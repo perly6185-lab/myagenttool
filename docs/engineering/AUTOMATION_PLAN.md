@@ -90,11 +90,15 @@ Implemented M0 entry point:
 ```text
 pnpm ai:issue-tree -- --idea "..." --provider openai|command|mock
 pnpm ai:issue-tree -- --brief-file brief.json --repo OWNER/REPO --apply
+pnpm ai:issue-tree -- --brief-file brief.json --repo OWNER/REPO --apply --human-approved "approved by NAME in ISSUE/COMMENT"
 ```
 
 The command is dry-run by default and writes labels, milestone, acceptance
 criteria, source docs, and `## Project Fields` metadata. After apply, run issue
 hygiene and Project field sync dry-run before moving generated work to `ready`.
+High-risk, security/data/privacy, billing/cost, local execution,
+roadmap-changing, or release/deploy issue creation is blocked until approval
+evidence is passed with `--human-approved` or `MYAGENTTOOL_HUMAN_APPROVED`.
 
 ### Layer 5: AI Development Execution
 

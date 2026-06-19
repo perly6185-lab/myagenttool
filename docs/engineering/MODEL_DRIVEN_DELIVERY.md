@@ -34,6 +34,7 @@ Command:
 ```text
 pnpm ai:issue-tree -- --idea "..." --provider openai|command|mock
 pnpm ai:issue-tree -- --brief-file .myagenttool/runs/brief.json --repo OWNER/REPO --apply
+pnpm ai:issue-tree -- --brief-file .myagenttool/runs/brief.json --repo OWNER/REPO --apply --human-approved "approved by NAME in ISSUE/COMMENT"
 ```
 
 The issue tree command turns a PM brief into one or more governed GitHub issue
@@ -47,6 +48,9 @@ Apply mode requires:
 - Non-empty acceptance criteria.
 - Required governance label groups.
 - A milestone and source doc.
+- Explicit `--human-approved "reason"` or `MYAGENTTOOL_HUMAN_APPROVED` when the
+  issue tree contains high-risk, security/data/privacy, billing/cost, local
+  execution, roadmap-changing, or release/deploy work.
 
 After apply, run:
 

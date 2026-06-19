@@ -14,7 +14,7 @@ Usage:
   node tools/ai/src/index.mjs --check
   node tools/ai/src/index.mjs intake-brief --idea "..." [--out path]
   node tools/ai/src/index.mjs pm-brief|pm-agent --idea "..." --provider openai|command|mock [--out path] [--json]
-  node tools/ai/src/index.mjs issue-tree --idea "..." --provider openai|command|mock [--brief-file path] [--repo OWNER/REPO] [--out path] [--apply]
+  node tools/ai/src/index.mjs issue-tree --idea "..." --provider openai|command|mock [--brief-file path] [--repo OWNER/REPO] [--out path] [--apply] [--human-approved "reason"]
   node tools/ai/src/index.mjs branch-plan --issue NUMBER --title "..."
   node tools/ai/src/index.mjs code-plan|code-agent --issue NUMBER [--repo OWNER/REPO] --provider openai|command|mock [--out path] [--json]
   node tools/ai/src/index.mjs scope-check [--plan-file path] [--base REF] [--out path] [--json] [--allow-drift "reason"]
@@ -291,6 +291,27 @@ function check() {
   if (issueTree.issues.length === 0 || !issueTree.issues[0].labels.some((label) => label.startsWith("acceptance/"))) {
     fail("Issue tree generation sanity check failed.");
   }
+  if (humanApprovalRequiredReasons(issueTree).length === 0) {
+    fail("Issue tree human approval detection sanity check failed.");
+  }
+  const unapprovedFailures = issueTreeApplyFailures(issueTree, "");
+  if (!unapprovedFailures.some((failure) => failure.includes("human approval"))) {
+    fail("Issue tree high-risk approval gate sanity check failed.");
+  }
+  const approvedIssueTree = issueTreeWithHumanApproval(issueTree, "Approved for local check.");
+  validateIssueTreeForApply(approvedIssueTree, "Approved for local check.");
+  if (!formatIssueBody(approvedIssueTree.issues[0], undefined).includes("Approved for local check.")) {
+    fail("Issue tree approval evidence formatting sanity check failed.");
+  }
+  const lowRiskIssueTree = issueTreeFromBrief({
+    ...sample,
+    nonGoals: ["No unrelated refactors."],
+    riskFlags: [],
+    projectFields: { ...sample.projectFields, risk: "low", area: "docs", sourceDoc: "docs/engineering/AI_DEVELOPMENT_WORKFLOW.md" },
+  });
+  if (issueTreeApplyFailures(lowRiskIssueTree, "").some((failure) => failure.includes("human approval"))) {
+    fail("Issue tree low-risk apply gate sanity check failed.");
+  }
 
   const testingPlan = testingPlanFor({ change: "web", risk: "high" });
   if (!testingPlan.requiredEvidence.some((item) => item.includes("Visual QA")) || !testingPlan.commands.includes("pnpm github:check:issues")) {
@@ -398,7 +419,8 @@ async function issueTree(args) {
   const apply = args.includes("--apply");
   const repo = option(args, "--repo") ?? process.env.GITHUB_REPOSITORY ?? defaultRepo();
   const brief = await loadPmBriefForIssueTree(args);
-  const tree = issueTreeFromBrief(brief);
+  const humanApproval = option(args, "--human-approved") ?? process.env.MYAGENTTOOL_HUMAN_APPROVED ?? "";
+  const tree = issueTreeWithHumanApproval(issueTreeFromBrief(brief), humanApproval);
   const out = option(args, "--out");
 
   if (!apply) {
@@ -408,7 +430,7 @@ async function issueTree(args) {
   }
 
   if (!repo) fail("Cannot apply issue tree without --repo or GITHUB_REPOSITORY.");
-  validateIssueTreeForApply(tree);
+  validateIssueTreeForApply(tree, humanApproval);
 
   const created = [];
   for (const issueSpec of tree.issues) {
@@ -1110,9 +1132,28 @@ function issueTreeFromBrief(brief) {
     governance: {
       dryRunDefault: true,
       applyRequiresExplicitFlag: true,
+      humanApprovalProvided: false,
+      humanApprovalEvidence: "",
       humanApprovalRequiredFor: ["roadmap-changing work", "security", "billing", "local execution", "release"],
       followUp: ["Run pnpm github:check:issues.", "Run sync-project-fields dry-run before moving issues to ready."],
     },
+  };
+}
+
+function issueTreeWithHumanApproval(tree, humanApproval) {
+  const evidence = String(humanApproval ?? "").trim();
+  if (!evidence) return tree;
+  return {
+    ...tree,
+    governance: {
+      ...tree.governance,
+      humanApprovalProvided: true,
+      humanApprovalEvidence: evidence,
+    },
+    issues: tree.issues.map((issueSpec) => ({
+      ...issueSpec,
+      humanApproval: evidence,
+    })),
   };
 }
 
@@ -1122,8 +1163,17 @@ function mergeGovernanceLabels(labels, fields) {
   return [...labelsFromProjectFields(fields), ...customLabels];
 }
 
-function validateIssueTreeForApply(tree) {
+function validateIssueTreeForApply(tree, humanApproval = "") {
+  const failures = issueTreeApplyFailures(tree, humanApproval);
+  if (failures.length > 0) {
+    fail(`Issue tree is not safe to apply:\n${failures.map((failure) => `  - ${failure}`).join("\n")}`);
+  }
+}
+
+function issueTreeApplyFailures(tree, humanApproval = "") {
   const failures = [];
+  const approvalReasons = humanApprovalRequiredReasons(tree);
+  const approvalEvidence = String(humanApproval || tree.governance?.humanApprovalEvidence || "").trim();
   for (const issueSpec of tree.issues) {
     if (!issueSpec.title || issueSpec.title.includes("TODO")) failures.push(`${issueSpec.title || "(untitled)"}: title is missing or TODO`);
     if (!issueSpec.milestone) failures.push(`${issueSpec.title}: milestone is missing`);
@@ -1134,9 +1184,44 @@ function validateIssueTreeForApply(tree) {
       }
     }
   }
-  if (failures.length > 0) {
-    fail(`Issue tree is not safe to apply:\n${failures.map((failure) => `  - ${failure}`).join("\n")}`);
+  if (approvalReasons.length > 0 && !approvalEvidence) {
+    failures.push(`human approval is required for ${approvalReasons.join(", ")}; pass --human-approved "approval reason" or set MYAGENTTOOL_HUMAN_APPROVED`);
   }
+  return failures;
+}
+
+function humanApprovalRequiredReasons(tree) {
+  const reasons = new Set();
+  for (const issueSpec of tree.issues ?? []) {
+    const labels = issueSpec.labels ?? [];
+    const fields = issueSpec.projectFields ?? {};
+    const text = [
+      issueSpec.title,
+      issueSpec.outcome,
+      issueSpec.problem,
+      issueSpec.userStory,
+      ...(issueSpec.riskFlags ?? []),
+      ...(issueSpec.nonGoals ?? []),
+      fields.area,
+      fields.type,
+      fields.risk,
+      fields.sourceDoc,
+      ...labels,
+    ]
+      .filter(Boolean)
+      .join("\n")
+      .toLowerCase();
+
+    if (labels.some((label) => ["risk/high", "risk/critical"].includes(label)) || ["high", "critical"].includes(normalizeLabelValue(fields.risk))) {
+      reasons.add("high-risk work");
+    }
+    if (/security|auth|credential|secret|permission|privacy|data retention|data-retention/.test(text)) reasons.add("security or data/privacy impact");
+    if (/billing|cost|quota|settlement|chargeback|payment/.test(text)) reasons.add("billing or cost impact");
+    if (/local execution|local-execution|desktop|process execution|child process|subprocess|shell|command execution|cancellation/.test(text)) reasons.add("local execution impact");
+    if (/release|deploy|deployment|rollback|production/.test(text)) reasons.add("release or deploy impact");
+    if (/roadmap|initiative|milestone|lifecycle|distribution/.test(text)) reasons.add("roadmap-changing work");
+  }
+  return [...reasons];
 }
 
 function formatIssueTree(tree, { applied }) {
@@ -1155,6 +1240,8 @@ ${tree.issues.map((issueSpec, index) => formatIssueTreeItem(issueSpec, created[i
 - Dry-run by default: yes
 - Apply requires explicit flag: yes
 - Human approval required for: ${tree.governance.humanApprovalRequiredFor.join(", ")}
+- Human approval provided: ${tree.governance.humanApprovalProvided ? "yes" : "no"}
+${tree.governance.humanApprovalEvidence ? `- Human approval evidence: ${tree.governance.humanApprovalEvidence}` : ""}
 
 ## Follow-up Checks
 
@@ -1193,6 +1280,9 @@ ${checklist(issueSpec.acceptanceCriteria)}
 
 ## Risk Flags
 ${list(issueSpec.riskFlags)}
+
+## Human Approval
+${issueSpec.humanApproval ? issueSpec.humanApproval : "Not recorded. Required before apply for high-risk, security/data, billing/cost, local execution, roadmap, or release/deploy work."}
 
 ## Open Questions
 ${list(issueSpec.openQuestions)}
