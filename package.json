@@ -30,6 +30,7 @@
     "github:check:branch": "node tools/github/src/index.mjs check-branch-protection",
     "release:check": "node tools/release/src/index.mjs --check",
     "release:draft": "node tools/release/src/index.mjs draft-notes",
+    "release:retrospective": "node tools/release/src/index.mjs retrospective",
     "deploy:check": "node tools/deploy/src/index.mjs --check",
     "deploy:plan": "node tools/deploy/src/index.mjs plan",
     "deploy:preflight": "node tools/deploy/src/index.mjs preflight",

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -12,6 +12,7 @@ const HELP = `MyAgentTool release tooling
 Usage:
   node tools/release/src/index.mjs --check
   node tools/release/src/index.mjs draft-notes --repo OWNER/REPO --pr NUMBER
+  node tools/release/src/index.mjs retrospective --pr NUMBER [--feedback-file path] [--out path]
 
 Notes:
   draft-notes prints a release note draft. It does not publish a GitHub release.
@@ -36,6 +37,11 @@ function main() {
     return;
   }
 
+  if (command === "retrospective") {
+    retrospective(args);
+    return;
+  }
+
   fail(`Unknown command: ${command}\n\n${HELP}`);
 }
 
@@ -52,7 +58,7 @@ function checkReleaseDocs() {
   }
 
   const releaseProcess = readFileSync(resolve(repoRoot, "docs/engineering/RELEASE_PROCESS.md"), "utf8");
-  const requiredSections = ["## Release Checklist", "## Release Notes", "## Rollback", "## Human Approval Required"];
+  const requiredSections = ["## Versioning", "## Release Checklist", "## Release Notes", "## Retrospective", "## Rollback", "## Human Approval Required", "## Telemetry And Support Signals"];
   const missingSections = requiredSections.filter((section) => !releaseProcess.includes(section));
   if (missingSections.length > 0) {
     fail(`Release process missing sections:\n${missingSections.map((section) => `  - ${section}`).join("\n")}`);
@@ -112,9 +118,55 @@ function draftNotes(args) {
   console.log("");
   console.log("- TODO: list limitations or state none.");
   console.log("");
+  console.log("## Feedback And Retrospective Evidence");
+  console.log("");
+  console.log("- TODO: link `pnpm release:retrospective` output or state not collected.");
+  console.log("");
   console.log("## Rollback Notes");
   console.log("");
   console.log("- TODO: explain rollback or state no runtime release was made.");
+}
+
+function retrospective(args) {
+  const prNumber = option(args, "--pr") ?? process.env.PR_NUMBER ?? "TODO";
+  const feedbackFile = option(args, "--feedback-file");
+  const feedback = feedbackFile ? readFileSync(resolve(repoRoot, feedbackFile), "utf8").trim() : "";
+  const content = `# Release Retrospective
+
+Created: ${new Date().toISOString()}
+
+## Scope
+
+- Source PR: ${prNumber === "TODO" ? "TODO" : `#${prNumber}`}
+- Feedback source: ${feedbackFile ?? "not provided"}
+
+## What Shipped
+
+- TODO: shipped change or release artifact.
+
+## What Failed Or Confused Users
+
+- TODO: failed checks, support signals, demo confusion, or state none.
+
+## Feedback
+
+${feedback || "- TODO: paste release, demo, support, or user feedback."}
+
+## Rollback Needs
+
+- TODO: rollback needed, not needed, or already completed.
+
+## Follow-up Work
+
+- [ ] Convert confirmed bug, risk, roadmap/task, or documentation follow-up with pnpm ai:feedback.
+
+## Telemetry And Support Signals
+
+- Allowed before launch: manual demo notes, issue comments, PR review notes, release workflow logs, local smoke output, and user-supplied screenshots/log excerpts.
+- Not allowed before launch: silent product telemetry, unapproved personal data collection, broad local log uploads, production monitoring claims, or billing/support automation without a source doc update.
+`;
+
+  writeOrPrint(content, option(args, "--out"));
 }
 
 function inferReleaseType(paths) {
@@ -139,6 +191,18 @@ function extractVerification(body) {
 function extractSection(body, name) {
   const match = (body ?? "").match(new RegExp(`##\\s+${name}\\s*([\\s\\S]*?)(?:\\n##\\s+|$)`, "i"));
   return match?.[1]?.trim();
+}
+
+function writeOrPrint(content, out) {
+  if (!out) {
+    console.log(content.trimEnd());
+    return;
+  }
+
+  const target = resolve(repoRoot, out);
+  mkdirSync(dirname(target), { recursive: true });
+  writeFileSync(target, content, "utf8");
+  console.log(`Wrote ${out}`);
 }
 
 function option(args, name) {

@@ -145,6 +145,8 @@ ${context.version || "not specified"}
 - GitHub environment approval for preview, staging, and production.
 - Human approval for staging and production.
 - Rollback notes and owner.
+- Version follows the release policy or states a non-versioned documentation preview.
+- Deploy secret responsibilities are reviewed.
 
 ## Data, Billing, And Local Execution Review
 
@@ -158,6 +160,10 @@ ${context.version || "not specified"}
 - Trigger: failed smoke check, incident, broken artifact, or release owner request.
 - Command or manual action: ${rollbackAction(context.target)}
 - Compatibility notes:
+
+## Environment Responsibilities
+
+${formatEnvironmentResponsibilities(context)}
 `;
 
   writeOrPrint(content, option(args, "--out"));
@@ -190,7 +196,7 @@ function preflight(args) {
     adapter: redactAdapter(adapter),
     status: failures.length > 0 ? "failed" : "passed",
     failures,
-    rollback: rollbackAction(context.target),
+    policy: releaseEvidencePolicy(context),
   });
 
   if (failures.length > 0) {
@@ -212,7 +218,7 @@ function publish(args) {
       context,
       adapter: redactAdapter(adapter),
       status: "dry-run",
-      rollback: rollbackAction(context.target),
+      policy: releaseEvidencePolicy(context),
     });
     writeFileSync(evidence.mdFile, dryRunReport(context, adapter), "utf8");
     console.log(`Deploy dry-run written to ${relative(evidence.mdFile)}.`);
@@ -235,7 +241,7 @@ function publish(args) {
     adapter: redactAdapter(adapter),
     status: result.status === 0 ? "completed" : "failed",
     exitCode: result.status,
-    rollback: rollbackAction(context.target),
+    policy: releaseEvidencePolicy(context),
     artifact: result.artifact ?? "",
   });
   writeFileSync(evidence.mdFile, applyReport(context, adapter, result), "utf8");
@@ -343,6 +349,7 @@ function writeEvidence(evidence, payload) {
   writeFileSync(evidence.jsonFile, `${JSON.stringify({
     evidenceVersion: "2026-06-19",
     createdAt: new Date().toISOString(),
+    policy: releaseEvidencePolicy(payload.context ?? {}),
     ...payload,
   }, null, 2)}\n`, "utf8");
 }
@@ -414,6 +421,30 @@ function redactAdapter(adapter) {
   };
 }
 
+function releaseEvidencePolicy(context) {
+  return {
+    versionPolicy: "Use semantic versioning for application releases. Documentation previews may use a PR, branch, or date-based identifier.",
+    version: context.version || "not specified",
+    humanApprovalRequired: ["staging", "production"].includes(context.environment) || context.target === "desktop",
+    productionApprovalEnv: "MYAGENTTOOL_DEPLOY_APPROVED",
+    deploySecretNames: deployCommandEnvNames(context),
+    rollback: rollbackAction(context.target),
+    entitlementLimitation: "Required reviewers and wait timers remain tracked through issue #32 when repository entitlement blocks enforcement.",
+  };
+}
+
+function formatEnvironmentResponsibilities(context) {
+  const policy = releaseEvidencePolicy(context);
+  return [
+    `- Version policy: ${policy.versionPolicy}`,
+    `- Version: ${policy.version}`,
+    `- Human approval required: ${policy.humanApprovalRequired ? "yes" : "no"}`,
+    `- Production approval env: ${policy.productionApprovalEnv}`,
+    `- Deploy command secret/env names: ${policy.deploySecretNames.join(", ")}`,
+    `- Entitlement limitation: ${policy.entitlementLimitation}`,
+  ].join("\n");
+}
+
 function rollbackAction(target) {
   return TARGETS[target]?.rollback ?? "Restore the previous verified artifact.";
 }
@@ -432,6 +463,10 @@ Configured: ${adapter.configured ? "yes" : "no"}
 Built in: ${adapter.builtin ? "yes" : "no"}
 Rollback: ${rollbackAction(context.target)}
 
+## Environment Responsibilities
+
+${formatEnvironmentResponsibilities(context)}
+
 No deploy adapter was executed.
 `;
 }
@@ -449,6 +484,10 @@ Adapter source: ${adapter.source}
 Exit: ${result.status}
 Artifact: ${result.artifact || "not recorded"}
 Rollback: ${rollbackAction(context.target)}
+
+## Environment Responsibilities
+
+${formatEnvironmentResponsibilities(context)}
 
 ## stdout
 
