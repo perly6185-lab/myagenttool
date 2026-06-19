@@ -8,20 +8,42 @@ try {
   start("server", process.execPath, ["apps/server/src/index.mjs"], {
     SERVER_PORT: String(serverPort)
   });
-  start("desktop", process.execPath, ["apps/desktop/src/index.mjs"], {
-    BRIDGE_SERVER_URL: serverUrl,
-    BRIDGE_POLL_INTERVAL_MS: "100"
-  });
 
   await waitFor(async () => {
     const health = await request("GET", "/health");
     return health.status === "ok";
   }, "server health");
 
+  const offlineCreated = await request("POST", "/api/invocations", {
+    task: "Run the M0 offline queue smoke test."
+  });
+  const offlineInvocationId = offlineCreated.invocation.id;
+  const queuedState = await request("GET", "/api/state");
+  const queuedInvocation = queuedState.invocations.find((item) => item.id === offlineInvocationId);
+  assert(queuedInvocation?.status === "queued", "offline invocation should be queued before bridge registration");
+  assert(queuedInvocation?.delivery.state === "queued", "offline delivery should be queued before bridge registration");
+
+  start("desktop", process.execPath, ["apps/desktop/src/index.mjs"], {
+    BRIDGE_SERVER_URL: serverUrl,
+    BRIDGE_POLL_INTERVAL_MS: "100"
+  });
+
   await waitFor(async () => {
     const state = await request("GET", "/api/state");
     return state.device.status === "online" && state.agent.status === "available";
   }, "desktop bridge registration");
+
+  await waitFor(async () => {
+    const state = await request("GET", "/api/state");
+    const invocation = state.invocations.find((item) => item.id === offlineInvocationId);
+    if (invocation?.status === "succeeded") {
+      return state;
+    }
+    if (["failed", "cancelled", "timed_out", "expired"].includes(invocation?.status)) {
+      throw new Error(`Offline invocation ended unexpectedly: ${invocation.status}`);
+    }
+    return false;
+  }, "offline queued invocation dispatch after reconnect");
 
   const created = await request("POST", "/api/invocations", {
     task: "Run the M0 local smoke test."
@@ -43,14 +65,21 @@ try {
   const invocation = finalState.invocations.find((item) => item.id === invocationId);
   const audit = finalState.auditSummaries.find((item) => item.invocationId === invocationId);
   const logEvents = finalState.events.filter((item) => item.invocationId === invocationId && item.type === "log");
+  const trace = finalState.traces.find((item) => item.id === invocation.traceId);
+  const span = finalState.spans.find((item) => item.id === invocation.rootSpanId);
 
   assert(invocation.result?.touchedUserFiles === false, "demo agent must not touch user files");
+  assert(invocation.delivery.state === "acknowledged", "expected acknowledged delivery");
+  assert(invocation.delivery.dispatchAttempts >= 1, "expected dispatch attempts");
   assert(logEvents.length >= 5, "expected progress log events");
   assert(audit?.permissionDecision === "allowed", "expected allowed audit summary");
+  assert(audit?.traceId === invocation.traceId, "expected audit summary to reference trace");
+  assert(trace?.subjectId === invocationId, "expected invocation trace");
+  assert(span?.status === "succeeded", "expected completed root span");
   assert(audit?.costSummary?.includes("unknown"), "expected unknown cost summary");
 
   console.log("[smoke] M0 local invocation loop OK");
-  console.log(`[smoke] invocation=${invocationId} logs=${logEvents.length} status=${invocation.status}`);
+  console.log(`[smoke] offlineInvocation=${offlineInvocationId} invocation=${invocationId} logs=${logEvents.length} status=${invocation.status}`);
 } finally {
   stopChildren();
 }

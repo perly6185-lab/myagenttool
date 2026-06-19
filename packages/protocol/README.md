@@ -9,8 +9,9 @@ This package defines the first M0 contract types shared by:
 - Desktop Bridge.
 - Agent adapters.
 
-It currently contains type definitions only. It does not implement transport,
-validation, persistence, invocation execution, billing, or adapter behavior.
+It currently contains shared type definitions, M0 protocol vocabulary constants,
+and a small vocabulary self-check. It does not implement transport, validation,
+persistence, invocation execution, billing, or adapter behavior.
 
 Source documents:
 

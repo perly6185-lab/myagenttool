@@ -23,6 +23,7 @@ Primary source docs:
 - `docs/vision/INVOCATION_DELIVERY.md`
 - `docs/vision/IDEA_TO_OUTCOME.md`
 - `docs/engineering/ADR_INDEX.md`
+- `docs/engineering/M0_CORE_PROTOCOL_SERVICE.md`
 
 Accepted M0 architecture decisions:
 
