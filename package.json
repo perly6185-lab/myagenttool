@@ -1,0 +1,19 @@
+{
+  "name": "myagenttool",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Personal and small-team Agent Control Plane.",
+  "packageManager": "pnpm@9.15.0",
+  "scripts": {
+    "dev": "node tools/dev/run-local-demo.mjs",
+    "test": "pnpm -r --if-present test && pnpm smoke:local",
+    "lint": "pnpm -r --if-present lint",
+    "typecheck": "pnpm -r --if-present typecheck",
+    "docs:check": "powershell -NoProfile -ExecutionPolicy Bypass -File tools/docs/check-markdown-links.ps1",
+    "repo:check": "powershell -NoProfile -ExecutionPolicy Bypass -File tools/docs/check-repo-health.ps1",
+    "smoke:local": "node tools/dev/local-smoke.mjs"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.2"
+  }
+}

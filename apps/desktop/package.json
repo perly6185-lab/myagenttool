@@ -1,0 +1,20 @@
+{
+  "name": "@myagenttool/desktop",
+  "version": "0.0.0",
+  "private": true,
+  "description": "M0 local demo Desktop Bridge.",
+  "type": "module",
+  "scripts": {
+    "dev": "node ./src/index.mjs",
+    "test": "node ./src/index.mjs --check",
+    "lint": "node ./src/index.mjs --check",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@myagenttool/protocol": "workspace:*",
+    "@myagenttool/shared": "workspace:*"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.2"
+  }
+}

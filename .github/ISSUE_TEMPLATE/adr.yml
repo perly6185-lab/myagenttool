@@ -1,0 +1,50 @@
+name: ADR
+description: An architecture decision that needs to be made or recorded.
+title: "[ADR]: "
+labels:
+  - type/adr
+  - status/backlog
+body:
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      description: What decision needs to be made and why now?
+    validations:
+      required: true
+  - type: textarea
+    id: options
+    attributes:
+      label: Options considered
+      placeholder: "- Option A\n- Option B"
+    validations:
+      required: true
+  - type: textarea
+    id: decision
+    attributes:
+      label: Proposed decision
+      description: What should we choose?
+    validations:
+      required: true
+  - type: textarea
+    id: consequences
+    attributes:
+      label: Consequences
+      description: Tradeoffs, follow-up work, and reversibility.
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - web
+        - server
+        - desktop
+        - protocol
+        - security
+        - billing
+        - docs
+        - cross-cutting
+    validations:
+      required: true

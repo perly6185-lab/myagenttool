@@ -1,0 +1,76 @@
+name: Initiative
+description: A milestone-sized product outcome that groups multiple epics.
+title: "[Initiative]: "
+labels:
+  - type/initiative
+  - status/backlog
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use initiatives for large outcomes such as M0 Remote Invocation Loop.
+  - type: input
+    id: milestone
+    attributes:
+      label: Milestone
+      placeholder: M0 / M1 / M2 / M3 / M4
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - web
+        - server
+        - desktop
+        - protocol
+        - security
+        - billing
+        - docs
+        - cross-cutting
+    validations:
+      required: true
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Outcome
+      description: What user-visible or operator-visible result should exist?
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: Scope
+      description: What is included?
+    validations:
+      required: true
+  - type: textarea
+    id: non_scope
+    attributes:
+      label: Non-scope
+      description: What is explicitly excluded?
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: Link to docs/vision/ACCEPTANCE_CRITERIA.md where possible.
+      placeholder: "- [ ] ..."
+    validations:
+      required: true
+  - type: input
+    id: source_doc
+    attributes:
+      label: Source doc
+      placeholder: docs/vision/ROADMAP.md
+  - type: dropdown
+    id: risk
+    attributes:
+      label: Risk
+      options:
+        - low
+        - medium
+        - high
+        - critical
+    validations:
+      required: true

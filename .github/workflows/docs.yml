@@ -1,0 +1,64 @@
+name: Docs
+
+on:
+  pull_request:
+    paths:
+      - "**/*.md"
+      - ".github/**"
+  push:
+    branches:
+      - main
+    paths:
+      - "**/*.md"
+      - ".github/**"
+
+jobs:
+  markdown-basic:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check markdown files are non-empty
+        shell: bash
+        run: |
+          set -euo pipefail
+          while IFS= read -r file; do
+            if [ ! -s "$file" ]; then
+              echo "Empty markdown file: $file"
+              exit 1
+            fi
+          done < <(find . -name "*.md" -type f)
+
+      - name: Check relative markdown links
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import pathlib
+          import re
+          import sys
+
+          root = pathlib.Path(".").resolve()
+          pattern = re.compile(r"\[[^\]]+\]\(([^)]+)\)")
+          failures = []
+
+          for path in root.rglob("*.md"):
+              text = path.read_text(encoding="utf-8")
+              for match in pattern.finditer(text):
+                  target = match.group(1).split("#", 1)[0]
+                  if not target or "://" in target or target.startswith("mailto:"):
+                      continue
+                  if target.startswith("/"):
+                      candidate = root / target.lstrip("/")
+                  else:
+                      candidate = path.parent / target
+                  if not candidate.exists():
+                      failures.append(f"{path.relative_to(root)} -> {target}")
+
+          if failures:
+              print("Broken markdown links:")
+              for failure in failures:
+                  print(f"  {failure}")
+              sys.exit(1)
+          PY
