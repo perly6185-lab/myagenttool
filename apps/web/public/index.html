@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>myagenttool M0 Local Demo</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">com.myagenttool</p>
+          <h1>M0 Local Invocation Loop</h1>
+        </div>
+        <div class="status-pill" id="connectionStatus">Connecting</div>
+      </header>
+
+      <section class="grid">
+        <section class="panel">
+          <h2>Local Device</h2>
+          <dl class="facts">
+            <div><dt>Name</dt><dd id="deviceName">-</dd></div>
+            <div><dt>Status</dt><dd id="deviceStatus">-</dd></div>
+            <div><dt>Platform</dt><dd id="devicePlatform">-</dd></div>
+          </dl>
+        </section>
+
+        <section class="panel">
+          <h2>Managed Agent</h2>
+          <dl class="facts">
+            <div><dt>Name</dt><dd id="agentName">-</dd></div>
+            <div><dt>Status</dt><dd id="agentStatus">-</dd></div>
+            <div><dt>Cost</dt><dd id="agentCost">-</dd></div>
+          </dl>
+        </section>
+
+        <section class="panel action-panel">
+          <h2>Task</h2>
+          <textarea id="taskInput" rows="5">Summarize the local demo state and confirm the bridge is working.</textarea>
+          <div class="actions">
+            <button id="runButton" type="button">Run Task</button>
+            <button id="cancelButton" type="button" class="secondary">Cancel Current</button>
+          </div>
+        </section>
+
+        <section class="panel">
+          <h2>Invocation</h2>
+          <dl class="facts">
+            <div><dt>ID</dt><dd id="invocationId">-</dd></div>
+            <div><dt>Status</dt><dd id="invocationStatus">-</dd></div>
+            <div><dt>Delivery</dt><dd id="deliveryStatus">-</dd></div>
+            <div><dt>Cancellation</dt><dd id="cancelStatus">-</dd></div>
+          </dl>
+        </section>
+      </section>
+
+      <section class="wide">
+        <section class="panel">
+          <h2>Logs</h2>
+          <ol id="eventList" class="event-list"></ol>
+        </section>
+
+        <section class="panel">
+          <h2>Result and Audit</h2>
+          <pre id="resultBox">No result yet.</pre>
+        </section>
+      </section>
+    </main>
+    <script src="/app.js" type="module"></script>
+  </body>
+</html>

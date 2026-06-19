@@ -1,0 +1,59 @@
+name: Risk
+description: A product, security, delivery, or technical risk to track.
+title: "[Risk]: "
+labels:
+  - type/risk
+  - status/backlog
+body:
+  - type: dropdown
+    id: risk
+    attributes:
+      label: Severity
+      options:
+        - low
+        - medium
+        - high
+        - critical
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - web
+        - server
+        - desktop
+        - protocol
+        - security
+        - billing
+        - docs
+        - cross-cutting
+    validations:
+      required: true
+  - type: textarea
+    id: scenario
+    attributes:
+      label: Risk scenario
+      description: What can go wrong?
+    validations:
+      required: true
+  - type: textarea
+    id: impact
+    attributes:
+      label: Impact
+      description: What happens if this risk occurs?
+    validations:
+      required: true
+  - type: textarea
+    id: mitigation
+    attributes:
+      label: Mitigation
+      description: What will reduce or contain the risk?
+    validations:
+      required: true
+  - type: input
+    id: source_doc
+    attributes:
+      label: Source doc
+      placeholder: docs/vision/SECURITY.md

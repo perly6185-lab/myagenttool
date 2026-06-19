@@ -1,0 +1,16 @@
+{
+  "name": "@myagenttool/tools-dev",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Local demo orchestration tools.",
+  "type": "module",
+  "scripts": {
+    "dev": "node ./run-local-demo.mjs",
+    "test": "node ./check.mjs",
+    "lint": "node ./check.mjs",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.2"
+  }
+}

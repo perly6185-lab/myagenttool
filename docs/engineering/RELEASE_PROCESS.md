@@ -1,0 +1,139 @@
+# Release Process
+
+This document defines the target release process.
+
+The release process should make it clear what shipped, what changed, what risks
+remain, and how to roll back.
+
+## Release Types
+
+### Documentation Release
+
+Changes only docs, issue templates, workflows, or project management artifacts.
+
+Required:
+
+- Markdown checks pass.
+- Links are valid.
+
+### Server Release
+
+Changes API, auth, registry, gateway, queue, audit, billing, or project
+automation.
+
+Required:
+
+- Server tests pass.
+- Migration notes exist if schema changes.
+- Rollback notes exist if deployment behavior changes.
+
+### Web Release
+
+Changes account, device, agent, invocation, audit, billing, or UX flows.
+
+Required:
+
+- UI checks pass.
+- E2E smoke path passes when available.
+- User-facing copy remains understandable.
+
+### Desktop Bridge Release
+
+Changes local execution, device linking, discovery, adapters, credentials,
+process handling, or cancellation.
+
+Required:
+
+- Cross-platform test evidence.
+- Security review.
+- Local execution permission review.
+- Rollback or downgrade path.
+
+### Protocol Release
+
+Changes shared schemas, invocation messages, events, or state transitions.
+
+Required:
+
+- Compatibility notes.
+- Contract tests.
+- Migration plan for older Desktop Bridge versions.
+
+## Versioning
+
+Use semantic versioning once application code exists:
+
+```text
+MAJOR.MINOR.PATCH
+```
+
+Recommended interpretation:
+
+- MAJOR: incompatible protocol or deployment changes.
+- MINOR: new capabilities.
+- PATCH: fixes and safe internal changes.
+
+Desktop Bridge and server compatibility should be tracked explicitly.
+
+## Release Checklist
+
+Before release:
+
+- Linked issues are closed or clearly deferred.
+- Acceptance criteria are verified.
+- Tests pass.
+- Known limitations are listed.
+- Security, data, billing, and audit impact is reviewed.
+- Rollback notes exist.
+- Release notes are drafted.
+
+## Release Notes
+
+Release notes should include:
+
+- Summary.
+- Shipped issues.
+- User-visible changes.
+- Security or data changes.
+- Billing or cost changes.
+- Breaking changes.
+- Known limitations.
+- Rollback notes.
+
+## Rollback
+
+Every release should answer:
+
+- Can the server be rolled back?
+- Can database migrations be reversed or tolerated?
+- Can the Desktop Bridge downgrade?
+- Are queued invocations compatible?
+- Are protocol messages backward compatible?
+- What happens to running local work?
+
+## Human Approval Required
+
+Human approval is required for:
+
+- Production deployment.
+- Desktop Bridge distribution.
+- Billing behavior changes.
+- Data retention changes.
+- Local execution permission changes.
+- Public extension release.
+
+## AI Role
+
+AI may:
+
+- Generate release notes.
+- Summarize merged PRs.
+- Identify missing rollback notes.
+- Check issue and Project status.
+- Propose a release checklist.
+
+AI must not:
+
+- Release production without approval.
+- Hide failed checks.
+- Mark risky behavior as resolved without evidence.

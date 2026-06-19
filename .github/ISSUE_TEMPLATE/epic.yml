@@ -1,0 +1,77 @@
+name: Epic
+description: A coherent product or platform capability under an initiative.
+title: "[Epic]: "
+labels:
+  - type/epic
+  - status/backlog
+body:
+  - type: input
+    id: initiative
+    attributes:
+      label: Parent initiative
+      placeholder: M0 Remote Invocation Loop
+    validations:
+      required: true
+  - type: input
+    id: milestone
+    attributes:
+      label: Milestone
+      placeholder: M0 / M1 / M2 / M3 / M4
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - web
+        - server
+        - desktop
+        - protocol
+        - security
+        - billing
+        - docs
+        - cross-cutting
+    validations:
+      required: true
+  - type: dropdown
+    id: agent_target
+    attributes:
+      label: Agent target
+      options:
+        - all
+        - cli
+        - http
+        - mcp
+        - a2a
+        - platform
+        - lifecycle
+        - none
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What user or system problem does this epic solve?
+    validations:
+      required: true
+  - type: textarea
+    id: proposed_shape
+    attributes:
+      label: Proposed shape
+      description: Briefly describe the capability and major parts.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      placeholder: "- [ ] ..."
+    validations:
+      required: true
+  - type: input
+    id: source_doc
+    attributes:
+      label: Source doc
+      placeholder: docs/vision/STATE_MACHINE.md
