@@ -4,11 +4,7 @@ const namespace = "com.myagenttool";
 const protocolVersion = "0.0.0";
 const host = process.env.SERVER_HOST ?? "127.0.0.1";
 const port = Number(process.env.SERVER_PORT ?? 3001);
-
-if (process.argv.includes("--check")) {
-  console.log("[server:check] local demo server check OK");
-  process.exit(0);
-}
+const dispatchLeaseMs = Number(process.env.SERVER_DISPATCH_LEASE_MS ?? 30_000);
 
 const state = {
   device: {
@@ -59,10 +55,18 @@ const state = {
   },
   invocations: [],
   events: [],
+  traces: [],
+  spans: [],
   auditSummaries: []
 };
 
 let idCounter = 1;
+
+if (process.argv.includes("--check")) {
+  runProtocolSelfCheck();
+  console.log("[server:check] local demo server check OK");
+  process.exit(0);
+}
 
 const server = http.createServer(async (req, res) => {
   try {
@@ -98,6 +102,7 @@ const server = http.createServer(async (req, res) => {
       state.device.lastSeenAt = now();
       state.device.bridgeVersion = String(body.bridgeVersion ?? "0.0.0");
       state.agent.status = "available";
+      redeliverExpiredDispatches();
       appendEvent({
         invocationId: null,
         type: "heartbeat",
@@ -110,26 +115,15 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === "GET" && url.pathname === "/api/bridge/next") {
       state.device.lastSeenAt = now();
-      const invocation = state.invocations.find(
-        (item) => item.status === "queued" && item.delivery.state === "queued"
-      );
+      redeliverExpiredDispatches();
+      const invocation = nextDispatchableInvocation();
 
       if (!invocation) {
         sendJson(res, 204, null);
         return;
       }
 
-      invocation.status = "dispatching";
-      invocation.delivery.state = "dispatching";
-      invocation.delivery.dispatchAttempts += 1;
-      invocation.delivery.lastDispatchAt = now();
-      invocation.updatedAt = now();
-      appendEvent({
-        invocationId: invocation.id,
-        type: "delivery_dispatched",
-        level: "info",
-        message: "Invocation dispatched to Desktop Bridge."
-      });
+      markDispatched(invocation);
 
       sendJson(res, 200, {
         namespace,
@@ -158,22 +152,7 @@ const server = http.createServer(async (req, res) => {
         return;
       }
 
-      invocation.delivery.state = "acknowledged";
-      invocation.delivery.acknowledgedAt = now();
-      invocation.status = "running";
-      invocation.updatedAt = now();
-      appendEvent({
-        invocationId: invocation.id,
-        type: "delivery_acknowledged",
-        level: "info",
-        message: "Desktop Bridge acknowledged durable receipt."
-      });
-      appendEvent({
-        invocationId: invocation.id,
-        type: "invocation_started",
-        level: "info",
-        message: "Demo CLI Agent started."
-      });
+      acknowledgeInvocation(invocation);
       sendJson(res, 200, { ok: true });
       return;
     }
@@ -204,28 +183,7 @@ const server = http.createServer(async (req, res) => {
         return;
       }
 
-      const terminalStatus = body.status === "cancelled" ? "cancelled" : body.status === "failed" ? "failed" : "succeeded";
-      invocation.status = terminalStatus;
-      invocation.result = body.result ?? null;
-      invocation.completedAt = now();
-      invocation.updatedAt = now();
-      if (terminalStatus === "cancelled") {
-        invocation.cancellation.state = "applied";
-      }
-
-      appendEvent({
-        invocationId: invocation.id,
-        type:
-          terminalStatus === "succeeded"
-            ? "invocation_succeeded"
-            : terminalStatus === "cancelled"
-              ? "cancel_applied"
-              : "invocation_failed",
-        level: terminalStatus === "succeeded" ? "info" : "warn",
-        message: body.summary ?? `Invocation ${terminalStatus}.`,
-        data: body.result ?? null
-      });
-      state.auditSummaries.push(createAuditSummary(invocation, body.summary ?? null));
+      completeInvocation(invocation, body);
       sendJson(res, 200, { ok: true, invocation });
       return;
     }
@@ -238,25 +196,6 @@ const server = http.createServer(async (req, res) => {
         return;
       }
       const invocation = createInvocation(task);
-      state.invocations.unshift(invocation);
-      appendEvent({
-        invocationId: invocation.id,
-        type: "invocation_created",
-        level: "info",
-        message: "Invocation created from Web Console."
-      });
-      appendEvent({
-        invocationId: invocation.id,
-        type: "invocation_authorized",
-        level: "info",
-        message: "Demo invocation authorized for local demo agent."
-      });
-      appendEvent({
-        invocationId: invocation.id,
-        type: "delivery_queued",
-        level: "info",
-        message: "Invocation queued for Desktop Bridge."
-      });
       sendJson(res, 201, { invocation });
       return;
     }
@@ -299,7 +238,8 @@ function nextId(prefix) {
 function createInvocation(task) {
   const id = nextId("inv_demo");
   const createdAt = now();
-  return {
+  const trace = createTrace(id);
+  const invocation = {
     id,
     ideaSessionId: null,
     agentId: state.agent.id,
@@ -330,13 +270,143 @@ function createInvocation(task) {
       metadata: { demo: true }
     },
     result: null,
+    traceId: trace.id,
+    rootSpanId: trace.rootSpanId,
     createdAt,
     updatedAt: createdAt
   };
+  state.invocations.unshift(invocation);
+  appendEvent({
+    invocationId: invocation.id,
+    type: "invocation_created",
+    level: "info",
+    message: "Invocation created from Web Console."
+  });
+  appendEvent({
+    invocationId: invocation.id,
+    type: "invocation_authorized",
+    level: "info",
+    message: "Demo invocation authorized for local demo agent."
+  });
+  appendEvent({
+    invocationId: invocation.id,
+    type: "trace_created",
+    level: "info",
+    message: "Invocation trace created.",
+    data: { traceId: trace.id, rootSpanId: trace.rootSpanId }
+  });
+  appendEvent({
+    invocationId: invocation.id,
+    type: "delivery_queued",
+    level: "info",
+    message: "Invocation queued for Desktop Bridge."
+  });
+  return invocation;
+}
+
+function nextDispatchableInvocation() {
+  return state.invocations.find((item) =>
+    item.status === "queued" && ["queued", "redelivering"].includes(item.delivery.state)
+  );
+}
+
+function markDispatched(invocation) {
+  invocation.status = "dispatching";
+  invocation.delivery.state = "dispatching";
+  invocation.delivery.dispatchAttempts += 1;
+  invocation.delivery.lastDispatchAt = now();
+  invocation.delivery.leaseExpiresAt = new Date(Date.now() + dispatchLeaseMs).toISOString();
+  invocation.delivery.bridgeCursor = `cursor_${invocation.delivery.dispatchAttempts}_${invocation.id}`;
+  invocation.updatedAt = now();
+  appendEvent({
+    invocationId: invocation.id,
+    type: invocation.delivery.dispatchAttempts > 1 ? "delivery_redelivered" : "delivery_dispatched",
+    level: "info",
+    message: invocation.delivery.dispatchAttempts > 1 ? "Invocation redelivered to Desktop Bridge." : "Invocation dispatched to Desktop Bridge.",
+    data: {
+      dispatchAttempts: invocation.delivery.dispatchAttempts,
+      leaseExpiresAt: invocation.delivery.leaseExpiresAt,
+      bridgeCursor: invocation.delivery.bridgeCursor
+    }
+  });
+}
+
+function acknowledgeInvocation(invocation) {
+  if (invocation.delivery.state === "acknowledged" || invocation.status === "running") {
+    return;
+  }
+  invocation.delivery.state = "acknowledged";
+  invocation.delivery.acknowledgedAt = now();
+  invocation.delivery.leaseExpiresAt = null;
+  invocation.status = "running";
+  invocation.updatedAt = now();
+  appendEvent({
+    invocationId: invocation.id,
+    type: "delivery_acknowledged",
+    level: "info",
+    message: "Desktop Bridge acknowledged durable receipt."
+  });
+  appendEvent({
+    invocationId: invocation.id,
+    type: "invocation_started",
+    level: "info",
+    message: "Demo CLI Agent started."
+  });
+}
+
+function completeInvocation(invocation, body) {
+  if (isTerminal(invocation.status)) {
+    return;
+  }
+  const terminalStatus = body.status === "cancelled" ? "cancelled" : body.status === "failed" ? "failed" : "succeeded";
+  invocation.status = terminalStatus;
+  invocation.result = body.result ?? null;
+  invocation.completedAt = now();
+  invocation.updatedAt = now();
+  completeRootSpan(invocation, terminalStatus);
+  if (terminalStatus === "cancelled") {
+    invocation.cancellation.state = "applied";
+  }
+
+  appendEvent({
+    invocationId: invocation.id,
+    type:
+      terminalStatus === "succeeded"
+        ? "invocation_succeeded"
+        : terminalStatus === "cancelled"
+          ? "cancel_applied"
+          : "invocation_failed",
+    level: terminalStatus === "succeeded" ? "info" : "warn",
+    message: body.summary ?? `Invocation ${terminalStatus}.`,
+    data: body.result ?? null
+  });
+  state.auditSummaries.push(createAuditSummary(invocation, body.summary ?? null));
+}
+
+function redeliverExpiredDispatches() {
+  const current = Date.now();
+  for (const invocation of state.invocations) {
+    if (invocation.status !== "dispatching" || invocation.delivery.state !== "dispatching" || !invocation.delivery.leaseExpiresAt) {
+      continue;
+    }
+    if (Date.parse(invocation.delivery.leaseExpiresAt) > current) {
+      continue;
+    }
+    invocation.status = "queued";
+    invocation.delivery.state = "redelivering";
+    invocation.updatedAt = now();
+    appendEvent({
+      invocationId: invocation.id,
+      type: "delivery_redelivered",
+      level: "warn",
+      message: "Dispatch lease expired; invocation returned to queue for redelivery.",
+      data: { dispatchAttempts: invocation.delivery.dispatchAttempts }
+    });
+  }
 }
 
 function cancelInvocation(invocation) {
-  if (["succeeded", "failed", "cancelled", "timed_out", "expired", "rejected"].includes(invocation.status)) {
+  if (isTerminal(invocation.status)) {
     return;
   }
   invocation.cancellation.requestedBy = "usr_local";
@@ -382,7 +452,7 @@ function createAuditSummary(invocation, summary) {
     deviceId: invocation.delivery.deviceId,
     status: invocation.status,
     permissionDecision: "allowed",
-    traceId: null,
+    traceId: invocation.traceId ?? null,
     startedAt: invocation.createdAt,
     completedAt: invocation.completedAt ?? now(),
     resultSummary: invocation.status === "succeeded" ? summary : null,
@@ -391,6 +461,50 @@ function createAuditSummary(invocation, summary) {
     costSummary: "Demo agent cost is unknown; no billing was performed.",
     metadata: { namespace, protocolVersion }
   };
+}
+
+function createTrace(invocationId) {
+  const traceId = nextId("trc_demo");
+  const spanId = nextId("spn_demo");
+  const createdAt = now();
+  const trace = {
+    id: traceId,
+    subjectType: "invocation",
+    subjectId: invocationId,
+    rootSpanId: spanId,
+    createdAt
+  };
+  const span = {
+    id: spanId,
+    traceId,
+    parentSpanId: null,
+    name: "m0.remote_invocation",
+    status: "started",
+    startedAt: createdAt,
+    endedAt: null,
+    attributes: {
+      deviceId: state.device.id,
+      agentId: state.agent.id,
+      transport: "polling-demo-websocket-baseline",
+      queue: "server-owned"
+    }
+  };
+  state.traces.unshift(trace);
+  state.spans.unshift(span);
+  return { id: traceId, rootSpanId: spanId };
+}
+
+function completeRootSpan(invocation, terminalStatus) {
+  const span = state.spans.find((item) => item.id === invocation.rootSpanId);
+  if (!span || span.endedAt) {
+    return;
+  }
+  span.status = terminalStatus === "succeeded" ? "succeeded" : terminalStatus === "cancelled" ? "cancelled" : "failed";
+  span.endedAt = now();
+}
+
+function isTerminal(status) {
+  return ["succeeded", "failed", "cancelled", "timed_out", "expired", "rejected"].includes(status);
 }
 
 function appendEvent(event) {
@@ -418,8 +532,68 @@ function publicState() {
     agent: state.agent,
     invocations: state.invocations,
     events: state.events,
+    traces: state.traces,
+    spans: state.spans,
     auditSummaries: state.auditSummaries
   };
+}
+
+function runProtocolSelfCheck() {
+  resetDemoStateForCheck();
+  const invocation = createInvocation("self-check invocation");
+  assert(invocation.status === "queued", "created invocation should be queued");
+  assert(invocation.delivery.state === "queued", "created delivery should be queued");
+  assert(state.traces.length === 1 && state.spans.length === 1, "trace and root span should be created");
+
+  markDispatched(invocation);
+  assert(invocation.status === "dispatching", "dispatched invocation should be dispatching");
+  assert(invocation.delivery.state === "dispatching", "delivery should be dispatching");
+  assert(invocation.delivery.dispatchAttempts === 1, "dispatch attempts should increment");
+
+  invocation.delivery.leaseExpiresAt = new Date(Date.now() - 1000).toISOString();
+  redeliverExpiredDispatches();
+  assert(invocation.status === "queued", "expired dispatch lease should return invocation to queued");
+  assert(invocation.delivery.state === "redelivering", "expired dispatch lease should mark redelivering");
+
+  const redelivery = nextDispatchableInvocation();
+  assert(redelivery?.id === invocation.id, "redelivering invocation should be dispatchable");
+  markDispatched(invocation);
+  assert(invocation.delivery.dispatchAttempts === 2, "redelivery should increment attempts");
+
+  acknowledgeInvocation(invocation);
+  acknowledgeInvocation(invocation);
+  assert(invocation.status === "running", "acknowledged invocation should be running");
+  assert(invocation.delivery.state === "acknowledged", "delivery should be acknowledged");
+  assert(invocation.delivery.leaseExpiresAt === null, "acknowledgement should clear lease");
+
+  completeInvocation(invocation, {
+    status: "succeeded",
+    summary: "Self-check completed.",
+    result: { touchedUserFiles: false }
+  });
+  assert(invocation.status === "succeeded", "completed invocation should succeed");
+  assert(state.auditSummaries.some((item) => item.invocationId === invocation.id && item.traceId === invocation.traceId), "audit summary should reference trace");
+  assert(state.spans.find((item) => item.id === invocation.rootSpanId)?.status === "succeeded", "root span should complete");
+
+  const queuedCancel = createInvocation("queued cancellation");
+  cancelInvocation(queuedCancel);
+  assert(queuedCancel.status === "cancelled", "queued cancellation should cancel invocation");
+  assert(queuedCancel.cancellation.state === "queued_cancelled", "queued cancellation state should be queued_cancelled");
+}
+
+function resetDemoStateForCheck() {
+  state.invocations = [];
+  state.events = [];
+  state.traces = [];
+  state.spans = [];
+  state.auditSummaries = [];
+  idCounter = 1;
+}
+
+function assert(condition, message) {
+  if (!condition) {
+    throw new Error(message);
+  }
 }
 
 function setCors(res) {

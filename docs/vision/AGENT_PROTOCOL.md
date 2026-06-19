@@ -248,6 +248,8 @@ An invocation is one request to one agent.
   "agentId": "agt_123",
   "requestedBy": "usr_123",
   "status": "queued",
+  "traceId": "trc_123",
+  "rootSpanId": "spn_001",
   "delivery": {
     "deviceId": "dev_123",
     "state": "queued",

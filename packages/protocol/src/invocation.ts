@@ -72,6 +72,8 @@ export interface Invocation {
   agentId: AgentId;
   requestedBy: UserId;
   status: InvocationStatus;
+  traceId: TraceId;
+  rootSpanId: SpanId;
   delivery: InvocationDelivery;
   cancellation: InvocationCancellation;
   input: JsonObject;
