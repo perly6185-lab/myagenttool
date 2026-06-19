@@ -1,5 +1,5 @@
 import http from "node:http";
-import { createReadStream, existsSync } from "node:fs";
+import { createReadStream, existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, extname, join } from "node:path";
 
@@ -15,6 +15,34 @@ if (process.argv.includes("--check")) {
     console.error(`[web:check] missing files: ${missing.join(", ")}`);
     process.exit(1);
   }
+
+  const html = readFileSync(join(publicDir, "index.html"), "utf8");
+  const css = readFileSync(join(publicDir, "styles.css"), "utf8");
+  const js = readFileSync(join(publicDir, "app.js"), "utf8");
+  const expectations = [
+    [html, "What should your computer do?", "task composer"],
+    [html, "Run on this computer", "plain-language run action"],
+    [html, "Safety", "safety review"],
+    [html, "Data", "data review"],
+    [html, "Cost", "cost review"],
+    [html, "Activity", "activity timeline"],
+    [html, "Result", "result panel"],
+    [html, "Audit", "audit panel"],
+    [css, "@media (max-width: 760px)", "mobile layout guard"],
+    [css, "overflow-wrap: anywhere", "long text overflow guard"],
+    [js, "readableStatus", "plain-language state mapper"],
+    [js, "readableEventType", "plain-language event mapper"]
+  ];
+
+  const failed = expectations
+    .filter(([content, needle]) => !content.includes(needle))
+    .map(([, , label]) => label);
+
+  if (failed.length > 0) {
+    console.error(`[web:check] missing UX/visual QA expectations: ${failed.join(", ")}`);
+    process.exit(1);
+  }
+
   console.log("[web:check] local demo web console check OK");
   process.exit(0);
 }
