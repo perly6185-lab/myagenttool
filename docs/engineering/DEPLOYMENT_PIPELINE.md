@@ -19,6 +19,10 @@ environment gates before a cloud or desktop distribution target is selected.
 `docs/preview` rollback is to revert the publishing commit or redeploy the
 previous docs artifact.
 
+Documentation previews may use a PR number, branch, or date-based identifier.
+Staging and production releases for application targets must pass an explicit
+`--version` so rollback evidence can identify the previous artifact.
+
 ## Environments
 
 ### Preview
@@ -56,6 +60,10 @@ Required:
 - Rollback plan is explicit.
 - Security, data, cost, local execution, and billing impact are reviewed.
 
+As of 2026-06-19, production remains manually gated. Repository entitlement
+limits required reviewers and wait timers; keep this tracked through issue #32
+until technical enforcement is available.
+
 ## Deployment Adapter
 
 Command:
@@ -84,6 +92,16 @@ For example:
 ```text
 MYAGENTTOOL_DEPLOY_DOCS_PREVIEW_COMMAND_JSON='["node","tools/deploy-docs-preview.mjs"]'
 ```
+
+GitHub environment secret responsibilities:
+
+| Secret or env | Owner responsibility |
+| --- | --- |
+| `MYAGENTTOOL_DEPLOY_COMMAND_JSON` | Default deploy adapter command, reviewed by release owner |
+| `MYAGENTTOOL_DEPLOY_<TARGET>_COMMAND_JSON` | Target-specific adapter command, reviewed by target owner |
+| `MYAGENTTOOL_DEPLOY_<ENVIRONMENT>_COMMAND_JSON` | Environment adapter command, reviewed by environment owner |
+| `MYAGENTTOOL_DEPLOY_<TARGET>_<ENVIRONMENT>_COMMAND_JSON` | Most specific adapter command, reviewed by target and environment owners |
+| `MYAGENTTOOL_DEPLOY_PRODUCTION_APPROVED` | Production approval signal, set only by protected environment approval |
 
 The adapter command receives `MYAGENTTOOL_DEPLOY_CONTEXT`, a JSON file with:
 
@@ -114,10 +132,17 @@ Every release/deploy path should preserve:
 - Rollback notes.
 - Human approval record.
 - Known limitations.
+- Version policy or non-versioned preview justification.
+- Deploy secret names and ownership responsibility.
+- Entitlement limitation note when GitHub enforcement is unavailable.
 
 The release workflow uploads release and deployment plan artifacts. The deploy
 workflow runs preflight before any adapter publish step and uploads deploy
 evidence artifacts for preview, staging, and production.
+
+Deploy evidence JSON includes `policy.versionPolicy`,
+`policy.deploySecretNames`, `policy.rollback`, `policy.humanApprovalRequired`,
+and the issue #32 entitlement limitation note.
 
 ## Rollback
 

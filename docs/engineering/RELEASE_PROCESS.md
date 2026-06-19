@@ -75,6 +75,11 @@ Recommended interpretation:
 
 Desktop Bridge and server compatibility should be tracked explicitly.
 
+Until packaged application artifacts exist, documentation previews may use a
+PR number, branch name, or date-based identifier. Production, staging, server,
+web, desktop, and protocol releases must use an explicit `--version` so rollback
+evidence can point to the previous artifact.
+
 ## Release Checklist
 
 Before release:
@@ -104,10 +109,14 @@ Use the local draft command before human review:
 
 ```text
 pnpm release:draft
+pnpm release:retrospective -- --pr 123
 ```
 
 The command prints a draft from the current branch PR when GitHub access is
 available. It does not publish a release.
+
+Release notes should reference retrospective evidence when feedback, demo notes,
+support signals, or rollback decisions influenced the release.
 
 For deployment planning, use:
 
@@ -124,6 +133,48 @@ configured `MYAGENTTOOL_DEPLOY_COMMAND_JSON` adapter.
 Production also requires `MYAGENTTOOL_DEPLOY_APPROVED=true`. In GitHub Actions
 this should come from an explicit environment secret, not from the workflow
 input alone.
+
+## Retrospective
+
+After a release, preview, or product demo, record:
+
+- What shipped.
+- What failed checks, confused users, or created support risk.
+- Feedback source and evidence.
+- Rollback needs.
+- Follow-up issues or risks.
+- Telemetry/support signals used.
+
+Use:
+
+```text
+pnpm release:retrospective -- --pr 123 --feedback-file feedback.md
+pnpm ai:feedback -- --feedback "..." --target bug --issue-tree
+pnpm ai:issue-tree -- --brief-file .myagenttool/runs/feedback-brief.json --repo OWNER/REPO
+```
+
+`ai:feedback --issue-tree` creates a governed PM brief JSON that can feed
+`ai:issue-tree` dry-run/apply. Apply still requires explicit approval and normal
+issue governance.
+
+## Telemetry And Support Signals
+
+Allowed before product launch:
+
+- Manual demo notes.
+- Issue comments and PR review notes.
+- Release and deploy workflow logs.
+- Local smoke output.
+- User-supplied screenshots or log excerpts with sensitive data removed.
+
+Not allowed before product launch:
+
+- Silent product telemetry.
+- Unapproved personal data collection.
+- Broad local log uploads.
+- Production monitoring or support automation claims without source-doc review.
+- Billing, quota, chargeback, or support escalation automation without explicit
+  issue and human approval.
 
 ## Rollback
 

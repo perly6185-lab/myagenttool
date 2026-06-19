@@ -23,7 +23,7 @@ Usage:
   node tools/ai/src/index.mjs review-pr|review-agent --pr NUMBER [--repo OWNER/REPO] --provider openai|command|mock [--out path] [--json] [--comment]
   node tools/ai/src/index.mjs work-manifest [--issue NUMBER] [--pr NUMBER] [--out path]
   node tools/ai/src/index.mjs coding-adapter-contract [--adapter NAME] [--out path]
-  node tools/ai/src/index.mjs feedback-convert --feedback "..." --target bug|risk|roadmap|documentation [--out path]
+  node tools/ai/src/index.mjs feedback-convert --feedback "..." --target bug|risk|roadmap|documentation [--issue-tree] [--json] [--out path]
 
 Providers:
   openai   Uses OPENAI_API_KEY and the Responses API.
@@ -668,6 +668,13 @@ function feedbackConvert(args) {
   const riskFlags = inferRiskFlags(feedback);
   const risk = target === "risk" || riskFlags.length > 0 ? "high" : "medium";
   const titlePrefix = type === "bug" ? "[Bug]" : type === "risk" ? "[Risk]" : "[Task]";
+  const brief = feedbackBrief({ feedback, target, type, area, platform, risk, riskFlags, titlePrefix });
+
+  if (args.includes("--issue-tree") || args.includes("--json")) {
+    const content = `${JSON.stringify(brief, null, 2)}\n`;
+    writeOrPrint(content, option(args, "--out"));
+    return;
+  }
 
   const draft = `# Feedback Conversion Draft
 
@@ -713,9 +720,61 @@ Platform: ${platform}
 Agent Target: platform
 Priority: p2
 Source Doc: docs/engineering/FULL_FLOW_AI_DELIVERY.md
+
+## Issue Tree Handoff
+
+To create a governed issue dry-run from this feedback, run:
+
+\`\`\`text
+pnpm ai:feedback -- --feedback "..." --target ${target} --issue-tree --out .myagenttool/runs/feedback-brief.json
+pnpm ai:issue-tree -- --brief-file .myagenttool/runs/feedback-brief.json --repo OWNER/REPO
+\`\`\`
 `;
 
   writeOrPrint(draft, option(args, "--out"));
+}
+
+function feedbackBrief({ feedback, target, type, area, platform, risk, riskFlags, titlePrefix }) {
+  const acceptance = type === "bug"
+    ? ["A reproduction or evidence note is recorded.", "The expected user outcome is restored or a follow-up risk is filed."]
+    : type === "risk"
+      ? ["Risk impact and likelihood are recorded.", "A mitigation or explicit owner decision is documented."]
+      : ["The feedback is converted into a milestone-aligned follow-up with clear acceptance criteria."];
+  return {
+    outcome: "Convert release, demo, support, or user feedback into tracked follow-up work.",
+    primaryUser: "Reviewer or operator triaging feedback after a release or demo.",
+    problem: feedback,
+    userStory: "As a reviewer, I want feedback to become traceable work so that release learning is not lost.",
+    nonGoals: ["Do not silently change roadmap scope without review.", "Do not collect telemetry beyond approved pre-launch signals."],
+    acceptanceCriteria: acceptance,
+    riskFlags: riskFlags.length > 0 ? riskFlags : ["Review whether the feedback implies user-visible confusion, rollback needs, or support risk."],
+    projectFields: {
+      milestone: "M0",
+      area,
+      type,
+      status: "backlog",
+      risk,
+      acceptance: "defined",
+      platform,
+      agentTarget: "platform",
+      priority: type === "bug" || type === "risk" ? "p1" : "p2",
+      sourceDoc: "docs/engineering/FULL_FLOW_AI_DELIVERY.md",
+    },
+    issueTitle: `${titlePrefix}: TODO short title from feedback`,
+    suggestedLabels: labelsFromProjectFields({
+      milestone: "M0",
+      area,
+      type,
+      status: "backlog",
+      risk,
+      acceptance: "defined",
+      platform,
+      agentTarget: "platform",
+      priority: type === "bug" || type === "risk" ? "p1" : "p2",
+      sourceDoc: "docs/engineering/FULL_FLOW_AI_DELIVERY.md",
+    }),
+    openQuestions: ["What evidence confirms this feedback?", "Should this be fixed before the next release or tracked as a later follow-up?"],
+  };
 }
 
 async function createCodePlan(args) {

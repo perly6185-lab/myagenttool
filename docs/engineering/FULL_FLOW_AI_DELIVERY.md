@@ -70,6 +70,8 @@ Already implemented:
 - `tools/release` helper CLI for release process checks and release note drafts.
 - `tools/deploy` helper CLI for deployment checks, plans, preflight, and dry-run
   or adapter-backed publish.
+- Release retrospective command and feedback-to-issue-tree handoff for
+  post-release learning.
 - GitHub AI Review, Release, and Deploy workflows.
 - Design contract and visual QA guidance for product-facing UI work.
 
@@ -221,17 +223,21 @@ Needed:
 
 ### 7. Feedback Loop
 
-Missing:
+Implemented first slice:
 
 - Feedback intake template.
-- Automatic conversion from feedback to bug/risk/roadmap issue.
-- Post-release review report.
+- `pnpm ai:feedback -- --feedback "..." --target bug|risk|roadmap|documentation`
+  drafts feedback triage.
+- `pnpm ai:feedback -- --feedback "..." --target bug --issue-tree` produces a
+  PM brief JSON that can feed `pnpm ai:issue-tree -- --brief-file ...`.
+- `pnpm release:retrospective -- --pr 123` creates a release/demo review
+  checklist with feedback, rollback, and follow-up issue prompts.
+- Release notes can reference retrospective evidence.
 
 Needed:
 
-- Feedback issue template.
-- Release retrospective checklist.
-- Telemetry and support signal policy before product launch.
+- Real support/telemetry ingestion remains out of scope before product launch.
+- Feedback issue creation still requires explicit `ai:issue-tree --apply`.
 
 ## Maturity Levels
 
@@ -288,7 +294,9 @@ pnpm ai:work-runner -- --issue 123 --provider openai|command|mock
 pnpm ai:manifest -- --issue 123 --pr 456
 pnpm ai:review -- --pr 456 --provider openai|command|mock
 pnpm ai:feedback -- --feedback "..." --target bug
+pnpm ai:feedback -- --feedback "..." --target bug --issue-tree
 pnpm release:draft -- --pr 456
+pnpm release:retrospective -- --pr 456
 pnpm deploy:plan -- --target docs --environment preview
 pnpm deploy:preflight -- --target web --environment staging
 ```
