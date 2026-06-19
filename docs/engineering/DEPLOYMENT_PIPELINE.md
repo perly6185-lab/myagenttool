@@ -6,6 +6,19 @@ The current product is not ready for unattended production release. The pipeline
 therefore focuses on repeatable preflight checks, release evidence, environment
 approval, and a deploy adapter boundary.
 
+## M0 Deploy Target
+
+The first M0 deploy target is `docs/preview`.
+
+This target uses the built-in `builtin-docs-preview` adapter. It creates a
+reviewable documentation preview artifact and deployment evidence under
+`.myagenttool/deploy-runs` without publishing to a public hosting provider. This
+lets the release path exercise real preflight, evidence, rollback, and GitHub
+environment gates before a cloud or desktop distribution target is selected.
+
+`docs/preview` rollback is to revert the publishing commit or redeploy the
+previous docs artifact.
+
 ## Environments
 
 ### Preview
@@ -17,6 +30,7 @@ Required:
 - CI passes.
 - Governance checks pass.
 - Release/deploy tooling checks pass when deployment behavior changes.
+- GitHub environment named `preview` exists.
 
 ### Staging
 
@@ -28,6 +42,7 @@ Required:
 - Deployment plan exists.
 - Rollback notes exist.
 - Owner approval is recorded.
+- GitHub environment named `staging` exists.
 
 ### Production
 
@@ -52,8 +67,23 @@ pnpm deploy:publish -- --target web --environment staging --apply
 `deploy:publish` is dry-run by default. Real deployment requires:
 
 - `--apply`.
-- `MYAGENTTOOL_DEPLOY_COMMAND` configured.
+- A built-in adapter for the selected target, or a command adapter configured
+  with a JSON argv array.
 - Passing preflight checks.
+
+Command adapters are configured by the most specific matching environment
+variable:
+
+1. `MYAGENTTOOL_DEPLOY_<TARGET>_<ENVIRONMENT>_COMMAND_JSON`
+2. `MYAGENTTOOL_DEPLOY_<ENVIRONMENT>_COMMAND_JSON`
+3. `MYAGENTTOOL_DEPLOY_<TARGET>_COMMAND_JSON`
+4. `MYAGENTTOOL_DEPLOY_COMMAND_JSON`
+
+For example:
+
+```text
+MYAGENTTOOL_DEPLOY_DOCS_PREVIEW_COMMAND_JSON='["node","tools/deploy-docs-preview.mjs"]'
+```
 
 The adapter command receives `MYAGENTTOOL_DEPLOY_CONTEXT`, a JSON file with:
 
@@ -68,6 +98,10 @@ The adapter command receives `MYAGENTTOOL_DEPLOY_CONTEXT`, a JSON file with:
 This keeps the core repo independent of one cloud vendor while still allowing a
 real deployment command to be plugged in later.
 
+Adapter commands run without a shell. Production also requires
+`MYAGENTTOOL_DEPLOY_APPROVED=true`, which should be set only by an approved
+GitHub production environment job.
+
 ## Required Evidence
 
 Every release/deploy path should preserve:
@@ -76,12 +110,14 @@ Every release/deploy path should preserve:
 - Deployment plan.
 - Preflight check output.
 - GitHub workflow run URL.
+- Deployment evidence JSON/Markdown from `.myagenttool/deploy-runs`.
 - Rollback notes.
 - Human approval record.
 - Known limitations.
 
 The release workflow uploads release and deployment plan artifacts. The deploy
-workflow runs preflight before any adapter publish step.
+workflow runs preflight before any adapter publish step and uploads deploy
+evidence artifacts for preview, staging, and production.
 
 ## Rollback
 
@@ -110,6 +146,19 @@ pnpm deploy:publish -- --target web --environment production --apply
 - `Deploy`: manual workflow that runs preflight and optionally calls the real
   deployment adapter.
 
-Production deployments should use GitHub environment protection rules when the
+GitHub environments required for M0:
+
+- `preview`: no production secrets; may run dry-run or docs preview adapter.
+- `staging`: protected by release owner review before `--apply`.
+- `production`: protected by release owner review and sets
+  `MYAGENTTOOL_DEPLOY_APPROVED=true` only after approval.
+
+Production deployments must use GitHub environment protection rules when the
 repository entitlement allows it. Until branch/environment protection is fully
-enforced, the manual approval requirement remains a documented operating rule.
+enforced, the manual approval requirement remains a documented operating rule
+and the deploy CLI still refuses production unless
+`MYAGENTTOOL_DEPLOY_APPROVED=true`.
+
+As of 2026-06-19, the repository has `preview`, `staging`, and `production`
+environments created, but required reviewers and wait timers are blocked by the
+current repository entitlement. Track enforced protection through issue #32.

@@ -181,13 +181,17 @@ Implemented first slice:
 - `pnpm release:draft` release note generator.
 - `pnpm deploy:plan`, `pnpm deploy:preflight`, and `pnpm deploy:publish`.
 - Manual GitHub Release and Deploy workflows.
+- M0 `docs/preview` built-in deploy adapter that creates preview artifact and
+  deployment evidence.
+- GitHub `preview`, `staging`, and `production` environments exist.
 
 Missing:
 
 - Versioning policy applied in package metadata.
-- Staging/preview/prod deployment environments.
-- Real deploy adapter for selected hosting/distribution targets.
-- Rollback evidence from actual deployments.
+- Required reviewer/wait-timer enforcement for staging and production,
+  currently blocked by repository entitlement.
+- Real cloud/server/desktop deploy adapters beyond the M0 docs preview target.
+- Rollback evidence from hosted or distributed deployments.
 
 Needed:
 
