@@ -60,6 +60,8 @@ Already implemented:
   drafts, branch plans, and feedback conversion drafts.
 - Model-driven `tools/ai` commands for PM briefs, code plans, PR review drafts,
   and issue-to-branch work runner evidence through explicit providers.
+- Trusted coding adapter contract slots for Codex, Claude, Qwen Code,
+  OpenClaw-like, QClaw-like, generic command, and deterministic mock adapters.
 - `tools/release` helper CLI for release process checks and release note drafts.
 - `tools/deploy` helper CLI for deployment checks, plans, preflight, and dry-run
   or adapter-backed publish.
@@ -113,10 +115,13 @@ Implemented first slice:
   issue, branch, plan, and run evidence.
 - Work runner apply mode is explicit and writes evidence under
   `.myagenttool/runs`.
+- Work runner apply mode refuses dirty worktrees, writes a coding adapter
+  contract, runs a registry-selected adapter, captures adapter evidence, and
+  runs repository verification unless skipped explicitly.
 
 Missing:
 
-- Direct coding edits from a trusted coding agent adapter.
+- Production wrapper commands for each trusted coding agent adapter.
 - Guardrails that stop broad changes when the issue scope is narrow.
 
 Needed:
