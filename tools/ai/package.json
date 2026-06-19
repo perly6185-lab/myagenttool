@@ -1,0 +1,16 @@
+{
+  "name": "@myagenttool/tools-ai",
+  "version": "0.0.0",
+  "private": true,
+  "description": "AI delivery workflow helpers for intake briefs and work manifests.",
+  "type": "module",
+  "scripts": {
+    "dev": "node ./src/index.mjs",
+    "test": "node ./src/index.mjs --check",
+    "lint": "node ./src/index.mjs --check",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.2"
+  }
+}

@@ -214,3 +214,20 @@ Automation must not:
 - Tests run before merge.
 - Release notes can be generated from project metadata.
 - AI-generated work leaves enough evidence for human review.
+
+## Full-flow Delivery Roadmap
+
+Use [FULL_FLOW_AI_DELIVERY.md](FULL_FLOW_AI_DELIVERY.md) as the system-level
+definition.
+
+Priority automation still missing:
+
+- Idea intake to PM brief.
+- PM brief to issue tree.
+- Issue to branch and work manifest.
+- AI self-review with findings-first output.
+- Release note and rollback note generation.
+- Feedback to bug/risk/roadmap issue conversion.
+
+These should be implemented as explicit commands with dry-run defaults before
+they are wired into autonomous agent workflows.

@@ -13,6 +13,7 @@ $required = @(
   "packages/adapters",
   "packages/shared",
   "tools/docs",
+  "tools/ai",
   "tools/dev",
   "tools/github",
   "tools/release"

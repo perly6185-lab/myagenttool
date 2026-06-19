@@ -103,6 +103,7 @@ function normalizeCommand(args) {
 function checkLocal() {
   const requiredFiles = [
     ".github/PULL_REQUEST_TEMPLATE.md",
+    ".github/ISSUE_TEMPLATE/feedback.yml",
     ".github/workflows/ci.yml",
     ".github/workflows/docs.yml",
     ".github/workflows/governance.yml",
