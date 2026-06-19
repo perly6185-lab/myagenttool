@@ -110,6 +110,7 @@ Use the local draft command before human review:
 ```text
 pnpm release:draft
 pnpm release:retrospective -- --pr 123
+pnpm release:draft -- --pr 123 --evidence-file .myagenttool/runs/release-evidence.json
 ```
 
 The command prints a draft from the current branch PR when GitHub access is
@@ -117,6 +118,20 @@ available. It does not publish a release.
 
 Release notes should reference retrospective evidence when feedback, demo notes,
 support signals, or rollback decisions influenced the release.
+
+Release evidence can be supplied as JSON or Markdown. JSON manifests may use:
+
+```json
+{
+  "pr": ["https://github.com/OWNER/REPO/pull/123"],
+  "deploy": [".myagenttool/deploy-runs/...evidence.json"],
+  "feedback": [".myagenttool/runs/demo-feedback.md"],
+  "retrospective": [".myagenttool/runs/release-retrospective.md"]
+}
+```
+
+When evidence is missing, release draft and retrospective output must say so
+explicitly rather than hiding the gap behind TODO-only text.
 
 For deployment planning, use:
 
@@ -149,6 +164,7 @@ Use:
 
 ```text
 pnpm release:retrospective -- --pr 123 --feedback-file feedback.md
+pnpm release:retrospective -- --pr 123 --evidence-dir .myagenttool/deploy-runs
 pnpm ai:feedback -- --feedback "..." --target bug --issue-tree
 pnpm ai:issue-tree -- --brief-file .myagenttool/runs/feedback-brief.json --repo OWNER/REPO
 ```
