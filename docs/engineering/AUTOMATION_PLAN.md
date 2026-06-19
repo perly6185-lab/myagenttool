@@ -108,9 +108,26 @@ Workflow:
 2. Produce implementation plan.
 3. Create branch.
 4. Edit code or docs.
-5. Run checks.
-6. Draft PR.
-7. Attach verification evidence.
+5. Generate Testing skills evidence.
+6. Run scope drift check.
+7. Run checks.
+8. Draft PR.
+9. Attach verification evidence.
+
+Current executable helpers:
+
+```text
+pnpm ai:code-plan -- --issue 123 --provider openai|command|mock
+pnpm ai:testing-plan -- --change web --risk high
+pnpm ai:scope-check -- --plan-file .myagenttool/runs/<run>/code-plan.json --base main
+pnpm ai:work-runner -- --issue 123 --provider openai|command|mock
+```
+
+`ai:work-runner --apply` writes the code plan, run manifest, coding adapter
+contract, Testing skills plan, and scope drift evidence under
+`.myagenttool/runs/<run>`. Trusted coding adapters must use JSON argv
+configuration and produce `adapter-result.json`; they must not execute
+model-proposed shell commands directly.
 
 ### Layer 6: AI Review
 

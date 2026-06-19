@@ -122,6 +122,57 @@ For Integration Builder:
 - High-risk permissions require user approval.
 - Redaction rules are generated when sensitive fields are detected.
 
+## Testing Skills Workflow
+
+AI-assisted changes should choose testing guidance deliberately instead of
+treating tests as a generic final step.
+
+Use:
+
+```text
+pnpm ai:testing-plan -- --change docs|web|server|desktop|protocol|security|release|adapter --risk low|medium|high|critical
+```
+
+The command produces required evidence, recommended commands, manual evidence,
+and skill guidance for the PR. It is deterministic repository policy. External
+Testing skills are reference material only; generated tests remain
+repository-owned, reviewable, and subject to normal checks.
+
+Change type mapping:
+
+| Change type | Expected evidence |
+| --- | --- |
+| docs | Markdown links, source doc consistency, repo health |
+| web | Unit/smoke checks plus visual QA evidence for desktop and mobile viewports |
+| server | Integration evidence for API, queue, audit, persistence, or cost behavior |
+| desktop | Cross-platform process execution and cancellation evidence |
+| protocol | State-machine, schema, and compatibility evidence |
+| security | Security review evidence for auth, credentials, data, and local execution |
+| release | Release, rollback, and deploy preflight evidence |
+| adapter | Adapter contract evidence for success, failure, and cancellation paths |
+
+Risk mapping:
+
+| Risk | Minimum evidence |
+| --- | --- |
+| low | Relevant docs/repo checks or focused unit coverage |
+| medium | Standard automated checks plus manual verification notes when behavior changes |
+| high | Standard checks, issue hygiene, residual risk notes, and explicit missing-test gaps |
+| critical | High-risk evidence plus human gate notes before merge or release |
+
+Specific paths:
+
+- Visual UI work follows [VISUAL_QA.md](VISUAL_QA.md).
+- Desktop and local execution work must cover process execution and
+  cancellation on Windows, macOS, and Linux, or record the platform gap.
+- Protocol work should exercise invocation, delivery, cancellation, unlink, and
+  audit state-machine behavior.
+- Adapter work should cover success, failure, cancellation, and redaction.
+- Release work should include release notes, rollback notes, and deploy
+  preflight evidence.
+- All non-doc behavior changes should keep `pnpm smoke:local` in the evidence
+  set unless the PR explains why it is not relevant.
+
 ## Manual Verification
 
 Manual verification is acceptable for early M0 demos, but it must be recorded in

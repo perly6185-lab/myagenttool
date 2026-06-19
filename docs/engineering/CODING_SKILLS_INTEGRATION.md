@@ -51,8 +51,20 @@ For non-trivial implementation work:
 2. Choose the relevant skill family from the approved M0 list.
 3. Implement the smallest milestone-aligned change.
 4. Add or update tests based on risk.
-5. Run local checks.
-6. Attach verification evidence to the PR.
+5. Generate a deterministic Testing skills plan.
+6. Run local checks.
+7. Attach verification evidence to the PR.
+
+Use:
+
+```text
+pnpm ai:testing-plan -- --change web --risk high
+pnpm ai:scope-check -- --plan-file .myagenttool/runs/<run>/code-plan.json --base main
+```
+
+`ai:testing-plan` records which Testing skills guidance applies. `ai:scope-check`
+records whether the diff stayed inside the code plan. `ai:work-runner --apply`
+generates both artifacts automatically in `.myagenttool/runs/<run>`.
 
 Suggested command sequence:
 
@@ -60,6 +72,8 @@ Suggested command sequence:
 pnpm docs:check
 pnpm repo:check
 pnpm github:check
+pnpm ai:scope-check -- --base main
+pnpm ai:testing-plan -- --change docs --risk medium
 pnpm typecheck
 pnpm test
 pnpm github:check:pr
@@ -67,6 +81,11 @@ pnpm github:check:pr
 
 For UI work, also follow [PM_DESIGN_SKILLS.md](PM_DESIGN_SKILLS.md) and
 [MYAGENTTOOL_DESIGN.md](../design/MYAGENTTOOL_DESIGN.md).
+
+For coding-agent work, use the trusted adapter contract in
+[MODEL_DRIVEN_DELIVERY.md](MODEL_DRIVEN_DELIVERY.md). Production wrappers must
+accept JSON argv configuration, receive `MYAGENTTOOL_WORK_CONTEXT`, write
+`adapter-result.json`, and never execute model-proposed shell commands directly.
 
 ## Review Questions
 

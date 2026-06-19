@@ -17,7 +17,9 @@ Usage:
   node tools/ai/src/index.mjs issue-tree --idea "..." --provider openai|command|mock [--brief-file path] [--repo OWNER/REPO] [--out path] [--apply]
   node tools/ai/src/index.mjs branch-plan --issue NUMBER --title "..."
   node tools/ai/src/index.mjs code-plan|code-agent --issue NUMBER [--repo OWNER/REPO] --provider openai|command|mock [--out path] [--json]
-  node tools/ai/src/index.mjs run-work|work-runner --issue NUMBER [--repo OWNER/REPO] --provider openai|command|mock [--apply] [--coding-adapter NAME] [--adapter-command-json JSON] [--verify] [--skip-verify] [--open-pr]
+  node tools/ai/src/index.mjs scope-check [--plan-file path] [--base REF] [--out path] [--json] [--allow-drift "reason"]
+  node tools/ai/src/index.mjs testing-plan --change docs|web|server|desktop|protocol|security|release|adapter [--risk low|medium|high|critical] [--out path] [--json]
+  node tools/ai/src/index.mjs run-work|work-runner --issue NUMBER [--repo OWNER/REPO] --provider openai|command|mock [--apply] [--coding-adapter NAME] [--adapter-command-json JSON] [--verify] [--skip-verify] [--open-pr] [--allow-drift "reason"]
   node tools/ai/src/index.mjs review-pr|review-agent --pr NUMBER [--repo OWNER/REPO] --provider openai|command|mock [--out path] [--json] [--comment]
   node tools/ai/src/index.mjs work-manifest [--issue NUMBER] [--pr NUMBER] [--out path]
   node tools/ai/src/index.mjs coding-adapter-contract [--adapter NAME] [--out path]
@@ -224,6 +226,16 @@ function main() {
     return;
   }
 
+  if (command === "scope-check") {
+    scopeCheck(args);
+    return;
+  }
+
+  if (command === "testing-plan") {
+    testingPlan(args);
+    return;
+  }
+
   if (command === "run-work" || command === "work-runner") {
     runWork(args).catch(failFromError);
     return;
@@ -278,6 +290,21 @@ function check() {
   const issueTree = issueTreeFromBrief(sample);
   if (issueTree.issues.length === 0 || !issueTree.issues[0].labels.some((label) => label.startsWith("acceptance/"))) {
     fail("Issue tree generation sanity check failed.");
+  }
+
+  const testingPlan = testingPlanFor({ change: "web", risk: "high" });
+  if (!testingPlan.requiredEvidence.some((item) => item.includes("Visual QA")) || !testingPlan.commands.includes("pnpm github:check:issues")) {
+    fail("Testing skills plan sanity check failed.");
+  }
+
+  const docDrift = classifyScopeDrift({ changedFiles: ["docs/engineering/example.md"], undeclaredFiles: ["docs/engineering/example.md"], allowDrift: "" });
+  const overriddenDrift = classifyScopeDrift({ changedFiles: ["apps/web/src/App.tsx"], undeclaredFiles: ["apps/web/src/App.tsx"], allowDrift: "linked follow-up approval" });
+  if (docDrift !== "low" || overriddenDrift !== "overridden") {
+    fail("Scope drift policy sanity check failed.");
+  }
+
+  if (!existsSync(resolve(repoRoot, "tools/ai/src/coding-wrapper.mjs"))) {
+    fail("Trusted coding wrapper missing.");
   }
 
   console.log("[tools-ai:check] AI delivery helpers check OK");
@@ -442,6 +469,27 @@ async function codePlanCommand(args) {
   writeStructuredResult(plan, formatCodePlan(plan), args);
 }
 
+function scopeCheck(args) {
+  const planFile = option(args, "--plan-file");
+  const plan = planFile ? JSON.parse(readFileSync(resolve(repoRoot, planFile), "utf8")) : undefined;
+  const base = option(args, "--base") ?? "HEAD";
+  const allowDrift = option(args, "--allow-drift") ?? "";
+  const result = buildScopeCheckResult({ plan, planFile: planFile ?? "", base, allowDrift });
+  const content = args.includes("--json") ? `${JSON.stringify(result, null, 2)}\n` : formatScopeCheck(result);
+  writeOrPrint(content, option(args, "--out"));
+  if (result.driftLevel === "high" && !allowDrift) {
+    fail("Scope drift is high. Provide --allow-drift with justification or reduce the diff.");
+  }
+}
+
+function testingPlan(args) {
+  const change = option(args, "--change") ?? "docs";
+  const risk = option(args, "--risk") ?? "medium";
+  const plan = testingPlanFor({ change, risk });
+  const content = args.includes("--json") ? `${JSON.stringify(plan, null, 2)}\n` : formatTestingPlan(plan);
+  writeOrPrint(content, option(args, "--out"));
+}
+
 async function runWork(args) {
   const issue = option(args, "--issue");
   if (!issue) fail("Missing --issue.");
@@ -461,7 +509,10 @@ async function runWork(args) {
   writeFileSync(resolve(runDir, "code-plan.json"), `${JSON.stringify(plan, null, 2)}\n`, "utf8");
   writeFileSync(contextFile, `${JSON.stringify(workContext({ issue, repo, branch, plan, runId, adapter }), null, 2)}\n`, "utf8");
   writeFileSync(resolve(runDir, "coding-adapter-contract.json"), `${JSON.stringify(codingAdapterContractJson(adapter), null, 2)}\n`, "utf8");
-  writeFileSync(resolve(runDir, "manifest.md"), formatRunManifest({ issue, repo, plan, apply, adapter, verify, openPr }), "utf8");
+  const testPlan = testingPlanFor({ change: inferChangeType(plan.filesToTouch), risk: inferRiskLevel(plan) });
+  writeFileSync(resolve(runDir, "testing-plan.json"), `${JSON.stringify(testPlan, null, 2)}\n`, "utf8");
+  writeFileSync(resolve(runDir, "testing-plan.md"), formatTestingPlan(testPlan), "utf8");
+  writeFileSync(resolve(runDir, "manifest.md"), formatRunManifest({ issue, repo, plan, apply, adapter, verify, openPr, testPlan }), "utf8");
 
   if (!apply) {
     console.log(`AI work dry-run created .myagenttool/runs/${runId}`);
@@ -475,6 +526,13 @@ async function runWork(args) {
   const adapterResult = runCodingAdapter({ args, adapter, issue, repo, branch, plan, runId, runDir, contextFile });
   writeFileSync(resolve(runDir, "coding-adapter-result.json"), `${JSON.stringify(adapterResult.summary, null, 2)}\n`, "utf8");
 
+  const scopeResult = buildScopeCheckResult({ plan, planFile: `.myagenttool/runs/${runId}/code-plan.json`, base: "HEAD", allowDrift: option(args, "--allow-drift") ?? "" });
+  writeFileSync(resolve(runDir, "scope-check.json"), `${JSON.stringify(scopeResult, null, 2)}\n`, "utf8");
+  writeFileSync(resolve(runDir, "scope-check.md"), formatScopeCheck(scopeResult), "utf8");
+  if (scopeResult.driftLevel === "high" && !scopeResult.allowDrift) {
+    fail(`Scope drift is high. See .myagenttool/runs/${runId}/scope-check.md or provide --allow-drift with justification.`);
+  }
+
   if (verify) {
     const verification = runVerification();
     writeFileSync(resolve(runDir, "verification.md"), verification, "utf8");
@@ -482,7 +540,7 @@ async function runWork(args) {
 
   if (openPr) {
     if (!repo) fail("Cannot open PR without --repo or GITHUB_REPOSITORY.");
-    const body = formatPrBody({ issue, plan, runId, adapter, verified: verify });
+    const body = formatPrBody({ issue, plan, runId, adapter, verified: verify, testPlan, scopeResult });
     runGh(["pr", "create", "--repo", repo, "--title", plan.prSummary || `Work for #${issue}`, "--body", body]);
   }
 
@@ -1189,6 +1247,58 @@ ${plan.prSummary}
 `;
 }
 
+function formatScopeCheck(result) {
+  return `# AI Scope Check
+
+Base: ${result.base}
+Plan file: ${result.planFile || "not provided"}
+Drift level: ${result.driftLevel}
+Allowed: ${result.allowed ? "yes" : "no"}
+Policy action: ${result.policyAction ?? "pass"}
+Override: ${result.allowDrift || "none"}
+
+## Changed Files
+
+${list(result.changedFiles)}
+
+## Declared Files
+
+${list(result.declaredFiles)}
+
+## Undeclared Files
+
+${list(result.undeclaredFiles)}
+
+## Summary
+
+${result.summary}
+`;
+}
+
+function formatTestingPlan(plan) {
+  return `# AI Testing Skills Plan
+
+Change type: ${plan.change}
+Risk: ${plan.risk}
+
+## Required Evidence
+
+${list(plan.requiredEvidence)}
+
+## Recommended Commands
+
+${list(plan.commands)}
+
+## Manual Evidence
+
+${list(plan.manualEvidence)}
+
+## Skill Guidance
+
+${list(plan.skillGuidance)}
+`;
+}
+
 function formatReview(review) {
   const findings =
     review.findings.length === 0
@@ -1253,7 +1363,7 @@ ${Object.entries(contract.environment)
 `;
 }
 
-function formatRunManifest({ issue, repo, plan, apply, adapter, verify, openPr }) {
+function formatRunManifest({ issue, repo, plan, apply, adapter, verify, openPr, testPlan }) {
   return `# AI Work Run
 
 Created: ${new Date().toISOString()}
@@ -1276,6 +1386,12 @@ ${formatCodePlan(plan)}
 - Verification requested: ${verify ? "yes" : "no"}
 - Open PR requested: ${openPr ? "yes" : "no"}
 - Model-proposed shell commands executed directly: no
+
+## Testing Skills Plan
+
+- Change type: ${testPlan?.change ?? "unknown"}
+- Risk: ${testPlan?.risk ?? "unknown"}
+- Evidence file: testing-plan.md
 
 ## Required Human Gates
 
@@ -1500,7 +1616,7 @@ function normalizeAdapterResult(result, fallback) {
   };
 }
 
-function formatPrBody({ issue, plan, runId, adapter, verified }) {
+function formatPrBody({ issue, plan, runId, adapter, verified, testPlan, scopeResult }) {
   return `## Summary
 
 - ${plan.prSummary || plan.summary}
@@ -1530,12 +1646,16 @@ function formatPrBody({ issue, plan, runId, adapter, verified }) {
 ## Verification
 
 - [${verified ? "x" : " "}] Automated checks: work-runner verification${verified ? "" : " not requested"}
+- [${scopeResult?.allowed ? "x" : " "}] Scope drift check: ${scopeResult?.driftLevel ?? "not generated"}${scopeResult?.allowDrift ? ` (${scopeResult.allowDrift})` : ""}
+- [x] Testing skills plan: ${testPlan?.change ?? "unknown"} / ${testPlan?.risk ?? "unknown"}
 - [ ] Manual verification:
 
 AI work manifest: .myagenttool/runs/${runId}/manifest.md
 Coding adapter: ${adapter?.name ?? "unknown"}
 Coding adapter result: .myagenttool/runs/${runId}/coding-adapter-result.json
 Coding adapter contract: .myagenttool/runs/${runId}/coding-adapter-contract.json
+Scope drift evidence: ${scopeResult ? `.myagenttool/runs/${runId}/scope-check.md` : "not generated"}
+Testing skills evidence: .myagenttool/runs/${runId}/testing-plan.md
 Verification evidence: ${verified ? `.myagenttool/runs/${runId}/verification.md` : "not generated"}
 `;
 }
@@ -1647,6 +1767,141 @@ function targetToType(target) {
   if (normalized === "bug") return "bug";
   if (normalized === "risk") return "risk";
   return "task";
+}
+
+function changedFilesSince(base) {
+  const diffFiles = lines(commandOutput("git", ["diff", "--name-only", base, "--"]));
+  const statusFiles = commandOutput("git", ["status", "--short"])
+    .split(/\r?\n/)
+    .map(statusPath)
+    .filter(Boolean);
+  return [...new Set([...diffFiles, ...statusFiles])];
+}
+
+function buildScopeCheckResult({ plan, planFile, base, allowDrift }) {
+  const changedFiles = changedFilesSince(base);
+  const hasPlan = Boolean(plan);
+  const declaredFiles = new Set((plan?.filesToTouch ?? []).map(normalizePath));
+  const undeclaredFiles = hasPlan ? changedFiles.filter((file) => !declaredFiles.has(normalizePath(file))) : [];
+  const driftLevel = classifyScopeDrift({ changedFiles, undeclaredFiles, allowDrift });
+  return {
+    base,
+    planFile,
+    hasPlan,
+    changedFiles,
+    declaredFiles: [...declaredFiles],
+    undeclaredFiles,
+    driftLevel,
+    allowed: driftLevel !== "high" || Boolean(allowDrift),
+    policyAction: scopeDriftAction(driftLevel, allowDrift),
+    allowDrift,
+    summary: scopeDriftSummary({ changedFiles, undeclaredFiles, driftLevel, allowDrift, hasPlan }),
+  };
+}
+
+function classifyScopeDrift({ changedFiles, undeclaredFiles, allowDrift }) {
+  if (changedFiles.length === 0 || undeclaredFiles.length === 0) return "none";
+  if (allowDrift) return "overridden";
+  if (undeclaredFiles.length <= 2 && undeclaredFiles.every((file) => /^docs\/|^\.github\//.test(normalizePath(file)))) return "low";
+  if (undeclaredFiles.length <= 4) return "medium";
+  return "high";
+}
+
+function scopeDriftSummary({ changedFiles, undeclaredFiles, driftLevel, allowDrift, hasPlan = true }) {
+  if (changedFiles.length === 0) return "No changed files detected.";
+  if (!hasPlan) return "No plan file was provided; changed files are listed without drift classification.";
+  if (undeclaredFiles.length === 0) return "All changed files were declared in the code plan.";
+  if (allowDrift) return `Scope drift was explicitly allowed: ${allowDrift}`;
+  return `${undeclaredFiles.length} changed file(s) were not declared in the code plan.`;
+}
+
+function scopeDriftAction(driftLevel, allowDrift) {
+  if (driftLevel === "high" && !allowDrift) return "fail";
+  if (["low", "medium", "overridden"].includes(driftLevel)) return "warn";
+  return "pass";
+}
+
+function testingPlanFor({ change, risk }) {
+  const normalizedChange = normalizeLabelValue(change);
+  const normalizedRisk = normalizeLabelValue(risk);
+  const base = {
+    change: normalizedChange,
+    risk: normalizedRisk,
+    requiredEvidence: ["PR lists automated checks run.", "PR lists manual verification or states why it is not needed."],
+    commands: ["pnpm docs:check", "pnpm repo:check", "pnpm typecheck", "pnpm test"],
+    manualEvidence: [],
+    skillGuidance: ["Use Testing skills as guidance; generated tests remain repository-owned and reviewable."],
+  };
+
+  if (normalizedChange === "docs") {
+    base.commands = ["pnpm docs:check", "pnpm repo:check"];
+    base.requiredEvidence.push("Documentation links and source docs are checked.");
+  }
+  if (normalizedChange === "web") {
+    base.requiredEvidence.push("Visual QA evidence for desktop and mobile viewports.");
+    base.manualEvidence.push("Screenshot or artifact paths for UI changes.");
+    base.commands.push("pnpm smoke:local");
+  }
+  if (normalizedChange === "server") {
+    base.requiredEvidence.push("Integration evidence for API, queue, audit, or persistence behavior.");
+  }
+  if (normalizedChange === "desktop") {
+    base.requiredEvidence.push("Cross-platform process execution and cancellation evidence.");
+    base.manualEvidence.push("Windows/macOS/Linux evidence or explicit gap.");
+  }
+  if (normalizedChange === "protocol") {
+    base.requiredEvidence.push("State-machine or schema compatibility evidence.");
+  }
+  if (normalizedChange === "security") {
+    base.requiredEvidence.push("Security review evidence for auth, credentials, data, and local execution.");
+    base.skillGuidance.push("Use secure-app-builder style review before merge.");
+  }
+  if (normalizedChange === "release") {
+    base.requiredEvidence.push("Release, rollback, and deployment preflight evidence.");
+    base.commands.push("pnpm release:check", "pnpm deploy:check");
+  }
+  if (normalizedChange === "adapter") {
+    base.requiredEvidence.push("Adapter contract evidence for success, failure, and cancellation paths.");
+  }
+  if (["high", "critical"].includes(normalizedRisk)) {
+    base.requiredEvidence.push("Residual risks and missing test gaps are recorded.");
+    base.commands.push("pnpm github:check:issues");
+  }
+  return base;
+}
+
+function inferChangeType(files) {
+  const normalizedFiles = (files ?? []).map(normalizePath);
+  if (normalizedFiles.some((file) => file.startsWith("apps/web/"))) return "web";
+  if (normalizedFiles.some((file) => file.startsWith("apps/desktop") || file.includes("desktop"))) return "desktop";
+  if (normalizedFiles.some((file) => file.startsWith("apps/server/"))) return "server";
+  if (normalizedFiles.some((file) => file.startsWith("packages/protocol/") || file.includes("state-machine"))) return "protocol";
+  if (normalizedFiles.some((file) => file.includes("security") || file.includes("auth") || file.includes("credential"))) return "security";
+  if (normalizedFiles.some((file) => file.startsWith("tools/release/") || file.startsWith("tools/deploy/") || file.includes("release") || file.includes("deploy"))) return "release";
+  if (normalizedFiles.some((file) => file.includes("adapter") || file.includes("coding-wrapper"))) return "adapter";
+  if (normalizedFiles.length > 0 && normalizedFiles.every((file) => file.startsWith("docs/") || file.startsWith(".github/"))) return "docs";
+  return "docs";
+}
+
+function inferRiskLevel(plan) {
+  const text = `${plan?.summary ?? ""}\n${(plan?.risks ?? []).join("\n")}\n${(plan?.steps ?? []).join("\n")}`.toLowerCase();
+  if (/critical|production|billing|credential|secret|security|local execution|delete|destructive/.test(text)) return "high";
+  if (/risk|permission|data|deploy|release|desktop|adapter|migration/.test(text)) return "medium";
+  return "low";
+}
+
+function normalizePath(path) {
+  return path.replace(/\\/g, "/");
+}
+
+function lines(output) {
+  return output.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+}
+
+function statusPath(line) {
+  const path = line.replace(/^.{1,2}\s+/, "").trim();
+  const rename = path.match(/^.+\s+->\s+(.+)$/);
+  return rename?.[1] ?? path;
 }
 
 function markdownSection(content, heading) {

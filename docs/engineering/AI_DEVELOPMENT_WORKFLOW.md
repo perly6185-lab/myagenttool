@@ -146,12 +146,23 @@ Code changes should:
 AI should run the smallest useful verification set before opening or updating a
 PR.
 
+For AI-generated or agent-written work, first generate the deterministic
+Testing skills plan:
+
+```text
+pnpm ai:testing-plan -- --change docs|web|server|desktop|protocol|security|release|adapter --risk low|medium|high|critical
+```
+
 At minimum:
 
 - Markdown/docs checks for documentation-only changes.
 - Unit tests for local logic.
 - Integration tests for protocol, queue, bridge, billing, and audit behavior.
 - E2E tests for core user workflows.
+- Visual QA evidence for product-facing web changes.
+- Cross-platform process and cancellation evidence for Desktop Bridge or local
+  execution changes.
+- Adapter contract evidence for generated or trusted adapter changes.
 
 ### 9. Pull Request
 
@@ -161,6 +172,8 @@ Every PR should:
 - Explain what changed.
 - List acceptance criteria satisfied.
 - List tests run.
+- Link Testing skills evidence when AI generated or agent-written code changed.
+- Link scope drift evidence for work-runner apply mode or broad manual changes.
 - State deferred work and residual risk.
 
 AI may draft the PR body, but human review is required before merging risky
@@ -249,6 +262,8 @@ git status --short --branch
 pnpm docs:check
 pnpm repo:check
 pnpm github:check
+pnpm ai:scope-check -- --base main
+pnpm ai:testing-plan -- --change docs --risk medium
 pnpm typecheck
 pnpm test
 pnpm github:check:pr

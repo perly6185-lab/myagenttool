@@ -64,6 +64,9 @@ Already implemented:
   milestone, acceptance criteria, and Project field metadata.
 - Trusted coding adapter contract slots for Codex, Claude, Qwen Code,
   OpenClaw-like, QClaw-like, generic command, and deterministic mock adapters.
+- Scope drift and Testing skills planning commands for AI work evidence.
+- A first trusted coding wrapper contract path at
+  `tools/ai/src/coding-wrapper.mjs`.
 - `tools/release` helper CLI for release process checks and release note drafts.
 - `tools/deploy` helper CLI for deployment checks, plans, preflight, and dry-run
   or adapter-backed publish.
@@ -120,16 +123,29 @@ Implemented first slice:
 - Work runner apply mode refuses dirty worktrees, writes a coding adapter
   contract, runs a registry-selected adapter, captures adapter evidence, and
   runs repository verification unless skipped explicitly.
+- `pnpm ai:scope-check -- --plan-file .myagenttool/runs/<run>/code-plan.json --base main`
+  reports undeclared changed files and requires visible justification for high
+  drift.
+- `pnpm ai:testing-plan -- --change web --risk high` maps change type and risk
+  to required test evidence.
+- Work runner run evidence includes a Testing skills plan, and apply mode adds
+  scope drift evidence for PR review.
+- `tools/ai/src/coding-wrapper.mjs` validates the production wrapper contract
+  path without executing model-proposed shell commands.
 
 Missing:
 
-- Production wrapper commands for each trusted coding agent adapter.
-- Guardrails that stop broad changes when the issue scope is narrow.
+- Agent-specific production wrappers for Codex, Claude, Qwen Code,
+  OpenClaw/QClaw-style CLIs beyond the shared contract wrapper.
+- Technical enforcement that blocks every broad change in CI before human
+  review.
 
 Needed:
 
-- Work manifest stored in PR body and `.myagenttool/runs`.
-- Scope drift check.
+- Work manifest, scope drift, Testing skills, adapter contract, and
+  verification evidence should remain linked in PR bodies.
+- Promote high-risk scope drift and missing Testing skills evidence from local
+  evidence to governance checks where appropriate.
 
 ### 4. Automated Review
 
@@ -262,6 +278,8 @@ pnpm ai:pm -- --idea "..." --provider openai|command|mock
 pnpm ai:issue-tree -- --idea "..." --provider openai|command|mock
 pnpm ai:branch -- --issue 123 --title "short title"
 pnpm ai:code-plan -- --issue 123 --provider openai|command|mock
+pnpm ai:scope-check -- --plan-file .myagenttool/runs/<run>/code-plan.json --base main
+pnpm ai:testing-plan -- --change web --risk high
 pnpm ai:work-runner -- --issue 123 --provider openai|command|mock
 pnpm ai:manifest -- --issue 123 --pr 456
 pnpm ai:review -- --pr 456 --provider openai|command|mock
