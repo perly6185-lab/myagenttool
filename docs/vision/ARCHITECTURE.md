@@ -12,6 +12,12 @@ events, traces, and audit.
 M0 also includes queued delivery for offline devices and cancellation
 propagation to the bridge and local process.
 
+Accepted M0 implementation decisions are tracked in
+[ADR_INDEX.md](../engineering/ADR_INDEX.md). The current baseline chooses a
+WebSocket bridge channel, a Node.js CLI/service-style Desktop Bridge, a Node.js
+server with a relational persistence boundary and database-backed queue records,
+and a focused plain-language Web Console shell.
+
 The same logical architecture should support SaaS, self-hosted, and private
 deployment models. See [DEPLOYMENT.md](DEPLOYMENT.md).
 

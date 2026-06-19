@@ -19,6 +19,7 @@ AI-assisted delivery is governed by:
 - [LOCAL_DEV_ENV.md](LOCAL_DEV_ENV.md): target local development experience.
 - [TEST_STRATEGY.md](TEST_STRATEGY.md): test expectations by risk and milestone.
 - [RELEASE_PROCESS.md](RELEASE_PROCESS.md): release and rollback rules.
+- [ADR_INDEX.md](ADR_INDEX.md): accepted architecture decision records.
 
 ## Management Model
 
@@ -128,6 +129,7 @@ Use only for confirmed broken behavior or documentation contradiction.
 For initial setup, follow [GITHUB_SETUP.md](GITHUB_SETUP.md).
 For copy-ready M0 issue drafts, use [M0_ISSUE_SEED.md](M0_ISSUE_SEED.md).
 For initial architecture decision drafts, use [ADR_SEED.md](ADR_SEED.md).
+For accepted decisions, use [ADR_INDEX.md](ADR_INDEX.md).
 For AI engineering execution seed issues, use
 [AI_ENGINEERING_ISSUE_SEED.md](AI_ENGINEERING_ISSUE_SEED.md).
 
