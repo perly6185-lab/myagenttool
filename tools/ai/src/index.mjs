@@ -742,7 +742,8 @@ function mockStructuredOutput({ agentName, prompt, issue, title }) {
   if (agentName === "code-plan") {
     const issueMatch = prompt.match(/Issue title:\n(.+)/);
     const planTitle = title || issueMatch?.[1]?.trim() || "AI delivery work";
-    const issueNumber = issue ?? prompt.match(/#(\d+)/)?.[1] ?? "0";
+    const expectedBranchMatch = prompt.match(/Expected branch:\n(?:[a-z]+\/)?issue-(\d+)-/);
+    const issueNumber = issue ?? expectedBranchMatch?.[1] ?? "0";
     return {
       branch: buildBranchName(issueNumber, planTitle, "feat"),
       summary: "Add a safe AI work runner slice that turns issue context into an implementation plan, review draft, and verification evidence.",
