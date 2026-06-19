@@ -154,6 +154,9 @@ Before claiming M0 UI acceptance:
 - Safety, cost, and audit information are visible before or after run.
 - The page still works when no device is online.
 
+Use [VISUAL_QA.md](../engineering/VISUAL_QA.md) for the current M0 visual QA
+path.
+
 ## Open Design Usage
 
 Open-design may generate:

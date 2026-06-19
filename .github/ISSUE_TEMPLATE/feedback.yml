@@ -1,0 +1,61 @@
+name: Feedback
+description: Capture demo, release, support, or user feedback for triage.
+title: "[Feedback]: "
+labels:
+  - type/task
+  - status/backlog
+  - area/cross-cutting
+  - risk/medium
+  - acceptance/not-defined
+body:
+  - type: textarea
+    id: feedback
+    attributes:
+      label: Feedback
+      description: What did the user, reviewer, demo, or support signal say?
+    validations:
+      required: true
+  - type: dropdown
+    id: source
+    attributes:
+      label: Source
+      options:
+        - user interview
+        - product demo
+        - release review
+        - support signal
+        - operations signal
+        - internal review
+    validations:
+      required: true
+  - type: dropdown
+    id: triage
+    attributes:
+      label: Triage target
+      options:
+        - bug
+        - risk
+        - roadmap
+        - documentation
+        - needs investigation
+    validations:
+      required: true
+  - type: textarea
+    id: user_outcome
+    attributes:
+      label: User outcome
+      description: What should become better for the user?
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence
+      description: Links, screenshots, logs, PRs, releases, or reproduction notes.
+  - type: textarea
+    id: next_step
+    attributes:
+      label: Proposed next step
+      placeholder: "- [ ] Convert to bug/risk/roadmap issue..."
+    validations:
+      required: true

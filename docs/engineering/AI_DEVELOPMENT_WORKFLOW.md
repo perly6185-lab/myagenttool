@@ -3,6 +3,9 @@
 This document defines how this repository should turn a user idea into
 reviewable, tested, and releasable software with AI assistance.
 
+For the broader product-delivery operating system, use
+[FULL_FLOW_AI_DELIVERY.md](FULL_FLOW_AI_DELIVERY.md).
+
 The goal is not to let AI silently build everything. The goal is to make AI a
 disciplined development operator that follows the project context, creates
 traceable work, asks for approval at the right points, and leaves evidence.

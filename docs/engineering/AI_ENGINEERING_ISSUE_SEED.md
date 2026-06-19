@@ -22,6 +22,12 @@ Current GitHub range:
 #28 [Task]: M0 Desktop Bridge Skeleton
 #29 [Task]: M0 Demo CLI Agent
 #30 [Task]: M0 Local Invocation Smoke Test
+#32 [Risk]: Required Checks Blocked by Repository Entitlement
+#33 [Epic]: M0 Demo UX Redesign with Open Design
+#34 [Task]: Integrate PM Skills into AI Development Workflow
+#35 [Task]: Add Open Design Workflow for M0 Web Console
+#36 [Task]: Add Visual QA Screenshots for Web Console
+#37 [Task]: Integrate Coding Skills into AI Development Workflow
 ```
 
 ## Issue Details
@@ -147,6 +153,101 @@ After #23 is decided, create implementation issues for:
 - Local invocation smoke test.
 
 These were imported as #24 through #30.
+
+## Full-flow AI Delivery Follow-ups
+
+These follow-ups move the project from AI-assisted coding toward the full
+delivery chain defined in [FULL_FLOW_AI_DELIVERY.md](FULL_FLOW_AI_DELIVERY.md).
+
+### Epic: Full-flow AI Product Delivery Operating System
+
+Type: epic
+Milestone: M0
+Area: cross-cutting
+Risk: high
+Acceptance: defined
+Platform: all
+Agent Target: platform
+Source doc: `docs/engineering/FULL_FLOW_AI_DELIVERY.md`
+
+Acceptance:
+
+- The idea-to-feedback flow is documented as a stage contract.
+- Current capability and gaps are visible.
+- Follow-up issues exist for PM intake, issue/branch orchestration, automated
+  review, release drafting, and feedback conversion.
+
+### Task: AI Intake Brief Generator
+
+Type: task
+Milestone: M0
+Area: docs
+Risk: medium
+Acceptance: defined
+Platform: all
+Agent Target: platform
+Source doc: `docs/engineering/FULL_FLOW_AI_DELIVERY.md`
+
+Acceptance:
+
+- A deterministic command generates a PM brief draft from a plain-language idea.
+- The brief includes user outcome, suggested slice, risk flags, acceptance, and
+  next steps.
+- The command does not call external AI or mutate GitHub state by default.
+
+### Task: AI Work Manifest Generator
+
+Type: task
+Milestone: M0
+Area: docs
+Risk: medium
+Acceptance: defined
+Platform: all
+Agent Target: platform
+Source doc: `docs/engineering/FULL_FLOW_AI_DELIVERY.md`
+
+Acceptance:
+
+- A deterministic command generates a work manifest for the current branch.
+- The manifest includes issue, PR, branch, changed files, checks, evidence, risk
+  review, and follow-ups.
+- The command does not mutate GitHub state by default.
+
+### Task: Release Draft Generator
+
+Type: task
+Milestone: M0
+Area: docs
+Risk: medium
+Acceptance: defined
+Platform: server
+Agent Target: platform
+Source doc: `docs/engineering/RELEASE_PROCESS.md`
+
+Acceptance:
+
+- A deterministic command generates release note drafts from PR metadata.
+- Draft includes shipped issues, verification, impact, limitations, and rollback
+  notes.
+- The command does not publish a release.
+
+### Task: Feedback Intake Template
+
+Type: task
+Milestone: M0
+Area: docs
+Risk: low
+Acceptance: defined
+Platform: all
+Agent Target: platform
+Source doc: `docs/engineering/FULL_FLOW_AI_DELIVERY.md`
+
+Acceptance:
+
+- Feedback issue template exists.
+- Feedback captures source, triage target, user outcome, evidence, and next
+  step.
+- Feedback can be converted into bug, risk, roadmap, or documentation work.
 
 ## Scaffold Implementation Issues
 

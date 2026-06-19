@@ -77,7 +77,8 @@ Use this for Web Console, onboarding, task flow, and demo experience changes:
   [MYAGENTTOOL_DESIGN.md](../design/MYAGENTTOOL_DESIGN.md)?
 - Was PM/design framing recorded through
   [PM_DESIGN_SKILLS.md](PM_DESIGN_SKILLS.md) or an issue linked to it?
-- Is visual QA evidence attached when layout or copy changed?
+- Is visual QA evidence attached when layout or copy changed, following
+  [VISUAL_QA.md](VISUAL_QA.md)?
 
 ## AI Review Output Format
 

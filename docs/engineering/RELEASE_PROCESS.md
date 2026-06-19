@@ -100,6 +100,15 @@ Release notes should include:
 - Known limitations.
 - Rollback notes.
 
+Use the local draft command before human review:
+
+```text
+pnpm release:draft
+```
+
+The command prints a draft from the current branch PR when GitHub access is
+available. It does not publish a release.
+
 ## Rollback
 
 Every release should answer:
@@ -127,6 +136,7 @@ Human approval is required for:
 AI may:
 
 - Generate release notes.
+- Generate release note drafts with `pnpm release:draft`.
 - Summarize merged PRs.
 - Identify missing rollback notes.
 - Check issue and Project status.
