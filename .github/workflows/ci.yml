@@ -35,6 +35,12 @@ jobs:
       - name: Check documentation links
         run: pnpm docs:check
 
+      - name: Check AI, release, and deploy tooling
+        run: |
+          pnpm ai:check
+          pnpm release:check
+          pnpm deploy:check
+
       - name: Typecheck
         run: pnpm typecheck
 

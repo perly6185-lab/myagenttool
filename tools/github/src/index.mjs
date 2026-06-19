@@ -104,13 +104,18 @@ function checkLocal() {
   const requiredFiles = [
     ".github/PULL_REQUEST_TEMPLATE.md",
     ".github/ISSUE_TEMPLATE/feedback.yml",
+    ".github/workflows/ai-review.yml",
     ".github/workflows/ci.yml",
+    ".github/workflows/deploy.yml",
     ".github/workflows/docs.yml",
     ".github/workflows/governance.yml",
+    ".github/workflows/release.yml",
     DOCS.automation,
     DOCS.workflow,
     DOCS.review,
     DOCS.github,
+    "docs/engineering/MODEL_DRIVEN_DELIVERY.md",
+    "docs/engineering/DEPLOYMENT_PIPELINE.md",
   ];
 
   const missing = requiredFiles.filter((path) => !existsSync(resolve(repoRoot, path)));
