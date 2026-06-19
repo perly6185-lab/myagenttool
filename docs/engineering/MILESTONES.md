@@ -22,6 +22,16 @@ Primary source docs:
 - `docs/vision/STATE_MACHINE.md`
 - `docs/vision/INVOCATION_DELIVERY.md`
 - `docs/vision/IDEA_TO_OUTCOME.md`
+- `docs/engineering/ADR_INDEX.md`
+
+Accepted M0 architecture decisions:
+
+- Realtime transport: WebSocket bridge channel.
+- Desktop Bridge runtime: Node.js CLI/service-style process.
+- Server/storage/queue: Node.js server with relational persistence boundary and
+  database-backed queue records.
+- Web shell: focused plain-language invocation flow with expandable technical
+  details.
 
 ## M1: Local Agent Management
 
