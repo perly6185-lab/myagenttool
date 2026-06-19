@@ -3,6 +3,7 @@ import type { Agent, AuditSummary, Device, Invocation, InvocationEvent } from "@
 export type WebConsoleSnapshot = {
   device: Device;
   agent: Agent;
+  agents: Agent[];
   invocations: Invocation[];
   events: InvocationEvent[];
   auditSummaries: AuditSummary[];

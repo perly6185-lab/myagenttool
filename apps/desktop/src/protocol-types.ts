@@ -1,4 +1,10 @@
-import type { Invocation, InvocationEvent } from "@myagenttool/protocol";
+import type { Agent, Invocation, InvocationEvent } from "@myagenttool/protocol";
 
-export type DesktopBridgeWorkItem = Pick<Invocation, "id" | "agentId" | "input" | "options">;
+export type DesktopBridgeWorkItem = {
+  invocationId: Invocation["id"];
+  agentId: Invocation["agentId"];
+  adapter: Agent["adapter"];
+  input: Invocation["input"];
+  options: Invocation["options"];
+};
 export type DesktopBridgeEvent = InvocationEvent;
