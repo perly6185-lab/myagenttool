@@ -62,7 +62,9 @@ pnpm ai:testing-plan -- --change web --risk high
 pnpm ai:scope-check -- --plan-file .myagenttool/runs/<run>/code-plan.json --base main
 ```
 
-`ai:testing-plan` records which Testing skills guidance applies. `ai:scope-check`
+`ai:testing-plan` records which Testing skills guidance applies. Work-runner
+evidence infers every matching route from planned files and merges the
+requirements, so mixed changes carry all relevant evidence. `ai:scope-check`
 records whether the diff stayed inside the code plan. `ai:work-runner --apply`
 generates both artifacts automatically in `.myagenttool/runs/<run>`.
 

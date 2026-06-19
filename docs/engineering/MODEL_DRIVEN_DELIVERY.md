@@ -167,12 +167,16 @@ Command:
 
 ```text
 pnpm ai:testing-plan -- --change web --risk high
+pnpm ai:testing-plan -- --changes "server,security,release" --risk high
 ```
 
 The Testing skills plan maps the change type and risk level to required
-evidence, recommended commands, manual verification, and skill guidance. It is
-not an external dependency; it is a deterministic repository-owned selection
-rule for how AI-generated or agent-written work should be tested.
+evidence, recommended commands, manual verification, and skill guidance. In
+work-runner evidence, planned files can match multiple change types; the runner
+merges every matched route so security/data/release requirements are not hidden
+behind broader web, server, protocol, or docs changes. It is not an external
+dependency; it is a deterministic repository-owned selection rule for how
+AI-generated or agent-written work should be tested.
 
 Supported change types are `docs`, `web`, `server`, `desktop`, `protocol`,
 `security`, `release`, and `adapter`. Supported risks are `low`, `medium`,
