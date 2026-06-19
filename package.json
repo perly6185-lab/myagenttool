@@ -20,6 +20,7 @@
     "ai:review": "node tools/ai/src/index.mjs review-pr",
     "ai:run-work": "node tools/ai/src/index.mjs run-work",
     "ai:work-runner": "node tools/ai/src/index.mjs run-work",
+    "ai:coding-adapter-contract": "node tools/ai/src/index.mjs coding-adapter-contract",
     "github:check": "node tools/github/src/index.mjs --check",
     "github:check:issues": "node tools/github/src/index.mjs check-issues",
     "github:check:pr": "node tools/github/src/index.mjs check-pr",

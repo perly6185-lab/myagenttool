@@ -77,16 +77,67 @@ pnpm ai:work-runner -- --issue 123 --provider openai|command|mock
 The work runner connects an issue to a branch and evidence directory. It is
 dry-run by default. With `--apply`, it can:
 
-- Fetch and update `main`.
 - Create the issue branch.
 - Write model plan and run manifest under `.myagenttool/runs`.
-- Pass context to a configured coding command through
+- Write the trusted coding adapter contract for the run.
+- Pass context to a configured coding adapter through
   `MYAGENTTOOL_WORK_CONTEXT`.
-- Run standard verification with `--verify`.
+- Run standard verification unless `--skip-verify` is explicit.
 - Open a PR with `--open-pr`.
 
 The runner never executes shell commands proposed by the model. A configured
 coding command is a separate trusted adapter and must obey repository policy.
+
+### Trusted Coding Adapter
+
+Command:
+
+```text
+pnpm ai:work-runner -- --issue 123 --provider openai|command|mock --apply --coding-adapter codex
+pnpm ai:work-runner -- --issue 123 --provider mock --apply --coding-adapter mock
+pnpm ai:manifest -- --issue 123 --pr 456
+node tools/ai/src/index.mjs coding-adapter-contract --adapter codex
+```
+
+Supported adapter slots are `mock`, `codex`, `claude`, `qwen-code`,
+`openclaw`, `qclaw`, and `command`. The named CLI adapters are contract slots;
+each production adapter must be configured through a trusted wrapper command,
+not raw model output.
+
+Command-backed adapters are configured as JSON argv arrays, for example:
+
+```text
+MYAGENTTOOL_CODEX_COMMAND_JSON='["codex","exec"]'
+```
+
+or:
+
+```text
+pnpm ai:work-runner -- --issue 123 --provider mock --apply \
+  --coding-adapter command \
+  --adapter-command-json '["node","tools/internal-coding-wrapper.mjs"]'
+```
+
+The runner executes adapter commands without a shell. The adapter receives:
+
+- `MYAGENTTOOL_WORK_CONTEXT`
+- `MYAGENTTOOL_WORK_PLAN_FILE`
+- `MYAGENTTOOL_WORK_MANIFEST_FILE`
+- `MYAGENTTOOL_WORK_EVIDENCE_DIR`
+- `MYAGENTTOOL_WORK_BRANCH`
+- `MYAGENTTOOL_WORK_ISSUE`
+
+The adapter must write `adapter-result.json` in
+`MYAGENTTOOL_WORK_EVIDENCE_DIR` with:
+
+- `status`
+- `summary`
+- `changedFiles`
+- `commandsRun`
+- `risks`
+
+It may also write stdout/stderr logs. Evidence must not include secrets or broad
+local file dumps.
 
 ## Providers
 
@@ -137,6 +188,9 @@ workflow validation. It must not be represented as a real model decision.
 - Model output is treated as a proposal until verification evidence exists.
 - Secrets and broad local file content are not sent by default.
 - Model-proposed shell commands are never executed directly.
+- Coding adapters are registry-selected and command-backed adapters use JSON
+  argv arrays instead of shell strings.
+- Work runner apply mode refuses dirty worktrees before any adapter runs.
 - High-risk work should create or link a risk issue.
 
 ## Acceptance
@@ -149,3 +203,6 @@ The model-driven layer is acceptable when:
 - `pnpm ai:review -- --provider mock` returns findings-first review output.
 - GitHub AI Review workflow can run on PRs.
 - Work runner dry-run and apply modes are visibly separate.
+- `coding-adapter-contract` documents the adapter input, output, and evidence
+  contract.
+- The mock coding adapter can create deterministic run evidence.

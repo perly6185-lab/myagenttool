@@ -16,9 +16,10 @@ Usage:
   node tools/ai/src/index.mjs pm-brief|pm-agent --idea "..." --provider openai|command|mock [--out path] [--json]
   node tools/ai/src/index.mjs branch-plan --issue NUMBER --title "..."
   node tools/ai/src/index.mjs code-plan|code-agent --issue NUMBER [--repo OWNER/REPO] --provider openai|command|mock [--out path] [--json]
-  node tools/ai/src/index.mjs run-work|work-runner --issue NUMBER [--repo OWNER/REPO] --provider openai|command|mock [--apply] [--execute-command "..."] [--verify] [--open-pr]
+  node tools/ai/src/index.mjs run-work|work-runner --issue NUMBER [--repo OWNER/REPO] --provider openai|command|mock [--apply] [--coding-adapter NAME] [--adapter-command-json JSON] [--verify] [--skip-verify] [--open-pr]
   node tools/ai/src/index.mjs review-pr|review-agent --pr NUMBER [--repo OWNER/REPO] --provider openai|command|mock [--out path] [--json] [--comment]
   node tools/ai/src/index.mjs work-manifest [--issue NUMBER] [--pr NUMBER] [--out path]
+  node tools/ai/src/index.mjs coding-adapter-contract [--adapter NAME] [--out path]
   node tools/ai/src/index.mjs feedback-convert --feedback "..." --target bug|risk|roadmap|documentation [--out path]
 
 Providers:
@@ -28,7 +29,7 @@ Providers:
 
 Notes:
   Model-backed commands require a provider. Use --provider mock only for deterministic validation.
-  run-work is dry-run by default. It creates branches, runs local commands, or opens PRs only with --apply.
+  run-work is dry-run by default. It creates branches, runs trusted coding adapters, verifies, or opens PRs only with --apply.
 `;
 
 const PM_BRIEF_SCHEMA = {
@@ -119,6 +120,70 @@ const REVIEW_SCHEMA = {
   },
 };
 
+const CODING_ADAPTER_CONTRACT_VERSION = "2026-06-19";
+
+const CODING_ADAPTERS = {
+  mock: {
+    name: "mock",
+    kind: "internal",
+    label: "Mock coding adapter",
+    description: "Deterministic local adapter for contract checks and workflow demos.",
+    commandEnv: null,
+  },
+  codex: {
+    name: "codex",
+    kind: "cli",
+    label: "Codex CLI adapter",
+    description: "Adapter slot for Codex-style CLI coding agents.",
+    commandEnv: "MYAGENTTOOL_CODEX_COMMAND_JSON",
+  },
+  claude: {
+    name: "claude",
+    kind: "cli",
+    label: "Claude CLI adapter",
+    description: "Adapter slot for Claude-style CLI coding agents.",
+    commandEnv: "MYAGENTTOOL_CLAUDE_COMMAND_JSON",
+  },
+  "qwen-code": {
+    name: "qwen-code",
+    kind: "cli",
+    label: "Qwen Code CLI adapter",
+    description: "Adapter slot for Qwen Code-style CLI coding agents.",
+    commandEnv: "MYAGENTTOOL_QWEN_CODE_COMMAND_JSON",
+  },
+  openclaw: {
+    name: "openclaw",
+    kind: "cli",
+    label: "OpenClaw-like CLI adapter",
+    description: "Adapter slot for OpenClaw-like local coding agents exposed as a command.",
+    commandEnv: "MYAGENTTOOL_OPENCLAW_COMMAND_JSON",
+  },
+  qclaw: {
+    name: "qclaw",
+    kind: "cli",
+    label: "QClaw-like CLI adapter",
+    description: "Adapter slot for QClaw-like local coding agents exposed as a command.",
+    commandEnv: "MYAGENTTOOL_QCLAW_COMMAND_JSON",
+  },
+  command: {
+    name: "command",
+    kind: "cli",
+    label: "Generic trusted command adapter",
+    description: "Adapter slot for an explicitly configured internal wrapper command.",
+    commandEnv: "MYAGENTTOOL_CODING_ADAPTER_COMMAND_JSON",
+  },
+};
+
+const STANDARD_VERIFICATION_COMMANDS = [
+  ["pnpm", ["docs:check"]],
+  ["pnpm", ["repo:check"]],
+  ["pnpm", ["ai:check"]],
+  ["pnpm", ["release:check"]],
+  ["pnpm", ["deploy:check"]],
+  ["pnpm", ["typecheck"]],
+  ["pnpm", ["test"]],
+];
+
 function main() {
   const args = process.argv.slice(2);
   const command = args.includes("--check") ? "check" : args.find((arg) => !arg.startsWith("--"));
@@ -165,6 +230,11 @@ function main() {
 
   if (command === "work-manifest") {
     workManifest(args);
+    return;
+  }
+
+  if (command === "coding-adapter-contract") {
+    codingAdapterContract(args);
     return;
   }
 
@@ -334,51 +404,33 @@ async function runWork(args) {
   if (!issue) fail("Missing --issue.");
 
   const apply = args.includes("--apply");
-  const executeCommand = option(args, "--execute-command") ?? process.env.MYAGENTTOOL_CODING_AGENT_COMMAND;
   const openPr = args.includes("--open-pr");
-  const verify = args.includes("--verify");
+  const verify = apply && !args.includes("--skip-verify");
   const repo = option(args, "--repo") ?? process.env.GITHUB_REPOSITORY ?? defaultRepo();
   const plan = await createCodePlan(args);
   const runId = `${new Date().toISOString().replace(/[:.]/g, "-")}-issue-${issue}`;
   const runDir = resolve(repoRoot, ".myagenttool/runs", runId);
   const contextFile = resolve(runDir, "context.json");
+  const adapter = resolveCodingAdapter(args);
+  const branch = sanitizeBranch(plan.branch || buildBranchName(issue, `issue-${issue}`, "feat"));
   mkdirSync(runDir, { recursive: true });
 
   writeFileSync(resolve(runDir, "code-plan.json"), `${JSON.stringify(plan, null, 2)}\n`, "utf8");
-  writeFileSync(contextFile, `${JSON.stringify(workContext({ issue, repo, plan, runId }), null, 2)}\n`, "utf8");
-  writeFileSync(resolve(runDir, "manifest.md"), formatRunManifest({ issue, repo, plan, apply, executeCommand, verify, openPr }), "utf8");
+  writeFileSync(contextFile, `${JSON.stringify(workContext({ issue, repo, branch, plan, runId, adapter }), null, 2)}\n`, "utf8");
+  writeFileSync(resolve(runDir, "coding-adapter-contract.json"), `${JSON.stringify(codingAdapterContractJson(adapter), null, 2)}\n`, "utf8");
+  writeFileSync(resolve(runDir, "manifest.md"), formatRunManifest({ issue, repo, plan, apply, adapter, verify, openPr }), "utf8");
 
   if (!apply) {
     console.log(`AI work dry-run created .myagenttool/runs/${runId}`);
-    console.log("Re-run with --apply to create the branch and execute the configured coding command.");
+    console.log("Re-run with --apply to create the branch, run the trusted coding adapter, verify, and optionally open a PR.");
     return;
   }
 
   ensureCleanWorktree();
-  const branch = sanitizeBranch(plan.branch || buildBranchName(issue, `issue-${issue}`, "feat"));
   runCommand("git", ["switch", "-c", branch], { label: `create branch ${branch}` });
 
-  if (executeCommand) {
-    const commandResult = spawnSync(executeCommand, {
-      cwd: repoRoot,
-      env: {
-        ...process.env,
-        MYAGENTTOOL_WORK_ISSUE: String(issue),
-        MYAGENTTOOL_WORK_BRANCH: branch,
-        MYAGENTTOOL_WORK_CONTEXT: contextFile,
-        MYAGENTTOOL_WORK_PLAN_FILE: resolve(runDir, "code-plan.json"),
-        MYAGENTTOOL_WORK_MANIFEST_FILE: resolve(runDir, "manifest.md"),
-      },
-      encoding: "utf8",
-      shell: true,
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    writeFileSync(resolve(runDir, "coding-command.stdout.txt"), commandResult.stdout ?? "", "utf8");
-    writeFileSync(resolve(runDir, "coding-command.stderr.txt"), commandResult.stderr ?? "", "utf8");
-    if (commandResult.status !== 0) {
-      fail(`Coding command failed with exit ${commandResult.status}. See .myagenttool/runs/${runId}.`);
-    }
-  }
+  const adapterResult = runCodingAdapter({ args, adapter, issue, repo, branch, plan, runId, runDir, contextFile });
+  writeFileSync(resolve(runDir, "coding-adapter-result.json"), `${JSON.stringify(adapterResult.summary, null, 2)}\n`, "utf8");
 
   if (verify) {
     const verification = runVerification();
@@ -387,7 +439,7 @@ async function runWork(args) {
 
   if (openPr) {
     if (!repo) fail("Cannot open PR without --repo or GITHUB_REPOSITORY.");
-    const body = formatPrBody({ issue, plan, runId });
+    const body = formatPrBody({ issue, plan, runId, adapter, verified: verify });
     runGh(["pr", "create", "--repo", repo, "--title", plan.prSummary || `Work for #${issue}`, "--body", body]);
   }
 
@@ -491,6 +543,15 @@ ${changedFiles.length > 0 ? changedFiles.map((file) => `- ${file}`).join("\n") :
 `;
 
   writeOrPrint(manifest, out);
+}
+
+function codingAdapterContract(args) {
+  const adapter = resolveCodingAdapter(args);
+  const out = option(args, "--out");
+  const json = args.includes("--json");
+  const contract = codingAdapterContractJson(adapter);
+  const content = json ? `${JSON.stringify(contract, null, 2)}\n` : formatCodingAdapterContract(contract);
+  writeOrPrint(content, out);
 }
 
 function feedbackConvert(args) {
@@ -894,7 +955,39 @@ ${review.approve ? "AI reviewer sees no blocking issue, but human approval is st
 `;
 }
 
-function formatRunManifest({ issue, repo, plan, apply, executeCommand, verify, openPr }) {
+function formatCodingAdapterContract(contract) {
+  return `# Trusted Coding Adapter Contract
+
+Version: ${contract.version}
+
+## Adapter
+
+- Name: ${contract.adapter.name}
+- Label: ${contract.adapter.label}
+- Kind: ${contract.adapter.kind}
+- Command environment: ${contract.adapter.commandEnv ?? "none"}
+
+## Required Inputs
+
+${list(contract.requiredInputs)}
+
+## Required Evidence
+
+${list(contract.requiredEvidence)}
+
+## Safety Rules
+
+${list(contract.safetyRules)}
+
+## Environment
+
+${Object.entries(contract.environment)
+  .map(([name, value]) => `- ${name}: ${value}`)
+  .join("\n")}
+`;
+}
+
+function formatRunManifest({ issue, repo, plan, apply, adapter, verify, openPr }) {
   return `# AI Work Run
 
 Created: ${new Date().toISOString()}
@@ -912,9 +1005,11 @@ ${formatCodePlan(plan)}
 
 ## Execution
 
-- Coding command configured: ${executeCommand ? "yes" : "no"}
+- Coding adapter: ${adapter.name}
+- Adapter command source: ${adapter.commandEnv ?? "internal"}
 - Verification requested: ${verify ? "yes" : "no"}
 - Open PR requested: ${openPr ? "yes" : "no"}
+- Model-proposed shell commands executed directly: no
 
 ## Required Human Gates
 
@@ -924,30 +1019,35 @@ ${formatCodePlan(plan)}
 `;
 }
 
-function workContext({ issue, repo, plan, runId }) {
+function workContext({ issue, repo, branch, plan, runId, adapter }) {
   return {
+    contractVersion: CODING_ADAPTER_CONTRACT_VERSION,
     issue: String(issue),
     repository: repo ?? "",
-    branch: plan.branch,
+    branch,
     runId,
+    adapter: {
+      name: adapter.name,
+      kind: adapter.kind,
+      label: adapter.label,
+    },
     plan,
+    policy: {
+      mayEditWorkspace: true,
+      mayRunVerification: true,
+      mayOpenPullRequest: false,
+      mayExecuteModelProposedCommands: false,
+      dirtyWorktreePolicy: "refuse unless an outer policy explicitly allows it",
+      scope: "Only edit files needed for the source issue and plan.",
+    },
     createdAt: new Date().toISOString(),
   };
 }
 
 function runVerification() {
-  const commands = [
-    ["pnpm", ["docs:check"]],
-    ["pnpm", ["repo:check"]],
-    ["pnpm", ["ai:check"]],
-    ["pnpm", ["release:check"]],
-    ["pnpm", ["deploy:check"]],
-    ["pnpm", ["typecheck"]],
-    ["pnpm", ["test"]],
-  ];
   const sections = [`# Work Verification\n\nCreated: ${new Date().toISOString()}\n`];
 
-  for (const [command, args] of commands) {
+  for (const [command, args] of STANDARD_VERIFICATION_COMMANDS) {
     const label = `${command} ${args.join(" ")}`;
     const result = spawnSync(command, args, {
       cwd: repoRoot,
@@ -964,7 +1064,177 @@ function runVerification() {
   return sections.join("\n");
 }
 
-function formatPrBody({ issue, plan, runId }) {
+function resolveCodingAdapter(args) {
+  const requested = (option(args, "--coding-adapter") ?? option(args, "--adapter") ?? process.env.MYAGENTTOOL_CODING_ADAPTER ?? "mock").toLowerCase();
+  const adapter = CODING_ADAPTERS[requested];
+  if (!adapter) {
+    fail(`Unsupported coding adapter: ${requested}. Supported adapters: ${Object.keys(CODING_ADAPTERS).join(", ")}`);
+  }
+  return adapter;
+}
+
+function codingAdapterContractJson(adapter) {
+  return {
+    version: CODING_ADAPTER_CONTRACT_VERSION,
+    adapter: {
+      name: adapter.name,
+      kind: adapter.kind,
+      label: adapter.label,
+      description: adapter.description,
+      commandEnv: adapter.commandEnv,
+    },
+    requiredInputs: [
+      "MYAGENTTOOL_WORK_CONTEXT points to a JSON context file.",
+      "MYAGENTTOOL_WORK_PLAN_FILE points to the structured code plan.",
+      "MYAGENTTOOL_WORK_MANIFEST_FILE points to the run manifest.",
+      "MYAGENTTOOL_WORK_EVIDENCE_DIR points to the adapter evidence directory.",
+      "MYAGENTTOOL_WORK_BRANCH contains the issue branch name.",
+      "MYAGENTTOOL_WORK_ISSUE contains the source issue number.",
+    ],
+    requiredEvidence: [
+      "adapter-result.json with status, summary, changedFiles, commandsRun, and risks.",
+      "stdout.txt and stderr.txt for command-backed adapters.",
+      "No secrets or broad local file dumps in evidence.",
+    ],
+    safetyRules: [
+      "Refuse to run when the worktree is dirty unless an outer policy explicitly allows it.",
+      "Only edit files required for the issue, plan, and repository patterns.",
+      "Do not execute shell commands proposed by model output.",
+      "Use repository verification scripts instead of ad hoc destructive commands.",
+      "Leave merge, production deployment, billing, credential, and release gates to humans.",
+    ],
+    environment: {
+      MYAGENTTOOL_WORK_CONTEXT: "Absolute path to context.json.",
+      MYAGENTTOOL_WORK_PLAN_FILE: "Absolute path to code-plan.json.",
+      MYAGENTTOOL_WORK_MANIFEST_FILE: "Absolute path to manifest.md.",
+      MYAGENTTOOL_WORK_EVIDENCE_DIR: "Absolute path to adapter evidence directory.",
+      MYAGENTTOOL_WORK_BRANCH: "Branch created by the runner.",
+      MYAGENTTOOL_WORK_ISSUE: "Source issue number.",
+    },
+  };
+}
+
+function runCodingAdapter({ args, adapter, issue, repo, branch, plan, runId, runDir, contextFile }) {
+  const evidenceDir = resolve(runDir, "coding-adapter");
+  mkdirSync(evidenceDir, { recursive: true });
+
+  if (adapter.name === "mock") {
+    const summary = {
+      adapter: adapter.name,
+      contractVersion: CODING_ADAPTER_CONTRACT_VERSION,
+      status: "completed",
+      summary: "Mock adapter validated the coding adapter contract and did not edit files.",
+      changedFiles: [],
+      commandsRun: [],
+      risks: ["No real coding agent was invoked."],
+      completedAt: new Date().toISOString(),
+    };
+    writeFileSync(resolve(evidenceDir, "adapter-result.json"), `${JSON.stringify(summary, null, 2)}\n`, "utf8");
+    writeFileSync(resolve(evidenceDir, "stdout.txt"), "Mock coding adapter completed.\n", "utf8");
+    writeFileSync(resolve(evidenceDir, "stderr.txt"), "", "utf8");
+    return { summary };
+  }
+
+  const commandConfig = resolveAdapterCommand(args, adapter);
+  const result = spawnSync(commandConfig.command, commandConfig.args, {
+    cwd: repoRoot,
+    env: {
+      ...process.env,
+      MYAGENTTOOL_WORK_ISSUE: String(issue),
+      MYAGENTTOOL_WORK_BRANCH: branch,
+      MYAGENTTOOL_WORK_REPOSITORY: repo ?? "",
+      MYAGENTTOOL_WORK_RUN_ID: runId,
+      MYAGENTTOOL_WORK_CONTEXT: contextFile,
+      MYAGENTTOOL_WORK_PLAN_FILE: resolve(runDir, "code-plan.json"),
+      MYAGENTTOOL_WORK_MANIFEST_FILE: resolve(runDir, "manifest.md"),
+      MYAGENTTOOL_WORK_EVIDENCE_DIR: evidenceDir,
+      MYAGENTTOOL_CODING_ADAPTER: adapter.name,
+    },
+    encoding: "utf8",
+    shell: false,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+
+  writeFileSync(resolve(evidenceDir, "stdout.txt"), result.stdout ?? "", "utf8");
+  writeFileSync(resolve(evidenceDir, "stderr.txt"), result.stderr ?? "", "utf8");
+
+  const adapterResultFile = resolve(evidenceDir, "adapter-result.json");
+  const adapterResult = readAdapterResult(adapterResultFile, {
+    adapter: adapter.name,
+    contractVersion: CODING_ADAPTER_CONTRACT_VERSION,
+    status: "failed",
+    summary: result.status === 0 ? "Adapter command completed without required adapter-result.json." : `Adapter command failed with exit ${result.status}.`,
+    changedFiles: [],
+    commandsRun: [commandConfig.redactedLabel],
+    risks: result.status === 0 ? ["Adapter evidence contract was not satisfied."] : ["Inspect adapter stderr before continuing."],
+    completedAt: new Date().toISOString(),
+  });
+
+  if (result.status !== 0) {
+    fail(`Coding adapter ${adapter.name} failed with exit ${result.status}. See .myagenttool/runs/${runId}/coding-adapter.`);
+  }
+
+  if (adapterResult.status !== "completed") {
+    fail(`Coding adapter ${adapter.name} did not produce completed evidence. See .myagenttool/runs/${runId}/coding-adapter.`);
+  }
+
+  return { summary: adapterResult };
+}
+
+function resolveAdapterCommand(args, adapter) {
+  const raw = option(args, "--adapter-command-json") ?? process.env[adapter.commandEnv] ?? process.env.MYAGENTTOOL_CODING_ADAPTER_COMMAND_JSON;
+  if (!raw) {
+    fail(`Coding adapter ${adapter.name} requires --adapter-command-json, ${adapter.commandEnv}, or MYAGENTTOOL_CODING_ADAPTER_COMMAND_JSON.`);
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (error) {
+    fail(`Coding adapter command must be JSON, for example ["codex","exec"]. Parse error: ${error.message}`);
+  }
+
+  if (!Array.isArray(parsed) || parsed.length === 0 || parsed.some((item) => typeof item !== "string" || item.length === 0)) {
+    fail('Coding adapter command JSON must be a non-empty string array, for example ["codex","exec"].');
+  }
+
+  const [command, ...commandArgs] = parsed;
+  return {
+    command,
+    args: commandArgs,
+    redactedLabel: parsed.join(" "),
+  };
+}
+
+function readAdapterResult(path, fallback) {
+  if (!existsSync(path)) return fallback;
+  try {
+    const parsed = JSON.parse(readFileSync(path, "utf8"));
+    return normalizeAdapterResult(parsed, fallback);
+  } catch {
+    return {
+      ...fallback,
+      status: "failed",
+      summary: "Adapter result file existed but was not valid JSON.",
+      risks: [...fallback.risks, "Invalid adapter-result.json must be inspected."],
+    };
+  }
+}
+
+function normalizeAdapterResult(result, fallback) {
+  return {
+    adapter: stringOr(result.adapter, fallback.adapter),
+    contractVersion: stringOr(result.contractVersion, fallback.contractVersion),
+    status: stringOr(result.status, fallback.status),
+    summary: stringOr(result.summary, fallback.summary),
+    changedFiles: stringArrayOr(result.changedFiles, fallback.changedFiles),
+    commandsRun: stringArrayOr(result.commandsRun, fallback.commandsRun),
+    risks: stringArrayOr(result.risks, fallback.risks),
+    completedAt: stringOr(result.completedAt, fallback.completedAt),
+  };
+}
+
+function formatPrBody({ issue, plan, runId, adapter, verified }) {
   return `## Summary
 
 - ${plan.prSummary || plan.summary}
@@ -993,10 +1263,14 @@ function formatPrBody({ issue, plan, runId }) {
 
 ## Verification
 
-- [ ] Automated checks:
+- [${verified ? "x" : " "}] Automated checks: work-runner verification${verified ? "" : " not requested"}
 - [ ] Manual verification:
 
 AI work manifest: .myagenttool/runs/${runId}/manifest.md
+Coding adapter: ${adapter?.name ?? "unknown"}
+Coding adapter result: .myagenttool/runs/${runId}/coding-adapter-result.json
+Coding adapter contract: .myagenttool/runs/${runId}/coding-adapter-contract.json
+Verification evidence: ${verified ? `.myagenttool/runs/${runId}/verification.md` : "not generated"}
 `;
 }
 
@@ -1107,6 +1381,14 @@ function targetToType(target) {
   if (normalized === "bug") return "bug";
   if (normalized === "risk") return "risk";
   return "task";
+}
+
+function stringOr(value, fallback) {
+  return typeof value === "string" && value.length > 0 ? value : fallback;
+}
+
+function stringArrayOr(value, fallback) {
+  return Array.isArray(value) && value.every((item) => typeof item === "string") ? value : fallback;
 }
 
 function buildBranchName(issue, title, kind) {
