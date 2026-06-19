@@ -18,7 +18,7 @@ Usage:
   node tools/ai/src/index.mjs branch-plan --issue NUMBER --title "..."
   node tools/ai/src/index.mjs code-plan|code-agent --issue NUMBER [--repo OWNER/REPO] --provider openai|command|mock [--out path] [--json]
   node tools/ai/src/index.mjs scope-check [--plan-file path] [--base REF] [--out path] [--json] [--allow-drift "reason"]
-  node tools/ai/src/index.mjs testing-plan --change docs|web|server|desktop|protocol|security|release|adapter [--risk low|medium|high|critical] [--out path] [--json]
+  node tools/ai/src/index.mjs testing-plan [--change docs|web|server|desktop|protocol|security|release|adapter] [--changes docs,security,release] [--risk low|medium|high|critical] [--out path] [--json]
   node tools/ai/src/index.mjs run-work|work-runner --issue NUMBER [--repo OWNER/REPO] --provider openai|command|mock [--apply] [--coding-adapter NAME] [--adapter-command-json JSON] [--verify] [--skip-verify] [--open-pr] [--allow-drift "reason"]
   node tools/ai/src/index.mjs review-pr|review-agent --pr NUMBER [--repo OWNER/REPO] --provider openai|command|mock [--out path] [--json] [--comment]
   node tools/ai/src/index.mjs work-manifest [--issue NUMBER] [--pr NUMBER] [--out path]
@@ -317,6 +317,27 @@ function check() {
   if (!testingPlan.requiredEvidence.some((item) => item.includes("Visual QA")) || !testingPlan.commands.includes("pnpm github:check:issues")) {
     fail("Testing skills plan sanity check failed.");
   }
+  const mixedTestingPlan = testingPlanFor({ changes: inferChangeTypes(["apps/server/src/index.mjs", "docs/vision/SECURITY.md", "tools/deploy/src/index.mjs"]), risk: "high" });
+  if (
+    !["server", "security", "release"].every((change) => mixedTestingPlan.changes.includes(change)) ||
+    !mixedTestingPlan.requiredEvidence.some((item) => item.includes("Security review")) ||
+    !mixedTestingPlan.requiredEvidence.some((item) => item.includes("Release, rollback")) ||
+    !mixedTestingPlan.requiredEvidence.some((item) => item.includes("Integration evidence"))
+  ) {
+    fail("Mixed Testing skills routing sanity check failed.");
+  }
+  const releaseDocsPlan = testingPlanFor({ changes: inferChangeTypes(["tools/release/src/index.mjs", "docs/engineering/RELEASE_PROCESS.md"]), risk: "medium" });
+  if (!["docs", "release"].every((change) => releaseDocsPlan.changes.includes(change))) {
+    fail("Release plus docs Testing skills routing sanity check failed.");
+  }
+  const protocolAdapterPlan = testingPlanFor({ changes: inferChangeTypes(["packages/protocol/src/invocation.ts", "packages/adapters/src/index.ts"]), risk: "medium" });
+  if (!["protocol", "adapter"].every((change) => protocolAdapterPlan.changes.includes(change))) {
+    fail("Protocol plus adapter Testing skills routing sanity check failed.");
+  }
+  const docsOnlyPlan = testingPlanFor({ changes: inferChangeTypes(["docs/engineering/TEST_STRATEGY.md"]), risk: "low" });
+  if (docsOnlyPlan.changes.length !== 1 || docsOnlyPlan.changes[0] !== "docs" || docsOnlyPlan.commands.includes("pnpm test")) {
+    fail("Docs-only Testing skills routing sanity check failed.");
+  }
 
   const docDrift = classifyScopeDrift({ changedFiles: ["docs/engineering/example.md"], undeclaredFiles: ["docs/engineering/example.md"], allowDrift: "" });
   const overriddenDrift = classifyScopeDrift({ changedFiles: ["apps/web/src/App.tsx"], undeclaredFiles: ["apps/web/src/App.tsx"], allowDrift: "linked follow-up approval" });
@@ -506,8 +527,9 @@ function scopeCheck(args) {
 
 function testingPlan(args) {
   const change = option(args, "--change") ?? "docs";
+  const changes = parseChangeList(option(args, "--changes"));
   const risk = option(args, "--risk") ?? "medium";
-  const plan = testingPlanFor({ change, risk });
+  const plan = testingPlanFor({ change, changes, risk });
   const content = args.includes("--json") ? `${JSON.stringify(plan, null, 2)}\n` : formatTestingPlan(plan);
   writeOrPrint(content, option(args, "--out"));
 }
@@ -531,7 +553,7 @@ async function runWork(args) {
   writeFileSync(resolve(runDir, "code-plan.json"), `${JSON.stringify(plan, null, 2)}\n`, "utf8");
   writeFileSync(contextFile, `${JSON.stringify(workContext({ issue, repo, branch, plan, runId, adapter }), null, 2)}\n`, "utf8");
   writeFileSync(resolve(runDir, "coding-adapter-contract.json"), `${JSON.stringify(codingAdapterContractJson(adapter), null, 2)}\n`, "utf8");
-  const testPlan = testingPlanFor({ change: inferChangeType(plan.filesToTouch), risk: inferRiskLevel(plan) });
+  const testPlan = testingPlanFor({ changes: inferChangeTypes(plan.filesToTouch), risk: inferRiskLevel(plan) });
   writeFileSync(resolve(runDir, "testing-plan.json"), `${JSON.stringify(testPlan, null, 2)}\n`, "utf8");
   writeFileSync(resolve(runDir, "testing-plan.md"), formatTestingPlan(testPlan), "utf8");
   writeFileSync(resolve(runDir, "manifest.md"), formatRunManifest({ issue, repo, plan, apply, adapter, verify, openPr, testPlan }), "utf8");
@@ -1436,7 +1458,7 @@ ${result.summary}
 function formatTestingPlan(plan) {
   return `# AI Testing Skills Plan
 
-Change type: ${plan.change}
+Matched change types: ${plan.changes?.join(", ") ?? plan.change}
 Risk: ${plan.risk}
 
 ## Required Evidence
@@ -1547,7 +1569,7 @@ ${formatCodePlan(plan)}
 
 ## Testing Skills Plan
 
-- Change type: ${testPlan?.change ?? "unknown"}
+- Matched change types: ${testPlan?.changes?.join(", ") ?? testPlan?.change ?? "unknown"}
 - Risk: ${testPlan?.risk ?? "unknown"}
 - Evidence file: testing-plan.md
 
@@ -1805,7 +1827,7 @@ function formatPrBody({ issue, plan, runId, adapter, verified, testPlan, scopeRe
 
 - [${verified ? "x" : " "}] Automated checks: work-runner verification${verified ? "" : " not requested"}
 - [${scopeResult?.allowed ? "x" : " "}] Scope drift check: ${scopeResult?.driftLevel ?? "not generated"}${scopeResult?.allowDrift ? ` (${scopeResult.allowDrift})` : ""}
-- [x] Testing skills plan: ${testPlan?.change ?? "unknown"} / ${testPlan?.risk ?? "unknown"}
+- [x] Testing skills plan: ${testPlan?.changes?.join(", ") ?? testPlan?.change ?? "unknown"} / ${testPlan?.risk ?? "unknown"}
 - [ ] Manual verification:
 
 AI work manifest: .myagenttool/runs/${runId}/manifest.md
@@ -1979,11 +2001,12 @@ function scopeDriftAction(driftLevel, allowDrift) {
   return "pass";
 }
 
-function testingPlanFor({ change, risk }) {
-  const normalizedChange = normalizeLabelValue(change);
+function testingPlanFor({ change, changes, risk }) {
+  const normalizedChanges = normalizeChangeTypes(changes ?? [change ?? "docs"]);
   const normalizedRisk = normalizeLabelValue(risk);
   const base = {
-    change: normalizedChange,
+    change: normalizedChanges.join("+"),
+    changes: normalizedChanges,
     risk: normalizedRisk,
     requiredEvidence: ["PR lists automated checks run.", "PR lists manual verification or states why it is not needed."],
     commands: ["pnpm docs:check", "pnpm repo:check", "pnpm typecheck", "pnpm test"],
@@ -1991,54 +2014,88 @@ function testingPlanFor({ change, risk }) {
     skillGuidance: ["Use Testing skills as guidance; generated tests remain repository-owned and reviewable."],
   };
 
-  if (normalizedChange === "docs") {
+  if (normalizedChanges.length === 1 && normalizedChanges.includes("docs")) {
     base.commands = ["pnpm docs:check", "pnpm repo:check"];
     base.requiredEvidence.push("Documentation links and source docs are checked.");
   }
-  if (normalizedChange === "web") {
+  if (normalizedChanges.includes("docs")) {
+    base.requiredEvidence.push("Documentation links and source docs are checked.");
+  }
+  if (normalizedChanges.includes("web")) {
     base.requiredEvidence.push("Visual QA evidence for desktop and mobile viewports.");
     base.manualEvidence.push("Screenshot or artifact paths for UI changes.");
     base.commands.push("pnpm smoke:local");
   }
-  if (normalizedChange === "server") {
+  if (normalizedChanges.includes("server")) {
     base.requiredEvidence.push("Integration evidence for API, queue, audit, or persistence behavior.");
   }
-  if (normalizedChange === "desktop") {
+  if (normalizedChanges.includes("desktop")) {
     base.requiredEvidence.push("Cross-platform process execution and cancellation evidence.");
     base.manualEvidence.push("Windows/macOS/Linux evidence or explicit gap.");
   }
-  if (normalizedChange === "protocol") {
+  if (normalizedChanges.includes("protocol")) {
     base.requiredEvidence.push("State-machine or schema compatibility evidence.");
   }
-  if (normalizedChange === "security") {
+  if (normalizedChanges.includes("security")) {
     base.requiredEvidence.push("Security review evidence for auth, credentials, data, and local execution.");
     base.skillGuidance.push("Use secure-app-builder style review before merge.");
   }
-  if (normalizedChange === "release") {
+  if (normalizedChanges.includes("release")) {
     base.requiredEvidence.push("Release, rollback, and deployment preflight evidence.");
     base.commands.push("pnpm release:check", "pnpm deploy:check");
   }
-  if (normalizedChange === "adapter") {
+  if (normalizedChanges.includes("adapter")) {
     base.requiredEvidence.push("Adapter contract evidence for success, failure, and cancellation paths.");
   }
   if (["high", "critical"].includes(normalizedRisk)) {
     base.requiredEvidence.push("Residual risks and missing test gaps are recorded.");
     base.commands.push("pnpm github:check:issues");
   }
-  return base;
+  return {
+    ...base,
+    requiredEvidence: uniqueStrings(base.requiredEvidence),
+    commands: uniqueStrings(base.commands),
+    manualEvidence: uniqueStrings(base.manualEvidence),
+    skillGuidance: uniqueStrings(base.skillGuidance),
+  };
 }
 
 function inferChangeType(files) {
-  const normalizedFiles = (files ?? []).map(normalizePath);
-  if (normalizedFiles.some((file) => file.startsWith("apps/web/"))) return "web";
-  if (normalizedFiles.some((file) => file.startsWith("apps/desktop") || file.includes("desktop"))) return "desktop";
-  if (normalizedFiles.some((file) => file.startsWith("apps/server/"))) return "server";
-  if (normalizedFiles.some((file) => file.startsWith("packages/protocol/") || file.includes("state-machine"))) return "protocol";
-  if (normalizedFiles.some((file) => file.includes("security") || file.includes("auth") || file.includes("credential"))) return "security";
-  if (normalizedFiles.some((file) => file.startsWith("tools/release/") || file.startsWith("tools/deploy/") || file.includes("release") || file.includes("deploy"))) return "release";
-  if (normalizedFiles.some((file) => file.includes("adapter") || file.includes("coding-wrapper"))) return "adapter";
-  if (normalizedFiles.length > 0 && normalizedFiles.every((file) => file.startsWith("docs/") || file.startsWith(".github/"))) return "docs";
-  return "docs";
+  return inferChangeTypes(files)[0] ?? "docs";
+}
+
+function inferChangeTypes(files) {
+  const normalizedFiles = (files ?? []).map((file) => normalizePath(file).toLowerCase());
+  const changes = [];
+  const add = (change) => {
+    if (!changes.includes(change)) changes.push(change);
+  };
+  if (normalizedFiles.some((file) => file.startsWith("apps/web/"))) add("web");
+  if (normalizedFiles.some((file) => file.startsWith("apps/desktop/") || file.includes("desktop") || file.includes("local-execution"))) add("desktop");
+  if (normalizedFiles.some((file) => file.startsWith("apps/server/"))) add("server");
+  if (normalizedFiles.some((file) => file.startsWith("packages/protocol/") || file.includes("state-machine") || file.includes("schema") || file.includes("protocol"))) add("protocol");
+  if (normalizedFiles.some((file) => /security|auth|credential|secret|privacy|data-governance|data-retention|billing|cost|quota/.test(file))) add("security");
+  if (normalizedFiles.some((file) => file.startsWith("tools/release/") || file.startsWith("tools/deploy/") || file.includes("release") || file.includes("deploy") || file.includes("rollback"))) add("release");
+  if (normalizedFiles.some((file) => file.startsWith("packages/adapters/") || file.includes("adapter") || file.includes("coding-wrapper"))) add("adapter");
+  if (normalizedFiles.length === 0 || normalizedFiles.some((file) => file.startsWith("docs/") || file.startsWith(".github/"))) add("docs");
+  return normalizeChangeTypes(changes);
+}
+
+function normalizeChangeTypes(changes) {
+  const order = ["docs", "web", "server", "desktop", "protocol", "security", "release", "adapter"];
+  const normalized = uniqueStrings((changes ?? []).map((change) => normalizeLabelValue(change)).filter(Boolean));
+  const known = order.filter((change) => normalized.includes(change));
+  const unknown = normalized.filter((change) => !order.includes(change));
+  return [...known, ...unknown].length > 0 ? [...known, ...unknown] : ["docs"];
+}
+
+function parseChangeList(value) {
+  if (!value) return undefined;
+  return value.split(/[,\s]+/).map((item) => item.trim()).filter(Boolean);
+}
+
+function uniqueStrings(items) {
+  return [...new Set(items.filter(Boolean))];
 }
 
 function inferRiskLevel(plan) {

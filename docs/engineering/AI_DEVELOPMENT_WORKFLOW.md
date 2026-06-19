@@ -154,7 +154,12 @@ Testing skills plan:
 
 ```text
 pnpm ai:testing-plan -- --change docs|web|server|desktop|protocol|security|release|adapter --risk low|medium|high|critical
+pnpm ai:testing-plan -- --changes "server,security,release" --risk high
 ```
+
+`ai:work-runner` infers all matching change routes from the planned files and
+merges their evidence requirements. Mixed changes such as server plus security
+or release plus docs must list every matched route in the generated evidence.
 
 At minimum:
 

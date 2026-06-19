@@ -131,12 +131,18 @@ Use:
 
 ```text
 pnpm ai:testing-plan -- --change docs|web|server|desktop|protocol|security|release|adapter --risk low|medium|high|critical
+pnpm ai:testing-plan -- --changes "server,security,release" --risk high
 ```
 
 The command produces required evidence, recommended commands, manual evidence,
 and skill guidance for the PR. It is deterministic repository policy. External
 Testing skills are reference material only; generated tests remain
 repository-owned, reviewable, and subject to normal checks.
+
+`ai:work-runner` infers every matching route from planned files and merges the
+requirements. For example, a server file plus security documentation must carry
+both server integration evidence and security review evidence; a release tool
+plus docs update must carry both release/deploy and documentation evidence.
 
 Change type mapping:
 
