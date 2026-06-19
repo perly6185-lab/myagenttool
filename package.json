@@ -18,6 +18,8 @@
     "ai:manifest": "node tools/ai/src/index.mjs work-manifest",
     "ai:pm": "node tools/ai/src/index.mjs pm-brief",
     "ai:code-plan": "node tools/ai/src/index.mjs code-plan",
+    "ai:scope-check": "node tools/ai/src/index.mjs scope-check",
+    "ai:testing-plan": "node tools/ai/src/index.mjs testing-plan",
     "ai:review": "node tools/ai/src/index.mjs review-pr",
     "ai:run-work": "node tools/ai/src/index.mjs run-work",
     "ai:work-runner": "node tools/ai/src/index.mjs run-work",

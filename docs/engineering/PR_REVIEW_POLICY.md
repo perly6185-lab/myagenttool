@@ -20,6 +20,9 @@ Before asking for human review, AI should check:
 
 - Does the PR satisfy the linked issue acceptance criteria?
 - Are tests present and relevant?
+- Does Testing skills evidence match the change type and risk?
+- Does scope drift evidence show the diff stayed inside the code plan, or is
+  an override justified?
 - Are failure paths handled?
 - Does the change alter local execution, permissions, cancellation, billing, or
   data retention?
@@ -47,6 +50,14 @@ Every reviewer should check:
 - Scope matches the issue.
 - Acceptance criteria are covered.
 - Tests or verification are credible.
+- Testing evidence is proportional to risk:
+  - Web changes include visual QA evidence.
+  - Desktop/local execution changes include cross-platform execution and
+    cancellation evidence or a recorded gap.
+  - Protocol changes include state-machine or schema compatibility evidence.
+  - Adapter changes include success, failure, cancellation, and redaction
+    evidence.
+  - Release changes include release, deploy preflight, and rollback evidence.
 - New risks are filed.
 - The implementation does not silently broaden M0.
 - Project fields and labels are accurate.
@@ -106,6 +117,8 @@ Do not merge when:
 
 - Acceptance criteria are not met.
 - Required tests are missing.
+- Testing skills evidence or scope drift evidence is missing for AI-generated
+  or agent-written work.
 - High-risk behavior lacks audit or rollback notes.
 - Billing or data handling is ambiguous.
 - The linked issue or source doc contradicts the implementation.
