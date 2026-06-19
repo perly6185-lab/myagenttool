@@ -21,14 +21,53 @@ Remaining manual setup:
 - Create or tune Project views in the GitHub web UI.
 - Move only the first 2-3 issues from `backlog` to `ready` after reviewing
   dependencies.
+- Choose the branch protection path: make the repository public, upgrade the
+  account/repository entitlement, use rulesets if available, or keep a documented
+  manual merge policy.
 
 It assumes the repository already contains:
 
 - `.github/ISSUE_TEMPLATE`
 - `.github/PULL_REQUEST_TEMPLATE.md`
+- `.github/workflows/ci.yml`
 - `.github/workflows/docs.yml`
+- `.github/workflows/governance.yml`
+- `docs/design`
 - `docs/engineering`
 - `docs/vision`
+
+## Current Automation
+
+The repository now has executable governance checks:
+
+```text
+pnpm docs:check
+pnpm repo:check
+pnpm typecheck
+pnpm test
+pnpm github:check
+pnpm github:check:issues
+pnpm github:check:pr
+pnpm github:check:branch
+```
+
+GitHub Actions:
+
+- `Docs`: checks markdown files and relative markdown links.
+- `CI`: installs dependencies, checks repository structure, checks docs,
+  typechecks, and runs tests including the local smoke test.
+- `Governance`: checks PR evidence and issue hygiene.
+
+`pnpm github:check:branch` probes branch protection. If GitHub reports that
+private-repository branch protection requires a different entitlement, track the
+limitation through the governance risk issue and keep CI as a manual merge gate
+until enforcement is available.
+
+PM and design skill adoption is documented in
+[PM_DESIGN_SKILLS.md](PM_DESIGN_SKILLS.md). The M0 design contract lives in
+[MYAGENTTOOL_DESIGN.md](../design/MYAGENTTOOL_DESIGN.md).
+Coding skill adoption is documented in
+[CODING_SKILLS_INTEGRATION.md](CODING_SKILLS_INTEGRATION.md).
 
 ## 1. Create Milestones
 

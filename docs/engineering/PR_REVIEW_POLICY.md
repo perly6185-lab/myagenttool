@@ -64,6 +64,21 @@ Use this for security, billing, desktop, and local execution changes:
 - What audit evidence is recorded?
 - What is the rollback path?
 
+## Product And Design Checklist
+
+Use this for Web Console, onboarding, task flow, and demo experience changes:
+
+- Is the first screen a usable task workspace rather than a landing page?
+- Can a non-professional user tell what will happen before running the task?
+- Are device, agent, safety, data, cost, cancellation, and audit visible in
+  plain language?
+- Are expert details available without dominating the primary flow?
+- Does the change follow
+  [MYAGENTTOOL_DESIGN.md](../design/MYAGENTTOOL_DESIGN.md)?
+- Was PM/design framing recorded through
+  [PM_DESIGN_SKILLS.md](PM_DESIGN_SKILLS.md) or an issue linked to it?
+- Is visual QA evidence attached when layout or copy changed?
+
 ## AI Review Output Format
 
 AI review should lead with findings.

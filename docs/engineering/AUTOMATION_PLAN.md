@@ -131,14 +131,38 @@ Release automation should:
 - Attach migration notes.
 - Attach rollback notes.
 
+## Implemented Scripts
+
+The first executable governance layer now lives in `tools/github`:
+
+```text
+pnpm github:check
+pnpm github:check:issues
+pnpm github:check:pr
+pnpm github:check:branch
+node tools/github/src/index.mjs sync-project-fields --owner perly6185-lab --project 1
+```
+
+Default behavior is read-only. `sync-project-fields` is dry-run by default and
+requires `--apply` before mutating Project fields.
+
+Current checks:
+
+- Local governance files and PR template sections exist.
+- Open issues have milestone plus type, status, area, risk, acceptance,
+  platform, and agent target labels.
+- Ready issues have acceptance criteria.
+- PRs link or close issues and include verification evidence.
+- Project fields can be compared against `## Project Fields` body metadata.
+- Branch protection availability can be probed, with entitlement failures
+  recorded as a governance risk.
+
 ## Suggested Scripts
 
 Future repository scripts:
 
 ```text
-tools/github/sync-project-fields.ps1
-tools/github/check-issue-hygiene.ps1
-tools/github/create-seed-issues.ps1
+tools/github/create-seed-issues.mjs
 tools/docs/check-markdown-links.ps1
 tools/release/generate-release-notes.ps1
 ```
@@ -151,6 +175,8 @@ tools/release/generate-release-notes.ps1
 - Issue hygiene report.
 - PR template enforcement.
 - Basic test runner after code scaffold exists.
+- PR governance check.
+- Project field drift dry-run check.
 
 ### M1
 

@@ -2,7 +2,7 @@
   "name": "@myagenttool/tools-github",
   "version": "0.0.0",
   "private": true,
-  "description": "GitHub automation tooling workspace placeholder.",
+  "description": "GitHub governance, issue hygiene, PR, and Project field tooling.",
   "type": "module",
   "scripts": {
     "dev": "node ./src/index.mjs",

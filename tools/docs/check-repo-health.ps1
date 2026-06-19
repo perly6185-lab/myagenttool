@@ -8,6 +8,7 @@ $required = @(
   "apps/web",
   "apps/server",
   "apps/desktop",
+  "docs/design",
   "packages/protocol",
   "packages/adapters",
   "packages/shared",

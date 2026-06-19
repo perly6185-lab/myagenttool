@@ -2,9 +2,8 @@
 
 This document defines the desired local development experience.
 
-The repository now contains the initial pnpm workspace scaffold. Application
-behavior is still placeholder-only until the M0 skeleton issues are implemented.
-This document sets the target local development experience and follows
+The repository now contains the initial pnpm workspace scaffold and a local M0
+demo loop. This document sets the local development experience and follows
 [ADR 0001](ADR_0001_LOCAL_DEV_STACK.md).
 
 ## Target Experience
@@ -19,9 +18,9 @@ A contributor should be able to:
 6. See logs, status, result, and audit output.
 7. Run tests.
 
-## Planned Commands
+## Commands
 
-Root commands should look like:
+Root commands:
 
 ```text
 pnpm install
@@ -29,18 +28,17 @@ pnpm dev
 pnpm test
 pnpm lint
 pnpm typecheck
-pnpm e2e
-```
-
-Current scaffold commands:
-
-```text
 pnpm repo:check
 pnpm docs:check
+pnpm github:check
+pnpm github:check:issues
+pnpm github:check:pr
+pnpm github:check:branch
+pnpm smoke:local
 ```
 
-The current `dev`, `test`, `lint`, and `typecheck` scripts are workspace
-placeholders until application packages are implemented.
+`pnpm dev` starts the local server, Desktop Bridge, and web console. `pnpm test`
+runs workspace checks plus the local invocation smoke test.
 
 If the project later changes stack, keep the same intent:
 
@@ -54,11 +52,18 @@ M0 local development should include:
 
 - Web Console.
 - API Server.
-- Database.
-- Queue or queue table.
+- In-memory demo queue.
 - Desktop Bridge.
 - Demo CLI agent.
 - Optional mock HTTP agent.
+
+Current local URLs:
+
+```text
+Web Console: http://127.0.0.1:3000
+API Server:  http://127.0.0.1:3001
+Health:      http://127.0.0.1:3001/health
+```
 
 ## Planned Workspace Shape
 
@@ -105,13 +110,16 @@ Never commit secrets.
 
 ## Demo Agent
 
-M0 should include a harmless demo CLI agent that:
+M0 includes a harmless demo CLI agent that:
 
 - Accepts a plain text task.
 - Emits progress lines.
 - Can sleep long enough to test cancellation.
 - Returns a structured result.
 - Does not access user files by default.
+
+The smoke test asserts the demo invocation succeeds, emits logs, returns a
+structured result, and does not claim to touch user files.
 
 ## Debugging
 

@@ -164,6 +164,20 @@ Review focus:
 - Cross-platform assumptions.
 - UX clarity for non-professional users.
 
+### 10A. PM And Design Review
+
+For product-facing UI changes, AI should also use
+[PM_DESIGN_SKILLS.md](PM_DESIGN_SKILLS.md) and
+[MYAGENTTOOL_DESIGN.md](../design/MYAGENTTOOL_DESIGN.md).
+
+Review focus:
+
+- Does the change prioritize non-professional users?
+- Is the first screen a usable task workspace?
+- Are safety, data, cost, cancellation, and audit visible in plain language?
+- Are technical identifiers and protocol terms kept out of the primary flow?
+- Is visual QA evidence attached when layout or copy changes?
+
 ### 11. Release
 
 AI may draft release notes from merged PRs.
@@ -209,3 +223,57 @@ For each non-trivial AI-assisted change, keep evidence in one or more of:
 - Audit or cost note.
 
 If evidence cannot be preserved, do not treat the work as complete.
+
+## Executable M0 Workflow
+
+For M0 repository work, AI should use this command sequence before asking for
+review:
+
+```text
+git status --short --branch
+pnpm docs:check
+pnpm repo:check
+pnpm github:check
+pnpm typecheck
+pnpm test
+pnpm github:check:pr
+```
+
+When GitHub access is available, AI should also run:
+
+```text
+pnpm github:check:issues
+node tools/github/src/index.mjs sync-project-fields --owner perly6185-lab --project 1
+pnpm github:check:branch
+```
+
+The Project field sync command is dry-run by default. Use `--apply` only when
+the user has approved Project mutation for that turn.
+
+## Merge Boundary
+
+AI may create commits, push branches, open PRs, update issues, and attach
+verification evidence when authorized. AI must not merge into `main`, publish a
+release, deploy production, or change billing/local execution permissions
+without explicit approval.
+
+If GitHub branch protection is unavailable because of repository entitlement,
+the manual merge rule is:
+
+- Merge only after `Docs`, `CI`, and `Governance` checks pass.
+- Confirm the PR links or closes issues.
+- Confirm residual risks are filed before merge.
+- Keep the entitlement limitation tracked as a risk until technical enforcement
+  is available.
+
+## Skill-Assisted Work
+
+Use local integration docs to choose external skill influence deliberately:
+
+- [PM_DESIGN_SKILLS.md](PM_DESIGN_SKILLS.md) for PM framing, open-design
+  workflow, and visual QA expectations.
+- [CODING_SKILLS_INTEGRATION.md](CODING_SKILLS_INTEGRATION.md) for coding, QA,
+  security, agent, and OSS maintenance skill guidance.
+
+External skill output is source material. Repository docs, tests, PR governance,
+and human approval remain the source of truth.
