@@ -119,7 +119,12 @@ An agent is an external managed capability.
   },
   "adapter": {
     "type": "cli",
-    "command": "codex"
+    "command": "codex",
+    "args": ["{{payloadJson}}"],
+    "workingDirectoryPolicy": "explicit",
+    "environmentPolicy": "inherit_safe",
+    "timeoutSeconds": 600,
+    "cancellation": "supported"
   },
   "lifecycle": {
     "state": "enabled",

@@ -4,6 +4,7 @@ import type {
   IntegrationArtifactId,
   IsoDateTime,
   JsonObject,
+  JsonValue,
   LifecycleOperationId,
   RiskLevel,
   UserId,
@@ -19,9 +20,33 @@ export type AgentLocation =
   | { type: "platform_agent" }
   | { type: "external"; reference: string };
 
+export type AgentCancellationSupport = "supported" | "unsupported" | "unknown";
+export type AgentEnvironmentPolicy = "inherit_safe" | "explicit_only" | "none";
+export type AgentWorkingDirectoryPolicy = "bridge_default" | "explicit" | "none";
+
 export type AgentAdapter =
-  | { type: "cli"; command: string; args?: string[] }
-  | { type: "http"; baseUrl: string; authMode?: "none" | "bearer" | "api_key" | "custom" }
+  | {
+      type: "cli";
+      command: string;
+      args?: string[];
+      workingDirectory?: string | null;
+      workingDirectoryPolicy?: AgentWorkingDirectoryPolicy;
+      environmentPolicy?: AgentEnvironmentPolicy;
+      env?: Record<string, string>;
+      timeoutSeconds?: number;
+      cancellation?: AgentCancellationSupport;
+    }
+  | {
+      type: "http";
+      baseUrl: string;
+      authMode?: "none" | "bearer" | "api_key" | "custom";
+      requestPath?: string;
+      method?: "POST";
+      payloadShape?: JsonObject;
+      timeoutSeconds?: number;
+      streaming?: boolean;
+      cancellation?: AgentCancellationSupport;
+    }
   | { type: "mcp"; serverRef: string }
   | { type: "a2a"; endpoint: string }
   | { type: "platform"; name?: string }
@@ -70,8 +95,21 @@ export interface Agent {
   economics: AgentEconomicsMetadata;
   capabilities: AgentCapability[];
   status: AgentStatus;
+  registrationNotes?: {
+    risk: string;
+    data: string;
+    cost: string;
+    cancellation: string;
+  };
   createdAt: IsoDateTime;
   updatedAt?: IsoDateTime;
+}
+
+export interface AgentInvocationResult {
+  summary: string;
+  output?: JsonValue;
+  touchedUserFiles?: boolean;
+  cost?: JsonObject;
 }
 
 export type AgentLifecycleOperationType =

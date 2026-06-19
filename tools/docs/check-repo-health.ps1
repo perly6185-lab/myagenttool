@@ -14,6 +14,8 @@ $required = @(
   "docs/engineering/ADR_0003_M0_DESKTOP_BRIDGE_RUNTIME.md",
   "docs/engineering/ADR_0004_M0_SERVER_STORAGE_QUEUE.md",
   "docs/engineering/ADR_0005_M0_WEB_CONSOLE_APP_SHELL.md",
+  "docs/engineering/M0_CORE_PROTOCOL_SERVICE.md",
+  "docs/engineering/M0_DESKTOP_AGENT_BRIDGE.md",
   "packages/protocol",
   "packages/adapters",
   "packages/shared",

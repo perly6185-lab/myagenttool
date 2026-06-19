@@ -23,6 +23,8 @@ export interface Device {
   status: DeviceStatus;
   unlinkState: DeviceUnlinkState;
   lastSeenAt: IsoDateTime | null;
+  registeredCapabilities?: string[];
+  credentialRevokedAt?: IsoDateTime | null;
   createdAt: IsoDateTime;
   updatedAt?: IsoDateTime;
 }

@@ -2,7 +2,7 @@ import type { Agent, AuditSummary, Device, Invocation, InvocationEvent, Span, Tr
 
 export type LocalDemoServerState = {
   device: Device;
-  agent: Agent;
+  agents: Agent[];
   invocations: Invocation[];
   events: InvocationEvent[];
   traces: Trace[];

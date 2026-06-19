@@ -19,40 +19,58 @@ const state = {
     status: "offline",
     unlinkState: "linked",
     lastSeenAt: null,
+    registeredCapabilities: [],
+    credentialRevokedAt: null,
     createdAt: now()
   },
-  agent: {
-    id: "agt_demo_cli",
-    name: "Demo CLI Agent",
-    description: "Safe local demo agent for M0 smoke tests.",
-    ownerUserId: "usr_local",
-    location: { type: "local_device", deviceId: "dev_local_001" },
-    adapter: { type: "cli", command: "demo-agent" },
-    lifecycle: {
-      state: "enabled",
-      installState: "installed",
-      version: "0.0.0",
-      managedBy: "bridge"
-    },
-    economics: {
-      model: "unknown",
-      pricingDimensions: [],
-      currency: "USD",
-      costOwner: "usr_local",
-      budgetPoolId: null,
-      unknownCostPolicy: "warn"
-    },
-    capabilities: [
-      {
-        name: "demo_task",
-        description: "Runs a harmless local demonstration task.",
-        riskLevel: "low",
-        riskTags: ["read_only"]
-      }
-    ],
-    status: "unavailable",
-    createdAt: now()
-  },
+  agents: [
+    {
+      id: "agt_demo_cli",
+      name: "Demo CLI Agent",
+      description: "Safe local demo agent for M0 smoke tests.",
+      ownerUserId: "usr_local",
+      location: { type: "local_device", deviceId: "dev_local_001" },
+      adapter: {
+        type: "cli",
+        command: "demo-agent",
+        args: ["{{payloadJson}}"],
+        workingDirectoryPolicy: "bridge_default",
+        environmentPolicy: "inherit_safe",
+        timeoutSeconds: 30,
+        cancellation: "supported"
+      },
+      lifecycle: {
+        state: "enabled",
+        installState: "installed",
+        version: "0.0.0",
+        managedBy: "bridge"
+      },
+      economics: {
+        model: "unknown",
+        pricingDimensions: [],
+        currency: "USD",
+        costOwner: "usr_local",
+        budgetPoolId: null,
+        unknownCostPolicy: "warn"
+      },
+      capabilities: [
+        {
+          name: "demo_task",
+          description: "Runs a harmless local demonstration task.",
+          riskLevel: "low",
+          riskTags: ["read_only"]
+        }
+      ],
+      status: "unavailable",
+      registrationNotes: {
+        risk: "Low risk demo command. It does not read or write user files.",
+        data: "Task text, logs, trace, and final result are stored in the local demo server.",
+        cost: "Cost is unknown and no billing is performed.",
+        cancellation: "The bridge forwards cancellation to the local demo process."
+      },
+      createdAt: now()
+    }
+  ],
   invocations: [],
   events: [],
   traces: [],
@@ -61,6 +79,7 @@ const state = {
 };
 
 let idCounter = 1;
+const directHttpRuns = new Map();
 
 if (process.argv.includes("--check")) {
   runProtocolSelfCheck();
@@ -98,10 +117,19 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === "POST" && url.pathname === "/api/bridge/register") {
       const body = await readJson(req);
+      if (state.device.unlinkState !== "linked") {
+        sendJson(res, 403, { error: "device_credentials_revoked" });
+        return;
+      }
       state.device.status = "online";
       state.device.lastSeenAt = now();
       state.device.bridgeVersion = String(body.bridgeVersion ?? "0.0.0");
-      state.agent.status = "available";
+      state.device.registeredCapabilities = Array.isArray(body.capabilities) ? body.capabilities.map(String) : [];
+      state.device.updatedAt = now();
+      for (const agent of state.agents.filter((item) => item.location.type === "local_device")) {
+        agent.status = "available";
+        agent.updatedAt = now();
+      }
       redeliverExpiredDispatches();
       appendEvent({
         invocationId: null,
@@ -109,12 +137,38 @@ const server = http.createServer(async (req, res) => {
         level: "info",
         message: "Desktop Bridge registered local demo device."
       });
-      sendJson(res, 200, { ok: true, device: state.device, agent: state.agent });
+      sendJson(res, 200, { ok: true, device: state.device, agents: state.agents });
+      return;
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/agents") {
+      const body = await readJson(req);
+      let agent;
+      try {
+        agent = registerAgent(body);
+      } catch (error) {
+        sendJson(res, 400, {
+          error: "invalid_agent_registration",
+          message: error instanceof Error ? error.message : String(error)
+        });
+        return;
+      }
+      sendJson(res, 201, { agent });
+      return;
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/device/unlink") {
+      unlinkDevice();
+      sendJson(res, 200, { device: state.device });
       return;
     }
 
     if (req.method === "GET" && url.pathname === "/api/bridge/next") {
       state.device.lastSeenAt = now();
+      if (state.device.unlinkState !== "linked") {
+        sendJson(res, 204, null);
+        return;
+      }
       redeliverExpiredDispatches();
       const invocation = nextDispatchableInvocation();
 
@@ -130,6 +184,7 @@ const server = http.createServer(async (req, res) => {
         protocolVersion,
         invocationId: invocation.id,
         agentId: invocation.agentId,
+        adapter: findAgent(invocation.agentId)?.adapter ?? null,
         input: invocation.input,
         options: invocation.options
       });
@@ -195,7 +250,29 @@ const server = http.createServer(async (req, res) => {
         sendJson(res, 400, { error: "task_required" });
         return;
       }
-      const invocation = createInvocation(task);
+      const agent = body.agentId ? findAgent(body.agentId) : defaultAgent();
+      if (!agent) {
+        sendJson(res, 404, { error: "agent_not_found" });
+        return;
+      }
+      if (agent.status === "disabled") {
+        sendJson(res, 409, { error: "agent_disabled" });
+        return;
+      }
+      if (agent.location.type === "local_device" && state.device.unlinkState !== "linked") {
+        sendJson(res, 409, { error: "device_unlinked" });
+        return;
+      }
+      const invocation = createInvocation(task, agent);
+      if (agent.adapter.type === "http" && agent.location.type === "remote_http") {
+        queueMicrotask(() => runHttpInvocation(invocation, agent).catch((error) => {
+          completeInvocation(invocation, {
+            status: "failed",
+            summary: `HTTP Agent failed: ${error instanceof Error ? error.message : String(error)}`,
+            result: null
+          });
+        }));
+      }
       sendJson(res, 201, { invocation });
       return;
     }
@@ -235,25 +312,159 @@ function nextId(prefix) {
   return id;
 }
 
-function createInvocation(task) {
+function registerAgent(body) {
+  const type = body.type ?? body.adapter?.type;
+  if (!["cli", "http"].includes(type)) {
+    throw new Error("M0 supports manual cli and http agent registration only.");
+  }
+
+  const agent = type === "cli" ? createCliAgent(body) : createHttpAgent(body);
+  const existingIndex = state.agents.findIndex((item) => item.id === agent.id);
+  if (existingIndex >= 0) {
+    state.agents[existingIndex] = { ...state.agents[existingIndex], ...agent, updatedAt: now() };
+  } else {
+    state.agents.push(agent);
+  }
+  return agent;
+}
+
+function createCliAgent(body) {
+  const id = sanitizeAgentId(body.id ?? nextId("agt_cli"));
+  const command = String(body.command ?? body.adapter?.command ?? "").trim();
+  if (!command) {
+    throw new Error("CLI agent command is required.");
+  }
+  const args = Array.isArray(body.args ?? body.adapter?.args) ? (body.args ?? body.adapter.args).map(String) : [];
+  return baseAgent({
+    id,
+    type: "cli",
+    name: body.name ?? "Manual CLI Agent",
+    description: body.description ?? "Manually registered CLI agent.",
+    location: { type: "local_device", deviceId: state.device.id },
+    adapter: {
+      type: "cli",
+      command,
+      args,
+      workingDirectory: body.workingDirectory ?? null,
+      workingDirectoryPolicy: body.workingDirectory ? "explicit" : "bridge_default",
+      environmentPolicy: body.env ? "explicit_only" : "inherit_safe",
+      env: normalizeEnv(body.env),
+      timeoutSeconds: Number(body.timeoutSeconds ?? 30),
+      cancellation: "supported"
+    },
+    capabilities: [
+      {
+        name: body.capabilityName ?? "manual_cli_task",
+        description: body.capabilityDescription ?? "Runs a manually registered local CLI command.",
+        riskLevel: body.riskLevel ?? "medium",
+        riskTags: ["read_local", "shell_exec"]
+      }
+    ],
+    status: state.device.status === "online" ? "available" : "unavailable",
+    registrationNotes: {
+      risk: "Runs a local command with structured argv. Review the command, arguments, working directory, and environment before invoking.",
+      data: "Task input and command output are streamed to the local demo server as invocation events.",
+      cost: "Cost is external or unknown unless the registered command reports it.",
+      cancellation: "The Desktop Bridge attempts to terminate the process tree when cancellation is requested."
+    }
+  });
+}
+
+function createHttpAgent(body) {
+  const id = sanitizeAgentId(body.id ?? nextId("agt_http"));
+  const baseUrl = String(body.baseUrl ?? body.adapter?.baseUrl ?? "").trim();
+  if (!baseUrl) {
+    throw new Error("HTTP agent baseUrl is required.");
+  }
+  const requestPath = String(body.requestPath ?? body.adapter?.requestPath ?? "/invoke");
+  return baseAgent({
+    id,
+    type: "http",
+    name: body.name ?? "Manual HTTP Agent",
+    description: body.description ?? "Manually registered HTTP agent.",
+    location: { type: "remote_http", baseUrl },
+    adapter: {
+      type: "http",
+      baseUrl,
+      authMode: body.authMode ?? body.adapter?.authMode ?? "none",
+      requestPath,
+      method: "POST",
+      payloadShape: body.payloadShape ?? { task: "string" },
+      timeoutSeconds: Number(body.timeoutSeconds ?? 30),
+      streaming: Boolean(body.streaming ?? false),
+      cancellation: body.cancellation ?? "supported"
+    },
+    capabilities: [
+      {
+        name: body.capabilityName ?? "manual_http_task",
+        description: body.capabilityDescription ?? "Runs a manually registered HTTP endpoint.",
+        riskLevel: body.riskLevel ?? "medium",
+        riskTags: ["network_access", "external_data_transfer"]
+      }
+    ],
+    status: "available",
+    registrationNotes: {
+      risk: "Sends invocation input to the configured HTTP endpoint.",
+      data: "Task input leaves the local demo server and endpoint response is stored as the result.",
+      cost: "Cost is external or unknown unless the endpoint reports it.",
+      cancellation: "The server aborts the HTTP request when supported; otherwise cancellation is recorded as not supported or unknown."
+    }
+  });
+}
+
+function baseAgent({ id, name, description, location, adapter, capabilities, status, registrationNotes }) {
+  const createdAt = now();
+  return {
+    id,
+    name: String(name),
+    description: String(description),
+    ownerUserId: "usr_local",
+    location,
+    adapter,
+    lifecycle: {
+      state: "enabled",
+      installState: "installed",
+      version: "0.0.0",
+      managedBy: adapter.type === "http" ? "external" : "bridge"
+    },
+    economics: {
+      model: "unknown",
+      pricingDimensions: [],
+      currency: "USD",
+      costOwner: "usr_local",
+      budgetPoolId: null,
+      unknownCostPolicy: "warn"
+    },
+    capabilities,
+    status,
+    registrationNotes,
+    createdAt,
+    updatedAt: createdAt
+  };
+}
+
+function createInvocation(task, agent = defaultAgent()) {
+  if (!agent) {
+    throw new Error("No agent is registered.");
+  }
   const id = nextId("inv_demo");
   const createdAt = now();
-  const trace = createTrace(id);
+  const trace = createTrace(id, agent);
   const invocation = {
     id,
     ideaSessionId: null,
-    agentId: state.agent.id,
+    agentId: agent.id,
     requestedBy: "usr_local",
-    status: "queued",
+    status: agent.adapter.type === "http" ? "running" : "queued",
     delivery: {
       deliveryId: nextId("del_demo"),
-      deviceId: state.device.id,
-      state: "queued",
+      deviceId: agent.location.type === "local_device" ? agent.location.deviceId : null,
+      state: agent.adapter.type === "http" ? "not_required" : "queued",
       idempotencyKey: `idem_${id}`,
       leaseExpiresAt: null,
-      dispatchAttempts: 0,
-      lastDispatchAt: null,
-      acknowledgedAt: null,
+      dispatchAttempts: agent.adapter.type === "http" ? 1 : 0,
+      lastDispatchAt: agent.adapter.type === "http" ? createdAt : null,
+      acknowledgedAt: agent.adapter.type === "http" ? createdAt : null,
       bridgeCursor: null,
       expiresAt: null
     },
@@ -286,7 +497,7 @@ function createInvocation(task) {
     invocationId: invocation.id,
     type: "invocation_authorized",
     level: "info",
-    message: "Demo invocation authorized for local demo agent."
+    message: `Demo invocation authorized for ${agent.name}.`
   });
   appendEvent({
     invocationId: invocation.id,
@@ -297,9 +508,9 @@ function createInvocation(task) {
   });
   appendEvent({
     invocationId: invocation.id,
-    type: "delivery_queued",
+    type: agent.adapter.type === "http" ? "invocation_started" : "delivery_queued",
     level: "info",
-    message: "Invocation queued for Desktop Bridge."
+    message: agent.adapter.type === "http" ? "HTTP Agent invocation started." : "Invocation queued for Desktop Bridge."
   });
   return invocation;
 }
@@ -358,7 +569,14 @@ function completeInvocation(invocation, body) {
   if (isTerminal(invocation.status)) {
     return;
   }
-  const terminalStatus = body.status === "cancelled" ? "cancelled" : body.status === "failed" ? "failed" : "succeeded";
+  const terminalStatus =
+    body.status === "cancelled"
+      ? "cancelled"
+      : body.status === "timed_out"
+        ? "timed_out"
+        : body.status === "failed"
+          ? "failed"
+          : "succeeded";
   invocation.status = terminalStatus;
   invocation.result = body.result ?? null;
   invocation.completedAt = now();
@@ -375,12 +593,93 @@ function completeInvocation(invocation, body) {
         ? "invocation_succeeded"
         : terminalStatus === "cancelled"
           ? "cancel_applied"
-          : "invocation_failed",
+          : terminalStatus === "timed_out"
+            ? "invocation_timed_out"
+            : "invocation_failed",
     level: terminalStatus === "succeeded" ? "info" : "warn",
     message: body.summary ?? `Invocation ${terminalStatus}.`,
     data: body.result ?? null
   });
   state.auditSummaries.push(createAuditSummary(invocation, body.summary ?? null));
+}
+
+async function runHttpInvocation(invocation, agent) {
+  const controller = new AbortController();
+  let timedOut = false;
+  const timeout = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, Number(agent.adapter.timeoutSeconds ?? invocation.options.timeoutSeconds ?? 30) * 1000);
+  directHttpRuns.set(invocation.id, controller);
+  appendEvent({
+    invocationId: invocation.id,
+    type: "log",
+    level: "info",
+    message: `HTTP Agent request started for ${agent.name}.`
+  });
+
+  try {
+    const url = new URL(agent.adapter.requestPath ?? "/invoke", agent.adapter.baseUrl);
+    const response = await fetch(url, {
+      method: "POST",
+      signal: controller.signal,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        invocationId: invocation.id,
+        task: invocation.input.task,
+        input: invocation.input,
+        options: invocation.options
+      })
+    });
+
+    const text = await response.text();
+    let payload = null;
+    try {
+      payload = text ? JSON.parse(text) : null;
+    } catch {
+      payload = { output: text };
+    }
+
+    if (!response.ok) {
+      completeInvocation(invocation, {
+        status: "failed",
+        summary: payload?.summary ?? `HTTP Agent failed with status ${response.status}.`,
+        result: payload
+      });
+      return;
+    }
+
+    completeInvocation(invocation, {
+      status: "succeeded",
+      summary: payload?.summary ?? "HTTP Agent completed.",
+      result: payload
+    });
+  } catch (error) {
+    if (timedOut) {
+      completeInvocation(invocation, {
+        status: "timed_out",
+        summary: "HTTP Agent request timed out.",
+        result: null
+      });
+      return;
+    }
+    if (controller.signal.aborted) {
+      completeInvocation(invocation, {
+        status: "cancelled",
+        summary: "HTTP Agent request was cancelled.",
+        result: null
+      });
+      return;
+    }
+    completeInvocation(invocation, {
+      status: "failed",
+      summary: `HTTP Agent request failed: ${error instanceof Error ? error.message : String(error)}`,
+      result: null
+    });
+  } finally {
+    clearTimeout(timeout);
+    directHttpRuns.delete(invocation.id);
+  }
 }
 
 function redeliverExpiredDispatches() {
@@ -409,6 +708,7 @@ function cancelInvocation(invocation) {
   if (isTerminal(invocation.status)) {
     return;
   }
+  const agent = findAgent(invocation.agentId);
   invocation.cancellation.requestedBy = "usr_local";
   invocation.cancellation.requestedAt = now();
   invocation.cancellation.reason = "Requested from Web Console.";
@@ -442,6 +742,30 @@ function cancelInvocation(invocation) {
     level: "info",
     message: "Running invocation cancellation requested."
   });
+
+  if (agent?.adapter.type === "http") {
+    const controller = directHttpRuns.get(invocation.id);
+    if (controller) {
+      appendEvent({
+        invocationId: invocation.id,
+        type: "cancel_dispatched",
+        level: "info",
+        message: "Server aborted the HTTP Agent request."
+      });
+      controller.abort();
+      return;
+    }
+    if (agent.adapter.cancellation === "unsupported") {
+      invocation.cancellation.state = "not_supported";
+      appendEvent({
+        invocationId: invocation.id,
+        type: "cancel_failed",
+        level: "warn",
+        message: "HTTP Agent cancellation is not supported."
+      });
+      state.auditSummaries.push(createAuditSummary(invocation, "HTTP cancellation is not supported."));
+    }
+  }
 }
 
 function createAuditSummary(invocation, summary) {
@@ -463,7 +787,7 @@ function createAuditSummary(invocation, summary) {
   };
 }
 
-function createTrace(invocationId) {
+function createTrace(invocationId, agent = defaultAgent()) {
   const traceId = nextId("trc_demo");
   const spanId = nextId("spn_demo");
   const createdAt = now();
@@ -484,9 +808,10 @@ function createTrace(invocationId) {
     endedAt: null,
     attributes: {
       deviceId: state.device.id,
-      agentId: state.agent.id,
-      transport: "polling-demo-websocket-baseline",
-      queue: "server-owned"
+      agentId: agent?.id ?? "unknown",
+      adapterType: agent?.adapter.type ?? "unknown",
+      transport: agent?.adapter.type === "http" ? "direct-http" : "polling-demo-websocket-baseline",
+      queue: agent?.adapter.type === "http" ? "not-required" : "server-owned"
     }
   };
   state.traces.unshift(trace);
@@ -524,12 +849,63 @@ function findInvocation(id) {
   return state.invocations.find((item) => item.id === id);
 }
 
+function defaultAgent() {
+  return state.agents.find((item) => item.id === "agt_demo_cli") ?? state.agents[0] ?? null;
+}
+
+function findAgent(id) {
+  return state.agents.find((item) => item.id === id);
+}
+
+function normalizeEnv(env) {
+  if (!env || typeof env !== "object" || Array.isArray(env)) {
+    return {};
+  }
+  return Object.fromEntries(Object.entries(env).map(([key, value]) => [String(key), String(value)]));
+}
+
+function sanitizeAgentId(id) {
+  const raw = String(id).trim();
+  const withPrefix = raw.startsWith("agt_") ? raw : `agt_${raw}`;
+  return withPrefix.replace(/[^a-zA-Z0-9_]/g, "_");
+}
+
+function unlinkDevice() {
+  state.device.status = "offline";
+  state.device.unlinkState = "unlinked";
+  state.device.credentialRevokedAt = now();
+  state.device.updatedAt = now();
+  for (const agent of state.agents.filter((item) => item.location.type === "local_device")) {
+    agent.status = "unavailable";
+    agent.updatedAt = now();
+  }
+  for (const invocation of state.invocations.filter((item) => item.status === "queued")) {
+    invocation.status = "cancelled";
+    invocation.cancellation.state = "queued_cancelled";
+    invocation.cancellation.reason = "Device unlinked before dispatch.";
+    invocation.updatedAt = now();
+    appendEvent({
+      invocationId: invocation.id,
+      type: "device_queue_cancelled",
+      level: "warn",
+      message: "Queued invocation cancelled because the device was unlinked."
+    });
+  }
+  appendEvent({
+    invocationId: null,
+    type: "device_unlinked",
+    level: "info",
+    message: "Desktop Bridge device credentials were revoked for unlink."
+  });
+}
+
 function publicState() {
   return {
     namespace,
     protocolVersion,
     device: state.device,
-    agent: state.agent,
+    agent: defaultAgent(),
+    agents: state.agents,
     invocations: state.invocations,
     events: state.events,
     traces: state.traces,
@@ -540,9 +916,33 @@ function publicState() {
 
 function runProtocolSelfCheck() {
   resetDemoStateForCheck();
-  const invocation = createInvocation("self-check invocation");
+  const cliAgent = registerAgent({
+    id: "agt_self_cli",
+    type: "cli",
+    name: "Self-check CLI",
+    command: "demo-agent",
+    args: ["{{payloadJson}}"],
+    timeoutSeconds: 10
+  });
+  assert(cliAgent.adapter.type === "cli", "CLI agent should register");
+  assert(cliAgent.adapter.args[0] === "{{payloadJson}}", "CLI agent should keep structured argv template");
+
+  const httpAgent = registerAgent({
+    id: "agt_self_http",
+    type: "http",
+    name: "Self-check HTTP",
+    baseUrl: "http://127.0.0.1:1",
+    requestPath: "/invoke",
+    timeoutSeconds: 10,
+    cancellation: "supported"
+  });
+  assert(httpAgent.adapter.type === "http", "HTTP agent should register");
+  assert(httpAgent.adapter.baseUrl === "http://127.0.0.1:1", "HTTP agent should keep base URL");
+
+  const invocation = createInvocation("self-check invocation", cliAgent);
   assert(invocation.status === "queued", "created invocation should be queued");
   assert(invocation.delivery.state === "queued", "created delivery should be queued");
+  assert(invocation.agentId === cliAgent.id, "created invocation should reference selected CLI agent");
   assert(state.traces.length === 1 && state.spans.length === 1, "trace and root span should be created");
 
   markDispatched(invocation);
@@ -579,9 +979,24 @@ function runProtocolSelfCheck() {
   cancelInvocation(queuedCancel);
   assert(queuedCancel.status === "cancelled", "queued cancellation should cancel invocation");
   assert(queuedCancel.cancellation.state === "queued_cancelled", "queued cancellation state should be queued_cancelled");
+
+  const unlinkQueued = createInvocation("unlink cancellation", cliAgent);
+  unlinkDevice();
+  assert(state.device.unlinkState === "unlinked", "unlink should mark device unlinked");
+  assert(Boolean(state.device.credentialRevokedAt), "unlink should revoke device credentials");
+  assert(unlinkQueued.status === "cancelled", "unlink should cancel queued local invocations");
 }
 
 function resetDemoStateForCheck() {
+  state.device.status = "offline";
+  state.device.unlinkState = "linked";
+  state.device.credentialRevokedAt = null;
+  state.agents = state.agents.filter((agent) => agent.id === "agt_demo_cli");
+  const demoAgent = defaultAgent();
+  if (demoAgent) {
+    demoAgent.status = "unavailable";
+    demoAgent.updatedAt = now();
+  }
   state.invocations = [];
   state.events = [];
   state.traces = [];
