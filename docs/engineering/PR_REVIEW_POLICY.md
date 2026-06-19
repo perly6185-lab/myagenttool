@@ -142,3 +142,15 @@ Do not merge when:
 - High-risk behavior lacks audit or rollback notes.
 - Billing or data handling is ambiguous.
 - The linked issue or source doc contradicts the implementation.
+
+`pnpm github:check:pr` runs PR risk gates in advisory mode by default. For
+high-risk branches or CI jobs that should block on missing evidence, run:
+
+```text
+pnpm github:check:pr -- --fail-on-risk-warnings
+```
+
+The same fail mode can be enabled with `MYAGENTTOOL_PR_RISK_GATE_FAIL=true`.
+Evidence must name the relevant route and artifact or review result; generic
+words such as `artifact`, `data`, or `release` are not enough for high-risk
+visual, security/data/billing, or release/deploy routes.

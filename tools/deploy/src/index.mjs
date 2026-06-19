@@ -109,6 +109,17 @@ function check() {
     }
   }
 
+  const productionContext = { target: "web", environment: "production", version: "", firstM0Target: false };
+  const productionFailures = deployReadinessFailures(productionContext, { configured: false, builtin: false });
+  if (!productionFailures.some((failure) => failure.includes("production requires --version")) || !productionFailures.some((failure) => failure.includes("MYAGENTTOOL_DEPLOY_APPROVED"))) {
+    fail("Deploy production readiness sanity check failed.");
+  }
+  const previewContext = { target: "docs", environment: "preview", version: "", firstM0Target: true };
+  const previewFailures = deployReadinessFailures(previewContext, { configured: false, builtin: true });
+  if (previewFailures.length > 0) {
+    fail("Deploy preview readiness sanity check failed.");
+  }
+
   console.log("[tools-deploy:check] deploy pipeline check OK");
 }
 
@@ -173,23 +184,7 @@ function preflight(args) {
   const context = deployContext(args);
   const adapter = deployAdapter(context);
   const evidence = createEvidence(context, "preflight", option(args, "--out-dir"));
-  const failures = [];
-
-  if (context.environment === "production" && !context.version) {
-    failures.push("production requires --version.");
-  }
-
-  if ((context.environment === "staging" || context.environment === "production") && !context.version) {
-    failures.push(`${context.environment} requires --version so rollback evidence is traceable.`);
-  }
-
-  if (context.environment === "production" && process.env.MYAGENTTOOL_DEPLOY_APPROVED !== "true") {
-    failures.push("production requires MYAGENTTOOL_DEPLOY_APPROVED=true after human approval.");
-  }
-
-  if (context.target === "desktop" && context.environment === "production") {
-    failures.push("desktop production distribution requires signing and installer evidence before publish.");
-  }
+  const failures = deployReadinessFailures(context, adapter);
 
   writeEvidence(evidence, {
     context,
@@ -214,24 +209,28 @@ function publish(args) {
   writeFileSync(evidence.contextFile, `${JSON.stringify(context, null, 2)}\n`, "utf8");
 
   if (!apply) {
+    const failures = deployReadinessFailures(context, adapter);
+    const readinessStatus = failures.length > 0 ? "would-fail-preflight" : "ready";
     writeEvidence(evidence, {
       context,
       adapter: redactAdapter(adapter),
       status: "dry-run",
+      readinessStatus,
+      failures,
       policy: releaseEvidencePolicy(context),
     });
-    writeFileSync(evidence.mdFile, dryRunReport(context, adapter), "utf8");
+    writeFileSync(evidence.mdFile, dryRunReport(context, adapter, failures), "utf8");
     console.log(`Deploy dry-run written to ${relative(evidence.mdFile)}.`);
+    if (failures.length > 0) {
+      console.log(`Dry-run readiness: ${readinessStatus}. See evidence for ${failures.length} preflight issue(s).`);
+    }
     console.log("Re-run with --apply after human approval to execute the configured command.");
     return;
   }
 
-  if (context.environment === "production" && process.env.MYAGENTTOOL_DEPLOY_APPROVED !== "true") {
-    fail("Production deploy requires MYAGENTTOOL_DEPLOY_APPROVED=true after human approval.");
-  }
-
-  if (!adapter.configured && !adapter.builtin) {
-    fail(`No deploy adapter configured for ${context.target}/${context.environment}. Set ${deployCommandEnvNames(context).join(", ")}.`);
+  const readinessFailures = deployReadinessFailures(context, adapter);
+  if (readinessFailures.length > 0) {
+    fail(`Deploy publish failed readiness checks:\n${readinessFailures.map((failure) => `  - ${failure}`).join("\n")}`);
   }
 
   const result = executeDeployAdapter({ context, adapter, evidence });
@@ -305,6 +304,32 @@ function deployAdapter(context) {
     configured: false,
     builtin: false,
   };
+}
+
+function deployReadinessFailures(context, adapter) {
+  const failures = [];
+
+  if (context.environment === "production" && !context.version) {
+    failures.push("production requires --version.");
+  }
+
+  if ((context.environment === "staging" || context.environment === "production") && !context.version) {
+    failures.push(`${context.environment} requires --version so rollback evidence is traceable.`);
+  }
+
+  if (context.environment === "production" && process.env.MYAGENTTOOL_DEPLOY_APPROVED !== "true") {
+    failures.push("production requires MYAGENTTOOL_DEPLOY_APPROVED=true after human approval.");
+  }
+
+  if (context.target === "desktop" && context.environment === "production") {
+    failures.push("desktop production distribution requires signing and installer evidence before publish.");
+  }
+
+  if (!adapter.configured && !adapter.builtin) {
+    failures.push(`No deploy adapter configured for ${context.target}/${context.environment}. Set ${deployCommandEnvNames(context).join(", ")}.`);
+  }
+
+  return failures;
 }
 
 function deployCommandEnvNames(context) {
@@ -449,7 +474,8 @@ function rollbackAction(target) {
   return TARGETS[target]?.rollback ?? "Restore the previous verified artifact.";
 }
 
-function dryRunReport(context, adapter) {
+function dryRunReport(context, adapter, failures = []) {
+  const readinessStatus = failures.length > 0 ? "would-fail-preflight" : "ready";
   return `# Deploy Dry Run
 
 Created: ${new Date().toISOString()}
@@ -462,6 +488,11 @@ Adapter source: ${adapter.source}
 Configured: ${adapter.configured ? "yes" : "no"}
 Built in: ${adapter.builtin ? "yes" : "no"}
 Rollback: ${rollbackAction(context.target)}
+Readiness: ${readinessStatus}
+
+## Preflight Readiness
+
+${failures.length > 0 ? failures.map((failure) => `- ${failure}`).join("\n") : "- Ready for publish readiness checks."}
 
 ## Environment Responsibilities
 

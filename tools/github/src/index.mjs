@@ -43,7 +43,7 @@ Usage:
   node tools/github/src/index.mjs --check
   node tools/github/src/index.mjs check-local
   node tools/github/src/index.mjs check-issues --repo OWNER/REPO
-  node tools/github/src/index.mjs check-pr --repo OWNER/REPO --pr NUMBER
+  node tools/github/src/index.mjs check-pr --repo OWNER/REPO --pr NUMBER [--fail-on-risk-warnings]
   node tools/github/src/index.mjs check-branch-protection --repo OWNER/REPO --branch main
   node tools/github/src/index.mjs sync-project-fields --owner OWNER --project 1 [--apply]
 
@@ -133,18 +133,38 @@ function checkLocal() {
     );
   }
 
-  const visualWarnings = reviewRiskWarnings(["apps/web/src/App.tsx"], "## Verification\n- pnpm test\n", 0);
-  if (!visualWarnings.some((warning) => warning.includes("visual QA"))) {
+  const visualResult = reviewRiskGates(["apps/web/src/App.tsx"], "## Verification\n- pnpm test\n", 0);
+  if (!visualResult.warnings.some((warning) => warning.includes("visual QA"))) {
     failReport("Pull request risk routing check failed", ["web changes should warn when visual QA evidence is missing"]);
   }
 
-  const coveredVisualWarnings = reviewRiskWarnings(
+  const coveredVisualResult = reviewRiskGates(
     ["apps/web/src/App.tsx"],
     "## Verification\n- pnpm test\n## Risk Gates\n- Visual QA screenshots captured for desktop and mobile viewports.\n",
     0,
   );
-  if (coveredVisualWarnings.some((warning) => warning.includes("visual QA"))) {
+  if (coveredVisualResult.warnings.some((warning) => warning.includes("visual QA"))) {
     failReport("Pull request risk routing check failed", ["web visual QA evidence should satisfy the route"]);
+  }
+
+  const weakSecurityResult = reviewRiskGates(
+    ["docs/vision/DATA_GOVERNANCE.md"],
+    "## Verification\n- pnpm test\n## Risk Gates\n- data\n",
+    0,
+    { failOnRiskWarnings: true },
+  );
+  if (!weakSecurityResult.failures.some((failure) => failure.includes("security/data/billing"))) {
+    failReport("Pull request risk routing check failed", ["generic data text should not satisfy high-risk evidence"]);
+  }
+
+  const coveredSecurityResult = reviewRiskGates(
+    ["docs/vision/DATA_GOVERNANCE.md"],
+    "## Verification\n- pnpm test\n## Risk Gates\n- Security/data review completed: privacy retention impact assessed; audit evidence linked.\n",
+    0,
+    { failOnRiskWarnings: true },
+  );
+  if (coveredSecurityResult.failures.length > 0) {
+    failReport("Pull request risk routing check failed", ["specific security/data evidence should satisfy the route"]);
   }
 
   console.log("[tools-github:check] GitHub governance local check OK");
@@ -228,7 +248,9 @@ function checkPullRequest(args) {
   }
 
   const changedFiles = pr.files.map(prFilePath).filter(Boolean);
-  warnings.push(...reviewRiskWarnings(changedFiles, body, pr.number));
+  const riskGateResult = reviewRiskGates(changedFiles, body, pr.number, { failOnRiskWarnings: args.includes("--fail-on-risk-warnings") || process.env.MYAGENTTOOL_PR_RISK_GATE_FAIL === "true" });
+  warnings.push(...riskGateResult.warnings);
+  failures.push(...riskGateResult.failures);
 
   if (pr.commits.length === 0) {
     failures.push(`PR #${pr.number} has no commits`);
@@ -476,35 +498,44 @@ function hasAcceptanceMention(body) {
 }
 
 function reviewRiskWarnings(files, body, prNumber) {
+  return reviewRiskGates(files, body, prNumber).warnings;
+}
+
+function reviewRiskGates(files, body, prNumber, options = {}) {
   const normalizedFiles = files.map(normalizePath);
   const warnings = [];
+  const failures = [];
   const prefix = prNumber ? `PR #${prNumber}` : "PR";
+  const missing = (message) => {
+    if (options.failOnRiskWarnings) failures.push(message);
+    else warnings.push(message);
+  };
 
   if (normalizedFiles.some(isWebFile) && !hasVisualEvidence(body)) {
-    warnings.push(`${prefix} changes web UI files but does not mention visual QA screenshot evidence`);
+    missing(`${prefix} changes web UI files but does not mention visual QA screenshot evidence`);
   }
 
   if (normalizedFiles.some(isDesktopOrLocalExecutionFile) && !hasDesktopEvidence(body)) {
-    warnings.push(`${prefix} changes desktop or local execution files but does not mention cross-platform execution/cancellation evidence`);
+    missing(`${prefix} changes desktop or local execution files but does not mention cross-platform execution/cancellation evidence`);
   }
 
   if (normalizedFiles.some(isProtocolFile) && !hasProtocolEvidence(body)) {
-    warnings.push(`${prefix} changes protocol/state-machine files but does not mention state-machine or schema compatibility evidence`);
+    missing(`${prefix} changes protocol/state-machine files but does not mention state-machine or schema compatibility evidence`);
   }
 
   if (normalizedFiles.some(isAdapterFile) && !hasAdapterEvidence(body)) {
-    warnings.push(`${prefix} changes adapter files but does not mention success, failure, cancellation, or redaction evidence`);
+    missing(`${prefix} changes adapter files but does not mention success, failure, cancellation, or redaction evidence`);
   }
 
   if (normalizedFiles.some(isSecurityDataBillingFile) && !hasSecurityDataBillingEvidence(body)) {
-    warnings.push(`${prefix} changes security/data/billing files but does not mention security, data, billing, credential, or audit evidence`);
+    missing(`${prefix} changes security/data/billing files but does not mention security/data/privacy, billing/cost, credential, audit, or retention evidence`);
   }
 
   if (normalizedFiles.some(isReleaseFile) && !hasReleaseEvidence(body)) {
-    warnings.push(`${prefix} changes release/deploy files but does not mention release, rollback, deploy preflight, or human approval evidence`);
+    missing(`${prefix} changes release/deploy files but does not mention release, rollback, deploy preflight, or human approval evidence`);
   }
 
-  return warnings;
+  return { warnings, failures };
 }
 
 function prFilePath(file) {
@@ -528,7 +559,7 @@ function isAdapterFile(file) {
 }
 
 function isSecurityDataBillingFile(file) {
-  return /security|auth|credential|secret|billing|cost|quota|settlement|chargeback|audit|data-retention|privacy/i.test(file);
+  return /security|auth|credential|secret|billing|cost|quota|settlement|chargeback|audit|data[-_]governance|data[-_]retention|privacy/i.test(file);
 }
 
 function isReleaseFile(file) {
@@ -536,7 +567,7 @@ function isReleaseFile(file) {
 }
 
 function hasVisualEvidence(body) {
-  return /visual qa|screenshot|desktop viewport|mobile viewport|artifact/i.test(body);
+  return /visual qa.*(screenshot|desktop|mobile|viewport)|screenshot.*(desktop|mobile|viewport)|desktop viewport.*mobile viewport/i.test(body);
 }
 
 function hasDesktopEvidence(body) {
@@ -552,11 +583,11 @@ function hasAdapterEvidence(body) {
 }
 
 function hasSecurityDataBillingEvidence(body) {
-  return /security|credential|secret|billing|cost|quota|data|privacy|audit|retention/i.test(body);
+  return /security\/data review|security review|privacy.*(retention|impact|review)|data.*(retention|privacy|audit|impact)|credential.*(redaction|rotation|review)|billing.*(cost|quota|review)|cost.*(quota|billing|impact)|audit evidence/i.test(body);
 }
 
 function hasReleaseEvidence(body) {
-  return /release|rollback|deploy preflight|human approval|environment approval|production gate/i.test(body);
+  return /release.*(rollback|notes|evidence)|rollback.*(plan|notes|evidence)|deploy preflight|deployment preflight|human approval.*(release|deploy|production)|environment approval|production gate/i.test(body);
 }
 
 function normalizePath(path) {

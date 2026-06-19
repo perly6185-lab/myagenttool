@@ -79,6 +79,11 @@ pnpm deploy:publish -- --target web --environment staging --apply
   with a JSON argv array.
 - Passing preflight checks.
 
+Dry-run publish also records preflight readiness. It does not execute an
+adapter, but the generated evidence reports `readinessStatus: ready` or
+`readinessStatus: would-fail-preflight` with the same approval, version, and
+adapter configuration issues that would block apply mode.
+
 Command adapters are configured by the most specific matching environment
 variable:
 
@@ -142,7 +147,9 @@ evidence artifacts for preview, staging, and production.
 
 Deploy evidence JSON includes `policy.versionPolicy`,
 `policy.deploySecretNames`, `policy.rollback`, `policy.humanApprovalRequired`,
-and the issue #32 entitlement limitation note.
+and the issue #32 entitlement limitation note. Dry-run publish evidence also
+includes `readinessStatus` and any preflight readiness failures so local
+operators do not mistake a dry-run artifact for production readiness.
 
 ## Rollback
 
