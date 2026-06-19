@@ -161,12 +161,16 @@ Implemented first slice:
 - `pnpm ai:review -- --pr 123 --provider openai|command|mock` generates a
   findings-first PR review draft.
 - The AI Review workflow can comment on PRs.
+- PR governance now warns when changed files imply missing visual QA,
+  desktop/local execution, protocol, adapter, security/data/billing, or
+  release/deploy evidence.
 
 Missing:
 
-- Security review checklists for local execution and billing changes.
 - Visual QA automation for web UI screenshots.
 - Cross-platform desktop runner checks on Windows, macOS, and Linux.
+- Technical enforcement that fails PRs for every missing risk-specific evidence
+  route.
 
 Needed:
 

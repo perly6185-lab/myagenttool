@@ -566,6 +566,8 @@ async function reviewPullRequest(args) {
       "Use a findings-first code review style.",
       "Prioritize correctness, security, local execution safety, billing/cost impact, data governance, and missing tests.",
       "Do not approve if verification evidence is missing for behavior-changing work.",
+      "Always include riskGates for security, data, billing/cost, local execution, release/deploy, web visual QA, and desktop cross-platform execution/cancellation when they apply.",
+      "When evidence is missing, add a verificationGaps item instead of assuming the check passed.",
       "Return only JSON that matches the schema.",
     ].join("\n"),
     userPrompt: [
@@ -930,8 +932,15 @@ function mockStructuredOutput({ agentName, prompt, issue, title }) {
     return {
       summary: "Mock review found no blocking correctness issue in the provided context.",
       findings: [],
-      verificationGaps: ["Run the full repository checks and attach output before merge."],
-      riskGates: ["Human approval is still required for merge, release, billing, local execution, and data retention changes."],
+      verificationGaps: [
+        "Run the full repository checks and attach output before merge.",
+        "Attach visual QA, desktop cancellation, security/data/billing, or release evidence when matching files change.",
+      ],
+      riskGates: [
+        "Security, data, billing/cost, local execution, and release/deploy changes require explicit evidence before merge.",
+        "Web UI changes require visual QA screenshot evidence; desktop/local execution changes require cross-platform execution and cancellation evidence.",
+        "Human approval is still required for merge, release, billing, local execution, and data retention changes.",
+      ],
       approve: false,
     };
   }
