@@ -15,6 +15,7 @@ Command:
 
 ```text
 pnpm ai:pm -- --idea "..." --provider openai|command|mock
+pnpm ai:issue-tree -- --idea "..." --provider openai|command|mock
 ```
 
 The PM agent turns plain language into:
@@ -25,6 +26,36 @@ The PM agent turns plain language into:
 - Acceptance criteria.
 - Risk flags for security, data, cost, local execution, and release.
 - Source docs that should be checked before implementation.
+
+### Issue Tree Agent
+
+Command:
+
+```text
+pnpm ai:issue-tree -- --idea "..." --provider openai|command|mock
+pnpm ai:issue-tree -- --brief-file .myagenttool/runs/brief.json --repo OWNER/REPO --apply
+```
+
+The issue tree command turns a PM brief into one or more governed GitHub issue
+specs. It is dry-run by default and prints the exact issue body, labels,
+milestone, acceptance criteria, and Project field metadata that would be used.
+
+Apply mode requires:
+
+- `--apply`.
+- `--repo` or `GITHUB_REPOSITORY`.
+- Non-empty acceptance criteria.
+- Required governance label groups.
+- A milestone and source doc.
+
+After apply, run:
+
+```text
+pnpm github:check:issues
+node tools/github/src/index.mjs sync-project-fields --owner perly6185-lab --project 1
+```
+
+The Project sync command remains dry-run unless `--apply` is explicit.
 
 ### Code Planning Agent
 
@@ -199,6 +230,7 @@ The model-driven layer is acceptable when:
 
 - `pnpm ai:check` passes.
 - `pnpm ai:pm -- --provider mock` returns a structured PM brief.
+- `pnpm ai:issue-tree -- --provider mock` returns a governed issue draft.
 - `pnpm ai:code-plan -- --provider mock` returns a scoped implementation plan.
 - `pnpm ai:review -- --provider mock` returns findings-first review output.
 - GitHub AI Review workflow can run on PRs.

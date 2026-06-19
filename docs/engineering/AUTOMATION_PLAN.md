@@ -85,6 +85,17 @@ Human approval:
 - Required before creating roadmap-changing initiatives.
 - Required before high-risk automation or billing issues.
 
+Implemented M0 entry point:
+
+```text
+pnpm ai:issue-tree -- --idea "..." --provider openai|command|mock
+pnpm ai:issue-tree -- --brief-file brief.json --repo OWNER/REPO --apply
+```
+
+The command is dry-run by default and writes labels, milestone, acceptance
+criteria, source docs, and `## Project Fields` metadata. After apply, run issue
+hygiene and Project field sync dry-run before moving generated work to `ready`.
+
 ### Layer 5: AI Development Execution
 
 Purpose:
@@ -222,8 +233,6 @@ definition.
 
 Priority automation still missing:
 
-- Idea intake to PM brief.
-- PM brief to issue tree.
 - Issue to branch and work manifest.
 - AI self-review with findings-first output.
 - Release note and rollback note generation.

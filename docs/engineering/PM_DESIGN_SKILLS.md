@@ -68,6 +68,8 @@ For M0 UI or product experience changes, use this sequence:
    - Success criteria.
    - Safety, cost, data, and audit expectations.
    - Non-goals for the current milestone.
+   - Convert approved PM output into governed backlog with
+     `pnpm ai:issue-tree`.
 
 3. Design contract:
    - Update `docs/design/MYAGENTTOOL_DESIGN.md`.
@@ -110,6 +112,9 @@ For M0 UI or product experience changes, use this sequence:
 
 - New M0 UI work links to this document or the design contract.
 - UX issues include non-professional-user acceptance criteria.
+- PM output can be converted into issue-tree dry-run evidence before apply.
+- Applied issues include labels, milestone, acceptance criteria, and
+  `## Project Fields` metadata for Project sync.
 - Visual changes include screenshot or manual visual QA evidence.
 - External design agent output is treated as source material, not as trusted
   production code.

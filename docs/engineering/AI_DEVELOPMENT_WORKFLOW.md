@@ -93,6 +93,18 @@ AI should create or update GitHub Issues with:
 Issue bodies should contain enough context that another AI or human can pick up
 the work without reading the entire repository.
 
+Use the governed issue-tree path for PM-derived work:
+
+```text
+pnpm ai:issue-tree -- --idea "..." --provider openai|command|mock
+pnpm ai:issue-tree -- --brief-file brief.json --repo OWNER/REPO --apply
+```
+
+The command is dry-run by default. Apply mode is appropriate only when the PM
+brief has acceptance criteria, source docs, labels, milestone, and Project field
+metadata. High-risk roadmap, security, billing, release, or local execution
+issues still need human approval before creation.
+
 ### 5. ADR and Risk
 
 Create an ADR when the work chooses a durable technical direction.

@@ -60,6 +60,8 @@ Already implemented:
   drafts, branch plans, and feedback conversion drafts.
 - Model-driven `tools/ai` commands for PM briefs, code plans, PR review drafts,
   and issue-to-branch work runner evidence through explicit providers.
+- PM brief to issue tree dry-run/apply command with governance labels,
+  milestone, acceptance criteria, and Project field metadata.
 - Trusted coding adapter contract slots for Codex, Claude, Qwen Code,
   OpenClaw-like, QClaw-like, generic command, and deterministic mock adapters.
 - `tools/release` helper CLI for release process checks and release note drafts.
@@ -79,10 +81,12 @@ Implemented first slice:
 - The PM brief classifies scope, risk, platform, agent target, labels, and
   source docs.
 - The prompt requires a non-professional user path.
+- `pnpm ai:issue-tree -- --idea "..." --provider openai|command|mock` turns a
+  PM brief into governed issue specs and can apply them with explicit
+  `--apply`.
 
 Needed:
 
-- Issue tree creation from a PM brief.
 - Rules for when AI may create issues directly and when it must ask approval.
 
 ### 2. Issue Creation And Project Sync
@@ -91,17 +95,15 @@ Partially implemented:
 
 - Issue hygiene checks.
 - Project field dry-run and explicit apply.
+- Issue tree creation includes `## Project Fields` metadata for Project sync.
 
 Missing:
 
-- A seed/create command that can create one issue or an issue tree from a PM
-  brief.
 - Parent/child issue linkage or a consistent fallback convention.
 - Automatic status transitions from PR/check events.
 
 Needed:
 
-- Issue creation CLI with dry-run/apply.
 - Project field apply in CI only when explicitly authorized.
 - Backlog health report.
 
@@ -257,6 +259,7 @@ Do not claim true automatic product delivery until:
 ```text
 pnpm ai:intake -- --idea "..."
 pnpm ai:pm -- --idea "..." --provider openai|command|mock
+pnpm ai:issue-tree -- --idea "..." --provider openai|command|mock
 pnpm ai:branch -- --issue 123 --title "short title"
 pnpm ai:code-plan -- --issue 123 --provider openai|command|mock
 pnpm ai:work-runner -- --issue 123 --provider openai|command|mock

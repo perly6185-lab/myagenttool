@@ -14,6 +14,7 @@ Usage:
   node tools/ai/src/index.mjs --check
   node tools/ai/src/index.mjs intake-brief --idea "..." [--out path]
   node tools/ai/src/index.mjs pm-brief|pm-agent --idea "..." --provider openai|command|mock [--out path] [--json]
+  node tools/ai/src/index.mjs issue-tree --idea "..." --provider openai|command|mock [--brief-file path] [--repo OWNER/REPO] [--out path] [--apply]
   node tools/ai/src/index.mjs branch-plan --issue NUMBER --title "..."
   node tools/ai/src/index.mjs code-plan|code-agent --issue NUMBER [--repo OWNER/REPO] --provider openai|command|mock [--out path] [--json]
   node tools/ai/src/index.mjs run-work|work-runner --issue NUMBER [--repo OWNER/REPO] --provider openai|command|mock [--apply] [--coding-adapter NAME] [--adapter-command-json JSON] [--verify] [--skip-verify] [--open-pr]
@@ -208,6 +209,11 @@ function main() {
     return;
   }
 
+  if (command === "issue-tree") {
+    issueTree(args).catch(failFromError);
+    return;
+  }
+
   if (command === "branch-plan") {
     branchPlan(args);
     return;
@@ -267,6 +273,11 @@ function check() {
   });
   if (!sample.outcome || sample.acceptanceCriteria.length === 0) {
     fail("Mock AI provider sanity check failed.");
+  }
+
+  const issueTree = issueTreeFromBrief(sample);
+  if (issueTree.issues.length === 0 || !issueTree.issues[0].labels.some((label) => label.startsWith("acceptance/"))) {
+    fail("Issue tree generation sanity check failed.");
   }
 
   console.log("[tools-ai:check] AI delivery helpers check OK");
@@ -354,6 +365,38 @@ async function pmBrief(args) {
   });
 
   writeStructuredResult(result, formatPmBrief(result), args);
+}
+
+async function issueTree(args) {
+  const apply = args.includes("--apply");
+  const repo = option(args, "--repo") ?? process.env.GITHUB_REPOSITORY ?? defaultRepo();
+  const brief = await loadPmBriefForIssueTree(args);
+  const tree = issueTreeFromBrief(brief);
+  const out = option(args, "--out");
+
+  if (!apply) {
+    const content = args.includes("--json") ? `${JSON.stringify(tree, null, 2)}\n` : formatIssueTree(tree, { applied: false });
+    writeOrPrint(content, out);
+    return;
+  }
+
+  if (!repo) fail("Cannot apply issue tree without --repo or GITHUB_REPOSITORY.");
+  validateIssueTreeForApply(tree);
+
+  const created = [];
+  for (const issueSpec of tree.issues) {
+    const body = formatIssueBody(issueSpec, created[0]?.number);
+    const argsForGh = ["issue", "create", "--repo", repo, "--title", issueSpec.title, "--body", body];
+    for (const label of issueSpec.labels) argsForGh.push("--label", label);
+    if (issueSpec.milestone) argsForGh.push("--milestone", issueSpec.milestone);
+    const output = gh(argsForGh).stdout.trim();
+    const number = Number(output.match(/\/issues\/(\d+)/)?.[1] ?? 0);
+    created.push({ title: issueSpec.title, url: output, number });
+  }
+
+  const appliedTree = { ...tree, applied: true, created };
+  const content = args.includes("--json") ? `${JSON.stringify(appliedTree, null, 2)}\n` : formatIssueTree(appliedTree, { applied: true });
+  writeOrPrint(content, out);
 }
 
 function branchPlan(args) {
@@ -836,6 +879,229 @@ function mockStructuredOutput({ agentName, prompt, issue, title }) {
   }
 
   throw new Error(`No mock output for agent ${agentName}.`);
+}
+
+async function loadPmBriefForIssueTree(args) {
+  const briefFile = option(args, "--brief-file");
+  if (briefFile) {
+    const content = readFileSync(resolve(repoRoot, briefFile), "utf8");
+    try {
+      return normalizePmBrief(JSON.parse(content));
+    } catch {
+      return normalizePmBrief(parsePmBriefMarkdown(content));
+    }
+  }
+
+  const idea = option(args, "--idea");
+  if (!idea) fail("Missing --idea or --brief-file.");
+  const brief = await runStructuredAgent({
+    args,
+    agentName: "pm-brief",
+    schema: PM_BRIEF_SCHEMA,
+    systemPrompt: [
+      "You are the MyAgentTool PM agent.",
+      "Turn plain-language ideas into milestone-aligned, non-professional-first engineering slices.",
+      "Prefer M0 unless the idea clearly requires billing, lifecycle automation, distribution, or later roadmap work.",
+      "Do not hide security, data, cost, release, or local execution risk.",
+      "Return only JSON that matches the schema.",
+    ].join("\n"),
+    userPrompt: [
+      `Idea:\n${idea}`,
+      docsContext(["docs/vision/PRODUCT.md", "docs/engineering/FULL_FLOW_AI_DELIVERY.md", "docs/engineering/PM_DESIGN_SKILLS.md"]),
+    ].join("\n\n"),
+  });
+  return normalizePmBrief(brief);
+}
+
+function normalizePmBrief(brief) {
+  const projectFields = brief.projectFields ?? {};
+  return {
+    outcome: brief.outcome ?? "TODO",
+    primaryUser: brief.primaryUser ?? "Non-professional user first.",
+    problem: brief.problem ?? "TODO",
+    userStory: brief.userStory ?? "TODO",
+    nonGoals: stringArrayOr(brief.nonGoals, ["No hidden local command execution.", "No production release without approval."]),
+    acceptanceCriteria: stringArrayOr(brief.acceptanceCriteria, []),
+    riskFlags: stringArrayOr(brief.riskFlags, ["Review security, data, cost, local execution, and release impact manually."]),
+    issueTitle: brief.issueTitle ?? "[Task]: TODO",
+    suggestedLabels: stringArrayOr(brief.suggestedLabels, []),
+    openQuestions: stringArrayOr(brief.openQuestions, []),
+    projectFields: {
+      milestone: projectFields.milestone ?? "M0",
+      area: projectFields.area ?? "cross-cutting",
+      type: projectFields.type ?? "task",
+      status: "backlog",
+      risk: projectFields.risk ?? "medium",
+      acceptance: projectFields.acceptance ?? "defined",
+      platform: projectFields.platform ?? "all",
+      agentTarget: projectFields.agentTarget ?? "platform",
+      priority: projectFields.priority ?? "p1",
+      sourceDoc: projectFields.sourceDoc ?? "docs/engineering/FULL_FLOW_AI_DELIVERY.md",
+    },
+  };
+}
+
+function parsePmBriefMarkdown(content) {
+  return {
+    outcome: markdownSection(content, "Outcome") || markdownSection(content, "Plain-language Outcome"),
+    primaryUser: markdownSection(content, "Primary User"),
+    problem: markdownSection(content, "Problem"),
+    userStory: markdownSection(content, "User Story"),
+    nonGoals: markdownListSection(content, "Non-goals"),
+    acceptanceCriteria: markdownChecklistSection(content, "Acceptance Criteria"),
+    riskFlags: markdownListSection(content, "Risk Flags"),
+    issueTitle: (content.match(/Title:\s*(.+)/i)?.[1] ?? "").trim(),
+    suggestedLabels: markdownListAfter(content, "Labels:"),
+    openQuestions: markdownListSection(content, "Open Questions"),
+    projectFields: parseProjectFieldsFromText(content),
+  };
+}
+
+function issueTreeFromBrief(brief) {
+  const normalized = normalizePmBrief(brief);
+  const labels = mergeGovernanceLabels(normalized.suggestedLabels, normalized.projectFields);
+  const rootIssue = {
+    role: "root",
+    title: normalizeIssueTitle(normalized.issueTitle, normalized.projectFields.type),
+    outcome: normalized.outcome,
+    primaryUser: normalized.primaryUser,
+    problem: normalized.problem,
+    userStory: normalized.userStory,
+    nonGoals: normalized.nonGoals,
+    acceptanceCriteria: normalized.acceptanceCriteria,
+    riskFlags: normalized.riskFlags,
+    openQuestions: normalized.openQuestions,
+    labels,
+    milestone: normalized.projectFields.milestone,
+    projectFields: normalized.projectFields,
+    sourceDoc: normalized.projectFields.sourceDoc,
+  };
+  return {
+    version: "2026-06-19",
+    mode: "dry-run",
+    source: "pm-brief",
+    issues: [rootIssue],
+    governance: {
+      dryRunDefault: true,
+      applyRequiresExplicitFlag: true,
+      humanApprovalRequiredFor: ["roadmap-changing work", "security", "billing", "local execution", "release"],
+      followUp: ["Run pnpm github:check:issues.", "Run sync-project-fields dry-run before moving issues to ready."],
+    },
+  };
+}
+
+function mergeGovernanceLabels(labels, fields) {
+  const governancePrefixes = ["type/", "status/", "area/", "risk/", "acceptance/", "platform/", "agent/", "priority/"];
+  const customLabels = labels.filter((label) => !governancePrefixes.some((prefix) => label.startsWith(prefix)));
+  return [...labelsFromProjectFields(fields), ...customLabels];
+}
+
+function validateIssueTreeForApply(tree) {
+  const failures = [];
+  for (const issueSpec of tree.issues) {
+    if (!issueSpec.title || issueSpec.title.includes("TODO")) failures.push(`${issueSpec.title || "(untitled)"}: title is missing or TODO`);
+    if (!issueSpec.milestone) failures.push(`${issueSpec.title}: milestone is missing`);
+    if (!issueSpec.acceptanceCriteria.length) failures.push(`${issueSpec.title}: acceptance criteria are missing`);
+    for (const group of ["type/", "status/", "area/", "risk/", "acceptance/", "platform/", "agent/"]) {
+      if (!issueSpec.labels.some((label) => label.startsWith(group))) {
+        failures.push(`${issueSpec.title}: missing ${group} label`);
+      }
+    }
+  }
+  if (failures.length > 0) {
+    fail(`Issue tree is not safe to apply:\n${failures.map((failure) => `  - ${failure}`).join("\n")}`);
+  }
+}
+
+function formatIssueTree(tree, { applied }) {
+  const created = tree.created ?? [];
+  return `# AI Issue Tree ${applied ? "Apply Result" : "Dry Run"}
+
+Generated: ${new Date().toISOString()}
+Version: ${tree.version}
+
+## Issues
+
+${tree.issues.map((issueSpec, index) => formatIssueTreeItem(issueSpec, created[index])).join("\n\n")}
+
+## Governance
+
+- Dry-run by default: yes
+- Apply requires explicit flag: yes
+- Human approval required for: ${tree.governance.humanApprovalRequiredFor.join(", ")}
+
+## Follow-up Checks
+
+${list(tree.governance.followUp)}
+`;
+}
+
+function formatIssueTreeItem(issueSpec, created) {
+  return `### ${issueSpec.title}
+
+${created ? `Created: ${created.url}\n` : ""}Labels: ${issueSpec.labels.join(", ")}
+Milestone: ${issueSpec.milestone}
+Source Doc: ${issueSpec.sourceDoc}
+
+${formatIssueBody(issueSpec, undefined)}`;
+}
+
+function formatIssueBody(issueSpec, parentNumber) {
+  return `${parentNumber ? `## Parent\n#${parentNumber}\n\n` : ""}## Outcome
+${issueSpec.outcome}
+
+## Primary User
+${issueSpec.primaryUser}
+
+## Problem
+${issueSpec.problem}
+
+## User Story
+${issueSpec.userStory}
+
+## Non-goals
+${list(issueSpec.nonGoals)}
+
+## Acceptance
+${checklist(issueSpec.acceptanceCriteria)}
+
+## Risk Flags
+${list(issueSpec.riskFlags)}
+
+## Open Questions
+${list(issueSpec.openQuestions)}
+
+## Project Fields
+${formatProjectFields(issueSpec.projectFields)}
+`;
+}
+
+function normalizeIssueTitle(title, type) {
+  if (!title || title === "TODO") {
+    const prefix = type === "risk" ? "[Risk]" : type === "adr" ? "[ADR]" : type === "epic" ? "[Epic]" : "[Task]";
+    return `${prefix}: TODO`;
+  }
+  return title;
+}
+
+function labelsFromProjectFields(fields) {
+  return [
+    `type/${normalizeLabelValue(fields.type)}`,
+    `status/${normalizeLabelValue(fields.status)}`,
+    `area/${normalizeLabelValue(fields.area)}`,
+    `risk/${normalizeLabelValue(fields.risk)}`,
+    `acceptance/${normalizeLabelValue(fields.acceptance)}`,
+    `platform/${normalizeLabelValue(fields.platform)}`,
+    `agent/${normalizeLabelValue(fields.agentTarget)}`,
+    `priority/${normalizeLabelValue(fields.priority)}`,
+  ];
+}
+
+function normalizeLabelValue(value) {
+  return String(value ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, "-");
 }
 
 function formatPmBrief(brief) {
@@ -1381,6 +1647,50 @@ function targetToType(target) {
   if (normalized === "bug") return "bug";
   if (normalized === "risk") return "risk";
   return "task";
+}
+
+function markdownSection(content, heading) {
+  const escaped = heading.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const match = content.match(new RegExp(`##\\s+${escaped}\\s*\\n([\\s\\S]*?)(?:\\n##\\s+|$)`, "i"));
+  return match?.[1]?.trim() ?? "";
+}
+
+function markdownListSection(content, heading) {
+  return markdownSection(content, heading)
+    .split(/\r?\n/)
+    .map((line) => line.replace(/^\s*-\s+/, "").trim())
+    .filter(Boolean);
+}
+
+function markdownChecklistSection(content, heading) {
+  return markdownSection(content, heading)
+    .split(/\r?\n/)
+    .map((line) => line.replace(/^\s*-\s+\[[ x]\]\s+/i, "").replace(/^\s*-\s+/, "").trim())
+    .filter(Boolean);
+}
+
+function markdownListAfter(content, marker) {
+  const index = content.indexOf(marker);
+  if (index === -1) return [];
+  return content
+    .slice(index + marker.length)
+    .split(/\r?\n/)
+    .map((line) => line.replace(/^\s*-\s+/, "").trim())
+    .filter(Boolean)
+    .filter((line) => !line.startsWith("##"));
+}
+
+function parseProjectFieldsFromText(content) {
+  const fields = {};
+  const section = markdownSection(content, "Project Fields");
+  for (const line of section.split(/\r?\n/)) {
+    const match = line.match(/^\s*([A-Za-z ]+):\s*(.+?)\s*$/);
+    if (!match) continue;
+    const rawKey = match[1].trim().toLowerCase();
+    const key = rawKey === "agent target" ? "agentTarget" : rawKey === "source doc" ? "sourceDoc" : rawKey.replace(/\s+([a-z])/g, (_, letter) => letter.toUpperCase());
+    fields[key] = match[2].trim();
+  }
+  return fields;
 }
 
 function stringOr(value, fallback) {
