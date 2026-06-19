@@ -27,6 +27,7 @@ const REQUIRED_PR_SECTIONS = [
   "## Milestone / Area",
   "## Acceptance",
   "## Verification",
+  "## Risk Gates",
 ];
 
 const DOCS = {
@@ -132,6 +133,20 @@ function checkLocal() {
     );
   }
 
+  const visualWarnings = reviewRiskWarnings(["apps/web/src/App.tsx"], "## Verification\n- pnpm test\n", 0);
+  if (!visualWarnings.some((warning) => warning.includes("visual QA"))) {
+    failReport("Pull request risk routing check failed", ["web changes should warn when visual QA evidence is missing"]);
+  }
+
+  const coveredVisualWarnings = reviewRiskWarnings(
+    ["apps/web/src/App.tsx"],
+    "## Verification\n- pnpm test\n## Risk Gates\n- Visual QA screenshots captured for desktop and mobile viewports.\n",
+    0,
+  );
+  if (coveredVisualWarnings.some((warning) => warning.includes("visual QA"))) {
+    failReport("Pull request risk routing check failed", ["web visual QA evidence should satisfy the route"]);
+  }
+
   console.log("[tools-github:check] GitHub governance local check OK");
 }
 
@@ -211,6 +226,9 @@ function checkPullRequest(args) {
   if (pr.files.length === 0) {
     failures.push(`PR #${pr.number} has no changed files`);
   }
+
+  const changedFiles = pr.files.map(prFilePath).filter(Boolean);
+  warnings.push(...reviewRiskWarnings(changedFiles, body, pr.number));
 
   if (pr.commits.length === 0) {
     failures.push(`PR #${pr.number} has no commits`);
@@ -455,6 +473,94 @@ function hasVerificationEvidence(body) {
 
 function hasAcceptanceMention(body) {
   return /Acceptance/i.test(body) || /Closes\s+#\d+/i.test(body);
+}
+
+function reviewRiskWarnings(files, body, prNumber) {
+  const normalizedFiles = files.map(normalizePath);
+  const warnings = [];
+  const prefix = prNumber ? `PR #${prNumber}` : "PR";
+
+  if (normalizedFiles.some(isWebFile) && !hasVisualEvidence(body)) {
+    warnings.push(`${prefix} changes web UI files but does not mention visual QA screenshot evidence`);
+  }
+
+  if (normalizedFiles.some(isDesktopOrLocalExecutionFile) && !hasDesktopEvidence(body)) {
+    warnings.push(`${prefix} changes desktop or local execution files but does not mention cross-platform execution/cancellation evidence`);
+  }
+
+  if (normalizedFiles.some(isProtocolFile) && !hasProtocolEvidence(body)) {
+    warnings.push(`${prefix} changes protocol/state-machine files but does not mention state-machine or schema compatibility evidence`);
+  }
+
+  if (normalizedFiles.some(isAdapterFile) && !hasAdapterEvidence(body)) {
+    warnings.push(`${prefix} changes adapter files but does not mention success, failure, cancellation, or redaction evidence`);
+  }
+
+  if (normalizedFiles.some(isSecurityDataBillingFile) && !hasSecurityDataBillingEvidence(body)) {
+    warnings.push(`${prefix} changes security/data/billing files but does not mention security, data, billing, credential, or audit evidence`);
+  }
+
+  if (normalizedFiles.some(isReleaseFile) && !hasReleaseEvidence(body)) {
+    warnings.push(`${prefix} changes release/deploy files but does not mention release, rollback, deploy preflight, or human approval evidence`);
+  }
+
+  return warnings;
+}
+
+function prFilePath(file) {
+  return typeof file === "string" ? file : file.path ?? file.filename ?? file.name ?? "";
+}
+
+function isWebFile(file) {
+  return file.startsWith("apps/web/") || file === "docs/engineering/VISUAL_QA.md";
+}
+
+function isDesktopOrLocalExecutionFile(file) {
+  return file.startsWith("apps/desktop/") || /desktop|bridge|local-execution|process|cancel/i.test(file);
+}
+
+function isProtocolFile(file) {
+  return file.startsWith("packages/protocol/") || /state-machine|schema|protocol/i.test(file);
+}
+
+function isAdapterFile(file) {
+  return file.startsWith("packages/adapters/") || /adapter|coding-wrapper/i.test(file);
+}
+
+function isSecurityDataBillingFile(file) {
+  return /security|auth|credential|secret|billing|cost|quota|settlement|chargeback|audit|data-retention|privacy/i.test(file);
+}
+
+function isReleaseFile(file) {
+  return file.startsWith("tools/release/") || file.startsWith("tools/deploy/") || /\.github\/workflows\/(release|deploy)\.yml$/i.test(file) || /release|deploy|rollback|version/i.test(file);
+}
+
+function hasVisualEvidence(body) {
+  return /visual qa|screenshot|desktop viewport|mobile viewport|artifact/i.test(body);
+}
+
+function hasDesktopEvidence(body) {
+  return /(windows|macos|linux|cross-platform).*(execution|process|cancel)|cancel.*(windows|macos|linux|cross-platform)|desktop bridge/i.test(body);
+}
+
+function hasProtocolEvidence(body) {
+  return /state-machine|schema|compatibility|protocol/i.test(body);
+}
+
+function hasAdapterEvidence(body) {
+  return /adapter.*(success|failure|cancel|redaction)|success.*failure.*cancel|adapter-result/i.test(body);
+}
+
+function hasSecurityDataBillingEvidence(body) {
+  return /security|credential|secret|billing|cost|quota|data|privacy|audit|retention/i.test(body);
+}
+
+function hasReleaseEvidence(body) {
+  return /release|rollback|deploy preflight|human approval|environment approval|production gate/i.test(body);
+}
+
+function normalizePath(path) {
+  return path.replace(/\\/g, "/");
 }
 
 function option(args, name) {

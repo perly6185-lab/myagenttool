@@ -29,3 +29,10 @@
 - [ ] Not run, documentation-only change.
 - [ ] Manual verification:
 - [ ] Automated checks:
+
+## Risk Gates
+
+- [ ] Visual QA evidence for web UI changes, or not applicable.
+- [ ] Cross-platform execution/cancellation evidence for desktop or local execution changes, or not applicable.
+- [ ] Security, data, billing, credential, and audit impact reviewed, or not applicable.
+- [ ] Release, deploy preflight, rollback, and human approval evidence, or not applicable.

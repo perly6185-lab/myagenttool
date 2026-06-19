@@ -62,6 +62,26 @@ Every reviewer should check:
 - The implementation does not silently broaden M0.
 - Project fields and labels are accurate.
 
+## Automated Risk Routing
+
+Pull request governance enforces the baseline requirements that a PR links or
+closes an issue and lists verification evidence. Risk-specific routes are
+advisory warnings until a later issue promotes them to required checks.
+
+Current advisory routes:
+
+- Web UI files should mention visual QA screenshot evidence.
+- Desktop Bridge or local execution files should mention cross-platform
+  execution and cancellation evidence.
+- Protocol or state-machine files should mention schema or compatibility
+  evidence.
+- Adapter files should mention success, failure, cancellation, or redaction
+  evidence.
+- Security, data, billing, credential, cost, or audit files should mention the
+  relevant review evidence.
+- Release or deploy files should mention release, rollback, deploy preflight,
+  and human approval evidence.
+
 ## High-Risk PR Checklist
 
 Use this for security, billing, desktop, and local execution changes:
