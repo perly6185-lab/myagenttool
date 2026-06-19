@@ -88,7 +88,9 @@ Implemented first slice:
 - The prompt requires a non-professional user path.
 - `pnpm ai:issue-tree -- --idea "..." --provider openai|command|mock` turns a
   PM brief into governed issue specs and can apply them with explicit
-  `--apply`.
+  `--apply`. High-risk, security/data/privacy, billing/cost, local execution,
+  roadmap-changing, or release/deploy issue creation also requires
+  `--human-approved "reason"` or `MYAGENTTOOL_HUMAN_APPROVED`.
 
 Needed:
 
@@ -303,4 +305,6 @@ pnpm deploy:preflight -- --target web --environment staging
 
 Most commands generate drafts. `ai:work-runner` and `deploy:publish` require
 explicit `--apply` before they create branches, open PRs, or call a deployment
-adapter. None of these commands replace human approval.
+adapter. `ai:issue-tree --apply` additionally blocks high-risk issue creation
+until human approval evidence is provided. None of these commands replace human
+approval.

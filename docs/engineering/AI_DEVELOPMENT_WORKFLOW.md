@@ -98,12 +98,15 @@ Use the governed issue-tree path for PM-derived work:
 ```text
 pnpm ai:issue-tree -- --idea "..." --provider openai|command|mock
 pnpm ai:issue-tree -- --brief-file brief.json --repo OWNER/REPO --apply
+pnpm ai:issue-tree -- --brief-file brief.json --repo OWNER/REPO --apply --human-approved "approved by NAME in ISSUE/COMMENT"
 ```
 
 The command is dry-run by default. Apply mode is appropriate only when the PM
 brief has acceptance criteria, source docs, labels, milestone, and Project field
 metadata. High-risk roadmap, security, billing, release, or local execution
-issues still need human approval before creation.
+issues require explicit human approval before creation. Pass
+`--human-approved "reason"` or set `MYAGENTTOOL_HUMAN_APPROVED` only after that
+approval exists; the approval evidence is written into the generated issue body.
 
 ### 5. ADR and Risk
 
