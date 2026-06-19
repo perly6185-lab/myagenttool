@@ -233,8 +233,11 @@ Implemented first slice:
 - `pnpm ai:feedback -- --feedback "..." --target bug --issue-tree` produces a
   PM brief JSON that can feed `pnpm ai:issue-tree -- --brief-file ...`.
 - `pnpm release:retrospective -- --pr 123` creates a release/demo review
-  checklist with feedback, rollback, and follow-up issue prompts.
-- Release notes can reference retrospective evidence.
+  checklist with feedback, rollback, follow-up issue prompts, and any supplied
+  PR/deploy/feedback evidence.
+- Release notes can reference retrospective, PR, deploy, and feedback evidence
+  through `--evidence-file` or `--evidence-dir`, and explicitly call out missing
+  evidence.
 
 Needed:
 
