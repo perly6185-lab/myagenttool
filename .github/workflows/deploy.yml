@@ -1,0 +1,81 @@
+name: Deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: Deployment target
+        required: true
+        default: docs
+        type: choice
+        options:
+          - docs
+          - server
+          - web
+          - desktop
+          - protocol
+      environment:
+        description: Deployment environment
+        required: true
+        default: preview
+        type: choice
+        options:
+          - preview
+          - staging
+          - production
+      version:
+        description: Version or release identifier
+        required: false
+        type: string
+      apply:
+        description: Run real deployment adapter
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Deploy preflight
+        run: |
+          if [ -n "${{ inputs.version }}" ]; then
+            pnpm deploy:preflight -- --target "${{ inputs.target }}" --environment "${{ inputs.environment }}" --version "${{ inputs.version }}"
+          else
+            pnpm deploy:preflight -- --target "${{ inputs.target }}" --environment "${{ inputs.environment }}"
+          fi
+
+      - name: Publish
+        env:
+          MYAGENTTOOL_DEPLOY_COMMAND: ${{ secrets.MYAGENTTOOL_DEPLOY_COMMAND }}
+        run: |
+          ARGS="--target ${{ inputs.target }} --environment ${{ inputs.environment }}"
+          if [ -n "${{ inputs.version }}" ]; then
+            ARGS="$ARGS --version ${{ inputs.version }}"
+          fi
+          if [ "${{ inputs.apply }}" = "true" ]; then
+            pnpm deploy:publish -- $ARGS --apply
+          else
+            pnpm deploy:publish -- $ARGS
+          fi

@@ -109,6 +109,17 @@ pnpm release:draft
 The command prints a draft from the current branch PR when GitHub access is
 available. It does not publish a release.
 
+For deployment planning, use:
+
+```text
+pnpm deploy:plan -- --target docs --environment preview
+pnpm deploy:preflight -- --target web --environment staging
+pnpm deploy:publish -- --target web --environment production
+```
+
+`deploy:publish` is dry-run by default. Real deployment requires `--apply`,
+environment approval, and `MYAGENTTOOL_DEPLOY_COMMAND`.
+
 ## Rollback
 
 Every release should answer:

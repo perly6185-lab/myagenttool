@@ -1,0 +1,16 @@
+{
+  "name": "@myagenttool/tools-deploy",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Deployment pipeline checks and dry-run/apply gateway.",
+  "type": "module",
+  "scripts": {
+    "dev": "node ./src/index.mjs",
+    "test": "node ./src/index.mjs --check",
+    "lint": "node ./src/index.mjs --check",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.2"
+  }
+}

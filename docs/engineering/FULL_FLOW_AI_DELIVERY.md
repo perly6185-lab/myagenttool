@@ -58,25 +58,29 @@ Already implemented:
   branch protection probing, and Project field drift sync.
 - `tools/ai` helper CLI for deterministic intake brief and work manifest
   drafts, branch plans, and feedback conversion drafts.
+- Model-driven `tools/ai` commands for PM briefs, code plans, PR review drafts,
+  and issue-to-branch work runner evidence through explicit providers.
 - `tools/release` helper CLI for release process checks and release note drafts.
+- `tools/deploy` helper CLI for deployment checks, plans, preflight, and dry-run
+  or adapter-backed publish.
+- GitHub AI Review, Release, and Deploy workflows.
 - Design contract and visual QA guidance for product-facing UI work.
 
 ## Gaps To True Product Autodelivery
 
 ### 1. Idea Intake And PM Breakdown
 
-Missing:
+Implemented first slice:
 
-- A structured intake command that turns a plain-language idea into a PM brief.
-- Automatic classification of scope, risk, platform, agent target, and affected
+- `pnpm ai:pm -- --idea "..." --provider openai|command|mock` returns a
+  structured model PM brief.
+- The PM brief classifies scope, risk, platform, agent target, labels, and
   source docs.
-- A required "non-professional user outcome" field for product-facing issues.
+- The prompt requires a non-professional user path.
 
 Needed:
 
-- `pnpm ai:intake -- --idea "..."` as the deterministic brief generator, then a
-  future model-backed agent workflow.
-- PM brief template.
+- Issue tree creation from a PM brief.
 - Rules for when AI may create issues directly and when it must ask approval.
 
 ### 2. Issue Creation And Project Sync
@@ -101,18 +105,23 @@ Needed:
 
 ### 3. Branch And Implementation Orchestration
 
+Implemented first slice:
+
+- `pnpm ai:code-plan -- --issue 123 --provider openai|command|mock` generates a
+  model implementation plan.
+- `pnpm ai:work-runner -- --issue 123 --provider openai|command|mock` connects
+  issue, branch, plan, and run evidence.
+- Work runner apply mode is explicit and writes evidence under
+  `.myagenttool/runs`.
+
 Missing:
 
-- A standard issue-to-branch command.
-- AI execution manifest recording issue, branch, files touched, commands run,
-  risks found, and follow-up issues created.
+- Direct coding edits from a trusted coding agent adapter.
 - Guardrails that stop broad changes when the issue scope is narrow.
 
 Needed:
 
-- `pnpm ai:manifest` as the deterministic work manifest generator, then a
-  future issue-to-branch command.
-- Work manifest stored in PR body or `.agents/runs`.
+- Work manifest stored in PR body and `.myagenttool/runs`.
 - Scope drift check.
 
 ### 4. Automated Review
@@ -124,16 +133,20 @@ Partially implemented:
 - Docs checks.
 - Smoke test.
 
+Implemented first slice:
+
+- `pnpm ai:review -- --pr 123 --provider openai|command|mock` generates a
+  findings-first PR review draft.
+- The AI Review workflow can comment on PRs.
+
 Missing:
 
-- AI code-review bot that comments findings on PRs.
 - Security review checklists for local execution and billing changes.
 - Visual QA automation for web UI screenshots.
 - Cross-platform desktop runner checks on Windows, macOS, and Linux.
 
 Needed:
 
-- PR review command that produces findings-first output.
 - Playwright screenshot workflow for UI changes.
 - Cross-platform process execution/cancellation tests.
 
@@ -157,23 +170,23 @@ Blocked:
 
 ### 6. Release
 
-Partially implemented:
+Implemented first slice:
 
 - Release process document.
+- `pnpm release:draft` release note generator.
+- `pnpm deploy:plan`, `pnpm deploy:preflight`, and `pnpm deploy:publish`.
+- Manual GitHub Release and Deploy workflows.
 
 Missing:
 
-- Release notes generator.
 - Versioning policy applied in package metadata.
-- Release checklist command.
 - Staging/preview/prod deployment environments.
-- Rollback evidence.
+- Real deploy adapter for selected hosting/distribution targets.
+- Rollback evidence from actual deployments.
 
 Needed:
 
-- `pnpm release:draft` to generate a draft release note from PR and issue
-  metadata.
-- Environment-specific deployment docs and approvals.
+- Environment-specific approvals and secrets.
 
 ### 7. Feedback Loop
 
@@ -197,14 +210,14 @@ Needed:
 | L1 | Issues and Project exist | Completed |
 | L2 | Branch, PR, CI, and smoke tests work | Mostly complete |
 | L3 | Governance checks and Project drift checks work | Mostly complete |
-| L4 | AI can create PM brief, issue, branch, code, PR, and review evidence | Not complete |
-| L5 | Human-approved merge and release can be generated with rollback notes | Not complete |
+| L4 | AI can create PM brief, issue, branch, code, PR, and review evidence | Partially complete |
+| L5 | Human-approved merge and release can be generated with rollback notes | Partially complete |
 | L6 | Feedback automatically becomes tracked bugs/risks/roadmap updates | Not complete |
 
 Current target:
 
 ```text
-Reach L3 solidly, then build L4 in small slices.
+Reach L4 with a trusted coding adapter and issue creation apply mode.
 ```
 
 ## Acceptance For "Automatic Product Delivery"
@@ -234,11 +247,18 @@ Do not claim true automatic product delivery until:
 
 ```text
 pnpm ai:intake -- --idea "..."
+pnpm ai:pm -- --idea "..." --provider openai|command|mock
 pnpm ai:branch -- --issue 123 --title "short title"
+pnpm ai:code-plan -- --issue 123 --provider openai|command|mock
+pnpm ai:work-runner -- --issue 123 --provider openai|command|mock
 pnpm ai:manifest -- --issue 123 --pr 456
+pnpm ai:review -- --pr 456 --provider openai|command|mock
 pnpm ai:feedback -- --feedback "..." --target bug
 pnpm release:draft -- --pr 456
+pnpm deploy:plan -- --target docs --environment preview
+pnpm deploy:preflight -- --target web --environment staging
 ```
 
-These commands generate drafts. They do not replace human approval, and they do
-not merge, deploy, publish, or run local user commands.
+Most commands generate drafts. `ai:work-runner` and `deploy:publish` require
+explicit `--apply` before they create branches, open PRs, or call a deployment
+adapter. None of these commands replace human approval.

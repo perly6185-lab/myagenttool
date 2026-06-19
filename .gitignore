@@ -17,6 +17,12 @@ apps/*/.env.local
 npm-debug.log*
 pnpm-debug.log*
 
+# Local agent/run evidence
+.myagenttool/runs/
+.myagenttool/deploy-runs/
+.agents/runs/
+.agents/deploy-runs/
+
 # OS/editor noise
 .DS_Store
 Thumbs.db

@@ -1,0 +1,77 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: Merged pull request number
+        required: true
+        type: string
+      target:
+        description: Release target
+        required: true
+        default: docs
+        type: choice
+        options:
+          - docs
+          - server
+          - web
+          - desktop
+          - protocol
+      version:
+        description: Version or release identifier
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  pull-requests: read
+  issues: read
+
+jobs:
+  draft:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Release checks
+        run: |
+          pnpm release:check
+          pnpm deploy:check
+
+      - name: Draft release notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: pnpm release:draft -- --pr "${{ inputs.pr }}" > release-draft.md
+
+      - name: Draft deployment plan
+        run: |
+          if [ -n "${{ inputs.version }}" ]; then
+            pnpm deploy:plan -- --target "${{ inputs.target }}" --environment staging --version "${{ inputs.version }}" > deployment-plan.md
+          else
+            pnpm deploy:plan -- --target "${{ inputs.target }}" --environment staging > deployment-plan.md
+          fi
+
+      - name: Upload release evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-evidence
+          path: |
+            release-draft.md
+            deployment-plan.md
