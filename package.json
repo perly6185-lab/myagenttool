@@ -14,6 +14,7 @@
     "ai:intake": "node tools/ai/src/index.mjs intake-brief",
     "ai:branch": "node tools/ai/src/index.mjs branch-plan",
     "ai:feedback": "node tools/ai/src/index.mjs feedback-convert",
+    "ai:issue-tree": "node tools/ai/src/index.mjs issue-tree",
     "ai:manifest": "node tools/ai/src/index.mjs work-manifest",
     "ai:pm": "node tools/ai/src/index.mjs pm-brief",
     "ai:code-plan": "node tools/ai/src/index.mjs code-plan",
