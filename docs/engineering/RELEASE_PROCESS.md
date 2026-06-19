@@ -118,7 +118,12 @@ pnpm deploy:publish -- --target web --environment production
 ```
 
 `deploy:publish` is dry-run by default. Real deployment requires `--apply`,
-environment approval, and `MYAGENTTOOL_DEPLOY_COMMAND`.
+environment approval, and either the built-in `docs/preview` adapter or a
+configured `MYAGENTTOOL_DEPLOY_COMMAND_JSON` adapter.
+
+Production also requires `MYAGENTTOOL_DEPLOY_APPROVED=true`. In GitHub Actions
+this should come from an explicit environment secret, not from the workflow
+input alone.
 
 ## Rollback
 
