@@ -56,6 +56,7 @@ Primary source docs:
 - `docs/vision/POLICY_AND_RISK.md`
 - `docs/vision/USER_EXPERIENCE.md`
 - `docs/engineering/M1_ISSUE_PLAN.md`
+- `docs/engineering/M1_ACCEPTANCE_CLOSEOUT.md`
 
 ## M2: Integration Builder and Governance
 
