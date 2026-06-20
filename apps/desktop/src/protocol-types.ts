@@ -1,4 +1,4 @@
-import type { Agent, AgentDiscoveryRun, Invocation, InvocationEvent } from "@myagenttool/protocol";
+import type { Agent, AgentDiscoveryRun, IntegrationProbeRun, Invocation, InvocationEvent } from "@myagenttool/protocol";
 
 export type DesktopBridgeWorkItem = {
   invocationId: Invocation["id"];
@@ -26,4 +26,10 @@ export type DesktopBridgeDiscoveryWorkItem = {
   }>;
   userProvidedPaths: string[];
   userProvidedEndpoints: string[];
+};
+export type DesktopBridgeProbeWorkItem = {
+  probeRunId: IntegrationProbeRun["id"];
+  artifactId: IntegrationProbeRun["artifactId"];
+  deviceId: IntegrationProbeRun["deviceId"];
+  adapter: IntegrationProbeRun["adapter"];
 };

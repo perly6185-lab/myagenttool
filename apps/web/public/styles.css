@@ -17,7 +17,8 @@ body {
 
 button,
 textarea,
-select {
+select,
+input {
   font: inherit;
 }
 
@@ -163,6 +164,21 @@ textarea:focus {
   outline: 3px solid #d8ecea;
 }
 
+input {
+  width: 100%;
+  min-height: 40px;
+  border: 1px solid #bdc7c2;
+  border-radius: 8px;
+  padding: 8px 10px;
+  background: #ffffff;
+  color: #17201d;
+}
+
+input:focus {
+  border-color: #2f6f73;
+  outline: 3px solid #d8ecea;
+}
+
 .selectors {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -285,19 +301,75 @@ button.secondary {
   padding-top: 12px;
 }
 
+.integration-panel {
+  margin-top: 12px;
+  border-top: 1px solid #e2e6e3;
+  padding-top: 12px;
+}
+
+.integration-panel textarea {
+  min-height: 116px;
+}
+
+.discovery-inputs,
+.integration-fields {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.integration-fields {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin-top: 10px;
+}
+
+.discovery-inputs label,
+.integration-fields label {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.discovery-inputs span,
+.integration-fields span {
+  color: #687671;
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.check-row {
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  min-height: 40px;
+}
+
+.check-row input {
+  width: 18px;
+  min-height: 18px;
+}
+
+.integration-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
 .discovery-actions {
   display: grid;
   grid-template-columns: 1fr;
   gap: 8px;
 }
 
-.candidate-list {
+.candidate-list,
+.artifact-list {
   display: grid;
   gap: 8px;
   margin-top: 10px;
 }
 
-.candidate-card {
+.candidate-card,
+.artifact-card {
   display: grid;
   gap: 8px;
   border: 1px solid #e1e6e2;
@@ -306,18 +378,27 @@ button.secondary {
   background: #fbfcfb;
 }
 
+.artifact-card[data-selected="true"] {
+  border-color: #7aa2a4;
+  background: #f3fbfa;
+}
+
 .candidate-card h3,
-.candidate-card p {
+.candidate-card p,
+.artifact-card h3,
+.artifact-card p {
   margin: 0;
 }
 
-.candidate-card h3 {
+.candidate-card h3,
+.artifact-card h3 {
   font-size: 15px;
   line-height: 1.25;
   overflow-wrap: anywhere;
 }
 
-.candidate-card p {
+.candidate-card p,
+.artifact-card p {
   color: #42504b;
   font-size: 13px;
   line-height: 1.35;
@@ -334,6 +415,18 @@ button.secondary {
 
 .candidate-meta span {
   overflow-wrap: anywhere;
+}
+
+.artifact-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.artifact-actions button {
+  min-height: 36px;
+  padding: 7px 8px;
+  font-size: 13px;
 }
 
 .approval-panel {
@@ -542,6 +635,12 @@ dd {
   }
 
   .approval-actions {
+    grid-template-columns: 1fr;
+  }
+
+  .integration-fields,
+  .integration-actions,
+  .artifact-actions {
     grid-template-columns: 1fr;
   }
 

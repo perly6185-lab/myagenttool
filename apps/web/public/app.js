@@ -23,8 +23,25 @@ const els = {
   toggleAgentButton: document.querySelector("#toggleAgentButton"),
   runBlockReason: document.querySelector("#runBlockReason"),
   discoverButton: document.querySelector("#discoverButton"),
+  discoveryPaths: document.querySelector("#discoveryPaths"),
+  discoveryEndpoints: document.querySelector("#discoveryEndpoints"),
   discoverySummary: document.querySelector("#discoverySummary"),
   candidateList: document.querySelector("#candidateList"),
+  integrationIntent: document.querySelector("#integrationIntent"),
+  integrationAdapter: document.querySelector("#integrationAdapter"),
+  integrationCommand: document.querySelector("#integrationCommand"),
+  integrationUrl: document.querySelector("#integrationUrl"),
+  integrationWorkingDirectory: document.querySelector("#integrationWorkingDirectory"),
+  integrationEnvironment: document.querySelector("#integrationEnvironment"),
+  integrationCancellation: document.querySelector("#integrationCancellation"),
+  integrationCostOwner: document.querySelector("#integrationCostOwner"),
+  integrationEconomicModel: document.querySelector("#integrationEconomicModel"),
+  integrationStreaming: document.querySelector("#integrationStreaming"),
+  createIntegrationButton: document.querySelector("#createIntegrationButton"),
+  builderDraftButton: document.querySelector("#builderDraftButton"),
+  generateIntegrationButton: document.querySelector("#generateIntegrationButton"),
+  integrationSummary: document.querySelector("#integrationSummary"),
+  artifactList: document.querySelector("#artifactList"),
   approvalPanel: document.querySelector("#approvalPanel"),
   approvalTitle: document.querySelector("#approvalTitle"),
   approvalRisk: document.querySelector("#approvalRisk"),
@@ -48,6 +65,9 @@ const els = {
   auditDecision: document.querySelector("#auditDecision"),
   deliveryStatus: document.querySelector("#deliveryStatus"),
   cancelStatus: document.querySelector("#cancelStatus"),
+  quotaSummary: document.querySelector("#quotaSummary"),
+  retentionSummary: document.querySelector("#retentionSummary"),
+  builderSummary: document.querySelector("#builderSummary"),
   eventList: document.querySelector("#eventList"),
   resultTitle: document.querySelector("#resultTitle"),
   resultSummary: document.querySelector("#resultSummary"),
@@ -63,6 +83,7 @@ const els = {
 
 let currentInvocationId = null;
 let selectedAgentId = null;
+let selectedArtifactId = null;
 
 els.runButton.addEventListener("click", async () => {
   const task = els.taskInput.value.trim();
@@ -153,8 +174,8 @@ els.discoverButton.addEventListener("click", async () => {
           "user_provided_endpoint",
           "bridge_managed_config"
         ],
-        userProvidedPaths: ["demo-agent"],
-        userProvidedEndpoints: ["http://127.0.0.1:3212"]
+        userProvidedPaths: parseList(els.discoveryPaths.value),
+        userProvidedEndpoints: parseList(els.discoveryEndpoints.value)
       })
     });
     await refresh();
@@ -172,6 +193,73 @@ els.candidateList.addEventListener("click", async (event) => {
     const runId = encodeURIComponent(button.dataset.discoveryRunId);
     const candidateId = encodeURIComponent(button.dataset.candidateId);
     await fetch(`${apiBase}/api/discovery/${runId}/candidates/${candidateId}/register`, {
+      method: "POST"
+    });
+    await refresh();
+  } finally {
+    updateActions(lastState, currentInvocation());
+  }
+});
+
+els.createIntegrationButton.addEventListener("click", async () => {
+  els.createIntegrationButton.disabled = true;
+  try {
+    const data = await postIntegrationArtifact({ artifactType: "integration_plan", reviewState: "draft", generatedByAi: false });
+    selectedArtifactId = data.artifact.id;
+    await refresh();
+  } catch (error) {
+    els.integrationSummary.textContent = error instanceof Error ? error.message : "Unable to save integration draft.";
+  } finally {
+    updateActions(lastState, currentInvocation());
+  }
+});
+
+els.generateIntegrationButton.addEventListener("click", async () => {
+  const artifact = selectedIntegrationArtifact(lastState);
+  if (!artifact) return;
+
+  els.generateIntegrationButton.disabled = true;
+  try {
+    await fetch(`${apiBase}/api/integration-artifacts/${encodeURIComponent(artifact.id)}/generate`, {
+      method: "POST"
+    });
+    await refresh();
+  } finally {
+    updateActions(lastState, currentInvocation());
+  }
+});
+
+els.builderDraftButton.addEventListener("click", async () => {
+  els.builderDraftButton.disabled = true;
+  try {
+    const response = await fetch(`${apiBase}/api/integration-builder/draft`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(integrationPayload())
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data.message ?? data.error ?? "Unable to draft integration plan.");
+    }
+    selectedArtifactId = data.artifact.id;
+    await refresh();
+  } catch (error) {
+    els.integrationSummary.textContent = error instanceof Error ? error.message : "Unable to draft integration plan.";
+  } finally {
+    updateActions(lastState, currentInvocation());
+  }
+});
+
+els.artifactList.addEventListener("click", async (event) => {
+  const button = event.target.closest("button[data-artifact-id][data-artifact-action]");
+  if (!button) return;
+
+  button.disabled = true;
+  selectedArtifactId = button.dataset.artifactId;
+  try {
+    const artifactId = encodeURIComponent(button.dataset.artifactId);
+    const action = button.dataset.artifactAction;
+    await fetch(`${apiBase}/api/integration-artifacts/${artifactId}/${action}`, {
       method: "POST"
     });
     await refresh();
@@ -263,6 +351,8 @@ function render(state) {
   const approval = currentApproval(state, invocation);
   const usage = agent ? state.agentUsageSummaries?.find((item) => item.agentId === agent.id) : null;
   const troubleshootingReport = currentTroubleshootingReport(state, invocation);
+  const selectedArtifact = selectedIntegrationArtifact(state) ?? state.integrationArtifacts?.[0] ?? null;
+  if (selectedArtifact) selectedArtifactId = selectedArtifact.id;
 
   if (invocation) currentInvocationId = invocation.id;
 
@@ -298,6 +388,9 @@ function render(state) {
   els.auditDecision.textContent = audit ? readableAudit(audit) : lifecycleAudit ? readableLifecycleAudit(lifecycleAudit) : "Nothing recorded yet";
   els.deliveryStatus.textContent = readableDelivery(invocation?.delivery?.state);
   els.cancelStatus.textContent = readableCancellation(invocation?.cancellation?.state);
+  els.quotaSummary.textContent = quotaSummary(state);
+  els.retentionSummary.textContent = retentionSummary(state.retentionSettings);
+  els.builderSummary.textContent = builderSummary(state.integrationArtifacts);
   els.toggleAgentButton.textContent = agent?.status === "disabled" ? "Enable agent" : "Disable agent";
 
   els.resultTitle.textContent = resultTitle(invocation?.status);
@@ -310,6 +403,7 @@ function render(state) {
   renderApproval(approval);
   renderTimeline(visibleEvents);
   renderDiscovery(discoveryRun);
+  renderIntegrationArtifacts(state.integrationArtifacts ?? [], state.integrationProbeRuns ?? []);
   updateActions(state, invocation);
 }
 
@@ -408,6 +502,9 @@ function renderOffline() {
   els.healthCheckButton.disabled = true;
   els.toggleAgentButton.disabled = true;
   els.discoverButton.disabled = true;
+  els.createIntegrationButton.disabled = true;
+  els.builderDraftButton.disabled = true;
+  els.generateIntegrationButton.disabled = true;
   els.approvalPanel.hidden = true;
   els.approveButton.disabled = true;
   els.denyButton.disabled = true;
@@ -415,7 +512,9 @@ function renderOffline() {
   els.troubleshooterPanel.hidden = true;
   els.runBlockReason.textContent = "Server is offline.";
   els.discoverySummary.textContent = "Server is offline.";
+  els.integrationSummary.textContent = "Server is offline.";
   els.candidateList.replaceChildren();
+  els.artifactList.replaceChildren();
   renderTimeline([]);
 }
 
@@ -475,6 +574,10 @@ function updateActions(state, invocation) {
   els.healthCheckButton.disabled = !hasServer || !hasAgent || agent?.health?.status === "checking";
   els.toggleAgentButton.disabled = !hasServer || !hasAgent;
   els.discoverButton.disabled = !hasServer || state?.device?.status !== "online" || state?.discoveryRuns?.[0]?.status === "queued" || state?.discoveryRuns?.[0]?.status === "running";
+  const artifact = selectedIntegrationArtifact(state);
+  els.createIntegrationButton.disabled = !hasServer || els.integrationIntent.value.trim().length === 0;
+  els.builderDraftButton.disabled = !hasServer || els.integrationIntent.value.trim().length === 0;
+  els.generateIntegrationButton.disabled = !hasServer || !artifact || artifact.artifactType !== "integration_plan" || ["archived", "rejected"].includes(artifact.reviewState);
   els.runBlockReason.textContent = runBlockReason({ hasServer, hasTask, hasAgent, isRunning, disabled, unhealthy, agent });
 }
 
@@ -532,6 +635,82 @@ function renderDiscovery(discoveryRun) {
   );
 }
 
+function renderIntegrationArtifacts(artifacts, probeRuns) {
+  if (!artifacts.length) {
+    els.integrationSummary.textContent = "Save an unsupported-agent draft before generating reviewable artifacts.";
+    const empty = document.createElement("div");
+    empty.className = "timeline-empty";
+    empty.innerHTML = "<strong>No artifacts yet</strong><span>Draft an unsupported integration to begin review.</span>";
+    els.artifactList.replaceChildren(empty);
+    return;
+  }
+
+  const latest = artifacts[0];
+  els.integrationSummary.textContent = `${latest.summary} is ${readableReviewState(latest.reviewState)}. Generated work stays disabled until explicit registration.`;
+  els.artifactList.replaceChildren(
+    ...artifacts.slice(0, 12).map((artifact) => {
+      const probe = probeRuns.find((item) => item.artifactId === artifact.id);
+      const card = document.createElement("article");
+      card.className = "artifact-card";
+      if (artifact.id === selectedArtifactId) {
+        card.dataset.selected = "true";
+      }
+
+      const title = document.createElement("h3");
+      title.textContent = artifact.summary;
+
+      const description = document.createElement("p");
+      description.textContent = artifact.payload?.adapterGuidance ?? "Review this generated integration artifact before use.";
+
+      const meta = document.createElement("div");
+      meta.className = "candidate-meta";
+      meta.replaceChildren(
+        metaSpan(`Type: ${artifact.artifactType.replaceAll("_", " ")}`),
+        metaSpan(`Adapter: ${readableAdapterType(artifact.targetType)}`),
+        metaSpan(`Review: ${readableReviewState(artifact.reviewState)}`),
+        metaSpan(artifact.generatedByAi ? "Generated by AI" : "User draft"),
+        metaSpan(`Cost: ${artifact.governance?.economics?.model ?? "unknown"}`),
+        metaSpan(`Quota: ${artifact.governance?.quota?.decision ?? "record only"}`)
+      );
+
+      const probeText = document.createElement("p");
+      probeText.textContent = probe ? `${probe.summary} (${probe.status})` : "Probe has not run.";
+
+      const actions = document.createElement("div");
+      actions.className = "artifact-actions";
+      actions.replaceChildren(
+        artifactButton(artifact, "review", "Review"),
+        artifactButton(artifact, "approve", "Approve"),
+        artifactButton(artifact, "reject", "Reject"),
+        artifactButton(artifact, "archive", "Archive"),
+        artifactButton(artifact, "probe", "Probe"),
+        artifactButton(artifact, "register", "Register disabled")
+      );
+
+      card.append(title, description, meta, probeText, actions);
+      return card;
+    })
+  );
+}
+
+function artifactButton(artifact, action, label) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "secondary";
+  button.dataset.artifactId = artifact.id;
+  button.dataset.artifactAction = action;
+  button.textContent = label;
+  const disabledByState =
+    (action === "probe" && (artifact.artifactType !== "adapter_config" || !["approved", "tested"].includes(artifact.reviewState))) ||
+    (action === "register" && (artifact.artifactType !== "adapter_config" || artifact.reviewState !== "tested")) ||
+    (action === "approve" && ["approved", "tested", "enabled", "archived"].includes(artifact.reviewState)) ||
+    (action === "review" && ["needs_review", "tested", "enabled", "archived"].includes(artifact.reviewState)) ||
+    (action === "reject" && ["rejected", "enabled", "archived"].includes(artifact.reviewState)) ||
+    (action === "archive" && artifact.reviewState === "archived");
+  button.disabled = disabledByState;
+  return button;
+}
+
 function metaSpan(text) {
   const span = document.createElement("span");
   span.textContent = text;
@@ -560,6 +739,80 @@ function readableAdapterType(type) {
   if (type === "cli") return "CLI";
   if (type === "http") return "HTTP";
   return type ?? "Unknown";
+}
+
+async function postIntegrationArtifact(overrides = {}) {
+  const response = await fetch(`${apiBase}/api/integration-artifacts`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ...integrationPayload(), ...overrides })
+  });
+  const data = await response.json();
+  if (!response.ok) {
+    throw new Error(data.message ?? data.error ?? "Unable to create integration artifact.");
+  }
+  return data;
+}
+
+function integrationPayload() {
+  return {
+    targetType: els.integrationAdapter.value,
+    title: "Unsupported agent integration",
+    description: els.integrationIntent.value.trim(),
+    command: els.integrationCommand.value.trim(),
+    baseUrl: els.integrationUrl.value.trim(),
+    workingDirectory: els.integrationWorkingDirectory.value.trim(),
+    environmentNeeds: els.integrationEnvironment.value.trim(),
+    cancellation: els.integrationCancellation.value,
+    streaming: els.integrationStreaming.checked,
+    costOwner: els.integrationCostOwner.value.trim() || "usr_local",
+    economicModel: els.integrationEconomicModel.value
+  };
+}
+
+function selectedIntegrationArtifact(state) {
+  if (!state?.integrationArtifacts?.length) {
+    return null;
+  }
+  return state.integrationArtifacts.find((item) => item.id === selectedArtifactId) ?? state.integrationArtifacts[0];
+}
+
+function parseList(value) {
+  return String(value ?? "")
+    .split(/[\n,]+/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function readableReviewState(state) {
+  const map = {
+    draft: "draft",
+    generated: "generated",
+    needs_review: "needs review",
+    approved: "approved",
+    tested: "tested",
+    enabled: "registered",
+    rejected: "rejected",
+    archived: "archived"
+  };
+  return map[state] ?? state ?? "unknown";
+}
+
+function quotaSummary(state) {
+  const latest = state?.quotaDecisionRecords?.[0];
+  if (!latest) return "No quota decision recorded yet";
+  return `${latest.decision}: ${latest.reason}`;
+}
+
+function retentionSummary(settings) {
+  if (!settings) return "Retention is not configured";
+  return `Logs ${settings.logsDays}d, prompts ${settings.promptsDays}d, responses ${settings.responsesDays}d, artifacts ${settings.artifactsDays}d`;
+}
+
+function builderSummary(artifacts = []) {
+  if (!artifacts.length) return "Integration Builder drafts plans only";
+  const generated = artifacts.filter((item) => item.generatedByAi).length;
+  return `${artifacts.length} artifact(s), ${generated} AI-generated, advisory until explicit action`;
 }
 
 function readableStatus(status) {

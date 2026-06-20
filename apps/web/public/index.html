@@ -80,11 +80,90 @@
               <p class="step-label">Discovery</p>
               <h2>Find local agents</h2>
             </div>
+            <div class="discovery-inputs">
+              <label>
+                <span>CLI commands or paths</span>
+                <input id="discoveryPaths" type="text" value="demo-agent" aria-label="CLI commands or paths" />
+              </label>
+              <label>
+                <span>HTTP endpoints</span>
+                <input id="discoveryEndpoints" type="text" value="http://127.0.0.1:3212" aria-label="HTTP endpoints" />
+              </label>
+            </div>
             <div class="discovery-actions">
               <button id="discoverButton" type="button" class="secondary">Discover agents</button>
             </div>
             <p id="discoverySummary" class="action-note">Discovery is conservative and only checks known or user-provided sources.</p>
             <div id="candidateList" class="candidate-list" aria-live="polite"></div>
+          </section>
+
+          <section class="integration-panel" aria-label="Integration builder">
+            <div class="section-heading compact">
+              <p class="step-label">Integration</p>
+              <h2>Connect unsupported agent</h2>
+            </div>
+            <textarea
+              id="integrationIntent"
+              aria-label="Unsupported agent intent"
+              rows="5"
+            >I have an unsupported local CLI agent. It can receive a task and return a summary.</textarea>
+            <div class="integration-fields">
+              <label>
+                <span>Adapter hint</span>
+                <select id="integrationAdapter" aria-label="Adapter hint">
+                  <option value="cli">Local command</option>
+                  <option value="http">HTTP endpoint</option>
+                </select>
+              </label>
+              <label>
+                <span>Command</span>
+                <input id="integrationCommand" type="text" value="demo-agent" aria-label="Command" />
+              </label>
+              <label>
+                <span>URL</span>
+                <input id="integrationUrl" type="text" value="http://127.0.0.1:3212" aria-label="URL" />
+              </label>
+              <label>
+                <span>Working directory</span>
+                <input id="integrationWorkingDirectory" type="text" aria-label="Working directory" />
+              </label>
+              <label>
+                <span>Environment needs</span>
+                <input id="integrationEnvironment" type="text" value="No secrets required" aria-label="Environment needs" />
+              </label>
+              <label>
+                <span>Cancellation</span>
+                <select id="integrationCancellation" aria-label="Cancellation support">
+                  <option value="unknown">Unknown</option>
+                  <option value="supported">Supported</option>
+                  <option value="unsupported">Unsupported</option>
+                </select>
+              </label>
+              <label>
+                <span>Cost owner</span>
+                <input id="integrationCostOwner" type="text" value="usr_local" aria-label="Cost owner" />
+              </label>
+              <label>
+                <span>Cost model</span>
+                <select id="integrationEconomicModel" aria-label="Cost model">
+                  <option value="unknown">Unknown</option>
+                  <option value="free">Free</option>
+                  <option value="external_billed">External billed</option>
+                  <option value="internal_chargeback">Internal chargeback</option>
+                </select>
+              </label>
+              <label class="check-row">
+                <input id="integrationStreaming" type="checkbox" />
+                <span>Streaming</span>
+              </label>
+            </div>
+            <div class="integration-actions">
+              <button id="createIntegrationButton" type="button" class="secondary">Save draft</button>
+              <button id="builderDraftButton" type="button" class="secondary">Platform draft</button>
+              <button id="generateIntegrationButton" type="button" class="secondary">Generate artifacts</button>
+            </div>
+            <p id="integrationSummary" class="action-note">Generated integrations stay disabled until reviewed, tested, and registered explicitly.</p>
+            <div id="artifactList" class="artifact-list" aria-live="polite"></div>
           </section>
         </section>
 
@@ -179,6 +258,18 @@
               <div><dt>Record</dt><dd id="auditDecision">-</dd></div>
               <div><dt>Delivery</dt><dd id="deliveryStatus">-</dd></div>
               <div><dt>Cancellation</dt><dd id="cancelStatus">-</dd></div>
+            </dl>
+          </section>
+
+          <section class="context-section">
+            <div class="section-heading compact">
+              <p class="step-label">Governance</p>
+              <h2>Integration controls</h2>
+            </div>
+            <dl class="facts">
+              <div><dt>Quota</dt><dd id="quotaSummary">-</dd></div>
+              <div><dt>Retention</dt><dd id="retentionSummary">-</dd></div>
+              <div><dt>Builder</dt><dd id="builderSummary">-</dd></div>
             </dl>
           </section>
         </aside>
