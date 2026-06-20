@@ -225,6 +225,15 @@ button.secondary {
   color: #23302c;
 }
 
+.action-note {
+  min-height: 20px;
+  margin: 8px 0 0;
+  color: #6f4a12;
+  font-size: 13px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
 .review-strip {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -353,6 +362,13 @@ dd {
   overflow-wrap: anywhere;
 }
 
+.agent-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-top: 12px;
+}
+
 .result-section {
   min-height: 190px;
 }
@@ -402,6 +418,10 @@ dd {
   }
 
   .actions {
+    grid-template-columns: 1fr;
+  }
+
+  .agent-actions {
     grid-template-columns: 1fr;
   }
 

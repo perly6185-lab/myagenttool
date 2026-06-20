@@ -41,6 +41,7 @@ export type AgentAdapter =
       baseUrl: string;
       authMode?: "none" | "bearer" | "api_key" | "custom";
       requestPath?: string;
+      healthPath?: string;
       method?: "POST";
       payloadShape?: JsonObject;
       timeoutSeconds?: number;
@@ -53,6 +54,7 @@ export type AgentAdapter =
   | { type: "external"; name: string; config?: JsonObject };
 
 export type AgentStatus = "available" | "unavailable" | "disabled" | "unknown";
+export type AgentHealthStatus = "unknown" | "checking" | "healthy" | "unhealthy";
 
 export type CapabilityRiskTag =
   | "read_only"
@@ -84,6 +86,13 @@ export interface AgentLifecycleMetadata {
   managedBy: "bridge" | "platform" | "user" | "external" | "unknown";
 }
 
+export interface AgentHealth {
+  status: AgentHealthStatus;
+  checkedAt: IsoDateTime | null;
+  message: string;
+  nextAction: string | null;
+}
+
 export interface Agent {
   id: AgentId;
   name: string;
@@ -95,6 +104,7 @@ export interface Agent {
   economics: AgentEconomicsMetadata;
   capabilities: AgentCapability[];
   status: AgentStatus;
+  health?: AgentHealth;
   registrationNotes?: {
     risk: string;
     data: string;
@@ -130,6 +140,7 @@ export interface AgentLifecycleOperation {
   operation: AgentLifecycleOperationType;
   status: "queued" | "running" | "succeeded" | "failed" | "cancelled";
   reason: string | null;
+  message?: string | null;
   createdAt: IsoDateTime;
   completedAt?: IsoDateTime | null;
 }

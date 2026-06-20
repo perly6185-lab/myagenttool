@@ -62,6 +62,12 @@ const state = {
         }
       ],
       status: "unavailable",
+      health: {
+        status: "unknown",
+        checkedAt: null,
+        message: "Health has not been checked yet.",
+        nextAction: "Run a health check before relying on this agent."
+      },
       registrationNotes: {
         risk: "Low risk demo command. It does not read or write user files.",
         data: "Task text, logs, trace, and final result are stored in the local demo server.",
@@ -75,7 +81,9 @@ const state = {
   events: [],
   traces: [],
   spans: [],
-  auditSummaries: []
+  auditSummaries: [],
+  healthChecks: [],
+  lifecycleAuditRecords: []
 };
 
 let idCounter = 1;
@@ -127,6 +135,10 @@ const server = http.createServer(async (req, res) => {
       state.device.registeredCapabilities = Array.isArray(body.capabilities) ? body.capabilities.map(String) : [];
       state.device.updatedAt = now();
       for (const agent of state.agents.filter((item) => item.location.type === "local_device")) {
+        if (isAgentDisabled(agent)) {
+          agent.updatedAt = now();
+          continue;
+        }
         agent.status = "available";
         agent.updatedAt = now();
       }
@@ -154,6 +166,31 @@ const server = http.createServer(async (req, res) => {
         return;
       }
       sendJson(res, 201, { agent });
+      return;
+    }
+
+    const agentActionMatch = url.pathname.match(/^\/api\/agents\/([^/]+)\/(enable|disable|health-check)$/);
+    if (req.method === "POST" && agentActionMatch) {
+      const agent = findAgent(decodeURIComponent(agentActionMatch[1]));
+      if (!agent) {
+        sendJson(res, 404, { error: "agent_not_found" });
+        return;
+      }
+
+      if (agentActionMatch[2] === "disable") {
+        const operation = disableAgent(agent);
+        sendJson(res, 200, { agent, operation });
+        return;
+      }
+
+      if (agentActionMatch[2] === "enable") {
+        const operation = enableAgent(agent);
+        sendJson(res, 200, { agent, operation });
+        return;
+      }
+
+      const operation = createAgentHealthCheck(agent);
+      sendJson(res, 202, { agent, operation });
       return;
     }
 
@@ -188,6 +225,47 @@ const server = http.createServer(async (req, res) => {
         input: invocation.input,
         options: invocation.options
       });
+      return;
+    }
+
+    if (req.method === "GET" && url.pathname === "/api/bridge/health-next") {
+      state.device.lastSeenAt = now();
+      if (state.device.unlinkState !== "linked") {
+        sendJson(res, 204, null);
+        return;
+      }
+
+      const operation = nextBridgeHealthCheck();
+      if (!operation) {
+        sendJson(res, 204, null);
+        return;
+      }
+
+      markHealthCheckStarted(operation);
+      sendJson(res, 200, {
+        namespace,
+        protocolVersion,
+        checkId: operation.id,
+        agentId: operation.agentId,
+        adapter: findAgent(operation.agentId)?.adapter ?? null
+      });
+      return;
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/bridge/health-complete") {
+      const body = await readJson(req);
+      const operation = state.healthChecks.find((item) => item.id === body.checkId && item.agentId === body.agentId);
+      if (!operation) {
+        sendJson(res, 404, { error: "health_check_not_found" });
+        return;
+      }
+
+      completeHealthCheck(operation, {
+        status: body.status,
+        message: body.message,
+        nextAction: body.nextAction
+      });
+      sendJson(res, 200, { ok: true, operation, agent: findAgent(operation.agentId) });
       return;
     }
 
@@ -259,6 +337,13 @@ const server = http.createServer(async (req, res) => {
         sendJson(res, 409, { error: "agent_disabled" });
         return;
       }
+      if (agent.health?.status === "unhealthy") {
+        sendJson(res, 409, {
+          error: "agent_unhealthy",
+          message: agent.health.message
+        });
+        return;
+      }
       if (agent.location.type === "local_device" && state.device.unlinkState !== "linked") {
         sendJson(res, 409, { error: "device_unlinked" });
         return;
@@ -321,7 +406,18 @@ function registerAgent(body) {
   const agent = type === "cli" ? createCliAgent(body) : createHttpAgent(body);
   const existingIndex = state.agents.findIndex((item) => item.id === agent.id);
   if (existingIndex >= 0) {
-    state.agents[existingIndex] = { ...state.agents[existingIndex], ...agent, updatedAt: now() };
+    const existing = state.agents[existingIndex];
+    const merged = {
+      ...existing,
+      ...agent,
+      health: existing.health ?? agent.health,
+      updatedAt: now()
+    };
+    if (isAgentDisabled(existing)) {
+      merged.lifecycle = { ...agent.lifecycle, state: "disabled" };
+      merged.status = "disabled";
+    }
+    state.agents[existingIndex] = merged;
   } else {
     state.agents.push(agent);
   }
@@ -377,6 +473,7 @@ function createHttpAgent(body) {
     throw new Error("HTTP agent baseUrl is required.");
   }
   const requestPath = String(body.requestPath ?? body.adapter?.requestPath ?? "/invoke");
+  const healthPath = String(body.healthPath ?? body.adapter?.healthPath ?? "/health");
   return baseAgent({
     id,
     type: "http",
@@ -388,6 +485,7 @@ function createHttpAgent(body) {
       baseUrl,
       authMode: body.authMode ?? body.adapter?.authMode ?? "none",
       requestPath,
+      healthPath,
       method: "POST",
       payloadShape: body.payloadShape ?? { task: "string" },
       timeoutSeconds: Number(body.timeoutSeconds ?? 30),
@@ -437,10 +535,225 @@ function baseAgent({ id, name, description, location, adapter, capabilities, sta
     },
     capabilities,
     status,
+    health: {
+      status: "unknown",
+      checkedAt: null,
+      message: "Health has not been checked yet.",
+      nextAction: "Run a health check before relying on this agent."
+    },
     registrationNotes,
     createdAt,
     updatedAt: createdAt
   };
+}
+
+function disableAgent(agent) {
+  const operation = createLifecycleOperation(agent, "disable", "Disabled from Web Console.");
+  startLifecycleOperation(operation, `Disabling ${agent.name}.`);
+  agent.lifecycle = { ...agent.lifecycle, state: "disabled" };
+  agent.status = "disabled";
+  agent.updatedAt = now();
+  finishLifecycleOperation(operation, "succeeded", `${agent.name} is disabled. New invocations are blocked.`);
+  return operation;
+}
+
+function enableAgent(agent) {
+  const operation = createLifecycleOperation(agent, "enable", "Enabled from Web Console.");
+  startLifecycleOperation(operation, `Enabling ${agent.name}.`);
+  agent.lifecycle = { ...agent.lifecycle, state: "enabled" };
+  agent.status = enabledAgentStatus(agent);
+  agent.updatedAt = now();
+  finishLifecycleOperation(operation, "succeeded", `${agent.name} is enabled.`);
+  return operation;
+}
+
+function createAgentHealthCheck(agent) {
+  const operation = createLifecycleOperation(agent, "health_check", "Health check requested from Web Console.");
+  state.healthChecks.unshift(operation);
+  state.healthChecks = state.healthChecks.slice(0, 50);
+  agent.health = {
+    status: "checking",
+    checkedAt: null,
+    message: "Health check requested.",
+    nextAction: "Wait for the health result."
+  };
+  agent.updatedAt = now();
+
+  if (agent.adapter.type === "http" && agent.location.type === "remote_http") {
+    queueMicrotask(() => runHttpHealthCheck(operation, agent).catch((error) => {
+      completeHealthCheck(operation, {
+        status: "unhealthy",
+        message: `HTTP health check failed: ${error instanceof Error ? error.message : String(error)}`,
+        nextAction: "Verify the HTTP agent health endpoint."
+      });
+    }));
+    return operation;
+  }
+
+  if (agent.adapter.type === "cli" && agent.location.type === "local_device") {
+    if (state.device.status !== "online" || state.device.unlinkState !== "linked") {
+      completeHealthCheck(operation, {
+        status: "unhealthy",
+        message: "Desktop Bridge is not online for this local agent.",
+        nextAction: "Start Desktop Bridge and retry the health check."
+      });
+    }
+    return operation;
+  }
+
+  completeHealthCheck(operation, {
+    status: "unhealthy",
+    message: "This demo cannot health-check the selected adapter type yet.",
+    nextAction: "Use a CLI or HTTP demo agent."
+  });
+  return operation;
+}
+
+function createLifecycleOperation(agent, operation, reason) {
+  const createdAt = now();
+  const record = {
+    id: nextId("lco_demo"),
+    agentId: agent.id,
+    deviceId: agent.location.type === "local_device" ? agent.location.deviceId : undefined,
+    requestedBy: "usr_local",
+    operation,
+    status: "queued",
+    reason,
+    message: `${operation.replaceAll("_", " ")} queued for ${agent.name}.`,
+    createdAt,
+    completedAt: null
+  };
+  state.lifecycleAuditRecords.unshift(record);
+  state.lifecycleAuditRecords = state.lifecycleAuditRecords.slice(0, 100);
+  appendEvent({
+    invocationId: null,
+    type: "lifecycle_requested",
+    level: "info",
+    message: record.message,
+    data: { operationId: record.id, agentId: agent.id, operation }
+  });
+  return record;
+}
+
+function startLifecycleOperation(operation, message) {
+  if (operation.status !== "queued") {
+    return;
+  }
+  operation.status = "running";
+  operation.message = message;
+  appendEvent({
+    invocationId: null,
+    type: "lifecycle_started",
+    level: "info",
+    message,
+    data: { operationId: operation.id, agentId: operation.agentId, operation: operation.operation }
+  });
+}
+
+function finishLifecycleOperation(operation, status, message) {
+  operation.status = status;
+  operation.message = message;
+  operation.completedAt = now();
+  appendEvent({
+    invocationId: null,
+    type: status === "succeeded" ? "lifecycle_completed" : "lifecycle_failed",
+    level: status === "succeeded" ? "info" : "warn",
+    message,
+    data: { operationId: operation.id, agentId: operation.agentId, operation: operation.operation }
+  });
+}
+
+function nextBridgeHealthCheck() {
+  return state.healthChecks.find((operation) => {
+    if (operation.status !== "queued") {
+      return false;
+    }
+    const agent = findAgent(operation.agentId);
+    return agent?.adapter.type === "cli" && agent.location.type === "local_device";
+  });
+}
+
+function markHealthCheckStarted(operation) {
+  const agent = findAgent(operation.agentId);
+  if (agent) {
+    agent.health = {
+      status: "checking",
+      checkedAt: null,
+      message: "Desktop Bridge is checking this agent.",
+      nextAction: "Wait for the health result."
+    };
+    agent.updatedAt = now();
+  }
+  startLifecycleOperation(operation, `Health check started for ${agent?.name ?? operation.agentId}.`);
+}
+
+async function runHttpHealthCheck(operation, agent) {
+  markHealthCheckStarted(operation);
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), Number(agent.adapter.timeoutSeconds ?? 10) * 1000);
+  try {
+    const url = new URL(agent.adapter.healthPath ?? "/health", agent.adapter.baseUrl);
+    const response = await fetch(url, {
+      method: "GET",
+      signal: controller.signal
+    });
+    const text = await response.text();
+    let payload = null;
+    try {
+      payload = text ? JSON.parse(text) : null;
+    } catch {
+      payload = { message: text };
+    }
+    completeHealthCheck(operation, {
+      status: response.ok ? "healthy" : "unhealthy",
+      message: payload?.message ?? payload?.status ?? `HTTP health endpoint returned ${response.status}.`,
+      nextAction: response.ok ? null : "Inspect the HTTP agent health endpoint."
+    });
+  } catch (error) {
+    completeHealthCheck(operation, {
+      status: "unhealthy",
+      message: `HTTP health check failed: ${error instanceof Error ? error.message : String(error)}`,
+      nextAction: "Verify that the HTTP agent is reachable."
+    });
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function completeHealthCheck(operation, result) {
+  const agent = findAgent(operation.agentId);
+  const healthy = result.status === "healthy" || result.status === "ok" || result.status === "succeeded";
+  const message = String(result.message ?? (healthy ? "Agent health check passed." : "Agent health check failed."));
+  const nextAction = result.nextAction === undefined
+    ? healthy ? null : "Review the agent setup, then run another health check."
+    : result.nextAction;
+
+  finishLifecycleOperation(operation, healthy ? "succeeded" : "failed", message);
+  if (!agent) {
+    return;
+  }
+
+  agent.health = {
+    status: healthy ? "healthy" : "unhealthy",
+    checkedAt: now(),
+    message,
+    nextAction
+  };
+  agent.updatedAt = now();
+}
+
+function enabledAgentStatus(agent) {
+  if (agent.location.type === "local_device") {
+    return state.device.status === "online" && state.device.unlinkState === "linked" ? "available" : "unavailable";
+  }
+  if (agent.location.type === "remote_http") {
+    return "available";
+  }
+  return "unknown";
+}
+
+function isAgentDisabled(agent) {
+  return agent?.status === "disabled" || agent?.lifecycle?.state === "disabled";
 }
 
 function createInvocation(task, agent = defaultAgent()) {
@@ -516,9 +829,16 @@ function createInvocation(task, agent = defaultAgent()) {
 }
 
 function nextDispatchableInvocation() {
-  return state.invocations.find((item) =>
-    item.status === "queued" && ["queued", "redelivering"].includes(item.delivery.state)
-  );
+  return state.invocations.find((item) => {
+    if (item.status !== "queued" || !["queued", "redelivering"].includes(item.delivery.state)) {
+      return false;
+    }
+    const agent = findAgent(item.agentId);
+    if (!agent) {
+      return false;
+    }
+    return !isAgentDisabled(agent) && agent?.health?.status !== "unhealthy";
+  });
 }
 
 function markDispatched(invocation) {
@@ -876,6 +1196,10 @@ function unlinkDevice() {
   state.device.credentialRevokedAt = now();
   state.device.updatedAt = now();
   for (const agent of state.agents.filter((item) => item.location.type === "local_device")) {
+    if (isAgentDisabled(agent)) {
+      agent.updatedAt = now();
+      continue;
+    }
     agent.status = "unavailable";
     agent.updatedAt = now();
   }
@@ -928,7 +1252,9 @@ function publicState() {
     events: state.events,
     traces: state.traces,
     spans: state.spans,
-    auditSummaries: state.auditSummaries
+    auditSummaries: state.auditSummaries,
+    healthChecks: state.healthChecks,
+    lifecycleAuditRecords: state.lifecycleAuditRecords
   };
 }
 
@@ -956,12 +1282,40 @@ function runProtocolSelfCheck() {
   });
   assert(httpAgent.adapter.type === "http", "HTTP agent should register");
   assert(httpAgent.adapter.baseUrl === "http://127.0.0.1:1", "HTTP agent should keep base URL");
+  assert(httpAgent.adapter.healthPath === "/health", "HTTP agent should default health path");
 
+  const disableOperation = disableAgent(cliAgent);
+  assert(cliAgent.status === "disabled", "disabled CLI agent should report disabled");
+  assert(disableOperation.status === "succeeded", "disable operation should complete");
+
+  const disabledInvocation = createInvocation("disabled dispatch should wait", cliAgent);
+  assert(nextDispatchableInvocation()?.id !== disabledInvocation.id, "disabled agent work should not dispatch");
+
+  const enableOperation = enableAgent(cliAgent);
+  assert(enableOperation.status === "succeeded", "enable operation should complete");
+  assert(cliAgent.status === "unavailable", "enabled offline CLI agent should be unavailable");
+
+  state.device.status = "online";
+  const healthOperation = createAgentHealthCheck(cliAgent);
+  assert(healthOperation.status === "queued", "CLI health check should queue for Desktop Bridge");
+  assert(nextBridgeHealthCheck()?.id === healthOperation.id, "queued CLI health check should be bridge-visible");
+  markHealthCheckStarted(healthOperation);
+  completeHealthCheck(healthOperation, {
+    status: "healthy",
+    message: "Self-check CLI health passed.",
+    nextAction: null
+  });
+  assert(cliAgent.health?.status === "healthy", "completed CLI health should mark agent healthy");
+  assert(state.lifecycleAuditRecords.some((item) => item.id === healthOperation.id && item.status === "succeeded"), "health should record lifecycle audit");
+  state.device.status = "offline";
+
+  const traceCountBeforeInvocation = state.traces.length;
+  const spanCountBeforeInvocation = state.spans.length;
   const invocation = createInvocation("self-check invocation", cliAgent);
   assert(invocation.status === "queued", "created invocation should be queued");
   assert(invocation.delivery.state === "queued", "created delivery should be queued");
   assert(invocation.agentId === cliAgent.id, "created invocation should reference selected CLI agent");
-  assert(state.traces.length === 1 && state.spans.length === 1, "trace and root span should be created");
+  assert(state.traces.length === traceCountBeforeInvocation + 1 && state.spans.length === spanCountBeforeInvocation + 1, "trace and root span should be created");
 
   markDispatched(invocation);
   assert(invocation.status === "dispatching", "dispatched invocation should be dispatching");
@@ -1035,6 +1389,8 @@ function resetDemoStateForCheck() {
   state.traces = [];
   state.spans = [];
   state.auditSummaries = [];
+  state.healthChecks = [];
+  state.lifecycleAuditRecords = [];
   idCounter = 1;
 }
 

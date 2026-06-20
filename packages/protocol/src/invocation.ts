@@ -144,7 +144,7 @@ export type InvocationEventType =
 
 export interface InvocationEvent {
   id: InvocationEventId;
-  invocationId: InvocationId;
+  invocationId: InvocationId | null;
   type: InvocationEventType;
   level?: "debug" | "info" | "warn" | "error";
   message?: string;

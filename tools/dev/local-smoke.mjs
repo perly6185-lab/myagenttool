@@ -55,10 +55,41 @@ try {
     name: "Smoke HTTP Agent",
     baseUrl: httpAgentUrl,
     requestPath: "/invoke",
+    healthPath: "/health",
     timeoutSeconds: 5,
     cancellation: "supported"
   });
   assert(registeredHttp.agent.adapter.baseUrl === httpAgentUrl, "registered HTTP agent should keep baseUrl");
+
+  await request("POST", "/api/agents/agt_smoke_cli/health-check");
+  const cliHealthState = await waitFor(async () => {
+    const state = await request("GET", "/api/state");
+    const agent = state.agents.find((item) => item.id === "agt_smoke_cli");
+    return agent?.health?.status === "healthy" ? state : false;
+  }, "healthy CLI agent check");
+  assert(cliHealthState.lifecycleAuditRecords.some((item) => item.agentId === "agt_smoke_cli" && item.operation === "health_check" && item.status === "succeeded"), "CLI health check should record lifecycle audit");
+
+  await request("POST", "/api/agents/agt_smoke_http/health-check");
+  const httpHealthState = await waitFor(async () => {
+    const state = await request("GET", "/api/state");
+    const agent = state.agents.find((item) => item.id === "agt_smoke_http");
+    return agent?.health?.status === "healthy" ? state : false;
+  }, "healthy HTTP agent check");
+  assert(httpHealthState.lifecycleAuditRecords.some((item) => item.agentId === "agt_smoke_http" && item.operation === "health_check" && item.status === "succeeded"), "HTTP health check should record lifecycle audit");
+
+  const disabled = await request("POST", "/api/agents/agt_smoke_cli/disable");
+  assert(disabled.agent.status === "disabled", "disabled agent should report disabled");
+  assert(disabled.operation.status === "succeeded", "disable operation should succeed");
+
+  const disabledRun = await requestAllowError("POST", "/api/invocations", {
+    task: "This should not run while disabled.",
+    agentId: "agt_smoke_cli"
+  });
+  assert(disabledRun.status === 409 && disabledRun.data.error === "agent_disabled", "disabled agent should block new invocations");
+
+  const enabled = await request("POST", "/api/agents/agt_smoke_cli/enable");
+  assert(enabled.agent.status === "available", "enabled online CLI agent should become available");
+  assert(enabled.operation.status === "succeeded", "enable operation should succeed");
 
   await waitFor(async () => {
     const state = await request("GET", "/api/state");
@@ -176,6 +207,12 @@ try {
 
 function startHttpAgent() {
   const server = http.createServer(async (req, res) => {
+    if (req.method === "GET" && req.url === "/health") {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ status: "ok", message: "Smoke HTTP Agent healthy." }));
+      return;
+    }
+
     if (req.method !== "POST" || req.url !== "/invoke") {
       res.writeHead(404, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ error: "not_found" }));
@@ -249,6 +286,16 @@ async function request(method, path, body) {
     throw new Error(`${method} ${path} failed: ${JSON.stringify(data)}`);
   }
   return data;
+}
+
+async function requestAllowError(method, path, body) {
+  const response = await fetch(`${serverUrl}${path}`, {
+    method,
+    headers: body ? { "Content-Type": "application/json" } : undefined,
+    body: body ? JSON.stringify(body) : undefined
+  });
+  const data = response.status === 204 ? null : await response.json();
+  return { status: response.status, data };
 }
 
 async function readRequestJson(req) {
