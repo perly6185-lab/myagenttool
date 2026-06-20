@@ -73,10 +73,12 @@ try {
     name: "Smoke CLI Agent",
     command: "demo-agent",
     args: ["{{payloadJson}}"],
-    timeoutSeconds: 30
+    timeoutSeconds: 30,
+    costOwner: "team_smoke_ops"
   });
   assert(registeredCli.agent.adapter.command === "demo-agent", "registered CLI agent should keep command");
   assert(registeredCli.agent.adapter.args[0] === "{{payloadJson}}", "registered CLI agent should keep structured argv");
+  assert(registeredCli.agent.economics.costOwner === "team_smoke_ops", "registered CLI agent should keep cost owner metadata");
 
   const registeredHttp = await request("POST", "/api/agents", {
     id: "agt_smoke_http",
@@ -263,6 +265,20 @@ try {
     const invocation = state.invocations.find((item) => item.id === httpFailureInvocationId);
     return invocation?.status === "failed" ? state : false;
   }, "failed HTTP invocation");
+  const troubleshootCreated = await request("POST", `/api/invocations/${httpFailureInvocationId}/troubleshoot`);
+  assert(troubleshootCreated.report.invocationId === httpFailureInvocationId, "troubleshooter should target failed invocation");
+  assert(troubleshootCreated.report.adapterError?.includes("HTTP Agent failed"), "troubleshooter should summarize HTTP failure");
+  assert(troubleshootCreated.report.remediationRequiresApproval === true, "troubleshooter remediation should require approval");
+  const troubleshootingState = await request("GET", "/api/state");
+  const platformInvocation = troubleshootingState.invocations.find((item) => item.agentId === "agt_platform_troubleshooter" && item.status === "succeeded");
+  const platformAudit = troubleshootingState.auditSummaries.find((item) => item.agentId === "agt_platform_troubleshooter");
+  assert(platformInvocation, "troubleshooter should use normal invocation path");
+  assert(platformAudit, "troubleshooter should record audit");
+  assert(troubleshootingState.troubleshootingReports.some((item) => item.invocationId === httpFailureInvocationId), "troubleshooter report should be visible in state");
+  assert(troubleshootingState.agentUsageSummaries.find((item) => item.agentId === "agt_smoke_cli")?.costOwner === "team_smoke_ops", "usage summary should expose cost owner");
+  assert(troubleshootingState.agentUsageSummaries.find((item) => item.agentId === "agt_smoke_cli")?.succeededCount >= 1, "CLI usage should count successful invocations");
+  assert(troubleshootingState.agentUsageSummaries.find((item) => item.agentId === "agt_smoke_http")?.failedCount >= 1, "HTTP usage should count failed invocation");
+  assert(troubleshootingState.agentUsageSummaries.find((item) => item.agentId === "agt_platform_troubleshooter")?.succeededCount >= 1, "platform agent usage should be counted");
 
   const cancelCreated = await request("POST", "/api/invocations", {
     task: "Run the M0 cancellation smoke test.",

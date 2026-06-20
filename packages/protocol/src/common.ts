@@ -12,6 +12,7 @@ export type IdeaSessionId = `ids_${string}`;
 export type LifecycleOperationId = `lco_${string}`;
 export type ApprovalRequestId = `apr_${string}`;
 export type PolicyDecisionId = `pdr_${string}`;
+export type TroubleshootingReportId = `trb_${string}`;
 export type IntegrationArtifactId = `itg_${string}`;
 export type InvocationEventId = `evt_${string}`;
 export type TraceId = `trc_${string}`;

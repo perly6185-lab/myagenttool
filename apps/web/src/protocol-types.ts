@@ -2,11 +2,13 @@ import type {
   Agent,
   AgentDiscoveryRun,
   AgentLifecycleOperation,
+  AgentUsageSummary,
   ApprovalRequest,
   AuditSummary,
   Device,
   Invocation,
   InvocationEvent,
+  InvocationTroubleshootingReport,
   PolicyDecisionRecord,
 } from "@myagenttool/protocol";
 
@@ -22,4 +24,6 @@ export type WebConsoleSnapshot = {
   discoveryRuns: AgentDiscoveryRun[];
   approvalRequests: ApprovalRequest[];
   policyDecisionRecords: PolicyDecisionRecord[];
+  troubleshootingReports: InvocationTroubleshootingReport[];
+  agentUsageSummaries: AgentUsageSummary[];
 };

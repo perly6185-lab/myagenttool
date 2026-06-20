@@ -2,11 +2,13 @@ import type {
   Agent,
   AgentDiscoveryRun,
   AgentLifecycleOperation,
+  AgentUsageSummary,
   ApprovalRequest,
   AuditSummary,
   Device,
   Invocation,
   InvocationEvent,
+  InvocationTroubleshootingReport,
   PolicyDecisionRecord,
   Span,
   Trace,
@@ -25,4 +27,6 @@ export type LocalDemoServerState = {
   discoveryRuns: AgentDiscoveryRun[];
   approvalRequests: ApprovalRequest[];
   policyDecisionRecords: PolicyDecisionRecord[];
+  troubleshootingReports: InvocationTroubleshootingReport[];
+  agentUsageSummaries: AgentUsageSummary[];
 };
