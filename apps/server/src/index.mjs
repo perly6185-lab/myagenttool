@@ -75,6 +75,51 @@ const state = {
         cancellation: "The bridge forwards cancellation to the local demo process."
       },
       createdAt: now()
+    },
+    {
+      id: "agt_platform_troubleshooter",
+      name: "Invocation Troubleshooter",
+      description: "Platform-owned agent that explains failed invocations and suggested fixes.",
+      ownerUserId: "system",
+      location: { type: "platform_agent" },
+      adapter: { type: "platform", name: "invocation_troubleshooter_agent" },
+      lifecycle: {
+        state: "enabled",
+        installState: "installed",
+        version: "0.0.0",
+        managedBy: "platform"
+      },
+      economics: {
+        model: "free",
+        pricingDimensions: ["per_invocation"],
+        currency: "USD",
+        costOwner: "usr_local",
+        budgetPoolId: null,
+        unknownCostPolicy: "warn"
+      },
+      capabilities: [
+        {
+          name: "troubleshoot_invocation",
+          description: "Summarizes failed invocation state, logs, bridge status, adapter errors, and suggested fixes.",
+          riskLevel: "low",
+          riskTags: ["read_only"]
+        }
+      ],
+      status: "available",
+      health: {
+        status: "healthy",
+        checkedAt: now(),
+        message: "Platform troubleshooting agent is available.",
+        nextAction: null
+      },
+      registrationNotes: {
+        risk: "Read-only platform agent. It explains recorded state and cannot remediate without approval.",
+        data: "Reads invocation status, related events, bridge state, adapter metadata, trace, and audit records from the local demo server.",
+        cost: "Free platform demo helper. No billing automation is performed.",
+        cancellation: "Runs synchronously in the local demo server."
+      },
+      createdAt: now(),
+      updatedAt: now()
     }
   ],
   invocations: [],
@@ -86,7 +131,9 @@ const state = {
   lifecycleAuditRecords: [],
   discoveryRuns: [],
   approvalRequests: [],
-  policyDecisionRecords: []
+  policyDecisionRecords: [],
+  troubleshootingReports: [],
+  agentUsageSummaries: []
 };
 
 let idCounter = 1;
@@ -465,6 +512,23 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    const troubleshootMatch = url.pathname.match(/^\/api\/invocations\/([^/]+)\/troubleshoot$/);
+    if (req.method === "POST" && troubleshootMatch) {
+      const invocation = findInvocation(troubleshootMatch[1]);
+      if (!invocation) {
+        sendJson(res, 404, { error: "invocation_not_found" });
+        return;
+      }
+      if (!["failed", "cancelled", "timed_out", "expired", "rejected"].includes(invocation.status)) {
+        sendJson(res, 409, { error: "invocation_not_troubleshootable" });
+        return;
+      }
+
+      const report = createTroubleshootingReport(invocation);
+      sendJson(res, 201, { report });
+      return;
+    }
+
     sendJson(res, 404, { error: "not_found" });
   } catch (error) {
     sendJson(res, 500, {
@@ -553,7 +617,8 @@ function createCliAgent(body) {
       data: "Task input and command output are streamed to the local demo server as invocation events.",
       cost: "Cost is external or unknown unless the registered command reports it.",
       cancellation: "The Desktop Bridge attempts to terminate the process tree when cancellation is requested."
-    }
+    },
+    economics: normalizeAgentEconomics(body)
   });
 }
 
@@ -597,11 +662,12 @@ function createHttpAgent(body) {
       data: "Task input leaves the local demo server and endpoint response is stored as the result.",
       cost: "Cost is external or unknown unless the endpoint reports it.",
       cancellation: "The server aborts the HTTP request when supported; otherwise cancellation is recorded as not supported or unknown."
-    }
+    },
+    economics: normalizeAgentEconomics(body)
   });
 }
 
-function baseAgent({ id, name, description, location, adapter, capabilities, status, registrationNotes }) {
+function baseAgent({ id, name, description, location, adapter, capabilities, status, registrationNotes, economics = {} }) {
   const createdAt = now();
   return {
     id,
@@ -614,15 +680,16 @@ function baseAgent({ id, name, description, location, adapter, capabilities, sta
       state: "enabled",
       installState: "installed",
       version: "0.0.0",
-      managedBy: adapter.type === "http" ? "external" : "bridge"
+      managedBy: adapter.type === "http" ? "external" : adapter.type === "platform" ? "platform" : "bridge"
     },
     economics: {
-      model: "unknown",
-      pricingDimensions: [],
-      currency: "USD",
-      costOwner: "usr_local",
-      budgetPoolId: null,
-      unknownCostPolicy: "warn"
+      model: normalizeEconomicModel(economics.model, "unknown"),
+      pricingDimensions: normalizeStringArray(economics.pricingDimensions),
+      currency: String(economics.currency ?? "USD"),
+      costOwner: String(economics.costOwner ?? "usr_local"),
+      budgetPoolId: economics.budgetPoolId ?? null,
+      revenueOwner: economics.revenueOwner ?? null,
+      unknownCostPolicy: normalizeUnknownCostPolicy(economics.unknownCostPolicy, "warn")
     },
     capabilities,
     status,
@@ -1091,21 +1158,22 @@ function createInvocation(task, agent = defaultAgent(), options = {}) {
   const createdAt = now();
   const trace = createTrace(id, agent);
   const policy = evaluateInvocationPolicy(agent, options);
+  const directRun = runsWithoutBridge(agent);
   const invocation = {
     id,
     ideaSessionId: null,
     agentId: agent.id,
     requestedBy: "usr_local",
-    status: policy.decision === "requires_local_approval" ? "waiting_for_local_approval" : agent.adapter.type === "http" ? "running" : "queued",
+    status: policy.decision === "requires_local_approval" ? "waiting_for_local_approval" : directRun ? "running" : "queued",
     delivery: {
       deliveryId: nextId("del_demo"),
       deviceId: agent.location.type === "local_device" ? agent.location.deviceId : null,
-      state: policy.decision === "requires_local_approval" ? "not_required" : agent.adapter.type === "http" ? "not_required" : "queued",
+      state: policy.decision === "requires_local_approval" ? "not_required" : directRun ? "not_required" : "queued",
       idempotencyKey: `idem_${id}`,
       leaseExpiresAt: null,
-      dispatchAttempts: policy.decision === "requires_local_approval" ? 0 : agent.adapter.type === "http" ? 1 : 0,
-      lastDispatchAt: policy.decision === "requires_local_approval" ? null : agent.adapter.type === "http" ? createdAt : null,
-      acknowledgedAt: policy.decision === "requires_local_approval" ? null : agent.adapter.type === "http" ? createdAt : null,
+      dispatchAttempts: policy.decision === "requires_local_approval" ? 0 : directRun ? 1 : 0,
+      lastDispatchAt: policy.decision === "requires_local_approval" ? null : directRun ? createdAt : null,
+      acknowledgedAt: policy.decision === "requires_local_approval" ? null : directRun ? createdAt : null,
       bridgeCursor: null,
       expiresAt: null
     },
@@ -1154,9 +1222,9 @@ function createInvocation(task, agent = defaultAgent(), options = {}) {
   });
   appendEvent({
     invocationId: invocation.id,
-    type: policy.decision === "requires_local_approval" ? "local_approval_requested" : agent.adapter.type === "http" ? "invocation_started" : "delivery_queued",
+    type: policy.decision === "requires_local_approval" ? "local_approval_requested" : directRun ? "invocation_started" : "delivery_queued",
     level: "info",
-    message: policy.decision === "requires_local_approval" ? "Local approval is required before this high-risk invocation can run." : agent.adapter.type === "http" ? "HTTP Agent invocation started." : "Invocation queued for Desktop Bridge."
+    message: policy.decision === "requires_local_approval" ? "Local approval is required before this high-risk invocation can run." : directRun ? `${agent.name} invocation started.` : "Invocation queued for Desktop Bridge."
   });
   if (policy.decision === "requires_local_approval") {
     const approval = createApprovalRequest(invocation, agent, policy);
@@ -1270,6 +1338,10 @@ function startInvocationIfAllowed(invocation, agent = findAgent(invocation.agent
   }
 }
 
+function runsWithoutBridge(agent) {
+  return agent.adapter.type === "platform" || (agent.adapter.type === "http" && agent.location.type === "remote_http");
+}
+
 function approveInvocation(approval, invocation) {
   if (approval.status !== "pending" || invocation.status !== "waiting_for_local_approval") {
     return;
@@ -1343,6 +1415,7 @@ function denyInvocation(approval, invocation) {
     message: "Invocation rejected before execution."
   });
   state.auditSummaries.push(createAuditSummary(invocation, "Local approval denied before execution."));
+  recordAgentUsage(invocation, "rejected");
 }
 
 function nextDispatchableInvocation() {
@@ -1438,6 +1511,183 @@ function completeInvocation(invocation, body) {
     data: body.result ?? null
   });
   state.auditSummaries.push(createAuditSummary(invocation, body.summary ?? null));
+  recordAgentUsage(invocation, terminalStatus);
+}
+
+function recordAgentUsage(invocation, terminalStatus) {
+  const agent = findAgent(invocation.agentId);
+  const summary = getAgentUsageSummary(invocation.agentId);
+  summary.invocationCount += 1;
+  if (terminalStatus === "succeeded") {
+    summary.succeededCount += 1;
+  } else if (terminalStatus === "failed" || terminalStatus === "timed_out" || terminalStatus === "expired" || terminalStatus === "rejected") {
+    summary.failedCount += 1;
+  } else if (terminalStatus === "cancelled") {
+    summary.cancelledCount += 1;
+  }
+  summary.lastInvocationId = invocation.id;
+  summary.lastInvocationStatus = terminalStatus;
+  summary.costOwner = agent?.economics?.costOwner ?? "unknown";
+  summary.economicModel = agent?.economics?.model ?? "unknown";
+  summary.currency = agent?.economics?.currency ?? "USD";
+  summary.unknownCostVisible = summary.economicModel === "unknown";
+  summary.updatedAt = now();
+}
+
+function getAgentUsageSummary(agentId) {
+  let summary = state.agentUsageSummaries.find((item) => item.agentId === agentId);
+  if (!summary) {
+    const agent = findAgent(agentId);
+    summary = {
+      agentId,
+      invocationCount: 0,
+      succeededCount: 0,
+      failedCount: 0,
+      cancelledCount: 0,
+      lastInvocationId: null,
+      lastInvocationStatus: null,
+      costOwner: agent?.economics?.costOwner ?? "unknown",
+      economicModel: agent?.economics?.model ?? "unknown",
+      currency: agent?.economics?.currency ?? "USD",
+      unknownCostVisible: (agent?.economics?.model ?? "unknown") === "unknown",
+      updatedAt: null
+    };
+    state.agentUsageSummaries.push(summary);
+  }
+  return summary;
+}
+
+function createTroubleshootingReport(targetInvocation) {
+  const platformAgent = findAgent("agt_platform_troubleshooter");
+  if (!platformAgent) {
+    throw new Error("Platform troubleshooting agent is not registered.");
+  }
+  const platformInvocation = createInvocation(`Troubleshoot invocation ${targetInvocation.id}`, platformAgent, {
+    metadata: { targetInvocationId: targetInvocation.id }
+  });
+  appendEvent({
+    invocationId: platformInvocation.id,
+    type: "platform_agent_started",
+    level: "info",
+    message: `Invocation Troubleshooter started for ${targetInvocation.id}.`,
+    data: { targetInvocationId: targetInvocation.id }
+  });
+
+  const report = buildTroubleshootingReport(targetInvocation, platformAgent);
+  state.troubleshootingReports.unshift(report);
+  state.troubleshootingReports = state.troubleshootingReports.slice(0, 100);
+
+  appendEvent({
+    invocationId: platformInvocation.id,
+    type: "platform_agent_recommended",
+    level: "info",
+    message: report.summary,
+    data: {
+      targetInvocationId: targetInvocation.id,
+      reportId: report.id,
+      suggestedFixes: report.suggestedFixes,
+      remediationRequiresApproval: report.remediationRequiresApproval
+    }
+  });
+  appendEvent({
+    invocationId: platformInvocation.id,
+    type: "platform_agent_action_requested",
+    level: "info",
+    message: "Suggested fixes are advisory only; remediation must be approved and run through normal workflows.",
+    data: { targetInvocationId: targetInvocation.id, reportId: report.id }
+  });
+  completeInvocation(platformInvocation, {
+    status: "succeeded",
+    summary: report.summary,
+    result: {
+      summary: report.summary,
+      output: report,
+      touchedUserFiles: false,
+      cost: { model: platformAgent.economics.model, billable: false }
+    }
+  });
+  return report;
+}
+
+function buildTroubleshootingReport(invocation, platformAgent) {
+  const agent = findAgent(invocation.agentId);
+  const events = state.events.filter((item) => item.invocationId === invocation.id).reverse();
+  const logEvents = events.filter((item) => item.type === "log" || item.type === "agent_output");
+  const audit = state.auditSummaries.find((item) => item.invocationId === invocation.id);
+  const adapterError = findAdapterError(invocation, events, audit);
+  const bridgeState = bridgeStateSummary(invocation, agent);
+  const suggestedFixes = troubleshootingFixes(invocation, agent, adapterError);
+  return {
+    id: nextId("trb_demo"),
+    invocationId: invocation.id,
+    platformAgentId: platformAgent.id,
+    requestedBy: "usr_local",
+    status: "generated",
+    failedStatus: invocation.status,
+    bridgeState,
+    adapterError,
+    logSummary: summarizeLogs(logEvents),
+    suggestedFixes,
+    remediationRequiresApproval: true,
+    summary: `Troubleshooter reviewed ${invocation.id}: status ${invocation.status}; ${adapterError ?? "no adapter error text recorded"}.`,
+    createdAt: now()
+  };
+}
+
+function findAdapterError(invocation, events, audit) {
+  if (audit?.errorSummary) {
+    return audit.errorSummary;
+  }
+  const failedEvent = events.find((event) => ["invocation_failed", "cancel_failed", "local_approval_denied"].includes(event.type));
+  if (failedEvent?.message) {
+    return failedEvent.message;
+  }
+  if (invocation.status === "cancelled") {
+    return invocation.cancellation?.reason ?? "Invocation was cancelled before completion.";
+  }
+  if (invocation.status === "rejected") {
+    return "Invocation was rejected before execution.";
+  }
+  return null;
+}
+
+function bridgeStateSummary(invocation, agent) {
+  if (agent?.location?.type !== "local_device") {
+    return `No Desktop Bridge delivery required; delivery state is ${invocation.delivery?.state ?? "unknown"}.`;
+  }
+  return `Device ${state.device.status}; delivery state ${invocation.delivery?.state ?? "unknown"}; attempts ${invocation.delivery?.dispatchAttempts ?? 0}.`;
+}
+
+function summarizeLogs(logEvents) {
+  if (logEvents.length === 0) {
+    return "No agent log events were recorded.";
+  }
+  const latest = logEvents.slice(-3).map((event) => event.message).filter(Boolean);
+  return `${logEvents.length} log event(s). Latest: ${latest.join(" | ")}`;
+}
+
+function troubleshootingFixes(invocation, agent, adapterError) {
+  const fixes = [];
+  if (agent?.location?.type === "local_device" && state.device.status !== "online") {
+    fixes.push("Start or reconnect Desktop Bridge, then retry the task.");
+  }
+  if (invocation.delivery?.dispatchAttempts === 0 && invocation.delivery?.state === "queued") {
+    fixes.push("Check whether the agent is disabled, unhealthy, or waiting for the bridge.");
+  }
+  if (agent?.health?.status === "unhealthy") {
+    fixes.push("Run an agent health check after fixing the reported health issue.");
+  }
+  if (adapterError?.toLowerCase().includes("http")) {
+    fixes.push("Verify the HTTP agent URL, request path, and local service logs.");
+  }
+  if (invocation.status === "rejected") {
+    fixes.push("Review the local approval request before retrying high-risk work.");
+  }
+  if (fixes.length === 0) {
+    fixes.push("Review the event timeline and retry after confirming the selected agent setup.");
+  }
+  fixes.push("Do not apply remediation automatically; use the normal approved workflow for changes.");
+  return fixes;
 }
 
 async function runHttpInvocation(invocation, agent) {
@@ -1573,6 +1823,7 @@ function cancelInvocation(invocation) {
       message: "Invocation cancelled before execution."
     });
     state.auditSummaries.push(createAuditSummary(invocation, "Cancelled before local execution."));
+    recordAgentUsage(invocation, "cancelled");
     return;
   }
 
@@ -1697,7 +1948,7 @@ function findApprovalRequest(id) {
 }
 
 function defaultAgent() {
-  return state.agents.find((item) => item.id === "agt_demo_cli") ?? state.agents[0] ?? null;
+  return state.agents.find((item) => item.id === "agt_demo_cli") ?? state.agents.find((item) => item.adapter.type !== "platform") ?? state.agents[0] ?? null;
 }
 
 function findAgent(id) {
@@ -1727,6 +1978,33 @@ function normalizeRiskLevel(value, fallback = "medium") {
 function normalizeRiskTags(value, fallback) {
   const tags = normalizeStringArray(value);
   return tags.length > 0 ? tags : fallback;
+}
+
+function normalizeAgentEconomics(body = {}) {
+  const economics = body.economics && typeof body.economics === "object" && !Array.isArray(body.economics)
+    ? body.economics
+    : {};
+  return {
+    model: normalizeEconomicModel(body.economicModel ?? economics.model, "unknown"),
+    pricingDimensions: normalizeStringArray(body.pricingDimensions ?? economics.pricingDimensions),
+    currency: String(body.currency ?? economics.currency ?? "USD"),
+    costOwner: String(body.costOwner ?? economics.costOwner ?? "usr_local"),
+    budgetPoolId: body.budgetPoolId ?? economics.budgetPoolId ?? null,
+    revenueOwner: body.revenueOwner ?? economics.revenueOwner ?? null,
+    unknownCostPolicy: normalizeUnknownCostPolicy(body.unknownCostPolicy ?? economics.unknownCostPolicy, "warn")
+  };
+}
+
+function normalizeEconomicModel(value, fallback = "unknown") {
+  const normalized = String(value ?? fallback).trim();
+  return ["free", "external_billed", "platform_billed", "internal_chargeback", "revenue_generating", "rev_share", "unknown"].includes(normalized)
+    ? normalized
+    : fallback;
+}
+
+function normalizeUnknownCostPolicy(value, fallback = "warn") {
+  const normalized = String(value ?? fallback).trim();
+  return ["warn", "require_approval", "block"].includes(normalized) ? normalized : fallback;
 }
 
 function sanitizeAgentId(id) {
@@ -1769,6 +2047,7 @@ function unlinkDevice() {
       message: "Queued invocation cancelled because the device was unlinked."
     });
     state.auditSummaries.push(createAuditSummary(invocation, "Device unlink cancelled queued local work."));
+    recordAgentUsage(invocation, "cancelled");
   }
   for (const invocation of state.invocations.filter((item) => ["dispatching", "running"].includes(item.status))) {
     invocation.status = "cancelling";
@@ -1808,7 +2087,9 @@ function publicState() {
     lifecycleAuditRecords: state.lifecycleAuditRecords,
     discoveryRuns: state.discoveryRuns,
     approvalRequests: state.approvalRequests,
-    policyDecisionRecords: state.policyDecisionRecords
+    policyDecisionRecords: state.policyDecisionRecords,
+    troubleshootingReports: state.troubleshootingReports,
+    agentUsageSummaries: state.agentUsageSummaries
   };
 }
 
@@ -1868,6 +2149,7 @@ function runProtocolSelfCheck() {
   assert(httpAgent.adapter.type === "http", "HTTP agent should register");
   assert(httpAgent.adapter.baseUrl === "http://127.0.0.1:1", "HTTP agent should keep base URL");
   assert(httpAgent.adapter.healthPath === "/health", "HTTP agent should default health path");
+  assert(findAgent("agt_platform_troubleshooter")?.adapter.type === "platform", "platform troubleshooter should be registered");
 
   const disableOperation = disableAgent(cliAgent);
   assert(cliAgent.status === "disabled", "disabled CLI agent should report disabled");
@@ -1931,6 +2213,21 @@ function runProtocolSelfCheck() {
   assert(invocation.status === "succeeded", "completed invocation should succeed");
   assert(state.auditSummaries.some((item) => item.invocationId === invocation.id && item.traceId === invocation.traceId), "audit summary should reference trace");
   assert(state.spans.find((item) => item.id === invocation.rootSpanId)?.status === "succeeded", "root span should complete");
+  assert(getAgentUsageSummary(cliAgent.id).succeededCount === 1, "successful invocation should increment agent usage");
+
+  const failedForTroubleshooting = createInvocation("self-check failed invocation", cliAgent);
+  completeInvocation(failedForTroubleshooting, {
+    status: "failed",
+    summary: "Self-check adapter failure.",
+    result: null
+  });
+  const report = createTroubleshootingReport(failedForTroubleshooting);
+  assert(report.invocationId === failedForTroubleshooting.id, "troubleshooter report should target failed invocation");
+  assert(report.adapterError?.includes("Self-check adapter failure"), "troubleshooter should summarize adapter error");
+  assert(report.suggestedFixes.some((item) => item.includes("approved workflow")), "troubleshooter should not remediate automatically");
+  assert(state.invocations.some((item) => item.agentId === "agt_platform_troubleshooter" && item.status === "succeeded"), "troubleshooter should use normal invocation path");
+  assert(state.auditSummaries.some((item) => item.agentId === "agt_platform_troubleshooter"), "troubleshooter should write audit through invocation completion");
+  assert(getAgentUsageSummary("agt_platform_troubleshooter").succeededCount === 1, "platform agent usage should be counted");
 
   const highRiskAgent = registerAgent({
     id: "agt_self_high_risk",
@@ -1965,6 +2262,7 @@ function runProtocolSelfCheck() {
   assert(deniedInvocation.status === "rejected", "denied approval should reject invocation");
   assert(state.auditSummaries.some((item) => item.invocationId === deniedInvocation.id && item.permissionDecision === "denied"), "denied approval should be audited");
   assert(state.events.some((item) => item.invocationId === deniedInvocation.id && item.type === "local_approval_denied"), "denied approval should emit an event");
+  assert(getAgentUsageSummary(highRiskAgent.id).failedCount >= 1, "denied invocation should increment failed usage count");
 
   const queuedCancel = createInvocation("queued cancellation");
   cancelInvocation(queuedCancel);
@@ -1997,7 +2295,7 @@ function resetDemoStateForCheck() {
   state.device.status = "offline";
   state.device.unlinkState = "linked";
   state.device.credentialRevokedAt = null;
-  state.agents = state.agents.filter((agent) => agent.id === "agt_demo_cli");
+  state.agents = state.agents.filter((agent) => agent.id === "agt_demo_cli" || agent.id === "agt_platform_troubleshooter");
   const demoAgent = defaultAgent();
   if (demoAgent) {
     demoAgent.status = "unavailable";
@@ -2013,6 +2311,8 @@ function resetDemoStateForCheck() {
   state.discoveryRuns = [];
   state.approvalRequests = [];
   state.policyDecisionRecords = [];
+  state.troubleshootingReports = [];
+  state.agentUsageSummaries = [];
   idCounter = 1;
 }
 

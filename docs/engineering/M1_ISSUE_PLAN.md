@@ -102,6 +102,22 @@ Add platform assistance and usage:
 - Usage counts by agent and invocation.
 - Cost owner metadata.
 
+Accepted implementation scope:
+
+- A platform-owned Invocation Troubleshooter agent is registered as a governed
+  platform agent.
+- Failed, cancelled, timed-out, expired, or rejected invocations can generate a
+  troubleshooting report with status, logs, bridge state, adapter error, and
+  suggested fixes.
+- Troubleshooting runs through normal invocation, event, trace, audit, and usage
+  paths, and suggestions remain advisory until a user approves normal
+  remediation workflows.
+- Agent registration accepts cost owner metadata and completion records update
+  per-agent usage counts.
+- API state and Web Console details show usage count, cost owner, unknown cost,
+  and troubleshooting summaries.
+- No platform billing automation is introduced.
+
 ## M1 Non-Goals
 
 - Silent installation or uninstall.

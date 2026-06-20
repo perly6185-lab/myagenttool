@@ -141,6 +141,8 @@
               <div><dt>Health</dt><dd id="agentHealth">-</dd></div>
               <div><dt>Capability</dt><dd id="agentCapability">-</dd></div>
               <div><dt>Cost estimate</dt><dd id="agentCost">-</dd></div>
+              <div><dt>Cost owner</dt><dd id="agentCostOwner">-</dd></div>
+              <div><dt>Usage</dt><dd id="agentUsage">-</dd></div>
               <div><dt>Next action</dt><dd id="agentNextAction">-</dd></div>
             </dl>
             <div class="agent-actions" aria-label="Agent management">
@@ -155,6 +157,17 @@
               <h2 id="resultTitle">No result yet</h2>
             </div>
             <p id="resultSummary" class="result-summary">Run a task to see the answer here.</p>
+            <button id="troubleshootButton" type="button" class="secondary troubleshoot-button">Troubleshoot</button>
+            <article id="troubleshooterPanel" class="troubleshooter-panel" aria-label="Troubleshooting summary" hidden>
+              <h3 id="troubleshooterTitle">Troubleshooting summary</h3>
+              <p id="troubleshooterSummary">-</p>
+              <dl class="facts">
+                <div><dt>Bridge</dt><dd id="troubleshooterBridge">-</dd></div>
+                <div><dt>Error</dt><dd id="troubleshooterError">-</dd></div>
+                <div><dt>Logs</dt><dd id="troubleshooterLogs">-</dd></div>
+                <div><dt>Fixes</dt><dd id="troubleshooterFixes">-</dd></div>
+              </dl>
+            </article>
           </section>
 
           <section class="context-section">

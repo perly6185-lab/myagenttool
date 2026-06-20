@@ -11,6 +11,8 @@ const els = {
   agentHealth: document.querySelector("#agentHealth"),
   agentCapability: document.querySelector("#agentCapability"),
   agentCost: document.querySelector("#agentCost"),
+  agentCostOwner: document.querySelector("#agentCostOwner"),
+  agentUsage: document.querySelector("#agentUsage"),
   agentNextAction: document.querySelector("#agentNextAction"),
   deviceSelect: document.querySelector("#deviceSelect"),
   agentSelect: document.querySelector("#agentSelect"),
@@ -48,7 +50,15 @@ const els = {
   cancelStatus: document.querySelector("#cancelStatus"),
   eventList: document.querySelector("#eventList"),
   resultTitle: document.querySelector("#resultTitle"),
-  resultSummary: document.querySelector("#resultSummary")
+  resultSummary: document.querySelector("#resultSummary"),
+  troubleshootButton: document.querySelector("#troubleshootButton"),
+  troubleshooterPanel: document.querySelector("#troubleshooterPanel"),
+  troubleshooterTitle: document.querySelector("#troubleshooterTitle"),
+  troubleshooterSummary: document.querySelector("#troubleshooterSummary"),
+  troubleshooterBridge: document.querySelector("#troubleshooterBridge"),
+  troubleshooterError: document.querySelector("#troubleshooterError"),
+  troubleshooterLogs: document.querySelector("#troubleshooterLogs"),
+  troubleshooterFixes: document.querySelector("#troubleshooterFixes")
 };
 
 let currentInvocationId = null;
@@ -200,6 +210,21 @@ els.denyButton.addEventListener("click", async () => {
   }
 });
 
+els.troubleshootButton.addEventListener("click", async () => {
+  const invocation = currentInvocation();
+  if (!invocation) return;
+
+  els.troubleshootButton.disabled = true;
+  try {
+    await fetch(`${apiBase}/api/invocations/${encodeURIComponent(invocation.id)}/troubleshoot`, {
+      method: "POST"
+    });
+    await refresh();
+  } finally {
+    updateActions(lastState, currentInvocation());
+  }
+});
+
 setInterval(refresh, 700);
 refresh();
 
@@ -236,6 +261,8 @@ function render(state) {
   const lifecycleAudit = state.lifecycleAuditRecords?.find((item) => item.agentId === agent?.id) ?? null;
   const discoveryRun = state.discoveryRuns?.[0] ?? null;
   const approval = currentApproval(state, invocation);
+  const usage = agent ? state.agentUsageSummaries?.find((item) => item.agentId === agent.id) : null;
+  const troubleshootingReport = currentTroubleshootingReport(state, invocation);
 
   if (invocation) currentInvocationId = invocation.id;
 
@@ -254,6 +281,8 @@ function render(state) {
   els.agentHealth.textContent = readableHealth(agent?.health);
   els.agentCapability.textContent = agent?.capabilities?.[0]?.description ?? "No capability selected";
   els.agentCost.textContent = costText(agent?.economics);
+  els.agentCostOwner.textContent = costOwnerText(agent?.economics, usage);
+  els.agentUsage.textContent = usageText(usage);
   els.agentNextAction.textContent = agent?.health?.nextAction ?? agentNextAction(agent, state);
 
   els.safetySummary.textContent = agent?.registrationNotes?.risk ?? "Review the selected agent before running.";
@@ -273,6 +302,7 @@ function render(state) {
 
   els.resultTitle.textContent = resultTitle(invocation?.status);
   els.resultSummary.textContent = resultSummary(invocation, audit);
+  renderTroubleshooter(troubleshootingReport);
 
   const visibleEvents = invocation
     ? state.events.filter((event) => event.invocationId === invocation.id || event.data?.agentId === agent?.id).slice(0, 30)
@@ -295,6 +325,28 @@ function currentApproval(state, invocation) {
     return null;
   }
   return state.approvalRequests?.find((item) => item.id === invocation.approvalRequestId) ?? null;
+}
+
+function currentTroubleshootingReport(state, invocation) {
+  if (!state || !invocation) {
+    return null;
+  }
+  return state.troubleshootingReports?.find((item) => item.invocationId === invocation.id) ?? null;
+}
+
+function renderTroubleshooter(report) {
+  if (!report) {
+    els.troubleshooterPanel.hidden = true;
+    return;
+  }
+
+  els.troubleshooterPanel.hidden = false;
+  els.troubleshooterTitle.textContent = `Troubleshooting ${report.invocationId}`;
+  els.troubleshooterSummary.textContent = report.summary;
+  els.troubleshooterBridge.textContent = report.bridgeState;
+  els.troubleshooterError.textContent = report.adapterError ?? "No adapter error text recorded.";
+  els.troubleshooterLogs.textContent = report.logSummary;
+  els.troubleshooterFixes.textContent = report.suggestedFixes?.join(" ") ?? "Review the event timeline and retry safely.";
 }
 
 function renderApproval(approval) {
@@ -342,6 +394,8 @@ function renderOffline() {
   els.agentStatus.textContent = "Unavailable";
   els.agentHealth.textContent = "-";
   els.agentCapability.textContent = "-";
+  els.agentCostOwner.textContent = "-";
+  els.agentUsage.textContent = "-";
   els.agentNextAction.textContent = "-";
   els.agentLifecycle.textContent = "-";
   els.deliveryStatus.textContent = "Not delivered";
@@ -357,6 +411,8 @@ function renderOffline() {
   els.approvalPanel.hidden = true;
   els.approveButton.disabled = true;
   els.denyButton.disabled = true;
+  els.troubleshootButton.disabled = true;
+  els.troubleshooterPanel.hidden = true;
   els.runBlockReason.textContent = "Server is offline.";
   els.discoverySummary.textContent = "Server is offline.";
   els.candidateList.replaceChildren();
@@ -409,11 +465,13 @@ function updateActions(state, invocation) {
   const unhealthy = agent?.health?.status === "unhealthy";
   const approval = currentApproval(state, invocation);
   const approvalPending = approval?.status === "pending";
+  const canTroubleshoot = ["failed", "cancelled", "timed_out", "expired", "rejected"].includes(invocation?.status);
   els.runButton.textContent = localAgent && state?.device?.status !== "online" ? "Queue for this computer" : "Run on this computer";
   els.runButton.disabled = !hasServer || !hasTask || !hasAgent || isRunning || disabled || unhealthy;
   els.cancelButton.disabled = !invocation || !["queued", "dispatching", "waiting_for_local_approval", "running"].includes(invocation.status);
   els.approveButton.disabled = !approvalPending;
   els.denyButton.disabled = !approvalPending;
+  els.troubleshootButton.disabled = !canTroubleshoot;
   els.healthCheckButton.disabled = !hasServer || !hasAgent || agent?.health?.status === "checking";
   els.toggleAgentButton.disabled = !hasServer || !hasAgent;
   els.discoverButton.disabled = !hasServer || state?.device?.status !== "online" || state?.discoveryRuns?.[0]?.status === "queued" || state?.discoveryRuns?.[0]?.status === "running";
@@ -599,6 +657,18 @@ function costText(economics) {
   return `${economics.model} (${economics.unknownCostPolicy})`;
 }
 
+function costOwnerText(economics, usage) {
+  const owner = usage?.costOwner ?? economics?.costOwner ?? "unknown";
+  const model = usage?.economicModel ?? economics?.model ?? "unknown";
+  if (owner === "unknown") return `Unknown owner (${model})`;
+  return `${owner} (${model})`;
+}
+
+function usageText(usage) {
+  if (!usage) return "No completed invocations yet";
+  return `${usage.invocationCount} completed: ${usage.succeededCount} succeeded, ${usage.failedCount} failed, ${usage.cancelledCount} cancelled`;
+}
+
 function readableDelivery(state) {
   const map = {
     not_required: "Runs without computer delivery",
@@ -693,6 +763,7 @@ function adapterText(adapter) {
   if (!adapter) return "-";
   if (adapter.type === "cli") return `CLI command: ${adapter.command}`;
   if (adapter.type === "http") return `HTTP endpoint: ${adapter.baseUrl}`;
+  if (adapter.type === "platform") return `Platform agent: ${adapter.name ?? "built-in"}`;
   return adapter.type;
 }
 

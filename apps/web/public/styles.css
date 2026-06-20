@@ -463,6 +463,39 @@ dd {
   overflow-wrap: anywhere;
 }
 
+.troubleshoot-button {
+  width: 100%;
+  margin-top: 12px;
+}
+
+.troubleshooter-panel {
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+  border-top: 1px solid #e2e6e3;
+  padding-top: 12px;
+}
+
+.troubleshooter-panel[hidden] {
+  display: none;
+}
+
+.troubleshooter-panel h3,
+.troubleshooter-panel p {
+  margin: 0;
+}
+
+.troubleshooter-panel h3 {
+  color: #17201d;
+  font-size: 15px;
+}
+
+.troubleshooter-panel p {
+  color: #2d3935;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
 @media (max-width: 1120px) {
   .workspace {
     grid-template-columns: 1fr 1fr;

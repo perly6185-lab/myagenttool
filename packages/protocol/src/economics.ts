@@ -52,6 +52,21 @@ export interface AgentEconomicsMetadata {
   unknownCostPolicy?: "warn" | "require_approval" | "block";
 }
 
+export interface AgentUsageSummary {
+  agentId: AgentId;
+  invocationCount: number;
+  succeededCount: number;
+  failedCount: number;
+  cancelledCount: number;
+  lastInvocationId: InvocationId | null;
+  lastInvocationStatus: "succeeded" | "failed" | "cancelled" | "timed_out" | "expired" | "rejected" | null;
+  costOwner: UserId | TeamId | "unknown";
+  economicModel: AgentEconomicModel;
+  currency: CurrencyCode;
+  unknownCostVisible: boolean;
+  updatedAt: IsoDateTime | null;
+}
+
 export interface AIProvider {
   id: AIProviderId;
   ownerUserId: UserId;

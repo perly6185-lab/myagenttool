@@ -12,6 +12,7 @@ import type {
   PolicyDecisionId,
   SpanId,
   TraceId,
+  TroubleshootingReportId,
   UserId,
 } from "./common.js";
 import type {
@@ -98,6 +99,22 @@ export interface PolicyDecisionRecord {
   reason: string;
   approvalRequestId?: ApprovalRequestId | null;
   approver?: UserId | null;
+  createdAt: IsoDateTime;
+}
+
+export interface InvocationTroubleshootingReport {
+  id: TroubleshootingReportId;
+  invocationId: InvocationId;
+  platformAgentId: AgentId;
+  requestedBy: UserId;
+  status: "generated";
+  failedStatus: InvocationStatus;
+  bridgeState: string;
+  adapterError: string | null;
+  logSummary: string;
+  suggestedFixes: string[];
+  remediationRequiresApproval: boolean;
+  summary: string;
   createdAt: IsoDateTime;
 }
 
