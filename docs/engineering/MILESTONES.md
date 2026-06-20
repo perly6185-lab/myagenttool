@@ -55,6 +55,7 @@ Primary source docs:
 - `docs/vision/AGENT_LIFECYCLE.md`
 - `docs/vision/POLICY_AND_RISK.md`
 - `docs/vision/USER_EXPERIENCE.md`
+- `docs/engineering/M1_ISSUE_PLAN.md`
 
 ## M2: Integration Builder and Governance
 
