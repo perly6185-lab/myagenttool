@@ -29,6 +29,19 @@ Start simple:
 - Issues with `acceptance/not-defined` show in the Acceptance Gaps view.
 - Closed issues move to `done`.
 - PRs linked to issues show in the Review view.
+- Use `pnpm github:sync-project -- --repo OWNER/REPO --owner OWNER --project 1
+  --milestone M2` as a dry-run before milestone closeout.
+- Use `--apply` only after the user approves GitHub mutation; add `--done` when
+  closing completed milestone work so issue labels and Project fields move to
+  `done` and `verified`.
+
+Examples:
+
+```text
+pnpm github:sync-project -- --repo perly6185-lab/myagenttool --owner perly6185-lab --project 1 --milestone M2
+pnpm github:sync-project -- --repo perly6185-lab/myagenttool --owner perly6185-lab --project 1 --milestone M2 --done --apply
+pnpm github:sync-project -- --repo perly6185-lab/myagenttool --owner perly6185-lab --project 1 --issues 90,91,92 --done --apply
+```
 
 Avoid complex automation until the team has used the board for a few weeks.
 

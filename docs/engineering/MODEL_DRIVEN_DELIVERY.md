@@ -56,10 +56,12 @@ After apply, run:
 
 ```text
 pnpm github:check:issues
-node tools/github/src/index.mjs sync-project-fields --owner perly6185-lab --project 1
+pnpm github:sync-project -- --repo perly6185-lab/myagenttool --owner perly6185-lab --project 1 --milestone M2
 ```
 
-The Project sync command remains dry-run unless `--apply` is explicit.
+The Project sync command remains dry-run unless `--apply` is explicit. During
+closeout, add `--done` after acceptance is verified so labels and Project fields
+move to `done` and `verified`.
 
 ### Code Planning Agent
 

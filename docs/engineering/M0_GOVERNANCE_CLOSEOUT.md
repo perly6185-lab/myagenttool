@@ -27,10 +27,10 @@ pnpm github:check
 pnpm github:check:issues
 pnpm github:check:pr
 pnpm github:check:branch
-node tools/github/src/index.mjs sync-project-fields --owner perly6185-lab --project 1
+pnpm github:sync-project -- --repo perly6185-lab/myagenttool --owner perly6185-lab --project 1 --milestone M0
 ```
 
-Default behavior is read-only. Project field sync mutates only with `--apply`.
+Default behavior is read-only. Project sync mutates only with `--apply`.
 
 ## Required GitHub CLI Access
 
@@ -39,10 +39,10 @@ Read-only checks need authenticated `gh` access that can read:
 - Repository issues.
 - Pull requests.
 - Actions status.
-- Project items when running project field sync dry-run.
+- Project items when running project sync dry-run.
 
-`sync-project-fields --apply` requires Project write access and should be run
-only after reviewing the dry-run output.
+`github:sync-project -- --apply` requires issue and Project write access and
+should be run only after reviewing the dry-run output.
 
 ## Issue Closure Rule
 

@@ -283,12 +283,13 @@ When GitHub access is available, AI should also run:
 
 ```text
 pnpm github:check:issues
-node tools/github/src/index.mjs sync-project-fields --owner perly6185-lab --project 1
+pnpm github:sync-project -- --repo perly6185-lab/myagenttool --owner perly6185-lab --project 1 --milestone M2
 pnpm github:check:branch
 ```
 
-The Project field sync command is dry-run by default. Use `--apply` only when
-the user has approved Project mutation for that turn.
+The Project sync command is dry-run by default. Use `--apply` only when the user
+has approved Project mutation for that turn. Add `--done` during milestone
+closeout after acceptance is verified.
 
 ## Merge Boundary
 

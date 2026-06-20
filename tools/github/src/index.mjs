@@ -46,6 +46,7 @@ Usage:
   node tools/github/src/index.mjs check-pr --repo OWNER/REPO --pr NUMBER [--fail-on-risk-warnings]
   node tools/github/src/index.mjs check-branch-protection --repo OWNER/REPO --branch main
   node tools/github/src/index.mjs sync-project-fields --owner OWNER --project 1 [--apply]
+  node tools/github/src/index.mjs sync-project --repo OWNER/REPO --owner OWNER --project 1 [--milestone M2|--issues 1,2] [--done] [--apply]
 
 Environment:
   GITHUB_REPOSITORY   default OWNER/REPO for GitHub Actions
@@ -55,6 +56,7 @@ Environment:
 Notes:
   Commands are read-only. They do not mutate issues, Projects, or branches.
   sync-project-fields is dry-run by default and mutates Project fields only with --apply.
+  sync-project is dry-run by default and mutates issue milestones, labels, Project items, and Project fields only with --apply.
   GitHub commands require gh CLI authentication or a GitHub Actions token.
 `;
 
@@ -92,6 +94,11 @@ function main() {
     return;
   }
 
+  if (command === "sync-project") {
+    syncProject(args);
+    return;
+  }
+
   fail(`Unknown command: ${command}\n\n${HELP}`);
 }
 
@@ -125,12 +132,28 @@ function checkLocal() {
   }
 
   const template = readFileSync(resolve(repoRoot, ".github/PULL_REQUEST_TEMPLATE.md"), "utf8");
+  const packageJson = readFileSync(resolve(repoRoot, "package.json"), "utf8");
+  const githubTool = readFileSync(resolve(repoRoot, "tools/github/src/index.mjs"), "utf8");
+  const projectFieldsDoc = readFileSync(resolve(repoRoot, "docs/engineering/PROJECT_FIELDS.md"), "utf8");
   const missingSections = REQUIRED_PR_SECTIONS.filter((section) => !template.includes(section));
   if (missingSections.length > 0) {
     failReport(
       "Pull request template is missing required sections",
       missingSections.map((section) => `missing ${section}`),
     );
+  }
+
+  const missingProjectSync = [
+    [packageJson, "github:sync-project", "package script github:sync-project"],
+    [githubTool, "sync-project --repo OWNER/REPO", "sync-project help command"],
+    [githubTool, "function syncProject(args)", "sync-project implementation"],
+    [githubTool, "Project sync applied", "sync-project apply summary"],
+    [projectFieldsDoc, "github:sync-project", "Project sync documentation"],
+  ]
+    .filter(([content, needle]) => !content.includes(needle))
+    .map(([, , label]) => label);
+  if (missingProjectSync.length > 0) {
+    failReport("Project sync command check failed", missingProjectSync.map((label) => `missing ${label}`));
   }
 
   const visualResult = reviewRiskGates(["apps/web/src/App.tsx"], "## Verification\n- pnpm test\n", 0);
@@ -396,8 +419,309 @@ function syncProjectFields(args) {
   }
 }
 
+function syncProject(args) {
+  const repo = option(args, "--repo") ?? process.env.GITHUB_REPOSITORY ?? defaultRepo();
+  const owner = option(args, "--owner");
+  const projectNumber = option(args, "--project");
+  const milestoneFilter = option(args, "--milestone");
+  const issueFilter = option(args, "--issues");
+  const apply = args.includes("--apply");
+  const markDone = args.includes("--done");
+
+  if (!repo) fail("Missing --repo or GITHUB_REPOSITORY.");
+  if (!owner) fail("Missing --owner.");
+  if (!projectNumber) fail("Missing --project.");
+  if (!milestoneFilter && !issueFilter) fail("Missing --milestone or --issues.");
+
+  const [project, fields, milestones] = [
+    ghJson(["project", "view", projectNumber, "--owner", owner, "--format", "json"]),
+    ghJson(["project", "field-list", projectNumber, "--owner", owner, "--format", "json"]),
+    ghJson(["api", `repos/${repo}/milestones`, "--paginate"]),
+  ];
+
+  const projectId = project.id;
+  const projectTitle = project.title;
+  const fieldMap = buildProjectFieldMap(fields.fields);
+  const milestoneMap = buildMilestoneMap(milestones);
+  const issues = loadSyncProjectIssues({ repo, milestoneFilter, issueFilter });
+  const warnings = [];
+  const operations = [];
+
+  for (const issue of issues) {
+    const parsed = parseProjectFields(issue.body);
+    const labelFields = fieldsFromLabels(issue.labels.map((label) => label.name));
+    const desiredMilestone = normalizeMilestoneName(milestoneFilter ?? parsed.milestone ?? issue.milestone?.title ?? "");
+    const desired = desiredProjectValues({
+      issue,
+      parsed,
+      labelFields,
+      markDone,
+    });
+
+    if (!desiredMilestone) {
+      warnings.push(`#${issue.number} ${issue.title}: no desired milestone found`);
+    } else if (normalizeMilestoneName(issue.milestone?.title ?? "") !== desiredMilestone) {
+      const milestone = milestoneMap.get(desiredMilestone);
+      if (!milestone) {
+        warnings.push(`#${issue.number} ${issue.title}: milestone not found: ${desiredMilestone}`);
+      } else {
+        operations.push({
+          kind: "issue-milestone",
+          issue,
+          from: issue.milestone?.title ?? "",
+          to: milestone.title,
+        });
+      }
+    }
+
+    const desiredLabels = labelsForDesiredProjectValues(desired, markDone);
+    const currentLabels = new Set(issue.labels.map((label) => label.name));
+    const labelsToAdd = desiredLabels.filter((label) => !currentLabels.has(label));
+    const labelsToRemove = labelsToRemoveForSync(currentLabels, desiredLabels);
+    if (labelsToAdd.length > 0 || labelsToRemove.length > 0) {
+      operations.push({
+        kind: "issue-labels",
+        issue,
+        add: labelsToAdd,
+        remove: labelsToRemove,
+      });
+    }
+
+    let projectItem = issue.projectItems.find((item) => item.title === projectTitle);
+    if (!projectItem) {
+      operations.push({
+        kind: "project-add",
+        issue,
+        projectTitle,
+      });
+    }
+
+    const currentProjectValues = projectItem ? currentProjectFields(projectItem) : {};
+    for (const [field, desiredValue] of Object.entries(desired)) {
+      if (!desiredValue || field === "milestone") continue;
+
+      const projectField = fieldMap[field];
+      if (!projectField) {
+        warnings.push(`#${issue.number} ${issue.title}: Project field not found: ${field}`);
+        continue;
+      }
+
+      const normalizedDesired = normalizeValue(desiredValue);
+      const currentValue = currentProjectValues[field];
+      if (projectItem && normalizeValue(currentValue) === normalizedDesired) continue;
+
+      const optionId = projectField.options?.get(normalizedDesired);
+      if (projectField.type === "single-select" && !optionId) {
+        warnings.push(`#${issue.number} ${issue.title}: Project option not found for ${field}=${desiredValue}`);
+        continue;
+      }
+
+      operations.push({
+        kind: "project-field",
+        issue,
+        itemId: projectItem?.id ?? null,
+        field,
+        fieldId: projectField.id,
+        type: projectField.type,
+        from: currentValue ?? "",
+        to: desiredValue,
+        optionId,
+      });
+    }
+  }
+
+  if (warnings.length > 0) {
+    console.log("Project sync warnings:");
+    for (const warning of warnings) console.log(`  - ${warning}`);
+  }
+
+  if (operations.length === 0) {
+    console.log("Project sync OK");
+    return;
+  }
+
+  console.log(`Project sync ${apply ? "applying" : "dry-run"} operations:`);
+  for (const operation of operations) {
+    printProjectSyncOperation(operation);
+  }
+
+  if (!apply) {
+    console.log("Dry-run only. Re-run with --apply to update issues and Project fields.");
+    return;
+  }
+
+  const itemIdsByIssueNumber = new Map();
+  for (const issue of issues) {
+    const item = issue.projectItems.find((projectItem) => projectItem.title === projectTitle);
+    if (item) itemIdsByIssueNumber.set(issue.number, item.id);
+  }
+
+  for (const operation of operations) {
+    if (operation.kind === "issue-milestone") {
+      gh(["issue", "edit", String(operation.issue.number), "--repo", repo, "--milestone", operation.to]);
+    }
+
+    if (operation.kind === "issue-labels") {
+      if (operation.remove.length > 0) {
+        gh(["issue", "edit", String(operation.issue.number), "--repo", repo, "--remove-label", operation.remove.join(",")]);
+      }
+      if (operation.add.length > 0) {
+        gh(["issue", "edit", String(operation.issue.number), "--repo", repo, "--add-label", operation.add.join(",")]);
+      }
+    }
+
+    if (operation.kind === "project-add") {
+      const added = ghJson(["project", "item-add", projectNumber, "--owner", owner, "--url", operation.issue.url, "--format", "json"]);
+      itemIdsByIssueNumber.set(operation.issue.number, added.id);
+    }
+
+    if (operation.kind === "project-field") {
+      const itemId = operation.itemId ?? itemIdsByIssueNumber.get(operation.issue.number);
+      if (!itemId) {
+        warnings.push(`#${operation.issue.number} ${operation.issue.title}: could not resolve Project item id`);
+        continue;
+      }
+      const editArgs = [
+        "project",
+        "item-edit",
+        "--id",
+        itemId,
+        "--project-id",
+        projectId,
+        "--field-id",
+        operation.fieldId,
+      ];
+      if (operation.type === "single-select") {
+        editArgs.push("--single-select-option-id", operation.optionId);
+      } else {
+        editArgs.push("--text", operation.to);
+      }
+      gh(editArgs);
+    }
+  }
+
+  console.log(`Project sync applied ${operations.length} operation(s).`);
+}
+
 function hasAcceptanceCriteria(body) {
   return /##\s+Acceptance/i.test(body ?? "") || /Acceptance Criteria/i.test(body ?? "") || /-\s+\[[ x]\]\s+.+/i.test(body ?? "");
+}
+
+function loadSyncProjectIssues({ repo, milestoneFilter, issueFilter }) {
+  if (issueFilter) {
+    const numbers = issueFilter
+      .split(",")
+      .map((item) => item.trim())
+      .filter(Boolean);
+    return numbers.map((number) => ghJson([
+      "issue",
+      "view",
+      number,
+      "--repo",
+      repo,
+      "--json",
+      "number,title,body,labels,milestone,projectItems,url,state",
+    ]));
+  }
+
+  const milestoneQuery = milestoneFilter ? ` milestone:"${milestoneFilter}"` : "";
+  const issues = ghJson([
+    "issue",
+    "list",
+    "--repo",
+    repo,
+    "--state",
+    "all",
+    "--limit",
+    "200",
+    "--search",
+    `repo:${repo}${milestoneQuery}`,
+    "--json",
+    "number,title,body,labels,milestone,projectItems,url,state",
+  ]);
+
+  return issues.filter((issue) => {
+    if (!milestoneFilter) return true;
+    return normalizeMilestoneName(issue.milestone?.title ?? "") === normalizeMilestoneName(milestoneFilter)
+      || normalizeProjectMilestoneValue(parseProjectFields(issue.body).milestone) === normalizeMilestoneName(milestoneFilter)
+      || issue.title.includes(`${milestoneFilter} `)
+      || issue.title.includes(`${milestoneFilter}:`);
+  });
+}
+
+function desiredProjectValues({ issue, parsed, labelFields, markDone }) {
+  const closed = issue.state === "CLOSED";
+  return {
+    status: markDone || closed ? "done" : parsed.status ?? labelFields.status ?? "backlog",
+    area: parsed.area ?? labelFields.area ?? "cross-cutting",
+    type: parsed.type ?? labelFields.type ?? "task",
+    risk: parsed.risk ?? labelFields.risk ?? "medium",
+    acceptance: markDone || closed ? "verified" : parsed.acceptance ?? labelFields.acceptance ?? "defined",
+    platform: parsed.platform ?? labelFields.platform ?? "all",
+    agentTarget: parsed.agentTarget ?? labelFields.agentTarget ?? "all",
+    priority: parsed.priority ?? labelFields.priority ?? "p2",
+    sourceDoc: parsed.sourceDoc ?? "",
+  };
+}
+
+function labelsForDesiredProjectValues(values, markDone) {
+  const labels = [];
+  const status = markDone ? "done" : values.status;
+  const acceptance = markDone ? "verified" : values.acceptance;
+  if (values.type) labels.push(`type/${values.type}`);
+  if (status) labels.push(`status/${status.replace(/\s+/g, "-")}`);
+  if (values.area) labels.push(`area/${values.area}`);
+  if (values.risk) labels.push(`risk/${values.risk}`);
+  if (acceptance) labels.push(`acceptance/${acceptance.replace(/\s+/g, "-")}`);
+  if (values.platform) labels.push(`platform/${values.platform}`);
+  if (values.agentTarget) labels.push(`agent/${values.agentTarget}`);
+  if (values.priority) labels.push(`priority/${values.priority}`);
+  return [...new Set(labels)];
+}
+
+function labelsToRemoveForSync(currentLabels, desiredLabels) {
+  const desired = new Set(desiredLabels);
+  const groups = Object.values(FIELD_GROUPS).concat("priority/");
+  return [...currentLabels].filter((label) => groups.some((prefix) => label.startsWith(prefix)) && !desired.has(label));
+}
+
+function buildMilestoneMap(milestones) {
+  const map = new Map();
+  for (const milestone of milestones) {
+    map.set(normalizeMilestoneName(milestone.title), milestone);
+    const short = milestone.title.match(/\bM\d+\b/i)?.[0];
+    if (short) map.set(short.toLowerCase(), milestone);
+  }
+  return map;
+}
+
+function normalizeMilestoneName(value) {
+  const normalized = String(value ?? "").trim();
+  if (!normalized) return "";
+  const short = normalized.match(/\bM\d+\b/i)?.[0];
+  return short ? short.toLowerCase() : normalizeValue(normalized);
+}
+
+function normalizeProjectMilestoneValue(value) {
+  return normalizeMilestoneName(value);
+}
+
+function printProjectSyncOperation(operation) {
+  if (operation.kind === "issue-milestone") {
+    console.log(`  - #${operation.issue.number} milestone: ${operation.from || "(empty)"} -> ${operation.to}`);
+    return;
+  }
+  if (operation.kind === "issue-labels") {
+    console.log(`  - #${operation.issue.number} labels: add [${operation.add.join(", ") || "-"}], remove [${operation.remove.join(", ") || "-"}]`);
+    return;
+  }
+  if (operation.kind === "project-add") {
+    console.log(`  - #${operation.issue.number} add to Project: ${operation.projectTitle}`);
+    return;
+  }
+  if (operation.kind === "project-field") {
+    console.log(`  - #${operation.issue.number} Project ${operation.field}: ${operation.from || "(empty)"} -> ${operation.to}`);
+  }
 }
 
 function hasProjectFields(body) {
