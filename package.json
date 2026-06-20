@@ -37,7 +37,8 @@
     "deploy:run": "node tools/deploy/src/index.mjs run",
     "deploy:publish": "node tools/deploy/src/index.mjs publish",
     "repo:check": "pwsh -NoProfile -ExecutionPolicy Bypass -File tools/docs/check-repo-health.ps1",
-    "smoke:local": "node tools/dev/local-smoke.mjs"
+    "smoke:local": "node tools/dev/local-smoke.mjs",
+    "acceptance:m0": "node tools/dev/m0-acceptance.mjs"
   },
   "devDependencies": {
     "typescript": "^5.7.2"

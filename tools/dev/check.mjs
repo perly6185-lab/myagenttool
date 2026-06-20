@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
 
-const required = ["run-local-demo.mjs", "local-smoke.mjs"];
+const required = ["run-local-demo.mjs", "local-smoke.mjs", "m0-acceptance.mjs"];
 const missing = required.filter((path) => !existsSync(new URL(path, import.meta.url)));
 
 if (missing.length > 0) {

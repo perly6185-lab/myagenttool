@@ -18,6 +18,7 @@ $required = @(
   "docs/engineering/M0_DESKTOP_AGENT_BRIDGE.md",
   "docs/engineering/M0_WEB_CONSOLE_LOOP.md",
   "docs/engineering/M0_ACCEPTANCE_CLOSEOUT.md",
+  "docs/engineering/M0_MANUAL_ACCEPTANCE.md",
   "docs/engineering/M0_GOVERNANCE_CLOSEOUT.md",
   "docs/engineering/OPEN_DESIGN_WORKFLOW.md",
   "packages/protocol",

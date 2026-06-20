@@ -32,6 +32,7 @@ the staged implementation work.
 | Local engineering scripts baseline | `pnpm docs:check`, `pnpm repo:check`, `pnpm github:check`, `pnpm smoke:local` |
 | Issue hygiene and project-field dry-run | `tools/github/src/index.mjs` |
 | Required-check governance fallback | `docs/engineering/M0_GOVERNANCE_CLOSEOUT.md` |
+| Human M0 acceptance path | `docs/engineering/M0_MANUAL_ACCEPTANCE.md`, `pnpm acceptance:m0` |
 
 ## Verification Commands
 
@@ -45,6 +46,7 @@ pnpm github:check:issues
 pnpm typecheck
 pnpm test
 pnpm smoke:local
+pnpm acceptance:m0
 git diff --check
 ```
 
@@ -69,6 +71,9 @@ Risk-gate evidence covered by the staged PRs:
   cover invocation, delivery, cancellation, trace, audit, and unlink semantics.
 - Adapter success/failure/cancel evidence: `pnpm smoke:local` covers CLI
   success, HTTP success, HTTP failure, and CLI cancellation.
+- Manual acceptance evidence: `pnpm acceptance:m0` covers the #1 initiative
+  happy path, page surfaces, CLI and HTTP registration, offline reconnect,
+  cancellation, unlink cleanup, audit, trace, and unknown-cost visibility.
 - Security/data review evidence: device unlink credential revocation, queued
   cleanup audit, unknown-cost visibility, and audit summaries are covered by
   server self-check and local smoke.
