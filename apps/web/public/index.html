@@ -97,6 +97,24 @@
             <span class="state-badge" id="taskState">Waiting</span>
           </div>
 
+          <section id="approvalPanel" class="approval-panel" aria-label="Local approval" hidden>
+            <div class="section-heading compact">
+              <p class="step-label">Approval</p>
+              <h2 id="approvalTitle">Review before running</h2>
+            </div>
+            <dl class="facts approval-facts">
+              <div><dt>Risk</dt><dd id="approvalRisk">-</dd></div>
+              <div><dt>Data</dt><dd id="approvalData">-</dd></div>
+              <div><dt>Cost</dt><dd id="approvalCost">-</dd></div>
+              <div><dt>Cancellation</dt><dd id="approvalCancellation">-</dd></div>
+              <div><dt>Tags</dt><dd id="approvalTags">-</dd></div>
+            </dl>
+            <div class="approval-actions">
+              <button id="approveButton" type="button">Approve run</button>
+              <button id="denyButton" type="button" class="secondary">Deny run</button>
+            </div>
+          </section>
+
           <div class="timeline" id="eventList" aria-live="polite"></div>
         </section>
 

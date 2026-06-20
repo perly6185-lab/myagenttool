@@ -23,6 +23,15 @@ const els = {
   discoverButton: document.querySelector("#discoverButton"),
   discoverySummary: document.querySelector("#discoverySummary"),
   candidateList: document.querySelector("#candidateList"),
+  approvalPanel: document.querySelector("#approvalPanel"),
+  approvalTitle: document.querySelector("#approvalTitle"),
+  approvalRisk: document.querySelector("#approvalRisk"),
+  approvalData: document.querySelector("#approvalData"),
+  approvalCost: document.querySelector("#approvalCost"),
+  approvalCancellation: document.querySelector("#approvalCancellation"),
+  approvalTags: document.querySelector("#approvalTags"),
+  approveButton: document.querySelector("#approveButton"),
+  denyButton: document.querySelector("#denyButton"),
   activityTitle: document.querySelector("#activityTitle"),
   taskState: document.querySelector("#taskState"),
   safetySummary: document.querySelector("#safetySummary"),
@@ -161,6 +170,36 @@ els.candidateList.addEventListener("click", async (event) => {
   }
 });
 
+els.approveButton.addEventListener("click", async () => {
+  const approval = currentApproval(lastState, currentInvocation());
+  if (!approval) return;
+
+  els.approveButton.disabled = true;
+  try {
+    await fetch(`${apiBase}/api/approvals/${encodeURIComponent(approval.id)}/approve`, {
+      method: "POST"
+    });
+    await refresh();
+  } finally {
+    updateActions(lastState, currentInvocation());
+  }
+});
+
+els.denyButton.addEventListener("click", async () => {
+  const approval = currentApproval(lastState, currentInvocation());
+  if (!approval) return;
+
+  els.denyButton.disabled = true;
+  try {
+    await fetch(`${apiBase}/api/approvals/${encodeURIComponent(approval.id)}/deny`, {
+      method: "POST"
+    });
+    await refresh();
+  } finally {
+    updateActions(lastState, currentInvocation());
+  }
+});
+
 setInterval(refresh, 700);
 refresh();
 
@@ -196,6 +235,7 @@ function render(state) {
   const agent = agents.find((item) => item.id === selectedAgentId) ?? state.agent ?? agents[0];
   const lifecycleAudit = state.lifecycleAuditRecords?.find((item) => item.agentId === agent?.id) ?? null;
   const discoveryRun = state.discoveryRuns?.[0] ?? null;
+  const approval = currentApproval(state, invocation);
 
   if (invocation) currentInvocationId = invocation.id;
 
@@ -237,6 +277,7 @@ function render(state) {
   const visibleEvents = invocation
     ? state.events.filter((event) => event.invocationId === invocation.id || event.data?.agentId === agent?.id).slice(0, 30)
     : state.events.slice(0, 30);
+  renderApproval(approval);
   renderTimeline(visibleEvents);
   renderDiscovery(discoveryRun);
   updateActions(state, invocation);
@@ -247,6 +288,32 @@ function currentInvocation() {
     return null;
   }
   return lastState.invocations.find((item) => item.id === currentInvocationId) ?? null;
+}
+
+function currentApproval(state, invocation) {
+  if (!state || !invocation?.approvalRequestId) {
+    return null;
+  }
+  return state.approvalRequests?.find((item) => item.id === invocation.approvalRequestId) ?? null;
+}
+
+function renderApproval(approval) {
+  if (!approval) {
+    els.approvalPanel.hidden = true;
+    return;
+  }
+
+  els.approvalPanel.hidden = false;
+  els.approvalTitle.textContent = approval.status === "pending"
+    ? "Review before running"
+    : approval.status === "approved"
+      ? "Approval granted"
+      : "Approval denied";
+  els.approvalRisk.textContent = approval.summary?.risk ?? `${approval.riskLevel} risk`;
+  els.approvalData.textContent = approval.summary?.data ?? "Task input and result are recorded.";
+  els.approvalCost.textContent = approval.summary?.cost ?? "Cost is unknown.";
+  els.approvalCancellation.textContent = approval.summary?.cancellation ?? "Cancellation behavior is unknown.";
+  els.approvalTags.textContent = approval.riskTags?.length ? approval.riskTags.join(", ") : "No tags declared";
 }
 
 function renderSelectors(state, agents) {
@@ -287,6 +354,9 @@ function renderOffline() {
   els.healthCheckButton.disabled = true;
   els.toggleAgentButton.disabled = true;
   els.discoverButton.disabled = true;
+  els.approvalPanel.hidden = true;
+  els.approveButton.disabled = true;
+  els.denyButton.disabled = true;
   els.runBlockReason.textContent = "Server is offline.";
   els.discoverySummary.textContent = "Server is offline.";
   els.candidateList.replaceChildren();
@@ -332,14 +402,18 @@ function updateActions(state, invocation) {
   const hasServer = Boolean(state);
   const hasTask = els.taskInput.value.trim().length > 0;
   const hasAgent = Boolean(selectedAgentId);
-  const isRunning = ["queued", "dispatching", "running", "cancelling"].includes(invocation?.status);
+  const isRunning = ["queued", "dispatching", "waiting_for_local_approval", "running", "cancelling"].includes(invocation?.status);
   const agent = selectedAgent(state);
   const localAgent = agent?.location?.type === "local_device";
   const disabled = agent?.status === "disabled";
   const unhealthy = agent?.health?.status === "unhealthy";
+  const approval = currentApproval(state, invocation);
+  const approvalPending = approval?.status === "pending";
   els.runButton.textContent = localAgent && state?.device?.status !== "online" ? "Queue for this computer" : "Run on this computer";
   els.runButton.disabled = !hasServer || !hasTask || !hasAgent || isRunning || disabled || unhealthy;
-  els.cancelButton.disabled = !invocation || !["queued", "dispatching", "running"].includes(invocation.status);
+  els.cancelButton.disabled = !invocation || !["queued", "dispatching", "waiting_for_local_approval", "running"].includes(invocation.status);
+  els.approveButton.disabled = !approvalPending;
+  els.denyButton.disabled = !approvalPending;
   els.healthCheckButton.disabled = !hasServer || !hasAgent || agent?.health?.status === "checking";
   els.toggleAgentButton.disabled = !hasServer || !hasAgent;
   els.discoverButton.disabled = !hasServer || state?.device?.status !== "online" || state?.discoveryRuns?.[0]?.status === "queued" || state?.discoveryRuns?.[0]?.status === "running";
@@ -434,6 +508,7 @@ function readableStatus(status) {
   const map = {
     queued: "Queued",
     dispatching: "Sending",
+    waiting_for_local_approval: "Needs approval",
     running: "Running",
     cancelling: "Stopping",
     succeeded: "Done",
@@ -449,6 +524,7 @@ function activityTitle(status) {
   const map = {
     queued: "Task is waiting for the local agent",
     dispatching: "Task is being sent to the computer",
+    waiting_for_local_approval: "Task needs local approval",
     running: "The local agent is working",
     cancelling: "Stop request sent",
     succeeded: "Task finished",
@@ -557,7 +633,9 @@ function resultTitle(status) {
   if (status === "cancelled") return "Stopped";
   if (status === "timed_out") return "Timed out";
   if (status === "expired") return "Expired";
+  if (status === "rejected") return "Rejected";
   if (status === "running") return "Working locally";
+  if (status === "waiting_for_local_approval") return "Needs approval";
   if (status === "queued") return "Waiting";
   return "No result yet";
 }
@@ -565,6 +643,8 @@ function resultTitle(status) {
 function resultSummary(invocation, audit) {
   if (!invocation) return "Run a task to see the answer here.";
   if (invocation.result?.summary) return invocation.result.summary;
+  if (invocation.status === "waiting_for_local_approval") return "Review the local approval request before this task can run.";
+  if (invocation.status === "rejected") return audit?.errorSummary ?? "Local approval was denied, so the task did not run.";
   if (invocation.status === "running") return "The agent is still working on your computer.";
   if (invocation.status === "queued") return "The task is queued for the local bridge.";
   if (invocation.status === "dispatching") return "The task is being sent to your computer.";
@@ -579,6 +659,11 @@ function readableEventType(type) {
   const map = {
     invocation_created: "Task created",
     invocation_authorized: "Task allowed",
+    invocation_rejected: "Task rejected",
+    policy_decision_recorded: "Policy checked",
+    local_approval_requested: "Approval needed",
+    local_approval_granted: "Approval granted",
+    local_approval_denied: "Approval denied",
     delivery_queued: "Waiting for computer",
     delivery_dispatched: "Sent to computer",
     delivery_redelivered: "Delivery retried",

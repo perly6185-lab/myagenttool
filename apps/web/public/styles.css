@@ -83,7 +83,8 @@ h2 {
 }
 
 .connection[data-state="bad"],
-.state-badge[data-state="failed"] {
+.state-badge[data-state="failed"],
+.state-badge[data-state="rejected"] {
   border-color: #e0a0a0;
   color: #8b1d1d;
   background: #fff0f0;
@@ -91,6 +92,7 @@ h2 {
 
 .state-badge[data-state="running"],
 .state-badge[data-state="queued"],
+.state-badge[data-state="waiting_for_local_approval"],
 .state-badge[data-state="cancelling"] {
   border-color: #d7b86e;
   color: #715015;
@@ -334,6 +336,30 @@ button.secondary {
   overflow-wrap: anywhere;
 }
 
+.approval-panel {
+  display: grid;
+  gap: 12px;
+  margin-bottom: 12px;
+  border: 1px solid #e0b46c;
+  border-radius: 8px;
+  padding: 14px;
+  background: #fff9ed;
+}
+
+.approval-panel[hidden] {
+  display: none;
+}
+
+.approval-facts div {
+  grid-template-columns: 96px 1fr;
+}
+
+.approval-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
 .timeline {
   display: grid;
   gap: 10px;
@@ -479,6 +505,10 @@ dd {
   }
 
   .agent-actions {
+    grid-template-columns: 1fr;
+  }
+
+  .approval-actions {
     grid-template-columns: 1fr;
   }
 

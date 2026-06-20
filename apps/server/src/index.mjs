@@ -84,7 +84,9 @@ const state = {
   auditSummaries: [],
   healthChecks: [],
   lifecycleAuditRecords: [],
-  discoveryRuns: []
+  discoveryRuns: [],
+  approvalRequests: [],
+  policyDecisionRecords: []
 };
 
 let idCounter = 1;
@@ -396,6 +398,28 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    const approvalMatch = url.pathname.match(/^\/api\/approvals\/([^/]+)\/(approve|deny)$/);
+    if (req.method === "POST" && approvalMatch) {
+      const approval = findApprovalRequest(decodeURIComponent(approvalMatch[1]));
+      if (!approval) {
+        sendJson(res, 404, { error: "approval_not_found" });
+        return;
+      }
+      const invocation = findInvocation(approval.invocationId);
+      if (!invocation) {
+        sendJson(res, 404, { error: "invocation_not_found" });
+        return;
+      }
+
+      if (approvalMatch[2] === "approve") {
+        approveInvocation(approval, invocation);
+      } else {
+        denyInvocation(approval, invocation);
+      }
+      sendJson(res, 200, { approval, invocation });
+      return;
+    }
+
     if (req.method === "POST" && url.pathname === "/api/invocations") {
       const body = await readJson(req);
       const task = String(body.task ?? "").trim();
@@ -423,16 +447,8 @@ const server = http.createServer(async (req, res) => {
         sendJson(res, 409, { error: "device_unlinked" });
         return;
       }
-      const invocation = createInvocation(task, agent);
-      if (agent.adapter.type === "http" && agent.location.type === "remote_http") {
-        queueMicrotask(() => runHttpInvocation(invocation, agent).catch((error) => {
-          completeInvocation(invocation, {
-            status: "failed",
-            summary: `HTTP Agent failed: ${error instanceof Error ? error.message : String(error)}`,
-            result: null
-          });
-        }));
-      }
+      const invocation = createInvocation(task, agent, body.options ?? {});
+      startInvocationIfAllowed(invocation, agent);
       sendJson(res, 201, { invocation });
       return;
     }
@@ -527,8 +543,8 @@ function createCliAgent(body) {
       {
         name: body.capabilityName ?? "manual_cli_task",
         description: body.capabilityDescription ?? "Runs a manually registered local CLI command.",
-        riskLevel: body.riskLevel ?? "medium",
-        riskTags: ["read_local", "shell_exec"]
+        riskLevel: normalizeRiskLevel(body.riskLevel, "medium"),
+        riskTags: normalizeRiskTags(body.riskTags ?? body.capabilityRiskTags, ["read_local", "shell_exec"])
       }
     ],
     status: state.device.status === "online" ? "available" : "unavailable",
@@ -571,8 +587,8 @@ function createHttpAgent(body) {
       {
         name: body.capabilityName ?? "manual_http_task",
         description: body.capabilityDescription ?? "Runs a manually registered HTTP endpoint.",
-        riskLevel: body.riskLevel ?? "medium",
-        riskTags: ["network_access", "external_data_transfer"]
+        riskLevel: normalizeRiskLevel(body.riskLevel, "medium"),
+        riskTags: normalizeRiskTags(body.riskTags ?? body.capabilityRiskTags, ["network_access", "external_data_transfer"])
       }
     ],
     status: "available",
@@ -1067,28 +1083,29 @@ function updateLifecycleAudit(id, patch) {
   }
 }
 
-function createInvocation(task, agent = defaultAgent()) {
+function createInvocation(task, agent = defaultAgent(), options = {}) {
   if (!agent) {
     throw new Error("No agent is registered.");
   }
   const id = nextId("inv_demo");
   const createdAt = now();
   const trace = createTrace(id, agent);
+  const policy = evaluateInvocationPolicy(agent, options);
   const invocation = {
     id,
     ideaSessionId: null,
     agentId: agent.id,
     requestedBy: "usr_local",
-    status: agent.adapter.type === "http" ? "running" : "queued",
+    status: policy.decision === "requires_local_approval" ? "waiting_for_local_approval" : agent.adapter.type === "http" ? "running" : "queued",
     delivery: {
       deliveryId: nextId("del_demo"),
       deviceId: agent.location.type === "local_device" ? agent.location.deviceId : null,
-      state: agent.adapter.type === "http" ? "not_required" : "queued",
+      state: policy.decision === "requires_local_approval" ? "not_required" : agent.adapter.type === "http" ? "not_required" : "queued",
       idempotencyKey: `idem_${id}`,
       leaseExpiresAt: null,
-      dispatchAttempts: agent.adapter.type === "http" ? 1 : 0,
-      lastDispatchAt: agent.adapter.type === "http" ? createdAt : null,
-      acknowledgedAt: agent.adapter.type === "http" ? createdAt : null,
+      dispatchAttempts: policy.decision === "requires_local_approval" ? 0 : agent.adapter.type === "http" ? 1 : 0,
+      lastDispatchAt: policy.decision === "requires_local_approval" ? null : agent.adapter.type === "http" ? createdAt : null,
+      acknowledgedAt: policy.decision === "requires_local_approval" ? null : agent.adapter.type === "http" ? createdAt : null,
       bridgeCursor: null,
       expiresAt: null
     },
@@ -1100,17 +1117,21 @@ function createInvocation(task, agent = defaultAgent()) {
     },
     input: { task },
     options: {
-      timeoutSeconds: 30,
-      requireLocalApproval: false,
-      metadata: { demo: true }
+      timeoutSeconds: Number(options.timeoutSeconds ?? 30),
+      requireLocalApproval: Boolean(options.requireLocalApproval ?? policy.decision === "requires_local_approval"),
+      metadata: { demo: true, ...(options.metadata && typeof options.metadata === "object" && !Array.isArray(options.metadata) ? options.metadata : {}) }
     },
     result: null,
+    policyDecisionId: null,
+    approvalRequestId: null,
     traceId: trace.id,
     rootSpanId: trace.rootSpanId,
     createdAt,
     updatedAt: createdAt
   };
   state.invocations.unshift(invocation);
+  const policyRecord = createPolicyDecisionRecord(invocation, agent, policy);
+  invocation.policyDecisionId = policyRecord.id;
   appendEvent({
     invocationId: invocation.id,
     type: "invocation_created",
@@ -1119,9 +1140,10 @@ function createInvocation(task, agent = defaultAgent()) {
   });
   appendEvent({
     invocationId: invocation.id,
-    type: "invocation_authorized",
-    level: "info",
-    message: `Demo invocation authorized for ${agent.name}.`
+    type: "policy_decision_recorded",
+    level: policy.decision === "requires_local_approval" ? "warn" : "info",
+    message: policy.reason,
+    data: { policyDecisionId: policyRecord.id, riskLevel: policy.riskLevel, riskTags: policy.riskTags, decision: policy.decision }
   });
   appendEvent({
     invocationId: invocation.id,
@@ -1132,11 +1154,195 @@ function createInvocation(task, agent = defaultAgent()) {
   });
   appendEvent({
     invocationId: invocation.id,
-    type: agent.adapter.type === "http" ? "invocation_started" : "delivery_queued",
+    type: policy.decision === "requires_local_approval" ? "local_approval_requested" : agent.adapter.type === "http" ? "invocation_started" : "delivery_queued",
     level: "info",
-    message: agent.adapter.type === "http" ? "HTTP Agent invocation started." : "Invocation queued for Desktop Bridge."
+    message: policy.decision === "requires_local_approval" ? "Local approval is required before this high-risk invocation can run." : agent.adapter.type === "http" ? "HTTP Agent invocation started." : "Invocation queued for Desktop Bridge."
   });
+  if (policy.decision === "requires_local_approval") {
+    const approval = createApprovalRequest(invocation, agent, policy);
+    invocation.approvalRequestId = approval.id;
+    policyRecord.approvalRequestId = approval.id;
+  } else {
+    appendEvent({
+      invocationId: invocation.id,
+      type: "invocation_authorized",
+      level: "info",
+      message: `Demo invocation authorized for ${agent.name}.`
+    });
+  }
   return invocation;
+}
+
+function evaluateInvocationPolicy(agent, options = {}) {
+  const capabilities = Array.isArray(agent.capabilities) ? agent.capabilities : [];
+  const riskLevel = highestRiskLevel(capabilities.map((capability) => capability.riskLevel));
+  const riskTags = uniqueStrings(capabilities.flatMap((capability) => capability.riskTags ?? []));
+  const requiresApproval = Boolean(options.requireLocalApproval) || ["high", "critical"].includes(riskLevel);
+  return {
+    decision: requiresApproval ? "requires_local_approval" : "allowed",
+    reason: requiresApproval
+      ? `${agent.name} has ${riskLevel} risk capability tags and needs local approval before running.`
+      : `${agent.name} risk is ${riskLevel}; invocation is allowed by local policy.`,
+    riskLevel,
+    riskTags,
+    summary: {
+      risk: agent.registrationNotes?.risk ?? `${agent.name} reports ${riskLevel} risk for this capability.`,
+      data: agent.registrationNotes?.data ?? "Task input, logs, trace, and result are recorded by the local demo server.",
+      cost: agent.registrationNotes?.cost ?? costTextForAgent(agent),
+      cancellation: agent.registrationNotes?.cancellation ?? cancellationTextForAdapter(agent.adapter)
+    }
+  };
+}
+
+function createPolicyDecisionRecord(invocation, agent, policy) {
+  const record = {
+    id: nextId("pdr_demo"),
+    invocationId: invocation.id,
+    agentId: agent.id,
+    action: "invoke",
+    riskLevel: policy.riskLevel,
+    riskTags: policy.riskTags,
+    decision: policy.decision,
+    reason: policy.reason,
+    approvalRequestId: null,
+    approver: null,
+    createdAt: now()
+  };
+  state.policyDecisionRecords.unshift(record);
+  state.policyDecisionRecords = state.policyDecisionRecords.slice(0, 200);
+  return record;
+}
+
+function createApprovalRequest(invocation, agent, policy) {
+  const approval = {
+    id: nextId("apr_demo"),
+    invocationId: invocation.id,
+    agentId: agent.id,
+    requestedBy: invocation.requestedBy,
+    status: "pending",
+    riskLevel: policy.riskLevel,
+    riskTags: policy.riskTags,
+    summary: policy.summary,
+    createdAt: now(),
+    decidedAt: null,
+    decidedBy: null
+  };
+  state.approvalRequests.unshift(approval);
+  state.approvalRequests = state.approvalRequests.slice(0, 200);
+  return approval;
+}
+
+function highestRiskLevel(levels) {
+  const order = ["low", "medium", "high", "critical"];
+  let highest = "low";
+  for (const level of levels) {
+    const normalized = order.includes(level) ? level : "medium";
+    if (order.indexOf(normalized) > order.indexOf(highest)) {
+      highest = normalized;
+    }
+  }
+  return highest;
+}
+
+function uniqueStrings(values) {
+  return [...new Set(values.map(String).map((item) => item.trim()).filter(Boolean))];
+}
+
+function costTextForAgent(agent) {
+  if (agent.economics?.model && agent.economics.model !== "unknown") {
+    return `${agent.economics.model} cost policy: ${agent.economics.unknownCostPolicy ?? "unknown"}.`;
+  }
+  return "Cost is unknown and no billing is performed by the demo server.";
+}
+
+function startInvocationIfAllowed(invocation, agent = findAgent(invocation.agentId)) {
+  if (!agent || invocation.status === "waiting_for_local_approval" || isTerminal(invocation.status)) {
+    return;
+  }
+  if (agent.adapter.type === "http" && agent.location.type === "remote_http") {
+    queueMicrotask(() => runHttpInvocation(invocation, agent).catch((error) => {
+      completeInvocation(invocation, {
+        status: "failed",
+        summary: `HTTP Agent failed: ${error instanceof Error ? error.message : String(error)}`,
+        result: null
+      });
+    }));
+  }
+}
+
+function approveInvocation(approval, invocation) {
+  if (approval.status !== "pending" || invocation.status !== "waiting_for_local_approval") {
+    return;
+  }
+  const agent = findAgent(invocation.agentId);
+  approval.status = "approved";
+  approval.decidedAt = now();
+  approval.decidedBy = "usr_local";
+  invocation.status = agent?.adapter.type === "http" ? "running" : "queued";
+  invocation.delivery.state = agent?.adapter.type === "http" ? "not_required" : "queued";
+  invocation.delivery.dispatchAttempts = agent?.adapter.type === "http" ? 1 : 0;
+  invocation.delivery.lastDispatchAt = agent?.adapter.type === "http" ? now() : null;
+  invocation.delivery.acknowledgedAt = agent?.adapter.type === "http" ? now() : null;
+  invocation.updatedAt = now();
+  const policyRecord = state.policyDecisionRecords.find((item) => item.id === invocation.policyDecisionId);
+  if (policyRecord) {
+    policyRecord.decision = "allowed";
+    policyRecord.approver = "usr_local";
+    policyRecord.reason = "Local approval granted for high-risk invocation.";
+  }
+  appendEvent({
+    invocationId: invocation.id,
+    type: "local_approval_granted",
+    level: "info",
+    message: "Local approval granted. Invocation can run.",
+    data: { approvalRequestId: approval.id }
+  });
+  appendEvent({
+    invocationId: invocation.id,
+    type: "invocation_authorized",
+    level: "info",
+    message: `Invocation authorized after local approval for ${agent?.name ?? invocation.agentId}.`
+  });
+  appendEvent({
+    invocationId: invocation.id,
+    type: agent?.adapter.type === "http" ? "invocation_started" : "delivery_queued",
+    level: "info",
+    message: agent?.adapter.type === "http" ? "HTTP Agent invocation started after approval." : "Invocation queued for Desktop Bridge after approval."
+  });
+  startInvocationIfAllowed(invocation, agent);
+}
+
+function denyInvocation(approval, invocation) {
+  if (approval.status !== "pending" || invocation.status !== "waiting_for_local_approval") {
+    return;
+  }
+  approval.status = "denied";
+  approval.decidedAt = now();
+  approval.decidedBy = "usr_local";
+  invocation.status = "rejected";
+  invocation.completedAt = now();
+  invocation.updatedAt = now();
+  completeRootSpan(invocation, "failed");
+  const policyRecord = state.policyDecisionRecords.find((item) => item.id === invocation.policyDecisionId);
+  if (policyRecord) {
+    policyRecord.decision = "denied";
+    policyRecord.approver = "usr_local";
+    policyRecord.reason = "Local approval denied by user.";
+  }
+  appendEvent({
+    invocationId: invocation.id,
+    type: "local_approval_denied",
+    level: "warn",
+    message: "Local approval denied. Invocation was not executed.",
+    data: { approvalRequestId: approval.id }
+  });
+  appendEvent({
+    invocationId: invocation.id,
+    type: "invocation_rejected",
+    level: "warn",
+    message: "Invocation rejected before execution."
+  });
+  state.auditSummaries.push(createAuditSummary(invocation, "Local approval denied before execution."));
 }
 
 function nextDispatchableInvocation() {
@@ -1344,10 +1550,16 @@ function cancelInvocation(invocation) {
   invocation.cancellation.requestedAt = now();
   invocation.cancellation.reason = "Requested from Web Console.";
 
-  if (invocation.status === "queued") {
+  if (["queued", "waiting_for_local_approval"].includes(invocation.status)) {
     invocation.status = "cancelled";
     invocation.cancellation.state = "queued_cancelled";
     invocation.updatedAt = now();
+    const pendingApproval = invocation.approvalRequestId ? findApprovalRequest(invocation.approvalRequestId) : null;
+    if (pendingApproval?.status === "pending") {
+      pendingApproval.status = "denied";
+      pendingApproval.decidedAt = now();
+      pendingApproval.decidedBy = "usr_local";
+    }
     appendEvent({
       invocationId: invocation.id,
       type: "cancel_requested",
@@ -1358,7 +1570,7 @@ function cancelInvocation(invocation) {
       invocationId: invocation.id,
       type: "cancel_applied",
       level: "info",
-      message: "Queued invocation cancelled before dispatch."
+      message: "Invocation cancelled before execution."
     });
     state.auditSummaries.push(createAuditSummary(invocation, "Cancelled before local execution."));
     return;
@@ -1406,7 +1618,7 @@ function createAuditSummary(invocation, summary) {
     agentId: invocation.agentId,
     deviceId: invocation.delivery.deviceId,
     status: invocation.status,
-    permissionDecision: "allowed",
+    permissionDecision: invocation.status === "rejected" ? "denied" : "allowed",
     traceId: invocation.traceId ?? null,
     startedAt: invocation.createdAt,
     completedAt: invocation.completedAt ?? now(),
@@ -1480,6 +1692,10 @@ function findInvocation(id) {
   return state.invocations.find((item) => item.id === id);
 }
 
+function findApprovalRequest(id) {
+  return state.approvalRequests.find((item) => item.id === id);
+}
+
 function defaultAgent() {
   return state.agents.find((item) => item.id === "agt_demo_cli") ?? state.agents[0] ?? null;
 }
@@ -1503,6 +1719,16 @@ function normalizeStringArray(value) {
   return Array.isArray(value) ? value.map(String).map((item) => item.trim()).filter(Boolean) : [];
 }
 
+function normalizeRiskLevel(value, fallback = "medium") {
+  const normalized = String(value ?? fallback).trim();
+  return ["low", "medium", "high", "critical"].includes(normalized) ? normalized : fallback;
+}
+
+function normalizeRiskTags(value, fallback) {
+  const tags = normalizeStringArray(value);
+  return tags.length > 0 ? tags : fallback;
+}
+
 function sanitizeAgentId(id) {
   const raw = String(id).trim();
   const withPrefix = raw.startsWith("agt_") ? raw : `agt_${raw}`;
@@ -1522,7 +1748,7 @@ function unlinkDevice() {
     agent.status = "unavailable";
     agent.updatedAt = now();
   }
-  for (const invocation of state.invocations.filter((item) => item.status === "queued")) {
+  for (const invocation of state.invocations.filter((item) => ["queued", "waiting_for_local_approval"].includes(item.status))) {
     invocation.status = "cancelled";
     invocation.cancellation.state = "queued_cancelled";
     invocation.cancellation.requestedBy = "usr_local";
@@ -1530,6 +1756,12 @@ function unlinkDevice() {
     invocation.cancellation.reason = "Device unlinked before dispatch.";
     invocation.completedAt = now();
     invocation.updatedAt = now();
+    const pendingApproval = invocation.approvalRequestId ? findApprovalRequest(invocation.approvalRequestId) : null;
+    if (pendingApproval?.status === "pending") {
+      pendingApproval.status = "denied";
+      pendingApproval.decidedAt = now();
+      pendingApproval.decidedBy = "usr_local";
+    }
     appendEvent({
       invocationId: invocation.id,
       type: "device_queue_cancelled",
@@ -1574,7 +1806,9 @@ function publicState() {
     auditSummaries: state.auditSummaries,
     healthChecks: state.healthChecks,
     lifecycleAuditRecords: state.lifecycleAuditRecords,
-    discoveryRuns: state.discoveryRuns
+    discoveryRuns: state.discoveryRuns,
+    approvalRequests: state.approvalRequests,
+    policyDecisionRecords: state.policyDecisionRecords
   };
 }
 
@@ -1698,6 +1932,40 @@ function runProtocolSelfCheck() {
   assert(state.auditSummaries.some((item) => item.invocationId === invocation.id && item.traceId === invocation.traceId), "audit summary should reference trace");
   assert(state.spans.find((item) => item.id === invocation.rootSpanId)?.status === "succeeded", "root span should complete");
 
+  const highRiskAgent = registerAgent({
+    id: "agt_self_high_risk",
+    type: "cli",
+    name: "Self-check High Risk CLI",
+    command: "demo-agent",
+    args: ["{{payloadJson}}"],
+    riskLevel: "high",
+    riskTags: ["read_local", "shell_exec", "destructive"]
+  });
+  const approvalInvocation = createInvocation("high-risk invocation approval path", highRiskAgent);
+  assert(approvalInvocation.status === "waiting_for_local_approval", "high-risk invocation should wait for local approval");
+  assert(approvalInvocation.delivery.dispatchAttempts === 0, "approval-gated invocation should not dispatch");
+  assert(nextDispatchableInvocation()?.id !== approvalInvocation.id, "approval-gated invocation should not be dispatchable");
+  const approval = findApprovalRequest(approvalInvocation.approvalRequestId);
+  assert(approval?.status === "pending", "approval request should be pending");
+  assert(approval.summary.risk && approval.summary.data && approval.summary.cost && approval.summary.cancellation, "approval request should include plain-language summary");
+  const policyRecord = state.policyDecisionRecords.find((item) => item.id === approvalInvocation.policyDecisionId);
+  assert(policyRecord?.decision === "requires_local_approval", "policy should require approval");
+  assert(policyRecord.riskTags.includes("destructive"), "policy should record risk tags");
+  approveInvocation(approval, approvalInvocation);
+  assert(approval.status === "approved", "approval should be granted");
+  assert(approvalInvocation.status === "queued", "approved local invocation should enter queue");
+  assert(nextDispatchableInvocation()?.id === approvalInvocation.id, "approved local invocation should become dispatchable");
+  cancelInvocation(approvalInvocation);
+  assert(approvalInvocation.status === "cancelled", "approved self-check invocation should be cancellable before dispatch");
+
+  const deniedInvocation = createInvocation("high-risk invocation denial path", highRiskAgent);
+  const deniedApproval = findApprovalRequest(deniedInvocation.approvalRequestId);
+  denyInvocation(deniedApproval, deniedInvocation);
+  assert(deniedApproval.status === "denied", "approval should be denied");
+  assert(deniedInvocation.status === "rejected", "denied approval should reject invocation");
+  assert(state.auditSummaries.some((item) => item.invocationId === deniedInvocation.id && item.permissionDecision === "denied"), "denied approval should be audited");
+  assert(state.events.some((item) => item.invocationId === deniedInvocation.id && item.type === "local_approval_denied"), "denied approval should emit an event");
+
   const queuedCancel = createInvocation("queued cancellation");
   cancelInvocation(queuedCancel);
   assert(queuedCancel.status === "cancelled", "queued cancellation should cancel invocation");
@@ -1743,6 +2011,8 @@ function resetDemoStateForCheck() {
   state.healthChecks = [];
   state.lifecycleAuditRecords = [];
   state.discoveryRuns = [];
+  state.approvalRequests = [];
+  state.policyDecisionRecords = [];
   idCounter = 1;
 }
 
