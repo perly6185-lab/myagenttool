@@ -16,6 +16,8 @@ $required = @(
   "docs/engineering/ADR_0005_M0_WEB_CONSOLE_APP_SHELL.md",
   "docs/engineering/M0_CORE_PROTOCOL_SERVICE.md",
   "docs/engineering/M0_DESKTOP_AGENT_BRIDGE.md",
+  "docs/engineering/M0_WEB_CONSOLE_LOOP.md",
+  "docs/engineering/OPEN_DESIGN_WORKFLOW.md",
   "packages/protocol",
   "packages/adapters",
   "packages/shared",

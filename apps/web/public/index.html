@@ -27,6 +27,18 @@
             aria-label="Task"
             rows="7"
           >Summarize the local demo state and confirm the bridge is working.</textarea>
+
+          <div class="selectors" aria-label="Run target">
+            <label>
+              <span>Computer</span>
+              <select id="deviceSelect" aria-label="Computer"></select>
+            </label>
+            <label>
+              <span>Agent</span>
+              <select id="agentSelect" aria-label="Agent"></select>
+            </label>
+          </div>
+
           <div class="actions">
             <button id="runButton" type="button">Run on this computer</button>
             <button id="cancelButton" type="button" class="secondary">Cancel task</button>
@@ -45,7 +57,21 @@
               <span>Cost</span>
               <strong id="costSummary">No billing in demo</strong>
             </div>
+            <div>
+              <span>Cancellation</span>
+              <strong id="cancellationSummary">Can request stop</strong>
+            </div>
           </div>
+
+          <details class="advanced-details">
+            <summary>Technical details</summary>
+            <dl class="facts">
+              <div><dt>Adapter</dt><dd id="adapterName">-</dd></div>
+              <div><dt>Task ID</dt><dd id="invocationId">-</dd></div>
+              <div><dt>Trace</dt><dd id="traceId">-</dd></div>
+              <div><dt>State</dt><dd id="technicalState">-</dd></div>
+            </dl>
+          </details>
         </section>
 
         <section class="run-panel" aria-label="Task activity">
@@ -69,6 +95,7 @@
             <dl class="facts">
               <div><dt>Status</dt><dd id="deviceStatus">-</dd></div>
               <div><dt>Platform</dt><dd id="devicePlatform">-</dd></div>
+              <div><dt>Last seen</dt><dd id="deviceLastSeen">-</dd></div>
             </dl>
           </section>
 
@@ -79,6 +106,7 @@
             </div>
             <dl class="facts">
               <div><dt>Status</dt><dd id="agentStatus">-</dd></div>
+              <div><dt>Capability</dt><dd id="agentCapability">-</dd></div>
               <div><dt>Cost estimate</dt><dd id="agentCost">-</dd></div>
             </dl>
           </section>
@@ -97,7 +125,7 @@
               <h2>What was recorded</h2>
             </div>
             <dl class="facts">
-              <div><dt>Task ID</dt><dd id="invocationId">-</dd></div>
+              <div><dt>Record</dt><dd id="auditDecision">-</dd></div>
               <div><dt>Delivery</dt><dd id="deliveryStatus">-</dd></div>
               <div><dt>Cancellation</dt><dd id="cancelStatus">-</dd></div>
             </dl>

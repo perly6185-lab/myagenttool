@@ -25,6 +25,8 @@ Primary source docs:
 - `docs/engineering/ADR_INDEX.md`
 - `docs/engineering/M0_CORE_PROTOCOL_SERVICE.md`
 - `docs/engineering/M0_DESKTOP_AGENT_BRIDGE.md`
+- `docs/engineering/M0_WEB_CONSOLE_LOOP.md`
+- `docs/engineering/OPEN_DESIGN_WORKFLOW.md`
 
 Accepted M0 architecture decisions:
 

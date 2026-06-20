@@ -77,9 +77,11 @@ For M0 UI or product experience changes, use this sequence:
    - Include desktop and mobile expectations.
 
 4. Prototype:
-   - Use open-design or another design agent to create a reviewable prototype.
-   - Keep generated artifacts outside runtime code until reviewed.
-   - Convert only approved patterns into `apps/web`.
+- Use open-design or another design agent to create a reviewable prototype.
+- Keep generated artifacts outside runtime code until reviewed.
+- Convert only approved patterns into `apps/web`.
+- Follow [OPEN_DESIGN_WORKFLOW.md](OPEN_DESIGN_WORKFLOW.md) for prototype
+  inputs, review rules, and the Codex implementation path.
 
 5. Implementation:
    - Codex implements the approved experience in the web console.
