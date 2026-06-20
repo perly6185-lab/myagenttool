@@ -39,6 +39,8 @@ pnpm smoke:local
 
 `pnpm dev` starts the local server, Desktop Bridge, and web console. `pnpm test`
 runs workspace checks plus the local invocation smoke test.
+GitHub governance commands are read-only by default. Project field sync is a
+dry-run unless `--apply` is explicitly passed.
 
 If the project later changes stack, keep the same intent:
 

@@ -21,9 +21,10 @@ Remaining manual setup:
 - Create or tune Project views in the GitHub web UI.
 - Move only the first 2-3 issues from `backlog` to `ready` after reviewing
   dependencies.
-- Choose the branch protection path: make the repository public, upgrade the
-  account/repository entitlement, use rulesets if available, or keep a documented
-  manual merge policy.
+- Choose the long-term branch protection path: make the repository public,
+  upgrade the account/repository entitlement, or use rulesets if available.
+  Until enforcement is available, use the manual merge gate in
+  [M0_GOVERNANCE_CLOSEOUT.md](M0_GOVERNANCE_CLOSEOUT.md).
 
 It assumes the repository already contains:
 
@@ -60,8 +61,8 @@ GitHub Actions:
 
 `pnpm github:check:branch` probes branch protection. If GitHub reports that
 private-repository branch protection requires a different entitlement, track the
-limitation through the governance risk issue and keep CI as a manual merge gate
-until enforcement is available.
+limitation through the governance risk issue and follow
+[M0_GOVERNANCE_CLOSEOUT.md](M0_GOVERNANCE_CLOSEOUT.md).
 
 PM and design skill adoption is documented in
 [PM_DESIGN_SKILLS.md](PM_DESIGN_SKILLS.md). The M0 design contract lives in
