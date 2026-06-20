@@ -161,6 +161,21 @@ function checkLocal() {
     failReport("Project sync command check failed", ["milestone aliases should resolve to full GitHub milestone titles"]);
   }
 
+  const sampleProjectValues = currentProjectFields({
+    status: { name: "done", optionId: "status-done" },
+    area: { name: "docs", optionId: "area-docs" },
+    type: { name: "task", optionId: "type-task" },
+    risk: { name: "low", optionId: "risk-low" },
+    acceptance: { name: "verified", optionId: "acceptance-verified" },
+    platform: { name: "all", optionId: "platform-all" },
+    "agent Target": { name: "platform", optionId: "agent-platform" },
+    priority: { name: "p2", optionId: "priority-p2" },
+    "source Doc": "docs/engineering/PROJECT_FIELDS.md",
+  });
+  if (sampleProjectValues.status !== "done" || sampleProjectValues.agentTarget !== "platform") {
+    failReport("Project sync command check failed", ["Project single-select field objects should compare by name"]);
+  }
+
   const visualResult = reviewRiskGates(["apps/web/src/App.tsx"], "## Verification\n- pnpm test\n", 0);
   if (!visualResult.warnings.some((warning) => warning.includes("visual QA"))) {
     failReport("Pull request risk routing check failed", ["web changes should warn when visual QA evidence is missing"]);
@@ -450,6 +465,7 @@ function syncProject(args) {
   const milestoneMap = buildMilestoneMap(milestones);
   const resolvedMilestoneFilter = resolveMilestoneFilter(milestoneMap, milestoneFilter);
   const issues = loadSyncProjectIssues({ repo, milestoneFilter: resolvedMilestoneFilter, issueFilter });
+  const projectItemsByIssueNumber = loadProjectItemsByIssueNumber({ owner, projectNumber });
   const warnings = [];
   const operations = [];
 
@@ -493,7 +509,8 @@ function syncProject(args) {
       });
     }
 
-    let projectItem = issue.projectItems.find((item) => item.title === projectTitle);
+    const issueProjectItem = issue.projectItems.find((item) => item.title === projectTitle);
+    const projectItem = projectItemsByIssueNumber.get(issue.number) ?? issueProjectItem;
     if (!projectItem) {
       operations.push({
         kind: "project-add",
@@ -557,9 +574,8 @@ function syncProject(args) {
   }
 
   const itemIdsByIssueNumber = new Map();
-  for (const issue of issues) {
-    const item = issue.projectItems.find((projectItem) => projectItem.title === projectTitle);
-    if (item) itemIdsByIssueNumber.set(issue.number, item.id);
+  for (const [issueNumber, item] of projectItemsByIssueNumber) {
+    if (item.id) itemIdsByIssueNumber.set(issueNumber, item.id);
   }
 
   for (const operation of operations) {
@@ -607,6 +623,26 @@ function syncProject(args) {
   }
 
   console.log(`Project sync applied ${operations.length} operation(s).`);
+}
+
+function loadProjectItemsByIssueNumber({ owner, projectNumber }) {
+  const result = ghJson([
+    "project",
+    "item-list",
+    projectNumber,
+    "--owner",
+    owner,
+    "--limit",
+    "1000",
+    "--format",
+    "json",
+  ]);
+  const itemsByIssueNumber = new Map();
+  for (const item of result.items ?? []) {
+    const number = Number(item.content?.number);
+    if (Number.isInteger(number)) itemsByIssueNumber.set(number, item);
+  }
+  return itemsByIssueNumber;
 }
 
 function hasAcceptanceCriteria(body) {
@@ -779,16 +815,21 @@ function normalizeProjectFields(fields) {
 
 function currentProjectFields(item) {
   return {
-    status: item.status,
-    area: item.area,
-    type: item.type,
-    risk: item.risk,
-    acceptance: item.acceptance,
-    platform: item.platform,
-    agentTarget: item["agent Target"],
-    priority: item.priority,
-    sourceDoc: item["source Doc"],
+    status: projectFieldValue(item.status),
+    area: projectFieldValue(item.area),
+    type: projectFieldValue(item.type),
+    risk: projectFieldValue(item.risk),
+    acceptance: projectFieldValue(item.acceptance),
+    platform: projectFieldValue(item.platform),
+    agentTarget: projectFieldValue(item["agent Target"]),
+    priority: projectFieldValue(item.priority),
+    sourceDoc: projectFieldValue(item["source Doc"]),
   };
+}
+
+function projectFieldValue(value) {
+  if (value && typeof value === "object" && "name" in value) return value.name;
+  return value;
 }
 
 function buildProjectFieldMap(fields) {
