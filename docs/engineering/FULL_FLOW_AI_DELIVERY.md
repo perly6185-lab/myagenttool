@@ -262,6 +262,10 @@ Current target:
 Reach L4 with a trusted coding adapter and issue creation apply mode.
 ```
 
+M0 closeout is recorded in [AI_DELIVERY_CLOSEOUT.md](AI_DELIVERY_CLOSEOUT.md).
+That document distinguishes accepted M0 operating scaffolding from M1/M2
+follow-up candidates.
+
 ## Acceptance For "Automatic Product Delivery"
 
 Do not claim true automatic product delivery until:

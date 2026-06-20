@@ -5,6 +5,8 @@ reviewable, tested, and releasable software with AI assistance.
 
 For the broader product-delivery operating system, use
 [FULL_FLOW_AI_DELIVERY.md](FULL_FLOW_AI_DELIVERY.md).
+M0 acceptance and follow-up boundaries are recorded in
+[AI_DELIVERY_CLOSEOUT.md](AI_DELIVERY_CLOSEOUT.md).
 
 The goal is not to let AI silently build everything. The goal is to make AI a
 disciplined development operator that follows the project context, creates

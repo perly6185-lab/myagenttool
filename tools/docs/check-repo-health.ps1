@@ -21,6 +21,7 @@ $required = @(
   "docs/engineering/M0_MANUAL_ACCEPTANCE.md",
   "docs/engineering/M0_GOVERNANCE_CLOSEOUT.md",
   "docs/engineering/OPEN_DESIGN_WORKFLOW.md",
+  "docs/engineering/AI_DELIVERY_CLOSEOUT.md",
   "packages/protocol",
   "packages/adapters",
   "packages/shared",
