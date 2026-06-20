@@ -882,13 +882,31 @@ function unlinkDevice() {
   for (const invocation of state.invocations.filter((item) => item.status === "queued")) {
     invocation.status = "cancelled";
     invocation.cancellation.state = "queued_cancelled";
+    invocation.cancellation.requestedBy = "usr_local";
+    invocation.cancellation.requestedAt = now();
     invocation.cancellation.reason = "Device unlinked before dispatch.";
+    invocation.completedAt = now();
     invocation.updatedAt = now();
     appendEvent({
       invocationId: invocation.id,
       type: "device_queue_cancelled",
       level: "warn",
       message: "Queued invocation cancelled because the device was unlinked."
+    });
+    state.auditSummaries.push(createAuditSummary(invocation, "Device unlink cancelled queued local work."));
+  }
+  for (const invocation of state.invocations.filter((item) => ["dispatching", "running"].includes(item.status))) {
+    invocation.status = "cancelling";
+    invocation.cancellation.state = "requested";
+    invocation.cancellation.requestedBy = "usr_local";
+    invocation.cancellation.requestedAt = now();
+    invocation.cancellation.reason = "Device unlink requested cancellation for running local work.";
+    invocation.updatedAt = now();
+    appendEvent({
+      invocationId: invocation.id,
+      type: "cancel_requested",
+      level: "warn",
+      message: "Device unlink requested cancellation for running local work."
     });
   }
   appendEvent({
@@ -985,6 +1003,21 @@ function runProtocolSelfCheck() {
   assert(state.device.unlinkState === "unlinked", "unlink should mark device unlinked");
   assert(Boolean(state.device.credentialRevokedAt), "unlink should revoke device credentials");
   assert(unlinkQueued.status === "cancelled", "unlink should cancel queued local invocations");
+  assert(state.auditSummaries.some((item) => item.invocationId === unlinkQueued.id && item.errorSummary?.includes("Device unlink")), "unlink should audit queued cleanup");
+
+  resetDemoStateForCheck();
+  const runningCancelAgent = registerAgent({
+    id: "agt_running_cancel",
+    type: "cli",
+    name: "Running cancel CLI",
+    command: "demo-agent"
+  });
+  const runningCancel = createInvocation("running unlink cancellation", runningCancelAgent);
+  markDispatched(runningCancel);
+  acknowledgeInvocation(runningCancel);
+  unlinkDevice();
+  assert(runningCancel.status === "cancelling", "unlink should request cancellation for running local invocations");
+  assert(runningCancel.cancellation.state === "requested", "running unlink cancellation should be requested");
 }
 
 function resetDemoStateForCheck() {
