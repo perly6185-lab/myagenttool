@@ -83,7 +83,8 @@ const state = {
   spans: [],
   auditSummaries: [],
   healthChecks: [],
-  lifecycleAuditRecords: []
+  lifecycleAuditRecords: [],
+  discoveryRuns: []
 };
 
 let idCounter = 1;
@@ -166,6 +167,32 @@ const server = http.createServer(async (req, res) => {
         return;
       }
       sendJson(res, 201, { agent });
+      return;
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/discovery") {
+      const body = await readJson(req);
+      const discoveryRun = createDiscoveryRun(body);
+      sendJson(res, 202, { discoveryRun });
+      return;
+    }
+
+    const discoveryRegisterMatch = url.pathname.match(/^\/api\/discovery\/([^/]+)\/candidates\/([^/]+)\/register$/);
+    if (req.method === "POST" && discoveryRegisterMatch) {
+      const discoveryRun = findDiscoveryRun(decodeURIComponent(discoveryRegisterMatch[1]));
+      if (!discoveryRun) {
+        sendJson(res, 404, { error: "discovery_run_not_found" });
+        return;
+      }
+
+      const candidate = discoveryRun.candidates.find((item) => item.id === decodeURIComponent(discoveryRegisterMatch[2]));
+      if (!candidate) {
+        sendJson(res, 404, { error: "discovery_candidate_not_found" });
+        return;
+      }
+
+      const agent = registerDiscoveredCandidate(discoveryRun, candidate);
+      sendJson(res, 201, { agent, discoveryRun, candidate });
       return;
     }
 
@@ -266,6 +293,54 @@ const server = http.createServer(async (req, res) => {
         nextAction: body.nextAction
       });
       sendJson(res, 200, { ok: true, operation, agent: findAgent(operation.agentId) });
+      return;
+    }
+
+    if (req.method === "GET" && url.pathname === "/api/bridge/discovery-next") {
+      state.device.lastSeenAt = now();
+      if (state.device.unlinkState !== "linked") {
+        sendJson(res, 204, null);
+        return;
+      }
+
+      const discoveryRun = nextBridgeDiscoveryRun();
+      if (!discoveryRun) {
+        sendJson(res, 204, null);
+        return;
+      }
+
+      markDiscoveryStarted(discoveryRun);
+      sendJson(res, 200, {
+        namespace,
+        protocolVersion,
+        discoveryRunId: discoveryRun.id,
+        deviceId: discoveryRun.deviceId,
+        scope: discoveryRun.scope,
+        knownCommands: ["demo-agent"],
+        knownLocalEndpoints: [
+          {
+            name: "Smoke HTTP Agent",
+            baseUrl: "http://127.0.0.1:3212",
+            requestPath: "/invoke",
+            healthPath: "/health"
+          }
+        ],
+        userProvidedPaths: normalizeStringArray(discoveryRun.options?.userProvidedPaths),
+        userProvidedEndpoints: normalizeStringArray(discoveryRun.options?.userProvidedEndpoints)
+      });
+      return;
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/bridge/discovery-complete") {
+      const body = await readJson(req);
+      const discoveryRun = findDiscoveryRun(body.discoveryRunId);
+      if (!discoveryRun) {
+        sendJson(res, 404, { error: "discovery_run_not_found" });
+        return;
+      }
+
+      completeDiscoveryRun(discoveryRun, body);
+      sendJson(res, 200, { ok: true, discoveryRun });
       return;
     }
 
@@ -756,6 +831,242 @@ function isAgentDisabled(agent) {
   return agent?.status === "disabled" || agent?.lifecycle?.state === "disabled";
 }
 
+function createDiscoveryRun(body = {}) {
+  const allowedScope = [
+    "known_command_allowlist",
+    "user_provided_path",
+    "known_local_endpoint",
+    "user_provided_endpoint",
+    "bridge_managed_config"
+  ];
+  const scope = Array.isArray(body.scope)
+    ? body.scope.filter((item) => allowedScope.includes(item))
+    : allowedScope;
+  const createdAt = now();
+  const discoveryRun = {
+    id: nextId("lco_demo"),
+    deviceId: state.device.id,
+    requestedBy: "usr_local",
+    status: state.device.status === "online" && state.device.unlinkState === "linked" ? "queued" : "failed",
+    scope,
+    options: {
+      userProvidedPaths: normalizeStringArray(body.userProvidedPaths),
+      userProvidedEndpoints: normalizeStringArray(body.userProvidedEndpoints)
+    },
+    message: "Conservative discovery checks known commands, known endpoints, user-provided entries, and bridge-managed config only.",
+    candidates: [],
+    createdAt,
+    completedAt: state.device.status === "online" && state.device.unlinkState === "linked" ? null : createdAt
+  };
+  if (discoveryRun.status === "failed") {
+    discoveryRun.message = "Desktop Bridge is offline. Start the bridge before discovery.";
+  }
+  state.discoveryRuns.unshift(discoveryRun);
+  state.discoveryRuns = state.discoveryRuns.slice(0, 20);
+  state.lifecycleAuditRecords.unshift({
+    id: discoveryRun.id,
+    agentId: "agt_demo_cli",
+    deviceId: state.device.id,
+    requestedBy: "usr_local",
+    operation: "discover",
+    status: discoveryRun.status,
+    reason: "Conservative local agent discovery requested.",
+    message: discoveryRun.message,
+    createdAt,
+    completedAt: discoveryRun.completedAt
+  });
+  state.lifecycleAuditRecords = state.lifecycleAuditRecords.slice(0, 100);
+  appendEvent({
+    invocationId: null,
+    type: "lifecycle_requested",
+    level: discoveryRun.status === "failed" ? "warn" : "info",
+    message: discoveryRun.message,
+    data: { operationId: discoveryRun.id, operation: "discover", deviceId: state.device.id }
+  });
+  return discoveryRun;
+}
+
+function nextBridgeDiscoveryRun() {
+  return state.discoveryRuns.find((item) => item.status === "queued");
+}
+
+function markDiscoveryStarted(discoveryRun) {
+  if (discoveryRun.status !== "queued") {
+    return;
+  }
+  discoveryRun.status = "running";
+  discoveryRun.message = "Desktop Bridge is checking conservative discovery sources.";
+  updateLifecycleAudit(discoveryRun.id, {
+    status: "running",
+    message: discoveryRun.message
+  });
+  appendEvent({
+    invocationId: null,
+    type: "lifecycle_started",
+    level: "info",
+    message: discoveryRun.message,
+    data: { operationId: discoveryRun.id, operation: "discover", deviceId: discoveryRun.deviceId }
+  });
+}
+
+function completeDiscoveryRun(discoveryRun, body) {
+  const candidates = Array.isArray(body.candidates) ? body.candidates : [];
+  discoveryRun.candidates = candidates.map((candidate, index) => normalizeDiscoveryCandidate(candidate, index));
+  discoveryRun.status = body.status === "failed" ? "failed" : "succeeded";
+  discoveryRun.message = body.message ?? `Discovery found ${discoveryRun.candidates.length} conservative candidate(s).`;
+  discoveryRun.completedAt = now();
+  updateLifecycleAudit(discoveryRun.id, {
+    status: discoveryRun.status,
+    message: discoveryRun.message,
+    completedAt: discoveryRun.completedAt
+  });
+  appendEvent({
+    invocationId: null,
+    type: discoveryRun.status === "succeeded" ? "lifecycle_completed" : "lifecycle_failed",
+    level: discoveryRun.status === "succeeded" ? "info" : "warn",
+    message: discoveryRun.message,
+    data: {
+      operationId: discoveryRun.id,
+      operation: "discover",
+      deviceId: discoveryRun.deviceId,
+      candidateCount: discoveryRun.candidates.length
+    }
+  });
+}
+
+function normalizeDiscoveryCandidate(candidate, index) {
+  const adapterType = candidate.adapter?.type === "http" ? "http" : "cli";
+  const source = [
+    "known_command_allowlist",
+    "user_provided_path",
+    "known_local_endpoint",
+    "user_provided_endpoint",
+    "bridge_managed_config"
+  ].includes(candidate.source)
+    ? candidate.source
+    : "known_command_allowlist";
+  const agentId = sanitizeAgentId(candidate.registration?.agentId ?? candidate.agentId ?? candidate.id ?? `discovered_${index + 1}`);
+  const adapter = adapterType === "http"
+    ? {
+        type: "http",
+        baseUrl: String(candidate.adapter?.baseUrl ?? candidate.baseUrl ?? "http://127.0.0.1:3212"),
+        authMode: "none",
+        requestPath: String(candidate.adapter?.requestPath ?? candidate.requestPath ?? "/invoke"),
+        healthPath: String(candidate.adapter?.healthPath ?? candidate.healthPath ?? "/health"),
+        method: "POST",
+        payloadShape: { task: "string" },
+        timeoutSeconds: Number(candidate.adapter?.timeoutSeconds ?? 30),
+        streaming: false,
+        cancellation: candidate.adapter?.cancellation ?? "supported"
+      }
+    : {
+        type: "cli",
+        command: String(candidate.adapter?.command ?? candidate.command ?? "demo-agent"),
+        args: Array.isArray(candidate.adapter?.args ?? candidate.args) ? (candidate.adapter?.args ?? candidate.args).map(String) : ["{{payloadJson}}"],
+        workingDirectoryPolicy: "bridge_default",
+        environmentPolicy: "inherit_safe",
+        timeoutSeconds: Number(candidate.adapter?.timeoutSeconds ?? 30),
+        cancellation: candidate.adapter?.cancellation ?? "supported"
+      };
+  return {
+    id: String(candidate.id ?? `cand_${index + 1}`),
+    name: String(candidate.name ?? (adapterType === "http" ? "Discovered HTTP Agent" : "Discovered CLI Agent")),
+    description: String(candidate.description ?? "Candidate found by conservative local discovery."),
+    adapter,
+    source,
+    confidence: ["low", "medium", "high"].includes(candidate.confidence) ? candidate.confidence : "medium",
+    riskLevel: ["low", "medium", "high", "critical"].includes(candidate.riskLevel) ? candidate.riskLevel : adapterType === "http" ? "medium" : "low",
+    riskTags: Array.isArray(candidate.riskTags) ? candidate.riskTags.map(String) : adapterType === "http" ? ["network_access", "external_data_transfer"] : ["read_only"],
+    riskHints: Array.isArray(candidate.riskHints) ? candidate.riskHints.map(String) : conservativeRiskHints(source, adapterType),
+    healthProbeAvailable: Boolean(candidate.healthProbeAvailable ?? true),
+    healthPath: adapterType === "http" ? adapter.healthPath : null,
+    registration: {
+      agentId,
+      status: "candidate",
+      registeredAgentId: null
+    },
+    createdAt: now()
+  };
+}
+
+function registerDiscoveredCandidate(discoveryRun, candidate) {
+  const agent = registerAgent({
+    id: candidate.registration.agentId,
+    type: candidate.adapter.type,
+    name: candidate.name,
+    description: candidate.description,
+    command: candidate.adapter.type === "cli" ? candidate.adapter.command : undefined,
+    args: candidate.adapter.type === "cli" ? candidate.adapter.args : undefined,
+    baseUrl: candidate.adapter.type === "http" ? candidate.adapter.baseUrl : undefined,
+    requestPath: candidate.adapter.type === "http" ? candidate.adapter.requestPath : undefined,
+    healthPath: candidate.adapter.type === "http" ? candidate.adapter.healthPath : undefined,
+    timeoutSeconds: candidate.adapter.timeoutSeconds,
+    cancellation: candidate.adapter.cancellation,
+    capabilityName: "discovered_task",
+    capabilityDescription: candidate.description,
+    riskLevel: candidate.riskLevel
+  });
+  agent.capabilities[0].riskTags = candidate.riskTags;
+  agent.registrationNotes = {
+    risk: candidate.riskHints.join(" "),
+    data: candidate.adapter.type === "http"
+      ? "Task input may be sent to the configured local HTTP endpoint."
+      : "Task input and command output are streamed through the Desktop Bridge.",
+    cost: "Cost is unknown unless this discovered agent reports it.",
+    cancellation: cancellationTextForAdapter(candidate.adapter)
+  };
+  agent.discovery = {
+    runId: discoveryRun.id,
+    candidateId: candidate.id,
+    source: candidate.source,
+    confidence: candidate.confidence
+  };
+  disableAgent(agent);
+  candidate.registration.status = "registered";
+  candidate.registration.registeredAgentId = agent.id;
+  discoveryRun.updatedAt = now();
+  appendEvent({
+    invocationId: null,
+    type: "lifecycle_completed",
+    level: "info",
+    message: `${candidate.name} was registered from discovery and left disabled for review.`,
+    data: { operationId: discoveryRun.id, operation: "discover", agentId: agent.id, candidateId: candidate.id }
+  });
+  return agent;
+}
+
+function conservativeRiskHints(source, adapterType) {
+  const hints = ["Discovery is conservative and did not scan the full operating system."];
+  if (source === "known_command_allowlist") {
+    hints.push("Candidate came from a known command allowlist.");
+  }
+  if (source === "known_local_endpoint") {
+    hints.push("Candidate came from a known local endpoint.");
+  }
+  if (source === "user_provided_path" || source === "user_provided_endpoint") {
+    hints.push("Candidate came from user-provided input.");
+  }
+  hints.push(adapterType === "http" ? "Review data sent to this endpoint before enabling." : "Review the command before enabling.");
+  return hints;
+}
+
+function cancellationTextForAdapter(adapter) {
+  if (adapter.cancellation === "supported") {
+    return "Can request stop.";
+  }
+  if (adapter.cancellation === "unsupported") {
+    return "Stop is not supported by this agent.";
+  }
+  return "Stop behavior is unknown.";
+}
+
+function updateLifecycleAudit(id, patch) {
+  const record = state.lifecycleAuditRecords.find((item) => item.id === id);
+  if (record) {
+    Object.assign(record, patch);
+  }
+}
+
 function createInvocation(task, agent = defaultAgent()) {
   if (!agent) {
     throw new Error("No agent is registered.");
@@ -1177,11 +1488,19 @@ function findAgent(id) {
   return state.agents.find((item) => item.id === id);
 }
 
+function findDiscoveryRun(id) {
+  return state.discoveryRuns.find((item) => item.id === id);
+}
+
 function normalizeEnv(env) {
   if (!env || typeof env !== "object" || Array.isArray(env)) {
     return {};
   }
   return Object.fromEntries(Object.entries(env).map(([key, value]) => [String(key), String(value)]));
+}
+
+function normalizeStringArray(value) {
+  return Array.isArray(value) ? value.map(String).map((item) => item.trim()).filter(Boolean) : [];
 }
 
 function sanitizeAgentId(id) {
@@ -1254,7 +1573,8 @@ function publicState() {
     spans: state.spans,
     auditSummaries: state.auditSummaries,
     healthChecks: state.healthChecks,
-    lifecycleAuditRecords: state.lifecycleAuditRecords
+    lifecycleAuditRecords: state.lifecycleAuditRecords,
+    discoveryRuns: state.discoveryRuns
   };
 }
 
@@ -1270,6 +1590,37 @@ function runProtocolSelfCheck() {
   });
   assert(cliAgent.adapter.type === "cli", "CLI agent should register");
   assert(cliAgent.adapter.args[0] === "{{payloadJson}}", "CLI agent should keep structured argv template");
+
+  state.device.status = "online";
+  const discoveryRun = createDiscoveryRun({
+    scope: ["known_command_allowlist", "known_local_endpoint"],
+    userProvidedPaths: ["demo-agent"],
+    userProvidedEndpoints: ["http://127.0.0.1:3212"]
+  });
+  assert(discoveryRun.status === "queued", "online discovery should queue");
+  assert(nextBridgeDiscoveryRun()?.id === discoveryRun.id, "queued discovery should be bridge-visible");
+  markDiscoveryStarted(discoveryRun);
+  completeDiscoveryRun(discoveryRun, {
+    candidates: [
+      {
+        id: "cand_self_demo",
+        name: "Self-check Discovered Demo Agent",
+        adapter: { type: "cli", command: "demo-agent", args: ["{{payloadJson}}"] },
+        source: "known_command_allowlist",
+        confidence: "high",
+        riskLevel: "low",
+        riskTags: ["read_only"],
+        healthProbeAvailable: true
+      }
+    ]
+  });
+  assert(discoveryRun.status === "succeeded", "discovery should complete");
+  assert(discoveryRun.candidates.length === 1, "discovery should keep candidates");
+  assert(!state.agents.some((agent) => agent.id === discoveryRun.candidates[0].registration.agentId), "discovery should not auto-register candidates");
+  const discoveredAgent = registerDiscoveredCandidate(discoveryRun, discoveryRun.candidates[0]);
+  assert(discoveredAgent.status === "disabled", "registered discovery candidate should stay disabled");
+  assert(discoveryRun.candidates[0].registration.status === "registered", "candidate registration status should update");
+  state.device.status = "offline";
 
   const httpAgent = registerAgent({
     id: "agt_self_http",
@@ -1391,6 +1742,7 @@ function resetDemoStateForCheck() {
   state.auditSummaries = [];
   state.healthChecks = [];
   state.lifecycleAuditRecords = [];
+  state.discoveryRuns = [];
   idCounter = 1;
 }
 

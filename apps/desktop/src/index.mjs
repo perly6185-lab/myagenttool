@@ -52,6 +52,17 @@ async function poll() {
     } finally {
       busy = false;
     }
+    return;
+  }
+
+  const discoveryWork = await request("GET", "/api/bridge/discovery-next");
+  if (discoveryWork) {
+    busy = true;
+    try {
+      await runDiscovery(discoveryWork);
+    } finally {
+      busy = false;
+    }
   }
 }
 
@@ -243,6 +254,158 @@ function checkCliAgentHealth(adapter) {
   };
 }
 
+async function runDiscovery(work) {
+  const candidates = [];
+  const scope = Array.isArray(work.scope) ? work.scope : [];
+
+  if (scope.includes("known_command_allowlist") && Array.isArray(work.knownCommands) && work.knownCommands.includes("demo-agent")) {
+    candidates.push(cliCandidate({
+      id: "cand_demo_cli",
+      name: "Demo CLI Agent",
+      command: "demo-agent",
+      source: "known_command_allowlist",
+      confidence: "high",
+      riskLevel: "low",
+      riskTags: ["read_only"],
+      riskHints: [
+        "Found from the built-in known command allowlist.",
+        "Discovery did not scan the full operating system.",
+        "Review the command before enabling."
+      ]
+    }));
+  }
+
+  if (scope.includes("user_provided_path")) {
+    for (const path of normalizeStringArray(work.userProvidedPaths)) {
+      candidates.push(cliCandidate({
+        id: `cand_user_cli_${safeId(path)}`,
+        name: `User-provided CLI: ${path}`,
+        command: path,
+        source: "user_provided_path",
+        confidence: path === "demo-agent" ? "high" : "medium",
+        riskLevel: "medium",
+        riskTags: ["read_local", "shell_exec"],
+        riskHints: [
+          "Found from a user-provided command path.",
+          "No broad filesystem scan was performed.",
+          "Review shell execution risk before enabling."
+        ]
+      }));
+    }
+  }
+
+  if (scope.includes("known_local_endpoint")) {
+    for (const endpoint of Array.isArray(work.knownLocalEndpoints) ? work.knownLocalEndpoints : []) {
+      candidates.push(httpCandidate({
+        id: `cand_known_http_${safeId(endpoint.baseUrl)}`,
+        name: endpoint.name ?? "Known Local HTTP Agent",
+        baseUrl: endpoint.baseUrl,
+        requestPath: endpoint.requestPath ?? "/invoke",
+        healthPath: endpoint.healthPath ?? "/health",
+        source: "known_local_endpoint",
+        confidence: "medium"
+      }));
+    }
+  }
+
+  if (scope.includes("user_provided_endpoint")) {
+    for (const endpoint of normalizeStringArray(work.userProvidedEndpoints)) {
+      candidates.push(httpCandidate({
+        id: `cand_user_http_${safeId(endpoint)}`,
+        name: `User-provided HTTP Agent: ${endpoint}`,
+        baseUrl: endpoint,
+        requestPath: "/invoke",
+        healthPath: "/health",
+        source: "user_provided_endpoint",
+        confidence: "medium"
+      }));
+    }
+  }
+
+  if (scope.includes("bridge_managed_config")) {
+    candidates.push(cliCandidate({
+      id: "cand_bridge_managed_demo",
+      name: "Bridge-managed Demo CLI Agent",
+      command: "demo-agent",
+      source: "bridge_managed_config",
+      confidence: "high",
+      riskLevel: "low",
+      riskTags: ["read_only"],
+      riskHints: [
+        "Found from bridge-managed demo configuration.",
+        "Discovery stayed inside bridge-managed config.",
+        "Review before enabling."
+      ]
+    }));
+  }
+
+  await request("POST", "/api/bridge/discovery-complete", {
+    discoveryRunId: work.discoveryRunId,
+    status: "succeeded",
+    message: `Desktop Bridge returned ${candidates.length} conservative discovery candidate(s).`,
+    candidates: uniqueCandidates(candidates)
+  });
+}
+
+function cliCandidate({ id, name, command, source, confidence, riskLevel, riskTags, riskHints }) {
+  return {
+    id,
+    name,
+    description: "Runs a local CLI command discovered conservatively.",
+    adapter: {
+      type: "cli",
+      command,
+      args: ["{{payloadJson}}"],
+      timeoutSeconds: 30,
+      cancellation: "supported"
+    },
+    source,
+    confidence,
+    riskLevel,
+    riskTags,
+    riskHints,
+    healthProbeAvailable: true
+  };
+}
+
+function httpCandidate({ id, name, baseUrl, requestPath, healthPath, source, confidence }) {
+  return {
+    id,
+    name,
+    description: "Calls a local HTTP endpoint discovered conservatively.",
+    adapter: {
+      type: "http",
+      baseUrl,
+      requestPath,
+      healthPath,
+      timeoutSeconds: 30,
+      cancellation: "supported"
+    },
+    source,
+    confidence,
+    riskLevel: "medium",
+    riskTags: ["network_access", "external_data_transfer"],
+    riskHints: [
+      "Found from a known or user-provided local endpoint.",
+      "Discovery did not scan the network.",
+      "Review data sent to this endpoint before enabling."
+    ],
+    healthProbeAvailable: true
+  };
+}
+
+function uniqueCandidates(candidates) {
+  const seen = new Set();
+  return candidates.filter((candidate) => {
+    const key = `${candidate.adapter.type}:${candidate.adapter.command ?? candidate.adapter.baseUrl}:${candidate.source}`;
+    if (seen.has(key)) {
+      return false;
+    }
+    seen.add(key);
+    return true;
+  });
+}
+
 function createCliSpawnPlan(adapter, payload) {
   const payloadJson = JSON.stringify(payload);
   const command = adapter.command === "demo-agent" ? process.execPath : String(adapter.command);
@@ -276,6 +439,14 @@ function normalizeEnv(env) {
     return {};
   }
   return Object.fromEntries(Object.entries(env).map(([key, value]) => [String(key), String(value)]));
+}
+
+function normalizeStringArray(value) {
+  return Array.isArray(value) ? value.map(String).map((item) => item.trim()).filter(Boolean) : [];
+}
+
+function safeId(value) {
+  return String(value).trim().replace(/[^a-zA-Z0-9_]/g, "_").slice(0, 48) || "candidate";
 }
 
 async function terminateProcessTree(child) {

@@ -57,6 +57,22 @@ Add conservative discovery:
 - User-provided paths or endpoints.
 - Discovery candidates visible but not auto-enabled.
 
+Accepted implementation scope:
+
+- `POST /api/discovery` creates a discovery run without mutating the agent
+  registry.
+- Desktop Bridge claims discovery work and only checks known command
+  allowlists, known local endpoints, user-provided paths/endpoints, and
+  bridge-managed config.
+- Discovery candidates include adapter type, source, confidence, risk hints,
+  risk tags, and health probe availability.
+- Web Console explains that discovery is conservative and lists candidates as
+  reviewable items.
+- Registering a candidate is explicit and leaves the new agent disabled until
+  the user enables it.
+- `pnpm smoke:local` covers conservative discovery, no auto-registration, and
+  explicit disabled registration from a candidate.
+
 ### Batch 3
 
 Add policy and approval:

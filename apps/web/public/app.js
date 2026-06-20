@@ -20,6 +20,9 @@ const els = {
   healthCheckButton: document.querySelector("#healthCheckButton"),
   toggleAgentButton: document.querySelector("#toggleAgentButton"),
   runBlockReason: document.querySelector("#runBlockReason"),
+  discoverButton: document.querySelector("#discoverButton"),
+  discoverySummary: document.querySelector("#discoverySummary"),
+  candidateList: document.querySelector("#candidateList"),
   activityTitle: document.querySelector("#activityTitle"),
   taskState: document.querySelector("#taskState"),
   safetySummary: document.querySelector("#safetySummary"),
@@ -117,6 +120,47 @@ els.toggleAgentButton.addEventListener("click", async () => {
   }
 });
 
+els.discoverButton.addEventListener("click", async () => {
+  els.discoverButton.disabled = true;
+  try {
+    await fetch(`${apiBase}/api/discovery`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        scope: [
+          "known_command_allowlist",
+          "known_local_endpoint",
+          "user_provided_path",
+          "user_provided_endpoint",
+          "bridge_managed_config"
+        ],
+        userProvidedPaths: ["demo-agent"],
+        userProvidedEndpoints: ["http://127.0.0.1:3212"]
+      })
+    });
+    await refresh();
+  } finally {
+    updateActions(lastState, currentInvocation());
+  }
+});
+
+els.candidateList.addEventListener("click", async (event) => {
+  const button = event.target.closest("button[data-discovery-run-id][data-candidate-id]");
+  if (!button) return;
+
+  button.disabled = true;
+  try {
+    const runId = encodeURIComponent(button.dataset.discoveryRunId);
+    const candidateId = encodeURIComponent(button.dataset.candidateId);
+    await fetch(`${apiBase}/api/discovery/${runId}/candidates/${candidateId}/register`, {
+      method: "POST"
+    });
+    await refresh();
+  } finally {
+    updateActions(lastState, currentInvocation());
+  }
+});
+
 setInterval(refresh, 700);
 refresh();
 
@@ -151,6 +195,7 @@ function render(state) {
     : null;
   const agent = agents.find((item) => item.id === selectedAgentId) ?? state.agent ?? agents[0];
   const lifecycleAudit = state.lifecycleAuditRecords?.find((item) => item.agentId === agent?.id) ?? null;
+  const discoveryRun = state.discoveryRuns?.[0] ?? null;
 
   if (invocation) currentInvocationId = invocation.id;
 
@@ -193,6 +238,7 @@ function render(state) {
     ? state.events.filter((event) => event.invocationId === invocation.id || event.data?.agentId === agent?.id).slice(0, 30)
     : state.events.slice(0, 30);
   renderTimeline(visibleEvents);
+  renderDiscovery(discoveryRun);
   updateActions(state, invocation);
 }
 
@@ -240,7 +286,10 @@ function renderOffline() {
   els.cancelButton.disabled = true;
   els.healthCheckButton.disabled = true;
   els.toggleAgentButton.disabled = true;
+  els.discoverButton.disabled = true;
   els.runBlockReason.textContent = "Server is offline.";
+  els.discoverySummary.textContent = "Server is offline.";
+  els.candidateList.replaceChildren();
   renderTimeline([]);
 }
 
@@ -293,7 +342,92 @@ function updateActions(state, invocation) {
   els.cancelButton.disabled = !invocation || !["queued", "dispatching", "running"].includes(invocation.status);
   els.healthCheckButton.disabled = !hasServer || !hasAgent || agent?.health?.status === "checking";
   els.toggleAgentButton.disabled = !hasServer || !hasAgent;
+  els.discoverButton.disabled = !hasServer || state?.device?.status !== "online" || state?.discoveryRuns?.[0]?.status === "queued" || state?.discoveryRuns?.[0]?.status === "running";
   els.runBlockReason.textContent = runBlockReason({ hasServer, hasTask, hasAgent, isRunning, disabled, unhealthy, agent });
+}
+
+function renderDiscovery(discoveryRun) {
+  if (!discoveryRun) {
+    els.discoverySummary.textContent = "Discovery is conservative and only checks known or user-provided sources.";
+    els.candidateList.replaceChildren();
+    return;
+  }
+
+  els.discoverySummary.textContent = discoverySummary(discoveryRun);
+  if (!discoveryRun.candidates?.length) {
+    const empty = document.createElement("div");
+    empty.className = "timeline-empty";
+    empty.innerHTML = "<strong>No candidates yet</strong><span>Run discovery while Desktop Bridge is online.</span>";
+    els.candidateList.replaceChildren(empty);
+    return;
+  }
+
+  els.candidateList.replaceChildren(
+    ...discoveryRun.candidates.map((candidate) => {
+      const card = document.createElement("article");
+      card.className = "candidate-card";
+
+      const title = document.createElement("h3");
+      title.textContent = candidate.name;
+
+      const description = document.createElement("p");
+      description.textContent = candidate.description;
+
+      const meta = document.createElement("div");
+      meta.className = "candidate-meta";
+      meta.replaceChildren(
+        metaSpan(`Adapter: ${readableAdapterType(candidate.adapter?.type)}`),
+        metaSpan(`Source: ${readableDiscoverySource(candidate.source)}`),
+        metaSpan(`Confidence: ${candidate.confidence}`),
+        metaSpan(`Risk: ${candidate.riskLevel}`),
+        metaSpan(candidate.healthProbeAvailable ? "Health probe available" : "No health probe")
+      );
+
+      const risk = document.createElement("p");
+      risk.textContent = candidate.riskHints?.join(" ") ?? "Review this candidate before registering.";
+
+      const action = document.createElement("button");
+      action.type = "button";
+      action.className = "secondary";
+      action.dataset.discoveryRunId = discoveryRun.id;
+      action.dataset.candidateId = candidate.id;
+      action.textContent = candidate.registration?.status === "registered" ? "Registered disabled" : "Register disabled";
+      action.disabled = candidate.registration?.status === "registered";
+
+      card.append(title, description, meta, risk, action);
+      return card;
+    })
+  );
+}
+
+function metaSpan(text) {
+  const span = document.createElement("span");
+  span.textContent = text;
+  return span;
+}
+
+function discoverySummary(discoveryRun) {
+  if (discoveryRun.status === "queued") return "Discovery is queued for Desktop Bridge. It will only check known or user-provided sources.";
+  if (discoveryRun.status === "running") return "Desktop Bridge is checking conservative discovery sources.";
+  if (discoveryRun.status === "failed") return discoveryRun.message;
+  return `${discoveryRun.message} Candidates are not auto-enabled.`;
+}
+
+function readableDiscoverySource(source) {
+  const map = {
+    known_command_allowlist: "known command allowlist",
+    user_provided_path: "user-provided path",
+    known_local_endpoint: "known local endpoint",
+    user_provided_endpoint: "user-provided endpoint",
+    bridge_managed_config: "bridge-managed config"
+  };
+  return map[source] ?? source;
+}
+
+function readableAdapterType(type) {
+  if (type === "cli") return "CLI";
+  if (type === "http") return "HTTP";
+  return type ?? "Unknown";
 }
 
 function readableStatus(status) {
