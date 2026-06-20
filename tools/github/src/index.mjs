@@ -156,6 +156,11 @@ function checkLocal() {
     failReport("Project sync command check failed", missingProjectSync.map((label) => `missing ${label}`));
   }
 
+  const milestoneAliasMap = buildMilestoneMap([{ title: "M2 - Local Agent Discovery" }]);
+  if (resolveMilestoneFilter(milestoneAliasMap, "M2") !== "M2 - Local Agent Discovery") {
+    failReport("Project sync command check failed", ["milestone aliases should resolve to full GitHub milestone titles"]);
+  }
+
   const visualResult = reviewRiskGates(["apps/web/src/App.tsx"], "## Verification\n- pnpm test\n", 0);
   if (!visualResult.warnings.some((warning) => warning.includes("visual QA"))) {
     failReport("Pull request risk routing check failed", ["web changes should warn when visual QA evidence is missing"]);
@@ -443,14 +448,15 @@ function syncProject(args) {
   const projectTitle = project.title;
   const fieldMap = buildProjectFieldMap(fields.fields);
   const milestoneMap = buildMilestoneMap(milestones);
-  const issues = loadSyncProjectIssues({ repo, milestoneFilter, issueFilter });
+  const resolvedMilestoneFilter = resolveMilestoneFilter(milestoneMap, milestoneFilter);
+  const issues = loadSyncProjectIssues({ repo, milestoneFilter: resolvedMilestoneFilter, issueFilter });
   const warnings = [];
   const operations = [];
 
   for (const issue of issues) {
     const parsed = parseProjectFields(issue.body);
     const labelFields = fieldsFromLabels(issue.labels.map((label) => label.name));
-    const desiredMilestone = normalizeMilestoneName(milestoneFilter ?? parsed.milestone ?? issue.milestone?.title ?? "");
+    const desiredMilestone = normalizeMilestoneName(resolvedMilestoneFilter ?? parsed.milestone ?? issue.milestone?.title ?? "");
     const desired = desiredProjectValues({
       issue,
       parsed,
@@ -693,6 +699,11 @@ function buildMilestoneMap(milestones) {
     if (short) map.set(short.toLowerCase(), milestone);
   }
   return map;
+}
+
+function resolveMilestoneFilter(milestoneMap, milestoneFilter) {
+  if (!milestoneFilter) return undefined;
+  return milestoneMap.get(normalizeMilestoneName(milestoneFilter))?.title ?? milestoneFilter;
 }
 
 function normalizeMilestoneName(value) {
