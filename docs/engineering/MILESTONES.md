@@ -73,6 +73,7 @@ Primary source docs:
 - `docs/vision/AGENT_ADAPTER_MATRIX.md`
 - `docs/vision/ECONOMIC_LEDGER.md`
 - `docs/engineering/M2_ISSUE_PLAN.md`
+- `docs/engineering/M2_ACCEPTANCE_CLOSEOUT.md`
 
 ## M3: Lifecycle Automation and Billing
 

@@ -185,6 +185,7 @@ export interface AgentDiscoveryRun {
 }
 
 export type IntegrationArtifactType =
+  | "integration_plan"
   | "adapter_config"
   | "install_recipe"
   | "health_check"
@@ -202,7 +203,21 @@ export interface IntegrationArtifact {
   reviewState: IntegrationReviewState;
   generatedByAi: boolean;
   summary: string;
+  sourceArtifactId?: IntegrationArtifactId | null;
   payload?: JsonObject;
   createdAt: IsoDateTime;
   updatedAt?: IsoDateTime;
+}
+
+export interface IntegrationProbeRun {
+  id: LifecycleOperationId;
+  artifactId: IntegrationArtifactId;
+  deviceId: DeviceId | null;
+  requestedBy: UserId;
+  status: "queued" | "running" | "succeeded" | "failed" | "cancelled";
+  adapter: Extract<AgentAdapter, { type: "cli" | "http" }>;
+  summary: string;
+  details: string[];
+  createdAt: IsoDateTime;
+  completedAt?: IsoDateTime | null;
 }

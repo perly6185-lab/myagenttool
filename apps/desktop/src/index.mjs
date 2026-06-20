@@ -63,6 +63,17 @@ async function poll() {
     } finally {
       busy = false;
     }
+    return;
+  }
+
+  const probeWork = await request("GET", "/api/bridge/probe-next");
+  if (probeWork) {
+    busy = true;
+    try {
+      await runIntegrationProbe(probeWork);
+    } finally {
+      busy = false;
+    }
   }
 }
 
@@ -283,12 +294,14 @@ async function runDiscovery(work) {
         command: path,
         source: "user_provided_path",
         confidence: path === "demo-agent" ? "high" : "medium",
-        riskLevel: "medium",
-        riskTags: ["read_local", "shell_exec"],
+        riskLevel: highRiskCliCommand(path) ? "high" : "medium",
+        riskTags: highRiskCliCommand(path) ? ["read_local", "write_local", "shell_exec", "network_access"] : ["read_local", "shell_exec"],
         riskHints: [
           "Found from a user-provided command path.",
           "No broad filesystem scan was performed.",
-          "Review shell execution risk before enabling."
+          highRiskCliCommand(path)
+            ? "High-risk coding CLI commands still require local approval before invocation."
+            : "Review shell execution risk before enabling."
         ]
       }));
     }
@@ -344,6 +357,35 @@ async function runDiscovery(work) {
     status: "succeeded",
     message: `Desktop Bridge returned ${candidates.length} conservative discovery candidate(s).`,
     candidates: uniqueCandidates(candidates)
+  });
+}
+
+async function runIntegrationProbe(work) {
+  const adapter = work.adapter;
+  if (!adapter || adapter.type !== "cli") {
+    await request("POST", "/api/bridge/probe-complete", {
+      probeRunId: work.probeRunId,
+      status: "failed",
+      summary: `Desktop Bridge cannot probe adapter type ${adapter?.type ?? "unknown"}.`,
+      details: ["Use HTTP server-side probe or CLI adapter config."]
+    });
+    return;
+  }
+
+  const health = checkCliAgentHealth(adapter);
+  const highRisk = highRiskCliCommand(adapter.command);
+  await request("POST", "/api/bridge/probe-complete", {
+    probeRunId: work.probeRunId,
+    status: health.ok ? "succeeded" : "failed",
+    summary: health.ok ? `Restricted CLI probe passed for ${adapter.command}.` : health.message,
+    details: [
+      "No install scripts were run.",
+      "No broad filesystem scan was performed.",
+      highRisk
+        ? "Command is high risk and remains subject to local approval before invocation."
+        : "Command can be reviewed and registered explicitly.",
+      health.nextAction ?? "Probe complete."
+    ]
   });
 }
 
@@ -447,6 +489,11 @@ function normalizeStringArray(value) {
 
 function safeId(value) {
   return String(value).trim().replace(/[^a-zA-Z0-9_]/g, "_").slice(0, 48) || "candidate";
+}
+
+function highRiskCliCommand(command) {
+  const normalized = String(command ?? "").trim().toLowerCase();
+  return ["codex", "codex.cmd", "codex.ps1", "claude", "qwen", "qwen-code", "openclaw", "qclaw"].some((name) => normalized === name || normalized.endsWith(`/${name}`) || normalized.endsWith(`\\${name}`));
 }
 
 async function terminateProcessTree(child) {
