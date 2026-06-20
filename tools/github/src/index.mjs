@@ -210,6 +210,53 @@ function checkLocal() {
     failReport("Pull request risk routing check failed", ["specific security/data evidence should satisfy the route"]);
   }
 
+  const weakIssueLink = validateDedicatedLinkedIssue({
+    repo: "example/repo",
+    body: "Refs #1",
+    closingIssuesReferences: [],
+    issueLoader: () => ({
+      number: 1,
+      title: "[Initiative]: M2",
+      labels: [{ name: "type/initiative" }],
+      projectItems: [{ title: "myagenttool Roadmap" }],
+    }),
+  });
+  if (!weakIssueLink.failures.some((failure) => failure.includes("dedicated non-initiative"))) {
+    failReport("Pull request issue guard check failed", ["initiative-only issue links should fail"]);
+  }
+
+  const missingProjectIssueLink = validateDedicatedLinkedIssue({
+    repo: "example/repo",
+    body: "Refs #2",
+    closingIssuesReferences: [],
+    issueLoader: () => ({
+      number: 2,
+      title: "[Task]: Work",
+      body: "## Acceptance\n- [ ] Done",
+      labels: [{ name: "type/task" }],
+      projectItems: [],
+    }),
+  });
+  if (!missingProjectIssueLink.failures.some((failure) => failure.includes("Project Fields"))) {
+    failReport("Pull request issue guard check failed", ["work issues without Project Fields metadata should fail"]);
+  }
+
+  const coveredIssueLink = validateDedicatedLinkedIssue({
+    repo: "example/repo",
+    body: "Refs #3",
+    closingIssuesReferences: [],
+    issueLoader: () => ({
+      number: 3,
+      title: "[Task]: Work",
+      body: "## Project Fields\nMilestone: M2\nArea: cross-cutting\nType: task\nStatus: ready\nRisk: medium\nAcceptance: defined\nPlatform: all\nAgent Target: none\nPriority: p1\nSource Doc: docs/engineering/PROJECT_MANAGEMENT.md",
+      labels: [{ name: "type/task" }],
+      projectItems: [{ title: "myagenttool Roadmap" }],
+    }),
+  });
+  if (coveredIssueLink.failures.length > 0) {
+    failReport("Pull request issue guard check failed", ["Project-tracked task issue should satisfy the guard"]);
+  }
+
   console.log("[tools-github:check] GitHub governance local check OK");
 }
 
@@ -278,6 +325,10 @@ function checkPullRequest(args) {
     failures.push(`PR #${pr.number} does not link or close an issue`);
   }
 
+  const linkedIssueResult = validateDedicatedLinkedIssue({ repo, body, closingIssuesReferences: pr.closingIssuesReferences });
+  failures.push(...linkedIssueResult.failures.map((failure) => `PR #${pr.number} ${failure}`));
+  warnings.push(...linkedIssueResult.warnings.map((warning) => `PR #${pr.number} ${warning}`));
+
   if (!hasVerificationEvidence(body)) {
     failures.push(`PR #${pr.number} does not list verification evidence`);
   }
@@ -300,6 +351,68 @@ function checkPullRequest(args) {
   }
 
   printReport("Pull request governance", failures, warnings);
+}
+
+function validateDedicatedLinkedIssue({ repo, body, closingIssuesReferences = [], issueLoader = loadIssueForPrGuard }) {
+  const failures = [];
+  const warnings = [];
+  const issueNumbers = linkedIssueNumbers(body, closingIssuesReferences);
+  if (issueNumbers.length === 0) {
+    return { failures, warnings };
+  }
+
+  const issues = [];
+  for (const issueNumber of issueNumbers) {
+    try {
+      issues.push(issueLoader(repo, issueNumber));
+    } catch (error) {
+      failures.push(`linked issue #${issueNumber} could not be loaded: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  const workIssues = issues.filter((issue) => !issueHasLabel(issue, "type/initiative"));
+  if (workIssues.length === 0) {
+    failures.push("must link a dedicated non-initiative issue, not only a milestone initiative");
+    return { failures, warnings };
+  }
+
+  if (!workIssues.some((issue) => Array.isArray(issue.projectItems) && issue.projectItems.length > 0)) {
+    warnings.push("could not verify linked work issue Project item from this token; run github:sync-project before merge");
+  }
+
+  if (!workIssues.some((issue) => hasProjectFields(issue.body))) {
+    failures.push("must link at least one work issue with Project Fields metadata");
+  }
+
+  return { failures, warnings };
+}
+
+function linkedIssueNumbers(body, closingIssuesReferences = []) {
+  const numbers = new Set();
+  for (const issue of closingIssuesReferences) {
+    if (issue?.number) numbers.add(Number(issue.number));
+  }
+  const text = body ?? "";
+  for (const match of text.matchAll(/\b(?:refs|closes|fixes)\s+#(\d+)/gi)) {
+    numbers.add(Number(match[1]));
+  }
+  return [...numbers].filter(Number.isInteger);
+}
+
+function loadIssueForPrGuard(repo, issueNumber) {
+  return ghJson([
+    "issue",
+    "view",
+    String(issueNumber),
+    "--repo",
+    repo,
+    "--json",
+    "number,title,body,labels,projectItems,state",
+  ]);
+}
+
+function issueHasLabel(issue, labelName) {
+  return Array.isArray(issue.labels) && issue.labels.some((label) => label.name === labelName);
 }
 
 function checkBranchProtection(args) {
