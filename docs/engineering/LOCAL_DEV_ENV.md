@@ -39,8 +39,12 @@ pnpm smoke:local
 
 `pnpm dev` starts the local server, Desktop Bridge, and web console. `pnpm test`
 runs workspace checks plus the local invocation smoke test.
-GitHub governance commands are read-only by default. Project field sync is a
-dry-run unless `--apply` is explicitly passed.
+GitHub governance commands are read-only by default. Project sync is a dry-run
+unless `--apply` is explicitly passed.
+
+```text
+pnpm github:sync-project -- --repo perly6185-lab/myagenttool --owner perly6185-lab --project 1 --milestone M2
+```
 
 If the project later changes stack, keep the same intent:
 

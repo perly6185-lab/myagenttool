@@ -28,6 +28,7 @@
     "github:check:issues": "node tools/github/src/index.mjs check-issues",
     "github:check:pr": "node tools/github/src/index.mjs check-pr",
     "github:check:branch": "node tools/github/src/index.mjs check-branch-protection",
+    "github:sync-project": "node tools/github/src/index.mjs sync-project",
     "release:check": "node tools/release/src/index.mjs --check",
     "release:draft": "node tools/release/src/index.mjs draft-notes",
     "release:retrospective": "node tools/release/src/index.mjs retrospective",
