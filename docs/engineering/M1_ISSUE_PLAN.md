@@ -81,6 +81,19 @@ Add policy and approval:
 - Local approval required for high-risk invocation.
 - Approval/audit events and refusal path.
 
+Accepted implementation scope:
+
+- Registered agents can declare `riskLevel` and `riskTags`; invocation policy
+  records retain the selected risk level and tags.
+- High-risk and critical invocations enter `waiting_for_local_approval` and do
+  not dispatch until approved.
+- Approval requests explain risk, data, cost, cancellation, and tags in the Web
+  Console with approve and deny actions.
+- Approved local invocations move into the normal queue and denied invocations
+  become `rejected` with denied audit evidence.
+- `node apps/server/src/index.mjs --check`, `node apps/web/src/index.mjs
+  --check`, and `pnpm smoke:local` cover the approval and denial paths.
+
 ### Batch 4
 
 Add platform assistance and usage:

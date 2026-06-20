@@ -1,5 +1,6 @@
 import type {
   AgentId,
+  ApprovalRequestId,
   ArtifactId,
   DeviceId,
   IdeaSessionId,
@@ -8,6 +9,7 @@ import type {
   IsoDateTime,
   JsonObject,
   JsonValue,
+  PolicyDecisionId,
   SpanId,
   TraceId,
   UserId,
@@ -66,6 +68,39 @@ export interface InvocationOptions {
   metadata?: JsonObject;
 }
 
+export interface ApprovalRequest {
+  id: ApprovalRequestId;
+  invocationId: InvocationId;
+  agentId: AgentId;
+  requestedBy: UserId;
+  status: "pending" | "approved" | "denied";
+  riskLevel: "low" | "medium" | "high" | "critical";
+  riskTags: string[];
+  summary: {
+    risk: string;
+    data: string;
+    cost: string;
+    cancellation: string;
+  };
+  createdAt: IsoDateTime;
+  decidedAt?: IsoDateTime | null;
+  decidedBy?: UserId | null;
+}
+
+export interface PolicyDecisionRecord {
+  id: PolicyDecisionId;
+  invocationId: InvocationId;
+  agentId: AgentId;
+  action: "invoke";
+  riskLevel: "low" | "medium" | "high" | "critical";
+  riskTags: string[];
+  decision: "allowed" | "requires_local_approval" | "denied";
+  reason: string;
+  approvalRequestId?: ApprovalRequestId | null;
+  approver?: UserId | null;
+  createdAt: IsoDateTime;
+}
+
 export interface Invocation {
   id: InvocationId;
   ideaSessionId: IdeaSessionId | null;
@@ -78,6 +113,8 @@ export interface Invocation {
   cancellation: InvocationCancellation;
   input: JsonObject;
   options: InvocationOptions;
+  policyDecisionId?: PolicyDecisionId | null;
+  approvalRequestId?: ApprovalRequestId | null;
   createdAt: IsoDateTime;
   updatedAt?: IsoDateTime;
 }

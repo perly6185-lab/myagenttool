@@ -90,6 +90,19 @@ try {
   });
   assert(registeredHttp.agent.adapter.baseUrl === httpAgentUrl, "registered HTTP agent should keep baseUrl");
 
+  const registeredRisky = await request("POST", "/api/agents", {
+    id: "agt_smoke_risky",
+    type: "cli",
+    name: "Smoke High Risk CLI Agent",
+    command: "demo-agent",
+    args: ["{{payloadJson}}"],
+    timeoutSeconds: 30,
+    riskLevel: "high",
+    riskTags: ["read_local", "shell_exec", "destructive"]
+  });
+  assert(registeredRisky.agent.capabilities[0].riskLevel === "high", "registered high-risk agent should keep risk level");
+  assert(registeredRisky.agent.capabilities[0].riskTags.includes("destructive"), "registered high-risk agent should keep risk tags");
+
   await request("POST", "/api/agents/agt_smoke_cli/health-check");
   const cliHealthState = await waitFor(async () => {
     const state = await request("GET", "/api/state");
@@ -166,6 +179,60 @@ try {
   assert(span?.status === "succeeded", "expected completed root span");
   assert(audit?.costSummary?.includes("unknown"), "expected unknown cost summary");
 
+  const riskyCreated = await request("POST", "/api/invocations", {
+    task: "Run the high-risk local approval smoke test.",
+    agentId: "agt_smoke_risky"
+  });
+  const riskyInvocationId = riskyCreated.invocation.id;
+  const riskyApprovalId = riskyCreated.invocation.approvalRequestId;
+  assert(riskyCreated.invocation.status === "waiting_for_local_approval", "high-risk invocation should wait for approval");
+  assert(riskyApprovalId, "high-risk invocation should include approval request id");
+  await sleep(350);
+  const riskyWaitingState = await request("GET", "/api/state");
+  const riskyWaiting = riskyWaitingState.invocations.find((item) => item.id === riskyInvocationId);
+  const riskyApproval = riskyWaitingState.approvalRequests.find((item) => item.id === riskyApprovalId);
+  const riskyPolicy = riskyWaitingState.policyDecisionRecords.find((item) => item.id === riskyWaiting.policyDecisionId);
+  assert(riskyWaiting.status === "waiting_for_local_approval", "high-risk invocation should not dispatch before approval");
+  assert(riskyApproval?.status === "pending", "approval request should stay pending before decision");
+  assert(riskyApproval.summary.risk && riskyApproval.summary.data && riskyApproval.summary.cost && riskyApproval.summary.cancellation, "approval request should include plain-language summary");
+  assert(riskyPolicy?.decision === "requires_local_approval", "policy decision should require local approval");
+  assert(riskyPolicy.riskTags.includes("destructive"), "policy decision should record risk tags");
+
+  await request("POST", `/api/approvals/${riskyApprovalId}/approve`);
+  const riskyFinalState = await waitFor(async () => {
+    const state = await request("GET", "/api/state");
+    const invocation = state.invocations.find((item) => item.id === riskyInvocationId);
+    if (invocation?.status === "succeeded") {
+      return state;
+    }
+    if (["failed", "cancelled", "timed_out", "expired", "rejected"].includes(invocation?.status)) {
+      throw new Error(`High-risk approved invocation ended unexpectedly: ${invocation.status}`);
+    }
+    return false;
+  }, "approved high-risk invocation");
+  const riskyFinal = riskyFinalState.invocations.find((item) => item.id === riskyInvocationId);
+  const approvedRequest = riskyFinalState.approvalRequests.find((item) => item.id === riskyApprovalId);
+  assert(approvedRequest?.status === "approved", "approval request should be approved");
+  assert(riskyFinal.delivery.dispatchAttempts >= 1, "approved high-risk invocation should dispatch");
+  assert(riskyFinalState.events.some((item) => item.invocationId === riskyInvocationId && item.type === "local_approval_granted"), "approved high-risk invocation should emit granted event");
+
+  const deniedCreated = await request("POST", "/api/invocations", {
+    task: "Run the high-risk local approval denial smoke test.",
+    agentId: "agt_smoke_risky"
+  });
+  const deniedInvocationId = deniedCreated.invocation.id;
+  const deniedApprovalId = deniedCreated.invocation.approvalRequestId;
+  await request("POST", `/api/approvals/${deniedApprovalId}/deny`);
+  const deniedState = await request("GET", "/api/state");
+  const deniedInvocation = deniedState.invocations.find((item) => item.id === deniedInvocationId);
+  const deniedRequest = deniedState.approvalRequests.find((item) => item.id === deniedApprovalId);
+  const deniedAudit = deniedState.auditSummaries.find((item) => item.invocationId === deniedInvocationId);
+  assert(deniedRequest?.status === "denied", "approval request should be denied");
+  assert(deniedInvocation?.status === "rejected", "denied high-risk invocation should be rejected");
+  assert(deniedInvocation.delivery.dispatchAttempts === 0, "denied high-risk invocation should not dispatch");
+  assert(deniedAudit?.permissionDecision === "denied", "denied high-risk invocation should audit denied permission");
+  assert(deniedState.events.some((item) => item.invocationId === deniedInvocationId && item.type === "local_approval_denied"), "denied high-risk invocation should emit denied event");
+
   const httpCreated = await request("POST", "/api/invocations", {
     task: "Run the M0 HTTP smoke test.",
     agentId: "agt_smoke_http"
@@ -226,7 +293,7 @@ try {
   assert(cancelEvents.some((item) => item.type === "cancel_applied"), "running cancellation should be visible as applied");
 
   console.log("[smoke] M0 local invocation loop OK");
-  console.log(`[smoke] offlineInvocation=${offlineInvocationId} cliInvocation=${invocationId} httpInvocation=${httpInvocationId} cancelledInvocation=${cancelInvocationId} logs=${logEvents.length} status=${invocation.status}`);
+  console.log(`[smoke] offlineInvocation=${offlineInvocationId} cliInvocation=${invocationId} riskyInvocation=${riskyInvocationId} deniedInvocation=${deniedInvocationId} httpInvocation=${httpInvocationId} cancelledInvocation=${cancelInvocationId} logs=${logEvents.length} status=${invocation.status}`);
 } finally {
   stopChildren();
   if (httpAgentServer) {
