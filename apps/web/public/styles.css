@@ -13,6 +13,7 @@
 
 body {
   margin: 0;
+  overflow-x: hidden;
 }
 
 button,
@@ -20,10 +21,12 @@ textarea,
 select,
 input {
   font: inherit;
+  min-width: 0;
 }
 
 .shell {
-  width: min(1360px, calc(100vw - 32px));
+  width: calc(100% - 32px);
+  max-width: 1360px;
   margin: 0 auto;
   padding: 22px 0 32px;
 }
@@ -56,6 +59,7 @@ h1 {
   max-width: 760px;
   font-size: 30px;
   line-height: 1.12;
+  overflow-wrap: anywhere;
 }
 
 h2 {
@@ -221,6 +225,16 @@ select:focus {
   margin-top: 12px;
 }
 
+.agent-shortcuts {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.agent-shortcuts button {
+  min-height: 40px;
+}
+
 button {
   min-height: 42px;
   border: 1px solid #2f6f73;
@@ -361,6 +375,25 @@ button.secondary {
   gap: 8px;
 }
 
+.codex-entry {
+  display: grid;
+  gap: 4px;
+  margin-top: 8px;
+  border: 1px solid #d7b86e;
+  border-radius: 8px;
+  padding: 9px 10px;
+  background: #fff9ed;
+  color: #523910;
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+.codex-entry strong,
+.codex-entry span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 .candidate-list,
 .artifact-list {
   display: grid;
@@ -415,6 +448,41 @@ button.secondary {
 
 .candidate-meta span {
   overflow-wrap: anywhere;
+}
+
+.codex-review {
+  display: grid;
+  gap: 5px;
+  margin: 0;
+  border: 1px solid #eadbbd;
+  border-radius: 8px;
+  padding: 8px;
+  background: #fffaf0;
+}
+
+.codex-review div {
+  display: grid;
+  grid-template-columns: minmax(74px, 0.32fr) 1fr;
+  gap: 8px;
+  min-width: 0;
+}
+
+.codex-review dt,
+.codex-review dd {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+  line-height: 1.3;
+}
+
+.codex-review dt {
+  color: #72521a;
+  font-weight: 750;
+}
+
+.codex-review dd {
+  color: #3f3320;
 }
 
 .artifact-actions {
@@ -602,7 +670,8 @@ dd {
 
 @media (max-width: 760px) {
   .shell {
-    width: min(100vw - 20px, 680px);
+    width: calc(100% - 20px);
+    max-width: 680px;
     padding-top: 14px;
   }
 
@@ -644,7 +713,8 @@ dd {
     grid-template-columns: 1fr;
   }
 
-  .candidate-meta {
+  .candidate-meta,
+  .codex-review div {
     grid-template-columns: 1fr;
   }
 
