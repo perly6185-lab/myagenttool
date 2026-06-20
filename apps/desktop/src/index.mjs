@@ -1,4 +1,5 @@
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
+import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 
@@ -6,8 +7,12 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const serverUrl = process.env.BRIDGE_SERVER_URL ?? "http://127.0.0.1:3001";
 const pollIntervalMs = Number(process.env.BRIDGE_POLL_INTERVAL_MS ?? 700);
 const demoAgentPath = resolve(__dirname, "demo-agent.mjs");
+const codexFixtureAgentPath = resolve(__dirname, "codex-fixture-agent.mjs");
 
 if (process.argv.includes("--check")) {
+  if (!existsSync(demoAgentPath) || !existsSync(codexFixtureAgentPath)) {
+    throw new Error("Desktop agent fixtures are not configured.");
+  }
   console.log("[desktop:check] local demo bridge check OK");
   process.exit(0);
 }
@@ -88,6 +93,7 @@ async function runInvocation(work) {
   let finalResult = null;
   let cancelled = false;
   let stdoutBuffer = "";
+  let stderrBuffer = "";
   let cancelResult = null;
   let timedOut = false;
 
@@ -152,7 +158,7 @@ async function runInvocation(work) {
     const lines = stdoutBuffer.split(/\r?\n/);
     stdoutBuffer = lines.pop() ?? "";
     for (const line of lines) {
-      handleAgentLine(invocationId, line).then((result) => {
+      handleAgentLine(invocationId, line, adapter).then((result) => {
         if (result) {
           finalResult = result;
         }
@@ -161,12 +167,19 @@ async function runInvocation(work) {
   });
 
   child.stderr.on("data", (chunk) => {
-    request("POST", "/api/bridge/events", {
-      invocationId,
-      type: "log",
-      level: "warn",
-      message: chunk.toString("utf8").trim()
-    });
+    stderrBuffer += chunk.toString("utf8");
+    const lines = stderrBuffer.split(/\r?\n/);
+    stderrBuffer = lines.pop() ?? "";
+    for (const line of lines) {
+      if (line.trim()) {
+        request("POST", "/api/bridge/events", {
+          invocationId,
+          type: adapter.outputFormat === "codex_jsonl" ? "agent_output" : "log",
+          level: "warn",
+          message: line.trim()
+        });
+      }
+    }
   });
 
   const exitCode = await new Promise((resolveExit) => {
@@ -176,10 +189,18 @@ async function runInvocation(work) {
   clearTimeout(timeoutTimer);
 
   if (stdoutBuffer.trim()) {
-    const result = await handleAgentLine(invocationId, stdoutBuffer.trim());
+    const result = await handleAgentLine(invocationId, stdoutBuffer.trim(), adapter);
     if (result) {
       finalResult = result;
     }
+  }
+  if (stderrBuffer.trim()) {
+    await request("POST", "/api/bridge/events", {
+      invocationId,
+      type: adapter.outputFormat === "codex_jsonl" ? "agent_output" : "log",
+      level: "warn",
+      message: stderrBuffer.trim()
+    });
   }
 
   if (timedOut) {
@@ -244,6 +265,14 @@ async function runHealthCheck(work) {
 }
 
 function checkCliAgentHealth(adapter) {
+  if (isCodexCliCommand(adapter.command)) {
+    const probe = probeCodexCli(adapter);
+    return {
+      ok: probe.ok,
+      message: probe.ok ? "Codex CLI non-interactive surface is reachable." : probe.summary,
+      nextAction: probe.ok ? null : "Verify Codex CLI installation and authentication."
+    };
+  }
   if (adapter.command === "demo-agent") {
     return {
       ok: true,
@@ -288,20 +317,24 @@ async function runDiscovery(work) {
 
   if (scope.includes("user_provided_path")) {
     for (const path of normalizeStringArray(work.userProvidedPaths)) {
+      const codexCommand = isCodexCliCommand(path);
       candidates.push(cliCandidate({
         id: `cand_user_cli_${safeId(path)}`,
-        name: `User-provided CLI: ${path}`,
+        name: codexCommand ? "Codex CLI" : `User-provided CLI: ${path}`,
         command: path,
         source: "user_provided_path",
         confidence: path === "demo-agent" ? "high" : "medium",
         riskLevel: highRiskCliCommand(path) ? "high" : "medium",
-        riskTags: highRiskCliCommand(path) ? ["read_local", "write_local", "shell_exec", "network_access"] : ["read_local", "shell_exec"],
+        riskTags: codexCommand ? codexRiskTags() : highRiskCliCommand(path) ? ["read_local", "write_local", "shell_exec", "network_access"] : ["read_local", "shell_exec"],
         riskHints: [
           "Found from a user-provided command path.",
           "No broad filesystem scan was performed.",
-          highRiskCliCommand(path)
+          codexCommand
+            ? "Codex CLI is configured for codex exec, JSONL output, and read-only sandbox by default."
+            : highRiskCliCommand(path)
             ? "High-risk coding CLI commands still require local approval before invocation."
-            : "Review shell execution risk before enabling."
+            : "Review shell execution risk before enabling.",
+          codexCommand ? "Local approval is required before invoking this coding agent." : "Generated integrations stay disabled until explicit registration."
         ]
       }));
     }
@@ -372,6 +405,17 @@ async function runIntegrationProbe(work) {
     return;
   }
 
+  if (isCodexCliCommand(adapter.command)) {
+    const probe = probeCodexCli(adapter);
+    await request("POST", "/api/bridge/probe-complete", {
+      probeRunId: work.probeRunId,
+      status: probe.ok ? "succeeded" : "failed",
+      summary: probe.summary,
+      details: probe.details
+    });
+    return;
+  }
+
   const health = checkCliAgentHealth(adapter);
   const highRisk = highRiskCliCommand(adapter.command);
   await request("POST", "/api/bridge/probe-complete", {
@@ -390,16 +434,19 @@ async function runIntegrationProbe(work) {
 }
 
 function cliCandidate({ id, name, command, source, confidence, riskLevel, riskTags, riskHints }) {
+  const codexCommand = isCodexCliCommand(command);
   return {
     id,
     name,
-    description: "Runs a local CLI command discovered conservatively.",
+    description: codexCommand ? "Runs Codex CLI non-interactively through a reviewed local adapter config." : "Runs a local CLI command discovered conservatively.",
     adapter: {
       type: "cli",
       command,
-      args: ["{{payloadJson}}"],
-      timeoutSeconds: 30,
-      cancellation: "supported"
+      args: codexCommand ? codexCliArgs() : ["{{payloadJson}}"],
+      timeoutSeconds: codexCommand ? 120 : 30,
+      cancellation: "supported",
+      outputFormat: codexCommand ? "codex_jsonl" : "plain_result",
+      sandbox: codexCommand ? "read-only" : null
     },
     source,
     confidence,
@@ -450,10 +497,15 @@ function uniqueCandidates(candidates) {
 
 function createCliSpawnPlan(adapter, payload) {
   const payloadJson = JSON.stringify(payload);
-  const command = adapter.command === "demo-agent" ? process.execPath : String(adapter.command);
+  const codexCommandOverride = isCodexCliCommand(adapter.command) ? process.env.MYAGENTTOOL_CODEX_COMMAND : null;
+  const command = adapter.command === "demo-agent" || codexCommandOverride === "fixture"
+    ? process.execPath
+    : codexCommandOverride || String(adapter.command);
   const argsTemplate = Array.isArray(adapter.args) && adapter.args.length > 0 ? adapter.args : ["{{payloadJson}}"];
   const args = adapter.command === "demo-agent"
     ? [demoAgentPath, ...renderArgs(argsTemplate, payloadJson, payload)]
+    : codexCommandOverride === "fixture"
+      ? [codexFixtureAgentPath, ...renderArgs(argsTemplate, payloadJson, payload)]
     : renderArgs(argsTemplate, payloadJson, payload);
   const env = buildEnv(adapter);
   const cwd = adapter.workingDirectoryPolicy === "explicit" && adapter.workingDirectory
@@ -496,6 +548,52 @@ function highRiskCliCommand(command) {
   return ["codex", "codex.cmd", "codex.ps1", "claude", "qwen", "qwen-code", "openclaw", "qclaw"].some((name) => normalized === name || normalized.endsWith(`/${name}`) || normalized.endsWith(`\\${name}`));
 }
 
+function probeCodexCli(adapter) {
+  const codexCommandOverride = process.env.MYAGENTTOOL_CODEX_COMMAND;
+  const command = codexCommandOverride === "fixture"
+    ? process.execPath
+    : codexCommandOverride || String(adapter.command ?? "codex");
+  const args = codexCommandOverride === "fixture"
+    ? [codexFixtureAgentPath, "exec", "--help"]
+    : ["exec", "--help"];
+  const result = spawnSync(command, args, {
+    cwd: process.cwd(),
+    env: buildEnv({ ...adapter, environmentPolicy: "inherit_safe" }),
+    windowsHide: true,
+    encoding: "utf8",
+    shell: false,
+    stdio: ["ignore", "pipe", "pipe"]
+  });
+  const combined = `${result.stdout ?? ""}\n${result.stderr ?? ""}`;
+  const hasExecHelp = result.status === 0 && /Run Codex non-interactively|Usage:\s+codex exec/i.test(combined);
+  return {
+    ok: hasExecHelp,
+    summary: hasExecHelp ? "Restricted Codex CLI probe passed." : "Restricted Codex CLI probe failed.",
+    details: [
+      "Probe used codex exec --help only.",
+      "No prompt was executed.",
+      "No install scripts were run.",
+      "No broad filesystem scan was performed.",
+      `Configured output format: ${adapter.outputFormat ?? "unknown"}.`,
+      `Configured sandbox: ${adapter.sandbox ?? "unset"}.`,
+      hasExecHelp ? "Codex exec surface is available." : `Codex exec help was not detected. Exit: ${result.status ?? "unknown"}.`
+    ]
+  };
+}
+
+function isCodexCliCommand(command) {
+  const normalized = String(command ?? "").trim().toLowerCase();
+  return ["codex", "codex.cmd", "codex.ps1", "codex.exe"].some((name) => normalized === name || normalized.endsWith(`/${name}`) || normalized.endsWith(`\\${name}`));
+}
+
+function codexCliArgs() {
+  return ["exec", "--json", "--sandbox", "read-only", "--ephemeral", "{{task}}"];
+}
+
+function codexRiskTags() {
+  return ["read_local", "write_local", "shell_exec", "network_access", "repo_context", "code_change"];
+}
+
 async function terminateProcessTree(child) {
   if (!child.pid) {
     return { ok: false, message: "Cannot cancel CLI process because no process id was assigned." };
@@ -534,9 +632,12 @@ async function terminateProcessTree(child) {
   return { ok: true, message: "SIGTERM cancellation sent to CLI process." };
 }
 
-async function handleAgentLine(invocationId, line) {
+async function handleAgentLine(invocationId, line, adapter = {}) {
   if (!line) {
     return null;
+  }
+  if (adapter.outputFormat === "codex_jsonl") {
+    return handleCodexJsonLine(invocationId, line);
   }
   if (line.startsWith("RESULT ")) {
     return JSON.parse(line.slice("RESULT ".length));
@@ -547,6 +648,67 @@ async function handleAgentLine(invocationId, line) {
     level: "info",
     message: line
   });
+  return null;
+}
+
+async function handleCodexJsonLine(invocationId, line) {
+  let event;
+  try {
+    event = JSON.parse(line);
+  } catch {
+    await request("POST", "/api/bridge/events", {
+      invocationId,
+      type: "agent_output",
+      level: "info",
+      message: line
+    });
+    return null;
+  }
+
+  const message = codexEventMessage(event);
+  if (message) {
+    await request("POST", "/api/bridge/events", {
+      invocationId,
+      type: "agent_output",
+      level: event.type === "turn.failed" || event.type === "error" ? "warn" : "info",
+      message,
+      data: {
+        source: "codex_jsonl",
+        eventType: event.type,
+        itemType: event.item?.type ?? null
+      }
+    });
+  }
+
+  if (event.type === "turn.completed") {
+    return {
+      summary: "Codex CLI completed.",
+      touchedUserFiles: false,
+      output: { usage: event.usage ?? null },
+      cost: { model: "codex", billable: true, unknown: true }
+    };
+  }
+
+  if (event.item?.type === "agent_message" && event.item?.text) {
+    return {
+      summary: String(event.item.text),
+      touchedUserFiles: false,
+      output: { latestMessage: String(event.item.text) },
+      cost: { model: "codex", billable: true, unknown: true }
+    };
+  }
+
+  return null;
+}
+
+function codexEventMessage(event) {
+  if (event.type === "thread.started") return `Codex thread started: ${event.thread_id ?? "unknown"}.`;
+  if (event.type === "turn.started") return "Codex turn started.";
+  if (event.type === "turn.completed") return "Codex turn completed.";
+  if (event.type === "turn.failed") return `Codex turn failed: ${event.error?.message ?? "unknown error"}.`;
+  if (event.type === "error") return `Codex error: ${event.message ?? event.error?.message ?? "unknown error"}.`;
+  if (event.item?.type === "agent_message" && event.item?.text) return String(event.item.text);
+  if (event.item?.type) return `Codex event: ${event.item.type}.`;
   return null;
 }
 

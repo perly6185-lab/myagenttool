@@ -768,6 +768,8 @@ function createCliAgent(body) {
     throw new Error("CLI agent command is required.");
   }
   const args = Array.isArray(body.args ?? body.adapter?.args) ? (body.args ?? body.adapter.args).map(String) : [];
+  const codexCommand = isCodexCliCommand(command);
+  const normalizedArgs = args.length > 0 ? args : codexCommand ? codexCliArgs() : [];
   return baseAgent({
     id,
     type: "cli",
@@ -777,24 +779,26 @@ function createCliAgent(body) {
     adapter: {
       type: "cli",
       command,
-      args,
+      args: normalizedArgs,
       workingDirectory: body.workingDirectory ?? null,
       workingDirectoryPolicy: body.workingDirectory ? "explicit" : "bridge_default",
       environmentPolicy: body.env ? "explicit_only" : "inherit_safe",
       env: normalizeEnv(body.env),
-      timeoutSeconds: Number(body.timeoutSeconds ?? 30),
-      cancellation: "supported"
+      timeoutSeconds: Number(body.timeoutSeconds ?? (codexCommand ? 120 : 30)),
+      cancellation: "supported",
+      outputFormat: normalizeCliOutputFormat(body.outputFormat ?? body.adapter?.outputFormat, command),
+      sandbox: body.sandbox ?? body.adapter?.sandbox ?? (codexCommand ? "read-only" : null)
     },
     capabilities: [
       {
         name: body.capabilityName ?? "manual_cli_task",
         description: body.capabilityDescription ?? "Runs a manually registered local CLI command.",
-        riskLevel: normalizeRiskLevel(body.riskLevel, "medium"),
-        riskTags: normalizeRiskTags(body.riskTags ?? body.capabilityRiskTags, ["read_local", "shell_exec"])
+        riskLevel: normalizeRiskLevel(body.riskLevel, codexCommand ? "high" : "medium"),
+        riskTags: normalizeRiskTags(body.riskTags ?? body.capabilityRiskTags, codexCommand ? codexRiskTags() : ["read_local", "shell_exec"])
       }
     ],
     status: state.device.status === "online" ? "available" : "unavailable",
-    registrationNotes: {
+    registrationNotes: codexCommand ? codexRegistrationNotes() : {
       risk: "Runs a local command with structured argv. Review the command, arguments, working directory, and environment before invoking.",
       data: "Task input and command output are streamed to the local demo server as invocation events.",
       cost: "Cost is external or unknown unless the registered command reports it.",
@@ -1211,6 +1215,8 @@ function normalizeDiscoveryCandidate(candidate, index) {
     ? candidate.source
     : "known_command_allowlist";
   const agentId = sanitizeAgentId(candidate.registration?.agentId ?? candidate.agentId ?? candidate.id ?? `discovered_${index + 1}`);
+  const command = String(candidate.adapter?.command ?? candidate.command ?? "demo-agent");
+  const codexCommand = adapterType === "cli" && isCodexCliCommand(command);
   const adapter = adapterType === "http"
     ? {
         type: "http",
@@ -1226,12 +1232,14 @@ function normalizeDiscoveryCandidate(candidate, index) {
       }
     : {
         type: "cli",
-        command: String(candidate.adapter?.command ?? candidate.command ?? "demo-agent"),
-        args: Array.isArray(candidate.adapter?.args ?? candidate.args) ? (candidate.adapter?.args ?? candidate.args).map(String) : ["{{payloadJson}}"],
+        command,
+        args: Array.isArray(candidate.adapter?.args ?? candidate.args) ? (candidate.adapter?.args ?? candidate.args).map(String) : codexCommand ? codexCliArgs() : ["{{payloadJson}}"],
         workingDirectoryPolicy: "bridge_default",
         environmentPolicy: "inherit_safe",
-        timeoutSeconds: Number(candidate.adapter?.timeoutSeconds ?? 30),
-        cancellation: candidate.adapter?.cancellation ?? "supported"
+        timeoutSeconds: Number(candidate.adapter?.timeoutSeconds ?? (codexCommand ? 120 : 30)),
+        cancellation: candidate.adapter?.cancellation ?? "supported",
+        outputFormat: normalizeCliOutputFormat(candidate.adapter?.outputFormat, command),
+        sandbox: candidate.adapter?.sandbox ?? (codexCommand ? "read-only" : null)
       };
   return {
     id: String(candidate.id ?? `cand_${index + 1}`),
@@ -1240,8 +1248,8 @@ function normalizeDiscoveryCandidate(candidate, index) {
     adapter,
     source,
     confidence: ["low", "medium", "high"].includes(candidate.confidence) ? candidate.confidence : "medium",
-    riskLevel: ["low", "medium", "high", "critical"].includes(candidate.riskLevel) ? candidate.riskLevel : adapterType === "http" ? "medium" : "low",
-    riskTags: Array.isArray(candidate.riskTags) ? candidate.riskTags.map(String) : adapterType === "http" ? ["network_access", "external_data_transfer"] : ["read_only"],
+    riskLevel: ["low", "medium", "high", "critical"].includes(candidate.riskLevel) ? candidate.riskLevel : codexCommand ? "high" : adapterType === "http" ? "medium" : "low",
+    riskTags: Array.isArray(candidate.riskTags) ? candidate.riskTags.map(String) : adapterType === "http" ? ["network_access", "external_data_transfer"] : codexCommand ? codexRiskTags() : ["read_only"],
     riskHints: Array.isArray(candidate.riskHints) ? candidate.riskHints.map(String) : conservativeRiskHints(source, adapterType),
     healthProbeAvailable: Boolean(candidate.healthProbeAvailable ?? true),
     healthPath: adapterType === "http" ? adapter.healthPath : null,
@@ -1262,6 +1270,8 @@ function registerDiscoveredCandidate(discoveryRun, candidate) {
     description: candidate.description,
     command: candidate.adapter.type === "cli" ? candidate.adapter.command : undefined,
     args: candidate.adapter.type === "cli" ? candidate.adapter.args : undefined,
+    outputFormat: candidate.adapter.type === "cli" ? candidate.adapter.outputFormat : undefined,
+    sandbox: candidate.adapter.type === "cli" ? candidate.adapter.sandbox : undefined,
     baseUrl: candidate.adapter.type === "http" ? candidate.adapter.baseUrl : undefined,
     requestPath: candidate.adapter.type === "http" ? candidate.adapter.requestPath : undefined,
     healthPath: candidate.adapter.type === "http" ? candidate.adapter.healthPath : undefined,
@@ -1346,20 +1356,24 @@ function buildIntegrationArtifactPayload(body) {
   const healthPath = String(body.healthPath ?? body.adapter?.healthPath ?? "/health").trim() || "/health";
   const args = normalizeStringArray(body.args).length > 0
     ? normalizeStringArray(body.args)
-    : command
-      ? ["{{payloadJson}}"]
+    : isCodexCliCommand(command)
+      ? codexCliArgs()
+      : command
+        ? ["{{payloadJson}}"]
       : [];
   const payload = {
     title: String(body.title ?? body.name ?? "Unsupported agent integration"),
     description: description || "User described an unsupported agent for integration.",
     adapterGuidance: adapterGuidance(targetType),
     structuredHints: {
-      command,
-      baseUrl,
-      requestPath,
-      healthPath,
-      workingDirectory: String(body.workingDirectory ?? "").trim(),
-      environmentNeeds: String(body.environmentNeeds ?? "").trim(),
+    command,
+    baseUrl,
+    requestPath,
+    healthPath,
+    workingDirectory: String(body.workingDirectory ?? "").trim(),
+    environmentNeeds: String(body.environmentNeeds ?? "").trim(),
+      outputFormat: normalizeCliOutputFormat(body.outputFormat ?? body.adapter?.outputFormat, command),
+      sandbox: body.sandbox ?? body.adapter?.sandbox ?? (isCodexCliCommand(command) ? "read-only" : null),
       streaming: Boolean(body.streaming ?? false),
       cancellation: normalizeCancellation(body.cancellation),
       args
@@ -1373,7 +1387,9 @@ function buildIntegrationArtifactPayload(body) {
       healthPath,
       streaming: Boolean(body.streaming ?? false),
       cancellation: normalizeCancellation(body.cancellation),
-      timeoutSeconds: Number(body.timeoutSeconds ?? 30)
+      timeoutSeconds: body.timeoutSeconds === undefined ? undefined : Number(body.timeoutSeconds),
+      outputFormat: body.outputFormat ?? body.adapter?.outputFormat,
+      sandbox: body.sandbox ?? body.adapter?.sandbox
     }),
     riskNotes: riskNotesForIntegration(targetType, body),
     dataNotes: dataNotesForIntegration(targetType),
@@ -1609,6 +1625,8 @@ function registerIntegrationArtifact(artifact) {
     description: artifact.payload?.description ?? artifact.summary,
     command: adapter.type === "cli" ? adapter.command : undefined,
     args: adapter.type === "cli" ? adapter.args : undefined,
+    outputFormat: adapter.type === "cli" ? adapter.outputFormat : undefined,
+    sandbox: adapter.type === "cli" ? adapter.sandbox : undefined,
     baseUrl: adapter.type === "http" ? adapter.baseUrl : undefined,
     requestPath: adapter.type === "http" ? adapter.requestPath : undefined,
     healthPath: adapter.type === "http" ? adapter.healthPath : undefined,
@@ -1660,12 +1678,14 @@ function adapterFromArtifact(artifact) {
   return {
     type: "cli",
     command: String(adapter?.command ?? artifact.payload?.structuredHints?.command ?? "demo-agent"),
-    args: normalizeStringArray(adapter?.args).length > 0 ? normalizeStringArray(adapter.args) : ["{{payloadJson}}"],
+    args: normalizeStringArray(adapter?.args).length > 0 ? normalizeStringArray(adapter.args) : isCodexCliCommand(adapter?.command ?? artifact.payload?.structuredHints?.command) ? codexCliArgs() : ["{{payloadJson}}"],
     workingDirectory: adapter?.workingDirectory ?? null,
     workingDirectoryPolicy: adapter?.workingDirectory ? "explicit" : "bridge_default",
     environmentPolicy: "inherit_safe",
     timeoutSeconds: Number(adapter?.timeoutSeconds ?? 30),
-    cancellation: normalizeCancellation(adapter?.cancellation)
+    cancellation: normalizeCancellation(adapter?.cancellation),
+    outputFormat: normalizeCliOutputFormat(adapter?.outputFormat, adapter?.command ?? artifact.payload?.structuredHints?.command),
+    sandbox: adapter?.sandbox ?? (isCodexCliCommand(adapter?.command ?? artifact.payload?.structuredHints?.command) ? "read-only" : null)
   };
 }
 
@@ -1744,9 +1764,10 @@ function draftIntegrationWithPlatformAgent(body = {}) {
 
 function buildIntegrationGovernance(body, payload) {
   const targetType = payload.adapterConfig?.type ?? body.targetType ?? "cli";
+  const command = payload.adapterConfig?.command ?? body.command ?? body.adapter?.command;
   return {
     riskLevel: normalizeRiskLevel(body.riskLevel, targetType === "cli" ? "high" : "medium"),
-    riskTags: normalizeRiskTags(body.riskTags, defaultRiskTags(targetType)),
+    riskTags: normalizeRiskTags(body.riskTags, defaultRiskTags(targetType, command)),
     economics: {
       model: normalizeEconomicModel(body.economicModel ?? body.economics?.model, "unknown"),
       costOwner: String(body.costOwner ?? body.economics?.costOwner ?? "usr_local"),
@@ -1844,6 +1865,20 @@ function buildAdapterConfig(targetType, options) {
       cancellation: options.cancellation
     };
   }
+  if (isCodexCliCommand(options.command)) {
+    return {
+      type: "cli",
+      command: options.command || "codex",
+      args: options.args?.length ? options.args : codexCliArgs(),
+      workingDirectory: options.workingDirectory || null,
+      workingDirectoryPolicy: options.workingDirectory ? "explicit" : "bridge_default",
+      environmentPolicy: "inherit_safe",
+      timeoutSeconds: Number(options.timeoutSeconds ?? 120),
+      cancellation: options.cancellation,
+      outputFormat: "codex_jsonl",
+      sandbox: "read-only"
+    };
+  }
   return {
     type: "cli",
     command: options.command || "demo-agent",
@@ -1852,7 +1887,9 @@ function buildAdapterConfig(targetType, options) {
     workingDirectoryPolicy: options.workingDirectory ? "explicit" : "bridge_default",
     environmentPolicy: "inherit_safe",
     timeoutSeconds: options.timeoutSeconds,
-    cancellation: options.cancellation
+    cancellation: options.cancellation,
+    outputFormat: normalizeCliOutputFormat(options.outputFormat, options.command),
+    sandbox: options.sandbox ?? null
   };
 }
 
@@ -1862,7 +1899,10 @@ function adapterGuidance(targetType) {
     : "This looks like a local command-line agent. Review the command, arguments, working directory, data access, and cancellation behavior before enabling.";
 }
 
-function riskNotesForIntegration(targetType) {
+function riskNotesForIntegration(targetType, body = {}) {
+  if (targetType === "cli" && isCodexCliCommand(body.command ?? body.adapter?.command)) {
+    return "Codex CLI can inspect repository context and may propose code changes. It must run through codex exec, read-only sandbox by default, JSONL evidence, local approval, and explicit enablement.";
+  }
   return targetType === "http"
     ? "HTTP integrations can send task data to the configured endpoint. Keep the endpoint local or trusted before enabling."
     : "CLI integrations can execute local commands. This is high risk until reviewed, probed, and explicitly enabled.";
@@ -1894,8 +1934,39 @@ function integrationArtifactSummary(artifactType, targetType, payload) {
   return `${title}${artifactType.replaceAll("_", " ")} for ${targetType.toUpperCase()} integration`;
 }
 
-function defaultRiskTags(targetType) {
+function defaultRiskTags(targetType, command) {
+  if (targetType === "cli" && isCodexCliCommand(command)) {
+    return codexRiskTags();
+  }
   return targetType === "http" ? ["network_access", "external_data_transfer"] : ["read_local", "shell_exec", "generated_code"];
+}
+
+function isCodexCliCommand(command) {
+  const normalized = String(command ?? "").trim().toLowerCase();
+  return ["codex", "codex.cmd", "codex.ps1", "codex.exe"].some((name) => normalized === name || normalized.endsWith(`/${name}`) || normalized.endsWith(`\\${name}`));
+}
+
+function codexCliArgs() {
+  return ["exec", "--json", "--sandbox", "read-only", "--ephemeral", "{{task}}"];
+}
+
+function codexRiskTags() {
+  return ["read_local", "write_local", "shell_exec", "network_access", "repo_context", "code_change"];
+}
+
+function normalizeCliOutputFormat(value, command) {
+  const normalized = String(value ?? "").trim().toLowerCase();
+  if (normalized === "codex_jsonl") return "codex_jsonl";
+  return isCodexCliCommand(command) ? "codex_jsonl" : "plain_result";
+}
+
+function codexRegistrationNotes() {
+  return {
+    risk: "Runs Codex CLI in non-interactive mode. Review repository access, sandbox, model output, and proposed file changes before invoking.",
+    data: "Task input, Codex JSONL events, command output, trace, and result summary are recorded by the local demo server.",
+    cost: "Codex cost is external or unknown to the demo server and remains visible for review.",
+    cancellation: "The Desktop Bridge attempts to terminate the Codex process tree when cancellation is requested."
+  };
 }
 
 function suggestedAgentId(artifact) {
@@ -2943,19 +3014,23 @@ function runProtocolSelfCheck() {
       {
         id: "cand_self_codex",
         name: "Codex CLI",
-        adapter: { type: "cli", command: "codex", args: ["{{payloadJson}}"] },
+        adapter: { type: "cli", command: "codex" },
         source: "user_provided_path",
         confidence: "medium",
         riskLevel: "high",
-        riskTags: ["read_local", "write_local", "shell_exec", "network_access"],
         healthProbeAvailable: true
       }
     ]
   });
   assert(codexDiscovery.candidates[0].adapter.command === "codex", "user-provided Codex CLI should be discoverable when explicit");
   assert(codexDiscovery.candidates[0].riskLevel === "high", "Codex-like CLI discovery should be high risk");
+  assert(codexDiscovery.candidates[0].adapter.args.includes("--json"), "Codex discovery should use JSONL output");
+  assert(codexDiscovery.candidates[0].adapter.args.includes("read-only"), "Codex discovery should default to read-only sandbox");
+  assert(codexDiscovery.candidates[0].adapter.outputFormat === "codex_jsonl", "Codex discovery should mark JSONL output");
+  assert(codexDiscovery.candidates[0].riskTags.includes("repo_context"), "Codex discovery should include repository context risk");
   const codexAgent = registerDiscoveredCandidate(codexDiscovery, codexDiscovery.candidates[0]);
   assert(codexAgent.status === "disabled", "explicit Codex discovery registration should stay disabled");
+  assert(codexAgent.adapter.outputFormat === "codex_jsonl", "registered Codex candidate should preserve JSONL output config");
 
   const draftArtifact = createIntegrationArtifact({
     targetType: "cli",
@@ -2971,6 +3046,19 @@ function runProtocolSelfCheck() {
   const adapterArtifact = generatedArtifacts.find((item) => item.artifactType === "adapter_config");
   assert(adapterArtifact?.generatedByAi === true, "generated adapter config should record AI metadata");
   assert(adapterArtifact.reviewState === "needs_review", "generated adapter config should need review");
+  const codexDraftArtifact = createIntegrationArtifact({
+    targetType: "cli",
+    title: "Self-check Codex integration",
+    description: "I want to connect Codex CLI for repository review tasks.",
+    command: "codex",
+    cancellation: "supported",
+    environmentNeeds: "Use existing local Codex authentication."
+  });
+  const codexAdapterArtifact = generateIntegrationArtifacts(codexDraftArtifact).find((item) => item.artifactType === "adapter_config");
+  assert(codexAdapterArtifact.payload.adapterConfig.args.includes("--json"), "Codex adapter config should request JSONL output");
+  assert(codexAdapterArtifact.payload.adapterConfig.args.includes("read-only"), "Codex adapter config should default to read-only sandbox");
+  assert(codexAdapterArtifact.payload.adapterConfig.outputFormat === "codex_jsonl", "Codex adapter config should declare JSONL output");
+  assert(codexAdapterArtifact.governance.riskTags.includes("repo_context"), "Codex adapter config should record repo context risk");
   transitionIntegrationArtifact(adapterArtifact, "approve");
   const probeRun = createIntegrationProbeRun(adapterArtifact);
   assert(probeRun.status === "queued", "CLI probe should queue for Desktop Bridge");
