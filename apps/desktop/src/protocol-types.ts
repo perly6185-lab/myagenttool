@@ -8,3 +8,8 @@ export type DesktopBridgeWorkItem = {
   options: Invocation["options"];
 };
 export type DesktopBridgeEvent = InvocationEvent;
+export type DesktopBridgeHealthWorkItem = {
+  checkId: string;
+  agentId: Agent["id"];
+  adapter: Agent["adapter"];
+};

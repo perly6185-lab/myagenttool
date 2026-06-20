@@ -43,6 +43,7 @@
             <button id="runButton" type="button">Run on this computer</button>
             <button id="cancelButton" type="button" class="secondary">Cancel task</button>
           </div>
+          <p id="runBlockReason" class="action-note" aria-live="polite"></p>
 
           <div class="review-strip" aria-label="Pre-run review">
             <div>
@@ -67,6 +68,7 @@
             <summary>Technical details</summary>
             <dl class="facts">
               <div><dt>Adapter</dt><dd id="adapterName">-</dd></div>
+              <div><dt>Lifecycle</dt><dd id="agentLifecycle">-</dd></div>
               <div><dt>Task ID</dt><dd id="invocationId">-</dd></div>
               <div><dt>Trace</dt><dd id="traceId">-</dd></div>
               <div><dt>State</dt><dd id="technicalState">-</dd></div>
@@ -106,9 +108,15 @@
             </div>
             <dl class="facts">
               <div><dt>Status</dt><dd id="agentStatus">-</dd></div>
+              <div><dt>Health</dt><dd id="agentHealth">-</dd></div>
               <div><dt>Capability</dt><dd id="agentCapability">-</dd></div>
               <div><dt>Cost estimate</dt><dd id="agentCost">-</dd></div>
+              <div><dt>Next action</dt><dd id="agentNextAction">-</dd></div>
             </dl>
+            <div class="agent-actions" aria-label="Agent management">
+              <button id="healthCheckButton" type="button" class="secondary">Check health</button>
+              <button id="toggleAgentButton" type="button" class="secondary">Disable agent</button>
+            </div>
           </section>
 
           <section class="context-section result-section">

@@ -8,13 +8,18 @@ const els = {
   deviceLastSeen: document.querySelector("#deviceLastSeen"),
   agentName: document.querySelector("#agentName"),
   agentStatus: document.querySelector("#agentStatus"),
+  agentHealth: document.querySelector("#agentHealth"),
   agentCapability: document.querySelector("#agentCapability"),
   agentCost: document.querySelector("#agentCost"),
+  agentNextAction: document.querySelector("#agentNextAction"),
   deviceSelect: document.querySelector("#deviceSelect"),
   agentSelect: document.querySelector("#agentSelect"),
   taskInput: document.querySelector("#taskInput"),
   runButton: document.querySelector("#runButton"),
   cancelButton: document.querySelector("#cancelButton"),
+  healthCheckButton: document.querySelector("#healthCheckButton"),
+  toggleAgentButton: document.querySelector("#toggleAgentButton"),
+  runBlockReason: document.querySelector("#runBlockReason"),
   activityTitle: document.querySelector("#activityTitle"),
   taskState: document.querySelector("#taskState"),
   safetySummary: document.querySelector("#safetySummary"),
@@ -22,6 +27,7 @@ const els = {
   costSummary: document.querySelector("#costSummary"),
   cancellationSummary: document.querySelector("#cancellationSummary"),
   adapterName: document.querySelector("#adapterName"),
+  agentLifecycle: document.querySelector("#agentLifecycle"),
   invocationId: document.querySelector("#invocationId"),
   traceId: document.querySelector("#traceId"),
   technicalState: document.querySelector("#technicalState"),
@@ -57,7 +63,7 @@ els.runButton.addEventListener("click", async () => {
     els.resultTitle.textContent = "Could not start";
     els.resultSummary.textContent = error instanceof Error ? error.message : "Unable to start the task.";
   } finally {
-    els.runButton.disabled = false;
+    updateActions(lastState, currentInvocation());
   }
 });
 
@@ -77,7 +83,37 @@ els.cancelButton.addEventListener("click", async () => {
     });
     await refresh();
   } finally {
-    els.cancelButton.disabled = false;
+    updateActions(lastState, currentInvocation());
+  }
+});
+
+els.healthCheckButton.addEventListener("click", async () => {
+  if (!selectedAgentId) return;
+
+  els.healthCheckButton.disabled = true;
+  try {
+    await fetch(`${apiBase}/api/agents/${encodeURIComponent(selectedAgentId)}/health-check`, {
+      method: "POST"
+    });
+    await refresh();
+  } finally {
+    updateActions(lastState, currentInvocation());
+  }
+});
+
+els.toggleAgentButton.addEventListener("click", async () => {
+  const agent = selectedAgent(lastState);
+  if (!agent) return;
+
+  const action = agent.status === "disabled" ? "enable" : "disable";
+  els.toggleAgentButton.disabled = true;
+  try {
+    await fetch(`${apiBase}/api/agents/${encodeURIComponent(agent.id)}/${action}`, {
+      method: "POST"
+    });
+    await refresh();
+  } finally {
+    updateActions(lastState, currentInvocation());
   }
 });
 
@@ -113,7 +149,8 @@ function render(state) {
   const audit = invocation
     ? state.auditSummaries.find((item) => item.invocationId === invocation.id)
     : null;
-  const agent = agents.find((item) => item.id === (invocation?.agentId ?? selectedAgentId)) ?? state.agent ?? agents[0];
+  const agent = agents.find((item) => item.id === selectedAgentId) ?? state.agent ?? agents[0];
+  const lifecycleAudit = state.lifecycleAuditRecords?.find((item) => item.agentId === agent?.id) ?? null;
 
   if (invocation) currentInvocationId = invocation.id;
 
@@ -129,27 +166,31 @@ function render(state) {
 
   els.agentName.textContent = agent?.name ?? "No agent registered";
   els.agentStatus.textContent = readableAgentStatus(agent?.status);
+  els.agentHealth.textContent = readableHealth(agent?.health);
   els.agentCapability.textContent = agent?.capabilities?.[0]?.description ?? "No capability selected";
   els.agentCost.textContent = costText(agent?.economics);
+  els.agentNextAction.textContent = agent?.health?.nextAction ?? agentNextAction(agent, state);
 
   els.safetySummary.textContent = agent?.registrationNotes?.risk ?? "Review the selected agent before running.";
   els.dataSummary.textContent = agent?.registrationNotes?.data ?? "Task input and result are recorded.";
   els.costSummary.textContent = agent?.registrationNotes?.cost ?? costText(agent?.economics);
   els.cancellationSummary.textContent = agent?.registrationNotes?.cancellation ?? cancellationText(agent?.adapter);
   els.adapterName.textContent = adapterText(agent?.adapter);
+  els.agentLifecycle.textContent = lifecycleText(agent);
 
   els.invocationId.textContent = invocation?.id ?? "No task yet";
   els.traceId.textContent = invocation?.traceId ?? "No trace yet";
   els.technicalState.textContent = invocation ? `${invocation.status} / ${invocation.delivery?.state ?? "no delivery"}` : "No task yet";
-  els.auditDecision.textContent = audit ? readableAudit(audit) : "Nothing recorded yet";
+  els.auditDecision.textContent = audit ? readableAudit(audit) : lifecycleAudit ? readableLifecycleAudit(lifecycleAudit) : "Nothing recorded yet";
   els.deliveryStatus.textContent = readableDelivery(invocation?.delivery?.state);
   els.cancelStatus.textContent = readableCancellation(invocation?.cancellation?.state);
+  els.toggleAgentButton.textContent = agent?.status === "disabled" ? "Enable agent" : "Disable agent";
 
   els.resultTitle.textContent = resultTitle(invocation?.status);
   els.resultSummary.textContent = resultSummary(invocation, audit);
 
   const visibleEvents = invocation
-    ? state.events.filter((event) => event.invocationId === invocation.id).slice(0, 30)
+    ? state.events.filter((event) => event.invocationId === invocation.id || event.data?.agentId === agent?.id).slice(0, 30)
     : state.events.slice(0, 30);
   renderTimeline(visibleEvents);
   updateActions(state, invocation);
@@ -173,7 +214,7 @@ function renderSelectors(state, agents) {
 
   const previous = els.agentSelect.value || selectedAgentId;
   els.agentSelect.replaceChildren(
-    ...agents.map((agent) => new Option(`${agent.name} - ${readableAgentStatus(agent.status)}`, agent.id))
+    ...agents.map((agent) => new Option(`${agent.name} - ${readableAgentStatus(agent.status)} - ${readableHealthLabel(agent.health)}`, agent.id))
   );
   els.agentSelect.value = agents.some((agent) => agent.id === previous) ? previous : selectedAgentId ?? "";
   selectedAgentId = els.agentSelect.value || selectedAgentId;
@@ -186,7 +227,10 @@ function renderOffline() {
   els.deviceStatus.textContent = "Offline";
   els.deviceLastSeen.textContent = "-";
   els.agentStatus.textContent = "Unavailable";
+  els.agentHealth.textContent = "-";
   els.agentCapability.textContent = "-";
+  els.agentNextAction.textContent = "-";
+  els.agentLifecycle.textContent = "-";
   els.deliveryStatus.textContent = "Not delivered";
   els.cancelStatus.textContent = "No task";
   els.auditDecision.textContent = "Nothing recorded";
@@ -194,6 +238,9 @@ function renderOffline() {
   els.resultSummary.textContent = "Start the local demo server, then this workspace can show your computer and agent status.";
   els.runButton.disabled = true;
   els.cancelButton.disabled = true;
+  els.healthCheckButton.disabled = true;
+  els.toggleAgentButton.disabled = true;
+  els.runBlockReason.textContent = "Server is offline.";
   renderTimeline([]);
 }
 
@@ -237,10 +284,16 @@ function updateActions(state, invocation) {
   const hasTask = els.taskInput.value.trim().length > 0;
   const hasAgent = Boolean(selectedAgentId);
   const isRunning = ["queued", "dispatching", "running", "cancelling"].includes(invocation?.status);
-  const localAgent = state?.agents?.find((agent) => agent.id === selectedAgentId)?.location?.type === "local_device";
+  const agent = selectedAgent(state);
+  const localAgent = agent?.location?.type === "local_device";
+  const disabled = agent?.status === "disabled";
+  const unhealthy = agent?.health?.status === "unhealthy";
   els.runButton.textContent = localAgent && state?.device?.status !== "online" ? "Queue for this computer" : "Run on this computer";
-  els.runButton.disabled = !hasServer || !hasTask || !hasAgent || isRunning;
+  els.runButton.disabled = !hasServer || !hasTask || !hasAgent || isRunning || disabled || unhealthy;
   els.cancelButton.disabled = !invocation || !["queued", "dispatching", "running"].includes(invocation.status);
+  els.healthCheckButton.disabled = !hasServer || !hasAgent || agent?.health?.status === "checking";
+  els.toggleAgentButton.disabled = !hasServer || !hasAgent;
+  els.runBlockReason.textContent = runBlockReason({ hasServer, hasTask, hasAgent, isRunning, disabled, unhealthy, agent });
 }
 
 function readableStatus(status) {
@@ -284,6 +337,50 @@ function readableAgentStatus(status) {
   if (status === "unavailable") return "Waiting for computer";
   if (status === "disabled") return "Disabled";
   return status ?? "-";
+}
+
+function readableHealth(health) {
+  if (!health) return "Not checked";
+  const checkedAt = health.checkedAt ? ` at ${shortTime(health.checkedAt)}` : "";
+  if (health.status === "healthy") return `Healthy${checkedAt} - ${health.message}`;
+  if (health.status === "unhealthy") return `Needs attention${checkedAt} - ${health.message}`;
+  if (health.status === "checking") return "Checking health";
+  return "Not checked";
+}
+
+function readableHealthLabel(health) {
+  if (health?.status === "healthy") return "Healthy";
+  if (health?.status === "unhealthy") return "Needs attention";
+  if (health?.status === "checking") return "Checking health";
+  return "Not checked";
+}
+
+function agentNextAction(agent, state) {
+  if (!agent) return "-";
+  if (agent.status === "disabled") return "Enable the agent before running a task.";
+  if (agent.health?.status === "unhealthy") return agent.health.nextAction ?? "Run another health check after fixing the agent.";
+  if (agent.health?.status === "unknown" || !agent.health) return "Run a health check when setup changes.";
+  if (agent.location?.type === "local_device" && state?.device?.status !== "online") return "Start Desktop Bridge to run local work.";
+  return "Ready for tasks.";
+}
+
+function lifecycleText(agent) {
+  if (!agent) return "-";
+  return `${agent.lifecycle?.state ?? "unknown"} / ${agent.lifecycle?.installState ?? "unknown"}`;
+}
+
+function selectedAgent(state) {
+  return state?.agents?.find((agent) => agent.id === selectedAgentId) ?? state?.agent ?? null;
+}
+
+function runBlockReason({ hasServer, hasTask, hasAgent, isRunning, disabled, unhealthy, agent }) {
+  if (!hasServer) return "Server is offline.";
+  if (!hasTask) return "Enter a task before running.";
+  if (!hasAgent) return "Select an agent before running.";
+  if (disabled) return `${agent?.name ?? "This agent"} is disabled. Enable it before running a new task.`;
+  if (unhealthy) return `${agent?.name ?? "This agent"} is unhealthy. Run a health check after fixing it.`;
+  if (isRunning) return "Wait for the current task to finish or cancel it.";
+  return "";
 }
 
 function costText(economics) {
@@ -357,6 +454,11 @@ function readableEventType(type) {
     agent_output: "Agent output",
     trace_created: "Trace started",
     span_completed: "Trace completed",
+    heartbeat: "Computer connected",
+    lifecycle_requested: "Agent action requested",
+    lifecycle_started: "Agent action started",
+    lifecycle_completed: "Agent action completed",
+    lifecycle_failed: "Agent action failed",
     invocation_succeeded: "Task completed",
     invocation_failed: "Task failed",
     invocation_timed_out: "Task timed out",
@@ -387,6 +489,13 @@ function readableAudit(audit) {
   if (audit.permissionDecision === "allowed") return "Allowed and recorded";
   if (audit.permissionDecision === "denied") return "Denied and recorded";
   return "Recorded";
+}
+
+function readableLifecycleAudit(audit) {
+  if (!audit) return "Nothing recorded";
+  if (audit.status === "succeeded") return `${audit.operation.replaceAll("_", " ")} completed`;
+  if (audit.status === "failed") return `${audit.operation.replaceAll("_", " ")} needs attention`;
+  return `${audit.operation.replaceAll("_", " ")} ${audit.status}`;
 }
 
 function shortTime(value) {

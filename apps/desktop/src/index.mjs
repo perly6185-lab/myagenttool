@@ -34,15 +34,24 @@ async function poll() {
   }
 
   const response = await request("GET", "/api/bridge/next");
-  if (!response) {
+  if (response) {
+    busy = true;
+    try {
+      await runInvocation(response);
+    } finally {
+      busy = false;
+    }
     return;
   }
 
-  busy = true;
-  try {
-    await runInvocation(response);
-  } finally {
-    busy = false;
+  const healthWork = await request("GET", "/api/bridge/health-next");
+  if (healthWork) {
+    busy = true;
+    try {
+      await runHealthCheck(healthWork);
+    } finally {
+      busy = false;
+    }
   }
 }
 
@@ -187,6 +196,51 @@ async function runInvocation(work) {
     summary: `Demo CLI Agent exited with code ${exitCode}.`,
     result: finalResult
   });
+}
+
+async function runHealthCheck(work) {
+  const adapter = work.adapter;
+  if (!adapter || adapter.type !== "cli") {
+    await request("POST", "/api/bridge/health-complete", {
+      checkId: work.checkId,
+      agentId: work.agentId,
+      status: "unhealthy",
+      message: `Desktop Bridge cannot health-check adapter type ${adapter?.type ?? "unknown"}.`,
+      nextAction: "Use a CLI demo agent for bridge health checks."
+    });
+    return;
+  }
+
+  const result = checkCliAgentHealth(adapter);
+  await request("POST", "/api/bridge/health-complete", {
+    checkId: work.checkId,
+    agentId: work.agentId,
+    status: result.ok ? "healthy" : "unhealthy",
+    message: result.message,
+    nextAction: result.ok ? null : result.nextAction
+  });
+}
+
+function checkCliAgentHealth(adapter) {
+  if (adapter.command === "demo-agent") {
+    return {
+      ok: true,
+      message: "Demo CLI Agent is reachable through Desktop Bridge.",
+      nextAction: null
+    };
+  }
+  if (!adapter.command || typeof adapter.command !== "string") {
+    return {
+      ok: false,
+      message: "CLI agent command is missing.",
+      nextAction: "Register the agent with a command, then retry the health check."
+    };
+  }
+  return {
+    ok: true,
+    message: `Desktop Bridge can attempt CLI command: ${adapter.command}.`,
+    nextAction: null
+  };
 }
 
 function createCliSpawnPlan(adapter, payload) {

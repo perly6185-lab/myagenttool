@@ -1,4 +1,13 @@
-import type { Agent, AuditSummary, Device, Invocation, InvocationEvent, Span, Trace } from "@myagenttool/protocol";
+import type {
+  Agent,
+  AgentLifecycleOperation,
+  AuditSummary,
+  Device,
+  Invocation,
+  InvocationEvent,
+  Span,
+  Trace,
+} from "@myagenttool/protocol";
 
 export type LocalDemoServerState = {
   device: Device;
@@ -8,4 +17,6 @@ export type LocalDemoServerState = {
   traces: Trace[];
   spans: Span[];
   auditSummaries: AuditSummary[];
+  healthChecks: AgentLifecycleOperation[];
+  lifecycleAuditRecords: AgentLifecycleOperation[];
 };

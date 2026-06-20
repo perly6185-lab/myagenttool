@@ -34,6 +34,20 @@ Implement the smallest M1 product slice:
 
 This batch should close the enable/disable, health-check, and web-state issues.
 
+Accepted implementation scope:
+
+- `POST /api/agents/:id/disable` and `POST /api/agents/:id/enable`
+  update registry state, record lifecycle audit records, and emit lifecycle
+  events.
+- Disabled agents are blocked before new invocations are created, and bridge
+  registration does not re-enable them implicitly.
+- `POST /api/agents/:id/health-check` supports HTTP health endpoints directly
+  and queues CLI health checks for Desktop Bridge reporting.
+- Web Console shows agent status, health, next action, lifecycle details, and
+  disables run with plain-language reasons for disabled or unhealthy agents.
+- `pnpm smoke:local` covers CLI and HTTP health checks, disabled invocation
+  blocking, and re-enabled CLI invocation flow.
+
 ### Batch 2
 
 Add conservative discovery:
