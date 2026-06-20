@@ -22,16 +22,21 @@ if (process.argv.includes("--check")) {
   const expectations = [
     [html, "What should your computer do?", "task composer"],
     [html, "Run on this computer", "plain-language run action"],
+    [html, "id=\"agentSelect\"", "agent selector"],
     [html, "Safety", "safety review"],
     [html, "Data", "data review"],
     [html, "Cost", "cost review"],
+    [html, "Cancellation", "cancellation review"],
+    [html, "Technical details", "collapsed technical details"],
     [html, "Activity", "activity timeline"],
     [html, "Result", "result panel"],
     [html, "Audit", "audit panel"],
     [css, "@media (max-width: 760px)", "mobile layout guard"],
     [css, "overflow-wrap: anywhere", "long text overflow guard"],
     [js, "readableStatus", "plain-language state mapper"],
-    [js, "readableEventType", "plain-language event mapper"]
+    [js, "readableEventType", "plain-language event mapper"],
+    [js, "registrationNotes", "agent review notes"],
+    [js, "selectedAgentId", "agent selection state"]
   ];
 
   const failed = expectations
