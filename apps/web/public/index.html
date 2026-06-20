@@ -74,6 +74,18 @@
               <div><dt>State</dt><dd id="technicalState">-</dd></div>
             </dl>
           </details>
+
+          <section class="discovery-panel" aria-label="Agent discovery">
+            <div class="section-heading compact">
+              <p class="step-label">Discovery</p>
+              <h2>Find local agents</h2>
+            </div>
+            <div class="discovery-actions">
+              <button id="discoverButton" type="button" class="secondary">Discover agents</button>
+            </div>
+            <p id="discoverySummary" class="action-note">Discovery is conservative and only checks known or user-provided sources.</p>
+            <div id="candidateList" class="candidate-list" aria-live="polite"></div>
+          </section>
         </section>
 
         <section class="run-panel" aria-label="Task activity">

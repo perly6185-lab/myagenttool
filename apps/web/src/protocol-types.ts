@@ -1,4 +1,12 @@
-import type { Agent, AgentLifecycleOperation, AuditSummary, Device, Invocation, InvocationEvent } from "@myagenttool/protocol";
+import type {
+  Agent,
+  AgentDiscoveryRun,
+  AgentLifecycleOperation,
+  AuditSummary,
+  Device,
+  Invocation,
+  InvocationEvent,
+} from "@myagenttool/protocol";
 
 export type WebConsoleSnapshot = {
   device: Device;
@@ -9,4 +17,5 @@ export type WebConsoleSnapshot = {
   auditSummaries: AuditSummary[];
   healthChecks: AgentLifecycleOperation[];
   lifecycleAuditRecords: AgentLifecycleOperation[];
+  discoveryRuns: AgentDiscoveryRun[];
 };

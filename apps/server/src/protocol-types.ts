@@ -1,5 +1,6 @@
 import type {
   Agent,
+  AgentDiscoveryRun,
   AgentLifecycleOperation,
   AuditSummary,
   Device,
@@ -19,4 +20,5 @@ export type LocalDemoServerState = {
   auditSummaries: AuditSummary[];
   healthChecks: AgentLifecycleOperation[];
   lifecycleAuditRecords: AgentLifecycleOperation[];
+  discoveryRuns: AgentDiscoveryRun[];
 };

@@ -38,6 +38,35 @@ try {
     return state.device.status === "online" && state.agent.status === "available" && state.agents.length >= 1;
   }, "desktop bridge registration");
 
+  const discoveryCreated = await request("POST", "/api/discovery", {
+    scope: [
+      "known_command_allowlist",
+      "known_local_endpoint",
+      "user_provided_path",
+      "user_provided_endpoint",
+      "bridge_managed_config"
+    ],
+    userProvidedPaths: ["demo-agent"],
+    userProvidedEndpoints: [httpAgentUrl]
+  });
+  const discoveryRunId = discoveryCreated.discoveryRun.id;
+  const discoveryState = await waitFor(async () => {
+    const state = await request("GET", "/api/state");
+    const run = state.discoveryRuns.find((item) => item.id === discoveryRunId);
+    return run?.status === "succeeded" ? state : false;
+  }, "conservative agent discovery");
+  const discoveryRun = discoveryState.discoveryRuns.find((item) => item.id === discoveryRunId);
+  assert(discoveryRun.candidates.length >= 2, "discovery should return conservative candidates");
+  assert(discoveryRun.candidates.some((item) => item.source === "known_command_allowlist"), "discovery should include known command allowlist candidate");
+  assert(discoveryRun.candidates.some((item) => item.source === "user_provided_endpoint"), "discovery should include user-provided endpoint candidate");
+  assert(discoveryRun.candidates.every((item) => item.registration.status === "candidate"), "discovery candidates should not auto-register");
+  assert(!discoveryState.agents.some((agent) => agent.discovery?.runId === discoveryRunId), "discovery should not auto-register agents");
+
+  const candidateToRegister = discoveryRun.candidates.find((item) => item.source === "known_command_allowlist") ?? discoveryRun.candidates[0];
+  const registeredDiscovered = await request("POST", `/api/discovery/${discoveryRunId}/candidates/${candidateToRegister.id}/register`);
+  assert(registeredDiscovered.agent.status === "disabled", "registered discovery candidate should stay disabled");
+  assert(registeredDiscovered.candidate.registration.status === "registered", "registered discovery candidate should update candidate status");
+
   const registeredCli = await request("POST", "/api/agents", {
     id: "agt_smoke_cli",
     type: "cli",

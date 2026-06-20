@@ -26,6 +26,8 @@ if (process.argv.includes("--check")) {
     [html, "id=\"healthCheckButton\"", "agent health check action"],
     [html, "id=\"toggleAgentButton\"", "agent enable disable action"],
     [html, "id=\"agentHealth\"", "agent health state"],
+    [html, "id=\"discoverButton\"", "agent discovery action"],
+    [html, "id=\"candidateList\"", "agent discovery candidates"],
     [html, "Safety", "safety review"],
     [html, "Data", "data review"],
     [html, "Cost", "cost review"],
@@ -40,6 +42,9 @@ if (process.argv.includes("--check")) {
     [js, "readableEventType", "plain-language event mapper"],
     [js, "readableHealth", "plain-language health mapper"],
     [js, "readableHealthLabel", "agent list health label"],
+    [js, "renderDiscovery", "conservative discovery renderer"],
+    [js, "readableDiscoverySource", "plain-language discovery source"],
+    [js, "readableAdapterType", "plain-language candidate adapter type"],
     [js, "runBlockReason", "run blocked explanation"],
     [js, "registrationNotes", "agent review notes"],
     [js, "selectedAgentId", "agent selection state"]

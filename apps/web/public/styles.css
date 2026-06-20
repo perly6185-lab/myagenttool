@@ -277,6 +277,63 @@ button.secondary {
   margin-top: 10px;
 }
 
+.discovery-panel {
+  margin-top: 12px;
+  border-top: 1px solid #e2e6e3;
+  padding-top: 12px;
+}
+
+.discovery-actions {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 8px;
+}
+
+.candidate-list {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.candidate-card {
+  display: grid;
+  gap: 8px;
+  border: 1px solid #e1e6e2;
+  border-radius: 8px;
+  padding: 10px;
+  background: #fbfcfb;
+}
+
+.candidate-card h3,
+.candidate-card p {
+  margin: 0;
+}
+
+.candidate-card h3 {
+  font-size: 15px;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+
+.candidate-card p {
+  color: #42504b;
+  font-size: 13px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.candidate-meta {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+  color: #51605b;
+  font-size: 12px;
+}
+
+.candidate-meta span {
+  overflow-wrap: anywhere;
+}
+
 .timeline {
   display: grid;
   gap: 10px;
@@ -422,6 +479,10 @@ dd {
   }
 
   .agent-actions {
+    grid-template-columns: 1fr;
+  }
+
+  .candidate-meta {
     grid-template-columns: 1fr;
   }
 

@@ -145,6 +145,45 @@ export interface AgentLifecycleOperation {
   completedAt?: IsoDateTime | null;
 }
 
+export type AgentDiscoverySource =
+  | "known_command_allowlist"
+  | "user_provided_path"
+  | "known_local_endpoint"
+  | "user_provided_endpoint"
+  | "bridge_managed_config";
+
+export interface AgentDiscoveryCandidate {
+  id: string;
+  name: string;
+  description: string;
+  adapter: Extract<AgentAdapter, { type: "cli" | "http" }>;
+  source: AgentDiscoverySource;
+  confidence: "low" | "medium" | "high";
+  riskLevel: RiskLevel;
+  riskTags: CapabilityRiskTag[];
+  riskHints: string[];
+  healthProbeAvailable: boolean;
+  healthPath?: string | null;
+  registration: {
+    agentId: AgentId;
+    status: "candidate" | "registered";
+    registeredAgentId?: AgentId | null;
+  };
+  createdAt: IsoDateTime;
+}
+
+export interface AgentDiscoveryRun {
+  id: LifecycleOperationId;
+  deviceId: DeviceId;
+  requestedBy: UserId;
+  status: "queued" | "running" | "succeeded" | "failed" | "cancelled";
+  scope: AgentDiscoverySource[];
+  message: string;
+  candidates: AgentDiscoveryCandidate[];
+  createdAt: IsoDateTime;
+  completedAt?: IsoDateTime | null;
+}
+
 export type IntegrationArtifactType =
   | "adapter_config"
   | "install_recipe"
