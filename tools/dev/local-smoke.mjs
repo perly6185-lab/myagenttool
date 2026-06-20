@@ -91,6 +91,12 @@ try {
   const registeredCodex = await request("POST", `/api/discovery/${codexDiscoveryId}/candidates/${codexCandidate.id}/register`);
   assert(registeredCodex.agent.status === "disabled", "registered Codex candidate should remain disabled");
   assert(registeredCodex.agent.adapter.outputFormat === "codex_jsonl", "registered Codex candidate should preserve JSONL output config");
+  const codexRegisteredState = await request("GET", "/api/state");
+  const registeredCodexAgent = codexRegisteredState.agents.find((item) => item.id === registeredCodex.agent.id);
+  assert(registeredCodexAgent?.status === "disabled", "guided Codex entry should keep registered agent disabled");
+  assert(registeredCodexAgent?.registrationNotes?.risk?.includes("Codex CLI"), "registered Codex agent should expose Codex review notes");
+  const enabledCodexDiscovery = await request("POST", `/api/agents/${registeredCodex.agent.id}/enable`);
+  assert(enabledCodexDiscovery.agent.status === "available", "explicitly enabled Codex discovery agent should become selectable");
 
   const codexDraftIntegration = await request("POST", "/api/integration-artifacts", {
     artifactType: "integration_plan",

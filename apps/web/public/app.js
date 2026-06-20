@@ -1,4 +1,5 @@
-const apiBase = "http://127.0.0.1:3001";
+const defaultApiBase = "http://127.0.0.1:3001";
+const apiBase = resolveApiBase();
 
 const els = {
   connectionStatus: document.querySelector("#connectionStatus"),
@@ -23,6 +24,7 @@ const els = {
   toggleAgentButton: document.querySelector("#toggleAgentButton"),
   runBlockReason: document.querySelector("#runBlockReason"),
   discoverButton: document.querySelector("#discoverButton"),
+  addCodexButton: document.querySelector("#addCodexButton"),
   discoveryPaths: document.querySelector("#discoveryPaths"),
   discoveryEndpoints: document.querySelector("#discoveryEndpoints"),
   discoverySummary: document.querySelector("#discoverySummary"),
@@ -163,20 +165,32 @@ els.toggleAgentButton.addEventListener("click", async () => {
 els.discoverButton.addEventListener("click", async () => {
   els.discoverButton.disabled = true;
   try {
-    await fetch(`${apiBase}/api/discovery`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        scope: [
-          "known_command_allowlist",
-          "known_local_endpoint",
-          "user_provided_path",
-          "user_provided_endpoint",
-          "bridge_managed_config"
-        ],
-        userProvidedPaths: parseList(els.discoveryPaths.value),
-        userProvidedEndpoints: parseList(els.discoveryEndpoints.value)
-      })
+    await createDiscovery({
+      scope: [
+        "known_command_allowlist",
+        "known_local_endpoint",
+        "user_provided_path",
+        "user_provided_endpoint",
+        "bridge_managed_config"
+      ],
+      userProvidedPaths: parseList(els.discoveryPaths.value),
+      userProvidedEndpoints: parseList(els.discoveryEndpoints.value)
+    });
+    await refresh();
+  } finally {
+    updateActions(lastState, currentInvocation());
+  }
+});
+
+els.addCodexButton.addEventListener("click", async () => {
+  els.addCodexButton.disabled = true;
+  els.discoverySummary.textContent = "Checking explicit Codex CLI entry. No broad scan, install, registration, or enablement will run.";
+  try {
+    ensureListValue(els.discoveryPaths, "codex");
+    await createDiscovery({
+      scope: ["user_provided_path"],
+      userProvidedPaths: ["codex"],
+      userProvidedEndpoints: []
     });
     await refresh();
   } finally {
@@ -195,6 +209,12 @@ els.candidateList.addEventListener("click", async (event) => {
     await fetch(`${apiBase}/api/discovery/${runId}/candidates/${candidateId}/register`, {
       method: "POST"
     });
+    const state = await fetchState();
+    const run = state.discoveryRuns?.find((item) => item.id === button.dataset.discoveryRunId);
+    const candidate = run?.candidates?.find((item) => item.id === button.dataset.candidateId);
+    if (candidate?.registration?.registeredAgentId) {
+      selectedAgentId = candidate.registration.registeredAgentId;
+    }
     await refresh();
   } finally {
     updateActions(lastState, currentInvocation());
@@ -574,6 +594,7 @@ function updateActions(state, invocation) {
   els.healthCheckButton.disabled = !hasServer || !hasAgent || agent?.health?.status === "checking";
   els.toggleAgentButton.disabled = !hasServer || !hasAgent;
   els.discoverButton.disabled = !hasServer || state?.device?.status !== "online" || state?.discoveryRuns?.[0]?.status === "queued" || state?.discoveryRuns?.[0]?.status === "running";
+  els.addCodexButton.disabled = els.discoverButton.disabled;
   const artifact = selectedIntegrationArtifact(state);
   els.createIntegrationButton.disabled = !hasServer || els.integrationIntent.value.trim().length === 0;
   els.builderDraftButton.disabled = !hasServer || els.integrationIntent.value.trim().length === 0;
@@ -621,6 +642,26 @@ function renderDiscovery(discoveryRun) {
       const risk = document.createElement("p");
       risk.textContent = candidate.riskHints?.join(" ") ?? "Review this candidate before registering.";
 
+      const codexReview = codexCandidateReview(candidate);
+      if (codexReview.length > 0) {
+        const review = document.createElement("dl");
+        review.className = "codex-review";
+        review.replaceChildren(
+          ...codexReview.map(([label, value]) => {
+            const row = document.createElement("div");
+            const term = document.createElement("dt");
+            const definition = document.createElement("dd");
+            term.textContent = label;
+            definition.textContent = value;
+            row.append(term, definition);
+            return row;
+          })
+        );
+        card.append(title, description, meta, risk, review);
+      } else {
+        card.append(title, description, meta, risk);
+      }
+
       const action = document.createElement("button");
       action.type = "button";
       action.className = "secondary";
@@ -629,7 +670,7 @@ function renderDiscovery(discoveryRun) {
       action.textContent = candidate.registration?.status === "registered" ? "Registered disabled" : "Register disabled";
       action.disabled = candidate.registration?.status === "registered";
 
-      card.append(title, description, meta, risk, action);
+      card.append(action);
       return card;
     })
   );
@@ -752,6 +793,70 @@ async function postIntegrationArtifact(overrides = {}) {
     throw new Error(data.message ?? data.error ?? "Unable to create integration artifact.");
   }
   return data;
+}
+
+async function createDiscovery(payload) {
+  const response = await fetch(`${apiBase}/api/discovery`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload)
+  });
+  if (!response.ok) {
+    const data = await response.json();
+    throw new Error(data.message ?? data.error ?? "Unable to start discovery.");
+  }
+  return response.json();
+}
+
+function resolveApiBase() {
+  const override = new URLSearchParams(window.location.search).get("api");
+  if (!override) {
+    return defaultApiBase;
+  }
+
+  try {
+    const url = new URL(override);
+    if (url.protocol === "http:" && ["127.0.0.1", "localhost"].includes(url.hostname)) {
+      return url.origin;
+    }
+  } catch {
+    return defaultApiBase;
+  }
+
+  return defaultApiBase;
+}
+
+async function fetchState() {
+  const response = await fetch(`${apiBase}/api/state`);
+  if (!response.ok) {
+    throw new Error("Unable to refresh state.");
+  }
+  return response.json();
+}
+
+function ensureListValue(input, value) {
+  const items = parseList(input.value);
+  if (!items.includes(value)) {
+    input.value = [...items, value].join(", ");
+  }
+}
+
+function isCodexCandidate(candidate) {
+  const command = String(candidate?.adapter?.command ?? "").toLowerCase();
+  return command === "codex" || command.endsWith("/codex") || command.endsWith("\\codex") || candidate?.adapter?.outputFormat === "codex_jsonl";
+}
+
+function codexCandidateReview(candidate) {
+  if (!isCodexCandidate(candidate)) {
+    return [];
+  }
+  return [
+    ["Command", [candidate.adapter?.command, ...(candidate.adapter?.args ?? [])].filter(Boolean).join(" ")],
+    ["Evidence", candidate.adapter?.outputFormat === "codex_jsonl" ? "Codex JSONL events" : "Review output format"],
+    ["Sandbox", candidate.adapter?.sandbox ?? "unset"],
+    ["Approval", "Required before high-risk local invocation"],
+    ["Cost", "External or unknown to this demo"]
+  ];
 }
 
 function integrationPayload() {
