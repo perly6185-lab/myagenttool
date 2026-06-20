@@ -30,7 +30,8 @@ try {
 
   start("desktop", process.execPath, ["apps/desktop/src/index.mjs"], {
     BRIDGE_SERVER_URL: serverUrl,
-    BRIDGE_POLL_INTERVAL_MS: "100"
+    BRIDGE_POLL_INTERVAL_MS: "100",
+    MYAGENTTOOL_CODEX_COMMAND: "fixture"
   });
 
   await waitFor(async () => {
@@ -83,8 +84,101 @@ try {
   assert(codexCandidate, "explicit Codex command should appear as a candidate");
   assert(codexCandidate.riskLevel === "high", "explicit Codex candidate should be high risk");
   assert(codexCandidate.riskTags.includes("shell_exec"), "explicit Codex candidate should include shell execution risk");
+  assert(codexCandidate.riskTags.includes("repo_context"), "explicit Codex candidate should include repository context risk");
+  assert(codexCandidate.adapter.args.includes("--json"), "explicit Codex candidate should use JSONL output");
+  assert(codexCandidate.adapter.args.includes("read-only"), "explicit Codex candidate should default to read-only sandbox");
+  assert(codexCandidate.adapter.outputFormat === "codex_jsonl", "explicit Codex candidate should mark Codex JSONL output");
   const registeredCodex = await request("POST", `/api/discovery/${codexDiscoveryId}/candidates/${codexCandidate.id}/register`);
   assert(registeredCodex.agent.status === "disabled", "registered Codex candidate should remain disabled");
+  assert(registeredCodex.agent.adapter.outputFormat === "codex_jsonl", "registered Codex candidate should preserve JSONL output config");
+
+  const codexDraftIntegration = await request("POST", "/api/integration-artifacts", {
+    artifactType: "integration_plan",
+    reviewState: "draft",
+    generatedByAi: false,
+    targetType: "cli",
+    title: "Codex CLI Pilot Agent",
+    description: "Connect Codex CLI for a read-only repository summary pilot.",
+    command: "codex",
+    cancellation: "supported",
+    environmentNeeds: "Use existing local Codex authentication.",
+    costOwner: "team_smoke_ops",
+    economicModel: "unknown"
+  });
+  const codexGenerated = await request("POST", `/api/integration-artifacts/${codexDraftIntegration.artifact.id}/generate`);
+  const codexAdapterArtifact = codexGenerated.artifacts.find((item) => item.artifactType === "adapter_config");
+  assert(codexAdapterArtifact?.payload.adapterConfig.outputFormat === "codex_jsonl", "Codex adapter artifact should declare JSONL output");
+  assert(codexAdapterArtifact.payload.adapterConfig.args.includes("--json"), "Codex adapter artifact should use JSONL args");
+  assert(codexAdapterArtifact.payload.adapterConfig.args.includes("read-only"), "Codex adapter artifact should default to read-only sandbox");
+  assert(codexAdapterArtifact.governance.riskTags.includes("repo_context"), "Codex adapter artifact should record repo context risk");
+  const approvedCodexAdapter = await request("POST", `/api/integration-artifacts/${codexAdapterArtifact.id}/approve`);
+  assert(approvedCodexAdapter.artifact.reviewState === "approved", "Codex adapter config should approve for probe");
+  const codexProbeCreated = await request("POST", `/api/integration-artifacts/${codexAdapterArtifact.id}/probe`);
+  assert(codexProbeCreated.probeRun.status === "queued", "Codex CLI probe should queue for Desktop Bridge");
+  const codexProbeState = await waitFor(async () => {
+    const state = await request("GET", "/api/state");
+    const probe = state.integrationProbeRuns.find((item) => item.id === codexProbeCreated.probeRun.id);
+    return probe?.status === "succeeded" ? state : false;
+  }, "restricted Codex CLI probe");
+  const testedCodexArtifact = codexProbeState.integrationArtifacts.find((item) => item.id === codexAdapterArtifact.id);
+  const codexProbe = codexProbeState.integrationProbeRuns.find((item) => item.id === codexProbeCreated.probeRun.id);
+  assert(testedCodexArtifact.reviewState === "tested", "passing Codex probe should mark adapter config tested");
+  assert(codexProbe.details.some((item) => item.includes("codex exec --help")), "Codex probe should only use help surface");
+  const registeredCodexIntegration = await request("POST", `/api/integration-artifacts/${codexAdapterArtifact.id}/register`);
+  assert(registeredCodexIntegration.agent.status === "disabled", "registered Codex integration should stay disabled");
+  assert(registeredCodexIntegration.agent.adapter.outputFormat === "codex_jsonl", "registered Codex integration should preserve JSONL output");
+  const enabledCodexIntegration = await request("POST", `/api/agents/${registeredCodexIntegration.agent.id}/enable`);
+  assert(enabledCodexIntegration.agent.status === "available", "enabled Codex integration should become available while bridge is online");
+  const codexApprovalRun = await request("POST", "/api/invocations", {
+    task: "Summarize repository readiness without editing files.",
+    agentId: registeredCodexIntegration.agent.id
+  });
+  assert(codexApprovalRun.invocation.status === "waiting_for_local_approval", "Codex invocation should require local approval before dispatch");
+  await request("POST", `/api/approvals/${codexApprovalRun.invocation.approvalRequestId}/approve`);
+  const codexFinalState = await waitFor(async () => {
+    const state = await request("GET", "/api/state");
+    const invocation = state.invocations.find((item) => item.id === codexApprovalRun.invocation.id);
+    if (invocation?.status === "succeeded") {
+      return state;
+    }
+    if (["failed", "cancelled", "timed_out", "expired", "rejected"].includes(invocation?.status)) {
+      throw new Error(`Codex fixture invocation ended unexpectedly: ${invocation.status}`);
+    }
+    return false;
+  }, "approved Codex fixture invocation");
+  const codexFinal = codexFinalState.invocations.find((item) => item.id === codexApprovalRun.invocation.id);
+  const codexEvents = codexFinalState.events.filter((item) => item.invocationId === codexFinal.id);
+  const codexAudit = codexFinalState.auditSummaries.find((item) => item.invocationId === codexFinal.id);
+  assert(codexFinal.result?.summary?.includes("Codex"), "Codex fixture invocation should produce a Codex summary");
+  assert(codexEvents.some((item) => item.type === "agent_output" && item.data?.source === "codex_jsonl"), "Codex fixture invocation should record JSONL evidence");
+  assert(codexAudit?.permissionDecision === "allowed", "approved Codex fixture invocation should audit allowed permission");
+
+  const codexCancelRun = await request("POST", "/api/invocations", {
+    task: "Run a cancellable Codex fixture task.",
+    agentId: registeredCodexIntegration.agent.id
+  });
+  await request("POST", `/api/approvals/${codexCancelRun.invocation.approvalRequestId}/approve`);
+  await waitFor(async () => {
+    const state = await request("GET", "/api/state");
+    const invocation = state.invocations.find((item) => item.id === codexCancelRun.invocation.id);
+    return invocation?.status === "running";
+  }, "running Codex fixture invocation before cancellation");
+  await request("POST", `/api/invocations/${codexCancelRun.invocation.id}/cancel`);
+  const codexCancelState = await waitFor(async () => {
+    const state = await request("GET", "/api/state");
+    const invocation = state.invocations.find((item) => item.id === codexCancelRun.invocation.id);
+    if (invocation?.status === "cancelled") {
+      return state;
+    }
+    if (["failed", "succeeded", "timed_out", "expired"].includes(invocation?.status)) {
+      throw new Error(`Codex fixture cancellation ended unexpectedly: ${invocation.status}`);
+    }
+    return false;
+  }, "running Codex fixture cancellation");
+  const codexCancelled = codexCancelState.invocations.find((item) => item.id === codexCancelRun.invocation.id);
+  const codexCancelEvents = codexCancelState.events.filter((item) => item.invocationId === codexCancelRun.invocation.id);
+  assert(codexCancelled.cancellation.state === "applied", "Codex fixture cancellation should be applied");
+  assert(codexCancelEvents.some((item) => item.type === "cancel_dispatched"), "Codex fixture cancellation should dispatch to bridge");
 
   const draftIntegration = await request("POST", "/api/integration-artifacts", {
     artifactType: "integration_plan",
