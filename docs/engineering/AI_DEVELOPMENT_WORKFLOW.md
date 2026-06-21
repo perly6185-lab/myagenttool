@@ -7,6 +7,13 @@ For the broader product-delivery operating system, use
 [FULL_FLOW_AI_DELIVERY.md](FULL_FLOW_AI_DELIVERY.md).
 M0 acceptance and follow-up boundaries are recorded in
 [AI_DELIVERY_CLOSEOUT.md](AI_DELIVERY_CLOSEOUT.md).
+For product-facing UI, workflow, and prototype work, use
+[PRODUCT_FLOWS.md](../design/PRODUCT_FLOWS.md) as the role and task-flow
+source of truth.
+For ASCII-derived UI prototypes, use
+[PROTOTYPE_CANVAS_PHASE_1.md](PROTOTYPE_CANVAS_PHASE_1.md) and
+[docs/design/prototypes/canvas](../design/prototypes/canvas/) before writing
+production UI code.
 
 The goal is not to let AI silently build everything. The goal is to make AI a
 disciplined development operator that follows the project context, creates
@@ -24,6 +31,13 @@ approval.
 ```text
 Idea -> Clarification -> Spec -> Issue -> ADR/Risk -> Plan -> Branch -> Code
 -> Tests -> PR -> Review -> Merge -> Release -> Feedback
+```
+
+For non-trivial product-facing UI work, expand the design portion of the flow:
+
+```text
+Idea -> Product Flow -> ASCII sketch -> Prototype Canvas -> HTML prototype
+-> Visual QA -> Code Plan -> implementation
 ```
 
 ## Stage Rules
@@ -73,6 +87,9 @@ Spec output should include:
 
 - Problem.
 - User outcome.
+- Product flow impact for UI, workflow, or user-facing changes:
+  role flow, scenario, frequency, owner surface, usability task, and what must
+  stay hidden.
 - Non-goals.
 - Acceptance criteria.
 - Security, data, billing, audit, and UX implications.
@@ -91,9 +108,24 @@ AI should create or update GitHub Issues with:
 - Platform.
 - Agent Target.
 - Source Doc.
+- Product Flow.
 
 Issue bodies should contain enough context that another AI or human can pick up
 the work without reading the entire repository.
+
+For UI, workflow, or user-facing work, the issue Product Flow field must cite
+[PRODUCT_FLOWS.md](../design/PRODUCT_FLOWS.md) and identify:
+
+- Role flow: ordinary developer, advanced developer, team administrator,
+  auditor, or the explicit multi-role combination.
+- Scenario and frequency.
+- Owner surface.
+- Usability task.
+- What not to show in that surface.
+- Whether acceptance is complete or a follow-up issue is required.
+
+Use `Not applicable` only for purely internal work with no product-facing
+workflow or user-visible behavior.
 
 Use the governed issue-tree path for PM-derived work:
 
@@ -130,6 +162,9 @@ a trivial documentation or formatting change.
 The plan should mention:
 
 - Files or modules likely to change.
+- Product Flow binding for UI, workflow, or user-facing changes: role flow,
+  scenario, affected surfaces, prototype states, acceptance signals, and what
+  must stay hidden.
 - Tests to run.
 - Risks or assumptions.
 - Whether user approval is required before privileged actions.
@@ -151,6 +186,26 @@ Code changes should:
 - Avoid unrelated refactors.
 - Add tests based on risk.
 - Keep user-facing flows understandable without internal terminology.
+
+For AI-generated implementation plans, Code Flow is downstream of Product Flow.
+The code plan must not only list `filesToTouch` and commands; product-facing
+plans must also carry:
+
+- `productFlow`.
+- `affectedSurfaces`.
+- `prototypeStates`.
+- `acceptanceSignals`.
+- `whatNotToShow`.
+- `visualQaTasks`.
+
+If the work changes UI structure or interaction and starts from an ASCII sketch,
+the plan should also reference the Prototype Canvas artifact, exported HTML
+prototype, and generated Visual QA checklist before production UI coding begins.
+
+If a Web Console or design change uses placeholder Product Flow values such as
+`Not applicable`, `requires product-flow triage`, or `update if this changes
+UI`, the plan is incomplete and must not be treated as ready for apply or PR
+review.
 
 ### 8. Tests
 
@@ -176,6 +231,8 @@ At minimum:
 - Integration tests for protocol, queue, bridge, billing, and audit behavior.
 - E2E tests for core user workflows.
 - Visual QA evidence for product-facing web changes.
+- Product Flow visual QA evidence for role, owner surface, prototype states,
+  and what-not-to-show checks.
 - Cross-platform process and cancellation evidence for Desktop Bridge or local
   execution changes.
 - Adapter contract evidence for generated or trusted adapter changes.
@@ -187,6 +244,9 @@ Every PR should:
 - Link the issue.
 - Explain what changed.
 - List acceptance criteria satisfied.
+- Fill the Product Flow section with role flow, scenario, frequency, owner
+  surface, usability task, what not to show, and any partial acceptance or
+  follow-up.
 - List tests run.
 - Link Testing skills evidence when AI generated or agent-written code changed.
 - Link scope drift evidence for work-runner apply mode or broad manual changes.
@@ -213,17 +273,54 @@ Review focus:
 For product-facing UI changes, AI should also use
 [PM_DESIGN_SKILLS.md](PM_DESIGN_SKILLS.md),
 [DESIGN.md](../../DESIGN.md), and
-[MYAGENTTOOL_DESIGN.md](../design/MYAGENTTOOL_DESIGN.md).
+[MYAGENTTOOL_DESIGN.md](../design/MYAGENTTOOL_DESIGN.md), plus
+[PRODUCT_FLOWS.md](../design/PRODUCT_FLOWS.md).
 
 Review focus:
 
 - Does the change prioritize non-professional users?
 - Is the first screen a usable task workspace?
+- Which role flow owns the changed surface?
+- Does the change preserve high-frequency task work, low-frequency
+  configuration, governance evidence, and advanced controls as separate
+  surfaces?
+- Are the role-specific usability task and four acceptance signals addressed?
+- Does the change keep the role's "what not to show" list out of that surface?
 - Are safety, data, cost, cancellation, and audit visible in plain language?
 - Are technical identifiers and protocol terms kept out of the primary flow?
 - Does the implementation preserve the repo-level design tokens, component
   rules, responsive behavior, and state language in `DESIGN.md`?
 - Is visual QA evidence attached when layout or copy changes?
+- For ASCII-derived UI work, did the change pass through Prototype Canvas before
+  implementation and preserve the canvas Product Flow metadata?
+
+No product-facing UI or workflow phase may be marked verified unless the
+role-specific usability tasks and acceptance signals in
+[PRODUCT_FLOWS.md](../design/PRODUCT_FLOWS.md) are addressed, or the PR and
+phase closeout link a follow-up issue for the missing coverage.
+
+## Phase Completion Template
+
+Use this in phase closeout docs, PR comments, or final phase reports:
+
+```text
+Phase:
+Tracking issue:
+Product flow:
+- Role flow:
+- Scenario:
+- Frequency:
+- Owner surface:
+- Usability task:
+- What not to show:
+Acceptance signals:
+- Findable:
+- Understandable:
+- Actionable:
+- Traceable:
+Verification:
+Residual follow-up:
+```
 
 ### 11. Release
 

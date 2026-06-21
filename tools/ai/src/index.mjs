@@ -66,6 +66,20 @@ const PM_BRIEF_SCHEMA = {
           sourceDoc: { type: "string" },
         },
       },
+      productFlow: {
+        type: "object",
+        additionalProperties: false,
+        required: ["roleFlow", "scenario", "frequency", "ownerSurface", "usabilityTask", "whatNotToShow", "partialAcceptanceOrFollowUp"],
+        properties: {
+          roleFlow: { type: "string" },
+          scenario: { type: "string" },
+          frequency: { type: "string" },
+          ownerSurface: { type: "string" },
+          usabilityTask: { type: "string" },
+          whatNotToShow: { type: "string" },
+          partialAcceptanceOrFollowUp: { type: "string" },
+        },
+      },
       issueTitle: { type: "string" },
       suggestedLabels: { type: "array", items: { type: "string" } },
       openQuestions: { type: "array", items: { type: "string" } },
@@ -78,10 +92,44 @@ const CODE_PLAN_SCHEMA = {
   schema: {
     type: "object",
     additionalProperties: false,
-    required: ["branch", "summary", "filesToTouch", "steps", "commands", "risks", "followUpIssues", "prSummary"],
+    required: [
+      "branch",
+      "summary",
+      "productFlow",
+      "affectedSurfaces",
+      "prototypeStates",
+      "acceptanceSignals",
+      "whatNotToShow",
+      "visualQaTasks",
+      "filesToTouch",
+      "steps",
+      "commands",
+      "risks",
+      "followUpIssues",
+      "prSummary",
+    ],
     properties: {
       branch: { type: "string" },
       summary: { type: "string" },
+      productFlow: {
+        type: "object",
+        additionalProperties: false,
+        required: ["roleFlow", "scenario", "frequency", "ownerSurface", "usabilityTask", "whatNotToShow", "partialAcceptanceOrFollowUp"],
+        properties: {
+          roleFlow: { type: "string" },
+          scenario: { type: "string" },
+          frequency: { type: "string" },
+          ownerSurface: { type: "string" },
+          usabilityTask: { type: "string" },
+          whatNotToShow: { type: "string" },
+          partialAcceptanceOrFollowUp: { type: "string" },
+        },
+      },
+      affectedSurfaces: { type: "array", items: { type: "string" } },
+      prototypeStates: { type: "array", items: { type: "string" } },
+      acceptanceSignals: { type: "array", items: { type: "string" } },
+      whatNotToShow: { type: "array", items: { type: "string" } },
+      visualQaTasks: { type: "array", items: { type: "string" } },
       filesToTouch: { type: "array", items: { type: "string" } },
       steps: { type: "array", items: { type: "string" } },
       commands: { type: "array", items: { type: "string" } },
@@ -271,6 +319,9 @@ function check() {
     "docs/engineering/MODEL_DRIVEN_DELIVERY.md",
     "docs/engineering/DEPLOYMENT_PIPELINE.md",
     "docs/design/MYAGENTTOOL_DESIGN.md",
+    "docs/design/PRODUCT_FLOWS.md",
+    "docs/engineering/VISUAL_QA.md",
+    "DESIGN.md",
   ];
 
   const missing = requiredDocs.filter((path) => !existsSync(resolve(repoRoot, path)));
@@ -314,7 +365,12 @@ function check() {
   }
 
   const testingPlan = testingPlanFor({ change: "web", risk: "high" });
-  if (!testingPlan.requiredEvidence.some((item) => item.includes("Visual QA")) || !testingPlan.commands.includes("pnpm github:check:issues")) {
+  if (
+    !testingPlan.requiredEvidence.some((item) => item.includes("Visual QA")) ||
+    !testingPlan.requiredEvidence.some((item) => item.includes("Product Flow")) ||
+    !testingPlan.commands.includes("pnpm visual:qa:browser") ||
+    !testingPlan.commands.includes("pnpm github:check:issues")
+  ) {
     fail("Testing skills plan sanity check failed.");
   }
   const mixedTestingPlan = testingPlanFor({ changes: inferChangeTypes(["apps/server/src/index.mjs", "docs/vision/SECURITY.md", "tools/deploy/src/index.mjs"]), risk: "high" });
@@ -343,6 +399,34 @@ function check() {
   const overriddenDrift = classifyScopeDrift({ changedFiles: ["apps/web/src/App.tsx"], undeclaredFiles: ["apps/web/src/App.tsx"], allowDrift: "linked follow-up approval" });
   if (docDrift !== "low" || overriddenDrift !== "overridden") {
     fail("Scope drift policy sanity check failed.");
+  }
+  const placeholderFlowPlan = {
+    filesToTouch: ["apps/web/public/app.js"],
+    productFlow: {
+      roleFlow: "Not applicable or requires product-flow triage",
+      scenario: "update if this changes UI",
+      frequency: "Not applicable",
+      ownerSurface: "Not applicable",
+      usabilityTask: "Not applicable",
+      whatNotToShow: "Internal details",
+      partialAcceptanceOrFollowUp: "Product-facing changes must cite docs/design/PRODUCT_FLOWS.md before review",
+    },
+    affectedSurfaces: ["Not applicable"],
+    prototypeStates: [],
+    whatNotToShow: ["Not applicable"],
+    visualQaTasks: ["Not applicable"],
+  };
+  if (productFlowPlanGaps(placeholderFlowPlan).length === 0) {
+    fail("Product Flow drift sanity check failed.");
+  }
+  const concreteFlowPlan = mockStructuredOutput({ agentName: "code-plan", prompt: "Issue title:\nImprove Web Console task flow\nExpected branch:\nfeat/issue-1-flow" });
+  if (productFlowPlanGaps({
+    ...concreteFlowPlan,
+    filesToTouch: ["apps/web/public/app.js"],
+    affectedSurfaces: ["Home task workspace"],
+    visualQaTasks: ["Capture desktop and mobile screenshots for the ordinary developer run-task flow."],
+  }).length > 0) {
+    fail("Concrete Product Flow plan sanity check failed.");
   }
 
   if (!existsSync(resolve(repoRoot, "tools/ai/src/coding-wrapper.mjs"))) {
@@ -425,11 +509,12 @@ async function pmBrief(args) {
       "Turn plain-language ideas into milestone-aligned, non-professional-first engineering slices.",
       "Prefer M0 unless the idea clearly requires billing, lifecycle automation, distribution, or later roadmap work.",
       "Do not hide security, data, cost, release, or local execution risk.",
+      "For UI, workflow, or user-facing work, include productFlow using docs/design/PRODUCT_FLOWS.md; otherwise mark it Not applicable.",
       "Return only JSON that matches the schema.",
     ].join("\n"),
     userPrompt: [
       `Idea:\n${idea}`,
-      docsContext(["docs/vision/PRODUCT.md", "docs/engineering/FULL_FLOW_AI_DELIVERY.md", "docs/design/MYAGENTTOOL_DESIGN.md"]),
+      docsContext(["docs/vision/PRODUCT.md", "docs/engineering/FULL_FLOW_AI_DELIVERY.md", "docs/design/MYAGENTTOOL_DESIGN.md", "docs/design/PRODUCT_FLOWS.md"]),
     ].join("\n\n"),
   });
 
@@ -520,8 +605,8 @@ function scopeCheck(args) {
   const result = buildScopeCheckResult({ plan, planFile: planFile ?? "", base, allowDrift });
   const content = args.includes("--json") ? `${JSON.stringify(result, null, 2)}\n` : formatScopeCheck(result);
   writeOrPrint(content, option(args, "--out"));
-  if (result.driftLevel === "high" && !allowDrift) {
-    fail("Scope drift is high. Provide --allow-drift with justification or reduce the diff.");
+  if (!result.allowed) {
+    fail("Scope or Product Flow drift is not allowed. Provide concrete Product Flow coverage or reduce the diff.");
   }
 }
 
@@ -573,8 +658,8 @@ async function runWork(args) {
   const scopeResult = buildScopeCheckResult({ plan, planFile: `.myagenttool/runs/${runId}/code-plan.json`, base: "HEAD", allowDrift: option(args, "--allow-drift") ?? "" });
   writeFileSync(resolve(runDir, "scope-check.json"), `${JSON.stringify(scopeResult, null, 2)}\n`, "utf8");
   writeFileSync(resolve(runDir, "scope-check.md"), formatScopeCheck(scopeResult), "utf8");
-  if (scopeResult.driftLevel === "high" && !scopeResult.allowDrift) {
-    fail(`Scope drift is high. See .myagenttool/runs/${runId}/scope-check.md or provide --allow-drift with justification.`);
+  if (!scopeResult.allowed) {
+    fail(`Scope or Product Flow drift is not allowed. See .myagenttool/runs/${runId}/scope-check.md.`);
   }
 
   if (verify) {
@@ -611,6 +696,7 @@ async function reviewPullRequest(args) {
       "Prioritize correctness, security, local execution safety, billing/cost impact, data governance, and missing tests.",
       "Do not approve if verification evidence is missing for behavior-changing work.",
       "Always include riskGates for security, data, billing/cost, local execution, release/deploy, web visual QA, and desktop cross-platform execution/cancellation when they apply.",
+      "For product-facing UI/workflow changes, review Product Flow coverage, IA separation, owner surface boundaries, prototype states, what-not-to-show, and role-specific usability tasks.",
       "When evidence is missing, add a verificationGaps item instead of assuming the check passed.",
       "Return only JSON that matches the schema.",
     ].join("\n"),
@@ -618,7 +704,13 @@ async function reviewPullRequest(args) {
       `PR title:\n${prContext.title}`,
       `PR body:\n${prContext.body}`,
       `Diff:\n${truncate(prContext.diff, 60000)}`,
-      docsContext(["docs/engineering/PR_REVIEW_POLICY.md", "docs/engineering/FULL_FLOW_AI_DELIVERY.md"]),
+      docsContext([
+        "docs/design/PRODUCT_FLOWS.md",
+        "DESIGN.md",
+        "docs/engineering/VISUAL_QA.md",
+        "docs/engineering/PR_REVIEW_POLICY.md",
+        "docs/engineering/FULL_FLOW_AI_DELIVERY.md",
+      ]),
     ].join("\n\n"),
   });
 
@@ -838,6 +930,8 @@ async function createCodePlan(args) {
       "You are the MyAgentTool coding orchestration agent.",
       "Create a scoped implementation plan from one GitHub issue.",
       "Prefer small changes, existing repo patterns, and explicit verification commands.",
+      "For UI, workflow, or user-facing work, bind the code plan to Product Flow: role, scenario, owner surface, prototype states, what not to show, and visual QA tasks.",
+      "Do not use Not applicable or product-flow triage placeholders for product-facing UI/workflow changes.",
       "Do not invent files that conflict with the current workspace.",
       "Return only JSON that matches the schema.",
     ].join("\n"),
@@ -846,7 +940,13 @@ async function createCodePlan(args) {
       `Expected branch:\n${branch}`,
       `Issue title:\n${issueContext.title}`,
       `Issue body:\n${truncate(issueContext.body, 20000)}`,
-      docsContext(["docs/engineering/FULL_FLOW_AI_DELIVERY.md", "docs/engineering/DEFINITION_OF_DONE.md"]),
+      docsContext([
+        "docs/design/PRODUCT_FLOWS.md",
+        "DESIGN.md",
+        "docs/engineering/VISUAL_QA.md",
+        "docs/engineering/FULL_FLOW_AI_DELIVERY.md",
+        "docs/engineering/DEFINITION_OF_DONE.md",
+      ]),
     ].join("\n\n"),
   });
 }
@@ -991,6 +1091,15 @@ function mockStructuredOutput({ agentName, prompt, issue, title }) {
         priority: "p1",
         sourceDoc: "docs/engineering/FULL_FLOW_AI_DELIVERY.md",
       },
+      productFlow: {
+        roleFlow: "ordinary developer",
+        scenario: "Turn a plain-language idea into a governed AI development issue.",
+        frequency: "medium",
+        ownerSurface: "AI intake and issue creation workflow",
+        usabilityTask: "Create a trackable issue with acceptance, risk, and Product Flow evidence.",
+        whatNotToShow: "Raw provider internals or unreviewed automation details as product-facing proof.",
+        partialAcceptanceOrFollowUp: "None for the governed issue creation slice.",
+      },
       issueTitle: "[Task]: Model-backed PM brief generation",
       suggestedLabels: [
         "type/task",
@@ -1014,6 +1123,25 @@ function mockStructuredOutput({ agentName, prompt, issue, title }) {
     return {
       branch: buildBranchName(issueNumber, planTitle, "feat"),
       summary: "Add a safe AI work runner slice that turns issue context into an implementation plan, review draft, and verification evidence.",
+      productFlow: {
+        roleFlow: "ordinary developer",
+        scenario: "Run an AI-assisted development task from a governed issue.",
+        frequency: "medium",
+        ownerSurface: "AI development workflow and generated PR evidence",
+        usabilityTask: "Confirm generated work is tied to a role, task flow, verification evidence, and follow-up.",
+        whatNotToShow: "Raw provider internals or unreviewed automation details as product-facing proof.",
+        partialAcceptanceOrFollowUp: "None for this automation slice.",
+      },
+      affectedSurfaces: ["AI issue tree", "AI code plan", "PR evidence"],
+      prototypeStates: ["empty", "running", "succeeded", "failed"],
+      acceptanceSignals: [
+        "Findable: Product Flow is visible in the code plan and PR body.",
+        "Understandable: Reviewer can identify role, scenario, and owner surface.",
+        "Actionable: Verification commands and follow-up issues are explicit.",
+        "Traceable: Evidence files link code plan, testing plan, scope check, and PR.",
+      ],
+      whatNotToShow: ["Raw provider internals", "Unreviewed generated work as accepted evidence"],
+      visualQaTasks: ["Not applicable for non-Web UI automation changes."],
       filesToTouch: [
         "tools/ai/src/index.mjs",
         "docs/engineering/MODEL_DRIVEN_DELIVERY.md",
@@ -1073,11 +1201,12 @@ async function loadPmBriefForIssueTree(args) {
       "Turn plain-language ideas into milestone-aligned, non-professional-first engineering slices.",
       "Prefer M0 unless the idea clearly requires billing, lifecycle automation, distribution, or later roadmap work.",
       "Do not hide security, data, cost, release, or local execution risk.",
+      "For UI, workflow, or user-facing work, include productFlow using docs/design/PRODUCT_FLOWS.md; otherwise mark it Not applicable.",
       "Return only JSON that matches the schema.",
     ].join("\n"),
     userPrompt: [
       `Idea:\n${idea}`,
-      docsContext(["docs/vision/PRODUCT.md", "docs/engineering/FULL_FLOW_AI_DELIVERY.md", "docs/engineering/PM_DESIGN_SKILLS.md"]),
+      docsContext(["docs/vision/PRODUCT.md", "docs/engineering/FULL_FLOW_AI_DELIVERY.md", "docs/engineering/PM_DESIGN_SKILLS.md", "docs/design/PRODUCT_FLOWS.md"]),
     ].join("\n\n"),
   });
   return normalizePmBrief(brief);
@@ -1096,6 +1225,7 @@ function normalizePmBrief(brief) {
     issueTitle: brief.issueTitle ?? "[Task]: TODO",
     suggestedLabels: stringArrayOr(brief.suggestedLabels, []),
     openQuestions: stringArrayOr(brief.openQuestions, []),
+    productFlow: normalizeProductFlow(brief.productFlow),
     projectFields: {
       milestone: projectFields.milestone ?? "M0",
       area: projectFields.area ?? "cross-cutting",
@@ -1123,6 +1253,7 @@ function parsePmBriefMarkdown(content) {
     issueTitle: (content.match(/Title:\s*(.+)/i)?.[1] ?? "").trim(),
     suggestedLabels: markdownListAfter(content, "Labels:"),
     openQuestions: markdownListSection(content, "Open Questions"),
+    productFlow: parseProductFlowFromText(content),
     projectFields: parseProjectFieldsFromText(content),
   };
 }
@@ -1141,6 +1272,7 @@ function issueTreeFromBrief(brief) {
     acceptanceCriteria: normalized.acceptanceCriteria,
     riskFlags: normalized.riskFlags,
     openQuestions: normalized.openQuestions,
+    productFlow: normalized.productFlow,
     labels,
     milestone: normalized.projectFields.milestone,
     projectFields: normalized.projectFields,
@@ -1200,6 +1332,9 @@ function issueTreeApplyFailures(tree, humanApproval = "") {
     if (!issueSpec.title || issueSpec.title.includes("TODO")) failures.push(`${issueSpec.title || "(untitled)"}: title is missing or TODO`);
     if (!issueSpec.milestone) failures.push(`${issueSpec.title}: milestone is missing`);
     if (!issueSpec.acceptanceCriteria.length) failures.push(`${issueSpec.title}: acceptance criteria are missing`);
+    if (requiresConcreteProductFlowForIssue(issueSpec) && !hasConcreteProductFlow(issueSpec.productFlow)) {
+      failures.push(`${issueSpec.title}: UI/workflow issue requires concrete Product Flow from docs/design/PRODUCT_FLOWS.md`);
+    }
     for (const group of ["type/", "status/", "area/", "risk/", "acceptance/", "platform/", "agent/"]) {
       if (!issueSpec.labels.some((label) => label.startsWith(group))) {
         failures.push(`${issueSpec.title}: missing ${group} label`);
@@ -1300,6 +1435,9 @@ ${list(issueSpec.nonGoals)}
 ## Acceptance
 ${checklist(issueSpec.acceptanceCriteria)}
 
+## Product Flow
+${formatProductFlow(issueSpec.productFlow)}
+
 ## Risk Flags
 ${list(issueSpec.riskFlags)}
 
@@ -1384,6 +1522,10 @@ ${list(brief.suggestedLabels ?? [])}
 
 ${formatProjectFields(brief.projectFields)}
 
+## Product Flow
+
+${formatProductFlow(normalizeProductFlow(brief.productFlow))}
+
 ## Open Questions
 
 ${list(brief.openQuestions)}
@@ -1400,6 +1542,30 @@ ${plan.branch}
 ## Summary
 
 ${plan.summary}
+
+## Product Flow
+
+${formatProductFlow(plan.productFlow)}
+
+## Affected Surfaces
+
+${list(plan.affectedSurfaces ?? [])}
+
+## Prototype States
+
+${list(plan.prototypeStates ?? [])}
+
+## Acceptance Signals
+
+${list(plan.acceptanceSignals ?? [])}
+
+## What Not To Show
+
+${list(plan.whatNotToShow ?? [])}
+
+## Visual QA Tasks
+
+${list(plan.visualQaTasks ?? [])}
 
 ## Files To Touch
 
@@ -1448,6 +1614,10 @@ ${list(result.declaredFiles)}
 ## Undeclared Files
 
 ${list(result.undeclaredFiles)}
+
+## Product Flow Gaps
+
+${list(result.productFlowGaps)}
 
 ## Summary
 
@@ -1823,6 +1993,22 @@ function formatPrBody({ issue, plan, runId, adapter, verified, testPlan, scopeRe
 - [x] Security, data, cost, or lifecycle impact was considered.
 - [x] Docs were updated when behavior or scope changed.
 
+## Product Flow
+
+${formatProductFlow(plan.productFlow)}
+
+Affected surfaces:
+${list(plan.affectedSurfaces ?? [])}
+
+Prototype states:
+${list(plan.prototypeStates ?? [])}
+
+Acceptance signals:
+${list(plan.acceptanceSignals ?? [])}
+
+Visual QA tasks:
+${list(plan.visualQaTasks ?? [])}
+
 ## Verification
 
 - [${verified ? "x" : " "}] Automated checks: work-runner verification${verified ? "" : " not requested"}
@@ -1854,6 +2040,70 @@ function formatProjectFields(fields) {
     `Priority: ${fields.priority}`,
     `Source Doc: ${fields.sourceDoc}`,
   ].join("\n");
+}
+
+function normalizeProductFlow(productFlow) {
+  const flow = productFlow && typeof productFlow === "object" ? productFlow : {};
+  return {
+    roleFlow: stringOr(flow.roleFlow, "Not applicable or requires product-flow triage"),
+    scenario: stringOr(flow.scenario, "Not applicable unless this changes UI, workflow, or user-facing behavior"),
+    frequency: stringOr(flow.frequency, "Not applicable"),
+    ownerSurface: stringOr(flow.ownerSurface, "Not applicable"),
+    usabilityTask: stringOr(flow.usabilityTask, "Not applicable"),
+    whatNotToShow: stringOr(flow.whatNotToShow, "Internal implementation details in product-facing surfaces"),
+    partialAcceptanceOrFollowUp: stringOr(flow.partialAcceptanceOrFollowUp, "Product-facing changes must cite docs/design/PRODUCT_FLOWS.md before review"),
+  };
+}
+
+function formatProductFlow(productFlow) {
+  const flow = normalizeProductFlow(productFlow);
+  return [
+    `- Role flow: ${flow.roleFlow}`,
+    `- Scenario: ${flow.scenario}`,
+    `- Frequency: ${flow.frequency}`,
+    `- Owner surface: ${flow.ownerSurface}`,
+    `- Usability task: ${flow.usabilityTask}`,
+    `- What not to show: ${flow.whatNotToShow}`,
+    `- Partial acceptance or follow-up: ${flow.partialAcceptanceOrFollowUp}`,
+  ].join("\n");
+}
+
+function requiresConcreteProductFlowForIssue(issueSpec) {
+  const fields = issueSpec.projectFields ?? {};
+  const text = [
+    issueSpec.title,
+    issueSpec.outcome,
+    issueSpec.problem,
+    issueSpec.userStory,
+    fields.area,
+    fields.platform,
+    fields.sourceDoc,
+    ...(issueSpec.labels ?? []),
+  ]
+    .filter(Boolean)
+    .join("\n")
+    .toLowerCase();
+  return /\b(web|ui|ux|workflow|user-facing|console|homepage|visual|design)\b/.test(text)
+    || String(fields.sourceDoc ?? "").startsWith("docs/design/")
+    || ["web"].includes(normalizeLabelValue(fields.area))
+    || ["web"].includes(normalizeLabelValue(fields.platform));
+}
+
+function hasConcreteProductFlow(productFlow) {
+  const flow = normalizeProductFlow(productFlow);
+  return [
+    flow.roleFlow,
+    flow.scenario,
+    flow.frequency,
+    flow.ownerSurface,
+    flow.usabilityTask,
+    flow.whatNotToShow,
+    flow.partialAcceptanceOrFollowUp,
+  ].every((value) => !isPlaceholderProductFlowValue(value));
+}
+
+function isPlaceholderProductFlowValue(value) {
+  return /not applicable|requires product-flow triage|update if|must cite docs\/design\/product_flows|todo|n\/a/i.test(String(value ?? ""));
 }
 
 function writeStructuredResult(json, markdown, args) {
@@ -1964,6 +2214,8 @@ function buildScopeCheckResult({ plan, planFile, base, allowDrift }) {
   const declaredFiles = new Set((plan?.filesToTouch ?? []).map(normalizePath));
   const undeclaredFiles = hasPlan ? changedFiles.filter((file) => !declaredFiles.has(normalizePath(file))) : [];
   const driftLevel = classifyScopeDrift({ changedFiles, undeclaredFiles, allowDrift });
+  const productFlowGaps = hasPlan ? productFlowPlanGaps(plan) : [];
+  const allowed = (driftLevel !== "high" || Boolean(allowDrift)) && productFlowGaps.length === 0;
   return {
     base,
     planFile,
@@ -1971,11 +2223,12 @@ function buildScopeCheckResult({ plan, planFile, base, allowDrift }) {
     changedFiles,
     declaredFiles: [...declaredFiles],
     undeclaredFiles,
+    productFlowGaps,
     driftLevel,
-    allowed: driftLevel !== "high" || Boolean(allowDrift),
-    policyAction: scopeDriftAction(driftLevel, allowDrift),
+    allowed,
+    policyAction: productFlowGaps.length > 0 ? "fail" : scopeDriftAction(driftLevel, allowDrift),
     allowDrift,
-    summary: scopeDriftSummary({ changedFiles, undeclaredFiles, driftLevel, allowDrift, hasPlan }),
+    summary: scopeDriftSummary({ changedFiles, undeclaredFiles, driftLevel, allowDrift, hasPlan, productFlowGaps }),
   };
 }
 
@@ -1987,7 +2240,8 @@ function classifyScopeDrift({ changedFiles, undeclaredFiles, allowDrift }) {
   return "high";
 }
 
-function scopeDriftSummary({ changedFiles, undeclaredFiles, driftLevel, allowDrift, hasPlan = true }) {
+function scopeDriftSummary({ changedFiles, undeclaredFiles, driftLevel, allowDrift, hasPlan = true, productFlowGaps = [] }) {
+  if (productFlowGaps.length > 0) return `Product Flow plan gaps: ${productFlowGaps.join("; ")}`;
   if (changedFiles.length === 0) return "No changed files detected.";
   if (!hasPlan) return "No plan file was provided; changed files are listed without drift classification.";
   if (undeclaredFiles.length === 0) return "All changed files were declared in the code plan.";
@@ -1999,6 +2253,36 @@ function scopeDriftAction(driftLevel, allowDrift) {
   if (driftLevel === "high" && !allowDrift) return "fail";
   if (["low", "medium", "overridden"].includes(driftLevel)) return "warn";
   return "pass";
+}
+
+function productFlowPlanGaps(plan) {
+  const plannedFiles = (plan?.filesToTouch ?? []).map(normalizePath);
+  if (!plannedFiles.some(isProductFacingPlanFile)) return [];
+
+  const gaps = [];
+  if (!hasConcreteProductFlow(plan.productFlow)) {
+    gaps.push("productFlow must use concrete role, scenario, owner surface, usability task, and what-not-to-show values");
+  }
+  if (!stringArrayOr(plan.affectedSurfaces, []).some((item) => !isPlaceholderProductFlowValue(item))) {
+    gaps.push("affectedSurfaces must name the Product Flow owner surface");
+  }
+  if (!stringArrayOr(plan.prototypeStates, []).some((item) => !isPlaceholderProductFlowValue(item))) {
+    gaps.push("prototypeStates must list the UI states being verified");
+  }
+  if (!stringArrayOr(plan.whatNotToShow, []).some((item) => !isPlaceholderProductFlowValue(item))) {
+    gaps.push("whatNotToShow must list content that stays out of the owner surface");
+  }
+  if (!stringArrayOr(plan.visualQaTasks, []).some((item) => !isPlaceholderProductFlowValue(item))) {
+    gaps.push("visualQaTasks must list Product Flow visual checks");
+  }
+  return gaps;
+}
+
+function isProductFacingPlanFile(file) {
+  return file.startsWith("apps/web/")
+    || file === "DESIGN.md"
+    || file.startsWith("docs/design/")
+    || file === "docs/engineering/VISUAL_QA.md";
 }
 
 function testingPlanFor({ change, changes, risk }) {
@@ -2023,8 +2307,11 @@ function testingPlanFor({ change, changes, risk }) {
   }
   if (normalizedChanges.includes("web")) {
     base.requiredEvidence.push("Visual QA evidence for desktop and mobile viewports.");
+    base.requiredEvidence.push("Product Flow evidence for role, owner surface, prototype states, and what-not-to-show checks.");
     base.manualEvidence.push("Screenshot or artifact paths for UI changes.");
+    base.manualEvidence.push("Role-specific usability task result from docs/design/PRODUCT_FLOWS.md.");
     base.commands.push("pnpm smoke:local");
+    base.commands.push("pnpm visual:qa", "pnpm visual:qa:browser");
   }
   if (normalizedChanges.includes("server")) {
     base.requiredEvidence.push("Integration evidence for API, queue, audit, or persistence behavior.");
@@ -2159,6 +2446,27 @@ function parseProjectFieldsFromText(content) {
     const rawKey = match[1].trim().toLowerCase();
     const key = rawKey === "agent target" ? "agentTarget" : rawKey === "source doc" ? "sourceDoc" : rawKey.replace(/\s+([a-z])/g, (_, letter) => letter.toUpperCase());
     fields[key] = match[2].trim();
+  }
+  return fields;
+}
+
+function parseProductFlowFromText(content) {
+  const fields = {};
+  const section = markdownSection(content, "Product Flow");
+  const keyMap = {
+    "role flow": "roleFlow",
+    scenario: "scenario",
+    frequency: "frequency",
+    "owner surface": "ownerSurface",
+    "usability task": "usabilityTask",
+    "what not to show": "whatNotToShow",
+    "partial acceptance or follow-up": "partialAcceptanceOrFollowUp",
+  };
+  for (const line of section.split(/\r?\n/)) {
+    const match = line.match(/^\s*-?\s*([A-Za-z ]+(?:or follow-up)?):\s*(.+?)\s*$/);
+    if (!match) continue;
+    const key = keyMap[match[1].trim().toLowerCase()];
+    if (key) fields[key] = match[2].trim();
   }
   return fields;
 }

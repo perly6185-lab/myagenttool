@@ -371,6 +371,18 @@ For each state, list:
 - action consequence
 - what must stay hidden
 
+For UI work that starts from an ASCII sketch, route the sketch through Prototype
+Canvas before implementation:
+
+```text
+Product Flow -> ASCII sketch -> Prototype Canvas -> HTML prototype -> Visual QA
+```
+
+Prototype Canvas must preserve the Product Flow metadata for each region. A
+canvas preview is not accepted if the task composer gains low-frequency
+configuration, raw evidence, hook names, imported evidence, integration
+builders, or full session detail.
+
 ## Four Acceptance Signals
 
 Use these signals instead of subjective "do you like it?" feedback:

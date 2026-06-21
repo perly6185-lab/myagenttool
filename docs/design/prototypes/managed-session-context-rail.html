@@ -1,0 +1,217 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Managed Session Context Rail Prototype</title>
+    <link rel="stylesheet" href="./managed-session-context-rail.css">
+  </head>
+  <body>
+    <main class="shell">
+      <header class="topbar" aria-label="Prototype header">
+        <div>
+          <p class="eyebrow">HTML prototype</p>
+          <h1>Managed Codex Session In Context Rail</h1>
+        </div>
+        <div class="status-pill">Local computer connected</div>
+      </header>
+
+      <nav class="state-tabs" aria-label="Prototype states">
+        <button class="state-tab is-active" type="button" data-state="ready">Ready</button>
+        <button class="state-tab" type="button" data-state="running">Running</button>
+        <button class="state-tab" type="button" data-state="approval">Approval</button>
+        <button class="state-tab" type="button" data-state="succeeded">Succeeded</button>
+      </nav>
+
+      <section class="workspace" aria-label="Managed session workspace prototype">
+        <section class="panel task-panel" aria-labelledby="task-title">
+          <div class="panel-heading">
+            <p class="eyebrow">Left column</p>
+            <h2 id="task-title">Current Task Intent</h2>
+          </div>
+
+          <label class="field-label" for="taskText">What should your computer do?</label>
+          <textarea id="taskText" rows="5">Fix failing tests in the Web Console and summarize changed files.</textarea>
+
+          <div class="control-grid">
+            <label>
+              Computer
+              <select>
+                <option>This computer</option>
+              </select>
+            </label>
+            <label>
+              Agent
+              <select>
+                <option>Codex CLI</option>
+              </select>
+            </label>
+          </div>
+
+          <fieldset class="session-mode">
+            <legend>Codex session</legend>
+            <label><input type="radio" name="session" value="new"> New session</label>
+            <label><input type="radio" name="session" value="continue" checked> Continue latest</label>
+          </fieldset>
+
+          <div class="button-row">
+            <button class="primary-action" type="button" data-run-button>Run</button>
+            <button class="secondary-action" type="button">Cancel</button>
+          </div>
+
+          <section class="boundary-note" aria-label="Task composer guidance">
+            <h3>Before you run</h3>
+            <p>Codex will continue the latest managed session using the selected computer and agent.</p>
+          </section>
+        </section>
+
+        <section class="panel execution-panel" aria-labelledby="execution-title">
+          <div class="panel-heading">
+            <p class="eyebrow">Middle column</p>
+            <h2 id="execution-title" data-execution-title>Status</h2>
+          </div>
+
+          <article class="state-card" data-status-card>
+            <h3>Ready to run</h3>
+            <p>Review safety, data, cost, and cancellation before starting.</p>
+            <dl>
+              <div><dt>Safety</dt><dd>May edit files in this workspace</dd></div>
+              <div><dt>Data</dt><dd>Local repo only</dd></div>
+              <div><dt>Cost</dt><dd>Uses local Codex authorization</dd></div>
+              <div><dt>Cancel</dt><dd>Available while running</dd></div>
+            </dl>
+          </article>
+
+          <article class="state-card approval-card" data-approval-card hidden>
+            <h3>Approval needed</h3>
+            <p>Codex wants to run <code>pnpm test -- --watch=false</code>.</p>
+            <p class="muted">Consequence: runs local tests in this repository.</p>
+            <div class="button-row">
+              <button class="primary-action" type="button">Approve</button>
+              <button class="secondary-action" type="button">Deny</button>
+            </div>
+          </article>
+
+          <article class="timeline-card">
+            <h3>Activity</h3>
+            <ol data-activity-list>
+              <li>No activity yet.</li>
+            </ol>
+          </article>
+
+          <article class="result-card">
+            <h3>Result</h3>
+            <div data-result-body>
+              <p>Run a task to see results.</p>
+            </div>
+            <details>
+              <summary>Technical details</summary>
+              <p>Collapsed by default. Raw governance internals stay out of the primary task flow.</p>
+            </details>
+          </article>
+        </section>
+
+        <aside class="panel context-panel" aria-labelledby="context-title">
+          <div class="panel-heading">
+            <p class="eyebrow">Right rail</p>
+            <h2 id="context-title">Context, History, Governance</h2>
+          </div>
+
+          <article class="context-card">
+            <h3>Current context</h3>
+            <dl>
+              <div><dt>Repo</dt><dd>myagenttool</dd></div>
+              <div><dt>Agent</dt><dd>Codex CLI</dd></div>
+              <div><dt>Mode</dt><dd>Managed</dd></div>
+            </dl>
+          </article>
+
+          <article class="session-card" aria-label="Latest Managed Codex session">
+            <div class="card-title-row">
+              <h3>Latest Managed Codex Session</h3>
+              <span class="status-dot" data-session-dot>Latest</span>
+            </div>
+            <p class="session-id">codex-2026-06-21-managed-session-with-long-title-wrap-check</p>
+            <dl>
+              <div><dt>Last seen</dt><dd data-last-seen>5m ago</dd></div>
+              <div><dt>Status</dt><dd data-session-status>succeeded</dd></div>
+              <div><dt>Turns</dt><dd data-turn-count>3</dd></div>
+              <div><dt>Files changed</dt><dd data-files-changed>3</dd></div>
+            </dl>
+            <div class="button-row">
+              <button class="primary-action" type="button" data-continue-button>Continue</button>
+              <button class="secondary-action" type="button">Result</button>
+              <button
+                class="secondary-action"
+                type="button"
+                aria-controls="session-detail"
+                aria-expanded="false"
+                data-open-session-button
+              >Open session</button>
+            </div>
+          </article>
+
+          <article class="context-card">
+            <h3>Needs attention</h3>
+            <p data-attention-text>No approvals.</p>
+          </article>
+
+          <article class="context-card advanced-entry">
+            <h3>Evidence Center</h3>
+            <p>Available as an advanced context entry, not in the task composer.</p>
+            <button class="secondary-action" type="button">Open evidence</button>
+          </article>
+        </aside>
+      </section>
+
+      <section
+        class="session-detail"
+        id="session-detail"
+        aria-labelledby="session-detail-title"
+        data-session-detail
+        hidden
+      >
+        <div class="panel-heading">
+          <p class="eyebrow">Session detail</p>
+          <h2 id="session-detail-title">Follow-up Turns Inside This Managed Session</h2>
+        </div>
+
+        <div class="turn-layout">
+          <article class="turn-list-card">
+            <h3>Session turns</h3>
+            <ol class="turn-list">
+              <li>
+                <span class="turn-type">Initial task</span>
+                <strong>Fix failing tests in the Web Console</strong>
+                <span>succeeded · 3 files changed</span>
+              </li>
+              <li>
+                <span class="turn-type">Follow-up</span>
+                <strong>Adjust result copy after reviewing the diff</strong>
+                <span>succeeded · 1 file changed</span>
+              </li>
+              <li>
+                <span class="turn-type">Feedback</span>
+                <strong>Respond to review comment about mobile wrapping</strong>
+                <span>ready to continue</span>
+              </li>
+            </ol>
+          </article>
+
+          <article class="follow-up-card">
+            <h3>Add follow-up</h3>
+            <label class="field-label" for="followUpText">Ask the next step in this session</label>
+            <textarea id="followUpText" rows="4">Please tighten the mobile layout and keep governance details out of the main task input.</textarea>
+            <div class="button-row">
+              <button class="primary-action" type="button">Send follow-up</button>
+              <button class="secondary-action" type="button">Attach diff context</button>
+            </div>
+            <p class="muted">Follow-ups reuse the managed session context and create their own evidence records.</p>
+          </article>
+        </div>
+      </section>
+    </main>
+
+    <script src="./managed-session-context-rail.js"></script>
+  </body>
+</html>

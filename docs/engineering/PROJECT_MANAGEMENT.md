@@ -12,6 +12,8 @@ AI-assisted delivery is governed by:
 - [AI_CONTEXT.md](AI_CONTEXT.md): the entry context for AI agents.
 - [AI_DEVELOPMENT_WORKFLOW.md](AI_DEVELOPMENT_WORKFLOW.md): the full idea to
   release workflow.
+- [PROJECT_STATUS_FLOW.md](PROJECT_STATUS_FLOW.md): status gates connecting
+  Product Flow, issues, Project state, code plans, and PR evidence.
 - [DEFINITION_OF_DONE.md](DEFINITION_OF_DONE.md): completion rules.
 - [AUTOMATION_PLAN.md](AUTOMATION_PLAN.md): GitHub and repository automation
   roadmap.
@@ -121,10 +123,12 @@ Use only for confirmed broken behavior or documentation contradiction.
 3. Create epics for major capabilities.
 4. Create tasks, ADRs, and risks under each epic.
 5. Mark acceptance criteria before moving work to `ready`.
-6. Open PRs that reference issues.
-7. Run tests and AI self-review.
-8. Verify acceptance before closing issues.
-9. Release with notes and rollback plan when applicable.
+6. For UI, workflow, or user-facing work, add concrete Product Flow before
+   moving work to `ready`.
+7. Open PRs that reference issues.
+8. Run tests and AI self-review.
+9. Verify acceptance before closing issues.
+10. Release with notes and rollback plan when applicable.
 
 For initial setup, follow [GITHUB_SETUP.md](GITHUB_SETUP.md).
 For copy-ready M0 issue drafts, use [M0_ISSUE_SEED.md](M0_ISSUE_SEED.md).
@@ -145,6 +149,7 @@ An issue is ready when:
 - It has an area.
 - It has a type.
 - It has clear acceptance criteria.
+- UI, workflow, or user-facing work has concrete Product Flow.
 - It links to a source doc or explains why none exists.
 - Security, data, cost, lifecycle, and UX impact are considered when relevant.
 - Blocking ADRs or risks are linked.
@@ -155,6 +160,8 @@ An issue is done when:
 
 - Acceptance criteria are satisfied.
 - The PR is merged.
+- Product Flow acceptance signals are satisfied for UI, workflow, or
+  user-facing work, or residual gaps are linked.
 - Relevant docs are updated.
 - User-facing behavior is understandable without internal terminology.
 - Security, data, cost, and audit implications are handled or explicitly

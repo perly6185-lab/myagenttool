@@ -24,6 +24,16 @@
 - [ ] Security, data, cost, or lifecycle impact was considered.
 - [ ] Docs were updated when behavior or scope changed.
 
+## Product Flow
+
+- Role flow: <!-- ordinary developer / advanced developer / team administrator / auditor / not applicable -->
+- Scenario:
+- Frequency: <!-- high / medium / low but critical / not applicable -->
+- Owner surface:
+- Usability task:
+- What not to show:
+- Partial acceptance or follow-up:
+
 ## Verification
 
 - [ ] Not run, documentation-only change.

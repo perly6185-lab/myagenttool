@@ -63,6 +63,20 @@ body:
     validations:
       required: true
   - type: textarea
+    id: product_flow
+    attributes:
+      label: Product flow impact
+      description: For UI, workflow, or user-facing changes, cite docs/design/PRODUCT_FLOWS.md and list role, scenario, owner surface, usability task, and what not to show. Use "Not applicable" for purely internal work.
+      placeholder: |
+        Role flow:
+        Scenario:
+        Frequency:
+        Owner surface:
+        Usability task:
+        What not to show:
+    validations:
+      required: true
+  - type: textarea
     id: notes
     attributes:
       label: Notes

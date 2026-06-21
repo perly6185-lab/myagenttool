@@ -1,0 +1,232 @@
+{
+  "version": "2026-06-21.phase-1",
+  "name": "Managed Session History Prototype Canvas",
+  "source": {
+    "type": "ascii",
+    "path": ".myagenttool/runs/flow-validation-managed-session-history/ascii-prototype.md"
+  },
+  "productFlow": {
+    "roleFlow": "ordinary developer plus advanced developer",
+    "scenario": "Review managed session history UI before production implementation.",
+    "frequency": "high for task composer, medium for session detail",
+    "ownerSurface": "Prototype Canvas and generated HTML prototype",
+    "usabilityTask": "Inspect the proposed UI, adjust layout/copy, and export the prototype for Visual QA.",
+    "partialAcceptanceOrFollowUp": "Gate 2 will import ASCII automatically; Gate 3 will add visual editing."
+  },
+  "canvas": {
+    "coordinateSystem": "infinite",
+    "viewport": { "x": 0, "y": 0, "width": 1440, "height": 980 },
+    "grid": { "size": 24, "visible": true }
+  },
+  "surfaces": [
+    {
+      "id": "home-workspace",
+      "name": "Home Workspace",
+      "kind": "home",
+      "role": "ordinary_developer",
+      "productFlow": {
+        "roleFlow": "ordinary developer",
+        "scenario": "Run or continue a managed Codex task from the home workspace.",
+        "frequency": "high",
+        "ownerSurface": "Home task workspace with right context rail",
+        "usabilityTask": "Use Codex to run a repository task and find the latest managed session.",
+        "partialAcceptanceOrFollowUp": "Session detail opens from the context rail."
+      },
+      "prototypeStates": ["ready", "running", "approval_needed", "succeeded", "mobile_stacked"],
+      "acceptanceSignals": [
+        "Findable: task input and run action are visible without explanation.",
+        "Understandable: current execution state and next step are visible.",
+        "Actionable: run, cancel, continue, result, and open session actions have clear consequences.",
+        "Traceable: latest managed session is reachable without exposing raw evidence first."
+      ],
+      "whatNotToShow": ["raw JSONL", "hook names", "imported evidence", "integration builder", "full session turns"],
+      "bounds": { "x": 0, "y": 0, "width": 1320, "height": 760 },
+      "regions": [
+        {
+          "id": "task-composer",
+          "name": "Current Task Intent",
+          "ownerSurface": "Left column: current task intent",
+          "frequency": "high",
+          "role": "ordinary_developer",
+          "productFlow": {
+            "roleFlow": "ordinary developer",
+            "scenario": "Describe and run a local agent task.",
+            "frequency": "high",
+            "ownerSurface": "Task composer",
+            "usabilityTask": "Type a task, select computer and agent, review safety, and run.",
+            "partialAcceptanceOrFollowUp": "Advanced evidence and session detail remain outside this region."
+          },
+          "prototypeStates": ["empty", "ready", "running_disabled", "mobile_stacked"],
+          "acceptanceSignals": [
+            "Findable: task input is the first control in the left column.",
+            "Understandable: safety/data/cost/cancel review is plain language.",
+            "Actionable: run and cancel are visible.",
+            "Traceable: user can continue to result/session through context rail."
+          ],
+          "whatNotToShow": ["Evidence Center", "Import evidence", "raw JSONL", "hook names", "integration builder", "session turns", "Add follow-up"],
+          "bounds": { "x": 32, "y": 72, "width": 360, "height": 560 },
+          "elements": [
+            { "id": "task-title", "type": "heading", "label": "Current Task Intent", "bounds": { "x": 56, "y": 104, "width": 300, "height": 32 } },
+            { "id": "task-input", "type": "textarea", "label": "What should your computer do?", "bounds": { "x": 56, "y": 152, "width": 312, "height": 112 } },
+            { "id": "computer-select", "type": "select", "label": "Computer: This computer", "bounds": { "x": 56, "y": 288, "width": 148, "height": 48 } },
+            { "id": "agent-select", "type": "select", "label": "Agent: Codex CLI", "bounds": { "x": 220, "y": 288, "width": 148, "height": 48 } },
+            { "id": "session-mode", "type": "radio", "label": "Codex session: Continue latest", "bounds": { "x": 56, "y": 360, "width": 312, "height": 64 } },
+            { "id": "run", "type": "button", "label": "Run", "variant": "primary", "interaction": { "type": "change_state", "target": "running" }, "bounds": { "x": 56, "y": 448, "width": 116, "height": 44 } },
+            { "id": "cancel", "type": "button", "label": "Cancel", "variant": "secondary", "interaction": { "type": "cancel", "target": "current-run" }, "bounds": { "x": 184, "y": 448, "width": 116, "height": 44 } },
+            { "id": "pre-run-review", "type": "text", "label": "Before you run: Codex will continue the latest managed session using the selected computer and agent.", "bounds": { "x": 56, "y": 520, "width": 312, "height": 72 } }
+          ]
+        },
+        {
+          "id": "execution-status",
+          "name": "Current Task Execution",
+          "ownerSurface": "Middle column: current task execution",
+          "frequency": "high",
+          "role": "ordinary_developer",
+          "productFlow": {
+            "roleFlow": "ordinary developer",
+            "scenario": "Watch status and result after running a task.",
+            "frequency": "high",
+            "ownerSurface": "Execution status",
+            "usabilityTask": "Understand whether the task is ready, running, waiting for approval, or complete.",
+            "partialAcceptanceOrFollowUp": "Technical details remain collapsed."
+          },
+          "prototypeStates": ["ready", "running", "approval_needed", "succeeded", "failed"],
+          "acceptanceSignals": [
+            "Findable: current state appears in the middle column.",
+            "Understandable: state copy uses plain language.",
+            "Actionable: approval or result actions appear only when relevant.",
+            "Traceable: result can lead to diff/session context."
+          ],
+          "whatNotToShow": ["raw JSONL flood", "hook event names before summaries", "private Codex session files"],
+          "bounds": { "x": 424, "y": 72, "width": 456, "height": 560 },
+          "elements": [
+            { "id": "status-title", "type": "heading", "label": "Status", "bounds": { "x": 448, "y": 104, "width": 240, "height": 32 } },
+            { "id": "state-card", "type": "status", "label": "Ready to run", "stateBinding": "ready", "bounds": { "x": 448, "y": 152, "width": 408, "height": 132 } },
+            { "id": "approval-card", "type": "status", "label": "Approval needed", "stateBinding": "approval_needed", "bounds": { "x": 448, "y": 304, "width": 408, "height": 116 } },
+            { "id": "activity", "type": "timeline", "label": "Activity", "bounds": { "x": 448, "y": 440, "width": 408, "height": 92 } },
+            { "id": "result", "type": "result", "label": "Result", "bounds": { "x": 448, "y": 552, "width": 408, "height": 112 } }
+          ]
+        },
+        {
+          "id": "context-rail",
+          "name": "Context, History, Governance",
+          "ownerSurface": "Right rail: context, history, and governance",
+          "frequency": "medium",
+          "role": "multi_role",
+          "productFlow": {
+            "roleFlow": "ordinary developer plus advanced developer",
+            "scenario": "Find latest managed session and open detail without crowding the task composer.",
+            "frequency": "medium",
+            "ownerSurface": "Right context rail",
+            "usabilityTask": "Continue, view result, or open the latest managed session.",
+            "partialAcceptanceOrFollowUp": "Evidence Center remains an advanced entry."
+          },
+          "prototypeStates": ["latest_session", "needs_attention_empty", "advanced_entry"],
+          "acceptanceSignals": [
+            "Findable: latest managed session appears in the right rail.",
+            "Understandable: session status and counts are summarized.",
+            "Actionable: Continue, Result, and Open session are distinct.",
+            "Traceable: Evidence Center is reachable as an advanced entry."
+          ],
+          "whatNotToShow": ["raw JSONL", "hook event names", "unfiltered evidence registry", "private Codex auth files"],
+          "bounds": { "x": 912, "y": 72, "width": 376, "height": 560 },
+          "elements": [
+            { "id": "context-title", "type": "heading", "label": "Context, History, Governance", "bounds": { "x": 936, "y": 104, "width": 312, "height": 32 } },
+            { "id": "current-context", "type": "metric", "label": "Repo: myagenttool; Agent: Codex CLI; Mode: Managed", "bounds": { "x": 936, "y": 152, "width": 328, "height": 96 } },
+            { "id": "latest-session", "type": "status", "label": "Latest Managed Codex Session", "bounds": { "x": 936, "y": 272, "width": 328, "height": 128 } },
+            { "id": "continue", "type": "button", "label": "Continue", "variant": "primary", "interaction": { "type": "submit", "target": "continue-latest" }, "bounds": { "x": 936, "y": 416, "width": 96, "height": 40 } },
+            { "id": "result-button", "type": "button", "label": "Result", "variant": "secondary", "interaction": { "type": "open_surface", "target": "result" }, "bounds": { "x": 1044, "y": 416, "width": 84, "height": 40 } },
+            { "id": "open-session", "type": "button", "label": "Open session", "variant": "secondary", "interaction": { "type": "open_surface", "target": "session-detail" }, "bounds": { "x": 1140, "y": 416, "width": 124, "height": 40 } },
+            { "id": "needs-attention", "type": "status", "label": "Needs attention: No approvals.", "bounds": { "x": 936, "y": 480, "width": 328, "height": 72 } },
+            { "id": "evidence-entry", "type": "link", "label": "Evidence Center", "variant": "muted", "bounds": { "x": 936, "y": 576, "width": 328, "height": 64 } }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "session-detail",
+      "name": "Session Detail",
+      "kind": "detail",
+      "role": "advanced_developer",
+      "productFlow": {
+        "roleFlow": "advanced developer",
+        "scenario": "Inspect and continue turns inside a managed Codex session.",
+        "frequency": "medium",
+        "ownerSurface": "Session detail opened from context rail",
+        "usabilityTask": "Review previous turns and add a follow-up without losing session context.",
+        "partialAcceptanceOrFollowUp": "Diff review remains a later detail flow."
+      },
+      "prototypeStates": ["session_open", "follow_up_ready", "feedback_ready"],
+      "acceptanceSignals": [
+        "Findable: session detail opens from the right rail.",
+        "Understandable: turns are labeled as initial, follow-up, feedback, or retry.",
+        "Actionable: user can send follow-up or attach diff context.",
+        "Traceable: follow-ups reuse managed session context and evidence records."
+      ],
+      "whatNotToShow": ["private Codex auth files", "private Codex session files as primary evidence", "imported evidence as managed proof"],
+      "bounds": { "x": 0, "y": 840, "width": 920, "height": 360 },
+      "regions": [
+        {
+          "id": "session-turns",
+          "name": "Session Turns",
+          "ownerSurface": "Session detail",
+          "frequency": "medium",
+          "role": "advanced_developer",
+          "productFlow": {
+            "roleFlow": "advanced developer",
+            "scenario": "Inspect managed session turns.",
+            "frequency": "medium",
+            "ownerSurface": "Session detail turn list",
+            "usabilityTask": "Find prior turns and understand their status.",
+            "partialAcceptanceOrFollowUp": "Raw evidence is accessed from Evidence Center, not this list."
+          },
+          "prototypeStates": ["initial_task", "follow_up", "feedback"],
+          "acceptanceSignals": [
+            "Findable: turn list is visible in session detail.",
+            "Understandable: turn labels are plain language.",
+            "Actionable: user can choose next follow-up.",
+            "Traceable: each turn remains tied to managed session context."
+          ],
+          "whatNotToShow": ["raw JSONL flood", "private Codex session files", "imported evidence as managed proof"],
+          "bounds": { "x": 32, "y": 912, "width": 420, "height": 232 },
+          "elements": [
+            { "id": "turns-title", "type": "heading", "label": "Session turns", "bounds": { "x": 56, "y": 944, "width": 220, "height": 32 } },
+            { "id": "turn-initial", "type": "text", "label": "Initial task: Fix failing tests in the Web Console", "bounds": { "x": 56, "y": 992, "width": 360, "height": 36 } },
+            { "id": "turn-follow-up", "type": "text", "label": "Follow-up: Adjust result copy after reviewing the diff", "bounds": { "x": 56, "y": 1040, "width": 360, "height": 36 } },
+            { "id": "turn-feedback", "type": "text", "label": "Feedback: Respond to review comment about mobile wrapping", "bounds": { "x": 56, "y": 1088, "width": 360, "height": 36 } }
+          ]
+        },
+        {
+          "id": "follow-up-composer",
+          "name": "Add Follow-up",
+          "ownerSurface": "Session detail follow-up composer",
+          "frequency": "medium",
+          "role": "advanced_developer",
+          "productFlow": {
+            "roleFlow": "advanced developer",
+            "scenario": "Send feedback or a follow-up inside an existing managed session.",
+            "frequency": "medium",
+            "ownerSurface": "Session detail follow-up composer",
+            "usabilityTask": "Ask the next step in this session and attach diff context if needed.",
+            "partialAcceptanceOrFollowUp": "Approval broker UI remains separate."
+          },
+          "prototypeStates": ["follow_up_ready", "diff_context_attached"],
+          "acceptanceSignals": [
+            "Findable: Add follow-up appears only in session detail.",
+            "Understandable: copy says the follow-up reuses managed session context.",
+            "Actionable: send follow-up and attach diff context are separate.",
+            "Traceable: follow-up creates its own evidence record."
+          ],
+          "whatNotToShow": ["Evidence Center as task input", "raw JSONL", "hook names", "private Codex auth files"],
+          "bounds": { "x": 484, "y": 912, "width": 392, "height": 232 },
+          "elements": [
+            { "id": "follow-up-title", "type": "heading", "label": "Add follow-up", "bounds": { "x": 508, "y": 944, "width": 220, "height": 32 } },
+            { "id": "follow-up-input", "type": "textarea", "label": "Ask the next step in this session", "bounds": { "x": 508, "y": 992, "width": 336, "height": 72 } },
+            { "id": "send-follow-up", "type": "button", "label": "Send follow-up", "variant": "primary", "interaction": { "type": "submit", "target": "follow-up" }, "bounds": { "x": 508, "y": 1088, "width": 136, "height": 40 } },
+            { "id": "attach-diff", "type": "button", "label": "Attach diff context", "variant": "secondary", "interaction": { "type": "submit", "target": "diff-context" }, "bounds": { "x": 656, "y": 1088, "width": 160, "height": 40 } }
+          ]
+        }
+      ]
+    }
+  ]
+}

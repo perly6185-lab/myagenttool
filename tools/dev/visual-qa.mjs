@@ -1,4 +1,5 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { pathToFileURL } from "node:url";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -15,6 +16,9 @@ const viewports = [
   { name: "desktop", width: 1366, height: 768 },
   { name: "mobile", width: 390, height: 844 }
 ];
+const screenshotResult = browserAutomation.driver
+  ? await captureScreenshots(browserAutomation.driver)
+  : { status: "skipped", screenshots: [], reason: browserAutomation.reason };
 
 const states = [
   {
@@ -64,7 +68,10 @@ const artifact = {
   screenshotAutomation: {
     status: browserAutomation.status,
     reason: browserAutomation.reason,
-    upgradePath: "Install Playwright or Puppeteer and extend this tool to attach screenshots."
+    upgradePath: "Install Playwright or Puppeteer to attach desktop and mobile screenshots.",
+    screenshotStatus: screenshotResult.status,
+    screenshots: screenshotResult.screenshots,
+    screenshotReason: screenshotResult.reason
   },
   viewports,
   states: states.map((state) => ({ name: state.name, expectedMarkers: state.expected })),
@@ -87,6 +94,13 @@ if (requireBrowser && browserAutomation.status !== "available") {
     detail: browserAutomation.reason
   });
 }
+if (requireBrowser && screenshotResult.status !== "captured") {
+  failed.push({
+    name: "browser screenshots captured",
+    status: "fail",
+    detail: screenshotResult.reason
+  });
+}
 
 if (failed.length > 0) {
   console.error(`[visual-qa] failed: ${failed.map((item) => item.name).join(", ")}`);
@@ -104,21 +118,75 @@ function check(name, run, detail) {
 }
 
 async function detectBrowserAutomation() {
-  for (const packageName of ["playwright", "puppeteer"]) {
-    try {
-      await import(packageName);
-      return {
-        status: "available",
-        reason: `${packageName} is installed. Screenshot automation can be enabled in this tool.`
-      };
-    } catch {
-      // Try the next supported package.
-    }
+  try {
+    const playwright = await import("playwright");
+    return {
+      status: "available",
+      driver: { name: "playwright", module: playwright },
+      reason: "playwright is installed. Screenshot automation is available."
+    };
+  } catch {
+    // Try Puppeteer next.
   }
+
+  try {
+    const puppeteer = await import("puppeteer");
+    return {
+      status: "available",
+      driver: { name: "puppeteer", module: puppeteer.default ?? puppeteer },
+      reason: "puppeteer is installed. Screenshot automation is available."
+    };
+  } catch {
+    // Fall through to not configured.
+  }
+
   return {
     status: "not_configured",
+    driver: null,
     reason: "No browser automation dependency is installed in this workspace."
   };
+}
+
+async function captureScreenshots(driver) {
+  const screenshots = [];
+  const screenshotDir = resolve(artifactDir, "screenshots");
+  mkdirSync(screenshotDir, { recursive: true });
+  try {
+    if (driver.name === "playwright") {
+      const browser = await driver.module.chromium.launch();
+      const page = await browser.newPage();
+      for (const viewport of viewports) {
+        await page.setViewportSize({ width: viewport.width, height: viewport.height });
+        await page.goto(pathToFileURL(resolve(publicDir, "index.html")).href);
+        const path = resolve(screenshotDir, `${viewport.name}.png`);
+        await page.screenshot({ path, fullPage: true });
+        screenshots.push({ viewport: viewport.name, path: relativeArtifactPath(path) });
+      }
+      await browser.close();
+      return { status: "captured", screenshots, reason: "Captured screenshots with Playwright." };
+    }
+
+    if (driver.name === "puppeteer") {
+      const browser = await driver.module.launch();
+      const page = await browser.newPage();
+      for (const viewport of viewports) {
+        await page.setViewport({ width: viewport.width, height: viewport.height });
+        await page.goto(pathToFileURL(resolve(publicDir, "index.html")).href);
+        const path = resolve(screenshotDir, `${viewport.name}.png`);
+        await page.screenshot({ path, fullPage: true });
+        screenshots.push({ viewport: viewport.name, path: relativeArtifactPath(path) });
+      }
+      await browser.close();
+      return { status: "captured", screenshots, reason: "Captured screenshots with Puppeteer." };
+    }
+  } catch (error) {
+    return { status: "failed", screenshots, reason: error instanceof Error ? error.message : String(error) };
+  }
+  return { status: "failed", screenshots, reason: `Unsupported browser driver: ${driver.name}` };
+}
+
+function relativeArtifactPath(path) {
+  return path.replace(repoRoot, "").replace(/^[/\\]/, "").replace(/\\/g, "/");
 }
 
 function commandPanel(source = html) {
@@ -151,6 +219,15 @@ function markdownReport(report) {
     "",
     `Status: ${report.screenshotAutomation.status}`,
     `Reason: ${report.screenshotAutomation.reason}`,
+    `Screenshot status: ${report.screenshotAutomation.screenshotStatus}`,
+    `Screenshot reason: ${report.screenshotAutomation.screenshotReason}`,
+    "",
+    "Screenshots:",
+    ...(
+      report.screenshotAutomation.screenshots.length > 0
+        ? report.screenshotAutomation.screenshots.map((item) => `- ${item.viewport}: ${item.path}`)
+        : ["- None."]
+    ),
     "",
     "## Viewports",
     "",

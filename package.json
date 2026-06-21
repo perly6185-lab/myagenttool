@@ -39,6 +39,7 @@
     "deploy:run": "node tools/deploy/src/index.mjs run",
     "deploy:publish": "node tools/deploy/src/index.mjs publish",
     "repo:check": "pwsh -NoProfile -ExecutionPolicy Bypass -File tools/docs/check-repo-health.ps1",
+    "prototype:qa": "node tools/dev/import-ascii-prototype.mjs && node tools/dev/export-prototype-canvas.mjs && node tools/dev/prototype-qa.mjs && node tools/dev/canvas-contract-qa.mjs",
     "visual:qa": "node tools/dev/visual-qa.mjs",
     "visual:qa:browser": "node tools/dev/visual-qa.mjs --require-browser",
     "smoke:local": "node tools/dev/local-smoke.mjs",

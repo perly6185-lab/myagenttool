@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Imported Managed Session History Prototype Canvas Export</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --bg: #f6f7f9;
+        --panel: #ffffff;
+        --ink: #18202c;
+        --muted: #5d6878;
+        --line: #d8dee8;
+        --accent: #146c5f;
+        --accent-soft: #dff3ee;
+        font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+      * { box-sizing: border-box; }
+      body { margin: 0; background: var(--bg); color: var(--ink); }
+      main { max-width: 1240px; margin: 0 auto; padding: 24px; }
+      .hero { display: grid; gap: 8px; padding: 20px 0 24px; }
+      .hero p, .surface-header p, dt, .meta, .element-type { margin: 0; color: var(--muted); font-size: 12px; font-weight: 700; text-transform: uppercase; }
+      h1, h2, h3 { margin: 0; }
+      h1 { font-size: 28px; }
+      h2 { font-size: 20px; }
+      h3 { font-size: 15px; }
+      .surface { margin-bottom: 24px; padding: 18px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); }
+      .surface-header { display: flex; justify-content: space-between; gap: 18px; padding-bottom: 16px; border-bottom: 1px solid var(--line); }
+      dl { display: grid; gap: 8px; margin: 0; min-width: 280px; }
+      dt { margin-bottom: 2px; }
+      dd { margin: 0; color: var(--ink); overflow-wrap: anywhere; }
+      .region-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; padding-top: 16px; }
+      .region { display: grid; align-content: start; gap: 12px; padding: 14px; border: 1px solid var(--line); border-radius: 8px; background: #fbfcfd; }
+      .region-meta { display: grid; gap: 6px; }
+      .element-list { display: grid; gap: 8px; }
+      .element { min-height: 34px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px; background: #fff; overflow-wrap: anywhere; }
+      .element[data-type="button"] { text-align: center; font-weight: 700; color: #fff; background: var(--accent); border-color: var(--accent); }
+      .element[data-type="textarea"], .element[data-type="status"], .element[data-type="timeline"], .element[data-type="result"] { min-height: 56px; }
+      .hidden-list { margin: 0; padding-left: 18px; color: var(--muted); font-size: 13px; }
+      @media (max-width: 820px) {
+        main { padding: 16px; }
+        .surface-header { display: grid; }
+        .region-grid { grid-template-columns: 1fr; }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header class="hero">
+        <p>Exported from Prototype Canvas</p>
+        <h1>Imported Managed Session History Prototype Canvas</h1>
+        <div class="meta">Source: .myagenttool/runs/flow-validation-managed-session-history/ascii-prototype.md</div>
+      </header>
+      
+      <section class="surface" id="home-workspace" aria-labelledby="home-workspace-title">
+        <header class="surface-header">
+          <div>
+            <p>ordinary developer / home</p>
+            <h2 id="home-workspace-title">Home Workspace</h2>
+          </div>
+          <dl>
+            <div><dt>Owner</dt><dd>Home task workspace with right context rail</dd></div>
+            <div><dt>States</dt><dd>ready, running, approval_needed, succeeded, mobile_stacked</dd></div>
+          </dl>
+        </header>
+        <div class="region-grid">
+          <article class="region" aria-label="Current Task Intent">
+    <div class="region-meta">
+      <h3>Current Task Intent</h3>
+      <div class="meta">Owner: Left column: current task intent</div>
+      <div class="meta">States: empty, ready, running_disabled, mobile_stacked</div>
+    </div>
+    <div class="element-list">
+      <div class="element" data-type="button"><span class="element-type">button</span><br>Run</div><div class="element" data-type="button"><span class="element-type">button</span><br>Cancel</div><div class="element" data-type="textarea"><span class="element-type">textarea</span><br>What should your computer do?</div><div class="element" data-type="select"><span class="element-type">select</span><br>Computer</div><div class="element" data-type="select"><span class="element-type">select</span><br>Agent</div><div class="element" data-type="text"><span class="element-type">text</span><br>Codex session</div><div class="element" data-type="radio"><span class="element-type">radio</span><br>New session</div><div class="element" data-type="radio"><span class="element-type">radio</span><br>Continue latest</div><div class="element" data-type="select"><span class="element-type">select</span><br>Computer: This computer</div><div class="element" data-type="select"><span class="element-type">select</span><br>Agent: Codex CLI</div><div class="element" data-type="radio"><span class="element-type">radio</span><br>Session: Continue latest</div>
+    </div>
+    <div>
+      <div class="meta">What not to show</div>
+      <ul class="hidden-list"><li>Evidence Center</li><li>Import evidence</li><li>raw JSONL</li><li>hook names</li><li>integration builder</li><li>session turns</li><li>Add follow-up</li></ul>
+    </div>
+  </article><article class="region" aria-label="Current Task Execution">
+    <div class="region-meta">
+      <h3>Current Task Execution</h3>
+      <div class="meta">Owner: Middle column: current task execution</div>
+      <div class="meta">States: ready, running, approval_needed, succeeded, failed</div>
+    </div>
+    <div class="element-list">
+      <div class="element" data-type="status"><span class="element-type">status</span><br>Status</div><div class="element" data-type="status"><span class="element-type">status</span><br>Ready to run</div><div class="element" data-type="timeline"><span class="element-type">timeline</span><br>Activity</div><div class="element" data-type="timeline"><span class="element-type">timeline</span><br>No activity yet</div><div class="element" data-type="result"><span class="element-type">result</span><br>Result</div><div class="element" data-type="result"><span class="element-type">result</span><br>Run a task to see results.</div><div class="element" data-type="status"><span class="element-type">status</span><br>Running with Codex CLI</div><div class="element" data-type="status"><span class="element-type">status</span><br>Approval needed</div><div class="element" data-type="button"><span class="element-type">button</span><br>Approve Deny</div><div class="element" data-type="status"><span class="element-type">status</span><br>Completed</div><div class="element" data-type="button"><span class="element-type">button</span><br>Review diff Open result</div>
+    </div>
+    <div>
+      <div class="meta">What not to show</div>
+      <ul class="hidden-list"><li>raw JSONL flood</li><li>hook event names before summaries</li><li>private Codex session files</li></ul>
+    </div>
+  </article><article class="region" aria-label="Context, History, Governance">
+    <div class="region-meta">
+      <h3>Context, History, Governance</h3>
+      <div class="meta">Owner: Right rail: context, history, and governance</div>
+      <div class="meta">States: latest_session, needs_attention_empty, needs_attention_pending, advanced_entry</div>
+    </div>
+    <div class="element-list">
+      <div class="element" data-type="metric"><span class="element-type">metric</span><br>Current context</div><div class="element" data-type="text"><span class="element-type">text</span><br>Repo: myagenttool</div><div class="element" data-type="text"><span class="element-type">text</span><br>Agent: Codex CLI</div><div class="element" data-type="text"><span class="element-type">text</span><br>Mode: Managed</div><div class="element" data-type="status"><span class="element-type">status</span><br>Latest Managed Codex</div><div class="element" data-type="text"><span class="element-type">text</span><br>Session</div><div class="element" data-type="text"><span class="element-type">text</span><br>Last seen 5m ago</div><div class="element" data-type="text"><span class="element-type">text</span><br>Status: succeeded</div><div class="element" data-type="text"><span class="element-type">text</span><br>Files changed: 3</div><div class="element" data-type="button"><span class="element-type">button</span><br>Continue Result</div><div class="element" data-type="status"><span class="element-type">status</span><br>Needs attention</div><div class="element" data-type="text"><span class="element-type">text</span><br>No approvals</div><div class="element" data-type="text"><span class="element-type">text</span><br>Status: running</div><div class="element" data-type="button"><span class="element-type">button</span><br>Open session</div><div class="element" data-type="text"><span class="element-type">text</span><br>Status: waiting</div><div class="element" data-type="text"><span class="element-type">text</span><br>1 pending request</div><div class="element" data-type="text"><span class="element-type">text</span><br>Evidence Center</div><div class="element" data-type="button"><span class="element-type">button</span><br>Open evidence</div>
+    </div>
+    <div>
+      <div class="meta">What not to show</div>
+      <ul class="hidden-list"><li>raw JSONL</li><li>hook event names</li><li>unfiltered evidence registry</li><li>private Codex auth files</li></ul>
+    </div>
+  </article>
+        </div>
+      </section>
+
+      <section class="surface" id="session-detail" aria-labelledby="session-detail-title">
+        <header class="surface-header">
+          <div>
+            <p>advanced developer / detail</p>
+            <h2 id="session-detail-title">Session Detail</h2>
+          </div>
+          <dl>
+            <div><dt>Owner</dt><dd>Session detail opened from context rail</dd></div>
+            <div><dt>States</dt><dd>session_open, initial_task, follow_up, feedback</dd></div>
+          </dl>
+        </header>
+        <div class="region-grid">
+          <article class="region" aria-label="Session Turns">
+    <div class="region-meta">
+      <h3>Session Turns</h3>
+      <div class="meta">Owner: Session detail</div>
+      <div class="meta">States: initial_task, follow_up, feedback</div>
+    </div>
+    <div class="element-list">
+      <div class="element" data-type="heading"><span class="element-type">heading</span><br>Session turns</div><div class="element" data-type="text"><span class="element-type">text</span><br>Initial task</div><div class="element" data-type="text"><span class="element-type">text</span><br>Fix failing tests in the Web Console</div><div class="element" data-type="text"><span class="element-type">text</span><br>Follow-up</div><div class="element" data-type="text"><span class="element-type">text</span><br>Adjust result copy after reviewing the diff</div><div class="element" data-type="text"><span class="element-type">text</span><br>Feedback</div><div class="element" data-type="text"><span class="element-type">text</span><br>Respond to review comment about mobile wrapping</div><div class="element" data-type="text"><span class="element-type">text</span><br>ready to continue</div>
+    </div>
+    <div>
+      <div class="meta">What not to show</div>
+      <ul class="hidden-list"><li>raw JSONL flood</li><li>private Codex session files</li><li>imported evidence as managed proof</li></ul>
+    </div>
+  </article><article class="region" aria-label="Add Follow-up">
+    <div class="region-meta">
+      <h3>Add Follow-up</h3>
+      <div class="meta">Owner: Session detail follow-up composer</div>
+      <div class="meta">States: follow_up_ready, diff_context_attached</div>
+    </div>
+    <div class="element-list">
+      <div class="element" data-type="heading"><span class="element-type">heading</span><br>Add follow-up</div><div class="element" data-type="textarea"><span class="element-type">textarea</span><br>Ask the next step in this session</div><div class="element" data-type="button"><span class="element-type">button</span><br>Send follow-up</div><div class="element" data-type="button"><span class="element-type">button</span><br>Attach diff</div><div class="element" data-type="text"><span class="element-type">text</span><br>Follow-ups reuse managed session</div>
+    </div>
+    <div>
+      <div class="meta">What not to show</div>
+      <ul class="hidden-list"><li>Evidence Center as task input</li><li>raw JSONL</li><li>hook names</li><li>private Codex auth files</li></ul>
+    </div>
+  </article>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>

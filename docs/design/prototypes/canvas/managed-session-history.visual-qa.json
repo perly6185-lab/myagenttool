@@ -1,0 +1,199 @@
+{
+  "generatedAt": "2026-06-21T03:49:37.159Z",
+  "sourceScene": "docs/design/prototypes/canvas/managed-session-history.imported.scene.json",
+  "exportedHtml": "docs/design/prototypes/canvas/managed-session-history.export.html",
+  "productFlow": {
+    "roleFlow": "ordinary developer",
+    "scenario": "find and continue the latest Managed Codex session from the Web Console context rail",
+    "frequency": "high",
+    "ownerSurface": "right rail: context, history, and governance",
+    "usabilityTask": "Inspect the imported UI structure, verify ownership boundaries, and prepare it for visual editing.",
+    "partialAcceptanceOrFollowUp": "Gate 3 will add visual pan, zoom, drag, and label editing."
+  },
+  "viewports": [
+    {
+      "name": "desktop",
+      "width": 1366,
+      "height": 768
+    },
+    {
+      "name": "mobile",
+      "width": 390,
+      "height": 844
+    }
+  ],
+  "surfaces": [
+    {
+      "id": "home-workspace",
+      "name": "Home Workspace",
+      "role": "ordinary_developer",
+      "ownerSurface": "Home task workspace with right context rail",
+      "prototypeStates": [
+        "ready",
+        "running",
+        "approval_needed",
+        "succeeded",
+        "mobile_stacked"
+      ],
+      "tasks": [
+        "Confirm Home Workspace is findable for ordinary developer.",
+        "Confirm states are represented: ready, running, approval_needed, succeeded, mobile_stacked.",
+        "Confirm owner surface remains Home task workspace with right context rail.",
+        "Confirm Findable: user can find the previous Codex session in the right rail.",
+        "Confirm Understandable: user can tell whether the session can continue or only be inspected.",
+        "Confirm Actionable: user can continue, open result, review diff, or cancel with clear consequence.",
+        "Confirm Traceable: evidence remains reachable from context without dominating the ordinary developer task flow."
+      ],
+      "regions": [
+        {
+          "id": "task-composer",
+          "name": "Current Task Intent",
+          "ownerSurface": "Left column: current task intent",
+          "prototypeStates": [
+            "empty",
+            "ready",
+            "running_disabled",
+            "mobile_stacked"
+          ],
+          "whatNotToShow": [
+            "Evidence Center",
+            "Import evidence",
+            "raw JSONL",
+            "hook names",
+            "integration builder",
+            "session turns",
+            "Add follow-up"
+          ],
+          "tasks": [
+            "Confirm Current Task Intent appears only in Left column: current task intent.",
+            "Confirm labels are understandable without raw implementation terms.",
+            "Confirm \"Evidence Center\" is not shown in Current Task Intent.",
+            "Confirm \"Import evidence\" is not shown in Current Task Intent.",
+            "Confirm \"raw JSONL\" is not shown in Current Task Intent.",
+            "Confirm \"hook names\" is not shown in Current Task Intent.",
+            "Confirm \"integration builder\" is not shown in Current Task Intent.",
+            "Confirm \"session turns\" is not shown in Current Task Intent.",
+            "Confirm \"Add follow-up\" is not shown in Current Task Intent."
+          ]
+        },
+        {
+          "id": "execution-status",
+          "name": "Current Task Execution",
+          "ownerSurface": "Middle column: current task execution",
+          "prototypeStates": [
+            "ready",
+            "running",
+            "approval_needed",
+            "succeeded",
+            "failed"
+          ],
+          "whatNotToShow": [
+            "raw JSONL flood",
+            "hook event names before summaries",
+            "private Codex session files"
+          ],
+          "tasks": [
+            "Confirm Current Task Execution appears only in Middle column: current task execution.",
+            "Confirm labels are understandable without raw implementation terms.",
+            "Confirm \"raw JSONL flood\" is not shown in Current Task Execution.",
+            "Confirm \"hook event names before summaries\" is not shown in Current Task Execution.",
+            "Confirm \"private Codex session files\" is not shown in Current Task Execution."
+          ]
+        },
+        {
+          "id": "context-rail",
+          "name": "Context, History, Governance",
+          "ownerSurface": "Right rail: context, history, and governance",
+          "prototypeStates": [
+            "latest_session",
+            "needs_attention_empty",
+            "needs_attention_pending",
+            "advanced_entry"
+          ],
+          "whatNotToShow": [
+            "raw JSONL",
+            "hook event names",
+            "unfiltered evidence registry",
+            "private Codex auth files"
+          ],
+          "tasks": [
+            "Confirm Context, History, Governance appears only in Right rail: context, history, and governance.",
+            "Confirm labels are understandable without raw implementation terms.",
+            "Confirm \"raw JSONL\" is not shown in Context, History, Governance.",
+            "Confirm \"hook event names\" is not shown in Context, History, Governance.",
+            "Confirm \"unfiltered evidence registry\" is not shown in Context, History, Governance.",
+            "Confirm \"private Codex auth files\" is not shown in Context, History, Governance."
+          ]
+        }
+      ]
+    },
+    {
+      "id": "session-detail",
+      "name": "Session Detail",
+      "role": "advanced_developer",
+      "ownerSurface": "Session detail opened from context rail",
+      "prototypeStates": [
+        "session_open",
+        "initial_task",
+        "follow_up",
+        "feedback"
+      ],
+      "tasks": [
+        "Confirm Session Detail is findable for advanced developer.",
+        "Confirm states are represented: session_open, initial_task, follow_up, feedback.",
+        "Confirm owner surface remains Session detail opened from context rail.",
+        "Confirm Findable: session detail opens from the right rail.",
+        "Confirm Understandable: turns are labeled as initial task, follow-up, or feedback.",
+        "Confirm Actionable: user can send follow-up or attach diff context.",
+        "Confirm Traceable: follow-ups reuse managed session context and create evidence."
+      ],
+      "regions": [
+        {
+          "id": "session-turns",
+          "name": "Session Turns",
+          "ownerSurface": "Session detail",
+          "prototypeStates": [
+            "initial_task",
+            "follow_up",
+            "feedback"
+          ],
+          "whatNotToShow": [
+            "raw JSONL flood",
+            "private Codex session files",
+            "imported evidence as managed proof"
+          ],
+          "tasks": [
+            "Confirm Session Turns appears only in Session detail.",
+            "Confirm labels are understandable without raw implementation terms.",
+            "Confirm \"raw JSONL flood\" is not shown in Session Turns.",
+            "Confirm \"private Codex session files\" is not shown in Session Turns.",
+            "Confirm \"imported evidence as managed proof\" is not shown in Session Turns."
+          ]
+        },
+        {
+          "id": "follow-up-composer",
+          "name": "Add Follow-up",
+          "ownerSurface": "Session detail follow-up composer",
+          "prototypeStates": [
+            "follow_up_ready",
+            "diff_context_attached"
+          ],
+          "whatNotToShow": [
+            "Evidence Center as task input",
+            "raw JSONL",
+            "hook names",
+            "private Codex auth files"
+          ],
+          "tasks": [
+            "Confirm Add Follow-up appears only in Session detail follow-up composer.",
+            "Confirm labels are understandable without raw implementation terms.",
+            "Confirm \"Evidence Center as task input\" is not shown in Add Follow-up.",
+            "Confirm \"raw JSONL\" is not shown in Add Follow-up.",
+            "Confirm \"hook names\" is not shown in Add Follow-up.",
+            "Confirm \"private Codex auth files\" is not shown in Add Follow-up."
+          ]
+        }
+      ]
+    }
+  ]
+}

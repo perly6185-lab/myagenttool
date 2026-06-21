@@ -58,6 +58,18 @@ body:
       placeholder: "- [ ] ..."
     validations:
       required: true
+  - type: textarea
+    id: product_flow
+    attributes:
+      label: Product flow impact
+      description: For user-visible initiatives, cite docs/design/PRODUCT_FLOWS.md and summarize the relevant role matrix rows, scenarios, usability tasks, and what not to show. Use "Not applicable" only for internal initiatives.
+      placeholder: |
+        Role matrix impact:
+        Key scenarios:
+        Usability tasks:
+        What not to show:
+    validations:
+      required: true
   - type: input
     id: source_doc
     attributes:
