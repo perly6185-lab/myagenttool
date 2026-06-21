@@ -23,6 +23,14 @@ if (process.argv.includes("--check")) {
     [html, "What should your computer do?", "task composer"],
     [html, "Run on this computer", "plain-language run action"],
     [html, "id=\"agentSelect\"", "agent selector"],
+    [html, "id=\"deviceSelectValue\"", "visible device selector value"],
+    [html, "id=\"agentSelectValue\"", "visible agent selector value"],
+    [html, "id=\"agentChoiceList\"", "scannable agent choice list"],
+    [html, "id=\"codexSessionMode\"", "Codex session mode control"],
+    [html, "id=\"codexWorkspacePolicy\"", "Codex workspace policy control"],
+    [html, "id=\"compareAgentList\"", "compare agent selector"],
+    [html, "id=\"comparePanel\"", "compare results panel"],
+    [html, "data-workspace-mode=\"evidence_center\"", "evidence center advanced mode"],
     [html, "id=\"healthCheckButton\"", "agent health check action"],
     [html, "id=\"toggleAgentButton\"", "agent enable disable action"],
     [html, "id=\"agentHealth\"", "agent health state"],
@@ -42,6 +50,35 @@ if (process.argv.includes("--check")) {
     [html, "id=\"artifactList\"", "integration artifact review list"],
     [html, "id=\"quotaSummary\"", "integration quota summary"],
     [html, "id=\"retentionSummary\"", "integration retention summary"],
+    [html, "id=\"taskPreview\"", "task preview"],
+    [html, "id=\"executionPreview\"", "execution preview"],
+    [html, "id=\"sessionMode\"", "session mode detail"],
+    [html, "id=\"managedSessionHistoryContext\"", "managed Codex session history context"],
+    [html, "data-session-filter=\"needs_approval\"", "managed session approval filter"],
+    [html, "id=\"managedSessionDetail\"", "managed session detail panel"],
+    [html, "id=\"managedSessionDetailWorktree\"", "managed session worktree detail"],
+    [html, "id=\"managedSessionDetailDirty\"", "managed session dirty state detail"],
+    [html, "id=\"managedSessionDetailContinue\"", "managed session continuation guidance"],
+    [html, "id=\"managedChangeReviewPanel\"", "managed change review panel"],
+    [html, "id=\"managedChangeList\"", "managed change list"],
+    [html, "id=\"managedChangeDiff\"", "managed diff preview"],
+    [html, "id=\"managedChangeReviewComment\"", "managed change reviewer comment"],
+    [html, "id=\"approveChangeButton\"", "managed change approval action"],
+    [html, "id=\"rejectChangeButton\"", "managed change rejection action"],
+    [html, "id=\"feedbackChangeButton\"", "managed change feedback action"],
+    [html, "id=\"approvalAttentionSummary\"", "approval needs-attention summary"],
+    [html, "id=\"approvalQueueList\"", "approval queue list"],
+    [html, "id=\"evidenceCenterContext\"", "evidence center context"],
+    [html, "id=\"evidenceTypeFilter\"", "evidence type filter"],
+    [html, "id=\"evidenceSourceFilter\"", "evidence source filter"],
+    [html, "id=\"evidenceRedactionFilter\"", "evidence redaction filter"],
+    [html, "id=\"evidenceAgentFilter\"", "evidence agent filter"],
+    [html, "id=\"evidenceSessionFilter\"", "evidence session filter"],
+    [html, "id=\"evidenceInvocationFilter\"", "evidence invocation filter"],
+    [html, "id=\"evidenceRepoFilter\"", "evidence repo filter"],
+    [html, "id=\"evidenceCenterList\"", "evidence center list"],
+    [html, "id=\"evidenceDetailBody\"", "evidence detail body"],
+    [html, "id=\"exportEvidenceSummaryButton\"", "evidence export summary action"],
     [html, "id=\"approvalPanel\"", "local approval panel"],
     [html, "id=\"approveButton\"", "local approval approve action"],
     [html, "id=\"denyButton\"", "local approval deny action"],
@@ -55,11 +92,18 @@ if (process.argv.includes("--check")) {
     [html, "Audit", "audit panel"],
     [css, "@media (max-width: 760px)", "mobile layout guard"],
     [css, "overflow-wrap: anywhere", "long text overflow guard"],
+    [css, ".select-value", "visible select value overlay"],
     [js, "readableStatus", "plain-language state mapper"],
     [js, "readableEventType", "plain-language event mapper"],
+    [js, "execution_preview", "execution preview event renderer"],
+    [js, "sessionModeText", "session mode renderer"],
+    [js, "latestExecutionPreview", "execution preview state lookup"],
     [js, "readableHealth", "plain-language health mapper"],
     [js, "readableHealthLabel", "agent list health label"],
     [js, "renderDiscovery", "conservative discovery renderer"],
+    [js, "renderAgentChoices", "scannable agent selection renderer"],
+    [js, "codexAgentInState", "default Codex agent lookup"],
+    [js, "const previous = selectedAgentId || els.agentSelect.value", "agent card selection wins over stale native select value"],
     [js, "codexCandidateReview", "Codex candidate risk review renderer"],
     [js, "createDiscovery", "shared discovery API action"],
     [js, "resolveApiBase", "localhost-only API override for local visual QA"],
@@ -82,6 +126,31 @@ if (process.argv.includes("--check")) {
     [js, "runBlockReason", "run blocked explanation"],
     [js, "registrationNotes", "agent review notes"],
     [js, "selectedAgentId", "agent selection state"]
+    ,
+    [js, "renderManagedSessionHistory", "managed session history renderer"],
+    [js, "sessionMatchesHistoryFilter", "managed session history filters"],
+    [js, "managedSessionSummary", "managed session summary aggregation"],
+    [js, "selectedManagedSessionId", "managed session detail selection"],
+    [js, "managedWorkspaceForSession", "managed workspace lookup"],
+    [js, "codexWorkspacePolicy", "Codex workspace policy option"],
+    [js, "/api/compare-runs", "compare run API action"],
+    [js, "renderComparePanel", "compare result renderer"],
+    [js, "selectedCompareAgentIds", "compare agent selection state"],
+    [js, "renderManagedChangeReview", "managed change review renderer"],
+    [js, "/api/codex/change-reviews", "managed change review API action"],
+    [js, "selectedManagedChangeEvidenceId", "managed change selection state"],
+    [js, "renderApprovalQueue", "approval queue renderer"],
+    [js, "codexApprovalQueue", "approval queue public state"],
+    [js, "renderEvidenceCenter", "evidence center renderer"],
+    [js, "evidenceCenterRecords", "evidence center public state"],
+    [js, "renderEvidenceFilterOptions", "evidence center dynamic filters"],
+    [js, "codexSessionRegistryId", "evidence session filter field"],
+    [js, "invocationId", "evidence invocation filter field"],
+    [js, "repoPath", "evidence repo filter field"],
+    [js, "imported_after_the_fact", "imported evidence marker"],
+    [css, ".diff-preview", "managed diff preview styling"],
+    [css, ".approval-queue-item", "approval queue styling"],
+    [css, ".evidence-record-item", "evidence center styling"]
   ];
 
   const failed = expectations
@@ -90,6 +159,40 @@ if (process.argv.includes("--check")) {
 
   if (failed.length > 0) {
     console.error(`[web:check] missing UX/visual QA expectations: ${failed.join(", ")}`);
+    process.exit(1);
+  }
+
+  const commandPanel = htmlBetween(html, '<section class="command-panel">', '<section class="run-panel"');
+  const contextPanel = htmlBetween(html, '<aside class="context-panel"', "</aside>");
+  const misplacedCommandPanelMarkers = [
+    ["mode-tabs", "advanced navigation"],
+    ["connectAgentPanel", "connect agent management panel"],
+    ["Evidence center", "evidence center management action"],
+    ["Import evidence", "import evidence management action"],
+    ["Codex supervision", "Codex supervision navigation"]
+  ].filter(([marker]) => commandPanel.includes(marker));
+  const missingContextPanelMarkers = [
+    ["mode-tabs", "advanced navigation in context rail"],
+    ["connectAgentPanel", "connect agent panel in context rail"],
+    ["Evidence center", "evidence center action in context rail"],
+    ["Import evidence", "import evidence action in context rail"],
+    ["Codex supervision", "Codex supervision action in context rail"]
+  ].filter(([marker]) => !contextPanel.includes(marker));
+
+  if (misplacedCommandPanelMarkers.length > 0 || missingContextPanelMarkers.length > 0) {
+    const misplaced = misplacedCommandPanelMarkers.map(([, label]) => label);
+    const missing = missingContextPanelMarkers.map(([, label]) => label);
+    console.error(`[web:check] IA ownership violations: ${[
+      misplaced.length ? `task composer contains ${misplaced.join(", ")}` : null,
+      missing.length ? `context rail missing ${missing.join(", ")}` : null
+    ].filter(Boolean).join("; ")}`);
+    process.exit(1);
+  }
+
+  const forbiddenPrivateCodexReads = ["auth.json", ".codex/sessions", ".codex\\\\sessions"];
+  const privateReadHits = forbiddenPrivateCodexReads.filter((marker) => js.includes(marker) || html.includes(marker));
+  if (privateReadHits.length > 0) {
+    console.error(`[web:check] private Codex session/auth reads must not be part of Web Console IA: ${privateReadHits.join(", ")}`);
     process.exit(1);
   }
 
@@ -128,4 +231,16 @@ function contentType(filePath) {
     default:
       return "application/octet-stream";
   }
+}
+
+function htmlBetween(html, start, end) {
+  const startIndex = html.indexOf(start);
+  if (startIndex < 0) {
+    return "";
+  }
+  const endIndex = html.indexOf(end, startIndex + start.length);
+  if (endIndex < 0) {
+    return html.slice(startIndex);
+  }
+  return html.slice(startIndex, endIndex);
 }

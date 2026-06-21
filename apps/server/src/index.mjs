@@ -77,6 +77,59 @@ const state = {
       createdAt: now()
     },
     {
+      id: "agt_codex_cli",
+      name: "Codex CLI",
+      description: "Runs Codex CLI non-interactively through a reviewed local adapter config.",
+      ownerUserId: "usr_local",
+      location: { type: "local_device", deviceId: "dev_local_001" },
+      adapter: {
+        type: "cli",
+        command: "codex",
+        args: codexCliArgs(),
+        workingDirectoryPolicy: "bridge_default",
+        environmentPolicy: "inherit_safe",
+        timeoutSeconds: 120,
+        cancellation: "supported",
+        outputFormat: "codex_jsonl",
+        sandbox: null
+      },
+      lifecycle: {
+        state: "enabled",
+        installState: "installed",
+        version: "0.0.0",
+        managedBy: "bridge"
+      },
+      economics: {
+        model: "unknown",
+        pricingDimensions: [],
+        currency: "USD",
+        costOwner: "usr_local",
+        budgetPoolId: null,
+        unknownCostPolicy: "warn"
+      },
+      capabilities: [
+        {
+          name: "codex_repo_task",
+          description: "Runs Codex CLI repository tasks using Codex CLI native permissions.",
+          riskLevel: "high",
+          riskTags: codexRiskTags()
+        }
+      ],
+      status: "unavailable",
+      health: {
+        status: "unknown",
+        checkedAt: null,
+        message: "Codex CLI setup has not been checked yet.",
+        nextAction: "Run a health check before the first Codex task."
+      },
+      registrationNotes: codexRegistrationNotes(),
+      discovery: {
+        source: "default_registered",
+        confidence: "high"
+      },
+      createdAt: now()
+    },
+    {
       id: "agt_platform_troubleshooter",
       name: "Invocation Troubleshooter",
       description: "Platform-owned agent that explains failed invocations and suggested fixes.",
@@ -168,6 +221,7 @@ const state = {
     }
   ],
   invocations: [],
+  compareRuns: [],
   events: [],
   traces: [],
   spans: [],
@@ -190,7 +244,14 @@ const state = {
   approvalRequests: [],
   policyDecisionRecords: [],
   troubleshootingReports: [],
-  agentUsageSummaries: []
+  agentUsageSummaries: [],
+  codexSessions: [],
+  codexWorkspaces: [],
+  codexEvidenceRecords: [],
+  codexChangeReviews: [],
+  codexHookEvents: [],
+  codexApprovalBrokerRequests: [],
+  codexImportedEvidenceRecords: []
 };
 
 let idCounter = 1;
@@ -226,6 +287,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (req.method === "GET" && url.pathname === "/api/state") {
+      expireCodexApprovalBrokerRequests();
       sendJson(res, 200, publicState());
       return;
     }
@@ -273,6 +335,81 @@ const server = http.createServer(async (req, res) => {
         return;
       }
       sendJson(res, 201, { agent });
+      return;
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/codex/hooks") {
+      const body = await readJson(req);
+      let result;
+      try {
+        result = recordCodexHookEvent(body);
+      } catch (error) {
+        sendJson(res, 400, {
+          error: "invalid_codex_hook_event",
+          message: error instanceof Error ? error.message : String(error)
+        });
+        return;
+      }
+      sendJson(res, 202, result);
+      return;
+    }
+
+    const codexApprovalReadMatch = url.pathname.match(/^\/api\/codex\/approval-broker\/([^/]+)$/);
+    if (req.method === "GET" && codexApprovalReadMatch) {
+      expireCodexApprovalBrokerRequests();
+      const requestId = decodeURIComponent(codexApprovalReadMatch[1]);
+      const request = state.codexApprovalBrokerRequests.find((item) => item.id === requestId);
+      if (!request) {
+        sendJson(res, 404, { error: "codex_approval_request_not_found" });
+        return;
+      }
+      sendJson(res, 200, { approvalRequest: request });
+      return;
+    }
+
+    const codexApprovalMatch = url.pathname.match(/^\/api\/codex\/approval-broker\/([^/]+)\/(approve|deny)$/);
+    if (req.method === "POST" && codexApprovalMatch) {
+      expireCodexApprovalBrokerRequests();
+      const requestId = decodeURIComponent(codexApprovalMatch[1]);
+      const request = state.codexApprovalBrokerRequests.find((item) => item.id === requestId);
+      if (!request) {
+        sendJson(res, 404, { error: "codex_approval_request_not_found" });
+        return;
+      }
+      const updated = resolveCodexApprovalBrokerRequest(request, codexApprovalMatch[2]);
+      sendJson(res, 200, { approvalRequest: updated });
+      return;
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/codex/imported-evidence") {
+      const body = await readJson(req);
+      let record;
+      try {
+        record = createCodexImportedEvidenceRecord(body);
+      } catch (error) {
+        sendJson(res, 400, {
+          error: "invalid_codex_imported_evidence",
+          message: error instanceof Error ? error.message : String(error)
+        });
+        return;
+      }
+      sendJson(res, 201, { importedEvidence: record });
+      return;
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/codex/change-reviews") {
+      const body = await readJson(req);
+      let review;
+      try {
+        review = createCodexChangeReview(body);
+      } catch (error) {
+        sendJson(res, 400, {
+          error: "invalid_codex_change_review",
+          message: error instanceof Error ? error.message : String(error)
+        });
+        return;
+      }
+      sendJson(res, 201, { changeReview: review });
       return;
     }
 
@@ -681,6 +818,36 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    if (req.method === "POST" && url.pathname === "/api/compare-runs") {
+      const body = await readJson(req);
+      const task = String(body.task ?? "").trim();
+      const agentIds = normalizeStringArray(body.agentIds);
+      if (!task) {
+        sendJson(res, 400, { error: "task_required" });
+        return;
+      }
+      if (agentIds.length < 2) {
+        sendJson(res, 400, { error: "compare_agents_required" });
+        return;
+      }
+      const agents = agentIds.map((id) => findAgent(id));
+      if (agents.some((agent) => !agent)) {
+        sendJson(res, 404, { error: "agent_not_found" });
+        return;
+      }
+      const blocked = agents.find((agent) => agent.status === "disabled" || agent.health?.status === "unhealthy");
+      if (blocked) {
+        sendJson(res, 409, { error: "agent_not_ready", agentId: blocked.id });
+        return;
+      }
+      const compareRun = createCompareRun(task, agents, body.options ?? {});
+      sendJson(res, 201, {
+        compareRun,
+        invocations: compareRun.childInvocationIds.map((id) => findInvocation(id)).filter(Boolean)
+      });
+      return;
+    }
+
     const cancelMatch = url.pathname.match(/^\/api\/invocations\/([^/]+)\/cancel$/);
     if (req.method === "POST" && cancelMatch) {
       const invocation = findInvocation(cancelMatch[1]);
@@ -787,7 +954,7 @@ function createCliAgent(body) {
       timeoutSeconds: Number(body.timeoutSeconds ?? (codexCommand ? 120 : 30)),
       cancellation: "supported",
       outputFormat: normalizeCliOutputFormat(body.outputFormat ?? body.adapter?.outputFormat, command),
-      sandbox: body.sandbox ?? body.adapter?.sandbox ?? (codexCommand ? "read-only" : null)
+      sandbox: body.sandbox ?? body.adapter?.sandbox ?? null
     },
     capabilities: [
       {
@@ -1239,7 +1406,7 @@ function normalizeDiscoveryCandidate(candidate, index) {
         timeoutSeconds: Number(candidate.adapter?.timeoutSeconds ?? (codexCommand ? 120 : 30)),
         cancellation: candidate.adapter?.cancellation ?? "supported",
         outputFormat: normalizeCliOutputFormat(candidate.adapter?.outputFormat, command),
-        sandbox: candidate.adapter?.sandbox ?? (codexCommand ? "read-only" : null)
+        sandbox: candidate.adapter?.sandbox ?? null
       };
   return {
     id: String(candidate.id ?? `cand_${index + 1}`),
@@ -1296,7 +1463,9 @@ function registerDiscoveredCandidate(discoveryRun, candidate) {
     source: candidate.source,
     confidence: candidate.confidence
   };
-  disableAgent(agent);
+  if (!isCodexCliCommand(agent.adapter?.command)) {
+    disableAgent(agent);
+  }
   candidate.registration.status = "registered";
   candidate.registration.registeredAgentId = agent.id;
   discoveryRun.updatedAt = now();
@@ -1304,7 +1473,9 @@ function registerDiscoveredCandidate(discoveryRun, candidate) {
     invocationId: null,
     type: "lifecycle_completed",
     level: "info",
-    message: `${candidate.name} was registered from discovery and left disabled for review.`,
+    message: isCodexCliCommand(agent.adapter?.command)
+      ? `${candidate.name} was registered from discovery and is available through Codex CLI native controls.`
+      : `${candidate.name} was registered from discovery and left disabled for review.`,
     data: { operationId: discoveryRun.id, operation: "discover", agentId: agent.id, candidateId: candidate.id }
   });
   return agent;
@@ -1373,7 +1544,7 @@ function buildIntegrationArtifactPayload(body) {
     workingDirectory: String(body.workingDirectory ?? "").trim(),
     environmentNeeds: String(body.environmentNeeds ?? "").trim(),
       outputFormat: normalizeCliOutputFormat(body.outputFormat ?? body.adapter?.outputFormat, command),
-      sandbox: body.sandbox ?? body.adapter?.sandbox ?? (isCodexCliCommand(command) ? "read-only" : null),
+      sandbox: body.sandbox ?? body.adapter?.sandbox ?? null,
       streaming: Boolean(body.streaming ?? false),
       cancellation: normalizeCancellation(body.cancellation),
       args
@@ -1645,7 +1816,9 @@ function registerIntegrationArtifact(artifact) {
     cancellation: artifact.payload?.cancellationNotes ?? cancellationTextForAdapter(adapter)
   };
   agent.integrationArtifactId = artifact.id;
-  disableAgent(agent);
+  if (!isCodexCliCommand(agent.adapter?.command)) {
+    disableAgent(agent);
+  }
   artifact.reviewState = "enabled";
   artifact.enabledAgentId = agent.id;
   artifact.updatedAt = now();
@@ -1653,8 +1826,10 @@ function registerIntegrationArtifact(artifact) {
     invocationId: null,
     type: "integration_enabled",
     level: "info",
-    message: `${agent.name} registered from tested artifact and left disabled.`,
-    data: { artifactId: artifact.id, agentId: agent.id, disabled: true }
+    message: isCodexCliCommand(agent.adapter?.command)
+      ? `${agent.name} registered from tested artifact and is available through Codex CLI native controls.`
+      : `${agent.name} registered from tested artifact and left disabled.`,
+    data: { artifactId: artifact.id, agentId: agent.id, disabled: isAgentDisabled(agent) }
   });
   return agent;
 }
@@ -1685,7 +1860,7 @@ function adapterFromArtifact(artifact) {
     timeoutSeconds: Number(adapter?.timeoutSeconds ?? 30),
     cancellation: normalizeCancellation(adapter?.cancellation),
     outputFormat: normalizeCliOutputFormat(adapter?.outputFormat, adapter?.command ?? artifact.payload?.structuredHints?.command),
-    sandbox: adapter?.sandbox ?? (isCodexCliCommand(adapter?.command ?? artifact.payload?.structuredHints?.command) ? "read-only" : null)
+    sandbox: adapter?.sandbox ?? null
   };
 }
 
@@ -1876,7 +2051,7 @@ function buildAdapterConfig(targetType, options) {
       timeoutSeconds: Number(options.timeoutSeconds ?? 120),
       cancellation: options.cancellation,
       outputFormat: "codex_jsonl",
-      sandbox: "read-only"
+      sandbox: options.sandbox ?? null
     };
   }
   return {
@@ -1901,7 +2076,7 @@ function adapterGuidance(targetType) {
 
 function riskNotesForIntegration(targetType, body = {}) {
   if (targetType === "cli" && isCodexCliCommand(body.command ?? body.adapter?.command)) {
-    return "Codex CLI can inspect repository context and may propose code changes. It must run through codex exec, read-only sandbox by default, JSONL evidence, local approval, and explicit enablement.";
+    return "Codex CLI can inspect repository context and may propose code changes. MyAgentTool records JSONL evidence and defers execution permissions to Codex CLI native controls.";
   }
   return targetType === "http"
     ? "HTTP integrations can send task data to the configured endpoint. Keep the endpoint local or trusted before enabling."
@@ -1947,7 +2122,11 @@ function isCodexCliCommand(command) {
 }
 
 function codexCliArgs() {
-  return ["exec", "--json", "--sandbox", "read-only", "--ephemeral", "{{task}}"];
+  return ["exec", "--json", "{{task}}"];
+}
+
+function codexCliResumeArgs() {
+  return ["exec", "resume", "--last", "--json", "{{task}}"];
 }
 
 function codexRiskTags() {
@@ -1962,7 +2141,7 @@ function normalizeCliOutputFormat(value, command) {
 
 function codexRegistrationNotes() {
   return {
-    risk: "Runs Codex CLI in non-interactive mode. Review repository access, sandbox, model output, and proposed file changes before invoking.",
+    risk: "Runs Codex CLI in non-interactive mode. Repository access, sandbox, approvals, and file-change permissions are governed by Codex CLI native controls.",
     data: "Task input, Codex JSONL events, command output, trace, and result summary are recorded by the local demo server.",
     cost: "Codex cost is external or unknown to the demo server and remains visible for review.",
     cancellation: "The Desktop Bridge attempts to terminate the Codex process tree when cancellation is requested."
@@ -2015,9 +2194,14 @@ function createInvocation(task, agent = defaultAgent(), options = {}) {
   const trace = createTrace(id, agent);
   const policy = evaluateInvocationPolicy(agent, options);
   const directRun = runsWithoutBridge(agent);
+  const codexSessionMode = normalizeCodexSessionMode(options.codexSessionMode, agent);
+  const codexWorkspacePolicy = normalizeCodexWorkspacePolicy(options.codexWorkspacePolicy, agent);
+  const managedCodexWorkspace = createManagedCodexWorkspace({ invocationId: id, agent, workspacePolicy: codexWorkspacePolicy });
+  const managedCodexSession = createManagedCodexSession({ invocationId: id, agent, codexSessionMode, workspace: managedCodexWorkspace });
   const invocation = {
     id,
     ideaSessionId: null,
+    compareRunId: null,
     agentId: agent.id,
     requestedBy: "usr_local",
     status: policy.decision === "requires_local_approval" ? "waiting_for_local_approval" : directRun ? "running" : "queued",
@@ -2043,7 +2227,17 @@ function createInvocation(task, agent = defaultAgent(), options = {}) {
     options: {
       timeoutSeconds: Number(options.timeoutSeconds ?? 30),
       requireLocalApproval: Boolean(options.requireLocalApproval ?? policy.decision === "requires_local_approval"),
-      metadata: { demo: true, ...(options.metadata && typeof options.metadata === "object" && !Array.isArray(options.metadata) ? options.metadata : {}) }
+      codexSessionMode,
+      codexWorkspacePolicy,
+      metadata: {
+        demo: true,
+        ...(managedCodexSession ? {
+          managedCodexSessionId: managedCodexSession.id,
+          managedCodexWorkspaceId: managedCodexWorkspace?.id ?? null,
+          managedLaunch: true
+        } : {}),
+        ...(options.metadata && typeof options.metadata === "object" && !Array.isArray(options.metadata) ? options.metadata : {})
+      }
     },
     result: null,
     policyDecisionId: null,
@@ -2054,6 +2248,15 @@ function createInvocation(task, agent = defaultAgent(), options = {}) {
     updatedAt: createdAt
   };
   state.invocations.unshift(invocation);
+  if (managedCodexSession) {
+    appendEvent({
+      invocationId: invocation.id,
+      type: "codex_session_registered",
+      level: "info",
+      message: "Managed Codex session registered for a MyAgentTool-launched invocation.",
+      data: { codexSessionId: managedCodexSession.id, workspaceId: managedCodexWorkspace?.id ?? null, sessionMode: codexSessionMode, workspacePolicy: codexWorkspacePolicy }
+    });
+  }
   const policyRecord = createPolicyDecisionRecord(invocation, agent, policy);
   invocation.policyDecisionId = policyRecord.id;
   appendEvent({
@@ -2097,15 +2300,480 @@ function createInvocation(task, agent = defaultAgent(), options = {}) {
   return invocation;
 }
 
+function createCompareRun(task, agents, options = {}) {
+  const createdAt = now();
+  const compareRun = {
+    id: nextId("cmp_demo"),
+    task,
+    requestedBy: "usr_local",
+    status: "running",
+    childInvocationIds: [],
+    preferredInvocationId: null,
+    summary: "Compare run started.",
+    createdAt,
+    updatedAt: createdAt
+  };
+  state.compareRuns.unshift(compareRun);
+  for (const agent of agents) {
+    const invocation = createInvocation(task, agent, {
+      ...options,
+      metadata: {
+        ...(options.metadata && typeof options.metadata === "object" && !Array.isArray(options.metadata) ? options.metadata : {}),
+        compareRunId: compareRun.id
+      }
+    });
+    invocation.compareRunId = compareRun.id;
+    compareRun.childInvocationIds.push(invocation.id);
+    startInvocationIfAllowed(invocation, agent);
+  }
+  updateCompareRun(compareRun);
+  return compareRun;
+}
+
+function normalizeCodexSessionMode(value, agent) {
+  if (!isCodexCliCommand(agent?.adapter?.command)) {
+    return "not_applicable";
+  }
+  return value === "continue_last" ? "continue_last" : "new";
+}
+
+function normalizeCodexWorkspacePolicy(value, agent) {
+  if (!isCodexCliCommand(agent?.adapter?.command)) {
+    return "not_applicable";
+  }
+  return ["current_repo", "new_worktree", "existing_worktree"].includes(value) ? value : "current_repo";
+}
+
+function createManagedCodexWorkspace({ invocationId, agent, workspacePolicy }) {
+  if (!isCodexCliCommand(agent?.adapter?.command)) {
+    return null;
+  }
+  const createdAt = now();
+  const workspace = {
+    id: nextId("cdx_ws"),
+    invocationId,
+    policy: workspacePolicy,
+    repoPath: agent.adapter?.workingDirectoryPolicy === "bridge_default" ? "bridge_default" : agent.adapter?.workingDirectory ?? null,
+    worktreePath: workspacePolicy === "current_repo" ? null : "pending_explicit_worktree",
+    baseBranch: null,
+    branchName: null,
+    dirtyState: "unknown",
+    lastCommit: null,
+    status: workspacePolicy === "new_worktree" ? "pending_explicit_creation" : "registered",
+    sessionIds: [],
+    createdAt,
+    lastSeenAt: createdAt
+  };
+  state.codexWorkspaces.unshift(workspace);
+  return workspace;
+}
+
+function createManagedCodexSession({ invocationId, agent, codexSessionMode, workspace }) {
+  if (!isCodexCliCommand(agent?.adapter?.command)) {
+    return null;
+  }
+  const createdAt = now();
+  const session = {
+    id: nextId("cdx_sess"),
+    codexSessionId: null,
+    codexThreadId: null,
+    invocationId,
+    userId: "usr_local",
+    deviceId: agent.location?.deviceId ?? null,
+    repoPath: agent.adapter?.workingDirectoryPolicy === "bridge_default" ? "bridge_default" : null,
+    workspaceId: workspace?.id ?? null,
+    agentId: agent.id,
+    sessionMode: codexSessionMode,
+    startedAt: createdAt,
+    lastSeenAt: createdAt,
+    status: "registered",
+    policyProfile: "codex_native_controls",
+    retentionProfile: "local_demo_retention",
+    evidenceIds: []
+  };
+  state.codexSessions.unshift(session);
+  if (workspace) {
+    workspace.sessionIds = uniqueStrings([...workspace.sessionIds, session.id]);
+  }
+  return session;
+}
+
+function codexSessionForInvocation(invocationId) {
+  return state.codexSessions.find((session) => session.invocationId === invocationId) ?? null;
+}
+
+function updateCodexSessionFromEvent(record) {
+  const session = codexSessionForInvocation(record.invocationId);
+  if (!session) {
+    return;
+  }
+  session.lastSeenAt = record.createdAt;
+  const workspace = codexWorkspaceForSession(session);
+  if (workspace) {
+    workspace.lastSeenAt = record.createdAt;
+  }
+  if (record.type === "execution_preview" && record.data) {
+    updateCodexWorkspaceFromPreview(workspace, record.data);
+  }
+  if (record.type === "agent_output" && record.data?.source === "codex_jsonl") {
+    session.status = "observing";
+    if (record.data.threadId) {
+      session.codexThreadId = record.data.threadId;
+    }
+    if (record.data.sessionId) {
+      session.codexSessionId = record.data.sessionId;
+    }
+  }
+}
+
+function codexWorkspaceForSession(session) {
+  if (!session?.workspaceId) {
+    return null;
+  }
+  return state.codexWorkspaces.find((workspace) => workspace.id === session.workspaceId) ?? null;
+}
+
+function updateCodexWorkspaceFromPreview(workspace, data) {
+  if (!workspace) {
+    return;
+  }
+  workspace.repoPath = data.workspace?.repoPath ?? data.cwd ?? workspace.repoPath;
+  workspace.worktreePath = data.workspace?.worktreePath ?? (workspace.policy === "current_repo" ? null : workspace.worktreePath);
+  workspace.baseBranch = data.workspace?.baseBranch ?? workspace.baseBranch;
+  workspace.branchName = data.workspace?.branchName ?? workspace.branchName;
+  workspace.dirtyState = data.workspace?.dirtyState ?? workspace.dirtyState;
+  workspace.lastCommit = data.workspace?.lastCommit ?? workspace.lastCommit;
+  workspace.status = data.workspace?.status ?? (workspace.policy === "new_worktree" ? "pending_explicit_creation" : "observed");
+}
+
+function createCodexEvidenceRecord(record) {
+  if (record.type !== "agent_output" || record.data?.source !== "codex_jsonl") {
+    return null;
+  }
+  const session = codexSessionForInvocation(record.invocationId);
+  const evidence = {
+    id: nextId("cdx_ev"),
+    invocationId: record.invocationId,
+    codexSessionRegistryId: session?.id ?? null,
+    sourceEventId: record.id,
+    source: "codex_jsonl",
+    eventType: record.data.eventType ?? "unknown",
+    itemType: record.data.itemType ?? null,
+    threadId: record.data.threadId ?? null,
+    sessionId: record.data.sessionId ?? null,
+    summary: record.message,
+    commandSummary: record.data.commandSummary ?? null,
+    fileChangeSummary: record.data.fileChangeSummary ?? null,
+    fileChangePath: record.data.fileChangePath ?? null,
+    fileChangeAction: record.data.fileChangeAction ?? null,
+    diffPreview: record.data.diffPreview ?? null,
+    changeRisk: record.data.changeRisk ?? null,
+    redactionState: "summary_only",
+    createdAt: record.createdAt
+  };
+  state.codexEvidenceRecords.unshift(evidence);
+  if (session) {
+    session.evidenceIds = uniqueStrings([...session.evidenceIds, evidence.id]);
+  }
+  return evidence;
+}
+
+function createCodexChangeReview(body) {
+  const evidenceId = String(body.evidenceId ?? "").trim();
+  const evidence = state.codexEvidenceRecords.find((item) => item.id === evidenceId);
+  if (!evidence) {
+    throw new Error("evidenceId must reference a Codex evidence record.");
+  }
+  if (!evidence.fileChangeSummary) {
+    throw new Error("evidenceId must reference a file-change evidence record.");
+  }
+  const decision = normalizeCodexChangeDecision(body.decision);
+  const comment = String(body.comment ?? "").trim();
+  if (decision === "feedback" && !comment) {
+    throw new Error("comment is required when sending feedback.");
+  }
+  const session = evidence.codexSessionRegistryId
+    ? state.codexSessions.find((item) => item.id === evidence.codexSessionRegistryId)
+    : codexSessionForInvocation(evidence.invocationId);
+  const createdAt = now();
+  const review = {
+    id: nextId("cdx_change_review"),
+    evidenceId: evidence.id,
+    invocationId: evidence.invocationId,
+    codexSessionRegistryId: evidence.codexSessionRegistryId ?? session?.id ?? null,
+    fileChangeSummary: evidence.fileChangeSummary,
+    fileChangePath: evidence.fileChangePath,
+    fileChangeAction: evidence.fileChangeAction,
+    diffPreview: evidence.diffPreview,
+    changeRisk: evidence.changeRisk ?? "unknown",
+    decision,
+    comment: comment.length <= 1000 ? comment : `${comment.slice(0, 997)}...`,
+    followUpPrompt: decision === "feedback" ? codexChangeFollowUpPrompt(evidence, comment) : null,
+    reviewedBy: "usr_local",
+    auditState: "recorded",
+    createdAt
+  };
+  state.codexChangeReviews.unshift(review);
+  appendEvent({
+    invocationId: evidence.invocationId,
+    type: decision === "feedback" ? "codex_change_feedback_requested" : "codex_change_reviewed",
+    level: decision === "rejected" ? "warn" : "info",
+    message: codexChangeReviewMessage(review),
+    data: {
+      codexChangeReviewId: review.id,
+      evidenceId: evidence.id,
+      decision,
+      fileChangeSummary: evidence.fileChangeSummary,
+      followUpPrompt: review.followUpPrompt
+    }
+  });
+  return review;
+}
+
+function normalizeCodexChangeDecision(value) {
+  const normalized = String(value ?? "").trim().toLowerCase();
+  return ["approved", "rejected", "feedback"].includes(normalized) ? normalized : "feedback";
+}
+
+function codexChangeReviewMessage(review) {
+  if (review.decision === "approved") {
+    return `Codex change approved: ${review.fileChangeSummary}.`;
+  }
+  if (review.decision === "rejected") {
+    return `Codex change rejected: ${review.fileChangeSummary}.`;
+  }
+  return `Codex change feedback recorded for ${review.fileChangeSummary}.`;
+}
+
+function codexChangeFollowUpPrompt(evidence, comment) {
+  const trimmed = String(comment ?? "").replace(/\s+/g, " ").trim();
+  const boundedComment = trimmed.length <= 500 ? trimmed : `${trimmed.slice(0, 497)}...`;
+  return [
+    "Follow up on reviewed Codex change.",
+    `Evidence: ${evidence.id}`,
+    `Change: ${evidence.fileChangeSummary}`,
+    `Reviewer comment: ${boundedComment}`
+  ].join("\n");
+}
+
+function closeCodexSession(invocation, status) {
+  const session = codexSessionForInvocation(invocation.id);
+  if (!session) {
+    return;
+  }
+  session.lastSeenAt = now();
+  session.status = status === "succeeded" ? "completed" : status === "cancelled" ? "cancelled" : "failed";
+}
+
+function recordCodexHookEvent(body) {
+  const invocationId = String(body.invocationId ?? "");
+  if (!invocationId) {
+    throw new Error("invocationId is required.");
+  }
+  const invocation = findInvocation(invocationId);
+  if (!invocation) {
+    throw new Error("invocation was not found.");
+  }
+  const eventName = normalizeCodexHookEventName(body.eventName);
+  const policy = evaluateCodexHookPolicy(eventName, body);
+  const session = codexSessionForInvocation(invocationId);
+  const record = {
+    id: nextId("cdx_hook"),
+    invocationId,
+    codexSessionRegistryId: session?.id ?? null,
+    eventName,
+    toolName: body.toolName ? String(body.toolName) : null,
+    policyDecision: policy.decision,
+    policyReason: policy.reason,
+    summary: String(body.summary ?? policy.summary),
+    redactionState: "summary_only",
+    createdAt: now()
+  };
+  state.codexHookEvents.unshift(record);
+  if (session) {
+    session.lastSeenAt = record.createdAt;
+  }
+  const brokerRequest = eventName === "PermissionRequest"
+    ? createCodexApprovalBrokerRequest({ invocation, session, hookEvent: record, body, policy })
+    : null;
+  appendEvent({
+    invocationId,
+    type: "codex_hook_event",
+    level: policy.decision === "blocked" ? "warn" : "info",
+    message: `${eventName}: ${policy.reason}`,
+    data: {
+      hookEventId: record.id,
+      brokerRequestId: brokerRequest?.id ?? null,
+      eventName,
+      toolName: record.toolName,
+      policyDecision: policy.decision
+    }
+  });
+  return {
+    hookEvent: record,
+    brokerRequest,
+    policyDecision: policy.decision
+  };
+}
+
+function createCodexApprovalBrokerRequest({ invocation, session, hookEvent, body, policy }) {
+  const createdAt = now();
+  const request = {
+    id: nextId("cdx_appr"),
+    invocationId: invocation.id,
+    codexSessionRegistryId: session?.id ?? null,
+    hookEventId: hookEvent.id,
+    toolName: body.toolName ? String(body.toolName) : "unknown",
+    summary: String(body.summary ?? "Codex permission request"),
+    riskLevel: "high",
+    status: policy.decision === "blocked" ? "denied" : "pending",
+    timeoutAt: new Date(Date.now() + codexApprovalTimeoutMs(body)).toISOString(),
+    decision: policy.decision === "blocked" ? "deny" : null,
+    decidedAt: policy.decision === "blocked" ? createdAt : null,
+    notificationState: policy.decision === "blocked" ? "not_required" : "queued",
+    createdAt,
+    updatedAt: createdAt
+  };
+  state.codexApprovalBrokerRequests.unshift(request);
+  appendEvent({
+    invocationId: invocation.id,
+    type: "codex_approval_requested",
+    level: request.status === "pending" ? "warn" : "info",
+    message: request.status === "pending"
+      ? `Codex approval broker is waiting on ${request.toolName}.`
+      : `Codex approval broker denied ${request.toolName}.`,
+    data: { approvalBrokerRequestId: request.id, status: request.status }
+  });
+  return request;
+}
+
+function codexApprovalTimeoutMs(body) {
+  const seconds = Number(body.timeoutSeconds);
+  if (Number.isFinite(seconds) && seconds >= 1 && seconds <= 300) {
+    return seconds * 1000;
+  }
+  return 5 * 60 * 1000;
+}
+
+function expireCodexApprovalBrokerRequests() {
+  const nowMs = Date.now();
+  for (const request of state.codexApprovalBrokerRequests) {
+    if (request.status !== "pending" || !request.timeoutAt) {
+      continue;
+    }
+    if (Date.parse(request.timeoutAt) > nowMs) {
+      continue;
+    }
+    resolveCodexApprovalBrokerRequest(request, "timeout");
+  }
+}
+
+function resolveCodexApprovalBrokerRequest(request, action) {
+  if (request.status !== "pending") {
+    return request;
+  }
+  const timedOut = action === "timeout";
+  request.status = action === "approve" ? "approved" : timedOut ? "timed_out" : "denied";
+  request.decision = action === "approve" ? "allow" : timedOut ? "timeout_deny" : "deny";
+  request.decidedAt = now();
+  request.updatedAt = request.decidedAt;
+  request.notificationState = "resolved";
+  appendEvent({
+    invocationId: request.invocationId,
+    type: action === "approve" ? "codex_approval_granted" : timedOut ? "codex_approval_timed_out" : "codex_approval_denied",
+    level: action === "approve" ? "info" : "warn",
+    message: action === "approve"
+      ? "Codex approval broker approved the request."
+      : timedOut ? "Codex approval broker timed out and denied the request." : "Codex approval broker denied the request.",
+    data: { approvalBrokerRequestId: request.id, decision: request.decision }
+  });
+  return request;
+}
+
+function createCodexImportedEvidenceRecord(body) {
+  const source = String(body.source ?? "user_selected_local_evidence").trim();
+  const summary = String(body.summary ?? "").trim();
+  if (!summary) {
+    throw new Error("summary is required.");
+  }
+  const createdAt = now();
+  const record = {
+    id: nextId("cdx_import"),
+    source,
+    userId: "usr_local",
+    repoPath: body.repoPath ? String(body.repoPath) : null,
+    marker: "imported_after_the_fact",
+    status: "imported",
+    redactionState: "preview_confirmed_summary_only",
+    summary: summary.length <= 500 ? summary : `${summary.slice(0, 497)}...`,
+    retentionProfile: "local_demo_retention",
+    linkedManagedSessionId: null,
+    createdAt,
+    updatedAt: createdAt
+  };
+  state.codexImportedEvidenceRecords.unshift(record);
+  appendEvent({
+    invocationId: null,
+    type: "codex_imported_evidence_recorded",
+    level: "info",
+    message: "Imported Codex evidence was recorded after explicit preview and confirmation.",
+    data: {
+      importedEvidenceId: record.id,
+      marker: record.marker,
+      redactionState: record.redactionState
+    }
+  });
+  return record;
+}
+
+function normalizeCodexHookEventName(value) {
+  const normalized = String(value ?? "");
+  const allowed = new Set(["SessionStart", "UserPromptSubmit", "PreToolUse", "PermissionRequest", "PostToolUse", "Stop", "PreCompact", "PostCompact"]);
+  return allowed.has(normalized) ? normalized : "Unknown";
+}
+
+function evaluateCodexHookPolicy(eventName, body) {
+  const summary = String(body.summary ?? "");
+  if (eventName === "UserPromptSubmit" && /(~\/\.codex\/auth\.json|auth\.json|api[_-]?key|secret)/i.test(summary)) {
+    return {
+      decision: "blocked",
+      reason: "Prompt needs review because it appears to reference credentials or secrets.",
+      summary: "Prompt policy check"
+    };
+  }
+  if (eventName === "PreToolUse") {
+    return {
+      decision: "review_required",
+      reason: `Tool use observed for ${body.toolName ?? "unknown tool"}.`,
+      summary: "Tool policy check"
+    };
+  }
+  if (eventName === "PermissionRequest") {
+    return {
+      decision: "review_required",
+      reason: `Permission request observed for ${body.toolName ?? "unknown tool"}.`,
+      summary: "Permission policy check"
+    };
+  }
+  return {
+    decision: "allowed",
+    reason: `${eventName} recorded.`,
+    summary: "Hook event recorded"
+  };
+}
+
 function evaluateInvocationPolicy(agent, options = {}) {
   const capabilities = Array.isArray(agent.capabilities) ? agent.capabilities : [];
   const riskLevel = highestRiskLevel(capabilities.map((capability) => capability.riskLevel));
   const riskTags = uniqueStrings(capabilities.flatMap((capability) => capability.riskTags ?? []));
-  const requiresApproval = Boolean(options.requireLocalApproval) || ["high", "critical"].includes(riskLevel);
+  const codexNativeControls = isCodexCliCommand(agent.adapter?.command);
+  const requiresApproval = !codexNativeControls && (Boolean(options.requireLocalApproval) || ["high", "critical"].includes(riskLevel));
   return {
     decision: requiresApproval ? "requires_local_approval" : "allowed",
     reason: requiresApproval
       ? `${agent.name} has ${riskLevel} risk capability tags and needs local approval before running.`
+      : codexNativeControls
+        ? `${agent.name} risk is ${riskLevel}; invocation is allowed and permissions are handled by Codex CLI native controls.`
       : `${agent.name} risk is ${riskLevel}; invocation is allowed by local policy.`,
     riskLevel,
     riskTags,
@@ -2368,6 +3036,30 @@ function completeInvocation(invocation, body) {
   });
   state.auditSummaries.push(createAuditSummary(invocation, body.summary ?? null));
   recordAgentUsage(invocation, terminalStatus);
+  closeCodexSession(invocation, terminalStatus);
+  updateCompareRunForInvocation(invocation);
+}
+
+function updateCompareRunForInvocation(invocation) {
+  if (!invocation.compareRunId) {
+    return;
+  }
+  const compareRun = state.compareRuns.find((item) => item.id === invocation.compareRunId);
+  if (compareRun) {
+    updateCompareRun(compareRun);
+  }
+}
+
+function updateCompareRun(compareRun) {
+  const children = compareRun.childInvocationIds.map((id) => findInvocation(id)).filter(Boolean);
+  const terminal = children.filter((child) => isTerminal(child.status));
+  compareRun.status = terminal.length === children.length
+    ? children.some((child) => child.status === "succeeded") ? "completed" : "failed"
+    : "running";
+  compareRun.summary = `${terminal.length}/${children.length} agent run(s) finished.`;
+  const firstSuccess = children.find((child) => child.status === "succeeded");
+  compareRun.preferredInvocationId = compareRun.preferredInvocationId ?? firstSuccess?.id ?? null;
+  compareRun.updatedAt = now();
 }
 
 function recordAgentUsage(invocation, terminalStatus) {
@@ -2783,7 +3475,7 @@ function isTerminal(status) {
 }
 
 function appendEvent(event) {
-  state.events.unshift({
+  const record = {
     id: nextId("evt_demo"),
     invocationId: event.invocationId,
     type: event.type,
@@ -2791,8 +3483,12 @@ function appendEvent(event) {
     message: event.message,
     data: event.data ?? null,
     createdAt: now()
-  });
+  };
+  state.events.unshift(record);
   state.events = state.events.slice(0, 200);
+  updateCodexSessionFromEvent(record);
+  createCodexEvidenceRecord(record);
+  return record;
 }
 
 function findInvocation(id) {
@@ -2832,6 +3528,14 @@ function normalizeEnv(env) {
 
 function normalizeStringArray(value) {
   return Array.isArray(value) ? value.map(String).map((item) => item.trim()).filter(Boolean) : [];
+}
+
+function summarizeText(value, maxLength = 160) {
+  const normalized = String(value ?? "").replace(/\s+/g, " ").trim();
+  if (!normalized) {
+    return "";
+  }
+  return normalized.length <= maxLength ? normalized : `${normalized.slice(0, Math.max(0, maxLength - 3))}...`;
 }
 
 function normalizeRiskLevel(value, fallback = "medium") {
@@ -2936,6 +3640,7 @@ function unlinkDevice() {
 }
 
 function publicState() {
+  expireCodexApprovalBrokerRequests();
   return {
     namespace,
     protocolVersion,
@@ -2943,6 +3648,7 @@ function publicState() {
     agent: defaultAgent(),
     agents: state.agents,
     invocations: state.invocations,
+    compareRuns: state.compareRuns,
     events: state.events,
     traces: state.traces,
     spans: state.spans,
@@ -2957,12 +3663,164 @@ function publicState() {
     approvalRequests: state.approvalRequests,
     policyDecisionRecords: state.policyDecisionRecords,
     troubleshootingReports: state.troubleshootingReports,
-    agentUsageSummaries: state.agentUsageSummaries
+    agentUsageSummaries: state.agentUsageSummaries,
+    codexSessions: state.codexSessions,
+    codexWorkspaces: state.codexWorkspaces,
+    codexEvidenceRecords: state.codexEvidenceRecords,
+    codexChangeReviews: state.codexChangeReviews,
+    codexHookEvents: state.codexHookEvents,
+    codexApprovalQueue: codexApprovalQueue(),
+    evidenceCenterRecords: evidenceCenterRecords(),
+    codexApprovalBrokerRequests: state.codexApprovalBrokerRequests,
+    codexImportedEvidenceRecords: state.codexImportedEvidenceRecords
   };
+}
+
+function codexApprovalQueue() {
+  return state.codexApprovalBrokerRequests.map((request) => {
+    const invocation = findInvocation(request.invocationId);
+    const session = request.codexSessionRegistryId
+      ? state.codexSessions.find((item) => item.id === request.codexSessionRegistryId)
+      : codexSessionForInvocation(request.invocationId);
+    const workspace = codexWorkspaceForSession(session);
+    return {
+      id: request.id,
+      status: request.status,
+      summary: request.summary,
+      toolName: request.toolName,
+      riskLevel: request.riskLevel,
+      timeoutAt: request.timeoutAt,
+      invocationId: request.invocationId,
+      codexSessionRegistryId: session?.id ?? null,
+      workspaceId: workspace?.id ?? null,
+      repoPath: workspace?.repoPath ?? session?.repoPath ?? null,
+      taskSummary: invocation?.input?.task ? summarizeText(invocation.input.task, 140) : null,
+      createdAt: request.createdAt,
+      updatedAt: request.updatedAt
+    };
+  });
+}
+
+function evidenceCenterRecords() {
+  const records = [];
+  for (const evidence of state.codexEvidenceRecords) {
+    records.push({
+      id: evidence.id,
+      type: evidence.fileChangeSummary ? "file_change" : evidence.commandSummary ? "command" : "jsonl_event",
+      source: "managed_codex_jsonl",
+      redactionState: evidence.redactionState,
+      invocationId: evidence.invocationId,
+      codexSessionRegistryId: evidence.codexSessionRegistryId,
+      agentId: findInvocation(evidence.invocationId)?.agentId ?? null,
+      repoPath: repoPathForEvidence(evidence.codexSessionRegistryId),
+      summary: evidence.fileChangeSummary ?? evidence.commandSummary ?? evidence.summary,
+      detail: evidence.diffPreview ?? evidence.summary,
+      marker: "managed",
+      createdAt: evidence.createdAt
+    });
+  }
+  for (const hook of state.codexHookEvents) {
+    records.push({
+      id: hook.id,
+      type: "hook_event",
+      source: "managed_codex_hook",
+      redactionState: hook.redactionState,
+      invocationId: hook.invocationId,
+      codexSessionRegistryId: hook.codexSessionRegistryId,
+      agentId: findInvocation(hook.invocationId)?.agentId ?? null,
+      repoPath: repoPathForEvidence(hook.codexSessionRegistryId),
+      summary: `${hook.eventName}: ${hook.policyDecision}`,
+      detail: hook.summary,
+      marker: "managed",
+      createdAt: hook.createdAt
+    });
+  }
+  for (const request of state.codexApprovalBrokerRequests) {
+    const session = request.codexSessionRegistryId ? state.codexSessions.find((item) => item.id === request.codexSessionRegistryId) : null;
+    records.push({
+      id: request.id,
+      type: "approval",
+      source: "managed_codex_approval_broker",
+      redactionState: "summary_only",
+      invocationId: request.invocationId,
+      codexSessionRegistryId: request.codexSessionRegistryId,
+      agentId: findInvocation(request.invocationId)?.agentId ?? null,
+      repoPath: repoPathForEvidence(session?.id),
+      summary: `${request.status}: ${request.toolName}`,
+      detail: request.summary,
+      marker: "managed",
+      createdAt: request.createdAt
+    });
+  }
+  for (const review of state.codexChangeReviews) {
+    records.push({
+      id: review.id,
+      type: "change_review",
+      source: "managed_codex_review",
+      redactionState: "summary_only",
+      invocationId: review.invocationId,
+      codexSessionRegistryId: review.codexSessionRegistryId,
+      agentId: findInvocation(review.invocationId)?.agentId ?? null,
+      repoPath: repoPathForEvidence(review.codexSessionRegistryId),
+      summary: `${review.decision}: ${review.fileChangeSummary}`,
+      detail: review.comment || review.followUpPrompt || review.fileChangeSummary,
+      marker: "managed",
+      createdAt: review.createdAt
+    });
+  }
+  for (const event of state.events.filter((item) => item.type === "codex_runtime_warning")) {
+    records.push({
+      id: event.id,
+      type: "runtime_warning",
+      source: "codex_stderr_summary",
+      redactionState: "summary_only",
+      invocationId: event.invocationId,
+      codexSessionRegistryId: codexSessionForInvocation(event.invocationId)?.id ?? null,
+      agentId: findInvocation(event.invocationId)?.agentId ?? null,
+      repoPath: repoPathForEvidence(codexSessionForInvocation(event.invocationId)?.id),
+      summary: event.message,
+      detail: event.data?.summary ?? event.message,
+      marker: "managed",
+      createdAt: event.createdAt
+    });
+  }
+  for (const imported of state.codexImportedEvidenceRecords) {
+    records.push({
+      id: imported.id,
+      type: "imported_evidence",
+      source: imported.source,
+      redactionState: imported.redactionState,
+      invocationId: null,
+      codexSessionRegistryId: imported.linkedManagedSessionId,
+      agentId: null,
+      repoPath: imported.repoPath,
+      summary: imported.summary,
+      detail: imported.summary,
+      marker: imported.marker,
+      createdAt: imported.createdAt
+    });
+  }
+  return records.sort((a, b) => Date.parse(b.createdAt ?? 0) - Date.parse(a.createdAt ?? 0));
+}
+
+function repoPathForEvidence(codexSessionRegistryId) {
+  const session = codexSessionRegistryId ? state.codexSessions.find((item) => item.id === codexSessionRegistryId) : null;
+  const workspace = codexWorkspaceForSession(session);
+  return workspace?.repoPath ?? session?.repoPath ?? null;
 }
 
 function runProtocolSelfCheck() {
   resetDemoStateForCheck();
+  const defaultCodexAgent = findAgent("agt_codex_cli");
+  assert(defaultCodexAgent?.status === "unavailable", "default Codex CLI agent should be registered enabled but unavailable while bridge is offline");
+  assert(defaultCodexAgent.lifecycle.state === "enabled", "default Codex CLI agent should use the local CLI's native authorization");
+  assert(defaultCodexAgent.adapter.outputFormat === "codex_jsonl", "default Codex CLI agent should use JSONL output");
+  assert(defaultCodexAgent.adapter.sandbox === null, "default Codex CLI agent should not impose a Web Console sandbox");
+  assert(!defaultCodexAgent.adapter.args.includes("--ephemeral"), "default Codex CLI agent should persist sessions for optional resume");
+  assert(codexCliResumeArgs().includes("resume"), "Codex CLI resume args should be available for continuation");
+  assert(!defaultCodexAgent.adapter.args.includes("read-only"), "default Codex CLI agent should defer sandboxing to Codex CLI");
+  assert(defaultCodexAgent.capabilities[0].riskLevel === "high", "default Codex CLI agent should stay high risk");
+  assert(defaultCodexAgent.registrationNotes.risk.includes("Codex CLI"), "default Codex CLI agent should expose Codex review notes");
   const cliAgent = registerAgent({
     id: "agt_self_cli",
     type: "cli",
@@ -3025,12 +3883,106 @@ function runProtocolSelfCheck() {
   assert(codexDiscovery.candidates[0].adapter.command === "codex", "user-provided Codex CLI should be discoverable when explicit");
   assert(codexDiscovery.candidates[0].riskLevel === "high", "Codex-like CLI discovery should be high risk");
   assert(codexDiscovery.candidates[0].adapter.args.includes("--json"), "Codex discovery should use JSONL output");
-  assert(codexDiscovery.candidates[0].adapter.args.includes("read-only"), "Codex discovery should default to read-only sandbox");
+  assert(!codexDiscovery.candidates[0].adapter.args.includes("read-only"), "Codex discovery should defer sandboxing to Codex CLI");
   assert(codexDiscovery.candidates[0].adapter.outputFormat === "codex_jsonl", "Codex discovery should mark JSONL output");
   assert(codexDiscovery.candidates[0].riskTags.includes("repo_context"), "Codex discovery should include repository context risk");
   const codexAgent = registerDiscoveredCandidate(codexDiscovery, codexDiscovery.candidates[0]);
-  assert(codexAgent.status === "disabled", "explicit Codex discovery registration should stay disabled");
+  assert(codexAgent.status === "available", "explicit Codex discovery registration should be available when bridge is online");
   assert(codexAgent.adapter.outputFormat === "codex_jsonl", "registered Codex candidate should preserve JSONL output config");
+  const managedCodexInvocation = createInvocation("self-check managed Codex session", codexAgent, { codexSessionMode: "continue_last" });
+  const managedCodexSession = codexSessionForInvocation(managedCodexInvocation.id);
+  assert(managedCodexInvocation.options.metadata.managedCodexSessionId === managedCodexSession?.id, "Codex invocation should link to managed session registry");
+  assert(managedCodexSession.sessionMode === "continue_last", "managed Codex registry should record session mode");
+  assert(managedCodexSession.workspaceId, "managed Codex registry should link a workspace registry record");
+  const managedCodexWorkspace = state.codexWorkspaces.find((item) => item.id === managedCodexSession.workspaceId);
+  assert(managedCodexWorkspace?.policy === "current_repo", "managed Codex workspace should default to current repo policy");
+  appendEvent({
+    invocationId: managedCodexInvocation.id,
+    type: "execution_preview",
+    level: "info",
+    message: "Execution preview: codex exec --json <task>",
+    data: {
+      workspace: {
+        repoPath: "/tmp/myagenttool",
+        branchName: "main",
+        dirtyState: "clean",
+        lastCommit: "abc1234",
+        status: "observed"
+      }
+    }
+  });
+  assert(managedCodexWorkspace.branchName === "main", "managed Codex workspace should learn branch from execution preview");
+  assert(managedCodexWorkspace.dirtyState === "clean", "managed Codex workspace should learn dirty state from execution preview");
+  appendEvent({
+    invocationId: managedCodexInvocation.id,
+    type: "agent_output",
+    level: "info",
+    message: "Codex thread started: self_check_thread.",
+    data: { source: "codex_jsonl", eventType: "thread.started", threadId: "self_check_thread" }
+  });
+  appendEvent({
+    invocationId: managedCodexInvocation.id,
+    type: "agent_output",
+    level: "info",
+    message: "modified: docs/engineering/CODEX_FIXTURE_REVIEW.md",
+    data: {
+      source: "codex_jsonl",
+      eventType: "item.completed",
+      itemType: "file_change",
+      fileChangeSummary: "modified: docs/engineering/CODEX_FIXTURE_REVIEW.md",
+      fileChangePath: "docs/engineering/CODEX_FIXTURE_REVIEW.md",
+      fileChangeAction: "modified",
+      diffPreview: "diff --git a/docs/engineering/CODEX_FIXTURE_REVIEW.md b/docs/engineering/CODEX_FIXTURE_REVIEW.md",
+      changeRisk: "medium"
+    }
+  });
+  assert(managedCodexSession.codexThreadId === "self_check_thread", "managed Codex registry should learn thread id from JSONL events");
+  assert(state.codexEvidenceRecords.some((item) => item.codexSessionRegistryId === managedCodexSession.id), "Codex JSONL events should create evidence records");
+  const selfCheckChangeEvidence = state.codexEvidenceRecords.find((item) => item.codexSessionRegistryId === managedCodexSession.id && item.fileChangeSummary);
+  assert(selfCheckChangeEvidence?.diffPreview, "Codex file-change evidence should retain a redacted diff preview");
+  const selfCheckChangeReview = createCodexChangeReview({
+    evidenceId: selfCheckChangeEvidence.id,
+    decision: "feedback",
+    comment: "Please tighten the wording before adopting this change."
+  });
+  assert(selfCheckChangeReview.followUpPrompt?.includes(selfCheckChangeEvidence.id), "Codex change feedback should preserve evidence linkage");
+  const hookRecord = recordCodexHookEvent({
+    invocationId: managedCodexInvocation.id,
+    eventName: "UserPromptSubmit",
+    summary: "Please do not paste ~/.codex/auth.json."
+  });
+  assert(hookRecord.policyDecision === "blocked", "Codex hook policy should flag credential-looking prompt content");
+  recordCodexHookEvent({
+    invocationId: managedCodexInvocation.id,
+    eventName: "PermissionRequest",
+    toolName: "Bash",
+    summary: "Self-check permission request"
+  });
+  const brokerRequest = state.codexApprovalBrokerRequests.find((item) => item.invocationId === managedCodexInvocation.id);
+  assert(brokerRequest?.status === "pending", "Codex PermissionRequest hook should create a broker request");
+  resolveCodexApprovalBrokerRequest(brokerRequest, "approve");
+  assert(brokerRequest.status === "approved", "Codex approval broker should resolve approval");
+  recordCodexHookEvent({
+    invocationId: managedCodexInvocation.id,
+    eventName: "PermissionRequest",
+    toolName: "Bash",
+    summary: "Self-check expiring permission request",
+    timeoutSeconds: 1
+  });
+  const expiringBrokerRequest = state.codexApprovalBrokerRequests.find((item) => item.summary === "Self-check expiring permission request");
+  expiringBrokerRequest.timeoutAt = new Date(Date.now() - 1).toISOString();
+  expireCodexApprovalBrokerRequests();
+  assert(expiringBrokerRequest.status === "timed_out", "Codex approval broker should deterministically time out pending requests");
+  assert(state.events.some((item) => item.type === "codex_approval_timed_out" && item.data?.approvalBrokerRequestId === expiringBrokerRequest.id), "Codex approval timeout should be audited");
+  const importedEvidence = createCodexImportedEvidenceRecord({
+    summary: "Self-check imported Codex evidence summary.",
+    source: "user_selected_local_preview"
+  });
+  assert(importedEvidence.marker === "imported_after_the_fact", "imported Codex evidence should be marked after the fact");
+  assert(!state.codexSessions.some((item) => item.id === importedEvidence.id), "imported evidence must not become a managed session");
+  const compareRun = createCompareRun("self-check compare run", [cliAgent, codexAgent], { codexWorkspacePolicy: "current_repo" });
+  assert(compareRun.childInvocationIds.length === 2, "compare run should create child invocations");
+  assert(compareRun.childInvocationIds.every((id) => findInvocation(id)?.compareRunId === compareRun.id), "compare child invocations should link to parent compare run");
 
   const draftArtifact = createIntegrationArtifact({
     targetType: "cli",
@@ -3056,7 +4008,7 @@ function runProtocolSelfCheck() {
   });
   const codexAdapterArtifact = generateIntegrationArtifacts(codexDraftArtifact).find((item) => item.artifactType === "adapter_config");
   assert(codexAdapterArtifact.payload.adapterConfig.args.includes("--json"), "Codex adapter config should request JSONL output");
-  assert(codexAdapterArtifact.payload.adapterConfig.args.includes("read-only"), "Codex adapter config should default to read-only sandbox");
+  assert(!codexAdapterArtifact.payload.adapterConfig.args.includes("read-only"), "Codex adapter config should defer sandboxing to Codex CLI");
   assert(codexAdapterArtifact.payload.adapterConfig.outputFormat === "codex_jsonl", "Codex adapter config should declare JSONL output");
   assert(codexAdapterArtifact.governance.riskTags.includes("repo_context"), "Codex adapter config should record repo context risk");
   transitionIntegrationArtifact(adapterArtifact, "approve");
@@ -3233,11 +4185,23 @@ function resetDemoStateForCheck() {
   state.device.status = "offline";
   state.device.unlinkState = "linked";
   state.device.credentialRevokedAt = null;
-  state.agents = state.agents.filter((agent) => ["agt_demo_cli", "agt_platform_troubleshooter", "agt_platform_integration_builder"].includes(agent.id));
+  state.agents = state.agents.filter((agent) => ["agt_demo_cli", "agt_codex_cli", "agt_platform_troubleshooter", "agt_platform_integration_builder"].includes(agent.id));
   const demoAgent = defaultAgent();
   if (demoAgent) {
     demoAgent.status = "unavailable";
     demoAgent.updatedAt = now();
+  }
+  const codexAgent = findAgent("agt_codex_cli");
+  if (codexAgent) {
+    codexAgent.lifecycle = { ...codexAgent.lifecycle, state: "enabled" };
+    codexAgent.status = "unavailable";
+    codexAgent.health = {
+      status: "unknown",
+      checkedAt: null,
+      message: "Codex CLI setup has not been checked yet.",
+      nextAction: "Run a health check before the first Codex task."
+    };
+    codexAgent.updatedAt = now();
   }
   state.invocations = [];
   state.events = [];
@@ -3262,6 +4226,13 @@ function resetDemoStateForCheck() {
   state.policyDecisionRecords = [];
   state.troubleshootingReports = [];
   state.agentUsageSummaries = [];
+  state.codexSessions = [];
+  state.codexWorkspaces = [];
+  state.codexEvidenceRecords = [];
+  state.codexChangeReviews = [];
+  state.codexHookEvents = [];
+  state.codexApprovalBrokerRequests = [];
+  state.codexImportedEvidenceRecords = [];
   idCounter = 1;
 }
 

@@ -6,6 +6,7 @@
   "packageManager": "pnpm@9.15.0",
   "scripts": {
     "dev": "node tools/dev/run-local-demo.mjs",
+    "dev:restart-changed": "node tools/dev/restart-changed-services.mjs",
     "test": "pnpm -r --filter \"./apps/*\" --filter \"./packages/*\" --filter \"./tools/*\" --if-present test && pnpm smoke:local",
     "lint": "pnpm -r --filter \"./apps/*\" --filter \"./packages/*\" --filter \"./tools/*\" --if-present lint",
     "typecheck": "pnpm -r --filter \"./apps/*\" --filter \"./packages/*\" --filter \"./tools/*\" --if-present typecheck",
@@ -38,6 +39,8 @@
     "deploy:run": "node tools/deploy/src/index.mjs run",
     "deploy:publish": "node tools/deploy/src/index.mjs publish",
     "repo:check": "pwsh -NoProfile -ExecutionPolicy Bypass -File tools/docs/check-repo-health.ps1",
+    "visual:qa": "node tools/dev/visual-qa.mjs",
+    "visual:qa:browser": "node tools/dev/visual-qa.mjs --require-browser",
     "smoke:local": "node tools/dev/local-smoke.mjs",
     "acceptance:m0": "node tools/dev/m0-acceptance.mjs"
   },

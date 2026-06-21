@@ -175,6 +175,9 @@ function checkLocal() {
   if (sampleProjectValues.status !== "done" || sampleProjectValues.agentTarget !== "platform") {
     failReport("Project sync command check failed", ["Project single-select field objects should compare by name"]);
   }
+  if (normalizeValue("in-progress") !== normalizeValue("in progress")) {
+    failReport("Project sync command check failed", ["Project values should normalize label slugs and option names"]);
+  }
 
   const visualResult = reviewRiskGates(["apps/web/src/App.tsx"], "## Verification\n- pnpm test\n", 0);
   if (!visualResult.warnings.some((warning) => warning.includes("visual QA"))) {
@@ -974,7 +977,7 @@ function normalizeValue(value) {
     .trim()
     .toLowerCase()
     .replace(/^m(\d).*$/, "m$1")
-    .replace(/_/g, "-")
+    .replace(/[_-]/g, " ")
     .replace(/\s+/g, " ");
 }
 

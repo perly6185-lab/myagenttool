@@ -193,10 +193,15 @@ Keep the board small enough to act on. It is better to have 20 clear issues than
 For each AI-assisted development task:
 
 1. Read [AI_CONTEXT.md](AI_CONTEXT.md).
-2. Read the linked source docs from the issue.
-3. Confirm the issue is `ready` or explain why it must stay in `backlog`.
-4. Produce a short implementation plan.
-5. Make issue-scoped changes.
-6. Run the relevant checks from [TEST_STRATEGY.md](TEST_STRATEGY.md).
-7. Apply [PR_REVIEW_POLICY.md](PR_REVIEW_POLICY.md) before requesting review.
-8. Update Project fields and follow-up risks.
+2. Confirm a tracking GitHub issue exists and is in the Project before
+   non-trivial implementation starts.
+3. Read the linked source docs from the issue.
+4. Confirm the issue is `ready` or explain why it must stay in `backlog`.
+5. Produce a short implementation plan.
+6. Make issue-scoped changes.
+7. If scope expands, update the issue or create and sync a new issue before
+   continuing.
+8. Run the relevant checks from [TEST_STRATEGY.md](TEST_STRATEGY.md).
+9. Apply [PR_REVIEW_POLICY.md](PR_REVIEW_POLICY.md) before requesting review.
+10. Run a Project sanity check or `github:sync-project` for the touched issues.
+11. Update Project fields, follow-up risks, and final handoff issue IDs.

@@ -22,6 +22,7 @@
             <p class="step-label">Task</p>
             <h2>What should your computer do?</h2>
           </div>
+          <p id="modeSummary" class="mode-summary">Run a registered local agent on this computer.</p>
           <textarea
             id="taskInput"
             aria-label="Task"
@@ -31,21 +32,51 @@
           <div class="selectors" aria-label="Run target">
             <label>
               <span>Computer</span>
-              <select id="deviceSelect" aria-label="Computer"></select>
+              <span class="select-shell">
+                <select id="deviceSelect" aria-label="Computer"></select>
+                <span id="deviceSelectValue" class="select-value" aria-hidden="true">-</span>
+              </span>
             </label>
             <label>
               <span>Agent</span>
-              <select id="agentSelect" aria-label="Agent"></select>
+              <span class="select-shell">
+                <select id="agentSelect" aria-label="Agent"></select>
+                <span id="agentSelectValue" class="select-value" aria-hidden="true">-</span>
+              </span>
             </label>
           </div>
 
           <div class="agent-shortcuts" aria-label="Agent setup">
-            <button id="addCodexButton" type="button" class="secondary">Add Codex CLI</button>
-            <div class="codex-entry" aria-label="Codex CLI entry">
-              <strong>Codex CLI</strong>
-              <span>Uses codex exec with JSONL evidence and a read-only sandbox. Registration stays disabled until you review and enable it.</span>
-            </div>
+            <button id="addCodexButton" type="button" class="secondary">Select Codex CLI</button>
+            <p class="shortcut-note">Use the local Codex CLI when you want repository work with MyAgentTool activity and evidence tracking.</p>
           </div>
+          <details class="agent-picker-details">
+            <summary>Available agents</summary>
+            <div id="agentChoiceList" class="agent-choice-list" aria-label="Available agents"></div>
+          </details>
+
+          <label id="codexSessionControl" class="session-control">
+            <span>Codex session</span>
+            <select id="codexSessionMode" aria-label="Codex session behavior">
+              <option value="new">Start new session</option>
+              <option value="continue_last">Continue last session</option>
+            </select>
+          </label>
+
+          <label id="codexWorkspaceControl" class="session-control">
+            <span>Workspace</span>
+            <select id="codexWorkspacePolicy" aria-label="Codex workspace policy">
+              <option value="current_repo">Current repo</option>
+              <option value="new_worktree">New isolated worktree</option>
+              <option value="existing_worktree">Existing worktree</option>
+            </select>
+          </label>
+
+          <details class="compare-control">
+            <summary>Compare agents</summary>
+            <p class="shortcut-note">Run the same task with multiple agents and compare their results.</p>
+            <div id="compareAgentList" class="compare-agent-list" aria-label="Compare agents"></div>
+          </details>
 
           <div class="actions">
             <button id="runButton" type="button">Run on this computer</button>
@@ -80,99 +111,11 @@
               <div><dt>Task ID</dt><dd id="invocationId">-</dd></div>
               <div><dt>Trace</dt><dd id="traceId">-</dd></div>
               <div><dt>State</dt><dd id="technicalState">-</dd></div>
+              <div><dt>Session</dt><dd id="sessionMode">-</dd></div>
+              <div><dt>Task preview</dt><dd id="taskPreview">-</dd></div>
+              <div><dt>Execution</dt><dd id="executionPreview">-</dd></div>
             </dl>
           </details>
-
-          <section class="discovery-panel" aria-label="Agent discovery">
-            <div class="section-heading compact">
-              <p class="step-label">Discovery</p>
-              <h2>Find local agents</h2>
-            </div>
-            <div class="discovery-inputs">
-              <label>
-                <span>CLI commands or paths</span>
-                <input id="discoveryPaths" type="text" value="demo-agent" aria-label="CLI commands or paths" />
-              </label>
-              <label>
-                <span>HTTP endpoints</span>
-                <input id="discoveryEndpoints" type="text" value="http://127.0.0.1:3212" aria-label="HTTP endpoints" />
-              </label>
-            </div>
-            <div class="discovery-actions">
-              <button id="discoverButton" type="button" class="secondary">Discover agents</button>
-            </div>
-            <p id="discoverySummary" class="action-note">Discovery is conservative and only checks known or user-provided sources.</p>
-            <div id="candidateList" class="candidate-list" aria-live="polite"></div>
-          </section>
-
-          <section class="integration-panel" aria-label="Integration builder">
-            <div class="section-heading compact">
-              <p class="step-label">Integration</p>
-              <h2>Connect unsupported agent</h2>
-            </div>
-            <textarea
-              id="integrationIntent"
-              aria-label="Unsupported agent intent"
-              rows="5"
-            >I have an unsupported local CLI agent. It can receive a task and return a summary.</textarea>
-            <div class="integration-fields">
-              <label>
-                <span>Adapter hint</span>
-                <select id="integrationAdapter" aria-label="Adapter hint">
-                  <option value="cli">Local command</option>
-                  <option value="http">HTTP endpoint</option>
-                </select>
-              </label>
-              <label>
-                <span>Command</span>
-                <input id="integrationCommand" type="text" value="demo-agent" aria-label="Command" />
-              </label>
-              <label>
-                <span>URL</span>
-                <input id="integrationUrl" type="text" value="http://127.0.0.1:3212" aria-label="URL" />
-              </label>
-              <label>
-                <span>Working directory</span>
-                <input id="integrationWorkingDirectory" type="text" aria-label="Working directory" />
-              </label>
-              <label>
-                <span>Environment needs</span>
-                <input id="integrationEnvironment" type="text" value="No secrets required" aria-label="Environment needs" />
-              </label>
-              <label>
-                <span>Cancellation</span>
-                <select id="integrationCancellation" aria-label="Cancellation support">
-                  <option value="unknown">Unknown</option>
-                  <option value="supported">Supported</option>
-                  <option value="unsupported">Unsupported</option>
-                </select>
-              </label>
-              <label>
-                <span>Cost owner</span>
-                <input id="integrationCostOwner" type="text" value="usr_local" aria-label="Cost owner" />
-              </label>
-              <label>
-                <span>Cost model</span>
-                <select id="integrationEconomicModel" aria-label="Cost model">
-                  <option value="unknown">Unknown</option>
-                  <option value="free">Free</option>
-                  <option value="external_billed">External billed</option>
-                  <option value="internal_chargeback">Internal chargeback</option>
-                </select>
-              </label>
-              <label class="check-row">
-                <input id="integrationStreaming" type="checkbox" />
-                <span>Streaming</span>
-              </label>
-            </div>
-            <div class="integration-actions">
-              <button id="createIntegrationButton" type="button" class="secondary">Save draft</button>
-              <button id="builderDraftButton" type="button" class="secondary">Platform draft</button>
-              <button id="generateIntegrationButton" type="button" class="secondary">Generate artifacts</button>
-            </div>
-            <p id="integrationSummary" class="action-note">Generated integrations stay disabled until reviewed, tested, and registered explicitly.</p>
-            <div id="artifactList" class="artifact-list" aria-live="polite"></div>
-          </section>
         </section>
 
         <section class="run-panel" aria-label="Task activity">
@@ -203,6 +146,13 @@
           </section>
 
           <div class="timeline" id="eventList" aria-live="polite"></div>
+          <section id="comparePanel" class="compare-panel" aria-label="Agent comparison" hidden>
+            <div class="section-heading compact">
+              <p class="step-label">Compare</p>
+              <h2>Agent results</h2>
+            </div>
+            <div id="compareList" class="compare-list" aria-live="polite"></div>
+          </section>
         </section>
 
         <aside class="context-panel" aria-label="Device, result, and audit">
@@ -236,6 +186,300 @@
               <button id="healthCheckButton" type="button" class="secondary">Check health</button>
               <button id="toggleAgentButton" type="button" class="secondary">Disable agent</button>
             </div>
+          </section>
+
+          <section id="managedCodexContext" class="context-section" hidden>
+            <div class="section-heading compact">
+              <p class="step-label">Codex session</p>
+              <h2>Current run</h2>
+            </div>
+            <dl class="facts">
+              <div><dt>Session</dt><dd id="managedSessionId">-</dd></div>
+              <div><dt>Thread</dt><dd id="managedThreadId">-</dd></div>
+              <div><dt>Repo</dt><dd id="managedRepoPath">-</dd></div>
+              <div><dt>Status</dt><dd id="managedSessionStatus">-</dd></div>
+            </dl>
+          </section>
+
+          <section id="managedSessionHistoryContext" class="context-section" hidden>
+            <div class="section-heading compact">
+              <p class="step-label">History</p>
+              <h2>Managed sessions</h2>
+            </div>
+            <div class="session-history-filters" aria-label="Managed session filters">
+              <button type="button" data-session-filter="all">All</button>
+              <button type="button" data-session-filter="running">Running</button>
+              <button type="button" data-session-filter="completed">Completed</button>
+              <button type="button" data-session-filter="failed">Failed</button>
+              <button type="button" data-session-filter="needs_approval">Needs approval</button>
+              <button type="button" data-session-filter="imported">Imported</button>
+            </div>
+            <div id="managedSessionHistoryList" class="session-history-list" aria-live="polite"></div>
+            <article id="managedSessionDetail" class="session-detail" aria-label="Managed session detail">
+              <h3 id="managedSessionDetailTitle">Session detail</h3>
+              <p id="managedSessionDetailSummary">Select a session to inspect its evidence and state.</p>
+              <dl class="facts">
+                <div><dt>Agent</dt><dd id="managedSessionDetailAgent">-</dd></div>
+                <div><dt>Mode</dt><dd id="managedSessionDetailMode">-</dd></div>
+                <div><dt>Repo</dt><dd id="managedSessionDetailRepo">-</dd></div>
+                <div><dt>Worktree</dt><dd id="managedSessionDetailWorktree">-</dd></div>
+                <div><dt>Branch</dt><dd id="managedSessionDetailBranch">-</dd></div>
+                <div><dt>Dirty</dt><dd id="managedSessionDetailDirty">-</dd></div>
+                <div><dt>Commit</dt><dd id="managedSessionDetailCommit">-</dd></div>
+                <div><dt>Evidence</dt><dd id="managedSessionDetailEvidence">-</dd></div>
+                <div><dt>Approvals</dt><dd id="managedSessionDetailApprovals">-</dd></div>
+                <div><dt>Continue</dt><dd id="managedSessionDetailContinue">-</dd></div>
+              </dl>
+              <section id="managedChangeReviewPanel" class="change-review-panel" aria-label="Managed Codex change review">
+                <div class="section-heading compact">
+                  <p class="step-label">Changes</p>
+                  <h3>Review diff</h3>
+                </div>
+                <div id="managedChangeList" class="change-list" aria-live="polite"></div>
+                <pre id="managedChangeDiff" class="diff-preview">Select a file change to inspect its diff.</pre>
+                <textarea
+                  id="managedChangeReviewComment"
+                  rows="3"
+                  placeholder="Add a reviewer note or follow-up instruction."
+                ></textarea>
+                <div class="change-review-actions" aria-label="Change review actions">
+                  <button id="approveChangeButton" type="button" class="secondary">Approve change</button>
+                  <button id="rejectChangeButton" type="button" class="secondary">Reject change</button>
+                  <button id="feedbackChangeButton" type="button" class="secondary">Send feedback</button>
+                </div>
+                <p id="managedChangeReviewStatus" class="action-note">Review decisions are recorded in the audit timeline.</p>
+              </section>
+            </article>
+          </section>
+
+          <section id="managedPolicyContext" class="context-section" hidden>
+            <div class="section-heading compact">
+              <p class="step-label">Policy</p>
+              <h2>Effective controls</h2>
+            </div>
+            <dl class="facts">
+              <div><dt>Sandbox</dt><dd id="managedPolicySandbox">-</dd></div>
+              <div><dt>Approval</dt><dd id="managedPolicyApproval">-</dd></div>
+              <div><dt>Network</dt><dd id="managedPolicyNetwork">-</dd></div>
+              <div><dt>Hooks</dt><dd id="managedPolicyHooks">-</dd></div>
+            </dl>
+          </section>
+
+          <section id="managedEvidenceContext" class="context-section" hidden>
+            <div class="section-heading compact">
+              <p class="step-label">Evidence</p>
+              <h2>Recorded signals</h2>
+            </div>
+            <dl class="facts">
+              <div><dt>JSONL</dt><dd id="managedEvidenceJsonl">-</dd></div>
+              <div><dt>Hooks</dt><dd id="managedEvidenceHooks">-</dd></div>
+              <div><dt>Files</dt><dd id="managedEvidenceFiles">-</dd></div>
+              <div><dt>Approval</dt><dd id="managedEvidenceApproval">-</dd></div>
+            </dl>
+          </section>
+
+          <section id="evidenceCenterContext" class="context-section" hidden>
+            <div class="section-heading compact">
+              <p class="step-label">Evidence</p>
+              <h2>Evidence center</h2>
+            </div>
+            <div class="evidence-filters" aria-label="Evidence filters">
+              <label>
+                Type
+                <select id="evidenceTypeFilter">
+                  <option value="all">All types</option>
+                  <option value="jsonl_event">JSONL</option>
+                  <option value="hook_event">Hooks</option>
+                  <option value="approval">Approvals</option>
+                  <option value="file_change">File changes</option>
+                  <option value="change_review">Change reviews</option>
+                  <option value="runtime_warning">Warnings</option>
+                  <option value="imported_evidence">Imported</option>
+                </select>
+              </label>
+              <label>
+                Source
+                <select id="evidenceSourceFilter">
+                  <option value="all">All sources</option>
+                  <option value="managed">Managed only</option>
+                  <option value="imported_after_the_fact">Imported only</option>
+                </select>
+              </label>
+              <label>
+                Redaction
+                <select id="evidenceRedactionFilter">
+                  <option value="all">All redaction states</option>
+                </select>
+              </label>
+              <label>
+                Agent
+                <select id="evidenceAgentFilter">
+                  <option value="all">All agents</option>
+                </select>
+              </label>
+              <label>
+                Session
+                <select id="evidenceSessionFilter">
+                  <option value="all">All sessions</option>
+                </select>
+              </label>
+              <label>
+                Invocation
+                <select id="evidenceInvocationFilter">
+                  <option value="all">All invocations</option>
+                </select>
+              </label>
+              <label class="wide-filter">
+                Repo / workspace
+                <select id="evidenceRepoFilter">
+                  <option value="all">All repos</option>
+                </select>
+              </label>
+            </div>
+            <div id="evidenceCenterList" class="evidence-center-list" aria-live="polite"></div>
+            <article class="evidence-detail" aria-label="Evidence detail">
+              <h3 id="evidenceDetailTitle">Evidence detail</h3>
+              <dl class="facts">
+                <div><dt>Type</dt><dd id="evidenceDetailType">-</dd></div>
+                <div><dt>Source</dt><dd id="evidenceDetailSource">-</dd></div>
+                <div><dt>Redaction</dt><dd id="evidenceDetailRedaction">-</dd></div>
+                <div><dt>Marker</dt><dd id="evidenceDetailMarker">-</dd></div>
+              </dl>
+              <pre id="evidenceDetailBody" class="diff-preview">Select an evidence record to inspect the summary.</pre>
+              <button id="exportEvidenceSummaryButton" type="button" class="secondary">Export summary</button>
+              <textarea id="evidenceExportSummary" class="compact-textarea" rows="4" readonly></textarea>
+            </article>
+          </section>
+
+          <section id="managedApprovalContext" class="context-section" hidden>
+            <div class="section-heading compact">
+              <p class="step-label">Approval</p>
+              <h2>Needs attention</h2>
+            </div>
+            <p id="approvalAttentionSummary" class="result-summary">No approval request needs attention.</p>
+            <div id="approvalQueueList" class="approval-queue-list" aria-label="Approval queue"></div>
+            <p id="managedApprovalSummary" class="result-summary">No Codex approval request is pending.</p>
+            <div class="agent-actions" aria-label="Codex approval broker actions">
+              <button id="managedApproveButton" type="button" class="secondary">Approve</button>
+              <button id="managedDenyButton" type="button" class="secondary">Deny</button>
+            </div>
+          </section>
+
+          <section id="importSessionContext" class="context-section" hidden>
+            <div class="section-heading compact">
+              <p class="step-label">Import</p>
+              <h2>After-the-fact evidence</h2>
+            </div>
+            <textarea
+              id="importEvidenceSummary"
+              class="compact-textarea"
+              aria-label="Imported evidence summary"
+              rows="4"
+            >Previewed local Codex evidence summary. No private auth files were read.</textarea>
+            <button id="importEvidenceButton" type="button" class="secondary">Record import</button>
+            <dl class="facts">
+              <div><dt>Source</dt><dd id="importSource">User-selected local evidence only</dd></div>
+              <div><dt>Redaction</dt><dd id="importRedaction">Preview required before retention</dd></div>
+              <div><dt>Marker</dt><dd id="importMarker">imported_after_the_fact</dd></div>
+              <div><dt>Boundary</dt><dd id="importBoundary">Not a managed compliance session</dd></div>
+            </dl>
+          </section>
+
+          <section id="connectAgentPanel" class="context-section connect-agent-panel" aria-label="Connect agent" hidden>
+            <div class="section-heading compact">
+              <p class="step-label">Connect</p>
+              <h2>Agent setup</h2>
+            </div>
+            <section class="discovery-panel" aria-label="Agent discovery">
+              <div class="section-heading compact">
+                <p class="step-label">Discovery</p>
+                <h2>Find local agents</h2>
+              </div>
+              <div class="discovery-inputs">
+                <label>
+                  <span>CLI commands or paths</span>
+                  <input id="discoveryPaths" type="text" value="demo-agent" aria-label="CLI commands or paths" />
+                </label>
+                <label>
+                  <span>HTTP endpoints</span>
+                  <input id="discoveryEndpoints" type="text" value="http://127.0.0.1:3212" aria-label="HTTP endpoints" />
+                </label>
+              </div>
+              <div class="discovery-actions">
+                <button id="discoverButton" type="button" class="secondary">Discover agents</button>
+              </div>
+              <p id="discoverySummary" class="action-note">Discovery is conservative and only checks known or user-provided sources.</p>
+              <div id="candidateList" class="candidate-list" aria-live="polite"></div>
+            </section>
+
+            <section class="integration-panel" aria-label="Integration builder">
+              <div class="section-heading compact">
+                <p class="step-label">Integration</p>
+                <h2>Connect unsupported agent</h2>
+              </div>
+              <textarea
+                id="integrationIntent"
+                aria-label="Unsupported agent intent"
+                rows="5"
+              >I have an unsupported local CLI agent. It can receive a task and return a summary.</textarea>
+              <div class="integration-fields">
+                <label>
+                  <span>Adapter hint</span>
+                  <select id="integrationAdapter" aria-label="Adapter hint">
+                    <option value="cli">Local command</option>
+                    <option value="http">HTTP endpoint</option>
+                  </select>
+                </label>
+                <label>
+                  <span>Command</span>
+                  <input id="integrationCommand" type="text" value="demo-agent" aria-label="Command" />
+                </label>
+                <label>
+                  <span>URL</span>
+                  <input id="integrationUrl" type="text" value="http://127.0.0.1:3212" aria-label="URL" />
+                </label>
+                <label>
+                  <span>Working directory</span>
+                  <input id="integrationWorkingDirectory" type="text" aria-label="Working directory" />
+                </label>
+                <label>
+                  <span>Environment needs</span>
+                  <input id="integrationEnvironment" type="text" value="No secrets required" aria-label="Environment needs" />
+                </label>
+                <label>
+                  <span>Cancellation</span>
+                  <select id="integrationCancellation" aria-label="Cancellation support">
+                    <option value="unknown">Unknown</option>
+                    <option value="supported">Supported</option>
+                    <option value="unsupported">Unsupported</option>
+                  </select>
+                </label>
+                <label>
+                  <span>Cost owner</span>
+                  <input id="integrationCostOwner" type="text" value="usr_local" aria-label="Cost owner" />
+                </label>
+                <label>
+                  <span>Cost model</span>
+                  <select id="integrationEconomicModel" aria-label="Cost model">
+                    <option value="unknown">Unknown</option>
+                    <option value="free">Free</option>
+                    <option value="external_billed">External billed</option>
+                    <option value="internal_chargeback">Internal chargeback</option>
+                  </select>
+                </label>
+                <label class="check-row">
+                  <input id="integrationStreaming" type="checkbox" />
+                  <span>Streaming</span>
+                </label>
+              </div>
+              <div class="integration-actions">
+                <button id="createIntegrationButton" type="button" class="secondary">Save draft</button>
+                <button id="builderDraftButton" type="button" class="secondary">Platform draft</button>
+                <button id="generateIntegrationButton" type="button" class="secondary">Generate artifacts</button>
+              </div>
+              <p id="integrationSummary" class="action-note">Generated integrations stay disabled until reviewed, tested, and registered explicitly.</p>
+              <div id="artifactList" class="artifact-list" aria-live="polite"></div>
+            </section>
           </section>
 
           <section class="context-section result-section">
@@ -279,6 +523,20 @@
               <div><dt>Retention</dt><dd id="retentionSummary">-</dd></div>
               <div><dt>Builder</dt><dd id="builderSummary">-</dd></div>
             </dl>
+          </section>
+
+          <section class="context-section management-section">
+            <div class="section-heading compact">
+              <p class="step-label">Manage</p>
+              <h2>Advanced tools</h2>
+            </div>
+            <nav class="mode-tabs" aria-label="Advanced workspace tools">
+              <button type="button" data-workspace-mode="run_task">Overview</button>
+              <button type="button" data-workspace-mode="managed_codex">Codex supervision</button>
+              <button type="button" data-workspace-mode="evidence_center">Evidence center</button>
+              <button type="button" data-workspace-mode="import_session">Import evidence</button>
+              <button type="button" data-workspace-mode="connect_agent">Connect agent</button>
+            </nav>
           </section>
         </aside>
       </section>

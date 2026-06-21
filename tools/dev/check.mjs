@@ -3,7 +3,7 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const repoRoot = resolve(fileURLToPath(new URL("../..", import.meta.url)));
-const required = ["run-local-demo.mjs", "local-smoke.mjs", "m0-acceptance.mjs"];
+const required = ["run-local-demo.mjs", "restart-changed-services.mjs", "local-smoke.mjs", "m0-acceptance.mjs", "visual-qa.mjs"];
 const missing = required.filter((path) => !existsSync(new URL(path, import.meta.url)));
 
 if (missing.length > 0) {
@@ -29,7 +29,7 @@ const requiredCodexPilotMarkers = [
   "Stage 3: Probe, Registration, And Enable Flow",
   "Stage 4: Real Invocation, Cancellation, And Evidence",
   "codex exec",
-  "read-only sandbox",
+  "native to Codex CLI",
   "JSONL output",
 ];
 const missingMarkers = requiredCodexPilotMarkers.filter((marker) => !codexPilot.includes(marker));

@@ -138,6 +138,12 @@ The plan should mention:
 
 AI should work from a GitHub issue whenever possible.
 
+For non-trivial AI-assisted changes, the issue is required before
+implementation begins. One coherent work surface should have one tracking issue.
+New feature surfaces, tools, user-visible flows, validation mechanisms, or
+governance behavior need either an explicit scope update on the current issue or
+a new issue synced into the Project before work continues.
+
 Code changes should:
 
 - Follow existing repo structure and style.
@@ -205,7 +211,8 @@ Review focus:
 ### 10A. PM And Design Review
 
 For product-facing UI changes, AI should also use
-[PM_DESIGN_SKILLS.md](PM_DESIGN_SKILLS.md) and
+[PM_DESIGN_SKILLS.md](PM_DESIGN_SKILLS.md),
+[DESIGN.md](../../DESIGN.md), and
 [MYAGENTTOOL_DESIGN.md](../design/MYAGENTTOOL_DESIGN.md).
 
 Review focus:
@@ -214,6 +221,8 @@ Review focus:
 - Is the first screen a usable task workspace?
 - Are safety, data, cost, cancellation, and audit visible in plain language?
 - Are technical identifiers and protocol terms kept out of the primary flow?
+- Does the implementation preserve the repo-level design tokens, component
+  rules, responsive behavior, and state language in `DESIGN.md`?
 - Is visual QA evidence attached when layout or copy changes?
 
 ### 11. Release
@@ -261,6 +270,17 @@ For each non-trivial AI-assisted change, keep evidence in one or more of:
 - Audit or cost note.
 
 If evidence cannot be preserved, do not treat the work as complete.
+
+Before final handoff, confirm the touched issues are in the Project and reflect
+their current state:
+
+```text
+pnpm github:sync-project -- --repo perly6185-lab/myagenttool --owner perly6185-lab --project 1 --issues ISSUE_IDS
+pnpm github:sync-project -- --repo perly6185-lab/myagenttool --owner perly6185-lab --project 1 --issues ISSUE_IDS --apply
+```
+
+The final response should name the tracking issue IDs and summarize the Project
+sync result.
 
 ## Executable M0 Workflow
 
