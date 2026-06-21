@@ -1,0 +1,401 @@
+# MyAgentTool Product Flows
+
+This file defines role-based product flows for MyAgentTool UI prototype and
+AI-assisted implementation work. Use it before changing Web Console IA,
+navigation, interaction states, or role-specific workflows.
+
+When exact user research is unavailable, define a role-scenario matrix instead
+of optimizing for a single imagined user. The system must consider ordinary
+developers, advanced developers, team administrators, and auditors without
+putting every capability on the first screen.
+
+## Role Matrix
+
+| Role | Goal | Frequency | Fear | Success Signal | Primary Surface |
+| --- | --- | --- | --- | --- | --- |
+| Ordinary developer | Run an agent task and understand the result | High | Not knowing where to click; accidentally changing code | Finds the task path quickly and understands next step | Home task workspace |
+| Advanced developer | Control Codex session, workspace, diff, and continuation | Medium | Losing context; adopting unreviewed changes | Can inspect session, review diff, and continue safely | Codex supervision |
+| Team administrator | Connect agents, approve risky actions, manage policy | Low but critical | Opaque permissions; approving the wrong action | Can judge approve/deny consequences and see audit | Connect Agent and Needs attention |
+| Auditor | Trace what happened and prove evidence source | Low but critical | Evidence is incomplete or managed/imported is blurred | Can trace managed evidence and export a summary | Evidence Center |
+
+## Product Principles
+
+- The homepage is for the ordinary developer's high-frequency task flow.
+- Advanced and governance workflows must have clear entry points, not compete
+  with the task composer.
+- Each role can complete its own job without learning every other role's tools.
+- Managed evidence and imported-after-the-fact evidence must stay visibly
+  separate.
+- A feature is not accepted until role-specific task tests pass.
+
+## Low-Fidelity IA
+
+Use this structure before visual styling:
+
+```text
+Left column:  current task intent
+  - task input
+  - computer and agent selector
+  - Codex-only task controls when Codex is selected
+  - run/cancel and pre-run review
+
+Middle column: current task execution
+  - status
+  - approval prompt when the current run needs action
+  - activity timeline
+  - result summary
+  - troubleshooting when failed
+
+Right rail: context, history, and governance
+  - selected computer and agent context
+  - current session summary
+  - Codex supervision
+  - Needs attention
+  - Evidence Center
+  - Import evidence
+  - Connect Agent
+```
+
+Do not place Evidence Center, Connect Agent, imported evidence, full session
+history, hook details, JSONL, or integration builders in the left task column.
+
+## Flow 1: Ordinary Developer Runs A Task
+
+Primary user: ordinary developer
+
+Frequency: high
+
+User job: ask the local computer to run an agent, then understand the result.
+
+Entry point: home task workspace.
+
+Happy path:
+
+```text
+Open home
+-> type plain-language task
+-> choose computer and agent
+-> review safety/data/cost/cancellation
+-> run
+-> watch status
+-> read result
+-> if changes exist, open diff review from session/result context
+```
+
+Failure path:
+
+```text
+Run fails
+-> see plain-language failure
+-> inspect troubleshooting
+-> retry or switch agent
+```
+
+Advanced path:
+
+```text
+Need proof or history
+-> open Codex supervision or Evidence Center from right rail
+```
+
+What not to show:
+
+- Raw JSONL.
+- Hook event names.
+- Full evidence registry.
+- Integration builder controls.
+- Imported evidence workflow.
+
+Prototype states:
+
+- empty
+- ready to run
+- running
+- approval needed
+- succeeded
+- failed
+- result has file changes
+- mobile one-column layout
+
+Usability test tasks:
+
+- Use Codex to run a repository task.
+- Explain what will run and where before clicking run.
+- Cancel a running task.
+- Find the result after the task succeeds.
+
+Acceptance signals:
+
+- Finds the task input and run action without explanation.
+- Can describe the current state and next step.
+- Understands whether a task may change files.
+- Can reach diff review without seeing raw governance internals first.
+
+## Flow 2: Advanced Developer Manages Codex Session
+
+Primary user: advanced developer
+
+Frequency: medium
+
+User job: inspect and continue managed Codex work without losing context.
+
+Entry point: Codex supervision.
+
+Happy path:
+
+```text
+Open Codex supervision
+-> select managed session
+-> inspect session mode, repo, workspace, branch, dirty state
+-> review evidence counts and approval state
+-> inspect file changes
+-> approve, reject, or send feedback
+-> continue last session from task composer when needed
+```
+
+Failure path:
+
+```text
+Session failed or was cancelled
+-> inspect timeline and session detail
+-> check approvals, warnings, and workspace state
+-> decide whether to retry, continue, or abandon
+```
+
+Advanced path:
+
+```text
+Need comparison
+-> use advanced compare option
+-> inspect each child invocation with independent workspace/evidence
+```
+
+What not to show:
+
+- Private Codex auth files.
+- Private Codex session files as primary evidence.
+- Imported evidence as managed proof.
+- Integration setup controls inside session detail.
+
+Prototype states:
+
+- no managed session
+- running session
+- completed session
+- needs approval
+- failed session
+- diff review
+- feedback submitted
+- continuation guidance
+
+Usability test tasks:
+
+- Find the previous Codex session.
+- Explain whether it was new or continued.
+- Review what files changed.
+- Send feedback tied to a specific diff.
+- Continue the latest managed Codex session.
+
+Acceptance signals:
+
+- Can find session history without using raw logs.
+- Can tell managed session from imported evidence.
+- Can decide whether to adopt or reject changes.
+- Can continue work without losing repo/workspace context.
+
+## Flow 3: Team Administrator Handles Risk And Integration
+
+Primary user: team administrator
+
+Frequency: low but critical
+
+User job: approve risky actions, connect agents, and keep policy visible.
+
+Entry point: Needs attention, Connect Agent, and advanced management rail.
+
+Happy path:
+
+```text
+Open Needs attention
+-> inspect pending approval
+-> review tool, risk, timeout, task, repo/session context
+-> approve or deny
+-> confirm audit record
+```
+
+Agent connection path:
+
+```text
+Open Connect Agent
+-> run conservative discovery
+-> inspect candidate risk and health
+-> create reviewable integration artifact
+-> approve/test/register explicitly
+```
+
+Failure path:
+
+```text
+Approval times out or is denied
+-> invocation stops before execution
+-> audit records timeout/deny
+-> user can explain why it stopped
+```
+
+What not to show:
+
+- Approval inbox inside the task composer.
+- Auto-enabled discovered agents.
+- Unreviewed generated integrations as runnable agents.
+- Unclear "allow" actions without consequence text.
+
+Prototype states:
+
+- no pending approvals
+- approval pending
+- approval approved
+- approval denied
+- approval timed out
+- discovery empty
+- candidate found
+- integration artifact needs review
+
+Usability test tasks:
+
+- Reject a high-risk request.
+- Approve a pending Codex permission request.
+- Explain what happens if the approval times out.
+- Register a discovered CLI only after review/test.
+
+Acceptance signals:
+
+- Can tell what tool/action is being approved.
+- Can judge consequences before approving.
+- Timeout/deny behavior is deterministic and visible.
+- Generated integrations remain disabled until explicitly registered.
+
+## Flow 4: Auditor Traces Evidence
+
+Primary user: auditor
+
+Frequency: low but critical
+
+User job: prove what happened, where evidence came from, and whether it was
+managed or imported.
+
+Entry point: Evidence Center.
+
+Happy path:
+
+```text
+Open Evidence Center
+-> filter by session, invocation, agent, repo/workspace, type, source, redaction
+-> inspect evidence detail
+-> confirm marker is managed or imported_after_the_fact
+-> export summary
+```
+
+Failure path:
+
+```text
+Evidence is incomplete
+-> identify missing managed chain segment
+-> distinguish missing evidence from imported supplement
+-> create follow-up issue
+```
+
+Advanced path:
+
+```text
+Need context
+-> jump from evidence to session/invocation
+-> compare JSONL, hook, approval, warning, and change review records
+```
+
+What not to show:
+
+- Imported evidence promoted as managed proof.
+- Unredacted secrets.
+- Private Codex auth/session file reads.
+- Raw event floods before filters and summaries.
+
+Prototype states:
+
+- no evidence
+- managed JSONL evidence
+- hook evidence
+- approval evidence
+- runtime warning
+- file change
+- change review
+- imported evidence
+- export summary
+
+Usability test tasks:
+
+- Prove a run was launched through MyAgentTool.
+- Filter evidence by repo and session.
+- Distinguish managed evidence from imported evidence.
+- Export a summary for a completed session.
+
+Acceptance signals:
+
+- Can trace the evidence chain without reading raw logs first.
+- Can identify evidence source and redaction state.
+- Can tell managed proof from after-the-fact import.
+- Can produce a concise audit summary.
+
+## Cross-Role Prototype Checklist
+
+Before coding a non-trivial UI workflow, produce a low-fidelity prototype or
+fixture-state sketch that covers:
+
+- empty
+- running
+- approval needed
+- succeeded
+- failed
+- cancelled
+- timeout
+- diff review
+- evidence center
+- imported evidence
+- mobile viewport
+
+For each state, list:
+
+- primary role
+- user question being answered
+- left/middle/right ownership
+- action available
+- action consequence
+- what must stay hidden
+
+## Four Acceptance Signals
+
+Use these signals instead of subjective "do you like it?" feedback:
+
+- Findable: the user can locate the entry point without explanation.
+- Understandable: the user can describe current state and next step.
+- Actionable: the user knows the consequence of run, cancel, approve, deny, or
+  export.
+- Traceable: advanced users can find history, evidence, and audit.
+
+If one of these fails for the intended role, the UI is not ready even if the
+feature exists and automated checks pass.
+
+## AI Implementation Gate
+
+Before AI writes production UI code, it must produce or reference:
+
+- role matrix row
+- primary scenario
+- user task flow
+- low-fidelity IA
+- prototype states
+- usability test tasks
+- "what not to show" list
+- acceptance signals
+
+If the implementation touches multiple roles, it must cover each role
+explicitly rather than choosing only one.

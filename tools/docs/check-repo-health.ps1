@@ -9,6 +9,7 @@ $required = @(
   "apps/server",
   "apps/desktop",
   "docs/design",
+  "docs/design/PRODUCT_FLOWS.md",
   "docs/engineering/ADR_INDEX.md",
   "docs/engineering/ADR_0002_M0_REALTIME_TRANSPORT.md",
   "docs/engineering/ADR_0003_M0_DESKTOP_BRIDGE_RUNTIME.md",

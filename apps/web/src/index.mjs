@@ -19,6 +19,8 @@ if (process.argv.includes("--check")) {
   const html = readFileSync(join(publicDir, "index.html"), "utf8");
   const css = readFileSync(join(publicDir, "styles.css"), "utf8");
   const js = readFileSync(join(publicDir, "app.js"), "utf8");
+  const productFlowsPath = join(publicDir, "..", "..", "..", "docs", "design", "PRODUCT_FLOWS.md");
+  const productFlows = existsSync(productFlowsPath) ? readFileSync(productFlowsPath, "utf8") : "";
   const expectations = [
     [html, "What should your computer do?", "task composer"],
     [html, "Run on this computer", "plain-language run action"],
@@ -150,7 +152,13 @@ if (process.argv.includes("--check")) {
     [js, "imported_after_the_fact", "imported evidence marker"],
     [css, ".diff-preview", "managed diff preview styling"],
     [css, ".approval-queue-item", "approval queue styling"],
-    [css, ".evidence-record-item", "evidence center styling"]
+    [css, ".evidence-record-item", "evidence center styling"],
+    [productFlows, "ordinary developer", "ordinary developer product flow"],
+    [productFlows, "advanced developer", "advanced developer product flow"],
+    [productFlows, "team administrator", "team administrator product flow"],
+    [productFlows, "auditor", "auditor product flow"],
+    [productFlows, "Usability test tasks", "role-based usability tasks"],
+    [productFlows, "What not to show", "role-based exclusion rules"]
   ];
 
   const failed = expectations

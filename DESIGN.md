@@ -7,6 +7,7 @@ before changing `apps/web/public/index.html`, `apps/web/public/app.js`, or
 Source documents:
 
 - `docs/design/MYAGENTTOOL_DESIGN.md`
+- `docs/design/PRODUCT_FLOWS.md`
 - `docs/vision/USER_EXPERIENCE.md`
 - `docs/engineering/VISUAL_QA.md`
 
@@ -122,6 +123,7 @@ controls, raw logs dominance, and column ownership. Attach
 Every AI-assisted frontend or workflow phase must answer these before it is
 marked verified:
 
+- Which role flow in `docs/design/PRODUCT_FLOWS.md` applies?
 - Who is this for: ordinary user, advanced user, operator, or admin?
 - Is the capability high-frequency task work, low-frequency configuration,
   supervision evidence, or advanced governance?
@@ -458,8 +460,10 @@ Confirm:
 For any non-trivial frontend change:
 
 1. Read this file first.
-2. Check `docs/design/MYAGENTTOOL_DESIGN.md` for product intent.
-3. Keep runtime implementation in `apps/web`.
-4. Update this file when introducing a new reusable UI pattern, token, state,
+2. Check `docs/design/PRODUCT_FLOWS.md` for role, scenario, task flow, and
+   usability tasks.
+3. Check `docs/design/MYAGENTTOOL_DESIGN.md` for product intent.
+4. Keep runtime implementation in `apps/web`.
+5. Update this file when introducing a new reusable UI pattern, token, state,
    or copy convention.
-5. Record visual QA evidence in the PR or handoff.
+6. Record visual QA evidence in the PR or handoff.
