@@ -1085,13 +1085,27 @@ button.secondary {
 }
 
 .project-current {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  min-width: 0;
+  align-items: center;
+  padding: 0 2px 6px;
+}
+
+.project-current-info {
   display: grid;
   gap: 2px;
   min-width: 0;
-  padding: 0 2px 4px;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  text-align: left;
 }
 
-.project-current strong {
+.project-current strong,
+.project-current-info strong {
   min-width: 0;
   overflow: hidden;
   color: #1f2a26;
@@ -1102,9 +1116,40 @@ button.secondary {
   white-space: nowrap;
 }
 
-.project-current span {
+.project-current span,
+.project-current-info span {
   color: #7b8782;
   font-size: 11px;
+}
+
+.project-current-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.project-current-actions button {
+  display: grid;
+  min-width: 24px;
+  min-height: 24px;
+  place-items: center;
+  border: 0;
+  border-radius: 6px;
+  padding: 0;
+  background: transparent;
+  color: #6f7a76;
+  font-weight: 850;
+}
+
+.project-current-actions button:hover {
+  background: #e8ecea;
+  color: #17201d;
+}
+
+.current-project-menu {
+  top: 36px;
+  right: 8px;
+  margin: 0;
 }
 
 .project-list {

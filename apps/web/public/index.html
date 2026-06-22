@@ -71,8 +71,16 @@
             </div>
           </div>
           <div class="project-current" aria-label="Current project">
-            <strong id="currentProjectName">myagenttool</strong>
-            <span id="currentProjectPath" class="project-path">Current project</span>
+            <button id="currentProjectSelectButton" type="button" class="project-current-info">
+              <strong id="currentProjectName">myagenttool</strong>
+              <span id="currentProjectPath" class="project-path">Current project</span>
+            </button>
+            <div class="project-current-actions" aria-label="Current project actions">
+              <button id="currentProjectToggleButton" type="button" aria-label="Collapse current project">⌄</button>
+              <button id="currentProjectMenuButton" type="button" aria-label="Current project menu">...</button>
+              <button id="currentProjectWorktreeButton" type="button" aria-label="Create worktree for current project">+</button>
+            </div>
+            <div id="currentProjectMenuPanel" class="project-menu-panel current-project-menu" hidden></div>
           </div>
           <div id="projectList" class="project-list" aria-label="Projects"></div>
           <nav class="mode-tabs sidebar-secondary-nav" aria-label="More workspace surfaces">

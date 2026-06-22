@@ -27,6 +27,11 @@ const els = {
   modeTabs: document.querySelector(".workspace-nav"),
   modeButtons: [...document.querySelectorAll("[data-workspace-mode]")],
   modeSummary: document.querySelector("#modeSummary"),
+  currentProjectSelectButton: document.querySelector("#currentProjectSelectButton"),
+  currentProjectToggleButton: document.querySelector("#currentProjectToggleButton"),
+  currentProjectMenuButton: document.querySelector("#currentProjectMenuButton"),
+  currentProjectWorktreeButton: document.querySelector("#currentProjectWorktreeButton"),
+  currentProjectMenuPanel: document.querySelector("#currentProjectMenuPanel"),
   currentProjectName: document.querySelector("#currentProjectName"),
   currentProjectPath: document.querySelector("#currentProjectPath"),
   projectList: document.querySelector("#projectList"),
@@ -323,12 +328,7 @@ els.projectList.addEventListener("click", async (event) => {
   if (worktreeButton) {
     const sourceProject = lastState?.projects?.find((item) => item.id === worktreeButton.dataset.projectWorktreeSourceId);
     if (sourceProject) {
-      els.worktreeNameInput.value = "";
-      els.worktreeBranchInput.value = `myagenttool/${slugForInput(sourceProject.name)}-task`;
-      els.worktreeBaseInput.value = "HEAD";
-      els.worktreePathInput.value = "";
-      document.querySelector(".project-add.project-tool")?.setAttribute("open", "");
-      els.worktreeStatus.textContent = `Creating worktree from ${sourceProject.name}.`;
+      prepareWorktreeForProject(sourceProject);
     }
     return;
   }
@@ -341,9 +341,13 @@ els.projectList.addEventListener("click", async (event) => {
 
   const button = event.target.closest("button[data-project-id]");
   if (!button) return;
+  await selectProjectById(button.dataset.projectId);
+});
+
+async function selectProjectById(projectId) {
   els.projectRegistryStatus.textContent = "Switching project...";
   try {
-    const response = await fetch(`${apiBase}/api/projects/${encodeURIComponent(button.dataset.projectId)}`, { method: "POST" });
+    const response = await fetch(`${apiBase}/api/projects/${encodeURIComponent(projectId)}`, { method: "POST" });
     const data = await response.json();
     if (!response.ok) throw new Error(data.message ?? data.error ?? "Unable to switch project.");
     els.projectRegistryStatus.textContent = `${data.project.name} selected.`;
@@ -351,6 +355,44 @@ els.projectList.addEventListener("click", async (event) => {
   } catch (error) {
     els.projectRegistryStatus.textContent = error instanceof Error ? error.message : "Unable to switch project.";
   }
+}
+
+function prepareWorktreeForProject(sourceProject) {
+  els.worktreeNameInput.value = "";
+  els.worktreeBranchInput.value = `myagenttool/${slugForInput(sourceProject.name)}-task`;
+  els.worktreeBaseInput.value = "HEAD";
+  els.worktreePathInput.value = "";
+  document.querySelector(".project-add.project-tool")?.setAttribute("open", "");
+  els.worktreeStatus.textContent = `Creating worktree from ${sourceProject.name}.`;
+}
+
+els.currentProjectSelectButton.addEventListener("click", async () => {
+  const project = currentProject(lastState);
+  if (!project) return;
+  await selectProjectById(project.id);
+});
+
+els.currentProjectToggleButton.addEventListener("click", () => {
+  const project = currentProject(lastState);
+  if (!project) return;
+  if (collapsedProjectRootIds.has(project.id)) {
+    collapsedProjectRootIds.delete(project.id);
+  } else {
+    collapsedProjectRootIds.add(project.id);
+  }
+  renderProjects(lastState);
+});
+
+els.currentProjectMenuButton.addEventListener("click", () => {
+  const project = currentProject(lastState);
+  if (!project) return;
+  els.currentProjectMenuPanel.hidden = !els.currentProjectMenuPanel.hidden;
+});
+
+els.currentProjectWorktreeButton.addEventListener("click", () => {
+  const project = currentProject(lastState);
+  if (!project) return;
+  prepareWorktreeForProject(project);
 });
 
 function toggleProjectMenu(projectId) {
@@ -1576,6 +1618,8 @@ function renderProjects(state) {
   els.currentProjectPath.textContent = project
     ? project.worktree ? `${project.path} · ${project.worktree.branchName}` : project.path
     : "Register a project to scope local runs.";
+  els.currentProjectToggleButton.textContent = project && collapsedProjectRootIds.has(project.id) ? "›" : "⌄";
+  els.currentProjectMenuPanel.replaceChildren(...(project ? projectMenuItems() : []));
   els.addProjectButton.disabled = false;
   els.removeProjectButton.disabled = projects.length <= 1;
   els.createWorktreeButton.disabled = !project;
@@ -1651,6 +1695,9 @@ function projectGroup(project, children, currentProjectId) {
   add.textContent = "+";
   actions.append(toggle, more, add);
   root.append(select, actions);
+  if (project.id === currentProjectId) {
+    actions.hidden = true;
+  }
   group.append(root);
   group.append(projectMenuPanel(project));
 
@@ -1676,6 +1723,11 @@ function projectMenuPanel(project) {
   panel.className = "project-menu-panel";
   panel.dataset.projectMenuPanel = project.id;
   panel.hidden = true;
+  panel.replaceChildren(...projectMenuItems());
+  return panel;
+}
+
+function projectMenuItems() {
   const items = [
     ["☷", "项目设置"],
     ["♢", "更改项目图标"],
@@ -1683,7 +1735,7 @@ function projectMenuPanel(project) {
     ["▣", "来自项目的新组"],
     ["⌫", "删除项目", "danger"]
   ];
-  panel.replaceChildren(...items.map(([icon, label, tone]) => {
+  return items.map(([icon, label, tone]) => {
     const item = document.createElement("button");
     item.type = "button";
     item.className = "project-menu-item";
@@ -1694,8 +1746,7 @@ function projectMenuPanel(project) {
     labelEl.textContent = label;
     item.append(iconEl, labelEl);
     return item;
-  }));
-  return panel;
+  });
 }
 
 function projectBranchRow(project, currentProjectId) {
