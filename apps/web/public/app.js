@@ -45,6 +45,7 @@ const els = {
   repoPanelTitle: document.querySelector("#repoPanelTitle"),
   repoToolButtons: [...document.querySelectorAll("[data-repo-tool]")],
   repoSearchModeButtons: [...document.querySelectorAll("[data-repo-search-mode]")],
+  repoHistoryHeader: document.querySelector("#repoHistoryHeader"),
   repoContentFilters: document.querySelector("#repoContentFilters"),
   projectSearchIncludeInput: document.querySelector("#projectSearchIncludeInput"),
   projectSearchExcludeInput: document.querySelector("#projectSearchExcludeInput"),
@@ -284,6 +285,7 @@ let projectTreeLoading = false;
 const loadingProjectTreePaths = new Set();
 let repoPanelTool = "files";
 let repoSearchMode = "name";
+let repoHistoryScope = "all";
 let projectContentSearchData = null;
 let projectContentSearchLoading = false;
 let repoGitSummaryData = null;
@@ -607,8 +609,27 @@ for (const button of els.repoSearchModeButtons) {
   });
 }
 els.projectTreeList.addEventListener("click", (event) => {
+  const historyScopeButton = event.target.closest("button[data-repo-history-scope]");
+  if (historyScopeButton) {
+    repoHistoryScope = historyScopeButton.dataset.repoHistoryScope ?? "all";
+    renderRepoSessionHistory(lastState);
+    return;
+  }
+
+  const sessionAction = event.target.closest("button[data-repo-session-action]");
+  if (sessionAction) {
+    const invocationId = sessionAction.dataset.invocationId;
+    if (invocationId && (sessionAction.dataset.repoSessionAction === "open" || sessionAction.dataset.repoSessionAction === "resume")) {
+      currentInvocationId = invocationId;
+      activeMode = "run_task";
+      render(lastState);
+    }
+    return;
+  }
+
   const button = event.target.closest("button[data-tree-path]");
   if (!button) return;
+  if (repoPanelTool === "history") return;
   if (repoSearchMode !== "name") return;
   if (button.dataset.kind !== "directory") return;
   const path = button.dataset.treePath ?? "";
@@ -1950,8 +1971,12 @@ function renderRepoBrowserMode() {
     button.setAttribute("aria-selected", String(active));
   }
   const showingFiles = repoPanelTool === "files";
+  const showingHistory = repoPanelTool === "history";
   els.repoPanelTitle.parentElement.hidden = repoPanelTool === "publish";
-  els.projectFileSearch.closest(".repo-search-shell").hidden = !showingFiles;
+  els.repoHistoryHeader.hidden = !showingHistory;
+  if (!showingHistory) els.repoHistoryHeader.replaceChildren();
+  els.projectFileSearch.closest(".repo-search-shell").hidden = !(showingFiles || showingHistory);
+  els.projectFileSearch.placeholder = showingHistory ? "搜索会话" : "搜索";
   els.repoSearchModeButtons[0].parentElement.hidden = !showingFiles;
   els.repoContentFilters.hidden = !showingFiles || repoSearchMode !== "content";
 }
@@ -2005,19 +2030,78 @@ function renderProjectTree() {
 }
 
 function renderRepoSessionHistory(state) {
-  const conversations = conversationHistoryItems(state).slice(0, 12);
+  const allConversations = conversationHistoryItems(state);
+  const query = els.projectFileSearch.value.trim().toLowerCase();
+  const conversations = allConversations
+    .filter((conversation) => repoHistoryScope === "worktree" ? conversationHasWorktree(conversation) : true)
+    .filter((conversation) => {
+      if (!query) return true;
+      return [
+        taskSummary(conversation.invocation.input?.task),
+        conversation.invocation.id,
+        conversation.resultSummary,
+        conversation.project?.name,
+        conversation.session?.workspace?.branchName,
+        conversation.session?.workspace?.worktreePath
+      ].some((value) => String(value ?? "").toLowerCase().includes(query));
+    })
+    .slice(0, 12);
   els.repoPanelTitle.textContent = "Agent 会话历史";
-  els.projectTreeSummary.textContent = `已显示 ${conversations.length} 项 · 最近 ${conversationHistoryItems(state).length} 项`;
+  els.projectTreeSummary.textContent = "";
+  els.repoHistoryHeader.replaceChildren(repoHistoryToolbar(conversations.length, allConversations.length));
   els.projectTreeList.replaceChildren(
-    ...(conversations.length ? conversations.map(repoSessionHistoryRow) : [emptyMiniCard("No agent sessions recorded yet.")])
+    ...(conversations.length ? conversations.map(repoSessionHistoryRow) : [emptyMiniCard("No agent sessions matched.")])
   );
 }
 
+function repoHistoryToolbar(visibleCount, totalCount) {
+  const toolbar = document.createElement("div");
+  toolbar.className = "repo-history-toolbar";
+
+  const summary = document.createElement("span");
+  summary.textContent = `已显示 ${visibleCount} 项 · 最近 ${totalCount} 项`;
+
+  const filters = document.createElement("span");
+  filters.className = "repo-history-filters";
+  for (const [scope, label] of [["all", "全部"], ["worktree", "工作树"]]) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.dataset.repoHistoryScope = scope;
+    button.dataset.active = String(repoHistoryScope === scope);
+    button.textContent = label;
+    filters.append(button);
+  }
+
+  const tools = document.createElement("span");
+  tools.className = "repo-history-tools";
+  tools.append(
+    repoHistoryToolButton("≡", "筛选"),
+    repoHistoryToolButton("↻", "刷新")
+  );
+
+  toolbar.append(summary, filters, tools);
+  return toolbar;
+}
+
+function repoHistoryToolButton(label, ariaLabel) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.setAttribute("aria-label", ariaLabel);
+  button.title = ariaLabel;
+  button.textContent = label;
+  return button;
+}
+
 function repoSessionHistoryRow(conversation) {
-  const row = document.createElement("button");
-  row.type = "button";
+  const row = document.createElement("article");
   row.className = "repo-session-row";
   row.dataset.invocationId = conversation.invocation.id;
+
+  const body = document.createElement("button");
+  body.type = "button";
+  body.className = "repo-session-body";
+  body.dataset.repoSessionAction = "open";
+  body.dataset.invocationId = conversation.invocation.id;
 
   const title = document.createElement("strong");
   title.textContent = taskSummary(conversation.invocation.input?.task) ?? conversation.invocation.id;
@@ -2030,8 +2114,34 @@ function repoSessionHistoryRow(conversation) {
     conversation.invocation.updatedAt ? relativeTime(conversation.invocation.updatedAt) : null
   ].filter(Boolean).join(" · ");
 
-  row.append(title, preview, meta);
+  const actions = document.createElement("span");
+  actions.className = "repo-session-actions";
+  actions.append(
+    repoSessionActionButton("⋮⋮", "拖动会话"),
+    repoSessionActionButton("▷", "继续会话", "resume", conversation.invocation.id),
+    repoSessionActionButton("⌄", "更多会话选项"),
+    repoSessionActionButton("...", "更多操作")
+  );
+
+  body.append(title, preview, meta);
+  row.append(body, actions);
   return row;
+}
+
+function repoSessionActionButton(label, ariaLabel, action = null, invocationId = null) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "repo-session-action";
+  button.setAttribute("aria-label", ariaLabel);
+  button.title = ariaLabel;
+  button.textContent = label;
+  if (action) button.dataset.repoSessionAction = action;
+  if (invocationId) button.dataset.invocationId = invocationId;
+  return button;
+}
+
+function conversationHasWorktree(conversation) {
+  return Boolean(conversation.session?.workspace?.worktreePath || conversation.project?.worktree);
 }
 
 function relativeTime(value) {
