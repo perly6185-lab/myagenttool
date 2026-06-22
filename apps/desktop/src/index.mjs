@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
 import * as pty from "node-pty";
@@ -27,6 +27,28 @@ if (process.argv.includes("--check")) {
   }
   if (typeof pty.spawn !== "function") {
     throw new Error("node-pty is not available.");
+  }
+  const inheritedEnv = {
+    CODEX_SANDBOX_NETWORK_DISABLED: "1",
+    CODEX_CI: "1",
+    CODEX_THREAD_ID: "thread-from-parent",
+    CODEX_HOME: "C:\\Users\\demo\\.codex",
+    HTTPS_PROXY: "http://127.0.0.1:7890",
+    MYAGENTTOOL_CODEX_ENV_JSON: "{\"OPENAI_BASE_URL\":\"http://127.0.0.1:8787/v1\"}"
+  };
+  const codexEnv = buildEnv({ command: "codex", environmentPolicy: "inherit_safe", env: inheritedEnv });
+  if (codexEnv.CODEX_SANDBOX_NETWORK_DISABLED || codexEnv.CODEX_CI || codexEnv.CODEX_THREAD_ID) {
+    throw new Error("Codex child environment isolation is not configured.");
+  }
+  if (codexEnv.CODEX_HOME !== inheritedEnv.CODEX_HOME || codexEnv.HTTPS_PROXY !== inheritedEnv.HTTPS_PROXY) {
+    throw new Error("Codex child environment stripped user configuration.");
+  }
+  if (codexEnv.OPENAI_BASE_URL !== "http://127.0.0.1:8787/v1") {
+    throw new Error("Codex child local env injection is not configured.");
+  }
+  const commandJsonPlan = codexCommandPlan({ command: "codex" }, ["exec", "--json", "{{task}}"], "fixture-task");
+  if (commandJsonPlan.command !== "codex" || commandJsonPlan.args[0] !== "exec") {
+    throw new Error("Codex command plan is not configured.");
   }
   const shellPlan = resolveTerminalShell(process.platform === "win32" ? "powershell" : "bash");
   if (!shellPlan.file) {
@@ -788,18 +810,24 @@ function uniqueCandidates(candidates) {
 function createCliSpawnPlan(adapter, payload) {
   const payloadJson = JSON.stringify(payload);
   const codexCommandOverride = isCodexCliCommand(adapter.command) ? process.env.MYAGENTTOOL_CODEX_COMMAND : null;
-  const command = adapter.command === "demo-agent" || codexCommandOverride === "fixture"
-    ? process.execPath
-    : codexCommandOverride || String(adapter.command);
   const codexImageAttachments = isCodexCliCommand(adapter.command) ? prepareCodexImageAttachments(payload) : [];
   const argsTemplate = isCodexCliCommand(adapter.command)
     ? insertCodexImageArgs(codexArgsTemplate(adapter, payload), codexImageAttachments)
     : codexArgsTemplate(adapter, payload);
+  const renderedArgs = renderArgs(argsTemplate, payloadJson, payload);
+  const baseCommand = codexCommandOverride || String(adapter.command);
+  const command = adapter.command === "demo-agent" || codexCommandOverride === "fixture"
+    ? process.execPath
+    : isCodexCliCommand(adapter.command)
+      ? codexCommandPlan(adapter, renderedArgs, payload.task).command
+      : baseCommand;
   const args = adapter.command === "demo-agent"
     ? [demoAgentPath, ...renderArgs(argsTemplate, payloadJson, payload)]
     : codexCommandOverride === "fixture"
-      ? [codexFixtureAgentPath, ...renderArgs(argsTemplate, payloadJson, payload)]
-    : renderArgs(argsTemplate, payloadJson, payload);
+      ? [codexFixtureAgentPath, ...renderedArgs]
+      : isCodexCliCommand(adapter.command)
+        ? codexCommandPlan(adapter, renderedArgs, payload.task).args
+        : renderedArgs;
   const env = buildEnv(adapter);
   const cwd = adapter.workingDirectoryPolicy === "explicit" && adapter.workingDirectory
     ? String(adapter.workingDirectory)
@@ -829,6 +857,49 @@ function codexArgsTemplate(adapter, payload) {
     return ["exec", "resume", "--last", "--skip-git-repo-check", "--json", "{{task}}"];
   }
   return args;
+}
+
+function codexCommandPlan(adapter, renderedArgs, task) {
+  const commandPrefix = parseCodexCommandJson();
+  if (!commandPrefix) {
+    return {
+      command: String(adapter.command),
+      args: renderedArgs
+    };
+  }
+  const [command, ...prefixArgs] = commandPrefix;
+  const args = [...prefixArgs, ...dedupeCommandPrefixArgs(prefixArgs, renderedArgs)];
+  return {
+    command,
+    args
+  };
+}
+
+function parseCodexCommandJson() {
+  const raw = String(process.env.MYAGENTTOOL_CODEX_COMMAND_JSON ?? "").trim();
+  if (!raw) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed) || parsed.length === 0 || parsed.some((item) => typeof item !== "string" || !item.trim())) {
+      console.error("[desktop] MYAGENTTOOL_CODEX_COMMAND_JSON must be a non-empty JSON string array; ignoring it.");
+      return null;
+    }
+    return parsed.map((item) => item.trim());
+  } catch (error) {
+    console.error(`[desktop] could not parse MYAGENTTOOL_CODEX_COMMAND_JSON; ignoring it: ${error instanceof Error ? error.message : String(error)}`);
+    return null;
+  }
+}
+
+function dedupeCommandPrefixArgs(prefixArgs, renderedArgs) {
+  if (!prefixArgs.length || !renderedArgs.length) {
+    return renderedArgs;
+  }
+  const lastPrefixArg = String(prefixArgs[prefixArgs.length - 1]).toLowerCase();
+  const firstRenderedArg = String(renderedArgs[0]).toLowerCase();
+  return lastPrefixArg === firstRenderedArg ? renderedArgs.slice(1) : renderedArgs;
 }
 
 function executionPreview(adapter, spawnPlan, task) {
@@ -1040,10 +1111,13 @@ function buildEnv(adapter) {
   if (adapter.environmentPolicy === "none") {
     return {};
   }
+  const explicitEnv = normalizeEnv(adapter.env);
   if (adapter.environmentPolicy === "explicit_only") {
-    return normalizeEnv(adapter.env);
+    return isCodexCliCommand(adapter.command) ? sanitizeCodexChildEnv({ ...explicitEnv, ...codexLocalEnv(explicitEnv) }) : explicitEnv;
   }
-  return { ...process.env, ...normalizeEnv(adapter.env) };
+  const baseEnv = { ...process.env, ...explicitEnv };
+  const inheritedEnv = { ...baseEnv, ...codexLocalEnv(baseEnv), ...explicitEnv };
+  return isCodexCliCommand(adapter.command) ? sanitizeCodexChildEnv(inheritedEnv) : inheritedEnv;
 }
 
 function normalizeEnv(env) {
@@ -1051,6 +1125,79 @@ function normalizeEnv(env) {
     return {};
   }
   return Object.fromEntries(Object.entries(env).map(([key, value]) => [String(key), String(value)]));
+}
+
+function sanitizeCodexChildEnv(env) {
+  const clean = { ...env };
+  for (const key of codexParentRuntimeEnvKeys()) {
+    delete clean[key];
+  }
+  return clean;
+}
+
+function codexLocalEnv(env = process.env) {
+  return {
+    ...parseEnvFile(resolve(process.cwd(), ".env.local")),
+    ...parseEnvFile(resolve(process.cwd(), ".myagenttool", "codex.env")),
+    ...parseEnvJson(env.MYAGENTTOOL_CODEX_ENV_JSON, "MYAGENTTOOL_CODEX_ENV_JSON")
+  };
+}
+
+function parseEnvFile(filePath) {
+  if (!existsSync(filePath)) {
+    return {};
+  }
+  const entries = {};
+  const content = readFileSync(filePath, "utf8");
+  for (const rawLine of content.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith("#")) {
+      continue;
+    }
+    const separatorIndex = line.indexOf("=");
+    if (separatorIndex <= 0) {
+      continue;
+    }
+    const key = line.slice(0, separatorIndex).trim();
+    const value = unquoteEnvValue(line.slice(separatorIndex + 1).trim());
+    if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) {
+      entries[key] = value;
+    }
+  }
+  return entries;
+}
+
+function parseEnvJson(raw, label) {
+  const text = String(raw ?? "").trim();
+  if (!text) {
+    return {};
+  }
+  try {
+    const parsed = JSON.parse(text);
+    return normalizeEnv(parsed);
+  } catch (error) {
+    console.error(`[desktop] could not parse ${label}; ignoring it: ${error instanceof Error ? error.message : String(error)}`);
+    return {};
+  }
+}
+
+function unquoteEnvValue(value) {
+  const text = String(value ?? "");
+  if ((text.startsWith("\"") && text.endsWith("\"")) || (text.startsWith("'") && text.endsWith("'"))) {
+    return text.slice(1, -1);
+  }
+  return text;
+}
+
+function codexParentRuntimeEnvKeys() {
+  return [
+    "CODEX_SANDBOX_NETWORK_DISABLED",
+    "CODEX_CI",
+    "CODEX_INTERNAL_ORIGINATOR_OVERRIDE",
+    "CODEX_THREAD_ID",
+    "CODEX_SESSION_ID",
+    "CODEX_PARENT_PID"
+  ];
 }
 
 function normalizeStringArray(value) {
@@ -1068,12 +1215,14 @@ function highRiskCliCommand(command) {
 
 function probeCodexCli(adapter) {
   const codexCommandOverride = process.env.MYAGENTTOOL_CODEX_COMMAND;
+  const helpArgs = ["exec", "--help"];
+  const commandPlan = codexCommandPlan({ ...adapter, command: adapter.command ?? "codex" }, helpArgs, "");
   const command = codexCommandOverride === "fixture"
     ? process.execPath
-    : codexCommandOverride || String(adapter.command ?? "codex");
+    : codexCommandOverride || commandPlan.command;
   const args = codexCommandOverride === "fixture"
     ? [codexFixtureAgentPath, "exec", "--help"]
-    : ["exec", "--help"];
+    : commandPlan.args;
   const result = spawnSync(command, args, {
     cwd: process.cwd(),
     env: buildEnv({ ...adapter, environmentPolicy: "inherit_safe" }),
