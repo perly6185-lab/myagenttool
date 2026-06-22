@@ -37,6 +37,11 @@ const els = {
   projectModalViews: [...document.querySelectorAll("[data-project-modal-view]")],
   projectModalTargets: [...document.querySelectorAll("[data-project-modal-target]")],
   projectBrowserContext: document.querySelector("#projectBrowserContext"),
+  repoPanelTitle: document.querySelector("#repoPanelTitle"),
+  repoSearchModeButtons: [...document.querySelectorAll("[data-repo-search-mode]")],
+  repoContentFilters: document.querySelector("#repoContentFilters"),
+  projectSearchIncludeInput: document.querySelector("#projectSearchIncludeInput"),
+  projectSearchExcludeInput: document.querySelector("#projectSearchExcludeInput"),
   projectTreeSummary: document.querySelector("#projectTreeSummary"),
   projectTreeList: document.querySelector("#projectTreeList"),
   projectFileSearch: document.querySelector("#projectFileSearch"),
@@ -269,6 +274,9 @@ let projectTreePath = "";
 let projectTreeProjectId = null;
 let projectTreeData = null;
 let projectTreeLoading = false;
+let repoSearchMode = "name";
+let projectContentSearchData = null;
+let projectContentSearchLoading = false;
 const selectedCompareAgentIds = new Set();
 const terminalView = createTerminalView();
 let pendingTerminalInput = "";
@@ -466,14 +474,29 @@ els.createWorktreeButton.addEventListener("click", async () => {
   }
 });
 
-els.refreshProjectTreeButton.addEventListener("click", () => loadProjectTree({ force: true }));
+els.refreshProjectTreeButton.addEventListener("click", () => refreshRepoBrowser({ force: true }));
 els.projectFileSearch.addEventListener("input", () => {
   clearTimeout(els.projectFileSearch._timer);
-  els.projectFileSearch._timer = setTimeout(() => loadProjectTree({ force: true }), 250);
+  els.projectFileSearch._timer = setTimeout(() => refreshRepoBrowser({ force: true }), 250);
 });
+for (const input of [els.projectSearchIncludeInput, els.projectSearchExcludeInput]) {
+  input.addEventListener("input", () => {
+    clearTimeout(input._timer);
+    input._timer = setTimeout(() => {
+      if (repoSearchMode === "content") loadProjectContentSearch({ force: true });
+    }, 250);
+  });
+}
+for (const button of els.repoSearchModeButtons) {
+  button.addEventListener("click", () => {
+    repoSearchMode = button.dataset.repoSearchMode;
+    refreshRepoBrowser({ force: true });
+  });
+}
 els.projectTreeList.addEventListener("click", (event) => {
   const button = event.target.closest("button[data-tree-path]");
   if (!button) return;
+  if (repoSearchMode !== "name") return;
   if (button.dataset.kind !== "directory") return;
   projectTreePath = button.dataset.treePath ?? "";
   loadProjectTree({ force: true });
@@ -1462,13 +1485,16 @@ function showProjectModalView(view = "home") {
 function renderProjects(state) {
   const projects = state?.projects ?? [];
   const project = currentProject(state);
-  if (project?.id !== projectTreeProjectId) {
-    projectTreeProjectId = project?.id ?? null;
+  const browserProject = repoBrowserProject(state);
+  if (browserProject?.id !== projectTreeProjectId) {
+    projectTreeProjectId = browserProject?.id ?? null;
     projectTreePath = "";
     projectTreeData = null;
-    queueMicrotask(() => loadProjectTree({ force: true }));
+    projectContentSearchData = null;
+    queueMicrotask(() => refreshRepoBrowser({ force: true }));
   }
   els.currentProjectName.textContent = project?.name ?? "No project";
+  els.repoPanelTitle.textContent = browserProject?.name ?? "No project";
   els.currentProjectPath.textContent = project
     ? project.worktree ? `${project.path} · ${project.worktree.branchName}` : project.path
     : "Register a project to scope local runs.";
@@ -1596,8 +1622,15 @@ function currentProject(state) {
     ?? null;
 }
 
+function repoBrowserProject(state) {
+  return state?.projects?.find((project) => project.source === "default" && project.name === "myagenttool")
+    ?? state?.projects?.find((project) => project.id === "prj_myagenttool")
+    ?? state?.projects?.find((project) => project.name === "myagenttool")
+    ?? currentProject(state);
+}
+
 async function loadProjectTree({ force = false } = {}) {
-  const project = currentProject(lastState);
+  const project = repoBrowserProject(lastState);
   if (!project || projectTreeLoading) return;
   if (!force && projectTreeData?.projectId === project.id) return;
   projectTreeLoading = true;
@@ -1624,14 +1657,73 @@ async function loadProjectTree({ force = false } = {}) {
   }
 }
 
+function refreshRepoBrowser({ force = false } = {}) {
+  renderRepoBrowserMode();
+  if (repoSearchMode === "content") {
+    loadProjectContentSearch({ force });
+    return;
+  }
+  loadProjectTree({ force });
+}
+
+async function loadProjectContentSearch({ force = false } = {}) {
+  const project = repoBrowserProject(lastState);
+  if (!project || projectContentSearchLoading) return;
+  const query = els.projectFileSearch.value.trim();
+  const include = els.projectSearchIncludeInput.value.trim();
+  const exclude = els.projectSearchExcludeInput.value.trim();
+  const cacheKey = `${project.id}\n${query}\n${include}\n${exclude}`;
+  if (!force && projectContentSearchData?.cacheKey === cacheKey) return;
+  projectContentSearchLoading = true;
+  renderProjectTree();
+  try {
+    if (!query) {
+      projectContentSearchData = { projectId: project.id, cacheKey, query, results: [] };
+      return;
+    }
+    const params = new URLSearchParams({ q: query });
+    if (include) params.set("include", include);
+    if (exclude) params.set("exclude", exclude);
+    const response = await fetch(`${apiBase}/api/projects/${encodeURIComponent(project.id)}/search?${params.toString()}`);
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.message ?? data.error ?? "Unable to search project content.");
+    projectContentSearchData = { ...data, cacheKey };
+  } catch (error) {
+    projectContentSearchData = {
+      projectId: project.id,
+      cacheKey,
+      query,
+      results: [],
+      error: error instanceof Error ? error.message : "Unable to search project content."
+    };
+  } finally {
+    projectContentSearchLoading = false;
+    renderProjectTree();
+  }
+}
+
+function renderRepoBrowserMode() {
+  for (const button of els.repoSearchModeButtons) {
+    const active = button.dataset.repoSearchMode === repoSearchMode;
+    button.dataset.active = String(active);
+    button.setAttribute("aria-selected", String(active));
+  }
+  els.repoContentFilters.hidden = repoSearchMode !== "content";
+}
+
 function renderProjectTree() {
-  const project = currentProject(lastState);
+  const project = repoBrowserProject(lastState);
+  renderRepoBrowserMode();
   if (!project) {
     els.projectTreeSummary.textContent = "Register a project to browse files.";
     els.projectTreeList.replaceChildren(emptyMiniCard("No project selected."));
     return;
   }
   els.refreshProjectTreeButton.disabled = projectTreeLoading;
+  if (repoSearchMode === "content") {
+    renderProjectContentSearch(project);
+    return;
+  }
   if (projectTreeLoading) {
     els.projectTreeSummary.textContent = "Loading project files...";
     els.projectTreeList.replaceChildren(emptyMiniCard("Loading..."));
@@ -1657,6 +1749,44 @@ function renderProjectTree() {
   }
   rows.push(...(data.entries ?? []).map(projectTreeRow));
   els.projectTreeList.replaceChildren(...(rows.length ? rows : [emptyMiniCard("No files matched.")]));
+}
+
+function renderProjectContentSearch(project) {
+  els.refreshProjectTreeButton.disabled = projectContentSearchLoading;
+  const query = els.projectFileSearch.value.trim();
+  if (!query) {
+    els.projectTreeSummary.textContent = "";
+    els.projectTreeList.replaceChildren(emptyMiniCard("输入要在文件中搜索的内容"));
+    return;
+  }
+  if (projectContentSearchLoading) {
+    els.projectTreeSummary.textContent = "Searching repository content...";
+    els.projectTreeList.replaceChildren(emptyMiniCard("Searching..."));
+    return;
+  }
+  if (projectContentSearchData?.error) {
+    els.projectTreeSummary.textContent = projectContentSearchData.error;
+    els.projectTreeList.replaceChildren(emptyMiniCard("Project content search unavailable."));
+    return;
+  }
+  const results = projectContentSearchData?.results ?? [];
+  els.projectTreeSummary.textContent = `${project.name} content matches · ${results.length}`;
+  els.projectTreeList.replaceChildren(...(results.length ? results.map(projectContentSearchRow) : [emptyMiniCard("No content matched.")]));
+}
+
+function projectContentSearchRow(result) {
+  const row = document.createElement("article");
+  row.className = "project-content-row";
+
+  const title = document.createElement("strong");
+  title.textContent = result.path;
+  title.title = result.path;
+  const detail = document.createElement("span");
+  detail.textContent = `Line ${result.line}: ${result.preview}`;
+  detail.title = result.preview;
+
+  row.append(title, detail);
+  return row;
 }
 
 function projectTreeRow(entry) {

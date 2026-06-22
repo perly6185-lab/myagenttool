@@ -383,18 +383,39 @@
 
         <aside class="context-panel" aria-label="Device, result, and audit">
           <section id="projectBrowserContext" class="context-section">
-            <div class="section-heading horizontal compact">
-              <div>
-                <p class="step-label">Project</p>
-                <h2>Files</h2>
-              </div>
-              <button id="refreshProjectTreeButton" type="button" class="secondary compact-button">Refresh</button>
+            <div class="repo-panel-tabs" aria-label="Repository tools">
+              <button type="button" data-repo-tool="files" data-active="true" aria-label="Files">▱</button>
+              <button type="button" data-repo-tool="grid" aria-label="Grid">▦</button>
+              <button type="button" data-repo-tool="branch" aria-label="Branches">⌁</button>
+              <button type="button" data-repo-tool="tasks" aria-label="Tasks">☷</button>
             </div>
-            <label class="project-search">
-              <span>Search</span>
-              <input id="projectFileSearch" type="search" placeholder="Find files" />
-            </label>
-            <p id="projectTreeSummary" class="mode-summary">Registered project files appear here.</p>
+            <div class="repo-panel-header">
+              <h2 id="repoPanelTitle">myagenttool</h2>
+              <div class="repo-panel-actions">
+                <button id="refreshProjectTreeButton" type="button" aria-label="Refresh">↻</button>
+                <button type="button" aria-label="More">...</button>
+              </div>
+            </div>
+            <div class="repo-search-shell">
+              <span aria-hidden="true">⌕</span>
+              <input id="projectFileSearch" type="search" placeholder="搜索" />
+              <span class="repo-search-toggles" aria-hidden="true">Aa&nbsp; ab&nbsp; .* </span>
+            </div>
+            <div class="repo-browser-tabs" role="tablist" aria-label="Repository search mode">
+              <button id="repoNameTab" type="button" data-repo-search-mode="name" data-active="true">名称</button>
+              <button id="repoContentTab" type="button" data-repo-search-mode="content">内容</button>
+            </div>
+            <div id="repoContentFilters" class="repo-content-filters" hidden>
+              <label>
+                <span>要包含的文件</span>
+                <input id="projectSearchIncludeInput" type="text" placeholder="要包含的文件（例如 *.ts、src/**）" />
+              </label>
+              <label>
+                <span>要排除的文件</span>
+                <input id="projectSearchExcludeInput" type="text" placeholder="要排除的文件（例如 *.min.js、dist/**）" />
+              </label>
+            </div>
+            <p id="projectTreeSummary" class="repo-browser-summary">Registered project files appear here.</p>
             <div id="projectTreeList" class="project-tree-list" aria-live="polite"></div>
           </section>
 

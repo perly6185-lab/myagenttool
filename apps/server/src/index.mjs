@@ -443,6 +443,29 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    const projectSearchMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/search$/);
+    if (projectSearchMatch && req.method === "GET") {
+      const project = state.projects.find((item) => item.id === decodeURIComponent(projectSearchMatch[1]));
+      if (!project) {
+        sendJson(res, 404, { error: "project_not_found" });
+        return;
+      }
+      try {
+        const results = searchProjectContent(project, {
+          query: url.searchParams.get("q") ?? "",
+          include: url.searchParams.get("include") ?? "",
+          exclude: url.searchParams.get("exclude") ?? ""
+        });
+        sendJson(res, 200, results);
+      } catch (error) {
+        sendJson(res, 400, {
+          error: "project_content_search_unavailable",
+          message: error instanceof Error ? error.message : String(error)
+        });
+      }
+      return;
+    }
+
     if (req.method === "GET" && url.pathname === "/api/terminal/capability") {
       sendJson(res, 200, state.terminalRuntimeCapability);
       return;
@@ -1525,6 +1548,93 @@ function readProjectTree(project, { relativePath = "", search = "" } = {}) {
   };
 }
 
+function searchProjectContent(project, { query = "", include = "", exclude = "" } = {}) {
+  const root = resolve(project.path);
+  const needle = String(query ?? "").trim().toLowerCase();
+  if (!needle) {
+    return { projectId: project.id, query: "", results: [] };
+  }
+  if (needle.length < 2) {
+    throw new Error("Search text must be at least 2 characters.");
+  }
+  const includePatterns = splitGlobInput(include);
+  const excludePatterns = splitGlobInput(exclude);
+  const results = [];
+  const stats = { scannedFiles: 0, skippedFiles: 0 };
+  walkProjectFiles(root, root, (fullPath, relPath) => {
+    if (results.length >= 80 || stats.scannedFiles >= 600) return false;
+    if (includePatterns.length && !matchesAnyGlob(relPath, includePatterns)) return true;
+    if (excludePatterns.length && matchesAnyGlob(relPath, excludePatterns)) return true;
+    const fileStat = statSync(fullPath);
+    if (fileStat.size > 512_000 || isProbablyBinary(fullPath)) {
+      stats.skippedFiles += 1;
+      return true;
+    }
+    let text = "";
+    try {
+      text = readFileSync(fullPath, "utf8");
+    } catch {
+      stats.skippedFiles += 1;
+      return true;
+    }
+    stats.scannedFiles += 1;
+    const lines = text.split(/\r?\n/);
+    for (let index = 0; index < lines.length; index += 1) {
+      const line = lines[index];
+      if (!line.toLowerCase().includes(needle)) continue;
+      results.push({
+        path: relPath,
+        line: index + 1,
+        preview: line.trim().slice(0, 180)
+      });
+      if (results.length >= 80) return false;
+    }
+    return true;
+  });
+  return { projectId: project.id, query, include, exclude, results, stats };
+}
+
+function walkProjectFiles(root, directory, visit) {
+  for (const entry of readdirSync(directory, { withFileTypes: true })) {
+    if ([".git", "node_modules", "dist", "build", ".next", "coverage"].includes(entry.name)) continue;
+    const fullPath = resolve(directory, entry.name);
+    const relPath = relative(root, fullPath).replaceAll("\\", "/");
+    if (entry.isDirectory()) {
+      const shouldContinue = walkProjectFiles(root, fullPath, visit);
+      if (!shouldContinue) return false;
+      continue;
+    }
+    if (!entry.isFile()) continue;
+    const shouldContinue = visit(fullPath, relPath);
+    if (!shouldContinue) return false;
+  }
+  return true;
+}
+
+function splitGlobInput(value) {
+  return String(value ?? "")
+    .split(/[,\s]+/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function matchesAnyGlob(path, patterns) {
+  return patterns.some((pattern) => globToRegExp(pattern).test(path));
+}
+
+function globToRegExp(pattern) {
+  const globstar = "__MYAGENTTOOL_GLOBSTAR__";
+  const escaped = String(pattern)
+    .replace(/[.+^${}()|[\]\\]/g, "\\$&")
+    .replace(/\*\*/g, globstar)
+    .replace(/\*/g, "[^/]*");
+  return new RegExp(`^${escaped.replaceAll(globstar, ".*")}$`, "i");
+}
+
+function isProbablyBinary(path) {
+  return /\.(png|jpe?g|gif|webp|ico|pdf|zip|gz|tar|7z|exe|dll|pdb|woff2?|ttf|otf)$/i.test(path);
+}
+
 function safeProjectPath(project, relativePath = "") {
   const root = resolve(project.path);
   const target = resolve(root, String(relativePath ?? ""));
@@ -1621,14 +1731,18 @@ function restorePersistentState() {
   if (snapshot?.schemaVersion !== stateSchemaVersion) {
     return;
   }
-  const restoredProjects = Array.isArray(snapshot.projects)
+  let restoredProjects = Array.isArray(snapshot.projects)
     ? snapshot.projects.filter((project) => project?.id && project?.path && existsSync(project.path))
     : [];
+  restoredProjects = restoredProjects.filter((project) => project.id !== defaultProject.id || sameProjectPath(project.path, defaultProject.path));
+  let defaultPathProject = restoredProjects.find((project) => sameProjectPath(project.path, defaultProject.path));
+  if (!defaultPathProject) {
+    restoredProjects.unshift(defaultProject);
+    defaultPathProject = defaultProject;
+  }
   if (restoredProjects.length) {
     state.projects = restoredProjects;
-    state.currentProjectId = restoredProjects.some((project) => project.id === snapshot.currentProjectId)
-      ? snapshot.currentProjectId
-      : restoredProjects[0].id;
+    state.currentProjectId = defaultPathProject.id;
   }
   for (const key of [
     "invocations",
