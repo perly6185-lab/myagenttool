@@ -1528,25 +1528,27 @@ button.secondary {
 .repo-panel-tabs {
   display: flex;
   align-items: center;
-  gap: 18px;
+  gap: 10px;
   margin: -6px -8px 10px;
   border-bottom: 1px solid #e3e7e5;
-  padding: 0 8px 10px;
+  padding: 0 8px 8px;
 }
 
 .repo-panel-tabs button,
 .repo-panel-actions button {
   min-height: 28px;
   border: 0;
-  padding: 0 2px;
+  border-radius: 7px;
+  padding: 0 8px;
   background: transparent;
   color: #8a9490;
   font-size: 19px;
 }
 
 .repo-panel-tabs button[data-active="true"] {
+  background: #eef3f0;
   color: #0e1714;
-  box-shadow: inset 0 -2px 0 #0e1714;
+  box-shadow: inset 0 -2px 0 #0e1714, 0 1px 3px rgb(20 28 25 / 8%);
 }
 
 .repo-panel-header {
