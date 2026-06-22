@@ -48,11 +48,11 @@ if (process.argv.includes("--check")) {
     throw new Error("Codex child local env injection is not configured.");
   }
   const commandJsonPlan = codexCommandPlan({ command: "codex" }, ["exec", "--json", "{{task}}"], "fixture-task");
-  if (!isCodexCliCommand(commandJsonPlan.command) || commandJsonPlan.args[0] !== "exec") {
+  if (commandJsonPlan.command !== process.execPath || !commandJsonPlan.args[0]?.toLowerCase().endsWith("\\node_modules\\@openai\\codex\\bin\\codex.js") || commandJsonPlan.args[1] !== "exec") {
     throw new Error("Codex command plan is not configured.");
   }
-  const codexCommand = resolveCodexCommand("codex", { PATH: `${resolve(process.env.APPDATA ?? "", "npm")}${delimiter}${process.env.PATH ?? ""}` });
-  if (process.platform === "win32" && !codexCommand.toLowerCase().endsWith("\\codex.cmd")) {
+  const codexCommand = resolveCodexCommandPlan("codex", [], { PATH: `${resolve(process.env.APPDATA ?? "", "npm")}${delimiter}${process.env.PATH ?? ""}`, APPDATA: process.env.APPDATA });
+  if (process.platform === "win32" && !codexCommand.args[0]?.toLowerCase().endsWith("\\node_modules\\@openai\\codex\\bin\\codex.js")) {
     throw new Error("Codex command resolution should prefer the user npm shim on Windows.");
   }
   const shellPlan = resolveTerminalShell(process.platform === "win32" ? "powershell" : "bash");
@@ -867,10 +867,7 @@ function codexArgsTemplate(adapter, payload) {
 function codexCommandPlan(adapter, renderedArgs, task) {
   const commandPrefix = parseCodexCommandJson();
   if (!commandPrefix) {
-    return {
-      command: resolveCodexCommand(adapter.command),
-      args: renderedArgs
-    };
+    return resolveCodexCommandPlan(adapter.command, renderedArgs);
   }
   const [command, ...prefixArgs] = commandPrefix;
   const args = [...prefixArgs, ...dedupeCommandPrefixArgs(prefixArgs, renderedArgs)];
@@ -880,28 +877,41 @@ function codexCommandPlan(adapter, renderedArgs, task) {
   };
 }
 
-function resolveCodexCommand(command, env = process.env) {
+function resolveCodexCommandPlan(command, args, env = process.env) {
   const rawCommand = String(command ?? "codex");
   if (!isCodexCliCommand(rawCommand) || rawCommand.includes("\\") || rawCommand.includes("/")) {
-    return rawCommand;
+    return { command: rawCommand, args };
   }
   if (process.platform !== "win32") {
-    return rawCommand;
+    return { command: rawCommand, args };
   }
-  const appDataNpm = env.APPDATA ? resolve(String(env.APPDATA), "npm", "codex.cmd") : null;
-  if (appDataNpm && existsSync(appDataNpm)) {
-    return appDataNpm;
+  const appDataNpm = env.APPDATA ? resolve(String(env.APPDATA), "npm") : null;
+  const appDataPlan = appDataNpm ? codexNpmShimPlan(appDataNpm, args) : null;
+  if (appDataPlan) {
+    return appDataPlan;
   }
   for (const pathEntry of String(env.PATH ?? "").split(delimiter)) {
     if (!pathEntry) {
       continue;
     }
-    const candidate = resolve(pathEntry, "codex.cmd");
-    if (existsSync(candidate)) {
-      return candidate;
+    const plan = codexNpmShimPlan(pathEntry, args);
+    if (plan) {
+      return plan;
     }
   }
-  return rawCommand;
+  return { command: rawCommand, args };
+}
+
+function codexNpmShimPlan(directory, args) {
+  const commandShim = resolve(directory, "codex.cmd");
+  const script = resolve(directory, "node_modules", "@openai", "codex", "bin", "codex.js");
+  if (!existsSync(commandShim) || !existsSync(script)) {
+    return null;
+  }
+  return {
+    command: process.execPath,
+    args: [script, ...args]
+  };
 }
 
 function parseCodexCommandJson() {
@@ -1248,7 +1258,7 @@ function probeCodexCli(adapter) {
   const commandPlan = codexCommandPlan({ ...adapter, command: adapter.command ?? "codex" }, helpArgs, "");
   const command = codexCommandOverride === "fixture"
     ? process.execPath
-    : codexCommandOverride || resolveCodexCommand(commandPlan.command);
+    : codexCommandOverride || commandPlan.command;
   const args = codexCommandOverride === "fixture"
     ? [codexFixtureAgentPath, "exec", "--help"]
     : commandPlan.args;
