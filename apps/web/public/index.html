@@ -4,6 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>MyAgentTool Task Workspace</title>
+    <link rel="stylesheet" href="/vendor/xterm/css/xterm.css" />
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
@@ -16,20 +17,75 @@
         <div class="connection" id="connectionStatus">Connecting</div>
       </header>
 
-      <section class="workspace" aria-label="Task workspace">
-        <section class="command-panel">
-          <div class="section-heading">
-            <p class="step-label">Task</p>
-            <h2>What should your computer do?</h2>
+      <section class="workspace" aria-label="Agent workspace">
+        <aside class="workspace-nav" aria-label="Agent workspace surfaces">
+          <div class="section-heading compact">
+            <p class="step-label">Project</p>
+            <h2 id="currentProjectName">myagenttool</h2>
           </div>
-          <p id="modeSummary" class="mode-summary">Run a registered local agent on this computer.</p>
-          <textarea
-            id="taskInput"
-            aria-label="Task"
-            rows="7"
-          >Summarize the local demo state and confirm the bridge is working.</textarea>
+          <p id="currentProjectPath" class="mode-summary project-path">Current project</p>
+          <div id="projectList" class="project-list" aria-label="Projects"></div>
+          <details class="project-add">
+            <summary>Add project</summary>
+            <label>
+              <span>Name</span>
+              <input id="projectNameInput" type="text" placeholder="Project name" />
+            </label>
+            <label>
+              <span>Path</span>
+              <input id="projectPathInput" type="text" placeholder="D:\github\project" />
+            </label>
+            <div class="project-actions">
+              <button id="addProjectButton" type="button">Add</button>
+              <button id="removeProjectButton" type="button" class="secondary">Remove current</button>
+            </div>
+            <p id="projectRegistryStatus" class="action-note" aria-live="polite"></p>
+          </details>
+          <details class="project-add">
+            <summary>Create worktree</summary>
+            <label>
+              <span>Name</span>
+              <input id="worktreeNameInput" type="text" placeholder="Task name" />
+            </label>
+            <label>
+              <span>Branch</span>
+              <input id="worktreeBranchInput" type="text" placeholder="myagenttool/task-name" />
+            </label>
+            <label>
+              <span>Base</span>
+              <input id="worktreeBaseInput" type="text" placeholder="HEAD" />
+            </label>
+            <label>
+              <span>Path</span>
+              <input id="worktreePathInput" type="text" placeholder="Optional target path" />
+            </label>
+            <div class="project-actions">
+              <button id="createWorktreeButton" type="button">Create</button>
+            </div>
+            <p id="worktreeStatus" class="action-note" aria-live="polite"></p>
+          </details>
+          <nav class="mode-tabs" aria-label="Agent workspace surfaces">
+            <button type="button" data-workspace-mode="run_task">Run</button>
+            <button type="button" data-workspace-mode="session">Session</button>
+            <button type="button" data-workspace-mode="diff">Diff</button>
+            <button type="button" data-workspace-mode="terminal">Terminal</button>
+            <button type="button" data-workspace-mode="evidence_center">Evidence</button>
+            <button type="button" data-workspace-mode="approval">Approval</button>
+            <button type="button" data-workspace-mode="setup">Setup</button>
+          </nav>
+        </aside>
 
-          <div class="selectors" aria-label="Run target">
+        <section id="commandPanel" class="command-panel codex-chat-shell" aria-label="Codex conversation">
+          <div class="chat-header">
+            <div>
+              <p class="step-label">Codex</p>
+              <h2 id="activityTitle">Ready to run</h2>
+              <p id="modeSummary" class="mode-summary">Run a registered local agent on this computer.</p>
+            </div>
+            <span class="state-badge" id="taskState">Waiting</span>
+          </div>
+
+          <div class="chat-toolbar" aria-label="Run target">
             <label>
               <span>Computer</span>
               <span class="select-shell">
@@ -44,87 +100,7 @@
                 <span id="agentSelectValue" class="select-value" aria-hidden="true">-</span>
               </span>
             </label>
-          </div>
-
-          <div class="agent-shortcuts" aria-label="Agent setup">
             <button id="addCodexButton" type="button" class="secondary">Select Codex CLI</button>
-            <p class="shortcut-note">Use the local Codex CLI when you want repository work with MyAgentTool activity and evidence tracking.</p>
-          </div>
-          <details class="agent-picker-details">
-            <summary>Available agents</summary>
-            <div id="agentChoiceList" class="agent-choice-list" aria-label="Available agents"></div>
-          </details>
-
-          <label id="codexSessionControl" class="session-control">
-            <span>Codex session</span>
-            <select id="codexSessionMode" aria-label="Codex session behavior">
-              <option value="new">Start new session</option>
-              <option value="continue_last">Continue last session</option>
-            </select>
-          </label>
-
-          <label id="codexWorkspaceControl" class="session-control">
-            <span>Workspace</span>
-            <select id="codexWorkspacePolicy" aria-label="Codex workspace policy">
-              <option value="current_repo">Current repo</option>
-              <option value="new_worktree">New isolated worktree</option>
-              <option value="existing_worktree">Existing worktree</option>
-            </select>
-          </label>
-
-          <details class="compare-control">
-            <summary>Compare agents</summary>
-            <p class="shortcut-note">Run the same task with multiple agents and compare their results.</p>
-            <div id="compareAgentList" class="compare-agent-list" aria-label="Compare agents"></div>
-          </details>
-
-          <div class="actions">
-            <button id="runButton" type="button">Run on this computer</button>
-            <button id="cancelButton" type="button" class="secondary">Cancel task</button>
-          </div>
-          <p id="runBlockReason" class="action-note" aria-live="polite"></p>
-
-          <div class="review-strip" aria-label="Pre-run review">
-            <div>
-              <span>Safety</span>
-              <strong id="safetySummary">Demo agent only</strong>
-            </div>
-            <div>
-              <span>Data</span>
-              <strong id="dataSummary">No user files by default</strong>
-            </div>
-            <div>
-              <span>Cost</span>
-              <strong id="costSummary">No billing in demo</strong>
-            </div>
-            <div>
-              <span>Cancellation</span>
-              <strong id="cancellationSummary">Can request stop</strong>
-            </div>
-          </div>
-
-          <details class="advanced-details">
-            <summary>Technical details</summary>
-            <dl class="facts">
-              <div><dt>Adapter</dt><dd id="adapterName">-</dd></div>
-              <div><dt>Lifecycle</dt><dd id="agentLifecycle">-</dd></div>
-              <div><dt>Task ID</dt><dd id="invocationId">-</dd></div>
-              <div><dt>Trace</dt><dd id="traceId">-</dd></div>
-              <div><dt>State</dt><dd id="technicalState">-</dd></div>
-              <div><dt>Session</dt><dd id="sessionMode">-</dd></div>
-              <div><dt>Task preview</dt><dd id="taskPreview">-</dd></div>
-              <div><dt>Execution</dt><dd id="executionPreview">-</dd></div>
-            </dl>
-          </details>
-        </section>
-
-        <section class="run-panel" aria-label="Task activity">
-          <div class="section-heading horizontal">
-            <div>
-              <p class="step-label">Activity</p>
-              <h2 id="activityTitle">Ready to run</h2>
-            </div>
-            <span class="state-badge" id="taskState">Waiting</span>
           </div>
 
           <section id="approvalPanel" class="approval-panel" aria-label="Local approval" hidden>
@@ -145,7 +121,7 @@
             </div>
           </section>
 
-          <div class="timeline" id="eventList" aria-live="polite"></div>
+          <div class="timeline agent-transcript" id="eventList" aria-live="polite" aria-label="Agent workspace transcript"></div>
           <section id="comparePanel" class="compare-panel" aria-label="Agent comparison" hidden>
             <div class="section-heading compact">
               <p class="step-label">Compare</p>
@@ -153,9 +129,177 @@
             </div>
             <div id="compareList" class="compare-list" aria-live="polite"></div>
           </section>
+
+          <div class="chat-composer" aria-label="Task composer">
+            <div class="composer-card">
+              <input id="attachmentFileInput" type="file" multiple hidden />
+              <input id="attachmentFolderInput" type="file" webkitdirectory multiple hidden />
+              <div id="attachmentTray" class="attachment-tray" aria-label="Attached files" hidden></div>
+              <textarea
+                id="taskInput"
+                aria-label="Task"
+                rows="3"
+                placeholder="Ask for follow-up changes"
+              >Summarize the local demo state and confirm the bridge is working.</textarea>
+
+              <div class="composer-bar">
+                <details id="addContextMenu" class="composer-menu add-context-menu">
+                  <summary class="icon-button composer-add" aria-label="Add files and more">+</summary>
+                  <div class="composer-popover add-context-popover" role="menu" aria-label="Add files and more">
+                    <p class="popover-title">Add</p>
+                    <button type="button" class="composer-menu-option" data-add-action="files">
+                      <span>Files and folders</span>
+                      <small>Select files to include in the next task.</small>
+                    </button>
+                    <button type="button" class="composer-menu-option" data-add-action="folder">
+                      <span>Folder</span>
+                      <small>Select a folder and include readable files.</small>
+                    </button>
+                    <button type="button" class="composer-menu-option" data-add-action="goal">
+                      <span>Goal</span>
+                      <small>Set a goal Codex can keep working towards.</small>
+                    </button>
+                    <button type="button" class="composer-menu-option" data-add-action="plan">
+                      <span>Plan mode</span>
+                      <small>Ask Codex to plan before making changes.</small>
+                    </button>
+                    <div class="popover-search" aria-label="Files and chats search">Type to search files or chats</div>
+                  </div>
+                </details>
+                <details id="permissionMenu" class="permission-menu">
+                  <summary class="composer-chip permission-trigger" aria-label="Permission mode">
+                    <span id="permissionModeLabel">Ask for approval</span>
+                  </summary>
+                  <div class="permission-popover" role="menu" aria-label="Permission mode">
+                    <button type="button" class="permission-option" data-permission-mode="ask" aria-selected="true">
+                      <span>Ask for approval</span>
+                      <small>Always ask before risky shell or file actions.</small>
+                    </button>
+                    <button type="button" class="permission-option" data-permission-mode="auto">
+                      <span>Approve for me</span>
+                      <small>Only ask when MyAgentTool detects higher risk.</small>
+                    </button>
+                    <button type="button" class="permission-option" data-permission-mode="full">
+                      <span>Full access</span>
+                      <small>Unrestricted mode request; still subject to backend policy.</small>
+                    </button>
+                  </div>
+                </details>
+                <label id="codexSessionControl" class="session-control composer-select">
+                  <span>Session</span>
+                  <select id="codexSessionMode" aria-label="Codex session behavior">
+                    <option value="new">Start new session</option>
+                    <option value="continue_last">Continue last session</option>
+                  </select>
+                </label>
+
+                <label id="codexWorkspaceControl" class="session-control composer-select">
+                  <span>Workspace</span>
+                  <select id="codexWorkspacePolicy" aria-label="Codex workspace policy">
+                    <option value="current_repo">Current repo</option>
+                    <option value="new_worktree">New isolated worktree</option>
+                    <option value="existing_worktree">Existing worktree</option>
+                  </select>
+                </label>
+                <details id="modelMenu" class="composer-menu model-menu">
+                  <summary class="composer-chip model-trigger" aria-label="Model and reasoning">
+                    <span id="modelModeLabel">5.5 Extra High</span>
+                  </summary>
+                  <div class="composer-popover model-popover" role="menu" aria-label="Model and reasoning">
+                    <p class="popover-title">Reasoning</p>
+                    <button type="button" class="composer-menu-option compact" data-reasoning-mode="low">
+                      <span>Low</span>
+                    </button>
+                    <button type="button" class="composer-menu-option compact" data-reasoning-mode="medium">
+                      <span>Medium</span>
+                    </button>
+                    <button type="button" class="composer-menu-option compact" data-reasoning-mode="high">
+                      <span>High</span>
+                    </button>
+                    <button type="button" class="composer-menu-option compact" data-reasoning-mode="extra_high" aria-selected="true">
+                      <span>Extra High</span>
+                    </button>
+                    <div class="model-family">GPT-5.5</div>
+                  </div>
+                </details>
+                <button id="runButton" type="button" class="send-button" aria-label="Send task">↑</button>
+              </div>
+            </div>
+
+            <div class="composer-footer">
+              <button id="cancelButton" type="button" class="secondary">Cancel task</button>
+            </div>
+            <p id="runBlockReason" class="action-note" aria-live="polite"></p>
+          </div>
+
+          <details class="chat-details">
+            <summary>Run details</summary>
+            <div class="review-strip" aria-label="Pre-run review">
+              <div>
+                <span>Safety</span>
+                <strong id="safetySummary">Demo agent only</strong>
+              </div>
+              <div>
+                <span>Data</span>
+                <strong id="dataSummary">No user files by default</strong>
+              </div>
+              <div>
+                <span>Cost</span>
+                <strong id="costSummary">No billing in demo</strong>
+              </div>
+              <div>
+                <span>Cancellation</span>
+                <strong id="cancellationSummary">Can request stop</strong>
+              </div>
+            </div>
+
+            <details class="agent-picker-details">
+              <summary>Available agents</summary>
+              <div id="agentChoiceList" class="agent-choice-list" aria-label="Available agents"></div>
+            </details>
+
+            <details class="compare-control">
+              <summary>Compare agents</summary>
+              <p class="shortcut-note">Run the same task with multiple agents and compare their results.</p>
+              <div id="compareAgentList" class="compare-agent-list" aria-label="Compare agents"></div>
+            </details>
+
+            <details class="advanced-details">
+              <summary>Technical details</summary>
+              <dl class="facts">
+                <div><dt>Adapter</dt><dd id="adapterName">-</dd></div>
+                <div><dt>Lifecycle</dt><dd id="agentLifecycle">-</dd></div>
+                <div><dt>Task ID</dt><dd id="invocationId">-</dd></div>
+                <div><dt>Trace</dt><dd id="traceId">-</dd></div>
+                <div><dt>State</dt><dd id="technicalState">-</dd></div>
+                <div><dt>Session</dt><dd id="sessionMode">-</dd></div>
+                <div><dt>Task preview</dt><dd id="taskPreview">-</dd></div>
+                <div><dt>Execution</dt><dd id="executionPreview">-</dd></div>
+              </dl>
+            </details>
+          </details>
+        </section>
+
+        <section id="runPanel" class="run-panel" aria-label="Task activity" hidden></section>
         </section>
 
         <aside class="context-panel" aria-label="Device, result, and audit">
+          <section id="projectBrowserContext" class="context-section">
+            <div class="section-heading horizontal compact">
+              <div>
+                <p class="step-label">Project</p>
+                <h2>Files</h2>
+              </div>
+              <button id="refreshProjectTreeButton" type="button" class="secondary compact-button">Refresh</button>
+            </div>
+            <label class="project-search">
+              <span>Search</span>
+              <input id="projectFileSearch" type="search" placeholder="Find files" />
+            </label>
+            <p id="projectTreeSummary" class="mode-summary">Registered project files appear here.</p>
+            <div id="projectTreeList" class="project-tree-list" aria-live="polite"></div>
+          </section>
+
           <section class="context-section">
             <div class="section-heading compact">
               <p class="step-label">Computer</p>
@@ -208,6 +352,7 @@
             </div>
             <div class="session-history-filters" aria-label="Managed session filters">
               <button type="button" data-session-filter="all">All</button>
+              <button type="button" data-session-filter="project">Project</button>
               <button type="button" data-session-filter="running">Running</button>
               <button type="button" data-session-filter="completed">Completed</button>
               <button type="button" data-session-filter="failed">Failed</button>
@@ -276,6 +421,37 @@
               <div><dt>Files</dt><dd id="managedEvidenceFiles">-</dd></div>
               <div><dt>Approval</dt><dd id="managedEvidenceApproval">-</dd></div>
             </dl>
+          </section>
+
+          <section id="terminalSurfaceContext" class="context-section terminal-surface" hidden>
+            <div class="section-heading compact">
+              <p class="step-label">Terminal</p>
+              <h2>Managed terminal</h2>
+            </div>
+            <div class="terminal-status-bar" aria-label="Managed terminal status">
+              <span id="terminalRuntimeStatus">#144-#150 pending</span>
+              <span id="terminalShellSummary">Managed PTY not connected</span>
+              <span id="terminalCwdSummary">No managed cwd registered</span>
+              <span id="terminalSessionSummary">No terminal session registered</span>
+            </div>
+            <div id="terminalOutputPreview" class="terminal-screen" aria-label="Interactive managed terminal output"></div>
+            <div class="agent-actions" aria-label="Managed terminal actions">
+              <button id="createTerminalSessionButton" type="button" class="secondary">Check managed runtime</button>
+              <button id="resizeTerminalButton" type="button" class="secondary">Resize</button>
+              <button id="closeTerminalSessionButton" type="button" class="secondary">Close session</button>
+            </div>
+            <p id="terminalActionStatus" class="action-note">Attach controls stay disabled until a managed PTY implementation is available.</p>
+            <div id="terminalProgressList" class="terminal-progress-list" aria-live="polite"></div>
+            <details class="terminal-details">
+              <summary>Runtime details</summary>
+              <dl class="facts">
+                <div><dt>Contract</dt><dd>docs/engineering/MANAGED_TERMINAL_JOIN_CONTRACT.md</dd></div>
+                <div><dt>SSH</dt><dd id="terminalSshSummary">Connector not connected</dd></div>
+                <div><dt>Codex link</dt><dd id="terminalCodexSummary">No Codex session linked</dd></div>
+                <div><dt>Evidence</dt><dd id="terminalEvidenceSummary">No terminal evidence</dd></div>
+                <div><dt>Policy</dt><dd id="terminalPolicySummary">Do not present unmanaged terminal output as managed proof</dd></div>
+              </dl>
+            </details>
           </section>
 
           <section id="evidenceCenterContext" class="context-section" hidden>
@@ -368,7 +544,7 @@
           <section id="importSessionContext" class="context-section" hidden>
             <div class="section-heading compact">
               <p class="step-label">Import</p>
-              <h2>After-the-fact evidence</h2>
+              <h2>Import evidence</h2>
             </div>
             <textarea
               id="importEvidenceSummary"
@@ -408,8 +584,92 @@
               <div class="discovery-actions">
                 <button id="discoverButton" type="button" class="secondary">Discover agents</button>
               </div>
-              <p id="discoverySummary" class="action-note">Discovery is conservative and only checks known or user-provided sources.</p>
-              <div id="candidateList" class="candidate-list" aria-live="polite"></div>
+            <p id="discoverySummary" class="action-note">Discovery is conservative and only checks known or user-provided sources.</p>
+            <div id="candidateList" class="candidate-list" aria-live="polite"></div>
+            </section>
+
+            <section class="ssh-target-panel" aria-label="SSH runtime target">
+              <div class="section-heading compact">
+                <p class="step-label">SSH target</p>
+                <h2>Remote runtime preflight</h2>
+              </div>
+              <p class="action-note">Register host, auth reference, and trust policy before any remote relay work. Plaintext keys are not stored here.</p>
+              <div class="ssh-target-fields">
+                <label>
+                  <span>Host</span>
+                  <input id="sshTargetHost" type="text" value="dev.example.internal" aria-label="SSH host" />
+                </label>
+                <label>
+                  <span>Port</span>
+                  <input id="sshTargetPort" type="number" value="22" min="1" max="65535" aria-label="SSH port" />
+                </label>
+                <label>
+                  <span>User</span>
+                  <input id="sshTargetUser" type="text" value="dev" aria-label="SSH user" />
+                </label>
+                <label>
+                  <span>Auth</span>
+                  <select id="sshTargetAuthMethod" aria-label="SSH auth method">
+                    <option value="ssh_agent">SSH agent</option>
+                    <option value="private_key_ref">Private key reference</option>
+                    <option value="password_ref">Password reference</option>
+                    <option value="managed_identity">Managed identity</option>
+                  </select>
+                </label>
+                <label>
+                  <span>Credential ref</span>
+                  <input id="sshTargetCredentialRef" type="text" value="ssh-agent:default" aria-label="SSH credential reference" />
+                </label>
+                <label>
+                  <span>Known host</span>
+                  <select id="sshTargetKnownHostPolicy" aria-label="SSH known host policy">
+                    <option value="strict">Strict known_hosts</option>
+                    <option value="pinned_fingerprint">Pinned fingerprint</option>
+                    <option value="manual_review">Manual review</option>
+                  </select>
+                </label>
+                <label>
+                  <span>Fingerprint</span>
+                  <input id="sshTargetFingerprint" type="text" placeholder="SHA256:..." aria-label="SSH host fingerprint" />
+                </label>
+                <label>
+                  <span>Workspace root</span>
+                  <input id="sshTargetWorkspaceRoot" type="text" value="/srv/myagenttool" aria-label="SSH workspace root" />
+                </label>
+                <label>
+                  <span>Platform</span>
+                  <select id="sshTargetPlatformHint" aria-label="SSH platform hint">
+                    <option value="linux">Linux</option>
+                    <option value="macos">macOS</option>
+                    <option value="windows">Windows</option>
+                    <option value="unknown">Unknown</option>
+                  </select>
+                </label>
+                <label>
+                  <span>Key selection</span>
+                  <select id="sshTargetKeySelection" aria-label="SSH key selection">
+                    <option value="ssh_agent_default">SSH agent default</option>
+                    <option value="explicit_key_ref">Explicit key reference</option>
+                    <option value="managed_identity">Managed identity</option>
+                  </select>
+                </label>
+                <label class="check-row">
+                  <input id="sshTargetAgentForwarding" type="checkbox" />
+                  <span>Agent forwarding</span>
+                </label>
+              </div>
+              <div class="integration-actions">
+                <button id="registerSshTargetButton" type="button" class="secondary">Register target</button>
+                <button id="testSshTargetButton" type="button" class="secondary">Run preflight</button>
+              </div>
+              <p id="sshTargetSummary" class="action-note">SSH targets stay in setup until host trust, credential reference, and relay registration are reviewed.</p>
+              <dl class="facts">
+                <div><dt>Latest target</dt><dd id="sshTargetLatest">No SSH target registered</dd></div>
+                <div><dt>Trust</dt><dd id="sshTargetTrust">No host trust policy recorded</dd></div>
+                <div><dt>Credential</dt><dd id="sshTargetCredential">No credential reference recorded</dd></div>
+                <div><dt>Relay</dt><dd id="sshTargetRelay">Remote relay not enabled</dd></div>
+              </dl>
+              <pre id="sshTargetTestReport" class="diff-preview">SSH preflight results appear here.</pre>
             </section>
 
             <section class="integration-panel" aria-label="Integration builder">
@@ -525,19 +785,6 @@
             </dl>
           </section>
 
-          <section class="context-section management-section">
-            <div class="section-heading compact">
-              <p class="step-label">Manage</p>
-              <h2>Advanced tools</h2>
-            </div>
-            <nav class="mode-tabs" aria-label="Advanced workspace tools">
-              <button type="button" data-workspace-mode="run_task">Overview</button>
-              <button type="button" data-workspace-mode="managed_codex">Codex supervision</button>
-              <button type="button" data-workspace-mode="evidence_center">Evidence center</button>
-              <button type="button" data-workspace-mode="import_session">Import evidence</button>
-              <button type="button" data-workspace-mode="connect_agent">Connect agent</button>
-            </nav>
-          </section>
         </aside>
       </section>
     </main>

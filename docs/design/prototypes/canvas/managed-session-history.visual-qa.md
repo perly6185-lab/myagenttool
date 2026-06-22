@@ -1,6 +1,6 @@
 # Prototype Canvas Visual QA Checklist
 
-Generated: 2026-06-21T03:49:37.159Z
+Generated: 2026-06-21T08:12:01.574Z
 Source scene: docs/design/prototypes/canvas/managed-session-history.imported.scene.json
 Exported HTML: docs/design/prototypes/canvas/managed-session-history.export.html
 

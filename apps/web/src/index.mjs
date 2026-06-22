@@ -1,10 +1,14 @@
 import http from "node:http";
 import { createReadStream, existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { dirname, extname, join } from "node:path";
+import { dirname, extname, join, normalize } from "node:path";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const publicDir = join(__dirname, "..", "public");
+const vendorRoots = {
+  "/vendor/xterm/": join(__dirname, "..", "node_modules", "@xterm", "xterm"),
+  "/vendor/xterm-addon-fit/": join(__dirname, "..", "node_modules", "@xterm", "addon-fit")
+};
 const host = process.env.WEB_HOST ?? "127.0.0.1";
 const port = Number(process.env.WEB_PORT ?? 3000);
 
@@ -22,8 +26,15 @@ if (process.argv.includes("--check")) {
   const productFlowsPath = join(publicDir, "..", "..", "..", "docs", "design", "PRODUCT_FLOWS.md");
   const productFlows = existsSync(productFlowsPath) ? readFileSync(productFlowsPath, "utf8") : "";
   const expectations = [
-    [html, "What should your computer do?", "task composer"],
-    [html, "Run on this computer", "plain-language run action"],
+    [html, "Codex conversation", "task composer"],
+    [html, "id=\"runButton\"", "plain-language run action"],
+    [html, "class=\"composer-card\"", "Codex-style composer card"],
+    [html, "id=\"attachmentFileInput\"", "file attachment input"],
+    [html, "id=\"attachmentTray\"", "attachment tray"],
+    [html, "class=\"send-button\"", "Codex-style send action"],
+    [html, "id=\"addContextMenu\"", "Codex-style add context menu"],
+    [html, "id=\"permissionMenu\"", "Codex-style permission menu"],
+    [html, "id=\"modelMenu\"", "Codex-style model menu"],
     [html, "id=\"agentSelect\"", "agent selector"],
     [html, "id=\"deviceSelectValue\"", "visible device selector value"],
     [html, "id=\"agentSelectValue\"", "visible agent selector value"],
@@ -70,6 +81,16 @@ if (process.argv.includes("--check")) {
     [html, "id=\"feedbackChangeButton\"", "managed change feedback action"],
     [html, "id=\"approvalAttentionSummary\"", "approval needs-attention summary"],
     [html, "id=\"approvalQueueList\"", "approval queue list"],
+    [html, "id=\"terminalSurfaceContext\"", "managed terminal surface"],
+    [html, "id=\"terminalRuntimeStatus\"", "terminal runtime status"],
+    [html, "id=\"terminalSessionSummary\"", "terminal session summary"],
+    [html, "id=\"terminalCodexSummary\"", "terminal Codex session summary"],
+    [html, "id=\"terminalEvidenceSummary\"", "terminal evidence summary"],
+    [html, "id=\"terminalSshSummary\"", "terminal SSH summary"],
+    [html, "id=\"createTerminalSessionButton\"", "terminal runtime check action"],
+    [html, "id=\"resizeTerminalButton\"", "terminal resize action"],
+    [html, "id=\"terminalOutputPreview\"", "terminal output renderer"],
+    [html, "/vendor/xterm/css/xterm.css", "xterm stylesheet"],
     [html, "id=\"evidenceCenterContext\"", "evidence center context"],
     [html, "id=\"evidenceTypeFilter\"", "evidence type filter"],
     [html, "id=\"evidenceSourceFilter\"", "evidence source filter"],
@@ -89,14 +110,34 @@ if (process.argv.includes("--check")) {
     [html, "Cost", "cost review"],
     [html, "Cancellation", "cancellation review"],
     [html, "Technical details", "collapsed technical details"],
-    [html, "Activity", "activity timeline"],
+    [html, "id=\"eventList\"", "activity timeline"],
     [html, "Result", "result panel"],
     [html, "Audit", "audit panel"],
     [css, "@media (max-width: 760px)", "mobile layout guard"],
     [css, "overflow-wrap: anywhere", "long text overflow guard"],
     [css, ".select-value", "visible select value overlay"],
+    [css, ".codex-chat-shell", "Codex conversation shell styling"],
+    [css, ".chat-composer", "chat composer styling"],
+    [css, ".composer-card", "Codex-style composer card styling"],
+    [css, ".attachment-chip", "attachment chip styling"],
+    [css, ".send-button", "Codex-style send action styling"],
+    [css, ".composer-popover", "composer popover styling"],
+    [css, ".permission-popover", "permission popover styling"],
+    [css, ".inline-approval-actions", "inline approval action styling"],
     [js, "readableStatus", "plain-language state mapper"],
     [js, "readableEventType", "plain-language event mapper"],
+    [js, "submitTaskFromComposer", "chat composer submit handler"],
+    [js, "selectedPermissionMode", "composer permission mode state"],
+    [js, "selectedReasoningMode", "composer reasoning mode state"],
+    [js, "composerMetadata", "composer metadata payload"],
+    [js, "attachmentBoundary", "composer attachment boundary metadata"],
+    [js, "Composer image attachment", "composer image boundary prompt"],
+    [js, "ingestFiles", "composer file ingestion"],
+    [js, "buildTaskWithAttachments", "attachment task context builder"],
+    [js, "Codex --image", "execution preview attachment renderer"],
+    [js, "timelineRole", "conversation timeline role mapper"],
+    [js, "codexApprovalActions", "inline Codex approval action renderer"],
+    [js, "command_timeout", "Codex command timeout note renderer"],
     [js, "execution_preview", "execution preview event renderer"],
     [js, "sessionModeText", "session mode renderer"],
     [js, "latestExecutionPreview", "execution preview state lookup"],
@@ -144,6 +185,23 @@ if (process.argv.includes("--check")) {
     [js, "renderApprovalQueue", "approval queue renderer"],
     [js, "codexApprovalQueue", "approval queue public state"],
     [js, "renderEvidenceCenter", "evidence center renderer"],
+    [js, "renderTerminalSurface", "terminal surface renderer"],
+    [js, "new Terminal", "xterm terminal emulator"],
+    [js, "terminal.onData", "xterm direct input bridge"],
+    [js, "/api/terminal/sessions", "terminal session registry API action"],
+    [js, "/input", "terminal input API action"],
+    [js, "/resize", "terminal resize API action"],
+    [js, "terminalRuntimeCapability", "terminal runtime capability state"],
+    [js, "terminalEvidenceRecords", "terminal evidence state"],
+    [js, "ownerCodexSessionId", "terminal Codex session linkage"],
+    [js, "latestCodexSession", "latest Codex session terminal helper"],
+    [js, "renderSshTargets", "SSH target setup renderer"],
+    [js, "/api/ssh-targets", "SSH target registry API action"],
+    [js, "remoteRelayEnabled", "SSH remote relay disabled state"],
+    [html, "id=\"sshTargetHost\"", "SSH host setup field"],
+    [html, "id=\"sshTargetCredentialRef\"", "SSH credential reference field"],
+    [html, "id=\"sshTargetKnownHostPolicy\"", "SSH known host policy field"],
+    [html, "id=\"sshTargetTestReport\"", "SSH preflight report"],
     [js, "evidenceCenterRecords", "evidence center public state"],
     [js, "renderEvidenceFilterOptions", "evidence center dynamic filters"],
     [js, "codexSessionRegistryId", "evidence session filter field"],
@@ -170,28 +228,42 @@ if (process.argv.includes("--check")) {
     process.exit(1);
   }
 
-  const commandPanel = htmlBetween(html, '<section class="command-panel">', '<section class="run-panel"');
+  const commandPanel = htmlBetween(html, '<section id="commandPanel" class="command-panel codex-chat-shell"', '<section id="runPanel" class="run-panel"');
+  const workspaceNav = htmlBetween(html, '<aside class="workspace-nav"', "</aside>");
   const contextPanel = htmlBetween(html, '<aside class="context-panel"', "</aside>");
   const misplacedCommandPanelMarkers = [
     ["mode-tabs", "advanced navigation"],
     ["connectAgentPanel", "connect agent management panel"],
+    ["sshTargetHost", "SSH setup field"],
     ["Evidence center", "evidence center management action"],
     ["Import evidence", "import evidence management action"],
-    ["Codex supervision", "Codex supervision navigation"]
+    ["Managed sessions", "managed session history"]
   ].filter(([marker]) => commandPanel.includes(marker));
+  const missingWorkspaceSurfaceMarkers = [
+    ["data-workspace-mode=\"run_task\"", "Run workspace surface"],
+    ["data-workspace-mode=\"session\"", "Session workspace surface"],
+    ["data-workspace-mode=\"diff\"", "Diff workspace surface"],
+    ["data-workspace-mode=\"terminal\"", "Terminal workspace surface"],
+    ["data-workspace-mode=\"evidence_center\"", "Evidence workspace surface"],
+    ["data-workspace-mode=\"approval\"", "Approval workspace surface"],
+    ["data-workspace-mode=\"setup\"", "Setup workspace surface"]
+  ].filter(([marker]) => !workspaceNav.includes(marker));
   const missingContextPanelMarkers = [
-    ["mode-tabs", "advanced navigation in context rail"],
-    ["connectAgentPanel", "connect agent panel in context rail"],
-    ["Evidence center", "evidence center action in context rail"],
-    ["Import evidence", "import evidence action in context rail"],
-    ["Codex supervision", "Codex supervision action in context rail"]
+    ["connectAgentPanel", "setup-owned connect agent panel"],
+    ["SSH target", "setup-owned SSH target panel"],
+    ["Evidence center", "evidence-owned center"],
+    ["Import evidence", "evidence-owned import boundary"],
+    ["Managed sessions", "session-owned history"],
+    ["Managed terminal", "terminal-owned runtime surface"]
   ].filter(([marker]) => !contextPanel.includes(marker));
 
-  if (misplacedCommandPanelMarkers.length > 0 || missingContextPanelMarkers.length > 0) {
+  if (misplacedCommandPanelMarkers.length > 0 || missingWorkspaceSurfaceMarkers.length > 0 || missingContextPanelMarkers.length > 0) {
     const misplaced = misplacedCommandPanelMarkers.map(([, label]) => label);
+    const missingSurface = missingWorkspaceSurfaceMarkers.map(([, label]) => label);
     const missing = missingContextPanelMarkers.map(([, label]) => label);
     console.error(`[web:check] IA ownership violations: ${[
       misplaced.length ? `task composer contains ${misplaced.join(", ")}` : null,
+      missingSurface.length ? `workspace nav missing ${missingSurface.join(", ")}` : null,
       missing.length ? `context rail missing ${missing.join(", ")}` : null
     ].filter(Boolean).join("; ")}`);
     process.exit(1);
@@ -210,6 +282,13 @@ if (process.argv.includes("--check")) {
 
 const server = http.createServer((req, res) => {
   const url = new URL(req.url ?? "/", `http://${host}:${port}`);
+  const vendorPath = resolveVendorPath(url.pathname);
+  if (vendorPath) {
+    res.writeHead(200, { "Content-Type": contentType(vendorPath) });
+    createReadStream(vendorPath).pipe(res);
+    return;
+  }
+
   const pathname = url.pathname === "/" ? "/index.html" : url.pathname;
   const safePath = pathname.replace(/^\/+/, "");
   const filePath = join(publicDir, safePath);
@@ -224,6 +303,18 @@ const server = http.createServer((req, res) => {
   createReadStream(filePath).pipe(res);
 });
 
+function resolveVendorPath(pathname) {
+  for (const [prefix, root] of Object.entries(vendorRoots)) {
+    if (!pathname.startsWith(prefix)) continue;
+    const relativePath = pathname.slice(prefix.length);
+    if (!/^(?:lib|css)\//.test(relativePath)) return null;
+    const filePath = normalize(join(root, relativePath));
+    if (!filePath.startsWith(root) || !existsSync(filePath)) return null;
+    return filePath;
+  }
+  return null;
+}
+
 server.listen(port, host, () => {
   console.log(`[web] http://${host}:${port}`);
 });
@@ -233,6 +324,7 @@ function contentType(filePath) {
     case ".html":
       return "text/html; charset=utf-8";
     case ".js":
+    case ".mjs":
       return "text/javascript; charset=utf-8";
     case ".css":
       return "text/css; charset=utf-8";

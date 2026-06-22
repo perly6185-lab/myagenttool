@@ -74,6 +74,7 @@ textarea {
 }
 
 .toolbar button,
+.scene-picker select,
 .surface-button,
 .inspector input,
 .inspector textarea {
@@ -87,6 +88,21 @@ textarea {
   min-width: 40px;
   min-height: 36px;
   padding: 0 12px;
+}
+
+.scene-picker {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.scene-picker select {
+  min-height: 36px;
+  padding: 0 10px;
+  color: var(--ink);
 }
 
 .toolbar output {

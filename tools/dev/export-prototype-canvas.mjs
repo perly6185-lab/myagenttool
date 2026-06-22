@@ -4,21 +4,35 @@ import { fileURLToPath } from "node:url";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const canvasRoot = resolve(repoRoot, "docs/design/prototypes/canvas");
-const scenePath = resolve(canvasRoot, "managed-session-history.imported.scene.json");
-const htmlOutPath = resolve(canvasRoot, "managed-session-history.export.html");
-const checklistJsonPath = resolve(canvasRoot, "managed-session-history.visual-qa.json");
-const checklistMdPath = resolve(canvasRoot, "managed-session-history.visual-qa.md");
+const prototypes = [
+  {
+    id: "managed-session-history",
+    scenePath: resolve(canvasRoot, "managed-session-history.imported.scene.json"),
+    htmlOutPath: resolve(canvasRoot, "managed-session-history.export.html"),
+    checklistJsonPath: resolve(canvasRoot, "managed-session-history.visual-qa.json"),
+    checklistMdPath: resolve(canvasRoot, "managed-session-history.visual-qa.md"),
+  },
+  {
+    id: "agent-workspace",
+    scenePath: resolve(canvasRoot, "agent-workspace.imported.scene.json"),
+    htmlOutPath: resolve(canvasRoot, "agent-workspace.export.html"),
+    checklistJsonPath: resolve(canvasRoot, "agent-workspace.visual-qa.json"),
+    checklistMdPath: resolve(canvasRoot, "agent-workspace.visual-qa.md"),
+  },
+];
 
-const scene = JSON.parse(readFileSync(scenePath, "utf8"));
-const checklist = buildChecklist(scene);
+for (const prototype of prototypes) {
+  const scene = JSON.parse(readFileSync(prototype.scenePath, "utf8"));
+  const checklist = buildChecklist(scene, prototype);
 
-writeFileSync(htmlOutPath, exportHtml(scene));
-writeFileSync(checklistJsonPath, `${JSON.stringify(checklist, null, 2)}\n`);
-writeFileSync(checklistMdPath, checklistMarkdown(checklist));
+  writeFileSync(prototype.htmlOutPath, exportHtml(scene));
+  writeFileSync(prototype.checklistJsonPath, `${JSON.stringify(checklist, null, 2)}\n`);
+  writeFileSync(prototype.checklistMdPath, checklistMarkdown(checklist));
 
-console.log(`[export-prototype-canvas] wrote ${relative(htmlOutPath)}`);
-console.log(`[export-prototype-canvas] wrote ${relative(checklistJsonPath)}`);
-console.log(`[export-prototype-canvas] wrote ${relative(checklistMdPath)}`);
+  console.log(`[export-prototype-canvas] wrote ${relative(prototype.htmlOutPath)}`);
+  console.log(`[export-prototype-canvas] wrote ${relative(prototype.checklistJsonPath)}`);
+  console.log(`[export-prototype-canvas] wrote ${relative(prototype.checklistMdPath)}`);
+}
 
 function exportHtml(model) {
   const surfaces = model.surfaces
@@ -118,7 +132,7 @@ function regionHtml(region) {
   </article>`;
 }
 
-function buildChecklist(model) {
+function buildChecklist(model, prototype) {
   const surfaces = model.surfaces.map((surface) => ({
     id: surface.id,
     name: surface.name,
@@ -147,8 +161,8 @@ function buildChecklist(model) {
 
   return {
     generatedAt: new Date().toISOString(),
-    sourceScene: "docs/design/prototypes/canvas/managed-session-history.imported.scene.json",
-    exportedHtml: "docs/design/prototypes/canvas/managed-session-history.export.html",
+    sourceScene: relative(prototype.scenePath),
+    exportedHtml: relative(prototype.htmlOutPath),
     productFlow: model.productFlow,
     viewports: [
       { name: "desktop", width: 1366, height: 768 },

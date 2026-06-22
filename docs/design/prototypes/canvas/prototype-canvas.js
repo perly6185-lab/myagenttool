@@ -1,6 +1,6 @@
-const sceneUrl = "./managed-session-history.imported.scene.json";
 const state = {
   scene: null,
+  sceneUrl: "./managed-session-history.imported.scene.json",
   activeSurfaceId: "",
   selected: null,
   zoom: 1,
@@ -10,6 +10,7 @@ const state = {
 };
 
 const refs = {
+  scenePicker: document.querySelector("[data-scene-picker]"),
   surfaceList: document.querySelector("[data-surface-list]"),
   frame: document.querySelector("[data-canvas-frame]"),
   world: document.querySelector("[data-canvas-world]"),
@@ -23,6 +24,12 @@ const refs = {
   validationMessage: document.querySelector("[data-validation-message]"),
 };
 
+refs.scenePicker.addEventListener("change", () => {
+  state.sceneUrl = refs.scenePicker.value;
+  state.selected = null;
+  resetView();
+  loadScene();
+});
 document.querySelector("[data-zoom-in]").addEventListener("click", () => setZoom(state.zoom + 0.1));
 document.querySelector("[data-zoom-out]").addEventListener("click", () => setZoom(state.zoom - 0.1));
 document.querySelector("[data-reset-view]").addEventListener("click", resetView);
@@ -35,7 +42,7 @@ refs.frame.addEventListener("pointercancel", endPointer);
 loadScene();
 
 async function loadScene() {
-  const response = await fetch(sceneUrl);
+  const response = await fetch(state.sceneUrl);
   state.scene = await response.json();
   state.activeSurfaceId = state.scene.surfaces[0]?.id ?? "";
   renderSurfaceNav();
@@ -185,7 +192,19 @@ function validateSelection() {
 
   const label = refs.labelInput.value.toLowerCase();
   const forbidden = selection.region.whatNotToShow.some((term) => label.includes(term.toLowerCase()));
-  const taskComposerLeak = selection.region.id === "task-composer" && ["latest managed codex", "open session", "evidence center", "send follow-up", "session turns"].some((term) => label.includes(term));
+  const taskComposerLeak =
+    ["task-composer", "run-composer"].includes(selection.region.id) &&
+    [
+      "latest managed codex",
+      "open session",
+      "evidence center",
+      "send follow-up",
+      "session turns",
+      "terminal",
+      "approval inbox",
+      "setup",
+      "raw jsonl",
+    ].some((term) => label.includes(term));
 
   if (forbidden || taskComposerLeak) {
     message.textContent = "Blocked boundary: this label belongs in another surface.";

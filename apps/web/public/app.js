@@ -1,11 +1,51 @@
-const defaultApiBase = "http://127.0.0.1:3001";
+import { Terminal } from "/vendor/xterm/lib/xterm.mjs";
+import { FitAddon } from "/vendor/xterm-addon-fit/lib/addon-fit.mjs";
+
+const defaultApiBase = "http://127.0.0.1:5001";
 const apiBase = resolveApiBase();
 
 const els = {
   connectionStatus: document.querySelector("#connectionStatus"),
+  commandPanel: document.querySelector("#commandPanel"),
+  runPanel: document.querySelector("#runPanel"),
+  contextPanel: document.querySelector(".context-panel"),
+  terminalSurfaceContext: document.querySelector("#terminalSurfaceContext"),
+  terminalRuntimeStatus: document.querySelector("#terminalRuntimeStatus"),
+  terminalShellSummary: document.querySelector("#terminalShellSummary"),
+  terminalCwdSummary: document.querySelector("#terminalCwdSummary"),
+  terminalSshSummary: document.querySelector("#terminalSshSummary"),
+  terminalSessionSummary: document.querySelector("#terminalSessionSummary"),
+  terminalCodexSummary: document.querySelector("#terminalCodexSummary"),
+  terminalEvidenceSummary: document.querySelector("#terminalEvidenceSummary"),
+  terminalPolicySummary: document.querySelector("#terminalPolicySummary"),
+  createTerminalSessionButton: document.querySelector("#createTerminalSessionButton"),
+  resizeTerminalButton: document.querySelector("#resizeTerminalButton"),
+  closeTerminalSessionButton: document.querySelector("#closeTerminalSessionButton"),
+  terminalOutputPreview: document.querySelector("#terminalOutputPreview"),
+  terminalActionStatus: document.querySelector("#terminalActionStatus"),
+  terminalProgressList: document.querySelector("#terminalProgressList"),
   modeTabs: document.querySelector(".mode-tabs"),
   modeButtons: [...document.querySelectorAll("[data-workspace-mode]")],
   modeSummary: document.querySelector("#modeSummary"),
+  currentProjectName: document.querySelector("#currentProjectName"),
+  currentProjectPath: document.querySelector("#currentProjectPath"),
+  projectList: document.querySelector("#projectList"),
+  projectBrowserContext: document.querySelector("#projectBrowserContext"),
+  projectTreeSummary: document.querySelector("#projectTreeSummary"),
+  projectTreeList: document.querySelector("#projectTreeList"),
+  projectFileSearch: document.querySelector("#projectFileSearch"),
+  refreshProjectTreeButton: document.querySelector("#refreshProjectTreeButton"),
+  projectNameInput: document.querySelector("#projectNameInput"),
+  projectPathInput: document.querySelector("#projectPathInput"),
+  addProjectButton: document.querySelector("#addProjectButton"),
+  removeProjectButton: document.querySelector("#removeProjectButton"),
+  projectRegistryStatus: document.querySelector("#projectRegistryStatus"),
+  worktreeNameInput: document.querySelector("#worktreeNameInput"),
+  worktreeBranchInput: document.querySelector("#worktreeBranchInput"),
+  worktreeBaseInput: document.querySelector("#worktreeBaseInput"),
+  worktreePathInput: document.querySelector("#worktreePathInput"),
+  createWorktreeButton: document.querySelector("#createWorktreeButton"),
+  worktreeStatus: document.querySelector("#worktreeStatus"),
   connectAgentPanel: document.querySelector("#connectAgentPanel"),
   managedCodexContext: document.querySelector("#managedCodexContext"),
   managedPolicyContext: document.querySelector("#managedPolicyContext"),
@@ -94,6 +134,17 @@ const els = {
   agentSelectValue: document.querySelector("#agentSelectValue"),
   agentChoiceList: document.querySelector("#agentChoiceList"),
   taskInput: document.querySelector("#taskInput"),
+  attachmentFileInput: document.querySelector("#attachmentFileInput"),
+  attachmentFolderInput: document.querySelector("#attachmentFolderInput"),
+  attachmentTray: document.querySelector("#attachmentTray"),
+  addContextMenu: document.querySelector("#addContextMenu"),
+  addContextOptions: document.querySelectorAll("[data-add-action]"),
+  permissionMenu: document.querySelector("#permissionMenu"),
+  permissionModeLabel: document.querySelector("#permissionModeLabel"),
+  permissionOptions: document.querySelectorAll("[data-permission-mode]"),
+  modelMenu: document.querySelector("#modelMenu"),
+  modelModeLabel: document.querySelector("#modelModeLabel"),
+  reasoningOptions: document.querySelectorAll("[data-reasoning-mode]"),
   codexSessionControl: document.querySelector("#codexSessionControl"),
   codexSessionMode: document.querySelector("#codexSessionMode"),
   codexWorkspaceControl: document.querySelector("#codexWorkspaceControl"),
@@ -112,6 +163,25 @@ const els = {
   discoveryEndpoints: document.querySelector("#discoveryEndpoints"),
   discoverySummary: document.querySelector("#discoverySummary"),
   candidateList: document.querySelector("#candidateList"),
+  sshTargetHost: document.querySelector("#sshTargetHost"),
+  sshTargetPort: document.querySelector("#sshTargetPort"),
+  sshTargetUser: document.querySelector("#sshTargetUser"),
+  sshTargetAuthMethod: document.querySelector("#sshTargetAuthMethod"),
+  sshTargetCredentialRef: document.querySelector("#sshTargetCredentialRef"),
+  sshTargetKnownHostPolicy: document.querySelector("#sshTargetKnownHostPolicy"),
+  sshTargetFingerprint: document.querySelector("#sshTargetFingerprint"),
+  sshTargetWorkspaceRoot: document.querySelector("#sshTargetWorkspaceRoot"),
+  sshTargetPlatformHint: document.querySelector("#sshTargetPlatformHint"),
+  sshTargetKeySelection: document.querySelector("#sshTargetKeySelection"),
+  sshTargetAgentForwarding: document.querySelector("#sshTargetAgentForwarding"),
+  registerSshTargetButton: document.querySelector("#registerSshTargetButton"),
+  testSshTargetButton: document.querySelector("#testSshTargetButton"),
+  sshTargetSummary: document.querySelector("#sshTargetSummary"),
+  sshTargetLatest: document.querySelector("#sshTargetLatest"),
+  sshTargetTrust: document.querySelector("#sshTargetTrust"),
+  sshTargetCredential: document.querySelector("#sshTargetCredential"),
+  sshTargetRelay: document.querySelector("#sshTargetRelay"),
+  sshTargetTestReport: document.querySelector("#sshTargetTestReport"),
   integrationIntent: document.querySelector("#integrationIntent"),
   integrationAdapter: document.querySelector("#integrationAdapter"),
   integrationCommand: document.querySelector("#integrationCommand"),
@@ -178,7 +248,24 @@ let selectedManagedSessionId = null;
 let selectedManagedChangeEvidenceId = null;
 let selectedEvidenceRecordId = null;
 let managedSessionFilter = "all";
+let selectedPermissionMode = "ask";
+let selectedReasoningMode = "extra_high";
+let selectedAddAction = null;
+let composerAttachments = [];
+let projectTreePath = "";
+let projectTreeProjectId = null;
+let projectTreeData = null;
+let projectTreeLoading = false;
 const selectedCompareAgentIds = new Set();
+const terminalView = createTerminalView();
+let pendingTerminalInput = "";
+let terminalInputFlushTimer = null;
+let terminalInputSendChain = Promise.resolve();
+const attachmentLimits = {
+  maxFiles: 8,
+  maxTextBytes: 24_000,
+  maxImageBytes: 768_000
+};
 
 els.modeTabs.addEventListener("click", (event) => {
   const button = event.target.closest("button[data-workspace-mode]");
@@ -192,8 +279,117 @@ els.modeTabs.addEventListener("click", (event) => {
   render(lastState);
 });
 
-els.runButton.addEventListener("click", async () => {
-  const task = els.taskInput.value.trim();
+els.projectList.addEventListener("click", async (event) => {
+  const button = event.target.closest("button[data-project-id]");
+  if (!button) return;
+  els.projectRegistryStatus.textContent = "Switching project...";
+  try {
+    const response = await fetch(`${apiBase}/api/projects/${encodeURIComponent(button.dataset.projectId)}`, { method: "POST" });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.message ?? data.error ?? "Unable to switch project.");
+    els.projectRegistryStatus.textContent = `${data.project.name} selected.`;
+    await refresh();
+  } catch (error) {
+    els.projectRegistryStatus.textContent = error instanceof Error ? error.message : "Unable to switch project.";
+  }
+});
+
+els.addProjectButton.addEventListener("click", async () => {
+  const path = els.projectPathInput.value.trim();
+  if (!path) {
+    els.projectRegistryStatus.textContent = "Enter a project path.";
+    return;
+  }
+  els.addProjectButton.disabled = true;
+  els.projectRegistryStatus.textContent = "Adding project...";
+  try {
+    const response = await fetch(`${apiBase}/api/projects`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: els.projectNameInput.value.trim(), path })
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.message ?? data.error ?? "Unable to add project.");
+    els.projectNameInput.value = "";
+    els.projectPathInput.value = "";
+    els.projectRegistryStatus.textContent = `${data.project.name} added.`;
+    await refresh();
+  } catch (error) {
+    els.projectRegistryStatus.textContent = error instanceof Error ? error.message : "Unable to add project.";
+  } finally {
+    els.addProjectButton.disabled = false;
+  }
+});
+
+els.removeProjectButton.addEventListener("click", async () => {
+  const project = currentProject(lastState);
+  if (!project) return;
+  els.removeProjectButton.disabled = true;
+  els.projectRegistryStatus.textContent = "Removing project...";
+  try {
+    const response = await fetch(`${apiBase}/api/projects/${encodeURIComponent(project.id)}`, { method: "DELETE" });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.message ?? data.error ?? "Unable to remove project.");
+    els.projectRegistryStatus.textContent = `${project.name} removed.`;
+    await refresh();
+  } catch (error) {
+    els.projectRegistryStatus.textContent = error instanceof Error ? error.message : "Unable to remove project.";
+  } finally {
+    els.removeProjectButton.disabled = false;
+  }
+});
+
+els.createWorktreeButton.addEventListener("click", async () => {
+  const project = currentProject(lastState);
+  if (!project) {
+    els.worktreeStatus.textContent = "Select a source project first.";
+    return;
+  }
+  els.createWorktreeButton.disabled = true;
+  els.worktreeStatus.textContent = "Creating worktree...";
+  try {
+    const payload = {
+      projectId: project.id,
+      name: els.worktreeNameInput.value.trim(),
+      branchName: els.worktreeBranchInput.value.trim(),
+      baseBranch: els.worktreeBaseInput.value.trim(),
+      path: els.worktreePathInput.value.trim()
+    };
+    const response = await fetch(`${apiBase}/api/worktrees`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.message ?? data.error ?? "Unable to create worktree.");
+    els.worktreeNameInput.value = "";
+    els.worktreeBranchInput.value = "";
+    els.worktreeBaseInput.value = "";
+    els.worktreePathInput.value = "";
+    els.worktreeStatus.textContent = `${data.project.name} worktree selected.`;
+    await refresh();
+  } catch (error) {
+    els.worktreeStatus.textContent = error instanceof Error ? error.message : "Unable to create worktree.";
+  } finally {
+    els.createWorktreeButton.disabled = false;
+  }
+});
+
+els.refreshProjectTreeButton.addEventListener("click", () => loadProjectTree({ force: true }));
+els.projectFileSearch.addEventListener("input", () => {
+  clearTimeout(els.projectFileSearch._timer);
+  els.projectFileSearch._timer = setTimeout(() => loadProjectTree({ force: true }), 250);
+});
+els.projectTreeList.addEventListener("click", (event) => {
+  const button = event.target.closest("button[data-tree-path]");
+  if (!button) return;
+  if (button.dataset.kind !== "directory") return;
+  projectTreePath = button.dataset.treePath ?? "";
+  loadProjectTree({ force: true });
+});
+
+async function submitTaskFromComposer() {
+  const task = buildTaskWithAttachments();
   if (!task) return;
 
   els.runButton.disabled = true;
@@ -208,14 +404,18 @@ els.runButton.addEventListener("click", async () => {
         agentIds: [selectedAgentId, ...compareAgentIds],
         options: {
           codexSessionMode: els.codexSessionMode.value,
-          codexWorkspacePolicy: els.codexWorkspacePolicy.value
+          codexWorkspacePolicy: els.codexWorkspacePolicy.value,
+          approvalMode: selectedPermissionMode,
+          metadata: composerMetadata()
         }
       } : {
         task,
         agentId: selectedAgentId,
         options: {
           codexSessionMode: els.codexSessionMode.value,
-          codexWorkspacePolicy: els.codexWorkspacePolicy.value
+          codexWorkspacePolicy: els.codexWorkspacePolicy.value,
+          approvalMode: selectedPermissionMode,
+          metadata: composerMetadata()
         }
       })
     });
@@ -224,6 +424,7 @@ els.runButton.addEventListener("click", async () => {
       throw new Error(data.message ?? data.error ?? "Unable to start task.");
     }
     currentInvocationId = data.invocation?.id ?? data.compareRun?.childInvocationIds?.[0] ?? null;
+    resetComposerAfterSubmit();
     await refresh();
   } catch (error) {
     els.resultTitle.textContent = "Could not start";
@@ -231,9 +432,235 @@ els.runButton.addEventListener("click", async () => {
   } finally {
     updateActions(lastState, currentInvocation());
   }
-});
+}
+
+function resetComposerAfterSubmit() {
+  els.taskInput.value = "";
+  composerAttachments = [];
+  selectedAddAction = null;
+  els.attachmentFileInput.value = "";
+  els.attachmentFolderInput.value = "";
+  els.addContextMenu.open = false;
+  renderAttachmentTray();
+}
+
+function composerMetadata() {
+  const includedAttachments = composerAttachments.filter((attachment) => attachment.included);
+  const project = currentProject(lastState);
+  const projectWorktree = project?.worktree;
+  return {
+    permissionMode: selectedPermissionMode,
+    reasoningMode: selectedReasoningMode,
+    addAction: selectedAddAction,
+    projectId: project?.id ?? null,
+    projectName: project?.name ?? null,
+    projectPath: project?.path ?? null,
+    worktreeId: projectWorktree?.id ?? null,
+    worktreeBranchName: projectWorktree?.branchName ?? null,
+    attachmentBoundary: includedAttachments.length > 0 ? "composer_only" : "none",
+    attachments: composerAttachments.map(attachmentMetadata)
+  };
+}
+
+function buildTaskWithAttachments() {
+  const baseTask = els.taskInput.value.trim();
+  if (!baseTask && composerAttachments.length === 0) {
+    return "";
+  }
+  const included = composerAttachments.filter((attachment) => attachment.included);
+  if (!included.length) {
+    return baseTask;
+  }
+  const attachmentContext = included.map((attachment, index) => {
+    const header = `Attachment ${index + 1}: ${attachment.name} (${attachment.type || "unknown"}, ${formatBytes(attachment.size)})`;
+    if (attachment.kind === "text") {
+      return `${header}\n${attachment.content}${attachment.truncated ? "\n[truncated]" : ""}`;
+    }
+    if (attachment.kind === "image") {
+      return attachment.truncated
+        ? `${header}\nComposer image attachment exceeded the local prototype size limit and was not embedded. Ask the user for a smaller image if image analysis is required.`
+        : `${header}\nComposer image attachment. Use this image only; do not search the local filesystem for other image files.`;
+    }
+    return `${header}\nBinary file attached; content not embedded.`;
+  }).join("\n\n");
+  return [
+    baseTask || "Review the attached context.",
+    composerAttachmentBoundary(),
+    "Composer attachments:",
+    attachmentContext
+  ].join("\n\n");
+}
+
+function composerAttachmentBoundary() {
+  return [
+    "Attachment boundary:",
+    "- Use only the composer attachments listed below as file or image context.",
+    "- Do not search the local filesystem for other images or files to satisfy this request.",
+    "- Attachment names are labels from the composer, not filesystem paths.",
+    "- If an attachment is unreadable or insufficient, say that directly."
+  ].join("\n");
+}
+
+function attachmentMetadata(attachment) {
+  const metadata = {
+    name: attachment.name,
+    type: attachment.type,
+    size: attachment.size,
+    kind: attachment.kind,
+    included: attachment.included,
+    truncated: attachment.truncated,
+    source: attachment.source
+  };
+  if (attachment.kind === "image" && attachment.included && attachment.content && !attachment.truncated) {
+    metadata.transport = {
+      kind: "data_url",
+      dataUrl: attachment.content
+    };
+  }
+  return metadata;
+}
+
+async function ingestFiles(files, source) {
+  const remaining = Math.max(0, attachmentLimits.maxFiles - composerAttachments.length);
+  const selected = files.filter(Boolean).slice(0, remaining);
+  if (!selected.length) {
+    els.runBlockReason.textContent = `Attachment limit reached (${attachmentLimits.maxFiles} files).`;
+    return;
+  }
+  const attachments = await Promise.all(selected.map((file) => readAttachment(file, source)));
+  composerAttachments = [...composerAttachments, ...attachments];
+  renderAttachmentTray();
+  updateActions(lastState, currentInvocation());
+}
+
+async function readAttachment(file, source) {
+  const type = file.type || guessFileType(file.name);
+  const id = `${Date.now()}_${Math.random().toString(36).slice(2)}`;
+  const base = {
+    id,
+    name: file.webkitRelativePath || file.name || "pasted-file",
+    type,
+    size: file.size,
+    source,
+    included: true,
+    truncated: false,
+    content: "",
+    kind: "binary"
+  };
+  if (isTextFile(file, type)) {
+    const text = await file.text();
+    base.kind = "text";
+    base.truncated = text.length > attachmentLimits.maxTextBytes;
+    base.content = text.slice(0, attachmentLimits.maxTextBytes);
+    return base;
+  }
+  if (type.startsWith("image/")) {
+    base.kind = "image";
+    base.truncated = file.size > attachmentLimits.maxImageBytes;
+    base.content = file.size <= attachmentLimits.maxImageBytes ? await readFileAsDataUrl(file) : "";
+    return base;
+  }
+  return base;
+}
+
+function renderAttachmentTray() {
+  els.attachmentTray.hidden = composerAttachments.length === 0;
+  els.attachmentTray.replaceChildren(...composerAttachments.map((attachment) => {
+    const item = document.createElement("div");
+    item.className = "attachment-chip";
+    item.dataset.kind = attachment.kind;
+
+    const summary = document.createElement("span");
+    summary.textContent = `${attachment.name} · ${formatBytes(attachment.size)}${attachment.truncated ? " · truncated" : ""}`;
+
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.textContent = "×";
+    remove.setAttribute("aria-label", `Remove ${attachment.name}`);
+    remove.dataset.removeAttachment = attachment.id;
+
+    item.append(summary, remove);
+    return item;
+  }));
+}
+
+function readFileAsDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result ?? ""));
+    reader.onerror = () => reject(reader.error ?? new Error("Unable to read file."));
+    reader.readAsDataURL(file);
+  });
+}
+
+function isTextFile(file, type) {
+  if (type.startsWith("text/")) return true;
+  return /\.(md|txt|json|js|mjs|cjs|ts|tsx|jsx|css|html|xml|yaml|yml|csv|log)$/i.test(file.name || "");
+}
+
+function guessFileType(name) {
+  if (/\.(png|jpg|jpeg|gif|webp)$/i.test(name)) return "image/unknown";
+  if (/\.(md|txt|json|js|mjs|ts|tsx|css|html|yaml|yml|csv|log)$/i.test(name)) return "text/plain";
+  return "application/octet-stream";
+}
+
+function formatBytes(bytes) {
+  const value = Number(bytes);
+  if (!Number.isFinite(value) || value <= 0) return "0 B";
+  if (value < 1024) return `${value} B`;
+  if (value < 1024 * 1024) return `${Math.round(value / 1024)} KB`;
+  return `${(value / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+els.runButton.addEventListener("click", submitTaskFromComposer);
 
 els.taskInput.addEventListener("input", () => updateActions(lastState, currentInvocation()));
+els.taskInput.addEventListener("keydown", (event) => {
+  if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
+    event.preventDefault();
+    if (!els.runButton.disabled) {
+      submitTaskFromComposer();
+    }
+  }
+});
+els.taskInput.addEventListener("paste", (event) => {
+  const files = [...(event.clipboardData?.files ?? [])];
+  if (!files.length) return;
+  ingestFiles(files, "paste");
+});
+els.attachmentFileInput.addEventListener("change", () => {
+  ingestFiles([...els.attachmentFileInput.files], "picker");
+  els.attachmentFileInput.value = "";
+});
+els.attachmentFolderInput.addEventListener("change", () => {
+  ingestFiles([...els.attachmentFolderInput.files], "folder");
+  els.attachmentFolderInput.value = "";
+});
+els.attachmentTray.addEventListener("click", (event) => {
+  const button = event.target.closest("button[data-remove-attachment]");
+  if (!button) return;
+  composerAttachments = composerAttachments.filter((attachment) => attachment.id !== button.dataset.removeAttachment);
+  renderAttachmentTray();
+  updateActions(lastState, currentInvocation());
+});
+for (const eventName of ["dragenter", "dragover"]) {
+  els.taskInput.addEventListener(eventName, (event) => {
+    if (!event.dataTransfer?.types?.includes("Files")) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "copy";
+    els.taskInput.closest(".composer-card")?.setAttribute("data-dragging", "true");
+  });
+}
+for (const eventName of ["dragleave", "drop"]) {
+  els.taskInput.addEventListener(eventName, (event) => {
+    els.taskInput.closest(".composer-card")?.removeAttribute("data-dragging");
+    if (eventName !== "drop") return;
+    const files = [...(event.dataTransfer?.files ?? [])];
+    if (!files.length) return;
+    event.preventDefault();
+    ingestFiles(files, "drop");
+  });
+}
 els.importEvidenceSummary.addEventListener("input", () => updateActions(lastState, currentInvocation()));
 els.codexSessionMode.addEventListener("change", () => updateActions(lastState, currentInvocation()));
 els.codexWorkspacePolicy.addEventListener("change", () => updateActions(lastState, currentInvocation()));
@@ -248,6 +675,53 @@ els.agentChoiceList.addEventListener("click", (event) => {
 
   selectedAgentId = button.dataset.agentId;
   render(lastState);
+});
+
+els.eventList.addEventListener("click", async (event) => {
+  const button = event.target.closest("button[data-codex-approval-action]");
+  if (!button) return;
+
+  button.disabled = true;
+  await resolveCodexApprovalRequest(button.dataset.codexApprovalRequestId, button.dataset.codexApprovalAction);
+});
+
+els.addContextOptions.forEach((option) => {
+  option.addEventListener("click", () => {
+    selectedAddAction = option.dataset.addAction ?? null;
+    els.addContextMenu.open = false;
+    if (selectedAddAction === "files") {
+      els.attachmentFileInput.click();
+    } else if (selectedAddAction === "folder") {
+      els.attachmentFolderInput.click();
+    }
+    els.runBlockReason.textContent = addActionMessage(selectedAddAction);
+  });
+});
+
+els.permissionOptions.forEach((option) => {
+  option.addEventListener("click", () => {
+    selectedPermissionMode = option.dataset.permissionMode ?? "ask";
+    renderPermissionMode();
+    els.permissionMenu.open = false;
+    updateActions(lastState, currentInvocation());
+  });
+});
+
+els.reasoningOptions.forEach((option) => {
+  option.addEventListener("click", () => {
+    selectedReasoningMode = option.dataset.reasoningMode ?? "extra_high";
+    renderReasoningMode();
+    els.modelMenu.open = false;
+    updateActions(lastState, currentInvocation());
+  });
+});
+
+document.addEventListener("click", (event) => {
+  for (const menu of [els.addContextMenu, els.permissionMenu, els.modelMenu]) {
+    if (menu?.open && !menu.contains(event.target)) {
+      menu.open = false;
+    }
+  }
 });
 
 els.compareAgentList.addEventListener("change", () => {
@@ -267,10 +741,14 @@ els.managedSessionHistoryFilters.addEventListener("click", (event) => {
 });
 
 els.managedSessionHistoryList.addEventListener("click", (event) => {
-  const button = event.target.closest("button[data-session-id]");
+  const button = event.target.closest("button[data-session-id], button[data-invocation-id]");
   if (!button) return;
 
-  selectedManagedSessionId = button.dataset.sessionId;
+  selectedManagedSessionId = button.dataset.sessionId ?? null;
+  if (button.dataset.invocationId) {
+    currentInvocationId = button.dataset.invocationId;
+    activeMode = "run_task";
+  }
   selectedManagedChangeEvidenceId = null;
   render(lastState);
 });
@@ -330,6 +808,89 @@ els.approvalQueueList.addEventListener("click", (event) => {
 els.approveChangeButton.addEventListener("click", () => submitSelectedChangeReview("approved"));
 els.rejectChangeButton.addEventListener("click", () => submitSelectedChangeReview("rejected"));
 els.feedbackChangeButton.addEventListener("click", () => submitSelectedChangeReview("feedback"));
+
+els.createTerminalSessionButton.addEventListener("click", async () => {
+  try {
+    const response = await fetch(`${apiBase}/api/terminal/sessions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        shell: lastState?.terminalRuntimeCapability?.defaultShell ?? "powershell",
+        ownerCodexSessionId: latestCodexSession(lastState)?.id ?? null,
+        ownerInvocationId: latestCodexSession(lastState)?.invocationId ?? null
+      })
+    });
+    if (!response.ok) throw new Error("Unable to register managed terminal session.");
+    els.terminalActionStatus.textContent = "Managed terminal session registry updated.";
+    await refresh();
+  } catch (error) {
+    els.terminalActionStatus.textContent = error instanceof Error ? error.message : "Unable to register managed terminal session.";
+  }
+});
+
+async function sendTerminalBytes(input, successMessage) {
+  const session = latestTerminalSession(lastState);
+  if (!session) return;
+  try {
+    const response = await fetch(`${apiBase}/api/terminal/sessions/${encodeURIComponent(session.terminalSessionId)}/input`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ input })
+    });
+    if (!response.ok) throw new Error("Unable to send managed terminal input.");
+    els.terminalActionStatus.textContent = successMessage;
+  } catch (error) {
+    els.terminalActionStatus.textContent = error instanceof Error ? error.message : "Unable to send managed terminal input.";
+  }
+}
+
+function queueTerminalInput(input) {
+  pendingTerminalInput += input;
+  if (terminalInputFlushTimer) {
+    return;
+  }
+  terminalInputFlushTimer = setTimeout(() => {
+    const payload = pendingTerminalInput;
+    pendingTerminalInput = "";
+    terminalInputFlushTimer = null;
+    if (payload) {
+      terminalInputSendChain = terminalInputSendChain
+        .then(() => sendTerminalBytes(payload, "Managed terminal input queued."))
+        .catch(() => {});
+    }
+  }, 20);
+}
+
+els.resizeTerminalButton.addEventListener("click", async () => {
+  const session = latestTerminalSession(lastState);
+  if (!session) return;
+  try {
+    fitTerminalView();
+    const response = await fetch(`${apiBase}/api/terminal/sessions/${encodeURIComponent(session.terminalSessionId)}/resize`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ cols: terminalView.terminal.cols, rows: terminalView.terminal.rows })
+    });
+    if (!response.ok) throw new Error("Unable to resize managed terminal.");
+    els.terminalActionStatus.textContent = "Managed terminal resize queued.";
+    await refresh();
+  } catch (error) {
+    els.terminalActionStatus.textContent = error instanceof Error ? error.message : "Unable to resize managed terminal.";
+  }
+});
+
+els.closeTerminalSessionButton.addEventListener("click", async () => {
+  const session = latestTerminalSession(lastState);
+  if (!session) return;
+  try {
+    const response = await fetch(`${apiBase}/api/terminal/sessions/${encodeURIComponent(session.terminalSessionId)}/close`, { method: "POST" });
+    if (!response.ok) throw new Error("Unable to close managed terminal session.");
+    els.terminalActionStatus.textContent = "Managed terminal session closed.";
+    await refresh();
+  } catch (error) {
+    els.terminalActionStatus.textContent = error instanceof Error ? error.message : "Unable to close managed terminal session.";
+  }
+});
 
 els.cancelButton.addEventListener("click", async () => {
   if (!currentInvocationId) return;
@@ -431,6 +992,37 @@ els.addCodexButton.addEventListener("click", async () => {
       userProvidedEndpoints: []
     });
     await refresh();
+  } finally {
+    updateActions(lastState, currentInvocation());
+  }
+});
+
+els.registerSshTargetButton.addEventListener("click", async () => {
+  els.registerSshTargetButton.disabled = true;
+  try {
+    await registerSshTarget(sshTargetPayload());
+    els.sshTargetSummary.textContent = "SSH target registered for setup preflight. Remote relay is still disabled.";
+    await refresh();
+  } catch (error) {
+    els.sshTargetSummary.textContent = error instanceof Error ? error.message : "Unable to register SSH target.";
+  } finally {
+    updateActions(lastState, currentInvocation());
+  }
+});
+
+els.testSshTargetButton.addEventListener("click", async () => {
+  const target = latestSshTarget(lastState);
+  if (!target) {
+    els.sshTargetSummary.textContent = "Register an SSH target before running preflight.";
+    return;
+  }
+  els.testSshTargetButton.disabled = true;
+  try {
+    await testSshTarget(target.id);
+    els.sshTargetSummary.textContent = "SSH target preflight report updated.";
+    await refresh();
+  } catch (error) {
+    els.sshTargetSummary.textContent = error instanceof Error ? error.message : "Unable to test SSH target.";
   } finally {
     updateActions(lastState, currentInvocation());
   }
@@ -600,11 +1192,19 @@ els.troubleshootButton.addEventListener("click", async () => {
 });
 
 setInterval(refresh, 700);
+setInterval(() => {
+  if (activeMode === "terminal") {
+    refresh();
+  }
+}, 80);
 refresh();
 
 let lastState = null;
+let refreshInFlight = false;
 
 async function refresh() {
+  if (refreshInFlight) return;
+  refreshInFlight = true;
   try {
     const response = await fetch(`${apiBase}/api/state`);
     const state = await response.json();
@@ -616,6 +1216,8 @@ async function refresh() {
     els.connectionStatus.textContent = "Server offline";
     els.connectionStatus.dataset.state = "bad";
     renderOffline();
+  } finally {
+    refreshInFlight = false;
   }
 }
 
@@ -623,6 +1225,9 @@ function render(state) {
   if (!state) {
     return;
   }
+  renderPermissionMode();
+  renderReasoningMode();
+  renderProjects(state);
   const agents = state.agents?.length ? state.agents : [state.agent].filter(Boolean);
   if (!selectedAgentId || !agents.some((agent) => agent.id === selectedAgentId)) {
     selectedAgentId = preferredAgentId(state, agents);
@@ -648,6 +1253,7 @@ function render(state) {
   const lifecycleAudit = state.lifecycleAuditRecords?.find((item) => item.agentId === agent?.id) ?? null;
   const discoveryRun = state.discoveryRuns?.[0] ?? null;
   const approval = currentApproval(state, invocation);
+  const codexApproval = currentCodexApproval(state, invocation);
   const usage = agent ? state.agentUsageSummaries?.find((item) => item.agentId === agent.id) : null;
   const troubleshootingReport = currentTroubleshootingReport(state, invocation);
   const selectedArtifact = selectedIntegrationArtifact(state) ?? state.integrationArtifacts?.[0] ?? null;
@@ -657,10 +1263,12 @@ function render(state) {
   const executionEvent = latestExecutionPreview(state, invocation);
   renderMode(state, selectedAgentForMode, invocation, approval);
 
-  const readableTaskState = readableStatus(invocation?.status);
+  const readableTaskState = codexApproval?.status === "pending" ? "Needs approval" : readableStatus(invocation?.status);
   els.taskState.textContent = readableTaskState;
-  els.taskState.dataset.state = invocation?.status ?? "waiting";
-  els.activityTitle.textContent = activityTitle(invocation?.status);
+  els.taskState.dataset.state = codexApproval?.status === "pending" ? "waiting_for_local_approval" : invocation?.status ?? "waiting";
+  els.activityTitle.textContent = codexApproval?.status === "pending"
+    ? `Waiting for Codex approval: ${codexApproval.toolName ?? "tool"}`
+    : activityTitle(invocation?.status);
 
   els.deviceName.textContent = state.device.name;
   els.deviceStatus.textContent = readableDeviceStatus(state.device.status);
@@ -705,25 +1313,214 @@ function render(state) {
     ? state.events.filter((event) => event.invocationId === invocation.id || event.data?.agentId === agent?.id).slice(0, 30)
     : state.events.slice(0, 30);
   renderApproval(approval);
-  renderTimeline(visibleEvents);
+  renderTimeline(visibleEvents, invocation, state);
   renderComparePanel(state);
   renderDiscovery(discoveryRun);
+  renderSshTargets(state);
   renderIntegrationArtifacts(state.integrationArtifacts ?? [], state.integrationProbeRuns ?? []);
   updateActions(state, invocation);
+}
+
+function renderPermissionMode() {
+  const labels = {
+    ask: "Ask for approval",
+    auto: "Approve for me",
+    full: "Full access"
+  };
+  els.permissionModeLabel.textContent = labels[selectedPermissionMode] ?? labels.ask;
+  for (const option of els.permissionOptions) {
+    const selected = option.dataset.permissionMode === selectedPermissionMode;
+    option.setAttribute("aria-selected", String(selected));
+  }
+}
+
+function renderReasoningMode() {
+  const labels = {
+    low: "5.5 Low",
+    medium: "5.5 Medium",
+    high: "5.5 High",
+    extra_high: "5.5 Extra High"
+  };
+  els.modelModeLabel.textContent = labels[selectedReasoningMode] ?? labels.extra_high;
+  for (const option of els.reasoningOptions) {
+    const selected = option.dataset.reasoningMode === selectedReasoningMode;
+    option.setAttribute("aria-selected", String(selected));
+  }
+}
+
+function renderProjects(state) {
+  const projects = state?.projects ?? [];
+  const project = currentProject(state);
+  if (project?.id !== projectTreeProjectId) {
+    projectTreeProjectId = project?.id ?? null;
+    projectTreePath = "";
+    projectTreeData = null;
+    queueMicrotask(() => loadProjectTree({ force: true }));
+  }
+  els.currentProjectName.textContent = project?.name ?? "No project";
+  els.currentProjectPath.textContent = project
+    ? project.worktree ? `${project.path} · ${project.worktree.branchName}` : project.path
+    : "Register a project to scope local runs.";
+  els.addProjectButton.disabled = false;
+  els.removeProjectButton.disabled = projects.length <= 1;
+  els.createWorktreeButton.disabled = !project;
+  els.projectList.replaceChildren(
+    ...(projects.length ? projects.map((item) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "project-item";
+      button.dataset.projectId = item.id;
+      button.dataset.active = String(item.id === state.currentProjectId);
+
+      const name = document.createElement("strong");
+      name.textContent = item.worktree ? `${item.name} · worktree` : item.name;
+      const detail = document.createElement("span");
+      detail.textContent = item.worktree ? `${item.worktree.branchName} · ${item.path}` : item.path;
+
+      button.append(name, detail);
+      return button;
+    }) : [emptyMiniCard("No projects registered.")])
+  );
+  renderProjectTree();
+}
+
+function currentProject(state) {
+  return state?.currentProject
+    ?? state?.projects?.find((project) => project.id === state.currentProjectId)
+    ?? state?.projects?.[0]
+    ?? null;
+}
+
+async function loadProjectTree({ force = false } = {}) {
+  const project = currentProject(lastState);
+  if (!project || projectTreeLoading) return;
+  if (!force && projectTreeData?.projectId === project.id) return;
+  projectTreeLoading = true;
+  renderProjectTree();
+  try {
+    const params = new URLSearchParams();
+    if (projectTreePath) params.set("path", projectTreePath);
+    const search = els.projectFileSearch.value.trim();
+    if (search) params.set("search", search);
+    const response = await fetch(`${apiBase}/api/projects/${encodeURIComponent(project.id)}/tree?${params.toString()}`);
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.message ?? data.error ?? "Unable to load project files.");
+    projectTreeData = data;
+  } catch (error) {
+    projectTreeData = {
+      projectId: project.id,
+      path: projectTreePath,
+      entries: [],
+      error: error instanceof Error ? error.message : "Unable to load project files."
+    };
+  } finally {
+    projectTreeLoading = false;
+    renderProjectTree();
+  }
+}
+
+function renderProjectTree() {
+  const project = currentProject(lastState);
+  if (!project) {
+    els.projectTreeSummary.textContent = "Register a project to browse files.";
+    els.projectTreeList.replaceChildren(emptyMiniCard("No project selected."));
+    return;
+  }
+  els.refreshProjectTreeButton.disabled = projectTreeLoading;
+  if (projectTreeLoading) {
+    els.projectTreeSummary.textContent = "Loading project files...";
+    els.projectTreeList.replaceChildren(emptyMiniCard("Loading..."));
+    return;
+  }
+  if (projectTreeData?.error) {
+    els.projectTreeSummary.textContent = projectTreeData.error;
+    els.projectTreeList.replaceChildren(emptyMiniCard("Project files unavailable."));
+    return;
+  }
+  const data = projectTreeData;
+  if (!data) {
+    els.projectTreeSummary.textContent = "Project files will load shortly.";
+    els.projectTreeList.replaceChildren(emptyMiniCard("Loading project files..."));
+    return;
+  }
+  const dirtyCount = Object.values(data.gitSummary ?? {}).reduce((sum, value) => sum + Number(value ?? 0), 0);
+  const pathLabel = data.path ? `/${data.path}` : "/";
+  els.projectTreeSummary.textContent = `${project.name} ${pathLabel}${dirtyCount ? ` · ${dirtyCount} changed` : ""}`;
+  const rows = [];
+  if (data.path) {
+    rows.push(projectTreeRow({ name: "..", path: parentTreePath(data.path), kind: "directory", gitStatus: "clean" }));
+  }
+  rows.push(...(data.entries ?? []).map(projectTreeRow));
+  els.projectTreeList.replaceChildren(...(rows.length ? rows : [emptyMiniCard("No files matched.")]));
+}
+
+function projectTreeRow(entry) {
+  const row = document.createElement("button");
+  row.type = "button";
+  row.className = "project-tree-row";
+  row.dataset.treePath = entry.path ?? "";
+  row.dataset.kind = entry.kind;
+
+  const icon = document.createElement("span");
+  icon.textContent = entry.kind === "directory" ? "▸" : "•";
+
+  const name = document.createElement("span");
+  name.textContent = entry.name;
+  name.title = entry.path || entry.name;
+
+  const status = document.createElement("span");
+  status.className = "project-tree-status";
+  status.dataset.status = entry.gitStatus;
+  status.textContent = gitStatusLabel(entry.gitStatus);
+
+  row.append(icon, name, status);
+  return row;
+}
+
+function parentTreePath(path) {
+  const parts = String(path ?? "").split("/").filter(Boolean);
+  parts.pop();
+  return parts.join("/");
+}
+
+function gitStatusLabel(status) {
+  if (status === "modified") return "M";
+  if (status === "added") return "A";
+  if (status === "deleted") return "D";
+  return "";
+}
+
+function addActionMessage(action) {
+  const messages = {
+    files: "Choose files or paste/drag them into the composer.",
+    folder: "Choose a folder; readable files are embedded into task context.",
+    goal: "Goal mode is marked for the next task in composer metadata.",
+    plan: "Plan mode is marked for the next task in composer metadata."
+  };
+  return messages[action] ?? "";
 }
 
 function renderMode(state, agent, invocation = null, approval = null) {
   const modeLabels = {
     run_task: "Describe the task, choose the computer and agent, then run it.",
-    managed_codex: "Review the Codex supervision chain for the selected run.",
-    evidence_center: "Inspect managed and imported evidence without entering the task workflow.",
-    import_session: "Record user-authorized Codex evidence after the fact. This is not a managed session.",
-    connect_agent: "Discover local agents or draft an unsupported-agent integration."
+    session: "Review managed session history and continue work without losing context.",
+    diff: "Review changed files and send feedback from the managed session.",
+    terminal: "Inspect managed runtime status. Terminal attach waits for the runtime phase.",
+    evidence_center: "Trace managed and imported evidence without entering the task workflow.",
+    approval: "Review pending approvals with risk, timeout, consequence, and audit context.",
+    setup: "Connect agents and prepare runtime targets outside the task composer."
   };
   const normalizedMode = modeLabels[activeMode] ? activeMode : "run_task";
   activeMode = normalizedMode;
   const isCodex = isCodexAgent(agent);
-  const showCodexContext = isCodex || activeMode === "managed_codex";
+  const showCodexSummary = isCodex || ["session", "diff", "terminal", "evidence_center", "approval"].includes(activeMode);
+  const showSessionSurface = activeMode === "session";
+  const showDiffSurface = activeMode === "diff";
+  const showEvidenceSurface = activeMode === "evidence_center";
+  const showApprovalSurface = activeMode === "approval";
+  const showSetupSurface = activeMode === "setup";
+  const showTerminalSurface = activeMode === "terminal";
+  const showRunSurface = activeMode === "run_task";
 
   for (const button of els.modeButtons) {
     const isActive = button.dataset.workspaceMode === activeMode;
@@ -732,22 +1529,27 @@ function renderMode(state, agent, invocation = null, approval = null) {
   }
 
   els.modeSummary.textContent = modeLabels[activeMode];
-  els.connectAgentPanel.hidden = activeMode !== "connect_agent";
-  els.managedCodexContext.hidden = !showCodexContext;
-  els.managedSessionHistoryContext.hidden = activeMode !== "managed_codex";
-  els.managedPolicyContext.hidden = activeMode !== "managed_codex";
-  els.managedEvidenceContext.hidden = activeMode !== "managed_codex";
-  els.evidenceCenterContext.hidden = activeMode !== "evidence_center";
-  els.managedApprovalContext.hidden = activeMode !== "managed_codex";
-  els.importSessionContext.hidden = activeMode !== "import_session";
+  els.contextPanel.dataset.workspaceMode = activeMode;
+  els.commandPanel.hidden = !showRunSurface;
+  els.runPanel.hidden = true;
+  els.connectAgentPanel.hidden = !showSetupSurface;
+  els.managedCodexContext.hidden = !showCodexSummary;
+  els.managedSessionHistoryContext.hidden = !(showSessionSurface || showDiffSurface);
+  els.managedPolicyContext.hidden = !(showSessionSurface || showTerminalSurface);
+  els.managedEvidenceContext.hidden = !(showSessionSurface || showEvidenceSurface);
+  els.evidenceCenterContext.hidden = !showEvidenceSurface;
+  els.managedApprovalContext.hidden = !showApprovalSurface;
+  els.importSessionContext.hidden = !showEvidenceSurface;
+  els.terminalSurfaceContext.hidden = !showTerminalSurface;
+  els.managedChangeReviewPanel.hidden = !showDiffSurface;
 
-  const showsCodexSession = showCodexContext;
+  const showsCodexSession = showRunSurface && isCodex;
   els.codexSessionControl.hidden = !showsCodexSession;
   els.codexWorkspaceControl.hidden = !showsCodexSession;
 
-  if (activeMode === "managed_codex" && state && !codexAgentInState(state)) {
+  if (["session", "diff", "terminal", "evidence_center", "approval"].includes(activeMode) && state && !codexAgentInState(state)) {
     els.modeSummary.textContent = "Codex CLI is not registered yet. Use Connect agent or start Desktop Bridge, then select Codex CLI.";
-  } else if (activeMode === "managed_codex" && !isCodex) {
+  } else if (["session", "diff", "terminal", "evidence_center", "approval"].includes(activeMode) && !isCodex) {
     els.modeSummary.textContent = "Select Codex CLI to inspect session registry, policy, evidence, and approval details.";
   }
 
@@ -755,6 +1557,260 @@ function renderMode(state, agent, invocation = null, approval = null) {
   renderManagedSessionHistory(state);
   renderEvidenceCenter(state);
   renderImportedEvidenceContext(state);
+  renderTerminalSurface(state);
+}
+
+function renderTerminalSurface(state) {
+  const capability = state?.terminalRuntimeCapability ?? null;
+  const session = latestTerminalSession(state);
+  const evidence = terminalEvidenceForSession(state, session);
+  els.terminalRuntimeStatus.textContent = capability?.localPty?.available
+    ? "Managed local PTY available"
+    : capability?.localPty?.reason ?? "Managed runtime capability not reported";
+  els.terminalShellSummary.textContent = session
+    ? `${session.shell} · ${session.status}`
+    : `Default ${capability?.defaultShell ?? "unknown"} · attach unavailable`;
+  els.terminalCwdSummary.textContent = session?.cwd ?? "No managed cwd registered";
+  els.terminalSshSummary.textContent = terminalSshSummary(state, capability);
+  els.terminalSessionSummary.textContent = session
+    ? `${session.terminalSessionId} · ${session.runtimeKind} · ${session.status}`
+    : "No terminal session registered";
+  const linkedCodex = session?.ownerCodexSessionId
+    ? state?.codexSessions?.find((item) => item.id === session.ownerCodexSessionId)
+    : null;
+  els.terminalCodexSummary.textContent = linkedCodex
+    ? `${linkedCodex.id} · ${linkedCodex.sessionMode} · ${linkedCodex.status}`
+    : "No Codex session linked";
+  els.terminalEvidenceSummary.textContent = evidence.length
+    ? `${evidence.length} terminal evidence record(s), summary-first`
+    : "No terminal evidence";
+  els.terminalPolicySummary.textContent = session
+    ? `${session.policyProfile}; ${session.approvalPolicy}; ${session.networkPolicy}`
+    : "Do not present unmanaged terminal output as managed proof";
+  els.createTerminalSessionButton.disabled = false;
+  els.resizeTerminalButton.disabled = session?.status !== "attached";
+  els.closeTerminalSessionButton.disabled = !session || ["closed", "exited"].includes(session.status);
+  renderTerminalEmulator(session, evidence);
+  renderTerminalProgress(state, session, evidence);
+}
+
+function latestTerminalSession(state) {
+  return state?.terminalSessions?.[0] ?? null;
+}
+
+function latestSshTarget(state) {
+  return state?.sshTargets?.[0] ?? null;
+}
+
+function latestSshTestForTarget(state, target) {
+  if (!target) return state?.sshConnectionTests?.[0] ?? null;
+  return state?.sshConnectionTests?.find((item) => item.targetId === target.id) ?? null;
+}
+
+function terminalSshSummary(state, capability) {
+  const target = latestSshTarget(state);
+  const test = latestSshTestForTarget(state, target);
+  if (!capability?.ssh?.available) {
+    return capability?.ssh?.reason ?? "SSH connector not reported";
+  }
+  if (!target) {
+    return "SSH target registry available; no target registered";
+  }
+  const relay = target.remoteRelayEnabled ? "relay enabled" : "relay disabled";
+  return `${target.user}@${target.host}:${target.port} · ${test?.status ?? target.status} · ${relay}`;
+}
+
+function latestCodexSession(state) {
+  return state?.codexSessions?.[0] ?? null;
+}
+
+function terminalEvidenceForSession(state, session) {
+  const records = state?.terminalEvidenceRecords ?? [];
+  if (!session) return records.slice(0, 8);
+  return records.filter((record) => record.terminalSessionId === session.terminalSessionId);
+}
+
+function createTerminalView() {
+  const terminal = new Terminal({
+    cursorBlink: true,
+    convertEol: false,
+    fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace',
+    fontSize: 13,
+    theme: {
+      background: "#0f1714",
+      foreground: "#e4f5e9",
+      cursor: "#e4f5e9"
+    }
+  });
+  const fit = new FitAddon();
+  terminal.loadAddon(fit);
+  let opened = false;
+  let sessionId = null;
+  const renderedEvidenceIds = new Set();
+
+  terminal.onData(queueTerminalInput);
+
+  return { terminal, fit, opened, sessionId, renderedEvidenceIds };
+}
+
+function renderTerminalEmulator(session, evidence) {
+  if (!terminalView.opened) {
+    terminalView.terminal.open(els.terminalOutputPreview);
+    terminalView.opened = true;
+    queueMicrotask(() => fitTerminalView());
+  }
+
+  if (!session) {
+    if (terminalView.sessionId !== null) {
+      terminalView.terminal.reset();
+      terminalView.renderedEvidenceIds.clear();
+      terminalView.sessionId = null;
+    }
+    if (terminalView.renderedEvidenceIds.size === 0) {
+      terminalView.terminal.write("Managed terminal output appears here after you attach a managed PTY.\r\n");
+      terminalView.renderedEvidenceIds.add("empty");
+    }
+    return;
+  }
+
+  if (terminalView.sessionId !== session.terminalSessionId) {
+    terminalView.terminal.reset();
+    terminalView.renderedEvidenceIds.clear();
+    terminalView.sessionId = session.terminalSessionId;
+  }
+
+  const outputRecords = [...evidence]
+    .filter((record) => record.type === "terminal_output_chunk")
+    .sort((a, b) => Date.parse(a.createdAt ?? 0) - Date.parse(b.createdAt ?? 0));
+  for (const record of outputRecords) {
+    if (terminalView.renderedEvidenceIds.has(record.id)) continue;
+    terminalView.terminal.write(String(record.data?.outputPreview ?? ""));
+    terminalView.renderedEvidenceIds.add(record.id);
+  }
+  fitTerminalView();
+}
+
+function fitTerminalView() {
+  try {
+    terminalView.fit.fit();
+  } catch {
+    // The terminal can be hidden during mode switches; it will fit on the next render.
+  }
+}
+
+function renderTerminalProgress(state, session, evidence) {
+  const actions = (state?.terminalBridgeActions ?? [])
+    .filter((action) => !session || action.terminalSessionId === session.terminalSessionId)
+    .map((action) => ({
+      at: action.completedAt ?? action.dispatchedAt ?? action.createdAt,
+      label: terminalActionLabel(action),
+      detail: `${action.actionType} · ${action.status}`
+    }));
+  const events = (state?.events ?? [])
+    .filter((event) => !session || event.data?.terminalSessionId === session.terminalSessionId)
+    .map((event) => ({
+      at: event.createdAt,
+      label: terminalEventLabel(event.type),
+      detail: event.message
+    }));
+  const evidenceItems = evidence
+    .filter((record) => ["terminal_input", "terminal_resize", "terminal_session_start", "terminal_exit", "terminal_policy_event"].includes(record.type))
+    .map((record) => ({
+      at: record.createdAt,
+      label: terminalEvidenceLabel(record.type),
+      detail: record.data?.inputSummary ?? record.summary
+    }));
+  const items = [...actions, ...events, ...evidenceItems]
+    .filter((item) => item.at)
+    .sort((a, b) => Date.parse(b.at) - Date.parse(a.at))
+    .slice(0, 10);
+  els.terminalProgressList.replaceChildren(
+    ...(items.length ? items.map(terminalProgressItem) : [emptyMiniCard("No managed terminal operation has run yet.")])
+  );
+}
+
+function terminalProgressItem(item) {
+  const row = document.createElement("article");
+  row.className = "terminal-progress-item";
+  const time = document.createElement("span");
+  time.textContent = shortTime(item.at);
+  const copy = document.createElement("div");
+  const label = document.createElement("strong");
+  label.textContent = item.label;
+  const detail = document.createElement("p");
+  detail.textContent = item.detail;
+  copy.append(label, detail);
+  row.append(time, copy);
+  return row;
+}
+
+function terminalActionLabel(action) {
+  const labels = {
+    create: "Attach requested",
+    input: "Input queued",
+    resize: "Resize queued",
+    close: "Close queued"
+  };
+  return labels[action.actionType] ?? "Terminal action";
+}
+
+function terminalEventLabel(type) {
+  const labels = {
+    "terminal.session.create": "Session registered",
+    "terminal.session.attached": "PTY attached",
+    "terminal.input.submit": "Input submitted",
+    "terminal.output.chunk": "Output received",
+    "terminal.resize": "Terminal resized",
+    "terminal.exit": "Terminal exited",
+    "terminal.close": "Terminal closed",
+    "terminal.runtime.warning": "Runtime warning"
+  };
+  return labels[type] ?? "Terminal event";
+}
+
+function terminalEvidenceLabel(type) {
+  const labels = {
+    terminal_session_start: "Session evidence",
+    terminal_input: "Input evidence",
+    terminal_resize: "Resize evidence",
+    terminal_exit: "Exit evidence",
+    terminal_policy_event: "Policy evidence"
+  };
+  return labels[type] ?? "Evidence recorded";
+}
+
+function renderSshTargets(state) {
+  const target = latestSshTarget(state);
+  const report = latestSshTestForTarget(state, target);
+  els.sshTargetLatest.textContent = target
+    ? `${target.user}@${target.host}:${target.port} · ${target.status}`
+    : "No SSH target registered";
+  els.sshTargetTrust.textContent = target
+    ? `${target.knownHostPolicy} · ${target.trustStatus}`
+    : "No host trust policy recorded";
+  els.sshTargetCredential.textContent = target
+    ? `${target.authMethod} · ${target.credentialStorage} · ${target.credentialRef}`
+    : "No credential reference recorded";
+  els.sshTargetRelay.textContent = target?.remoteRelayEnabled
+    ? "Remote relay enabled"
+    : "Remote relay not enabled";
+  els.sshTargetTestReport.textContent = report ? sshTestReportText(report) : "SSH preflight results appear here.";
+}
+
+function sshTestReportText(report) {
+  const checks = (report.checks ?? [])
+    .map((check) => `- ${check.label}: ${check.status} (${check.detail})`)
+    .join("\n");
+  return [
+    `${report.status}: ${report.summary}`,
+    `Auth: ${report.auth?.method}; ${report.auth?.credentialStorage}; plaintext stored: ${report.auth?.plaintextStored ? "yes" : "no"}`,
+    `Host: ${report.hostVerification?.policy}; ${report.hostVerification?.trustStatus}`,
+    `Platform: local ${report.platform?.localPlatform}; remote ${report.platform?.remotePlatformHint}; workspace ${report.platform?.workspaceRoot}`,
+    `Agent forwarding: ${report.agentForwarding?.enabled ? "enabled" : "disabled"} - ${report.agentForwarding?.risk}`,
+    `Key selection: ${report.keySelection?.mode} - ${report.keySelection?.risk}`,
+    `Remote relay: ${report.remoteRelayEnabled ? "enabled" : "disabled"}`,
+    checks
+  ].filter(Boolean).join("\n");
 }
 
 function renderImportedEvidenceContext(state) {
@@ -949,72 +2005,73 @@ function renderManagedCodexContext(state, agent, invocation, approval) {
 }
 
 function renderManagedSessionHistory(state) {
-  const allSessions = state?.codexSessions ?? [];
-  const sessions = allSessions.filter((session) => sessionMatchesHistoryFilter(state, session));
+  const allConversations = conversationHistoryItems(state);
+  const conversations = allConversations.filter((item) => conversationMatchesHistoryFilter(state, item));
   for (const button of els.managedSessionHistoryFilters.querySelectorAll("button[data-session-filter]")) {
     button.dataset.active = String(button.dataset.sessionFilter === managedSessionFilter);
   }
 
-  if (!sessions.length) {
+  if (!conversations.length) {
     const empty = document.createElement("p");
     empty.className = "session-history-empty";
-    empty.textContent = allSessions.length
-      ? "No managed Codex sessions match this filter."
-      : "No managed Codex sessions recorded yet.";
+    empty.textContent = allConversations.length
+      ? "No conversations match this filter."
+      : "No project conversations recorded yet.";
     els.managedSessionHistoryList.replaceChildren(empty);
     renderManagedSessionDetail(state, null);
     return;
   }
 
-  if (!selectedManagedSessionId || !sessions.some((session) => session.id === selectedManagedSessionId)) {
-    selectedManagedSessionId = sessions[0]?.id ?? null;
+  if (!currentInvocationId || !conversations.some((item) => item.invocation.id === currentInvocationId)) {
+    currentInvocationId = conversations[0]?.invocation.id ?? currentInvocationId;
   }
 
   els.managedSessionHistoryList.replaceChildren(
-    ...sessions.map((session) => {
-      const summary = managedSessionSummary(state, session);
-      const item = document.createElement("button");
-      item.type = "button";
-      item.className = "session-history-item";
-      item.dataset.sessionId = session.id;
-      item.dataset.selected = String(session.id === selectedManagedSessionId);
+    ...conversations.map((conversation) => {
+      const { invocation, session } = conversation;
+      const row = document.createElement("button");
+      row.type = "button";
+      row.className = "session-history-item";
+      row.dataset.invocationId = invocation.id;
+      if (session?.id) row.dataset.sessionId = session.id;
+      row.dataset.selected = String(invocation.id === currentInvocationId);
 
       const top = document.createElement("div");
       top.className = "session-history-top";
       const title = document.createElement("strong");
-      title.textContent = session.codexThreadId ?? session.codexSessionId ?? session.id;
+      title.textContent = taskSummary(invocation.input?.task) ?? invocation.id;
       const status = document.createElement("span");
       status.className = "session-history-badge";
-      status.textContent = readableStatus(session.status);
+      status.textContent = readableStatus(invocation.status);
       top.append(title, status);
 
       const meta = document.createElement("p");
       meta.textContent = [
-        sessionModeText(session.sessionMode),
-        session.startedAt ? shortTime(session.startedAt) : null,
-        sessionRepoText(session),
-        `${summary.evidenceCount} evidence`,
-        `${summary.approvalCount} approval`
+        conversation.project?.name ?? "Unknown project",
+        session ? sessionModeText(session.sessionMode) : "Demo session",
+        invocation.updatedAt ? shortTime(invocation.updatedAt) : null,
+        `${conversation.messageCount} events`,
+        conversation.approvalCount ? `${conversation.approvalCount} approval` : null
       ].filter(Boolean).join(" · ");
 
       const result = document.createElement("p");
       result.className = "session-history-result";
-      result.textContent = summary.resultSummary;
+      result.textContent = conversation.resultSummary;
 
-      item.append(top, meta, result);
-      return item;
+      row.append(top, meta, result);
+      return row;
     })
   );
   renderManagedSessionDetail(
     state,
-    sessions.find((session) => session.id === selectedManagedSessionId) ?? sessions[0]
+    conversations.find((item) => item.invocation.id === currentInvocationId) ?? conversations[0]
   );
 }
 
-function renderManagedSessionDetail(state, session) {
-  if (!session) {
+function renderManagedSessionDetail(state, conversation) {
+  if (!conversation) {
     els.managedSessionDetailTitle.textContent = "Session detail";
-    els.managedSessionDetailSummary.textContent = "Select a session to inspect its evidence and state.";
+    els.managedSessionDetailSummary.textContent = "Select a conversation to restore its transcript and inspect evidence.";
     els.managedSessionDetailAgent.textContent = "-";
     els.managedSessionDetailMode.textContent = "-";
     els.managedSessionDetailRepo.textContent = "-";
@@ -1029,27 +2086,68 @@ function renderManagedSessionDetail(state, session) {
     return;
   }
 
-  const summary = managedSessionSummary(state, session);
-  const agent = state?.agents?.find((item) => item.id === session.agentId);
+  const { invocation, session } = conversation;
+  const summary = session ? managedSessionSummary(state, session) : null;
+  const agent = state?.agents?.find((item) => item.id === invocation.agentId);
   const workspace = managedWorkspaceForSession(state, session);
-  const changes = codexChangeEvidenceForSession(state, session, summary.invocation);
-  els.managedSessionDetailTitle.textContent = session.codexThreadId ?? session.codexSessionId ?? session.id;
-  els.managedSessionDetailSummary.textContent = summary.resultSummary;
-  els.managedSessionDetailAgent.textContent = agent?.name ?? session.agentId ?? "Unknown agent";
-  els.managedSessionDetailMode.textContent = sessionModeText(session.sessionMode);
-  els.managedSessionDetailRepo.textContent = workspace?.repoPath ?? sessionRepoText(session);
+  const changes = session ? codexChangeEvidenceForSession(state, session, invocation) : [];
+  els.managedSessionDetailTitle.textContent = taskSummary(invocation.input?.task) ?? invocation.id;
+  els.managedSessionDetailSummary.textContent = conversation.resultSummary;
+  els.managedSessionDetailAgent.textContent = agent?.name ?? invocation.agentId ?? "Unknown agent";
+  els.managedSessionDetailMode.textContent = session ? sessionModeText(session.sessionMode) : "Demo invocation";
+  els.managedSessionDetailRepo.textContent = workspace?.repoPath ?? conversation.project?.path ?? "Repo unknown";
   els.managedSessionDetailWorktree.textContent = workspace?.worktreePath ?? "Not isolated";
   els.managedSessionDetailBranch.textContent = workspace?.branchName ?? workspace?.baseBranch ?? "Unknown";
   els.managedSessionDetailDirty.textContent = workspace?.dirtyState ?? "Unknown";
   els.managedSessionDetailCommit.textContent = workspace?.lastCommit ?? "Unknown";
-  els.managedSessionDetailEvidence.textContent = `${summary.evidenceCount} JSONL record(s), ${summary.hookCount} hook event(s)`;
-  els.managedSessionDetailApprovals.textContent = summary.approvalCount
-    ? `${summary.approvalCount} request(s): ${summary.approvalStatuses}`
+  els.managedSessionDetailEvidence.textContent = session
+    ? `${summary.evidenceCount} JSONL record(s), ${summary.hookCount} hook event(s)`
+    : `${conversation.messageCount} event(s)`;
+  els.managedSessionDetailApprovals.textContent = conversation.approvalCount
+    ? `${conversation.approvalCount} request(s)`
     : "No approval request recorded";
-  els.managedSessionDetailContinue.textContent = session.status === "completed" || session.status === "observing"
+  els.managedSessionDetailContinue.textContent = session && (session.status === "completed" || session.status === "observing")
     ? "Use Continue last session from the task composer when Codex CLI is selected."
-    : "Continuation is available after a managed Codex session is established.";
+    : "Clicking this history item restores the center transcript; exact provider resume is tracked in the worktree phase.";
   renderManagedChangeReview(state, session, changes);
+}
+
+function conversationHistoryItems(state) {
+  const invocations = state?.invocations ?? [];
+  return invocations.map((invocation) => {
+    const session = state?.codexSessions?.find((item) => item.invocationId === invocation.id) ?? null;
+    const project = projectForInvocation(state, invocation);
+    const audit = state?.auditSummaries?.find((item) => item.invocationId === invocation.id);
+    const events = state?.events?.filter((event) => event.invocationId === invocation.id) ?? [];
+    const approvalCount = (state?.approvalRequests ?? []).filter((approval) => approval.invocationId === invocation.id).length
+      + (state?.codexApprovalBrokerRequests ?? []).filter((approval) => approval.invocationId === invocation.id).length;
+    return {
+      invocation,
+      session,
+      project,
+      messageCount: events.length,
+      approvalCount,
+      resultSummary: resultSummary(invocation, audit),
+      updatedAt: invocation.updatedAt ?? invocation.createdAt
+    };
+  }).sort((a, b) => Date.parse(b.updatedAt ?? 0) - Date.parse(a.updatedAt ?? 0));
+}
+
+function projectForInvocation(state, invocation) {
+  const projectId = invocation?.options?.metadata?.projectId;
+  return state?.projects?.find((project) => project.id === projectId) ?? null;
+}
+
+function conversationMatchesHistoryFilter(state, item) {
+  const invocation = item.invocation;
+  if (managedSessionFilter === "all") return true;
+  if (managedSessionFilter === "project") return item.project?.id === state?.currentProjectId;
+  if (managedSessionFilter === "imported") return item.session?.sessionMode === "imported" || item.session?.status === "imported";
+  if (managedSessionFilter === "needs_approval") return item.approvalCount > 0 && ["waiting_for_local_approval", "running"].includes(invocation.status);
+  if (managedSessionFilter === "running") return ["queued", "dispatching", "running", "waiting_for_local_approval", "cancelling"].includes(invocation.status);
+  if (managedSessionFilter === "completed") return invocation.status === "succeeded";
+  if (managedSessionFilter === "failed") return ["failed", "cancelled", "timed_out", "expired", "rejected"].includes(invocation.status);
+  return true;
 }
 
 function managedSessionSummary(state, session) {
@@ -1315,10 +2413,17 @@ async function resolveSelectedCodexApproval(action) {
   if (!selectedCodexApprovalRequestId) {
     return;
   }
+  await resolveCodexApprovalRequest(selectedCodexApprovalRequestId, action);
+}
+
+async function resolveCodexApprovalRequest(requestId, action) {
+  if (!requestId) {
+    return;
+  }
   els.managedApproveButton.disabled = true;
   els.managedDenyButton.disabled = true;
   try {
-    await fetch(`${apiBase}/api/codex/approval-broker/${encodeURIComponent(selectedCodexApprovalRequestId)}/${action}`, {
+    await fetch(`${apiBase}/api/codex/approval-broker/${encodeURIComponent(requestId)}/${action}`, {
       method: "POST"
     });
     await refresh();
@@ -1347,6 +2452,13 @@ function currentApproval(state, invocation) {
     return null;
   }
   return state.approvalRequests?.find((item) => item.id === invocation.approvalRequestId) ?? null;
+}
+
+function currentCodexApproval(state, invocation) {
+  if (!state || !invocation) {
+    return null;
+  }
+  return (state.codexApprovalBrokerRequests ?? []).find((request) => request.invocationId === invocation.id && request.status === "pending") ?? null;
 }
 
 function currentTroubleshootingReport(state, invocation) {
@@ -1526,10 +2638,19 @@ function renderOffline() {
   els.healthCheckButton.disabled = true;
   els.toggleAgentButton.disabled = true;
   els.discoverButton.disabled = true;
+  els.registerSshTargetButton.disabled = true;
+  els.testSshTargetButton.disabled = true;
   els.createIntegrationButton.disabled = true;
   els.builderDraftButton.disabled = true;
   els.generateIntegrationButton.disabled = true;
   els.importEvidenceButton.disabled = true;
+  els.currentProjectName.textContent = "Offline";
+  els.currentProjectPath.textContent = "Project registry is unavailable.";
+  els.addProjectButton.disabled = true;
+  els.removeProjectButton.disabled = true;
+  els.projectList.replaceChildren(emptyMiniCard("Reconnect server to load projects."));
+  els.projectTreeSummary.textContent = "Project files unavailable while offline.";
+  els.projectTreeList.replaceChildren(emptyMiniCard("Reconnect server to browse files."));
   els.approvalPanel.hidden = true;
   els.approveButton.disabled = true;
   els.denyButton.disabled = true;
@@ -1539,50 +2660,152 @@ function renderOffline() {
   els.troubleshooterPanel.hidden = true;
   els.runBlockReason.textContent = "Server is offline.";
   els.discoverySummary.textContent = "Server is offline.";
+  els.sshTargetSummary.textContent = "Server is offline.";
+  els.sshTargetTestReport.textContent = "SSH preflight results appear here.";
   els.integrationSummary.textContent = "Server is offline.";
   els.candidateList.replaceChildren();
   els.artifactList.replaceChildren();
   renderTimeline([]);
 }
 
-function renderTimeline(events) {
+function renderTimeline(events, invocation = null, state = null) {
   if (events.length === 0) {
     const empty = document.createElement("div");
     empty.className = "timeline-empty";
-    empty.innerHTML = "<strong>No activity yet</strong><span>Run a task to watch local progress here.</span>";
+    empty.innerHTML = "<strong>Start a Codex conversation</strong><span>Describe a task below. The center workspace stays in conversation mode while terminal output remains in Terminal.</span>";
     els.eventList.replaceChildren(empty);
     return;
   }
 
+  const messageItems = [];
+  if (invocation?.input?.task) {
+    messageItems.push(transcriptItem({
+      role: "user",
+      title: "You",
+      message: taskSummary(invocation.input.task) ?? String(invocation.input.task),
+      createdAt: invocation.createdAt
+    }));
+  }
+
   els.eventList.replaceChildren(
-    ...events.map((event) => {
-      const item = document.createElement("article");
-      item.className = "timeline-item";
-
-      const time = document.createElement("time");
-      time.className = "timeline-time";
-      time.dateTime = event.createdAt;
-      time.textContent = shortTime(event.createdAt);
-
-      const copy = document.createElement("div");
-      copy.className = "timeline-copy";
-
-      const title = document.createElement("strong");
-      title.textContent = readableEventType(event.type);
-
-      const message = document.createElement("p");
-      message.textContent = timelineMessage(event);
-
-      copy.append(title, message);
-      item.append(time, copy);
-      return item;
+    ...messageItems,
+    ...events.slice().reverse().map((event) => {
+      const brokerRequest = codexApprovalRequestForEvent(state, event, invocation);
+      return transcriptItem({
+        role: timelineRole(event),
+        title: readableEventType(event.type),
+        message: timelineMessage(event),
+        createdAt: event.createdAt,
+        actions: brokerRequest?.status === "pending" ? codexApprovalActions(brokerRequest) : null
+      });
     })
   );
 }
 
+function transcriptItem({ role, title, message, createdAt = null, actions = null }) {
+  const item = document.createElement("article");
+  item.className = "timeline-item";
+  item.dataset.role = role;
+
+  if (createdAt) {
+    const time = document.createElement("time");
+    time.className = "timeline-time";
+    time.dateTime = createdAt;
+    time.textContent = shortTime(createdAt);
+    item.append(time);
+  }
+
+  const copy = document.createElement("div");
+  copy.className = "timeline-copy";
+
+  const heading = document.createElement("strong");
+  heading.textContent = title;
+  copy.append(heading);
+
+  if (Array.isArray(message)) {
+    copy.append(transcriptDetails(message));
+  } else {
+    const text = document.createElement("p");
+    text.textContent = message;
+    copy.append(text);
+  }
+
+  if (actions) copy.append(actions);
+  item.append(copy);
+  return item;
+}
+
+function transcriptDetails(rows) {
+  const details = document.createElement("details");
+  details.className = "timeline-details";
+  details.open = false;
+
+  const summary = document.createElement("summary");
+  summary.textContent = "Show technical details";
+
+  const list = document.createElement("dl");
+  for (const [label, value] of rows) {
+    const term = document.createElement("dt");
+    term.textContent = label;
+    const description = document.createElement("dd");
+    description.textContent = value;
+    list.append(term, description);
+  }
+
+  details.append(summary, list);
+  return details;
+}
+
+function codexApprovalRequestForEvent(state, event, invocation) {
+  if (!state || !event || !invocation) {
+    return null;
+  }
+  const requestId = event.data?.approvalBrokerRequestId ?? event.data?.brokerRequestId ?? null;
+  const requests = state.codexApprovalBrokerRequests ?? [];
+  if (requestId) {
+    return requests.find((request) => request.id === requestId) ?? null;
+  }
+  if (event.type === "codex_approval_requested") {
+    return requests.find((request) => request.invocationId === invocation.id && request.status === "pending") ?? null;
+  }
+  return null;
+}
+
+function codexApprovalActions(request) {
+  const actions = document.createElement("div");
+  actions.className = "inline-approval-actions";
+
+  const approve = document.createElement("button");
+  approve.type = "button";
+  approve.textContent = "Approve";
+  approve.dataset.codexApprovalRequestId = request.id;
+  approve.dataset.codexApprovalAction = "approve";
+
+  const deny = document.createElement("button");
+  deny.type = "button";
+  deny.className = "secondary";
+  deny.textContent = "Deny";
+  deny.dataset.codexApprovalRequestId = request.id;
+  deny.dataset.codexApprovalAction = "deny";
+
+  actions.append(approve, deny);
+  return actions;
+}
+
+function timelineRole(event) {
+  if (event.type === "execution_preview") return "tool";
+  if (event.type === "codex_approval_requested" || event.type === "approval_requested") return "approval";
+  if (event.type === "codex_runtime_warning" && event.data?.warningCategory === "command_timeout") return "tool";
+  if (event.type === "codex_runtime_warning" && event.level !== "warn") return "system";
+  if (event.type === "codex_hook_event") return "system";
+  if (event.type === "agent_output" || event.type === "invocation_completed") return "assistant";
+  if (event.level === "warn") return "approval";
+  return "system";
+}
+
 function updateActions(state, invocation) {
   const hasServer = Boolean(state);
-  const hasTask = els.taskInput.value.trim().length > 0;
+  const hasTask = els.taskInput.value.trim().length > 0 || composerAttachments.length > 0;
   const hasAgent = Boolean(selectedAgentId);
   const isRunning = ["queued", "dispatching", "waiting_for_local_approval", "running", "cancelling"].includes(invocation?.status);
   const agent = selectedAgent(state);
@@ -1593,7 +2816,10 @@ function updateActions(state, invocation) {
   const approval = currentApproval(state, invocation);
   const approvalPending = approval?.status === "pending";
   const canTroubleshoot = ["failed", "cancelled", "timed_out", "expired", "rejected"].includes(invocation?.status);
-  els.runButton.textContent = localAgent && state?.device?.status !== "online" ? "Queue for this computer" : "Run on this computer";
+  const runActionText = localAgent && state?.device?.status !== "online" ? "Queue for this computer" : "Send task";
+  els.runButton.textContent = "↑";
+  els.runButton.setAttribute("aria-label", runActionText);
+  els.runButton.title = runActionText;
   els.runButton.disabled = !hasServer || !hasTask || !hasAgent || isRunning || disabled || unhealthy;
   els.codexSessionMode.disabled = !isCodex || isRunning;
   els.cancelButton.disabled = !invocation || !["queued", "dispatching", "waiting_for_local_approval", "running"].includes(invocation.status);
@@ -1607,12 +2833,19 @@ function updateActions(state, invocation) {
   const codexAgent = codexAgentInState(state);
   els.addCodexButton.disabled = !hasServer || (!codexAgent && (state?.device?.status !== "online" || discoveryBusy)) || codexAgent?.health?.status === "checking";
   els.addCodexButton.textContent = codexActionText(codexAgent);
+  const sshPayload = sshTargetPayload();
+  const hasSshBasics = Boolean(sshPayload.host && sshPayload.user && sshPayload.workspaceRoot);
+  els.registerSshTargetButton.disabled = !hasServer || activeMode !== "setup" || !hasSshBasics;
+  els.testSshTargetButton.disabled = !hasServer || activeMode !== "setup" || !latestSshTarget(state);
   const artifact = selectedIntegrationArtifact(state);
   els.createIntegrationButton.disabled = !hasServer || els.integrationIntent.value.trim().length === 0;
   els.builderDraftButton.disabled = !hasServer || els.integrationIntent.value.trim().length === 0;
   els.generateIntegrationButton.disabled = !hasServer || !artifact || artifact.artifactType !== "integration_plan" || ["archived", "rejected"].includes(artifact.reviewState);
   els.importEvidenceButton.disabled = !hasServer || activeMode !== "import_session" || !els.importEvidenceSummary.value.trim();
-  els.runBlockReason.textContent = runBlockReason({ hasServer, hasTask, hasAgent, isRunning, disabled, unhealthy, agent });
+  els.runBlockReason.textContent = [
+    runBlockReason({ hasServer, hasTask, hasAgent, isRunning, disabled, unhealthy, agent }),
+    selectedAddAction ? addActionMessage(selectedAddAction) : null
+  ].filter(Boolean).join(" ");
 }
 
 function renderDiscovery(discoveryRun) {
@@ -1821,6 +3054,32 @@ async function createDiscovery(payload) {
   return response.json();
 }
 
+async function registerSshTarget(payload) {
+  const response = await fetch(`${apiBase}/api/ssh-targets`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload)
+  });
+  const data = await response.json();
+  if (!response.ok) {
+    throw new Error(data.message ?? data.error ?? "Unable to register SSH target.");
+  }
+  return data;
+}
+
+async function testSshTarget(targetId) {
+  const response = await fetch(`${apiBase}/api/ssh-targets/${encodeURIComponent(targetId)}/test`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ expectLiveConnection: false })
+  });
+  const data = await response.json();
+  if (!response.ok) {
+    throw new Error(data.message ?? data.error ?? "Unable to test SSH target.");
+  }
+  return data;
+}
+
 function resolveApiBase() {
   const override = new URLSearchParams(window.location.search).get("api");
   if (!override) {
@@ -1874,12 +3133,24 @@ function codexCandidateReview(candidate) {
 
 function timelineMessage(event) {
   if (event.type === "execution_preview" && event.data?.commandLine) {
-    const task = event.data.taskSummary ? ` Task: ${event.data.taskSummary}` : "";
-    const session = event.data.sessionMode ? ` Session: ${sessionModeText(event.data.sessionMode)}` : "";
-    return `${event.data.commandLine}${session}${task}`;
+    const details = [
+      ["Command", event.data.commandLine],
+      ["Session", event.data.sessionMode ? sessionModeText(event.data.sessionMode) : "Not recorded"],
+      ["Task", event.data.taskSummary ?? "Not recorded"]
+    ];
+    if (event.data.attachments?.length) {
+      details.push(["Attachments", event.data.attachments.map((attachment) => `${attachment.name} via Codex --image`).join(", ")]);
+    }
+    return details;
   }
   if (event.type === "codex_runtime_warning") {
+    if (event.data?.warningCategory === "command_timeout") {
+      return `${event.message ?? "A Codex command timed out."} The overall task can still succeed.`;
+    }
     return event.message ?? "Codex CLI reported a runtime warning.";
+  }
+  if (event.type === "codex_approval_requested") {
+    return `${event.message ?? "Codex approval is pending"} Review and choose Approve or Deny.`;
   }
   return event.message ?? "Activity recorded.";
 }
@@ -1926,6 +3197,22 @@ function integrationPayload() {
     streaming: els.integrationStreaming.checked,
     costOwner: els.integrationCostOwner.value.trim() || "usr_local",
     economicModel: els.integrationEconomicModel.value
+  };
+}
+
+function sshTargetPayload() {
+  return {
+    host: els.sshTargetHost.value.trim(),
+    port: Number(els.sshTargetPort.value || 22),
+    user: els.sshTargetUser.value.trim(),
+    authMethod: els.sshTargetAuthMethod.value,
+    credentialRef: els.sshTargetCredentialRef.value.trim(),
+    knownHostPolicy: els.sshTargetKnownHostPolicy.value,
+    knownHostFingerprint: els.sshTargetFingerprint.value.trim(),
+    workspaceRoot: els.sshTargetWorkspaceRoot.value.trim(),
+    platformHint: els.sshTargetPlatformHint.value,
+    keySelection: els.sshTargetKeySelection.value,
+    agentForwarding: els.sshTargetAgentForwarding.checked
   };
 }
 
@@ -2192,6 +3479,9 @@ function resultSummary(invocation, audit) {
 }
 
 function readableEventType(type) {
+  if (type === "codex_runtime_warning") {
+    return "Codex note";
+  }
   const map = {
     invocation_created: "Task created",
     invocation_authorized: "Task allowed",
@@ -2208,7 +3498,6 @@ function readableEventType(type) {
     invocation_started: "Agent started",
     log: "Agent update",
     agent_output: "Agent output",
-    codex_runtime_warning: "Codex warning",
     trace_created: "Trace started",
     span_completed: "Trace completed",
     heartbeat: "Computer connected",

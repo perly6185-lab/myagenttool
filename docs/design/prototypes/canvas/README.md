@@ -13,6 +13,7 @@ fits the current Product Flow gate.
 Input:
 
 - `.myagenttool/runs/flow-validation-managed-session-history/ascii-prototype.md`
+- `.myagenttool/runs/orca-inspired-agent-workspace-ui/agent-workspace-ascii-prototype.md`
 - role, scenario, owner surface, prototype states, and what-not-to-show rules
   from [PRODUCT_FLOWS.md](../../PRODUCT_FLOWS.md)
 
@@ -30,12 +31,14 @@ honor:
 
 - [scene-graph.schema.json](scene-graph.schema.json)
 - [managed-session-history.scene.json](managed-session-history.scene.json)
+- [agent-workspace.scene.json](agent-workspace.scene.json)
 
 ## Gate 2 Artifacts
 
 Gate 2 imports the current ASCII prototype into the scene graph contract:
 
 - [managed-session-history.imported.scene.json](managed-session-history.imported.scene.json)
+- [agent-workspace.imported.scene.json](agent-workspace.imported.scene.json)
 - `tools/dev/import-ascii-prototype.mjs`
 
 ## Gate 3 Artifacts
@@ -47,7 +50,12 @@ Gate 3 renders the imported scene in an editable canvas preview:
 - [prototype-canvas.js](prototype-canvas.js)
 
 Open `prototype-canvas.html` through a local static server so the browser can
-load `managed-session-history.imported.scene.json`. The preview supports:
+load imported scene graph JSON. The prototype picker supports:
+
+- Managed session history
+- Agent workspace
+
+The preview supports:
 
 - surface switching
 - pan and zoom
@@ -62,6 +70,9 @@ Gate 4 exports the imported scene into implementation evidence:
 - [managed-session-history.export.html](managed-session-history.export.html)
 - [managed-session-history.visual-qa.json](managed-session-history.visual-qa.json)
 - [managed-session-history.visual-qa.md](managed-session-history.visual-qa.md)
+- [agent-workspace.export.html](agent-workspace.export.html)
+- [agent-workspace.visual-qa.json](agent-workspace.visual-qa.json)
+- [agent-workspace.visual-qa.md](agent-workspace.visual-qa.md)
 - `tools/dev/export-prototype-canvas.mjs`
 
 The exported HTML is standalone and can be opened directly in a browser. The

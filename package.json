@@ -42,6 +42,8 @@
     "prototype:qa": "node tools/dev/import-ascii-prototype.mjs && node tools/dev/export-prototype-canvas.mjs && node tools/dev/prototype-qa.mjs && node tools/dev/canvas-contract-qa.mjs",
     "visual:qa": "node tools/dev/visual-qa.mjs",
     "visual:qa:browser": "node tools/dev/visual-qa.mjs --require-browser",
+    "smoke:ssh-target": "node tools/dev/ssh-target-smoke.mjs",
+    "smoke:terminal": "node tools/dev/terminal-smoke.mjs",
     "smoke:local": "node tools/dev/local-smoke.mjs",
     "acceptance:m0": "node tools/dev/m0-acceptance.mjs"
   },

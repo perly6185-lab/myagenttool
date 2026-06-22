@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 
-const controlUrl = process.env.DEV_CONTROL_URL ?? "http://127.0.0.1:3999";
+const controlUrl = process.env.DEV_CONTROL_URL ?? "http://127.0.0.1:5999";
 const args = process.argv.slice(2);
 const includeUntracked = !args.includes("--tracked-only");
 const checkOnly = args.includes("--check");

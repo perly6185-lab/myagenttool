@@ -1,10 +1,24 @@
 import http from "node:http";
+import { execFileSync } from "node:child_process";
+import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { basename, dirname, relative, resolve } from "node:path";
 
 const namespace = "com.myagenttool";
 const protocolVersion = "0.0.0";
 const host = process.env.SERVER_HOST ?? "127.0.0.1";
 const port = Number(process.env.SERVER_PORT ?? 3001);
 const dispatchLeaseMs = Number(process.env.SERVER_DISPATCH_LEASE_MS ?? 30_000);
+const isSelfCheck = process.argv.includes("--check");
+const persistenceEnabled = !isSelfCheck && process.env.MYAGENTTOOL_STATE_DISABLED !== "1";
+const stateStorePath = resolve(process.env.MYAGENTTOOL_STATE_PATH ?? ".myagenttool/state/local-demo-state.json");
+const stateSchemaVersion = 1;
+const defaultProjectPath = resolve(process.env.MYAGENTTOOL_PROJECT_PATH ?? process.cwd());
+const defaultProject = createProjectRecord({
+  id: "prj_myagenttool",
+  name: basename(defaultProjectPath) || "myagenttool",
+  path: defaultProjectPath,
+  source: "default"
+});
 
 const state = {
   device: {
@@ -23,6 +37,9 @@ const state = {
     credentialRevokedAt: null,
     createdAt: now()
   },
+  projects: [defaultProject],
+  currentProjectId: defaultProject.id,
+  worktrees: [],
   agents: [
     {
       id: "agt_demo_cli",
@@ -251,13 +268,21 @@ const state = {
   codexChangeReviews: [],
   codexHookEvents: [],
   codexApprovalBrokerRequests: [],
-  codexImportedEvidenceRecords: []
+  codexImportedEvidenceRecords: [],
+  terminalRuntimeCapability: createTerminalRuntimeCapability(),
+  terminalSessions: [],
+  terminalEvidenceRecords: [],
+  terminalBridgeActions: [],
+  sshTargets: [],
+  sshConnectionTests: []
 };
 
 let idCounter = 1;
 const directHttpRuns = new Map();
+let saveStateTimer = null;
+restorePersistentState();
 
-if (process.argv.includes("--check")) {
+if (isSelfCheck) {
   runProtocolSelfCheck();
   console.log("[server:check] local demo server check OK");
   process.exit(0);
@@ -289,6 +314,221 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "GET" && url.pathname === "/api/state") {
       expireCodexApprovalBrokerRequests();
       sendJson(res, 200, publicState());
+      return;
+    }
+
+    if (req.method === "GET" && url.pathname === "/api/projects") {
+      sendJson(res, 200, { projects: state.projects, currentProjectId: state.currentProjectId, currentProject: currentProject() });
+      return;
+    }
+
+    if (req.method === "GET" && url.pathname === "/api/worktrees") {
+      sendJson(res, 200, { worktrees: state.worktrees, currentProjectId: state.currentProjectId, currentProject: currentProject() });
+      return;
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/projects") {
+      const body = await readJson(req);
+      let project;
+      try {
+        project = addProject(body);
+      } catch (error) {
+        sendJson(res, 400, {
+          error: "invalid_project",
+          message: error instanceof Error ? error.message : String(error)
+        });
+        return;
+      }
+      sendJson(res, 201, { project, projects: state.projects, currentProjectId: state.currentProjectId });
+      return;
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/worktrees") {
+      const body = await readJson(req);
+      let result;
+      try {
+        result = createWorktree(body);
+      } catch (error) {
+        sendJson(res, 400, {
+          error: "invalid_worktree",
+          message: error instanceof Error ? error.message : String(error)
+        });
+        return;
+      }
+      sendJson(res, 201, result);
+      return;
+    }
+
+    const projectMatch = url.pathname.match(/^\/api\/projects\/([^/]+)$/);
+    if (projectMatch && req.method === "POST") {
+      const project = selectProject(decodeURIComponent(projectMatch[1]));
+      if (!project) {
+        sendJson(res, 404, { error: "project_not_found" });
+        return;
+      }
+      sendJson(res, 200, { project, projects: state.projects, currentProjectId: state.currentProjectId });
+      return;
+    }
+
+    if (projectMatch && req.method === "DELETE") {
+      let removed;
+      try {
+        removed = removeProject(decodeURIComponent(projectMatch[1]));
+      } catch (error) {
+        sendJson(res, 400, {
+          error: "project_remove_blocked",
+          message: error instanceof Error ? error.message : String(error)
+        });
+        return;
+      }
+      if (!removed) {
+        sendJson(res, 404, { error: "project_not_found" });
+        return;
+      }
+      sendJson(res, 200, { removed, projects: state.projects, currentProjectId: state.currentProjectId, currentProject: currentProject() });
+      return;
+    }
+
+    const projectTreeMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/tree$/);
+    if (projectTreeMatch && req.method === "GET") {
+      const project = state.projects.find((item) => item.id === decodeURIComponent(projectTreeMatch[1]));
+      if (!project) {
+        sendJson(res, 404, { error: "project_not_found" });
+        return;
+      }
+      try {
+        const tree = readProjectTree(project, {
+          relativePath: url.searchParams.get("path") ?? "",
+          search: url.searchParams.get("search") ?? ""
+        });
+        sendJson(res, 200, tree);
+      } catch (error) {
+        sendJson(res, 400, {
+          error: "project_tree_unavailable",
+          message: error instanceof Error ? error.message : String(error)
+        });
+      }
+      return;
+    }
+
+    if (req.method === "GET" && url.pathname === "/api/terminal/capability") {
+      sendJson(res, 200, state.terminalRuntimeCapability);
+      return;
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/ssh-targets") {
+      const body = await readJson(req);
+      let target;
+      try {
+        target = createSshTarget(body);
+      } catch (error) {
+        sendJson(res, 400, {
+          error: "invalid_ssh_target",
+          message: error instanceof Error ? error.message : String(error)
+        });
+        return;
+      }
+      sendJson(res, 201, { target, capability: state.terminalRuntimeCapability });
+      return;
+    }
+
+    const sshTestMatch = url.pathname.match(/^\/api\/ssh-targets\/([^/]+)\/test$/);
+    if (req.method === "POST" && sshTestMatch) {
+      const targetId = decodeURIComponent(sshTestMatch[1]);
+      const target = state.sshTargets.find((item) => item.id === targetId);
+      if (!target) {
+        sendJson(res, 404, { error: "ssh_target_not_found" });
+        return;
+      }
+      const body = await readJson(req);
+      const report = createSshConnectionTest(target, body);
+      sendJson(res, 202, { report, target });
+      return;
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/terminal/sessions") {
+      const body = await readJson(req);
+      let session;
+      try {
+        session = createManagedTerminalSession(body);
+      } catch (error) {
+        sendJson(res, 400, {
+          error: "invalid_terminal_session",
+          message: error instanceof Error ? error.message : String(error)
+        });
+        return;
+      }
+      sendJson(res, 201, { session, capability: state.terminalRuntimeCapability });
+      return;
+    }
+
+    const terminalInputMatch = url.pathname.match(/^\/api\/terminal\/sessions\/([^/]+)\/input$/);
+    if (req.method === "POST" && terminalInputMatch) {
+      const sessionId = decodeURIComponent(terminalInputMatch[1]);
+      const session = state.terminalSessions.find((item) => item.terminalSessionId === sessionId);
+      if (!session) {
+        sendJson(res, 404, { error: "terminal_session_not_found" });
+        return;
+      }
+      const body = await readJson(req);
+      const action = queueTerminalBridgeAction(session, "input", { input: String(body.input ?? "") });
+      recordTerminalEvidence(session, "terminal_input", "Terminal input submitted through managed surface.", {
+        inputSummary: summarizeText(String(body.input ?? ""), 160),
+        actionId: action.id
+      });
+      sendJson(res, 202, { action, session });
+      return;
+    }
+
+    const terminalResizeMatch = url.pathname.match(/^\/api\/terminal\/sessions\/([^/]+)\/resize$/);
+    if (req.method === "POST" && terminalResizeMatch) {
+      const sessionId = decodeURIComponent(terminalResizeMatch[1]);
+      const session = state.terminalSessions.find((item) => item.terminalSessionId === sessionId);
+      if (!session) {
+        sendJson(res, 404, { error: "terminal_session_not_found" });
+        return;
+      }
+      const body = await readJson(req);
+      const action = queueTerminalBridgeAction(session, "resize", {
+        cols: Number(body.cols ?? 100),
+        rows: Number(body.rows ?? 30)
+      });
+      recordTerminalEvidence(session, "terminal_resize", "Terminal resize submitted through managed surface.", {
+        cols: action.payload.cols,
+        rows: action.payload.rows,
+        actionId: action.id
+      });
+      sendJson(res, 202, { action, session });
+      return;
+    }
+
+    const terminalCloseMatch = url.pathname.match(/^\/api\/terminal\/sessions\/([^/]+)\/close$/);
+    if (req.method === "POST" && terminalCloseMatch) {
+      const sessionId = decodeURIComponent(terminalCloseMatch[1]);
+      const session = state.terminalSessions.find((item) => item.terminalSessionId === sessionId);
+      if (!session) {
+        sendJson(res, 404, { error: "terminal_session_not_found" });
+        return;
+      }
+      const action = queueTerminalBridgeAction(session, "close", {});
+      sendJson(res, 202, { action, session });
+      return;
+    }
+
+    if (req.method === "GET" && url.pathname === "/api/bridge/terminal-next") {
+      const action = nextTerminalBridgeAction();
+      sendJson(res, action ? 200 : 204, action);
+      return;
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/bridge/terminal-events") {
+      const body = await readJson(req);
+      const result = recordTerminalBridgeEvent(body);
+      if (!result.ok) {
+        sendJson(res, 400, { error: result.error });
+        return;
+      }
+      sendJson(res, 200, { ok: true, session: result.session });
       return;
     }
 
@@ -580,7 +820,8 @@ const server = http.createServer(async (req, res) => {
         agentId: invocation.agentId,
         adapter: findAgent(invocation.agentId)?.adapter ?? null,
         input: invocation.input,
-        options: invocation.options
+        options: invocation.options,
+        project: projectForInvocation(invocation)
       });
       return;
     }
@@ -890,6 +1131,15 @@ server.listen(port, host, () => {
   console.log(`[server] http://${host}:${port}`);
 });
 
+process.on("SIGINT", () => {
+  savePersistentState();
+  process.exit(0);
+});
+process.on("SIGTERM", () => {
+  savePersistentState();
+  process.exit(0);
+});
+
 function now() {
   return new Date().toISOString();
 }
@@ -898,6 +1148,417 @@ function nextId(prefix) {
   const id = `${prefix}_${String(idCounter).padStart(4, "0")}`;
   idCounter += 1;
   return id;
+}
+
+function createProjectRecord({ id = nextId("prj_demo"), name, path, host = "local", source = "user", worktree = null } = {}) {
+  const projectPath = normalizeProjectPath(path);
+  const createdAt = now();
+  return {
+    id,
+    name: String(name || basename(projectPath) || "Project").trim(),
+    path: projectPath,
+    host,
+    git: {
+      repoPath: projectPath,
+      remoteUrl: null,
+      defaultBranch: null,
+      currentBranch: null
+    },
+    source,
+    worktree,
+    createdAt,
+    updatedAt: createdAt,
+    lastOpenedAt: createdAt
+  };
+}
+
+function normalizeProjectPath(value) {
+  const projectPath = resolve(String(value ?? "").trim());
+  if (!projectPath) {
+    throw new Error("Project path is required.");
+  }
+  if (!existsSync(projectPath)) {
+    throw new Error(`Project path does not exist: ${projectPath}`);
+  }
+  if (!statSync(projectPath).isDirectory()) {
+    throw new Error(`Project path is not a directory: ${projectPath}`);
+  }
+  return projectPath;
+}
+
+function addProject(body = {}) {
+  const project = createProjectRecord({
+    name: body.name,
+    path: body.path,
+    host: body.host ?? "local",
+    source: "registered"
+  });
+  const existing = state.projects.find((item) => sameProjectPath(item.path, project.path));
+  if (existing) {
+    existing.name = project.name || existing.name;
+    existing.host = project.host;
+    existing.updatedAt = now();
+    selectProject(existing.id);
+    return existing;
+  }
+  state.projects.unshift(project);
+  selectProject(project.id);
+  appendEvent({
+    invocationId: null,
+    type: "project_registered",
+    level: "info",
+    message: `${project.name} project registered.`,
+    data: { projectId: project.id, path: project.path, host: project.host }
+  });
+  persistStateSoon();
+  return project;
+}
+
+function selectProject(projectId) {
+  const project = state.projects.find((item) => item.id === projectId);
+  if (!project) return null;
+  state.currentProjectId = project.id;
+  project.lastOpenedAt = now();
+  project.updatedAt = project.lastOpenedAt;
+  persistStateSoon();
+  return project;
+}
+
+function removeProject(projectId) {
+  if (state.projects.length <= 1) {
+    throw new Error("At least one project must remain registered.");
+  }
+  const index = state.projects.findIndex((item) => item.id === projectId);
+  if (index === -1) return null;
+  const [removed] = state.projects.splice(index, 1);
+  if (state.currentProjectId === removed.id) {
+    state.currentProjectId = state.projects[0]?.id ?? null;
+    if (state.currentProjectId) selectProject(state.currentProjectId);
+  }
+  appendEvent({
+    invocationId: null,
+    type: "project_removed",
+    level: "info",
+    message: `${removed.name} project removed from registry.`,
+    data: { projectId: removed.id, path: removed.path }
+  });
+  persistStateSoon();
+  return removed;
+}
+
+function currentProject() {
+  return state.projects.find((item) => item.id === state.currentProjectId) ?? state.projects[0] ?? null;
+}
+
+function projectForInvocation(invocation) {
+  const projectId = invocation?.options?.metadata?.projectId ?? state.currentProjectId;
+  return state.projects.find((item) => item.id === projectId) ?? currentProject();
+}
+
+function worktreeForProject(projectId) {
+  return state.worktrees.find((item) => item.projectId === projectId) ?? null;
+}
+
+function sameProjectPath(a, b) {
+  return resolve(String(a)).toLowerCase() === resolve(String(b)).toLowerCase();
+}
+
+function createWorktree(body = {}) {
+  const sourceProject = state.projects.find((item) => item.id === (body.projectId ?? state.currentProjectId)) ?? currentProject();
+  if (!sourceProject) {
+    throw new Error("A source project is required before creating a worktree.");
+  }
+
+  const repoRoot = gitRepoRoot(sourceProject.path);
+  const branchName = normalizeWorktreeBranch(body.branchName || body.name || `myagenttool/${slugify(sourceProject.name)}-${Date.now().toString(36)}`);
+  const baseBranch = normalizeWorktreeBase(body.baseBranch);
+  const worktreeName = slugify(body.name || branchName.split("/").at(-1) || "worktree");
+  const targetPath = body.path
+    ? resolve(String(body.path))
+    : nextAvailableWorktreePath(repoRoot, worktreeName);
+  if (existsSync(targetPath)) {
+    throw new Error(`Worktree path already exists: ${targetPath}`);
+  }
+
+  const gitArgs = ["-C", repoRoot, "worktree", "add", "-b", branchName, targetPath];
+  if (baseBranch) {
+    gitArgs.push(baseBranch);
+  }
+  execFileSync("git", gitArgs, {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+    timeout: 20_000
+  });
+
+  const createdAt = now();
+  const worktree = {
+    id: nextId("wtr_demo"),
+    sourceProjectId: sourceProject.id,
+    projectId: null,
+    repoPath: repoRoot,
+    worktreePath: targetPath,
+    branchName,
+    baseBranch: baseBranch ?? "HEAD",
+    status: "ready",
+    createdAt,
+    lastSeenAt: createdAt
+  };
+  const project = createProjectRecord({
+    name: body.name || `${sourceProject.name} / ${branchName.split("/").at(-1)}`,
+    path: targetPath,
+    host: sourceProject.host ?? "local",
+    source: "worktree",
+    worktree: {
+      id: worktree.id,
+      sourceProjectId: sourceProject.id,
+      branchName,
+      baseBranch: worktree.baseBranch
+    }
+  });
+  worktree.projectId = project.id;
+  state.worktrees.unshift(worktree);
+  state.projects.unshift(project);
+  selectProject(project.id);
+  appendEvent({
+    invocationId: null,
+    type: "worktree_created",
+    level: "info",
+    message: `Created worktree ${branchName}.`,
+    data: {
+      worktreeId: worktree.id,
+      sourceProjectId: sourceProject.id,
+      projectId: project.id,
+      path: targetPath,
+      branchName
+    }
+  });
+  persistStateSoon();
+  return { worktree, project, projects: state.projects, currentProjectId: state.currentProjectId };
+}
+
+function gitRepoRoot(projectPath) {
+  const output = execFileSync("git", ["-C", projectPath, "rev-parse", "--show-toplevel"], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+    timeout: 5_000
+  }).trim();
+  if (!output) {
+    throw new Error("Source project is not a Git repository.");
+  }
+  return resolve(output);
+}
+
+function normalizeWorktreeBranch(value) {
+  const branch = String(value ?? "").trim().replaceAll("\\", "/");
+  if (!branch || branch.length > 96 || branch.includes("..") || branch.startsWith("/") || branch.endsWith("/")) {
+    throw new Error("Worktree branch name is invalid.");
+  }
+  if (!/^[A-Za-z0-9._/-]+$/.test(branch)) {
+    throw new Error("Worktree branch can use letters, numbers, dots, slashes, underscores, and hyphens only.");
+  }
+  return branch;
+}
+
+function normalizeWorktreeBase(value) {
+  const base = String(value ?? "").trim();
+  if (!base) return null;
+  if (base.length > 96 || base.includes("..") || !/^[A-Za-z0-9._/-]+$/.test(base)) {
+    throw new Error("Worktree base ref is invalid.");
+  }
+  return base;
+}
+
+function nextAvailableWorktreePath(repoRoot, worktreeName) {
+  const parent = dirname(repoRoot);
+  const base = `${basename(repoRoot)}-${worktreeName || "worktree"}`;
+  let candidate = resolve(parent, base);
+  let index = 2;
+  while (existsSync(candidate)) {
+    candidate = resolve(parent, `${base}-${index}`);
+    index += 1;
+  }
+  return candidate;
+}
+
+function slugify(value) {
+  return String(value ?? "worktree")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 48) || "worktree";
+}
+
+function readProjectTree(project, { relativePath = "", search = "" } = {}) {
+  const root = resolve(project.path);
+  const target = safeProjectPath(project, relativePath);
+  const stats = statSync(target);
+  if (!stats.isDirectory()) {
+    throw new Error("Project tree path must be a directory.");
+  }
+
+  const gitStatus = gitStatusMap(root);
+  const searchText = String(search ?? "").trim().toLowerCase();
+  const entries = readdirSync(target, { withFileTypes: true })
+    .filter((entry) => ![".git", "node_modules"].includes(entry.name))
+    .map((entry) => {
+      const fullPath = resolve(target, entry.name);
+      const relPath = normalizeRelativePath(relative(root, fullPath));
+      const kind = entry.isDirectory() ? "directory" : entry.isFile() ? "file" : "other";
+      return {
+        name: entry.name,
+        path: relPath,
+        kind,
+        gitStatus: gitStatus.get(relPath) ?? "clean"
+      };
+    })
+    .filter((entry) => !searchText || entry.name.toLowerCase().includes(searchText) || entry.path.toLowerCase().includes(searchText))
+    .sort((a, b) => {
+      if (a.kind !== b.kind) return a.kind === "directory" ? -1 : 1;
+      return a.name.localeCompare(b.name);
+    })
+    .slice(0, 200);
+
+  return {
+    projectId: project.id,
+    projectPath: project.path,
+    path: normalizeRelativePath(relative(root, target)),
+    search: searchText,
+    entries,
+    truncated: entries.length >= 200,
+    gitSummary: gitSummary(gitStatus)
+  };
+}
+
+function safeProjectPath(project, relativePath = "") {
+  const root = resolve(project.path);
+  const target = resolve(root, String(relativePath ?? ""));
+  const rel = relative(root, target);
+  if (rel === ".." || rel.startsWith(`..\\`) || rel.startsWith("../") || resolve(target) === resolve(root, "..")) {
+    throw new Error("Project tree path escapes the registered project root.");
+  }
+  if (!existsSync(target)) {
+    throw new Error("Project tree path does not exist.");
+  }
+  return target;
+}
+
+function gitStatusMap(root) {
+  const statuses = new Map();
+  try {
+    const output = execFileSync("git", ["-C", root, "status", "--porcelain"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+      timeout: 3_000
+    });
+    for (const line of output.split(/\r?\n/)) {
+      if (!line.trim()) continue;
+      const code = line.slice(0, 2);
+      const filePath = normalizeRelativePath(line.slice(3).replace(/^"|"$/g, ""));
+      const status = code.includes("D") ? "deleted" : code.includes("A") || code.includes("?") ? "added" : "modified";
+      statuses.set(filePath, status);
+    }
+  } catch {
+    return statuses;
+  }
+  return statuses;
+}
+
+function gitSummary(statuses) {
+  const summary = { modified: 0, added: 0, deleted: 0 };
+  for (const status of statuses.values()) {
+    if (summary[status] !== undefined) summary[status] += 1;
+  }
+  return summary;
+}
+
+function normalizeRelativePath(value) {
+  return String(value ?? "").replaceAll("\\", "/");
+}
+
+function persistStateSoon() {
+  if (!persistenceEnabled) return;
+  if (saveStateTimer) return;
+  saveStateTimer = setTimeout(() => {
+    saveStateTimer = null;
+    savePersistentState();
+  }, 20);
+}
+
+function savePersistentState() {
+  if (!persistenceEnabled) return;
+  const snapshot = {
+    schemaVersion: stateSchemaVersion,
+    savedAt: now(),
+    projects: state.projects,
+    currentProjectId: state.currentProjectId,
+    worktrees: state.worktrees,
+    invocations: state.invocations,
+    compareRuns: state.compareRuns,
+    events: state.events,
+    traces: state.traces,
+    spans: state.spans,
+    auditSummaries: state.auditSummaries,
+    approvalRequests: state.approvalRequests,
+    policyDecisionRecords: state.policyDecisionRecords,
+    troubleshootingReports: state.troubleshootingReports,
+    agentUsageSummaries: state.agentUsageSummaries,
+    codexSessions: state.codexSessions,
+    codexWorkspaces: state.codexWorkspaces,
+    codexEvidenceRecords: state.codexEvidenceRecords,
+    codexChangeReviews: state.codexChangeReviews,
+    codexHookEvents: state.codexHookEvents,
+    codexApprovalBrokerRequests: state.codexApprovalBrokerRequests,
+    codexImportedEvidenceRecords: state.codexImportedEvidenceRecords
+  };
+  mkdirSync(dirname(stateStorePath), { recursive: true });
+  writeFileSync(stateStorePath, `${JSON.stringify(snapshot, null, 2)}\n`);
+}
+
+function restorePersistentState() {
+  if (!persistenceEnabled || !existsSync(stateStorePath)) return;
+  let snapshot;
+  try {
+    snapshot = JSON.parse(readFileSync(stateStorePath, "utf8"));
+  } catch {
+    return;
+  }
+  if (snapshot?.schemaVersion !== stateSchemaVersion) {
+    return;
+  }
+  const restoredProjects = Array.isArray(snapshot.projects)
+    ? snapshot.projects.filter((project) => project?.id && project?.path && existsSync(project.path))
+    : [];
+  if (restoredProjects.length) {
+    state.projects = restoredProjects;
+    state.currentProjectId = restoredProjects.some((project) => project.id === snapshot.currentProjectId)
+      ? snapshot.currentProjectId
+      : restoredProjects[0].id;
+  }
+  for (const key of [
+    "invocations",
+    "worktrees",
+    "compareRuns",
+    "events",
+    "traces",
+    "spans",
+    "auditSummaries",
+    "approvalRequests",
+    "policyDecisionRecords",
+    "troubleshootingReports",
+    "agentUsageSummaries",
+    "codexSessions",
+    "codexWorkspaces",
+    "codexEvidenceRecords",
+    "codexChangeReviews",
+    "codexHookEvents",
+    "codexApprovalBrokerRequests",
+    "codexImportedEvidenceRecords"
+  ]) {
+    if (Array.isArray(snapshot[key])) {
+      state[key] = snapshot[key];
+    }
+  }
 }
 
 function registerAgent(body) {
@@ -2198,6 +2859,8 @@ function createInvocation(task, agent = defaultAgent(), options = {}) {
   const codexWorkspacePolicy = normalizeCodexWorkspacePolicy(options.codexWorkspacePolicy, agent);
   const managedCodexWorkspace = createManagedCodexWorkspace({ invocationId: id, agent, workspacePolicy: codexWorkspacePolicy });
   const managedCodexSession = createManagedCodexSession({ invocationId: id, agent, codexSessionMode, workspace: managedCodexWorkspace });
+  const project = currentProject();
+  const projectWorktree = worktreeForProject(project?.id);
   const invocation = {
     id,
     ideaSessionId: null,
@@ -2231,12 +2894,18 @@ function createInvocation(task, agent = defaultAgent(), options = {}) {
       codexWorkspacePolicy,
       metadata: {
         demo: true,
+        ...(options.metadata && typeof options.metadata === "object" && !Array.isArray(options.metadata) ? options.metadata : {}),
+        projectId: project?.id ?? null,
+        projectName: project?.name ?? null,
+        projectPath: project?.path ?? null,
+        worktreeId: projectWorktree?.id ?? null,
+        worktreeBranchName: projectWorktree?.branchName ?? null,
+        worktreePath: projectWorktree?.worktreePath ?? null,
         ...(managedCodexSession ? {
           managedCodexSessionId: managedCodexSession.id,
           managedCodexWorkspaceId: managedCodexWorkspace?.id ?? null,
           managedLaunch: true
-        } : {}),
-        ...(options.metadata && typeof options.metadata === "object" && !Array.isArray(options.metadata) ? options.metadata : {})
+        } : {})
       }
     },
     result: null,
@@ -2248,6 +2917,7 @@ function createInvocation(task, agent = defaultAgent(), options = {}) {
     updatedAt: createdAt
   };
   state.invocations.unshift(invocation);
+  persistStateSoon();
   if (managedCodexSession) {
     appendEvent({
       invocationId: invocation.id,
@@ -2349,22 +3019,27 @@ function createManagedCodexWorkspace({ invocationId, agent, workspacePolicy }) {
     return null;
   }
   const createdAt = now();
+  const project = currentProject();
+  const projectWorktree = worktreeForProject(project?.id);
   const workspace = {
     id: nextId("cdx_ws"),
     invocationId,
     policy: workspacePolicy,
-    repoPath: agent.adapter?.workingDirectoryPolicy === "bridge_default" ? "bridge_default" : agent.adapter?.workingDirectory ?? null,
-    worktreePath: workspacePolicy === "current_repo" ? null : "pending_explicit_worktree",
-    baseBranch: null,
-    branchName: null,
+    repoPath: project?.path ?? (agent.adapter?.workingDirectoryPolicy === "bridge_default" ? "bridge_default" : agent.adapter?.workingDirectory ?? null),
+    worktreePath: projectWorktree?.worktreePath ?? (workspacePolicy === "current_repo" ? null : "pending_explicit_worktree"),
+    baseBranch: projectWorktree?.baseBranch ?? null,
+    branchName: projectWorktree?.branchName ?? null,
     dirtyState: "unknown",
     lastCommit: null,
-    status: workspacePolicy === "new_worktree" ? "pending_explicit_creation" : "registered",
+    status: projectWorktree ? "registered_worktree" : workspacePolicy === "new_worktree" ? "pending_explicit_creation" : "registered",
+    projectId: project?.id ?? null,
+    worktreeId: projectWorktree?.id ?? null,
     sessionIds: [],
     createdAt,
     lastSeenAt: createdAt
   };
   state.codexWorkspaces.unshift(workspace);
+  persistStateSoon();
   return workspace;
 }
 
@@ -2373,6 +3048,7 @@ function createManagedCodexSession({ invocationId, agent, codexSessionMode, work
     return null;
   }
   const createdAt = now();
+  const project = currentProject();
   const session = {
     id: nextId("cdx_sess"),
     codexSessionId: null,
@@ -2380,7 +3056,7 @@ function createManagedCodexSession({ invocationId, agent, codexSessionMode, work
     invocationId,
     userId: "usr_local",
     deviceId: agent.location?.deviceId ?? null,
-    repoPath: agent.adapter?.workingDirectoryPolicy === "bridge_default" ? "bridge_default" : null,
+    repoPath: project?.path ?? (agent.adapter?.workingDirectoryPolicy === "bridge_default" ? "bridge_default" : null),
     workspaceId: workspace?.id ?? null,
     agentId: agent.id,
     sessionMode: codexSessionMode,
@@ -2392,6 +3068,7 @@ function createManagedCodexSession({ invocationId, agent, codexSessionMode, work
     evidenceIds: []
   };
   state.codexSessions.unshift(session);
+  persistStateSoon();
   if (workspace) {
     workspace.sessionIds = uniqueStrings([...workspace.sessionIds, session.id]);
   }
@@ -2424,6 +3101,7 @@ function updateCodexSessionFromEvent(record) {
       session.codexSessionId = record.data.sessionId;
     }
   }
+  persistStateSoon();
 }
 
 function codexWorkspaceForSession(session) {
@@ -2444,6 +3122,7 @@ function updateCodexWorkspaceFromPreview(workspace, data) {
   workspace.dirtyState = data.workspace?.dirtyState ?? workspace.dirtyState;
   workspace.lastCommit = data.workspace?.lastCommit ?? workspace.lastCommit;
   workspace.status = data.workspace?.status ?? (workspace.policy === "new_worktree" ? "pending_explicit_creation" : "observed");
+  persistStateSoon();
 }
 
 function createCodexEvidenceRecord(record) {
@@ -2472,6 +3151,7 @@ function createCodexEvidenceRecord(record) {
     createdAt: record.createdAt
   };
   state.codexEvidenceRecords.unshift(evidence);
+  persistStateSoon();
   if (session) {
     session.evidenceIds = uniqueStrings([...session.evidenceIds, evidence.id]);
   }
@@ -2514,6 +3194,7 @@ function createCodexChangeReview(body) {
     createdAt
   };
   state.codexChangeReviews.unshift(review);
+  persistStateSoon();
   appendEvent({
     invocationId: evidence.invocationId,
     type: decision === "feedback" ? "codex_change_feedback_requested" : "codex_change_reviewed",
@@ -2563,6 +3244,7 @@ function closeCodexSession(invocation, status) {
   }
   session.lastSeenAt = now();
   session.status = status === "succeeded" ? "completed" : status === "cancelled" ? "cancelled" : "failed";
+  persistStateSoon();
 }
 
 function recordCodexHookEvent(body) {
@@ -2590,6 +3272,7 @@ function recordCodexHookEvent(body) {
     createdAt: now()
   };
   state.codexHookEvents.unshift(record);
+  persistStateSoon();
   if (session) {
     session.lastSeenAt = record.createdAt;
   }
@@ -2635,6 +3318,7 @@ function createCodexApprovalBrokerRequest({ invocation, session, hookEvent, body
     updatedAt: createdAt
   };
   state.codexApprovalBrokerRequests.unshift(request);
+  persistStateSoon();
   appendEvent({
     invocationId: invocation.id,
     type: "codex_approval_requested",
@@ -2678,6 +3362,7 @@ function resolveCodexApprovalBrokerRequest(request, action) {
   request.decidedAt = now();
   request.updatedAt = request.decidedAt;
   request.notificationState = "resolved";
+  persistStateSoon();
   appendEvent({
     invocationId: request.invocationId,
     type: action === "approve" ? "codex_approval_granted" : timedOut ? "codex_approval_timed_out" : "codex_approval_denied",
@@ -2712,6 +3397,7 @@ function createCodexImportedEvidenceRecord(body) {
     updatedAt: createdAt
   };
   state.codexImportedEvidenceRecords.unshift(record);
+  persistStateSoon();
   appendEvent({
     invocationId: null,
     type: "codex_imported_evidence_recorded",
@@ -3038,6 +3724,7 @@ function completeInvocation(invocation, body) {
   recordAgentUsage(invocation, terminalStatus);
   closeCodexSession(invocation, terminalStatus);
   updateCompareRunForInvocation(invocation);
+  persistStateSoon();
 }
 
 function updateCompareRunForInvocation(invocation) {
@@ -3060,6 +3747,7 @@ function updateCompareRun(compareRun) {
   const firstSuccess = children.find((child) => child.status === "succeeded");
   compareRun.preferredInvocationId = compareRun.preferredInvocationId ?? firstSuccess?.id ?? null;
   compareRun.updatedAt = now();
+  persistStateSoon();
 }
 
 function recordAgentUsage(invocation, terminalStatus) {
@@ -3080,6 +3768,7 @@ function recordAgentUsage(invocation, terminalStatus) {
   summary.currency = agent?.economics?.currency ?? "USD";
   summary.unknownCostVisible = summary.economicModel === "unknown";
   summary.updatedAt = now();
+  persistStateSoon();
 }
 
 function getAgentUsageSummary(agentId) {
@@ -3488,6 +4177,7 @@ function appendEvent(event) {
   state.events = state.events.slice(0, 200);
   updateCodexSessionFromEvent(record);
   createCodexEvidenceRecord(record);
+  persistStateSoon();
   return record;
 }
 
@@ -3645,6 +4335,10 @@ function publicState() {
     namespace,
     protocolVersion,
     device: state.device,
+    projects: state.projects,
+    currentProjectId: state.currentProjectId,
+    currentProject: currentProject(),
+    worktrees: state.worktrees,
     agent: defaultAgent(),
     agents: state.agents,
     invocations: state.invocations,
@@ -3672,8 +4366,618 @@ function publicState() {
     codexApprovalQueue: codexApprovalQueue(),
     evidenceCenterRecords: evidenceCenterRecords(),
     codexApprovalBrokerRequests: state.codexApprovalBrokerRequests,
-    codexImportedEvidenceRecords: state.codexImportedEvidenceRecords
+    codexImportedEvidenceRecords: state.codexImportedEvidenceRecords,
+    terminalRuntimeCapability: state.terminalRuntimeCapability,
+    terminalSessions: state.terminalSessions,
+    terminalEvidenceRecords: state.terminalEvidenceRecords,
+    terminalBridgeActions: state.terminalBridgeActions,
+    sshTargets: state.sshTargets,
+    sshConnectionTests: state.sshConnectionTests
   };
+}
+
+function createTerminalRuntimeCapability() {
+  const platform = process.platform;
+  const isWindows = platform === "win32";
+  const shells = isWindows ? ["powershell", "cmd", "pwsh", "wsl", "git-bash"] : ["bash", "zsh", "sh"];
+  return {
+    deviceId: "dev_local_001",
+    status: "managed_pty_supported",
+    localPty: {
+      available: true,
+      reason: "Desktop Bridge supports node-pty managed terminal sessions",
+      phase: "Phase E"
+    },
+    ssh: {
+      available: true,
+      reason: "SSH target registry and safety preflight are available; remote relay PTY is not enabled",
+      phase: "Phase G",
+      targetRegistry: true,
+      remoteRelayAvailable: false
+    },
+    relay: {
+      available: true,
+      reason: "Remote relay protocol is available through managed SSH stdio bootstrap",
+      phase: "Phase H",
+      transport: "ssh_stdio_relay"
+    },
+    supportedShells: shells,
+    defaultShell: isWindows ? "powershell" : "bash",
+    contract: "docs/engineering/MANAGED_TERMINAL_JOIN_CONTRACT.md",
+    updatedAt: now()
+  };
+}
+
+function createSshTarget(body = {}) {
+  const host = normalizeSshHost(body.host);
+  const port = normalizeSshPort(body.port);
+  const user = normalizeSshUser(body.user);
+  const authMethod = normalizeSshAuthMethod(body.authMethod);
+  const knownHostPolicy = normalizeKnownHostPolicy(body.knownHostPolicy);
+  const workspaceRoot = normalizeSshWorkspaceRoot(body.workspaceRoot);
+  const target = {
+    id: nextId("ssh_target"),
+    name: summarizeText(body.name ?? `${user}@${host}:${port}`, 80),
+    host,
+    port,
+    user,
+    authMethod,
+    credentialRef: normalizeSshCredentialRef(body, authMethod),
+    credentialStorage: "external_reference_only",
+    knownHostPolicy,
+    knownHostFingerprint: normalizeKnownHostFingerprint(body.knownHostFingerprint),
+    workspaceRoot,
+    platformHint: normalizeSshPlatformHint(body.platformHint),
+    agentForwarding: normalizeBoolean(body.agentForwarding, false),
+    keySelection: normalizeSshKeySelection(body.keySelection),
+    status: "registered",
+    trustStatus: sshTrustStatus(knownHostPolicy, body.knownHostFingerprint),
+    remoteRelayEnabled: false,
+    evidencePolicy: "not_managed_terminal_evidence_until_relay_registered",
+    riskSummary: sshTargetRiskSummary({ authMethod, knownHostPolicy, agentForwarding: body.agentForwarding, keySelection: body.keySelection }),
+    redactionRules: sshCredentialRedactionRules(authMethod),
+    createdAt: now(),
+    updatedAt: now(),
+    lastTestId: null
+  };
+  state.sshTargets.unshift(target);
+  appendEvent({
+    invocationId: null,
+    type: "ssh.target.registered",
+    level: "info",
+    message: "SSH runtime target registered for safety preflight.",
+    data: {
+      targetId: target.id,
+      host: target.host,
+      port: target.port,
+      user: target.user,
+      authMethod: target.authMethod,
+      knownHostPolicy: target.knownHostPolicy,
+      workspaceRoot: target.workspaceRoot,
+      remoteRelayEnabled: target.remoteRelayEnabled
+    }
+  });
+  return target;
+}
+
+function createSshConnectionTest(target, body = {}) {
+  const checks = sshPreflightChecks(target, body);
+  const blocking = checks.filter((check) => check.severity === "block");
+  const warning = checks.filter((check) => check.severity === "warn");
+  const report = {
+    id: nextId("ssh_test"),
+    targetId: target.id,
+    status: blocking.length > 0 ? "blocked" : warning.length > 0 ? "needs_review" : "ready_for_manual_test",
+    auth: {
+      method: target.authMethod,
+      credentialStorage: target.credentialStorage,
+      credentialRef: target.credentialRef,
+      plaintextStored: false
+    },
+    hostVerification: {
+      policy: target.knownHostPolicy,
+      trustStatus: target.trustStatus,
+      fingerprint: target.knownHostFingerprint ?? null
+    },
+    platform: {
+      localPlatform: state.device.platform,
+      remotePlatformHint: target.platformHint,
+      workspaceRoot: target.workspaceRoot
+    },
+    agentForwarding: {
+      enabled: target.agentForwarding,
+      risk: target.agentForwarding ? "Can expose signing capability to a remote host. Require explicit admin approval." : "Disabled by default."
+    },
+    keySelection: {
+      mode: target.keySelection,
+      risk: target.keySelection === "ssh_agent_default" ? "Default SSH agent identity may be ambiguous." : "Explicit credential reference required."
+    },
+    remoteRelayEnabled: false,
+    checks,
+    summary: sshConnectionTestSummary(blocking, warning),
+    createdAt: now()
+  };
+  state.sshConnectionTests.unshift(report);
+  target.lastTestId = report.id;
+  target.status = report.status;
+  target.updatedAt = now();
+  appendEvent({
+    invocationId: null,
+    type: "ssh.target.test",
+    level: report.status === "blocked" ? "warn" : "info",
+    message: report.summary,
+    data: {
+      targetId: target.id,
+      reportId: report.id,
+      status: report.status,
+      checks: checks.map((check) => `${check.id}:${check.status}`)
+    }
+  });
+  return report;
+}
+
+function createManagedTerminalSession(body = {}) {
+  const capability = state.terminalRuntimeCapability;
+  const runtimeKind = normalizeTerminalRuntimeKind(body.runtimeKind);
+  const sshTarget = runtimeKind === "remote_ssh_relay" ? latestReadySshTarget(body.targetId) : null;
+  if (runtimeKind === "remote_ssh_relay" && !sshTarget) {
+    throw new Error("Remote relay terminal sessions require a ready SSH target preflight.");
+  }
+  const shell = runtimeKind === "remote_ssh_relay"
+    ? normalizeRemoteTerminalShell(body.shell, sshTarget)
+    : normalizeTerminalShell(body.shell, capability.defaultShell);
+  const cwd = runtimeKind === "remote_ssh_relay"
+    ? normalizeTerminalCwd(body.cwd ?? sshTarget.workspaceRoot)
+    : normalizeTerminalCwd(body.cwd);
+  const runtimeAvailable = runtimeKind === "remote_ssh_relay" ? capability.relay.available : capability.localPty.available;
+  const session = {
+    terminalSessionId: nextId("term"),
+    ownerInvocationId: String(body.ownerInvocationId ?? "manual_terminal_surface"),
+    ownerCodexSessionId: normalizeTerminalCodexSessionId(body.ownerCodexSessionId, body.ownerInvocationId),
+    deviceId: state.device.id,
+    userId: "usr_local",
+    repoPath: cwd,
+    cwd,
+    shell,
+    runtimeKind,
+    targetId: sshTarget?.id ?? "local",
+    remoteHost: sshTarget?.host ?? null,
+    remoteUser: sshTarget?.user ?? null,
+    remoteRelayTransport: runtimeKind === "remote_ssh_relay" ? "ssh_stdio_relay" : null,
+    relayVersion: runtimeKind === "remote_ssh_relay" ? "0.1.0" : null,
+    status: runtimeAvailable ? "attaching" : "unavailable",
+    policyProfile: "managed-terminal-default",
+    approvalPolicy: "ask_before_risky_tools",
+    sandboxMode: "workspace_write",
+    networkPolicy: runtimeKind === "remote_ssh_relay" ? "ssh_target_only" : "restricted",
+    startedAt: now(),
+    lastSeenAt: now(),
+    exitedAt: null,
+    exitCode: null,
+    evidenceIds: []
+  };
+  state.terminalSessions.unshift(session);
+  persistStateSoon();
+  const action = runtimeAvailable
+    ? queueTerminalBridgeAction(session, "create", { shell, cwd, cols: Number(body.cols ?? 100), rows: Number(body.rows ?? 30), target: sshTarget })
+    : null;
+  recordTerminalEvidence(session, "terminal_session_start", runtimeAvailable ? "Managed terminal session create requested." : "Managed terminal session registered but runtime is unavailable.", {
+    shell,
+    cwd,
+    runtimeKind: session.runtimeKind,
+    remoteHost: session.remoteHost,
+    remoteUser: session.remoteUser,
+    remoteRelayTransport: session.remoteRelayTransport,
+    relayVersion: session.relayVersion,
+    policyProfile: session.policyProfile,
+    capabilityStatus: capability.status,
+    capabilityReason: runtimeKind === "remote_ssh_relay" ? capability.relay.reason : capability.localPty.reason,
+    actionId: action?.id ?? null
+  });
+  appendEvent({
+    invocationId: null,
+    type: runtimeAvailable ? "terminal.session.create" : "terminal.runtime.warning",
+    level: runtimeAvailable ? "info" : "warn",
+    message: runtimeAvailable ? "Managed terminal session create requested." : "Managed terminal runtime is not connected yet.",
+    data: {
+      terminalSessionId: session.terminalSessionId,
+      shell,
+      cwd,
+      runtimeKind,
+      targetId: session.targetId,
+      remoteHost: session.remoteHost,
+      status: session.status,
+      reason: runtimeKind === "remote_ssh_relay" ? capability.relay.reason : capability.localPty.reason
+    }
+  });
+  return session;
+}
+
+function normalizeTerminalCodexSessionId(ownerCodexSessionId, ownerInvocationId) {
+  if (ownerCodexSessionId && state.codexSessions.some((item) => item.id === String(ownerCodexSessionId))) {
+    return String(ownerCodexSessionId);
+  }
+  if (ownerInvocationId) {
+    return codexSessionForInvocation(String(ownerInvocationId))?.id ?? null;
+  }
+  return state.codexSessions[0]?.id ?? null;
+}
+
+function closeManagedTerminalSession(session) {
+  session.status = session.status === "attached" ? "detached" : "closed";
+  session.exitedAt = now();
+  session.lastSeenAt = now();
+  session.exitCode = null;
+  recordTerminalEvidence(session, "terminal_exit", "Managed terminal session closed from Web Console.", {
+    status: session.status,
+    exitCode: session.exitCode
+  });
+  appendEvent({
+    invocationId: session.ownerInvocationId === "manual_terminal_surface" ? null : session.ownerInvocationId,
+    type: "terminal.close",
+    level: "info",
+    message: "Managed terminal session closed.",
+    data: { terminalSessionId: session.terminalSessionId, status: session.status }
+  });
+}
+
+function queueTerminalBridgeAction(session, actionType, payload = {}) {
+  const action = {
+    id: nextId("term_act"),
+    terminalSessionId: session.terminalSessionId,
+    actionType,
+    payload,
+    status: "queued",
+    createdAt: now(),
+    dispatchedAt: null,
+    completedAt: null
+  };
+  state.terminalBridgeActions.push(action);
+  session.lastSeenAt = now();
+  persistStateSoon();
+  return action;
+}
+
+function nextTerminalBridgeAction() {
+  const action = state.terminalBridgeActions.find((item) => item.status === "queued");
+  if (!action) return null;
+  action.status = "dispatched";
+  action.dispatchedAt = now();
+  const session = state.terminalSessions.find((item) => item.terminalSessionId === action.terminalSessionId);
+  persistStateSoon();
+  return {
+    ...action,
+    session
+  };
+}
+
+function completeTerminalBridgeAction(actionId) {
+  const action = state.terminalBridgeActions.find((item) => item.id === actionId);
+  if (!action) return;
+  action.status = "completed";
+  action.completedAt = now();
+  persistStateSoon();
+}
+
+function recordTerminalBridgeEvent(body = {}) {
+  const session = state.terminalSessions.find((item) => item.terminalSessionId === body.terminalSessionId);
+  if (!session) return { ok: false, error: "terminal_session_not_found" };
+  const eventType = String(body.type ?? "");
+  if (body.actionId) completeTerminalBridgeAction(String(body.actionId));
+  session.lastSeenAt = now();
+
+  if (eventType === "terminal.session.attached") {
+    session.status = "attached";
+    recordTerminalEvidence(session, "terminal_session_start", "Managed terminal PTY attached.", {
+      shell: session.shell,
+      cwd: session.cwd,
+      runtimeKind: session.runtimeKind,
+      remoteHost: session.remoteHost,
+      remoteUser: session.remoteUser,
+      relayVersion: session.relayVersion,
+      policyProfile: session.policyProfile
+    });
+  } else if (eventType === "terminal.output.chunk") {
+    recordTerminalEvidence(session, "terminal_output_chunk", summarizeText(String(body.summary ?? "Terminal output received."), 200), {
+      stream: body.stream ?? "stdout",
+      byteCount: Number(body.byteCount ?? String(body.output ?? "").length),
+      outputPreview: summarizeText(String(body.output ?? ""), 500),
+      runtimeKind: session.runtimeKind,
+      remoteHost: session.remoteHost,
+      remoteUser: session.remoteUser,
+      relayVersion: session.relayVersion
+    });
+  } else if (eventType === "terminal.resize") {
+    recordTerminalEvidence(session, "terminal_resize", "Managed terminal resized.", {
+      cols: Number(body.cols ?? 0),
+      rows: Number(body.rows ?? 0),
+      runtimeKind: session.runtimeKind,
+      remoteHost: session.remoteHost,
+      remoteUser: session.remoteUser
+    });
+  } else if (eventType === "terminal.exit") {
+    session.status = "exited";
+    session.exitedAt = now();
+    session.exitCode = Number.isFinite(Number(body.exitCode)) ? Number(body.exitCode) : null;
+    recordTerminalEvidence(session, "terminal_exit", `Managed terminal exited${session.exitCode === null ? "" : ` with code ${session.exitCode}`}.`, {
+      exitCode: session.exitCode,
+      runtimeKind: session.runtimeKind,
+      remoteHost: session.remoteHost,
+      remoteUser: session.remoteUser,
+      relayVersion: session.relayVersion
+    });
+  } else if (eventType === "terminal.close") {
+    closeManagedTerminalSession(session);
+  } else if (eventType === "terminal.runtime.warning") {
+    session.status = session.status === "attaching" ? "error" : session.status;
+    recordTerminalEvidence(session, "terminal_policy_event", String(body.summary ?? "Managed terminal runtime warning."), {
+      warning: body.summary ?? body.error ?? "runtime warning"
+    });
+  }
+
+  appendEvent({
+    invocationId: session.ownerInvocationId === "manual_terminal_surface" ? null : session.ownerInvocationId,
+    type: eventType || "terminal.runtime.warning",
+    level: eventType === "terminal.runtime.warning" ? "warn" : "info",
+    message: String(body.summary ?? terminalEventSummary(eventType)),
+    data: {
+      terminalSessionId: session.terminalSessionId,
+      actionId: body.actionId ?? null,
+      status: session.status
+    }
+  });
+  return { ok: true, session };
+}
+
+function terminalEventSummary(type) {
+  switch (type) {
+    case "terminal.session.attached":
+      return "Managed terminal PTY attached.";
+    case "terminal.output.chunk":
+      return "Managed terminal output received.";
+    case "terminal.resize":
+      return "Managed terminal resized.";
+    case "terminal.exit":
+      return "Managed terminal exited.";
+    case "terminal.close":
+      return "Managed terminal closed.";
+    default:
+      return "Managed terminal runtime event.";
+  }
+}
+
+function recordTerminalEvidence(session, type, summary, data = {}) {
+  const evidence = {
+    id: nextId("tev"),
+    terminalSessionId: session.terminalSessionId,
+    ownerInvocationId: session.ownerInvocationId,
+    ownerCodexSessionId: session.ownerCodexSessionId,
+    type,
+    source: "managed_terminal_runtime",
+    redactionState: "summary_only",
+    marker: "managed_terminal",
+    repoPath: session.repoPath,
+    summary,
+    detail: summary,
+    data,
+    createdAt: now()
+  };
+  state.terminalEvidenceRecords.unshift(evidence);
+  session.evidenceIds = uniqueStrings([...(session.evidenceIds ?? []), evidence.id]);
+  persistStateSoon();
+  return evidence;
+}
+
+function normalizeTerminalShell(value, fallback) {
+  const requested = String(value ?? fallback ?? "").trim().toLowerCase();
+  const supported = state.terminalRuntimeCapability.supportedShells;
+  return supported.includes(requested) ? requested : fallback;
+}
+
+function normalizeTerminalCwd(value) {
+  const cwd = String(value ?? process.cwd()).trim();
+  return cwd || process.cwd();
+}
+
+function normalizeTerminalRuntimeKind(value) {
+  const runtimeKind = String(value ?? "local_pty").trim();
+  return ["local_pty", "remote_ssh_relay"].includes(runtimeKind) ? runtimeKind : "local_pty";
+}
+
+function latestReadySshTarget(targetId) {
+  const target = targetId
+    ? state.sshTargets.find((item) => item.id === String(targetId))
+    : state.sshTargets[0];
+  if (!target) return null;
+  const report = state.sshConnectionTests.find((item) => item.targetId === target.id);
+  if (report?.status !== "ready_for_manual_test") return null;
+  return target;
+}
+
+function normalizeRemoteTerminalShell(value, target) {
+  const shell = String(value ?? "").trim();
+  if (shell) return shell.replace(/[^\w./-]/g, "").slice(0, 80) || "bash";
+  if (target?.platformHint === "windows") return "powershell";
+  return "bash";
+}
+
+function normalizeSshHost(value) {
+  const host = String(value ?? "").trim();
+  if (!host) {
+    throw new Error("SSH host is required.");
+  }
+  if (/[\s/@]/.test(host)) {
+    throw new Error("SSH host must be a host name or IP address, not a full command.");
+  }
+  return host;
+}
+
+function normalizeSshPort(value) {
+  const port = Number(value ?? 22);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new Error("SSH port must be between 1 and 65535.");
+  }
+  return port;
+}
+
+function normalizeSshUser(value) {
+  const user = String(value ?? "").trim();
+  if (!user) {
+    throw new Error("SSH user is required.");
+  }
+  if (/[\s@]/.test(user)) {
+    throw new Error("SSH user must not contain spaces or host separators.");
+  }
+  return user;
+}
+
+function normalizeSshAuthMethod(value) {
+  const method = String(value ?? "ssh_agent").trim();
+  return ["ssh_agent", "private_key_ref", "password_ref", "managed_identity"].includes(method) ? method : "ssh_agent";
+}
+
+function normalizeKnownHostPolicy(value) {
+  const policy = String(value ?? "strict").trim();
+  return ["strict", "pinned_fingerprint", "manual_review"].includes(policy) ? policy : "strict";
+}
+
+function normalizeSshWorkspaceRoot(value) {
+  const root = String(value ?? "").trim();
+  if (!root) {
+    throw new Error("SSH workspace root is required.");
+  }
+  if (root.includes("\0")) {
+    throw new Error("SSH workspace root contains an invalid character.");
+  }
+  return root;
+}
+
+function normalizeSshCredentialRef(body, authMethod) {
+  const raw = String(body.credentialRef ?? body.keyRef ?? body.passwordRef ?? "").trim();
+  if (authMethod === "ssh_agent") {
+    return raw || "ssh-agent:default";
+  }
+  if (!raw) {
+    return "external-secret:unconfigured";
+  }
+  return raw.replace(/[^a-zA-Z0-9:_./-]/g, "_").slice(0, 120);
+}
+
+function normalizeKnownHostFingerprint(value) {
+  const fingerprint = String(value ?? "").trim();
+  if (!fingerprint) return null;
+  return fingerprint.replace(/\s+/g, "").slice(0, 160);
+}
+
+function normalizeSshPlatformHint(value) {
+  const hint = String(value ?? "unknown").trim().toLowerCase();
+  return ["linux", "macos", "windows", "unknown"].includes(hint) ? hint : "unknown";
+}
+
+function normalizeSshKeySelection(value) {
+  const selection = String(value ?? "ssh_agent_default").trim();
+  return ["ssh_agent_default", "explicit_key_ref", "managed_identity"].includes(selection) ? selection : "ssh_agent_default";
+}
+
+function normalizeBoolean(value, fallback = false) {
+  if (typeof value === "boolean") return value;
+  if (typeof value === "string") {
+    if (["true", "yes", "1", "on"].includes(value.toLowerCase())) return true;
+    if (["false", "no", "0", "off"].includes(value.toLowerCase())) return false;
+  }
+  return fallback;
+}
+
+function sshTrustStatus(knownHostPolicy, fingerprint) {
+  if (knownHostPolicy === "pinned_fingerprint" && fingerprint) return "pinned";
+  if (knownHostPolicy === "strict") return "known_hosts_required";
+  return "manual_review_required";
+}
+
+function sshCredentialRedactionRules(authMethod) {
+  return {
+    plaintextPrivateKey: "never_store",
+    password: "never_store",
+    credentialRef: "identifier_only",
+    logs: "host_user_port_only",
+    authMethod
+  };
+}
+
+function sshTargetRiskSummary({ authMethod, knownHostPolicy, agentForwarding, keySelection }) {
+  const risks = [];
+  if (knownHostPolicy === "manual_review") risks.push("host trust requires manual review");
+  if (normalizeBoolean(agentForwarding, false)) risks.push("agent forwarding can expose signing capability");
+  if (keySelection === "ssh_agent_default") risks.push("default SSH agent key selection may be ambiguous");
+  if (authMethod === "password_ref") risks.push("password credential must stay in an external secret store");
+  return risks.length ? risks.join("; ") : "strict host verification and external credential reference required";
+}
+
+function sshPreflightChecks(target, body = {}) {
+  const checks = [
+    {
+      id: "host",
+      label: "Host and port",
+      status: target.host && target.port ? "passed" : "failed",
+      severity: target.host && target.port ? "info" : "block",
+      detail: `${target.host}:${target.port}`
+    },
+    {
+      id: "auth",
+      label: "Credential handling",
+      status: target.credentialRef === "external-secret:unconfigured" ? "failed" : "passed",
+      severity: target.credentialRef === "external-secret:unconfigured" ? "block" : "info",
+      detail: `${target.authMethod}; ${target.credentialStorage}; no plaintext secret stored`
+    },
+    {
+      id: "host_verification",
+      label: "Host verification",
+      status: target.knownHostPolicy === "manual_review" ? "needs_review" : "passed",
+      severity: target.knownHostPolicy === "manual_review" ? "warn" : "info",
+      detail: target.knownHostFingerprint ? `fingerprint ${target.knownHostFingerprint}` : target.trustStatus
+    },
+    {
+      id: "workspace_root",
+      label: "Workspace root",
+      status: target.workspaceRoot ? "passed" : "failed",
+      severity: target.workspaceRoot ? "info" : "block",
+      detail: target.workspaceRoot || "missing"
+    },
+    {
+      id: "agent_forwarding",
+      label: "Agent forwarding",
+      status: target.agentForwarding ? "needs_review" : "passed",
+      severity: target.agentForwarding ? "warn" : "info",
+      detail: target.agentForwarding ? "enabled; require admin approval" : "disabled"
+    },
+    {
+      id: "remote_relay",
+      label: "Remote relay",
+      status: "not_enabled",
+      severity: "info",
+      detail: "Phase G does not enable remote PTY or managed evidence relay"
+    }
+  ];
+  if (body?.expectLiveConnection === true) {
+    checks.push({
+      id: "live_connection",
+      label: "Live connection",
+      status: "not_attempted",
+      severity: "warn",
+      detail: "Live SSH handshake is reserved for a reviewed connector implementation."
+    });
+  }
+  return checks;
+}
+
+function sshConnectionTestSummary(blocking, warning) {
+  if (blocking.length > 0) {
+    return `SSH target preflight blocked by ${blocking.map((check) => check.label).join(", ")}.`;
+  }
+  if (warning.length > 0) {
+    return `SSH target preflight needs review for ${warning.map((check) => check.label).join(", ")}.`;
+  }
+  return "SSH target preflight passed; remote relay remains disabled until Phase H.";
 }
 
 function codexApprovalQueue() {
@@ -3784,6 +5088,22 @@ function evidenceCenterRecords() {
       createdAt: event.createdAt
     });
   }
+  for (const evidence of state.terminalEvidenceRecords) {
+    records.push({
+      id: evidence.id,
+      type: evidence.type,
+      source: evidence.source,
+      redactionState: evidence.redactionState,
+      invocationId: evidence.ownerInvocationId === "manual_terminal_surface" ? null : evidence.ownerInvocationId,
+      codexSessionRegistryId: evidence.ownerCodexSessionId,
+      agentId: null,
+      repoPath: evidence.repoPath,
+      summary: evidence.summary,
+      detail: evidence.detail,
+      marker: evidence.marker,
+      createdAt: evidence.createdAt
+    });
+  }
   for (const imported of state.codexImportedEvidenceRecords) {
     records.push({
       id: imported.id,
@@ -3821,6 +5141,75 @@ function runProtocolSelfCheck() {
   assert(!defaultCodexAgent.adapter.args.includes("read-only"), "default Codex CLI agent should defer sandboxing to Codex CLI");
   assert(defaultCodexAgent.capabilities[0].riskLevel === "high", "default Codex CLI agent should stay high risk");
   assert(defaultCodexAgent.registrationNotes.risk.includes("Codex CLI"), "default Codex CLI agent should expose Codex review notes");
+  assert(state.terminalRuntimeCapability.localPty.available === true, "terminal runtime should report local PTY support");
+  assert(state.terminalRuntimeCapability.contract.includes("MANAGED_TERMINAL_JOIN_CONTRACT"), "terminal capability should reference the join contract");
+  const terminalSession = createManagedTerminalSession({ shell: state.terminalRuntimeCapability.defaultShell });
+  assert(terminalSession.terminalSessionId.startsWith("term_"), "terminal session registry should allocate terminal session ids");
+  assert(terminalSession.cwd && terminalSession.shell, "terminal session registry should record cwd and shell");
+  assert(terminalSession.status === "attaching", "terminal session should wait for Desktop Bridge attach event");
+  assert(terminalSession.evidenceIds.length > 0, "terminal session registry should create summary evidence");
+  const terminalAction = nextTerminalBridgeAction();
+  assert(terminalAction?.actionType === "create", "terminal create action should be bridge-visible");
+  assert(recordTerminalBridgeEvent({ terminalSessionId: terminalSession.terminalSessionId, actionId: terminalAction.id, type: "terminal.session.attached", summary: "self-check attached" }).ok, "terminal attach event should update session");
+  assert(terminalSession.status === "attached", "terminal attach event should mark session attached");
+  const inputAction = queueTerminalBridgeAction(terminalSession, "input", { input: "echo self-check\r" });
+  assert(nextTerminalBridgeAction()?.id === inputAction.id, "terminal input action should be bridge-visible");
+  assert(recordTerminalBridgeEvent({ terminalSessionId: terminalSession.terminalSessionId, actionId: inputAction.id, type: "terminal.output.chunk", output: "self-check", byteCount: 10, summary: "Terminal output: self-check" }).ok, "terminal output event should create evidence");
+  const resizeAction = queueTerminalBridgeAction(terminalSession, "resize", { cols: 100, rows: 30 });
+  assert(nextTerminalBridgeAction()?.id === resizeAction.id, "terminal resize action should be bridge-visible");
+  assert(recordTerminalBridgeEvent({ terminalSessionId: terminalSession.terminalSessionId, actionId: resizeAction.id, type: "terminal.resize", cols: 100, rows: 30, summary: "self-check resized" }).ok, "terminal resize event should create evidence");
+  assert(recordTerminalBridgeEvent({ terminalSessionId: terminalSession.terminalSessionId, type: "terminal.exit", exitCode: 0, summary: "self-check exited" }).ok, "terminal exit event should close lifecycle");
+  assert(evidenceCenterRecords().some((record) => record.source === "managed_terminal_runtime"), "Evidence Center should include managed terminal evidence summaries");
+  const codexWorkspace = createManagedCodexWorkspace({ invocationId: "inv_self_codex_terminal", agent: defaultCodexAgent, workspacePolicy: "current_repo" });
+  const codexSession = createManagedCodexSession({ invocationId: "inv_self_codex_terminal", agent: defaultCodexAgent, codexSessionMode: "continue_last", workspace: codexWorkspace });
+  const codexTerminal = createManagedTerminalSession({ ownerCodexSessionId: codexSession.id, ownerInvocationId: "inv_self_codex_terminal", shell: state.terminalRuntimeCapability.defaultShell });
+  assert(codexTerminal.ownerCodexSessionId === codexSession.id, "Codex terminal session should link to managed Codex session registry");
+  const codexTerminalAction = nextTerminalBridgeAction();
+  assert(codexTerminalAction?.terminalSessionId === codexTerminal.terminalSessionId, "Codex terminal create action should be bridge-visible");
+  assert(recordTerminalBridgeEvent({ terminalSessionId: codexTerminal.terminalSessionId, actionId: codexTerminalAction.id, type: "terminal.session.attached", summary: "self-check Codex terminal attached" }).ok, "Codex terminal attach event should update session");
+  assert(evidenceCenterRecords().some((record) => record.source === "managed_terminal_runtime" && record.codexSessionRegistryId === codexSession.id), "Codex terminal evidence should preserve Codex session linkage");
+  const sshTarget = createSshTarget({
+    name: "Self-check SSH target",
+    host: "example.internal",
+    port: 22,
+    user: "dev",
+    authMethod: "private_key_ref",
+    credentialRef: "external-secret:ssh/self-check",
+    knownHostPolicy: "pinned_fingerprint",
+    knownHostFingerprint: "SHA256:selfcheck",
+    workspaceRoot: "/srv/myagenttool",
+    platformHint: "linux",
+    agentForwarding: false,
+    keySelection: "explicit_key_ref"
+  });
+  assert(sshTarget.id.startsWith("ssh_target_"), "SSH target registry should allocate target ids");
+  assert(sshTarget.credentialStorage === "external_reference_only", "SSH target should store credential references only");
+  assert(sshTarget.remoteRelayEnabled === false, "SSH target design should not enable remote relay PTY");
+  const sshTest = createSshConnectionTest(sshTarget);
+  assert(sshTest.status === "ready_for_manual_test", "SSH preflight should pass with explicit credential and pinned host");
+  assert(sshTest.auth.plaintextStored === false, "SSH test report should not store plaintext credentials");
+  const remoteTerminal = createManagedTerminalSession({
+    runtimeKind: "remote_ssh_relay",
+    targetId: sshTarget.id,
+    shell: "bash",
+    cwd: "/srv/myagenttool"
+  });
+  assert(remoteTerminal.runtimeKind === "remote_ssh_relay", "remote relay terminal session should preserve runtime kind");
+  assert(remoteTerminal.remoteHost === sshTarget.host, "remote relay terminal session should record remote host");
+  const remoteAction = nextTerminalBridgeAction();
+  assert(remoteAction?.session?.runtimeKind === "remote_ssh_relay", "remote relay create action should be bridge-visible");
+  assert(recordTerminalBridgeEvent({ terminalSessionId: remoteTerminal.terminalSessionId, actionId: remoteAction.id, type: "terminal.session.attached", summary: "self-check remote relay attached" }).ok, "remote relay attach event should update session");
+  assert(recordTerminalBridgeEvent({ terminalSessionId: remoteTerminal.terminalSessionId, type: "terminal.output.chunk", output: "remote self-check", byteCount: 17, summary: "Terminal output: remote self-check" }).ok, "remote relay output event should create evidence");
+  assert(evidenceCenterRecords().some((record) => record.source === "managed_terminal_runtime" && record.detail.includes("remote self-check")), "Evidence Center should include remote relay terminal output summaries");
+  const blockedSshTarget = createSshTarget({
+    host: "blocked.example.internal",
+    user: "dev",
+    authMethod: "private_key_ref",
+    knownHostPolicy: "manual_review",
+    workspaceRoot: "/srv/myagenttool"
+  });
+  const blockedSshTest = createSshConnectionTest(blockedSshTarget);
+  assert(blockedSshTest.status === "blocked", "SSH preflight should block missing external credential reference");
   const cliAgent = registerAgent({
     id: "agt_self_cli",
     type: "cli",
@@ -4233,6 +5622,12 @@ function resetDemoStateForCheck() {
   state.codexHookEvents = [];
   state.codexApprovalBrokerRequests = [];
   state.codexImportedEvidenceRecords = [];
+  state.terminalSessions = [];
+  state.terminalEvidenceRecords = [];
+  state.terminalBridgeActions = [];
+  state.sshTargets = [];
+  state.sshConnectionTests = [];
+  state.terminalRuntimeCapability = createTerminalRuntimeCapability();
   idCounter = 1;
 }
 

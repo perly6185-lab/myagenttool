@@ -12,7 +12,8 @@
   },
   "dependencies": {
     "@myagenttool/protocol": "workspace:*",
-    "@myagenttool/shared": "workspace:*"
+    "@myagenttool/shared": "workspace:*",
+    "node-pty": "^1.1.0"
   },
   "devDependencies": {
     "typescript": "^5.7.2"

@@ -1,36 +1,43 @@
 import { spawn } from "node:child_process";
 import http from "node:http";
 
+const host = process.env.DEMO_HOST ?? "127.0.0.1";
+const webPort = Number(process.env.WEB_PORT ?? 5000);
+const serverPort = Number(process.env.SERVER_PORT ?? 5001);
+const controlHost = process.env.DEV_CONTROL_HOST ?? host;
+const controlPort = Number(process.env.DEV_CONTROL_PORT ?? 5999);
+const serverUrl = `http://${host}:${serverPort}`;
+const webUrl = `http://${host}:${webPort}`;
+const controlUrl = `http://${controlHost}:${controlPort}`;
+
 const processes = [
   {
     name: "server",
     command: process.execPath,
     args: ["apps/server/src/index.mjs"],
-    env: { SERVER_PORT: "3001" }
+    env: { SERVER_PORT: String(serverPort) }
   },
   {
     name: "desktop",
     command: process.execPath,
     args: ["apps/desktop/src/index.mjs"],
-    env: { BRIDGE_SERVER_URL: "http://127.0.0.1:3001" }
+    env: { BRIDGE_SERVER_URL: serverUrl, BRIDGE_TERMINAL_POLL_INTERVAL_MS: "40" }
   },
   {
     name: "web",
     command: process.execPath,
     args: ["apps/web/src/index.mjs"],
-    env: { WEB_PORT: "3000" }
+    env: { WEB_PORT: String(webPort) }
   }
 ];
 
-const controlHost = process.env.DEV_CONTROL_HOST ?? "127.0.0.1";
-const controlPort = Number(process.env.DEV_CONTROL_PORT ?? 3999);
 const children = new Map();
 let stopping = false;
 
 console.log("[demo] starting M0 Local Invocation Loop");
-console.log("[demo] Web Console: http://127.0.0.1:3000");
-console.log("[demo] Server API:  http://127.0.0.1:3001");
-console.log(`[demo] Dev control: http://${controlHost}:${controlPort}`);
+console.log(`[demo] Web Console: ${webUrl}`);
+console.log(`[demo] Server API:  ${serverUrl}`);
+console.log(`[demo] Dev control: ${controlUrl}`);
 console.log("[demo] Press Ctrl+C to stop.");
 
 for (const proc of processes) {

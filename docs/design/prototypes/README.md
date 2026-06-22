@@ -71,3 +71,26 @@ Figma path:
    `managed-session-context-rail.spec.json`.
 4. Preserve the Product Flow ownership and what-not-to-show rules when turning
    this into a high-fidelity design.
+
+## Agent Workspace IA Shell
+
+Files:
+
+- [canvas/agent-workspace.imported.scene.json](canvas/agent-workspace.imported.scene.json)
+- [canvas/agent-workspace.export.html](canvas/agent-workspace.export.html)
+- [canvas/agent-workspace.visual-qa.md](canvas/agent-workspace.visual-qa.md)
+
+Source:
+
+- `.myagenttool/runs/orca-inspired-agent-workspace-ui/agent-workspace-ascii-prototype.md`
+- [AGENT_WORKSPACE_IA.md](../AGENT_WORKSPACE_IA.md)
+
+Use this prototype before implementing the production Web Console workspace
+shell. It validates:
+
+- Run remains the default high-frequency surface.
+- Session, Diff, Terminal, Evidence, Approval, and Setup are separate
+  role-owned surfaces.
+- Terminal is a managed-runtime placeholder until the runtime line is ready.
+- Evidence and Approval keep governance in dedicated spaces.
+- Mobile remains task-first before showing the advanced surface switcher.

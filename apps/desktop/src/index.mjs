@@ -1,28 +1,45 @@
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { dirname, resolve } from "node:path";
+import { dirname, isAbsolute, relative, resolve } from "node:path";
+import * as pty from "node-pty";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const serverUrl = process.env.BRIDGE_SERVER_URL ?? "http://127.0.0.1:3001";
 const pollIntervalMs = Number(process.env.BRIDGE_POLL_INTERVAL_MS ?? 700);
+const terminalPollIntervalMs = Number(process.env.BRIDGE_TERMINAL_POLL_INTERVAL_MS ?? 40);
 const demoAgentPath = resolve(__dirname, "demo-agent.mjs");
 const codexFixtureAgentPath = resolve(__dirname, "codex-fixture-agent.mjs");
+const remoteRelayPath = resolve(__dirname, "remote-relay.mjs");
 
 if (process.argv.includes("--check")) {
-  if (!existsSync(demoAgentPath) || !existsSync(codexFixtureAgentPath)) {
+  if (!existsSync(demoAgentPath) || !existsSync(codexFixtureAgentPath) || !existsSync(remoteRelayPath)) {
     throw new Error("Desktop agent fixtures are not configured.");
   }
   const resumeArgs = codexArgsTemplate({ command: "codex", args: codexCliArgs() }, { options: { codexSessionMode: "continue_last" } });
   if (!resumeArgs.includes("resume") || resumeArgs.includes("--ephemeral")) {
     throw new Error("Codex continuation args are not configured.");
   }
+  const imageArgs = insertCodexImageArgs(["exec", "--json", "{{task}}"], [{ path: "composer-image.png" }]);
+  const taskArgIndex = imageArgs.indexOf("{{task}}");
+  if (!imageArgs.includes("--image") || imageArgs[taskArgIndex - 1] !== "--") {
+    throw new Error("Codex image attachment args are not configured.");
+  }
+  if (typeof pty.spawn !== "function") {
+    throw new Error("node-pty is not available.");
+  }
+  const shellPlan = resolveTerminalShell(process.platform === "win32" ? "powershell" : "bash");
+  if (!shellPlan.file) {
+    throw new Error("Managed terminal shell resolver is not configured.");
+  }
   console.log("[desktop:check] local demo bridge check OK");
   process.exit(0);
 }
 
 let busy = false;
+let terminalBusy = false;
 let stopped = false;
+const terminalSessions = new Map();
 
 process.on("SIGINT", stop);
 process.on("SIGTERM", stop);
@@ -30,12 +47,14 @@ process.on("SIGTERM", stop);
 await waitForServer();
 await request("POST", "/api/bridge/register", {
   bridgeVersion: "0.0.0",
-  capabilities: ["demo_cli_agent"]
+  capabilities: ["demo_cli_agent", "managed_terminal_pty", "remote_ssh_relay"]
 });
 console.log(`[desktop] registered with ${serverUrl}`);
 
 poll();
 const timer = setInterval(poll, pollIntervalMs);
+pollTerminal();
+const terminalTimer = setInterval(pollTerminal, terminalPollIntervalMs);
 
 async function poll() {
   if (busy || stopped) {
@@ -84,12 +103,208 @@ async function poll() {
       busy = false;
     }
   }
+
+}
+
+async function pollTerminal() {
+  if (terminalBusy || stopped) {
+    return;
+  }
+  terminalBusy = true;
+  try {
+    for (let index = 0; index < 25 && !stopped; index += 1) {
+      const terminalWork = await request("GET", "/api/bridge/terminal-next");
+      if (!terminalWork) {
+        break;
+      }
+      await runTerminalAction(terminalWork);
+    }
+  } finally {
+    terminalBusy = false;
+  }
+}
+
+async function runTerminalAction(action) {
+  const sessionId = action.terminalSessionId;
+  const actionId = action.id;
+  try {
+    if (action.session?.runtimeKind === "remote_ssh_relay") {
+      await runRemoteRelayAction(action);
+      return;
+    }
+    if (action.actionType === "create") {
+      await createPtySession(action);
+      return;
+    }
+    const current = terminalSessions.get(sessionId);
+    if (!current) {
+      await postTerminalEvent({
+        terminalSessionId: sessionId,
+        actionId,
+        type: "terminal.runtime.warning",
+        summary: "Managed terminal session is not active in Desktop Bridge."
+      });
+      return;
+    }
+    if (action.actionType === "input") {
+      current.pty.write(String(action.payload?.input ?? ""));
+      await postTerminalEvent({
+        terminalSessionId: sessionId,
+        actionId,
+        type: "terminal.input.submit",
+        summary: "Managed terminal input submitted."
+      });
+      return;
+    }
+    if (action.actionType === "resize") {
+      const cols = Math.max(20, Number(action.payload?.cols ?? 100));
+      const rows = Math.max(5, Number(action.payload?.rows ?? 30));
+      current.pty.resize(cols, rows);
+      await postTerminalEvent({
+        terminalSessionId: sessionId,
+        actionId,
+        type: "terminal.resize",
+        summary: `Managed terminal resized to ${cols}x${rows}.`,
+        cols,
+        rows
+      });
+      return;
+    }
+    if (action.actionType === "close") {
+      current.pty.kill();
+      terminalSessions.delete(sessionId);
+      await postTerminalEvent({
+        terminalSessionId: sessionId,
+        actionId,
+        type: "terminal.close",
+        summary: "Managed terminal close requested."
+      });
+    }
+  } catch (error) {
+    await postTerminalEvent({
+      terminalSessionId: sessionId,
+      actionId,
+      type: "terminal.runtime.warning",
+      summary: error instanceof Error ? error.message : String(error)
+    });
+  }
+}
+
+async function runRemoteRelayAction(action) {
+  const sessionId = action.terminalSessionId;
+  const actionId = action.id;
+  if (action.actionType === "create") {
+    await createRemoteRelaySession(action);
+    return;
+  }
+  const current = terminalSessions.get(sessionId);
+  if (!current?.relay) {
+    await postTerminalEvent({
+      terminalSessionId: sessionId,
+      actionId,
+      type: "terminal.runtime.warning",
+      summary: "Remote relay session is not active in Desktop Bridge."
+    });
+    return;
+  }
+  if (action.actionType === "input") {
+    writeRelay(current.relay, { type: "input", sessionId, actionId, input: String(action.payload?.input ?? "") });
+    return;
+  }
+  if (action.actionType === "resize") {
+    writeRelay(current.relay, {
+      type: "resize",
+      sessionId,
+      actionId,
+      cols: Math.max(20, Number(action.payload?.cols ?? 100)),
+      rows: Math.max(5, Number(action.payload?.rows ?? 30))
+    });
+    return;
+  }
+  if (action.actionType === "close") {
+    writeRelay(current.relay, { type: "close", sessionId, actionId });
+  }
+}
+
+async function createPtySession(action) {
+  const session = action.session ?? {};
+  const shellPlan = resolveTerminalShell(action.payload?.shell ?? session.shell);
+  const cwd = String(action.payload?.cwd ?? session.cwd ?? process.cwd());
+  const cols = Math.max(20, Number(action.payload?.cols ?? 100));
+  const rows = Math.max(5, Number(action.payload?.rows ?? 30));
+  const child = pty.spawn(shellPlan.file, shellPlan.args, {
+    name: "xterm-256color",
+    cols,
+    rows,
+    cwd,
+    env: { ...process.env, TERM: process.env.TERM && process.env.TERM !== "dumb" ? process.env.TERM : "xterm-256color" }
+  });
+  terminalSessions.set(action.terminalSessionId, { pty: child, shellPlan, cwd });
+  child.onData((output) => {
+    postTerminalEvent({
+      terminalSessionId: action.terminalSessionId,
+      type: "terminal.output.chunk",
+      stream: "stdout",
+      output,
+      byteCount: Buffer.byteLength(output),
+      summary: summarizeTerminalOutput(output)
+    });
+  });
+  child.onExit(({ exitCode }) => {
+    terminalSessions.delete(action.terminalSessionId);
+    postTerminalEvent({
+      terminalSessionId: action.terminalSessionId,
+      type: "terminal.exit",
+      exitCode,
+      summary: `Managed terminal exited with code ${exitCode}.`
+    });
+  });
+  await postTerminalEvent({
+    terminalSessionId: action.terminalSessionId,
+    actionId: action.id,
+    type: "terminal.session.attached",
+    summary: `Managed terminal attached to ${shellPlan.label}.`
+  });
+}
+
+async function postTerminalEvent(event) {
+  await request("POST", "/api/bridge/terminal-events", event);
+}
+
+function resolveTerminalShell(requested) {
+  const normalized = String(requested ?? "").trim().toLowerCase();
+  if (process.platform === "win32") {
+    const gitBash = "C:\\Program Files\\Git\\bin\\bash.exe";
+    const candidates = {
+      cmd: { file: "cmd.exe", args: [], label: "cmd.exe" },
+      "cmd.exe": { file: "cmd.exe", args: [], label: "cmd.exe" },
+      powershell: { file: "powershell.exe", args: ["-NoLogo"], label: "powershell.exe" },
+      "powershell.exe": { file: "powershell.exe", args: ["-NoLogo"], label: "powershell.exe" },
+      pwsh: { file: "pwsh.exe", args: ["-NoLogo"], label: "pwsh.exe" },
+      "pwsh.exe": { file: "pwsh.exe", args: ["-NoLogo"], label: "pwsh.exe" },
+      wsl: { file: "wsl.exe", args: [], label: "wsl.exe" },
+      "wsl.exe": { file: "wsl.exe", args: [], label: "wsl.exe" },
+      "git-bash": { file: existsSync(gitBash) ? gitBash : "bash.exe", args: ["--login"], label: "Git Bash" }
+    };
+    return candidates[normalized] ?? candidates.powershell;
+  }
+  const fallback = process.env.SHELL || "/bin/bash";
+  if (normalized === "zsh") return { file: "/bin/zsh", args: [], label: "zsh" };
+  if (normalized === "sh") return { file: "/bin/sh", args: [], label: "sh" };
+  if (normalized === "bash") return { file: "/bin/bash", args: [], label: "bash" };
+  return { file: fallback, args: [], label: fallback };
+}
+
+function summarizeTerminalOutput(output) {
+  const clean = String(output ?? "").replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, "").replace(/\s+/g, " ").trim();
+  return clean ? `Terminal output: ${clean.slice(0, 180)}` : "Terminal output received.";
 }
 
 async function runInvocation(work) {
   const invocationId = work.invocationId;
   const task = String(work.input?.task ?? "");
   const adapter = work.adapter;
+  const runtimeName = agentRuntimeName(adapter);
   console.log(`[desktop] running ${invocationId}: ${task}`);
 
   await request("POST", "/api/bridge/ack", { invocationId });
@@ -185,7 +400,7 @@ async function runInvocation(work) {
       invocationId,
       type: "invocation_timed_out",
       level: "warn",
-      message: "CLI Agent exceeded its configured timeout."
+      message: `${runtimeName} exceeded its configured timeout.`
     });
     cancelResult = await terminateProcessTree(child);
   }, timeoutMs);
@@ -198,7 +413,7 @@ async function runInvocation(work) {
         invocationId,
         type: "cancel_dispatched",
         level: "info",
-        message: "Desktop Bridge sent cancellation to Demo CLI Agent."
+        message: `Desktop Bridge sent cancellation to ${runtimeName}.`
       });
       cancelResult = await terminateProcessTree(child);
       if (!cancelResult.ok) {
@@ -260,7 +475,7 @@ async function runInvocation(work) {
     await request("POST", "/api/bridge/complete", {
       invocationId,
       status: "timed_out",
-      summary: "CLI Agent exceeded its configured timeout.",
+      summary: `${runtimeName} exceeded its configured timeout.`,
       result: finalResult
     });
     return;
@@ -273,8 +488,8 @@ async function runInvocation(work) {
     });
     await request("POST", "/api/bridge/complete", {
       invocationId,
-      status: cancelResult?.ok === false ? "failed" : "cancelled",
-      summary: cancelResult?.ok === false ? cancelResult.message : "CLI Agent was cancelled locally.",
+      status: "cancelled",
+      summary: `${runtimeName} was cancelled locally.`,
       result: finalResult
     });
     return;
@@ -293,7 +508,7 @@ async function runInvocation(work) {
     await request("POST", "/api/bridge/complete", {
       invocationId,
       status: "succeeded",
-      summary: finalResult?.summary ?? "Demo CLI Agent completed.",
+      summary: finalResult?.summary ?? `${runtimeName} completed.`,
       result: finalResult
     });
     return;
@@ -311,7 +526,7 @@ async function runInvocation(work) {
   await request("POST", "/api/bridge/complete", {
     invocationId,
     status: "failed",
-    summary: `Demo CLI Agent exited with code ${exitCode}.`,
+    summary: `${runtimeName} exited with code ${exitCode}.`,
     result: finalResult
   });
 }
@@ -576,7 +791,10 @@ function createCliSpawnPlan(adapter, payload) {
   const command = adapter.command === "demo-agent" || codexCommandOverride === "fixture"
     ? process.execPath
     : codexCommandOverride || String(adapter.command);
-  const argsTemplate = codexArgsTemplate(adapter, payload);
+  const codexImageAttachments = isCodexCliCommand(adapter.command) ? prepareCodexImageAttachments(payload) : [];
+  const argsTemplate = isCodexCliCommand(adapter.command)
+    ? insertCodexImageArgs(codexArgsTemplate(adapter, payload), codexImageAttachments)
+    : codexArgsTemplate(adapter, payload);
   const args = adapter.command === "demo-agent"
     ? [demoAgentPath, ...renderArgs(argsTemplate, payloadJson, payload)]
     : codexCommandOverride === "fixture"
@@ -585,15 +803,24 @@ function createCliSpawnPlan(adapter, payload) {
   const env = buildEnv(adapter);
   const cwd = adapter.workingDirectoryPolicy === "explicit" && adapter.workingDirectory
     ? String(adapter.workingDirectory)
-    : process.cwd();
+    : projectCwd(payload);
   return {
     command,
     args,
     env,
     cwd,
     sessionMode: payload.options?.codexSessionMode ?? "not_applicable",
-    workspacePolicy: payload.options?.codexWorkspacePolicy ?? "current_repo"
+    workspacePolicy: payload.options?.codexWorkspacePolicy ?? "current_repo",
+    attachments: codexImageAttachments
   };
+}
+
+function projectCwd(payload) {
+  const projectPath = String(payload.project?.path ?? payload.options?.metadata?.projectPath ?? "").trim();
+  if (projectPath && isAbsolute(projectPath) && existsSync(projectPath)) {
+    return projectPath;
+  }
+  return process.cwd();
 }
 
 function codexArgsTemplate(adapter, payload) {
@@ -616,7 +843,14 @@ function executionPreview(adapter, spawnPlan, task) {
     sessionMode: spawnPlan.sessionMode,
     workspace: workspacePreview(adapter, spawnPlan),
     environmentPolicy: adapter.environmentPolicy ?? "inherit_safe",
-    envVisible: false
+    envVisible: false,
+    attachments: spawnPlan.attachments?.map((attachment) => ({
+      name: attachment.name,
+      type: attachment.type,
+      size: attachment.size,
+      path: attachment.path,
+      transport: "codex_image_arg"
+    })) ?? []
   };
 }
 
@@ -692,10 +926,10 @@ function sanitizeRenderedArgs(renderedArgs, task) {
   return renderedArgs.map((arg) => {
     const text = String(arg);
     if (taskText && text === taskText) {
-      return "<task>";
+      return "[task redacted]";
     }
     if (taskText && text.includes(taskText)) {
-      return text.replaceAll(taskText, "<task>");
+      return text.replaceAll(taskText, "[task redacted]");
     }
     return text;
   });
@@ -719,6 +953,87 @@ function shellQuote(value) {
 
 function renderArgs(args, payloadJson, payload) {
   return args.map((arg) => String(arg).replaceAll("{{payloadJson}}", payloadJson).replaceAll("{{task}}", String(payload.task ?? "")));
+}
+
+function insertCodexImageArgs(args, attachments) {
+  if (!attachments.length) {
+    return args;
+  }
+  const imageArgs = attachments.flatMap((attachment) => ["--image", attachment.path]);
+  const taskIndex = args.findIndex((arg) => String(arg).includes("{{task}}"));
+  if (taskIndex >= 0) {
+    return [...args.slice(0, taskIndex), ...imageArgs, "--", ...args.slice(taskIndex)];
+  }
+  return [...args, ...imageArgs];
+}
+
+function prepareCodexImageAttachments(payload) {
+  const attachments = Array.isArray(payload.options?.metadata?.attachments)
+    ? payload.options.metadata.attachments
+    : [];
+  return attachments
+    .filter((attachment) => attachment?.included && attachment?.kind === "image" && attachment?.transport?.kind === "data_url")
+    .map((attachment, index) => writeCodexImageAttachment(payload, attachment, index))
+    .filter(Boolean);
+}
+
+function writeCodexImageAttachment(payload, attachment, index) {
+  const parsed = parseDataUrl(attachment.transport?.dataUrl);
+  if (!parsed || !parsed.mimeType.startsWith("image/")) {
+    return null;
+  }
+  const attachmentRoot = resolve(process.cwd(), ".myagenttool", "attachments", safeId(payload.invocationId ?? "invocation"));
+  mkdirSync(attachmentRoot, { recursive: true });
+  const fileName = `${String(index + 1).padStart(2, "0")}-${safeAttachmentFileName(attachment.name, parsed.mimeType)}`;
+  const filePath = resolve(attachmentRoot, fileName);
+  const relativePath = relative(attachmentRoot, filePath);
+  if (!relativePath || relativePath.startsWith("..") || isAbsolute(relativePath)) {
+    throw new Error("Attachment path escaped managed attachment directory.");
+  }
+  writeFileSync(filePath, parsed.buffer);
+  return {
+    name: String(attachment.name ?? fileName),
+    type: parsed.mimeType,
+    size: parsed.buffer.byteLength,
+    path: filePath
+  };
+}
+
+function parseDataUrl(value) {
+  const match = String(value ?? "").match(/^data:([^;,]+)?(;base64)?,([\s\S]*)$/);
+  if (!match) {
+    return null;
+  }
+  const mimeType = match[1] || "application/octet-stream";
+  const isBase64 = Boolean(match[2]);
+  try {
+    const buffer = isBase64
+      ? Buffer.from(match[3], "base64")
+      : Buffer.from(decodeURIComponent(match[3]), "utf8");
+    return { mimeType, buffer };
+  } catch {
+    return null;
+  }
+}
+
+function safeAttachmentFileName(name, mimeType) {
+  const raw = String(name ?? "composer-image").split(/[\\/]/).filter(Boolean).pop() || "composer-image";
+  const cleaned = raw.replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, 96) || "composer-image";
+  if (/\.[a-zA-Z0-9]{1,8}$/.test(cleaned)) {
+    return cleaned;
+  }
+  return `${cleaned}${extensionForMime(mimeType)}`;
+}
+
+function extensionForMime(mimeType) {
+  const map = {
+    "image/png": ".png",
+    "image/jpeg": ".jpg",
+    "image/jpg": ".jpg",
+    "image/gif": ".gif",
+    "image/webp": ".webp"
+  };
+  return map[String(mimeType ?? "").toLowerCase()] ?? ".img";
 }
 
 function buildEnv(adapter) {
@@ -789,6 +1104,10 @@ function isCodexCliCommand(command) {
   return ["codex", "codex.cmd", "codex.ps1", "codex.exe"].some((name) => normalized === name || normalized.endsWith(`/${name}`) || normalized.endsWith(`\\${name}`));
 }
 
+function agentRuntimeName(adapter) {
+  return isCodexCliCommand(adapter?.command) ? "Codex CLI" : "Demo CLI Agent";
+}
+
 function codexCliArgs() {
   return ["exec", "--json", "{{task}}"];
 }
@@ -816,9 +1135,14 @@ async function terminateProcessTree(child) {
         stderr += chunk.toString("utf8");
       });
       killer.on("close", (code) => {
+        const alreadyExited = child.exitCode !== null || child.killed;
         resolveResult({
-          ok: code === 0,
-          message: code === 0 ? "Windows process tree terminated." : `Windows process-tree cancellation failed: ${stderr.trim() || `taskkill exited ${code}`}`
+          ok: code === 0 || alreadyExited,
+          message: code === 0
+            ? "Windows process tree terminated."
+            : alreadyExited
+              ? "Process already exited before Windows process-tree cancellation completed."
+              : `Windows process-tree cancellation failed: ${stderr.trim() || `taskkill exited ${code}`}`
         });
       });
     });
@@ -876,7 +1200,7 @@ function codexRuntimeWarningEvent(invocationId, line) {
   return {
     invocationId,
     type: "codex_runtime_warning",
-    level: "warn",
+    level: summary.level,
     message: summary.message,
     data: {
       source: "codex_stderr",
@@ -890,14 +1214,32 @@ function codexRuntimeWarningSummary(line) {
   const normalized = String(line ?? "").replace(/\s+/g, " ").trim();
   if (/featured plugins?/i.test(normalized) && /401|unauthorized/i.test(normalized)) {
     return {
+      level: "warn",
       category: "plugin_catalog_auth",
       message: "Codex plugin catalog warning: Codex CLI could not refresh featured plugins authorization. The task can still complete."
     };
   }
+  if (/command timed out after \d+ milliseconds/i.test(normalized)) {
+    const redacted = redactLocalPaths(normalized);
+    return {
+      level: "info",
+      category: "command_timeout",
+      message: `Codex command note: ${redacted.length > 180 ? `${redacted.slice(0, 177)}...` : redacted}`
+    };
+  }
+  if (looksLikeImageFileListing(normalized)) {
+    const redacted = redactLocalPaths(normalized);
+    return {
+      level: "info",
+      category: "command_output_noise",
+      message: `Codex command output note: ignored unrelated local image listing (${redacted.length > 140 ? `${redacted.slice(0, 137)}...` : redacted}).`
+    };
+  }
   const redacted = redactLocalPaths(normalized);
   return {
+    level: "info",
     category: "codex_cli_stderr",
-    message: `Codex CLI warning: ${redacted.length > 180 ? `${redacted.slice(0, 177)}...` : redacted}`
+    message: `Codex runtime note: ${redacted.length > 180 ? `${redacted.slice(0, 177)}...` : redacted}`
   };
 }
 
@@ -909,6 +1251,12 @@ function redactLocalPaths(value) {
     }
   }
   return redacted;
+}
+
+function looksLikeImageFileListing(value) {
+  return /(?:^|\s)[A-Za-z]:\\[^\n]+?\.(?:png|jpe?g|gif|webp|bmp|tiff?)\b/i.test(value)
+    && /\b\d{4}[/-]\d{1,2}[/-]\d{1,2}\b/.test(value)
+    && /\b\d{2}:\d{2}(?::\d{2})?\b/.test(value);
 }
 
 async function sendCodexHookEvent(invocationId, adapter, event) {
@@ -1117,5 +1465,6 @@ function sleep(ms) {
 function stop() {
   stopped = true;
   clearInterval(timer);
+  clearInterval(terminalTimer);
   process.exit(0);
 }

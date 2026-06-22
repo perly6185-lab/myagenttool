@@ -4,12 +4,17 @@ import { fileURLToPath } from "node:url";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const asciiPath = resolve(repoRoot, ".myagenttool/runs/flow-validation-managed-session-history/ascii-prototype.md");
+const agentWorkspaceAsciiPath = resolve(repoRoot, ".myagenttool/runs/orca-inspired-agent-workspace-ui/agent-workspace-ascii-prototype.md");
 const canvasRoot = resolve(repoRoot, "docs/design/prototypes/canvas");
 const outPath = resolve(canvasRoot, "managed-session-history.imported.scene.json");
+const agentWorkspaceOutPath = resolve(canvasRoot, "agent-workspace.imported.scene.json");
 
 const ascii = readFileSync(asciiPath, "utf8");
 const sections = parseSections(ascii);
 const productFlow = parseProductFlow(ascii);
+const agentWorkspaceAscii = readFileSync(agentWorkspaceAsciiPath, "utf8");
+const agentWorkspaceSections = parseSections(agentWorkspaceAscii);
+const agentWorkspaceProductFlow = parseProductFlow(agentWorkspaceAscii);
 
 const scene = {
   version: "2026-06-21.phase-2-imported",
@@ -36,7 +41,355 @@ const scene = {
 
 mkdirSync(canvasRoot, { recursive: true });
 writeFileSync(outPath, `${JSON.stringify(scene, null, 2)}\n`);
+writeFileSync(agentWorkspaceOutPath, `${JSON.stringify(agentWorkspaceScene(), null, 2)}\n`);
 console.log(`[import-ascii-prototype] wrote ${relative(outPath)}`);
+console.log(`[import-ascii-prototype] wrote ${relative(agentWorkspaceOutPath)}`);
+
+function agentWorkspaceScene() {
+  return {
+    version: "2026-06-21.agent-workspace-imported",
+    name: "Imported Agent Workspace Prototype Canvas",
+    source: {
+      type: "ascii",
+      path: ".myagenttool/runs/orca-inspired-agent-workspace-ui/agent-workspace-ascii-prototype.md",
+    },
+    productFlow: {
+      roleFlow: agentWorkspaceProductFlow["Role flow"] ?? "ordinary developer, advanced developer, team administrator, auditor",
+      scenario: agentWorkspaceProductFlow.Scenario ?? "Navigate a managed agent workspace without mixing role surfaces.",
+      frequency: agentWorkspaceProductFlow.Frequency ?? "high for Run, medium or low critical for advanced surfaces",
+      ownerSurface: agentWorkspaceProductFlow["Owner surface"] ?? "Agent Workspace shell",
+      usabilityTask: "Review the Run-first workspace shell and confirm advanced surfaces stay separated.",
+      partialAcceptanceOrFollowUp: "Phase C will implement the production Web Console IA shell.",
+    },
+    canvas: {
+      coordinateSystem: "infinite",
+      viewport: { x: 0, y: 0, width: 1560, height: 1720 },
+      grid: { size: 24, visible: true },
+    },
+    surfaces: [
+      runWorkspaceSurface(),
+      workspaceDetailSurface({
+        id: "session-surface",
+        name: "Session Surface",
+        role: "advanced_developer",
+        section: "Desktop: Session Surface",
+        scenario: "Inspect and continue managed Codex session turns.",
+        frequency: "medium",
+        ownerSurface: "Session workspace surface",
+        states: ["no_session", "running_session", "completed_session", "continuation_guidance"],
+        labels: ["Managed Codex session", "Initial task", "Follow-up", "Feedback", "Add follow-up", "Continue session", "Attach diff"],
+        notShown: ["private Codex files", "integration setup controls", "imported evidence as managed proof"],
+      }),
+      workspaceDetailSurface({
+        id: "diff-surface",
+        name: "Diff Surface",
+        role: "advanced_developer",
+        section: "Desktop: Diff Surface",
+        scenario: "Review changed files and decide whether to accept or request changes.",
+        frequency: "medium",
+        ownerSurface: "Diff workspace surface",
+        states: ["diff_review", "review_pending", "changes_requested"],
+        labels: ["Changed files", "apps/web/public/app.js", "apps/web/public/styles.css", "Review state: pending", "Accept", "Request changes"],
+        notShown: ["raw event flood", "approval inbox", "integration setup controls"],
+      }),
+      workspaceDetailSurface({
+        id: "terminal-surface",
+        name: "Terminal Surface Placeholder",
+        role: "advanced_developer",
+        section: "Desktop: Terminal Surface Placeholder",
+        scenario: "Inspect managed terminal availability without implying unmanaged shells are governed.",
+        frequency: "medium",
+        ownerSurface: "Terminal workspace surface",
+        states: ["runtime_not_connected", "managed_pty_pending", "ssh_pending"],
+        labels: ["Managed terminal is not connected yet", "Placeholder for managed PTY attach", "View runtime plan", "Runtime issue: #144-#150", "Policy: not governed yet"],
+        notShown: ["raw local terminal as managed evidence", "unmanaged shell access", "private keys"],
+      }),
+      workspaceDetailSurface({
+        id: "evidence-surface",
+        name: "Evidence Surface",
+        role: "auditor",
+        section: "Desktop: Evidence Surface",
+        scenario: "Trace managed evidence and distinguish imported supplements.",
+        frequency: "low_critical",
+        ownerSurface: "Evidence workspace surface",
+        states: ["managed_jsonl_evidence", "approval_evidence", "file_change", "imported_evidence", "export_summary"],
+        labels: ["Evidence chain", "JSONL event summary", "Approval record", "File change summary", "Imported evidence is shown separately", "Export summary"],
+        notShown: ["unredacted secrets", "imported evidence as managed proof", "private Codex auth files"],
+      }),
+      workspaceDetailSurface({
+        id: "approval-surface",
+        name: "Approval Surface",
+        role: "team_administrator",
+        section: "Desktop: Approval Surface",
+        scenario: "Review pending risky actions and approve or deny with consequence context.",
+        frequency: "low_critical",
+        ownerSurface: "Approval workspace surface",
+        states: ["approval_pending", "approval_approved", "approval_denied", "approval_timed_out"],
+        labels: ["Pending request", "Codex requests test execution", "Risk: reads and executes local repo", "Approve", "Deny", "Audit: approve/deny is recorded"],
+        notShown: ["unclear allow buttons", "raw policy internals as primary copy", "approval inbox inside task composer"],
+      }),
+      workspaceDetailSurface({
+        id: "setup-surface",
+        name: "Setup Surface",
+        role: "team_administrator",
+        section: "Desktop: Setup Surface",
+        scenario: "Connect agents and prepare runtime targets without auto-enabling unreviewed integrations.",
+        frequency: "low_critical",
+        ownerSurface: "Setup workspace surface",
+        states: ["discovery_empty", "candidate_found", "integration_artifact_needs_review", "ssh_placeholder"],
+        labels: ["Connect Agent", "Codex CLI", "Local managed runtime", "SSH target placeholder", "Review setup"],
+        notShown: ["auto-enabled agents", "private keys", "unreviewed integrations as runnable agents"],
+      }),
+      mobileSurface(),
+    ],
+  };
+}
+
+function runWorkspaceSurface() {
+  const runBlocks = [
+    "Desktop: Run Surface Ready",
+    "Desktop: Running State",
+    "Desktop: Approval Needed State",
+    "Desktop: Succeeded With Changes",
+  ].map((sectionName) => agentWorkspaceSections.get(sectionName) ?? "");
+  return {
+    id: "run-workspace",
+    name: "Run Workspace",
+    kind: "home",
+    role: "ordinary_developer",
+    productFlow: {
+      roleFlow: "ordinary developer",
+      scenario: "Run a managed agent task from a clean first screen.",
+      frequency: "high",
+      ownerSurface: "Run-first Agent Workspace shell",
+      usabilityTask: "Type a task, choose computer and agent, review safety, and run without seeing advanced governance internals.",
+      partialAcceptanceOrFollowUp: "Phase C will implement the production shell and state wiring.",
+    },
+    prototypeStates: ["ready", "running", "approval_needed", "succeeded_with_changes"],
+    acceptanceSignals: [
+      "Findable: Run is the default active surface.",
+      "Understandable: task, status, and context rail are separated.",
+      "Actionable: run, cancel, approve/deny, review diff, and open session appear only when relevant.",
+      "Traceable: session and evidence summaries are reachable from the context rail.",
+    ],
+    whatNotToShow: ["raw terminal", "raw JSONL", "hook names", "imported evidence workflow", "integration builder", "full session turns", "approval inbox", "private Codex files"],
+    bounds: { x: 0, y: 0, width: 1420, height: 720 },
+    regions: [
+      workspaceNavRegion(runBlocks),
+      runComposerRegion(runBlocks),
+      runStatusRegion(runBlocks),
+      workspaceContextRailRegion(runBlocks),
+    ],
+  };
+}
+
+function workspaceNavRegion(blocks) {
+  return agentRegion({
+    id: "workspace-nav",
+    name: "Workspace Navigation",
+    ownerSurface: "Left workspace navigation",
+    frequency: "medium",
+    role: "multi_role",
+    scenario: "Switch between role-owned workspace surfaces.",
+    usabilityTask: "Find Run, Session, Diff, Terminal, Evidence, Approval, and Setup without crowding Run.",
+    states: ["run_active", "advanced_surface_available"],
+    acceptanceSignals: [
+      "Findable: all surfaces are available from navigation.",
+      "Understandable: Run is visually first.",
+      "Actionable: surface switching does not change task composer ownership.",
+    ],
+    whatNotToShow: ["raw terminal", "raw JSONL", "approval inbox content", "private keys"],
+    bounds: { x: 24, y: 72, width: 180, height: 560 },
+    labels: ["Run", "Session", "Diff", "Terminal", "Evidence", "Approval", "Setup"],
+    typeRules: [["Run", "button"], ["Session", "button"], ["Diff", "button"], ["Terminal", "button"], ["Evidence", "button"], ["Approval", "button"], ["Setup", "button"]],
+  });
+}
+
+function runComposerRegion(blocks) {
+  return agentRegion({
+    id: "run-composer",
+    name: "Run Task Composer",
+    ownerSurface: "Run surface",
+    frequency: "high",
+    role: "ordinary_developer",
+    scenario: "Describe and start a managed agent task.",
+    usabilityTask: "Type task, select computer and agent, select session mode, and run.",
+    states: ["ready", "running_disabled", "approval_visible", "succeeded_ready_for_next"],
+    acceptanceSignals: [
+      "Findable: task input is first in Run.",
+      "Understandable: computer, agent, and session mode are visible.",
+      "Actionable: run and cancel are clearly separated.",
+    ],
+    whatNotToShow: ["raw terminal", "raw JSONL", "hook names", "imported evidence workflow", "integration builder", "full session turns", "approval inbox", "private Codex files"],
+    bounds: { x: 232, y: 72, width: 440, height: 560 },
+    labels: ["What should your computer do?", "Fix failing tests and summarize changed files", "Computer", "This computer", "Agent", "Codex CLI", "Codex session", "New session", "Continue latest", "Safety review", "Run", "Cancel"],
+    typeRules: [["What should your computer do?", "textarea"], ["Run", "button"], ["Cancel", "button"], ["Computer", "select"], ["Agent", "select"], ["New session", "radio"], ["Continue latest", "radio"], ["Safety review", "status"]],
+  });
+}
+
+function runStatusRegion(blocks) {
+  return agentRegion({
+    id: "run-status",
+    name: "Run Status And Result",
+    ownerSurface: "Run surface",
+    frequency: "high",
+    role: "ordinary_developer",
+    scenario: "Understand current task state and act on the result.",
+    usabilityTask: "Tell whether the task is ready, running, waiting, or complete.",
+    states: ["ready", "running", "approval_needed", "succeeded_with_changes", "failed"],
+    acceptanceSignals: [
+      "Findable: status appears beside the composer.",
+      "Understandable: state copy is plain-language.",
+      "Actionable: approval and result actions appear only when relevant.",
+    ],
+    whatNotToShow: ["raw terminal stream", "raw JSONL", "hook names", "private Codex files"],
+    bounds: { x: 704, y: 72, width: 440, height: 560 },
+    labels: ["Status", "Ready to run", "Running with Codex CLI", "Approval needed", "Approve", "Deny", "Result", "Completed", "Review diff", "Open result", "Technical details collapsed"],
+    typeRules: [["Approve", "button"], ["Deny", "button"], ["Review diff", "button"], ["Open result", "button"], ["Status", "status"], ["Result", "result"]],
+  });
+}
+
+function workspaceContextRailRegion(blocks) {
+  return agentRegion({
+    id: "workspace-context-rail",
+    name: "Workspace Context Rail",
+    ownerSurface: "Right context rail",
+    frequency: "medium",
+    role: "multi_role",
+    scenario: "Summarize current session, attention, and evidence without crowding Run.",
+    usabilityTask: "Open session, approval, or evidence from context.",
+    states: ["session_ready", "needs_attention_empty", "needs_attention_pending", "evidence_summary"],
+    acceptanceSignals: [
+      "Findable: current session and attention are visible.",
+      "Understandable: managed/imported evidence counts are summarized.",
+      "Actionable: Open session, Open approval, and Open evidence are separate.",
+      "Traceable: evidence entry stays out of task input.",
+    ],
+    whatNotToShow: ["raw JSONL", "hook names", "unfiltered evidence registry", "private Codex files"],
+    bounds: { x: 1176, y: 72, width: 220, height: 560 },
+    labels: ["Current session", "codex-215", "Managed", "Open session", "Needs attention", "Open approval", "Evidence", "Managed: 12", "Imported: 0", "Open evidence"],
+    typeRules: [["Open session", "button", { interaction: { type: "open_surface", target: "session-surface" } }], ["Open approval", "button", { interaction: { type: "open_surface", target: "approval-surface" } }], ["Open evidence", "button", { interaction: { type: "open_surface", target: "evidence-surface" } }]],
+  });
+}
+
+function workspaceDetailSurface({ id, name, role, section, scenario, frequency, ownerSurface, states, labels, notShown }) {
+  const block = agentWorkspaceSections.get(section) ?? "";
+  const fallbackLabels = labels.length > 0 ? labels : extractMatchingLines(block, [/.+/]).slice(0, 8);
+  return {
+    id,
+    name,
+    kind: "detail",
+    role,
+    productFlow: {
+      roleFlow: role.replace(/_/g, " "),
+      scenario,
+      frequency,
+      ownerSurface,
+      usabilityTask: scenario,
+      partialAcceptanceOrFollowUp: "Phase C will implement this as a production workspace surface.",
+    },
+    prototypeStates: states,
+    acceptanceSignals: [
+      `Findable: ${name} is reachable from workspace navigation.`,
+      `Understandable: ${name} states are distinct from Run.`,
+      `Actionable: ${name} exposes only role-relevant actions.`,
+      `Traceable: ${name} preserves managed session context where relevant.`,
+    ],
+    whatNotToShow: notShown,
+    bounds: { x: 0, y: 760, width: 1120, height: 360 },
+    regions: [
+      agentRegion({
+        id: `${id}-main`,
+        name,
+        ownerSurface,
+        frequency,
+        role,
+        scenario,
+        usabilityTask: scenario,
+        states,
+        acceptanceSignals: [`${name} has its own surface ownership.`],
+        whatNotToShow: notShown,
+        bounds: { x: 232, y: 72, width: 520, height: 260 },
+        labels: fallbackLabels.slice(0, Math.ceil(fallbackLabels.length / 2)),
+        typeRules: [["Approve", "button"], ["Deny", "button"], ["Accept", "button"], ["Request changes", "button"], ["Export summary", "button"], ["Review setup", "button"], ["View runtime plan", "button"]],
+      }),
+      agentRegion({
+        id: `${id}-context`,
+        name: `${name} Context`,
+        ownerSurface: `${ownerSurface} context rail`,
+        frequency,
+        role,
+        scenario,
+        usabilityTask: scenario,
+        states,
+        acceptanceSignals: [`${name} context explains consequences or traceability.`],
+        whatNotToShow: notShown,
+        bounds: { x: 784, y: 72, width: 312, height: 260 },
+        labels: fallbackLabels.slice(Math.ceil(fallbackLabels.length / 2)),
+        typeRules: [["Continue session", "button"], ["Attach diff", "button"], ["Approve", "button"], ["Deny", "button"], ["Export summary", "button"]],
+      }),
+    ],
+  };
+}
+
+function mobileSurface() {
+  return {
+    id: "mobile-task-first",
+    name: "Mobile Task-First Layout",
+    kind: "detail",
+    role: "ordinary_developer",
+    productFlow: {
+      roleFlow: "ordinary developer",
+      scenario: "Use the workspace on mobile without advanced surfaces appearing before the task.",
+      frequency: "high",
+      ownerSurface: "Mobile Agent Workspace",
+      usabilityTask: "Run a task, see status, and open more surfaces after session context.",
+      partialAcceptanceOrFollowUp: "Phase C will implement responsive production layout.",
+    },
+    prototypeStates: ["mobile_ready", "mobile_running", "mobile_surface_switcher"],
+    acceptanceSignals: [
+      "Findable: Run appears first on mobile.",
+      "Understandable: status and session summary follow Run.",
+      "Actionable: More exposes advanced surfaces after the primary task flow.",
+    ],
+    whatNotToShow: ["raw terminal", "raw JSONL", "hook names", "imported evidence workflow", "setup controls in Run composer"],
+    bounds: { x: 0, y: 1160, width: 390, height: 720 },
+    regions: [
+      agentRegion({
+        id: "mobile-run-stack",
+        name: "Mobile Run Stack",
+        ownerSurface: "Mobile Run surface",
+        frequency: "high",
+        role: "ordinary_developer",
+        scenario: "Stack task, status, session, and more controls.",
+        usabilityTask: "Find the task path before advanced surfaces.",
+        states: ["mobile_ready", "mobile_surface_switcher"],
+        acceptanceSignals: ["Mobile Run stack preserves task-first order."],
+        whatNotToShow: ["raw terminal", "raw JSONL", "hook names", "imported evidence workflow", "setup controls in Run composer"],
+        bounds: { x: 24, y: 72, width: 342, height: 560 },
+        labels: ["Run", "What should your computer do?", "Agent: Codex CLI", "Session: Continue latest", "Run", "Cancel", "Status", "Ready to run", "Session", "Continue", "Open session", "More", "Session", "Diff", "Terminal", "Evidence", "Approval", "Setup"],
+        typeRules: [["What should your computer do?", "textarea"], ["Run", "button"], ["Cancel", "button"], ["Continue", "button"], ["Open session", "button"]],
+      }),
+    ],
+  };
+}
+
+function agentRegion({ id, name, ownerSurface, frequency, role, scenario, usabilityTask, states, acceptanceSignals, whatNotToShow, bounds, labels, typeRules = [] }) {
+  return region({
+    id,
+    name,
+    ownerSurface,
+    frequency,
+    role,
+    scenario,
+    usabilityTask,
+    states,
+    acceptanceSignals,
+    whatNotToShow,
+    bounds,
+    elements: labelsToElements(unique(labels), { x: bounds.x + 24, y: bounds.y + 32, width: bounds.width - 48, type: "text" }, typeRules),
+  });
+}
 
 function homeSurface(parsedSections) {
   const desktopReady = parsedSections.get("Desktop: Empty / Ready") ?? "";

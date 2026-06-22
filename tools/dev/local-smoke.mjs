@@ -5,6 +5,7 @@ const serverPort = 3211;
 const httpAgentPort = 3212;
 const serverUrl = `http://127.0.0.1:${serverPort}`;
 const httpAgentUrl = `http://127.0.0.1:${httpAgentPort}`;
+const smokePngDataUrl = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=";
 const children = [];
 let httpAgentServer = null;
 
@@ -209,13 +210,62 @@ try {
   assert(codexEvents.some((item) => item.type === "agent_output" && item.data?.source === "codex_jsonl"), "Codex fixture invocation should record JSONL evidence");
   const codexExecutionPreview = codexEvents.find((item) => item.type === "execution_preview");
   assert(codexExecutionPreview?.data?.commandLine?.includes("codex-fixture-agent.mjs"), "Codex fixture invocation should record sanitized execution preview");
-  assert(codexExecutionPreview.data.commandLine.includes("<task>"), "Codex execution preview should not include the full task in argv");
+  assert(codexExecutionPreview.data.commandLine.includes("[task redacted]"), "Codex execution preview should not include the full task in argv");
   assert(!codexExecutionPreview.data.commandLine.includes("--ephemeral"), "Codex new-session execution should persist session files for optional resume");
   assert(codexExecutionPreview.data.sessionMode === "new", "Codex execution preview should mark new session mode");
   assert(codexExecutionPreview.data.workspace?.policy === "current_repo", "Codex execution preview should include workspace policy");
   assert(codexExecutionPreview.data.workspace?.repoPath, "Codex execution preview should include workspace repo path");
   assert(codexExecutionPreview?.data?.taskSummary?.includes("Summarize repository readiness"), "Codex execution preview should include task summary");
   assert(codexAudit?.permissionDecision === "allowed", "Codex fixture invocation should audit allowed permission");
+
+  const codexImageRun = await request("POST", "/api/invocations", {
+    task: "Translate the text in the attached smoke image.",
+    agentId: registeredCodexIntegration.agent.id,
+    options: {
+      metadata: {
+        attachments: [
+          {
+            id: "smoke-image",
+            kind: "image",
+            name: "smoke-image.png",
+            type: "image/png",
+            size: 67,
+            included: true,
+            source: "paste",
+            transport: {
+              kind: "data_url",
+              dataUrl: smokePngDataUrl
+            }
+          }
+        ]
+      }
+    }
+  });
+  const codexImageBroker = await waitFor(async () => {
+    const state = await request("GET", "/api/state");
+    const broker = state.codexApprovalBrokerRequests.find((item) => item.invocationId === codexImageRun.invocation.id);
+    return broker?.status === "pending" ? broker : false;
+  }, "pending Codex image attachment broker request");
+  await request("POST", `/api/codex/approval-broker/${codexImageBroker.id}/approve`);
+  const codexImageState = await waitFor(async () => {
+    const state = await request("GET", "/api/state");
+    const invocation = state.invocations.find((item) => item.id === codexImageRun.invocation.id);
+    if (invocation?.status === "succeeded") {
+      return state;
+    }
+    if (["failed", "cancelled", "timed_out", "expired", "rejected"].includes(invocation?.status)) {
+      throw new Error(`Codex image fixture invocation ended unexpectedly: ${invocation.status}`);
+    }
+    return false;
+  }, "approved Codex image fixture invocation");
+  const codexImageEvents = codexImageState.events.filter((item) => item.invocationId === codexImageRun.invocation.id);
+  const codexImagePreview = codexImageEvents.find((item) => item.type === "execution_preview");
+  const codexImagePreviewArgs = codexImagePreview?.data?.args ?? [];
+  const codexImageTaskArgIndex = codexImagePreviewArgs.indexOf("[task redacted]");
+  assert(codexImagePreviewArgs.includes("--image"), "Codex image invocation should pass attachments with --image");
+  assert(codexImagePreviewArgs[codexImageTaskArgIndex - 1] === "--", "Codex image invocation should terminate --image args before the prompt");
+  assert(codexImagePreview.data.attachments?.[0]?.transport === "codex_image_arg", "Codex image invocation should record image transport metadata");
+
   const codexApprovedChange = await request("POST", "/api/codex/change-reviews", {
     evidenceId: codexChangeEvidence.id,
     decision: "approved",
@@ -312,7 +362,7 @@ try {
   assert(codexResumeSession.codexThreadId === "codex_fixture_thread_resumed", "managed Codex resumed session should record resumed thread id");
   assert(codexResumePreview?.data?.commandLine?.includes("resume"), "Codex continuation preview should use resume command");
   assert(codexResumePreview.data.commandLine.includes("--last"), "Codex continuation preview should resume the most recent session");
-  assert(codexResumePreview.data.commandLine.includes("<task>"), "Codex continuation preview should sanitize task argv");
+  assert(codexResumePreview.data.commandLine.includes("[task redacted]"), "Codex continuation preview should sanitize task argv");
   assert(codexResumePreview.data.sessionMode === "continue_last", "Codex continuation preview should mark continuation mode");
   assert(codexResumeState.events.some((item) => item.invocationId === codexResumeRun.invocation.id && item.message?.includes("resumed completed")), "Codex fixture continuation should run the resumed path");
 
