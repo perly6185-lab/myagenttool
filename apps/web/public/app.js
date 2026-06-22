@@ -367,13 +367,13 @@ function prepareWorktreeForProject(sourceProject) {
 }
 
 els.currentProjectSelectButton.addEventListener("click", async () => {
-  const project = currentProject(lastState);
+  const project = repoBrowserProject(lastState);
   if (!project) return;
   await selectProjectById(project.id);
 });
 
 els.currentProjectToggleButton.addEventListener("click", () => {
-  const project = currentProject(lastState);
+  const project = repoBrowserProject(lastState);
   if (!project) return;
   if (collapsedProjectRootIds.has(project.id)) {
     collapsedProjectRootIds.delete(project.id);
@@ -384,13 +384,13 @@ els.currentProjectToggleButton.addEventListener("click", () => {
 });
 
 els.currentProjectMenuButton.addEventListener("click", () => {
-  const project = currentProject(lastState);
+  const project = repoBrowserProject(lastState);
   if (!project) return;
   els.currentProjectMenuPanel.hidden = !els.currentProjectMenuPanel.hidden;
 });
 
 els.currentProjectWorktreeButton.addEventListener("click", () => {
-  const project = currentProject(lastState);
+  const project = repoBrowserProject(lastState);
   if (!project) return;
   prepareWorktreeForProject(project);
 });
@@ -1613,13 +1613,13 @@ function renderProjects(state) {
     projectContentSearchData = null;
     queueMicrotask(() => refreshRepoBrowser({ force: true }));
   }
-  els.currentProjectName.textContent = project?.name ?? "No project";
+  els.currentProjectName.textContent = browserProject?.name ?? project?.name ?? "No project";
   els.repoPanelTitle.textContent = browserProject?.name ?? "No project";
-  els.currentProjectPath.textContent = project
-    ? project.worktree ? `${project.path} · ${project.worktree.branchName}` : project.path
+  els.currentProjectPath.textContent = browserProject
+    ? browserProject.worktree ? `${browserProject.path} · ${browserProject.worktree.branchName}` : browserProject.path
     : "Register a project to scope local runs.";
-  els.currentProjectToggleButton.textContent = project && collapsedProjectRootIds.has(project.id) ? "›" : "⌄";
-  els.currentProjectMenuPanel.replaceChildren(...(project ? projectMenuItems() : []));
+  els.currentProjectToggleButton.textContent = browserProject && collapsedProjectRootIds.has(browserProject.id) ? "›" : "⌄";
+  els.currentProjectMenuPanel.replaceChildren(...(browserProject ? projectMenuItems() : []));
   els.addProjectButton.disabled = false;
   els.removeProjectButton.disabled = projects.length <= 1;
   els.createWorktreeButton.disabled = !project;
@@ -1629,26 +1629,27 @@ function renderProjects(state) {
 
 function projectTreeItems(projects, currentProjectId) {
   if (!projects.length) return [emptyMiniCard("No projects registered.")];
-  const roots = projects.filter((item) => !item.worktree);
-  const worktrees = projects.filter((item) => item.worktree);
+  const primaryRoot = repoBrowserProject({ projects }) ?? projects.find((item) => !item.worktree) ?? projects[0];
+  const roots = [primaryRoot, ...projects.filter((item) => !item.worktree && item.id !== primaryRoot?.id && !isHistoryProject(item))];
+  const taskProjects = projects.filter((item) => item.worktree || isHistoryProject(item));
   const usedWorktreeIds = new Set();
   const rows = [];
 
   for (const root of roots) {
-    const children = worktrees.filter((item) => item.worktree?.sourceProjectId === root.id);
+    const children = taskProjects.filter((item) => item.worktree?.sourceProjectId === root.id || (root.id === primaryRoot?.id && isHistoryProject(item)));
     for (const child of children) usedWorktreeIds.add(child.id);
-    rows.push(projectGroup(root, children, currentProjectId));
+    rows.push(projectGroup(root, children, currentProjectId, { hideRootActions: root.id === primaryRoot?.id }));
   }
 
-  for (const worktree of worktrees) {
-    if (usedWorktreeIds.has(worktree.id)) continue;
-    rows.push(projectGroup(worktree, [], currentProjectId));
+  for (const taskProject of taskProjects) {
+    if (usedWorktreeIds.has(taskProject.id) || isHistoryProject(taskProject)) continue;
+    rows.push(projectGroup(taskProject, [], currentProjectId));
   }
 
   return rows;
 }
 
-function projectGroup(project, children, currentProjectId) {
+function projectGroup(project, children, currentProjectId, { hideRootActions = false } = {}) {
   const group = document.createElement("section");
   group.className = "project-group";
   const collapsed = collapsedProjectRootIds.has(project.id);
@@ -1695,7 +1696,7 @@ function projectGroup(project, children, currentProjectId) {
   add.textContent = "+";
   actions.append(toggle, more, add);
   root.append(select, actions);
-  if (project.id === currentProjectId) {
+  if (project.id === currentProjectId || hideRootActions) {
     actions.hidden = true;
   }
   group.append(root);
@@ -1709,10 +1710,10 @@ function projectGroup(project, children, currentProjectId) {
     group.append(projectBranchRow(project, currentProjectId));
   }
   for (const child of children) {
-    group.append(projectWorktreeRow(child, currentProjectId));
+    group.append(projectWorktreeRow(child, currentProjectId, true));
   }
   if (project.worktree) {
-    group.append(projectWorktreeRow(project, currentProjectId));
+    group.append(projectWorktreeRow(project, currentProjectId, true));
   }
 
   return group;
@@ -1770,10 +1771,11 @@ function projectBranchRow(project, currentProjectId) {
   return button;
 }
 
-function projectWorktreeRow(project, currentProjectId) {
+function projectWorktreeRow(project, currentProjectId, nested = false) {
   const button = document.createElement("button");
   button.type = "button";
   button.className = "project-tree-item project-worktree-row";
+  if (nested) button.classList.add("project-worktree-child");
   button.dataset.projectId = project.id;
   button.dataset.active = String(project.id === currentProjectId);
 
@@ -1785,7 +1787,7 @@ function projectWorktreeRow(project, currentProjectId) {
   const title = document.createElement("strong");
   title.textContent = project.name;
   const detail = document.createElement("span");
-  detail.textContent = project.worktree?.branchName ?? project.git?.currentBranch ?? "worktree";
+  detail.textContent = project.worktree?.branchName ?? project.git?.currentBranch ?? projectPathLeaf(project.path);
   const meta = document.createElement("small");
   meta.textContent = projectPathLeaf(project.path);
   body.append(title, detail, meta);
@@ -1800,6 +1802,12 @@ function projectRootName(project) {
 
 function projectPathLeaf(path) {
   return String(path ?? "").split(/[\\/]/).filter(Boolean).at(-1) ?? "";
+}
+
+function isHistoryProject(project) {
+  const name = String(project?.name ?? "").toLowerCase();
+  const path = String(project?.path ?? "").toLowerCase();
+  return name.includes("history") || path.includes("myagenttool-history-");
 }
 
 function currentProject(state) {

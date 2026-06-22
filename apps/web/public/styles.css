@@ -1301,6 +1301,12 @@ button.secondary {
   padding: 6px 7px 6px 28px;
 }
 
+.project-worktree-child {
+  margin-left: 18px;
+  width: calc(100% - 18px);
+  padding-left: 10px;
+}
+
 .project-status-dot {
   width: 7px;
   height: 7px;
