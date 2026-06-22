@@ -373,9 +373,25 @@ async function selectProjectById(projectId) {
     if (!response.ok) throw new Error(data.message ?? data.error ?? "Unable to switch project.");
     els.projectRegistryStatus.textContent = `${data.project.name} selected.`;
     await refresh();
+    linkProjectSelectionToSession(data.project);
   } catch (error) {
     els.projectRegistryStatus.textContent = error instanceof Error ? error.message : "Unable to switch project.";
   }
+}
+
+function linkProjectSelectionToSession(project) {
+  const conversation = latestConversationForProject(lastState, project);
+  repoPanelTool = "history";
+  repoHistoryScope = project?.worktree || isHistoryProject(project) ? "worktree" : "all";
+  if (conversation) {
+    openWorkspaceTab(conversation.invocation.id, { activate: true });
+    selectedManagedSessionId = conversation.session?.id ?? null;
+    openRepoSessionMenuId = null;
+    expandedRepoSessionIds.add(conversation.invocation.id);
+    history.replaceState(null, "", repoSessionUrl(conversation.invocation.id));
+  }
+  render(lastState);
+  if (conversation) queueMicrotask(() => scrollRepoSessionIntoView(conversation.invocation.id));
 }
 
 function prepareWorktreeForProject(sourceProject) {
@@ -2138,6 +2154,7 @@ function repoSessionHistoryRow(conversation) {
   row.className = "repo-session-row";
   row.dataset.invocationId = conversation.invocation.id;
   row.dataset.expanded = String(expandedRepoSessionIds.has(conversation.invocation.id));
+  row.dataset.active = String(conversation.invocation.id === currentInvocationId);
 
   const body = document.createElement("button");
   body.type = "button";
@@ -2343,6 +2360,12 @@ function openRepoSessionLogView(conversation) {
   render(lastState);
 }
 
+function scrollRepoSessionIntoView(invocationId) {
+  const escaped = typeof CSS !== "undefined" && CSS.escape ? CSS.escape(invocationId) : String(invocationId).replaceAll('"', '\\"');
+  const row = els.projectTreeList.querySelector(`[data-invocation-id="${escaped}"]`);
+  row?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+}
+
 async function copyText(value, successMessage) {
   const text = String(value ?? "").trim();
   if (!text) return;
@@ -2363,7 +2386,12 @@ function openLocalPath(path) {
 }
 
 function conversationHasWorktree(conversation) {
-  return Boolean(conversation.session?.workspace?.worktreePath || conversation.project?.worktree);
+  return Boolean(
+    conversation.session?.workspace?.worktreePath
+      || conversation.project?.worktree
+      || isHistoryProject(conversation.project)
+      || String(conversation.invocation?.options?.metadata?.projectName ?? "").toLowerCase().includes("history")
+  );
 }
 
 function relativeTime(value) {
@@ -3234,6 +3262,33 @@ function conversationHistoryItems(state) {
 function projectForInvocation(state, invocation) {
   const projectId = invocation?.options?.metadata?.projectId;
   return state?.projects?.find((project) => project.id === projectId) ?? null;
+}
+
+function latestConversationForProject(state, project) {
+  if (!state || !project) return null;
+  return conversationHistoryItems(state).find((conversation) => conversationMatchesProject(conversation, project)) ?? null;
+}
+
+function conversationMatchesProject(conversation, project, state = lastState) {
+  const metadata = conversation.invocation?.options?.metadata ?? {};
+  const workspace = conversation.session ? managedWorkspaceForSession(state, conversation.session) : null;
+  if (metadata.projectId === project.id || workspace?.projectId === project.id) return true;
+  if (samePath(metadata.projectPath, project.path) || samePath(workspace?.repoPath, project.path) || samePath(workspace?.worktreePath, project.path)) return true;
+  if (project.worktree) {
+    return metadata.worktreeId === project.worktree.id
+      || samePath(metadata.worktreePath, project.path)
+      || samePath(workspace?.worktreePath, project.path);
+  }
+  if (isHistoryProject(project)) {
+    return samePath(metadata.projectPath, project.path)
+      || String(metadata.projectName ?? "").toLowerCase() === String(project.name ?? "").toLowerCase();
+  }
+  return false;
+}
+
+function samePath(left, right) {
+  const normalize = (value) => String(value ?? "").replaceAll("\\", "/").replace(/\/+$/, "").toLowerCase();
+  return Boolean(left && right && normalize(left) === normalize(right));
 }
 
 function conversationMatchesHistoryFilter(state, item) {

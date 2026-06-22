@@ -2036,6 +2036,12 @@ button.secondary {
   background: #fbfcfb;
 }
 
+.repo-session-row[data-active="true"] {
+  border-radius: 8px;
+  background: #eef3f0;
+  box-shadow: inset 3px 0 0 #2f6f73;
+}
+
 .repo-session-body {
   display: grid;
   gap: 6px;
