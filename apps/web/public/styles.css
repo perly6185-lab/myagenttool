@@ -1691,7 +1691,7 @@ button.secondary {
   min-height: 29px;
   border: 1px solid transparent;
   border-radius: 5px;
-  padding: 4px 5px;
+  padding: 4px 5px 4px calc(5px + (var(--tree-depth, 0) * 18px));
   background: transparent;
   color: #26322e;
   font-size: 13px;
@@ -1700,6 +1700,10 @@ button.secondary {
 
 .project-tree-row[data-kind="directory"] {
   font-weight: 750;
+}
+
+.project-tree-row[data-expanded="true"] {
+  background: #fbfcfb;
 }
 
 .project-tree-row:hover {

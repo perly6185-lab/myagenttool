@@ -270,7 +270,7 @@ let selectedPermissionMode = "ask";
 let selectedReasoningMode = "extra_high";
 let selectedAddAction = null;
 let composerAttachments = [];
-let projectTreePath = "";
+const expandedProjectTreePaths = new Set();
 let projectTreeProjectId = null;
 let projectTreeData = null;
 let projectTreeLoading = false;
@@ -498,7 +498,12 @@ els.projectTreeList.addEventListener("click", (event) => {
   if (!button) return;
   if (repoSearchMode !== "name") return;
   if (button.dataset.kind !== "directory") return;
-  projectTreePath = button.dataset.treePath ?? "";
+  const path = button.dataset.treePath ?? "";
+  if (expandedProjectTreePaths.has(path)) {
+    expandedProjectTreePaths.delete(path);
+  } else {
+    expandedProjectTreePaths.add(path);
+  }
   loadProjectTree({ force: true });
 });
 
@@ -1488,7 +1493,7 @@ function renderProjects(state) {
   const browserProject = repoBrowserProject(state);
   if (browserProject?.id !== projectTreeProjectId) {
     projectTreeProjectId = browserProject?.id ?? null;
-    projectTreePath = "";
+    expandedProjectTreePaths.clear();
     projectTreeData = null;
     projectContentSearchData = null;
     queueMicrotask(() => refreshRepoBrowser({ force: true }));
@@ -1632,22 +1637,30 @@ function repoBrowserProject(state) {
 async function loadProjectTree({ force = false } = {}) {
   const project = repoBrowserProject(lastState);
   if (!project || projectTreeLoading) return;
-  if (!force && projectTreeData?.projectId === project.id) return;
+  const expandedKey = [...expandedProjectTreePaths].sort().join("\n");
+  if (!force && projectTreeData?.projectId === project.id && projectTreeData?.expandedKey === expandedKey) return;
   projectTreeLoading = true;
   renderProjectTree();
   try {
-    const params = new URLSearchParams();
-    if (projectTreePath) params.set("path", projectTreePath);
     const search = els.projectFileSearch.value.trim();
-    if (search) params.set("search", search);
-    const response = await fetch(`${apiBase}/api/projects/${encodeURIComponent(project.id)}/tree?${params.toString()}`);
-    const data = await response.json();
-    if (!response.ok) throw new Error(data.message ?? data.error ?? "Unable to load project files.");
-    projectTreeData = data;
+    const paths = ["", ...expandedProjectTreePaths];
+    const nodes = new Map();
+    for (const path of paths) {
+      const params = new URLSearchParams();
+      if (path) params.set("path", path);
+      if (search) params.set("search", search);
+      const response = await fetch(`${apiBase}/api/projects/${encodeURIComponent(project.id)}/tree?${params.toString()}`);
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.message ?? data.error ?? "Unable to load project files.");
+      nodes.set(path, data);
+    }
+    const root = nodes.get("") ?? null;
+    projectTreeData = root ? { ...root, expandedKey, nodes } : null;
   } catch (error) {
     projectTreeData = {
       projectId: project.id,
-      path: projectTreePath,
+      path: "",
+      expandedKey,
       entries: [],
       error: error instanceof Error ? error.message : "Unable to load project files."
     };
@@ -1741,14 +1754,21 @@ function renderProjectTree() {
     return;
   }
   const dirtyCount = Object.values(data.gitSummary ?? {}).reduce((sum, value) => sum + Number(value ?? 0), 0);
-  const pathLabel = data.path ? `/${data.path}` : "/";
-  els.projectTreeSummary.textContent = `${project.name} ${pathLabel}${dirtyCount ? ` · ${dirtyCount} changed` : ""}`;
-  const rows = [];
-  if (data.path) {
-    rows.push(projectTreeRow({ name: "..", path: parentTreePath(data.path), kind: "directory", gitStatus: "clean" }));
-  }
-  rows.push(...(data.entries ?? []).map(projectTreeRow));
+  els.projectTreeSummary.textContent = `${project.name}${dirtyCount ? ` · ${dirtyCount} changed` : ""}`;
+  const rows = projectTreeRows(data, "");
   els.projectTreeList.replaceChildren(...(rows.length ? rows : [emptyMiniCard("No files matched.")]));
+}
+
+function projectTreeRows(data, path, depth = 0) {
+  const node = path ? data.nodes?.get(path) : data;
+  const rows = [];
+  for (const entry of node?.entries ?? []) {
+    rows.push(projectTreeRow(entry, depth));
+    if (entry.kind === "directory" && expandedProjectTreePaths.has(entry.path)) {
+      rows.push(...projectTreeRows(data, entry.path, depth + 1));
+    }
+  }
+  return rows;
 }
 
 function renderProjectContentSearch(project) {
@@ -1789,15 +1809,19 @@ function projectContentSearchRow(result) {
   return row;
 }
 
-function projectTreeRow(entry) {
+function projectTreeRow(entry, depth = 0) {
   const row = document.createElement("button");
   row.type = "button";
   row.className = "project-tree-row";
   row.dataset.treePath = entry.path ?? "";
   row.dataset.kind = entry.kind;
+  row.dataset.expanded = String(entry.kind === "directory" && expandedProjectTreePaths.has(entry.path));
+  row.style.setProperty("--tree-depth", String(depth));
 
   const icon = document.createElement("span");
-  icon.textContent = entry.kind === "directory" ? "▸" : "•";
+  icon.textContent = entry.kind === "directory"
+    ? expandedProjectTreePaths.has(entry.path) ? "▾" : "▸"
+    : "•";
 
   const name = document.createElement("span");
   name.textContent = entry.name;
@@ -1810,12 +1834,6 @@ function projectTreeRow(entry) {
 
   row.append(icon, name, status);
   return row;
-}
-
-function parentTreePath(path) {
-  const parts = String(path ?? "").split("/").filter(Boolean);
-  parts.pop();
-  return parts.join("/");
 }
 
 function gitStatusLabel(status) {
