@@ -826,7 +826,7 @@ function projectCwd(payload) {
 function codexArgsTemplate(adapter, payload) {
   const args = Array.isArray(adapter.args) && adapter.args.length > 0 ? adapter.args : ["{{payloadJson}}"];
   if (isCodexCliCommand(adapter.command) && payload.options?.codexSessionMode === "continue_last") {
-    return ["exec", "resume", "--last", "--json", "{{task}}"];
+    return ["exec", "resume", "--last", "--skip-git-repo-check", "--json", "{{task}}"];
   }
   return args;
 }
@@ -1109,7 +1109,7 @@ function agentRuntimeName(adapter) {
 }
 
 function codexCliArgs() {
-  return ["exec", "--json", "{{task}}"];
+  return ["exec", "--skip-git-repo-check", "--json", "{{task}}"];
 }
 
 function codexRiskTags() {

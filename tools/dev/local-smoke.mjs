@@ -212,6 +212,7 @@ try {
   assert(codexExecutionPreview?.data?.commandLine?.includes("codex-fixture-agent.mjs"), "Codex fixture invocation should record sanitized execution preview");
   assert(codexExecutionPreview.data.commandLine.includes("[task redacted]"), "Codex execution preview should not include the full task in argv");
   assert(!codexExecutionPreview.data.commandLine.includes("--ephemeral"), "Codex new-session execution should persist session files for optional resume");
+  assert(codexExecutionPreview.data.commandLine.includes("--skip-git-repo-check"), "Codex execution should allow prototype temp project roots");
   assert(codexExecutionPreview.data.sessionMode === "new", "Codex execution preview should mark new session mode");
   assert(codexExecutionPreview.data.workspace?.policy === "current_repo", "Codex execution preview should include workspace policy");
   assert(codexExecutionPreview.data.workspace?.repoPath, "Codex execution preview should include workspace repo path");

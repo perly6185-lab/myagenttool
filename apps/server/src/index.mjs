@@ -2783,11 +2783,11 @@ function isCodexCliCommand(command) {
 }
 
 function codexCliArgs() {
-  return ["exec", "--json", "{{task}}"];
+  return ["exec", "--skip-git-repo-check", "--json", "{{task}}"];
 }
 
 function codexCliResumeArgs() {
-  return ["exec", "resume", "--last", "--json", "{{task}}"];
+  return ["exec", "resume", "--last", "--skip-git-repo-check", "--json", "{{task}}"];
 }
 
 function codexRiskTags() {
