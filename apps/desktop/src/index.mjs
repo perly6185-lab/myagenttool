@@ -2,6 +2,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
+import { delimiter } from "node:path";
 import * as pty from "node-pty";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -47,8 +48,12 @@ if (process.argv.includes("--check")) {
     throw new Error("Codex child local env injection is not configured.");
   }
   const commandJsonPlan = codexCommandPlan({ command: "codex" }, ["exec", "--json", "{{task}}"], "fixture-task");
-  if (commandJsonPlan.command !== "codex" || commandJsonPlan.args[0] !== "exec") {
+  if (!isCodexCliCommand(commandJsonPlan.command) || commandJsonPlan.args[0] !== "exec") {
     throw new Error("Codex command plan is not configured.");
+  }
+  const codexCommand = resolveCodexCommand("codex", { PATH: `${resolve(process.env.APPDATA ?? "", "npm")}${delimiter}${process.env.PATH ?? ""}` });
+  if (process.platform === "win32" && !codexCommand.toLowerCase().endsWith("\\codex.cmd")) {
+    throw new Error("Codex command resolution should prefer the user npm shim on Windows.");
   }
   const shellPlan = resolveTerminalShell(process.platform === "win32" ? "powershell" : "bash");
   if (!shellPlan.file) {
@@ -863,7 +868,7 @@ function codexCommandPlan(adapter, renderedArgs, task) {
   const commandPrefix = parseCodexCommandJson();
   if (!commandPrefix) {
     return {
-      command: String(adapter.command),
+      command: resolveCodexCommand(adapter.command),
       args: renderedArgs
     };
   }
@@ -873,6 +878,30 @@ function codexCommandPlan(adapter, renderedArgs, task) {
     command,
     args
   };
+}
+
+function resolveCodexCommand(command, env = process.env) {
+  const rawCommand = String(command ?? "codex");
+  if (!isCodexCliCommand(rawCommand) || rawCommand.includes("\\") || rawCommand.includes("/")) {
+    return rawCommand;
+  }
+  if (process.platform !== "win32") {
+    return rawCommand;
+  }
+  const appDataNpm = env.APPDATA ? resolve(String(env.APPDATA), "npm", "codex.cmd") : null;
+  if (appDataNpm && existsSync(appDataNpm)) {
+    return appDataNpm;
+  }
+  for (const pathEntry of String(env.PATH ?? "").split(delimiter)) {
+    if (!pathEntry) {
+      continue;
+    }
+    const candidate = resolve(pathEntry, "codex.cmd");
+    if (existsSync(candidate)) {
+      return candidate;
+    }
+  }
+  return rawCommand;
 }
 
 function parseCodexCommandJson() {
@@ -1219,7 +1248,7 @@ function probeCodexCli(adapter) {
   const commandPlan = codexCommandPlan({ ...adapter, command: adapter.command ?? "codex" }, helpArgs, "");
   const command = codexCommandOverride === "fixture"
     ? process.execPath
-    : codexCommandOverride || commandPlan.command;
+    : codexCommandOverride || resolveCodexCommand(commandPlan.command);
   const args = codexCommandOverride === "fixture"
     ? [codexFixtureAgentPath, "exec", "--help"]
     : commandPlan.args;
