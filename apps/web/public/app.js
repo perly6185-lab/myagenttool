@@ -1638,7 +1638,7 @@ function projectTreeItems(projects, currentProjectId) {
   for (const root of roots) {
     const children = taskProjects.filter((item) => item.worktree?.sourceProjectId === root.id || (root.id === primaryRoot?.id && isHistoryProject(item)));
     for (const child of children) usedWorktreeIds.add(child.id);
-    rows.push(projectGroup(root, children, currentProjectId, { hideRootActions: root.id === primaryRoot?.id }));
+    rows.push(projectGroup(root, children, currentProjectId, { hideRootActions: root.id === primaryRoot?.id, hideRootRow: root.id === primaryRoot?.id }));
   }
 
   for (const taskProject of taskProjects) {
@@ -1649,58 +1649,60 @@ function projectTreeItems(projects, currentProjectId) {
   return rows;
 }
 
-function projectGroup(project, children, currentProjectId, { hideRootActions = false } = {}) {
+function projectGroup(project, children, currentProjectId, { hideRootActions = false, hideRootRow = false } = {}) {
   const group = document.createElement("section");
   group.className = "project-group";
   const collapsed = collapsedProjectRootIds.has(project.id);
 
-  const root = document.createElement("div");
-  root.className = "project-root";
-  root.dataset.active = String(project.id === currentProjectId && project.worktree);
+  if (!hideRootRow) {
+    const root = document.createElement("div");
+    root.className = "project-root";
+    root.dataset.active = String(project.id === currentProjectId && project.worktree);
 
-  const select = document.createElement("button");
-  select.type = "button";
-  select.className = "project-root-select";
-  select.dataset.projectId = project.id;
-  const folder = document.createElement("span");
-  folder.className = "project-folder";
-  folder.setAttribute("aria-hidden", "true");
-  folder.textContent = "#";
-  const title = document.createElement("strong");
-  title.textContent = projectRootName(project);
-  select.append(folder, title);
+    const select = document.createElement("button");
+    select.type = "button";
+    select.className = "project-root-select";
+    select.dataset.projectId = project.id;
+    const folder = document.createElement("span");
+    folder.className = "project-folder";
+    folder.setAttribute("aria-hidden", "true");
+    folder.textContent = "#";
+    const title = document.createElement("strong");
+    title.textContent = projectRootName(project);
+    select.append(folder, title);
 
-  const actions = document.createElement("span");
-  actions.className = "project-root-actions";
-  const chevron = document.createElement("span");
-  const toggle = document.createElement("button");
-  toggle.type = "button";
-  chevron.className = "project-chevron";
-  chevron.setAttribute("aria-hidden", "true");
-  chevron.textContent = collapsed ? "›" : "⌄";
-  toggle.className = "project-root-action";
-  toggle.dataset.projectToggleId = project.id;
-  toggle.setAttribute("aria-label", collapsed ? "Expand project" : "Collapse project");
-  toggle.append(chevron);
-  const more = document.createElement("button");
-  more.type = "button";
-  more.className = "project-root-action";
-  more.dataset.projectMenuId = project.id;
-  more.setAttribute("aria-label", "Project menu");
-  more.textContent = "...";
-  const add = document.createElement("button");
-  add.type = "button";
-  add.className = "project-root-action";
-  add.dataset.projectWorktreeSourceId = project.id;
-  add.setAttribute("aria-label", `Create worktree for ${project.name}`);
-  add.textContent = "+";
-  actions.append(toggle, more, add);
-  root.append(select, actions);
-  if (project.id === currentProjectId || hideRootActions) {
-    actions.hidden = true;
+    const actions = document.createElement("span");
+    actions.className = "project-root-actions";
+    const chevron = document.createElement("span");
+    const toggle = document.createElement("button");
+    toggle.type = "button";
+    chevron.className = "project-chevron";
+    chevron.setAttribute("aria-hidden", "true");
+    chevron.textContent = collapsed ? "›" : "⌄";
+    toggle.className = "project-root-action";
+    toggle.dataset.projectToggleId = project.id;
+    toggle.setAttribute("aria-label", collapsed ? "Expand project" : "Collapse project");
+    toggle.append(chevron);
+    const more = document.createElement("button");
+    more.type = "button";
+    more.className = "project-root-action";
+    more.dataset.projectMenuId = project.id;
+    more.setAttribute("aria-label", "Project menu");
+    more.textContent = "...";
+    const add = document.createElement("button");
+    add.type = "button";
+    add.className = "project-root-action";
+    add.dataset.projectWorktreeSourceId = project.id;
+    add.setAttribute("aria-label", `Create worktree for ${project.name}`);
+    add.textContent = "+";
+    actions.append(toggle, more, add);
+    root.append(select, actions);
+    if (project.id === currentProjectId || hideRootActions) {
+      actions.hidden = true;
+    }
+    group.append(root);
+    group.append(projectMenuPanel(project));
   }
-  group.append(root);
-  group.append(projectMenuPanel(project));
 
   if (collapsed) {
     return group;
