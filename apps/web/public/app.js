@@ -1720,7 +1720,7 @@ function refreshRepoBrowser({ force = false } = {}) {
     return;
   }
   if (repoPanelTool === "publish") {
-    renderRepoPublishPanel(lastState);
+    loadRepoGitSummary({ force });
     return;
   }
   if (repoSearchMode === "content") {
@@ -1778,6 +1778,7 @@ function renderRepoBrowserMode() {
     button.setAttribute("aria-selected", String(active));
   }
   const showingFiles = repoPanelTool === "files";
+  els.repoPanelTitle.parentElement.hidden = repoPanelTool === "publish";
   els.projectFileSearch.closest(".repo-search-shell").hidden = !showingFiles;
   els.repoSearchModeButtons[0].parentElement.hidden = !showingFiles;
   els.repoContentFilters.hidden = !showingFiles || repoSearchMode !== "content";
@@ -1954,19 +1955,33 @@ function repoChangeRow(change) {
 
 function renderRepoPublishPanel(state) {
   const project = repoBrowserProject(state);
-  els.repoPanelTitle.textContent = "分支";
   els.projectTreeSummary.textContent = "";
+  if (repoGitSummaryLoading) {
+    els.projectTreeList.replaceChildren(emptyMiniCard("Loading branch status..."));
+    return;
+  }
+  if (repoGitSummaryData?.error) {
+    els.projectTreeList.replaceChildren(emptyMiniCard(repoGitSummaryData.error));
+    return;
+  }
+  const published = Boolean(repoGitSummaryData?.published);
   const panel = document.createElement("div");
   panel.className = "repo-publish-panel";
   const title = document.createElement("strong");
-  title.textContent = "分支未发布";
+  title.textContent = published ? "分支已发布" : "分支未发布";
   const copy = document.createElement("span");
-  copy.textContent = "在创建 pull request 之前发布此分支。";
+  copy.textContent = published
+    ? `此分支正在跟踪 ${repoGitSummaryData.upstream}。`
+    : "在创建 pull request 之前发布此分支。";
   const refresh = document.createElement("button");
   refresh.type = "button";
   refresh.textContent = "刷新";
+  refresh.addEventListener("click", () => loadRepoGitSummary({ force: true }));
   const branch = document.createElement("small");
-  branch.textContent = project?.git?.currentBranch ?? repoGitSummaryData?.branch ?? "Unknown branch";
+  branch.textContent = [
+    repoGitSummaryData?.branch ?? project?.git?.currentBranch ?? "Unknown branch",
+    `${repoGitSummaryData?.changes?.length ?? 0} 个本地更改`
+  ].join(" · ");
   panel.append(title, copy, refresh, branch);
   els.projectTreeList.replaceChildren(panel);
 }
