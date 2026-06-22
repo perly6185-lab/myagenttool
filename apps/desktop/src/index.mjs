@@ -409,13 +409,28 @@ async function runInvocation(work) {
     return;
   }
 
-  const child = spawn(spawnPlan.command, spawnPlan.args, {
-    cwd: spawnPlan.cwd,
-    env: spawnPlan.env,
-    detached: process.platform !== "win32",
-    windowsHide: true,
-    stdio: ["ignore", "pipe", "pipe"]
-  });
+  let child;
+  try {
+    child = spawn(spawnPlan.command, spawnPlan.args, {
+      cwd: spawnPlan.cwd,
+      env: spawnPlan.env,
+      detached: process.platform !== "win32",
+      windowsHide: true,
+      stdio: ["ignore", "pipe", "pipe"]
+    });
+  } catch (error) {
+    await sendCodexHookEvent(invocationId, adapter, {
+      eventName: "Stop",
+      summary: `${runtimeName} failed to start.`
+    });
+    await request("POST", "/api/bridge/complete", {
+      invocationId,
+      status: "failed",
+      summary: `${runtimeName} failed to start: ${error instanceof Error ? error.message : String(error)}.`,
+      result: finalResult
+    });
+    return;
+  }
 
   const timeoutMs = Number(adapter.timeoutSeconds ?? work.options?.timeoutSeconds ?? 30) * 1000;
   const timeoutTimer = setTimeout(async () => {
