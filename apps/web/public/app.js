@@ -24,7 +24,7 @@ const els = {
   terminalOutputPreview: document.querySelector("#terminalOutputPreview"),
   terminalActionStatus: document.querySelector("#terminalActionStatus"),
   terminalProgressList: document.querySelector("#terminalProgressList"),
-  modeTabs: document.querySelector(".mode-tabs"),
+  modeTabs: document.querySelector(".workspace-nav"),
   modeButtons: [...document.querySelectorAll("[data-workspace-mode]")],
   modeSummary: document.querySelector("#modeSummary"),
   currentProjectName: document.querySelector("#currentProjectName"),
@@ -1364,24 +1364,118 @@ function renderProjects(state) {
   els.addProjectButton.disabled = false;
   els.removeProjectButton.disabled = projects.length <= 1;
   els.createWorktreeButton.disabled = !project;
-  els.projectList.replaceChildren(
-    ...(projects.length ? projects.map((item) => {
-      const button = document.createElement("button");
-      button.type = "button";
-      button.className = "project-item";
-      button.dataset.projectId = item.id;
-      button.dataset.active = String(item.id === state.currentProjectId);
-
-      const name = document.createElement("strong");
-      name.textContent = item.worktree ? `${item.name} · worktree` : item.name;
-      const detail = document.createElement("span");
-      detail.textContent = item.worktree ? `${item.worktree.branchName} · ${item.path}` : item.path;
-
-      button.append(name, detail);
-      return button;
-    }) : [emptyMiniCard("No projects registered.")])
-  );
+  els.projectList.replaceChildren(...projectTreeItems(projects, state.currentProjectId));
   renderProjectTree();
+}
+
+function projectTreeItems(projects, currentProjectId) {
+  if (!projects.length) return [emptyMiniCard("No projects registered.")];
+  const roots = projects.filter((item) => !item.worktree);
+  const worktrees = projects.filter((item) => item.worktree);
+  const usedWorktreeIds = new Set();
+  const rows = [];
+
+  for (const root of roots) {
+    const children = worktrees.filter((item) => item.worktree?.sourceProjectId === root.id);
+    for (const child of children) usedWorktreeIds.add(child.id);
+    rows.push(projectGroup(root, children, currentProjectId));
+  }
+
+  for (const worktree of worktrees) {
+    if (usedWorktreeIds.has(worktree.id)) continue;
+    rows.push(projectGroup(worktree, [], currentProjectId));
+  }
+
+  return rows;
+}
+
+function projectGroup(project, children, currentProjectId) {
+  const group = document.createElement("section");
+  group.className = "project-group";
+
+  const root = document.createElement("button");
+  root.type = "button";
+  root.className = "project-root";
+  root.dataset.projectId = project.id;
+  root.dataset.active = String(project.id === currentProjectId && project.worktree);
+
+  const chevron = document.createElement("span");
+  chevron.className = "project-chevron";
+  chevron.setAttribute("aria-hidden", "true");
+  chevron.textContent = "v";
+  const folder = document.createElement("span");
+  folder.className = "project-folder";
+  folder.setAttribute("aria-hidden", "true");
+  folder.textContent = "#";
+  const title = document.createElement("strong");
+  title.textContent = projectRootName(project);
+  root.append(chevron, folder, title);
+  group.append(root);
+
+  if (!project.worktree) {
+    group.append(projectBranchRow(project, currentProjectId));
+  }
+  for (const child of children) {
+    group.append(projectWorktreeRow(child, currentProjectId));
+  }
+  if (project.worktree) {
+    group.append(projectWorktreeRow(project, currentProjectId));
+  }
+
+  return group;
+}
+
+function projectBranchRow(project, currentProjectId) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "project-tree-item project-branch-row";
+  button.dataset.projectId = project.id;
+  button.dataset.active = String(project.id === currentProjectId);
+
+  const dot = document.createElement("span");
+  dot.className = "project-status-dot";
+  dot.setAttribute("aria-hidden", "true");
+  const body = document.createElement("span");
+  body.className = "project-tree-body";
+  const name = document.createElement("strong");
+  name.textContent = project.git?.currentBranch ?? project.git?.defaultBranch ?? "main";
+  const detail = document.createElement("span");
+  detail.textContent = "主工作树";
+  body.append(name, detail);
+  button.append(dot, body);
+  return button;
+}
+
+function projectWorktreeRow(project, currentProjectId) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "project-tree-item project-worktree-row";
+  button.dataset.projectId = project.id;
+  button.dataset.active = String(project.id === currentProjectId);
+
+  const dot = document.createElement("span");
+  dot.className = "project-status-dot";
+  dot.setAttribute("aria-hidden", "true");
+  const body = document.createElement("span");
+  body.className = "project-tree-body";
+  const title = document.createElement("strong");
+  title.textContent = project.name;
+  const detail = document.createElement("span");
+  detail.textContent = project.worktree?.branchName ?? project.git?.currentBranch ?? "worktree";
+  const meta = document.createElement("small");
+  meta.textContent = projectPathLeaf(project.path);
+  body.append(title, detail, meta);
+  button.append(dot, body);
+  return button;
+}
+
+function projectRootName(project) {
+  if (!project.worktree) return project.name;
+  return projectPathLeaf(project.worktree?.repoPath ?? project.path) || project.name;
+}
+
+function projectPathLeaf(path) {
+  return String(path ?? "").split(/[\\/]/).filter(Boolean).at(-1) ?? "";
 }
 
 function currentProject(state) {

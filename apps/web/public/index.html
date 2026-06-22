@@ -19,14 +19,32 @@
 
       <section class="workspace" aria-label="Agent workspace">
         <aside class="workspace-nav" aria-label="Agent workspace surfaces">
-          <div class="section-heading compact">
-            <p class="step-label">Project</p>
-            <h2 id="currentProjectName">myagenttool</h2>
-          </div>
-          <p id="currentProjectPath" class="mode-summary project-path">Current project</p>
-          <div id="projectList" class="project-list" aria-label="Projects"></div>
-          <details class="project-add">
-            <summary>Add project</summary>
+          <nav class="mode-tabs sidebar-primary-nav" aria-label="Agent workspace surfaces">
+            <button type="button" data-workspace-mode="run_task">
+              <span class="sidebar-nav-icon" aria-hidden="true">[]</span>
+              <span>任务</span>
+            </button>
+            <button type="button" data-workspace-mode="session">
+              <span class="sidebar-nav-icon" aria-hidden="true">&gt;</span>
+              <span>自动化</span>
+            </button>
+            <button type="button" data-workspace-mode="setup">
+              <span class="sidebar-nav-icon" aria-hidden="true">#</span>
+              <span>Orca Mobile</span>
+            </button>
+            <button type="button" data-workspace-mode="evidence_center">
+              <span class="sidebar-nav-icon" aria-hidden="true">/</span>
+              <span>搜索</span>
+            </button>
+          </nav>
+
+          <div class="project-sidebar-head">
+            <h2>Projects</h2>
+            <div class="project-sidebar-tools" aria-label="Project tools">
+              <details class="project-add project-tool">
+                <summary aria-label="Add project">+</summary>
+                <div class="project-tool-panel">
+                  <p class="project-tool-title">Add project</p>
             <label>
               <span>Name</span>
               <input id="projectNameInput" type="text" placeholder="Project name" />
@@ -40,9 +58,12 @@
               <button id="removeProjectButton" type="button" class="secondary">Remove current</button>
             </div>
             <p id="projectRegistryStatus" class="action-note" aria-live="polite"></p>
-          </details>
-          <details class="project-add">
-            <summary>Create worktree</summary>
+                </div>
+              </details>
+              <details class="project-add project-tool">
+                <summary aria-label="Create worktree">wt</summary>
+                <div class="project-tool-panel">
+                  <p class="project-tool-title">Create worktree</p>
             <label>
               <span>Name</span>
               <input id="worktreeNameInput" type="text" placeholder="Task name" />
@@ -63,15 +84,19 @@
               <button id="createWorktreeButton" type="button">Create</button>
             </div>
             <p id="worktreeStatus" class="action-note" aria-live="polite"></p>
-          </details>
-          <nav class="mode-tabs" aria-label="Agent workspace surfaces">
-            <button type="button" data-workspace-mode="run_task">Run</button>
-            <button type="button" data-workspace-mode="session">Session</button>
+                </div>
+              </details>
+            </div>
+          </div>
+          <div class="project-current" aria-label="Current project">
+            <strong id="currentProjectName">myagenttool</strong>
+            <span id="currentProjectPath" class="project-path">Current project</span>
+          </div>
+          <div id="projectList" class="project-list" aria-label="Projects"></div>
+          <nav class="mode-tabs sidebar-secondary-nav" aria-label="More workspace surfaces">
             <button type="button" data-workspace-mode="diff">Diff</button>
             <button type="button" data-workspace-mode="terminal">Terminal</button>
-            <button type="button" data-workspace-mode="evidence_center">Evidence</button>
             <button type="button" data-workspace-mode="approval">Approval</button>
-            <button type="button" data-workspace-mode="setup">Setup</button>
           </nav>
         </aside>
 
