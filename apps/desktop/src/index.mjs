@@ -44,6 +44,10 @@ if (process.argv.includes("--check")) {
   if (codexEnv.CODEX_HOME !== inheritedEnv.CODEX_HOME || codexEnv.HTTPS_PROXY !== inheritedEnv.HTTPS_PROXY) {
     throw new Error("Codex child environment stripped user configuration.");
   }
+  const defaultHomeEnv = buildEnv({ command: "codex", environmentPolicy: "inherit_safe", env: { USERPROFILE: "C:\\Users\\demo" } });
+  if (process.platform === "win32" && defaultHomeEnv.CODEX_HOME !== "C:\\Users\\demo\\.codex") {
+    throw new Error("Codex child environment should default to the user Codex home.");
+  }
   if (codexEnv.OPENAI_BASE_URL !== "http://127.0.0.1:8787/v1") {
     throw new Error("Codex child local env injection is not configured.");
   }
@@ -1167,11 +1171,11 @@ function buildEnv(adapter) {
   }
   const explicitEnv = normalizeEnv(adapter.env);
   if (adapter.environmentPolicy === "explicit_only") {
-    return isCodexCliCommand(adapter.command) ? sanitizeCodexChildEnv({ ...explicitEnv, ...codexLocalEnv(explicitEnv) }) : explicitEnv;
+    return isCodexCliCommand(adapter.command) ? sanitizeCodexChildEnv(withCodexUserDefaults({ ...explicitEnv, ...codexLocalEnv(explicitEnv) })) : explicitEnv;
   }
   const baseEnv = { ...process.env, ...explicitEnv };
   const inheritedEnv = { ...baseEnv, ...codexLocalEnv(baseEnv), ...explicitEnv };
-  return isCodexCliCommand(adapter.command) ? sanitizeCodexChildEnv(inheritedEnv) : inheritedEnv;
+  return isCodexCliCommand(adapter.command) ? sanitizeCodexChildEnv(withCodexUserDefaults(inheritedEnv)) : inheritedEnv;
 }
 
 function normalizeEnv(env) {
@@ -1187,6 +1191,19 @@ function sanitizeCodexChildEnv(env) {
     delete clean[key];
   }
   return clean;
+}
+
+function withCodexUserDefaults(env) {
+  const nextEnv = { ...env };
+  if (!nextEnv.CODEX_HOME) {
+    const userProfile = String(nextEnv.USERPROFILE ?? "").trim();
+    const home = String(nextEnv.HOME ?? "").trim();
+    const root = process.platform === "win32" ? userProfile || home : home || userProfile;
+    if (root) {
+      nextEnv.CODEX_HOME = resolve(root, ".codex");
+    }
+  }
+  return nextEnv;
 }
 
 function codexLocalEnv(env = process.env) {
