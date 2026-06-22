@@ -1924,6 +1924,7 @@ button.secondary {
 }
 
 .repo-session-row {
+  position: relative;
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
@@ -1936,6 +1937,13 @@ button.secondary {
   background: transparent;
   color: #17201d;
   text-align: left;
+}
+
+.repo-session-row[data-expanded="true"] {
+  border: 1px solid #e4e9e6;
+  border-radius: 8px;
+  padding: 12px;
+  background: #fbfcfb;
 }
 
 .repo-session-body {
@@ -2065,6 +2073,110 @@ button.secondary {
 
 .repo-session-action:hover {
   background: #edf1ef;
+}
+
+.repo-session-details {
+  grid-column: 1 / -1;
+  display: grid;
+  gap: 8px;
+  margin-top: 4px;
+  border-top: 1px solid #e5e9e7;
+  padding-top: 10px;
+  color: #17201d;
+}
+
+.repo-session-details > strong {
+  color: #79847f;
+  font-size: 11px;
+  font-weight: 850;
+  text-transform: uppercase;
+}
+
+.repo-session-details p {
+  min-width: 0;
+  margin: 0;
+  color: #17201d;
+  font-size: 13px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.repo-session-turns {
+  display: grid;
+  gap: 6px;
+}
+
+.repo-session-turns p {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr);
+  gap: 8px;
+}
+
+.repo-session-turns span {
+  color: #7a8581;
+}
+
+.repo-session-turns em {
+  overflow: hidden;
+  color: #17201d;
+  font-style: normal;
+  text-overflow: ellipsis;
+}
+
+.repo-session-detail-actions {
+  display: grid;
+  gap: 6px;
+  margin-top: 2px;
+}
+
+.repo-session-detail-actions .repo-session-action {
+  width: 100%;
+  grid-template-columns: auto 1fr;
+  justify-content: start;
+  min-height: 32px;
+  padding: 0 8px;
+  text-align: left;
+}
+
+.repo-session-menu {
+  position: absolute;
+  z-index: 50;
+  top: 42px;
+  right: 6px;
+  display: grid;
+  min-width: 214px;
+  border: 1px solid #e0e5e2;
+  border-radius: 10px;
+  padding: 6px;
+  background: #ffffff;
+  box-shadow: 0 22px 54px rgb(24 31 28 / 20%);
+}
+
+.repo-session-menu button {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  min-height: 38px;
+  border: 0;
+  border-radius: 7px;
+  padding: 0 10px;
+  background: transparent;
+  color: #17201d;
+  text-align: left;
+}
+
+.repo-session-menu button:hover {
+  background: #f2f5f3;
+}
+
+.repo-session-menu strong {
+  min-width: 0;
+  overflow: hidden;
+  font-size: 13px;
+  font-weight: 800;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 @media (max-width: 1200px) {

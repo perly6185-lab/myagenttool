@@ -286,6 +286,8 @@ const loadingProjectTreePaths = new Set();
 let repoPanelTool = "files";
 let repoSearchMode = "name";
 let repoHistoryScope = "all";
+const expandedRepoSessionIds = new Set();
+let openRepoSessionMenuId = null;
 let projectContentSearchData = null;
 let projectContentSearchLoading = false;
 let repoGitSummaryData = null;
@@ -300,6 +302,8 @@ const attachmentLimits = {
   maxTextBytes: 24_000,
   maxImageBytes: 768_000
 };
+
+initializeRouteState();
 
 els.modeTabs.addEventListener("click", (event) => {
   const button = event.target.closest("button[data-workspace-mode]");
@@ -619,10 +623,18 @@ els.projectTreeList.addEventListener("click", (event) => {
   const sessionAction = event.target.closest("button[data-repo-session-action]");
   if (sessionAction) {
     const invocationId = sessionAction.dataset.invocationId;
-    if (invocationId && (sessionAction.dataset.repoSessionAction === "open" || sessionAction.dataset.repoSessionAction === "resume")) {
-      currentInvocationId = invocationId;
-      activeMode = "run_task";
-      render(lastState);
+    const action = sessionAction.dataset.repoSessionAction;
+    if (invocationId && action === "open") {
+      restoreRepoSession(invocationId);
+    } else if (invocationId && action === "resume") {
+      openRepoSessionInNewTab(invocationId);
+    } else if (invocationId && action === "toggle") {
+      toggleRepoSessionDetails(invocationId);
+    } else if (invocationId && action === "menu") {
+      openRepoSessionMenuId = openRepoSessionMenuId === invocationId ? null : invocationId;
+      renderRepoSessionHistory(lastState);
+    } else if (invocationId && action) {
+      handleRepoSessionMenuAction(action, invocationId);
     }
     return;
   }
@@ -975,6 +987,10 @@ document.addEventListener("click", (event) => {
     if (menu?.open && !menu.contains(event.target)) {
       menu.open = false;
     }
+  }
+  if (openRepoSessionMenuId && !event.target.closest(".repo-session-menu") && !event.target.closest("[data-repo-session-action='menu']")) {
+    openRepoSessionMenuId = null;
+    renderRepoSessionHistory(lastState);
   }
 });
 
@@ -2087,7 +2103,6 @@ function repoHistoryToolButton(label, ariaLabel) {
   const button = document.createElement("button");
   button.type = "button";
   button.setAttribute("aria-label", ariaLabel);
-  button.title = ariaLabel;
   button.textContent = label;
   return button;
 }
@@ -2096,6 +2111,7 @@ function repoSessionHistoryRow(conversation) {
   const row = document.createElement("article");
   row.className = "repo-session-row";
   row.dataset.invocationId = conversation.invocation.id;
+  row.dataset.expanded = String(expandedRepoSessionIds.has(conversation.invocation.id));
 
   const body = document.createElement("button");
   body.type = "button";
@@ -2116,16 +2132,34 @@ function repoSessionHistoryRow(conversation) {
 
   const actions = document.createElement("span");
   actions.className = "repo-session-actions";
+  const expanded = expandedRepoSessionIds.has(conversation.invocation.id);
   actions.append(
-    repoSessionActionButton("⋮⋮", "拖动会话"),
-    repoSessionActionButton("▷", "继续会话", "resume", conversation.invocation.id),
-    repoSessionActionButton("⌄", "更多会话选项"),
-    repoSessionActionButton("...", "更多操作")
+    repoSessionDragHandle(conversation),
+    repoSessionActionButton("▷", "在新标签页中恢复", "resume", conversation.invocation.id),
+    repoSessionActionButton(expanded ? "⌃" : "⌄", expanded ? "收起详情" : "展开详情", "toggle", conversation.invocation.id),
+    repoSessionActionButton("...", "更多操作", "menu", conversation.invocation.id)
   );
 
   body.append(title, preview, meta);
   row.append(body, actions);
+  if (expanded) {
+    row.append(repoSessionDetails(conversation));
+  }
+  if (openRepoSessionMenuId === conversation.invocation.id) {
+    row.append(repoSessionMenu(conversation));
+  }
   return row;
+}
+
+function repoSessionDragHandle(conversation) {
+  const button = repoSessionActionButton("⋮⋮", "拖到新标签页中恢复", "drag", conversation.invocation.id);
+  button.draggable = true;
+  button.addEventListener("dragstart", (event) => {
+    event.dataTransfer.effectAllowed = "copy";
+    event.dataTransfer.setData("text/uri-list", repoSessionUrl(conversation.invocation.id));
+    event.dataTransfer.setData("text/plain", repoSessionUrl(conversation.invocation.id));
+  });
+  return button;
 }
 
 function repoSessionActionButton(label, ariaLabel, action = null, invocationId = null) {
@@ -2133,11 +2167,174 @@ function repoSessionActionButton(label, ariaLabel, action = null, invocationId =
   button.type = "button";
   button.className = "repo-session-action";
   button.setAttribute("aria-label", ariaLabel);
-  button.title = ariaLabel;
   button.textContent = label;
   if (action) button.dataset.repoSessionAction = action;
   if (invocationId) button.dataset.invocationId = invocationId;
   return button;
+}
+
+function repoSessionDetails(conversation) {
+  const details = document.createElement("section");
+  details.className = "repo-session-details";
+
+  const originalTitle = document.createElement("strong");
+  originalTitle.textContent = "原始请求";
+  const original = document.createElement("p");
+  original.textContent = taskSummary(conversation.invocation.input?.task) ?? conversation.invocation.id;
+
+  const latestTitle = document.createElement("strong");
+  latestTitle.textContent = "最近回复";
+  const turns = document.createElement("div");
+  turns.className = "repo-session-turns";
+  const recentEvents = (lastState?.events ?? [])
+    .filter((event) => event.invocationId === conversation.invocation.id)
+    .slice(-3);
+  for (const event of recentEvents) {
+    const row = document.createElement("p");
+    row.append(document.createElement("span"), document.createElement("em"));
+    row.querySelector("span").textContent = timelineRole(event) === "agent" ? "Agent" : readableEventType(event.type);
+    row.querySelector("em").textContent = repoSessionEventSummary(event);
+    turns.append(row);
+  }
+  if (!recentEvents.length) {
+    const empty = document.createElement("p");
+    empty.textContent = conversation.resultSummary;
+    turns.append(empty);
+  }
+
+  const quick = document.createElement("div");
+  quick.className = "repo-session-detail-actions";
+  quick.append(
+    repoSessionActionButton("▷ 在新标签页中恢复", "在新标签页中恢复", "resume", conversation.invocation.id),
+    repoSessionActionButton("⧉ 复制恢复命令", "复制恢复命令", "copy-command", conversation.invocation.id)
+  );
+
+  details.append(originalTitle, original, latestTitle, turns, quick);
+  return details;
+}
+
+function repoSessionEventSummary(event) {
+  const message = timelineMessage(event);
+  if (Array.isArray(message)) {
+    return message.map(([label, value]) => `${label}: ${value}`).join(" · ");
+  }
+  return message;
+}
+
+function repoSessionMenu(conversation) {
+  const menu = document.createElement("div");
+  menu.className = "repo-session-menu";
+  menu.dataset.invocationId = conversation.invocation.id;
+  const items = [
+    ["▷", "在新标签页中恢复", "resume"],
+    ["⧉", "复制恢复命令", "copy-command"],
+    ["◫", "打开日志", "open-log"],
+    ["▣", "显示日志", "show-log"],
+    ["□", "打开工作目录", "open-workdir"],
+    ["⧉", "复制会话 ID", "copy-session-id"],
+    ["⧉", "复制日志路径", "copy-log-path"]
+  ];
+  for (const [icon, label, action] of items) {
+    const item = document.createElement("button");
+    item.type = "button";
+    item.dataset.repoSessionAction = action;
+    item.dataset.invocationId = conversation.invocation.id;
+    const iconEl = document.createElement("span");
+    iconEl.textContent = icon;
+    const labelEl = document.createElement("strong");
+    labelEl.textContent = label;
+    item.append(iconEl, labelEl);
+    menu.append(item);
+  }
+  return menu;
+}
+
+function restoreRepoSession(invocationId) {
+  currentInvocationId = invocationId;
+  activeMode = "run_task";
+  openRepoSessionMenuId = null;
+  history.replaceState(null, "", repoSessionUrl(invocationId));
+  render(lastState);
+}
+
+function openRepoSessionInNewTab(invocationId) {
+  window.open(repoSessionUrl(invocationId), "_blank", "noopener");
+  openRepoSessionMenuId = null;
+  renderRepoSessionHistory(lastState);
+}
+
+function toggleRepoSessionDetails(invocationId) {
+  if (expandedRepoSessionIds.has(invocationId)) {
+    expandedRepoSessionIds.delete(invocationId);
+  } else {
+    expandedRepoSessionIds.add(invocationId);
+  }
+  openRepoSessionMenuId = null;
+  renderRepoSessionHistory(lastState);
+}
+
+async function handleRepoSessionMenuAction(action, invocationId) {
+  const conversation = conversationHistoryItems(lastState).find((item) => item.invocation.id === invocationId);
+  if (!conversation) return;
+  if (action === "resume") {
+    openRepoSessionInNewTab(invocationId);
+  } else if (action === "copy-command") {
+    await copyText(repoSessionResumeCommand(conversation), "恢复命令已复制。");
+  } else if (action === "copy-session-id") {
+    await copyText(conversation.session?.codexThreadId ?? conversation.session?.codexSessionId ?? conversation.session?.id ?? invocationId, "会话 ID 已复制。");
+  } else if (action === "copy-log-path") {
+    await copyText(repoSessionLogPath(conversation), "日志路径已复制。");
+  } else if (action === "open-workdir") {
+    openLocalPath(managedWorkspaceForSession(lastState, conversation.session)?.worktreePath ?? managedWorkspaceForSession(lastState, conversation.session)?.repoPath ?? conversation.project?.path);
+  } else if (action === "open-log" || action === "show-log") {
+    openRepoSessionLogView(conversation);
+  }
+  openRepoSessionMenuId = null;
+  renderRepoSessionHistory(lastState);
+}
+
+function repoSessionUrl(invocationId) {
+  const url = new URL(window.location.href);
+  url.searchParams.set("invocation", invocationId);
+  url.searchParams.set("mode", "run_task");
+  return url.toString();
+}
+
+function repoSessionResumeCommand(conversation) {
+  const threadId = conversation.session?.codexThreadId ?? conversation.session?.codexSessionId;
+  return threadId ? `codex resume ${threadId}` : `codex resume --last`;
+}
+
+function repoSessionLogPath(conversation) {
+  return conversation.session?.codexThreadId
+    ? `Codex JSONL thread ${conversation.session.codexThreadId}`
+    : conversation.session?.id ? `Managed session ${conversation.session.id}` : `Invocation ${conversation.invocation.id}`;
+}
+
+function openRepoSessionLogView(conversation) {
+  selectedManagedSessionId = conversation.session?.id ?? null;
+  currentInvocationId = conversation.invocation.id;
+  activeMode = "session";
+  render(lastState);
+}
+
+async function copyText(value, successMessage) {
+  const text = String(value ?? "").trim();
+  if (!text) return;
+  try {
+    await navigator.clipboard.writeText(text);
+    els.projectTreeSummary.textContent = successMessage;
+  } catch {
+    els.projectTreeSummary.textContent = text;
+  }
+}
+
+function openLocalPath(path) {
+  if (!path) {
+    els.projectTreeSummary.textContent = "当前会话没有记录工作目录。";
+    return;
+  }
+  copyText(path, "工作目录已复制，可在文件管理器中打开。");
 }
 
 function conversationHasWorktree(conversation) {
@@ -3972,6 +4169,16 @@ function resolveApiBase() {
   }
 
   return defaultApiBase;
+}
+
+function initializeRouteState() {
+  const params = new URLSearchParams(window.location.search);
+  const invocationId = params.get("invocation");
+  const mode = params.get("mode");
+  if (invocationId) currentInvocationId = invocationId;
+  if (mode && ["run_task", "session", "diff", "terminal", "evidence_center", "approval", "setup", "import_session", "managed_codex"].includes(mode)) {
+    activeMode = mode;
+  }
 }
 
 async function fetchState() {
