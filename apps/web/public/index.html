@@ -41,25 +41,7 @@
           <div class="project-sidebar-head">
             <h2>Projects</h2>
             <div class="project-sidebar-tools" aria-label="Project tools">
-              <details class="project-add project-tool">
-                <summary aria-label="Add project">+</summary>
-                <div class="project-tool-panel">
-                  <p class="project-tool-title">Add project</p>
-            <label>
-              <span>Name</span>
-              <input id="projectNameInput" type="text" placeholder="Project name" />
-            </label>
-            <label>
-              <span>Path</span>
-              <input id="projectPathInput" type="text" placeholder="D:\github\project" />
-            </label>
-            <div class="project-actions">
-              <button id="addProjectButton" type="button">Add</button>
-              <button id="removeProjectButton" type="button" class="secondary">Remove current</button>
-            </div>
-            <p id="projectRegistryStatus" class="action-note" aria-live="polite"></p>
-                </div>
-              </details>
+              <button id="openProjectModalButton" type="button" class="project-tool-button" aria-label="Add project">+</button>
               <details class="project-add project-tool">
                 <summary aria-label="Create worktree">wt</summary>
                 <div class="project-tool-panel">
@@ -99,6 +81,98 @@
             <button type="button" data-workspace-mode="approval">Approval</button>
           </nav>
         </aside>
+
+        <div id="projectModal" class="modal-backdrop" hidden>
+          <section class="project-modal" role="dialog" aria-modal="true" aria-labelledby="projectModalTitle">
+            <button id="projectModalCloseButton" type="button" class="modal-close-button" aria-label="Close">x</button>
+            <button id="projectModalBackButton" type="button" class="modal-back-button" hidden>&lt; 返回</button>
+            <div class="project-modal-view" data-project-modal-view="home">
+              <h2 id="projectModalTitle">添加项目</h2>
+              <div class="project-host-row">
+                <span>主机</span>
+                <span class="project-host-select">Local Windows <span aria-hidden="true">⌄</span></span>
+              </div>
+              <button type="button" class="project-modal-option" data-project-modal-target="browse">
+                <span class="project-modal-option-icon" aria-hidden="true">▱</span>
+                <span>
+                  <strong>浏览文件夹</strong>
+                  <small>本地项目、Git repo 或包含多个 repos 的文件夹</small>
+                </span>
+              </button>
+              <p class="project-modal-section-label">其他添加方式</p>
+              <div class="project-modal-option-group">
+                <button type="button" class="project-modal-option" data-project-modal-target="clone">
+                  <span class="project-modal-option-icon" aria-hidden="true">◎</span>
+                  <span>
+                    <strong>从 URL 克隆</strong>
+                    <small>克隆远程 Git 存储库</small>
+                  </span>
+                </button>
+                <button type="button" class="project-modal-option" data-project-modal-target="create">
+                  <span class="project-modal-option-icon" aria-hidden="true">+</span>
+                  <span>
+                    <strong>创建新项目</strong>
+                    <small>从空文件夹开始</small>
+                  </span>
+                </button>
+              </div>
+            </div>
+
+            <div class="project-modal-view" data-project-modal-view="browse" hidden>
+              <h2>浏览文件夹</h2>
+              <p class="project-modal-subtitle">输入本机可访问的项目路径。</p>
+              <label>
+                <span>项目名称</span>
+                <input id="projectNameInput" type="text" placeholder="Project name" />
+              </label>
+              <label>
+                <span>文件夹路径</span>
+                <input id="projectPathInput" type="text" placeholder="D:\github\project" />
+              </label>
+              <div class="project-actions">
+                <button id="addProjectButton" type="button">添加</button>
+                <button id="removeProjectButton" type="button" class="secondary">Remove current</button>
+              </div>
+            </div>
+
+            <div class="project-modal-view" data-project-modal-view="clone" hidden>
+              <h2>从 URL 克隆</h2>
+              <p class="project-modal-subtitle">输入 Git URL 并选择克隆位置。</p>
+              <label>
+                <span>git 网址</span>
+                <input id="cloneUrlInput" type="url" placeholder="https://github.com/user/repo.git" />
+              </label>
+              <label>
+                <span>父文件夹</span>
+                <input id="cloneParentInput" type="text" placeholder="D:\github" />
+              </label>
+              <label>
+                <span>项目名称</span>
+                <input id="cloneNameInput" type="text" placeholder="Optional folder name" />
+              </label>
+              <div class="project-actions">
+                <button id="cloneProjectButton" type="button">克隆</button>
+              </div>
+            </div>
+
+            <div class="project-modal-view" data-project-modal-view="create" hidden>
+              <h2>创建新项目</h2>
+              <p class="project-modal-subtitle">创建一个空文件夹并初始化 Git。</p>
+              <label>
+                <span>项目名称</span>
+                <input id="createProjectNameInput" type="text" placeholder="my-new-project" />
+              </label>
+              <label>
+                <span>文件夹路径</span>
+                <input id="createProjectPathInput" type="text" placeholder="D:\github\my-new-project" />
+              </label>
+              <div class="project-actions">
+                <button id="createProjectButton" type="button">创建</button>
+              </div>
+            </div>
+            <p id="projectRegistryStatus" class="action-note" aria-live="polite"></p>
+          </section>
+        </div>
 
         <section id="commandPanel" class="command-panel codex-chat-shell" aria-label="Codex conversation">
           <div class="chat-header">

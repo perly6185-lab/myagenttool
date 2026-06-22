@@ -1228,6 +1228,7 @@ button.secondary {
   position: relative;
 }
 
+.project-tool-button,
 .project-add summary {
   display: grid;
   width: 24px;
@@ -1246,6 +1247,14 @@ button.secondary {
   display: none;
 }
 
+.project-tool-button {
+  min-height: 24px;
+  border: 0;
+  padding: 0;
+  background: transparent;
+}
+
+.project-tool-button:hover,
 .project-add summary:hover,
 .project-add[open] summary {
   background: #e4e9e6;
@@ -1298,6 +1307,216 @@ button.secondary {
   grid-template-columns: 1fr;
   gap: 6px;
   margin-top: 8px;
+}
+
+.modal-backdrop[hidden] {
+  display: none;
+}
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgb(0 0 0 / 54%);
+  backdrop-filter: blur(2px);
+}
+
+.project-modal {
+  position: relative;
+  display: grid;
+  gap: 16px;
+  width: min(760px, calc(100vw - 48px));
+  max-height: calc(100vh - 64px);
+  overflow: auto;
+  border: 1px solid #dfe4e2;
+  border-radius: 8px;
+  padding: 32px 36px;
+  background: #ffffff;
+  box-shadow: 0 22px 72px rgb(0 0 0 / 28%);
+}
+
+.modal-close-button,
+.modal-back-button {
+  border: 0;
+  background: transparent;
+  color: #59635f;
+}
+
+.modal-close-button {
+  position: absolute;
+  top: 22px;
+  right: 24px;
+  min-height: 28px;
+  padding: 0 4px;
+  font-size: 24px;
+  line-height: 1;
+}
+
+.modal-back-button {
+  justify-self: start;
+  min-height: 28px;
+  padding: 0;
+  font-size: 14px;
+}
+
+.project-modal-view {
+  display: grid;
+  gap: 16px;
+}
+
+.project-modal-view[hidden] {
+  display: none;
+}
+
+.project-modal h2 {
+  margin: 0;
+  color: #0f1714;
+  font-size: 28px;
+  font-weight: 850;
+  line-height: 1.15;
+}
+
+.project-modal-subtitle {
+  margin: -8px 0 14px;
+  color: #7a8380;
+  font-size: 18px;
+  line-height: 1.35;
+}
+
+.project-host-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  color: #68736f;
+  font-size: 14px;
+}
+
+.project-host-select {
+  min-width: 196px;
+  border: 1px solid #dfe4e2;
+  border-radius: 8px;
+  padding: 9px 16px;
+  color: #17201d;
+  background: #fafbfa;
+  font-size: 16px;
+}
+
+.project-modal-option-group {
+  display: grid;
+  border: 1px solid #dfe4e2;
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.project-modal-option {
+  display: grid;
+  grid-template-columns: 38px minmax(0, 1fr);
+  gap: 14px;
+  align-items: center;
+  min-height: 86px;
+  border: 1px solid #dfe4e2;
+  border-radius: 8px;
+  padding: 16px 24px;
+  background: #ffffff;
+  color: #18211e;
+  text-align: left;
+}
+
+.project-modal-option-group .project-modal-option {
+  border-width: 0 0 1px;
+  border-radius: 0;
+}
+
+.project-modal-option-group .project-modal-option:last-child {
+  border-bottom-width: 0;
+}
+
+.project-modal-option:hover {
+  background: #f7f8f7;
+}
+
+.project-modal-option-icon {
+  display: grid;
+  width: 28px;
+  height: 28px;
+  place-items: center;
+  color: #616b67;
+  font-size: 22px;
+  line-height: 1;
+}
+
+.project-modal-option strong,
+.project-modal-option small {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.project-modal-option strong {
+  color: #141c19;
+  font-size: 20px;
+  font-weight: 800;
+  line-height: 1.25;
+}
+
+.project-modal-option small {
+  margin-top: 3px;
+  color: #7a8380;
+  font-size: 15px;
+}
+
+.project-modal-section-label {
+  margin: 2px 0 -8px;
+  color: #737d79;
+  font-size: 14px;
+  font-weight: 760;
+}
+
+.project-modal label {
+  display: grid;
+  gap: 8px;
+}
+
+.project-modal label span {
+  color: #616b67;
+  font-size: 14px;
+  font-weight: 760;
+}
+
+.project-modal input {
+  width: 100%;
+  min-height: 50px;
+  border: 1px solid #d7ddda;
+  border-radius: 8px;
+  padding: 10px 16px;
+  background: #ffffff;
+  color: #121a17;
+  font-size: 19px;
+}
+
+.project-modal input:focus {
+  border-color: #aeb6b2;
+  outline: 4px solid rgb(29 32 31 / 18%);
+}
+
+.project-modal .project-actions {
+  margin-top: 2px;
+}
+
+.project-modal .project-actions button {
+  min-height: 52px;
+  font-size: 17px;
+  font-weight: 800;
+}
+
+.project-modal .action-note {
+  min-height: 20px;
+  margin: 0;
 }
 
 .compact-button {

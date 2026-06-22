@@ -30,6 +30,12 @@ const els = {
   currentProjectName: document.querySelector("#currentProjectName"),
   currentProjectPath: document.querySelector("#currentProjectPath"),
   projectList: document.querySelector("#projectList"),
+  openProjectModalButton: document.querySelector("#openProjectModalButton"),
+  projectModal: document.querySelector("#projectModal"),
+  projectModalCloseButton: document.querySelector("#projectModalCloseButton"),
+  projectModalBackButton: document.querySelector("#projectModalBackButton"),
+  projectModalViews: [...document.querySelectorAll("[data-project-modal-view]")],
+  projectModalTargets: [...document.querySelectorAll("[data-project-modal-target]")],
   projectBrowserContext: document.querySelector("#projectBrowserContext"),
   projectTreeSummary: document.querySelector("#projectTreeSummary"),
   projectTreeList: document.querySelector("#projectTreeList"),
@@ -40,6 +46,13 @@ const els = {
   addProjectButton: document.querySelector("#addProjectButton"),
   removeProjectButton: document.querySelector("#removeProjectButton"),
   projectRegistryStatus: document.querySelector("#projectRegistryStatus"),
+  cloneUrlInput: document.querySelector("#cloneUrlInput"),
+  cloneParentInput: document.querySelector("#cloneParentInput"),
+  cloneNameInput: document.querySelector("#cloneNameInput"),
+  cloneProjectButton: document.querySelector("#cloneProjectButton"),
+  createProjectNameInput: document.querySelector("#createProjectNameInput"),
+  createProjectPathInput: document.querySelector("#createProjectPathInput"),
+  createProjectButton: document.querySelector("#createProjectButton"),
   worktreeNameInput: document.querySelector("#worktreeNameInput"),
   worktreeBranchInput: document.querySelector("#worktreeBranchInput"),
   worktreeBaseInput: document.querySelector("#worktreeBaseInput"),
@@ -294,6 +307,21 @@ els.projectList.addEventListener("click", async (event) => {
   }
 });
 
+els.openProjectModalButton.addEventListener("click", () => openProjectModal("home"));
+els.projectModalCloseButton.addEventListener("click", closeProjectModal);
+els.projectModalBackButton.addEventListener("click", () => showProjectModalView("home"));
+els.projectModal.addEventListener("click", (event) => {
+  if (event.target === els.projectModal) closeProjectModal();
+});
+for (const button of els.projectModalTargets) {
+  button.addEventListener("click", () => showProjectModalView(button.dataset.projectModalTarget));
+}
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && !els.projectModal.hidden) {
+    closeProjectModal();
+  }
+});
+
 els.addProjectButton.addEventListener("click", async () => {
   const path = els.projectPathInput.value.trim();
   if (!path) {
@@ -314,6 +342,7 @@ els.addProjectButton.addEventListener("click", async () => {
     els.projectPathInput.value = "";
     els.projectRegistryStatus.textContent = `${data.project.name} added.`;
     await refresh();
+    closeProjectModal();
   } catch (error) {
     els.projectRegistryStatus.textContent = error instanceof Error ? error.message : "Unable to add project.";
   } finally {
@@ -336,6 +365,68 @@ els.removeProjectButton.addEventListener("click", async () => {
     els.projectRegistryStatus.textContent = error instanceof Error ? error.message : "Unable to remove project.";
   } finally {
     els.removeProjectButton.disabled = false;
+  }
+});
+
+els.cloneProjectButton.addEventListener("click", async () => {
+  const gitUrl = els.cloneUrlInput.value.trim();
+  const parentPath = els.cloneParentInput.value.trim();
+  if (!gitUrl || !parentPath) {
+    els.projectRegistryStatus.textContent = "Enter a Git URL and parent folder.";
+    return;
+  }
+  els.cloneProjectButton.disabled = true;
+  els.projectRegistryStatus.textContent = "Cloning project...";
+  try {
+    const response = await fetch(`${apiBase}/api/projects/clone`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        gitUrl,
+        parentPath,
+        name: els.cloneNameInput.value.trim()
+      })
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.message ?? data.error ?? "Unable to clone project.");
+    els.cloneUrlInput.value = "";
+    els.cloneNameInput.value = "";
+    els.projectRegistryStatus.textContent = `${data.project.name} cloned.`;
+    await refresh();
+    closeProjectModal();
+  } catch (error) {
+    els.projectRegistryStatus.textContent = error instanceof Error ? error.message : "Unable to clone project.";
+  } finally {
+    els.cloneProjectButton.disabled = false;
+  }
+});
+
+els.createProjectButton.addEventListener("click", async () => {
+  const path = els.createProjectPathInput.value.trim();
+  const name = els.createProjectNameInput.value.trim();
+  if (!path) {
+    els.projectRegistryStatus.textContent = "Enter a project folder path.";
+    return;
+  }
+  els.createProjectButton.disabled = true;
+  els.projectRegistryStatus.textContent = "Creating project...";
+  try {
+    const response = await fetch(`${apiBase}/api/projects/create`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, path })
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.message ?? data.error ?? "Unable to create project.");
+    els.createProjectNameInput.value = "";
+    els.createProjectPathInput.value = "";
+    els.projectRegistryStatus.textContent = `${data.project.name} created.`;
+    await refresh();
+    closeProjectModal();
+  } catch (error) {
+    els.projectRegistryStatus.textContent = error instanceof Error ? error.message : "Unable to create project.";
+  } finally {
+    els.createProjectButton.disabled = false;
   }
 });
 
@@ -1345,6 +1436,26 @@ function renderReasoningMode() {
   for (const option of els.reasoningOptions) {
     const selected = option.dataset.reasoningMode === selectedReasoningMode;
     option.setAttribute("aria-selected", String(selected));
+  }
+}
+
+function openProjectModal(view = "home") {
+  els.projectModal.hidden = false;
+  showProjectModalView(view);
+}
+
+function closeProjectModal() {
+  els.projectModal.hidden = true;
+  showProjectModalView("home");
+}
+
+function showProjectModalView(view = "home") {
+  for (const item of els.projectModalViews) {
+    item.hidden = item.dataset.projectModalView !== view;
+  }
+  els.projectModalBackButton.hidden = view === "home";
+  if (view === "home") {
+    els.projectRegistryStatus.textContent = "";
   }
 }
 

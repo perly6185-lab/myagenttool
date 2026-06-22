@@ -1,7 +1,7 @@
 import http from "node:http";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
-import { basename, dirname, relative, resolve } from "node:path";
+import { basename, dirname, isAbsolute, relative, resolve } from "node:path";
 
 const namespace = "com.myagenttool";
 const protocolVersion = "0.0.0";
@@ -335,6 +335,38 @@ const server = http.createServer(async (req, res) => {
       } catch (error) {
         sendJson(res, 400, {
           error: "invalid_project",
+          message: error instanceof Error ? error.message : String(error)
+        });
+        return;
+      }
+      sendJson(res, 201, { project, projects: state.projects, currentProjectId: state.currentProjectId });
+      return;
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/projects/clone") {
+      const body = await readJson(req);
+      let project;
+      try {
+        project = cloneProject(body);
+      } catch (error) {
+        sendJson(res, 400, {
+          error: "invalid_project_clone",
+          message: error instanceof Error ? error.message : String(error)
+        });
+        return;
+      }
+      sendJson(res, 201, { project, projects: state.projects, currentProjectId: state.currentProjectId });
+      return;
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/projects/create") {
+      const body = await readJson(req);
+      let project;
+      try {
+        project = createBlankProject(body);
+      } catch (error) {
+        sendJson(res, 400, {
+          error: "invalid_project_create",
           message: error instanceof Error ? error.message : String(error)
         });
         return;
@@ -1212,6 +1244,69 @@ function addProject(body = {}) {
   });
   persistStateSoon();
   return project;
+}
+
+function cloneProject(body = {}) {
+  const gitUrl = String(body.gitUrl ?? "").trim();
+  if (!isLikelyGitUrl(gitUrl)) {
+    throw new Error("A valid Git URL is required.");
+  }
+  const parentPath = normalizeProjectPath(body.parentPath);
+  const name = slugify(body.name || repoNameFromGitUrl(gitUrl));
+  if (!name) {
+    throw new Error("A clone folder name is required.");
+  }
+  const targetPath = resolve(parentPath, name);
+  const relativeTarget = relative(parentPath, targetPath);
+  if (!relativeTarget || relativeTarget.startsWith("..") || isAbsolute(relativeTarget)) {
+    throw new Error("Clone path must stay inside the selected parent folder.");
+  }
+  if (existsSync(targetPath)) {
+    throw new Error(`Project folder already exists: ${targetPath}`);
+  }
+  execFileSync("git", ["clone", gitUrl, targetPath], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+    timeout: 120_000
+  });
+  return addProject({ name: body.name || name, path: targetPath, host: body.host ?? "local" });
+}
+
+function createBlankProject(body = {}) {
+  const rawPath = String(body.path ?? "").trim();
+  if (!rawPath) {
+    throw new Error("Project path is required.");
+  }
+  const targetPath = resolve(rawPath);
+  if (existsSync(targetPath)) {
+    if (!statSync(targetPath).isDirectory()) {
+      throw new Error(`Project path is not a directory: ${targetPath}`);
+    }
+    if (readdirSync(targetPath).length > 0) {
+      throw new Error(`Project folder is not empty: ${targetPath}`);
+    }
+  } else {
+    mkdirSync(targetPath, { recursive: true });
+  }
+  execFileSync("git", ["-C", targetPath, "init"], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+    timeout: 20_000
+  });
+  return addProject({ name: body.name, path: targetPath, host: body.host ?? "local" });
+}
+
+function isLikelyGitUrl(value) {
+  return /^(https?:\/\/|ssh:\/\/|git@)[^\s]+$/i.test(value);
+}
+
+function repoNameFromGitUrl(value) {
+  return String(value)
+    .trim()
+    .split(/[/:\\]/)
+    .filter(Boolean)
+    .at(-1)
+    ?.replace(/\.git$/i, "") ?? "";
 }
 
 function selectProject(projectId) {
