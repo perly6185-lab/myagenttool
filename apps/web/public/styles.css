@@ -1593,6 +1593,11 @@ button.secondary {
   color: #8b9691;
 }
 
+.repo-search-shell[hidden],
+.repo-browser-tabs[hidden] {
+  display: none;
+}
+
 .repo-search-shell input {
   width: 100%;
   min-width: 0;

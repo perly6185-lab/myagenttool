@@ -1778,7 +1778,7 @@ function renderRepoBrowserMode() {
     button.setAttribute("aria-selected", String(active));
   }
   const showingFiles = repoPanelTool === "files";
-  els.projectFileSearch.closest(".repo-search-shell").hidden = repoPanelTool === "source" || repoPanelTool === "publish";
+  els.projectFileSearch.closest(".repo-search-shell").hidden = !showingFiles;
   els.repoSearchModeButtons[0].parentElement.hidden = !showingFiles;
   els.repoContentFilters.hidden = !showingFiles || repoSearchMode !== "content";
 }
