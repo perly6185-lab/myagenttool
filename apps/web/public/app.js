@@ -275,6 +275,7 @@ const expandedProjectTreePaths = new Set();
 let projectTreeProjectId = null;
 let projectTreeData = null;
 let projectTreeLoading = false;
+const loadingProjectTreePaths = new Set();
 let repoPanelTool = "files";
 let repoSearchMode = "name";
 let projectContentSearchData = null;
@@ -487,7 +488,14 @@ for (const button of els.repoToolButtons) {
 }
 els.projectFileSearch.addEventListener("input", () => {
   clearTimeout(els.projectFileSearch._timer);
-  els.projectFileSearch._timer = setTimeout(() => refreshRepoBrowser({ force: true }), 250);
+  els.projectFileSearch._timer = setTimeout(() => {
+    if (repoPanelTool === "files" && repoSearchMode === "name") {
+      expandedProjectTreePaths.clear();
+      loadingProjectTreePaths.clear();
+      projectTreeData = null;
+    }
+    refreshRepoBrowser({ force: true });
+  }, 250);
 });
 for (const input of [els.projectSearchIncludeInput, els.projectSearchExcludeInput]) {
   input.addEventListener("input", () => {
@@ -511,10 +519,11 @@ els.projectTreeList.addEventListener("click", (event) => {
   const path = button.dataset.treePath ?? "";
   if (expandedProjectTreePaths.has(path)) {
     expandedProjectTreePaths.delete(path);
+    renderProjectTree();
   } else {
     expandedProjectTreePaths.add(path);
+    loadProjectTreeNode(path);
   }
-  loadProjectTree({ force: true });
 });
 
 async function submitTaskFromComposer() {
@@ -1504,6 +1513,7 @@ function renderProjects(state) {
   if (browserProject?.id !== projectTreeProjectId) {
     projectTreeProjectId = browserProject?.id ?? null;
     expandedProjectTreePaths.clear();
+    loadingProjectTreePaths.clear();
     projectTreeData = null;
     projectContentSearchData = null;
     queueMicrotask(() => refreshRepoBrowser({ force: true }));
@@ -1647,30 +1657,19 @@ function repoBrowserProject(state) {
 async function loadProjectTree({ force = false } = {}) {
   const project = repoBrowserProject(lastState);
   if (!project || projectTreeLoading) return;
-  const expandedKey = [...expandedProjectTreePaths].sort().join("\n");
-  if (!force && projectTreeData?.projectId === project.id && projectTreeData?.expandedKey === expandedKey) return;
+  if (!force && projectTreeData?.projectId === project.id) return;
   projectTreeLoading = true;
   renderProjectTree();
   try {
     const search = els.projectFileSearch.value.trim();
-    const paths = ["", ...expandedProjectTreePaths];
     const nodes = new Map();
-    for (const path of paths) {
-      const params = new URLSearchParams();
-      if (path) params.set("path", path);
-      if (search) params.set("search", search);
-      const response = await fetch(`${apiBase}/api/projects/${encodeURIComponent(project.id)}/tree?${params.toString()}`);
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.message ?? data.error ?? "Unable to load project files.");
-      nodes.set(path, data);
-    }
-    const root = nodes.get("") ?? null;
-    projectTreeData = root ? { ...root, expandedKey, nodes } : null;
+    const root = await fetchProjectTreeNode(project.id, "", search);
+    nodes.set("", root);
+    projectTreeData = root ? { ...root, nodes } : null;
   } catch (error) {
     projectTreeData = {
       projectId: project.id,
       path: "",
-      expandedKey,
       entries: [],
       error: error instanceof Error ? error.message : "Unable to load project files."
     };
@@ -1678,6 +1677,36 @@ async function loadProjectTree({ force = false } = {}) {
     projectTreeLoading = false;
     renderProjectTree();
   }
+}
+
+async function loadProjectTreeNode(path) {
+  const project = repoBrowserProject(lastState);
+  if (!project || !projectTreeData || loadingProjectTreePaths.has(path)) return;
+  if (projectTreeData.nodes?.has(path)) {
+    renderProjectTree();
+    return;
+  }
+  loadingProjectTreePaths.add(path);
+  renderProjectTree();
+  try {
+    const data = await fetchProjectTreeNode(project.id, path, els.projectFileSearch.value.trim());
+    projectTreeData.nodes.set(path, data);
+  } catch {
+    projectTreeData.nodes.set(path, { projectId: project.id, path, entries: [], error: "Unable to load folder." });
+  } finally {
+    loadingProjectTreePaths.delete(path);
+    renderProjectTree();
+  }
+}
+
+async function fetchProjectTreeNode(projectId, path, search) {
+  const params = new URLSearchParams();
+  if (path) params.set("path", path);
+  if (search) params.set("search", search);
+  const response = await fetch(`${apiBase}/api/projects/${encodeURIComponent(projectId)}/tree?${params.toString()}`);
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.message ?? data.error ?? "Unable to load project files.");
+  return data;
 }
 
 function refreshRepoBrowser({ force = false } = {}) {
@@ -1948,10 +1977,24 @@ function projectTreeRows(data, path, depth = 0) {
   for (const entry of node?.entries ?? []) {
     rows.push(projectTreeRow(entry, depth));
     if (entry.kind === "directory" && expandedProjectTreePaths.has(entry.path)) {
-      rows.push(...projectTreeRows(data, entry.path, depth + 1));
+      if (loadingProjectTreePaths.has(entry.path)) {
+        rows.push(projectTreeMessageRow("Loading...", depth + 1));
+      } else if (data.nodes?.get(entry.path)?.error) {
+        rows.push(projectTreeMessageRow(data.nodes.get(entry.path).error, depth + 1));
+      } else {
+        rows.push(...projectTreeRows(data, entry.path, depth + 1));
+      }
     }
   }
   return rows;
+}
+
+function projectTreeMessageRow(text, depth = 0) {
+  const row = document.createElement("p");
+  row.className = "project-tree-inline-message";
+  row.style.setProperty("--tree-depth", String(depth));
+  row.textContent = text;
+  return row;
 }
 
 function renderProjectContentSearch(project) {

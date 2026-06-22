@@ -1706,6 +1706,13 @@ button.secondary {
   background: #fbfcfb;
 }
 
+.project-tree-inline-message {
+  margin: 0;
+  padding: 4px 5px 4px calc(21px + (var(--tree-depth, 0) * 18px));
+  color: #89948f;
+  font-size: 12px;
+}
+
 .project-tree-row:hover {
   border-color: #d9dfdc;
   background: #f7f9f8;
