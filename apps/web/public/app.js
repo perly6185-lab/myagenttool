@@ -38,6 +38,7 @@ const els = {
   projectModalTargets: [...document.querySelectorAll("[data-project-modal-target]")],
   projectBrowserContext: document.querySelector("#projectBrowserContext"),
   repoPanelTitle: document.querySelector("#repoPanelTitle"),
+  repoToolButtons: [...document.querySelectorAll("[data-repo-tool]")],
   repoSearchModeButtons: [...document.querySelectorAll("[data-repo-search-mode]")],
   repoContentFilters: document.querySelector("#repoContentFilters"),
   projectSearchIncludeInput: document.querySelector("#projectSearchIncludeInput"),
@@ -274,9 +275,12 @@ const expandedProjectTreePaths = new Set();
 let projectTreeProjectId = null;
 let projectTreeData = null;
 let projectTreeLoading = false;
+let repoPanelTool = "files";
 let repoSearchMode = "name";
 let projectContentSearchData = null;
 let projectContentSearchLoading = false;
+let repoGitSummaryData = null;
+let repoGitSummaryLoading = false;
 const selectedCompareAgentIds = new Set();
 const terminalView = createTerminalView();
 let pendingTerminalInput = "";
@@ -475,6 +479,12 @@ els.createWorktreeButton.addEventListener("click", async () => {
 });
 
 els.refreshProjectTreeButton.addEventListener("click", () => refreshRepoBrowser({ force: true }));
+for (const button of els.repoToolButtons) {
+  button.addEventListener("click", () => {
+    repoPanelTool = button.dataset.repoTool;
+    refreshRepoBrowser({ force: true });
+  });
+}
 els.projectFileSearch.addEventListener("input", () => {
   clearTimeout(els.projectFileSearch._timer);
   els.projectFileSearch._timer = setTimeout(() => refreshRepoBrowser({ force: true }), 250);
@@ -1672,6 +1682,18 @@ async function loadProjectTree({ force = false } = {}) {
 
 function refreshRepoBrowser({ force = false } = {}) {
   renderRepoBrowserMode();
+  if (repoPanelTool === "history") {
+    renderRepoSessionHistory(lastState);
+    return;
+  }
+  if (repoPanelTool === "source") {
+    loadRepoGitSummary({ force });
+    return;
+  }
+  if (repoPanelTool === "publish") {
+    renderRepoPublishPanel(lastState);
+    return;
+  }
   if (repoSearchMode === "content") {
     loadProjectContentSearch({ force });
     return;
@@ -1716,22 +1738,43 @@ async function loadProjectContentSearch({ force = false } = {}) {
 }
 
 function renderRepoBrowserMode() {
+  for (const button of els.repoToolButtons) {
+    const active = button.dataset.repoTool === repoPanelTool;
+    button.dataset.active = String(active);
+    button.setAttribute("aria-selected", String(active));
+  }
   for (const button of els.repoSearchModeButtons) {
     const active = button.dataset.repoSearchMode === repoSearchMode;
     button.dataset.active = String(active);
     button.setAttribute("aria-selected", String(active));
   }
-  els.repoContentFilters.hidden = repoSearchMode !== "content";
+  const showingFiles = repoPanelTool === "files";
+  els.projectFileSearch.closest(".repo-search-shell").hidden = repoPanelTool === "source" || repoPanelTool === "publish";
+  els.repoSearchModeButtons[0].parentElement.hidden = !showingFiles;
+  els.repoContentFilters.hidden = !showingFiles || repoSearchMode !== "content";
 }
 
 function renderProjectTree() {
   const project = repoBrowserProject(lastState);
   renderRepoBrowserMode();
+  if (repoPanelTool === "history") {
+    renderRepoSessionHistory(lastState);
+    return;
+  }
+  if (repoPanelTool === "source") {
+    renderRepoSourceControl(project);
+    return;
+  }
+  if (repoPanelTool === "publish") {
+    renderRepoPublishPanel(lastState);
+    return;
+  }
   if (!project) {
     els.projectTreeSummary.textContent = "Register a project to browse files.";
     els.projectTreeList.replaceChildren(emptyMiniCard("No project selected."));
     return;
   }
+  els.repoPanelTitle.textContent = project.name;
   els.refreshProjectTreeButton.disabled = projectTreeLoading;
   if (repoSearchMode === "content") {
     renderProjectContentSearch(project);
@@ -1757,6 +1800,146 @@ function renderProjectTree() {
   els.projectTreeSummary.textContent = `${project.name}${dirtyCount ? ` · ${dirtyCount} changed` : ""}`;
   const rows = projectTreeRows(data, "");
   els.projectTreeList.replaceChildren(...(rows.length ? rows : [emptyMiniCard("No files matched.")]));
+}
+
+function renderRepoSessionHistory(state) {
+  const conversations = conversationHistoryItems(state).slice(0, 12);
+  els.repoPanelTitle.textContent = "Agent 会话历史";
+  els.projectTreeSummary.textContent = `已显示 ${conversations.length} 项 · 最近 ${conversationHistoryItems(state).length} 项`;
+  els.projectTreeList.replaceChildren(
+    ...(conversations.length ? conversations.map(repoSessionHistoryRow) : [emptyMiniCard("No agent sessions recorded yet.")])
+  );
+}
+
+function repoSessionHistoryRow(conversation) {
+  const row = document.createElement("button");
+  row.type = "button";
+  row.className = "repo-session-row";
+  row.dataset.invocationId = conversation.invocation.id;
+
+  const title = document.createElement("strong");
+  title.textContent = taskSummary(conversation.invocation.input?.task) ?? conversation.invocation.id;
+  const preview = document.createElement("span");
+  preview.textContent = conversation.resultSummary;
+  const meta = document.createElement("small");
+  meta.textContent = [
+    "Codex",
+    `${conversation.messageCount} 条消息`,
+    conversation.invocation.updatedAt ? relativeTime(conversation.invocation.updatedAt) : null
+  ].filter(Boolean).join(" · ");
+
+  row.append(title, preview, meta);
+  return row;
+}
+
+function relativeTime(value) {
+  const timestamp = Date.parse(value);
+  if (!Number.isFinite(timestamp)) return "";
+  const deltaMs = Date.now() - timestamp;
+  const minutes = Math.max(1, Math.round(deltaMs / 60_000));
+  if (minutes < 60) return `${minutes} 分钟前`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 48) return `${hours} 小时前`;
+  return `${Math.round(hours / 24)} 天前`;
+}
+
+async function loadRepoGitSummary({ force = false } = {}) {
+  const project = repoBrowserProject(lastState);
+  if (!project || repoGitSummaryLoading) return;
+  if (!force && repoGitSummaryData?.projectId === project.id) {
+    renderProjectTree();
+    return;
+  }
+  repoGitSummaryLoading = true;
+  renderProjectTree();
+  try {
+    const response = await fetch(`${apiBase}/api/projects/${encodeURIComponent(project.id)}/git-summary`);
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.message ?? data.error ?? "Unable to load source control.");
+    repoGitSummaryData = data;
+  } catch (error) {
+    repoGitSummaryData = {
+      projectId: project.id,
+      changes: [],
+      error: error instanceof Error ? error.message : "Unable to load source control."
+    };
+  } finally {
+    repoGitSummaryLoading = false;
+    renderProjectTree();
+  }
+}
+
+function renderRepoSourceControl(project) {
+  els.repoPanelTitle.textContent = "源代码控制";
+  if (!project) {
+    els.projectTreeSummary.textContent = "No repository selected.";
+    els.projectTreeList.replaceChildren(emptyMiniCard("No repository selected."));
+    return;
+  }
+  if (repoGitSummaryLoading) {
+    els.projectTreeSummary.textContent = "Loading source control...";
+    els.projectTreeList.replaceChildren(emptyMiniCard("Loading changes..."));
+    return;
+  }
+  if (repoGitSummaryData?.error) {
+    els.projectTreeSummary.textContent = repoGitSummaryData.error;
+    els.projectTreeList.replaceChildren(emptyMiniCard("Source control unavailable."));
+    return;
+  }
+  const changes = repoGitSummaryData?.changes ?? [];
+  els.projectTreeSummary.textContent = `${repoGitSummaryData?.branch ?? "branch"} · 更改 ${changes.length}`;
+  els.projectTreeList.replaceChildren(...[
+    repoSourceMessageBox(),
+    repoStageAllButton(),
+    ...(changes.length ? changes.map(repoChangeRow) : [emptyMiniCard("No working tree changes.")])
+  ]);
+}
+
+function repoSourceMessageBox() {
+  const box = document.createElement("div");
+  box.className = "repo-source-message";
+  box.textContent = "信息";
+  return box;
+}
+
+function repoStageAllButton() {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "repo-stage-all";
+  button.textContent = "+ 暂存全部";
+  return button;
+}
+
+function repoChangeRow(change) {
+  const row = document.createElement("div");
+  row.className = "repo-change-row";
+  const name = document.createElement("strong");
+  name.textContent = change.name;
+  const dir = document.createElement("span");
+  dir.textContent = change.directory;
+  const status = document.createElement("small");
+  status.textContent = change.status;
+  row.append(name, dir, status);
+  return row;
+}
+
+function renderRepoPublishPanel(state) {
+  const project = repoBrowserProject(state);
+  els.repoPanelTitle.textContent = "分支";
+  els.projectTreeSummary.textContent = "";
+  const panel = document.createElement("div");
+  panel.className = "repo-publish-panel";
+  const title = document.createElement("strong");
+  title.textContent = "分支未发布";
+  const copy = document.createElement("span");
+  copy.textContent = "在创建 pull request 之前发布此分支。";
+  const refresh = document.createElement("button");
+  refresh.type = "button";
+  refresh.textContent = "刷新";
+  const branch = document.createElement("small");
+  branch.textContent = project?.git?.currentBranch ?? repoGitSummaryData?.branch ?? "Unknown branch";
+  panel.append(title, copy, refresh, branch);
+  els.projectTreeList.replaceChildren(panel);
 }
 
 function projectTreeRows(data, path, depth = 0) {

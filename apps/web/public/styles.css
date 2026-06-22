@@ -1768,6 +1768,121 @@ button.secondary {
   font-size: 12px;
 }
 
+.repo-session-row {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  border: 0;
+  border-bottom: 1px solid #e5e9e7;
+  border-radius: 0;
+  padding: 12px 4px;
+  background: transparent;
+  color: #17201d;
+  text-align: left;
+}
+
+.repo-session-row strong,
+.repo-session-row span,
+.repo-session-row small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.repo-session-row strong {
+  font-size: 14px;
+}
+
+.repo-session-row span {
+  color: #3d4945;
+  font-size: 13px;
+}
+
+.repo-session-row small {
+  color: #7a8581;
+  font-size: 12px;
+}
+
+.repo-source-message {
+  min-height: 84px;
+  border: 1px solid #e1e6e3;
+  border-radius: 8px;
+  padding: 14px;
+  color: #c1c7c4;
+  background: #ffffff;
+  font-size: 16px;
+}
+
+.repo-stage-all {
+  min-height: 36px;
+  border: 1px solid #dde4e0;
+  border-radius: 8px;
+  background: #ffffff;
+  color: #17201d;
+  font-weight: 800;
+}
+
+.repo-change-row {
+  display: grid;
+  grid-template-columns: minmax(0, auto) minmax(0, 1fr) auto;
+  gap: 7px;
+  align-items: baseline;
+  min-width: 0;
+  padding: 5px 4px;
+  color: #17201d;
+}
+
+.repo-change-row strong,
+.repo-change-row span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.repo-change-row span {
+  color: #7b8581;
+  font-size: 12px;
+}
+
+.repo-change-row small {
+  color: #8b670b;
+  font-size: 12px;
+  font-weight: 850;
+}
+
+.repo-publish-panel {
+  display: grid;
+  justify-items: start;
+  gap: 8px;
+  padding: 28px 4px;
+}
+
+.repo-publish-panel strong {
+  color: #050908;
+  font-size: 21px;
+  font-weight: 850;
+}
+
+.repo-publish-panel span {
+  color: #5c6763;
+  font-size: 15px;
+}
+
+.repo-publish-panel button {
+  min-height: 36px;
+  border: 1px solid #dce3df;
+  border-radius: 8px;
+  padding: 6px 12px;
+  background: #ffffff;
+  font-weight: 800;
+}
+
+.repo-publish-panel small {
+  color: #8a9490;
+}
+
 .discovery-panel {
   margin-top: 12px;
   border-top: 1px solid #e2e6e3;

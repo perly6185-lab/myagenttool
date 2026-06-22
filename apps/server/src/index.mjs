@@ -466,6 +466,24 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    const projectGitSummaryMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/git-summary$/);
+    if (projectGitSummaryMatch && req.method === "GET") {
+      const project = state.projects.find((item) => item.id === decodeURIComponent(projectGitSummaryMatch[1]));
+      if (!project) {
+        sendJson(res, 404, { error: "project_not_found" });
+        return;
+      }
+      try {
+        sendJson(res, 200, gitProjectSummary(project));
+      } catch (error) {
+        sendJson(res, 400, {
+          error: "project_git_summary_unavailable",
+          message: error instanceof Error ? error.message : String(error)
+        });
+      }
+      return;
+    }
+
     if (req.method === "GET" && url.pathname === "/api/terminal/capability") {
       sendJson(res, 200, state.terminalRuntimeCapability);
       return;
@@ -1675,6 +1693,47 @@ function gitSummary(statuses) {
     if (summary[status] !== undefined) summary[status] += 1;
   }
   return summary;
+}
+
+function gitProjectSummary(project) {
+  const root = resolve(project.path);
+  const branch = gitOutput(root, ["branch", "--show-current"]) || "detached";
+  const upstream = gitOutput(root, ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"]);
+  const changes = [];
+  const output = gitOutput(root, ["status", "--porcelain"]);
+  for (const line of output.split(/\r?\n/)) {
+    if (!line.trim()) continue;
+    const statusCode = line.slice(0, 2).trim() || "M";
+    const relPath = normalizeRelativePath(line.slice(3).replace(/^"|"$/g, ""));
+    changes.push({
+      path: relPath,
+      name: basename(relPath),
+      directory: dirname(relPath) === "." ? "" : normalizeRelativePath(dirname(relPath)),
+      status: statusCode,
+      additions: statusCode.includes("A") || statusCode.includes("?") ? 1 : 0,
+      deletions: statusCode.includes("D") ? 1 : 0
+    });
+  }
+  return {
+    projectId: project.id,
+    branch,
+    upstream,
+    published: Boolean(upstream),
+    changes,
+    summary: gitSummary(gitStatusMap(root))
+  };
+}
+
+function gitOutput(root, args) {
+  try {
+    return execFileSync("git", ["-C", root, ...args], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+      timeout: 5_000
+    }).trim();
+  } catch {
+    return "";
+  }
 }
 
 function normalizeRelativePath(value) {
