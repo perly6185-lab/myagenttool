@@ -271,6 +271,7 @@ let selectedPermissionMode = "ask";
 let selectedReasoningMode = "extra_high";
 let selectedAddAction = null;
 let composerAttachments = [];
+const collapsedProjectRootIds = new Set();
 const expandedProjectTreePaths = new Set();
 let projectTreeProjectId = null;
 let projectTreeData = null;
@@ -306,6 +307,38 @@ els.modeTabs.addEventListener("click", (event) => {
 });
 
 els.projectList.addEventListener("click", async (event) => {
+  const collapseButton = event.target.closest("button[data-project-toggle-id]");
+  if (collapseButton) {
+    const id = collapseButton.dataset.projectToggleId;
+    if (collapsedProjectRootIds.has(id)) {
+      collapsedProjectRootIds.delete(id);
+    } else {
+      collapsedProjectRootIds.add(id);
+    }
+    renderProjects(lastState);
+    return;
+  }
+
+  const worktreeButton = event.target.closest("button[data-project-worktree-source-id]");
+  if (worktreeButton) {
+    const sourceProject = lastState?.projects?.find((item) => item.id === worktreeButton.dataset.projectWorktreeSourceId);
+    if (sourceProject) {
+      els.worktreeNameInput.value = "";
+      els.worktreeBranchInput.value = `myagenttool/${slugForInput(sourceProject.name)}-task`;
+      els.worktreeBaseInput.value = "HEAD";
+      els.worktreePathInput.value = "";
+      document.querySelector(".project-add.project-tool")?.setAttribute("open", "");
+      els.worktreeStatus.textContent = `Creating worktree from ${sourceProject.name}.`;
+    }
+    return;
+  }
+
+  const menuButton = event.target.closest("button[data-project-menu-id]");
+  if (menuButton) {
+    toggleProjectMenu(menuButton.dataset.projectMenuId);
+    return;
+  }
+
   const button = event.target.closest("button[data-project-id]");
   if (!button) return;
   els.projectRegistryStatus.textContent = "Switching project...";
@@ -319,6 +352,26 @@ els.projectList.addEventListener("click", async (event) => {
     els.projectRegistryStatus.textContent = error instanceof Error ? error.message : "Unable to switch project.";
   }
 });
+
+function toggleProjectMenu(projectId) {
+  const menu = [...document.querySelectorAll("[data-project-menu-panel]")]
+    .find((panel) => panel.dataset.projectMenuPanel === projectId);
+  if (!menu) return;
+  const willOpen = menu.hidden;
+  for (const panel of document.querySelectorAll("[data-project-menu-panel]")) {
+    panel.hidden = true;
+  }
+  menu.hidden = !willOpen;
+}
+
+function slugForInput(value) {
+  return String(value ?? "project")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 36) || "project";
+}
 
 els.openProjectModalButton.addEventListener("click", () => openProjectModal("home"));
 els.projectModalCloseButton.addEventListener("click", closeProjectModal);
@@ -1554,25 +1607,56 @@ function projectTreeItems(projects, currentProjectId) {
 function projectGroup(project, children, currentProjectId) {
   const group = document.createElement("section");
   group.className = "project-group";
+  const collapsed = collapsedProjectRootIds.has(project.id);
 
-  const root = document.createElement("button");
-  root.type = "button";
+  const root = document.createElement("div");
   root.className = "project-root";
-  root.dataset.projectId = project.id;
   root.dataset.active = String(project.id === currentProjectId && project.worktree);
 
-  const chevron = document.createElement("span");
-  chevron.className = "project-chevron";
-  chevron.setAttribute("aria-hidden", "true");
-  chevron.textContent = "v";
+  const select = document.createElement("button");
+  select.type = "button";
+  select.className = "project-root-select";
+  select.dataset.projectId = project.id;
   const folder = document.createElement("span");
   folder.className = "project-folder";
   folder.setAttribute("aria-hidden", "true");
   folder.textContent = "#";
   const title = document.createElement("strong");
   title.textContent = projectRootName(project);
-  root.append(chevron, folder, title);
+  select.append(folder, title);
+
+  const actions = document.createElement("span");
+  actions.className = "project-root-actions";
+  const chevron = document.createElement("span");
+  const toggle = document.createElement("button");
+  toggle.type = "button";
+  chevron.className = "project-chevron";
+  chevron.setAttribute("aria-hidden", "true");
+  chevron.textContent = collapsed ? "›" : "⌄";
+  toggle.className = "project-root-action";
+  toggle.dataset.projectToggleId = project.id;
+  toggle.setAttribute("aria-label", collapsed ? "Expand project" : "Collapse project");
+  toggle.append(chevron);
+  const more = document.createElement("button");
+  more.type = "button";
+  more.className = "project-root-action";
+  more.dataset.projectMenuId = project.id;
+  more.setAttribute("aria-label", "Project menu");
+  more.textContent = "...";
+  const add = document.createElement("button");
+  add.type = "button";
+  add.className = "project-root-action";
+  add.dataset.projectWorktreeSourceId = project.id;
+  add.setAttribute("aria-label", `Create worktree for ${project.name}`);
+  add.textContent = "+";
+  actions.append(toggle, more, add);
+  root.append(select, actions);
   group.append(root);
+  group.append(projectMenuPanel(project));
+
+  if (collapsed) {
+    return group;
+  }
 
   if (!project.worktree) {
     group.append(projectBranchRow(project, currentProjectId));
@@ -1585,6 +1669,33 @@ function projectGroup(project, children, currentProjectId) {
   }
 
   return group;
+}
+
+function projectMenuPanel(project) {
+  const panel = document.createElement("div");
+  panel.className = "project-menu-panel";
+  panel.dataset.projectMenuPanel = project.id;
+  panel.hidden = true;
+  const items = [
+    ["☷", "项目设置"],
+    ["♢", "更改项目图标"],
+    ["◉", "Show hidden worktrees"],
+    ["▣", "来自项目的新组"],
+    ["⌫", "删除项目", "danger"]
+  ];
+  panel.replaceChildren(...items.map(([icon, label, tone]) => {
+    const item = document.createElement("button");
+    item.type = "button";
+    item.className = "project-menu-item";
+    if (tone) item.dataset.tone = tone;
+    const iconEl = document.createElement("span");
+    iconEl.textContent = icon;
+    const labelEl = document.createElement("strong");
+    labelEl.textContent = label;
+    item.append(iconEl, labelEl);
+    return item;
+  }));
+  return panel;
 }
 
 function projectBranchRow(project, currentProjectId) {

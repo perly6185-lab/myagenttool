@@ -1113,6 +1113,7 @@ button.secondary {
 }
 
 .project-group {
+  position: relative;
   display: grid;
   gap: 2px;
 }
@@ -1129,13 +1130,54 @@ button.secondary {
 }
 
 .project-root {
-  display: flex;
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: 7px;
   min-height: 30px;
-  padding: 5px 7px;
+  padding: 2px 4px;
   font-size: 13px;
   font-weight: 750;
+}
+
+.project-root-select {
+  display: flex;
+  min-width: 0;
+  min-height: 30px;
+  align-items: center;
+  gap: 7px;
+  border: 0;
+  border-radius: 7px;
+  padding: 5px 3px;
+  background: transparent;
+  color: #22302b;
+  text-align: left;
+}
+
+.project-root-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  opacity: 0.78;
+}
+
+.project-root-action {
+  display: grid;
+  min-width: 24px;
+  min-height: 24px;
+  place-items: center;
+  border: 0;
+  border-radius: 6px;
+  padding: 0;
+  background: transparent;
+  color: #6f7a76;
+  font-weight: 850;
+}
+
+.project-root-action:hover {
+  background: #e8ecea;
+  color: #17201d;
 }
 
 .project-root[data-active="true"],
@@ -1155,7 +1197,7 @@ button.secondary {
   color: #525f5a;
 }
 
-.project-root strong,
+.project-root-select strong,
 .project-tree-body,
 .project-tree-body strong,
 .project-tree-body span,
@@ -1164,6 +1206,46 @@ button.secondary {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.project-menu-panel {
+  position: absolute;
+  z-index: 40;
+  width: min(274px, calc(100vw - 36px));
+  margin: 4px 0 0 34px;
+  border: 1px solid #dfe5e2;
+  border-radius: 8px;
+  padding: 8px 0;
+  background: #ffffff;
+  box-shadow: 0 18px 46px rgb(32 40 36 / 18%);
+}
+
+.project-menu-panel[hidden] {
+  display: none;
+}
+
+.project-menu-item {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr);
+  gap: 10px;
+  width: 100%;
+  min-height: 38px;
+  border: 0;
+  padding: 7px 16px;
+  background: transparent;
+  color: #17201d;
+  text-align: left;
+}
+
+.project-menu-item:hover {
+  background: #f3f6f4;
+}
+
+.project-menu-item[data-tone="danger"] {
+  border-top: 1px solid #edf0ee;
+  margin-top: 6px;
+  padding-top: 12px;
+  color: #e01919;
 }
 
 .project-tree-item {
