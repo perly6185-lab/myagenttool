@@ -26,6 +26,10 @@ if (process.argv.includes("--check")) {
   if (!imageArgs.includes("--image") || imageArgs[taskArgIndex - 1] !== "--") {
     throw new Error("Codex image attachment args are not configured.");
   }
+  const fullAccessArgs = applyCodexPermissionMode(["exec", "--json", "{{task}}"], { options: { approvalMode: "full" } });
+  if (fullAccessArgs[1] !== "--dangerously-bypass-approvals-and-sandbox") {
+    throw new Error("Codex full-access permission mode is not configured.");
+  }
   if (typeof pty.spawn !== "function") {
     throw new Error("node-pty is not available.");
   }
@@ -838,7 +842,9 @@ function createCliSpawnPlan(adapter, payload) {
   const argsTemplate = isCodexCliCommand(adapter.command)
     ? insertCodexImageArgs(codexArgsTemplate(adapter, payload), codexImageAttachments)
     : codexArgsTemplate(adapter, payload);
-  const renderedArgs = renderArgs(argsTemplate, payloadJson, payload);
+  const renderedArgs = isCodexCliCommand(adapter.command)
+    ? applyCodexPermissionMode(renderArgs(argsTemplate, payloadJson, payload), payload)
+    : renderArgs(argsTemplate, payloadJson, payload);
   const baseCommand = codexCommandOverride || String(adapter.command);
   const command = adapter.command === "demo-agent" || codexCommandOverride === "fixture"
     ? process.execPath
@@ -881,6 +887,26 @@ function codexArgsTemplate(adapter, payload) {
     return ["exec", "resume", "--last", "--skip-git-repo-check", "--json", "{{task}}"];
   }
   return args;
+}
+
+function applyCodexPermissionMode(args, payload) {
+  if (normalizeCodexApprovalMode(payload.options?.approvalMode ?? payload.options?.metadata?.permissionMode) !== "full") {
+    return args;
+  }
+  if (args.includes("--dangerously-bypass-approvals-and-sandbox")) {
+    return args;
+  }
+  const insertionIndex = args[0] === "exec" ? 1 : 0;
+  return [
+    ...args.slice(0, insertionIndex),
+    "--dangerously-bypass-approvals-and-sandbox",
+    ...args.slice(insertionIndex)
+  ];
+}
+
+function normalizeCodexApprovalMode(value) {
+  const normalized = String(value ?? "ask").trim().toLowerCase();
+  return ["ask", "auto", "full"].includes(normalized) ? normalized : "ask";
 }
 
 function codexCommandPlan(adapter, renderedArgs, task) {

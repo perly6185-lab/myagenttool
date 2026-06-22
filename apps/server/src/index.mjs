@@ -2892,6 +2892,7 @@ function createInvocation(task, agent = defaultAgent(), options = {}) {
       requireLocalApproval: Boolean(options.requireLocalApproval ?? policy.decision === "requires_local_approval"),
       codexSessionMode,
       codexWorkspacePolicy,
+      approvalMode: normalizeCodexApprovalMode(options.approvalMode ?? options.metadata?.permissionMode),
       metadata: {
         demo: true,
         ...(options.metadata && typeof options.metadata === "object" && !Array.isArray(options.metadata) ? options.metadata : {}),
@@ -3301,6 +3302,8 @@ function recordCodexHookEvent(body) {
 
 function createCodexApprovalBrokerRequest({ invocation, session, hookEvent, body, policy }) {
   const createdAt = now();
+  const approvalMode = normalizeCodexApprovalMode(invocation.options?.approvalMode ?? invocation.options?.metadata?.permissionMode);
+  const autoApproved = policy.decision !== "blocked" && (approvalMode === "full" || (approvalMode === "auto" && !codexApprovalRequiresManualReview({ invocation, body, policy })));
   const request = {
     id: nextId("cdx_appr"),
     invocationId: invocation.id,
@@ -3309,11 +3312,12 @@ function createCodexApprovalBrokerRequest({ invocation, session, hookEvent, body
     toolName: body.toolName ? String(body.toolName) : "unknown",
     summary: String(body.summary ?? "Codex permission request"),
     riskLevel: "high",
-    status: policy.decision === "blocked" ? "denied" : "pending",
+    status: policy.decision === "blocked" ? "denied" : autoApproved ? "approved" : "pending",
     timeoutAt: new Date(Date.now() + codexApprovalTimeoutMs(body)).toISOString(),
-    decision: policy.decision === "blocked" ? "deny" : null,
-    decidedAt: policy.decision === "blocked" ? createdAt : null,
-    notificationState: policy.decision === "blocked" ? "not_required" : "queued",
+    decision: policy.decision === "blocked" ? "deny" : autoApproved ? "allow" : null,
+    decidedAt: policy.decision === "blocked" || autoApproved ? createdAt : null,
+    notificationState: policy.decision === "blocked" || autoApproved ? "resolved" : "queued",
+    approvalMode,
     createdAt,
     updatedAt: createdAt
   };
@@ -3325,10 +3329,50 @@ function createCodexApprovalBrokerRequest({ invocation, session, hookEvent, body
     level: request.status === "pending" ? "warn" : "info",
     message: request.status === "pending"
       ? `Codex approval broker is waiting on ${request.toolName}.`
-      : `Codex approval broker denied ${request.toolName}.`,
+      : request.status === "approved"
+        ? `Codex approval broker approved ${request.toolName} by ${approvalMode} mode.`
+        : `Codex approval broker denied ${request.toolName}.`,
     data: { approvalBrokerRequestId: request.id, status: request.status }
   });
+  if (autoApproved) {
+    appendEvent({
+      invocationId: invocation.id,
+      type: "codex_approval_granted",
+      level: "info",
+      message: `Codex approval broker auto-approved the request in ${approvalMode} mode.`,
+      data: { approvalBrokerRequestId: request.id, decision: request.decision, approvalMode }
+    });
+  }
   return request;
+}
+
+function normalizeCodexApprovalMode(value) {
+  const normalized = String(value ?? "ask").trim().toLowerCase();
+  return ["ask", "auto", "full"].includes(normalized) ? normalized : "ask";
+}
+
+function codexApprovalRequiresManualReview({ invocation, body, policy }) {
+  const text = [
+    invocation?.input?.task,
+    body?.summary,
+    body?.toolName,
+    policy?.reason
+  ].map((item) => String(item ?? "").toLowerCase()).join(" ");
+  return [
+    "auth.json",
+    "private key",
+    "password",
+    "secret",
+    "token",
+    "credential",
+    "rm -rf",
+    "delete",
+    "remove-item",
+    "format",
+    "registry",
+    "full access",
+    "dangerously"
+  ].some((pattern) => text.includes(pattern));
 }
 
 function codexApprovalTimeoutMs(body) {
