@@ -1,0 +1,220 @@
+/*
+ * Shape of GET /api/state as the web console reads it. The canonical schema
+ * lives in @myagenttool/protocol (and the M0 server); this mirror keeps only
+ * the fields the UI touches, with permissive optionals so a leaner server
+ * response never crashes a screen. Treat protocol as the source of truth.
+ */
+
+export interface DeviceSnapshot {
+  id: string;
+  name: string;
+  status: string;
+  platform: string;
+  architecture: string;
+  lastSeenAt: string | null;
+}
+
+export interface AgentHealth {
+  status?: string;
+  message?: string;
+  checkedAt?: string | null;
+  nextAction?: string;
+}
+
+export interface AgentAdapter {
+  type?: string;
+  command?: string;
+  baseUrl?: string;
+  name?: string;
+  cancellation?: string;
+  outputFormat?: string;
+  sandbox?: string;
+  args?: string[];
+}
+
+export interface AgentEconomics {
+  model?: string;
+  unknownCostPolicy?: string;
+  costOwner?: string;
+}
+
+export interface AgentCapability {
+  name?: string;
+  description?: string;
+  riskLevel?: string;
+  riskTags?: string[];
+}
+
+export interface AgentRegistrationNotes {
+  risk?: string;
+  data?: string;
+  cost?: string;
+  cancellation?: string;
+}
+
+export interface AgentSnapshot {
+  id: string;
+  name: string;
+  status?: string;
+  health?: AgentHealth;
+  capabilities?: AgentCapability[];
+  economics?: AgentEconomics;
+  adapter?: AgentAdapter;
+  lifecycle?: { state?: string; installState?: string };
+  location?: { type?: string; deviceId?: string };
+  registrationNotes?: AgentRegistrationNotes;
+  discovery?: { runId?: string };
+}
+
+export interface InvocationSnapshot {
+  id: string;
+  status?: string;
+  agentId?: string;
+  traceId?: string;
+  rootSpanId?: string;
+  approvalRequestId?: string;
+  policyDecisionId?: string;
+  delivery?: { state?: string; dispatchAttempts?: number };
+  cancellation?: { state?: string };
+  result?: { summary?: string; touchedUserFiles?: boolean };
+}
+
+export interface InvocationEventSnapshot {
+  id: string;
+  invocationId?: string;
+  type: string;
+  message?: string;
+  createdAt: string;
+  data?: { agentId?: string; source?: string };
+}
+
+export interface AuditSnapshot {
+  invocationId?: string;
+  agentId?: string;
+  permissionDecision?: string;
+  errorSummary?: string;
+  traceId?: string;
+  costSummary?: string;
+}
+
+export interface LifecycleAuditSnapshot {
+  agentId?: string;
+  operation: string;
+  status: string;
+}
+
+export interface DiscoveryCandidate {
+  id: string;
+  name: string;
+  description?: string;
+  source?: string;
+  confidence?: string;
+  riskLevel?: string;
+  riskTags?: string[];
+  riskHints?: string[];
+  healthProbeAvailable?: boolean;
+  adapter?: AgentAdapter;
+  registration?: { status?: string; registeredAgentId?: string };
+}
+
+export interface DiscoveryRunSnapshot {
+  id: string;
+  status: string;
+  message?: string;
+  candidates?: DiscoveryCandidate[];
+}
+
+export interface ApprovalSnapshot {
+  id: string;
+  status: string;
+  riskLevel?: string;
+  riskTags?: string[];
+  summary?: { risk?: string; data?: string; cost?: string; cancellation?: string };
+}
+
+export interface PolicyDecisionSnapshot {
+  id: string;
+  decision: string;
+  reason?: string;
+  riskTags?: string[];
+}
+
+export interface TroubleshootingReport {
+  invocationId: string;
+  summary: string;
+  bridgeState: string;
+  adapterError?: string;
+  logSummary: string;
+  suggestedFixes?: string[];
+}
+
+export interface AgentUsageSummary {
+  agentId: string;
+  costOwner?: string;
+  economicModel?: string;
+  invocationCount: number;
+  succeededCount: number;
+  failedCount: number;
+  cancelledCount: number;
+}
+
+export interface IntegrationArtifact {
+  id: string;
+  summary: string;
+  artifactType: string;
+  targetType?: string;
+  reviewState: string;
+  generatedByAi?: boolean;
+  payload?: {
+    adapterGuidance?: string;
+    structuredHints?: Record<string, unknown>;
+    adapterConfig?: Record<string, unknown>;
+  };
+  governance?: {
+    economics?: { model?: string };
+    quota?: { decision?: string };
+    riskTags?: string[];
+  };
+}
+
+export interface IntegrationProbeRun {
+  id: string;
+  artifactId: string;
+  status: string;
+  summary: string;
+  details?: string[];
+}
+
+export interface QuotaDecisionRecord {
+  id: string;
+  decision: string;
+  reason: string;
+  artifactId?: string;
+}
+
+export interface RetentionSettings {
+  logsDays: number;
+  promptsDays: number;
+  responsesDays: number;
+  artifactsDays: number;
+}
+
+export interface ConsoleSnapshot {
+  device: DeviceSnapshot;
+  agent: AgentSnapshot | null;
+  agents: AgentSnapshot[];
+  invocations: InvocationSnapshot[];
+  events: InvocationEventSnapshot[];
+  auditSummaries: AuditSnapshot[];
+  healthChecks?: LifecycleAuditSnapshot[];
+  lifecycleAuditRecords?: LifecycleAuditSnapshot[];
+  discoveryRuns?: DiscoveryRunSnapshot[];
+  approvalRequests?: ApprovalSnapshot[];
+  policyDecisionRecords?: PolicyDecisionSnapshot[];
+  troubleshootingReports?: TroubleshootingReport[];
+  agentUsageSummaries?: AgentUsageSummary[];
+  integrationArtifacts?: IntegrationArtifact[];
+  integrationProbeRuns?: IntegrationProbeRun[];
+  quotaDecisionRecords?: QuotaDecisionRecord[];
+  retentionSettings?: RetentionSettings;
+}
