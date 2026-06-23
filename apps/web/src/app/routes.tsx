@@ -6,6 +6,7 @@ import { AgentsView } from "@/features/agents/agents-view";
 import { DevicesView } from "@/features/devices/devices-view";
 import { DiscoveryView } from "@/features/discovery/discovery-view";
 import { IntegrationsView } from "@/features/integrations/integrations-view";
+import { EconomicsView } from "@/features/economics/economics-view";
 import { AuditView } from "@/features/audit/audit-view";
 
 /**
@@ -19,5 +20,6 @@ export const SECTION_VIEWS: Record<SectionKey, ComponentType> = {
   devices: DevicesView,
   discovery: DiscoveryView,
   integrations: IntegrationsView,
+  economics: EconomicsView,
   audit: AuditView,
 };

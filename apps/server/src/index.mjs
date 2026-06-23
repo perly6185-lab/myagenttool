@@ -190,7 +190,8 @@ const state = {
   approvalRequests: [],
   policyDecisionRecords: [],
   troubleshootingReports: [],
-  agentUsageSummaries: []
+  agentUsageSummaries: [],
+  ledgerEntries: []
 };
 
 let idCounter = 1;
@@ -2451,11 +2452,61 @@ function completeInvocation(invocation, body) {
   });
   state.auditSummaries.push(createAuditSummary(invocation, body.summary ?? null));
   recordAgentUsage(invocation, terminalStatus);
+  recordLedgerEntry(invocation, terminalStatus);
+}
+
+// One finalized economic ledger entry per completed invocation, derived from the
+// cost the agent reported (Claude returns real total_cost_usd; Codex/demo report
+// unknown). This is the spine of the agent-economics differentiator: every run is
+// attributable to a cost owner and rolls up through one ledger.
+function recordLedgerEntry(invocation, terminalStatus) {
+  const agent = findAgent(invocation.agentId);
+  const cost = invocation.result?.cost ?? {};
+  const amountUsd = typeof cost.amountUsd === "number" ? cost.amountUsd : null;
+  const known = amountUsd !== null;
+  const economicModel = agent?.economics?.model ?? "unknown";
+  const ledgerStatus = terminalStatus === "cancelled" ? "voided" : known ? "finalized" : "estimated";
+  const entry = {
+    id: nextId("led_demo"),
+    invocationId: invocation.id,
+    agentId: invocation.agentId,
+    agentName: agent?.name ?? invocation.agentId,
+    deviceId: invocation.delivery?.deviceId ?? state.device.id,
+    userId: agent?.economics?.costOwner ?? "unknown",
+    sourceType: cost.model === "codex" || cost.model === "claude" ? "ai_usage" : "agent_invocation",
+    entryType: "cost",
+    economicModel,
+    meterName: "per_invocation",
+    provider: cost.model ?? "unknown",
+    quantity: 1,
+    inputTokens: Number(cost.inputTokens ?? 0) || 0,
+    outputTokens: Number(cost.outputTokens ?? 0) || 0,
+    currency: agent?.economics?.currency ?? "USD",
+    amountUsd,
+    amountText: known ? `$${amountUsd.toFixed(4)}` : "unknown",
+    amountDirection: cost.billable ? "payable" : "informational",
+    costOwner: agent?.economics?.costOwner ?? "unknown",
+    billable: Boolean(cost.billable),
+    status: ledgerStatus,
+    invocationStatus: terminalStatus,
+    createdAt: now(),
+    finalizedAt: known ? now() : null
+  };
+  state.ledgerEntries.unshift(entry);
+  state.ledgerEntries = state.ledgerEntries.slice(0, 200);
+  return entry;
 }
 
 function recordAgentUsage(invocation, terminalStatus) {
   const agent = findAgent(invocation.agentId);
   const summary = getAgentUsageSummary(invocation.agentId);
+  const cost = invocation.result?.cost ?? {};
+  if (typeof cost.amountUsd === "number") {
+    summary.totalCostUsd = Number((Number(summary.totalCostUsd ?? 0) + cost.amountUsd).toFixed(6));
+    summary.billableInvocations = (summary.billableInvocations ?? 0) + 1;
+  } else {
+    summary.unknownCostInvocations = (summary.unknownCostInvocations ?? 0) + 1;
+  }
   summary.invocationCount += 1;
   if (terminalStatus === "succeeded") {
     summary.succeededCount += 1;
@@ -2489,6 +2540,9 @@ function getAgentUsageSummary(agentId) {
       economicModel: agent?.economics?.model ?? "unknown",
       currency: agent?.economics?.currency ?? "USD",
       unknownCostVisible: (agent?.economics?.model ?? "unknown") === "unknown",
+      totalCostUsd: 0,
+      billableInvocations: 0,
+      unknownCostInvocations: 0,
       updatedAt: null
     };
     state.agentUsageSummaries.push(summary);
@@ -2815,9 +2869,19 @@ function createAuditSummary(invocation, summary) {
     resultSummary: invocation.status === "succeeded" ? summary : null,
     errorSummary: invocation.status === "succeeded" ? null : summary,
     dataStored: true,
-    costSummary: "Demo agent cost is unknown; no billing was performed.",
+    costSummary: costSummaryForInvocation(invocation),
     metadata: { namespace, protocolVersion }
   };
+}
+
+// Keep the word "unknown" when there is no metered amount; surface the real
+// figure when an agent (e.g. Claude) reports one.
+function costSummaryForInvocation(invocation) {
+  const cost = invocation.result?.cost ?? {};
+  if (typeof cost.amountUsd === "number") {
+    return `Metered $${cost.amountUsd.toFixed(4)} via ${cost.model ?? "agent"}${cost.billable ? " (billable)" : ""}.`;
+  }
+  return "Cost is unknown; no billing was performed.";
 }
 
 function createTrace(invocationId, agent = defaultAgent()) {
@@ -3040,7 +3104,57 @@ function publicState() {
     approvalRequests: state.approvalRequests,
     policyDecisionRecords: state.policyDecisionRecords,
     troubleshootingReports: state.troubleshootingReports,
-    agentUsageSummaries: state.agentUsageSummaries
+    agentUsageSummaries: state.agentUsageSummaries,
+    ledgerEntries: state.ledgerEntries,
+    ledgerSummary: summarizeLedger()
+  };
+}
+
+// Roll the per-invocation ledger up into the views the console shows: a total,
+// and breakdowns by cost owner and by agent. Known USD amounts sum; unmetered
+// runs are surfaced as a visible count, never hidden.
+function summarizeLedger() {
+  const entries = state.ledgerEntries;
+  const byOwner = new Map();
+  const byAgent = new Map();
+  let totalCostUsd = 0;
+  let knownEntries = 0;
+  let unknownEntries = 0;
+  let billableEntries = 0;
+
+  for (const entry of entries) {
+    const known = typeof entry.amountUsd === "number";
+    if (known) {
+      totalCostUsd += entry.amountUsd;
+      knownEntries += 1;
+    } else {
+      unknownEntries += 1;
+    }
+    if (entry.billable) billableEntries += 1;
+
+    const owner = byOwner.get(entry.costOwner) ?? { costOwner: entry.costOwner, entries: 0, knownCostUsd: 0, unknownEntries: 0 };
+    owner.entries += 1;
+    if (known) owner.knownCostUsd += entry.amountUsd;
+    else owner.unknownEntries += 1;
+    byOwner.set(entry.costOwner, owner);
+
+    const agent = byAgent.get(entry.agentId) ?? { agentId: entry.agentId, agentName: entry.agentName, entries: 0, knownCostUsd: 0, unknownEntries: 0, provider: entry.provider };
+    agent.entries += 1;
+    if (known) agent.knownCostUsd += entry.amountUsd;
+    else agent.unknownEntries += 1;
+    byAgent.set(entry.agentId, agent);
+  }
+
+  const round = (value) => Number(value.toFixed(6));
+  return {
+    currency: "USD",
+    totalCostUsd: round(totalCostUsd),
+    entryCount: entries.length,
+    knownEntries,
+    unknownEntries,
+    billableEntries,
+    byCostOwner: [...byOwner.values()].map((o) => ({ ...o, knownCostUsd: round(o.knownCostUsd) })),
+    byAgent: [...byAgent.values()].map((a) => ({ ...a, knownCostUsd: round(a.knownCostUsd) }))
   };
 }
 
@@ -3345,6 +3459,7 @@ function resetDemoStateForCheck() {
   state.policyDecisionRecords = [];
   state.troubleshootingReports = [];
   state.agentUsageSummaries = [];
+  state.ledgerEntries = [];
   idCounter = 1;
 }
 

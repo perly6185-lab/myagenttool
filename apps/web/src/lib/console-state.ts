@@ -157,6 +157,55 @@ export interface AgentUsageSummary {
   succeededCount: number;
   failedCount: number;
   cancelledCount: number;
+  totalCostUsd?: number;
+  billableInvocations?: number;
+  unknownCostInvocations?: number;
+}
+
+export interface LedgerEntry {
+  id: string;
+  invocationId?: string;
+  agentId?: string;
+  agentName?: string;
+  provider?: string;
+  economicModel?: string;
+  inputTokens?: number;
+  outputTokens?: number;
+  currency?: string;
+  amountUsd?: number | null;
+  amountText?: string;
+  billable?: boolean;
+  status?: string;
+  costOwner?: string;
+  invocationStatus?: string;
+  createdAt: string;
+}
+
+export interface LedgerOwnerRollup {
+  costOwner: string;
+  entries: number;
+  knownCostUsd: number;
+  unknownEntries: number;
+}
+
+export interface LedgerAgentRollup {
+  agentId: string;
+  agentName?: string;
+  provider?: string;
+  entries: number;
+  knownCostUsd: number;
+  unknownEntries: number;
+}
+
+export interface LedgerSummary {
+  currency: string;
+  totalCostUsd: number;
+  entryCount: number;
+  knownEntries: number;
+  unknownEntries: number;
+  billableEntries: number;
+  byCostOwner: LedgerOwnerRollup[];
+  byAgent: LedgerAgentRollup[];
 }
 
 export interface IntegrationArtifact {
@@ -218,4 +267,6 @@ export interface ConsoleSnapshot {
   integrationProbeRuns?: IntegrationProbeRun[];
   quotaDecisionRecords?: QuotaDecisionRecord[];
   retentionSettings?: RetentionSettings;
+  ledgerEntries?: LedgerEntry[];
+  ledgerSummary?: LedgerSummary;
 }

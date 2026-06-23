@@ -7,6 +7,7 @@ export type SectionKey =
   | "devices"
   | "discovery"
   | "integrations"
+  | "economics"
   | "audit";
 
 interface UiState {
@@ -27,6 +28,7 @@ const SECTION_KEYS: SectionKey[] = [
   "devices",
   "discovery",
   "integrations",
+  "economics",
   "audit",
 ];
 

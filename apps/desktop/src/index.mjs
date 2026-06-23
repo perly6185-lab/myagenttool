@@ -720,7 +720,14 @@ async function handleCodexJsonLine(invocationId, line) {
       summary: "Codex CLI completed.",
       touchedUserFiles: false,
       output: { usage: event.usage ?? null },
-      cost: { model: "codex", billable: true, unknown: true }
+      cost: {
+        model: "codex",
+        billable: true,
+        unknown: true,
+        amountUsd: null,
+        inputTokens: Number(event.usage?.input_tokens ?? 0) || 0,
+        outputTokens: Number(event.usage?.output_tokens ?? 0) || 0
+      }
     };
   }
 
@@ -788,7 +795,9 @@ async function handleClaudeJsonLine(invocationId, line) {
         model: "claude",
         billable: true,
         unknown: typeof event.total_cost_usd !== "number",
-        amountUsd: typeof event.total_cost_usd === "number" ? event.total_cost_usd : null
+        amountUsd: typeof event.total_cost_usd === "number" ? event.total_cost_usd : null,
+        inputTokens: Number(event.usage?.input_tokens ?? 0) || 0,
+        outputTokens: Number(event.usage?.output_tokens ?? 0) || 0
       }
     };
   }

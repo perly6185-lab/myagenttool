@@ -5,6 +5,7 @@ import {
   MonitorSmartphone,
   Puzzle,
   Radar,
+  Receipt,
   ScrollText,
   type LucideIcon,
 } from "lucide-react";
@@ -25,5 +26,6 @@ export const SECTIONS: SectionDef[] = [
   { key: "devices", label: "Devices", icon: MonitorSmartphone, blurb: "Local bridges and platforms" },
   { key: "discovery", label: "Discovery", icon: Radar, blurb: "Find local agents conservatively" },
   { key: "integrations", label: "Integrations", icon: Puzzle, blurb: "Connect unsupported agents" },
+  { key: "economics", label: "Economics", icon: Receipt, blurb: "Metered AI usage and cost ledger" },
   { key: "audit", label: "Audit", icon: ScrollText, blurb: "What was recorded and why" },
 ];
