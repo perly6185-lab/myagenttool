@@ -248,6 +248,12 @@ const server = http.createServer(async (req, res) => {
         }
         agent.status = "available";
         agent.updatedAt = now();
+        // Local CLI agents have no health endpoint; probe them once the bridge
+        // is online so a fresh/restarted agent doesn't sit at "Not checked".
+        // Only when health is unknown, so reconnects don't re-probe endlessly.
+        if (agent.adapter?.type === "cli" && (!agent.health || agent.health.status === "unknown")) {
+          createAgentHealthCheck(agent);
+        }
       }
       redeliverExpiredDispatches();
       appendEvent({
