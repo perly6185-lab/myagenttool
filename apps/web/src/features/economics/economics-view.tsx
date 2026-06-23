@@ -1,6 +1,8 @@
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { EmptyState } from "@/components/common/empty-state";
+import { BudgetsCard } from "@/features/economics/budgets-card";
+import { ChargebackCard } from "@/features/economics/chargeback-card";
 import { useConsoleState } from "@/data/use-console-state";
 import { shortTime } from "@/lib/readable-labels";
 import type { LedgerEntry } from "@/lib/console-state";
@@ -28,9 +30,9 @@ function Metric({ label, value, hint }: { label: string; value: string; hint?: s
 }
 
 function amountCell(entry: LedgerEntry) {
-  if (typeof entry.amountUsd === "number") {
-    return <span className="tabular-nums">{usd(entry.amountUsd)}</span>;
-  }
+  if (entry.amountSource === "reported") return <span className="tabular-nums">{entry.amountText}</span>;
+  if (entry.amountSource === "estimated")
+    return <span className="tabular-nums text-muted-foreground">{entry.amountText}</span>;
   return <span className="text-muted-foreground">unknown</span>;
 }
 
@@ -43,47 +45,26 @@ export function EconomicsView() {
     <div className="space-y-5">
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <Metric
-          label="Metered cost"
-          value={usd(summary?.totalCostUsd ?? 0)}
+          label="Finalized cost"
+          value={usd(summary?.finalizedUsd ?? 0)}
           hint={`${summary?.knownEntries ?? 0} metered run(s)`}
+        />
+        <Metric
+          label="Estimated cost"
+          value={`~${usd(summary?.estimatedUsd ?? 0)}`}
+          hint={`${summary?.estimatedEntries ?? 0} token-estimated run(s)`}
         />
         <Metric
           label="Unmetered runs"
           value={String(summary?.unknownEntries ?? 0)}
-          hint="Cost unknown — surfaced, not hidden"
+          hint="No cost reported or estimable"
         />
         <Metric label="Billable runs" value={String(summary?.billableEntries ?? 0)} hint="Flagged billable by the agent" />
-        <Metric label="Ledger entries" value={String(summary?.entryCount ?? 0)} hint="One per completed invocation" />
       </div>
 
-      <div className="grid gap-5 lg:grid-cols-2">
-        <Card>
-          <CardHeader>
-            <CardTitle>By cost owner</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-2">
-            {!summary?.byCostOwner?.length ? (
-              <EmptyState title="No spend recorded" hint="Run an agent to populate the ledger." />
-            ) : (
-              summary.byCostOwner.map((owner) => (
-                <div
-                  key={owner.costOwner}
-                  className="flex items-center justify-between gap-3 rounded-lg border border-border px-3 py-2 text-sm"
-                >
-                  <div className="min-w-0">
-                    <p className="truncate font-medium">{owner.costOwner}</p>
-                    <p className="text-xs text-muted-foreground">
-                      {owner.entries} run(s)
-                      {owner.unknownEntries ? ` · ${owner.unknownEntries} unmetered` : ""}
-                    </p>
-                  </div>
-                  <span className="tabular-nums font-medium">{usd(owner.knownCostUsd)}</span>
-                </div>
-              ))
-            )}
-          </CardContent>
-        </Card>
+      <BudgetsCard />
 
+      <div className="grid gap-5 lg:grid-cols-2">
         <Card>
           <CardHeader>
             <CardTitle>By agent</CardTitle>
@@ -101,22 +82,25 @@ export function EconomicsView() {
                     <p className="truncate font-medium">{agent.agentName ?? agent.agentId}</p>
                     <p className="text-xs text-muted-foreground">
                       {agent.provider ?? "unknown"} · {agent.entries} run(s)
+                      {agent.estimatedCostUsd ? ` · ~${usd(agent.estimatedCostUsd)} est.` : ""}
                       {agent.unknownEntries ? ` · ${agent.unknownEntries} unmetered` : ""}
                     </p>
                   </div>
-                  <span className="tabular-nums font-medium">{usd(agent.knownCostUsd)}</span>
+                  <span className="tabular-nums font-medium">{usd(agent.knownCostUsd + agent.estimatedCostUsd)}</span>
                 </div>
               ))
             )}
           </CardContent>
         </Card>
+
+        <ChargebackCard />
       </div>
 
       <Card>
         <CardHeader>
           <CardTitle>Cost ledger</CardTitle>
           <p className="text-sm text-muted-foreground">
-            One finalized entry per completed invocation — every run is attributable to a cost owner.
+            One entry per completed invocation — reported amounts are finalized; token estimates are marked ~.
           </p>
         </CardHeader>
         <CardContent>

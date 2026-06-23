@@ -102,6 +102,8 @@ export const api = {
     request("POST", "/api/integration-builder/draft", payload),
   updateRetention: (payload: Record<string, number>) =>
     request("PATCH", "/api/integration-retention", payload),
+  setBudget: (payload: { costOwner: string; limitUsd: number; policy: string }) =>
+    request("PUT", "/api/budgets", payload),
 
   approveApproval: (id: string) =>
     request("POST", `/api/approvals/${encodeURIComponent(id)}/approve`),

@@ -174,6 +174,7 @@ export interface LedgerEntry {
   currency?: string;
   amountUsd?: number | null;
   amountText?: string;
+  amountSource?: "reported" | "estimated" | "unknown";
   billable?: boolean;
   status?: string;
   costOwner?: string;
@@ -185,6 +186,7 @@ export interface LedgerOwnerRollup {
   costOwner: string;
   entries: number;
   knownCostUsd: number;
+  estimatedCostUsd: number;
   unknownEntries: number;
 }
 
@@ -194,18 +196,34 @@ export interface LedgerAgentRollup {
   provider?: string;
   entries: number;
   knownCostUsd: number;
+  estimatedCostUsd: number;
   unknownEntries: number;
 }
 
 export interface LedgerSummary {
   currency: string;
   totalCostUsd: number;
+  finalizedUsd: number;
+  estimatedUsd: number;
   entryCount: number;
   knownEntries: number;
+  estimatedEntries: number;
   unknownEntries: number;
   billableEntries: number;
   byCostOwner: LedgerOwnerRollup[];
   byAgent: LedgerAgentRollup[];
+}
+
+export interface BudgetStatus {
+  costOwner: string;
+  exists: boolean;
+  budgetId?: string;
+  limitUsd: number | null;
+  policy: string;
+  currency?: string;
+  spentUsd: number;
+  remainingUsd: number | null;
+  over: boolean;
 }
 
 export interface IntegrationArtifact {
@@ -269,4 +287,5 @@ export interface ConsoleSnapshot {
   retentionSettings?: RetentionSettings;
   ledgerEntries?: LedgerEntry[];
   ledgerSummary?: LedgerSummary;
+  budgetStatuses?: BudgetStatus[];
 }

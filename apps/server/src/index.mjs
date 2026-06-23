@@ -191,7 +191,8 @@ const state = {
   policyDecisionRecords: [],
   troubleshootingReports: [],
   agentUsageSummaries: [],
-  ledgerEntries: []
+  ledgerEntries: [],
+  budgets: []
 };
 
 let idCounter = 1;
@@ -293,6 +294,19 @@ const server = http.createServer(async (req, res) => {
       const body = await readJson(req);
       const discoveryRun = createDiscoveryRun(body);
       sendJson(res, 202, { discoveryRun });
+      return;
+    }
+
+    if ((req.method === "PUT" || req.method === "POST") && url.pathname === "/api/budgets") {
+      const body = await readJson(req);
+      let budget;
+      try {
+        budget = upsertBudget(body);
+      } catch (error) {
+        sendJson(res, 400, { error: "invalid_budget", message: error instanceof Error ? error.message : String(error) });
+        return;
+      }
+      sendJson(res, 200, { budget, status: budgetStatusFor(budget.costOwner) });
       return;
     }
 
@@ -688,7 +702,20 @@ const server = http.createServer(async (req, res) => {
         sendJson(res, 409, { error: "device_unlinked" });
         return;
       }
-      const invocation = createInvocation(task, agent, body.options ?? {});
+      const budget = enforceBudgetForAgent(agent);
+      if (budget.action === "block") {
+        sendJson(res, 409, { error: "budget_exceeded", message: budget.reason, budget: budget.status });
+        return;
+      }
+      const invocationOptions = { ...(body.options ?? {}) };
+      if (budget.action === "require_approval") {
+        invocationOptions.requireLocalApproval = true;
+        invocationOptions.metadata = {
+          ...(invocationOptions.metadata && typeof invocationOptions.metadata === "object" ? invocationOptions.metadata : {}),
+          budgetApprovalReason: budget.reason
+        };
+      }
+      const invocation = createInvocation(task, agent, invocationOptions);
       startInvocationIfAllowed(invocation, agent);
       sendJson(res, 201, { invocation });
       return;
@@ -2462,10 +2489,15 @@ function completeInvocation(invocation, body) {
 function recordLedgerEntry(invocation, terminalStatus) {
   const agent = findAgent(invocation.agentId);
   const cost = invocation.result?.cost ?? {};
-  const amountUsd = typeof cost.amountUsd === "number" ? cost.amountUsd : null;
-  const known = amountUsd !== null;
+  const inputTokens = Number(cost.inputTokens ?? 0) || 0;
+  const outputTokens = Number(cost.outputTokens ?? 0) || 0;
+  const reported = typeof cost.amountUsd === "number" ? cost.amountUsd : null;
+  // No provider-reported amount? Estimate from tokens x the price book (Codex).
+  const estimate = reported === null ? estimateCostUsd(cost.model, inputTokens, outputTokens) : null;
+  const effective = reported ?? estimate;
+  const amountSource = reported !== null ? "reported" : estimate !== null ? "estimated" : "unknown";
   const economicModel = agent?.economics?.model ?? "unknown";
-  const ledgerStatus = terminalStatus === "cancelled" ? "voided" : known ? "finalized" : "estimated";
+  const ledgerStatus = terminalStatus === "cancelled" ? "voided" : reported !== null ? "finalized" : "estimated";
   const entry = {
     id: nextId("led_demo"),
     invocationId: invocation.id,
@@ -2476,25 +2508,41 @@ function recordLedgerEntry(invocation, terminalStatus) {
     sourceType: cost.model === "codex" || cost.model === "claude" ? "ai_usage" : "agent_invocation",
     entryType: "cost",
     economicModel,
-    meterName: "per_invocation",
+    meterName: amountSource === "estimated" ? "per_token" : "per_invocation",
     provider: cost.model ?? "unknown",
     quantity: 1,
-    inputTokens: Number(cost.inputTokens ?? 0) || 0,
-    outputTokens: Number(cost.outputTokens ?? 0) || 0,
+    inputTokens,
+    outputTokens,
     currency: agent?.economics?.currency ?? "USD",
-    amountUsd,
-    amountText: known ? `$${amountUsd.toFixed(4)}` : "unknown",
+    amountUsd: effective,
+    amountSource,
+    amountText: reported !== null ? `$${reported.toFixed(4)}` : estimate !== null ? `~$${estimate.toFixed(4)}` : "unknown",
     amountDirection: cost.billable ? "payable" : "informational",
     costOwner: agent?.economics?.costOwner ?? "unknown",
     billable: Boolean(cost.billable),
     status: ledgerStatus,
     invocationStatus: terminalStatus,
     createdAt: now(),
-    finalizedAt: known ? now() : null
+    finalizedAt: reported !== null ? now() : null
   };
   state.ledgerEntries.unshift(entry);
   state.ledgerEntries = state.ledgerEntries.slice(0, 200);
   return entry;
+}
+
+// Estimate cost from tokens x a price book (USD per 1M tokens), used only when
+// an agent reports no billed amount (e.g. Codex). Estimates are marked
+// separately and never counted as finalized spend. The table is inlined so it
+// is available to the module-load self-check (no const TDZ).
+function estimateCostUsd(model, inputTokens, outputTokens) {
+  const pricing = {
+    codex: { inputPerMTok: 1.25, outputPerMTok: 10 },
+    claude: { inputPerMTok: 3, outputPerMTok: 15 }
+  };
+  const price = pricing[String(model ?? "").toLowerCase()];
+  if (!price || (inputTokens <= 0 && outputTokens <= 0)) return null;
+  const amount = (inputTokens / 1_000_000) * price.inputPerMTok + (outputTokens / 1_000_000) * price.outputPerMTok;
+  return Number(amount.toFixed(6));
 }
 
 function recordAgentUsage(invocation, terminalStatus) {
@@ -3106,7 +3154,9 @@ function publicState() {
     troubleshootingReports: state.troubleshootingReports,
     agentUsageSummaries: state.agentUsageSummaries,
     ledgerEntries: state.ledgerEntries,
-    ledgerSummary: summarizeLedger()
+    ledgerSummary: summarizeLedger(),
+    budgets: state.budgets,
+    budgetStatuses: budgetStatuses()
   };
 }
 
@@ -3117,45 +3167,165 @@ function summarizeLedger() {
   const entries = state.ledgerEntries;
   const byOwner = new Map();
   const byAgent = new Map();
-  let totalCostUsd = 0;
+  let finalizedUsd = 0;
+  let estimatedUsd = 0;
   let knownEntries = 0;
+  let estimatedEntries = 0;
   let unknownEntries = 0;
   let billableEntries = 0;
 
   for (const entry of entries) {
-    const known = typeof entry.amountUsd === "number";
-    if (known) {
-      totalCostUsd += entry.amountUsd;
+    const amount = typeof entry.amountUsd === "number" ? entry.amountUsd : 0;
+    if (entry.amountSource === "reported") {
+      finalizedUsd += amount;
       knownEntries += 1;
+    } else if (entry.amountSource === "estimated") {
+      estimatedUsd += amount;
+      estimatedEntries += 1;
     } else {
       unknownEntries += 1;
     }
     if (entry.billable) billableEntries += 1;
 
-    const owner = byOwner.get(entry.costOwner) ?? { costOwner: entry.costOwner, entries: 0, knownCostUsd: 0, unknownEntries: 0 };
+    const owner = byOwner.get(entry.costOwner) ?? { costOwner: entry.costOwner, entries: 0, knownCostUsd: 0, estimatedCostUsd: 0, unknownEntries: 0 };
     owner.entries += 1;
-    if (known) owner.knownCostUsd += entry.amountUsd;
+    if (entry.amountSource === "reported") owner.knownCostUsd += amount;
+    else if (entry.amountSource === "estimated") owner.estimatedCostUsd += amount;
     else owner.unknownEntries += 1;
     byOwner.set(entry.costOwner, owner);
 
-    const agent = byAgent.get(entry.agentId) ?? { agentId: entry.agentId, agentName: entry.agentName, entries: 0, knownCostUsd: 0, unknownEntries: 0, provider: entry.provider };
+    const agent = byAgent.get(entry.agentId) ?? { agentId: entry.agentId, agentName: entry.agentName, provider: entry.provider, entries: 0, knownCostUsd: 0, estimatedCostUsd: 0, unknownEntries: 0 };
     agent.entries += 1;
-    if (known) agent.knownCostUsd += entry.amountUsd;
+    if (entry.amountSource === "reported") agent.knownCostUsd += amount;
+    else if (entry.amountSource === "estimated") agent.estimatedCostUsd += amount;
     else agent.unknownEntries += 1;
     byAgent.set(entry.agentId, agent);
   }
 
   const round = (value) => Number(value.toFixed(6));
+  const roundOwner = (o) => ({ ...o, knownCostUsd: round(o.knownCostUsd), estimatedCostUsd: round(o.estimatedCostUsd) });
   return {
     currency: "USD",
-    totalCostUsd: round(totalCostUsd),
+    totalCostUsd: round(finalizedUsd + estimatedUsd),
+    finalizedUsd: round(finalizedUsd),
+    estimatedUsd: round(estimatedUsd),
     entryCount: entries.length,
     knownEntries,
+    estimatedEntries,
     unknownEntries,
     billableEntries,
-    byCostOwner: [...byOwner.values()].map((o) => ({ ...o, knownCostUsd: round(o.knownCostUsd) })),
-    byAgent: [...byAgent.values()].map((a) => ({ ...a, knownCostUsd: round(a.knownCostUsd) }))
+    byCostOwner: [...byOwner.values()].map(roundOwner),
+    byAgent: [...byAgent.values()].map(roundOwner)
   };
+}
+
+// --- Budgets and quota enforcement ---------------------------------------
+// A budget pool caps a cost owner's metered spend. When spend reaches the
+// limit, the owner's policy decides: warn (allow), require_approval (force the
+// approval gate), or block (refuse new invocations). No budgets are seeded, so
+// enforcement is opt-in and existing flows are unaffected until one is set.
+
+function normalizeBudgetPolicy(value) {
+  const normalized = String(value ?? "").trim();
+  return ["warn", "require_approval", "block"].includes(normalized) ? normalized : "warn";
+}
+
+function upsertBudget(body) {
+  const costOwner = String(body.costOwner ?? "").trim();
+  if (!costOwner) throw new Error("Budget costOwner is required.");
+  const limitUsd = Number(body.limitUsd);
+  if (!Number.isFinite(limitUsd) || limitUsd < 0) throw new Error("Budget limitUsd must be a non-negative number.");
+  const policy = normalizeBudgetPolicy(body.policy);
+  const existing = state.budgets.find((item) => item.costOwner === costOwner);
+  if (existing) {
+    existing.limitUsd = limitUsd;
+    existing.policy = policy;
+    existing.updatedAt = now();
+    return existing;
+  }
+  const budget = {
+    id: nextId("bgt_demo"),
+    costOwner,
+    limitUsd,
+    policy,
+    currency: "USD",
+    createdAt: now(),
+    updatedAt: now()
+  };
+  state.budgets.push(budget);
+  return budget;
+}
+
+function ownerSpentUsd(costOwner) {
+  let spent = 0;
+  for (const entry of state.ledgerEntries) {
+    if (entry.costOwner === costOwner && typeof entry.amountUsd === "number") {
+      spent += entry.amountUsd;
+    }
+  }
+  return Number(spent.toFixed(6));
+}
+
+function budgetStatusFor(costOwner) {
+  const budget = state.budgets.find((item) => item.costOwner === costOwner);
+  const spentUsd = ownerSpentUsd(costOwner);
+  if (!budget) {
+    return { costOwner, exists: false, limitUsd: null, policy: "warn", spentUsd, remainingUsd: null, over: false };
+  }
+  const over = spentUsd >= budget.limitUsd;
+  return {
+    costOwner,
+    exists: true,
+    budgetId: budget.id,
+    limitUsd: budget.limitUsd,
+    policy: budget.policy,
+    currency: budget.currency,
+    spentUsd,
+    remainingUsd: Number((budget.limitUsd - spentUsd).toFixed(6)),
+    over
+  };
+}
+
+function budgetStatuses() {
+  return state.budgets.map((budget) => budgetStatusFor(budget.costOwner));
+}
+
+function recordBudgetQuotaDecision(status, decision, reason) {
+  const record = {
+    id: nextId("qd_demo"),
+    subjectType: "user",
+    subjectId: status.costOwner,
+    resourceType: "budget_pool",
+    resourceId: status.budgetId ?? status.costOwner,
+    decision,
+    reason,
+    createdAt: now()
+  };
+  state.quotaDecisionRecords.unshift(record);
+  state.quotaDecisionRecords = state.quotaDecisionRecords.slice(0, 100);
+  return record;
+}
+
+// Evaluate the cost owner's budget before an invocation is created. Returns the
+// action to take; only an over-budget owner with a budget set is affected.
+function enforceBudgetForAgent(agent) {
+  const costOwner = agent?.economics?.costOwner ?? "unknown";
+  const status = budgetStatusFor(costOwner);
+  if (!status.exists || !status.over) {
+    return { action: "allow", status };
+  }
+  const spent = `$${status.spentUsd.toFixed(4)}`;
+  const limit = `$${Number(status.limitUsd).toFixed(2)}`;
+  if (status.policy === "block") {
+    recordBudgetQuotaDecision(status, "blocked_quota_exceeded", `${costOwner} spent ${spent} of ${limit} budget; new runs are blocked.`);
+    return { action: "block", status, reason: `Budget exceeded for ${costOwner}: ${spent} of ${limit}.` };
+  }
+  if (status.policy === "require_approval") {
+    recordBudgetQuotaDecision(status, "allowed", `${costOwner} is over budget (${spent} of ${limit}); local approval required.`);
+    return { action: "require_approval", status, reason: `Over budget for ${costOwner}: ${spent} of ${limit}.` };
+  }
+  recordBudgetQuotaDecision(status, "allowed", `${costOwner} is over budget (${spent} of ${limit}); allowed with warning.`);
+  return { action: "warn", status };
 }
 
 function runProtocolSelfCheck() {
@@ -3460,6 +3630,7 @@ function resetDemoStateForCheck() {
   state.troubleshootingReports = [];
   state.agentUsageSummaries = [];
   state.ledgerEntries = [];
+  state.budgets = [];
   idCounter = 1;
 }
 
