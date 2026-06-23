@@ -205,11 +205,17 @@ async function runInvocation(work) {
     });
   }
 
+  // Carry the forced-kill fact into the terminal completion so the audit records
+  // it even if the separate cancel_force_killed event is lost or arrives late.
+  const forcedNote = cancelResult?.signal === "SIGKILL"
+    ? " Process tree was force-killed (SIGKILL) after ignoring graceful stop."
+    : "";
+
   if (timedOut) {
     await request("POST", "/api/bridge/complete", {
       invocationId,
       status: "timed_out",
-      summary: "CLI Agent exceeded its configured timeout.",
+      summary: `CLI Agent exceeded its configured timeout.${forcedNote}`,
       result: finalResult
     });
     return;
@@ -219,7 +225,7 @@ async function runInvocation(work) {
     await request("POST", "/api/bridge/complete", {
       invocationId,
       status: cancelResult?.ok === false ? "failed" : "cancelled",
-      summary: cancelResult?.ok === false ? cancelResult.message : "CLI Agent was cancelled locally.",
+      summary: cancelResult?.ok === false ? cancelResult.message : `CLI Agent was cancelled locally.${forcedNote}`,
       result: finalResult
     });
     return;
@@ -612,8 +618,10 @@ function probeClaudeCli(adapter) {
     shell: false,
     stdio: ["ignore", "pipe", "pipe"]
   });
-  const combined = `${result.stdout ?? ""}\n${result.stderr ?? ""}`;
-  const ok = result.status === 0 && /Claude Code|\d+\.\d+\.\d+/.test(combined);
+  // Require BOTH a version and a "claude" token in stdout — a stray x.y.z in a
+  // stderr warning (e.g. a deprecation notice) must not be read as healthy.
+  const stdout = result.stdout ?? "";
+  const ok = result.status === 0 && /\d+\.\d+\.\d+/.test(stdout) && /claude/i.test(stdout);
   return {
     ok,
     summary: ok ? "Restricted Claude CLI probe passed." : "Restricted Claude CLI probe failed."

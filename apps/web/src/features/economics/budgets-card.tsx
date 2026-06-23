@@ -8,6 +8,7 @@ import { EmptyState } from "@/components/common/empty-state";
 import { useConsoleState } from "@/data/use-console-state";
 import { useAsyncAction, api } from "@/data/use-console-actions";
 import { cn } from "@/lib/cn";
+import { formatUsd as usd } from "@/lib/money";
 import type { BudgetStatus } from "@/lib/console-state";
 
 const POLICY_LABEL: Record<string, string> = {
@@ -15,10 +16,6 @@ const POLICY_LABEL: Record<string, string> = {
   require_approval: "Require approval",
   block: "Block",
 };
-
-function usd(value: number): string {
-  return `$${value.toFixed(value < 1 ? 4 : 2)}`;
-}
 
 export function BudgetsCard() {
   const { data: state } = useConsoleState();
@@ -127,8 +124,13 @@ function BudgetRow({ status }: { status: BudgetStatus }) {
           style={{ width: `${pct}%` }}
         />
       </div>
+      {status.estimatedUsd ? (
+        <p className="mt-1.5 text-xs text-muted-foreground">
+          Includes ~{usd(status.estimatedUsd)} token-estimated spend.
+        </p>
+      ) : null}
       {status.over ? (
-        <p className="mt-1.5 text-xs text-destructive">
+        <p className="mt-1 text-xs text-destructive">
           Over budget — new runs are {status.policy === "block" ? "blocked" : status.policy === "require_approval" ? "held for approval" : "allowed with a warning"}.
         </p>
       ) : null}

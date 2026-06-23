@@ -209,6 +209,7 @@ export interface LedgerSummary {
   knownEntries: number;
   estimatedEntries: number;
   unknownEntries: number;
+  voidedEntries?: number;
   billableEntries: number;
   byCostOwner: LedgerOwnerRollup[];
   byAgent: LedgerAgentRollup[];
@@ -222,6 +223,8 @@ export interface BudgetStatus {
   policy: string;
   currency?: string;
   spentUsd: number;
+  finalizedUsd?: number;
+  estimatedUsd?: number;
   remainingUsd: number | null;
   over: boolean;
 }

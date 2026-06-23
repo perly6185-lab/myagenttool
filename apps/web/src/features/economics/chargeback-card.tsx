@@ -2,11 +2,8 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/common/empty-state";
 import { useConsoleState } from "@/data/use-console-state";
+import { formatUsd as usd } from "@/lib/money";
 import type { LedgerEntry } from "@/lib/console-state";
-
-function usd(value: number): string {
-  return `$${value.toFixed(value < 1 ? 4 : 2)}`;
-}
 
 function toCsv(entries: LedgerEntry[]): string {
   const header = [

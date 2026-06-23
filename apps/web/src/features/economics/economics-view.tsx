@@ -5,11 +5,8 @@ import { BudgetsCard } from "@/features/economics/budgets-card";
 import { ChargebackCard } from "@/features/economics/chargeback-card";
 import { useConsoleState } from "@/data/use-console-state";
 import { shortTime } from "@/lib/readable-labels";
+import { formatUsd as usd } from "@/lib/money";
 import type { LedgerEntry } from "@/lib/console-state";
-
-function usd(value: number): string {
-  return `$${value.toFixed(value < 1 ? 4 : 2)}`;
-}
 
 function statusTone(status?: string): "neutral" | "success" | "warning" {
   if (status === "finalized") return "success";

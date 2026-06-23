@@ -198,6 +198,50 @@ const state = {
 let idCounter = 1;
 const directHttpRuns = new Map();
 
+// Token price book (USD per 1M tokens) for estimating cost when an agent reports
+// no billed amount (e.g. Codex). Declared before the module-load self-check so
+// estimateCostUsd can reference it without a const TDZ.
+const TOKEN_PRICING = {
+  codex: { inputPerMTok: 1.25, outputPerMTok: 10 },
+  claude: { inputPerMTok: 3, outputPerMTok: 15 }
+};
+// Best-effort hold per in-flight run for budget admission; the true per-run cost
+// is unknown until completion, so this only bounds concurrent bursts.
+const BUDGET_RESERVATION_USD = 0.05;
+
+// One descriptor per first-class coding agent collapses the Codex/Claude special
+// cases (id, mode key, default args, timeout, risk tags, notes) into a single
+// entry. Adding a provider = one entry here (+ a TOKEN_PRICING row). Declared
+// before the self-check; the values only reference hoisted functions.
+const CODING_AGENTS = {
+  codex: {
+    matches: (command) => isCodexCliCommand(command),
+    idPrefix: "agt_codex_",
+    modeKey: "sandbox",
+    normalizeMode: (value) => normalizeCodexSandbox(value),
+    defaultArgs: (mode) => codexCliArgs(mode),
+    timeoutSeconds: 120,
+    riskTags: () => codexRiskTags(),
+    notes: () => codexRegistrationNotes()
+  },
+  claude: {
+    matches: (command) => isClaudeCliCommand(command),
+    idPrefix: "agt_claude_",
+    modeKey: "permissionMode",
+    normalizeMode: (value) => normalizeClaudePermissionMode(value),
+    defaultArgs: (mode) => claudeCliArgs(mode),
+    timeoutSeconds: 180,
+    riskTags: () => claudeRiskTags(),
+    notes: () => claudeRegistrationNotes()
+  }
+};
+function codingAgentProfile(command) {
+  for (const profile of Object.values(CODING_AGENTS)) {
+    if (profile.matches(command)) return profile;
+  }
+  return null;
+}
+
 if (process.argv.includes("--check")) {
   runProtocolSelfCheck();
   console.log("[server:check] local demo server check OK");
@@ -807,28 +851,17 @@ function createCliAgent(body) {
     throw new Error("CLI agent command is required.");
   }
   const args = Array.isArray(body.args ?? body.adapter?.args) ? (body.args ?? body.adapter.args).map(String) : [];
-  const codexCommand = isCodexCliCommand(command);
-  const claudeCommand = isClaudeCliCommand(command);
-  const codingAgent = codexCommand || claudeCommand;
-  const codexSandbox = codexCommand ? normalizeCodexSandbox(body.sandbox ?? body.adapter?.sandbox) : null;
-  // Claude's permission mode is the analog of Codex's sandbox; accept either key.
-  const claudeMode = claudeCommand
-    ? normalizeClaudePermissionMode(body.permissionMode ?? body.adapter?.permissionMode ?? body.sandbox)
+  const profile = codingAgentProfile(command);
+  // A coding agent's "mode" is its sandbox (Codex) or permission mode (Claude);
+  // accept the profile's key, the adapter copy, or a generic `sandbox`.
+  const mode = profile
+    ? profile.normalizeMode(body[profile.modeKey] ?? body.adapter?.[profile.modeKey] ?? body.sandbox)
     : null;
   // Deterministic id per (coding command + mode) so re-registering the same
-  // config upserts in place instead of piling up duplicates on one device; a
-  // different mode is still a distinct agent. Non-coding CLI agents keep a
-  // generated id, and an explicit body.id always wins.
-  const id = sanitizeAgentId(
-    body.id ??
-      (codexCommand
-        ? `agt_codex_${codexSandbox}`
-        : claudeCommand
-          ? `agt_claude_${claudeMode}`
-          : nextId("agt_cli"))
-  );
-  const defaultCodingArgs = codexCommand ? codexCliArgs(codexSandbox) : claudeCommand ? claudeCliArgs(claudeMode) : [];
-  const normalizedArgs = args.length > 0 ? args : defaultCodingArgs;
+  // config upserts in place instead of piling up duplicates; a different mode is
+  // a distinct agent. Non-coding CLI agents get a generated id; explicit body.id wins.
+  const id = sanitizeAgentId(body.id ?? (profile ? `${profile.idPrefix}${mode}` : nextId("agt_cli")));
+  const normalizedArgs = args.length > 0 ? args : profile ? profile.defaultArgs(mode) : [];
   return baseAgent({
     id,
     type: "cli",
@@ -843,34 +876,32 @@ function createCliAgent(body) {
       workingDirectoryPolicy: body.workingDirectory ? "explicit" : "bridge_default",
       environmentPolicy: body.env ? "explicit_only" : "inherit_safe",
       env: normalizeEnv(body.env),
-      timeoutSeconds: Number(body.timeoutSeconds ?? (claudeCommand ? 180 : codexCommand ? 120 : 30)),
+      timeoutSeconds: Number(body.timeoutSeconds ?? profile?.timeoutSeconds ?? 30),
       cancellation: "supported",
       outputFormat: normalizeCliOutputFormat(body.outputFormat ?? body.adapter?.outputFormat, command),
-      sandbox: codexCommand ? codexSandbox : (body.sandbox ?? body.adapter?.sandbox ?? null),
-      permissionMode: claudeCommand ? claudeMode : null
+      sandbox: profile?.modeKey === "sandbox" ? mode : (body.sandbox ?? body.adapter?.sandbox ?? null),
+      permissionMode: profile?.modeKey === "permissionMode" ? mode : null
     },
     capabilities: [
       {
         name: body.capabilityName ?? "manual_cli_task",
         description: body.capabilityDescription ?? "Runs a manually registered local CLI command.",
-        riskLevel: normalizeRiskLevel(body.riskLevel, codingAgent ? "high" : "medium"),
+        riskLevel: normalizeRiskLevel(body.riskLevel, profile ? "high" : "medium"),
         riskTags: normalizeRiskTags(
           body.riskTags ?? body.capabilityRiskTags,
-          codexCommand ? codexRiskTags() : claudeCommand ? claudeRiskTags() : ["read_local", "shell_exec"]
+          profile ? profile.riskTags() : ["read_local", "shell_exec"]
         )
       }
     ],
     status: state.device.status === "online" ? "available" : "unavailable",
-    registrationNotes: codexCommand
-      ? codexRegistrationNotes()
-      : claudeCommand
-        ? claudeRegistrationNotes()
-        : {
-      risk: "Runs a local command with structured argv. Review the command, arguments, working directory, and environment before invoking.",
-      data: "Task input and command output are streamed to the local demo server as invocation events.",
-      cost: "Cost is external or unknown unless the registered command reports it.",
-      cancellation: "The Desktop Bridge attempts to terminate the process tree when cancellation is requested."
-    },
+    registrationNotes: profile
+      ? profile.notes()
+      : {
+          risk: "Runs a local command with structured argv. Review the command, arguments, working directory, and environment before invoking.",
+          data: "Task input and command output are streamed to the local demo server as invocation events.",
+          cost: "Cost is external or unknown unless the registered command reports it.",
+          cancellation: "The Desktop Bridge attempts to terminate the process tree when cancellation is requested."
+        },
     economics: normalizeAgentEconomics(body)
   });
 }
@@ -2491,7 +2522,7 @@ function recordLedgerEntry(invocation, terminalStatus) {
   const cost = invocation.result?.cost ?? {};
   const inputTokens = Number(cost.inputTokens ?? 0) || 0;
   const outputTokens = Number(cost.outputTokens ?? 0) || 0;
-  const reported = typeof cost.amountUsd === "number" ? cost.amountUsd : null;
+  const reported = finiteUsd(cost.amountUsd);
   // No provider-reported amount? Estimate from tokens x the price book (Codex).
   const estimate = reported === null ? estimateCostUsd(cost.model, inputTokens, outputTokens) : null;
   const effective = reported ?? estimate;
@@ -2505,7 +2536,7 @@ function recordLedgerEntry(invocation, terminalStatus) {
     agentName: agent?.name ?? invocation.agentId,
     deviceId: invocation.delivery?.deviceId ?? state.device.id,
     userId: agent?.economics?.costOwner ?? "unknown",
-    sourceType: cost.model === "codex" || cost.model === "claude" ? "ai_usage" : "agent_invocation",
+    sourceType: TOKEN_PRICING[String(cost.model ?? "").toLowerCase()] ? "ai_usage" : "agent_invocation",
     entryType: "cost",
     economicModel,
     meterName: amountSource === "estimated" ? "per_token" : "per_invocation",
@@ -2530,30 +2561,43 @@ function recordLedgerEntry(invocation, terminalStatus) {
   return entry;
 }
 
-// Estimate cost from tokens x a price book (USD per 1M tokens), used only when
-// an agent reports no billed amount (e.g. Codex). Estimates are marked
-// separately and never counted as finalized spend. The table is inlined so it
-// is available to the module-load self-check (no const TDZ).
+// Estimate cost from tokens x the price book, used only when an agent reports no
+// billed amount (e.g. Codex). Estimates are tracked separately from finalized
+// (reported) spend, but DO count toward budget caps (see ledgerEntrySpend).
 function estimateCostUsd(model, inputTokens, outputTokens) {
-  const pricing = {
-    codex: { inputPerMTok: 1.25, outputPerMTok: 10 },
-    claude: { inputPerMTok: 3, outputPerMTok: 15 }
-  };
-  const price = pricing[String(model ?? "").toLowerCase()];
+  const price = TOKEN_PRICING[String(model ?? "").toLowerCase()];
   if (!price || (inputTokens <= 0 && outputTokens <= 0)) return null;
   const amount = (inputTokens / 1_000_000) * price.inputPerMTok + (outputTokens / 1_000_000) * price.outputPerMTok;
   return Number(amount.toFixed(6));
+}
+
+// A finite, non-negative USD number, or null. Guards spend totals and budget
+// comparisons against NaN / Infinity / negative amounts from an agent.
+function finiteUsd(value) {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
+}
+
+// What a ledger entry contributes to spend and budgets: voided (cancelled)
+// entries contribute nothing; reported and estimated amounts both count. This is
+// the single spend rule shared by the ledger summary and budget enforcement.
+function ledgerEntrySpend(entry) {
+  if (entry.status === "voided") return 0;
+  return finiteUsd(entry.amountUsd) ?? 0;
 }
 
 function recordAgentUsage(invocation, terminalStatus) {
   const agent = findAgent(invocation.agentId);
   const summary = getAgentUsageSummary(invocation.agentId);
   const cost = invocation.result?.cost ?? {};
-  if (typeof cost.amountUsd === "number") {
-    summary.totalCostUsd = Number((Number(summary.totalCostUsd ?? 0) + cost.amountUsd).toFixed(6));
-    summary.billableInvocations = (summary.billableInvocations ?? 0) + 1;
-  } else {
-    summary.unknownCostInvocations = (summary.unknownCostInvocations ?? 0) + 1;
+  const reported = finiteUsd(cost.amountUsd);
+  // Cancelled runs are voided — they do not add to billed spend.
+  if (terminalStatus !== "cancelled") {
+    if (reported !== null) {
+      summary.totalCostUsd = Number((Number(summary.totalCostUsd ?? 0) + reported).toFixed(6));
+      summary.billableInvocations = (summary.billableInvocations ?? 0) + 1;
+    } else {
+      summary.unknownCostInvocations = (summary.unknownCostInvocations ?? 0) + 1;
+    }
   }
   summary.invocationCount += 1;
   if (terminalStatus === "succeeded") {
@@ -3131,6 +3175,7 @@ function unlinkDevice() {
 }
 
 function publicState() {
+  const ledgerSummary = summarizeLedger();
   return {
     namespace,
     protocolVersion,
@@ -3154,9 +3199,9 @@ function publicState() {
     troubleshootingReports: state.troubleshootingReports,
     agentUsageSummaries: state.agentUsageSummaries,
     ledgerEntries: state.ledgerEntries,
-    ledgerSummary: summarizeLedger(),
+    ledgerSummary,
     budgets: state.budgets,
-    budgetStatuses: budgetStatuses()
+    budgetStatuses: budgetStatuses(ledgerSummary)
   };
 }
 
@@ -3172,10 +3217,17 @@ function summarizeLedger() {
   let knownEntries = 0;
   let estimatedEntries = 0;
   let unknownEntries = 0;
+  let voidedEntries = 0;
   let billableEntries = 0;
 
   for (const entry of entries) {
-    const amount = typeof entry.amountUsd === "number" ? entry.amountUsd : 0;
+    // Voided (cancelled) entries stay visible in the ledger but contribute no
+    // spend — same rule budget enforcement uses (ledgerEntrySpend).
+    if (entry.status === "voided") {
+      voidedEntries += 1;
+      continue;
+    }
+    const amount = ledgerEntrySpend(entry);
     if (entry.amountSource === "reported") {
       finalizedUsd += amount;
       knownEntries += 1;
@@ -3213,6 +3265,7 @@ function summarizeLedger() {
     knownEntries,
     estimatedEntries,
     unknownEntries,
+    voidedEntries,
     billableEntries,
     byCostOwner: [...byOwner.values()].map(roundOwner),
     byAgent: [...byAgent.values()].map(roundOwner)
@@ -3256,38 +3309,77 @@ function upsertBudget(body) {
   return budget;
 }
 
-function ownerSpentUsd(costOwner) {
-  let spent = 0;
+// Committed spend for a cost owner (reported + estimated, excluding voided),
+// split so the UI can show the breakdown. This is the budget basis.
+function ownerSpend(costOwner) {
+  let finalizedUsd = 0;
+  let estimatedUsd = 0;
   for (const entry of state.ledgerEntries) {
-    if (entry.costOwner === costOwner && typeof entry.amountUsd === "number") {
-      spent += entry.amountUsd;
-    }
+    if (entry.costOwner !== costOwner || entry.status === "voided") continue;
+    const amount = ledgerEntrySpend(entry);
+    if (entry.amountSource === "reported") finalizedUsd += amount;
+    else if (entry.amountSource === "estimated") estimatedUsd += amount;
   }
-  return Number(spent.toFixed(6));
+  const round = (v) => Number(v.toFixed(6));
+  return { finalizedUsd: round(finalizedUsd), estimatedUsd: round(estimatedUsd), spentUsd: round(finalizedUsd + estimatedUsd) };
 }
 
-function budgetStatusFor(costOwner) {
-  const budget = state.budgets.find((item) => item.costOwner === costOwner);
-  const spentUsd = ownerSpentUsd(costOwner);
-  if (!budget) {
-    return { costOwner, exists: false, limitUsd: null, policy: "warn", spentUsd, remainingUsd: null, over: false };
+// Best-effort reservation against concurrent bursts: each in-flight (non-terminal)
+// run for this owner holds a nominal amount, since the real per-run cost is not
+// known until completion.
+function ownerInFlightReservation(costOwner) {
+  let active = 0;
+  for (const inv of state.invocations) {
+    if (!["queued", "dispatching", "running", "waiting_for_local_approval", "cancelling"].includes(inv.status)) continue;
+    const agent = findAgent(inv.agentId);
+    if ((agent?.economics?.costOwner ?? "unknown") === costOwner) active += 1;
   }
-  const over = spentUsd >= budget.limitUsd;
-  return {
+  return Number((active * BUDGET_RESERVATION_USD).toFixed(6));
+}
+
+function budgetStatusFor(costOwner, spend = ownerSpend(costOwner)) {
+  const budget = state.budgets.find((item) => item.costOwner === costOwner);
+  const base = {
     costOwner,
+    spentUsd: spend.spentUsd,
+    finalizedUsd: spend.finalizedUsd,
+    estimatedUsd: spend.estimatedUsd
+  };
+  if (!budget) {
+    return { ...base, exists: false, limitUsd: null, policy: "warn", remainingUsd: null, over: false };
+  }
+  // A limit of 0 is a deliberate "freeze" (block every run): spend >= 0 is always
+  // true. For limit > 0, at-or-over the cap is over-budget.
+  const over = spend.spentUsd >= budget.limitUsd;
+  return {
+    ...base,
     exists: true,
     budgetId: budget.id,
     limitUsd: budget.limitUsd,
     policy: budget.policy,
     currency: budget.currency,
-    spentUsd,
-    remainingUsd: Number((budget.limitUsd - spentUsd).toFixed(6)),
+    remainingUsd: Number((budget.limitUsd - spend.spentUsd).toFixed(6)),
     over
   };
 }
 
-function budgetStatuses() {
-  return state.budgets.map((budget) => budgetStatusFor(budget.costOwner));
+// Derive every budget's status from the ledger summary's per-owner rollup so the
+// hot /api/state path scans the ledger once (via summarizeLedger) instead of
+// re-scanning per budget.
+function budgetStatuses(summary = summarizeLedger()) {
+  const spendByOwner = new Map(
+    (summary.byCostOwner ?? []).map((o) => [
+      o.costOwner,
+      {
+        finalizedUsd: o.knownCostUsd,
+        estimatedUsd: o.estimatedCostUsd,
+        spentUsd: Number((o.knownCostUsd + o.estimatedCostUsd).toFixed(6))
+      }
+    ])
+  );
+  return state.budgets.map((budget) =>
+    budgetStatusFor(budget.costOwner, spendByOwner.get(budget.costOwner) ?? { finalizedUsd: 0, estimatedUsd: 0, spentUsd: 0 })
+  );
 }
 
 function recordBudgetQuotaDecision(status, decision, reason) {
@@ -3311,20 +3403,28 @@ function recordBudgetQuotaDecision(status, decision, reason) {
 function enforceBudgetForAgent(agent) {
   const costOwner = agent?.economics?.costOwner ?? "unknown";
   const status = budgetStatusFor(costOwner);
-  if (!status.exists || !status.over) {
+  if (!status.exists) {
     return { action: "allow", status };
   }
-  const spent = `$${status.spentUsd.toFixed(4)}`;
+  // Project committed spend plus a hold for in-flight runs, so a burst of
+  // concurrent invocations cannot all slip through on the same pre-completion
+  // snapshot.
+  const reservation = ownerInFlightReservation(costOwner);
+  const projectedUsd = Number((status.spentUsd + reservation).toFixed(6));
+  if (projectedUsd < status.limitUsd) {
+    return { action: "allow", status };
+  }
+  const projected = `$${projectedUsd.toFixed(4)}`;
   const limit = `$${Number(status.limitUsd).toFixed(2)}`;
   if (status.policy === "block") {
-    recordBudgetQuotaDecision(status, "blocked_quota_exceeded", `${costOwner} spent ${spent} of ${limit} budget; new runs are blocked.`);
-    return { action: "block", status, reason: `Budget exceeded for ${costOwner}: ${spent} of ${limit}.` };
+    recordBudgetQuotaDecision(status, "blocked_quota_exceeded", `${costOwner} projected ${projected} against ${limit} budget; new runs are blocked.`);
+    return { action: "block", status, reason: `Budget exceeded for ${costOwner}: ${projected} of ${limit}.` };
   }
   if (status.policy === "require_approval") {
-    recordBudgetQuotaDecision(status, "allowed", `${costOwner} is over budget (${spent} of ${limit}); local approval required.`);
-    return { action: "require_approval", status, reason: `Over budget for ${costOwner}: ${spent} of ${limit}.` };
+    recordBudgetQuotaDecision(status, "allowed", `${costOwner} is over budget (${projected} of ${limit}); local approval required.`);
+    return { action: "require_approval", status, reason: `Over budget for ${costOwner}: ${projected} of ${limit}.` };
   }
-  recordBudgetQuotaDecision(status, "allowed", `${costOwner} is over budget (${spent} of ${limit}); allowed with warning.`);
+  recordBudgetQuotaDecision(status, "allowed", `${costOwner} is over budget (${projected} of ${limit}); allowed with warning.`);
   return { action: "warn", status };
 }
 
