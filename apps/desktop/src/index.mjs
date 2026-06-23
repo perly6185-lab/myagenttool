@@ -129,6 +129,7 @@ async function runInvocation(work) {
       message: "CLI Agent exceeded its configured timeout."
     });
     cancelResult = await terminateProcessTree(child);
+    await reportForcedKill(invocationId, cancelResult, "Timeout");
   }, timeoutMs);
 
   const cancelTimer = setInterval(async () => {
@@ -142,6 +143,7 @@ async function runInvocation(work) {
         message: "Desktop Bridge sent cancellation to Demo CLI Agent."
       });
       cancelResult = await terminateProcessTree(child);
+      await reportForcedKill(invocationId, cancelResult, "Cancellation");
       if (!cancelResult.ok) {
         await request("POST", "/api/bridge/events", {
           invocationId,
@@ -656,6 +658,22 @@ async function terminateProcessTree(child, { graceMs = 2000 } = {}) {
     return { ok: true, message: "Process tree force-killed with SIGKILL after grace period.", signal: "SIGKILL" };
   }
   return { ok: false, message: "Process tree did not exit after SIGTERM and SIGKILL.", signal: "SIGKILL" };
+}
+
+// Make a forced kill observable: when a process tree ignored the graceful stop
+// and had to be SIGKILLed, record it so the timeline and audit show that a hard
+// kill was needed (not a clean cooperative stop).
+async function reportForcedKill(invocationId, result, context) {
+  if (result?.signal !== "SIGKILL") {
+    return;
+  }
+  await request("POST", "/api/bridge/events", {
+    invocationId,
+    type: "cancel_force_killed",
+    level: "warn",
+    message: `${context}: the agent process tree ignored the graceful stop and was force-killed (SIGKILL).`,
+    data: { signal: "SIGKILL", reason: result.message }
+  });
 }
 
 // Resolve true if the child exits within ms, false otherwise.

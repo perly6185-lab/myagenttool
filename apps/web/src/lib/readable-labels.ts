@@ -235,6 +235,7 @@ export function readableEventType(type: string): string {
     cancel_dispatched: "Stop sent",
     cancel_applied: "Stop completed",
     cancel_failed: "Stop failed",
+    cancel_force_killed: "Force-stopped (SIGKILL)",
   };
   return map[type] ?? type.replaceAll("_", " ");
 }
