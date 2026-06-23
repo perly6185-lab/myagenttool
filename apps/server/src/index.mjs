@@ -272,6 +272,12 @@ const server = http.createServer(async (req, res) => {
         });
         return;
       }
+      // Coding agents have no health endpoint, so auto-run the restricted CLI
+      // probe (codex exec --help / claude --version) on manual registration —
+      // a fresh agent reports Healthy/Needs attention instead of "Not checked".
+      if (agent.adapter?.type === "cli" && (isCodexCliCommand(agent.adapter.command) || isClaudeCliCommand(agent.adapter.command))) {
+        createAgentHealthCheck(agent);
+      }
       sendJson(res, 201, { agent });
       return;
     }
