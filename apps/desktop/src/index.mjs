@@ -273,6 +273,14 @@ function checkCliAgentHealth(adapter) {
       nextAction: probe.ok ? null : "Verify Codex CLI installation and authentication."
     };
   }
+  if (isClaudeCliCommand(adapter.command)) {
+    const probe = probeClaudeCli(adapter);
+    return {
+      ok: probe.ok,
+      message: probe.ok ? "Claude Code CLI non-interactive surface is reachable." : probe.summary,
+      nextAction: probe.ok ? null : "Verify Claude Code CLI installation and authentication."
+    };
+  }
   if (adapter.command === "demo-agent") {
     return {
       ok: true,
@@ -586,6 +594,30 @@ function isCodexCliCommand(command) {
   return ["codex", "codex.cmd", "codex.ps1", "codex.exe"].some((name) => normalized === name || normalized.endsWith(`/${name}`) || normalized.endsWith(`\\${name}`));
 }
 
+function isClaudeCliCommand(command) {
+  const normalized = String(command ?? "").trim().toLowerCase();
+  return ["claude", "claude.cmd", "claude.exe"].some((name) => normalized === name || normalized.endsWith(`/${name}`) || normalized.endsWith(`\\${name}`));
+}
+
+// Restricted Claude probe: `claude --version` only, no prompt is executed.
+function probeClaudeCli(adapter) {
+  const command = String(adapter.command ?? "claude");
+  const result = spawnSync(command, ["--version"], {
+    cwd: process.cwd(),
+    env: buildEnv({ ...adapter, environmentPolicy: "inherit_safe" }),
+    windowsHide: true,
+    encoding: "utf8",
+    shell: false,
+    stdio: ["ignore", "pipe", "pipe"]
+  });
+  const combined = `${result.stdout ?? ""}\n${result.stderr ?? ""}`;
+  const ok = result.status === 0 && /Claude Code|\d+\.\d+\.\d+/.test(combined);
+  return {
+    ok,
+    summary: ok ? "Restricted Claude CLI probe passed." : "Restricted Claude CLI probe failed."
+  };
+}
+
 function codexCliArgs() {
   return ["exec", "--json", "--sandbox", "read-only", "--ephemeral", "{{task}}"];
 }
@@ -638,6 +670,9 @@ async function handleAgentLine(invocationId, line, adapter = {}) {
   }
   if (adapter.outputFormat === "codex_jsonl") {
     return handleCodexJsonLine(invocationId, line);
+  }
+  if (adapter.outputFormat === "claude_jsonl") {
+    return handleClaudeJsonLine(invocationId, line);
   }
   if (line.startsWith("RESULT ")) {
     return JSON.parse(line.slice("RESULT ".length));
@@ -709,6 +744,70 @@ function codexEventMessage(event) {
   if (event.type === "error") return `Codex error: ${event.message ?? event.error?.message ?? "unknown error"}.`;
   if (event.item?.type === "agent_message" && event.item?.text) return String(event.item.text);
   if (event.item?.type) return `Codex event: ${event.item.type}.`;
+  return null;
+}
+
+// Parse one Claude Code stream-json line. The final `result` event carries the
+// answer text; assistant events stream interim output as evidence.
+async function handleClaudeJsonLine(invocationId, line) {
+  let event;
+  try {
+    event = JSON.parse(line);
+  } catch {
+    await request("POST", "/api/bridge/events", {
+      invocationId,
+      type: "agent_output",
+      level: "info",
+      message: line
+    });
+    return null;
+  }
+
+  const message = claudeEventMessage(event);
+  if (message) {
+    await request("POST", "/api/bridge/events", {
+      invocationId,
+      type: "agent_output",
+      level: event.type === "result" && event.subtype !== "success" ? "warn" : "info",
+      message,
+      data: {
+        source: "claude_jsonl",
+        eventType: event.type,
+        subtype: event.subtype ?? null
+      }
+    });
+  }
+
+  if (event.type === "result") {
+    const text = typeof event.result === "string" ? event.result : `Claude result: ${event.subtype ?? "done"}`;
+    return {
+      summary: String(text),
+      touchedUserFiles: false,
+      output: { subtype: event.subtype ?? null, numTurns: event.num_turns ?? null },
+      cost: {
+        model: "claude",
+        billable: true,
+        unknown: typeof event.total_cost_usd !== "number",
+        amountUsd: typeof event.total_cost_usd === "number" ? event.total_cost_usd : null
+      }
+    };
+  }
+
+  return null;
+}
+
+function claudeEventMessage(event) {
+  if (event.type === "assistant" && Array.isArray(event.message?.content)) {
+    const text = event.message.content
+      .filter((block) => block.type === "text")
+      .map((block) => block.text)
+      .join("")
+      .trim();
+    return text || null;
+  }
+  if (event.type === "result") {
+    return typeof event.result === "string" ? event.result : `Claude result: ${event.subtype ?? "done"}.`;
+  }
   return null;
 }
 

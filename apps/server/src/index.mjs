@@ -769,8 +769,15 @@ function createCliAgent(body) {
   }
   const args = Array.isArray(body.args ?? body.adapter?.args) ? (body.args ?? body.adapter.args).map(String) : [];
   const codexCommand = isCodexCliCommand(command);
+  const claudeCommand = isClaudeCliCommand(command);
+  const codingAgent = codexCommand || claudeCommand;
   const codexSandbox = codexCommand ? normalizeCodexSandbox(body.sandbox ?? body.adapter?.sandbox) : null;
-  const normalizedArgs = args.length > 0 ? args : codexCommand ? codexCliArgs(codexSandbox) : [];
+  // Claude's permission mode is the analog of Codex's sandbox; accept either key.
+  const claudeMode = claudeCommand
+    ? normalizeClaudePermissionMode(body.permissionMode ?? body.adapter?.permissionMode ?? body.sandbox)
+    : null;
+  const defaultCodingArgs = codexCommand ? codexCliArgs(codexSandbox) : claudeCommand ? claudeCliArgs(claudeMode) : [];
+  const normalizedArgs = args.length > 0 ? args : defaultCodingArgs;
   return baseAgent({
     id,
     type: "cli",
@@ -785,21 +792,29 @@ function createCliAgent(body) {
       workingDirectoryPolicy: body.workingDirectory ? "explicit" : "bridge_default",
       environmentPolicy: body.env ? "explicit_only" : "inherit_safe",
       env: normalizeEnv(body.env),
-      timeoutSeconds: Number(body.timeoutSeconds ?? (codexCommand ? 120 : 30)),
+      timeoutSeconds: Number(body.timeoutSeconds ?? (claudeCommand ? 180 : codexCommand ? 120 : 30)),
       cancellation: "supported",
       outputFormat: normalizeCliOutputFormat(body.outputFormat ?? body.adapter?.outputFormat, command),
-      sandbox: codexCommand ? codexSandbox : (body.sandbox ?? body.adapter?.sandbox ?? null)
+      sandbox: codexCommand ? codexSandbox : (body.sandbox ?? body.adapter?.sandbox ?? null),
+      permissionMode: claudeCommand ? claudeMode : null
     },
     capabilities: [
       {
         name: body.capabilityName ?? "manual_cli_task",
         description: body.capabilityDescription ?? "Runs a manually registered local CLI command.",
-        riskLevel: normalizeRiskLevel(body.riskLevel, codexCommand ? "high" : "medium"),
-        riskTags: normalizeRiskTags(body.riskTags ?? body.capabilityRiskTags, codexCommand ? codexRiskTags() : ["read_local", "shell_exec"])
+        riskLevel: normalizeRiskLevel(body.riskLevel, codingAgent ? "high" : "medium"),
+        riskTags: normalizeRiskTags(
+          body.riskTags ?? body.capabilityRiskTags,
+          codexCommand ? codexRiskTags() : claudeCommand ? claudeRiskTags() : ["read_local", "shell_exec"]
+        )
       }
     ],
     status: state.device.status === "online" ? "available" : "unavailable",
-    registrationNotes: codexCommand ? codexRegistrationNotes() : {
+    registrationNotes: codexCommand
+      ? codexRegistrationNotes()
+      : claudeCommand
+        ? claudeRegistrationNotes()
+        : {
       risk: "Runs a local command with structured argv. Review the command, arguments, working directory, and environment before invoking.",
       data: "Task input and command output are streamed to the local demo server as invocation events.",
       cost: "Cost is external or unknown unless the registered command reports it.",
@@ -1968,7 +1983,10 @@ function codexRiskTags() {
 function normalizeCliOutputFormat(value, command) {
   const normalized = String(value ?? "").trim().toLowerCase();
   if (normalized === "codex_jsonl") return "codex_jsonl";
-  return isCodexCliCommand(command) ? "codex_jsonl" : "plain_result";
+  if (normalized === "claude_jsonl") return "claude_jsonl";
+  if (isCodexCliCommand(command)) return "codex_jsonl";
+  if (isClaudeCliCommand(command)) return "claude_jsonl";
+  return "plain_result";
 }
 
 function codexRegistrationNotes() {
@@ -1977,6 +1995,37 @@ function codexRegistrationNotes() {
     data: "Task input, Codex JSONL events, command output, trace, and result summary are recorded by the local demo server.",
     cost: "Codex cost is external or unknown to the demo server and remains visible for review.",
     cancellation: "The Desktop Bridge attempts to terminate the Codex process tree when cancellation is requested."
+  };
+}
+
+function isClaudeCliCommand(command) {
+  const normalized = String(command ?? "").trim().toLowerCase();
+  return ["claude", "claude.cmd", "claude.exe"].some((name) => normalized === name || normalized.endsWith(`/${name}`) || normalized.endsWith(`\\${name}`));
+}
+
+// Claude Code runs non-interactively via `claude -p` with stream-json events.
+// plan is the safe default (no edits); acceptEdits and bypassPermissions are
+// writable opt-ins. "default"/"auto" are excluded because they block on
+// interactive prompts in a headless bridge.
+function normalizeClaudePermissionMode(value) {
+  const normalized = String(value ?? "").trim();
+  return ["plan", "acceptEdits", "bypassPermissions"].includes(normalized) ? normalized : "plan";
+}
+
+function claudeCliArgs(permissionMode = "plan") {
+  return ["-p", "{{task}}", "--output-format", "stream-json", "--verbose", "--permission-mode", normalizeClaudePermissionMode(permissionMode)];
+}
+
+function claudeRiskTags() {
+  return ["read_local", "write_local", "shell_exec", "network_access", "repo_context", "code_change"];
+}
+
+function claudeRegistrationNotes() {
+  return {
+    risk: "Runs Claude Code non-interactively (claude -p). Review repository access, permission mode, tool use, and proposed file changes before invoking.",
+    data: "Task input, Claude stream-json events, result text, trace, and result summary are recorded by the local demo server.",
+    cost: "Claude cost is external or unknown to the demo server and remains visible for review.",
+    cancellation: "The Desktop Bridge attempts to terminate the Claude process tree when cancellation is requested."
   };
 }
 

@@ -10,7 +10,7 @@ import { useConsoleState } from "@/data/use-console-state";
 import { useAsyncAction, api } from "@/data/use-console-actions";
 import { useUiStore } from "@/store/ui-store";
 import { readableAdapterType, readableDiscoverySource } from "@/lib/readable-labels";
-import { RegisterCodexCard } from "@/features/discovery/register-codex-card";
+import { RegisterCodingAgentCard } from "@/features/discovery/register-coding-agent-card";
 import type { DiscoveryCandidate, DiscoveryRunSnapshot } from "@/lib/console-state";
 
 const FULL_SCOPE = [
@@ -87,7 +87,10 @@ export function DiscoveryView() {
 
   return (
     <div className="space-y-5">
-      <RegisterCodexCard />
+      <div className="grid gap-5 xl:grid-cols-2">
+        <RegisterCodingAgentCard kind="codex" />
+        <RegisterCodingAgentCard kind="claude" />
+      </div>
 
       <Card>
         <CardHeader>
