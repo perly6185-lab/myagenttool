@@ -178,12 +178,22 @@ export interface LedgerEntry {
   billable?: boolean;
   status?: string;
   costOwner?: string;
+  projectId?: string;
   invocationStatus?: string;
   createdAt: string;
 }
 
 export interface LedgerOwnerRollup {
   costOwner: string;
+  entries: number;
+  knownCostUsd: number;
+  estimatedCostUsd: number;
+  unknownEntries: number;
+}
+
+export interface LedgerProjectRollup {
+  projectId: string;
+  projectName?: string;
   entries: number;
   knownCostUsd: number;
   estimatedCostUsd: number;
@@ -212,11 +222,25 @@ export interface LedgerSummary {
   voidedEntries?: number;
   billableEntries: number;
   byCostOwner: LedgerOwnerRollup[];
+  byProject: LedgerProjectRollup[];
   byAgent: LedgerAgentRollup[];
 }
 
+export interface ProjectSnapshot {
+  id: string;
+  name: string;
+  color: string;
+  ownerTeamId: string;
+  budgetPoolId: string | null;
+  defaultAgentId: string | null;
+  status: "active" | "archived";
+  createdAt: string;
+  updatedAt?: string;
+}
+
 export interface BudgetStatus {
-  costOwner: string;
+  projectId: string;
+  projectName?: string;
   exists: boolean;
   budgetId?: string;
   limitUsd: number | null;
@@ -272,6 +296,7 @@ export interface RetentionSettings {
 
 export interface ConsoleSnapshot {
   device: DeviceSnapshot;
+  projects?: ProjectSnapshot[];
   agent: AgentSnapshot | null;
   agents: AgentSnapshot[];
   invocations: InvocationSnapshot[];

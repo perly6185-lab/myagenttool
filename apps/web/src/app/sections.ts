@@ -1,5 +1,6 @@
 import {
   Boxes,
+  FolderKanban,
   LayoutDashboard,
   ListChecks,
   MonitorSmartphone,
@@ -21,6 +22,7 @@ export interface SectionDef {
 /** Top-level control-plane domains shown in the nav rail, in order. */
 export const SECTIONS: SectionDef[] = [
   { key: "dashboard", label: "Overview", icon: LayoutDashboard, blurb: "Start a task and watch it run" },
+  { key: "projects", label: "Projects", icon: FolderKanban, blurb: "Group work and own budgets" },
   { key: "invocations", label: "Invocations", icon: ListChecks, blurb: "Every call, status, and result" },
   { key: "agents", label: "Agents", icon: Boxes, blurb: "Registered agents and health" },
   { key: "devices", label: "Devices", icon: MonitorSmartphone, blurb: "Local bridges and platforms" },

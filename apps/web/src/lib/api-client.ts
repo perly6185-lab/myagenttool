@@ -73,8 +73,8 @@ export interface IntegrationPayload {
 }
 
 export const api = {
-  createInvocation: (task: string, agentId: string | null) =>
-    request("POST", "/api/invocations", { task, agentId }),
+  createInvocation: (task: string, agentId: string | null, projectId?: string | null) =>
+    request("POST", "/api/invocations", { task, agentId, projectId }),
   cancelInvocation: (id: string) =>
     request("POST", `/api/invocations/${encodeURIComponent(id)}/cancel`),
   troubleshoot: (id: string) =>
@@ -102,8 +102,13 @@ export const api = {
     request("POST", "/api/integration-builder/draft", payload),
   updateRetention: (payload: Record<string, number>) =>
     request("PATCH", "/api/integration-retention", payload),
-  setBudget: (payload: { costOwner: string; limitUsd: number; policy: string }) =>
+  setBudget: (payload: { projectId: string; limitUsd: number; policy: string }) =>
     request("PUT", "/api/budgets", payload),
+
+  createProject: (payload: { name: string; color?: string }) =>
+    request("POST", "/api/projects", payload),
+  updateProject: (id: string, payload: Record<string, unknown>) =>
+    request("PATCH", `/api/projects/${encodeURIComponent(id)}`, payload),
 
   approveApproval: (id: string) =>
     request("POST", `/api/approvals/${encodeURIComponent(id)}/approve`),

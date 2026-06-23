@@ -10,6 +10,7 @@ import type {
   JsonObject,
   JsonValue,
   PolicyDecisionId,
+  ProjectId,
   SpanId,
   TraceId,
   TroubleshootingReportId,
@@ -121,6 +122,7 @@ export interface InvocationTroubleshootingReport {
 export interface Invocation {
   id: InvocationId;
   ideaSessionId: IdeaSessionId | null;
+  projectId: ProjectId;
   agentId: AgentId;
   requestedBy: UserId;
   status: InvocationStatus;

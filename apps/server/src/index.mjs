@@ -1,10 +1,22 @@
 import http from "node:http";
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 const namespace = "com.myagenttool";
 const protocolVersion = "0.0.0";
 const host = process.env.SERVER_HOST ?? "127.0.0.1";
 const port = Number(process.env.SERVER_PORT ?? 3001);
 const dispatchLeaseMs = Number(process.env.SERVER_DISPATCH_LEASE_MS ?? 30_000);
+
+// JSON snapshot persistence (orca-style flat file + schema version). SQLite is a
+// P1+ concern; for now durability matters most for projects/ledger/budgets.
+const PERSIST_VERSION = 1;
+const PERSIST_FILE = process.env.SERVER_STATE_FILE
+  ? path.resolve(process.env.SERVER_STATE_FILE)
+  : path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "data", "state.json");
+const PERSIST_KEYS = ["projects", "agents", "invocations", "ledgerEntries", "budgets", "quotaDecisionRecords"];
+let persistTimer = null;
 
 const state = {
   device: {
@@ -23,9 +35,22 @@ const state = {
     credentialRevokedAt: null,
     createdAt: now()
   },
+  projects: [
+    {
+      id: "prj_default",
+      name: "Default Project",
+      color: "#6366f1",
+      ownerTeamId: "team_local",
+      budgetPoolId: null,
+      defaultAgentId: "agt_demo_cli",
+      status: "active",
+      createdAt: now()
+    }
+  ],
   agents: [
     {
       id: "agt_demo_cli",
+      projectId: "prj_default",
       name: "Demo CLI Agent",
       description: "Safe local demo agent for M0 smoke tests.",
       ownerUserId: "usr_local",
@@ -78,6 +103,7 @@ const state = {
     },
     {
       id: "agt_platform_troubleshooter",
+      projectId: "prj_default",
       name: "Invocation Troubleshooter",
       description: "Platform-owned agent that explains failed invocations and suggested fixes.",
       ownerUserId: "system",
@@ -341,6 +367,38 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    if (req.method === "GET" && url.pathname === "/api/projects") {
+      sendJson(res, 200, { projects: state.projects });
+      return;
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/projects") {
+      const body = await readJson(req);
+      let project;
+      try {
+        project = createProject(body);
+      } catch (error) {
+        sendJson(res, 400, { error: "invalid_project", message: error instanceof Error ? error.message : String(error) });
+        return;
+      }
+      sendJson(res, 201, { project });
+      return;
+    }
+
+    const projectMatch = url.pathname.match(/^\/api\/projects\/([^/]+)$/);
+    if (req.method === "PATCH" && projectMatch) {
+      const body = await readJson(req);
+      let project;
+      try {
+        project = updateProject(decodeURIComponent(projectMatch[1]), body);
+      } catch (error) {
+        sendJson(res, 404, { error: "project_not_found", message: error instanceof Error ? error.message : String(error) });
+        return;
+      }
+      sendJson(res, 200, { project });
+      return;
+    }
+
     if ((req.method === "PUT" || req.method === "POST") && url.pathname === "/api/budgets") {
       const body = await readJson(req);
       let budget;
@@ -350,7 +408,7 @@ const server = http.createServer(async (req, res) => {
         sendJson(res, 400, { error: "invalid_budget", message: error instanceof Error ? error.message : String(error) });
         return;
       }
-      sendJson(res, 200, { budget, status: budgetStatusFor(budget.costOwner) });
+      sendJson(res, 200, { budget, status: budgetStatusFor(budget.projectId) });
       return;
     }
 
@@ -746,12 +804,13 @@ const server = http.createServer(async (req, res) => {
         sendJson(res, 409, { error: "device_unlinked" });
         return;
       }
-      const budget = enforceBudgetForAgent(agent);
+      const projectId = resolveProjectId(body.projectId ?? agent.projectId);
+      const budget = enforceBudgetForProject(projectId);
       if (budget.action === "block") {
         sendJson(res, 409, { error: "budget_exceeded", message: budget.reason, budget: budget.status });
         return;
       }
-      const invocationOptions = { ...(body.options ?? {}) };
+      const invocationOptions = { ...(body.options ?? {}), projectId };
       if (budget.action === "require_approval") {
         invocationOptions.requireLocalApproval = true;
         invocationOptions.metadata = {
@@ -803,6 +862,8 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
+loadPersistedState();
+
 server.listen(port, host, () => {
   console.log(`[server] http://${host}:${port}`);
 });
@@ -811,10 +872,91 @@ function now() {
   return new Date().toISOString();
 }
 
+// Restore persisted slices on boot. A version mismatch drops the file wholesale
+// (e.g. pre-project budgets keyed by costOwner) so the seed state takes over.
+function loadPersistedState() {
+  try {
+    if (!fs.existsSync(PERSIST_FILE)) return;
+    const snapshot = JSON.parse(fs.readFileSync(PERSIST_FILE, "utf8"));
+    if (!snapshot || snapshot.version !== PERSIST_VERSION) {
+      console.warn(`[server] ignoring incompatible state snapshot (version ${snapshot?.version})`);
+      return;
+    }
+    for (const key of PERSIST_KEYS) {
+      if (Array.isArray(snapshot[key])) state[key] = snapshot[key];
+    }
+    if (Number.isFinite(snapshot.idCounter)) idCounter = snapshot.idCounter;
+    console.log(`[server] restored state from ${PERSIST_FILE}`);
+  } catch (error) {
+    console.warn(`[server] failed to load state snapshot: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+// Debounced write so a burst of mutations coalesces into one disk write.
+function persistState() {
+  if (persistTimer) return;
+  persistTimer = setTimeout(() => {
+    persistTimer = null;
+    try {
+      fs.mkdirSync(path.dirname(PERSIST_FILE), { recursive: true });
+      const snapshot = { version: PERSIST_VERSION, savedAt: now(), idCounter };
+      for (const key of PERSIST_KEYS) snapshot[key] = state[key];
+      fs.writeFileSync(PERSIST_FILE, JSON.stringify(snapshot, null, 2));
+    } catch (error) {
+      console.warn(`[server] failed to persist state: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }, 500);
+  if (typeof persistTimer.unref === "function") persistTimer.unref();
+}
+
 function nextId(prefix) {
   const id = `${prefix}_${String(idCounter).padStart(4, "0")}`;
   idCounter += 1;
   return id;
+}
+
+// --- Projects ------------------------------------------------------------
+// A Project is the attribution floor every invocation rolls up to. Resolve any
+// caller-supplied id to a known project, falling back to the default so headless
+// and bridge runs always have a valid owner.
+function findProject(projectId) {
+  return state.projects.find((item) => item.id === projectId) ?? null;
+}
+
+function resolveProjectId(projectId) {
+  return findProject(projectId) ? projectId : "prj_default";
+}
+
+function createProject(body) {
+  const name = String(body.name ?? "").trim();
+  if (!name) throw new Error("Project name is required.");
+  const project = {
+    id: nextId("prj"),
+    name,
+    color: String(body.color ?? "#6366f1"),
+    ownerTeamId: String(body.ownerTeamId ?? "team_local"),
+    budgetPoolId: body.budgetPoolId ?? null,
+    defaultAgentId: body.defaultAgentId ?? null,
+    status: "active",
+    createdAt: now(),
+    updatedAt: now()
+  };
+  state.projects.push(project);
+  persistState();
+  return project;
+}
+
+function updateProject(projectId, patch) {
+  const project = findProject(projectId);
+  if (!project) throw new Error("Project not found.");
+  if (patch.name !== undefined) project.name = String(patch.name).trim() || project.name;
+  if (patch.color !== undefined) project.color = String(patch.color);
+  if (patch.defaultAgentId !== undefined) project.defaultAgentId = patch.defaultAgentId ?? null;
+  if (patch.budgetPoolId !== undefined) project.budgetPoolId = patch.budgetPoolId ?? null;
+  if (patch.status !== undefined && ["active", "archived"].includes(patch.status)) project.status = patch.status;
+  project.updatedAt = now();
+  persistState();
+  return project;
 }
 
 function registerAgent(body) {
@@ -894,6 +1036,7 @@ function createCliAgent(body) {
       }
     ],
     status: state.device.status === "online" ? "available" : "unavailable",
+    projectId: body.projectId,
     registrationNotes: profile
       ? profile.notes()
       : {
@@ -941,6 +1084,7 @@ function createHttpAgent(body) {
       }
     ],
     status: "available",
+    projectId: body.projectId,
     registrationNotes: {
       risk: "Sends invocation input to the configured HTTP endpoint.",
       data: "Task input leaves the local demo server and endpoint response is stored as the result.",
@@ -951,10 +1095,11 @@ function createHttpAgent(body) {
   });
 }
 
-function baseAgent({ id, name, description, location, adapter, capabilities, status, registrationNotes, economics = {} }) {
+function baseAgent({ id, name, description, location, adapter, capabilities, status, registrationNotes, economics = {}, projectId }) {
   const createdAt = now();
   return {
     id,
+    projectId: resolveProjectId(projectId),
     name: String(name),
     description: String(description),
     ownerUserId: "usr_local",
@@ -2157,9 +2302,11 @@ function createInvocation(task, agent = defaultAgent(), options = {}) {
   const trace = createTrace(id, agent);
   const policy = evaluateInvocationPolicy(agent, options);
   const directRun = runsWithoutBridge(agent);
+  const projectId = resolveProjectId(options.projectId ?? agent.projectId);
   const invocation = {
     id,
     ideaSessionId: null,
+    projectId,
     agentId: agent.id,
     requestedBy: "usr_local",
     status: policy.decision === "requires_local_approval" ? "waiting_for_local_approval" : directRun ? "running" : "queued",
@@ -2236,6 +2383,7 @@ function createInvocation(task, agent = defaultAgent(), options = {}) {
       message: `Demo invocation authorized for ${agent.name}.`
     });
   }
+  persistState();
   return invocation;
 }
 
@@ -2532,6 +2680,7 @@ function recordLedgerEntry(invocation, terminalStatus) {
   const entry = {
     id: nextId("led_demo"),
     invocationId: invocation.id,
+    projectId: invocation.projectId ?? "prj_default",
     agentId: invocation.agentId,
     agentName: agent?.name ?? invocation.agentId,
     deviceId: invocation.delivery?.deviceId ?? state.device.id,
@@ -2558,6 +2707,7 @@ function recordLedgerEntry(invocation, terminalStatus) {
   };
   state.ledgerEntries.unshift(entry);
   state.ledgerEntries = state.ledgerEntries.slice(0, 200);
+  persistState();
   return entry;
 }
 
@@ -3180,6 +3330,7 @@ function publicState() {
     namespace,
     protocolVersion,
     device: state.device,
+    projects: state.projects,
     agent: defaultAgent(),
     agents: state.agents,
     invocations: state.invocations,
@@ -3212,6 +3363,7 @@ function summarizeLedger() {
   const entries = state.ledgerEntries;
   const byOwner = new Map();
   const byAgent = new Map();
+  const byProject = new Map();
   let finalizedUsd = 0;
   let estimatedUsd = 0;
   let knownEntries = 0;
@@ -3246,6 +3398,14 @@ function summarizeLedger() {
     else owner.unknownEntries += 1;
     byOwner.set(entry.costOwner, owner);
 
+    const projectId = entry.projectId ?? "prj_default";
+    const project = byProject.get(projectId) ?? { projectId, projectName: findProject(projectId)?.name ?? projectId, entries: 0, knownCostUsd: 0, estimatedCostUsd: 0, unknownEntries: 0 };
+    project.entries += 1;
+    if (entry.amountSource === "reported") project.knownCostUsd += amount;
+    else if (entry.amountSource === "estimated") project.estimatedCostUsd += amount;
+    else project.unknownEntries += 1;
+    byProject.set(projectId, project);
+
     const agent = byAgent.get(entry.agentId) ?? { agentId: entry.agentId, agentName: entry.agentName, provider: entry.provider, entries: 0, knownCostUsd: 0, estimatedCostUsd: 0, unknownEntries: 0 };
     agent.entries += 1;
     if (entry.amountSource === "reported") agent.knownCostUsd += amount;
@@ -3268,6 +3428,7 @@ function summarizeLedger() {
     voidedEntries,
     billableEntries,
     byCostOwner: [...byOwner.values()].map(roundOwner),
+    byProject: [...byProject.values()].map(roundOwner),
     byAgent: [...byAgent.values()].map(roundOwner)
   };
 }
@@ -3284,21 +3445,23 @@ function normalizeBudgetPolicy(value) {
 }
 
 function upsertBudget(body) {
-  const costOwner = String(body.costOwner ?? "").trim();
-  if (!costOwner) throw new Error("Budget costOwner is required.");
+  const projectId = String(body.projectId ?? "").trim();
+  if (!projectId) throw new Error("Budget projectId is required.");
+  if (!findProject(projectId)) throw new Error("Budget projectId must reference a known project.");
   const limitUsd = Number(body.limitUsd);
   if (!Number.isFinite(limitUsd) || limitUsd < 0) throw new Error("Budget limitUsd must be a non-negative number.");
   const policy = normalizeBudgetPolicy(body.policy);
-  const existing = state.budgets.find((item) => item.costOwner === costOwner);
+  const existing = state.budgets.find((item) => item.projectId === projectId);
   if (existing) {
     existing.limitUsd = limitUsd;
     existing.policy = policy;
     existing.updatedAt = now();
+    persistState();
     return existing;
   }
   const budget = {
     id: nextId("bgt_demo"),
-    costOwner,
+    projectId,
     limitUsd,
     policy,
     currency: "USD",
@@ -3306,16 +3469,17 @@ function upsertBudget(body) {
     updatedAt: now()
   };
   state.budgets.push(budget);
+  persistState();
   return budget;
 }
 
-// Committed spend for a cost owner (reported + estimated, excluding voided),
+// Committed spend for a project (reported + estimated, excluding voided),
 // split so the UI can show the breakdown. This is the budget basis.
-function ownerSpend(costOwner) {
+function projectSpend(projectId) {
   let finalizedUsd = 0;
   let estimatedUsd = 0;
   for (const entry of state.ledgerEntries) {
-    if (entry.costOwner !== costOwner || entry.status === "voided") continue;
+    if ((entry.projectId ?? "prj_default") !== projectId || entry.status === "voided") continue;
     const amount = ledgerEntrySpend(entry);
     if (entry.amountSource === "reported") finalizedUsd += amount;
     else if (entry.amountSource === "estimated") estimatedUsd += amount;
@@ -3325,22 +3489,22 @@ function ownerSpend(costOwner) {
 }
 
 // Best-effort reservation against concurrent bursts: each in-flight (non-terminal)
-// run for this owner holds a nominal amount, since the real per-run cost is not
+// run for this project holds a nominal amount, since the real per-run cost is not
 // known until completion.
-function ownerInFlightReservation(costOwner) {
+function projectInFlightReservation(projectId) {
   let active = 0;
   for (const inv of state.invocations) {
     if (!["queued", "dispatching", "running", "waiting_for_local_approval", "cancelling"].includes(inv.status)) continue;
-    const agent = findAgent(inv.agentId);
-    if ((agent?.economics?.costOwner ?? "unknown") === costOwner) active += 1;
+    if ((inv.projectId ?? "prj_default") === projectId) active += 1;
   }
   return Number((active * BUDGET_RESERVATION_USD).toFixed(6));
 }
 
-function budgetStatusFor(costOwner, spend = ownerSpend(costOwner)) {
-  const budget = state.budgets.find((item) => item.costOwner === costOwner);
+function budgetStatusFor(projectId, spend = projectSpend(projectId)) {
+  const budget = state.budgets.find((item) => item.projectId === projectId);
   const base = {
-    costOwner,
+    projectId,
+    projectName: findProject(projectId)?.name ?? projectId,
     spentUsd: spend.spentUsd,
     finalizedUsd: spend.finalizedUsd,
     estimatedUsd: spend.estimatedUsd
@@ -3363,32 +3527,32 @@ function budgetStatusFor(costOwner, spend = ownerSpend(costOwner)) {
   };
 }
 
-// Derive every budget's status from the ledger summary's per-owner rollup so the
+// Derive every budget's status from the ledger summary's per-project rollup so the
 // hot /api/state path scans the ledger once (via summarizeLedger) instead of
 // re-scanning per budget.
 function budgetStatuses(summary = summarizeLedger()) {
-  const spendByOwner = new Map(
-    (summary.byCostOwner ?? []).map((o) => [
-      o.costOwner,
+  const spendByProject = new Map(
+    (summary.byProject ?? []).map((p) => [
+      p.projectId,
       {
-        finalizedUsd: o.knownCostUsd,
-        estimatedUsd: o.estimatedCostUsd,
-        spentUsd: Number((o.knownCostUsd + o.estimatedCostUsd).toFixed(6))
+        finalizedUsd: p.knownCostUsd,
+        estimatedUsd: p.estimatedCostUsd,
+        spentUsd: Number((p.knownCostUsd + p.estimatedCostUsd).toFixed(6))
       }
     ])
   );
   return state.budgets.map((budget) =>
-    budgetStatusFor(budget.costOwner, spendByOwner.get(budget.costOwner) ?? { finalizedUsd: 0, estimatedUsd: 0, spentUsd: 0 })
+    budgetStatusFor(budget.projectId, spendByProject.get(budget.projectId) ?? { finalizedUsd: 0, estimatedUsd: 0, spentUsd: 0 })
   );
 }
 
 function recordBudgetQuotaDecision(status, decision, reason) {
   const record = {
     id: nextId("qd_demo"),
-    subjectType: "user",
-    subjectId: status.costOwner,
+    subjectType: "team",
+    subjectId: status.projectId,
     resourceType: "budget_pool",
-    resourceId: status.budgetId ?? status.costOwner,
+    resourceId: status.budgetId ?? status.projectId,
     decision,
     reason,
     createdAt: now()
@@ -3398,18 +3562,18 @@ function recordBudgetQuotaDecision(status, decision, reason) {
   return record;
 }
 
-// Evaluate the cost owner's budget before an invocation is created. Returns the
-// action to take; only an over-budget owner with a budget set is affected.
-function enforceBudgetForAgent(agent) {
-  const costOwner = agent?.economics?.costOwner ?? "unknown";
-  const status = budgetStatusFor(costOwner);
+// Evaluate the project's budget before an invocation is created. Returns the
+// action to take; only an over-budget project with a budget set is affected.
+function enforceBudgetForProject(projectId) {
+  const status = budgetStatusFor(projectId);
+  const label = status.projectName ?? projectId;
   if (!status.exists) {
     return { action: "allow", status };
   }
   // Project committed spend plus a hold for in-flight runs, so a burst of
   // concurrent invocations cannot all slip through on the same pre-completion
   // snapshot.
-  const reservation = ownerInFlightReservation(costOwner);
+  const reservation = projectInFlightReservation(projectId);
   const projectedUsd = Number((status.spentUsd + reservation).toFixed(6));
   if (projectedUsd < status.limitUsd) {
     return { action: "allow", status };
@@ -3417,14 +3581,14 @@ function enforceBudgetForAgent(agent) {
   const projected = `$${projectedUsd.toFixed(4)}`;
   const limit = `$${Number(status.limitUsd).toFixed(2)}`;
   if (status.policy === "block") {
-    recordBudgetQuotaDecision(status, "blocked_quota_exceeded", `${costOwner} projected ${projected} against ${limit} budget; new runs are blocked.`);
-    return { action: "block", status, reason: `Budget exceeded for ${costOwner}: ${projected} of ${limit}.` };
+    recordBudgetQuotaDecision(status, "blocked_quota_exceeded", `${label} projected ${projected} against ${limit} budget; new runs are blocked.`);
+    return { action: "block", status, reason: `Budget exceeded for ${label}: ${projected} of ${limit}.` };
   }
   if (status.policy === "require_approval") {
-    recordBudgetQuotaDecision(status, "allowed", `${costOwner} is over budget (${projected} of ${limit}); local approval required.`);
-    return { action: "require_approval", status, reason: `Over budget for ${costOwner}: ${projected} of ${limit}.` };
+    recordBudgetQuotaDecision(status, "allowed", `${label} is over budget (${projected} of ${limit}); local approval required.`);
+    return { action: "require_approval", status, reason: `Over budget for ${label}: ${projected} of ${limit}.` };
   }
-  recordBudgetQuotaDecision(status, "allowed", `${costOwner} is over budget (${projected} of ${limit}); allowed with warning.`);
+  recordBudgetQuotaDecision(status, "allowed", `${label} is over budget (${projected} of ${limit}); allowed with warning.`);
   return { action: "warn", status };
 }
 
@@ -3701,6 +3865,7 @@ function resetDemoStateForCheck() {
   state.device.unlinkState = "linked";
   state.device.credentialRevokedAt = null;
   state.agents = state.agents.filter((agent) => ["agt_demo_cli", "agt_platform_troubleshooter", "agt_platform_integration_builder"].includes(agent.id));
+  state.projects = state.projects.filter((project) => project.id === "prj_default");
   const demoAgent = defaultAgent();
   if (demoAgent) {
     demoAgent.status = "unavailable";

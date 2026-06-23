@@ -9,6 +9,7 @@ function toCsv(entries: LedgerEntry[]): string {
   const header = [
     "id",
     "createdAt",
+    "projectId",
     "costOwner",
     "agent",
     "provider",
@@ -22,6 +23,7 @@ function toCsv(entries: LedgerEntry[]): string {
   const rows = entries.map((e) => [
     e.id,
     e.createdAt,
+    e.projectId ?? "",
     e.costOwner ?? "",
     e.agentName ?? e.agentId ?? "",
     e.provider ?? "",
@@ -37,7 +39,7 @@ function toCsv(entries: LedgerEntry[]): string {
 
 export function ChargebackCard() {
   const { data: state } = useConsoleState();
-  const owners = state?.ledgerSummary?.byCostOwner ?? [];
+  const rollups = state?.ledgerSummary?.byProject ?? [];
   const entries = state?.ledgerEntries ?? [];
 
   function exportCsv() {
@@ -55,21 +57,21 @@ export function ChargebackCard() {
       <CardHeader className="flex-row items-start justify-between">
         <div>
           <CardTitle>Chargeback statement</CardTitle>
-          <p className="text-sm text-muted-foreground">Settlement-ready rollup per cost owner.</p>
+          <p className="text-sm text-muted-foreground">Settlement-ready rollup per project.</p>
         </div>
         <Button variant="secondary" size="sm" disabled={!entries.length} onClick={exportCsv}>
           Export CSV
         </Button>
       </CardHeader>
       <CardContent>
-        {owners.length === 0 ? (
+        {rollups.length === 0 ? (
           <EmptyState title="Nothing to settle" hint="Run agents to build a chargeback statement." />
         ) : (
           <div className="overflow-hidden rounded-lg border border-border">
             <table className="w-full text-sm">
               <thead className="bg-muted/40 text-xs uppercase tracking-wide text-muted-foreground">
                 <tr>
-                  <th className="px-3 py-2 text-left font-medium">Cost owner</th>
+                  <th className="px-3 py-2 text-left font-medium">Project</th>
                   <th className="px-3 py-2 text-right font-medium">Runs</th>
                   <th className="px-3 py-2 text-right font-medium">Finalized</th>
                   <th className="px-3 py-2 text-right font-medium">Estimated</th>
@@ -78,9 +80,9 @@ export function ChargebackCard() {
                 </tr>
               </thead>
               <tbody>
-                {owners.map((o) => (
-                  <tr key={o.costOwner} className="border-t border-border">
-                    <td className="px-3 py-2 font-medium">{o.costOwner}</td>
+                {rollups.map((o) => (
+                  <tr key={o.projectId} className="border-t border-border">
+                    <td className="px-3 py-2 font-medium">{o.projectName ?? o.projectId}</td>
                     <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">{o.entries}</td>
                     <td className="px-3 py-2 text-right tabular-nums">{usd(o.knownCostUsd)}</td>
                     <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">~{usd(o.estimatedCostUsd)}</td>

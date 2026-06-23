@@ -51,7 +51,12 @@ export function DashboardView() {
   const setSelectedAgentId = useUiStore((s) => s.setSelectedAgentId);
   const selectedInvocationId = useUiStore((s) => s.selectedInvocationId);
   const setSelectedInvocationId = useUiStore((s) => s.setSelectedInvocationId);
+  const selectedProjectId = useUiStore((s) => s.selectedProjectId);
+  const setSelectedProjectId = useUiStore((s) => s.setSelectedProjectId);
   const { execute, pending, error } = useAsyncAction();
+
+  const projects = state?.projects ?? [];
+  const projectId = selectedProjectId ?? projects[0]?.id ?? null;
 
   const [task, setTask] = useState(
     "Summarize the local demo state and confirm the bridge is working.",
@@ -82,7 +87,7 @@ export function DashboardView() {
 
   async function runTask() {
     await execute(async () => {
-      const created = (await api.createInvocation(task.trim(), agent?.id ?? null)) as {
+      const created = (await api.createInvocation(task.trim(), agent?.id ?? null, projectId)) as {
         invocation: { id: string };
       };
       setSelectedInvocationId(created.invocation.id);
@@ -98,6 +103,21 @@ export function DashboardView() {
         </CardHeader>
         <CardContent className="space-y-4">
           <Textarea rows={6} value={task} onChange={(e) => setTask(e.target.value)} aria-label="Task" />
+
+          <Field label="Project">
+            <Select
+              value={projectId ?? ""}
+              onChange={(e) => setSelectedProjectId(e.target.value || null)}
+              aria-label="Project"
+            >
+              {projects.length === 0 ? <option value="">No project</option> : null}
+              {projects.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name}
+                </option>
+              ))}
+            </Select>
+          </Field>
 
           <div className="grid gap-3 sm:grid-cols-2">
             <Field label="Computer">
