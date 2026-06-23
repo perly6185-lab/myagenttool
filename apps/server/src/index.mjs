@@ -570,12 +570,20 @@ const server = http.createServer(async (req, res) => {
 
       markDispatched(invocation);
 
+      // Run the agent in the project's worktree when repo-backed: override the
+      // adapter's cwd for this dispatch only (the stored agent is untouched).
+      const baseAdapter = findAgent(invocation.agentId)?.adapter ?? null;
+      const adapter = baseAdapter && invocation.workingDirectory
+        ? { ...baseAdapter, workingDirectory: invocation.workingDirectory, workingDirectoryPolicy: "explicit" }
+        : baseAdapter;
+
       sendJson(res, 200, {
         namespace,
         protocolVersion,
         invocationId: invocation.id,
         agentId: invocation.agentId,
-        adapter: findAgent(invocation.agentId)?.adapter ?? null,
+        adapter,
+        workingDirectory: invocation.workingDirectory ?? null,
         input: invocation.input,
         options: invocation.options
       });
@@ -980,6 +988,16 @@ function detectDefaultBranch(repoPath) {
   } catch {
     return "main";
   }
+}
+
+// The directory an invocation runs in: a repo-backed project's ready main
+// worktree. Null when the project is logical-only (falls back to the agent
+// adapter's own cwd policy).
+function projectWorkingDirectory(projectId) {
+  const ready = state.projectTargets.some((t) => t.projectId === projectId && t.state === "ready");
+  if (!ready) return null;
+  const main = state.worktrees.find((w) => w.projectId === projectId && w.isMain);
+  return main?.path ?? null;
 }
 
 function createMainWorktree(target) {
@@ -2450,10 +2468,12 @@ function createInvocation(task, agent = defaultAgent(), options = {}) {
   const policy = evaluateInvocationPolicy(agent, options);
   const directRun = runsWithoutBridge(agent);
   const projectId = resolveProjectId(options.projectId ?? agent.projectId);
+  const workingDirectory = projectWorkingDirectory(projectId);
   const invocation = {
     id,
     ideaSessionId: null,
     projectId,
+    workingDirectory,
     agentId: agent.id,
     requestedBy: "usr_local",
     status: policy.decision === "requires_local_approval" ? "waiting_for_local_approval" : directRun ? "running" : "queued",
@@ -2498,6 +2518,15 @@ function createInvocation(task, agent = defaultAgent(), options = {}) {
     level: "info",
     message: "Invocation created from Web Console."
   });
+  if (workingDirectory) {
+    appendEvent({
+      invocationId: invocation.id,
+      type: "log",
+      level: "info",
+      message: `Runs in project worktree: ${workingDirectory}`,
+      data: { workingDirectory, projectId }
+    });
+  }
   appendEvent({
     invocationId: invocation.id,
     type: "policy_decision_recorded",
