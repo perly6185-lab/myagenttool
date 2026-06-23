@@ -1,10 +1,12 @@
 import { useState } from "react";
+import { Check } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input, Select } from "@/components/ui/input";
 import { Field } from "@/components/common/field";
 import { useAsyncAction, api } from "@/data/use-console-actions";
+import { useConsoleState } from "@/data/use-console-state";
 import { useUiStore } from "@/store/ui-store";
 
 type Tone = "neutral" | "warning" | "danger";
@@ -89,15 +91,19 @@ const CONFIGS: Record<"codex" | "claude", CodingAgentConfig> = {
 
 export function RegisterCodingAgentCard({ kind }: { kind: "codex" | "claude" }) {
   const config = CONFIGS[kind];
+  const kindLabel = kind === "codex" ? "Codex" : "Claude";
   const setSelectedAgentId = useUiStore((s) => s.setSelectedAgentId);
   const setSection = useUiStore((s) => s.setSection);
+  const { data: state } = useConsoleState();
   const { execute, pending, error } = useAsyncAction();
 
   const [name, setName] = useState(config.title.replace("Connect ", ""));
   const [mode, setMode] = useState(config.defaultMode);
   const [costOwner, setCostOwner] = useState("usr_local");
-  const [registered, setRegistered] = useState<string | null>(null);
 
+  // Reflect live registration state so the button is honest across reloads.
+  const existing = (state?.agents ?? []).filter((agent) => agent.adapter?.command === config.command);
+  const alreadyRegistered = existing.length > 0;
   const active = config.modes.find((m) => m.value === mode)!;
   const writable = mode !== config.safeMode;
 
@@ -114,7 +120,6 @@ export function RegisterCodingAgentCard({ kind }: { kind: "codex" | "claude" }) 
         costOwner: costOwner.trim() || "usr_local",
       })) as { agent: { id: string } };
       setSelectedAgentId(result.agent.id);
-      setRegistered(result.agent.id);
       return result;
     });
   }
@@ -158,16 +163,21 @@ export function RegisterCodingAgentCard({ kind }: { kind: "codex" | "claude" }) 
         ) : null}
 
         <div className="flex items-center gap-3">
-          <Button disabled={pending} onClick={register}>
-            Register {kind === "codex" ? "Codex" : "Claude"}
+          <Button
+            variant={alreadyRegistered ? "secondary" : "primary"}
+            disabled={pending}
+            onClick={register}
+          >
+            {pending ? "Registering…" : alreadyRegistered ? `Register another ${kindLabel}` : `Register ${kindLabel}`}
           </Button>
-          {registered ? (
+          {alreadyRegistered ? (
             <button
               type="button"
-              className="text-xs text-primary underline-offset-2 hover:underline"
+              className="inline-flex items-center gap-1 text-xs text-success underline-offset-2 hover:underline"
               onClick={() => setSection("agents")}
             >
-              Registered {registered} — open in Agents →
+              <Check className="size-3.5" />
+              {existing.length} {kindLabel} agent{existing.length > 1 ? "s" : ""} registered — open in Agents →
             </button>
           ) : null}
         </div>
