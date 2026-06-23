@@ -769,7 +769,8 @@ function createCliAgent(body) {
   }
   const args = Array.isArray(body.args ?? body.adapter?.args) ? (body.args ?? body.adapter.args).map(String) : [];
   const codexCommand = isCodexCliCommand(command);
-  const normalizedArgs = args.length > 0 ? args : codexCommand ? codexCliArgs() : [];
+  const codexSandbox = codexCommand ? normalizeCodexSandbox(body.sandbox ?? body.adapter?.sandbox) : null;
+  const normalizedArgs = args.length > 0 ? args : codexCommand ? codexCliArgs(codexSandbox) : [];
   return baseAgent({
     id,
     type: "cli",
@@ -787,7 +788,7 @@ function createCliAgent(body) {
       timeoutSeconds: Number(body.timeoutSeconds ?? (codexCommand ? 120 : 30)),
       cancellation: "supported",
       outputFormat: normalizeCliOutputFormat(body.outputFormat ?? body.adapter?.outputFormat, command),
-      sandbox: body.sandbox ?? body.adapter?.sandbox ?? (codexCommand ? "read-only" : null)
+      sandbox: codexCommand ? codexSandbox : (body.sandbox ?? body.adapter?.sandbox ?? null)
     },
     capabilities: [
       {
@@ -1946,8 +1947,18 @@ function isCodexCliCommand(command) {
   return ["codex", "codex.cmd", "codex.ps1", "codex.exe"].some((name) => normalized === name || normalized.endsWith(`/${name}`) || normalized.endsWith(`\\${name}`));
 }
 
-function codexCliArgs() {
-  return ["exec", "--json", "--sandbox", "read-only", "--ephemeral", "{{task}}"];
+function codexCliArgs(sandbox = "read-only") {
+  return ["exec", "--json", "--sandbox", normalizeCodexSandbox(sandbox), "--ephemeral", "{{task}}"];
+}
+
+// Codex sandbox modes, safest first. read-only stays the default everywhere a
+// sandbox is not explicitly chosen, so conservative discovery/builder paths are
+// unchanged; writable modes are opt-in and remain high-risk (approval-gated).
+function normalizeCodexSandbox(value) {
+  const normalized = String(value ?? "").trim().toLowerCase();
+  return ["read-only", "workspace-write", "danger-full-access"].includes(normalized)
+    ? normalized
+    : "read-only";
 }
 
 function codexRiskTags() {

@@ -85,6 +85,8 @@ export const api = {
   setAgentEnabled: (id: string, enabled: boolean) =>
     request("POST", `/api/agents/${encodeURIComponent(id)}/${enabled ? "enable" : "disable"}`),
 
+  registerAgent: (payload: Record<string, unknown>) => request("POST", "/api/agents", payload),
+
   createDiscovery: (payload: DiscoveryPayload) => request("POST", "/api/discovery", payload),
   registerCandidate: (runId: string, candidateId: string) =>
     request(
