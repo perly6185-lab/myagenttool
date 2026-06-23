@@ -626,42 +626,104 @@ function codexRiskTags() {
   return ["read_local", "write_local", "shell_exec", "network_access", "repo_context", "code_change"];
 }
 
-async function terminateProcessTree(child) {
-  if (!child.pid) {
+// Terminate the agent's whole process tree, gracefully then forcefully, and
+// confirm it actually died. A coding agent spawns child processes (shells, model
+// calls); killing only the parent leaves orphans running. On posix the child is
+// a process-group leader (spawned detached), so we signal the negative pid to
+// reach the whole group; on Windows we use taskkill /t. SIGTERM is given a grace
+// period, then escalated to SIGKILL if the tree is still alive.
+async function terminateProcessTree(child, { graceMs = 2000 } = {}) {
+  if (!child || child.pid == null) {
     return { ok: false, message: "Cannot cancel CLI process because no process id was assigned." };
   }
   if (child.exitCode !== null || child.killed) {
-    return { ok: true, message: "Process already exited." };
+    return { ok: true, message: "Process already exited.", signal: null };
   }
 
   if (process.platform === "win32") {
-    return new Promise((resolveResult) => {
-      const killer = spawn("taskkill", ["/pid", String(child.pid), "/t", "/f"], {
-        windowsHide: true,
-        stdio: ["ignore", "pipe", "pipe"]
-      });
-      let stderr = "";
-      killer.stderr.on("data", (chunk) => {
-        stderr += chunk.toString("utf8");
-      });
-      killer.on("close", (code) => {
-        resolveResult({
-          ok: code === 0,
-          message: code === 0 ? "Windows process tree terminated." : `Windows process-tree cancellation failed: ${stderr.trim() || `taskkill exited ${code}`}`
-        });
-      });
-    });
+    const result = await taskkillTree(child);
+    await awaitChildExit(child, graceMs);
+    return result;
   }
 
-  try {
-    process.kill(-child.pid, "SIGTERM");
-  } catch (error) {
-    return {
-      ok: false,
-      message: `SIGTERM process-group cancellation failed: ${error instanceof Error ? error.message : String(error)}`
-    };
+  // posix: signal the process group, escalating SIGTERM -> SIGKILL.
+  safeGroupKill(child.pid, "SIGTERM");
+  if (await awaitChildExit(child, graceMs)) {
+    return { ok: true, message: "Process tree terminated with SIGTERM.", signal: "SIGTERM" };
   }
-  return { ok: true, message: "SIGTERM cancellation sent to CLI process." };
+  safeGroupKill(child.pid, "SIGKILL");
+  if (await awaitChildExit(child, graceMs)) {
+    return { ok: true, message: "Process tree force-killed with SIGKILL after grace period.", signal: "SIGKILL" };
+  }
+  return { ok: false, message: "Process tree did not exit after SIGTERM and SIGKILL.", signal: "SIGKILL" };
+}
+
+// Resolve true if the child exits within ms, false otherwise.
+function awaitChildExit(child, ms) {
+  if (child.exitCode !== null || child.killed) {
+    return Promise.resolve(true);
+  }
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      child.removeListener("exit", onExit);
+      resolve(value);
+    };
+    const onExit = () => finish(true);
+    child.once("exit", onExit);
+    const timer = setTimeout(() => finish(false), ms);
+  });
+}
+
+// Signal a process group, tolerating an already-gone group (ESRCH) and falling
+// back to the single pid if the group signal is not permitted.
+function safeGroupKill(pid, signal) {
+  try {
+    process.kill(-pid, signal);
+    return true;
+  } catch (error) {
+    if (error && error.code === "ESRCH") {
+      return false;
+    }
+    try {
+      process.kill(pid, signal);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+}
+
+function taskkillTree(child) {
+  return new Promise((resolve) => {
+    const killer = spawn("taskkill", ["/pid", String(child.pid), "/t", "/f"], {
+      windowsHide: true,
+      stdio: ["ignore", "pipe", "pipe"]
+    });
+    let stderr = "";
+    killer.stderr.on("data", (chunk) => {
+      stderr += chunk.toString("utf8");
+    });
+    killer.on("error", (error) => {
+      resolve({ ok: false, message: `taskkill could not run: ${error.message}`, signal: null });
+    });
+    killer.on("close", (code) => {
+      const gone = child.exitCode !== null || /not found|128/i.test(stderr);
+      resolve({
+        ok: code === 0 || gone,
+        message:
+          code === 0
+            ? "Windows process tree terminated (taskkill /t /f)."
+            : gone
+              ? "Process already exited."
+              : `Windows process-tree cancellation failed: ${stderr.trim() || `taskkill exited ${code}`}`,
+        signal: "taskkill"
+      });
+    });
+  });
 }
 
 async function handleAgentLine(invocationId, line, adapter = {}) {
