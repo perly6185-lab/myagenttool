@@ -762,7 +762,6 @@ function registerAgent(body) {
 }
 
 function createCliAgent(body) {
-  const id = sanitizeAgentId(body.id ?? nextId("agt_cli"));
   const command = String(body.command ?? body.adapter?.command ?? "").trim();
   if (!command) {
     throw new Error("CLI agent command is required.");
@@ -776,6 +775,18 @@ function createCliAgent(body) {
   const claudeMode = claudeCommand
     ? normalizeClaudePermissionMode(body.permissionMode ?? body.adapter?.permissionMode ?? body.sandbox)
     : null;
+  // Deterministic id per (coding command + mode) so re-registering the same
+  // config upserts in place instead of piling up duplicates on one device; a
+  // different mode is still a distinct agent. Non-coding CLI agents keep a
+  // generated id, and an explicit body.id always wins.
+  const id = sanitizeAgentId(
+    body.id ??
+      (codexCommand
+        ? `agt_codex_${codexSandbox}`
+        : claudeCommand
+          ? `agt_claude_${claudeMode}`
+          : nextId("agt_cli"))
+  );
   const defaultCodingArgs = codexCommand ? codexCliArgs(codexSandbox) : claudeCommand ? claudeCliArgs(claudeMode) : [];
   const normalizedArgs = args.length > 0 ? args : defaultCodingArgs;
   return baseAgent({
