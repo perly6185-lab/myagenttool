@@ -102,8 +102,11 @@ export function RegisterCodingAgentCard({ kind }: { kind: "codex" | "claude" }) 
   const [costOwner, setCostOwner] = useState("usr_local");
 
   // Reflect live registration state so the button is honest across reloads.
+  // Same command + mode upserts (an update); a new mode adds a distinct agent.
   const existing = (state?.agents ?? []).filter((agent) => agent.adapter?.command === config.command);
+  const registeredModes = existing.map((agent) => agent.adapter?.[config.modeField]);
   const alreadyRegistered = existing.length > 0;
+  const modeAlreadyRegistered = registeredModes.includes(mode);
   const active = config.modes.find((m) => m.value === mode)!;
   const writable = mode !== config.safeMode;
 
@@ -168,7 +171,13 @@ export function RegisterCodingAgentCard({ kind }: { kind: "codex" | "claude" }) 
             disabled={pending}
             onClick={register}
           >
-            {pending ? "Registering…" : alreadyRegistered ? `Register another ${kindLabel}` : `Register ${kindLabel}`}
+            {pending
+              ? "Registering…"
+              : modeAlreadyRegistered
+                ? `Update ${kindLabel} (${mode})`
+                : alreadyRegistered
+                  ? `Register another ${kindLabel}`
+                  : `Register ${kindLabel}`}
           </Button>
           {alreadyRegistered ? (
             <button

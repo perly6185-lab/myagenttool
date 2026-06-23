@@ -29,6 +29,7 @@ export interface AgentAdapter {
   cancellation?: string;
   outputFormat?: string;
   sandbox?: string;
+  permissionMode?: string;
   args?: string[];
 }
 
