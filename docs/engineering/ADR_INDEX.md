@@ -21,6 +21,11 @@ This index lists accepted engineering decisions that guide implementation.
 - Web shell: focused M0 invocation shell with plain-language task entry,
   pre-run review, status/logs/result, and expandable technical details.
 
+## M1 Decision Summary
+
+- Codex sandbox: `read-only` default; writable execution is an explicit opt-in
+  and always passes the local approval gate.
+
 ## Open Decision Rules
 
 Create a new ADR when implementation would otherwise make a durable decision
