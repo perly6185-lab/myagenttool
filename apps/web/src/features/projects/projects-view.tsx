@@ -85,6 +85,11 @@ export function ProjectsView() {
     void execute(() => api.updateProject(project.id, { status: next }));
   }
 
+  function toggleIsolation(project: ProjectSnapshot) {
+    const next = project.isolation === "worktree" ? "shared" : "worktree";
+    void execute(() => api.updateProject(project.id, { isolation: next }));
+  }
+
   return (
     <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_minmax(0,0.8fr)]">
       <Card>
@@ -108,6 +113,7 @@ export function ProjectsView() {
                 active={project.id === activeId}
                 onSelect={() => setSelectedProjectId(project.id)}
                 onArchive={() => archive(project)}
+                onToggleIsolation={() => toggleIsolation(project)}
                 busy={pending}
               />
             ))
@@ -208,6 +214,7 @@ function ProjectRow({
   active,
   onSelect,
   onArchive,
+  onToggleIsolation,
   busy,
 }: {
   project: ProjectSnapshot;
@@ -217,8 +224,10 @@ function ProjectRow({
   active: boolean;
   onSelect: () => void;
   onArchive: () => void;
+  onToggleIsolation: () => void;
   busy: boolean;
 }) {
+  const isolated = project.isolation === "worktree";
   return (
     <div className={cn("rounded-lg border px-3 py-2.5", active ? "border-primary bg-primary/5" : "border-border")}>
       <div className="flex items-center justify-between gap-3 text-sm">
@@ -237,18 +246,41 @@ function ProjectRow({
             </span>
           </span>
         </button>
-        <Button variant="secondary" size="sm" disabled={busy} onClick={onArchive}>
-          {project.status === "archived" ? "Restore" : "Archive"}
-        </Button>
+        <div className="flex items-center gap-2">
+          {target ? (
+            <Button
+              variant="secondary"
+              size="sm"
+              disabled={busy}
+              onClick={onToggleIsolation}
+              title="Toggle per-invocation git worktree isolation"
+            >
+              {isolated ? "Isolation: per-run" : "Isolation: shared"}
+            </Button>
+          ) : null}
+          <Button variant="secondary" size="sm" disabled={busy} onClick={onArchive}>
+            {project.status === "archived" ? "Restore" : "Archive"}
+          </Button>
+        </div>
       </div>
 
-      {target ? <TargetBlock target={target} worktrees={worktrees} /> : null}
+      {target ? <TargetBlock target={target} worktrees={worktrees} isolated={isolated} /> : null}
     </div>
   );
 }
 
-function TargetBlock({ target, worktrees }: { target: ProjectTargetSnapshot; worktrees: WorktreeSnapshot[] }) {
+function TargetBlock({
+  target,
+  worktrees,
+  isolated,
+}: {
+  target: ProjectTargetSnapshot;
+  worktrees: WorktreeSnapshot[];
+  isolated: boolean;
+}) {
   const tone = target.state === "ready" ? "success" : target.state === "failed" ? "danger" : "neutral";
+  const mainWorktrees = worktrees.filter((w) => w.isMain);
+  const ephemeral = worktrees.filter((w) => w.ephemeral);
   return (
     <div className="mt-2 border-t border-border/60 pt-2">
       <div className="flex items-center justify-between gap-2 text-xs">
@@ -270,13 +302,21 @@ function TargetBlock({ target, worktrees }: { target: ProjectTargetSnapshot; wor
 
       {target.state === "failed" ? <p className="mt-1 text-xs text-destructive">{target.message}</p> : null}
 
-      {worktrees.map((w) => (
+      {mainWorktrees.map((w) => (
         <div key={w.id} className="mt-1.5 flex items-center gap-2 pl-3 text-xs">
           <span className="text-muted-foreground">⌐</span>
           <span className="font-medium">{w.branch}</span>
-          {w.isMain ? <Badge tone="neutral">Main worktree</Badge> : null}
+          <Badge tone="neutral">Main worktree</Badge>
         </div>
       ))}
+
+      {isolated ? (
+        <p className="mt-1.5 pl-3 text-xs text-muted-foreground">
+          {ephemeral.length > 0
+            ? `${ephemeral.length} isolated run(s) active — each on its own agent/<id> worktree`
+            : "Per-run isolation on — each invocation gets a fresh git worktree"}
+        </p>
+      ) : null}
     </div>
   );
 }

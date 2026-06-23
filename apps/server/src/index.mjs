@@ -45,6 +45,7 @@ const state = {
       budgetPoolId: null,
       defaultAgentId: "agt_demo_cli",
       status: "active",
+      isolation: "shared",
       createdAt: now()
     }
   ],
@@ -898,6 +899,9 @@ function loadPersistedState() {
     for (const key of PERSIST_KEYS) {
       if (Array.isArray(snapshot[key])) state[key] = snapshot[key];
     }
+    // Drop ephemeral worktree records whose directories no longer exist (a prior
+    // run's isolated worktrees do not survive a restart).
+    state.worktrees = state.worktrees.filter((w) => !w.ephemeral || fs.existsSync(w.path));
     if (Number.isFinite(snapshot.idCounter)) idCounter = snapshot.idCounter;
     console.log(`[server] restored state from ${PERSIST_FILE}`);
   } catch (error) {
@@ -951,6 +955,7 @@ function createProject(body) {
     budgetPoolId: body.budgetPoolId ?? null,
     defaultAgentId: body.defaultAgentId ?? null,
     status: "active",
+    isolation: body.isolation === "worktree" ? "worktree" : "shared",
     createdAt: now(),
     updatedAt: now()
   };
@@ -967,6 +972,7 @@ function updateProject(projectId, patch) {
   if (patch.defaultAgentId !== undefined) project.defaultAgentId = patch.defaultAgentId ?? null;
   if (patch.budgetPoolId !== undefined) project.budgetPoolId = patch.budgetPoolId ?? null;
   if (patch.status !== undefined && ["active", "archived"].includes(patch.status)) project.status = patch.status;
+  if (patch.isolation !== undefined && ["shared", "worktree"].includes(patch.isolation)) project.isolation = patch.isolation;
   project.updatedAt = now();
   persistState();
   return project;
@@ -998,6 +1004,69 @@ function projectWorkingDirectory(projectId) {
   if (!ready) return null;
   const main = state.worktrees.find((w) => w.projectId === projectId && w.isMain);
   return main?.path ?? null;
+}
+
+// Per-invocation isolation: add a dedicated git worktree on a fresh branch so
+// concurrent runs on the same repo never collide. Returns the worktree record
+// or null (no ready repo / git failed — caller falls back to the shared cwd).
+function createEphemeralWorktree(project, invocationId) {
+  const target = state.projectTargets.find((t) => t.projectId === project.id && t.state === "ready");
+  if (!target) return null;
+  const base = path.join(path.dirname(target.rootPath), `.${path.basename(target.rootPath)}.worktrees`);
+  const wtPath = path.join(base, invocationId);
+  const branch = `agent/${invocationId}`;
+  try {
+    fs.mkdirSync(base, { recursive: true });
+    execFileSync("git", ["-C", target.rootPath, "worktree", "add", "-b", branch, wtPath, target.defaultBranch ?? "HEAD"], {
+      stdio: "ignore"
+    });
+  } catch (error) {
+    console.warn(`[server] worktree add failed for ${invocationId}: ${error instanceof Error ? error.message : String(error)}`);
+    return null;
+  }
+  const worktree = {
+    id: nextId("wkt"),
+    projectId: project.id,
+    targetId: target.id,
+    invocationId,
+    branch,
+    path: wtPath,
+    isMain: false,
+    ephemeral: true,
+    createdAt: now()
+  };
+  state.worktrees.push(worktree);
+  return worktree;
+}
+
+// Tear down an invocation's ephemeral worktree (directory + branch + record).
+// Idempotent: a no-op when the invocation had no isolated worktree.
+function cleanupEphemeralWorktree(invocation) {
+  const worktree = state.worktrees.find((w) => w.ephemeral && w.invocationId === invocation.id);
+  if (!worktree) return;
+  const target = state.projectTargets.find((t) => t.id === worktree.targetId);
+  if (target) {
+    try {
+      execFileSync("git", ["-C", target.rootPath, "worktree", "remove", "--force", worktree.path], { stdio: "ignore" });
+    } catch {
+      // Directory may already be gone; prune below reconciles git's metadata.
+    }
+    try {
+      execFileSync("git", ["-C", target.rootPath, "worktree", "prune"], { stdio: "ignore" });
+      execFileSync("git", ["-C", target.rootPath, "branch", "-D", worktree.branch], { stdio: "ignore" });
+    } catch {
+      // Branch may carry no unique commits or already be deleted — best effort.
+    }
+  }
+  state.worktrees = state.worktrees.filter((w) => w.id !== worktree.id);
+  appendEvent({
+    invocationId: invocation.id,
+    type: "log",
+    level: "info",
+    message: `Isolated worktree removed: ${worktree.path}`,
+    data: { worktreeId: worktree.id, branch: worktree.branch }
+  });
+  persistState();
 }
 
 function createMainWorktree(target) {
@@ -2468,7 +2537,14 @@ function createInvocation(task, agent = defaultAgent(), options = {}) {
   const policy = evaluateInvocationPolicy(agent, options);
   const directRun = runsWithoutBridge(agent);
   const projectId = resolveProjectId(options.projectId ?? agent.projectId);
-  const workingDirectory = projectWorkingDirectory(projectId);
+  const project = findProject(projectId);
+  // Default to the project's shared worktree; an isolated project gets a fresh
+  // ephemeral worktree per CLI run (the only adapter that uses a cwd).
+  let workingDirectory = projectWorkingDirectory(projectId);
+  if (project?.isolation === "worktree" && agent.adapter?.type === "cli") {
+    const ephemeral = createEphemeralWorktree(project, id);
+    if (ephemeral) workingDirectory = ephemeral.path;
+  }
   const invocation = {
     id,
     ideaSessionId: null,
@@ -2519,12 +2595,13 @@ function createInvocation(task, agent = defaultAgent(), options = {}) {
     message: "Invocation created from Web Console."
   });
   if (workingDirectory) {
+    const isolated = project?.isolation === "worktree" && agent.adapter?.type === "cli";
     appendEvent({
       invocationId: invocation.id,
       type: "log",
       level: "info",
-      message: `Runs in project worktree: ${workingDirectory}`,
-      data: { workingDirectory, projectId }
+      message: `${isolated ? "Runs in isolated worktree" : "Runs in project worktree"}: ${workingDirectory}`,
+      data: { workingDirectory, projectId, isolated }
     });
   }
   appendEvent({
@@ -2835,6 +2912,7 @@ function completeInvocation(invocation, body) {
   state.auditSummaries.push(createAuditSummary(invocation, body.summary ?? null));
   recordAgentUsage(invocation, terminalStatus);
   recordLedgerEntry(invocation, terminalStatus);
+  cleanupEphemeralWorktree(invocation);
 }
 
 // One finalized economic ledger entry per completed invocation, derived from the
@@ -3235,6 +3313,7 @@ function cancelInvocation(invocation) {
     });
     state.auditSummaries.push(createAuditSummary(invocation, "Cancelled before local execution."));
     recordAgentUsage(invocation, "cancelled");
+    cleanupEphemeralWorktree(invocation);
     return;
   }
 
@@ -3477,6 +3556,7 @@ function unlinkDevice() {
     });
     state.auditSummaries.push(createAuditSummary(invocation, "Device unlink cancelled queued local work."));
     recordAgentUsage(invocation, "cancelled");
+    cleanupEphemeralWorktree(invocation);
   }
   for (const invocation of state.invocations.filter((item) => ["dispatching", "running"].includes(item.status))) {
     invocation.status = "cancelling";

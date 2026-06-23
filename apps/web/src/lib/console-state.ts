@@ -234,6 +234,7 @@ export interface ProjectSnapshot {
   budgetPoolId: string | null;
   defaultAgentId: string | null;
   status: "active" | "archived";
+  isolation: "shared" | "worktree";
   createdAt: string;
   updatedAt?: string;
 }
@@ -257,9 +258,11 @@ export interface WorktreeSnapshot {
   id: string;
   projectId: string;
   targetId: string;
+  invocationId?: string;
   branch: string;
   path: string;
   isMain: boolean;
+  ephemeral?: boolean;
   createdAt: string;
 }
 
