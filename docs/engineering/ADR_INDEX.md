@@ -9,6 +9,7 @@ This index lists accepted engineering decisions that guide implementation.
 - [ADR 0003: M0 Desktop Bridge Runtime](ADR_0003_M0_DESKTOP_BRIDGE_RUNTIME.md)
 - [ADR 0004: M0 Server Runtime, Storage, and Queue](ADR_0004_M0_SERVER_STORAGE_QUEUE.md)
 - [ADR 0005: M0 Web Console App Shell](ADR_0005_M0_WEB_CONSOLE_APP_SHELL.md)
+- [ADR 0006: Codex CLI Sandbox Default and Writable Opt-In](ADR_0006_CODEX_SANDBOX_DEFAULT.md)
 
 ## M0 Decision Summary
 
