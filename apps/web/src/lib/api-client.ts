@@ -107,6 +107,10 @@ export const api = {
 
   createProject: (payload: { name: string; color?: string }) =>
     request("POST", "/api/projects", payload),
+  cloneProject: (payload: { repoUrl: string; parentDir: string; name?: string; color?: string }) =>
+    request("POST", "/api/projects", payload),
+  bindProject: (payload: { repoPath: string; name?: string; color?: string }) =>
+    request("POST", "/api/projects", payload),
   updateProject: (id: string, payload: Record<string, unknown>) =>
     request("PATCH", `/api/projects/${encodeURIComponent(id)}`, payload),
 

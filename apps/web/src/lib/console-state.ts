@@ -238,6 +238,31 @@ export interface ProjectSnapshot {
   updatedAt?: string;
 }
 
+export interface ProjectTargetSnapshot {
+  id: string;
+  projectId: string;
+  deviceId: string;
+  kind: "clone" | "local";
+  remoteUrl: string | null;
+  rootPath: string;
+  defaultBranch: string | null;
+  state: "cloning" | "ready" | "failed";
+  progress: number;
+  message: string;
+  createdAt: string;
+  updatedAt?: string;
+}
+
+export interface WorktreeSnapshot {
+  id: string;
+  projectId: string;
+  targetId: string;
+  branch: string;
+  path: string;
+  isMain: boolean;
+  createdAt: string;
+}
+
 export interface BudgetStatus {
   projectId: string;
   projectName?: string;
@@ -297,6 +322,8 @@ export interface RetentionSettings {
 export interface ConsoleSnapshot {
   device: DeviceSnapshot;
   projects?: ProjectSnapshot[];
+  projectTargets?: ProjectTargetSnapshot[];
+  worktrees?: WorktreeSnapshot[];
   agent: AgentSnapshot | null;
   agents: AgentSnapshot[];
   invocations: InvocationSnapshot[];

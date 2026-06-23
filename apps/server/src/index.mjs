@@ -1,6 +1,7 @@
 import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
+import { spawn, execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 const namespace = "com.myagenttool";
@@ -11,11 +12,11 @@ const dispatchLeaseMs = Number(process.env.SERVER_DISPATCH_LEASE_MS ?? 30_000);
 
 // JSON snapshot persistence (orca-style flat file + schema version). SQLite is a
 // P1+ concern; for now durability matters most for projects/ledger/budgets.
-const PERSIST_VERSION = 1;
+const PERSIST_VERSION = 2;
 const PERSIST_FILE = process.env.SERVER_STATE_FILE
   ? path.resolve(process.env.SERVER_STATE_FILE)
   : path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "data", "state.json");
-const PERSIST_KEYS = ["projects", "agents", "invocations", "ledgerEntries", "budgets", "quotaDecisionRecords"];
+const PERSIST_KEYS = ["projects", "projectTargets", "worktrees", "agents", "invocations", "ledgerEntries", "budgets", "quotaDecisionRecords"];
 let persistTimer = null;
 
 const state = {
@@ -47,6 +48,8 @@ const state = {
       createdAt: now()
     }
   ],
+  projectTargets: [],
+  worktrees: [],
   agents: [
     {
       id: "agt_demo_cli",
@@ -374,14 +377,16 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === "POST" && url.pathname === "/api/projects") {
       const body = await readJson(req);
-      let project;
       try {
-        project = createProject(body);
+        if (body.repoUrl || body.repoPath) {
+          const result = createProjectWithRepo(body);
+          sendJson(res, 201, result);
+          return;
+        }
+        sendJson(res, 201, { project: createProject(body) });
       } catch (error) {
         sendJson(res, 400, { error: "invalid_project", message: error instanceof Error ? error.message : String(error) });
-        return;
       }
-      sendJson(res, 201, { project });
       return;
     }
 
@@ -957,6 +962,148 @@ function updateProject(projectId, patch) {
   project.updatedAt = now();
   persistState();
   return project;
+}
+
+// --- Project repositories (targets) + worktrees --------------------------
+// A ProjectTarget materializes a project on a device at a real git checkout
+// (the "where it runs" axis). A clone runs async with progress; a local bind
+// links an existing repo. The main worktree mirrors orca's project → worktree.
+function repoNameFromUrl(url) {
+  const last = String(url).split(/[\\/]/).filter(Boolean).pop() || "repo";
+  return last.replace(/\.git$/i, "") || "repo";
+}
+
+function detectDefaultBranch(repoPath) {
+  try {
+    const head = execFileSync("git", ["-C", repoPath, "symbolic-ref", "--short", "HEAD"], { encoding: "utf8" });
+    return head.trim() || "main";
+  } catch {
+    return "main";
+  }
+}
+
+function createMainWorktree(target) {
+  // One project keeps one main worktree for now; replace any prior one.
+  state.worktrees = state.worktrees.filter((w) => w.targetId !== target.id);
+  const worktree = {
+    id: nextId("wkt"),
+    projectId: target.projectId,
+    targetId: target.id,
+    branch: target.defaultBranch ?? "main",
+    path: target.rootPath,
+    isMain: true,
+    createdAt: now()
+  };
+  state.worktrees.push(worktree);
+  return worktree;
+}
+
+function startClone(target) {
+  const child = spawn("git", ["clone", "--progress", target.remoteUrl, target.rootPath]);
+  const apply = (chunk) => {
+    const text = chunk.toString();
+    // Prefer "Receiving objects: NN%"; fall back to any trailing percentage.
+    const recv = [...text.matchAll(/Receiving objects:\s+(\d+)%/g)].pop();
+    const any = recv ?? [...text.matchAll(/(\d+)%/g)].pop();
+    if (any) {
+      target.progress = Math.min(99, Number(any[1]));
+      target.message = recv ? `Receiving objects ${target.progress}%` : `Cloning ${target.progress}%`;
+      target.updatedAt = now();
+    }
+  };
+  child.stderr.on("data", apply);
+  child.stdout.on("data", apply);
+  child.on("error", (err) => {
+    target.state = "failed";
+    target.message = `git clone failed: ${err instanceof Error ? err.message : String(err)}`;
+    target.updatedAt = now();
+    persistState();
+  });
+  child.on("close", (code) => {
+    if (code === 0) {
+      target.state = "ready";
+      target.progress = 100;
+      target.defaultBranch = detectDefaultBranch(target.rootPath);
+      target.message = "Clone complete.";
+      createMainWorktree(target);
+    } else {
+      target.state = "failed";
+      target.message = `git clone exited with code ${code}.`;
+    }
+    target.updatedAt = now();
+    persistState();
+  });
+}
+
+function cloneProjectRepo(project, repoUrl, parentDir) {
+  const base = path.resolve(String(parentDir || "").trim() || process.cwd());
+  const rootPath = path.join(base, repoNameFromUrl(repoUrl));
+  if (fs.existsSync(rootPath)) throw new Error(`Destination already exists: ${rootPath}`);
+  const target = {
+    id: nextId("tgt"),
+    projectId: project.id,
+    deviceId: state.device.id,
+    kind: "clone",
+    remoteUrl: String(repoUrl),
+    rootPath,
+    defaultBranch: null,
+    state: "cloning",
+    progress: 0,
+    message: "Starting clone…",
+    createdAt: now(),
+    updatedAt: now()
+  };
+  state.projectTargets.push(target);
+  startClone(target);
+  return target;
+}
+
+function bindLocalRepo(project, repoPath) {
+  const rootPath = path.resolve(String(repoPath).trim());
+  if (!fs.existsSync(rootPath) || !fs.existsSync(path.join(rootPath, ".git"))) {
+    throw new Error(`Not a git repository: ${rootPath}`);
+  }
+  const target = {
+    id: nextId("tgt"),
+    projectId: project.id,
+    deviceId: state.device.id,
+    kind: "local",
+    remoteUrl: null,
+    rootPath,
+    defaultBranch: detectDefaultBranch(rootPath),
+    state: "ready",
+    progress: 100,
+    message: "Local repository linked.",
+    createdAt: now(),
+    updatedAt: now()
+  };
+  state.projectTargets.push(target);
+  createMainWorktree(target);
+  return target;
+}
+
+// Register a repository-backed project: clone a remote URL (async) or bind an
+// existing local checkout. The project is the logical owner; the target is the
+// materialization. Throws synchronously on bad input.
+function createProjectWithRepo(body) {
+  const isClone = Boolean(body.repoUrl);
+  const derived = isClone
+    ? repoNameFromUrl(body.repoUrl)
+    : path.basename(path.resolve(String(body.repoPath ?? "").trim() || "."));
+  const project = createProject({ name: String(body.name ?? "").trim() || derived, color: body.color });
+  let target;
+  try {
+    target = isClone
+      ? cloneProjectRepo(project, String(body.repoUrl), body.parentDir)
+      : bindLocalRepo(project, String(body.repoPath));
+  } catch (error) {
+    // Roll back the logical project so a bad path/URL leaves no orphan.
+    state.projects = state.projects.filter((p) => p.id !== project.id);
+    persistState();
+    throw error;
+  }
+  persistState();
+  return { project, target };
 }
 
 function registerAgent(body) {
@@ -3331,6 +3478,8 @@ function publicState() {
     protocolVersion,
     device: state.device,
     projects: state.projects,
+    projectTargets: state.projectTargets,
+    worktrees: state.worktrees,
     agent: defaultAgent(),
     agents: state.agents,
     invocations: state.invocations,
@@ -3866,6 +4015,8 @@ function resetDemoStateForCheck() {
   state.device.credentialRevokedAt = null;
   state.agents = state.agents.filter((agent) => ["agt_demo_cli", "agt_platform_troubleshooter", "agt_platform_integration_builder"].includes(agent.id));
   state.projects = state.projects.filter((project) => project.id === "prj_default");
+  state.projectTargets = [];
+  state.worktrees = [];
   const demoAgent = defaultAgent();
   if (demoAgent) {
     demoAgent.status = "unavailable";
