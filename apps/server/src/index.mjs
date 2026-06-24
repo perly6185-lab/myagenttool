@@ -26,10 +26,16 @@ const PERSIST_VERSION = 2;
 const PERSIST_FILE = process.env.SERVER_STATE_FILE
   ? path.resolve(process.env.SERVER_STATE_FILE)
   : path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "data", "state.json");
-const PERSIST_KEYS = ["projects", "projectTargets", "worktrees", "agents", "invocations", "ledgerEntries", "budgets", "quotaDecisionRecords"];
+const PERSIST_KEYS = ["users", "teams", "projects", "projectTargets", "worktrees", "agents", "invocations", "ledgerEntries", "budgets", "quotaDecisionRecords"];
 let persistTimer = null;
 
 const state = {
+  // Identity floor (see docs/engineering/IDENTITY_PLAN.md). Phase 1 seeds a
+  // single local user/team and propagates them via resolveActor; tokens are a
+  // Phase 2 concern.
+  users: [{ id: "usr_local", name: "Local User", teamId: "team_local" }],
+  teams: [{ id: "team_local", name: "Local Team" }],
+  tokens: [],
   device: {
     id: "dev_local_001",
     ownerUserId: "usr_local",
@@ -927,10 +933,11 @@ const server = http.createServer(async (req, res) => {
         return;
       }
 
+      const decider = resolveActor(req).userId;
       if (approvalMatch[2] === "approve") {
-        approveInvocation(approval, invocation);
+        approveInvocation(approval, invocation, decider);
       } else {
-        denyInvocation(approval, invocation);
+        denyInvocation(approval, invocation, decider);
       }
       sendJson(res, 200, { approval, invocation });
       return;
@@ -978,7 +985,8 @@ const server = http.createServer(async (req, res) => {
         sendJson(res, 409, { error: "budget_exceeded", message: budget.reason, budget: budget.status });
         return;
       }
-      const invocationOptions = { ...(body.options ?? {}), projectId, worktreeId: targetWorktree?.id ?? null };
+      const actor = resolveActor(req);
+      const invocationOptions = { ...(body.options ?? {}), projectId, worktreeId: targetWorktree?.id ?? null, requestedBy: actor.userId };
       if (budget.action === "require_approval") {
         invocationOptions.requireLocalApproval = true;
         invocationOptions.metadata = {
@@ -1132,6 +1140,21 @@ function nextId(prefix) {
 // and bridge runs always have a valid owner.
 function findProject(projectId) {
   return state.projects.find((item) => item.id === projectId) ?? null;
+}
+
+// --- Identity ------------------------------------------------------------
+// Single resolution point for "who is acting". Phase 1 falls back to the seeded
+// local user when there's no token, so behaviour is unchanged; Phase 2 will
+// return 401 for an unauthenticated request instead. See IDENTITY_PLAN.md.
+function findUser(userId) {
+  return state.users.find((u) => u.id === userId) ?? null;
+}
+
+function resolveActor(req) {
+  const token = String(req.headers?.authorization ?? "").replace(/^Bearer\s+/i, "");
+  const record = token ? state.tokens.find((t) => t.token === token && t.expiresAt > Date.now()) : null;
+  const user = (record && findUser(record.userId)) || findUser("usr_local") || state.users[0];
+  return { userId: user?.id ?? "usr_local", teamId: user?.teamId ?? "team_local" };
 }
 
 function resolveProjectId(projectId) {
@@ -3093,7 +3116,7 @@ function createInvocation(task, agent = defaultAgent(), options = {}) {
     worktreeId: explicitOk ? explicitWorktree.id : null,
     workingDirectory,
     agentId: agent.id,
-    requestedBy: "usr_local",
+    requestedBy: options.requestedBy ?? "usr_local",
     status: policy.decision === "requires_local_approval" ? "waiting_for_local_approval" : directRun ? "running" : "queued",
     delivery: {
       deliveryId: nextId("del_demo"),
@@ -3288,14 +3311,14 @@ function runsWithoutBridge(agent) {
   return agent.adapter.type === "platform" || (agent.adapter.type === "http" && agent.location.type === "remote_http");
 }
 
-function approveInvocation(approval, invocation) {
+function approveInvocation(approval, invocation, decidedBy = "usr_local") {
   if (approval.status !== "pending" || invocation.status !== "waiting_for_local_approval") {
     return;
   }
   const agent = findAgent(invocation.agentId);
   approval.status = "approved";
   approval.decidedAt = now();
-  approval.decidedBy = "usr_local";
+  approval.decidedBy = decidedBy;
   invocation.status = agent?.adapter.type === "http" ? "running" : "queued";
   invocation.delivery.state = agent?.adapter.type === "http" ? "not_required" : "queued";
   invocation.delivery.dispatchAttempts = agent?.adapter.type === "http" ? 1 : 0;
@@ -3330,13 +3353,13 @@ function approveInvocation(approval, invocation) {
   startInvocationIfAllowed(invocation, agent);
 }
 
-function denyInvocation(approval, invocation) {
+function denyInvocation(approval, invocation, decidedBy = "usr_local") {
   if (approval.status !== "pending" || invocation.status !== "waiting_for_local_approval") {
     return;
   }
   approval.status = "denied";
   approval.decidedAt = now();
-  approval.decidedBy = "usr_local";
+  approval.decidedBy = decidedBy;
   invocation.status = "rejected";
   invocation.completedAt = now();
   invocation.updatedAt = now();
@@ -3469,6 +3492,9 @@ function completeInvocation(invocation, body) {
 // attributable to a cost owner and rolls up through one ledger.
 function recordLedgerEntry(invocation, terminalStatus) {
   const agent = findAgent(invocation.agentId);
+  // Spend is owned by the project's team (who pays); attribute the run to the
+  // user who requested it. Fall back to the agent's configured owner.
+  const costOwner = findProject(invocation.projectId)?.ownerTeamId ?? agent?.economics?.costOwner ?? "unknown";
   const cost = invocation.result?.cost ?? {};
   const inputTokens = Number(cost.inputTokens ?? 0) || 0;
   const outputTokens = Number(cost.outputTokens ?? 0) || 0;
@@ -3486,7 +3512,7 @@ function recordLedgerEntry(invocation, terminalStatus) {
     agentId: invocation.agentId,
     agentName: agent?.name ?? invocation.agentId,
     deviceId: invocation.delivery?.deviceId ?? state.device.id,
-    userId: agent?.economics?.costOwner ?? "unknown",
+    userId: invocation.requestedBy ?? "unknown",
     sourceType: TOKEN_PRICING[String(cost.model ?? "").toLowerCase()] ? "ai_usage" : "agent_invocation",
     entryType: "cost",
     economicModel,
@@ -3500,7 +3526,7 @@ function recordLedgerEntry(invocation, terminalStatus) {
     amountSource,
     amountText: reported !== null ? `$${reported.toFixed(4)}` : estimate !== null ? `~$${estimate.toFixed(4)}` : "unknown",
     amountDirection: cost.billable ? "payable" : "informational",
-    costOwner: agent?.economics?.costOwner ?? "unknown",
+    costOwner,
     billable: Boolean(cost.billable),
     status: ledgerStatus,
     invocationStatus: terminalStatus,
