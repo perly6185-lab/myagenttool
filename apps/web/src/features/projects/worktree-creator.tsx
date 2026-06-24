@@ -57,11 +57,20 @@ export function WorktreeCreator({
   const [prQuery, setPrQuery] = useState("");
   const [prSel, setPrSel] = useState<number | null>(null);
 
-  // Load branches on mount / when the project changes; reset per-project picks.
+  // Keep a valid agent selected once the (async) agent list arrives.
+  useEffect(() => {
+    if (!agentId && agents.length > 0) setAgentId(agents[0].id);
+  }, [agents, agentId]);
+
+  // Load branches on mount / when the project changes; reset per-project picks
+  // (selections and the base-branch override belong to the previous project).
   useEffect(() => {
     setPr(null);
     setBrSel(null);
     setPrSel(null);
+    setBaseBranch("");
+    setBrQuery("");
+    setPrQuery("");
     (api.listBranches(pid) as Promise<{ branches: BranchRef[] }>)
       .then((r) => setBranches(r.branches ?? []))
       .catch(() => setBranches([]));

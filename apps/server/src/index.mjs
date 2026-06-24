@@ -938,6 +938,15 @@ const server = http.createServer(async (req, res) => {
 
 loadPersistedState();
 
+// Flush any debounced state on shutdown so the last mutation isn't lost.
+for (const signal of ["SIGINT", "SIGTERM"]) {
+  process.on(signal, () => {
+    flushState();
+    process.exit(0);
+  });
+}
+process.on("beforeExit", flushState);
+
 server.listen(port, host, () => {
   console.log(`[server] http://${host}:${port}`);
 });
@@ -962,10 +971,39 @@ function loadPersistedState() {
     // Drop ephemeral worktree records whose directories no longer exist (a prior
     // run's isolated worktrees do not survive a restart).
     state.worktrees = state.worktrees.filter((w) => !w.ephemeral || fs.existsSync(w.path));
+    // A clone interrupted by a restart can never resume — roll back the orphan
+    // (partial checkout dir + target + project + its worktrees) so the repo can
+    // be registered again instead of being stuck "cloning" forever.
+    const interrupted = state.projectTargets.filter((t) => t.state === "cloning");
+    if (interrupted.length > 0) {
+      const orphanProjectIds = new Set(interrupted.map((t) => t.projectId));
+      for (const target of interrupted) {
+        try {
+          if (target.rootPath) fs.rmSync(target.rootPath, { recursive: true, force: true });
+        } catch {
+          // Best effort: leave the partial dir if it cannot be removed.
+        }
+      }
+      state.projectTargets = state.projectTargets.filter((t) => t.state !== "cloning");
+      state.worktrees = state.worktrees.filter((w) => !orphanProjectIds.has(w.projectId));
+      state.projects = state.projects.filter((p) => !orphanProjectIds.has(p.id));
+      console.warn(`[server] rolled back ${interrupted.length} clone(s) interrupted by restart`);
+    }
     if (Number.isFinite(snapshot.idCounter)) idCounter = snapshot.idCounter;
     console.log(`[server] restored state from ${PERSIST_FILE}`);
   } catch (error) {
     console.warn(`[server] failed to load state snapshot: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+function writeSnapshot() {
+  try {
+    fs.mkdirSync(path.dirname(PERSIST_FILE), { recursive: true });
+    const snapshot = { version: PERSIST_VERSION, savedAt: now(), idCounter };
+    for (const key of PERSIST_KEYS) snapshot[key] = state[key];
+    fs.writeFileSync(PERSIST_FILE, JSON.stringify(snapshot, null, 2));
+  } catch (error) {
+    console.warn(`[server] failed to persist state: ${error instanceof Error ? error.message : String(error)}`);
   }
 }
 
@@ -974,16 +1012,18 @@ function persistState() {
   if (persistTimer) return;
   persistTimer = setTimeout(() => {
     persistTimer = null;
-    try {
-      fs.mkdirSync(path.dirname(PERSIST_FILE), { recursive: true });
-      const snapshot = { version: PERSIST_VERSION, savedAt: now(), idCounter };
-      for (const key of PERSIST_KEYS) snapshot[key] = state[key];
-      fs.writeFileSync(PERSIST_FILE, JSON.stringify(snapshot, null, 2));
-    } catch (error) {
-      console.warn(`[server] failed to persist state: ${error instanceof Error ? error.message : String(error)}`);
-    }
+    writeSnapshot();
   }, 500);
   if (typeof persistTimer.unref === "function") persistTimer.unref();
+}
+
+// Write any pending state immediately — used by exit handlers so the last
+// mutation isn't lost inside the debounce window on shutdown.
+function flushState() {
+  if (!persistTimer) return;
+  clearTimeout(persistTimer);
+  persistTimer = null;
+  writeSnapshot();
 }
 
 function nextId(prefix) {
@@ -1140,16 +1180,26 @@ function createNamedWorktree(project, name, opts = {}) {
   if (state.worktrees.some((w) => w.projectId === project.id && w.branch === branch)) {
     throw new Error(`A worktree for "${branch}" already exists.`);
   }
+  // The on-disk dir name is a lossy slug of the branch, so distinct branches can
+  // map to the same slug ("feat/x" and "feat-x"). Suffix until unique instead of
+  // failing, so a legitimately-different branch always gets a worktree.
   const safe = branch.replace(/[^a-zA-Z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") || "worktree";
   const base = path.join(path.dirname(target.rootPath), `.${path.basename(target.rootPath)}.worktrees`);
-  const wtPath = path.join(base, safe);
-  if (fs.existsSync(wtPath)) throw new Error(`Worktree path already exists: ${wtPath}`);
+  let wtPath = path.join(base, safe);
+  for (let n = 2; fs.existsSync(wtPath) || state.worktrees.some((w) => w.path === wtPath); n += 1) {
+    wtPath = path.join(base, `${safe}-${n}`);
+  }
   let branchExists = false;
   try {
     execFileSync("git", ["-C", target.rootPath, "rev-parse", "--verify", "--quiet", `refs/heads/${branch}`], { stdio: "ignore" });
     branchExists = true;
   } catch {
     branchExists = false;
+  }
+  // A caller that asked to base on a specific ref (a remote branch) must not be
+  // silently given a pre-existing, possibly-divergent local branch of that name.
+  if (branchExists && opts.startPoint) {
+    throw new Error(`Local branch "${branch}" already exists; cannot base a new worktree on ${opts.startPoint}.`);
   }
   const startPoint = opts.startPoint || target.defaultBranch || "HEAD";
   try {
@@ -3064,6 +3114,7 @@ function denyInvocation(approval, invocation) {
   });
   state.auditSummaries.push(createAuditSummary(invocation, "Local approval denied before execution."));
   recordAgentUsage(invocation, "rejected");
+  cleanupEphemeralWorktree(invocation);
 }
 
 function nextDispatchableInvocation() {
