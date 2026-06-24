@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ComponentType } from "react";
-import { ChevronDown, ChevronLeft, ChevronRight, File, Folder, GitBranch, ListChecks, MessageSquare, X } from "lucide-react";
+import { ChevronDown, ChevronLeft, ChevronRight, File, FileText, Folder, GitBranch, GitCompare, ListChecks, MessageSquare, X } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -62,6 +62,8 @@ export function WorktreeView({ worktree }: { worktree: WorktreeSnapshot }) {
   const [paneTab, setPaneTab] = useState<PaneTab>("project");
   const [git, setGit] = useState<GitStatus | null>(null);
   const [diff, setDiff] = useState<WorktreeDiff | null>(null);
+  // Per file-tab view: show the file's current content or just its changes.
+  const [fileView, setFileView] = useState<"content" | "diff">("content");
   // Tracks the latest run's status across renders so we can detect the
   // running→finished edge and refresh the workspace once.
   const prevStatusRef = useRef<string | null>(null);
@@ -79,6 +81,7 @@ export function WorktreeView({ worktree }: { worktree: WorktreeSnapshot }) {
   const openFiles = tabs.openFiles;
   const activeTab = tabs.activeTab;
   const cacheKey = `${worktree.id}::${activeTab}`;
+  const isFileTab = activeTab !== "session" && activeTab !== DIFF_TAB;
 
   function updateTabs(fn: (t: { openFiles: { path: string; name: string }[]; activeTab: string }) => { openFiles: { path: string; name: string }[]; activeTab: string }) {
     setTabsByWt((prev) => ({ ...prev, [worktree.id]: fn(prev[worktree.id] ?? { openFiles: [], activeTab: "session" }) }));
@@ -144,6 +147,7 @@ export function WorktreeView({ worktree }: { worktree: WorktreeSnapshot }) {
     setTree([]);
     setResults([]);
     setPaneTab("project");
+    setFileView("content");
     // Reset the run target to this worktree's own agent (the instance is reused
     // across worktree switches, so a stale agent would otherwise carry over).
     setAgentId(worktree.agentId ?? agents[0]?.id ?? "");
@@ -173,9 +177,12 @@ export function WorktreeView({ worktree }: { worktree: WorktreeSnapshot }) {
   // Load the unified diff when the Changes tab (or its diff view) is showing and
   // we don't have one cached. Cleared on worktree switch and after a run.
   useEffect(() => {
-    if ((paneTab !== "changes" && activeTab !== DIFF_TAB) || diff) return;
+    // The unified diff backs the Changes tab/diff view AND a file tab's "changes"
+    // toggle (which slices this file's section out of it).
+    const wantsDiff = paneTab === "changes" || activeTab === DIFF_TAB || fileView === "diff";
+    if (!wantsDiff || diff) return;
     (api.worktreeDiff(worktree.id) as Promise<WorktreeDiff>).then(setDiff).catch(() => setDiff(null));
-  }, [paneTab, activeTab, diff, worktree.id]);
+  }, [paneTab, activeTab, fileView, diff, worktree.id]);
 
   // Invocations are newest-first; the latest one in this worktree is the session.
   const invocations = (state?.invocations ?? []).filter((i) => i.worktreeId === worktree.id);
@@ -301,6 +308,33 @@ export function WorktreeView({ worktree }: { worktree: WorktreeSnapshot }) {
                 </button>
               </div>
             ) : null}
+
+            {/* File tab: toggle between the file's content and just its changes. */}
+            {isFileTab ? (
+              <div className="ml-auto flex shrink-0 items-center gap-0.5 self-center rounded-lg bg-muted p-0.5">
+                {(
+                  [
+                    ["content", "File content", FileText],
+                    ["diff", "File changes", GitCompare],
+                  ] as ["content" | "diff", string, ComponentType<{ className?: string }>][]
+                ).map(([key, label, Icon]) => (
+                  <button
+                    key={key}
+                    type="button"
+                    title={label}
+                    aria-label={label}
+                    aria-pressed={fileView === key}
+                    onClick={() => setFileView(key)}
+                    className={cn(
+                      "grid size-6 place-items-center rounded-md transition",
+                      fileView === key ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground",
+                    )}
+                  >
+                    <Icon className="size-3.5" />
+                  </button>
+                ))}
+              </div>
+            ) : null}
           </div>
 
           {activeTab === "session" ? (
@@ -351,6 +385,8 @@ export function WorktreeView({ worktree }: { worktree: WorktreeSnapshot }) {
             </>
           ) : activeTab === DIFF_TAB ? (
             <DiffView diff={diff} onOpenFile={openFile} />
+          ) : fileView === "diff" ? (
+            <FileDiffView path={activeTab} diff={diff} />
           ) : (
             <FileCodeView path={activeTab} data={fileCache[cacheKey]} />
           )}
@@ -717,6 +753,77 @@ function FileCodeView({ path, data }: { path: string; data?: { content: string; 
   );
 }
 
+// Tailwind classes for one unified-diff line (hunk header / metadata / +/-).
+// Shared by the whole-branch DiffView and a single file's FileDiffView.
+function diffLineClass(line: string): string {
+  if (line.startsWith("@@")) return "text-sky-500 bg-muted/50";
+  if (
+    line.startsWith("+++") ||
+    line.startsWith("---") ||
+    line.startsWith("diff --git") ||
+    line.startsWith("index ") ||
+    line.startsWith("new file") ||
+    line.startsWith("deleted file") ||
+    line.startsWith("rename ") ||
+    line.startsWith("similarity ")
+  ) {
+    return "text-muted-foreground";
+  }
+  if (line[0] === "+") return "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400";
+  if (line[0] === "-") return "bg-destructive/10 text-destructive";
+  return "text-muted-foreground";
+}
+
+// Slice one file's section out of the worktree's full unified diff: capture from
+// its `diff --git a/… b/<path>` header until the next file's header.
+function fileDiffText(full: string, path: string): string {
+  const out: string[] = [];
+  let capturing = false;
+  for (const line of full.split("\n")) {
+    const m = /^diff --git a\/.+ b\/(.+)$/.exec(line);
+    if (m) capturing = m[1] === path;
+    if (capturing) out.push(line);
+  }
+  return out.join("\n").trim();
+}
+
+// One file's changes (the "diff" toggle on a file tab), reusing the worktree
+// diff already fetched for the Changes tab.
+function FileDiffView({ path, diff }: { path: string; diff: WorktreeDiff | null }) {
+  if (!diff) {
+    return (
+      <Card>
+        <CardContent className="p-4 text-xs text-muted-foreground">Loading changes…</CardContent>
+      </Card>
+    );
+  }
+  const text = fileDiffText(diff.diff, path);
+  if (!text) {
+    return (
+      <Card>
+        <CardContent className="p-4 text-xs text-muted-foreground">No changes for this file on this branch.</CardContent>
+      </Card>
+    );
+  }
+  const lines = text.split("\n");
+  return (
+    <Card>
+      <CardHeader className="border-b border-border py-2">
+        <p className="select-all break-all font-mono text-[11px] text-muted-foreground">{path} · changes</p>
+      </CardHeader>
+      <CardContent className="p-0">
+        <div className="max-h-[60vh] overflow-auto font-mono text-[12px] leading-[1.5]">
+          {lines.map((line, i) => (
+            <div key={i} className={cn("whitespace-pre px-3", diffLineClass(line))}>
+              {line || " "}
+            </div>
+          ))}
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
 // Single-letter status for a changed file, mirroring git's porcelain codes.
 function statusLetter(f: DiffFile): string {
   if (f.untracked) return "A";
@@ -781,19 +888,8 @@ function DiffView({ diff, onOpenFile }: { diff: WorktreeDiff | null; onOpenFile:
                 </button>
               );
             }
-            const c = line[0];
-            const cls =
-              line.startsWith("@@")
-                ? "text-sky-500 bg-muted/50"
-                : line.startsWith("+++") || line.startsWith("---") || line.startsWith("index ") || line.startsWith("new file") || line.startsWith("deleted file") || line.startsWith("rename ") || line.startsWith("similarity ")
-                  ? "text-muted-foreground"
-                  : c === "+"
-                    ? "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400"
-                    : c === "-"
-                      ? "bg-destructive/10 text-destructive"
-                      : "text-muted-foreground";
             return (
-              <div key={i} className={cn("whitespace-pre px-3", cls)}>
+              <div key={i} className={cn("whitespace-pre px-3", diffLineClass(line))}>
                 {line || " "}
               </div>
             );
