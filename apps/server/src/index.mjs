@@ -829,6 +829,11 @@ const server = http.createServer(async (req, res) => {
         return;
       }
       const patch = await readJson(req);
+      // Moving a rule to another project requires owning the destination too.
+      if (patch.projectId !== undefined && patch.projectId !== automation.projectId && findProject(patch.projectId)) {
+        if (denyForeignProject(res, resolveActor(req), patch.projectId)) return;
+        automation.projectId = patch.projectId;
+      }
       if (patch.name !== undefined) automation.name = String(patch.name).trim() || automation.name;
       if (patch.prompt !== undefined) automation.prompt = String(patch.prompt);
       if (patch.schedule !== undefined) automation.schedule = normalizeSchedule(patch.schedule);

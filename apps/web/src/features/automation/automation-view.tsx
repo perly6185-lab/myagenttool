@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Play, Pause, Trash2, Clock, Plus } from "lucide-react";
+import { Play, Pause, Trash2, Clock, Plus, Pencil } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -25,6 +25,7 @@ export function AutomationView() {
   const projects = state?.projects ?? [];
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
+  const [editing, setEditing] = useState<AutomationSnapshot | null>(null);
 
   const selected = automations.find((a) => a.id === selectedId) ?? automations[0] ?? null;
   const agentName = (id: string) => agents.find((a) => a.id === id)?.name ?? id;
@@ -105,6 +106,9 @@ export function AutomationView() {
                 <Button size="sm" disabled={pending} onClick={() => runNow(selected)}>
                   <Play className="mr-1 size-3.5" /> Run now
                 </Button>
+                <Button variant="secondary" size="sm" disabled={pending} onClick={() => setEditing(selected)} title="Edit" aria-label="Edit automation">
+                  <Pencil className="size-3.5" />
+                </Button>
                 <Button variant="secondary" size="sm" disabled={pending} onClick={() => toggle(selected)} title={selected.enabled ? "Pause" : "Enable"}>
                   <Pause className="size-3.5" />
                 </Button>
@@ -168,40 +172,56 @@ export function AutomationView() {
           }}
         />
       </Modal>
+
+      <Modal open={Boolean(editing)} onClose={() => setEditing(null)} title="Edit automation">
+        {editing ? (
+          <AutomationForm
+            automation={editing}
+            onDone={(id) => {
+              setEditing(null);
+              if (id) setSelectedId(id);
+            }}
+          />
+        ) : null}
+      </Modal>
     </div>
   );
 }
 
-// Create-automation form (the "+" modal): name, target project/branch, agent,
+// Create/edit form. With `automation` it pre-fills and PATCHes that rule;
+// without, it POSTs a new one. Fields: name, target project/branch, agent,
 // schedule, and the prompt the agent runs each time.
-function AutomationForm({ onDone }: { onDone: (id: string | null) => void }) {
+function AutomationForm({ automation, onDone }: { automation?: AutomationSnapshot; onDone: (id: string | null) => void }) {
   const { data: state } = useConsoleState();
   const { execute, pending, error } = useAsyncAction();
   const projects = (state?.projects ?? []).filter((p) => p.status !== "archived");
   const agents = state?.agents ?? [];
 
-  const [name, setName] = useState("");
-  const [projectId, setProjectId] = useState(projects[0]?.id ?? "");
-  const [branch, setBranch] = useState("main");
-  const [agentId, setAgentId] = useState(agents[0]?.id ?? "");
-  const [kind, setKind] = useState<ScheduleKind>("weekdays");
-  const [time, setTime] = useState("09:00");
-  const [everyMinutes, setEveryMinutes] = useState(60);
-  const [prompt, setPrompt] = useState("");
+  const [name, setName] = useState(automation?.name ?? "");
+  const [projectId, setProjectId] = useState(automation?.projectId ?? projects[0]?.id ?? "");
+  const [branch, setBranch] = useState(automation?.branch ?? "main");
+  const [agentId, setAgentId] = useState(automation?.agentId ?? agents[0]?.id ?? "");
+  const [kind, setKind] = useState<ScheduleKind>(automation?.schedule.kind ?? "weekdays");
+  const [time, setTime] = useState(automation?.schedule.time ?? "09:00");
+  const [everyMinutes, setEveryMinutes] = useState(automation?.schedule.everyMinutes ?? 60);
+  const [prompt, setPrompt] = useState(automation?.prompt ?? "");
 
   function submit() {
     if (!name.trim() || !projectId || !prompt.trim()) return;
     const schedule = kind === "interval" ? { kind, everyMinutes } : { kind, time };
+    const payload = {
+      name: name.trim(),
+      projectId,
+      branch: branch.trim() || "main",
+      agentId: agentId || undefined,
+      schedule,
+      prompt: prompt.trim(),
+    };
     void execute(async () => {
-      const r = (await api.createAutomation({
-        name: name.trim(),
-        projectId,
-        branch: branch.trim() || "main",
-        agentId: agentId || undefined,
-        schedule,
-        prompt: prompt.trim(),
-      })) as { automation?: { id: string } };
-      onDone(r.automation?.id ?? null);
+      const r = (await (automation
+        ? api.updateAutomation(automation.id, payload)
+        : api.createAutomation(payload))) as { automation?: { id: string } };
+      onDone(r.automation?.id ?? automation?.id ?? null);
       return r;
     });
   }
@@ -265,7 +285,7 @@ function AutomationForm({ onDone }: { onDone: (id: string | null) => void }) {
           Cancel
         </Button>
         <Button size="sm" disabled={pending || !name.trim() || !projectId || !prompt.trim()} onClick={submit}>
-          Create automation
+          {automation ? "Save changes" : "Create automation"}
         </Button>
       </div>
       {error ? <p className="text-xs text-destructive">{error}</p> : null}
