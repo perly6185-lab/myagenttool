@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { ChevronDown, GitBranch, Github, Sparkles, Type } from "lucide-react";
+import { ChevronDown, CircleDot, GitBranch, GitPullRequest, Github, Sparkles, Type } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input, Select } from "@/components/ui/input";
 import { Field } from "@/components/common/field";
@@ -7,10 +7,16 @@ import { useConsoleState } from "@/data/use-console-state";
 import { useAsyncAction, api } from "@/data/use-console-actions";
 import { cn } from "@/lib/cn";
 
-type PullRequest = { number: number; title: string; headRefName: string; author: string };
-type PrState = { available: boolean; message: string; prs: PullRequest[] };
+type GithubItem = { type: "pr" | "issue"; number: number; title: string; headRefName: string | null; author: string };
+type GithubState = { available: boolean; message: string; items: GithubItem[] };
 type BranchRef = { name: string; remote: boolean };
 type Tab = "smart" | "github" | "branch" | "name";
+
+// Branch name for a worktree created from an issue: "<number>-<title slug>".
+function issueBranchName(item: GithubItem): string {
+  const slug = item.title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40) || "issue";
+  return `${item.number}-${slug}`;
+}
 
 const TABS: [Tab, string, typeof Sparkles][] = [
   ["smart", "Smart", Sparkles],
@@ -45,17 +51,16 @@ export function WorktreeCreator({
 
   const [wtName, setWtName] = useState("");
   const [desc, setDesc] = useState("");
-  const [suggested, setSuggested] = useState("");
   const [suggesting, setSuggesting] = useState(false);
 
   const [branches, setBranches] = useState<BranchRef[]>([]);
   const [brQuery, setBrQuery] = useState("");
   const [brSel, setBrSel] = useState<string | null>(null);
 
-  const [pr, setPr] = useState<PrState | null>(null);
-  const [prLoading, setPrLoading] = useState(false);
-  const [prQuery, setPrQuery] = useState("");
-  const [prSel, setPrSel] = useState<number | null>(null);
+  const [gh, setGh] = useState<GithubState | null>(null);
+  const [ghLoading, setGhLoading] = useState(false);
+  const [ghQuery, setGhQuery] = useState("");
+  const [ghSel, setGhSel] = useState<GithubItem | null>(null);
 
   // Keep a valid agent selected once the (async) agent list arrives.
   useEffect(() => {
@@ -65,58 +70,66 @@ export function WorktreeCreator({
   // Load branches on mount / when the project changes; reset per-project picks
   // (selections and the base-branch override belong to the previous project).
   useEffect(() => {
-    setPr(null);
+    setGh(null);
     setBrSel(null);
-    setPrSel(null);
+    setGhSel(null);
     setBaseBranch("");
     setBrQuery("");
-    setPrQuery("");
+    setGhQuery("");
+    setWtName("");
+    setDesc("");
     (api.listBranches(pid) as Promise<{ branches: BranchRef[] }>)
       .then((r) => setBranches(r.branches ?? []))
       .catch(() => setBranches([]));
   }, [pid]);
 
-  // Lazily load PRs the first time the GitHub tab is opened.
+  // Lazily load PRs + issues the first time the GitHub tab is opened.
   useEffect(() => {
-    if (tab !== "github" || pr) return;
-    setPrLoading(true);
-    (api.listPullRequests(pid) as Promise<PrState>)
-      .then(setPr)
-      .catch((e) => setPr({ available: false, message: e instanceof Error ? e.message : "Failed to load PRs.", prs: [] }))
-      .finally(() => setPrLoading(false));
-  }, [tab, pr, pid]);
+    if (tab !== "github" || gh) return;
+    setGhLoading(true);
+    (api.listGithubItems(pid) as Promise<GithubState>)
+      .then(setGh)
+      .catch((e) => setGh({ available: false, message: e instanceof Error ? e.message : "Failed to load.", items: [] }))
+      .finally(() => setGhLoading(false));
+  }, [tab, gh, pid]);
+
+  // Selecting a GitHub item backfills the shared name field: an issue seeds a
+  // new "<num>-<slug>" branch you can edit; a PR fills (read-only) its head ref.
+  function selectGithub(item: GithubItem) {
+    setGhSel(item);
+    setWtName(item.type === "issue" ? issueBranchName(item) : (item.headRefName ?? ""));
+  }
+  // Selecting a branch checks out that ref; reflect it in the name field too.
+  function selectBranch(name: string) {
+    setBrSel(name);
+    setWtName(name);
+  }
 
   async function suggest() {
     if (!desc.trim()) return;
     setSuggesting(true);
     try {
       const r = (await api.suggestWorktreeName(desc.trim())) as { name: string };
-      setSuggested(r.name);
+      setWtName(r.name); // backfill the editable name field
     } finally {
       setSuggesting(false);
     }
   }
 
-  const canCreate =
-    tab === "name"
-      ? Boolean(wtName.trim())
-      : tab === "smart"
-        ? Boolean(suggested.trim())
-        : tab === "branch"
-          ? Boolean(brSel)
-          : Boolean(prSel);
+  // A PR / existing branch checks out an existing ref; everything else creates a
+  // new branch from the (editable) name field.
+  const createsExistingRef = (tab === "github" && ghSel?.type === "pr") || tab === "branch";
+  const canCreate = createsExistingRef ? Boolean(tab === "branch" ? brSel : ghSel) : Boolean(wtName.trim());
 
   function create() {
     if (!canCreate) return;
     const startPoint = baseBranch || undefined;
     const payload =
-      tab === "github"
-        ? { prNumber: prSel!, agentId }
+      tab === "github" && ghSel?.type === "pr"
+        ? { prNumber: ghSel.number, agentId }
         : tab === "branch"
           ? { ref: brSel!, agentId }
-          : tab === "smart"
-            ? { name: suggested.trim(), agentId, startPoint }
-            : { name: wtName.trim(), agentId, startPoint };
+          : { name: wtName.trim(), agentId, startPoint };
     void execute(async () => {
       const r = await api.createWorktree(pid, payload);
       onDone?.();
@@ -125,8 +138,8 @@ export function WorktreeCreator({
   }
 
   const filteredBranches = branches.filter((b) => b.name.toLowerCase().includes(brQuery.trim().toLowerCase()));
-  const filteredPrs = (pr?.prs ?? []).filter((p) =>
-    `#${p.number} ${p.title} ${p.headRefName}`.toLowerCase().includes(prQuery.trim().toLowerCase()),
+  const filteredItems = (gh?.items ?? []).filter((it) =>
+    `#${it.number} ${it.title} ${it.headRefName ?? ""}`.toLowerCase().includes(ghQuery.trim().toLowerCase()),
   );
 
   return (
@@ -165,28 +178,19 @@ export function WorktreeCreator({
         </div>
 
         <div className="mt-3">
-          {tab === "name" ? (
-            <Input value={wtName} placeholder="Worktree name (new branch)" onChange={(e) => setWtName(e.target.value)} />
-          ) : null}
-
           {tab === "smart" ? (
-            <div className="space-y-2">
-              <div className="flex gap-2">
-                <Input
-                  value={desc}
-                  placeholder="Describe the work (e.g. fix login crash)"
-                  onChange={(e) => setDesc(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") suggest();
-                  }}
-                />
-                <Button variant="secondary" size="sm" disabled={suggesting || !desc.trim()} onClick={suggest}>
-                  Suggest
-                </Button>
-              </div>
-              {suggested ? (
-                <Input value={suggested} className="font-mono" onChange={(e) => setSuggested(e.target.value)} />
-              ) : null}
+            <div className="flex gap-2">
+              <Input
+                value={desc}
+                placeholder="Describe the work (e.g. fix login crash)"
+                onChange={(e) => setDesc(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") suggest();
+                }}
+              />
+              <Button variant="secondary" size="sm" disabled={suggesting || !desc.trim()} onClick={suggest}>
+                Suggest
+              </Button>
             </div>
           ) : null}
 
@@ -201,7 +205,7 @@ export function WorktreeCreator({
                     <li key={b.name}>
                       <button
                         type="button"
-                        onClick={() => setBrSel(b.name)}
+                        onClick={() => selectBranch(b.name)}
                         className={cn(
                           "flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs",
                           brSel === b.name ? "bg-primary/10 text-foreground" : "hover:bg-muted",
@@ -220,36 +224,45 @@ export function WorktreeCreator({
 
           {tab === "github" ? (
             <div className="space-y-2">
-              {prLoading ? <p className="text-xs text-muted-foreground">Loading pull requests…</p> : null}
-              {!prLoading && pr && !pr.available ? (
+              {ghLoading ? <p className="text-xs text-muted-foreground">Loading PRs &amp; issues…</p> : null}
+              {!ghLoading && gh && !gh.available ? (
                 <div className="rounded-md border border-dashed border-border px-3 py-3 text-xs text-muted-foreground">
-                  {pr.message} Connect a GitHub remote and authenticate <span className="font-mono">gh</span> to create
-                  worktrees from pull requests.
+                  {gh.message} Connect a GitHub remote and authenticate <span className="font-mono">gh</span> to create
+                  worktrees from PRs and issues.
                 </div>
               ) : null}
-              {pr?.available ? (
+              {gh?.available ? (
                 <>
-                  <Input value={prQuery} placeholder="Search GitHub PRs" onChange={(e) => setPrQuery(e.target.value)} />
-                  {filteredPrs.length === 0 ? (
-                    <p className="text-xs text-muted-foreground">No matching pull requests.</p>
+                  <Input value={ghQuery} placeholder="Search GitHub PRs & issues" onChange={(e) => setGhQuery(e.target.value)} />
+                  {filteredItems.length === 0 ? (
+                    <p className="text-xs text-muted-foreground">No matching PRs or issues.</p>
                   ) : (
                     <ul className="max-h-44 overflow-y-auto rounded-md border border-border">
-                      {filteredPrs.map((p) => (
-                        <li key={p.number}>
+                      {filteredItems.map((it) => (
+                        <li key={`${it.type}-${it.number}`}>
                           <button
                             type="button"
-                            onClick={() => setPrSel(p.number)}
+                            onClick={() => selectGithub(it)}
                             className={cn(
-                              "flex w-full flex-col px-3 py-1.5 text-left text-xs",
-                              prSel === p.number ? "bg-primary/10 text-foreground" : "hover:bg-muted",
+                              "flex w-full items-start gap-2 px-3 py-1.5 text-left text-xs",
+                              ghSel?.type === it.type && ghSel?.number === it.number
+                                ? "bg-primary/10 text-foreground"
+                                : "hover:bg-muted",
                             )}
                           >
-                            <span className="truncate">
-                              <span className="font-medium">#{p.number}</span> {p.title}
-                            </span>
-                            <span className="text-[10px] text-muted-foreground">
-                              {p.headRefName}
-                              {p.author ? ` · @${p.author}` : ""}
+                            {it.type === "pr" ? (
+                              <GitPullRequest className="mt-0.5 size-3 shrink-0 text-emerald-500" />
+                            ) : (
+                              <CircleDot className="mt-0.5 size-3 shrink-0 text-sky-500" />
+                            )}
+                            <span className="min-w-0">
+                              <span className="truncate">
+                                <span className="font-medium">#{it.number}</span> {it.title}
+                              </span>
+                              <span className="block text-[10px] text-muted-foreground">
+                                {it.type === "pr" ? it.headRefName : `issue → ${issueBranchName(it)}`}
+                                {it.author ? ` · @${it.author}` : ""}
+                              </span>
                             </span>
                           </button>
                         </li>
@@ -261,6 +274,29 @@ export function WorktreeCreator({
             </div>
           ) : null}
         </div>
+
+        {tab === "branch" && brSel ? (
+          <p className="mt-2 text-xs text-muted-foreground">
+            Checks out existing branch <span className="font-mono">{brSel}</span>.
+          </p>
+        ) : null}
+        {tab === "github" && ghSel?.type === "pr" ? (
+          <p className="mt-2 text-xs text-muted-foreground">
+            Checks out PR #{ghSel.number} (<span className="font-mono">{ghSel.headRefName}</span>).
+          </p>
+        ) : null}
+        {tab === "name" || tab === "smart" || (tab === "github" && ghSel?.type === "issue") ? (
+          <div className="mt-2">
+            <Field label="Worktree branch name">
+              <Input
+                value={wtName}
+                placeholder="new-branch-name"
+                className="font-mono"
+                onChange={(e) => setWtName(e.target.value)}
+              />
+            </Field>
+          </div>
+        ) : null}
       </div>
 
       <Field label="Agent">

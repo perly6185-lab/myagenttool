@@ -405,14 +405,14 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
-    const pullRequestsMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/pull-requests$/);
-    if (req.method === "GET" && pullRequestsMatch) {
-      const project = findProject(decodeURIComponent(pullRequestsMatch[1]));
+    const githubMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/github$/);
+    if (req.method === "GET" && githubMatch) {
+      const project = findProject(decodeURIComponent(githubMatch[1]));
       if (!project) {
         sendJson(res, 404, { error: "project_not_found" });
         return;
       }
-      sendJson(res, 200, projectPullRequests(project));
+      sendJson(res, 200, projectGithubItems(project));
       return;
     }
 
@@ -1260,11 +1260,11 @@ function createWorktreeFromRef(project, ref, opts = {}) {
   return createNamedWorktree(project, localName, { startPoint: isRemote ? r : undefined, agentId: opts.agentId });
 }
 
-// GitHub PR mode: list open PRs via the gh CLI. Degrades gracefully when the
-// repo has no GitHub remote or gh is unavailable/unauthenticated.
-function projectPullRequests(project) {
+// GitHub mode: list open PRs and issues via the gh CLI (orca lists both).
+// Degrades gracefully when the repo has no GitHub remote or gh is unavailable.
+function projectGithubItems(project) {
   const target = state.projectTargets.find((t) => t.projectId === project.id && t.state === "ready");
-  if (!target) return { available: false, message: "Project has no ready repository.", prs: [] };
+  if (!target) return { available: false, message: "Project has no ready repository.", items: [] };
   let remote = "";
   try {
     remote = execFileSync("git", ["-C", target.rootPath, "remote", "get-url", "origin"], { encoding: "utf8" }).trim();
@@ -1272,23 +1272,27 @@ function projectPullRequests(project) {
     remote = "";
   }
   if (!/github\.com/i.test(remote)) {
-    return { available: false, message: "No GitHub remote (origin) on this repository.", prs: [] };
+    return { available: false, message: "No GitHub remote (origin) on this repository.", items: [] };
   }
-  try {
-    const out = execFileSync("gh", ["pr", "list", "--json", "number,title,headRefName,author", "--limit", "30"], {
-      cwd: target.rootPath,
-      encoding: "utf8"
-    });
-    const prs = (JSON.parse(out || "[]") || []).map((p) => ({
-      number: p.number,
-      title: p.title,
-      headRefName: p.headRefName,
-      author: p.author?.login ?? ""
-    }));
-    return { available: true, message: prs.length ? `${prs.length} open PR(s).` : "No open pull requests.", prs };
-  } catch (error) {
-    return { available: false, message: `gh pr list failed: ${error instanceof Error ? error.message : String(error)}`, prs: [] };
+  const ghJson = (args) => {
+    try {
+      return JSON.parse(execFileSync("gh", args, { cwd: target.rootPath, encoding: "utf8" }) || "[]") || [];
+    } catch {
+      return null;
+    }
+  };
+  const prsRaw = ghJson(["pr", "list", "--json", "number,title,headRefName,author", "--limit", "30"]);
+  const issuesRaw = ghJson(["issue", "list", "--json", "number,title,author", "--limit", "30"]);
+  if (prsRaw === null && issuesRaw === null) {
+    return { available: false, message: "gh list failed (auth or remote?).", items: [] };
   }
+  const items = [
+    ...(prsRaw ?? []).map((p) => ({ type: "pr", number: p.number, title: p.title, headRefName: p.headRefName, author: p.author?.login ?? "" })),
+    ...(issuesRaw ?? []).map((i) => ({ type: "issue", number: i.number, title: i.title, headRefName: null, author: i.author?.login ?? "" }))
+  ].sort((a, b) => b.number - a.number);
+  const prCount = (prsRaw ?? []).length;
+  const issueCount = (issuesRaw ?? []).length;
+  return { available: true, message: `${prCount} open PR(s), ${issueCount} open issue(s).`, items };
 }
 
 // Create a worktree for a GitHub PR: resolve the PR head branch, fetch it, and
