@@ -1,10 +1,9 @@
-import { useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Input } from "@/components/ui/input";
-import { Field } from "@/components/common/field";
 import { EmptyState } from "@/components/common/empty-state";
+import { ProjectRegisterForm } from "@/features/projects/project-register-form";
+import { WorktreeCreator } from "@/features/projects/worktree-creator";
 import { useConsoleState } from "@/data/use-console-state";
 import { useAsyncAction, api } from "@/data/use-console-actions";
 import { useUiStore } from "@/store/ui-store";
@@ -17,12 +16,9 @@ import type {
   WorktreeSnapshot,
 } from "@/lib/console-state";
 
-const SWATCHES = ["#6366f1", "#f59e0b", "#10b981", "#ef4444", "#0ea5e9", "#a855f7"];
-type Mode = "clone" | "local" | "empty";
-
 export function ProjectsView() {
   const { data: state } = useConsoleState();
-  const { execute, pending, error } = useAsyncAction();
+  const { execute, pending } = useAsyncAction();
   const projects = state?.projects ?? [];
   const targets = state?.projectTargets ?? [];
   const worktrees = state?.worktrees ?? [];
@@ -33,54 +29,6 @@ export function ProjectsView() {
   const selectedWorktreeId = useUiStore((s) => s.selectedWorktreeId);
   const activeId = selectedProjectId ?? projects[0]?.id ?? null;
 
-  const [mode, setMode] = useState<Mode>("clone");
-  const [color, setColor] = useState(SWATCHES[0]);
-  const [name, setName] = useState("");
-  const [repoUrl, setRepoUrl] = useState("");
-  const [parentDir, setParentDir] = useState("");
-  const [repoPath, setRepoPath] = useState("");
-
-  function afterCreate(created: { project?: { id: string } }) {
-    if (created.project?.id) setSelectedProjectId(created.project.id);
-    setName("");
-    setRepoUrl("");
-    setRepoPath("");
-  }
-
-  function submit() {
-    if (mode === "clone") {
-      if (!repoUrl.trim() || !parentDir.trim()) return;
-      void execute(async () => {
-        const r = (await api.cloneProject({
-          repoUrl: repoUrl.trim(),
-          parentDir: parentDir.trim(),
-          name: name.trim() || undefined,
-          color,
-        })) as { project?: { id: string } };
-        afterCreate(r);
-        return r;
-      });
-    } else if (mode === "local") {
-      if (!repoPath.trim()) return;
-      void execute(async () => {
-        const r = (await api.bindProject({
-          repoPath: repoPath.trim(),
-          name: name.trim() || undefined,
-          color,
-        })) as { project?: { id: string } };
-        afterCreate(r);
-        return r;
-      });
-    } else {
-      if (!name.trim()) return;
-      void execute(async () => {
-        const r = (await api.createProject({ name: name.trim(), color })) as { project?: { id: string } };
-        afterCreate(r);
-        return r;
-      });
-    }
-  }
-
   function archive(project: ProjectSnapshot) {
     const next = project.status === "archived" ? "active" : "archived";
     void execute(() => api.updateProject(project.id, { status: next }));
@@ -89,10 +37,6 @@ export function ProjectsView() {
   function toggleIsolation(project: ProjectSnapshot) {
     const next = project.isolation === "worktree" ? "shared" : "worktree";
     void execute(() => api.updateProject(project.id, { isolation: next }));
-  }
-
-  function createWorktree(project: ProjectSnapshot, name: string) {
-    void execute(() => api.createWorktree(project.id, name));
   }
 
   function removeWorktree(id: string) {
@@ -123,7 +67,6 @@ export function ProjectsView() {
                 onSelect={() => setSelectedProjectId(project.id)}
                 onArchive={() => archive(project)}
                 onToggleIsolation={() => toggleIsolation(project)}
-                onCreateWorktree={(name) => createWorktree(project, name)}
                 onRemoveWorktree={removeWorktree}
                 selectedWorktreeId={selectedWorktreeId}
                 busy={pending}
@@ -138,80 +81,8 @@ export function ProjectsView() {
           <CardTitle>Register a project</CardTitle>
           <p className="text-sm text-muted-foreground">Clone a repo, link a local checkout, or create an empty project.</p>
         </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="flex gap-1 rounded-lg bg-muted p-1">
-            {(
-              [
-                ["clone", "Clone URL"],
-                ["local", "Local path"],
-                ["empty", "Empty"],
-              ] as [Mode, string][]
-            ).map(([key, label]) => (
-              <button
-                key={key}
-                type="button"
-                onClick={() => setMode(key)}
-                className={cn(
-                  "flex-1 rounded-md px-2 py-1.5 text-xs font-medium transition",
-                  mode === key ? "bg-background shadow-sm" : "text-muted-foreground hover:text-foreground",
-                )}
-              >
-                {label}
-              </button>
-            ))}
-          </div>
-
-          {mode === "clone" ? (
-            <>
-              <Field label="Git URL">
-                <Input
-                  value={repoUrl}
-                  placeholder="https://github.com/owner/repo.git"
-                  onChange={(e) => setRepoUrl(e.target.value)}
-                />
-              </Field>
-              <Field label="Parent folder">
-                <Input value={parentDir} placeholder="/Users/you/projects" onChange={(e) => setParentDir(e.target.value)} />
-              </Field>
-            </>
-          ) : null}
-
-          {mode === "local" ? (
-            <Field label="Repository path">
-              <Input value={repoPath} placeholder="/Users/you/projects/repo" onChange={(e) => setRepoPath(e.target.value)} />
-            </Field>
-          ) : null}
-
-          <Field label={mode === "empty" ? "Name" : "Name (optional — derived from repo)"}>
-            <Input
-              value={name}
-              placeholder="e.g. Migrations"
-              onChange={(e) => setName(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") submit();
-              }}
-            />
-          </Field>
-
-          <Field label="Color">
-            <div className="flex flex-wrap gap-2">
-              {SWATCHES.map((c) => (
-                <button
-                  key={c}
-                  type="button"
-                  aria-label={`Color ${c}`}
-                  onClick={() => setColor(c)}
-                  className="h-7 w-7 rounded-full border-2 transition"
-                  style={{ backgroundColor: c, borderColor: color === c ? "var(--foreground)" : "transparent" }}
-                />
-              ))}
-            </div>
-          </Field>
-
-          <Button onClick={submit} disabled={pending}>
-            {mode === "clone" ? "Clone…" : mode === "local" ? "Link repository" : "Create project"}
-          </Button>
-          {error ? <p className="text-xs text-destructive">{error}</p> : null}
+        <CardContent>
+          <ProjectRegisterForm />
         </CardContent>
       </Card>
     </div>
@@ -227,7 +98,6 @@ function ProjectRow({
   onSelect,
   onArchive,
   onToggleIsolation,
-  onCreateWorktree,
   onRemoveWorktree,
   selectedWorktreeId,
   busy,
@@ -240,7 +110,6 @@ function ProjectRow({
   onSelect: () => void;
   onArchive: () => void;
   onToggleIsolation: () => void;
-  onCreateWorktree: (name: string) => void;
   onRemoveWorktree: (id: string) => void;
   selectedWorktreeId: string | null;
   busy: boolean;
@@ -285,9 +154,9 @@ function ProjectRow({
       {target ? (
         <TargetBlock
           target={target}
+          projectId={project.id}
           worktrees={worktrees}
           isolated={isolated}
-          onCreateWorktree={onCreateWorktree}
           onRemoveWorktree={onRemoveWorktree}
           selectedWorktreeId={selectedWorktreeId}
           busy={busy}
@@ -299,31 +168,25 @@ function ProjectRow({
 
 function TargetBlock({
   target,
+  projectId,
   worktrees,
   isolated,
-  onCreateWorktree,
   onRemoveWorktree,
   selectedWorktreeId,
   busy,
 }: {
   target: ProjectTargetSnapshot;
+  projectId: string;
   worktrees: WorktreeSnapshot[];
   isolated: boolean;
-  onCreateWorktree: (name: string) => void;
   onRemoveWorktree: (id: string) => void;
   selectedWorktreeId: string | null;
   busy: boolean;
 }) {
-  const [newWorktree, setNewWorktree] = useState("");
   const tone = target.state === "ready" ? "success" : target.state === "failed" ? "danger" : "neutral";
   const mainWorktrees = worktrees.filter((w) => w.isMain);
   const named = worktrees.filter((w) => !w.isMain && !w.ephemeral);
   const ephemeral = worktrees.filter((w) => w.ephemeral);
-  function submit() {
-    if (!newWorktree.trim()) return;
-    onCreateWorktree(newWorktree.trim());
-    setNewWorktree("");
-  }
   return (
     <div className="mt-2 border-t border-border/60 pt-2">
       <div className="flex items-center justify-between gap-2 text-xs">
@@ -360,22 +223,7 @@ function TargetBlock({
         />
       ))}
 
-      {target.state === "ready" ? (
-        <div className="mt-2 flex gap-2 pl-3">
-          <Input
-            value={newWorktree}
-            placeholder="New worktree (branch name)"
-            className="h-7 text-xs"
-            onChange={(e) => setNewWorktree(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") submit();
-            }}
-          />
-          <Button variant="secondary" size="sm" disabled={busy || !newWorktree.trim()} onClick={submit}>
-            Create worktree
-          </Button>
-        </div>
-      ) : null}
+      {target.state === "ready" ? <WorktreeCreator projectId={projectId} /> : null}
 
       {isolated ? (
         <p className="mt-1.5 pl-3 text-xs text-muted-foreground">

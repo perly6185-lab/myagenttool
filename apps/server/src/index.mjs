@@ -405,6 +405,34 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    const pullRequestsMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/pull-requests$/);
+    if (req.method === "GET" && pullRequestsMatch) {
+      const project = findProject(decodeURIComponent(pullRequestsMatch[1]));
+      if (!project) {
+        sendJson(res, 404, { error: "project_not_found" });
+        return;
+      }
+      sendJson(res, 200, projectPullRequests(project));
+      return;
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/worktree-name-suggestion") {
+      const body = await readJson(req);
+      sendJson(res, 200, suggestBranchName(body.description));
+      return;
+    }
+
+    const branchesMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/branches$/);
+    if (req.method === "GET" && branchesMatch) {
+      const project = findProject(decodeURIComponent(branchesMatch[1]));
+      if (!project) {
+        sendJson(res, 404, { error: "project_not_found" });
+        return;
+      }
+      sendJson(res, 200, listProjectBranches(project));
+      return;
+    }
+
     const worktreeCreateMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/worktrees$/);
     if (req.method === "POST" && worktreeCreateMatch) {
       const body = await readJson(req);
@@ -414,7 +442,12 @@ const server = http.createServer(async (req, res) => {
         return;
       }
       try {
-        sendJson(res, 201, { worktree: createNamedWorktree(project, body.name) });
+        const worktree = body.prNumber
+          ? createWorktreeFromPr(project, body.prNumber, { agentId: body.agentId })
+          : body.ref
+            ? createWorktreeFromRef(project, body.ref, { agentId: body.agentId })
+            : createNamedWorktree(project, body.name, { agentId: body.agentId, startPoint: body.startPoint });
+        sendJson(res, 201, { worktree });
       } catch (error) {
         sendJson(res, 400, { error: "invalid_worktree", message: error instanceof Error ? error.message : String(error) });
       }
@@ -1099,7 +1132,7 @@ function cleanupEphemeralWorktree(invocation) {
 // User-created persistent worktree under a project (orca's "Create worktree").
 // Names a branch: checks out an existing one, or creates it from the default
 // branch. Unlike ephemeral worktrees these are kept until removed by the user.
-function createNamedWorktree(project, name) {
+function createNamedWorktree(project, name, opts = {}) {
   const target = state.projectTargets.find((t) => t.projectId === project.id && t.state === "ready");
   if (!target) throw new Error("Project has no ready repository.");
   const branch = String(name ?? "").trim();
@@ -1118,11 +1151,12 @@ function createNamedWorktree(project, name) {
   } catch {
     branchExists = false;
   }
+  const startPoint = opts.startPoint || target.defaultBranch || "HEAD";
   try {
     fs.mkdirSync(base, { recursive: true });
     const args = branchExists
       ? ["-C", target.rootPath, "worktree", "add", wtPath, branch]
-      : ["-C", target.rootPath, "worktree", "add", "-b", branch, wtPath, target.defaultBranch ?? "HEAD"];
+      : ["-C", target.rootPath, "worktree", "add", "-b", branch, wtPath, startPoint];
     execFileSync("git", args, { stdio: "ignore" });
   } catch (error) {
     throw new Error(`git worktree add failed: ${error instanceof Error ? error.message : String(error)}`);
@@ -1135,11 +1169,133 @@ function createNamedWorktree(project, name) {
     path: wtPath,
     isMain: false,
     ephemeral: false,
+    agentId: opts.agentId ?? null,
     createdAt: now()
   };
   state.worktrees.push(worktree);
   persistState();
   return worktree;
+}
+
+// Branch mode: list local + remote branches so the dialog can offer a
+// searchable "create from" list (orca's 分支 tab).
+function listProjectBranches(project) {
+  const target = state.projectTargets.find((t) => t.projectId === project.id && t.state === "ready");
+  if (!target) return { branches: [] };
+  try {
+    const out = execFileSync(
+      "git",
+      ["-C", target.rootPath, "for-each-ref", "--format=%(refname:short)", "refs/heads", "refs/remotes"],
+      { encoding: "utf8" }
+    );
+    const branches = out
+      .split("\n")
+      .map((s) => s.trim())
+      .filter(Boolean)
+      .filter((b) => !b.endsWith("/HEAD"))
+      .map((name) => ({ name, remote: name.startsWith("origin/") }));
+    return { branches };
+  } catch {
+    return { branches: [] };
+  }
+}
+
+// Create a worktree from an existing local or remote branch ref. A remote
+// "origin/x" ref creates a local branch "x" tracking it.
+function createWorktreeFromRef(project, ref, opts = {}) {
+  const r = String(ref ?? "").trim();
+  if (!r) throw new Error("A branch ref is required.");
+  const isRemote = r.startsWith("origin/");
+  const localName = isRemote ? r.slice("origin/".length) : r;
+  return createNamedWorktree(project, localName, { startPoint: isRemote ? r : undefined, agentId: opts.agentId });
+}
+
+// GitHub PR mode: list open PRs via the gh CLI. Degrades gracefully when the
+// repo has no GitHub remote or gh is unavailable/unauthenticated.
+function projectPullRequests(project) {
+  const target = state.projectTargets.find((t) => t.projectId === project.id && t.state === "ready");
+  if (!target) return { available: false, message: "Project has no ready repository.", prs: [] };
+  let remote = "";
+  try {
+    remote = execFileSync("git", ["-C", target.rootPath, "remote", "get-url", "origin"], { encoding: "utf8" }).trim();
+  } catch {
+    remote = "";
+  }
+  if (!/github\.com/i.test(remote)) {
+    return { available: false, message: "No GitHub remote (origin) on this repository.", prs: [] };
+  }
+  try {
+    const out = execFileSync("gh", ["pr", "list", "--json", "number,title,headRefName,author", "--limit", "30"], {
+      cwd: target.rootPath,
+      encoding: "utf8"
+    });
+    const prs = (JSON.parse(out || "[]") || []).map((p) => ({
+      number: p.number,
+      title: p.title,
+      headRefName: p.headRefName,
+      author: p.author?.login ?? ""
+    }));
+    return { available: true, message: prs.length ? `${prs.length} open PR(s).` : "No open pull requests.", prs };
+  } catch (error) {
+    return { available: false, message: `gh pr list failed: ${error instanceof Error ? error.message : String(error)}`, prs: [] };
+  }
+}
+
+// Create a worktree for a GitHub PR: resolve the PR head branch, fetch it, and
+// check it out into a new worktree.
+function createWorktreeFromPr(project, prNumber, opts = {}) {
+  const target = state.projectTargets.find((t) => t.projectId === project.id && t.state === "ready");
+  if (!target) throw new Error("Project has no ready repository.");
+  const n = Number(prNumber);
+  if (!Number.isInteger(n) || n <= 0) throw new Error("A valid PR number is required.");
+  let headRef = "";
+  try {
+    headRef = JSON.parse(
+      execFileSync("gh", ["pr", "view", String(n), "--json", "headRefName"], { cwd: target.rootPath, encoding: "utf8" })
+    ).headRefName;
+  } catch (error) {
+    throw new Error(`gh pr view failed: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  if (!headRef) throw new Error("Could not resolve the PR head branch.");
+  try {
+    execFileSync("git", ["-C", target.rootPath, "fetch", "origin", `pull/${n}/head:${headRef}`], { stdio: "ignore" });
+  } catch {
+    // The branch may already exist locally; createNamedWorktree checks it out.
+  }
+  return createNamedWorktree(project, headRef, { agentId: opts.agentId });
+}
+
+// Smart mode: derive a conventional, git-safe branch name from a free-text
+// description (local heuristic; an LLM namer can plug in here later).
+function suggestBranchName(description) {
+  const text = String(description ?? "").trim().toLowerCase();
+  if (!text) return { name: "", source: "heuristic" };
+  const prefix = /\b(fix|bug|bugfix|error|crash|broken|regression)\b/.test(text)
+    ? "fix"
+    : /\b(refactor|cleanup|rename|restructure|tidy)\b/.test(text)
+      ? "refactor"
+      : /\b(docs?|readme|comment)\b/.test(text)
+        ? "docs"
+        : /\b(test|tests|spec|coverage)\b/.test(text)
+          ? "test"
+          : /\b(chore|bump|deps|dependency|release)\b/.test(text)
+            ? "chore"
+            : "feat";
+  const stop = new Set(["the", "a", "an", "to", "for", "of", "and", "in", "on", "with", "add", "added", "adds", "make"]);
+  const slug =
+    text
+      .replace(/[^a-z0-9]+/g, " ")
+      .trim()
+      .split(/\s+/)
+      .filter((w) => !stop.has(w))
+      .slice(0, 6)
+      .join("-")
+      .replace(new RegExp(`^${prefix}-`), "") // avoid feat/feat-… style redundancy
+      .split("-")
+      .slice(0, 5)
+      .join("-")
+      .replace(/^-+|-+$/g, "") || "change";
+  return { name: `${prefix}/${slug}`, source: "heuristic" };
 }
 
 // Remove a user-created worktree's directory but keep its branch — the named

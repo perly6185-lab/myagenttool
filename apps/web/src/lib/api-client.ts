@@ -113,9 +113,18 @@ export const api = {
     request("POST", "/api/projects", payload),
   updateProject: (id: string, payload: Record<string, unknown>) =>
     request("PATCH", `/api/projects/${encodeURIComponent(id)}`, payload),
-  createWorktree: (projectId: string, name: string) =>
-    request("POST", `/api/projects/${encodeURIComponent(projectId)}/worktrees`, { name }),
+  createWorktree: (
+    projectId: string,
+    payload: { name?: string; ref?: string; prNumber?: number; agentId?: string; startPoint?: string },
+  ) =>
+    request("POST", `/api/projects/${encodeURIComponent(projectId)}/worktrees`, payload),
   removeWorktree: (id: string) => request("DELETE", `/api/worktrees/${encodeURIComponent(id)}`),
+  listPullRequests: (projectId: string) =>
+    request("GET", `/api/projects/${encodeURIComponent(projectId)}/pull-requests`),
+  listBranches: (projectId: string) =>
+    request("GET", `/api/projects/${encodeURIComponent(projectId)}/branches`),
+  suggestWorktreeName: (description: string) =>
+    request("POST", "/api/worktree-name-suggestion", { description }),
 
   approveApproval: (id: string) =>
     request("POST", `/api/approvals/${encodeURIComponent(id)}/approve`),
