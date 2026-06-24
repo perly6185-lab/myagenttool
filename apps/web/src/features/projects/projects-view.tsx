@@ -5,6 +5,7 @@ import { EmptyState } from "@/components/common/empty-state";
 import { ProjectRegisterForm } from "@/features/projects/project-register-form";
 import { WorktreeCreator } from "@/features/projects/worktree-creator";
 import { WorktreeLinkPopover } from "@/features/projects/worktree-link-popover";
+import { WorktreeView } from "@/features/projects/worktree-view";
 import { useConsoleState } from "@/data/use-console-state";
 import { useAsyncAction, api } from "@/data/use-console-actions";
 import { useUiStore } from "@/store/ui-store";
@@ -29,6 +30,10 @@ export function ProjectsView() {
   const setSelectedProjectId = useUiStore((s) => s.setSelectedProjectId);
   const selectedWorktreeId = useUiStore((s) => s.selectedWorktreeId);
   const activeId = selectedProjectId ?? projects[0]?.id ?? null;
+
+  // A selected worktree opens its focused session view in place of the list.
+  const openWorktree = worktrees.find((w) => w.id === selectedWorktreeId);
+  if (openWorktree) return <WorktreeView worktree={openWorktree} />;
 
   function archive(project: ProjectSnapshot) {
     const next = project.status === "archived" ? "active" : "archived";

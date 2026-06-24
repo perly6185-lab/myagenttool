@@ -126,6 +126,10 @@ export const api = {
   ) =>
     request("POST", `/api/projects/${encodeURIComponent(projectId)}/worktrees`, payload),
   removeWorktree: (id: string) => request("DELETE", `/api/worktrees/${encodeURIComponent(id)}`),
+  listWorktreeFiles: (id: string) => request("GET", `/api/worktrees/${encodeURIComponent(id)}/files`),
+  searchWorktree: (id: string, q: string, mode: "name" | "content") =>
+    request("GET", `/api/worktrees/${encodeURIComponent(id)}/search?mode=${mode}&q=${encodeURIComponent(q)}`),
+  worktreeGit: (id: string) => request("GET", `/api/worktrees/${encodeURIComponent(id)}/git`),
   listGithubItems: (projectId: string) =>
     request("GET", `/api/projects/${encodeURIComponent(projectId)}/github`),
   listBranches: (projectId: string) =>

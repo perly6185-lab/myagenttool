@@ -455,6 +455,41 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    const worktreeFilesMatch = url.pathname.match(/^\/api\/worktrees\/([^/]+)\/files$/);
+    if (req.method === "GET" && worktreeFilesMatch) {
+      const worktree = state.worktrees.find((w) => w.id === decodeURIComponent(worktreeFilesMatch[1]));
+      if (!worktree) {
+        sendJson(res, 404, { error: "worktree_not_found" });
+        return;
+      }
+      sendJson(res, 200, { path: worktree.path, tree: worktreeTree(worktree.path) });
+      return;
+    }
+
+    const worktreeSearchMatch = url.pathname.match(/^\/api\/worktrees\/([^/]+)\/search$/);
+    if (req.method === "GET" && worktreeSearchMatch) {
+      const worktree = state.worktrees.find((w) => w.id === decodeURIComponent(worktreeSearchMatch[1]));
+      if (!worktree) {
+        sendJson(res, 404, { error: "worktree_not_found" });
+        return;
+      }
+      const q = url.searchParams.get("q") ?? "";
+      const mode = url.searchParams.get("mode") === "content" ? "content" : "name";
+      sendJson(res, 200, searchWorktree(worktree, q, mode));
+      return;
+    }
+
+    const worktreeGitMatch = url.pathname.match(/^\/api\/worktrees\/([^/]+)\/git$/);
+    if (req.method === "GET" && worktreeGitMatch) {
+      const worktree = state.worktrees.find((w) => w.id === decodeURIComponent(worktreeGitMatch[1]));
+      if (!worktree) {
+        sendJson(res, 404, { error: "worktree_not_found" });
+        return;
+      }
+      sendJson(res, 200, worktreeGitStatus(worktree));
+      return;
+    }
+
     const worktreeDeleteMatch = url.pathname.match(/^\/api\/worktrees\/([^/]+)$/);
     if (req.method === "DELETE" && worktreeDeleteMatch) {
       try {
@@ -1271,6 +1306,114 @@ function listProjectBranches(project) {
   } catch {
     return { branches: [] };
   }
+}
+
+const TREE_SKIP = new Set([".git", "node_modules", ".DS_Store", "dist", "build"]);
+
+// Recursive file tree for the Project tab (bounded depth + entry budget so a
+// huge repo can't blow up the response).
+function worktreeTree(root, rel = "", depth = 0, budget = { n: 0 }) {
+  if (depth > 6 || budget.n > 1500) return [];
+  let entries;
+  try {
+    entries = fs.readdirSync(path.join(root, rel), { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  return entries
+    .filter((e) => !TREE_SKIP.has(e.name))
+    .sort((a, b) => (a.isDirectory() === b.isDirectory() ? a.name.localeCompare(b.name) : a.isDirectory() ? -1 : 1))
+    .map((e) => {
+      budget.n += 1;
+      const childRel = rel ? `${rel}/${e.name}` : e.name;
+      if (e.isDirectory()) {
+        return { name: e.name, path: childRel, dir: true, children: worktreeTree(root, childRel, depth + 1, budget) };
+      }
+      return { name: e.name, path: childRel, dir: false };
+    });
+}
+
+// Search a worktree by file name (recursive walk) or by content (git grep over
+// tracked files). Returns a capped, flat result list for the Project tab.
+function searchWorktree(worktree, query, mode) {
+  const q = String(query ?? "").trim();
+  if (!q) return { mode, matches: [] };
+  if (mode === "content") {
+    try {
+      const out = execFileSync("git", ["-C", worktree.path, "grep", "-n", "-I", "-i", "--no-color", "-e", q, "--", "."], {
+        encoding: "utf8"
+      });
+      const matches = out
+        .split("\n")
+        .filter(Boolean)
+        .slice(0, 60)
+        .map((line) => {
+          const m = line.match(/^([^:]+):(\d+):(.*)$/);
+          return m ? { path: m[1], line: Number(m[2]), text: m[3].slice(0, 200) } : null;
+        })
+        .filter(Boolean);
+      return { mode, matches };
+    } catch {
+      // git grep exits non-zero when there are no matches (or not a repo).
+      return { mode, matches: [] };
+    }
+  }
+  // Name mode: flatten the tree and match basenames.
+  const needle = q.toLowerCase();
+  const out = [];
+  const walk = (nodes) => {
+    for (const n of nodes) {
+      if (!n.dir && n.name.toLowerCase().includes(needle)) out.push({ path: n.path });
+      if (n.dir && n.children) walk(n.children);
+      if (out.length >= 100) return;
+    }
+  };
+  walk(worktreeTree(worktree.path));
+  return { mode, matches: out };
+}
+
+// Git status for a worktree: branch, change count, and ahead/behind vs its
+// upstream (whether the branch is published). Powers the worktree's Changes tab.
+function worktreeGitStatus(worktree) {
+  const cwd = worktree.path;
+  const git = (args) => execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8" }).trim();
+  const result = {
+    branch: worktree.branch,
+    changedFiles: 0,
+    clean: true,
+    hasUpstream: false,
+    upstream: null,
+    ahead: 0,
+    behind: 0
+  };
+  try {
+    result.branch = git(["rev-parse", "--abbrev-ref", "HEAD"]) || worktree.branch;
+  } catch {
+    /* keep recorded branch */
+  }
+  try {
+    const porcelain = git(["status", "--porcelain"]);
+    result.changedFiles = porcelain ? porcelain.split("\n").filter(Boolean).length : 0;
+    result.clean = result.changedFiles === 0;
+  } catch {
+    /* leave defaults */
+  }
+  try {
+    result.upstream = git(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"]);
+    result.hasUpstream = Boolean(result.upstream);
+  } catch {
+    result.hasUpstream = false;
+  }
+  if (result.hasUpstream) {
+    try {
+      const [behind, ahead] = git(["rev-list", "--left-right", "--count", "@{u}...HEAD"]).split(/\s+/).map(Number);
+      result.behind = behind || 0;
+      result.ahead = ahead || 0;
+    } catch {
+      /* leave 0/0 */
+    }
+  }
+  return result;
 }
 
 // Create a worktree from an existing local or remote branch ref. A remote

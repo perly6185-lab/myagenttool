@@ -71,6 +71,8 @@ export interface InvocationSnapshot {
   id: string;
   status?: string;
   agentId?: string;
+  projectId?: string;
+  worktreeId?: string | null;
   traceId?: string;
   rootSpanId?: string;
   approvalRequestId?: string;

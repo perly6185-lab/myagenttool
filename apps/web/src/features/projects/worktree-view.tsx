@@ -1,0 +1,440 @@
+import { useEffect, useState, type ComponentType } from "react";
+import { ChevronDown, ChevronLeft, ChevronRight, File, Folder, GitBranch, ListChecks, MessageSquare } from "lucide-react";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import { Input, Select, Textarea } from "@/components/ui/input";
+import { Field } from "@/components/common/field";
+import { EmptyState } from "@/components/common/empty-state";
+import { EventTimeline } from "@/features/invocations/event-timeline";
+import { WorktreeLinkPopover } from "@/features/projects/worktree-link-popover";
+import { useConsoleState } from "@/data/use-console-state";
+import { useAsyncAction, api } from "@/data/use-console-actions";
+import { useUiStore } from "@/store/ui-store";
+import { cn } from "@/lib/cn";
+import type { WorktreeSnapshot } from "@/lib/console-state";
+
+const RUNNING = ["queued", "dispatching", "waiting_for_local_approval", "running", "cancelling"];
+type TreeNode = { name: string; path: string; dir: boolean; children?: TreeNode[] };
+type SearchMatch = { path: string; line?: number; text?: string };
+type PaneTab = "project" | "sessions" | "changes" | "checks";
+const PANE_TABS: [PaneTab, string, ComponentType<{ className?: string }>][] = [
+  ["project", "Project", Folder],
+  ["sessions", "Sessions", MessageSquare],
+  ["changes", "Changes", GitBranch],
+  ["checks", "Checks", ListChecks],
+];
+type GitStatus = {
+  branch: string;
+  changedFiles: number;
+  clean: boolean;
+  hasUpstream: boolean;
+  upstream: string | null;
+  ahead: number;
+  behind: number;
+};
+
+// Worktree session view: run an agent in this worktree's checkout, watch its
+// output, and browse its files — the focused workspace for one branch.
+export function WorktreeView({ worktree }: { worktree: WorktreeSnapshot }) {
+  const { data: state } = useConsoleState();
+  const { execute, pending, error } = useAsyncAction();
+  const setSelectedWorktreeId = useUiStore((s) => s.setSelectedWorktreeId);
+
+  const agents = state?.agents ?? [];
+  const project = (state?.projects ?? []).find((p) => p.id === worktree.projectId);
+  const [task, setTask] = useState("Summarize this repository and the open work.");
+  const [agentId, setAgentId] = useState(worktree.agentId ?? agents[0]?.id ?? "");
+  const [tree, setTree] = useState<TreeNode[]>([]);
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [fileQuery, setFileQuery] = useState("");
+  const [searchMode, setSearchMode] = useState<"name" | "content">("name");
+  const [results, setResults] = useState<SearchMatch[]>([]);
+  const [paneTab, setPaneTab] = useState<PaneTab>("project");
+  const [git, setGit] = useState<GitStatus | null>(null);
+  const [sessionScope, setSessionScope] = useState<"worktree" | "all">("worktree");
+  const [sessionQuery, setSessionQuery] = useState("");
+
+  useEffect(() => {
+    if (!agentId && agents.length > 0) setAgentId(worktree.agentId ?? agents[0].id);
+  }, [agents, agentId, worktree.agentId]);
+
+  useEffect(() => {
+    setGit(null);
+    setFileQuery("");
+    (api.listWorktreeFiles(worktree.id) as Promise<{ tree: TreeNode[] }>)
+      .then((r) => {
+        const t = r.tree ?? [];
+        setTree(t);
+        const dirs = new Set<string>();
+        const collect = (ns: TreeNode[]) =>
+          ns.forEach((n) => {
+            if (n.dir) {
+              dirs.add(n.path);
+              if (n.children) collect(n.children);
+            }
+          });
+        collect(t);
+        setExpanded(dirs);
+      })
+      .catch(() => {
+        setTree([]);
+        setExpanded(new Set());
+      });
+  }, [worktree.id]);
+
+  // Debounced file search (by name or content) when the box has a query.
+  useEffect(() => {
+    const q = fileQuery.trim();
+    if (!q) {
+      setResults([]);
+      return;
+    }
+    const handle = setTimeout(() => {
+      (api.searchWorktree(worktree.id, q, searchMode) as Promise<{ matches: SearchMatch[] }>)
+        .then((r) => setResults(r.matches ?? []))
+        .catch(() => setResults([]));
+    }, 250);
+    return () => clearTimeout(handle);
+  }, [fileQuery, searchMode, worktree.id]);
+
+  useEffect(() => {
+    if ((paneTab !== "changes" && paneTab !== "checks") || git) return;
+    (api.worktreeGit(worktree.id) as Promise<GitStatus>).then(setGit).catch(() => setGit(null));
+  }, [paneTab, git, worktree.id]);
+
+  // Invocations are newest-first; the latest one in this worktree is the session.
+  const invocations = (state?.invocations ?? []).filter((i) => i.worktreeId === worktree.id);
+  const latest = invocations[0];
+
+  // Sessions tab: agent session history, scoped to this worktree or the project.
+  const scopedSessions =
+    sessionScope === "all"
+      ? (state?.invocations ?? []).filter((i) => i.projectId === worktree.projectId)
+      : invocations;
+  const sessions = scopedSessions.filter((i) => i.id.toLowerCase().includes(sessionQuery.trim().toLowerCase()));
+
+  // Checks tab: a readiness checklist for this worktree.
+  const checks = [
+    { label: "Repository ready", ok: true },
+    { label: "Agent assigned", ok: Boolean(worktree.agentId) },
+    { label: "Branch published", ok: Boolean(git?.hasUpstream) },
+    { label: "Linked to issue/PR", ok: Boolean(worktree.link) },
+    { label: "Latest run succeeded", ok: latest?.status === "succeeded" },
+  ];
+  const events = (state?.events ?? []).filter((e) => e.invocationId === latest?.id).slice(0, 40);
+  const isRunning = RUNNING.includes(latest?.status ?? "");
+  const agent = agents.find((a) => a.id === agentId);
+  const runDisabled = !state || !task.trim() || !agent || isRunning || pending;
+
+  function run() {
+    if (runDisabled) return;
+    void execute(() => api.createInvocation(task.trim(), agentId || null, worktree.projectId, worktree.id));
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center gap-2">
+        <button
+          type="button"
+          onClick={() => setSelectedWorktreeId(null)}
+          className="flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground"
+        >
+          <ChevronLeft className="size-4" />
+          {project?.name ?? "Project"}
+        </button>
+        <span className="text-muted-foreground">/</span>
+        <span className="font-medium">{worktree.branch}</span>
+        {worktree.isMain ? <Badge tone="neutral">main</Badge> : <Badge tone="neutral">worktree</Badge>}
+        {worktree.link ? <WorktreeLinkPopover worktree={worktree} /> : null}
+      </div>
+
+      <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_240px]">
+        <div className="space-y-4">
+          <Card>
+            <CardHeader>
+              <CardTitle>Run an agent in this worktree</CardTitle>
+              <p className="select-all break-all font-mono text-[11px] text-muted-foreground">{worktree.path}</p>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <Textarea rows={4} value={task} onChange={(e) => setTask(e.target.value)} aria-label="Task" />
+              <div className="grid gap-3 sm:grid-cols-[1fr_auto] sm:items-end">
+                <Field label="Agent">
+                  <Select value={agentId} onChange={(e) => setAgentId(e.target.value)} aria-label="Agent">
+                    {agents.length === 0 ? <option value="">No agent</option> : null}
+                    {agents.map((a) => (
+                      <option key={a.id} value={a.id}>
+                        {a.name}
+                      </option>
+                    ))}
+                  </Select>
+                </Field>
+                <Button onClick={run} disabled={runDisabled}>
+                  {isRunning ? "Running…" : "Run in this worktree"}
+                </Button>
+              </div>
+              {error ? <p className="text-xs text-destructive">{error}</p> : null}
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle>Session output</CardTitle>
+              {latest ? (
+                <p className="text-sm text-muted-foreground">
+                  {latest.id} · {latest.status}
+                </p>
+              ) : null}
+            </CardHeader>
+            <CardContent>
+              {latest ? (
+                <EventTimeline events={events} />
+              ) : (
+                <EmptyState title="No runs yet" hint="Run an agent above to start a session in this worktree." />
+              )}
+            </CardContent>
+          </Card>
+        </div>
+
+        <Card>
+          <CardContent className="p-3">
+            <div className="mb-3 flex gap-1 rounded-lg bg-muted p-0.5 text-xs">
+              {PANE_TABS.map(([key, label, Icon]) => (
+                <button
+                  key={key}
+                  type="button"
+                  title={label}
+                  aria-label={label}
+                  onClick={() => setPaneTab(key)}
+                  className={cn(
+                    "flex flex-1 items-center justify-center rounded-md px-2 py-1.5 transition",
+                    paneTab === key ? "bg-background shadow-sm text-foreground" : "text-muted-foreground hover:text-foreground",
+                  )}
+                >
+                  <Icon className="size-3.5" />
+                </button>
+              ))}
+            </div>
+
+            {paneTab === "project" ? (
+              <div className="space-y-2">
+                <Input
+                  value={fileQuery}
+                  placeholder="Find files"
+                  className="h-7 text-xs"
+                  onChange={(e) => setFileQuery(e.target.value)}
+                />
+                <div className="flex gap-1 rounded-lg bg-muted p-0.5 text-[11px]">
+                  {(
+                    [
+                      ["name", "Name"],
+                      ["content", "Content"],
+                    ] as ["name" | "content", string][]
+                  ).map(([k, l]) => (
+                    <button
+                      key={k}
+                      type="button"
+                      onClick={() => setSearchMode(k)}
+                      className={cn(
+                        "flex-1 rounded-md px-2 py-1 font-medium transition",
+                        searchMode === k ? "bg-background shadow-sm" : "text-muted-foreground hover:text-foreground",
+                      )}
+                    >
+                      {l}
+                    </button>
+                  ))}
+                </div>
+
+                {fileQuery.trim() ? (
+                  results.length === 0 ? (
+                    <p className="text-xs text-muted-foreground">No matches.</p>
+                  ) : (
+                    <ul className="space-y-1 text-xs">
+                      {results.map((m, i) => (
+                        <li key={`${m.path}:${m.line ?? i}`} className="min-w-0">
+                          <span className="flex items-center gap-1.5">
+                            <File className="size-3 shrink-0 text-muted-foreground" />
+                            <span className="truncate font-mono text-[11px]">
+                              {m.path}
+                              {m.line ? `:${m.line}` : ""}
+                            </span>
+                          </span>
+                          {m.text ? <p className="truncate pl-4 font-mono text-[10px] text-muted-foreground">{m.text.trim()}</p> : null}
+                        </li>
+                      ))}
+                    </ul>
+                  )
+                ) : tree.length === 0 ? (
+                  <p className="text-xs text-muted-foreground">Empty or unavailable.</p>
+                ) : (
+                  <FileTree
+                    nodes={tree}
+                    depth={0}
+                    expanded={expanded}
+                    toggle={(p) =>
+                      setExpanded((prev) => {
+                        const next = new Set(prev);
+                        if (next.has(p)) next.delete(p);
+                        else next.add(p);
+                        return next;
+                      })
+                    }
+                  />
+                )}
+              </div>
+            ) : null}
+
+            {paneTab === "changes" ? (
+              !git ? (
+                <p className="text-xs text-muted-foreground">Loading…</p>
+              ) : (
+                <div className="space-y-2 text-xs">
+                  <div className="flex items-center gap-1.5">
+                    <GitBranch className="size-3.5 shrink-0 opacity-70" />
+                    <span className="font-medium">{git.branch}</span>
+                  </div>
+                  {git.hasUpstream ? (
+                    git.clean && git.ahead === 0 ? (
+                      <div>
+                        <p className="font-medium text-foreground">No changes on this branch</p>
+                        <p className="text-muted-foreground">
+                          Clean and up to date with <span className="font-mono">{git.upstream}</span>.
+                        </p>
+                      </div>
+                    ) : (
+                      <div className="space-y-1 text-muted-foreground">
+                        {git.changedFiles > 0 ? <p>{git.changedFiles} uncommitted change(s)</p> : null}
+                        <p>
+                          {git.ahead} ahead · {git.behind} behind <span className="font-mono">{git.upstream}</span>
+                        </p>
+                      </div>
+                    )
+                  ) : (
+                    <div>
+                      <p className="font-medium text-foreground">Branch not published</p>
+                      <p className="text-muted-foreground">
+                        Publish this branch before creating a pull request.
+                        {git.changedFiles > 0 ? ` ${git.changedFiles} uncommitted change(s).` : ""}
+                      </p>
+                    </div>
+                  )}
+                </div>
+              )
+            ) : null}
+
+            {paneTab === "sessions" ? (
+              <div className="space-y-2">
+                <div className="flex items-center justify-between gap-2">
+                  <p className="text-[11px] text-muted-foreground">Showing {sessions.length} session(s)</p>
+                  <div className="flex gap-0.5 rounded-md bg-muted p-0.5 text-[10px]">
+                    {(
+                      [
+                        ["worktree", "Worktree"],
+                        ["all", "All"],
+                      ] as ["worktree" | "all", string][]
+                    ).map(([k, l]) => (
+                      <button
+                        key={k}
+                        type="button"
+                        onClick={() => setSessionScope(k)}
+                        className={cn(
+                          "rounded px-1.5 py-0.5 font-medium transition",
+                          sessionScope === k ? "bg-background shadow-sm" : "text-muted-foreground hover:text-foreground",
+                        )}
+                      >
+                        {l}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <Input
+                  value={sessionQuery}
+                  placeholder="Search sessions"
+                  className="h-7 text-xs"
+                  onChange={(e) => setSessionQuery(e.target.value)}
+                />
+                {sessions.length === 0 ? (
+                  <p className="text-xs text-muted-foreground">No agent sessions yet.</p>
+                ) : (
+                  <ul className="space-y-1 text-xs">
+                    {sessions.slice(0, 30).map((inv) => (
+                      <li key={inv.id} className="flex items-center justify-between gap-2 rounded border border-border px-2 py-1">
+                        <span className="truncate font-mono text-[11px]">{inv.id}</span>
+                        <Badge tone={inv.status === "succeeded" ? "success" : RUNNING.includes(inv.status ?? "") ? "neutral" : "warning"}>
+                          {inv.status}
+                        </Badge>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            ) : null}
+
+            {paneTab === "checks" ? (
+              <ul className="space-y-1.5 text-xs">
+                {checks.map((c) => (
+                  <li key={c.label} className="flex items-center gap-2">
+                    <span className={c.ok ? "text-emerald-500" : "text-muted-foreground"}>{c.ok ? "✓" : "○"}</span>
+                    <span className={c.ok ? "" : "text-muted-foreground"}>{c.label}</span>
+                  </li>
+                ))}
+              </ul>
+            ) : null}
+          </CardContent>
+        </Card>
+      </div>
+    </div>
+  );
+}
+
+function FileTree({
+  nodes,
+  depth,
+  expanded,
+  toggle,
+}: {
+  nodes: TreeNode[];
+  depth: number;
+  expanded: Set<string>;
+  toggle: (path: string) => void;
+}) {
+  return (
+    <ul className="text-xs">
+      {nodes.map((n) => {
+        const open = expanded.has(n.path);
+        return (
+          <li key={n.path}>
+            <button
+              type="button"
+              onClick={() => n.dir && toggle(n.path)}
+              style={{ paddingLeft: depth * 12 }}
+              className={cn(
+                "flex w-full items-center gap-1 rounded py-0.5 text-left",
+                n.dir ? "hover:bg-muted" : "cursor-default",
+              )}
+            >
+              {n.dir ? (
+                open ? (
+                  <ChevronDown className="size-3 shrink-0 opacity-60" />
+                ) : (
+                  <ChevronRight className="size-3 shrink-0 opacity-60" />
+                )
+              ) : (
+                <span className="w-3 shrink-0" />
+              )}
+              {n.dir ? (
+                <Folder className="size-3.5 shrink-0 text-sky-500" />
+              ) : (
+                <File className="size-3.5 shrink-0 text-muted-foreground" />
+              )}
+              <span className="truncate">{n.name}</span>
+            </button>
+            {n.dir && open && n.children ? (
+              <FileTree nodes={n.children} depth={depth + 1} expanded={expanded} toggle={toggle} />
+            ) : null}
+          </li>
+        );
+      })}
+    </ul>
+  );
+}

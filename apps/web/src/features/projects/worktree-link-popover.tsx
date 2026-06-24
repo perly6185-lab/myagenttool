@@ -50,7 +50,7 @@ export function WorktreeLinkPopover({ worktree }: { worktree: WorktreeSnapshot }
   function runHere() {
     setSelectedProjectId(worktree.projectId);
     setSelectedWorktreeId(worktree.id);
-    setSection("dashboard");
+    setSection("projects"); // opens the worktree session view
     setOpen(false);
   }
   function copyPath() {
