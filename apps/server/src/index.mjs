@@ -1756,8 +1756,9 @@ function worktreeDiff(worktree) {
   const MAX_DIFF_BYTES = 1024 * 1024;
   const result = { files: [], base: "HEAD", diff: "", truncated: false };
   // Changed-file list with porcelain status letters (index/work-tree).
+  // `core.quotepath=false` keeps non-ASCII paths literal instead of octal-escaped.
   try {
-    const porcelain = git(["status", "--porcelain"]).split("\n").filter(Boolean);
+    const porcelain = git(["-c", "core.quotepath=false", "status", "--porcelain"]).split("\n").filter(Boolean);
     result.files = porcelain.map((line) => {
       const index = line[0];
       const work = line[1];
@@ -1795,8 +1796,18 @@ function worktreeDiff(worktree) {
     /* no commits yet, or bad base */
   }
   // Untracked files never appear in `git diff`; render each as an addition.
+  // Bounded on both output size and file count so a worktree with many untracked
+  // files (e.g. a missing .gitignore) can't blow the size cap or spawn an
+  // unbounded number of `git diff` subprocesses on this request path.
+  const MAX_UNTRACKED = 200;
+  let untrackedSeen = 0;
   for (const f of result.files) {
     if (!f.untracked) continue;
+    if (diff.length > MAX_DIFF_BYTES || untrackedSeen >= MAX_UNTRACKED) {
+      result.truncated = true;
+      break;
+    }
+    untrackedSeen += 1;
     const patch = gitDiffSafe(["diff", "--no-color", "--no-index", "--", "/dev/null", f.path]);
     if (patch) diff += (diff && !diff.endsWith("\n") ? "\n" : "") + patch;
   }
