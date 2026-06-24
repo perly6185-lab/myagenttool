@@ -29,6 +29,7 @@ export function ProjectsView() {
   const selectedProjectId = useUiStore((s) => s.selectedProjectId);
   const setSelectedProjectId = useUiStore((s) => s.setSelectedProjectId);
   const selectedWorktreeId = useUiStore((s) => s.selectedWorktreeId);
+  const setSelectedWorktreeId = useUiStore((s) => s.setSelectedWorktreeId);
   const activeId = selectedProjectId ?? projects[0]?.id ?? null;
 
   // A selected worktree opens its focused session view in place of the list.
@@ -46,6 +47,7 @@ export function ProjectsView() {
   }
 
   function removeWorktree(id: string) {
+    if (id === selectedWorktreeId) setSelectedWorktreeId(null);
     void execute(() => api.removeWorktree(id));
   }
 

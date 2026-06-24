@@ -1381,7 +1381,9 @@ function searchWorktree(worktree, query, mode) {
   if (!q) return { mode, matches: [] };
   if (mode === "content") {
     try {
-      const out = execFileSync("git", ["-C", worktree.path, "grep", "-n", "-I", "-i", "--no-color", "-e", q, "--", "."], {
+      // -F: literal (fixed-string) search, matching the "find by content" intent
+      // rather than treating the query as a regex.
+      const out = execFileSync("git", ["-C", worktree.path, "grep", "-n", "-I", "-i", "-F", "--no-color", "-e", q, "--", "."], {
         encoding: "utf8"
       });
       const matches = out
@@ -1399,14 +1401,15 @@ function searchWorktree(worktree, query, mode) {
       return { mode, matches: [] };
     }
   }
-  // Name mode: flatten the tree and match basenames.
+  // Name mode: flatten the tree and match basenames. Check the cap at the top of
+  // each frame so the walk short-circuits globally (not just the current frame).
   const needle = q.toLowerCase();
   const out = [];
   const walk = (nodes) => {
     for (const n of nodes) {
+      if (out.length >= 100) return;
       if (!n.dir && n.name.toLowerCase().includes(needle)) out.push({ path: n.path });
       if (n.dir && n.children) walk(n.children);
-      if (out.length >= 100) return;
     }
   };
   walk(worktreeTree(worktree.path));
@@ -1464,7 +1467,18 @@ function createWorktreeFromRef(project, ref, opts = {}) {
   if (!r) throw new Error("A branch ref is required.");
   const isRemote = r.startsWith("origin/");
   const localName = isRemote ? r.slice("origin/".length) : r;
-  return createNamedWorktree(project, localName, { startPoint: isRemote ? r : undefined, agentId: opts.agentId });
+  const worktree = createNamedWorktree(project, localName, { startPoint: isRemote ? r : undefined, agentId: opts.agentId });
+  // Track the remote branch so the Changes tab reflects ahead/behind instead of
+  // reporting the branch as unpublished.
+  if (isRemote) {
+    const target = state.projectTargets.find((t) => t.id === worktree.targetId);
+    try {
+      execFileSync("git", ["-C", target.rootPath, "branch", `--set-upstream-to=${r}`, localName], { stdio: "ignore" });
+    } catch {
+      // Non-fatal: the worktree is created either way.
+    }
+  }
+  return worktree;
 }
 
 // GitHub mode: list open PRs and issues via the gh CLI (orca lists both).
