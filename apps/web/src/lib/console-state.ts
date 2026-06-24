@@ -336,9 +336,28 @@ export interface RetentionSettings {
   artifactsDays: number;
 }
 
+export interface AutomationSnapshot {
+  id: string;
+  name: string;
+  enabled: boolean;
+  projectId: string;
+  branch?: string;
+  schedule: string;
+  nextRunAt: string | null;
+  sessionMode?: string;
+  graceHours?: number;
+  precheck?: string;
+  agentId: string;
+  prompt: string;
+  lastRunAt: string | null;
+  runCount?: number;
+  tokens?: number;
+}
+
 export interface ConsoleSnapshot {
   /** Server-resolved defaults the browser can't compute (e.g. home-relative paths). */
   defaults?: { cloneParentDir?: string };
+  automations?: AutomationSnapshot[];
   device: DeviceSnapshot;
   projects?: ProjectSnapshot[];
   projectTargets?: ProjectTargetSnapshot[];

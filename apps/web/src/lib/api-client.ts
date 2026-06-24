@@ -204,6 +204,11 @@ export const api = {
   suggestWorktreeName: (description: string) =>
     request("POST", "/api/worktree-name-suggestion", { description }),
 
+  runAutomation: (id: string) => request("POST", `/api/automations/${encodeURIComponent(id)}/run`),
+  updateAutomation: (id: string, patch: Record<string, unknown>) =>
+    request("PATCH", `/api/automations/${encodeURIComponent(id)}`, patch),
+  deleteAutomation: (id: string) => request("DELETE", `/api/automations/${encodeURIComponent(id)}`),
+
   approveApproval: (id: string) =>
     request("POST", `/api/approvals/${encodeURIComponent(id)}/approve`),
   denyApproval: (id: string) => request("POST", `/api/approvals/${encodeURIComponent(id)}/deny`),

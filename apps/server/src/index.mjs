@@ -41,7 +41,7 @@ const PERSIST_VERSION = 2;
 const PERSIST_FILE = process.env.SERVER_STATE_FILE
   ? path.resolve(process.env.SERVER_STATE_FILE)
   : path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "data", "state.json");
-const PERSIST_KEYS = ["users", "teams", "tokens", "projects", "projectTargets", "worktrees", "agents", "invocations", "ledgerEntries", "budgets", "quotaDecisionRecords"];
+const PERSIST_KEYS = ["users", "teams", "tokens", "projects", "projectTargets", "worktrees", "agents", "automations", "invocations", "ledgerEntries", "budgets", "quotaDecisionRecords"];
 let persistTimer = null;
 
 // Identity Phase 2 (auth). When MYAGENT_REQUIRE_AUTH=1, every non-public route
@@ -64,6 +64,30 @@ const state = {
   users: [{ id: "usr_local", name: "Local User", teamId: "team_local" }],
   teams: [{ id: "team_local", name: "Local Team" }],
   tokens: [],
+  // Automation rules: a saved task that runs an agent on a schedule/trigger.
+  // The schedule is descriptive metadata for now — the cron scheduler that fires
+  // it is a follow-up; "Run now" already creates a real invocation.
+  automations: [
+    {
+      id: "atm_demo_audit",
+      name: "Weekday repo audit",
+      enabled: true,
+      projectId: "prj_default",
+      branch: "main",
+      schedule: "Weekdays at 9:00",
+      nextRunAt: null,
+      sessionMode: "fresh",
+      graceHours: 12,
+      precheck: "None",
+      agentId: "agt_demo_cli",
+      prompt:
+        "Check the repository's health: dependency updates, failing tests, lint/type-check status, and risky open changes. Summarize findings and recommend next steps.",
+      lastRunAt: null,
+      runCount: 0,
+      tokens: 0,
+      createdAt: now()
+    }
+  ],
   device: {
     id: "dev_local_001",
     ownerUserId: "usr_local",
@@ -717,6 +741,62 @@ const server = http.createServer(async (req, res) => {
         return;
       }
       sendJson(res, 200, { budget, status: budgetStatusFor(budget.projectId) });
+      return;
+    }
+
+    // Automation rules. Project-scoped, but the id isn't a project path, so each
+    // handler checks the owning team explicitly (denyForeignProject).
+    const automationRunMatch = url.pathname.match(/^\/api\/automations\/([^/]+)\/run$/);
+    if (req.method === "POST" && automationRunMatch) {
+      const automation = state.automations.find((a) => a.id === decodeURIComponent(automationRunMatch[1]));
+      if (!automation) {
+        sendJson(res, 404, { error: "automation_not_found" });
+        return;
+      }
+      const actor = resolveActor(req);
+      if (denyForeignProject(res, actor, automation.projectId)) return;
+      const agent = findAgent(automation.agentId) ?? defaultAgent();
+      if (!agent) {
+        sendJson(res, 404, { error: "agent_not_found" });
+        return;
+      }
+      const invocation = createInvocation(automation.prompt, agent, {
+        projectId: automation.projectId,
+        requestedBy: actor.userId,
+        metadata: { automationId: automation.id, automationName: automation.name }
+      });
+      startInvocationIfAllowed(invocation, agent);
+      automation.lastRunAt = now();
+      automation.runCount = (automation.runCount ?? 0) + 1;
+      persistState();
+      sendJson(res, 201, { invocation, automation });
+      return;
+    }
+
+    const automationIdMatch = url.pathname.match(/^\/api\/automations\/([^/]+)$/);
+    if (automationIdMatch && (req.method === "PATCH" || req.method === "DELETE")) {
+      const automation = state.automations.find((a) => a.id === decodeURIComponent(automationIdMatch[1]));
+      if (!automation) {
+        sendJson(res, 404, { error: "automation_not_found" });
+        return;
+      }
+      if (denyForeignProject(res, resolveActor(req), automation.projectId)) return;
+      if (req.method === "DELETE") {
+        state.automations = state.automations.filter((a) => a.id !== automation.id);
+        persistState();
+        res.writeHead(204);
+        res.end();
+        return;
+      }
+      const patch = await readJson(req);
+      if (patch.enabled !== undefined) automation.enabled = Boolean(patch.enabled);
+      if (patch.name !== undefined) automation.name = String(patch.name).trim() || automation.name;
+      if (patch.prompt !== undefined) automation.prompt = String(patch.prompt);
+      if (patch.schedule !== undefined) automation.schedule = String(patch.schedule);
+      if (patch.agentId !== undefined && findAgent(patch.agentId)) automation.agentId = patch.agentId;
+      if (patch.branch !== undefined) automation.branch = String(patch.branch);
+      persistState();
+      sendJson(res, 200, { automation });
       return;
     }
 
@@ -4597,6 +4677,7 @@ function publicState(actor) {
   const ledgerEntries = state.ledgerEntries.filter((e) => ownsProject(e.projectId));
   const budgets = state.budgets.filter((b) => ownsProject(b.projectId));
   const approvalRequests = state.approvalRequests.filter((a) => visibleInvocationIds.has(a.invocationId));
+  const automations = state.automations.filter((a) => ownsProject(a.projectId));
 
   const ledgerSummary = summarizeLedger(ledgerEntries);
   return {
@@ -4624,6 +4705,7 @@ function publicState(actor) {
     quotaDecisionRecords: state.quotaDecisionRecords,
     retentionSettings: state.retentionSettings,
     approvalRequests,
+    automations,
     policyDecisionRecords: state.policyDecisionRecords,
     troubleshootingReports: state.troubleshootingReports,
     agentUsageSummaries: state.agentUsageSummaries,

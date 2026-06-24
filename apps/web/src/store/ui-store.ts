@@ -3,6 +3,8 @@ import { create } from "zustand";
 export type SectionKey =
   | "dashboard"
   | "projects"
+  | "task"
+  | "automation"
   | "invocations"
   | "agents"
   | "devices"
@@ -29,6 +31,8 @@ interface UiState {
 const SECTION_KEYS: SectionKey[] = [
   "dashboard",
   "projects",
+  "task",
+  "automation",
   "invocations",
   "agents",
   "devices",
