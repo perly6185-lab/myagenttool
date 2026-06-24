@@ -1,8 +1,18 @@
 import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
-import { spawn, execFileSync } from "node:child_process";
+import { spawn, execFileSync as nodeExecFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+
+// All synchronous git/gh calls run inside the single HTTP handler and block the
+// event loop, so a slow/hung subprocess (e.g. `gh pr list` on a flaky network,
+// `git fetch`, `git grep`/`git status` on a huge repo) would freeze the whole
+// server for every client. Inject a default timeout + SIGKILL + larger buffer so
+// a stuck process is killed and the call's existing catch degrades gracefully.
+// Per-call options still override these defaults (e.g. a shorter timeout).
+function execFileSync(file, args, options = {}) {
+  return nodeExecFileSync(file, args, { timeout: 8000, killSignal: "SIGKILL", maxBuffer: 16 * 1024 * 1024, ...options });
+}
 
 const namespace = "com.myagenttool";
 const protocolVersion = "0.0.0";
