@@ -1,14 +1,17 @@
 import { useEffect, useMemo, useState } from "react";
-import { RefreshCw, ExternalLink, GitBranch } from "lucide-react";
+import { RefreshCw, ExternalLink, GitBranch, Workflow } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input, Select } from "@/components/ui/input";
+import { Field } from "@/components/common/field";
+import { Modal } from "@/components/ui/modal";
 import { EmptyState } from "@/components/common/empty-state";
 import { useConsoleState } from "@/data/use-console-state";
 import { useAsyncAction, api } from "@/data/use-console-actions";
 import { useUiStore } from "@/store/ui-store";
 import { cn } from "@/lib/cn";
+import { readableStatus, statusTone } from "@/lib/readable-labels";
 
 type GithubItem = {
   type: "issue" | "pr";
@@ -38,6 +41,8 @@ export function TaskView() {
   const setSelectedProjectId = useUiStore((s) => s.setSelectedProjectId);
   const setSelectedWorktreeId = useUiStore((s) => s.setSelectedWorktreeId);
   const worktrees = state?.worktrees ?? [];
+  const invocations = state?.invocations ?? [];
+  const [wtRow, setWtRow] = useState<Row | null>(null);
   const projects = useMemo(
     () => (state?.projects ?? []).filter((p) => p.status !== "archived"),
     [state?.projects],
@@ -47,20 +52,28 @@ export function TaskView() {
   function linkedWorktree(row: Row) {
     return worktrees.find((w) => w.projectId === row.projectId && w.link?.type === row.type && w.link?.number === row.number) ?? null;
   }
+  // The newest run in a worktree (invocations are newest-first) for its status.
+  function latestRun(worktreeId: string) {
+    return invocations.find((i) => i.worktreeId === worktreeId) ?? null;
+  }
   function openWorktree(worktreeId: string, projectId: string) {
     setSelectedProjectId(projectId);
     setSelectedWorktreeId(worktreeId);
     setSection("projects");
   }
-  function createWorktree(row: Row) {
-    const link = { type: row.type, number: row.number, title: row.title, url: row.url, state: row.state };
-    const payload =
-      row.type === "pr"
-        ? { prNumber: row.number, link }
-        : { name: branchFromIssue(row), link };
+  // Create a paused automation scoped to this item; the user lands on it to tune.
+  function automateIssue(row: Row) {
+    const kindLabel = row.type === "pr" ? "PR" : "Issue";
     void execute(async () => {
-      const r = (await api.createWorktree(row.projectId, payload)) as { worktree?: { id: string } };
-      if (r.worktree?.id) openWorktree(r.worktree.id, row.projectId);
+      const r = await api.createAutomation({
+        name: `${kindLabel} #${row.number}: ${row.title}`.slice(0, 80),
+        projectId: row.projectId,
+        branch: "main",
+        schedule: { kind: "weekdays", time: "09:00" },
+        enabled: false,
+        prompt: `Make progress on GitHub ${kindLabel} #${row.number}: ${row.title}.${row.url ? `\n${row.url}` : ""}\nReview the latest state, do the next useful step, and summarize what changed.`,
+      });
+      setSection("automation");
       return r;
     });
   }
@@ -205,9 +218,21 @@ export function TaskView() {
                     <td className="px-3 py-2 font-mono text-xs text-muted-foreground">#{r.number}</td>
                     <td className="px-3 py-2">
                       <div className="font-medium">{r.title}</div>
-                      <div className="text-xs text-muted-foreground">
-                        {r.projectName}
-                        {r.headRefName ? <span className="font-mono"> · {r.headRefName}</span> : null}
+                      <div className="flex flex-wrap items-center gap-x-1.5 text-xs text-muted-foreground">
+                        <span>{r.projectName}</span>
+                        {r.headRefName ? <span className="font-mono">· {r.headRefName}</span> : null}
+                        {(() => {
+                          const wt = linkedWorktree(r);
+                          if (!wt) return null;
+                          const run = latestRun(wt.id);
+                          return (
+                            <span className="inline-flex items-center gap-1">
+                              <GitBranch className="size-3 opacity-70" />
+                              <span className="font-mono">{wt.branch}</span>
+                              {run ? <Badge tone={statusTone(run.status)}>{readableStatus(run.status)}</Badge> : null}
+                            </span>
+                          );
+                        })()}
                       </div>
                     </td>
                     <td className="px-3 py-2 text-xs text-muted-foreground">{r.author || "—"}</td>
@@ -216,6 +241,9 @@ export function TaskView() {
                     </td>
                     <td className="px-3 py-2">
                       <div className="flex items-center justify-end gap-1">
+                        <Button variant="secondary" size="sm" disabled={pending} onClick={() => automateIssue(r)} title="Create an automation for this item">
+                          <Workflow className="mr-1 size-3.5" /> Automate
+                        </Button>
                         {(() => {
                           const wt = linkedWorktree(r);
                           return wt ? (
@@ -223,7 +251,7 @@ export function TaskView() {
                               <GitBranch className="mr-1 size-3.5" /> Open
                             </Button>
                           ) : (
-                            <Button variant="secondary" size="sm" disabled={pending} onClick={() => createWorktree(r)} title="Create a worktree for this item">
+                            <Button variant="secondary" size="sm" disabled={pending} onClick={() => setWtRow(r)} title="Create a worktree for this item">
                               <GitBranch className="mr-1 size-3.5" /> Worktree
                             </Button>
                           );
@@ -248,7 +276,102 @@ export function TaskView() {
           </div>
         )}
       </CardContent>
+
+      <Modal open={Boolean(wtRow)} onClose={() => setWtRow(null)} title={wtRow ? `Worktree for #${wtRow.number}` : "Worktree"}>
+        {wtRow ? (
+          <WorktreeOptionsForm
+            row={wtRow}
+            onDone={(wt) => {
+              setWtRow(null);
+              if (wt) openWorktree(wt.id, wt.projectId);
+            }}
+          />
+        ) : null}
+      </Modal>
     </Card>
+  );
+}
+
+// Worktree-creation options for a Task item: branch name (smart-suggested for an
+// issue), base branch, and agent. A PR checks out its own branch, so only the
+// agent is offered.
+function WorktreeOptionsForm({ row, onDone }: { row: Row; onDone: (wt: { id: string; projectId: string } | null) => void }) {
+  const { data: state } = useConsoleState();
+  const { execute, pending, error } = useAsyncAction();
+  const agents = state?.agents ?? [];
+  const isPr = row.type === "pr";
+
+  const [branch, setBranch] = useState(branchFromIssue(row));
+  const [base, setBase] = useState("main");
+  const [agentId, setAgentId] = useState(agents[0]?.id ?? "");
+  const [suggesting, setSuggesting] = useState(false);
+
+  async function suggest() {
+    setSuggesting(true);
+    try {
+      const r = (await api.suggestWorktreeName(row.title)) as { name?: string };
+      if (r.name) setBranch(r.name);
+    } catch {
+      /* keep the slug fallback */
+    }
+    setSuggesting(false);
+  }
+
+  function create() {
+    const link = { type: row.type, number: row.number, title: row.title, url: row.url, state: row.state };
+    const payload = isPr
+      ? { prNumber: row.number, agentId: agentId || undefined, link }
+      : { name: branch.trim() || branchFromIssue(row), startPoint: base.trim() || undefined, agentId: agentId || undefined, link };
+    void execute(async () => {
+      const r = (await api.createWorktree(row.projectId, payload)) as { worktree?: { id: string; projectId: string } };
+      onDone(r.worktree ?? null);
+      return r;
+    });
+  }
+
+  return (
+    <div className="space-y-3">
+      <p className="text-sm text-muted-foreground">
+        {isPr ? (
+          <>Checks out PR #{row.number}{row.headRefName ? <> (<span className="font-mono">{row.headRefName}</span>)</> : null}.</>
+        ) : (
+          <>Creates a new branch for issue #{row.number} and links it.</>
+        )}
+      </p>
+      {!isPr ? (
+        <>
+          <Field label="Branch name">
+            <div className="flex gap-2">
+              <Input value={branch} onChange={(e) => setBranch(e.target.value)} className="font-mono" />
+              <Button variant="secondary" size="sm" disabled={suggesting} onClick={suggest} title="Suggest a name">
+                Suggest
+              </Button>
+            </div>
+          </Field>
+          <Field label="Base branch">
+            <Input value={base} onChange={(e) => setBase(e.target.value)} className="font-mono" placeholder="main" />
+          </Field>
+        </>
+      ) : null}
+      <Field label="Agent">
+        <Select value={agentId} onChange={(e) => setAgentId(e.target.value)}>
+          {agents.map((a) => (
+            <option key={a.id} value={a.id}>
+              {a.name}
+            </option>
+          ))}
+        </Select>
+      </Field>
+      <div className="flex justify-end gap-2 pt-1">
+        <Button variant="secondary" size="sm" disabled={pending} onClick={() => onDone(null)}>
+          Cancel
+        </Button>
+        <Button size="sm" disabled={pending} onClick={create}>
+          Create worktree
+        </Button>
+      </div>
+      {error ? <p className="text-xs text-destructive">{error}</p> : null}
+    </div>
   );
 }
 
