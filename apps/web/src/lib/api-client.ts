@@ -115,7 +115,14 @@ export const api = {
     request("PATCH", `/api/projects/${encodeURIComponent(id)}`, payload),
   createWorktree: (
     projectId: string,
-    payload: { name?: string; ref?: string; prNumber?: number; agentId?: string; startPoint?: string },
+    payload: {
+      name?: string;
+      ref?: string;
+      prNumber?: number;
+      agentId?: string;
+      startPoint?: string;
+      link?: { type: "issue" | "pr"; number: number; title: string; url: string | null; state: string };
+    },
   ) =>
     request("POST", `/api/projects/${encodeURIComponent(projectId)}/worktrees`, payload),
   removeWorktree: (id: string) => request("DELETE", `/api/worktrees/${encodeURIComponent(id)}`),

@@ -254,6 +254,14 @@ export interface ProjectTargetSnapshot {
   updatedAt?: string;
 }
 
+export interface WorktreeLink {
+  type: "issue" | "pr";
+  number: number;
+  title: string;
+  url: string | null;
+  state: string;
+}
+
 export interface WorktreeSnapshot {
   id: string;
   projectId: string;
@@ -263,6 +271,7 @@ export interface WorktreeSnapshot {
   path: string;
   isMain: boolean;
   ephemeral?: boolean;
+  link?: WorktreeLink | null;
   createdAt: string;
 }
 

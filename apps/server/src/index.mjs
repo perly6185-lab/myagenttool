@@ -442,11 +442,12 @@ const server = http.createServer(async (req, res) => {
         return;
       }
       try {
+        const link = normalizeWorktreeLink(body.link);
         const worktree = body.prNumber
-          ? createWorktreeFromPr(project, body.prNumber, { agentId: body.agentId })
+          ? createWorktreeFromPr(project, body.prNumber, { agentId: body.agentId, link })
           : body.ref
             ? createWorktreeFromRef(project, body.ref, { agentId: body.agentId })
-            : createNamedWorktree(project, body.name, { agentId: body.agentId, startPoint: body.startPoint });
+            : createNamedWorktree(project, body.name, { agentId: body.agentId, startPoint: body.startPoint, link });
         sendJson(res, 201, { worktree });
       } catch (error) {
         sendJson(res, 400, { error: "invalid_worktree", message: error instanceof Error ? error.message : String(error) });
@@ -1220,11 +1221,26 @@ function createNamedWorktree(project, name, opts = {}) {
     isMain: false,
     ephemeral: false,
     agentId: opts.agentId ?? null,
+    link: opts.link ?? null,
     createdAt: now()
   };
   state.worktrees.push(worktree);
   persistState();
   return worktree;
+}
+
+// Normalize a caller-supplied GitHub link (issue/PR) for storage on a worktree.
+function normalizeWorktreeLink(link) {
+  if (!link || (link.type !== "issue" && link.type !== "pr")) return null;
+  const number = Number(link.number);
+  if (!Number.isInteger(number)) return null;
+  return {
+    type: link.type,
+    number,
+    title: String(link.title ?? ""),
+    url: typeof link.url === "string" ? link.url : null,
+    state: String(link.state ?? "open")
+  };
 }
 
 // Branch mode: list local + remote branches so the dialog can offer a
@@ -1281,14 +1297,14 @@ function projectGithubItems(project) {
       return null;
     }
   };
-  const prsRaw = ghJson(["pr", "list", "--json", "number,title,headRefName,author", "--limit", "30"]);
-  const issuesRaw = ghJson(["issue", "list", "--json", "number,title,author", "--limit", "30"]);
+  const prsRaw = ghJson(["pr", "list", "--json", "number,title,headRefName,author,url,state", "--limit", "30"]);
+  const issuesRaw = ghJson(["issue", "list", "--json", "number,title,author,url,state", "--limit", "30"]);
   if (prsRaw === null && issuesRaw === null) {
     return { available: false, message: "gh list failed (auth or remote?).", items: [] };
   }
   const items = [
-    ...(prsRaw ?? []).map((p) => ({ type: "pr", number: p.number, title: p.title, headRefName: p.headRefName, author: p.author?.login ?? "" })),
-    ...(issuesRaw ?? []).map((i) => ({ type: "issue", number: i.number, title: i.title, headRefName: null, author: i.author?.login ?? "" }))
+    ...(prsRaw ?? []).map((p) => ({ type: "pr", number: p.number, title: p.title, headRefName: p.headRefName, author: p.author?.login ?? "", url: p.url, state: (p.state ?? "open").toLowerCase() })),
+    ...(issuesRaw ?? []).map((i) => ({ type: "issue", number: i.number, title: i.title, headRefName: null, author: i.author?.login ?? "", url: i.url, state: (i.state ?? "open").toLowerCase() }))
   ].sort((a, b) => b.number - a.number);
   const prCount = (prsRaw ?? []).length;
   const issueCount = (issuesRaw ?? []).length;
@@ -1316,7 +1332,7 @@ function createWorktreeFromPr(project, prNumber, opts = {}) {
   } catch {
     // The branch may already exist locally; createNamedWorktree checks it out.
   }
-  return createNamedWorktree(project, headRef, { agentId: opts.agentId });
+  return createNamedWorktree(project, headRef, { agentId: opts.agentId, link: opts.link });
 }
 
 // Smart mode: derive a conventional, git-safe branch name from a free-text

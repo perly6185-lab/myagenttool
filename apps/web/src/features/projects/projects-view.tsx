@@ -4,6 +4,7 @@ import { Badge } from "@/components/ui/badge";
 import { EmptyState } from "@/components/common/empty-state";
 import { ProjectRegisterForm } from "@/features/projects/project-register-form";
 import { WorktreeCreator } from "@/features/projects/worktree-creator";
+import { WorktreeLinkPopover } from "@/features/projects/worktree-link-popover";
 import { useConsoleState } from "@/data/use-console-state";
 import { useAsyncAction, api } from "@/data/use-console-actions";
 import { useUiStore } from "@/store/ui-store";
@@ -265,6 +266,7 @@ function WorktreeNode({
             {worktree.branch}
           </span>
           <Badge tone="neutral">{label}</Badge>
+          {worktree.link ? <WorktreeLinkPopover link={worktree.link} /> : null}
         </span>
         {onRemove ? (
           <button

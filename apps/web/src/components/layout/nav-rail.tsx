@@ -8,6 +8,7 @@ import { Modal } from "@/components/ui/modal";
 import { ProjectRegisterForm } from "@/features/projects/project-register-form";
 import { ProjectSettingsForm } from "@/features/projects/project-settings-form";
 import { WorktreeCreator } from "@/features/projects/worktree-creator";
+import { WorktreeLinkPopover } from "@/features/projects/worktree-link-popover";
 import type { ProjectSnapshot } from "@/lib/console-state";
 
 export function NavRail() {
@@ -183,21 +184,26 @@ function ProjectTree() {
                   const wtActive = w.id === selectedWorktreeId;
                   return (
                     <li key={w.id}>
-                      <button
-                        type="button"
-                        title={w.path}
-                        onClick={() => openWorktree(project.id, w.id)}
+                      <div
                         className={cn(
-                          "flex w-full items-center gap-1.5 rounded-md px-2 py-1 text-left text-xs transition-colors",
+                          "flex items-center gap-1 rounded-md pr-1 text-xs transition-colors",
                           wtActive
                             ? "bg-sidebar-accent font-medium text-sidebar-accent-foreground"
                             : "text-muted-foreground hover:bg-sidebar-accent/60 hover:text-sidebar-foreground",
                         )}
                       >
-                        <GitBranch className="size-3 shrink-0 opacity-70" />
-                        <span className="truncate">{w.branch}</span>
-                        {w.isMain ? <span className="shrink-0 text-[10px] opacity-60">main</span> : null}
-                      </button>
+                        <button
+                          type="button"
+                          title={w.path}
+                          onClick={() => openWorktree(project.id, w.id)}
+                          className="flex min-w-0 flex-1 items-center gap-1.5 px-2 py-1 text-left"
+                        >
+                          <GitBranch className="size-3 shrink-0 opacity-70" />
+                          <span className="truncate">{w.branch}</span>
+                          {w.isMain ? <span className="shrink-0 text-[10px] opacity-60">main</span> : null}
+                        </button>
+                        {w.link ? <WorktreeLinkPopover link={w.link} /> : null}
+                      </div>
                     </li>
                   );
                 })}

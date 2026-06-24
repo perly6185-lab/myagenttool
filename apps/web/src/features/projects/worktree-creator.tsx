@@ -7,7 +7,15 @@ import { useConsoleState } from "@/data/use-console-state";
 import { useAsyncAction, api } from "@/data/use-console-actions";
 import { cn } from "@/lib/cn";
 
-type GithubItem = { type: "pr" | "issue"; number: number; title: string; headRefName: string | null; author: string };
+type GithubItem = {
+  type: "pr" | "issue";
+  number: number;
+  title: string;
+  headRefName: string | null;
+  author: string;
+  url: string | null;
+  state: string;
+};
 type GithubState = { available: boolean; message: string; items: GithubItem[] };
 type BranchRef = { name: string; remote: boolean };
 type Tab = "smart" | "github" | "branch" | "name";
@@ -124,12 +132,17 @@ export function WorktreeCreator({
   function create() {
     if (!canCreate) return;
     const startPoint = baseBranch || undefined;
+    // Carry the GitHub link so the worktree can show its issue/PR card later.
+    const link =
+      tab === "github" && ghSel
+        ? { type: ghSel.type, number: ghSel.number, title: ghSel.title, url: ghSel.url, state: ghSel.state }
+        : undefined;
     const payload =
       tab === "github" && ghSel?.type === "pr"
-        ? { prNumber: ghSel.number, agentId }
+        ? { prNumber: ghSel.number, agentId, link }
         : tab === "branch"
           ? { ref: brSel!, agentId }
-          : { name: wtName.trim(), agentId, startPoint };
+          : { name: wtName.trim(), agentId, startPoint, link };
     void execute(async () => {
       const r = await api.createWorktree(pid, payload);
       onDone?.();
