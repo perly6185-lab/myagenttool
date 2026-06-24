@@ -80,7 +80,9 @@ export function AutomationView() {
   const agentName = (id: string) => agents.find((a) => a.id === id)?.name ?? id;
   const projectName = (id: string) => projects.find((p) => p.id === id)?.name ?? id;
   // Invocations this rule has triggered (run-now + scheduled), newest first.
-  const runs = (state?.invocations ?? []).filter((i) => i.options?.metadata?.automationId === selected?.id);
+  // Guard on `selected`: with no selection, `selected?.id` is undefined and would
+  // match every ordinary invocation (whose automationId is also undefined).
+  const runs = selected ? (state?.invocations ?? []).filter((i) => i.options?.metadata?.automationId === selected.id) : [];
 
   function openRun(invId: string) {
     setSelectedInvocationId(invId);

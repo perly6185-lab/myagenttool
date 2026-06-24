@@ -83,8 +83,10 @@ const state = {
       prompt:
         "Check the repository's health: dependency updates, failing tests, lint/type-check status, and risky open changes. Summarize findings and recommend next steps.",
       lastRunAt: null,
+      lastInvocationId: null,
       runCount: 0,
       tokens: 0,
+      createdBy: "usr_local",
       createdAt: now()
     }
   ],
@@ -776,8 +778,12 @@ const server = http.createServer(async (req, res) => {
         agentId: findAgent(body.agentId) ? body.agentId : defaultAgent()?.id ?? null,
         prompt: String(body.prompt ?? ""),
         lastRunAt: null,
+        lastInvocationId: null,
         runCount: 0,
         tokens: 0,
+        // Scheduled runs are attributed to whoever created the rule (the manual
+        // /run path uses the requester) so cross-team accounting stays correct.
+        createdBy: actor.userId,
         createdAt: now()
       };
       state.automations.unshift(automation);
@@ -806,6 +812,7 @@ const server = http.createServer(async (req, res) => {
         metadata: { automationId: automation.id, automationName: automation.name }
       });
       startInvocationIfAllowed(invocation, agent);
+      automation.lastInvocationId = invocation.id;
       automation.lastRunAt = now();
       automation.runCount = (automation.runCount ?? 0) + 1;
       persistState();
@@ -1336,9 +1343,10 @@ loadPersistedState();
 // schedule from an older persisted snapshot) and give every enabled automation a
 // next-run time on boot — a restart shouldn't strand an enabled rule.
 for (const automation of state.automations) {
-  if (!automation.schedule || typeof automation.schedule !== "object") {
-    automation.schedule = normalizeSchedule(automation.schedule);
-  }
+  // Always normalize: migrates a legacy string schedule AND repairs a malformed
+  // object (e.g. interval with no everyMinutes) so computeNextRun can't return
+  // null and strand an "enabled" rule that never fires.
+  automation.schedule = normalizeSchedule(automation.schedule);
   if (automation.enabled && !automation.nextRunAt) automation.nextRunAt = computeNextRun(automation.schedule);
 }
 // The automation scheduler: every 30s, fire enabled rules whose next-run time
@@ -1401,15 +1409,26 @@ function runDueAutomations() {
   let changed = false;
   for (const automation of state.automations) {
     if (!automation.enabled || !automation.nextRunAt || Date.parse(automation.nextRunAt) > nowMs) continue;
+    // Don't stack a new run while the previous one is still in flight — otherwise
+    // an approval-gated agent (which parks at waiting_for_local_approval) would
+    // pile up a fresh unresolved invocation + approval every tick. Roll the
+    // schedule forward and try again next period.
+    const prev = automation.lastInvocationId ? findInvocation(automation.lastInvocationId) : null;
+    if (prev && !isTerminal(prev.status)) {
+      automation.nextRunAt = computeNextRun(automation.schedule, nowMs);
+      changed = true;
+      continue;
+    }
     const agent = findAgent(automation.agentId) ?? defaultAgent();
     if (agent) {
       try {
         const invocation = createInvocation(automation.prompt, agent, {
           projectId: automation.projectId,
-          requestedBy: "usr_local",
+          requestedBy: automation.createdBy ?? "usr_local",
           metadata: { automationId: automation.id, automationName: automation.name, scheduled: true }
         });
         startInvocationIfAllowed(invocation, agent);
+        automation.lastInvocationId = invocation.id;
         automation.lastRunAt = now();
         automation.runCount = (automation.runCount ?? 0) + 1;
       } catch {

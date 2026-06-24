@@ -26,6 +26,40 @@ function issueBranchName(item: GithubItem): string {
   return `${item.number}-${slug}`;
 }
 
+// Meaningful words for matching a free-text description against issue titles.
+const RANK_STOP = new Set([
+  "the", "a", "an", "to", "for", "of", "and", "in", "on", "with", "add", "fix", "bug",
+  "issue", "when", "that", "this", "from", "into", "make", "should", "does", "not",
+]);
+function rankTokens(s: string): string[] {
+  return s
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim()
+    .split(/\s+/)
+    .filter((w) => w.length > 2 && !RANK_STOP.has(w));
+}
+
+// Smart mode: rank open issues by how well their title matches the typed
+// description (token overlap), so the user can link a related issue instead of
+// hunting for it on the GitHub tab. Returns the top few non-zero matches.
+function rankIssues(description: string, items: GithubItem[]): GithubItem[] {
+  const query = new Set(rankTokens(description));
+  if (query.size === 0) return [];
+  return items
+    .filter((it) => it.type === "issue" && it.state === "open")
+    .map((it) => {
+      const overlap = rankTokens(it.title).filter((w) => query.has(w)).length;
+      // Mentioning the issue number in the description is a strong signal.
+      const numbered = new RegExp(`(^|\\D)${it.number}(\\D|$)`).test(description) ? 2 : 0;
+      return { it, score: overlap + numbered };
+    })
+    .filter((r) => r.score > 0)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 5)
+    .map((r) => r.it);
+}
+
 const TABS: [Tab, string, typeof Sparkles][] = [
   ["smart", "Smart", Sparkles],
   ["github", "GitHub", Github],
@@ -60,6 +94,7 @@ export function WorktreeCreator({
   const [wtName, setWtName] = useState("");
   const [desc, setDesc] = useState("");
   const [suggesting, setSuggesting] = useState(false);
+  const [smartIssues, setSmartIssues] = useState<GithubItem[]>([]);
 
   const [branches, setBranches] = useState<BranchRef[]>([]);
   const [brQuery, setBrQuery] = useState("");
@@ -86,6 +121,7 @@ export function WorktreeCreator({
     setGhQuery("");
     setWtName("");
     setDesc("");
+    setSmartIssues([]);
     (api.listBranches(pid) as Promise<{ branches: BranchRef[] }>)
       .then((r) => setBranches(r.branches ?? []))
       .catch(() => setBranches([]));
@@ -108,6 +144,7 @@ export function WorktreeCreator({
     setGhSel(null);
     setBrSel(null);
     setWtName("");
+    setSmartIssues([]);
   }
 
   // Selecting a GitHub item backfills the shared name field: an issue seeds a
@@ -122,12 +159,32 @@ export function WorktreeCreator({
     setWtName(name);
   }
 
+  // Selecting a recommended issue links the worktree to it and seeds a
+  // "<num>-<slug>" branch name, mirroring an issue pick on the GitHub tab.
+  function selectSmartIssue(item: GithubItem) {
+    setGhSel(item);
+    setWtName(issueBranchName(item));
+  }
+
   async function suggest() {
-    if (!desc.trim()) return;
+    const text = desc.trim();
+    if (!text) return;
     setSuggesting(true);
+    setGhSel(null); // re-suggesting resets any prior issue pick
     try {
-      const r = (await api.suggestWorktreeName(desc.trim())) as { name: string };
+      const namePromise = api.suggestWorktreeName(text) as Promise<{ name: string }>;
+      // Recommend related issues — reuse the loaded list, or fetch it once.
+      let items = gh?.items ?? null;
+      if (!gh) {
+        const loaded = await (api.listGithubItems(pid) as Promise<GithubState>).catch(() => null);
+        if (loaded) {
+          setGh(loaded);
+          items = loaded.items;
+        }
+      }
+      const r = await namePromise;
       setWtName(r.name); // backfill the editable name field
+      setSmartIssues(items ? rankIssues(text, items) : []);
     } finally {
       setSuggesting(false);
     }
@@ -142,8 +199,9 @@ export function WorktreeCreator({
     if (!canCreate) return;
     const startPoint = baseBranch || undefined;
     // Carry the GitHub link so the worktree can show its issue/PR card later.
+    // Smart mode can also link a recommended issue while creating a new branch.
     const link =
-      tab === "github" && ghSel
+      (tab === "github" || tab === "smart") && ghSel
         ? { type: ghSel.type, number: ghSel.number, title: ghSel.title, url: ghSel.url, state: ghSel.state }
         : undefined;
     const payload =
@@ -201,18 +259,54 @@ export function WorktreeCreator({
 
         <div className="mt-3">
           {tab === "smart" ? (
-            <div className="flex gap-2">
-              <Input
-                value={desc}
-                placeholder="Describe the work (e.g. fix login crash)"
-                onChange={(e) => setDesc(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") suggest();
-                }}
-              />
-              <Button variant="secondary" size="sm" disabled={suggesting || !desc.trim()} onClick={suggest}>
-                Suggest
-              </Button>
+            <div className="space-y-2">
+              <div className="flex gap-2">
+                <Input
+                  value={desc}
+                  placeholder="Describe the work (e.g. fix login crash)"
+                  onChange={(e) => setDesc(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") suggest();
+                  }}
+                />
+                <Button variant="secondary" size="sm" disabled={suggesting || !desc.trim()} onClick={suggest}>
+                  {suggesting ? "…" : "Suggest"}
+                </Button>
+              </div>
+              {smartIssues.length > 0 ? (
+                <div className="space-y-1">
+                  <p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                    Related issues
+                  </p>
+                  <ul className="max-h-44 overflow-y-auto rounded-md border border-border">
+                    {smartIssues.map((it) => (
+                      <li key={it.number}>
+                        <button
+                          type="button"
+                          onClick={() => selectSmartIssue(it)}
+                          className={cn(
+                            "flex w-full items-start gap-2 px-3 py-1.5 text-left text-xs",
+                            ghSel?.type === "issue" && ghSel?.number === it.number
+                              ? "bg-primary/10 text-foreground"
+                              : "hover:bg-muted",
+                          )}
+                        >
+                          <CircleDot className="mt-0.5 size-3 shrink-0 text-sky-500" />
+                          <span className="min-w-0">
+                            <span className="truncate">
+                              <span className="font-medium">#{it.number}</span> {it.title}
+                            </span>
+                            <span className="block text-[10px] text-muted-foreground">
+                              links issue → {issueBranchName(it)}
+                              {it.author ? ` · @${it.author}` : ""}
+                            </span>
+                          </span>
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              ) : null}
             </div>
           ) : null}
 
@@ -305,6 +399,11 @@ export function WorktreeCreator({
         {tab === "github" && ghSel?.type === "pr" ? (
           <p className="mt-2 text-xs text-muted-foreground">
             Checks out PR #{ghSel.number} (<span className="font-mono">{ghSel.headRefName}</span>).
+          </p>
+        ) : null}
+        {tab === "smart" && ghSel?.type === "issue" ? (
+          <p className="mt-2 text-xs text-muted-foreground">
+            Links issue #{ghSel.number} and creates a new branch.
           </p>
         ) : null}
         {tab === "name" || tab === "smart" || (tab === "github" && ghSel?.type === "issue") ? (
