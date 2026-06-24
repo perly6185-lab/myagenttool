@@ -7,7 +7,9 @@ import { Input, Select, Textarea } from "@/components/ui/input";
 import { Field } from "@/components/common/field";
 import { Modal } from "@/components/ui/modal";
 import { EmptyState } from "@/components/common/empty-state";
+import { FactList } from "@/components/common/fact-list";
 import { EventTimeline } from "@/features/invocations/event-timeline";
+import { approvalFor } from "@/features/selection";
 import { WorktreeLinkPopover } from "@/features/projects/worktree-link-popover";
 import { useConsoleState } from "@/data/use-console-state";
 import { useAsyncAction, api } from "@/data/use-console-actions";
@@ -216,6 +218,10 @@ export function WorktreeView({ worktree }: { worktree: WorktreeSnapshot }) {
   ];
   const events = (state?.events ?? []).filter((e) => e.invocationId === latest?.id).slice(0, 40);
   const isRunning = RUNNING.includes(latest?.status ?? "");
+  // A high-risk run pauses at waiting_for_local_approval; surface the decision
+  // (with the policy's risk/data/cost/cancel summary) right here so the user can
+  // approve or deny without leaving the worktree.
+  const approval = approvalFor(state, latest ?? null);
   const agent = agents.find((a) => a.id === agentId);
   const runDisabled = !state || !task.trim() || !agent || isRunning || pending;
 
@@ -329,6 +335,51 @@ export function WorktreeView({ worktree }: { worktree: WorktreeSnapshot }) {
                   {error ? <p className="text-xs text-destructive">{error}</p> : null}
                 </CardContent>
               </Card>
+
+              {approval ? (
+                <Card className="border-warning/50">
+                  <CardHeader>
+                    <CardTitle>
+                      {approval.status === "pending"
+                        ? "Approval needed before this run"
+                        : approval.status === "approved"
+                          ? "Approval granted"
+                          : "Approval denied"}
+                    </CardTitle>
+                    <p className="text-sm text-muted-foreground">
+                      {approval.status === "pending"
+                        ? "This high-risk invocation is paused until you approve it."
+                        : `Decision recorded — the run is ${approval.status}.`}
+                    </p>
+                  </CardHeader>
+                  <CardContent className="space-y-3">
+                    <FactList
+                      facts={[
+                        { term: "Risk", value: approval.summary?.risk ?? `${approval.riskLevel ?? "unknown"} risk` },
+                        { term: "Data", value: approval.summary?.data ?? "Task input and result are recorded." },
+                        { term: "Cost", value: approval.summary?.cost ?? "Cost is unknown." },
+                        { term: "Cancel", value: approval.summary?.cancellation ?? "Cancellation behavior is unknown." },
+                        { term: "Tags", value: approval.riskTags?.length ? approval.riskTags.join(", ") : "No tags declared" },
+                      ]}
+                    />
+                    {approval.status === "pending" ? (
+                      <div className="flex gap-2">
+                        <Button size="sm" disabled={pending} onClick={() => execute(() => api.approveApproval(approval.id))}>
+                          Approve run
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="secondary"
+                          disabled={pending}
+                          onClick={() => execute(() => api.denyApproval(approval.id))}
+                        >
+                          Deny run
+                        </Button>
+                      </div>
+                    ) : null}
+                  </CardContent>
+                </Card>
+              ) : null}
 
               <Card>
                 <CardHeader>
