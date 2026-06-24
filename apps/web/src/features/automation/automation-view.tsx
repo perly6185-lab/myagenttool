@@ -1,13 +1,18 @@
 import { useState } from "react";
-import { Play, Pause, Trash2, Clock } from "lucide-react";
+import { Play, Pause, Trash2, Clock, Plus } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Input, Select, Textarea } from "@/components/ui/input";
+import { Field } from "@/components/common/field";
+import { Modal } from "@/components/ui/modal";
 import { EmptyState } from "@/components/common/empty-state";
 import { useConsoleState } from "@/data/use-console-state";
 import { useAsyncAction, api } from "@/data/use-console-actions";
 import { cn } from "@/lib/cn";
 import type { AutomationSnapshot } from "@/lib/console-state";
+
+type ScheduleKind = "weekdays" | "daily" | "interval";
 
 // Automation = a saved task that runs an agent on a schedule/trigger. The cron
 // scheduler that fires it is a follow-up; "Run now" already creates a real
@@ -19,6 +24,7 @@ export function AutomationView() {
   const agents = state?.agents ?? [];
   const projects = state?.projects ?? [];
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [creating, setCreating] = useState(false);
 
   const selected = automations.find((a) => a.id === selectedId) ?? automations[0] ?? null;
   const agentName = (id: string) => agents.find((a) => a.id === id)?.name ?? id;
@@ -39,8 +45,15 @@ export function AutomationView() {
     <div className="grid gap-4 lg:grid-cols-[minmax(0,320px)_minmax(0,1fr)]">
       <Card>
         <CardHeader>
-          <CardTitle>Automation</CardTitle>
-          <p className="text-sm text-muted-foreground">Rules that run an agent on a schedule.</p>
+          <div className="flex items-center justify-between gap-2">
+            <div>
+              <CardTitle>Automation</CardTitle>
+              <p className="text-sm text-muted-foreground">Rules that run an agent on a schedule.</p>
+            </div>
+            <Button variant="secondary" size="sm" onClick={() => setCreating(true)} title="New automation" aria-label="New automation">
+              <Plus className="size-4" />
+            </Button>
+          </div>
         </CardHeader>
         <CardContent className="space-y-2">
           {automations.length === 0 ? (
@@ -63,7 +76,7 @@ export function AutomationView() {
                   </span>
                   <Clock className="size-3.5 shrink-0 text-muted-foreground" />
                 </div>
-                <div className="mt-1 truncate text-xs text-muted-foreground">{a.schedule}</div>
+                <div className="mt-1 truncate text-xs text-muted-foreground">{a.schedule.label}</div>
                 <div className="mt-0.5 truncate text-xs text-muted-foreground">
                   {projectName(a.projectId)}
                   {a.branch ? ` · ${a.branch}` : ""} · {agentName(a.agentId)}
@@ -106,8 +119,8 @@ export function AutomationView() {
               <FactGrid
                 cols="grid-cols-2 sm:grid-cols-3 lg:grid-cols-4"
                 items={[
-                  { term: "Schedule", value: selected.schedule },
-                  { term: "Next run", value: selected.nextRunAt ? new Date(selected.nextRunAt).toLocaleString() : "Scheduler pending" },
+                  { term: "Schedule", value: selected.schedule.label },
+                  { term: "Next run", value: selected.nextRunAt ? new Date(selected.nextRunAt).toLocaleString() : selected.enabled ? "—" : "Paused" },
                   { term: "Run location", value: selected.branch ?? "—" },
                   { term: "Session", value: selected.sessionMode === "fresh" ? "Fresh each run" : selected.sessionMode ?? "—" },
                   { term: "Source", value: `${projectName(selected.projectId)}${selected.branch ? ` · ${selected.branch}` : ""}` },
@@ -135,7 +148,7 @@ export function AutomationView() {
               </p>
             </div>
             <p className="text-xs text-muted-foreground">
-              Scheduling is descriptive for now — the cron trigger that fires this rule is a follow-up. “Run now” starts a real invocation.
+              Enabled rules fire automatically on their schedule (checked every 30s). “Run now” triggers an extra run immediately.
             </p>
           </CardContent>
         </Card>
@@ -146,6 +159,116 @@ export function AutomationView() {
           </CardContent>
         </Card>
       )}
+
+      <Modal open={creating} onClose={() => setCreating(false)} title="New automation">
+        <AutomationForm
+          onDone={(id) => {
+            setCreating(false);
+            if (id) setSelectedId(id);
+          }}
+        />
+      </Modal>
+    </div>
+  );
+}
+
+// Create-automation form (the "+" modal): name, target project/branch, agent,
+// schedule, and the prompt the agent runs each time.
+function AutomationForm({ onDone }: { onDone: (id: string | null) => void }) {
+  const { data: state } = useConsoleState();
+  const { execute, pending, error } = useAsyncAction();
+  const projects = (state?.projects ?? []).filter((p) => p.status !== "archived");
+  const agents = state?.agents ?? [];
+
+  const [name, setName] = useState("");
+  const [projectId, setProjectId] = useState(projects[0]?.id ?? "");
+  const [branch, setBranch] = useState("main");
+  const [agentId, setAgentId] = useState(agents[0]?.id ?? "");
+  const [kind, setKind] = useState<ScheduleKind>("weekdays");
+  const [time, setTime] = useState("09:00");
+  const [everyMinutes, setEveryMinutes] = useState(60);
+  const [prompt, setPrompt] = useState("");
+
+  function submit() {
+    if (!name.trim() || !projectId || !prompt.trim()) return;
+    const schedule = kind === "interval" ? { kind, everyMinutes } : { kind, time };
+    void execute(async () => {
+      const r = (await api.createAutomation({
+        name: name.trim(),
+        projectId,
+        branch: branch.trim() || "main",
+        agentId: agentId || undefined,
+        schedule,
+        prompt: prompt.trim(),
+      })) as { automation?: { id: string } };
+      onDone(r.automation?.id ?? null);
+      return r;
+    });
+  }
+
+  return (
+    <div className="space-y-3">
+      <Field label="Name">
+        <Input value={name} placeholder="e.g. Nightly test run" onChange={(e) => setName(e.target.value)} />
+      </Field>
+      <div className="grid grid-cols-2 gap-3">
+        <Field label="Project">
+          <Select value={projectId} onChange={(e) => setProjectId(e.target.value)}>
+            {projects.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.name}
+              </option>
+            ))}
+          </Select>
+        </Field>
+        <Field label="Branch">
+          <Input value={branch} onChange={(e) => setBranch(e.target.value)} />
+        </Field>
+      </div>
+      <Field label="Agent">
+        <Select value={agentId} onChange={(e) => setAgentId(e.target.value)}>
+          {agents.map((a) => (
+            <option key={a.id} value={a.id}>
+              {a.name}
+            </option>
+          ))}
+        </Select>
+      </Field>
+      <div className="grid grid-cols-2 gap-3">
+        <Field label="Schedule">
+          <Select value={kind} onChange={(e) => setKind(e.target.value as ScheduleKind)}>
+            <option value="weekdays">Weekdays</option>
+            <option value="daily">Daily</option>
+            <option value="interval">Every N minutes</option>
+          </Select>
+        </Field>
+        {kind === "interval" ? (
+          <Field label="Every (minutes)">
+            <Input
+              type="number"
+              min={1}
+              value={everyMinutes}
+              onChange={(e) => setEveryMinutes(Math.max(1, Number(e.target.value) || 1))}
+            />
+          </Field>
+        ) : (
+          <Field label="Time">
+            <Input type="time" value={time} onChange={(e) => setTime(e.target.value)} />
+          </Field>
+        )}
+      </div>
+      <Field label="Prompt">
+        <Textarea rows={4} value={prompt} placeholder="What should the agent do each run?" onChange={(e) => setPrompt(e.target.value)} />
+      </Field>
+      <div className="flex justify-end gap-2 pt-1">
+        <Button variant="secondary" size="sm" disabled={pending} onClick={() => onDone(null)}>
+          Cancel
+        </Button>
+        <Button size="sm" disabled={pending || !name.trim() || !projectId || !prompt.trim()} onClick={submit}>
+          Create automation
+        </Button>
+      </div>
+      {error ? <p className="text-xs text-destructive">{error}</p> : null}
     </div>
   );
 }

@@ -204,6 +204,7 @@ export const api = {
   suggestWorktreeName: (description: string) =>
     request("POST", "/api/worktree-name-suggestion", { description }),
 
+  createAutomation: (payload: Record<string, unknown>) => request("POST", "/api/automations", payload),
   runAutomation: (id: string) => request("POST", `/api/automations/${encodeURIComponent(id)}/run`),
   updateAutomation: (id: string, patch: Record<string, unknown>) =>
     request("PATCH", `/api/automations/${encodeURIComponent(id)}`, patch),

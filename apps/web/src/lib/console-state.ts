@@ -336,13 +336,20 @@ export interface RetentionSettings {
   artifactsDays: number;
 }
 
+export interface AutomationSchedule {
+  kind: "interval" | "daily" | "weekdays";
+  everyMinutes?: number;
+  time?: string;
+  label: string;
+}
+
 export interface AutomationSnapshot {
   id: string;
   name: string;
   enabled: boolean;
   projectId: string;
   branch?: string;
-  schedule: string;
+  schedule: AutomationSchedule;
   nextRunAt: string | null;
   sessionMode?: string;
   graceHours?: number;

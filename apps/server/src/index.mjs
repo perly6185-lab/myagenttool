@@ -74,7 +74,7 @@ const state = {
       enabled: true,
       projectId: "prj_default",
       branch: "main",
-      schedule: "Weekdays at 9:00",
+      schedule: { kind: "weekdays", time: "09:00", label: "Weekdays at 9:00" },
       nextRunAt: null,
       sessionMode: "fresh",
       graceHours: 12,
@@ -746,6 +746,46 @@ const server = http.createServer(async (req, res) => {
 
     // Automation rules. Project-scoped, but the id isn't a project path, so each
     // handler checks the owning team explicitly (denyForeignProject).
+    if (req.method === "POST" && url.pathname === "/api/automations") {
+      const body = await readJson(req);
+      const actor = resolveActor(req);
+      const name = String(body.name ?? "").trim();
+      const projectId = String(body.projectId ?? "");
+      if (!name) {
+        sendJson(res, 400, { error: "invalid_automation", message: "Name is required." });
+        return;
+      }
+      if (!findProject(projectId)) {
+        sendJson(res, 400, { error: "invalid_automation", message: "A known projectId is required." });
+        return;
+      }
+      if (denyForeignProject(res, actor, projectId)) return;
+      const schedule = normalizeSchedule(body.schedule);
+      const enabled = body.enabled !== false;
+      const automation = {
+        id: nextId("atm"),
+        name,
+        enabled,
+        projectId,
+        branch: String(body.branch ?? "main"),
+        schedule,
+        nextRunAt: enabled ? computeNextRun(schedule) : null,
+        sessionMode: "fresh",
+        graceHours: Number.isFinite(Number(body.graceHours)) ? Number(body.graceHours) : 12,
+        precheck: "None",
+        agentId: findAgent(body.agentId) ? body.agentId : defaultAgent()?.id ?? null,
+        prompt: String(body.prompt ?? ""),
+        lastRunAt: null,
+        runCount: 0,
+        tokens: 0,
+        createdAt: now()
+      };
+      state.automations.unshift(automation);
+      persistState();
+      sendJson(res, 201, { automation });
+      return;
+    }
+
     const automationRunMatch = url.pathname.match(/^\/api\/automations\/([^/]+)\/run$/);
     if (req.method === "POST" && automationRunMatch) {
       const automation = state.automations.find((a) => a.id === decodeURIComponent(automationRunMatch[1]));
@@ -789,12 +829,17 @@ const server = http.createServer(async (req, res) => {
         return;
       }
       const patch = await readJson(req);
-      if (patch.enabled !== undefined) automation.enabled = Boolean(patch.enabled);
       if (patch.name !== undefined) automation.name = String(patch.name).trim() || automation.name;
       if (patch.prompt !== undefined) automation.prompt = String(patch.prompt);
-      if (patch.schedule !== undefined) automation.schedule = String(patch.schedule);
+      if (patch.schedule !== undefined) automation.schedule = normalizeSchedule(patch.schedule);
       if (patch.agentId !== undefined && findAgent(patch.agentId)) automation.agentId = patch.agentId;
       if (patch.branch !== undefined) automation.branch = String(patch.branch);
+      if (patch.enabled !== undefined) automation.enabled = Boolean(patch.enabled);
+      // Recompute the next fire time whenever the rule is enabled or its schedule
+      // changes; clear it when paused so the scheduler skips it.
+      if (patch.enabled !== undefined || patch.schedule !== undefined) {
+        automation.nextRunAt = automation.enabled ? computeNextRun(automation.schedule) : null;
+      }
       persistState();
       sendJson(res, 200, { automation });
       return;
@@ -1279,6 +1324,21 @@ const server = http.createServer(async (req, res) => {
 
 loadPersistedState();
 
+// Normalize schedules to the structured shape (migrates any legacy string-form
+// schedule from an older persisted snapshot) and give every enabled automation a
+// next-run time on boot — a restart shouldn't strand an enabled rule.
+for (const automation of state.automations) {
+  if (!automation.schedule || typeof automation.schedule !== "object") {
+    automation.schedule = normalizeSchedule(automation.schedule);
+  }
+  if (automation.enabled && !automation.nextRunAt) automation.nextRunAt = computeNextRun(automation.schedule);
+}
+// The automation scheduler: every 30s, fire enabled rules whose next-run time
+// has passed and roll their schedule forward. Unref'd so it never holds the
+// process open by itself.
+const automationTimer = setInterval(runDueAutomations, 30_000);
+automationTimer.unref?.();
+
 // Flush any debounced state on shutdown so the last mutation isn't lost.
 for (const signal of ["SIGINT", "SIGTERM"]) {
   process.on(signal, () => {
@@ -1294,6 +1354,64 @@ server.listen(port, host, () => {
 
 function now() {
   return new Date().toISOString();
+}
+
+// Coerce a client-supplied schedule into the stored shape + a human label.
+// Three kinds: interval (every N min), daily (HH:MM), weekdays (Mon–Fri HH:MM).
+function normalizeSchedule(input) {
+  const s = input && typeof input === "object" ? input : {};
+  const kind = ["interval", "daily", "weekdays"].includes(s.kind) ? s.kind : "daily";
+  if (kind === "interval") {
+    const everyMinutes = Math.max(1, Math.floor(Number(s.everyMinutes) || 60));
+    return { kind, everyMinutes, label: `Every ${everyMinutes} min` };
+  }
+  const time = /^\d{2}:\d{2}$/.test(String(s.time)) ? s.time : "09:00";
+  return { kind, time, label: `${kind === "weekdays" ? "Weekdays" : "Daily"} at ${time}` };
+}
+
+// Next fire time (ISO) for a schedule, computed in the server's local timezone.
+function computeNextRun(schedule, fromMs = Date.now()) {
+  if (!schedule) return null;
+  if (schedule.kind === "interval") {
+    const m = Number(schedule.everyMinutes) || 0;
+    return m > 0 ? new Date(fromMs + m * 60_000).toISOString() : null;
+  }
+  const [hh, mm] = String(schedule.time ?? "09:00").split(":").map((n) => Number(n) || 0);
+  const cand = new Date(fromMs);
+  cand.setHours(hh, mm, 0, 0);
+  if (cand.getTime() <= fromMs) cand.setDate(cand.getDate() + 1);
+  if (schedule.kind === "weekdays") {
+    while (cand.getDay() === 0 || cand.getDay() === 6) cand.setDate(cand.getDate() + 1);
+  }
+  return cand.toISOString();
+}
+
+// Scheduler tick: fire any enabled automation whose next-run time has passed,
+// then roll its schedule forward. Mirrors the manual /run handler.
+function runDueAutomations() {
+  const nowMs = Date.now();
+  let changed = false;
+  for (const automation of state.automations) {
+    if (!automation.enabled || !automation.nextRunAt || Date.parse(automation.nextRunAt) > nowMs) continue;
+    const agent = findAgent(automation.agentId) ?? defaultAgent();
+    if (agent) {
+      try {
+        const invocation = createInvocation(automation.prompt, agent, {
+          projectId: automation.projectId,
+          requestedBy: "usr_local",
+          metadata: { automationId: automation.id, automationName: automation.name, scheduled: true }
+        });
+        startInvocationIfAllowed(invocation, agent);
+        automation.lastRunAt = now();
+        automation.runCount = (automation.runCount ?? 0) + 1;
+      } catch {
+        // A bad agent/project shouldn't wedge the scheduler; skip and roll forward.
+      }
+    }
+    automation.nextRunAt = computeNextRun(automation.schedule, nowMs);
+    changed = true;
+  }
+  if (changed) persistState();
 }
 
 // Restore persisted slices on boot. A version mismatch drops the file wholesale
