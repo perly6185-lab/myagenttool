@@ -1,4 +1,4 @@
-import { useEffect, useState, type ComponentType } from "react";
+import { useEffect, useRef, useState, type ComponentType } from "react";
 import { ChevronDown, ChevronLeft, ChevronRight, File, Folder, GitBranch, ListChecks, MessageSquare, X } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -33,6 +33,10 @@ type GitStatus = {
   ahead: number;
   behind: number;
 };
+type DiffFile = { path: string; index: string; work: string; untracked: boolean };
+type WorktreeDiff = { files: DiffFile[]; base: string; diff: string; truncated: boolean };
+// Reserved tab id for the unified diff view in the main pane.
+const DIFF_TAB = "__changes__";
 
 // Worktree session view: run an agent in this worktree's checkout, watch its
 // output, and browse its files — the focused workspace for one branch.
@@ -52,6 +56,10 @@ export function WorktreeView({ worktree }: { worktree: WorktreeSnapshot }) {
   const [results, setResults] = useState<SearchMatch[]>([]);
   const [paneTab, setPaneTab] = useState<PaneTab>("project");
   const [git, setGit] = useState<GitStatus | null>(null);
+  const [diff, setDiff] = useState<WorktreeDiff | null>(null);
+  // Tracks the latest run's status across renders so we can detect the
+  // running→finished edge and refresh the workspace once.
+  const prevStatusRef = useRef<string | null>(null);
   const [sessionScope, setSessionScope] = useState<"worktree" | "all">("worktree");
   const [sessionQuery, setSessionQuery] = useState("");
   // Open file tabs are kept per worktree so switching away and back preserves
@@ -70,17 +78,21 @@ export function WorktreeView({ worktree }: { worktree: WorktreeSnapshot }) {
   function selectTab(path: string) {
     updateTabs((t) => ({ ...t, activeTab: path }));
   }
+  // Fetch a file's content into the cache. `force` re-reads even when cached —
+  // used after a run finishes, since the agent may have rewritten the file.
+  function loadFile(path: string, force = false) {
+    const key = `${worktree.id}::${path}`;
+    if (!force && fileCache[key]) return;
+    (api.readWorktreeFile(worktree.id, path) as Promise<{ content: string; truncated?: boolean; message?: string }>)
+      .then((r) => setFileCache((c) => ({ ...c, [key]: { content: r.content ?? "", truncated: r.truncated, message: r.message } })))
+      .catch((e) => setFileCache((c) => ({ ...c, [key]: { content: "", message: e instanceof Error ? e.message : "Failed to load." } })));
+  }
   function openFile(path: string, name: string) {
     updateTabs((t) => ({
       openFiles: t.openFiles.some((f) => f.path === path) ? t.openFiles : [...t.openFiles, { path, name }],
       activeTab: path,
     }));
-    const key = `${worktree.id}::${path}`;
-    if (!fileCache[key]) {
-      (api.readWorktreeFile(worktree.id, path) as Promise<{ content: string; truncated?: boolean; message?: string }>)
-        .then((r) => setFileCache((c) => ({ ...c, [key]: { content: r.content ?? "", truncated: r.truncated, message: r.message } })))
-        .catch((e) => setFileCache((c) => ({ ...c, [key]: { content: "", message: e instanceof Error ? e.message : "Failed to load." } })));
-    }
+    loadFile(path);
   }
   function closeFile(path: string) {
     updateTabs((t) => {
@@ -89,19 +101,8 @@ export function WorktreeView({ worktree }: { worktree: WorktreeSnapshot }) {
     });
   }
 
-  useEffect(() => {
-    if (!agentId && agents.length > 0) setAgentId(worktree.agentId ?? agents[0].id);
-  }, [agents, agentId, worktree.agentId]);
-
-  useEffect(() => {
-    setGit(null);
-    setFileQuery("");
-    setTree([]);
-    setResults([]);
-    setPaneTab("project");
-    // Reset the run target to this worktree's own agent (the instance is reused
-    // across worktree switches, so a stale agent would otherwise carry over).
-    setAgentId(worktree.agentId ?? agents[0]?.id ?? "");
+  // Load (or reload) the file tree, expanding all directories by default.
+  function loadTree() {
     (api.listWorktreeFiles(worktree.id) as Promise<{ tree: TreeNode[] }>)
       .then((r) => {
         const t = r.tree ?? [];
@@ -121,6 +122,24 @@ export function WorktreeView({ worktree }: { worktree: WorktreeSnapshot }) {
         setTree([]);
         setExpanded(new Set());
       });
+  }
+
+  useEffect(() => {
+    if (!agentId && agents.length > 0) setAgentId(worktree.agentId ?? agents[0].id);
+  }, [agents, agentId, worktree.agentId]);
+
+  useEffect(() => {
+    setGit(null);
+    setDiff(null);
+    prevStatusRef.current = null;
+    setFileQuery("");
+    setTree([]);
+    setResults([]);
+    setPaneTab("project");
+    // Reset the run target to this worktree's own agent (the instance is reused
+    // across worktree switches, so a stale agent would otherwise carry over).
+    setAgentId(worktree.agentId ?? agents[0]?.id ?? "");
+    loadTree();
   }, [worktree.id]);
 
   // Debounced file search (by name or content) when the box has a query.
@@ -143,9 +162,35 @@ export function WorktreeView({ worktree }: { worktree: WorktreeSnapshot }) {
     (api.worktreeGit(worktree.id) as Promise<GitStatus>).then(setGit).catch(() => setGit(null));
   }, [paneTab, git, worktree.id]);
 
+  // Load the unified diff when the Changes tab (or its diff view) is showing and
+  // we don't have one cached. Cleared on worktree switch and after a run.
+  useEffect(() => {
+    if ((paneTab !== "changes" && activeTab !== DIFF_TAB) || diff) return;
+    (api.worktreeDiff(worktree.id) as Promise<WorktreeDiff>).then(setDiff).catch(() => setDiff(null));
+  }, [paneTab, activeTab, diff, worktree.id]);
+
   // Invocations are newest-first; the latest one in this worktree is the session.
   const invocations = (state?.invocations ?? []).filter((i) => i.worktreeId === worktree.id);
   const latest = invocations[0];
+
+  // When a run in this worktree finishes, the agent may have rewritten or added
+  // files — drop this worktree's cached contents, refetch what's open, and
+  // refresh the tree + git/diff so the workspace reflects the agent's output.
+  useEffect(() => {
+    const status = latest?.status ?? null;
+    const justFinished = RUNNING.includes(prevStatusRef.current ?? "") && status !== null && !RUNNING.includes(status);
+    prevStatusRef.current = status;
+    if (!justFinished) return;
+    setFileCache((c) => {
+      const next: typeof c = {};
+      for (const [k, v] of Object.entries(c)) if (!k.startsWith(`${worktree.id}::`)) next[k] = v;
+      return next;
+    });
+    (tabsByWt[worktree.id]?.openFiles ?? []).forEach((f) => loadFile(f.path, true));
+    setGit(null);
+    setDiff(null);
+    loadTree();
+  }, [latest?.status, latest?.id, worktree.id]);
 
   // Sessions tab: agent session history, scoped to this worktree or the project.
   const scopedSessions =
@@ -218,6 +263,14 @@ export function WorktreeView({ worktree }: { worktree: WorktreeSnapshot }) {
                 </button>
               </div>
             ))}
+            {activeTab === DIFF_TAB ? (
+              <div className="flex shrink-0 items-center gap-1 rounded-t-md border-b-2 border-primary pl-3 pr-1 text-sm text-foreground">
+                <span className="py-1.5">Changes</span>
+                <button type="button" onClick={() => selectTab("session")} aria-label="Close diff" className="grid size-5 place-items-center rounded hover:bg-muted">
+                  <X className="size-3" />
+                </button>
+              </div>
+            ) : null}
           </div>
 
           {activeTab === "session" ? (
@@ -266,6 +319,8 @@ export function WorktreeView({ worktree }: { worktree: WorktreeSnapshot }) {
                 </CardContent>
               </Card>
             </>
+          ) : activeTab === DIFF_TAB ? (
+            <DiffView diff={diff} onOpenFile={openFile} />
           ) : (
             <FileCodeView path={activeTab} data={fileCache[cacheKey]} />
           )}
@@ -399,6 +454,23 @@ export function WorktreeView({ worktree }: { worktree: WorktreeSnapshot }) {
                       </p>
                     </div>
                   )}
+                  {diff && diff.files.length > 0 ? (
+                    <ul className="space-y-0.5 border-t border-border pt-2">
+                      {diff.files.map((f) => (
+                        <li key={f.path} className="min-w-0">
+                          <button
+                            type="button"
+                            onClick={() => selectTab(DIFF_TAB)}
+                            className="flex w-full items-center gap-1.5 rounded py-0.5 text-left hover:bg-muted"
+                            title={f.path}
+                          >
+                            <span className={cn("w-3 shrink-0 text-center font-mono", statusColor(f))}>{statusLetter(f)}</span>
+                            <span className="truncate font-mono text-[11px]">{f.path}</span>
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  ) : null}
                 </div>
               )
             ) : null}
@@ -559,6 +631,94 @@ function FileCodeView({ path, data }: { path: string; data?: { content: string; 
           </table>
         </div>
         {data.truncated ? <p className="px-3 py-1 text-[11px] text-muted-foreground">{data.message}</p> : null}
+      </CardContent>
+    </Card>
+  );
+}
+
+// Single-letter status for a changed file, mirroring git's porcelain codes.
+function statusLetter(f: DiffFile): string {
+  if (f.untracked) return "A";
+  const c = f.work && f.work !== " " ? f.work : f.index;
+  return (c || "M").toUpperCase();
+}
+function statusColor(f: DiffFile): string {
+  switch (statusLetter(f)) {
+    case "A":
+      return "text-emerald-500";
+    case "D":
+      return "text-destructive";
+    case "R":
+      return "text-sky-500";
+    default:
+      return "text-amber-500";
+  }
+}
+
+// Renders a unified diff with per-line +/- coloring. File headers ("diff --git")
+// are clickable to open that file in its own tab.
+function DiffView({ diff, onOpenFile }: { diff: WorktreeDiff | null; onOpenFile: (path: string, name: string) => void }) {
+  if (!diff) {
+    return (
+      <Card>
+        <CardContent className="p-4 text-xs text-muted-foreground">Loading diff…</CardContent>
+      </Card>
+    );
+  }
+  if (!diff.diff.trim()) {
+    return (
+      <Card>
+        <CardContent className="p-4 text-xs text-muted-foreground">No changes to show on this branch.</CardContent>
+      </Card>
+    );
+  }
+  const lines = diff.diff.split("\n");
+  return (
+    <Card>
+      <CardHeader className="border-b border-border py-2">
+        <p className="text-[11px] text-muted-foreground">
+          Diff vs <span className="font-mono">{diff.base === "HEAD" ? "HEAD" : diff.base.slice(0, 12)}</span> · {diff.files.length} file(s)
+          {diff.truncated ? " · truncated" : ""}
+        </p>
+      </CardHeader>
+      <CardContent className="p-0">
+        <div className="max-h-[60vh] overflow-auto font-mono text-[12px] leading-[1.5]">
+          {lines.map((line, i) => {
+            const fileMatch = /^diff --git a\/.+ b\/(.+)$/.exec(line);
+            if (fileMatch) {
+              const p = fileMatch[1];
+              return (
+                <button
+                  key={i}
+                  type="button"
+                  onClick={() => onOpenFile(p, p.split("/").pop() ?? p)}
+                  className="mt-1 flex w-full items-center gap-1 border-t border-border bg-muted px-3 py-1 text-left font-medium text-foreground hover:underline"
+                  title={`Open ${p}`}
+                >
+                  <File className="size-3 shrink-0 opacity-60" />
+                  <span className="truncate">{p}</span>
+                </button>
+              );
+            }
+            const c = line[0];
+            const cls =
+              line.startsWith("@@")
+                ? "text-sky-500 bg-muted/50"
+                : line.startsWith("+++") || line.startsWith("---") || line.startsWith("index ") || line.startsWith("new file") || line.startsWith("deleted file") || line.startsWith("rename ") || line.startsWith("similarity ")
+                  ? "text-muted-foreground"
+                  : c === "+"
+                    ? "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400"
+                    : c === "-"
+                      ? "bg-destructive/10 text-destructive"
+                      : "text-muted-foreground";
+            return (
+              <div key={i} className={cn("whitespace-pre px-3", cls)}>
+                {line || " "}
+              </div>
+            );
+          })}
+        </div>
+        {diff.truncated ? <p className="px-3 py-1 text-[11px] text-muted-foreground">Diff truncated at 1 MB.</p> : null}
       </CardContent>
     </Card>
   );

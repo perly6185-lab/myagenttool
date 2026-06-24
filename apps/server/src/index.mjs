@@ -545,6 +545,17 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    const worktreeDiffMatch = url.pathname.match(/^\/api\/worktrees\/([^/]+)\/diff$/);
+    if (req.method === "GET" && worktreeDiffMatch) {
+      const worktree = state.worktrees.find((w) => w.id === decodeURIComponent(worktreeDiffMatch[1]));
+      if (!worktree) {
+        sendJson(res, 404, { error: "worktree_not_found" });
+        return;
+      }
+      sendJson(res, 200, worktreeDiff(worktree));
+      return;
+    }
+
     const worktreeDeleteMatch = url.pathname.match(/^\/api\/worktrees\/([^/]+)$/);
     if (req.method === "DELETE" && worktreeDeleteMatch) {
       try {
@@ -1256,32 +1267,97 @@ function createEphemeralWorktree(project, invocationId) {
   return worktree;
 }
 
-// Tear down an invocation's ephemeral worktree (directory + branch + record).
-// Idempotent: a no-op when the invocation had no isolated worktree.
+// Tear down an invocation's ephemeral worktree without losing the agent's work.
+// Uncommitted edits are committed to the branch first (so removing the directory
+// can't discard them), then the branch is kept whenever it carries commits and
+// deleted only when provably empty. If the work can't be auto-saved, the worktree
+// is kept (flipped to persistent) rather than destroyed. Idempotent.
 function cleanupEphemeralWorktree(invocation) {
   const worktree = state.worktrees.find((w) => w.ephemeral && w.invocationId === invocation.id);
   if (!worktree) return;
   const target = state.projectTargets.find((t) => t.id === worktree.targetId);
-  if (target) {
+  if (!target) {
+    // No repo to reconcile against; just drop the record.
+    state.worktrees = state.worktrees.filter((w) => w.id !== worktree.id);
+    persistState();
+    return;
+  }
+  const gitWt = (args, opts = {}) => execFileSync("git", ["-C", worktree.path, ...args], { encoding: "utf8", ...opts });
+  const gitRepo = (args, opts = {}) => execFileSync("git", ["-C", target.rootPath, ...args], { stdio: "ignore", ...opts });
+
+  // 1. Preserve uncommitted work: stage everything and commit it to the branch.
+  //    Identity is forced inline so this succeeds without global git config.
+  let dirty = false;
+  try {
+    dirty = Boolean(gitWt(["status", "--porcelain"]).trim());
+  } catch {
+    // Worktree directory may already be gone — nothing to preserve.
+  }
+  if (dirty) {
     try {
-      execFileSync("git", ["-C", target.rootPath, "worktree", "remove", "--force", worktree.path], { stdio: "ignore" });
+      gitWt(["add", "-A"], { stdio: "ignore", encoding: undefined });
+      gitWt(
+        ["-c", "user.email=agent@myagenttool.local", "-c", "user.name=Agent", "commit", "-m", `agent: uncommitted changes from ${invocation.id}`],
+        { stdio: "ignore", encoding: undefined }
+      );
     } catch {
-      // Directory may already be gone; prune below reconciles git's metadata.
-    }
-    try {
-      execFileSync("git", ["-C", target.rootPath, "worktree", "prune"], { stdio: "ignore" });
-      execFileSync("git", ["-C", target.rootPath, "branch", "-D", worktree.branch], { stdio: "ignore" });
-    } catch {
-      // Branch may carry no unique commits or already be deleted — best effort.
+      // Couldn't auto-commit: keep the worktree intact so the user can recover
+      // the changes by hand, rather than destroying them with a forced remove.
+      worktree.ephemeral = false;
+      appendEvent({
+        invocationId: invocation.id,
+        type: "log",
+        level: "warn",
+        message: `Isolated worktree kept: uncommitted changes could not be auto-saved`,
+        data: { worktreeId: worktree.id, branch: worktree.branch, path: worktree.path }
+      });
+      persistState();
+      return;
     }
   }
+
+  // 2. Remove the worktree directory (work is now committed on the branch).
+  try {
+    gitRepo(["worktree", "remove", "--force", worktree.path]);
+  } catch {
+    // Directory may already be gone; prune reconciles git's metadata.
+  }
+  try {
+    gitRepo(["worktree", "prune"]);
+  } catch {
+    /* best effort */
+  }
+
+  // 3. Delete the branch ONLY when it provably carries no commits beyond the
+  //    base. Anything else — commits present, or the count is unknown — keeps
+  //    the branch so the agent's work stays recoverable (push it, or create a
+  //    worktree from agent/<id> later). This is the non-destructive guarantee.
+  let uniqueCommits = null;
+  try {
+    const base = target.defaultBranch || "HEAD";
+    const n = Number(gitRepo(["rev-list", "--count", `${base}..${worktree.branch}`], { stdio: undefined, encoding: "utf8" }).trim());
+    uniqueCommits = Number.isFinite(n) ? n : null;
+  } catch {
+    uniqueCommits = null;
+  }
+  const branchKept = uniqueCommits !== 0;
+  if (!branchKept) {
+    try {
+      gitRepo(["branch", "-D", worktree.branch]);
+    } catch {
+      /* already gone — best effort */
+    }
+  }
+
   state.worktrees = state.worktrees.filter((w) => w.id !== worktree.id);
   appendEvent({
     invocationId: invocation.id,
     type: "log",
     level: "info",
-    message: `Isolated worktree removed: ${worktree.path}`,
-    data: { worktreeId: worktree.id, branch: worktree.branch }
+    message: branchKept
+      ? `Isolated worktree removed; branch ${worktree.branch} kept with ${uniqueCommits ?? "unknown"} commit(s)`
+      : `Isolated worktree removed: ${worktree.path}`,
+    data: { worktreeId: worktree.id, branch: worktree.branch, branchKept, commits: uniqueCommits }
   });
   persistState();
 }
@@ -1490,6 +1566,77 @@ function worktreeGitStatus(worktree) {
       /* leave 0/0 */
     }
   }
+  return result;
+}
+
+// Unified diff for a worktree: the full change set the agent produced — commits
+// on this branch plus uncommitted working-tree edits — measured against the
+// merge-base with the branch's upstream (or the project's default branch), with
+// untracked files rendered as additions. Powers the Changes tab's diff view.
+function worktreeDiff(worktree) {
+  const cwd = worktree.path;
+  const git = (args) => execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8" });
+  // `git diff --no-index` exits non-zero when the files differ; that surfaces as
+  // a throw whose stdout still holds the patch we want.
+  const gitDiffSafe = (args) => {
+    try {
+      return git(args);
+    } catch (error) {
+      return typeof error?.stdout === "string" ? error.stdout : "";
+    }
+  };
+  const MAX_DIFF_BYTES = 1024 * 1024;
+  const result = { files: [], base: "HEAD", diff: "", truncated: false };
+  // Changed-file list with porcelain status letters (index/work-tree).
+  try {
+    const porcelain = git(["status", "--porcelain"]).split("\n").filter(Boolean);
+    result.files = porcelain.map((line) => {
+      const index = line[0];
+      const work = line[1];
+      let p = line.slice(3);
+      // Renames are reported as "old -> new"; show the new path.
+      if (p.includes(" -> ")) p = p.split(" -> ")[1];
+      return { path: p, index, work, untracked: index === "?" };
+    });
+  } catch {
+    /* leave empty */
+  }
+  // Resolve the base to diff against: merge-base with the upstream if published,
+  // else with the project's default branch, else HEAD (uncommitted only).
+  let base = "HEAD";
+  try {
+    const upstream = git(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"]).trim();
+    base = git(["merge-base", upstream, "HEAD"]).trim() || "HEAD";
+  } catch {
+    const target = state.projectTargets.find((t) => t.id === worktree.targetId);
+    const def = target?.defaultBranch;
+    if (def) {
+      try {
+        base = git(["merge-base", def, "HEAD"]).trim() || "HEAD";
+      } catch {
+        base = "HEAD";
+      }
+    }
+  }
+  result.base = base;
+  // Tracked changes (branch commits + working tree) vs the base.
+  let diff = "";
+  try {
+    diff = git(["diff", "--no-color", base, "--"]);
+  } catch {
+    /* no commits yet, or bad base */
+  }
+  // Untracked files never appear in `git diff`; render each as an addition.
+  for (const f of result.files) {
+    if (!f.untracked) continue;
+    const patch = gitDiffSafe(["diff", "--no-color", "--no-index", "--", "/dev/null", f.path]);
+    if (patch) diff += (diff && !diff.endsWith("\n") ? "\n" : "") + patch;
+  }
+  if (diff.length > MAX_DIFF_BYTES) {
+    diff = diff.slice(0, MAX_DIFF_BYTES);
+    result.truncated = true;
+  }
+  result.diff = diff;
   return result;
 }
 
