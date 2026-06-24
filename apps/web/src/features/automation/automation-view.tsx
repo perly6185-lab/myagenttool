@@ -9,7 +9,9 @@ import { Modal } from "@/components/ui/modal";
 import { EmptyState } from "@/components/common/empty-state";
 import { useConsoleState } from "@/data/use-console-state";
 import { useAsyncAction, api } from "@/data/use-console-actions";
+import { useUiStore } from "@/store/ui-store";
 import { cn } from "@/lib/cn";
+import { readableStatus, statusTone } from "@/lib/readable-labels";
 import type { AutomationSnapshot } from "@/lib/console-state";
 
 type ScheduleKind = "weekdays" | "daily" | "interval";
@@ -26,10 +28,20 @@ export function AutomationView() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const [editing, setEditing] = useState<AutomationSnapshot | null>(null);
+  const [detailTab, setDetailTab] = useState<"overview" | "runs">("overview");
+  const setSection = useUiStore((s) => s.setSection);
+  const setSelectedInvocationId = useUiStore((s) => s.setSelectedInvocationId);
 
   const selected = automations.find((a) => a.id === selectedId) ?? automations[0] ?? null;
   const agentName = (id: string) => agents.find((a) => a.id === id)?.name ?? id;
   const projectName = (id: string) => projects.find((p) => p.id === id)?.name ?? id;
+  // Invocations this rule has triggered (run-now + scheduled), newest first.
+  const runs = (state?.invocations ?? []).filter((i) => i.options?.metadata?.automationId === selected?.id);
+
+  function openRun(invId: string) {
+    setSelectedInvocationId(invId);
+    setSection("invocations");
+  }
 
   function toggle(a: AutomationSnapshot) {
     void execute(() => api.updateAutomation(a.id, { enabled: !a.enabled }));
@@ -119,6 +131,55 @@ export function AutomationView() {
             </div>
           </CardHeader>
           <CardContent className="space-y-4">
+            <div className="flex gap-4 border-b border-border text-sm">
+              {(["overview", "runs"] as const).map((t) => (
+                <button
+                  key={t}
+                  type="button"
+                  onClick={() => setDetailTab(t)}
+                  className={cn(
+                    "-mb-px border-b-2 pb-2 capitalize transition",
+                    detailTab === t ? "border-primary font-medium text-foreground" : "border-transparent text-muted-foreground hover:text-foreground",
+                  )}
+                >
+                  {t === "runs" ? `Runs ${runs.length}` : "Overview"}
+                </button>
+              ))}
+            </div>
+
+            {detailTab === "runs" ? (
+              runs.length === 0 ? (
+                <EmptyState title="No runs yet" hint="“Run now” or the schedule will create runs here." />
+              ) : (
+                <div className="overflow-hidden rounded-lg border border-border">
+                  <table className="w-full text-sm">
+                    <tbody>
+                      {runs.map((r) => (
+                        <tr key={r.id} className="border-b border-border/60 last:border-0 hover:bg-muted/40">
+                          <td className="px-3 py-2 font-mono text-xs text-muted-foreground">{r.id}</td>
+                          <td className="px-3 py-2">
+                            {r.options?.metadata?.scheduled ? (
+                              <Badge tone="neutral">scheduled</Badge>
+                            ) : (
+                              <Badge tone="neutral">manual</Badge>
+                            )}
+                          </td>
+                          <td className="px-3 py-2">
+                            <Badge tone={statusTone(r.status)}>{readableStatus(r.status)}</Badge>
+                          </td>
+                          <td className="px-3 py-2 text-right">
+                            <button type="button" onClick={() => openRun(r.id)} className="text-xs text-primary hover:underline">
+                              View →
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )
+            ) : (
+              <>
             <div className="rounded-lg border border-border p-4">
               <FactGrid
                 cols="grid-cols-2 sm:grid-cols-3 lg:grid-cols-4"
@@ -154,6 +215,8 @@ export function AutomationView() {
             <p className="text-xs text-muted-foreground">
               Enabled rules fire automatically on their schedule (checked every 30s). “Run now” triggers an extra run immediately.
             </p>
+              </>
+            )}
           </CardContent>
         </Card>
       ) : (

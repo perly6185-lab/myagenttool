@@ -80,6 +80,7 @@ export interface InvocationSnapshot {
   delivery?: { state?: string; dispatchAttempts?: number };
   cancellation?: { state?: string };
   result?: { summary?: string; touchedUserFiles?: boolean };
+  options?: { metadata?: { automationId?: string; automationName?: string; scheduled?: boolean } };
 }
 
 export interface InvocationEventSnapshot {
