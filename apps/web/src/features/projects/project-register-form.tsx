@@ -1,8 +1,9 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Field } from "@/components/common/field";
 import { useAsyncAction, api } from "@/data/use-console-actions";
+import { useConsoleState } from "@/data/use-console-state";
 import { useUiStore } from "@/store/ui-store";
 import { cn } from "@/lib/cn";
 
@@ -14,7 +15,9 @@ type Mode = "clone" | "local" | "empty";
 // a successful create (used to close the modal).
 export function ProjectRegisterForm({ onDone }: { onDone?: () => void }) {
   const { execute, pending, error } = useAsyncAction();
+  const { data: state } = useConsoleState();
   const setSelectedProjectId = useUiStore((s) => s.setSelectedProjectId);
+  const defaultCloneParent = state?.defaults?.cloneParentDir ?? "";
 
   const [mode, setMode] = useState<Mode>("clone");
   const [color, setColor] = useState(SWATCHES[0]);
@@ -22,6 +25,13 @@ export function ProjectRegisterForm({ onDone }: { onDone?: () => void }) {
   const [repoUrl, setRepoUrl] = useState("");
   const [parentDir, setParentDir] = useState("");
   const [repoPath, setRepoPath] = useState("");
+
+  // Pre-fill the clone parent with the server's durable default (the browser
+  // can't resolve a home dir). Only fills when still empty, so a user edit or a
+  // deliberate clear is preserved.
+  useEffect(() => {
+    if (defaultCloneParent) setParentDir((cur) => cur || defaultCloneParent);
+  }, [defaultCloneParent]);
 
   function afterCreate(created: { project?: { id: string } }) {
     if (created.project?.id) setSelectedProjectId(created.project.id);
@@ -95,7 +105,7 @@ export function ProjectRegisterForm({ onDone }: { onDone?: () => void }) {
             <Input value={repoUrl} placeholder="https://github.com/owner/repo.git" onChange={(e) => setRepoUrl(e.target.value)} />
           </Field>
           <Field label="Parent folder">
-            <Input value={parentDir} placeholder="/Users/you/projects" onChange={(e) => setParentDir(e.target.value)} />
+            <Input value={parentDir} placeholder={defaultCloneParent || "/Users/you/projects"} onChange={(e) => setParentDir(e.target.value)} />
           </Field>
         </>
       ) : null}

@@ -335,6 +335,8 @@ export interface RetentionSettings {
 }
 
 export interface ConsoleSnapshot {
+  /** Server-resolved defaults the browser can't compute (e.g. home-relative paths). */
+  defaults?: { cloneParentDir?: string };
   device: DeviceSnapshot;
   projects?: ProjectSnapshot[];
   projectTargets?: ProjectTargetSnapshot[];

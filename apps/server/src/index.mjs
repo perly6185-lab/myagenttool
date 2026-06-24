@@ -4,6 +4,20 @@ import path from "node:path";
 import { spawn, execFileSync as nodeExecFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import crypto from "node:crypto";
+import os from "node:os";
+
+// Durable default parent for repo-backed projects. The Register dialog pre-fills
+// this so clones land in a persistent home dir instead of a transient cwd (the
+// old default was process.cwd() — the server's own repo). Overridable per clone.
+const DEFAULT_CLONE_PARENT = path.join(os.homedir(), ".myagenttool", "repos");
+
+// Expand a leading "~" to the home dir so a user-typed "~/repos" resolves.
+function expandHome(p) {
+  const s = String(p ?? "").trim();
+  if (s === "~") return os.homedir();
+  if (s.startsWith("~/")) return path.join(os.homedir(), s.slice(2));
+  return s;
+}
 
 // All synchronous git/gh calls run inside the single HTTP handler and block the
 // event loop, so a slow/hung subprocess (e.g. `gh pr list` on a flaky network,
@@ -2079,7 +2093,10 @@ function startClone(target) {
 }
 
 function cloneProjectRepo(project, repoUrl, parentDir) {
-  const base = path.resolve(String(parentDir || "").trim() || process.cwd());
+  const base = path.resolve(expandHome(parentDir) || DEFAULT_CLONE_PARENT);
+  // The durable default may not exist yet on a fresh machine; git clone needs
+  // the parent present.
+  fs.mkdirSync(base, { recursive: true });
   const rootPath = path.join(base, repoNameFromUrl(repoUrl));
   if (fs.existsSync(rootPath)) throw new Error(`Destination already exists: ${rootPath}`);
   const target = {
@@ -2102,7 +2119,7 @@ function cloneProjectRepo(project, repoUrl, parentDir) {
 }
 
 function bindLocalRepo(project, repoPath) {
-  const rootPath = path.resolve(String(repoPath).trim());
+  const rootPath = path.resolve(expandHome(repoPath));
   if (!fs.existsSync(rootPath) || !fs.existsSync(path.join(rootPath, ".git"))) {
     throw new Error(`Not a git repository: ${rootPath}`);
   }
@@ -4585,6 +4602,9 @@ function publicState(actor) {
   return {
     namespace,
     protocolVersion,
+    // Server-resolved defaults the web can't compute itself (no home dir in the
+    // browser). Pre-fills the Register dialog's clone parent folder.
+    defaults: { cloneParentDir: DEFAULT_CLONE_PARENT },
     device: state.device,
     projects,
     projectTargets,
