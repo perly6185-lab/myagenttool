@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Play, Pause, Trash2, Clock, Plus, Pencil } from "lucide-react";
+import { Play, Pause, Trash2, Clock, Plus, Pencil, Sparkles } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -15,6 +15,50 @@ import { readableStatus, statusTone } from "@/lib/readable-labels";
 import type { AutomationSnapshot } from "@/lib/console-state";
 
 type ScheduleKind = "weekdays" | "daily" | "interval";
+
+// Preset automation templates (the "Use template" menu). Each pre-fills the
+// form's name, prompt, and schedule so common scheduled tasks are one click.
+type AutomationTemplate = {
+  category: string;
+  name: string;
+  description: string;
+  prompt: string;
+  schedule: { kind: ScheduleKind; time?: string; everyMinutes?: number };
+};
+const TEMPLATES: AutomationTemplate[] = [
+  {
+    category: "Repo health",
+    name: "Weekday repo audit",
+    description: "Check dependencies, failing tests, and risky open changes each weekday.",
+    prompt:
+      "Check the repository's health: dependency updates, failing tests, lint/type-check status, and risky open changes. Summarize findings and recommend next steps.",
+    schedule: { kind: "weekdays", time: "09:00" },
+  },
+  {
+    category: "Release prep",
+    name: "Release readiness",
+    description: "Weekly release-risk summary from the current project state.",
+    prompt:
+      "Prepare a release-readiness summary: open risks, unmerged work, test and type-check status, and a go/no-go recommendation.",
+    schedule: { kind: "weekdays", time: "09:00" },
+  },
+  {
+    category: "Periodic review",
+    name: "Daily change review",
+    description: "Scan recent work for correctness, UX, and test-coverage risks.",
+    prompt:
+      "Scan the most recent work and flag correctness, UX, and test-coverage risks. Summarize and suggest concrete follow-ups.",
+    schedule: { kind: "daily", time: "18:00" },
+  },
+  {
+    category: "Maintenance",
+    name: "Hourly queue check",
+    description: "Find stuck work, stale generated files, and failed local validation.",
+    prompt:
+      "Find stuck work, stale generated files, and failed local validation. Report anything that needs attention.",
+    schedule: { kind: "interval", everyMinutes: 60 },
+  },
+];
 
 // Automation = a saved task that runs an agent on a schedule/trigger. The cron
 // scheduler that fires it is a follow-up; "Run now" already creates a real
@@ -268,6 +312,16 @@ function AutomationForm({ automation, onDone }: { automation?: AutomationSnapsho
   const [time, setTime] = useState(automation?.schedule.time ?? "09:00");
   const [everyMinutes, setEveryMinutes] = useState(automation?.schedule.everyMinutes ?? 60);
   const [prompt, setPrompt] = useState(automation?.prompt ?? "");
+  const [showTemplates, setShowTemplates] = useState(false);
+
+  function applyTemplate(t: AutomationTemplate) {
+    setName(t.name);
+    setPrompt(t.prompt);
+    setKind(t.schedule.kind);
+    if (t.schedule.time) setTime(t.schedule.time);
+    if (t.schedule.everyMinutes) setEveryMinutes(t.schedule.everyMinutes);
+    setShowTemplates(false);
+  }
 
   function submit() {
     if (!name.trim() || !projectId || !prompt.trim()) return;
@@ -291,6 +345,30 @@ function AutomationForm({ automation, onDone }: { automation?: AutomationSnapsho
 
   return (
     <div className="space-y-3">
+      <div className="relative flex justify-end">
+        <Button variant="secondary" size="sm" onClick={() => setShowTemplates((v) => !v)}>
+          <Sparkles className="mr-1 size-3.5" /> Use template
+        </Button>
+        {showTemplates ? (
+          <>
+            <div className="fixed inset-0 z-10" onClick={() => setShowTemplates(false)} aria-hidden />
+            <div className="absolute right-0 top-9 z-20 w-80 overflow-hidden rounded-lg border border-border bg-background shadow-lg">
+              {TEMPLATES.map((t) => (
+                <button
+                  key={t.name}
+                  type="button"
+                  onClick={() => applyTemplate(t)}
+                  className="block w-full border-b border-border/60 px-3 py-2.5 text-left last:border-0 hover:bg-muted/60"
+                >
+                  <div className="text-[11px] uppercase tracking-wide text-muted-foreground">{t.category}</div>
+                  <div className="text-sm font-medium">{t.name}</div>
+                  <div className="text-xs text-muted-foreground">{t.description}</div>
+                </button>
+              ))}
+            </div>
+          </>
+        ) : null}
+      </div>
       <Field label="Name">
         <Input value={name} placeholder="e.g. Nightly test run" onChange={(e) => setName(e.target.value)} />
       </Field>
