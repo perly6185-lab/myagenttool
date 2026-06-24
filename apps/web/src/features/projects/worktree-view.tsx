@@ -1,5 +1,5 @@
 import { useEffect, useState, type ComponentType } from "react";
-import { ChevronDown, ChevronLeft, ChevronRight, File, Folder, GitBranch, ListChecks, MessageSquare } from "lucide-react";
+import { ChevronDown, ChevronLeft, ChevronRight, File, Folder, GitBranch, ListChecks, MessageSquare, X } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -54,6 +54,40 @@ export function WorktreeView({ worktree }: { worktree: WorktreeSnapshot }) {
   const [git, setGit] = useState<GitStatus | null>(null);
   const [sessionScope, setSessionScope] = useState<"worktree" | "all">("worktree");
   const [sessionQuery, setSessionQuery] = useState("");
+  // Open file tabs are kept per worktree so switching away and back preserves
+  // them. Active tab + open files are stored by worktree id; file contents are
+  // cached under a "<worktreeId>::<path>" key.
+  const [tabsByWt, setTabsByWt] = useState<Record<string, { openFiles: { path: string; name: string }[]; activeTab: string }>>({});
+  const [fileCache, setFileCache] = useState<Record<string, { content: string; truncated?: boolean; message?: string }>>({});
+  const tabs = tabsByWt[worktree.id] ?? { openFiles: [], activeTab: "session" };
+  const openFiles = tabs.openFiles;
+  const activeTab = tabs.activeTab;
+  const cacheKey = `${worktree.id}::${activeTab}`;
+
+  function updateTabs(fn: (t: { openFiles: { path: string; name: string }[]; activeTab: string }) => { openFiles: { path: string; name: string }[]; activeTab: string }) {
+    setTabsByWt((prev) => ({ ...prev, [worktree.id]: fn(prev[worktree.id] ?? { openFiles: [], activeTab: "session" }) }));
+  }
+  function selectTab(path: string) {
+    updateTabs((t) => ({ ...t, activeTab: path }));
+  }
+  function openFile(path: string, name: string) {
+    updateTabs((t) => ({
+      openFiles: t.openFiles.some((f) => f.path === path) ? t.openFiles : [...t.openFiles, { path, name }],
+      activeTab: path,
+    }));
+    const key = `${worktree.id}::${path}`;
+    if (!fileCache[key]) {
+      (api.readWorktreeFile(worktree.id, path) as Promise<{ content: string; truncated?: boolean; message?: string }>)
+        .then((r) => setFileCache((c) => ({ ...c, [key]: { content: r.content ?? "", truncated: r.truncated, message: r.message } })))
+        .catch((e) => setFileCache((c) => ({ ...c, [key]: { content: "", message: e instanceof Error ? e.message : "Failed to load." } })));
+    }
+  }
+  function closeFile(path: string) {
+    updateTabs((t) => {
+      const next = t.openFiles.filter((f) => f.path !== path);
+      return { openFiles: next, activeTab: t.activeTab === path ? next[next.length - 1]?.path ?? "session" : t.activeTab };
+    });
+  }
 
   useEffect(() => {
     if (!agentId && agents.length > 0) setAgentId(worktree.agentId ?? agents[0].id);
@@ -150,50 +184,85 @@ export function WorktreeView({ worktree }: { worktree: WorktreeSnapshot }) {
       </div>
 
       <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_240px]">
-        <div className="space-y-4">
-          <Card>
-            <CardHeader>
-              <CardTitle>Run an agent in this worktree</CardTitle>
-              <p className="select-all break-all font-mono text-[11px] text-muted-foreground">{worktree.path}</p>
-            </CardHeader>
-            <CardContent className="space-y-3">
-              <Textarea rows={4} value={task} onChange={(e) => setTask(e.target.value)} aria-label="Task" />
-              <div className="grid gap-3 sm:grid-cols-[1fr_auto] sm:items-end">
-                <Field label="Agent">
-                  <Select value={agentId} onChange={(e) => setAgentId(e.target.value)} aria-label="Agent">
-                    {agents.length === 0 ? <option value="">No agent</option> : null}
-                    {agents.map((a) => (
-                      <option key={a.id} value={a.id}>
-                        {a.name}
-                      </option>
-                    ))}
-                  </Select>
-                </Field>
-                <Button onClick={run} disabled={runDisabled}>
-                  {isRunning ? "Running…" : "Run in this worktree"}
-                </Button>
-              </div>
-              {error ? <p className="text-xs text-destructive">{error}</p> : null}
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardHeader>
-              <CardTitle>Session output</CardTitle>
-              {latest ? (
-                <p className="text-sm text-muted-foreground">
-                  {latest.id} · {latest.status}
-                </p>
-              ) : null}
-            </CardHeader>
-            <CardContent>
-              {latest ? (
-                <EventTimeline events={events} />
-              ) : (
-                <EmptyState title="No runs yet" hint="Run an agent above to start a session in this worktree." />
+        <div className="space-y-3">
+          <div className="flex items-center gap-1 overflow-x-auto border-b border-border">
+            <button
+              type="button"
+              onClick={() => selectTab("session")}
+              className={cn(
+                "shrink-0 rounded-t-md border-b-2 px-3 py-1.5 text-sm transition",
+                activeTab === "session" ? "border-primary font-medium text-foreground" : "border-transparent text-muted-foreground hover:text-foreground",
               )}
-            </CardContent>
-          </Card>
+            >
+              Session
+            </button>
+            {openFiles.map((f) => (
+              <div
+                key={f.path}
+                className={cn(
+                  "flex shrink-0 items-center gap-1 rounded-t-md border-b-2 pl-3 pr-1 text-sm transition",
+                  activeTab === f.path ? "border-primary text-foreground" : "border-transparent text-muted-foreground",
+                )}
+              >
+                <button type="button" onClick={() => selectTab(f.path)} className="py-1.5 hover:text-foreground" title={f.path}>
+                  {f.name}
+                </button>
+                <button type="button" onClick={() => closeFile(f.path)} aria-label={`Close ${f.name}`} className="grid size-5 place-items-center rounded hover:bg-muted">
+                  <X className="size-3" />
+                </button>
+              </div>
+            ))}
+          </div>
+
+          {activeTab === "session" ? (
+            <>
+              <Card>
+                <CardHeader>
+                  <CardTitle>Run an agent in this worktree</CardTitle>
+                  <p className="select-all break-all font-mono text-[11px] text-muted-foreground">{worktree.path}</p>
+                </CardHeader>
+                <CardContent className="space-y-3">
+                  <Textarea rows={4} value={task} onChange={(e) => setTask(e.target.value)} aria-label="Task" />
+                  <div className="grid gap-3 sm:grid-cols-[1fr_auto] sm:items-end">
+                    <Field label="Agent">
+                      <Select value={agentId} onChange={(e) => setAgentId(e.target.value)} aria-label="Agent">
+                        {agents.length === 0 ? <option value="">No agent</option> : null}
+                        {agents.map((a) => (
+                          <option key={a.id} value={a.id}>
+                            {a.name}
+                          </option>
+                        ))}
+                      </Select>
+                    </Field>
+                    <Button onClick={run} disabled={runDisabled}>
+                      {isRunning ? "Running…" : "Run in this worktree"}
+                    </Button>
+                  </div>
+                  {error ? <p className="text-xs text-destructive">{error}</p> : null}
+                </CardContent>
+              </Card>
+
+              <Card>
+                <CardHeader>
+                  <CardTitle>Session output</CardTitle>
+                  {latest ? (
+                    <p className="text-sm text-muted-foreground">
+                      {latest.id} · {latest.status}
+                    </p>
+                  ) : null}
+                </CardHeader>
+                <CardContent>
+                  {latest ? (
+                    <EventTimeline events={events} />
+                  ) : (
+                    <EmptyState title="No runs yet" hint="Run an agent above to start a session in this worktree." />
+                  )}
+                </CardContent>
+              </Card>
+            </>
+          ) : (
+            <FileCodeView path={activeTab} data={fileCache[cacheKey]} />
+          )}
         </div>
 
         <Card>
@@ -252,13 +321,17 @@ export function WorktreeView({ worktree }: { worktree: WorktreeSnapshot }) {
                     <ul className="space-y-1 text-xs">
                       {results.map((m, i) => (
                         <li key={`${m.path}:${m.line ?? i}`} className="min-w-0">
-                          <span className="flex items-center gap-1.5">
+                          <button
+                            type="button"
+                            onClick={() => openFile(m.path, m.path.split("/").pop() ?? m.path)}
+                            className="flex w-full items-center gap-1.5 rounded text-left hover:bg-muted"
+                          >
                             <File className="size-3 shrink-0 text-muted-foreground" />
                             <span className="truncate font-mono text-[11px]">
                               {m.path}
                               {m.line ? `:${m.line}` : ""}
                             </span>
-                          </span>
+                          </button>
                           {m.text ? <p className="truncate pl-4 font-mono text-[10px] text-muted-foreground">{m.text.trim()}</p> : null}
                         </li>
                       ))}
@@ -271,6 +344,8 @@ export function WorktreeView({ worktree }: { worktree: WorktreeSnapshot }) {
                     nodes={tree}
                     depth={0}
                     expanded={expanded}
+                    activePath={activeTab}
+                    onOpen={openFile}
                     toggle={(p) =>
                       setExpanded((prev) => {
                         const next = new Set(prev);
@@ -391,12 +466,16 @@ function FileTree({
   nodes,
   depth,
   expanded,
+  activePath,
   toggle,
+  onOpen,
 }: {
   nodes: TreeNode[];
   depth: number;
   expanded: Set<string>;
+  activePath: string;
   toggle: (path: string) => void;
+  onOpen: (path: string, name: string) => void;
 }) {
   return (
     <ul className="text-xs">
@@ -406,11 +485,11 @@ function FileTree({
           <li key={n.path}>
             <button
               type="button"
-              onClick={() => n.dir && toggle(n.path)}
+              onClick={() => (n.dir ? toggle(n.path) : onOpen(n.path, n.name))}
               style={{ paddingLeft: depth * 12 }}
               className={cn(
-                "flex w-full items-center gap-1 rounded py-0.5 text-left",
-                n.dir ? "hover:bg-muted" : "cursor-default",
+                "flex w-full items-center gap-1 rounded py-0.5 text-left hover:bg-muted",
+                !n.dir && activePath === n.path ? "bg-primary/10 text-foreground" : "",
               )}
             >
               {n.dir ? (
@@ -430,11 +509,51 @@ function FileTree({
               <span className="truncate">{n.name}</span>
             </button>
             {n.dir && open && n.children ? (
-              <FileTree nodes={n.children} depth={depth + 1} expanded={expanded} toggle={toggle} />
+              <FileTree nodes={n.children} depth={depth + 1} expanded={expanded} activePath={activePath} toggle={toggle} onOpen={onOpen} />
             ) : null}
           </li>
         );
       })}
     </ul>
+  );
+}
+
+function FileCodeView({ path, data }: { path: string; data?: { content: string; truncated?: boolean; message?: string } }) {
+  if (!data) {
+    return (
+      <Card>
+        <CardContent className="p-4 text-xs text-muted-foreground">Loading {path}…</CardContent>
+      </Card>
+    );
+  }
+  if (data.message && !data.content) {
+    return (
+      <Card>
+        <CardContent className="p-4 text-xs text-muted-foreground">{data.message}</CardContent>
+      </Card>
+    );
+  }
+  const lines = data.content.split("\n");
+  return (
+    <Card>
+      <CardHeader className="border-b border-border py-2">
+        <p className="select-all break-all font-mono text-[11px] text-muted-foreground">{path}</p>
+      </CardHeader>
+      <CardContent className="p-0">
+        <div className="max-h-[60vh] overflow-auto">
+          <table className="w-full border-collapse font-mono text-[12px]">
+            <tbody>
+              {lines.map((line, i) => (
+                <tr key={i} className="align-top">
+                  <td className="select-none border-r border-border px-2 text-right text-muted-foreground">{i + 1}</td>
+                  <td className="whitespace-pre px-3">{line || " "}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        {data.truncated ? <p className="px-3 py-1 text-[11px] text-muted-foreground">{data.message}</p> : null}
+      </CardContent>
+    </Card>
   );
 }

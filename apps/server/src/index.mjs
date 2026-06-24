@@ -466,6 +466,38 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    const worktreeFileMatch = url.pathname.match(/^\/api\/worktrees\/([^/]+)\/file$/);
+    if (req.method === "GET" && worktreeFileMatch) {
+      const worktree = state.worktrees.find((w) => w.id === decodeURIComponent(worktreeFileMatch[1]));
+      if (!worktree) {
+        sendJson(res, 404, { error: "worktree_not_found" });
+        return;
+      }
+      const rel = url.searchParams.get("path") ?? "";
+      const root = path.resolve(worktree.path);
+      const abs = path.resolve(root, rel);
+      // Guard against path traversal outside the worktree.
+      if (abs !== root && !abs.startsWith(root + path.sep)) {
+        sendJson(res, 400, { error: "invalid_path" });
+        return;
+      }
+      try {
+        const stat = fs.statSync(abs);
+        if (stat.isDirectory()) {
+          sendJson(res, 400, { error: "is_directory" });
+          return;
+        }
+        if (stat.size > 512 * 1024) {
+          sendJson(res, 200, { path: rel, content: "", truncated: true, message: "File too large to preview." });
+          return;
+        }
+        sendJson(res, 200, { path: rel, content: fs.readFileSync(abs, "utf8") });
+      } catch (error) {
+        sendJson(res, 404, { error: "file_not_found", message: error instanceof Error ? error.message : String(error) });
+      }
+      return;
+    }
+
     const worktreeSearchMatch = url.pathname.match(/^\/api\/worktrees\/([^/]+)\/search$/);
     if (req.method === "GET" && worktreeSearchMatch) {
       const worktree = state.worktrees.find((w) => w.id === decodeURIComponent(worktreeSearchMatch[1]));
