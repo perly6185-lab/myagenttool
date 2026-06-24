@@ -133,6 +133,9 @@ export const api = {
     request("GET", `/api/worktrees/${encodeURIComponent(id)}/file?path=${encodeURIComponent(filePath)}`),
   worktreeGit: (id: string) => request("GET", `/api/worktrees/${encodeURIComponent(id)}/git`),
   worktreeDiff: (id: string) => request("GET", `/api/worktrees/${encodeURIComponent(id)}/diff`),
+  publishWorktreeBranch: (id: string) => request("POST", `/api/worktrees/${encodeURIComponent(id)}/push`),
+  createWorktreePr: (id: string, payload: { title: string; body: string }) =>
+    request("POST", `/api/worktrees/${encodeURIComponent(id)}/pr`, payload),
   listGithubItems: (projectId: string) =>
     request("GET", `/api/projects/${encodeURIComponent(projectId)}/github`),
   listBranches: (projectId: string) =>

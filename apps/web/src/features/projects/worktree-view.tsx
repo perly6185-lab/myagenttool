@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input, Select, Textarea } from "@/components/ui/input";
 import { Field } from "@/components/common/field";
+import { Modal } from "@/components/ui/modal";
 import { EmptyState } from "@/components/common/empty-state";
 import { EventTimeline } from "@/features/invocations/event-timeline";
 import { WorktreeLinkPopover } from "@/features/projects/worktree-link-popover";
@@ -43,6 +44,9 @@ const DIFF_TAB = "__changes__";
 export function WorktreeView({ worktree }: { worktree: WorktreeSnapshot }) {
   const { data: state } = useConsoleState();
   const { execute, pending, error } = useAsyncAction();
+  // Outward git actions (publish / open PR) use their own async slot so they
+  // don't share pending/error state with the run button.
+  const { execute: execGit, pending: gitPending, error: gitError } = useAsyncAction();
   const setSelectedWorktreeId = useUiStore((s) => s.setSelectedWorktreeId);
 
   const agents = state?.agents ?? [];
@@ -62,6 +66,9 @@ export function WorktreeView({ worktree }: { worktree: WorktreeSnapshot }) {
   const prevStatusRef = useRef<string | null>(null);
   const [sessionScope, setSessionScope] = useState<"worktree" | "all">("worktree");
   const [sessionQuery, setSessionQuery] = useState("");
+  const [prOpen, setPrOpen] = useState(false);
+  const [prTitle, setPrTitle] = useState("");
+  const [prBody, setPrBody] = useState("");
   // Open file tabs are kept per worktree so switching away and back preserves
   // them. Active tab + open files are stored by worktree id; file contents are
   // cached under a "<worktreeId>::<path>" key.
@@ -215,6 +222,28 @@ export function WorktreeView({ worktree }: { worktree: WorktreeSnapshot }) {
   function run() {
     if (runDisabled) return;
     void execute(() => api.createInvocation(task.trim(), agentId || null, worktree.projectId, worktree.id));
+  }
+
+  // Push the branch to origin, then refresh git/diff so the published state shows.
+  function publishBranch() {
+    void execGit(async () => {
+      await api.publishWorktreeBranch(worktree.id);
+      setGit(null);
+      setDiff(null);
+    });
+  }
+  function openPrDialog() {
+    // Seed a sensible title from the branch; the user edits before submitting.
+    setPrTitle(worktree.branch.replace(/^.*\//, "").replace(/[-_]+/g, " ").trim() || worktree.branch);
+    setPrBody("");
+    setPrOpen(true);
+  }
+  function submitPr() {
+    void execGit(async () => {
+      await api.createWorktreePr(worktree.id, { title: prTitle.trim(), body: prBody.trim() });
+      setPrOpen(false);
+      setGit(null);
+    });
   }
 
   return (
@@ -471,6 +500,32 @@ export function WorktreeView({ worktree }: { worktree: WorktreeSnapshot }) {
                       ))}
                     </ul>
                   ) : null}
+                  <div className="space-y-1.5 border-t border-border pt-2">
+                    {!git.hasUpstream ? (
+                      <Button onClick={publishBranch} disabled={gitPending} size="sm" className="w-full">
+                        {gitPending ? "Publishing…" : "Publish branch"}
+                      </Button>
+                    ) : git.ahead > 0 ? (
+                      <Button onClick={publishBranch} disabled={gitPending} size="sm" className="w-full">
+                        {gitPending ? "Pushing…" : `Push ${git.ahead} commit(s)`}
+                      </Button>
+                    ) : null}
+                    {worktree.link && worktree.link.type === "pr" ? (
+                      <a
+                        href={worktree.link.url ?? "#"}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="block rounded-md border border-border py-1.5 text-center text-xs text-primary hover:bg-muted"
+                      >
+                        PR #{worktree.link.number} ↗
+                      </a>
+                    ) : (
+                      <Button onClick={openPrDialog} disabled={gitPending} variant="secondary" size="sm" className="w-full">
+                        Open pull request
+                      </Button>
+                    )}
+                    {gitError ? <p className="text-[11px] text-destructive">{gitError}</p> : null}
+                  </div>
                 </div>
               )
             ) : null}
@@ -536,6 +591,31 @@ export function WorktreeView({ worktree }: { worktree: WorktreeSnapshot }) {
           </CardContent>
         </Card>
       </div>
+
+      <Modal
+        open={prOpen}
+        onClose={() => setPrOpen(false)}
+        title="Open pull request"
+        description={`Pushes ${worktree.branch} to origin and opens a PR via gh.`}
+      >
+        <div className="space-y-3">
+          <Field label="Title">
+            <Input value={prTitle} onChange={(e) => setPrTitle(e.target.value)} placeholder="Pull request title" />
+          </Field>
+          <Field label="Description">
+            <Textarea rows={5} value={prBody} onChange={(e) => setPrBody(e.target.value)} placeholder="Optional summary of the change" />
+          </Field>
+          {gitError ? <p className="text-xs text-destructive">{gitError}</p> : null}
+          <div className="flex justify-end gap-2">
+            <Button variant="secondary" size="sm" onClick={() => setPrOpen(false)} disabled={gitPending}>
+              Cancel
+            </Button>
+            <Button size="sm" onClick={submitPr} disabled={gitPending || !prTitle.trim()}>
+              {gitPending ? "Creating…" : "Create pull request"}
+            </Button>
+          </div>
+        </div>
+      </Modal>
     </div>
   );
 }

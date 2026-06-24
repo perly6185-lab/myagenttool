@@ -556,6 +556,38 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    const worktreePushMatch = url.pathname.match(/^\/api\/worktrees\/([^/]+)\/push$/);
+    if (req.method === "POST" && worktreePushMatch) {
+      const worktree = state.worktrees.find((w) => w.id === decodeURIComponent(worktreePushMatch[1]));
+      if (!worktree) {
+        sendJson(res, 404, { error: "worktree_not_found" });
+        return;
+      }
+      try {
+        sendJson(res, 200, { git: publishWorktreeBranch(worktree) });
+      } catch (error) {
+        sendJson(res, 502, { error: "push_failed", message: error instanceof Error ? error.message : String(error) });
+      }
+      return;
+    }
+
+    const worktreePrMatch = url.pathname.match(/^\/api\/worktrees\/([^/]+)\/pr$/);
+    if (req.method === "POST" && worktreePrMatch) {
+      const worktree = state.worktrees.find((w) => w.id === decodeURIComponent(worktreePrMatch[1]));
+      if (!worktree) {
+        sendJson(res, 404, { error: "worktree_not_found" });
+        return;
+      }
+      const body = await readJson(req);
+      try {
+        const pr = createWorktreePr(worktree, { title: body.title, body: body.body });
+        sendJson(res, 201, { pr, link: worktree.link });
+      } catch (error) {
+        sendJson(res, 502, { error: "pr_failed", message: error instanceof Error ? error.message : String(error) });
+      }
+      return;
+    }
+
     const worktreeDeleteMatch = url.pathname.match(/^\/api\/worktrees\/([^/]+)$/);
     if (req.method === "DELETE" && worktreeDeleteMatch) {
       try {
@@ -1718,6 +1750,64 @@ function createWorktreeFromPr(project, prNumber, opts = {}) {
     // The branch may already exist locally; createNamedWorktree checks it out.
   }
   return createNamedWorktree(project, headRef, { agentId: opts.agentId, link: opts.link });
+}
+
+// Network ops (push/PR) can outlast the default 8s subprocess bound; give them
+// room while still capping a stuck remote.
+const REMOTE_GIT_TIMEOUT_MS = 60_000;
+
+// Publish a worktree's branch to origin (`git push -u`), so it can back a PR.
+// Outward-facing write: the caller (UI) confirms before invoking this.
+function publishWorktreeBranch(worktree) {
+  const target = state.projectTargets.find((t) => t.id === worktree.targetId);
+  if (!target) throw new Error("Worktree has no repository to push from.");
+  try {
+    execFileSync("git", ["-C", worktree.path, "push", "-u", "origin", worktree.branch], {
+      encoding: "utf8",
+      timeout: REMOTE_GIT_TIMEOUT_MS
+    });
+  } catch (error) {
+    const detail = (error?.stderr || error?.message || String(error)).toString().trim();
+    throw new Error(`git push failed: ${detail}`);
+  }
+  return worktreeGitStatus(worktree);
+}
+
+// Open a pull request for a worktree's branch via the gh CLI. Pushes the branch
+// first (gh needs a remote head), then links the new PR back onto the worktree.
+// Outward-facing write: the caller (UI) confirms before invoking this.
+function createWorktreePr(worktree, opts = {}) {
+  const target = state.projectTargets.find((t) => t.id === worktree.targetId);
+  if (!target) throw new Error("Worktree has no repository to open a PR from.");
+  // Ensure the branch is on origin first.
+  try {
+    execFileSync("git", ["-C", worktree.path, "push", "-u", "origin", worktree.branch], {
+      encoding: "utf8",
+      timeout: REMOTE_GIT_TIMEOUT_MS
+    });
+  } catch (error) {
+    const detail = (error?.stderr || error?.message || String(error)).toString().trim();
+    throw new Error(`git push failed: ${detail}`);
+  }
+  const title = String(opts.title ?? "").trim() || worktree.branch;
+  const bodyText = String(opts.body ?? "").trim();
+  const args = ["pr", "create", "--head", worktree.branch, "--title", title, "--body", bodyText || title];
+  if (target.defaultBranch) args.push("--base", target.defaultBranch);
+  let out = "";
+  try {
+    out = execFileSync("gh", args, { cwd: target.rootPath, encoding: "utf8", timeout: REMOTE_GIT_TIMEOUT_MS }).trim();
+  } catch (error) {
+    const detail = (error?.stderr || error?.message || String(error)).toString().trim();
+    throw new Error(`gh pr create failed: ${detail}`);
+  }
+  // gh prints the new PR's URL on success; pull the number out of it.
+  const prUrl = (out.match(/https?:\/\/\S+/) || [])[0] || out;
+  const number = Number((prUrl.match(/\/pull\/(\d+)/) || [])[1]) || null;
+  if (number) {
+    worktree.link = normalizeWorktreeLink({ type: "pr", number, title, url: prUrl, state: "open" });
+    persistState();
+  }
+  return { url: prUrl, number };
 }
 
 // Smart mode: derive a conventional, git-safe branch name from a free-text
