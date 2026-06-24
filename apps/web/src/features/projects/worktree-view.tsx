@@ -7,15 +7,14 @@ import { Input, Select, Textarea } from "@/components/ui/input";
 import { Field } from "@/components/common/field";
 import { Modal } from "@/components/ui/modal";
 import { EmptyState } from "@/components/common/empty-state";
-import { FactList } from "@/components/common/fact-list";
 import { EventTimeline } from "@/features/invocations/event-timeline";
-import { approvalFor } from "@/features/selection";
+import { DecisionAction } from "@/features/invocations/decision-action";
 import { WorktreeLinkPopover } from "@/features/projects/worktree-link-popover";
 import { useConsoleState } from "@/data/use-console-state";
 import { useAsyncAction, api } from "@/data/use-console-actions";
 import { useUiStore } from "@/store/ui-store";
 import { cn } from "@/lib/cn";
-import type { InvocationEventSnapshot, WorktreeSnapshot } from "@/lib/console-state";
+import type { WorktreeSnapshot } from "@/lib/console-state";
 
 const RUNNING = ["queued", "dispatching", "waiting_for_local_approval", "running", "cancelling"];
 type TreeNode = { name: string; path: string; dir: boolean; children?: TreeNode[] };
@@ -226,54 +225,6 @@ export function WorktreeView({ worktree }: { worktree: WorktreeSnapshot }) {
     void execute(() => api.createInvocation(task.trim(), agentId || null, worktree.projectId, worktree.id));
   }
 
-  // Anchor the local-approval decision to the event that requested it, so a
-  // multi-run session keeps each approval in its own context instead of a single
-  // floating panel. Resolved per event by its invocation, not just `latest`.
-  function renderApprovalAction(event: InvocationEventSnapshot) {
-    if (event.type !== "local_approval_requested") return null;
-    const inv = (state?.invocations ?? []).find((i) => i.id === event.invocationId) ?? null;
-    const approval = approvalFor(state, inv);
-    if (!approval) return null;
-    if (approval.status !== "pending") {
-      return (
-        <p
-          className={cn(
-            "mt-1.5 text-xs font-medium",
-            approval.status === "approved" ? "text-success" : "text-destructive",
-          )}
-        >
-          {approval.status === "approved" ? "✓ Approved — run released." : "✕ Denied — run blocked."}
-        </p>
-      );
-    }
-    return (
-      <div className="mt-2 space-y-2 rounded-md border border-warning/50 bg-warning/5 p-3">
-        <FactList
-          facts={[
-            { term: "Risk", value: approval.summary?.risk ?? `${approval.riskLevel ?? "unknown"} risk` },
-            { term: "Data", value: approval.summary?.data ?? "Task input and result are recorded." },
-            { term: "Cost", value: approval.summary?.cost ?? "Cost is unknown." },
-            { term: "Cancel", value: approval.summary?.cancellation ?? "Cancellation behavior is unknown." },
-            { term: "Tags", value: approval.riskTags?.length ? approval.riskTags.join(", ") : "No tags declared" },
-          ]}
-        />
-        <div className="flex gap-2">
-          <Button size="sm" disabled={pending} onClick={() => execute(() => api.approveApproval(approval.id))}>
-            Approve run
-          </Button>
-          <Button
-            size="sm"
-            variant="secondary"
-            disabled={pending}
-            onClick={() => execute(() => api.denyApproval(approval.id))}
-          >
-            Deny run
-          </Button>
-        </div>
-      </div>
-    );
-  }
-
   // Push the branch to origin, then refresh git/diff so the published state shows.
   function publishBranch() {
     void execGit(async () => {
@@ -391,7 +342,7 @@ export function WorktreeView({ worktree }: { worktree: WorktreeSnapshot }) {
                 </CardHeader>
                 <CardContent>
                   {latest ? (
-                    <EventTimeline events={events} renderAction={renderApprovalAction} />
+                    <EventTimeline events={events} renderAction={(event) => <DecisionAction event={event} />} />
                   ) : (
                     <EmptyState title="No runs yet" hint="Run an agent above to start a session in this worktree." />
                   )}

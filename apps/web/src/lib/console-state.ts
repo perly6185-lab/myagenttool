@@ -88,7 +88,9 @@ export interface InvocationEventSnapshot {
   type: string;
   message?: string;
   createdAt: string;
-  data?: { agentId?: string; source?: string };
+  // `artifactId` / `targetInvocationId` let a platform-agent "action requested"
+  // event deep-link to the surface where its decision is actually made.
+  data?: { agentId?: string; source?: string; artifactId?: string; targetInvocationId?: string; reportId?: string };
 }
 
 export interface AuditSnapshot {
