@@ -1,12 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
-import { RefreshCw, ExternalLink } from "lucide-react";
+import { RefreshCw, ExternalLink, GitBranch } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input, Select } from "@/components/ui/input";
 import { EmptyState } from "@/components/common/empty-state";
 import { useConsoleState } from "@/data/use-console-state";
-import { api } from "@/data/use-console-actions";
+import { useAsyncAction, api } from "@/data/use-console-actions";
+import { useUiStore } from "@/store/ui-store";
 import { cn } from "@/lib/cn";
 
 type GithubItem = {
@@ -32,10 +33,37 @@ const TABS: [GithubItem["type"], string][] = [
 // board with project/type/search filters.
 export function TaskView() {
   const { data: state } = useConsoleState();
+  const { execute, pending } = useAsyncAction();
+  const setSection = useUiStore((s) => s.setSection);
+  const setSelectedProjectId = useUiStore((s) => s.setSelectedProjectId);
+  const setSelectedWorktreeId = useUiStore((s) => s.setSelectedWorktreeId);
+  const worktrees = state?.worktrees ?? [];
   const projects = useMemo(
     () => (state?.projects ?? []).filter((p) => p.status !== "archived"),
     [state?.projects],
   );
+
+  // A worktree already linked to this item (so the row offers "Open" not "Create").
+  function linkedWorktree(row: Row) {
+    return worktrees.find((w) => w.projectId === row.projectId && w.link?.type === row.type && w.link?.number === row.number) ?? null;
+  }
+  function openWorktree(worktreeId: string, projectId: string) {
+    setSelectedProjectId(projectId);
+    setSelectedWorktreeId(worktreeId);
+    setSection("projects");
+  }
+  function createWorktree(row: Row) {
+    const link = { type: row.type, number: row.number, title: row.title, url: row.url, state: row.state };
+    const payload =
+      row.type === "pr"
+        ? { prNumber: row.number, link }
+        : { name: branchFromIssue(row), link };
+    void execute(async () => {
+      const r = (await api.createWorktree(row.projectId, payload)) as { worktree?: { id: string } };
+      if (r.worktree?.id) openWorktree(r.worktree.id, row.projectId);
+      return r;
+    });
+  }
   const repoProjectIds = useMemo(
     () => new Set((state?.projectTargets ?? []).filter((t) => t.state === "ready").map((t) => t.projectId)),
     [state?.projectTargets],
@@ -186,18 +214,32 @@ export function TaskView() {
                     <td className="px-3 py-2">
                       <Badge tone={r.state === "open" ? "success" : r.state === "merged" ? "neutral" : "warning"}>{r.state}</Badge>
                     </td>
-                    <td className="px-3 py-2 text-right">
-                      {r.url ? (
-                        <a
-                          href={r.url}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="inline-grid size-7 place-items-center rounded text-muted-foreground hover:bg-muted hover:text-foreground"
-                          title="Open on GitHub"
-                        >
-                          <ExternalLink className="size-4" />
-                        </a>
-                      ) : null}
+                    <td className="px-3 py-2">
+                      <div className="flex items-center justify-end gap-1">
+                        {(() => {
+                          const wt = linkedWorktree(r);
+                          return wt ? (
+                            <Button variant="secondary" size="sm" onClick={() => openWorktree(wt.id, r.projectId)} title={`Open worktree ${wt.branch}`}>
+                              <GitBranch className="mr-1 size-3.5" /> Open
+                            </Button>
+                          ) : (
+                            <Button variant="secondary" size="sm" disabled={pending} onClick={() => createWorktree(r)} title="Create a worktree for this item">
+                              <GitBranch className="mr-1 size-3.5" /> Worktree
+                            </Button>
+                          );
+                        })()}
+                        {r.url ? (
+                          <a
+                            href={r.url}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="inline-grid size-7 place-items-center rounded text-muted-foreground hover:bg-muted hover:text-foreground"
+                            title="Open on GitHub"
+                          >
+                            <ExternalLink className="size-4" />
+                          </a>
+                        ) : null}
+                      </div>
                     </td>
                   </tr>
                 ))}
@@ -208,4 +250,15 @@ export function TaskView() {
       </CardContent>
     </Card>
   );
+}
+
+// Branch name for a new worktree off an issue: issue-<n>-<slugified title>.
+function branchFromIssue(row: Row): string {
+  const slug =
+    row.title
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      .slice(0, 40) || "work";
+  return `issue-${row.number}-${slug}`;
 }
