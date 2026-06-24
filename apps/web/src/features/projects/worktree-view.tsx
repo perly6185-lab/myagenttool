@@ -96,6 +96,12 @@ export function WorktreeView({ worktree }: { worktree: WorktreeSnapshot }) {
   useEffect(() => {
     setGit(null);
     setFileQuery("");
+    setTree([]);
+    setResults([]);
+    setPaneTab("project");
+    // Reset the run target to this worktree's own agent (the instance is reused
+    // across worktree switches, so a stale agent would otherwise carry over).
+    setAgentId(worktree.agentId ?? agents[0]?.id ?? "");
     (api.listWorktreeFiles(worktree.id) as Promise<{ tree: TreeNode[] }>)
       .then((r) => {
         const t = r.tree ?? [];

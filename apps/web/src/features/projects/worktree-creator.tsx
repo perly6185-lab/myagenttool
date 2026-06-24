@@ -101,6 +101,15 @@ export function WorktreeCreator({
       .finally(() => setGhLoading(false));
   }, [tab, gh, pid]);
 
+  // Switching tabs starts the new mode clean — otherwise a PR/branch selection
+  // (and the name it backfilled) leaks into a name/smart create as a new branch.
+  function changeTab(next: Tab) {
+    setTab(next);
+    setGhSel(null);
+    setBrSel(null);
+    setWtName("");
+  }
+
   // Selecting a GitHub item backfills the shared name field: an issue seeds a
   // new "<num>-<slug>" branch you can edit; a PR fills (read-only) its head ref.
   function selectGithub(item: GithubItem) {
@@ -176,7 +185,7 @@ export function WorktreeCreator({
             <button
               key={key}
               type="button"
-              onClick={() => setTab(key)}
+              onClick={() => changeTab(key)}
               className={cn(
                 "-mb-px flex items-center gap-1.5 border-b-2 px-2.5 py-1.5 text-xs font-medium transition",
                 tab === key

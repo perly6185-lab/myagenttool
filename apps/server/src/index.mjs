@@ -476,13 +476,20 @@ const server = http.createServer(async (req, res) => {
       const rel = url.searchParams.get("path") ?? "";
       const root = path.resolve(worktree.path);
       const abs = path.resolve(root, rel);
-      // Guard against path traversal outside the worktree.
+      // Guard against path traversal — lexically, then resolve symlinks and
+      // re-check so an in-tree symlink pointing outside can't escape.
       if (abs !== root && !abs.startsWith(root + path.sep)) {
         sendJson(res, 400, { error: "invalid_path" });
         return;
       }
       try {
-        const stat = fs.statSync(abs);
+        const realRoot = fs.realpathSync(root);
+        const realAbs = fs.realpathSync(abs);
+        if (realAbs !== realRoot && !realAbs.startsWith(realRoot + path.sep)) {
+          sendJson(res, 400, { error: "invalid_path" });
+          return;
+        }
+        const stat = fs.statSync(realAbs);
         if (stat.isDirectory()) {
           sendJson(res, 400, { error: "is_directory" });
           return;
@@ -491,7 +498,7 @@ const server = http.createServer(async (req, res) => {
           sendJson(res, 200, { path: rel, content: "", truncated: true, message: "File too large to preview." });
           return;
         }
-        sendJson(res, 200, { path: rel, content: fs.readFileSync(abs, "utf8") });
+        sendJson(res, 200, { path: rel, content: fs.readFileSync(realAbs, "utf8") });
       } catch (error) {
         sendJson(res, 404, { error: "file_not_found", message: error instanceof Error ? error.message : String(error) });
       }
@@ -953,7 +960,9 @@ const server = http.createServer(async (req, res) => {
         sendJson(res, 409, { error: "device_unlinked" });
         return;
       }
-      const projectId = resolveProjectId(body.projectId ?? targetWorktree?.projectId ?? agent.projectId);
+      // A targeted worktree defines the project (so the cwd binding can't be
+      // silently dropped by a mismatched body.projectId).
+      const projectId = resolveProjectId(targetWorktree?.projectId ?? body.projectId ?? agent.projectId);
       const budget = enforceBudgetForProject(projectId);
       if (budget.action === "block") {
         sendJson(res, 409, { error: "budget_exceeded", message: budget.reason, budget: budget.status });
@@ -3045,8 +3054,11 @@ function createInvocation(task, agent = defaultAgent(), options = {}) {
   const explicitWorktree = options.worktreeId
     ? state.worktrees.find((w) => w.id === options.worktreeId && w.projectId === projectId)
     : null;
-  let workingDirectory = explicitWorktree ? explicitWorktree.path : projectWorkingDirectory(projectId);
-  if (!explicitWorktree && project?.isolation === "worktree" && agent.adapter?.type === "cli") {
+  // Only honor the worktree if its checkout still exists on disk (a stale named
+  // worktree whose dir was removed would otherwise be a non-existent cwd).
+  const explicitOk = Boolean(explicitWorktree && fs.existsSync(explicitWorktree.path));
+  let workingDirectory = explicitOk ? explicitWorktree.path : projectWorkingDirectory(projectId);
+  if (!explicitOk && project?.isolation === "worktree" && agent.adapter?.type === "cli") {
     const ephemeral = createEphemeralWorktree(project, id);
     if (ephemeral) workingDirectory = ephemeral.path;
   }
@@ -3054,7 +3066,7 @@ function createInvocation(task, agent = defaultAgent(), options = {}) {
     id,
     ideaSessionId: null,
     projectId,
-    worktreeId: explicitWorktree?.id ?? null,
+    worktreeId: explicitOk ? explicitWorktree.id : null,
     workingDirectory,
     agentId: agent.id,
     requestedBy: "usr_local",
@@ -3101,8 +3113,8 @@ function createInvocation(task, agent = defaultAgent(), options = {}) {
     message: "Invocation created from Web Console."
   });
   if (workingDirectory) {
-    const isolated = !explicitWorktree && project?.isolation === "worktree" && agent.adapter?.type === "cli";
-    const where = explicitWorktree
+    const isolated = !explicitOk && project?.isolation === "worktree" && agent.adapter?.type === "cli";
+    const where = explicitOk
       ? `Runs in worktree ${explicitWorktree.branch}`
       : isolated
         ? "Runs in isolated worktree"
@@ -3112,7 +3124,7 @@ function createInvocation(task, agent = defaultAgent(), options = {}) {
       type: "log",
       level: "info",
       message: `${where}: ${workingDirectory}`,
-      data: { workingDirectory, projectId, worktreeId: explicitWorktree?.id ?? null, isolated }
+      data: { workingDirectory, projectId, worktreeId: explicitOk ? explicitWorktree.id : null, isolated }
     });
   }
   appendEvent({
