@@ -15,7 +15,7 @@ import { useConsoleState } from "@/data/use-console-state";
 import { useAsyncAction, api } from "@/data/use-console-actions";
 import { useUiStore } from "@/store/ui-store";
 import { cn } from "@/lib/cn";
-import type { WorktreeSnapshot } from "@/lib/console-state";
+import type { InvocationEventSnapshot, WorktreeSnapshot } from "@/lib/console-state";
 
 const RUNNING = ["queued", "dispatching", "waiting_for_local_approval", "running", "cancelling"];
 type TreeNode = { name: string; path: string; dir: boolean; children?: TreeNode[] };
@@ -218,16 +218,60 @@ export function WorktreeView({ worktree }: { worktree: WorktreeSnapshot }) {
   ];
   const events = (state?.events ?? []).filter((e) => e.invocationId === latest?.id).slice(0, 40);
   const isRunning = RUNNING.includes(latest?.status ?? "");
-  // A high-risk run pauses at waiting_for_local_approval; surface the decision
-  // (with the policy's risk/data/cost/cancel summary) right here so the user can
-  // approve or deny without leaving the worktree.
-  const approval = approvalFor(state, latest ?? null);
   const agent = agents.find((a) => a.id === agentId);
   const runDisabled = !state || !task.trim() || !agent || isRunning || pending;
 
   function run() {
     if (runDisabled) return;
     void execute(() => api.createInvocation(task.trim(), agentId || null, worktree.projectId, worktree.id));
+  }
+
+  // Anchor the local-approval decision to the event that requested it, so a
+  // multi-run session keeps each approval in its own context instead of a single
+  // floating panel. Resolved per event by its invocation, not just `latest`.
+  function renderApprovalAction(event: InvocationEventSnapshot) {
+    if (event.type !== "local_approval_requested") return null;
+    const inv = (state?.invocations ?? []).find((i) => i.id === event.invocationId) ?? null;
+    const approval = approvalFor(state, inv);
+    if (!approval) return null;
+    if (approval.status !== "pending") {
+      return (
+        <p
+          className={cn(
+            "mt-1.5 text-xs font-medium",
+            approval.status === "approved" ? "text-success" : "text-destructive",
+          )}
+        >
+          {approval.status === "approved" ? "✓ Approved — run released." : "✕ Denied — run blocked."}
+        </p>
+      );
+    }
+    return (
+      <div className="mt-2 space-y-2 rounded-md border border-warning/50 bg-warning/5 p-3">
+        <FactList
+          facts={[
+            { term: "Risk", value: approval.summary?.risk ?? `${approval.riskLevel ?? "unknown"} risk` },
+            { term: "Data", value: approval.summary?.data ?? "Task input and result are recorded." },
+            { term: "Cost", value: approval.summary?.cost ?? "Cost is unknown." },
+            { term: "Cancel", value: approval.summary?.cancellation ?? "Cancellation behavior is unknown." },
+            { term: "Tags", value: approval.riskTags?.length ? approval.riskTags.join(", ") : "No tags declared" },
+          ]}
+        />
+        <div className="flex gap-2">
+          <Button size="sm" disabled={pending} onClick={() => execute(() => api.approveApproval(approval.id))}>
+            Approve run
+          </Button>
+          <Button
+            size="sm"
+            variant="secondary"
+            disabled={pending}
+            onClick={() => execute(() => api.denyApproval(approval.id))}
+          >
+            Deny run
+          </Button>
+        </div>
+      </div>
+    );
   }
 
   // Push the branch to origin, then refresh git/diff so the published state shows.
@@ -336,51 +380,6 @@ export function WorktreeView({ worktree }: { worktree: WorktreeSnapshot }) {
                 </CardContent>
               </Card>
 
-              {approval ? (
-                <Card className="border-warning/50">
-                  <CardHeader>
-                    <CardTitle>
-                      {approval.status === "pending"
-                        ? "Approval needed before this run"
-                        : approval.status === "approved"
-                          ? "Approval granted"
-                          : "Approval denied"}
-                    </CardTitle>
-                    <p className="text-sm text-muted-foreground">
-                      {approval.status === "pending"
-                        ? "This high-risk invocation is paused until you approve it."
-                        : `Decision recorded — the run is ${approval.status}.`}
-                    </p>
-                  </CardHeader>
-                  <CardContent className="space-y-3">
-                    <FactList
-                      facts={[
-                        { term: "Risk", value: approval.summary?.risk ?? `${approval.riskLevel ?? "unknown"} risk` },
-                        { term: "Data", value: approval.summary?.data ?? "Task input and result are recorded." },
-                        { term: "Cost", value: approval.summary?.cost ?? "Cost is unknown." },
-                        { term: "Cancel", value: approval.summary?.cancellation ?? "Cancellation behavior is unknown." },
-                        { term: "Tags", value: approval.riskTags?.length ? approval.riskTags.join(", ") : "No tags declared" },
-                      ]}
-                    />
-                    {approval.status === "pending" ? (
-                      <div className="flex gap-2">
-                        <Button size="sm" disabled={pending} onClick={() => execute(() => api.approveApproval(approval.id))}>
-                          Approve run
-                        </Button>
-                        <Button
-                          size="sm"
-                          variant="secondary"
-                          disabled={pending}
-                          onClick={() => execute(() => api.denyApproval(approval.id))}
-                        >
-                          Deny run
-                        </Button>
-                      </div>
-                    ) : null}
-                  </CardContent>
-                </Card>
-              ) : null}
-
               <Card>
                 <CardHeader>
                   <CardTitle>Session output</CardTitle>
@@ -392,7 +391,7 @@ export function WorktreeView({ worktree }: { worktree: WorktreeSnapshot }) {
                 </CardHeader>
                 <CardContent>
                   {latest ? (
-                    <EventTimeline events={events} />
+                    <EventTimeline events={events} renderAction={renderApprovalAction} />
                   ) : (
                     <EmptyState title="No runs yet" hint="Run an agent above to start a session in this worktree." />
                   )}
