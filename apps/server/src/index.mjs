@@ -770,9 +770,9 @@ const server = http.createServer(async (req, res) => {
         branch: String(body.branch ?? "main"),
         schedule,
         nextRunAt: enabled ? computeNextRun(schedule) : null,
-        sessionMode: "fresh",
+        sessionMode: body.sessionMode === "reuse" ? "reuse" : "fresh",
         graceHours: Number.isFinite(Number(body.graceHours)) ? Number(body.graceHours) : 12,
-        precheck: "None",
+        precheck: typeof body.precheck === "string" && body.precheck.trim() ? body.precheck.trim() : "None",
         agentId: findAgent(body.agentId) ? body.agentId : defaultAgent()?.id ?? null,
         prompt: String(body.prompt ?? ""),
         lastRunAt: null,
@@ -839,6 +839,9 @@ const server = http.createServer(async (req, res) => {
       if (patch.schedule !== undefined) automation.schedule = normalizeSchedule(patch.schedule);
       if (patch.agentId !== undefined && findAgent(patch.agentId)) automation.agentId = patch.agentId;
       if (patch.branch !== undefined) automation.branch = String(patch.branch);
+      if (patch.precheck !== undefined) automation.precheck = String(patch.precheck).trim() || "None";
+      if (patch.sessionMode !== undefined) automation.sessionMode = patch.sessionMode === "reuse" ? "reuse" : "fresh";
+      if (patch.graceHours !== undefined && Number.isFinite(Number(patch.graceHours))) automation.graceHours = Number(patch.graceHours);
       if (patch.enabled !== undefined) automation.enabled = Boolean(patch.enabled);
       // Recompute the next fire time whenever the rule is enabled or its schedule
       // changes; clear it when paused so the scheduler skips it.

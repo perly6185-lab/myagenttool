@@ -312,6 +312,9 @@ function AutomationForm({ automation, onDone }: { automation?: AutomationSnapsho
   const [time, setTime] = useState(automation?.schedule.time ?? "09:00");
   const [everyMinutes, setEveryMinutes] = useState(automation?.schedule.everyMinutes ?? 60);
   const [prompt, setPrompt] = useState(automation?.prompt ?? "");
+  const [precheck, setPrecheck] = useState(automation && automation.precheck !== "None" ? automation.precheck ?? "" : "");
+  const [sessionMode, setSessionMode] = useState<"fresh" | "reuse">(automation?.sessionMode === "reuse" ? "reuse" : "fresh");
+  const [graceHours, setGraceHours] = useState(automation?.graceHours ?? 12);
   const [showTemplates, setShowTemplates] = useState(false);
 
   function applyTemplate(t: AutomationTemplate) {
@@ -333,6 +336,9 @@ function AutomationForm({ automation, onDone }: { automation?: AutomationSnapsho
       agentId: agentId || undefined,
       schedule,
       prompt: prompt.trim(),
+      precheck: precheck.trim() || "None",
+      sessionMode,
+      graceHours,
     };
     void execute(async () => {
       const r = (await (automation
@@ -421,6 +427,42 @@ function AutomationForm({ automation, onDone }: { automation?: AutomationSnapsho
       <Field label="Prompt">
         <Textarea rows={4} value={prompt} placeholder="What should the agent do each run?" onChange={(e) => setPrompt(e.target.value)} />
       </Field>
+      <Field label="Pre-check (optional command)">
+        <Input value={precheck} placeholder="e.g. gh pr list --json number -q '.[0].number'" onChange={(e) => setPrecheck(e.target.value)} />
+      </Field>
+      <div className="grid grid-cols-2 gap-3">
+        <Field label="Session">
+          <div className="flex gap-1 rounded-lg bg-muted p-0.5 text-xs">
+            {(
+              [
+                ["fresh", "Fresh each run"],
+                ["reuse", "Reuse"],
+              ] as ["fresh" | "reuse", string][]
+            ).map(([key, label]) => (
+              <button
+                key={key}
+                type="button"
+                onClick={() => setSessionMode(key)}
+                className={cn(
+                  "flex-1 rounded-md px-2 py-1.5 font-medium transition",
+                  sessionMode === key ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground",
+                )}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        </Field>
+        <Field label="Grace">
+          <Select value={String(graceHours)} onChange={(e) => setGraceHours(Number(e.target.value))}>
+            {[1, 6, 12, 24, 48].map((h) => (
+              <option key={h} value={h}>
+                {h} hour{h === 1 ? "" : "s"}
+              </option>
+            ))}
+          </Select>
+        </Field>
+      </div>
       <div className="flex justify-end gap-2 pt-1">
         <Button variant="secondary" size="sm" disabled={pending} onClick={() => onDone(null)}>
           Cancel
