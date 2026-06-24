@@ -341,6 +341,30 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    // Phase 3 tenancy gate (one choke point, mirrors the auth gate). Project-,
+    // worktree-, and invocation-scoped routes are reachable only by the owning
+    // team: resolve the target's team from the path id and 403 on mismatch.
+    // Unknown ids fall through to the route's own 404. No-op in single-team
+    // setups (everything is team_local). See docs/engineering/IDENTITY_PLAN.md.
+    {
+      let scopedTeam = null;
+      let m;
+      if ((m = url.pathname.match(/^\/api\/projects\/([^/]+)(?:\/|$)/))) {
+        const proj = findProject(decodeURIComponent(m[1]));
+        if (proj) scopedTeam = proj.ownerTeamId ?? "team_local";
+      } else if ((m = url.pathname.match(/^\/api\/worktrees\/([^/]+)(?:\/|$)/))) {
+        const wt = state.worktrees.find((w) => w.id === decodeURIComponent(m[1]));
+        if (wt) scopedTeam = projectTeam(wt.projectId);
+      } else if ((m = url.pathname.match(/^\/api\/invocations\/([^/]+)(?:\/|$)/))) {
+        const inv = findInvocation(decodeURIComponent(m[1]));
+        if (inv) scopedTeam = projectTeam(inv.projectId);
+      }
+      if (scopedTeam && scopedTeam !== resolveActor(req).teamId) {
+        sendJson(res, 403, { error: "forbidden", message: "Resource belongs to another team." });
+        return;
+      }
+    }
+
     // Local dev login: issue a bearer token for a known user. There is no
     // password yet (Phase 2 scope is token plumbing, not credential storage —
     // OIDC/SSO is explicitly out of scope, IDENTITY_PLAN.md), so this trusts the
@@ -376,7 +400,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (req.method === "GET" && url.pathname === "/api/state") {
-      sendJson(res, 200, publicState());
+      sendJson(res, 200, publicState(resolveActor(req)));
       return;
     }
 
@@ -446,12 +470,15 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (req.method === "GET" && url.pathname === "/api/projects") {
-      sendJson(res, 200, { projects: state.projects });
+      const teamId = resolveActor(req).teamId;
+      sendJson(res, 200, { projects: state.projects.filter((p) => (p.ownerTeamId ?? "team_local") === teamId) });
       return;
     }
 
     if (req.method === "POST" && url.pathname === "/api/projects") {
       const body = await readJson(req);
+      // Phase 3: a new project is owned by the creator's team by default.
+      if (body.ownerTeamId == null) body.ownerTeamId = resolveActor(req).teamId;
       try {
         if (body.repoUrl || body.repoPath) {
           const result = createProjectWithRepo(body);
@@ -659,6 +686,13 @@ const server = http.createServer(async (req, res) => {
 
     if ((req.method === "PUT" || req.method === "POST") && url.pathname === "/api/budgets") {
       const body = await readJson(req);
+      // Phase 3: can't set a budget on another team's project (projectId is in
+      // the body, not the path, so it bypasses the central gate).
+      const targetProject = body?.projectId ? findProject(String(body.projectId)) : null;
+      if (targetProject && (targetProject.ownerTeamId ?? "team_local") !== resolveActor(req).teamId) {
+        sendJson(res, 403, { error: "forbidden", message: "Budget targets another team's project." });
+        return;
+      }
       let budget;
       try {
         budget = upsertBudget(body);
@@ -1034,7 +1068,15 @@ const server = http.createServer(async (req, res) => {
         return;
       }
 
-      const decider = resolveActor(req).userId;
+      // Phase 3: only the owning team may decide an approval. (The approval id
+      // isn't a project/worktree path, so the central gate can't see it.)
+      const actor = resolveActor(req);
+      if (projectTeam(invocation.projectId) !== actor.teamId) {
+        sendJson(res, 403, { error: "forbidden", message: "Approval belongs to another team." });
+        return;
+      }
+
+      const decider = actor.userId;
       if (approvalMatch[2] === "approve") {
         approveInvocation(approval, invocation, decider);
       } else {
@@ -1081,12 +1123,18 @@ const server = http.createServer(async (req, res) => {
       // A targeted worktree defines the project (so the cwd binding can't be
       // silently dropped by a mismatched body.projectId).
       const projectId = resolveProjectId(targetWorktree?.projectId ?? body.projectId ?? agent.projectId);
+      const actor = resolveActor(req);
+      // Phase 3: can't run against another team's project/worktree (both arrive
+      // in the body, so they bypass the central path gate).
+      if (projectTeam(projectId) !== actor.teamId) {
+        sendJson(res, 403, { error: "forbidden", message: "Project belongs to another team." });
+        return;
+      }
       const budget = enforceBudgetForProject(projectId);
       if (budget.action === "block") {
         sendJson(res, 409, { error: "budget_exceeded", message: budget.reason, budget: budget.status });
         return;
       }
-      const actor = resolveActor(req);
       const invocationOptions = { ...(body.options ?? {}), projectId, worktreeId: targetWorktree?.id ?? null, requestedBy: actor.userId };
       if (budget.action === "require_approval") {
         invocationOptions.requireLocalApproval = true;
@@ -1281,6 +1329,15 @@ function issueToken(userId, ttlMs = TOKEN_TTL_MS) {
 
 function resolveProjectId(projectId) {
   return findProject(projectId) ? projectId : "prj_default";
+}
+
+// Identity Phase 3 (tenancy). The owning team of a project — the unit every
+// project-scoped resource (worktrees, invocations, budgets, ledger, approvals)
+// inherits its tenancy from. Unknown projects fall back to the seed team so a
+// stray/legacy projectId stays visible to the single-team demo rather than
+// vanishing. Real isolation kicks in only once a second team exists.
+function projectTeam(projectId) {
+  return findProject(projectId)?.ownerTeamId ?? "team_local";
 }
 
 function createProject(body) {
@@ -2050,7 +2107,7 @@ function createProjectWithRepo(body) {
   const derived = isClone
     ? repoNameFromUrl(body.repoUrl)
     : path.basename(path.resolve(String(body.repoPath ?? "").trim() || "."));
-  const project = createProject({ name: String(body.name ?? "").trim() || derived, color: body.color });
+  const project = createProject({ name: String(body.name ?? "").trim() || derived, color: body.color, ownerTeamId: body.ownerTeamId });
   let target;
   try {
     target = isClone
@@ -4470,18 +4527,39 @@ function unlinkDevice() {
   });
 }
 
-function publicState() {
-  const ledgerSummary = summarizeLedger();
+// Phase 3 tenancy: the snapshot is scoped to the actor's team. Project-derived
+// collections (targets/worktrees/invocations/budgets/approvals) and the ledger
+// are filtered to what this team owns; the ledger summary + budget statuses are
+// recomputed from the filtered slice so totals match the visible rows. With a
+// single seeded team this filters nothing (everything is team_local). Device,
+// agents, discovery and other shared local infra stay global for now.
+function publicState(actor) {
+  const teamId = actor?.teamId ?? "team_local";
+  const visibleProjectIds = new Set(
+    state.projects.filter((p) => (p.ownerTeamId ?? "team_local") === teamId).map((p) => p.id)
+  );
+  const ownsProject = (projectId) => visibleProjectIds.has(projectId ?? "prj_default");
+
+  const projects = state.projects.filter((p) => visibleProjectIds.has(p.id));
+  const projectTargets = state.projectTargets.filter((t) => ownsProject(t.projectId));
+  const worktrees = state.worktrees.filter((w) => ownsProject(w.projectId));
+  const invocations = state.invocations.filter((i) => ownsProject(i.projectId));
+  const visibleInvocationIds = new Set(invocations.map((i) => i.id));
+  const ledgerEntries = state.ledgerEntries.filter((e) => (e.costOwner ?? teamId) === teamId);
+  const budgets = state.budgets.filter((b) => ownsProject(b.projectId));
+  const approvalRequests = state.approvalRequests.filter((a) => visibleInvocationIds.has(a.invocationId));
+
+  const ledgerSummary = summarizeLedger(ledgerEntries);
   return {
     namespace,
     protocolVersion,
     device: state.device,
-    projects: state.projects,
-    projectTargets: state.projectTargets,
-    worktrees: state.worktrees,
+    projects,
+    projectTargets,
+    worktrees,
     agent: defaultAgent(),
     agents: state.agents,
-    invocations: state.invocations,
+    invocations,
     events: state.events,
     traces: state.traces,
     spans: state.spans,
@@ -4493,22 +4571,21 @@ function publicState() {
     integrationProbeRuns: state.integrationProbeRuns,
     quotaDecisionRecords: state.quotaDecisionRecords,
     retentionSettings: state.retentionSettings,
-    approvalRequests: state.approvalRequests,
+    approvalRequests,
     policyDecisionRecords: state.policyDecisionRecords,
     troubleshootingReports: state.troubleshootingReports,
     agentUsageSummaries: state.agentUsageSummaries,
-    ledgerEntries: state.ledgerEntries,
+    ledgerEntries,
     ledgerSummary,
-    budgets: state.budgets,
-    budgetStatuses: budgetStatuses(ledgerSummary)
+    budgets,
+    budgetStatuses: budgetStatuses(ledgerSummary, budgets)
   };
 }
 
 // Roll the per-invocation ledger up into the views the console shows: a total,
 // and breakdowns by cost owner and by agent. Known USD amounts sum; unmetered
 // runs are surfaced as a visible count, never hidden.
-function summarizeLedger() {
-  const entries = state.ledgerEntries;
+function summarizeLedger(entries = state.ledgerEntries) {
   const byOwner = new Map();
   const byAgent = new Map();
   const byProject = new Map();
@@ -4678,7 +4755,7 @@ function budgetStatusFor(projectId, spend = projectSpend(projectId)) {
 // Derive every budget's status from the ledger summary's per-project rollup so the
 // hot /api/state path scans the ledger once (via summarizeLedger) instead of
 // re-scanning per budget.
-function budgetStatuses(summary = summarizeLedger()) {
+function budgetStatuses(summary = summarizeLedger(), budgets = state.budgets) {
   const spendByProject = new Map(
     (summary.byProject ?? []).map((p) => [
       p.projectId,
@@ -4689,7 +4766,7 @@ function budgetStatuses(summary = summarizeLedger()) {
       }
     ])
   );
-  return state.budgets.map((budget) =>
+  return budgets.map((budget) =>
     budgetStatusFor(budget.projectId, spendByProject.get(budget.projectId) ?? { finalizedUsd: 0, estimatedUsd: 0, spentUsd: 0 })
   );
 }

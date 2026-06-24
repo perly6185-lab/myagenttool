@@ -100,10 +100,26 @@ and threads `actor` into `createInvocation` / approval / ledger helpers.
 - Gotcha fixed: CORS `Access-Control-Allow-Headers` must include `Authorization`,
   else the browser preflight blocks every authed call ("Server offline").
 
-### Phase 3 — tenancy / authorization
-- Scope `/api/state`, projects, budgets, approvals by `actor.teamId`; approvals
-  verify the actor is allowed to approve.
-- Multi-tenant isolation is now real.
+### Phase 3 — tenancy / authorization ✅ landed
+- `projectTeam(projectId)` derives the owning team; `publicState(actor)` filters
+  projects/targets/worktrees/invocations/budgets/approvals and the ledger to the
+  actor's team, recomputing the ledger summary + budget statuses from the
+  filtered slice so totals match the visible rows.
+- A second choke point (mirroring the auth gate) 403s any project-, worktree-,
+  or invocation-scoped path whose owning team ≠ the actor's. Body-carried ids
+  (approval→invocation→project, budget `projectId`, invocation create) get
+  explicit checks since they bypass the path gate. Approvals can only be decided
+  by the owning team.
+- New projects are owned by the creating actor's team (both empty and
+  repo-backed paths).
+- Always on, but a **no-op for a single team** (everything is `team_local`), so
+  zero regression; real isolation kicks in the moment a second team exists.
+  Verified: two-team fixture (per-team filtering + cross-team 403 on
+  patch/budget/cancel/github + no project leak) and single-team no-regression.
+
+Shared local infra (device, agents, discovery, integration artifacts) stays
+global for now — it isn't team-owned in the data model. Scoping events/traces by
+team and per-route RBAC roles are the natural follow-ups.
 
 ## Why Phase 1 first
 
