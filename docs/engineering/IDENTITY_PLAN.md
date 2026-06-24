@@ -83,10 +83,22 @@ and threads `actor` into `createInvocation` / approval / ledger helpers.
 - Risk: near-zero. Single-user output is identical; attribution underneath is now
   real.
 
-### Phase 2 — authentication
-- Issue tokens at Bridge register / `POST /api/session`; `resolveActor` requires a
-  valid token (else 401); the web sends it.
-- Requests are now authenticated.
+### Phase 2 — authentication ✅ landed
+- `POST /api/session` (local dev login, no password yet) + `DELETE /api/session`
+  (logout) issue/revoke a 256-bit bearer token; tokens are persisted (survive
+  restart) and expire (`MYAGENT_TOKEN_TTL_MS`, default 30d, pruned on issue).
+- `resolveActor(req)` now reports `authenticated`. A single auth gate at the top
+  of the request handler answers **401** for any non-public route when
+  `MYAGENT_REQUIRE_AUTH=1`. Public/exempt: `OPTIONS`, `/health`,
+  `POST /api/session`, and `/api/bridge/*` (device boundary — separate concern).
+- Web `request()` carries `Authorization: Bearer <token>`, transparently
+  auto-logs-in on first call (localStorage, in-memory fallback), and replays once
+  on a 401 (expired/rotated token).
+- Default **off** so the single-user demo + Bridge are unchanged; flip the flag
+  to make auth mandatory. Verified both modes (401↔200, logout revokes) and
+  end-to-end in-browser (auto-login → Connected).
+- Gotcha fixed: CORS `Access-Control-Allow-Headers` must include `Authorization`,
+  else the browser preflight blocks every authed call ("Server offline").
 
 ### Phase 3 — tenancy / authorization
 - Scope `/api/state`, projects, budgets, approvals by `actor.teamId`; approvals

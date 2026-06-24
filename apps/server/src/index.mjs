@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { spawn, execFileSync as nodeExecFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import crypto from "node:crypto";
 
 // All synchronous git/gh calls run inside the single HTTP handler and block the
 // event loop, so a slow/hung subprocess (e.g. `gh pr list` on a flaky network,
@@ -26,8 +27,17 @@ const PERSIST_VERSION = 2;
 const PERSIST_FILE = process.env.SERVER_STATE_FILE
   ? path.resolve(process.env.SERVER_STATE_FILE)
   : path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "data", "state.json");
-const PERSIST_KEYS = ["users", "teams", "projects", "projectTargets", "worktrees", "agents", "invocations", "ledgerEntries", "budgets", "quotaDecisionRecords"];
+const PERSIST_KEYS = ["users", "teams", "tokens", "projects", "projectTargets", "worktrees", "agents", "invocations", "ledgerEntries", "budgets", "quotaDecisionRecords"];
 let persistTimer = null;
+
+// Identity Phase 2 (auth). When MYAGENT_REQUIRE_AUTH=1, every non-public route
+// demands a valid Bearer token (resolveActor().authenticated) or answers 401.
+// Default off so the single-user demo and the Desktop Bridge keep working while
+// the web client carries a token; flip it on to make authentication mandatory.
+// Bridge (`/api/bridge/*`) stays on the device trust boundary (a separate
+// concern, IDENTITY_PLAN.md gap #3) and is always exempt. See IDENTITY_PLAN.md.
+const REQUIRE_AUTH = process.env.MYAGENT_REQUIRE_AUTH === "1";
+const TOKEN_TTL_MS = Number(process.env.MYAGENT_TOKEN_TTL_MS ?? 30 * 24 * 60 * 60 * 1000);
 
 const state = {
   // Identity floor (see docs/engineering/IDENTITY_PLAN.md). Phase 1 seeds a
@@ -314,6 +324,54 @@ const server = http.createServer(async (req, res) => {
         service: "myagenttool-local-demo-server",
         time: now()
       });
+      return;
+    }
+
+    // Identity Phase 2 auth gate — one choke point in front of every route below.
+    // OPTIONS and /health already returned above. The login endpoint and the
+    // device-boundary bridge are exempt; everything else needs a valid token
+    // when REQUIRE_AUTH is on. Off by default (single-user demo unchanged).
+    if (
+      REQUIRE_AUTH &&
+      !(req.method === "POST" && url.pathname === "/api/session") &&
+      !url.pathname.startsWith("/api/bridge/") &&
+      !resolveActor(req).authenticated
+    ) {
+      sendJson(res, 401, { error: "unauthenticated", message: "A valid Bearer token is required." });
+      return;
+    }
+
+    // Local dev login: issue a bearer token for a known user. There is no
+    // password yet (Phase 2 scope is token plumbing, not credential storage —
+    // OIDC/SSO is explicitly out of scope, IDENTITY_PLAN.md), so this trusts the
+    // requested userId and defaults to the seeded local user.
+    if (req.method === "POST" && url.pathname === "/api/session") {
+      const body = await readJson(req).catch(() => ({}));
+      const userId = String(body?.userId ?? "usr_local");
+      const user = findUser(userId);
+      if (!user) {
+        sendJson(res, 400, { error: "unknown_user", message: `No such user: ${userId}` });
+        return;
+      }
+      const record = issueToken(user.id);
+      sendJson(res, 200, {
+        token: record.token,
+        expiresAt: record.expiresAt,
+        user: { id: user.id, name: user.name, teamId: user.teamId }
+      });
+      return;
+    }
+
+    // Logout: revoke the presented token (idempotent).
+    if (req.method === "DELETE" && url.pathname === "/api/session") {
+      const token = String(req.headers?.authorization ?? "").replace(/^Bearer\s+/i, "");
+      if (token) {
+        const before = state.tokens.length;
+        state.tokens = state.tokens.filter((t) => t.token !== token);
+        if (before !== state.tokens.length) persistState();
+      }
+      res.writeHead(204);
+      res.end();
       return;
     }
 
@@ -1196,8 +1254,29 @@ function findUser(userId) {
 function resolveActor(req) {
   const token = String(req.headers?.authorization ?? "").replace(/^Bearer\s+/i, "");
   const record = token ? state.tokens.find((t) => t.token === token && t.expiresAt > Date.now()) : null;
+  // Behaviour-preserving fallback to the seeded user when unauthenticated; the
+  // `authenticated` flag lets the auth gate decide whether that's acceptable.
   const user = (record && findUser(record.userId)) || findUser("usr_local") || state.users[0];
-  return { userId: user?.id ?? "usr_local", teamId: user?.teamId ?? "team_local" };
+  return { userId: user?.id ?? "usr_local", teamId: user?.teamId ?? "team_local", authenticated: Boolean(record) };
+}
+
+// Drop expired tokens (called before issuing/checking so state.tokens stays
+// bounded across restarts since tokens are now persisted).
+function pruneTokens() {
+  const t = Date.now();
+  const before = state.tokens.length;
+  state.tokens = state.tokens.filter((r) => r.expiresAt > t);
+  return before !== state.tokens.length;
+}
+
+// Mint a bearer token for a user. Random 256-bit hex; persisted so a token kept
+// by the web client survives a server restart.
+function issueToken(userId, ttlMs = TOKEN_TTL_MS) {
+  pruneTokens();
+  const record = { token: crypto.randomBytes(32).toString("hex"), userId, expiresAt: Date.now() + ttlMs };
+  state.tokens.push(record);
+  persistState();
+  return record;
 }
 
 function resolveProjectId(projectId) {
@@ -4979,7 +5058,7 @@ function assert(condition, message) {
 function setCors(res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET,POST,PATCH,DELETE,OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
 }
 
 async function readJson(req) {

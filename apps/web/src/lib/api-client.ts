@@ -26,16 +26,77 @@ export function resolveApiBase(): string {
 
 const apiBase = resolveApiBase();
 
+// --- Identity Phase 2: bearer token (see docs/engineering/IDENTITY_PLAN.md) ---
+// The web client carries a token on every call. In local dev there is no
+// password yet, so the first request transparently logs in as the seeded user
+// (POST /api/session) and stores the token. This is a no-op when the server has
+// MYAGENT_REQUIRE_AUTH off, and satisfies the 401 gate when it is on.
+const TOKEN_KEY = "myagenttool.token";
+
+let memoryToken: string | null = null;
+let sessionPromise: Promise<string | null> | null = null;
+
+function getToken(): string | null {
+  try {
+    return window.localStorage.getItem(TOKEN_KEY) ?? memoryToken;
+  } catch {
+    return memoryToken;
+  }
+}
+
+function setToken(token: string | null): void {
+  memoryToken = token;
+  try {
+    if (token) window.localStorage.setItem(TOKEN_KEY, token);
+    else window.localStorage.removeItem(TOKEN_KEY);
+  } catch {
+    /* private mode / storage disabled — memoryToken still holds it this session */
+  }
+}
+
+async function login(): Promise<string | null> {
+  const response = await fetch(`${apiBase}/api/session`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({}),
+  });
+  if (!response.ok) return null;
+  const data = (await response.json().catch(() => ({}))) as { token?: string };
+  const token = data.token ?? null;
+  if (token) setToken(token);
+  return token;
+}
+
+/** Guarantee a token exists, de-duping concurrent first-call logins. */
+function ensureSession(): Promise<string | null> {
+  const existing = getToken();
+  if (existing) return Promise.resolve(existing);
+  if (!sessionPromise) sessionPromise = login().finally(() => (sessionPromise = null));
+  return sessionPromise;
+}
+
 async function request<T = unknown>(
   method: string,
   path: string,
   body?: unknown,
+  retry = true,
 ): Promise<T> {
+  await ensureSession();
+  const token = getToken();
+  const headers: Record<string, string> = {};
+  if (body) headers["Content-Type"] = "application/json";
+  if (token) headers.Authorization = `Bearer ${token}`;
   const response = await fetch(`${apiBase}${path}`, {
     method,
-    headers: body ? { "Content-Type": "application/json" } : undefined,
+    headers: Object.keys(headers).length ? headers : undefined,
     body: body ? JSON.stringify(body) : undefined,
   });
+  // Token rejected/expired: drop it, re-login once, replay the request.
+  if (response.status === 401 && retry) {
+    setToken(null);
+    await ensureSession();
+    return request<T>(method, path, body, false);
+  }
   if (response.status === 204) return undefined as T;
   const data = await response.json().catch(() => ({}));
   if (!response.ok) {
