@@ -405,6 +405,33 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    const worktreeCreateMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/worktrees$/);
+    if (req.method === "POST" && worktreeCreateMatch) {
+      const body = await readJson(req);
+      const project = findProject(decodeURIComponent(worktreeCreateMatch[1]));
+      if (!project) {
+        sendJson(res, 404, { error: "project_not_found" });
+        return;
+      }
+      try {
+        sendJson(res, 201, { worktree: createNamedWorktree(project, body.name) });
+      } catch (error) {
+        sendJson(res, 400, { error: "invalid_worktree", message: error instanceof Error ? error.message : String(error) });
+      }
+      return;
+    }
+
+    const worktreeDeleteMatch = url.pathname.match(/^\/api\/worktrees\/([^/]+)$/);
+    if (req.method === "DELETE" && worktreeDeleteMatch) {
+      try {
+        removeNamedWorktree(decodeURIComponent(worktreeDeleteMatch[1]));
+        sendJson(res, 200, { ok: true });
+      } catch (error) {
+        sendJson(res, 404, { error: "worktree_not_found", message: error instanceof Error ? error.message : String(error) });
+      }
+      return;
+    }
+
     if ((req.method === "PUT" || req.method === "POST") && url.pathname === "/api/budgets") {
       const body = await readJson(req);
       let budget;
@@ -1067,6 +1094,72 @@ function cleanupEphemeralWorktree(invocation) {
     data: { worktreeId: worktree.id, branch: worktree.branch }
   });
   persistState();
+}
+
+// User-created persistent worktree under a project (orca's "Create worktree").
+// Names a branch: checks out an existing one, or creates it from the default
+// branch. Unlike ephemeral worktrees these are kept until removed by the user.
+function createNamedWorktree(project, name) {
+  const target = state.projectTargets.find((t) => t.projectId === project.id && t.state === "ready");
+  if (!target) throw new Error("Project has no ready repository.");
+  const branch = String(name ?? "").trim();
+  if (!branch) throw new Error("Worktree name is required.");
+  if (state.worktrees.some((w) => w.projectId === project.id && w.branch === branch)) {
+    throw new Error(`A worktree for "${branch}" already exists.`);
+  }
+  const safe = branch.replace(/[^a-zA-Z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") || "worktree";
+  const base = path.join(path.dirname(target.rootPath), `.${path.basename(target.rootPath)}.worktrees`);
+  const wtPath = path.join(base, safe);
+  if (fs.existsSync(wtPath)) throw new Error(`Worktree path already exists: ${wtPath}`);
+  let branchExists = false;
+  try {
+    execFileSync("git", ["-C", target.rootPath, "rev-parse", "--verify", "--quiet", `refs/heads/${branch}`], { stdio: "ignore" });
+    branchExists = true;
+  } catch {
+    branchExists = false;
+  }
+  try {
+    fs.mkdirSync(base, { recursive: true });
+    const args = branchExists
+      ? ["-C", target.rootPath, "worktree", "add", wtPath, branch]
+      : ["-C", target.rootPath, "worktree", "add", "-b", branch, wtPath, target.defaultBranch ?? "HEAD"];
+    execFileSync("git", args, { stdio: "ignore" });
+  } catch (error) {
+    throw new Error(`git worktree add failed: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  const worktree = {
+    id: nextId("wkt"),
+    projectId: project.id,
+    targetId: target.id,
+    branch,
+    path: wtPath,
+    isMain: false,
+    ephemeral: false,
+    createdAt: now()
+  };
+  state.worktrees.push(worktree);
+  persistState();
+  return worktree;
+}
+
+// Remove a user-created worktree's directory but keep its branch — the named
+// work is preserved. The main worktree cannot be removed.
+function removeNamedWorktree(worktreeId) {
+  const worktree = state.worktrees.find((w) => w.id === worktreeId);
+  if (!worktree) throw new Error("Worktree not found.");
+  if (worktree.isMain) throw new Error("Cannot remove the main worktree.");
+  const target = state.projectTargets.find((t) => t.id === worktree.targetId);
+  if (target) {
+    try {
+      execFileSync("git", ["-C", target.rootPath, "worktree", "remove", "--force", worktree.path], { stdio: "ignore" });
+      execFileSync("git", ["-C", target.rootPath, "worktree", "prune"], { stdio: "ignore" });
+    } catch {
+      // Best effort: directory may already be gone.
+    }
+  }
+  state.worktrees = state.worktrees.filter((w) => w.id !== worktreeId);
+  persistState();
+  return worktree;
 }
 
 function createMainWorktree(target) {
@@ -4167,7 +4260,7 @@ function assert(condition, message) {
 
 function setCors(res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "GET,POST,PATCH,OPTIONS");
+  res.setHeader("Access-Control-Allow-Methods", "GET,POST,PATCH,DELETE,OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 }
 

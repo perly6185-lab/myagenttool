@@ -113,6 +113,9 @@ export const api = {
     request("POST", "/api/projects", payload),
   updateProject: (id: string, payload: Record<string, unknown>) =>
     request("PATCH", `/api/projects/${encodeURIComponent(id)}`, payload),
+  createWorktree: (projectId: string, name: string) =>
+    request("POST", `/api/projects/${encodeURIComponent(projectId)}/worktrees`, { name }),
+  removeWorktree: (id: string) => request("DELETE", `/api/worktrees/${encodeURIComponent(id)}`),
 
   approveApproval: (id: string) =>
     request("POST", `/api/approvals/${encodeURIComponent(id)}/approve`),

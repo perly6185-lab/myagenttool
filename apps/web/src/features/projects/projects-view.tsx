@@ -30,6 +30,7 @@ export function ProjectsView() {
 
   const selectedProjectId = useUiStore((s) => s.selectedProjectId);
   const setSelectedProjectId = useUiStore((s) => s.setSelectedProjectId);
+  const selectedWorktreeId = useUiStore((s) => s.selectedWorktreeId);
   const activeId = selectedProjectId ?? projects[0]?.id ?? null;
 
   const [mode, setMode] = useState<Mode>("clone");
@@ -90,6 +91,14 @@ export function ProjectsView() {
     void execute(() => api.updateProject(project.id, { isolation: next }));
   }
 
+  function createWorktree(project: ProjectSnapshot, name: string) {
+    void execute(() => api.createWorktree(project.id, name));
+  }
+
+  function removeWorktree(id: string) {
+    void execute(() => api.removeWorktree(id));
+  }
+
   return (
     <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_minmax(0,0.8fr)]">
       <Card>
@@ -114,6 +123,9 @@ export function ProjectsView() {
                 onSelect={() => setSelectedProjectId(project.id)}
                 onArchive={() => archive(project)}
                 onToggleIsolation={() => toggleIsolation(project)}
+                onCreateWorktree={(name) => createWorktree(project, name)}
+                onRemoveWorktree={removeWorktree}
+                selectedWorktreeId={selectedWorktreeId}
                 busy={pending}
               />
             ))
@@ -215,6 +227,9 @@ function ProjectRow({
   onSelect,
   onArchive,
   onToggleIsolation,
+  onCreateWorktree,
+  onRemoveWorktree,
+  selectedWorktreeId,
   busy,
 }: {
   project: ProjectSnapshot;
@@ -225,6 +240,9 @@ function ProjectRow({
   onSelect: () => void;
   onArchive: () => void;
   onToggleIsolation: () => void;
+  onCreateWorktree: (name: string) => void;
+  onRemoveWorktree: (id: string) => void;
+  selectedWorktreeId: string | null;
   busy: boolean;
 }) {
   const isolated = project.isolation === "worktree";
@@ -264,7 +282,17 @@ function ProjectRow({
         </div>
       </div>
 
-      {target ? <TargetBlock target={target} worktrees={worktrees} isolated={isolated} /> : null}
+      {target ? (
+        <TargetBlock
+          target={target}
+          worktrees={worktrees}
+          isolated={isolated}
+          onCreateWorktree={onCreateWorktree}
+          onRemoveWorktree={onRemoveWorktree}
+          selectedWorktreeId={selectedWorktreeId}
+          busy={busy}
+        />
+      ) : null}
     </div>
   );
 }
@@ -273,14 +301,29 @@ function TargetBlock({
   target,
   worktrees,
   isolated,
+  onCreateWorktree,
+  onRemoveWorktree,
+  selectedWorktreeId,
+  busy,
 }: {
   target: ProjectTargetSnapshot;
   worktrees: WorktreeSnapshot[];
   isolated: boolean;
+  onCreateWorktree: (name: string) => void;
+  onRemoveWorktree: (id: string) => void;
+  selectedWorktreeId: string | null;
+  busy: boolean;
 }) {
+  const [newWorktree, setNewWorktree] = useState("");
   const tone = target.state === "ready" ? "success" : target.state === "failed" ? "danger" : "neutral";
   const mainWorktrees = worktrees.filter((w) => w.isMain);
+  const named = worktrees.filter((w) => !w.isMain && !w.ephemeral);
   const ephemeral = worktrees.filter((w) => w.ephemeral);
+  function submit() {
+    if (!newWorktree.trim()) return;
+    onCreateWorktree(newWorktree.trim());
+    setNewWorktree("");
+  }
   return (
     <div className="mt-2 border-t border-border/60 pt-2">
       <div className="flex items-center justify-between gap-2 text-xs">
@@ -303,12 +346,36 @@ function TargetBlock({
       {target.state === "failed" ? <p className="mt-1 text-xs text-destructive">{target.message}</p> : null}
 
       {mainWorktrees.map((w) => (
-        <div key={w.id} className="mt-1.5 flex items-center gap-2 pl-3 text-xs">
-          <span className="text-muted-foreground">⌐</span>
-          <span className="font-medium">{w.branch}</span>
-          <Badge tone="neutral">Main worktree</Badge>
-        </div>
+        <WorktreeNode key={w.id} worktree={w} label="Main worktree" selected={w.id === selectedWorktreeId} />
       ))}
+
+      {named.map((w) => (
+        <WorktreeNode
+          key={w.id}
+          worktree={w}
+          label="worktree"
+          selected={w.id === selectedWorktreeId}
+          onRemove={() => onRemoveWorktree(w.id)}
+          busy={busy}
+        />
+      ))}
+
+      {target.state === "ready" ? (
+        <div className="mt-2 flex gap-2 pl-3">
+          <Input
+            value={newWorktree}
+            placeholder="New worktree (branch name)"
+            className="h-7 text-xs"
+            onChange={(e) => setNewWorktree(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") submit();
+            }}
+          />
+          <Button variant="secondary" size="sm" disabled={busy || !newWorktree.trim()} onClick={submit}>
+            Create worktree
+          </Button>
+        </div>
+      ) : null}
 
       {isolated ? (
         <p className="mt-1.5 pl-3 text-xs text-muted-foreground">
@@ -316,6 +383,55 @@ function TargetBlock({
             ? `${ephemeral.length} isolated run(s) active — each on its own agent/<id> worktree`
             : "Per-run isolation on — each invocation gets a fresh git worktree"}
         </p>
+      ) : null}
+    </div>
+  );
+}
+
+// One worktree row. Selecting it from the nav tree highlights the row and
+// reveals its on-disk path ("inspect that location").
+function WorktreeNode({
+  worktree,
+  label,
+  selected,
+  onRemove,
+  busy,
+}: {
+  worktree: WorktreeSnapshot;
+  label: string;
+  selected: boolean;
+  onRemove?: () => void;
+  busy?: boolean;
+}) {
+  return (
+    <div
+      className={cn(
+        "mt-1.5 rounded-md pl-3 text-xs",
+        selected ? "bg-primary/10 ring-1 ring-primary/40" : "",
+      )}
+    >
+      <div className="flex items-center justify-between gap-2 py-1 pr-2">
+        <span className="flex min-w-0 items-center gap-2">
+          <span className="text-muted-foreground">⌐</span>
+          <span className="truncate font-medium" title={worktree.path}>
+            {worktree.branch}
+          </span>
+          <Badge tone="neutral">{label}</Badge>
+        </span>
+        {onRemove ? (
+          <button
+            type="button"
+            disabled={busy}
+            onClick={onRemove}
+            className="shrink-0 text-muted-foreground hover:text-destructive disabled:opacity-50"
+            title="Remove worktree (keeps the branch)"
+          >
+            Remove
+          </button>
+        ) : null}
+      </div>
+      {selected ? (
+        <p className="select-all break-all pb-1.5 pl-5 font-mono text-[11px] text-muted-foreground">{worktree.path}</p>
       ) : null}
     </div>
   );
