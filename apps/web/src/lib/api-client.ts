@@ -73,8 +73,8 @@ export interface IntegrationPayload {
 }
 
 export const api = {
-  createInvocation: (task: string, agentId: string | null, projectId?: string | null) =>
-    request("POST", "/api/invocations", { task, agentId, projectId }),
+  createInvocation: (task: string, agentId: string | null, projectId?: string | null, worktreeId?: string | null) =>
+    request("POST", "/api/invocations", { task, agentId, projectId, worktreeId }),
   cancelInvocation: (id: string) =>
     request("POST", `/api/invocations/${encodeURIComponent(id)}/cancel`),
   troubleshoot: (id: string) =>

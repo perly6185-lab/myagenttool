@@ -859,7 +859,14 @@ const server = http.createServer(async (req, res) => {
         sendJson(res, 400, { error: "task_required" });
         return;
       }
-      const agent = body.agentId ? findAgent(body.agentId) : defaultAgent();
+      // Running "in a worktree": cwd is that worktree and, unless overridden, the
+      // agent the worktree was created with.
+      const targetWorktree = body.worktreeId ? state.worktrees.find((w) => w.id === body.worktreeId) : null;
+      const agent = body.agentId
+        ? findAgent(body.agentId)
+        : targetWorktree?.agentId
+          ? findAgent(targetWorktree.agentId)
+          : defaultAgent();
       if (!agent) {
         sendJson(res, 404, { error: "agent_not_found" });
         return;
@@ -879,13 +886,13 @@ const server = http.createServer(async (req, res) => {
         sendJson(res, 409, { error: "device_unlinked" });
         return;
       }
-      const projectId = resolveProjectId(body.projectId ?? agent.projectId);
+      const projectId = resolveProjectId(body.projectId ?? targetWorktree?.projectId ?? agent.projectId);
       const budget = enforceBudgetForProject(projectId);
       if (budget.action === "block") {
         sendJson(res, 409, { error: "budget_exceeded", message: budget.reason, budget: budget.status });
         return;
       }
-      const invocationOptions = { ...(body.options ?? {}), projectId };
+      const invocationOptions = { ...(body.options ?? {}), projectId, worktreeId: targetWorktree?.id ?? null };
       if (budget.action === "require_approval") {
         invocationOptions.requireLocalApproval = true;
         invocationOptions.metadata = {
@@ -2857,10 +2864,14 @@ function createInvocation(task, agent = defaultAgent(), options = {}) {
   const directRun = runsWithoutBridge(agent);
   const projectId = resolveProjectId(options.projectId ?? agent.projectId);
   const project = findProject(projectId);
-  // Default to the project's shared worktree; an isolated project gets a fresh
-  // ephemeral worktree per CLI run (the only adapter that uses a cwd).
-  let workingDirectory = projectWorkingDirectory(projectId);
-  if (project?.isolation === "worktree" && agent.adapter?.type === "cli") {
+  // An explicit worktree wins: run directly in it. Otherwise default to the
+  // project's shared worktree; an isolated project gets a fresh ephemeral
+  // worktree per CLI run (the only adapter that uses a cwd).
+  const explicitWorktree = options.worktreeId
+    ? state.worktrees.find((w) => w.id === options.worktreeId && w.projectId === projectId)
+    : null;
+  let workingDirectory = explicitWorktree ? explicitWorktree.path : projectWorkingDirectory(projectId);
+  if (!explicitWorktree && project?.isolation === "worktree" && agent.adapter?.type === "cli") {
     const ephemeral = createEphemeralWorktree(project, id);
     if (ephemeral) workingDirectory = ephemeral.path;
   }
@@ -2868,6 +2879,7 @@ function createInvocation(task, agent = defaultAgent(), options = {}) {
     id,
     ideaSessionId: null,
     projectId,
+    worktreeId: explicitWorktree?.id ?? null,
     workingDirectory,
     agentId: agent.id,
     requestedBy: "usr_local",
@@ -2914,13 +2926,18 @@ function createInvocation(task, agent = defaultAgent(), options = {}) {
     message: "Invocation created from Web Console."
   });
   if (workingDirectory) {
-    const isolated = project?.isolation === "worktree" && agent.adapter?.type === "cli";
+    const isolated = !explicitWorktree && project?.isolation === "worktree" && agent.adapter?.type === "cli";
+    const where = explicitWorktree
+      ? `Runs in worktree ${explicitWorktree.branch}`
+      : isolated
+        ? "Runs in isolated worktree"
+        : "Runs in project worktree";
     appendEvent({
       invocationId: invocation.id,
       type: "log",
       level: "info",
-      message: `${isolated ? "Runs in isolated worktree" : "Runs in project worktree"}: ${workingDirectory}`,
-      data: { workingDirectory, projectId, isolated }
+      message: `${where}: ${workingDirectory}`,
+      data: { workingDirectory, projectId, worktreeId: explicitWorktree?.id ?? null, isolated }
     });
   }
   appendEvent({

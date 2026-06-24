@@ -202,7 +202,7 @@ function ProjectTree() {
                           <span className="truncate">{w.branch}</span>
                           {w.isMain ? <span className="shrink-0 text-[10px] opacity-60">main</span> : null}
                         </button>
-                        {w.link ? <WorktreeLinkPopover link={w.link} /> : null}
+                        {w.link ? <WorktreeLinkPopover worktree={w} /> : null}
                       </div>
                     </li>
                   );

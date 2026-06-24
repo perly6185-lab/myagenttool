@@ -266,7 +266,7 @@ function WorktreeNode({
             {worktree.branch}
           </span>
           <Badge tone="neutral">{label}</Badge>
-          {worktree.link ? <WorktreeLinkPopover link={worktree.link} /> : null}
+          {worktree.link ? <WorktreeLinkPopover worktree={worktree} /> : null}
         </span>
         {onRemove ? (
           <button

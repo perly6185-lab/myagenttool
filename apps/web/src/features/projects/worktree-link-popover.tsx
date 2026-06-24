@@ -1,16 +1,23 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { CircleDot, ExternalLink, GitPullRequest } from "lucide-react";
+import { CircleDot, ExternalLink, GitPullRequest, Play, Clipboard } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
-import type { WorktreeLink } from "@/lib/console-state";
+import { useUiStore } from "@/store/ui-store";
+import type { WorktreeSnapshot } from "@/lib/console-state";
 
-// Click the issue/PR indicator on a worktree to open a small popover card with
-// the linked item's number, title, state, and an "open on GitHub" action.
-export function WorktreeLinkPopover({ link }: { link: WorktreeLink }) {
+// Click a worktree's issue/PR indicator to open a popover card with the linked
+// item plus actions: run an agent in this worktree, copy its path, open the
+// issue/PR on GitHub.
+export function WorktreeLinkPopover({ worktree }: { worktree: WorktreeSnapshot }) {
+  const link = worktree.link!;
   const [open, setOpen] = useState(false);
   const [pos, setPos] = useState<{ top: number; left: number } | null>(null);
   const btnRef = useRef<HTMLButtonElement>(null);
   const cardRef = useRef<HTMLDivElement>(null);
+  const setSection = useUiStore((s) => s.setSection);
+  const setSelectedProjectId = useUiStore((s) => s.setSelectedProjectId);
+  const setSelectedWorktreeId = useUiStore((s) => s.setSelectedWorktreeId);
+
   const Icon = link.type === "pr" ? GitPullRequest : CircleDot;
   const tone = link.type === "pr" ? "text-emerald-500" : "text-sky-500";
   const label = link.type === "pr" ? "PR" : "Issue";
@@ -35,9 +42,20 @@ export function WorktreeLinkPopover({ link }: { link: WorktreeLink }) {
   function toggle() {
     if (!open && btnRef.current) {
       const r = btnRef.current.getBoundingClientRect();
-      setPos({ top: Math.min(r.top, window.innerHeight - 160), left: r.right + 8 });
+      setPos({ top: Math.min(r.top, window.innerHeight - 180), left: r.right + 8 });
     }
     setOpen((v) => !v);
+  }
+
+  function runHere() {
+    setSelectedProjectId(worktree.projectId);
+    setSelectedWorktreeId(worktree.id);
+    setSection("dashboard");
+    setOpen(false);
+  }
+  function copyPath() {
+    void navigator.clipboard?.writeText(worktree.path);
+    setOpen(false);
   }
 
   return (
@@ -65,17 +83,19 @@ export function WorktreeLinkPopover({ link }: { link: WorktreeLink }) {
                     {label} #{link.number}
                   </span>
                 </span>
-                {link.url ? (
-                  <a
-                    href={link.url}
-                    target="_blank"
-                    rel="noreferrer"
-                    title="Open on GitHub"
-                    className="text-muted-foreground hover:text-foreground"
-                  >
-                    <ExternalLink className="size-3.5" />
-                  </a>
-                ) : null}
+                <span className="flex shrink-0 items-center gap-1.5 text-muted-foreground">
+                  <button type="button" onClick={runHere} title="Run an agent in this worktree" className="hover:text-foreground">
+                    <Play className="size-3.5" />
+                  </button>
+                  <button type="button" onClick={copyPath} title="Copy worktree path" className="hover:text-foreground">
+                    <Clipboard className="size-3.5" />
+                  </button>
+                  {link.url ? (
+                    <a href={link.url} target="_blank" rel="noreferrer" title="Open on GitHub" className="hover:text-foreground">
+                      <ExternalLink className="size-3.5" />
+                    </a>
+                  ) : null}
+                </span>
               </div>
               <p className="mt-1.5 font-medium text-foreground">{link.title}</p>
               <div className="mt-1.5">

@@ -271,6 +271,7 @@ export interface WorktreeSnapshot {
   path: string;
   isMain: boolean;
   ephemeral?: boolean;
+  agentId?: string | null;
   link?: WorktreeLink | null;
   createdAt: string;
 }
