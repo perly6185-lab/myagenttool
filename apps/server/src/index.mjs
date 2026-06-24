@@ -37,7 +37,11 @@ let persistTimer = null;
 // Bridge (`/api/bridge/*`) stays on the device trust boundary (a separate
 // concern, IDENTITY_PLAN.md gap #3) and is always exempt. See IDENTITY_PLAN.md.
 const REQUIRE_AUTH = process.env.MYAGENT_REQUIRE_AUTH === "1";
-const TOKEN_TTL_MS = Number(process.env.MYAGENT_TOKEN_TTL_MS ?? 30 * 24 * 60 * 60 * 1000);
+// Guard against a non-numeric override (e.g. "30d") that would make Number()
+// NaN and mint instantly-expired tokens — a login→401→relogin lockout loop.
+const TOKEN_TTL_DEFAULT_MS = 30 * 24 * 60 * 60 * 1000;
+const TOKEN_TTL_ENV = Number(process.env.MYAGENT_TOKEN_TTL_MS);
+const TOKEN_TTL_MS = Number.isFinite(TOKEN_TTL_ENV) && TOKEN_TTL_ENV > 0 ? TOKEN_TTL_ENV : TOKEN_TTL_DEFAULT_MS;
 
 const state = {
   // Identity floor (see docs/engineering/IDENTITY_PLAN.md). Phase 1 seeds a
@@ -351,7 +355,7 @@ const server = http.createServer(async (req, res) => {
       let m;
       if ((m = url.pathname.match(/^\/api\/projects\/([^/]+)(?:\/|$)/))) {
         const proj = findProject(decodeURIComponent(m[1]));
-        if (proj) scopedTeam = proj.ownerTeamId ?? "team_local";
+        if (proj) scopedTeam = teamOf(proj);
       } else if ((m = url.pathname.match(/^\/api\/worktrees\/([^/]+)(?:\/|$)/))) {
         const wt = state.worktrees.find((w) => w.id === decodeURIComponent(m[1]));
         if (wt) scopedTeam = projectTeam(wt.projectId);
@@ -471,7 +475,7 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === "GET" && url.pathname === "/api/projects") {
       const teamId = resolveActor(req).teamId;
-      sendJson(res, 200, { projects: state.projects.filter((p) => (p.ownerTeamId ?? "team_local") === teamId) });
+      sendJson(res, 200, { projects: state.projects.filter((p) => teamOf(p) === teamId) });
       return;
     }
 
@@ -687,12 +691,10 @@ const server = http.createServer(async (req, res) => {
     if ((req.method === "PUT" || req.method === "POST") && url.pathname === "/api/budgets") {
       const body = await readJson(req);
       // Phase 3: can't set a budget on another team's project (projectId is in
-      // the body, not the path, so it bypasses the central gate).
+      // the body, not the path, so it bypasses the central gate). Unknown ids
+      // fall through to upsertBudget's own 400 "must reference a known project".
       const targetProject = body?.projectId ? findProject(String(body.projectId)) : null;
-      if (targetProject && (targetProject.ownerTeamId ?? "team_local") !== resolveActor(req).teamId) {
-        sendJson(res, 403, { error: "forbidden", message: "Budget targets another team's project." });
-        return;
-      }
+      if (targetProject && denyForeignProject(res, resolveActor(req), targetProject.id)) return;
       let budget;
       try {
         budget = upsertBudget(body);
@@ -1071,10 +1073,7 @@ const server = http.createServer(async (req, res) => {
       // Phase 3: only the owning team may decide an approval. (The approval id
       // isn't a project/worktree path, so the central gate can't see it.)
       const actor = resolveActor(req);
-      if (projectTeam(invocation.projectId) !== actor.teamId) {
-        sendJson(res, 403, { error: "forbidden", message: "Approval belongs to another team." });
-        return;
-      }
+      if (denyForeignProject(res, actor, invocation.projectId)) return;
 
       const decider = actor.userId;
       if (approvalMatch[2] === "approve") {
@@ -1126,10 +1125,7 @@ const server = http.createServer(async (req, res) => {
       const actor = resolveActor(req);
       // Phase 3: can't run against another team's project/worktree (both arrive
       // in the body, so they bypass the central path gate).
-      if (projectTeam(projectId) !== actor.teamId) {
-        sendJson(res, 403, { error: "forbidden", message: "Project belongs to another team." });
-        return;
-      }
+      if (denyForeignProject(res, actor, projectId)) return;
       const budget = enforceBudgetForProject(projectId);
       if (budget.action === "block") {
         sendJson(res, 409, { error: "budget_exceeded", message: budget.reason, budget: budget.status });
@@ -1333,11 +1329,30 @@ function resolveProjectId(projectId) {
 
 // Identity Phase 3 (tenancy). The owning team of a project — the unit every
 // project-scoped resource (worktrees, invocations, budgets, ledger, approvals)
-// inherits its tenancy from. Unknown projects fall back to the seed team so a
-// stray/legacy projectId stays visible to the single-team demo rather than
-// vanishing. Real isolation kicks in only once a second team exists.
+// inherits its tenancy from. Unknown/legacy projects fall back to the seed team
+// so a stray projectId stays visible to the single-team demo rather than
+// vanishing. Real isolation kicks in only once a second team exists. `teamOf`
+// is the single source for the ownership rule + default so the four call sites
+// (state filter, project list, budget guard, tenancy gate) can't drift apart.
+function teamOf(project) {
+  return project?.ownerTeamId ?? "team_local";
+}
 function projectTeam(projectId) {
-  return findProject(projectId)?.ownerTeamId ?? "team_local";
+  return teamOf(findProject(projectId));
+}
+
+// Phase 3: ids carried in the request BODY bypass the path-based tenancy gate,
+// so every handler that resolves a project from the body funnels its check
+// through this one guard (invocation-create, approval, budget). Returns true —
+// after sending the 403 — when `projectId` is owned by another team; the caller
+// must `return` on true. Single-sourcing the rule here means a new body-id route
+// only needs to call this, not re-derive the comparison.
+function denyForeignProject(res, actor, projectId) {
+  if (projectTeam(projectId) !== actor.teamId) {
+    sendJson(res, 403, { error: "forbidden", message: "Resource belongs to another team." });
+    return true;
+  }
+  return false;
 }
 
 function createProject(body) {
@@ -4547,7 +4562,7 @@ function unlinkDevice() {
 function publicState(actor) {
   const teamId = actor?.teamId ?? "team_local";
   const visibleProjectIds = new Set(
-    state.projects.filter((p) => (p.ownerTeamId ?? "team_local") === teamId).map((p) => p.id)
+    state.projects.filter((p) => teamOf(p) === teamId).map((p) => p.id)
   );
   const ownsProject = (projectId) => visibleProjectIds.has(projectId ?? "prj_default");
 
@@ -4556,7 +4571,13 @@ function publicState(actor) {
   const worktrees = state.worktrees.filter((w) => ownsProject(w.projectId));
   const invocations = state.invocations.filter((i) => ownsProject(i.projectId));
   const visibleInvocationIds = new Set(invocations.map((i) => i.id));
-  const ledgerEntries = state.ledgerEntries.filter((e) => (e.costOwner ?? teamId) === teamId);
+  // Scope the ledger by the SAME key as enforcement (projectSpend filters by
+  // projectId) and the rest of this snapshot — not by costOwner. costOwner is a
+  // team id today but can diverge from the project's team on the missing-project
+  // fallback, which would make the shown budget under-count vs what runs enforce
+  // and could leak an entry with no costOwner to every team. projectId is always
+  // set (defaults to prj_default), so this is exact and leak-free.
+  const ledgerEntries = state.ledgerEntries.filter((e) => ownsProject(e.projectId));
   const budgets = state.budgets.filter((b) => ownsProject(b.projectId));
   const approvalRequests = state.approvalRequests.filter((a) => visibleInvocationIds.has(a.invocationId));
 
