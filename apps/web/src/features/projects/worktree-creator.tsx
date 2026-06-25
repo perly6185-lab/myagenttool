@@ -95,6 +95,7 @@ export function WorktreeCreator({
   const [desc, setDesc] = useState("");
   const [suggesting, setSuggesting] = useState(false);
   const [smartIssues, setSmartIssues] = useState<GithubItem[]>([]);
+  const [smartRan, setSmartRan] = useState(false);
 
   const [branches, setBranches] = useState<BranchRef[]>([]);
   const [brQuery, setBrQuery] = useState("");
@@ -122,6 +123,7 @@ export function WorktreeCreator({
     setWtName("");
     setDesc("");
     setSmartIssues([]);
+    setSmartRan(false);
     (api.listBranches(pid) as Promise<{ branches: BranchRef[] }>)
       .then((r) => setBranches(r.branches ?? []))
       .catch(() => setBranches([]));
@@ -145,6 +147,7 @@ export function WorktreeCreator({
     setBrSel(null);
     setWtName("");
     setSmartIssues([]);
+    setSmartRan(false);
   }
 
   // Selecting a GitHub item backfills the shared name field: an issue seeds a
@@ -185,6 +188,7 @@ export function WorktreeCreator({
       const r = await namePromise;
       setWtName(r.name); // backfill the editable name field
       setSmartIssues(items ? rankIssues(text, items) : []);
+      setSmartRan(true);
     } finally {
       setSuggesting(false);
     }
@@ -264,7 +268,10 @@ export function WorktreeCreator({
                 <Input
                   value={desc}
                   placeholder="Describe the work (e.g. fix login crash)"
-                  onChange={(e) => setDesc(e.target.value)}
+                  onChange={(e) => {
+                    setDesc(e.target.value);
+                    setSmartRan(false);
+                  }}
                   onKeyDown={(e) => {
                     if (e.key === "Enter") suggest();
                   }}
@@ -306,6 +313,11 @@ export function WorktreeCreator({
                     ))}
                   </ul>
                 </div>
+              ) : null}
+              {smartRan && smartIssues.length === 0 ? (
+                <p className="text-[10px] text-muted-foreground">
+                  {gh && !gh.available ? gh.message : "No related issues found."}
+                </p>
               ) : null}
             </div>
           ) : null}
