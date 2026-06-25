@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ComponentType } from "react";
-import { ChevronDown, ChevronLeft, ChevronRight, File, FileText, Folder, GitBranch, GitCompare, ListChecks, MessageSquare, X } from "lucide-react";
+import { ChevronDown, ChevronLeft, ChevronRight, File, FileText, Folder, GitBranch, GitCompare, ListChecks, MessageSquare, Paperclip, X } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -54,6 +54,11 @@ export function WorktreeView({ worktree }: { worktree: WorktreeSnapshot }) {
   const project = (state?.projects ?? []).find((p) => p.id === worktree.projectId);
   const [task, setTask] = useState("Summarize this repository and the open work.");
   const [agentId, setAgentId] = useState(worktree.agentId ?? agents[0]?.id ?? "");
+  const [permissionLevel, setPermissionLevel] = useState<"ask" | "auto" | "full">("ask");
+  // Pasted/picked files to save into the worktree before the run (so the agent
+  // can read them). Held as base64 until the run uploads them.
+  const [attachments, setAttachments] = useState<{ name: string; dataBase64: string; size: number }[]>([]);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [tree, setTree] = useState<TreeNode[]>([]);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [fileQuery, setFileQuery] = useState("");
@@ -227,9 +232,40 @@ export function WorktreeView({ worktree }: { worktree: WorktreeSnapshot }) {
   const agent = agents.find((a) => a.id === agentId);
   const runDisabled = !state || !task.trim() || !agent || isRunning || pending;
 
+  // Read picked/pasted files into base64 (capped) and stage them as attachments.
+  function addFiles(files: FileList | File[]) {
+    const MAX = 10 * 1024 * 1024;
+    Array.from(files)
+      .filter((f) => f.size > 0 && f.size <= MAX)
+      .slice(0, 10)
+      .forEach((f) => {
+        const reader = new FileReader();
+        reader.onload = () => {
+          const dataBase64 = String(reader.result ?? "").split(",")[1] ?? "";
+          if (dataBase64) setAttachments((prev) => [...prev, { name: f.name || "file", dataBase64, size: f.size }]);
+        };
+        reader.readAsDataURL(f);
+      });
+  }
+
   function run() {
     if (runDisabled) return;
-    void execute(() => api.createInvocation(task.trim(), agentId || null, worktree.projectId, worktree.id));
+    void execute(async () => {
+      let finalTask = task.trim();
+      // Save attachments into the worktree, then reference their paths in the task.
+      if (attachments.length > 0) {
+        const r = (await api.uploadWorktreeAttachments(
+          worktree.id,
+          attachments.map((a) => ({ name: a.name, dataBase64: a.dataBase64 })),
+        )) as { attachments?: { name: string; path: string }[] };
+        const saved = r.attachments ?? [];
+        if (saved.length > 0) {
+          finalTask += `\n\nAttached files (in the worktree):\n${saved.map((a) => `- ${a.path}`).join("\n")}`;
+        }
+        setAttachments([]);
+      }
+      return api.createInvocation(finalTask, agentId || null, worktree.projectId, worktree.id, { permissionLevel });
+    });
   }
 
   // Push the branch to origin, then refresh git/diff so the published state shows.
@@ -345,8 +381,49 @@ export function WorktreeView({ worktree }: { worktree: WorktreeSnapshot }) {
                   <p className="select-all break-all font-mono text-[11px] text-muted-foreground">{worktree.path}</p>
                 </CardHeader>
                 <CardContent className="space-y-3">
-                  <Textarea rows={4} value={task} onChange={(e) => setTask(e.target.value)} aria-label="Task" />
-                  <div className="grid gap-3 sm:grid-cols-[1fr_auto] sm:items-end">
+                  <Textarea
+                    rows={4}
+                    value={task}
+                    onChange={(e) => setTask(e.target.value)}
+                    onPaste={(e) => {
+                      if (e.clipboardData.files.length > 0) {
+                        e.preventDefault();
+                        addFiles(e.clipboardData.files);
+                      }
+                    }}
+                    aria-label="Task"
+                  />
+                  <div className="flex flex-wrap items-center gap-2">
+                    <input
+                      ref={fileInputRef}
+                      type="file"
+                      multiple
+                      className="hidden"
+                      onChange={(e) => {
+                        if (e.target.files) addFiles(e.target.files);
+                        e.target.value = "";
+                      }}
+                    />
+                    <Button variant="secondary" size="sm" onClick={() => fileInputRef.current?.click()} title="Attach files (or paste an image)">
+                      <Paperclip className="mr-1 size-3.5" /> Attach
+                    </Button>
+                    {attachments.map((a, i) => (
+                      <span key={i} className="inline-flex items-center gap-1 rounded-md border border-border bg-muted/40 px-2 py-1 text-xs">
+                        <File className="size-3 opacity-60" />
+                        <span className="max-w-[160px] truncate">{a.name}</span>
+                        <span className="text-muted-foreground">{(a.size / 1024).toFixed(0)}KB</span>
+                        <button
+                          type="button"
+                          onClick={() => setAttachments((prev) => prev.filter((_, j) => j !== i))}
+                          aria-label={`Remove ${a.name}`}
+                          className="ml-0.5 grid size-4 place-items-center rounded hover:text-destructive"
+                        >
+                          <X className="size-3" />
+                        </button>
+                      </span>
+                    ))}
+                  </div>
+                  <div className="grid gap-3 sm:grid-cols-[1fr_1fr_auto] sm:items-end">
                     <Field label="Agent">
                       <Select value={agentId} onChange={(e) => setAgentId(e.target.value)} aria-label="Agent">
                         {agents.length === 0 ? <option value="">No agent</option> : null}
@@ -355,6 +432,18 @@ export function WorktreeView({ worktree }: { worktree: WorktreeSnapshot }) {
                             {a.name}
                           </option>
                         ))}
+                      </Select>
+                    </Field>
+                    <Field label="Permissions">
+                      <Select
+                        value={permissionLevel}
+                        onChange={(e) => setPermissionLevel(e.target.value as "ask" | "auto" | "full")}
+                        aria-label="Permission level"
+                        title="How risky operations are gated for this run"
+                      >
+                        <option value="ask">Ask before edits</option>
+                        <option value="auto">Auto-approve</option>
+                        <option value="full">Full access</option>
                       </Select>
                     </Field>
                     <Button onClick={run} disabled={runDisabled}>

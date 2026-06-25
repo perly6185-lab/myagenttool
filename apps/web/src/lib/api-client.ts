@@ -134,8 +134,15 @@ export interface IntegrationPayload {
 }
 
 export const api = {
-  createInvocation: (task: string, agentId: string | null, projectId?: string | null, worktreeId?: string | null) =>
-    request("POST", "/api/invocations", { task, agentId, projectId, worktreeId }),
+  createInvocation: (
+    task: string,
+    agentId: string | null,
+    projectId?: string | null,
+    worktreeId?: string | null,
+    options?: Record<string, unknown>,
+  ) => request("POST", "/api/invocations", { task, agentId, projectId, worktreeId, options }),
+  uploadWorktreeAttachments: (id: string, files: { name: string; dataBase64: string }[]) =>
+    request("POST", `/api/worktrees/${encodeURIComponent(id)}/attachments`, { files }),
   cancelInvocation: (id: string) =>
     request("POST", `/api/invocations/${encodeURIComponent(id)}/cancel`),
   troubleshoot: (id: string) =>

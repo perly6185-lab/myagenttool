@@ -650,6 +650,42 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    // Save pasted/attached files into the worktree so the agent (whose cwd is the
+    // worktree) can read them. Files land in .agent-attachments/; names are
+    // sanitized to a basename and prefixed to avoid collisions/traversal.
+    const worktreeAttachMatch = url.pathname.match(/^\/api\/worktrees\/([^/]+)\/attachments$/);
+    if (req.method === "POST" && worktreeAttachMatch) {
+      const worktree = state.worktrees.find((w) => w.id === decodeURIComponent(worktreeAttachMatch[1]));
+      if (!worktree) {
+        sendJson(res, 404, { error: "worktree_not_found" });
+        return;
+      }
+      const body = await readJson(req).catch(() => ({}));
+      const files = Array.isArray(body.files) ? body.files.slice(0, 10) : [];
+      const MAX_BYTES = 10 * 1024 * 1024;
+      const dir = path.join(path.resolve(worktree.path), ".agent-attachments");
+      const saved = [];
+      try {
+        fs.mkdirSync(dir, { recursive: true });
+        for (const file of files) {
+          const raw = String(file?.dataBase64 ?? "");
+          if (!raw) continue;
+          const buf = Buffer.from(raw, "base64");
+          if (buf.length === 0 || buf.length > MAX_BYTES) continue;
+          // basename only — strip any path/traversal; keep a safe charset.
+          const base = path.basename(String(file?.name ?? "file")).replace(/[^A-Za-z0-9._-]/g, "_").slice(0, 80) || "file";
+          const name = `${crypto.randomBytes(3).toString("hex")}-${base}`;
+          fs.writeFileSync(path.join(dir, name), buf);
+          saved.push({ name: base, path: `.agent-attachments/${name}`, bytes: buf.length });
+        }
+      } catch (error) {
+        sendJson(res, 500, { error: "attachment_write_failed", message: error instanceof Error ? error.message : String(error) });
+        return;
+      }
+      sendJson(res, 201, { attachments: saved });
+      return;
+    }
+
     const worktreeSearchMatch = url.pathname.match(/^\/api\/worktrees\/([^/]+)\/search$/);
     if (req.method === "GET" && worktreeSearchMatch) {
       const worktree = state.worktrees.find((w) => w.id === decodeURIComponent(worktreeSearchMatch[1]));
@@ -1285,7 +1321,15 @@ const server = http.createServer(async (req, res) => {
         sendJson(res, 409, { error: "budget_exceeded", message: budget.reason, budget: budget.status });
         return;
       }
-      const invocationOptions = { ...(body.options ?? {}), projectId, worktreeId: targetWorktree?.id ?? null, requestedBy: actor.userId };
+      const permissionLevel = ["ask", "auto", "full"].includes(body.options?.permissionLevel) ? body.options.permissionLevel : "ask";
+      const invocationOptions = {
+        ...(body.options ?? {}),
+        permissionLevel,
+        projectId,
+        worktreeId: targetWorktree?.id ?? null,
+        requestedBy: actor.userId,
+        metadata: { ...(body.options?.metadata && typeof body.options.metadata === "object" ? body.options.metadata : {}), permissionLevel }
+      };
       if (budget.action === "require_approval") {
         invocationOptions.requireLocalApproval = true;
         invocationOptions.metadata = {
@@ -3855,7 +3899,12 @@ function evaluateInvocationPolicy(agent, options = {}) {
   const capabilities = Array.isArray(agent.capabilities) ? agent.capabilities : [];
   const riskLevel = highestRiskLevel(capabilities.map((capability) => capability.riskLevel));
   const riskTags = uniqueStrings(capabilities.flatMap((capability) => capability.riskTags ?? []));
-  const requiresApproval = Boolean(options.requireLocalApproval) || ["high", "critical"].includes(riskLevel);
+  // Permission level: "auto"/"full" pre-authorize risky operations (no manual
+  // approval); "ask" (default) keeps the risk gate. An explicit
+  // requireLocalApproval (e.g. budget enforcement) always wins.
+  const preauthorized = options.permissionLevel === "auto" || options.permissionLevel === "full";
+  const requiresApproval =
+    Boolean(options.requireLocalApproval) || (!preauthorized && ["high", "critical"].includes(riskLevel));
   return {
     decision: requiresApproval ? "requires_local_approval" : "allowed",
     reason: requiresApproval
