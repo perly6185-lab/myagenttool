@@ -134,6 +134,7 @@ export interface IntegrationPayload {
 }
 
 export const api = {
+  updateDevice: (payload: { maxConcurrency?: number }) => request("PATCH", "/api/device", payload),
   createInvocation: (
     task: string,
     agentId: string | null,

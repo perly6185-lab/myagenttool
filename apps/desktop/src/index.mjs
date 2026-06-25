@@ -22,7 +22,12 @@ if (process.argv.includes("--check")) {
 // tasks for the same working directory), so distinct worktrees run in parallel
 // while the same worktree stays serial. `polling` guards against overlapping
 // fill passes from the interval; `inFlight` counts running work.
-const MAX_CONCURRENT = Math.max(1, Number(process.env.BRIDGE_MAX_CONCURRENT ?? 3));
+// Pool size. The device's maxConcurrency (set on the server, tunable in the
+// Devices UI) is authoritative — the server won't dispatch past it — so this is
+// just the bridge's local ceiling, seeded from the device value at register with
+// the env as a fallback. A live increase applies on the next reconnect; the
+// server enforces decreases immediately.
+let maxConcurrent = Math.max(1, Math.floor(Number(process.env.BRIDGE_MAX_CONCURRENT ?? 3)) || 3);
 const inFlight = new Set();
 let polling = false;
 let stopped = false;
@@ -31,11 +36,15 @@ process.on("SIGINT", stop);
 process.on("SIGTERM", stop);
 
 await waitForServer();
-await request("POST", "/api/bridge/register", {
+const registration = await request("POST", "/api/bridge/register", {
   bridgeVersion: "0.0.0",
   capabilities: ["demo_cli_agent"]
 });
-console.log(`[desktop] registered with ${serverUrl} (max concurrency ${MAX_CONCURRENT})`);
+const deviceMax = Math.floor(Number(registration?.device?.maxConcurrency));
+if (Number.isFinite(deviceMax) && deviceMax >= 1) {
+  maxConcurrent = deviceMax;
+}
+console.log(`[desktop] registered with ${serverUrl} (max concurrency ${maxConcurrent})`);
 
 poll();
 const timer = setInterval(poll, pollIntervalMs);
@@ -57,7 +66,7 @@ async function poll() {
   }
   polling = true;
   try {
-    while (!stopped && inFlight.size < MAX_CONCURRENT) {
+    while (!stopped && inFlight.size < maxConcurrent) {
       const invocationWork = await request("GET", "/api/bridge/next");
       if (invocationWork) {
         track(runInvocation(invocationWork));
@@ -187,8 +196,16 @@ async function runInvocation(work) {
     }
   });
 
+  let spawnError = null;
   const exitCode = await new Promise((resolveExit) => {
     child.on("close", resolveExit);
+    // A spawn failure (missing cwd/binary, e.g. a deleted worktree) emits 'error';
+    // without this listener it would be unhandled and crash the whole bridge.
+    // Resolve as a non-zero exit so the run completes and the pool frees the slot.
+    child.on("error", (error) => {
+      spawnError = error;
+      resolveExit(typeof child.exitCode === "number" ? child.exitCode : -1);
+    });
   });
   clearInterval(cancelTimer);
   clearTimeout(timeoutTimer);
@@ -247,7 +264,7 @@ async function runInvocation(work) {
   await request("POST", "/api/bridge/complete", {
     invocationId,
     status: "failed",
-    summary: `Demo CLI Agent exited with code ${exitCode}.`,
+    summary: spawnError ? `Agent could not start: ${spawnError.message}` : `Demo CLI Agent exited with code ${exitCode}.`,
     result: finalResult
   });
 }

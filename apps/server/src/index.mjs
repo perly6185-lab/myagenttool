@@ -34,6 +34,10 @@ const protocolVersion = "0.0.0";
 const host = process.env.SERVER_HOST ?? "127.0.0.1";
 const port = Number(process.env.SERVER_PORT ?? 3001);
 const dispatchLeaseMs = Number(process.env.SERVER_DISPATCH_LEASE_MS ?? 30_000);
+// Default cross-worktree concurrency for the device. The authoritative limit
+// lives on the device record (state.device.maxConcurrency, tunable via the
+// Devices UI); this env only seeds the initial value.
+const DEFAULT_MAX_CONCURRENCY = Math.max(1, Math.floor(Number(process.env.BRIDGE_MAX_CONCURRENT ?? 3)) || 3);
 
 // JSON snapshot persistence (orca-style flat file + schema version). SQLite is a
 // P1+ concern; for now durability matters most for projects/ledger/budgets.
@@ -41,7 +45,9 @@ const PERSIST_VERSION = 2;
 const PERSIST_FILE = process.env.SERVER_STATE_FILE
   ? path.resolve(process.env.SERVER_STATE_FILE)
   : path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "data", "state.json");
-const PERSIST_KEYS = ["users", "teams", "tokens", "projects", "projectTargets", "worktrees", "agents", "automations", "invocations", "ledgerEntries", "budgets", "quotaDecisionRecords"];
+// "device" is written so its maxConcurrency setting survives restarts; the load
+// path restores only that field (the rest of the device is runtime state).
+const PERSIST_KEYS = ["device", "users", "teams", "tokens", "projects", "projectTargets", "worktrees", "agents", "automations", "invocations", "ledgerEntries", "budgets", "quotaDecisionRecords"];
 let persistTimer = null;
 
 // Identity Phase 2 (auth). When MYAGENT_REQUIRE_AUTH=1, every non-public route
@@ -100,6 +106,8 @@ const state = {
     pathFormat: process.platform === "win32" ? "windows" : "posix",
     bridgeVersion: "0.0.0",
     status: "offline",
+    // Max invocations this machine runs at once (across distinct worktrees).
+    maxConcurrency: DEFAULT_MAX_CONCURRENCY,
     unlinkState: "linked",
     lastSeenAt: null,
     registeredCapabilities: [],
@@ -1060,6 +1068,23 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    // Tune device-level settings (currently the cross-worktree concurrency cap).
+    if (req.method === "PATCH" && url.pathname === "/api/device") {
+      const body = await readJson(req).catch(() => ({}));
+      if (body.maxConcurrency !== undefined) {
+        const n = Math.floor(Number(body.maxConcurrency));
+        if (!Number.isFinite(n) || n < 1 || n > 16) {
+          sendJson(res, 400, { error: "invalid_max_concurrency", message: "maxConcurrency must be an integer in 1–16." });
+          return;
+        }
+        state.device.maxConcurrency = n;
+        state.device.updatedAt = now();
+        persistState();
+      }
+      sendJson(res, 200, { device: state.device });
+      return;
+    }
+
     if (req.method === "GET" && url.pathname === "/api/bridge/next") {
       state.device.lastSeenAt = now();
       if (state.device.unlinkState !== "linked") {
@@ -1530,6 +1555,12 @@ function loadPersistedState() {
     }
     for (const key of PERSIST_KEYS) {
       if (Array.isArray(snapshot[key])) state[key] = snapshot[key];
+    }
+    // Restore the device's concurrency setting only (not the whole device — its
+    // status/lastSeenAt are runtime and get reset on register).
+    const savedMax = Math.floor(Number(snapshot.device?.maxConcurrency));
+    if (Number.isFinite(savedMax) && savedMax >= 1 && savedMax <= 16) {
+      state.device.maxConcurrency = savedMax;
     }
     // Drop ephemeral worktree records whose directories no longer exist (a prior
     // run's isolated worktrees do not survive a restart).
@@ -4135,12 +4166,16 @@ function invocationDirKey(invocation) {
 }
 
 function nextDispatchableInvocation() {
+  const inFlight = state.invocations.filter((i) => ["dispatching", "running", "cancelling"].includes(i.status));
+  // Authoritative cross-worktree concurrency cap: don't dispatch once the device
+  // is at its limit, regardless of how the bridge polls.
+  if (inFlight.length >= (state.device.maxConcurrency ?? DEFAULT_MAX_CONCURRENCY)) {
+    return undefined;
+  }
   // Directories occupied by an in-flight invocation — skip a queued task whose
   // cwd is busy so the bridge can run other worktrees concurrently without two
   // agents writing the same directory.
-  const busyDirs = new Set(
-    state.invocations.filter((i) => ["dispatching", "running", "cancelling"].includes(i.status)).map(invocationDirKey),
-  );
+  const busyDirs = new Set(inFlight.map(invocationDirKey));
   return state.invocations.find((item) => {
     if (item.status !== "queued" || !["queued", "redelivering"].includes(item.delivery.state)) {
       return false;

@@ -12,6 +12,8 @@ export interface DeviceSnapshot {
   platform: string;
   architecture: string;
   lastSeenAt: string | null;
+  /** Max invocations this machine runs at once (across distinct worktrees). */
+  maxConcurrency?: number;
 }
 
 export interface AgentHealth {
