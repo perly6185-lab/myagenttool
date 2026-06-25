@@ -1052,9 +1052,15 @@ const server = http.createServer(async (req, res) => {
       // Run the agent in the project's worktree when repo-backed: override the
       // adapter's cwd for this dispatch only (the stored agent is untouched).
       const baseAdapter = findAgent(invocation.agentId)?.adapter ?? null;
-      const adapter = baseAdapter && invocation.workingDirectory
+      let adapter = baseAdapter && invocation.workingDirectory
         ? { ...baseAdapter, workingDirectory: invocation.workingDirectory, workingDirectoryPolicy: "explicit" }
         : baseAdapter;
+      // Push this run's permission level into the Codex sandbox flag for this
+      // dispatch only (the stored agent's args are untouched).
+      const permissionLevel = invocation.options?.metadata?.permissionLevel;
+      if (adapter?.type === "cli" && permissionLevel && isCodexCliCommand(adapter.command)) {
+        adapter = { ...adapter, args: withCodexSandbox(adapter.args, sandboxForPermission(permissionLevel)) };
+      }
 
       sendJson(res, 200, {
         namespace,
@@ -3677,6 +3683,22 @@ function normalizeCodexSandbox(value) {
   return ["read-only", "workspace-write", "danger-full-access"].includes(normalized)
     ? normalized
     : "read-only";
+}
+
+// Map a run's permission level onto a Codex sandbox mode.
+function sandboxForPermission(level) {
+  return level === "full" ? "danger-full-access" : level === "auto" ? "workspace-write" : "read-only";
+}
+
+// Rewrite a Codex args template's `--sandbox <mode>` (or append it) so a run's
+// permission level controls the actual sandbox, overriding the value baked in at
+// registration. Returns a new array; leaves non-codex args untouched.
+function withCodexSandbox(args, mode) {
+  const list = Array.isArray(args) ? [...args] : [];
+  const i = list.indexOf("--sandbox");
+  if (i >= 0 && i + 1 < list.length) list[i + 1] = mode;
+  else list.push("--sandbox", mode);
+  return list;
 }
 
 function codexRiskTags() {

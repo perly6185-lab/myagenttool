@@ -57,7 +57,7 @@ export function WorktreeView({ worktree }: { worktree: WorktreeSnapshot }) {
   const [permissionLevel, setPermissionLevel] = useState<"ask" | "auto" | "full">("ask");
   // Pasted/picked files to save into the worktree before the run (so the agent
   // can read them). Held as base64 until the run uploads them.
-  const [attachments, setAttachments] = useState<{ name: string; dataBase64: string; size: number }[]>([]);
+  const [attachments, setAttachments] = useState<{ name: string; dataBase64: string; size: number; type: string }[]>([]);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [tree, setTree] = useState<TreeNode[]>([]);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
@@ -242,7 +242,7 @@ export function WorktreeView({ worktree }: { worktree: WorktreeSnapshot }) {
         const reader = new FileReader();
         reader.onload = () => {
           const dataBase64 = String(reader.result ?? "").split(",")[1] ?? "";
-          if (dataBase64) setAttachments((prev) => [...prev, { name: f.name || "file", dataBase64, size: f.size }]);
+          if (dataBase64) setAttachments((prev) => [...prev, { name: f.name || "file", dataBase64, size: f.size, type: f.type }]);
         };
         reader.readAsDataURL(f);
       });
@@ -408,8 +408,16 @@ export function WorktreeView({ worktree }: { worktree: WorktreeSnapshot }) {
                       <Paperclip className="mr-1 size-3.5" /> Attach
                     </Button>
                     {attachments.map((a, i) => (
-                      <span key={i} className="inline-flex items-center gap-1 rounded-md border border-border bg-muted/40 px-2 py-1 text-xs">
-                        <File className="size-3 opacity-60" />
+                      <span key={i} className="inline-flex items-center gap-1.5 rounded-md border border-border bg-muted/40 py-1 pl-1.5 pr-2 text-xs">
+                        {a.type.startsWith("image/") ? (
+                          <img
+                            src={`data:${a.type};base64,${a.dataBase64}`}
+                            alt={a.name}
+                            className="size-8 rounded object-cover"
+                          />
+                        ) : (
+                          <File className="size-3 opacity-60" />
+                        )}
                         <span className="max-w-[160px] truncate">{a.name}</span>
                         <span className="text-muted-foreground">{(a.size / 1024).toFixed(0)}KB</span>
                         <button
