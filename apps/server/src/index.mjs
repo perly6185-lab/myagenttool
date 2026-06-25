@@ -144,10 +144,13 @@ const state = {
         "Use this when the task asks to edit, retouch, restyle, or generate an image",
         "(改图 / 编辑图片 / 抠图 / 换背景 / 生成图片).",
         "",
+        "- codex: prefer your built-in image_generation tool — it needs no extra setup.",
+        "  Only fall back to the CLI below if the built-in tool is unavailable.",
         "- claude: call the `edit_image` tool exposed by the `image-tool` MCP server.",
-        "- codex: run the CLI `node packages/image-tool/cli.mjs --input <path> --prompt <text> --output <path>`.",
+        "  If MCP is unavailable, run the CLI:",
+        "  `node packages/image-tool/cli.mjs --input <path> --prompt <text> --output <path>`.",
         "",
-        "Always pass an explicit output path and report it back when done."
+        "Always write to an explicit output path and report it back when done."
       ].join("\n"),
       targets: ["claude", "codex"],
       tool: {

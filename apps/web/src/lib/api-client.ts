@@ -156,6 +156,11 @@ export const api = {
 
   registerAgent: (payload: Record<string, unknown>) => request("POST", "/api/agents", payload),
 
+  createSkill: (payload: Record<string, unknown>) => request("POST", "/api/skills", payload),
+  updateSkill: (id: string, patch: Record<string, unknown>) =>
+    request("PATCH", `/api/skills/${encodeURIComponent(id)}`, patch),
+  deleteSkill: (id: string) => request("DELETE", `/api/skills/${encodeURIComponent(id)}`),
+
   createDiscovery: (payload: DiscoveryPayload) => request("POST", "/api/discovery", payload),
   registerCandidate: (runId: string, candidateId: string) =>
     request(

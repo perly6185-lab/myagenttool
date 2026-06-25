@@ -69,6 +69,24 @@ export interface AgentSnapshot {
   discovery?: { runId?: string };
 }
 
+export type SkillTarget = "claude" | "codex";
+
+export interface SkillSnapshot {
+  id: string;
+  name: string;
+  slug: string;
+  description: string;
+  body: string;
+  targets: SkillTarget[];
+  tool?: {
+    cli?: string;
+    mcp?: { name: string; command: string; args?: string[]; env?: Record<string, string> };
+  };
+  enabled: boolean;
+  createdAt: string;
+  updatedAt?: string;
+}
+
 export interface InvocationSnapshot {
   id: string;
   status?: string;
@@ -374,6 +392,7 @@ export interface ConsoleSnapshot {
   worktrees?: WorktreeSnapshot[];
   agent: AgentSnapshot | null;
   agents: AgentSnapshot[];
+  skills?: SkillSnapshot[];
   invocations: InvocationSnapshot[];
   events: InvocationEventSnapshot[];
   auditSummaries: AuditSnapshot[];

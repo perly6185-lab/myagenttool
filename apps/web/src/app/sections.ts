@@ -9,6 +9,7 @@ import {
   Radar,
   Receipt,
   ScrollText,
+  Sparkles,
   Workflow,
   type LucideIcon,
 } from "lucide-react";
@@ -29,6 +30,7 @@ export const SECTIONS: SectionDef[] = [
   { key: "automation", label: "Automation", icon: Workflow, blurb: "Rules that run agents on a trigger" },
   { key: "invocations", label: "Invocations", icon: ListChecks, blurb: "Every call, status, and result" },
   { key: "agents", label: "Agents", icon: Boxes, blurb: "Registered agents and health" },
+  { key: "skills", label: "Skills", icon: Sparkles, blurb: "Agent-targeted skills rendered per run" },
   { key: "devices", label: "Devices", icon: MonitorSmartphone, blurb: "Local bridges and platforms" },
   { key: "discovery", label: "Discovery", icon: Radar, blurb: "Find local agents conservatively" },
   { key: "integrations", label: "Integrations", icon: Puzzle, blurb: "Connect unsupported agents" },

@@ -7,6 +7,7 @@ export type SectionKey =
   | "automation"
   | "invocations"
   | "agents"
+  | "skills"
   | "devices"
   | "discovery"
   | "integrations"
@@ -16,12 +17,14 @@ export type SectionKey =
 interface UiState {
   section: SectionKey;
   selectedAgentId: string | null;
+  selectedSkillId: string | null;
   selectedInvocationId: string | null;
   selectedArtifactId: string | null;
   selectedProjectId: string | null;
   selectedWorktreeId: string | null;
   setSection: (section: SectionKey) => void;
   setSelectedAgentId: (id: string | null) => void;
+  setSelectedSkillId: (id: string | null) => void;
   setSelectedInvocationId: (id: string | null) => void;
   setSelectedArtifactId: (id: string | null) => void;
   setSelectedProjectId: (id: string | null) => void;
@@ -35,6 +38,7 @@ const SECTION_KEYS: SectionKey[] = [
   "automation",
   "invocations",
   "agents",
+  "skills",
   "devices",
   "discovery",
   "integrations",
@@ -53,12 +57,14 @@ function initialSection(): SectionKey {
 export const useUiStore = create<UiState>((set) => ({
   section: initialSection(),
   selectedAgentId: null,
+  selectedSkillId: null,
   selectedInvocationId: null,
   selectedArtifactId: null,
   selectedProjectId: null,
   selectedWorktreeId: null,
   setSection: (section) => set({ section }),
   setSelectedAgentId: (selectedAgentId) => set({ selectedAgentId }),
+  setSelectedSkillId: (selectedSkillId) => set({ selectedSkillId }),
   setSelectedInvocationId: (selectedInvocationId) => set({ selectedInvocationId }),
   setSelectedArtifactId: (selectedArtifactId) => set({ selectedArtifactId }),
   setSelectedProjectId: (selectedProjectId) => set({ selectedProjectId }),

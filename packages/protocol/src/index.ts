@@ -6,4 +6,5 @@ export * from "./economics.js";
 export * from "./agent.js";
 export * from "./invocation.js";
 export * from "./project.js";
+export * from "./skills.js";
 export * from "./audit.js";
