@@ -1904,8 +1904,26 @@ const SKILL_BLOCK_END = "<!-- myagent:skills:end -->";
 function gitExclude(wtPath, entries) {
   // Keep rendered files out of the branch so worktree cleanup never commits them.
   try {
-    const excludePath = path.join(wtPath, ".git", "info", "exclude");
-    if (!fs.existsSync(path.dirname(excludePath))) return;
+    // In a linked worktree, `.git` is a file ("gitdir: <path>"), not a directory;
+    // resolve the real gitdir so the exclude lands in the right place.
+    const dotGit = path.join(wtPath, ".git");
+    let gitDir = dotGit;
+    const stat = fs.existsSync(dotGit) ? fs.statSync(dotGit) : null;
+    if (stat?.isFile()) {
+      const pointer = fs.readFileSync(dotGit, "utf8").match(/gitdir:\s*(.+)\s*/);
+      if (!pointer) return;
+      gitDir = path.resolve(wtPath, pointer[1].trim());
+    } else if (!stat?.isDirectory()) {
+      return;
+    }
+    // git reads info/exclude from the COMMON dir, not a worktree's private gitdir.
+    // Each worktree gitdir carries a `commondir` file pointing at it.
+    const commonDirFile = path.join(gitDir, "commondir");
+    const commonDir = fs.existsSync(commonDirFile)
+      ? path.resolve(gitDir, fs.readFileSync(commonDirFile, "utf8").trim())
+      : gitDir;
+    const excludePath = path.join(commonDir, "info", "exclude");
+    fs.mkdirSync(path.dirname(excludePath), { recursive: true });
     const existing = fs.existsSync(excludePath) ? fs.readFileSync(excludePath, "utf8") : "";
     const missing = entries.filter((e) => !existing.split(/\r?\n/).includes(e));
     if (missing.length) fs.appendFileSync(excludePath, (existing.endsWith("\n") || !existing ? "" : "\n") + missing.join("\n") + "\n");
@@ -5242,6 +5260,18 @@ function publicState(actor) {
   const budgets = state.budgets.filter((b) => ownsProject(b.projectId));
   const approvalRequests = state.approvalRequests.filter((a) => visibleInvocationIds.has(a.invocationId));
   const automations = state.automations.filter((a) => ownsProject(a.projectId));
+  // Run-derived records (logs, traces, audit, policy, quota) are scoped to this
+  // team's own invocations/projects — otherwise another team sees everyone's
+  // execution history. Records with no invocationId are system-level and stay
+  // visible; spans follow their trace.
+  const events = state.events.filter((e) => !e.invocationId || visibleInvocationIds.has(e.invocationId));
+  const traces = state.traces.filter((t) => visibleInvocationIds.has(t.subjectId));
+  const visibleTraceIds = new Set(traces.map((t) => t.id));
+  const spans = state.spans.filter((s) => visibleTraceIds.has(s.traceId));
+  const auditSummaries = state.auditSummaries.filter((a) => !a.invocationId || visibleInvocationIds.has(a.invocationId));
+  const troubleshootingReports = state.troubleshootingReports.filter((r) => visibleInvocationIds.has(r.invocationId));
+  const policyDecisionRecords = state.policyDecisionRecords.filter((p) => !p.invocationId || visibleInvocationIds.has(p.invocationId));
+  const quotaDecisionRecords = state.quotaDecisionRecords.filter((q) => ownsProject(q.subjectId));
 
   const ledgerSummary = summarizeLedger(ledgerEntries);
   return {
@@ -5258,21 +5288,21 @@ function publicState(actor) {
     agents: state.agents,
     skills: state.skills,
     invocations,
-    events: state.events,
-    traces: state.traces,
-    spans: state.spans,
-    auditSummaries: state.auditSummaries,
+    events,
+    traces,
+    spans,
+    auditSummaries,
     healthChecks: state.healthChecks,
     lifecycleAuditRecords: state.lifecycleAuditRecords,
     discoveryRuns: state.discoveryRuns,
     integrationArtifacts: state.integrationArtifacts,
     integrationProbeRuns: state.integrationProbeRuns,
-    quotaDecisionRecords: state.quotaDecisionRecords,
+    quotaDecisionRecords,
     retentionSettings: state.retentionSettings,
     approvalRequests,
     automations,
-    policyDecisionRecords: state.policyDecisionRecords,
-    troubleshootingReports: state.troubleshootingReports,
+    policyDecisionRecords,
+    troubleshootingReports,
     agentUsageSummaries: state.agentUsageSummaries,
     ledgerEntries,
     ledgerSummary,
