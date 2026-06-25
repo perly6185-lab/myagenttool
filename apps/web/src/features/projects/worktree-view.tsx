@@ -232,20 +232,26 @@ export function WorktreeView({ worktree }: { worktree: WorktreeSnapshot }) {
   const agent = agents.find((a) => a.id === agentId);
   const runDisabled = !state || !task.trim() || !agent || isRunning || pending;
 
-  // Read picked/pasted files into base64 (capped) and stage them as attachments.
-  function addFiles(files: FileList | File[]) {
-    const MAX = 10 * 1024 * 1024;
-    Array.from(files)
-      .filter((f) => f.size > 0 && f.size <= MAX)
-      .slice(0, 10)
-      .forEach((f) => {
-        const reader = new FileReader();
-        reader.onload = () => {
-          const dataBase64 = String(reader.result ?? "").split(",")[1] ?? "";
-          if (dataBase64) setAttachments((prev) => [...prev, { name: f.name || "file", dataBase64, size: f.size, type: f.type }]);
-        };
-        reader.readAsDataURL(f);
-      });
+  // Read picked/pasted files into base64 and stage them. Awaits all reads so a
+  // run that starts right after a paste sees the files; the count cap is applied
+  // across accumulated state (not per call) and matches the server's limits.
+  const MAX_FILE_BYTES = 5 * 1024 * 1024;
+  async function addFiles(files: FileList | File[]) {
+    const read = await Promise.all(
+      Array.from(files)
+        .filter((f) => f.size > 0 && f.size <= MAX_FILE_BYTES)
+        .map(
+          (f) =>
+            new Promise<{ name: string; dataBase64: string; size: number; type: string } | null>((resolve) => {
+              const reader = new FileReader();
+              reader.onload = () => resolve({ name: f.name || "file", dataBase64: String(reader.result ?? "").split(",")[1] ?? "", size: f.size, type: f.type });
+              reader.onerror = () => resolve(null);
+              reader.readAsDataURL(f);
+            }),
+        ),
+    );
+    const valid = read.filter((a): a is NonNullable<typeof a> => Boolean(a?.dataBase64));
+    if (valid.length > 0) setAttachments((prev) => [...prev, ...valid].slice(0, 6));
   }
 
   function run() {
@@ -262,9 +268,12 @@ export function WorktreeView({ worktree }: { worktree: WorktreeSnapshot }) {
         if (saved.length > 0) {
           finalTask += `\n\nAttached files (in the worktree):\n${saved.map((a) => `- ${a.path}`).join("\n")}`;
         }
-        setAttachments([]);
       }
-      return api.createInvocation(finalTask, agentId || null, worktree.projectId, worktree.id, { permissionLevel });
+      const invocation = await api.createInvocation(finalTask, agentId || null, worktree.projectId, worktree.id, { permissionLevel });
+      // Clear only after the run is created, so a failed create keeps the staged
+      // files for a retry instead of silently dropping them.
+      setAttachments([]);
+      return invocation;
     });
   }
 

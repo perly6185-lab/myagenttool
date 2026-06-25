@@ -660,29 +660,56 @@ const server = http.createServer(async (req, res) => {
         sendJson(res, 404, { error: "worktree_not_found" });
         return;
       }
-      const body = await readJson(req).catch(() => ({}));
-      const files = Array.isArray(body.files) ? body.files.slice(0, 10) : [];
-      const MAX_BYTES = 10 * 1024 * 1024;
-      const dir = path.join(path.resolve(worktree.path), ".agent-attachments");
-      const saved = [];
+      let body;
       try {
+        // Bound the body so a flood of large base64 can't OOM the single process.
+        body = await readJson(req, 40 * 1024 * 1024);
+      } catch (error) {
+        sendJson(res, error?.statusCode === 413 ? 413 : 400, { error: "invalid_body", message: error instanceof Error ? error.message : String(error) });
+        return;
+      }
+      const files = Array.isArray(body.files) ? body.files.slice(0, 6) : [];
+      const MAX_BYTES = 5 * 1024 * 1024;
+      const root = path.resolve(worktree.path);
+      const dir = path.join(root, ".agent-attachments");
+      const saved = [];
+      const skipped = [];
+      try {
+        // Mirror the /file read guard: a symlinked attachments dir (or worktree)
+        // must not let writes escape the tree. Reject a symlinked dir, then
+        // realpath-verify the dir resolves under the worktree root.
+        if (fs.existsSync(dir) && fs.lstatSync(dir).isSymbolicLink()) {
+          sendJson(res, 400, { error: "invalid_path" });
+          return;
+        }
         fs.mkdirSync(dir, { recursive: true });
+        const realRoot = fs.realpathSync(root);
+        const realDir = fs.realpathSync(dir);
+        if (realDir !== realRoot && !realDir.startsWith(realRoot + path.sep)) {
+          sendJson(res, 400, { error: "invalid_path" });
+          return;
+        }
+        // Keep attachments out of git (untracked clutter + the ephemeral-cleanup
+        // `git add -A` would otherwise commit binaries onto the kept branch). A
+        // self-contained ignore is worktree-type-agnostic.
+        fs.writeFileSync(path.join(dir, ".gitignore"), "*\n");
         for (const file of files) {
+          const declaredName = path.basename(String(file?.name ?? "file")).replace(/[^A-Za-z0-9._-]/g, "_").slice(0, 80) || "file";
           const raw = String(file?.dataBase64 ?? "");
-          if (!raw) continue;
-          const buf = Buffer.from(raw, "base64");
-          if (buf.length === 0 || buf.length > MAX_BYTES) continue;
-          // basename only — strip any path/traversal; keep a safe charset.
-          const base = path.basename(String(file?.name ?? "file")).replace(/[^A-Za-z0-9._-]/g, "_").slice(0, 80) || "file";
-          const name = `${crypto.randomBytes(3).toString("hex")}-${base}`;
+          const buf = raw ? Buffer.from(raw, "base64") : Buffer.alloc(0);
+          if (buf.length === 0 || buf.length > MAX_BYTES) {
+            skipped.push({ name: declaredName, reason: buf.length === 0 ? "empty" : "too_large" });
+            continue;
+          }
+          const name = `${crypto.randomBytes(3).toString("hex")}-${declaredName}`;
           fs.writeFileSync(path.join(dir, name), buf);
-          saved.push({ name: base, path: `.agent-attachments/${name}`, bytes: buf.length });
+          saved.push({ name: declaredName, path: `.agent-attachments/${name}`, bytes: buf.length });
         }
       } catch (error) {
         sendJson(res, 500, { error: "attachment_write_failed", message: error instanceof Error ? error.message : String(error) });
         return;
       }
-      sendJson(res, 201, { attachments: saved });
+      sendJson(res, 201, { attachments: saved, skipped });
       return;
     }
 
@@ -5488,9 +5515,16 @@ function setCors(res) {
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
 }
 
-async function readJson(req) {
+async function readJson(req, maxBytes = Infinity) {
   const chunks = [];
+  let total = 0;
   for await (const chunk of req) {
+    total += chunk.length;
+    if (total > maxBytes) {
+      const error = new Error("payload_too_large");
+      error.statusCode = 413;
+      throw error;
+    }
     chunks.push(chunk);
   }
   const text = Buffer.concat(chunks).toString("utf8");
