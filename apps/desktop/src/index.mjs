@@ -17,7 +17,14 @@ if (process.argv.includes("--check")) {
   process.exit(0);
 }
 
-let busy = false;
+// Concurrency pool: run up to BRIDGE_MAX_CONCURRENT work items at once. Per-cwd
+// safety is enforced server-side (nextDispatchableInvocation won't hand out two
+// tasks for the same working directory), so distinct worktrees run in parallel
+// while the same worktree stays serial. `polling` guards against overlapping
+// fill passes from the interval; `inFlight` counts running work.
+const MAX_CONCURRENT = Math.max(1, Number(process.env.BRIDGE_MAX_CONCURRENT ?? 3));
+const inFlight = new Set();
+let polling = false;
 let stopped = false;
 
 process.on("SIGINT", stop);
@@ -28,57 +35,53 @@ await request("POST", "/api/bridge/register", {
   bridgeVersion: "0.0.0",
   capabilities: ["demo_cli_agent"]
 });
-console.log(`[desktop] registered with ${serverUrl}`);
+console.log(`[desktop] registered with ${serverUrl} (max concurrency ${MAX_CONCURRENT})`);
 
 poll();
 const timer = setInterval(poll, pollIntervalMs);
 
+// Track a running work promise so the pool knows when a slot frees up.
+function track(promise) {
+  const token = Symbol("work");
+  inFlight.add(token);
+  Promise.resolve(promise)
+    .catch((error) => console.error("[desktop] work failed:", error?.message ?? error))
+    .finally(() => inFlight.delete(token));
+}
+
+// Fill open slots: pull invocations first (the server skips cwd-busy ones), then
+// health/discovery/probe work, until the pool is full or nothing is available.
 async function poll() {
-  if (busy || stopped) {
+  if (stopped || polling) {
     return;
   }
-
-  const response = await request("GET", "/api/bridge/next");
-  if (response) {
-    busy = true;
-    try {
-      await runInvocation(response);
-    } finally {
-      busy = false;
+  polling = true;
+  try {
+    while (!stopped && inFlight.size < MAX_CONCURRENT) {
+      const invocationWork = await request("GET", "/api/bridge/next");
+      if (invocationWork) {
+        track(runInvocation(invocationWork));
+        continue;
+      }
+      const healthWork = await request("GET", "/api/bridge/health-next");
+      if (healthWork) {
+        track(runHealthCheck(healthWork));
+        continue;
+      }
+      const discoveryWork = await request("GET", "/api/bridge/discovery-next");
+      if (discoveryWork) {
+        track(runDiscovery(discoveryWork));
+        continue;
+      }
+      const probeWork = await request("GET", "/api/bridge/probe-next");
+      if (probeWork) {
+        track(runIntegrationProbe(probeWork));
+        continue;
+      }
+      break; // nothing dispatchable right now
     }
-    return;
-  }
-
-  const healthWork = await request("GET", "/api/bridge/health-next");
-  if (healthWork) {
-    busy = true;
-    try {
-      await runHealthCheck(healthWork);
-    } finally {
-      busy = false;
-    }
-    return;
-  }
-
-  const discoveryWork = await request("GET", "/api/bridge/discovery-next");
-  if (discoveryWork) {
-    busy = true;
-    try {
-      await runDiscovery(discoveryWork);
-    } finally {
-      busy = false;
-    }
-    return;
-  }
-
-  const probeWork = await request("GET", "/api/bridge/probe-next");
-  if (probeWork) {
-    busy = true;
-    try {
-      await runIntegrationProbe(probeWork);
-    } finally {
-      busy = false;
-    }
+  } finally {
+    polling = false;
   }
 }
 

@@ -4127,9 +4127,25 @@ function denyInvocation(approval, invocation, decidedBy = "usr_local") {
   cleanupEphemeralWorktree(invocation);
 }
 
+// The working directory an invocation runs in. Two invocations that share a cwd
+// must not run concurrently (their writes would collide); distinct worktrees
+// (and per-run ephemeral worktrees) have distinct cwds and can run in parallel.
+function invocationDirKey(invocation) {
+  return invocation.workingDirectory || "__default__";
+}
+
 function nextDispatchableInvocation() {
+  // Directories occupied by an in-flight invocation — skip a queued task whose
+  // cwd is busy so the bridge can run other worktrees concurrently without two
+  // agents writing the same directory.
+  const busyDirs = new Set(
+    state.invocations.filter((i) => ["dispatching", "running", "cancelling"].includes(i.status)).map(invocationDirKey),
+  );
   return state.invocations.find((item) => {
     if (item.status !== "queued" || !["queued", "redelivering"].includes(item.delivery.state)) {
+      return false;
+    }
+    if (busyDirs.has(invocationDirKey(item))) {
       return false;
     }
     const agent = findAgent(item.agentId);
