@@ -5,6 +5,7 @@ import { Input, Select } from "@/components/ui/input";
 import { Field } from "@/components/common/field";
 import { useConsoleState } from "@/data/use-console-state";
 import { useAsyncAction, api } from "@/data/use-console-actions";
+import { slugifyTitle, worktreeLinkFor } from "@/features/projects/worktree-payload";
 import { cn } from "@/lib/cn";
 
 type GithubItem = {
@@ -22,8 +23,7 @@ type Tab = "smart" | "github" | "branch" | "name";
 
 // Branch name for a worktree created from an issue: "<number>-<title slug>".
 function issueBranchName(item: GithubItem): string {
-  const slug = item.title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40) || "issue";
-  return `${item.number}-${slug}`;
+  return `${item.number}-${slugifyTitle(item.title)}`;
 }
 
 // Meaningful words for matching a free-text description against issue titles.
@@ -204,10 +204,7 @@ export function WorktreeCreator({
     const startPoint = baseBranch || undefined;
     // Carry the GitHub link so the worktree can show its issue/PR card later.
     // Smart mode can also link a recommended issue while creating a new branch.
-    const link =
-      (tab === "github" || tab === "smart") && ghSel
-        ? { type: ghSel.type, number: ghSel.number, title: ghSel.title, url: ghSel.url, state: ghSel.state }
-        : undefined;
+    const link = (tab === "github" || tab === "smart") && ghSel ? worktreeLinkFor(ghSel) : undefined;
     const payload =
       tab === "github" && ghSel?.type === "pr"
         ? { prNumber: ghSel.number, agentId, link }

@@ -7,6 +7,7 @@ import { Input, Select, Textarea } from "@/components/ui/input";
 import { Field } from "@/components/common/field";
 import { Modal } from "@/components/ui/modal";
 import { EmptyState } from "@/components/common/empty-state";
+import { FactList } from "@/components/common/fact-list";
 import { useConsoleState } from "@/data/use-console-state";
 import { useAsyncAction, api } from "@/data/use-console-actions";
 import { useUiStore } from "@/store/ui-store";
@@ -227,9 +228,9 @@ export function AutomationView() {
             ) : (
               <>
             <div className="rounded-lg border border-border p-4">
-              <FactGrid
-                cols="grid-cols-2 sm:grid-cols-3 lg:grid-cols-4"
-                items={[
+              <FactList
+                columns="grid-cols-2 sm:grid-cols-3 lg:grid-cols-4"
+                facts={[
                   { term: "Schedule", value: selected.schedule.label },
                   { term: "Next run", value: selected.nextRunAt ? new Date(selected.nextRunAt).toLocaleString() : selected.enabled ? "—" : "Paused" },
                   { term: "Run location", value: selected.branch ?? "—" },
@@ -242,13 +243,11 @@ export function AutomationView() {
               />
             </div>
             <div className="rounded-lg border border-border p-4">
-              <FactGrid
-                cols="grid-cols-2 sm:grid-cols-4"
-                items={[
+              <FactList
+                columns="grid-cols-2"
+                facts={[
                   { term: "Last run", value: selected.lastRunAt ? new Date(selected.lastRunAt).toLocaleString() : "Never" },
                   { term: "Runs", value: String(selected.runCount ?? 0) },
-                  { term: "Tokens", value: String(selected.tokens ?? 0) },
-                  { term: "Usage", value: (selected.runCount ?? 0) > 0 ? `${selected.runCount} run(s)` : "No runs" },
                 ]}
               />
             </div>
@@ -474,20 +473,6 @@ function AutomationForm({ automation, onDone }: { automation?: AutomationSnapsho
         </Button>
       </div>
       {error ? <p className="text-xs text-destructive">{error}</p> : null}
-    </div>
-  );
-}
-
-// Horizontal labelled-fact grid (the overview cards in the detail pane).
-function FactGrid({ cols, items }: { cols: string; items: { term: string; value: string }[] }) {
-  return (
-    <div className={cn("grid gap-4", cols)}>
-      {items.map((f) => (
-        <div key={f.term} className="min-w-0">
-          <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{f.term}</p>
-          <p className="mt-0.5 text-sm text-foreground [overflow-wrap:anywhere]">{f.value}</p>
-        </div>
-      ))}
     </div>
   );
 }

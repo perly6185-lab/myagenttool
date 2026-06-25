@@ -10,6 +10,7 @@ import { EmptyState } from "@/components/common/empty-state";
 import { useConsoleState } from "@/data/use-console-state";
 import { useAsyncAction, api } from "@/data/use-console-actions";
 import { useUiStore } from "@/store/ui-store";
+import { slugifyTitle, worktreeLinkFor } from "@/features/projects/worktree-payload";
 import { cn } from "@/lib/cn";
 import { readableStatus, statusTone } from "@/lib/readable-labels";
 
@@ -48,13 +49,25 @@ export function TaskView() {
     [state?.projects],
   );
 
+  // Index once instead of scanning per row: a worktree by its linked item, and a
+  // worktree's newest run (invocations are newest-first, so the first wins).
+  const worktreeByLink = useMemo(() => {
+    const map = new Map<string, (typeof worktrees)[number]>();
+    for (const w of worktrees) if (w.link) map.set(`${w.projectId}:${w.link.type}:${w.link.number}`, w);
+    return map;
+  }, [worktrees]);
+  const latestRunByWorktree = useMemo(() => {
+    const map = new Map<string, (typeof invocations)[number]>();
+    for (const i of invocations) if (i.worktreeId && !map.has(i.worktreeId)) map.set(i.worktreeId, i);
+    return map;
+  }, [invocations]);
   // A worktree already linked to this item (so the row offers "Open" not "Create").
   function linkedWorktree(row: Row) {
-    return worktrees.find((w) => w.projectId === row.projectId && w.link?.type === row.type && w.link?.number === row.number) ?? null;
+    return worktreeByLink.get(`${row.projectId}:${row.type}:${row.number}`) ?? null;
   }
-  // The newest run in a worktree (invocations are newest-first) for its status.
+  // The newest run in a worktree, for its status badge.
   function latestRun(worktreeId: string) {
-    return invocations.find((i) => i.worktreeId === worktreeId) ?? null;
+    return latestRunByWorktree.get(worktreeId) ?? null;
   }
   function openWorktree(worktreeId: string, projectId: string) {
     setSelectedProjectId(projectId);
@@ -318,7 +331,7 @@ function WorktreeOptionsForm({ row, onDone }: { row: Row; onDone: (wt: { id: str
   }
 
   function create() {
-    const link = { type: row.type, number: row.number, title: row.title, url: row.url, state: row.state };
+    const link = worktreeLinkFor(row);
     const payload = isPr
       ? { prNumber: row.number, agentId: agentId || undefined, link }
       : { name: branch.trim() || branchFromIssue(row), startPoint: base.trim() || undefined, agentId: agentId || undefined, link };
@@ -377,11 +390,5 @@ function WorktreeOptionsForm({ row, onDone }: { row: Row; onDone: (wt: { id: str
 
 // Branch name for a new worktree off an issue: issue-<n>-<slugified title>.
 function branchFromIssue(row: Row): string {
-  const slug =
-    row.title
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, "-")
-      .replace(/^-+|-+$/g, "")
-      .slice(0, 40) || "work";
-  return `issue-${row.number}-${slug}`;
+  return `issue-${row.number}-${slugifyTitle(row.title)}`;
 }
