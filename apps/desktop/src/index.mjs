@@ -27,7 +27,8 @@ if (process.argv.includes("--check")) {
 // just the bridge's local ceiling, seeded from the device value at register with
 // the env as a fallback. A live increase applies on the next reconnect; the
 // server enforces decreases immediately.
-let maxConcurrent = Math.max(1, Math.floor(Number(process.env.BRIDGE_MAX_CONCURRENT ?? 3)) || 3);
+const envMaxConcurrent = Math.floor(Number(process.env.BRIDGE_MAX_CONCURRENT));
+let maxConcurrent = Number.isFinite(envMaxConcurrent) ? Math.max(1, Math.min(16, envMaxConcurrent)) : 3;
 const inFlight = new Set();
 let polling = false;
 let stopped = false;

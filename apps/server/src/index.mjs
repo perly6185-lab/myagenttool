@@ -36,8 +36,10 @@ const port = Number(process.env.SERVER_PORT ?? 3001);
 const dispatchLeaseMs = Number(process.env.SERVER_DISPATCH_LEASE_MS ?? 30_000);
 // Default cross-worktree concurrency for the device. The authoritative limit
 // lives on the device record (state.device.maxConcurrency, tunable via the
-// Devices UI); this env only seeds the initial value.
-const DEFAULT_MAX_CONCURRENCY = Math.max(1, Math.floor(Number(process.env.BRIDGE_MAX_CONCURRENT ?? 3)) || 3);
+// Devices UI); this env only seeds the initial value. Clamped to the same 1–16
+// range PATCH/load enforce so the env can't seed an unbounded cap.
+const ENV_MAX_CONCURRENCY = Math.floor(Number(process.env.BRIDGE_MAX_CONCURRENT));
+const DEFAULT_MAX_CONCURRENCY = Number.isFinite(ENV_MAX_CONCURRENCY) ? Math.max(1, Math.min(16, ENV_MAX_CONCURRENCY)) : 3;
 
 // JSON snapshot persistence (orca-style flat file + schema version). SQLite is a
 // P1+ concern; for now durability matters most for projects/ledger/budgets.
@@ -47,7 +49,7 @@ const PERSIST_FILE = process.env.SERVER_STATE_FILE
   : path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "data", "state.json");
 // "device" is written so its maxConcurrency setting survives restarts; the load
 // path restores only that field (the rest of the device is runtime state).
-const PERSIST_KEYS = ["device", "users", "teams", "tokens", "projects", "projectTargets", "worktrees", "agents", "automations", "invocations", "ledgerEntries", "budgets", "quotaDecisionRecords"];
+const PERSIST_KEYS = ["device", "users", "teams", "tokens", "projects", "projectTargets", "worktrees", "agents", "skills", "automations", "invocations", "ledgerEntries", "budgets", "quotaDecisionRecords"];
 let persistTimer = null;
 
 // Identity Phase 2 (auth). When MYAGENT_REQUIRE_AUTH=1, every non-public route
@@ -129,6 +131,33 @@ const state = {
   ],
   projectTargets: [],
   worktrees: [],
+  // Skill library: agent-targeted instruction docs rendered into ephemeral
+  // worktrees in each agent's native format. The seed "image-edit" skill drives
+  // the shared image-tool capability (claude via MCP, codex via CLI).
+  skills: [
+    {
+      id: "skl_image_edit",
+      name: "Image Edit",
+      slug: "image-edit",
+      description: "Edit or generate images from a reference image and a text prompt.",
+      body: [
+        "Use this when the task asks to edit, retouch, restyle, or generate an image",
+        "(改图 / 编辑图片 / 抠图 / 换背景 / 生成图片).",
+        "",
+        "- claude: call the `edit_image` tool exposed by the `image-tool` MCP server.",
+        "- codex: run the CLI `node packages/image-tool/cli.mjs --input <path> --prompt <text> --output <path>`.",
+        "",
+        "Always pass an explicit output path and report it back when done."
+      ].join("\n"),
+      targets: ["claude", "codex"],
+      tool: {
+        cli: "node packages/image-tool/cli.mjs",
+        mcp: { name: "image-tool", command: "node", args: ["packages/image-tool/mcp-server.mjs"] }
+      },
+      enabled: true,
+      createdAt: now()
+    }
+  ],
   agents: [
     {
       id: "agt_demo_cli",
@@ -555,6 +584,41 @@ const server = http.createServer(async (req, res) => {
         return;
       }
       sendJson(res, 200, { project });
+      return;
+    }
+
+    if (req.method === "GET" && url.pathname === "/api/skills") {
+      sendJson(res, 200, { skills: state.skills });
+      return;
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/skills") {
+      const body = await readJson(req);
+      try {
+        sendJson(res, 201, { skill: createSkill(body) });
+      } catch (error) {
+        sendJson(res, 400, { error: "invalid_skill", message: error instanceof Error ? error.message : String(error) });
+      }
+      return;
+    }
+
+    const skillMatch = url.pathname.match(/^\/api\/skills\/([^/]+)$/);
+    if (req.method === "PATCH" && skillMatch) {
+      const body = await readJson(req);
+      try {
+        sendJson(res, 200, { skill: updateSkill(decodeURIComponent(skillMatch[1]), body) });
+      } catch (error) {
+        sendJson(res, 404, { error: "skill_not_found", message: error instanceof Error ? error.message : String(error) });
+      }
+      return;
+    }
+    if (req.method === "DELETE" && skillMatch) {
+      try {
+        deleteSkill(decodeURIComponent(skillMatch[1]));
+        sendJson(res, 200, { ok: true });
+      } catch (error) {
+        sendJson(res, 404, { error: "skill_not_found", message: error instanceof Error ? error.message : String(error) });
+      }
       return;
     }
 
@@ -1092,6 +1156,7 @@ const server = http.createServer(async (req, res) => {
         return;
       }
       redeliverExpiredDispatches();
+      reclaimStuckCancellations();
       const invocation = nextDispatchableInvocation();
 
       if (!invocation) {
@@ -1734,6 +1799,176 @@ function updateProject(projectId, patch) {
   project.updatedAt = now();
   persistState();
   return project;
+}
+
+// --- Skills: agent-targeted instruction docs -----------------------------
+// A Skill is stored centrally and rendered into an invocation's ephemeral
+// worktree in the running agent's native format. `targets` decides which agent
+// kinds (codex/claude) receive it.
+const SKILL_TARGETS = ["claude", "codex"];
+
+function slugify(value) {
+  return String(value ?? "")
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 64);
+}
+
+function findSkill(skillId) {
+  return state.skills.find((s) => s.id === skillId) ?? null;
+}
+
+function normalizeSkillTargets(value, fallback = []) {
+  if (!Array.isArray(value)) return fallback;
+  const seen = SKILL_TARGETS.filter((t) => value.includes(t));
+  return seen;
+}
+
+function normalizeSkillTool(value) {
+  if (!value || typeof value !== "object") return undefined;
+  const tool = {};
+  if (typeof value.cli === "string" && value.cli.trim()) tool.cli = value.cli.trim();
+  if (value.mcp && typeof value.mcp === "object" && typeof value.mcp.name === "string" && typeof value.mcp.command === "string") {
+    tool.mcp = {
+      name: value.mcp.name,
+      command: value.mcp.command,
+      args: Array.isArray(value.mcp.args) ? value.mcp.args.map(String) : undefined,
+      env: value.mcp.env && typeof value.mcp.env === "object" ? value.mcp.env : undefined
+    };
+  }
+  return Object.keys(tool).length ? tool : undefined;
+}
+
+function createSkill(body) {
+  const name = String(body.name ?? "").trim();
+  if (!name) throw new Error("Skill name is required.");
+  const slug = slugify(body.slug || name) || `skill-${state.skills.length + 1}`;
+  const skill = {
+    id: nextId("skl"),
+    name,
+    slug,
+    description: String(body.description ?? "").trim(),
+    body: String(body.body ?? ""),
+    targets: normalizeSkillTargets(body.targets, ["claude"]),
+    tool: normalizeSkillTool(body.tool),
+    enabled: body.enabled === undefined ? true : Boolean(body.enabled),
+    createdAt: now(),
+    updatedAt: now()
+  };
+  state.skills.push(skill);
+  persistState();
+  return skill;
+}
+
+function updateSkill(skillId, patch) {
+  const skill = findSkill(skillId);
+  if (!skill) throw new Error("Skill not found.");
+  if (patch.name !== undefined) skill.name = String(patch.name).trim() || skill.name;
+  if (patch.slug !== undefined) skill.slug = slugify(patch.slug) || skill.slug;
+  if (patch.description !== undefined) skill.description = String(patch.description).trim();
+  if (patch.body !== undefined) skill.body = String(patch.body);
+  if (patch.targets !== undefined) skill.targets = normalizeSkillTargets(patch.targets, skill.targets);
+  if (patch.tool !== undefined) skill.tool = normalizeSkillTool(patch.tool);
+  if (patch.enabled !== undefined) skill.enabled = Boolean(patch.enabled);
+  skill.updatedAt = now();
+  persistState();
+  return skill;
+}
+
+function deleteSkill(skillId) {
+  const before = state.skills.length;
+  state.skills = state.skills.filter((s) => s.id !== skillId);
+  if (state.skills.length === before) throw new Error("Skill not found.");
+  persistState();
+}
+
+// Which coding-agent CLI an agent wraps, so we can pick its native skill format.
+// Reuses the same command detection the registration path uses.
+function agentKind(agent) {
+  const command = agent?.adapter?.type === "cli" ? agent.adapter.command : null;
+  if (!command) return null;
+  if (isCodexCliCommand(command)) return "codex";
+  if (isClaudeCliCommand(command)) return "claude";
+  return null;
+}
+
+// Render the skills that apply to `agent` into its ephemeral worktree, in the
+// agent's native format. Only ever called for freshly-created ephemeral
+// worktrees, so the user's persistent checkout is never touched. Best-effort:
+// any failure is logged and skipped rather than blocking the invocation.
+const SKILL_BLOCK_START = "<!-- myagent:skills:start -->";
+const SKILL_BLOCK_END = "<!-- myagent:skills:end -->";
+
+function gitExclude(wtPath, entries) {
+  // Keep rendered files out of the branch so worktree cleanup never commits them.
+  try {
+    const excludePath = path.join(wtPath, ".git", "info", "exclude");
+    if (!fs.existsSync(path.dirname(excludePath))) return;
+    const existing = fs.existsSync(excludePath) ? fs.readFileSync(excludePath, "utf8") : "";
+    const missing = entries.filter((e) => !existing.split(/\r?\n/).includes(e));
+    if (missing.length) fs.appendFileSync(excludePath, (existing.endsWith("\n") || !existing ? "" : "\n") + missing.join("\n") + "\n");
+  } catch {
+    // Non-fatal: exclude is a tidiness optimization, not correctness.
+  }
+}
+
+function renderSkillsIntoWorktree(agent, wtPath) {
+  const kind = agentKind(agent);
+  if (!kind || !wtPath) return;
+  const applicable = state.skills.filter((s) => s.enabled && Array.isArray(s.targets) && s.targets.includes(kind));
+  if (!applicable.length) return;
+  const root = path.resolve(wtPath);
+  const inside = (p) => {
+    const resolved = path.resolve(root, p);
+    return resolved === root || resolved.startsWith(root + path.sep);
+  };
+  try {
+    if (kind === "claude") {
+      const mcpServers = {};
+      for (const skill of applicable) {
+        const dir = path.join(root, ".claude", "skills", skill.slug);
+        if (!inside(dir)) continue;
+        fs.mkdirSync(dir, { recursive: true });
+        const frontmatter = `---\nname: ${skill.name}\ndescription: ${skill.description}\n---\n\n`;
+        fs.writeFileSync(path.join(dir, "SKILL.md"), frontmatter + skill.body + "\n");
+        if (skill.tool?.mcp) {
+          mcpServers[skill.tool.mcp.name] = {
+            command: skill.tool.mcp.command,
+            ...(skill.tool.mcp.args ? { args: skill.tool.mcp.args } : {}),
+            ...(skill.tool.mcp.env ? { env: skill.tool.mcp.env } : {})
+          };
+        }
+      }
+      if (Object.keys(mcpServers).length) {
+        fs.writeFileSync(path.join(root, ".mcp.json"), JSON.stringify({ mcpServers }, null, 2) + "\n");
+      }
+      gitExclude(root, [".claude/", ".mcp.json"]);
+    } else if (kind === "codex") {
+      const sections = applicable.map((skill) => {
+        const lines = [`## ${skill.name}`, "", skill.description, "", skill.body];
+        if (skill.tool?.cli) lines.push("", `Tool: run \`${skill.tool.cli}\` to invoke this capability.`);
+        return lines.join("\n");
+      });
+      const block = `${SKILL_BLOCK_START}\n# Skills\n\n${sections.join("\n\n---\n\n")}\n${SKILL_BLOCK_END}`;
+      const agentsPath = path.join(root, "AGENTS.md");
+      let existing = "";
+      const preexisting = fs.existsSync(agentsPath);
+      if (preexisting) existing = fs.readFileSync(agentsPath, "utf8");
+      let next;
+      if (existing.includes(SKILL_BLOCK_START) && existing.includes(SKILL_BLOCK_END)) {
+        next = existing.replace(new RegExp(`${SKILL_BLOCK_START}[\\s\\S]*?${SKILL_BLOCK_END}`), block);
+      } else {
+        next = existing ? `${existing.replace(/\s*$/, "")}\n\n${block}\n` : `${block}\n`;
+      }
+      fs.writeFileSync(agentsPath, next);
+      // Only exclude AGENTS.md when we created it (don't hide a tracked file's diff).
+      if (!preexisting) gitExclude(root, ["AGENTS.md"]);
+    }
+  } catch (error) {
+    console.warn(`[server] skill render failed for ${agent?.id}: ${error instanceof Error ? error.message : String(error)}`);
+  }
 }
 
 // --- Project repositories (targets) + worktrees --------------------------
@@ -3872,7 +4107,11 @@ function createInvocation(task, agent = defaultAgent(), options = {}) {
   let workingDirectory = explicitOk ? explicitWorktree.path : projectWorkingDirectory(projectId);
   if (!explicitOk && project?.isolation === "worktree" && agent.adapter?.type === "cli") {
     const ephemeral = createEphemeralWorktree(project, id);
-    if (ephemeral) workingDirectory = ephemeral.path;
+    if (ephemeral) {
+      workingDirectory = ephemeral.path;
+      // Render skills targeting this agent into the throwaway worktree only.
+      renderSkillsIntoWorktree(agent, ephemeral.path);
+    }
   }
   const invocation = {
     id,
@@ -4165,8 +4404,39 @@ function invocationDirKey(invocation) {
   return invocation.workingDirectory || "__default__";
 }
 
+// Force a terminal status on runs stuck in "cancelling" past a grace (e.g. the
+// bridge died mid-cancel). Otherwise they'd hold a concurrency slot + lock their
+// worktree forever. Grace ≥ the dispatch lease so a legitimately-still-killing
+// process isn't reclaimed early.
+const CANCEL_GRACE_MS = Math.max(60_000, dispatchLeaseMs * 2);
+function reclaimStuckCancellations() {
+  const cutoff = Date.now() - CANCEL_GRACE_MS;
+  for (const invocation of state.invocations) {
+    if (invocation.status !== "cancelling") continue;
+    const since = Date.parse(invocation.cancellation?.requestedAt ?? invocation.updatedAt ?? "");
+    if (Number.isFinite(since) && since > cutoff) continue;
+    completeInvocation(invocation, {
+      status: "cancelled",
+      summary: "Cancellation reclaimed after grace — the bridge did not confirm completion.",
+      result: null,
+    });
+  }
+}
+
+// Bridge-executed = runs on this device's bridge (not a platform/remote-http
+// agent that runs elsewhere). Only these consume the device's concurrency.
+function isBridgeExecuted(invocation) {
+  const agent = findAgent(invocation.agentId);
+  return agent ? !runsWithoutBridge(agent) : true;
+}
+
 function nextDispatchableInvocation() {
-  const inFlight = state.invocations.filter((i) => ["dispatching", "running", "cancelling"].includes(i.status));
+  // Only count bridge-executed runs: a long-running platform/HTTP agent (which
+  // runs off-device and never touches the bridge) must not consume a bridge slot
+  // and starve CLI dispatch.
+  const inFlight = state.invocations.filter(
+    (i) => ["dispatching", "running", "cancelling"].includes(i.status) && isBridgeExecuted(i),
+  );
   // Authoritative cross-worktree concurrency cap: don't dispatch once the device
   // is at its limit, regardless of how the bridge polls.
   if (inFlight.length >= (state.device.maxConcurrency ?? DEFAULT_MAX_CONCURRENCY)) {
@@ -4986,6 +5256,7 @@ function publicState(actor) {
     worktrees,
     agent: defaultAgent(),
     agents: state.agents,
+    skills: state.skills,
     invocations,
     events: state.events,
     traces: state.traces,
