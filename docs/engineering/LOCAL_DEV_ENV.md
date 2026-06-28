@@ -76,9 +76,9 @@ M0 local development should include:
 Current local URLs:
 
 ```text
-Web Console: http://127.0.0.1:3000
-API Server:  http://127.0.0.1:3001
-Health:      http://127.0.0.1:3001/health
+Web Console: http://127.0.0.1:5000
+API Server:  http://127.0.0.1:5001
+Health:      http://127.0.0.1:5001/health
 ```
 
 ## Planned Workspace Shape

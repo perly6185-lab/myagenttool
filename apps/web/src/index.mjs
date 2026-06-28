@@ -10,7 +10,7 @@ const vendorRoots = {
   "/vendor/xterm-addon-fit/": join(__dirname, "..", "node_modules", "@xterm", "addon-fit")
 };
 const host = process.env.WEB_HOST ?? "127.0.0.1";
-const port = Number(process.env.WEB_PORT ?? 3000);
+const port = Number(process.env.WEB_PORT ?? 5000);
 
 if (process.argv.includes("--check")) {
   const required = ["index.html", "app.js", "styles.css"];

@@ -6,7 +6,7 @@ import { delimiter } from "node:path";
 import * as pty from "node-pty";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const serverUrl = process.env.BRIDGE_SERVER_URL ?? "http://127.0.0.1:3001";
+const serverUrl = process.env.BRIDGE_SERVER_URL ?? "http://127.0.0.1:5001";
 const pollIntervalMs = Number(process.env.BRIDGE_POLL_INTERVAL_MS ?? 700);
 const terminalPollIntervalMs = Number(process.env.BRIDGE_TERMINAL_POLL_INTERVAL_MS ?? 40);
 const demoAgentPath = resolve(__dirname, "demo-agent.mjs");

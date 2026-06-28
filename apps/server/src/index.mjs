@@ -6,7 +6,7 @@ import { basename, dirname, isAbsolute, relative, resolve } from "node:path";
 const namespace = "com.myagenttool";
 const protocolVersion = "0.0.0";
 const host = process.env.SERVER_HOST ?? "127.0.0.1";
-const port = Number(process.env.SERVER_PORT ?? 3001);
+const port = Number(process.env.SERVER_PORT ?? 5001);
 const dispatchLeaseMs = Number(process.env.SERVER_DISPATCH_LEASE_MS ?? 30_000);
 const isSelfCheck = process.argv.includes("--check");
 const persistenceEnabled = !isSelfCheck && process.env.MYAGENTTOOL_STATE_DISABLED !== "1";
