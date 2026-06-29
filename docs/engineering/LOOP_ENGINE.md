@@ -1037,6 +1037,8 @@ Operations that can change only local state:
 - `ai:loop-routine-list`, `ai:loop-routine-latest`,
   `ai:loop-routine-show`, and `ai:loop-routine-findings` are read-only local
   inspection commands.
+- `ai:loop-routine-index-rebuild` rebuilds the local compact routine history
+  index at `.myagenttool/state/routine-runs-index.json`.
 - The Web Console routine browser reads local routine-run evidence through
   dedicated read-only endpoints: `GET /api/loop-routines`,
   `GET /api/loop-routines/:runId`, and
@@ -1044,8 +1046,10 @@ Operations that can change only local state:
   compact routine summary/latest id for the current project.
 - CLI inspection, server APIs, and the Web Console use
   `tools/ai/src/loop/routine-inspect.mjs` as the shared routine read model.
-  This API surface does not run routines, enqueue child runs, execute workers,
-  push, create pull requests, or merge pull requests.
+  The read model prefers `.myagenttool/state/routine-runs-index.json` and falls
+  back to scanning `.myagenttool/routine-runs/` when the index is missing or
+  invalid. This API surface does not run routines, enqueue child runs, execute
+  workers, push, create pull requests, or merge pull requests.
 
 Operations that can change remote or GitHub state:
 
@@ -1245,6 +1249,7 @@ pnpm smoke:loop-routine-github-inputs
 pnpm smoke:loop-routine-schedule-plan
 pnpm smoke:loop-routine-schedule-run
 pnpm smoke:loop-routine-inspect
+pnpm smoke:loop-routine-index
 pnpm smoke:loop-routine-fanout-plan
 pnpm smoke:loop-routine-fanout-execute
 pnpm smoke:loop-routine-fanout-enqueue

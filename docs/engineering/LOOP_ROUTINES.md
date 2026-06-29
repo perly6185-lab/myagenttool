@@ -195,6 +195,24 @@ The local server exposes dedicated read-only routine APIs:
 `GET /api/state` only includes compact routine state, such as the latest run id
 and API links. It does not include the full routine run list or findings.
 
+Routine history uses a compact local index:
+
+```text
+.myagenttool/state/routine-runs-index.json
+```
+
+`loop-routine-run`, `loop-routine-fanout-plan`, and
+`loop-routine-fanout-execute` update this index incrementally after writing
+their evidence. `GET /api/loop-routines` and the compact `/api/state` routine
+summary prefer the index; if the index is missing, malformed, or has an invalid
+schema, they fall back to scanning `.myagenttool/routine-runs/` and report the
+fallback status in the `index` field. Operators can repair or recreate the
+index with:
+
+```text
+pnpm ai:loop-routine-index-rebuild
+```
+
 Routine checks execute during non-dry-run execution only. Check commands must
 resolve to an allowlisted command id. The first local allowlist maps:
 
@@ -360,7 +378,7 @@ for smoke tests and alternate installations.
 10. Local routine scheduler plan/run tick. Implemented for manual first-run,
     cooldown, max concurrency state, and simple `@hourly` / `@daily` aliases.
 11. Routine history and finding inspection CLI. Implemented as read-only local
-    commands over `.myagenttool/routine-runs/`.
+    commands over a compact routine-runs index with directory-scan fallback.
 12. Read-only Web Console routine browser. Implemented over local routine-run
     evidence exposed by the server read model.
 13. Full cron/event scheduler and long-lived daemon.
@@ -383,6 +401,7 @@ pnpm smoke:loop-routine-github-inputs
 pnpm smoke:loop-routine-schedule-plan
 pnpm smoke:loop-routine-schedule-run
 pnpm smoke:loop-routine-inspect
+pnpm smoke:loop-routine-index
 pnpm smoke:loop-routine-fanout-plan
 pnpm smoke:loop-routine-fanout-execute
 pnpm smoke:loop-routine-fanout-enqueue

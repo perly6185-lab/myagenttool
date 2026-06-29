@@ -18,8 +18,12 @@ import {
   latestLoopRoutineRunReadModel,
   listLoopRoutineFindingsReadModel,
   listLoopRoutineRunsReadModel,
+  rebuildLoopRoutineRunsIndex,
   showLoopRoutineRunReadModel,
+  updateLoopRoutineRunIndex,
 } from "./routine-inspect.mjs";
+
+export { rebuildLoopRoutineRunsIndex };
 
 const scriptPath = fileURLToPath(import.meta.url);
 const __dirname = dirname(scriptPath);
@@ -402,6 +406,7 @@ export function runLoopRoutine({ routine, sourcePath, dryRun = false, root = rep
     failedRequiredChecks: requiredFailures.map((check) => check.id),
     eventsWritten: events.length,
   };
+  updateLoopRoutineRunIndex({ routineRunId: runId, root, updateReason: "routine-run" });
   if (requiredFailures.length > 0) {
     const ids = requiredFailures.map((check) => check.id).join(", ");
     const error = new Error(`Loop routine required check(s) failed: ${ids}`);
@@ -711,6 +716,7 @@ export function planLoopRoutineFanout({ routineRunId, root = repoRoot }) {
     skippedCount: plan.skippedCount,
     plan: routineRunPath(routineRunId, "fanout-plan.json"),
   });
+  updateLoopRoutineRunIndex({ routineRunId, root, updateReason: "fanout-plan" });
   return {
     routineRunId,
     planPath: routineRunPath(routineRunId, "fanout-plan.json"),
@@ -818,6 +824,7 @@ export function executeLoopRoutineFanout({
     approval,
     result: routineRunPath(routineRunId, "fanout-result.json"),
   });
+  updateLoopRoutineRunIndex({ routineRunId, root, updateReason: "fanout-execute" });
   return {
     routineRunId,
     resultPath: routineRunPath(routineRunId, "fanout-result.json"),

@@ -76,6 +76,7 @@ import {
   loopRoutineFanoutPlan,
   loopRoutineFindings,
   loopRoutineCheck,
+  loopRoutineIndexRebuild,
   loopRoutineLatest,
   loopRoutineList,
   loopRoutinePlan,
@@ -193,6 +194,7 @@ Usage:
   node tools/ai/src/index.mjs loop-routine-latest --routine ID [--json]
   node tools/ai/src/index.mjs loop-routine-show --routine-run RUN_ID [--json]
   node tools/ai/src/index.mjs loop-routine-findings --routine-run RUN_ID [--severity low|medium|high] [--with-suggested-run] [--json]
+  node tools/ai/src/index.mjs loop-routine-index-rebuild [--json]
   node tools/ai/src/index.mjs loop-routine-schedule-plan [--no-examples] [--json]
   node tools/ai/src/index.mjs loop-routine-schedule-run [--no-examples] [--dry-run] [--limit N] [--json]
   node tools/ai/src/index.mjs loop-routine-fanout-plan --routine-run RUN_ID [--json]
@@ -665,6 +667,11 @@ function main() {
 
   if (command === "loop-routine-findings") {
     loopRoutineFindings(args);
+    return;
+  }
+
+  if (command === "loop-routine-index-rebuild") {
+    loopRoutineIndexRebuild(args);
     return;
   }
 

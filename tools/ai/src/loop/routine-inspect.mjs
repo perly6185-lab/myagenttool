@@ -1,7 +1,9 @@
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
-import { relative, resolve } from "node:path";
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { dirname, relative, resolve } from "node:path";
 
 export const LOOP_ROUTINE_INSPECT_SCHEMA_VERSION = 1;
+export const LOOP_ROUTINE_RUNS_INDEX_SCHEMA_VERSION = 1;
+export const LOOP_ROUTINE_RUNS_INDEX_PATH = ".myagenttool/state/routine-runs-index.json";
 
 const ROUTINE_READ_MODEL_BOUNDARIES = [
   "This read model is local and read-only.",
@@ -21,25 +23,29 @@ export function listLoopRoutineRunsReadModel({
   mode = "cli",
   useCache = false,
   cacheTtlMs = 2000,
+  preferIndex = true,
 } = {}) {
   const rootPath = resolveRequiredRoot(root);
   const runsRoot = resolve(rootPath, ".myagenttool/routine-runs");
   const safeLimit = positiveIntegerOr(limit, 20);
-  const cacheKey = JSON.stringify({ root: rootPath, projectId, routineId, status, limit: safeLimit, mode });
+  const indexPath = routineRunsIndexPath(rootPath);
+  const indexMtimeMs = existsSync(indexPath) ? statSync(indexPath).mtimeMs : 0;
   const directoryMtimeMs = existsSync(runsRoot) ? statSync(runsRoot).mtimeMs : 0;
+  const cacheKey = JSON.stringify({ root: rootPath, projectId, routineId, status, limit: safeLimit, mode, preferIndex });
+  const cacheMtimeMs = preferIndex && indexMtimeMs ? indexMtimeMs : directoryMtimeMs;
   if (
     useCache
     && readModelCache
     && readModelCache.cacheKey === cacheKey
-    && readModelCache.directoryMtimeMs === directoryMtimeMs
+    && readModelCache.cacheMtimeMs === cacheMtimeMs
     && Date.now() - readModelCache.cachedAtMs < cacheTtlMs
   ) {
     return readModelCache.value;
   }
 
-  const runs = discoverRoutineRunIds(rootPath)
-    .map((routineRunId) => routineRunSummary({ routineRunId, root: rootPath, mode }))
-    .filter(Boolean)
+  const indexed = preferIndex ? readRoutineRunsIndex({ root: rootPath, mode }) : null;
+  const source = indexed?.ok ? "index" : "scan";
+  const runs = (indexed?.ok ? indexed.index.runs : scanRoutineRuns({ root: rootPath, mode }))
     .filter((run) => !routineId || run.routineId === routineId)
     .filter((run) => !status || run.status === status)
     .sort((left, right) => String(right.startedAt ?? right.routineRunId).localeCompare(String(left.startedAt ?? left.routineRunId)))
@@ -54,6 +60,14 @@ export function listLoopRoutineRunsReadModel({
     runCount: runs.length,
     latestRunId: runs[0]?.routineRunId ?? null,
     filters: { routineId, status, limit: safeLimit },
+    index: {
+      source,
+      status: indexed?.ok ? "ok" : indexed?.status ?? "not_found",
+      path: LOOP_ROUTINE_RUNS_INDEX_PATH,
+      fallback: source === "scan",
+      runCount: indexed?.ok ? indexed.index.runCount : null,
+      error: indexed?.ok ? null : indexed?.error ?? null,
+    },
     runs,
     boundaries: ROUTINE_READ_MODEL_BOUNDARIES,
   };
@@ -61,12 +75,42 @@ export function listLoopRoutineRunsReadModel({
   if (useCache) {
     readModelCache = {
       cacheKey,
-      directoryMtimeMs,
+      cacheMtimeMs,
       cachedAtMs: Date.now(),
       value,
     };
   }
   return value;
+}
+
+export function rebuildLoopRoutineRunsIndex({ root, mode = "ui" } = {}) {
+  const rootPath = resolveRequiredRoot(root);
+  const runs = scanRoutineRuns({ root: rootPath, mode });
+  return writeRoutineRunsIndex({
+    root: rootPath,
+    runs,
+    updateReason: "rebuild",
+  });
+}
+
+export function updateLoopRoutineRunIndex({ routineRunId, root, mode = "ui", updateReason = "incremental" } = {}) {
+  const rootPath = resolveRequiredRoot(root);
+  const summary = routineRunSummary({ routineRunId, root: rootPath, mode });
+  if (!summary) return rebuildLoopRoutineRunsIndex({ root: rootPath, mode });
+  const current = readRoutineRunsIndex({ root: rootPath, mode });
+  if (!current?.ok) {
+    return rebuildLoopRoutineRunsIndex({ root: rootPath, mode });
+  }
+  const runs = [
+    summary,
+    ...arrayOr(current.index.runs, []).filter((run) => run.routineRunId !== routineRunId),
+  ].sort((left, right) => String(right.startedAt ?? right.routineRunId).localeCompare(String(left.startedAt ?? left.routineRunId)));
+  return writeRoutineRunsIndex({
+    root: rootPath,
+    runs,
+    previousGeneratedAt: current.index.generatedAt ?? null,
+    updateReason,
+  });
 }
 
 export function latestLoopRoutineRunReadModel({ routineId, root } = {}) {
@@ -120,12 +164,52 @@ export function compactLoopRoutineStateSummary({ root, projectId = null, project
     projectPath: result.projectPath,
     runCount: result.runCount,
     latestRunId: result.latestRunId,
+    index: result.index,
     api: {
       list: "/api/loop-routines",
       show: result.latestRunId ? `/api/loop-routines/${encodeURIComponent(result.latestRunId)}` : null,
       findings: result.latestRunId ? `/api/loop-routines/${encodeURIComponent(result.latestRunId)}/findings` : null,
     },
     boundaries: ROUTINE_READ_MODEL_BOUNDARIES,
+  };
+}
+
+export function readRoutineRunsIndex({ root, mode = "ui" } = {}) {
+  const rootPath = resolveRequiredRoot(root);
+  const path = routineRunsIndexPath(rootPath);
+  if (!existsSync(path)) {
+    return { ok: false, status: "not_found", path: LOOP_ROUTINE_RUNS_INDEX_PATH, error: null, index: null };
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(readFileSync(path, "utf8"));
+  } catch (error) {
+    return {
+      ok: false,
+      status: "invalid_json",
+      path: LOOP_ROUTINE_RUNS_INDEX_PATH,
+      error: error instanceof Error ? error.message : String(error),
+      index: null,
+    };
+  }
+  if (!isObject(parsed) || parsed.schemaVersion !== LOOP_ROUTINE_RUNS_INDEX_SCHEMA_VERSION || !Array.isArray(parsed.runs)) {
+    return {
+      ok: false,
+      status: "invalid_schema",
+      path: LOOP_ROUTINE_RUNS_INDEX_PATH,
+      error: "Routine runs index schema is invalid.",
+      index: null,
+    };
+  }
+  return {
+    ok: true,
+    status: "ok",
+    path: LOOP_ROUTINE_RUNS_INDEX_PATH,
+    index: {
+      ...parsed,
+      runs: parsed.runs.map((run) => normalizeIndexedRun(run, mode)).filter(Boolean),
+    },
+    error: null,
   };
 }
 
@@ -171,6 +255,82 @@ export function routineRunSummary({ routineRunId, root, mode = "cli" }) {
   };
 }
 
+function scanRoutineRuns({ root, mode }) {
+  return discoverRoutineRunIds(root)
+    .map((routineRunId) => routineRunSummary({ routineRunId, root, mode }))
+    .filter(Boolean);
+}
+
+function writeRoutineRunsIndex({ root, runs, previousGeneratedAt = null, updateReason }) {
+  const rootPath = resolveRequiredRoot(root);
+  const path = routineRunsIndexPath(rootPath);
+  mkdirSync(dirname(path), { recursive: true });
+  const sortedRuns = arrayOr(runs, [])
+    .map((run) => normalizeIndexedRun(run, "ui"))
+    .filter(Boolean)
+    .sort((left, right) => String(right.startedAt ?? right.routineRunId).localeCompare(String(left.startedAt ?? left.routineRunId)));
+  const index = {
+    schemaVersion: LOOP_ROUTINE_RUNS_INDEX_SCHEMA_VERSION,
+    generatedAt: new Date().toISOString(),
+    previousGeneratedAt,
+    updateReason,
+    runCount: sortedRuns.length,
+    latestRunId: sortedRuns[0]?.routineRunId ?? null,
+    runs: sortedRuns,
+    boundaries: ROUTINE_READ_MODEL_BOUNDARIES,
+  };
+  writeFileSync(path, `${JSON.stringify(index, null, 2)}\n`, "utf8");
+  readModelCache = null;
+  return {
+    schemaVersion: LOOP_ROUTINE_INSPECT_SCHEMA_VERSION,
+    indexPath: LOOP_ROUTINE_RUNS_INDEX_PATH,
+    index,
+  };
+}
+
+function normalizeIndexedRun(run, mode) {
+  if (!isObject(run) || !stringOr(run.routineRunId, "")) return null;
+  const base = {
+    routineRunId: stringOr(run.routineRunId, ""),
+    routineId: stringOr(run.routineId, "routine"),
+    status: stringOr(run.status, "unknown"),
+    runDir: stringOr(run.runDir, ""),
+    startedAt: run.startedAt ?? null,
+    completedAt: run.completedAt ?? null,
+    findingCount: numberOr(run.findingCount, run.summary?.findingCount ?? 0),
+    suggestedRunCount: numberOr(run.suggestedRunCount, run.summary?.suggestedRunCount ?? 0),
+    failedCheckCount: numberOr(run.failedCheckCount, run.summary?.failedCheckCount ?? 0),
+    fanoutCandidateCount: nullableNumber(run.fanoutCandidateCount ?? run.summary?.fanoutCandidateCount),
+    fanoutCreatedCount: nullableNumber(run.fanoutCreatedCount ?? run.summary?.fanoutCreatedCount),
+    evidence: arrayOr(run.evidence, []),
+  };
+  if (mode !== "ui" && mode !== "summary") return base;
+  const summary = isObject(run.summary) ? run.summary : {};
+  return {
+    ...base,
+    name: stringOr(run.name, run.routineId ?? "Routine"),
+    summary: {
+      name: summary.name ?? run.name ?? null,
+      sourcePath: summary.sourcePath ?? null,
+      inputCount: numberOr(summary.inputCount, 0),
+      skillCount: numberOr(summary.skillCount, 0),
+      checkCount: numberOr(summary.checkCount, 0),
+      failedCheckCount: numberOr(summary.failedCheckCount, base.failedCheckCount),
+      findingCount: numberOr(summary.findingCount, base.findingCount),
+      suggestedRunCount: numberOr(summary.suggestedRunCount, base.suggestedRunCount),
+      fanoutCandidateCount: nullableNumber(summary.fanoutCandidateCount ?? base.fanoutCandidateCount),
+      fanoutCreatedCount: nullableNumber(summary.fanoutCreatedCount ?? base.fanoutCreatedCount),
+      fanoutEnqueuedCount: nullableNumber(summary.fanoutEnqueuedCount),
+      fanoutWorkerCompletedCount: nullableNumber(summary.fanoutWorkerCompletedCount),
+    },
+    inputs: arrayOr(run.inputs, []),
+    skills: arrayOr(run.skills, []),
+    checks: arrayOr(run.checks, []),
+    findings: arrayOr(run.findings, []),
+    fanout: isObject(run.fanout) ? run.fanout : { plan: null, result: null },
+  };
+}
+
 function routineRunDetail({ run, root, mode }) {
   const routine = readOptionalJsonFile(resolve(run.runDir, "routine.json"));
   const plan = readOptionalJsonFile(resolve(run.runDir, "plan.json"));
@@ -191,7 +351,7 @@ function routineRunDetail({ run, root, mode }) {
     startedAt: events[0]?.createdAt ?? null,
     completedAt: routineRunCompletedAt(events),
     evidence: routineRunEvidencePaths(run.routineRunId, run.runDir),
-    summary: buildRoutineRunSummary({ routine, inputSnapshot, skillSnapshot, checksResult, findings, fanoutPlan, fanoutResult }),
+    summary: buildRoutineRunSummary({ routine, inputSnapshot, skillSnapshot, checksResult, findings, fanoutPlan, fanoutResult, events }),
     inputs: compactInputs(inputSnapshot),
     skills: compactSkills(skillSnapshot),
     checks: compactChecks(checksResult),
@@ -413,8 +573,16 @@ function routineRunPath(runId, file) {
   return `.myagenttool/routine-runs/${runId}/${file}`;
 }
 
+function routineRunsIndexPath(root) {
+  return resolve(root, LOOP_ROUTINE_RUNS_INDEX_PATH);
+}
+
 function relativeRepoPath(path, root) {
   return relative(root, path).replace(/\\/g, "/");
+}
+
+function isObject(value) {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value));
 }
 
 function arrayOr(value, fallback = []) {
@@ -423,4 +591,12 @@ function arrayOr(value, fallback = []) {
 
 function stringOr(value, fallback) {
   return typeof value === "string" && value.trim() ? value : fallback;
+}
+
+function numberOr(value, fallback) {
+  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+
+function nullableNumber(value) {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
 }

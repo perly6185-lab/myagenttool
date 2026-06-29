@@ -17,6 +17,7 @@ import {
   loadLoopRoutineFile,
   planLoopRoutineFanout,
   planLoopRoutineSchedule,
+  rebuildLoopRoutineRunsIndex,
   runLoopRoutineSchedule,
   runLoopRoutine,
   showLoopRoutineRun,
@@ -211,6 +212,26 @@ export function loopRoutineFindings(args) {
     return;
   }
   console.log(formatLoopRoutineFindings(result));
+}
+
+export function loopRoutineIndexRebuild(args) {
+  const result = rebuildLoopRoutineRunsIndex({ root: repoRoot });
+  if (args.includes("--json")) {
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+  console.log(formatLoopRoutineIndexRebuild(result));
+}
+
+function formatLoopRoutineIndexRebuild(result) {
+  return `# Loop Routine Runs Index
+
+Index: ${result.indexPath}
+Runs: ${result.index.runCount}
+Latest: ${result.index.latestRunId ?? "none"}
+Updated: ${result.index.generatedAt}
+Reason: ${result.index.updateReason}
+`;
 }
 
 function optionalPositiveInteger(args, name) {
