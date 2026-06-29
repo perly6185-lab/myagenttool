@@ -370,7 +370,7 @@ h2 {
 
 .task-list-card {
   display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr);
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
   min-height: 0;
   border: 1px solid #e5e8e6;
   border-radius: 10px;
@@ -443,6 +443,11 @@ h2 {
   background: #f7faf8;
 }
 
+.task-list-row[data-active="true"] {
+  background: #edf8f5;
+  box-shadow: inset 3px 0 0 #2f6f73;
+}
+
 .task-list-id {
   color: #6f7b77;
   font-size: 12px;
@@ -513,6 +518,104 @@ h2 {
   color: #17201d;
   font-size: 13px;
   font-weight: 850;
+}
+
+.routine-run-detail {
+  border-top: 1px solid #edf0ee;
+  background: #fbfcfb;
+}
+
+.routine-run-detail-card {
+  display: grid;
+  gap: 14px;
+  padding: 16px;
+}
+
+.routine-run-detail-header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: start;
+}
+
+.routine-run-detail-header h3,
+.routine-run-section h4 {
+  margin: 0;
+  letter-spacing: 0;
+}
+
+.routine-run-detail-header h3 {
+  font-size: 16px;
+}
+
+.routine-run-metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.routine-run-metric {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid #e5e8e6;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.routine-run-metric strong {
+  font-size: 18px;
+}
+
+.routine-run-metric small,
+.routine-boundary-note {
+  color: #6f7b77;
+  font-size: 12px;
+}
+
+.routine-run-section {
+  display: grid;
+  gap: 8px;
+}
+
+.routine-run-section h4 {
+  font-size: 13px;
+}
+
+.routine-finding-list,
+.routine-command-list {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.routine-finding-list li,
+.routine-command-list li {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid #e9edeb;
+  border-radius: 8px;
+  background: #ffffff;
+  overflow-wrap: anywhere;
+}
+
+.routine-finding-list span {
+  color: #5f6d68;
+  font-size: 13px;
+}
+
+.routine-command-list li {
+  font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+  font-size: 12px;
+}
+
+.routine-boundary-note {
+  margin: 0;
 }
 
 .chat-header {

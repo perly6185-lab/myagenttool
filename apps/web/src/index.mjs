@@ -128,7 +128,8 @@ if (process.argv.includes("--check")) {
     [css, ".inline-approval-actions", "inline approval action styling"],
     [js, "readableStatus", "plain-language state mapper"],
     [js, "loopRoutines", "routine read model state"],
-    [js, "routineRunReviewPrompt", "routine run review prompt"],
+    [js, "renderRoutineRunDetail", "routine run detail renderer"],
+    [js, "routineRunCommands", "routine run command list"],
     [js, "pnpm ai:loop-routine-show", "routine read-only inspection command"],
     [js, "readableEventType", "plain-language event mapper"],
     [js, "submitTaskFromComposer", "chat composer submit handler"],
@@ -249,7 +250,10 @@ if (process.argv.includes("--check")) {
     ["data-workspace-mode=\"session\"", "Session workspace surface"],
     ["data-workspace-mode=\"diff\"", "Diff workspace surface"],
     ["data-workspace-mode=\"terminal\"", "Terminal workspace surface"],
-    ["data-workspace-mode=\"approval\"", "Approval workspace surface"]
+    ["data-workspace-mode=\"evidence_center\"", "Evidence workspace surface"],
+    ["data-workspace-mode=\"approval\"", "Approval workspace surface"],
+    ["data-workspace-mode=\"setup\"", "Setup workspace surface"],
+    ["data-workspace-mode=\"import_session\"", "Import evidence workspace surface"]
   ].filter(([marker]) => !workspaceNav.includes(marker));
   const missingContextPanelMarkers = [
     ["connectAgentPanel", "setup-owned connect agent panel"],

@@ -280,6 +280,7 @@ const state = {
 let idCounter = 1;
 const directHttpRuns = new Map();
 let saveStateTimer = null;
+let loopRoutineReadModelCache = null;
 restorePersistentState();
 
 if (isSelfCheck) {
@@ -4645,6 +4646,16 @@ function loopRoutineReadModelForCurrentProject() {
   const project = currentProject();
   const root = project?.path ?? defaultProjectPath;
   const runsRoot = resolve(root, ".myagenttool/routine-runs");
+  const cacheKey = `${project?.id ?? "project"}:${root}`;
+  const directoryMtimeMs = existsSync(runsRoot) ? statSync(runsRoot).mtimeMs : 0;
+  if (
+    loopRoutineReadModelCache
+    && loopRoutineReadModelCache.cacheKey === cacheKey
+    && loopRoutineReadModelCache.directoryMtimeMs === directoryMtimeMs
+    && Date.now() - loopRoutineReadModelCache.cachedAtMs < 2000
+  ) {
+    return loopRoutineReadModelCache.value;
+  }
   const runs = existsSync(runsRoot)
     ? readdirSync(runsRoot, { withFileTypes: true })
       .filter((entry) => entry.isDirectory())
@@ -4653,7 +4664,7 @@ function loopRoutineReadModelForCurrentProject() {
       .sort((left, right) => String(right.startedAt ?? right.routineRunId).localeCompare(String(left.startedAt ?? left.routineRunId)))
       .slice(0, 50)
     : [];
-  return {
+  const value = {
     generatedAt: now(),
     projectId: project?.id ?? null,
     projectPath: root,
@@ -4666,6 +4677,13 @@ function loopRoutineReadModelForCurrentProject() {
       "Mutation still requires explicit Loop Routine CLI commands and approval flags."
     ]
   };
+  loopRoutineReadModelCache = {
+    cacheKey,
+    directoryMtimeMs,
+    cachedAtMs: Date.now(),
+    value
+  };
+  return value;
 }
 
 function loopRoutineRunSummary(root, runDir, routineRunId) {
