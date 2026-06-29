@@ -28,14 +28,6 @@
               <span class="sidebar-nav-icon" aria-hidden="true">&gt;</span>
               <span>自动化</span>
             </button>
-            <button type="button" data-workspace-mode="setup">
-              <span class="sidebar-nav-icon" aria-hidden="true">#</span>
-              <span>Orca Mobile</span>
-            </button>
-            <button type="button" data-workspace-mode="evidence_center">
-              <span class="sidebar-nav-icon" aria-hidden="true">/</span>
-              <span>搜索</span>
-            </button>
           </nav>
 
           <div class="project-sidebar-head">
@@ -184,6 +176,40 @@
 
         <section id="commandPanel" class="command-panel codex-chat-shell" aria-label="Codex conversation">
           <div id="workspaceTabStrip" class="workspace-tab-strip" role="tablist" aria-label="Open conversations"></div>
+          <section id="taskListPanel" class="task-list-panel" aria-label="Loop routine runs" hidden>
+            <div class="task-list-topbar">
+              <div class="task-list-tabs" aria-label="Task source">
+                <button type="button" data-active="true">Routine runs</button>
+                <button type="button">Findings</button>
+                <button type="button">Fanout</button>
+              </div>
+              <button type="button" class="task-list-project">Current project <span aria-hidden="true">⌄</span></button>
+              <button type="button" class="task-list-open" aria-label="Open routine evidence">↗</button>
+            </div>
+            <div class="task-list-card">
+              <div class="task-list-toolbar">
+                <div class="task-list-filters" aria-label="Task filters">
+                  <button type="button" data-active="true">All local runs</button>
+                  <button type="button">Suggested runs</button>
+                </div>
+                <div class="task-list-search">
+                  <span aria-hidden="true">⌕</span>
+                  <input type="search" value="routine:morning-triage" aria-label="Routine run search" />
+                </div>
+                <button id="newTaskFromListButton" type="button" class="task-list-icon" aria-label="New local review">+</button>
+                <button type="button" class="task-list-icon" aria-label="Refresh routine runs">↻</button>
+              </div>
+              <div class="task-list-columns" aria-hidden="true">
+                <span>Run</span>
+                <span>Routine / evidence</span>
+                <span>Checks</span>
+                <span>状态</span>
+                <span>Updated</span>
+                <span></span>
+              </div>
+              <div id="taskListRows" class="task-list-rows" aria-live="polite"></div>
+            </div>
+          </section>
           <div class="chat-header">
             <div>
               <p class="step-label">Codex</p>
@@ -917,6 +943,6 @@
         </aside>
       </section>
     </main>
-    <script src="/app.js" type="module"></script>
+    <script src="/app.js?v=task-page-owner-20260622" type="module"></script>
   </body>
 </html>

@@ -8,8 +8,12 @@ const els = {
   connectionStatus: document.querySelector("#connectionStatus"),
   commandPanel: document.querySelector("#commandPanel"),
   workspaceTabStrip: document.querySelector("#workspaceTabStrip"),
+  taskListPanel: document.querySelector("#taskListPanel"),
+  taskListRows: document.querySelector("#taskListRows"),
+  newTaskFromListButton: document.querySelector("#newTaskFromListButton"),
   runPanel: document.querySelector("#runPanel"),
   contextPanel: document.querySelector(".context-panel"),
+  workspace: document.querySelector(".workspace"),
   terminalSurfaceContext: document.querySelector("#terminalSurfaceContext"),
   terminalRuntimeStatus: document.querySelector("#terminalRuntimeStatus"),
   terminalShellSummary: document.querySelector("#terminalShellSummary"),
@@ -267,6 +271,7 @@ const els = {
 
 let currentInvocationId = null;
 const workspaceTabs = [];
+let activePage = "tasks";
 let workspaceDraftTabOpen = false;
 let selectedAgentId = null;
 let selectedArtifactId = null;
@@ -320,11 +325,28 @@ els.workspaceTabStrip.addEventListener("click", (event) => {
   activateWorkspaceTab(tabButton.dataset.workspaceTabId);
 });
 
+els.taskListRows.addEventListener("click", (event) => {
+  const button = event.target.closest("button[data-routine-run-id]");
+  if (!button) return;
+  openRoutineRunDraft(button.dataset.routineRunId);
+  render(lastState);
+});
+
+els.newTaskFromListButton.addEventListener("click", () => {
+  showWorkspacePage({ draft: true });
+  history.replaceState(null, "", taskWorkspaceUrl());
+  render(lastState);
+});
+
 els.modeTabs.addEventListener("click", (event) => {
   const button = event.target.closest("button[data-workspace-mode]");
   if (!button) return;
 
   activeMode = button.dataset.workspaceMode;
+  if (activeMode === "run_task") {
+    showTasksPage();
+    history.replaceState(null, "", taskListUrl());
+  }
   if (activeMode === "managed_codex") {
     const codexAgent = codexAgentInState(lastState);
     if (codexAgent) selectedAgentId = codexAgent.id;
@@ -1049,8 +1071,7 @@ els.managedSessionHistoryList.addEventListener("click", (event) => {
 
   selectedManagedSessionId = button.dataset.sessionId ?? null;
   if (button.dataset.invocationId) {
-    currentInvocationId = button.dataset.invocationId;
-    activeMode = "run_task";
+    openWorkspaceTab(button.dataset.invocationId, { activate: true });
   }
   selectedManagedChangeEvidenceId = null;
   render(lastState);
@@ -1539,13 +1560,16 @@ function render(state) {
   renderSelectors(state, agents);
   renderCompareAgentChoices(agents);
 
-  if (!workspaceDraftTabOpen && (!currentInvocationId || !state.invocations.some((item) => item.id === currentInvocationId))) {
-    currentInvocationId = state.invocations[0]?.id ?? null;
+  if (activePage === "workspace" && !workspaceDraftTabOpen && (!currentInvocationId || !state.invocations.some((item) => item.id === currentInvocationId))) {
+    currentInvocationId = workspaceTabs.find((tab) => state.invocations.some((item) => item.id === tab.id))?.id ?? null;
   }
-  if (currentInvocationId) openWorkspaceTab(currentInvocationId, { activate: false });
+  if (activePage === "workspace" && currentInvocationId && state.invocations.some((item) => item.id === currentInvocationId)) {
+    openWorkspaceTab(currentInvocationId, { activate: false });
+  }
   syncWorkspaceTabs(state);
+  const taskListActive = activePage === "tasks";
   const draftActive = workspaceDraftTabOpen && !currentInvocationId;
-  const invocation = draftActive ? null : currentInvocation() ?? state.invocations[0] ?? null;
+  const invocation = taskListActive || draftActive ? null : currentInvocation();
   const audit = invocation
     ? state.auditSummaries.find((item) => item.invocationId === invocation.id)
     : null;
@@ -1570,6 +1594,7 @@ function render(state) {
 
   if (invocation && !draftActive) currentInvocationId = invocation.id;
   renderWorkspaceTabs(state);
+  renderTaskList(state);
   const executionEvent = latestExecutionPreview(state, invocation);
   renderMode(state, selectedAgentForMode, invocation, approval);
 
@@ -1619,14 +1644,13 @@ function render(state) {
   els.resultSummary.textContent = resultSummary(invocation, audit);
   renderTroubleshooter(troubleshootingReport);
 
-  const visibleEvents = draftActive
+  const visibleEvents = draftActive || !invocation
     ? []
-    : invocation
-    ? state.events.filter((event) => event.invocationId === invocation.id || event.data?.agentId === agent?.id).slice(0, 30)
-    : state.events.slice(0, 30);
+    : taskEventsForInvocation(state, invocation).slice(0, 30);
   renderApproval(approval);
   renderTimeline(visibleEvents, invocation, state);
   renderComparePanel(state);
+  applyTaskListSurface();
   renderDiscovery(discoveryRun);
   renderSshTargets(state);
   renderIntegrationArtifacts(state.integrationArtifacts ?? [], state.integrationProbeRuns ?? []);
@@ -1702,7 +1726,10 @@ function renderProjects(state) {
   els.addProjectButton.disabled = false;
   els.removeProjectButton.disabled = projects.length <= 1;
   els.createWorktreeButton.disabled = !project;
-  els.projectList.replaceChildren(...projectTreeItems(projects, state.currentProjectId));
+  const highlightedProjectId = activePage === "tasks"
+    ? null
+    : state.currentProjectId;
+  els.projectList.replaceChildren(...projectTreeItems(projects, highlightedProjectId));
   renderProjectTree();
 }
 
@@ -2339,6 +2366,20 @@ function repoSessionUrl(invocationId) {
   const url = new URL(window.location.href);
   url.searchParams.set("invocation", invocationId);
   url.searchParams.set("mode", "run_task");
+  return url.toString();
+}
+
+function taskListUrl() {
+  const url = new URL(window.location.href);
+  url.searchParams.delete("invocation");
+  url.searchParams.set("mode", "run_task");
+  return url.toString();
+}
+
+function taskWorkspaceUrl() {
+  const url = new URL(window.location.href);
+  url.searchParams.delete("invocation");
+  url.searchParams.set("mode", "task_workspace");
   return url.toString();
 }
 
@@ -3148,10 +3189,6 @@ function renderManagedSessionHistory(state) {
     return;
   }
 
-  if (!currentInvocationId || !conversations.some((item) => item.invocation.id === currentInvocationId)) {
-    currentInvocationId = conversations[0]?.invocation.id ?? currentInvocationId;
-  }
-
   els.managedSessionHistoryList.replaceChildren(
     ...conversations.map((conversation) => {
       const { invocation, session } = conversation;
@@ -3190,7 +3227,7 @@ function renderManagedSessionHistory(state) {
   );
   renderManagedSessionDetail(
     state,
-    conversations.find((item) => item.invocation.id === currentInvocationId) ?? conversations[0]
+    conversations.find((item) => item.invocation.id === currentInvocationId) ?? null
   );
 }
 
@@ -3600,11 +3637,37 @@ function currentInvocation() {
   return lastState.invocations.find((item) => item.id === currentInvocationId) ?? null;
 }
 
+function taskEventsForInvocation(state, invocation) {
+  if (!state || !invocation) return [];
+  return (state.events ?? []).filter((event) => event.invocationId === invocation.id);
+}
+
+function shortInvocationId(id) {
+  const value = String(id ?? "");
+  const number = value.match(/(\d+)$/)?.[1];
+  return number ? `#${number}` : value.replace(/^inv_/, "#").slice(0, 8);
+}
+
+function showTasksPage() {
+  activePage = "tasks";
+  activeMode = "run_task";
+  workspaceDraftTabOpen = false;
+  currentInvocationId = null;
+  workspaceTabs.splice(0, workspaceTabs.length);
+}
+
+function showWorkspacePage({ draft = false, invocationId = null } = {}) {
+  activePage = "workspace";
+  activeMode = "run_task";
+  workspaceDraftTabOpen = draft && !invocationId;
+  currentInvocationId = invocationId;
+  workspaceTabs.splice(0, workspaceTabs.length);
+}
+
 function openWorkspaceTab(invocationId, { activate = true } = {}) {
   if (!invocationId) return;
-  if (!workspaceTabs.some((tab) => tab.id === invocationId)) {
-    workspaceTabs.push({ id: invocationId });
-  }
+  activePage = "workspace";
+  workspaceTabs.splice(0, workspaceTabs.length, { id: invocationId });
   if (activate) {
     workspaceDraftTabOpen = false;
     currentInvocationId = invocationId;
@@ -3614,6 +3677,7 @@ function openWorkspaceTab(invocationId, { activate = true } = {}) {
 
 function activateWorkspaceTab(invocationId) {
   if (!invocationId) return;
+  activePage = "workspace";
   workspaceDraftTabOpen = false;
   currentInvocationId = invocationId;
   activeMode = "run_task";
@@ -3626,9 +3690,8 @@ function closeWorkspaceTab(invocationId) {
   if (index === -1) return;
   workspaceTabs.splice(index, 1);
   if (currentInvocationId === invocationId) {
-    currentInvocationId = workspaceTabs[Math.max(0, index - 1)]?.id ?? workspaceTabs[0]?.id ?? lastState?.invocations?.[0]?.id ?? null;
+    showTasksPage();
   }
-  if (currentInvocationId) openWorkspaceTab(currentInvocationId, { activate: false });
   render(lastState);
 }
 
@@ -3637,6 +3700,130 @@ function syncWorkspaceTabs(state) {
   for (let index = workspaceTabs.length - 1; index >= 0; index -= 1) {
     if (!invocationIds.has(workspaceTabs[index].id)) workspaceTabs.splice(index, 1);
   }
+}
+
+function renderTaskList(state) {
+  const runs = [...(state?.loopRoutines?.runs ?? [])]
+    .sort((a, b) => String(b.startedAt ?? b.routineRunId).localeCompare(String(a.startedAt ?? a.routineRunId)))
+    .slice(0, 50);
+  if (!runs.length) {
+    els.taskListRows.replaceChildren(emptyMiniCard("No routine runs found for this project."));
+    return;
+  }
+  els.taskListRows.replaceChildren(...runs.map(routineRunRow));
+}
+
+function routineRunRow(run) {
+  const row = document.createElement("button");
+  row.type = "button";
+  row.className = "task-list-row";
+  row.dataset.routineRunId = run.routineRunId;
+
+  const id = document.createElement("span");
+  id.className = "task-list-id";
+  id.textContent = shortRoutineRunId(run.routineRunId);
+
+  const body = document.createElement("span");
+  body.className = "task-list-body";
+  const title = document.createElement("strong");
+  title.textContent = run.name ?? run.routineId ?? run.routineRunId;
+  const meta = document.createElement("small");
+  meta.textContent = [
+    run.routineId,
+    `${run.summary?.findingCount ?? 0} findings`,
+    `${run.summary?.suggestedRunCount ?? 0} suggested`,
+    run.runDir
+  ].filter(Boolean).join(" · ");
+  body.append(title, meta);
+
+  const owner = document.createElement("span");
+  owner.className = "task-list-owner";
+  owner.textContent = run.summary?.failedCheckCount ? `${run.summary.failedCheckCount} failed` : `${run.summary?.checkCount ?? 0} checks`;
+
+  const status = document.createElement("span");
+  status.className = "task-list-status";
+  status.dataset.status = run.status;
+  status.textContent = routineRunStatusText(run.status);
+
+  const updated = document.createElement("span");
+  updated.className = "task-list-updated";
+  updated.textContent = run.completedAt || run.startedAt ? shortTime(run.completedAt ?? run.startedAt) : "-";
+
+  const action = document.createElement("span");
+  action.className = "task-list-action";
+  action.textContent = "Inspect";
+
+  row.append(id, body, owner, status, updated, action);
+  return row;
+}
+
+function openRoutineRunDraft(routineRunId) {
+  const run = (lastState?.loopRoutines?.runs ?? []).find((item) => item.routineRunId === routineRunId);
+  if (!run) return;
+  showWorkspacePage({ draft: true });
+  els.taskInput.value = routineRunReviewPrompt(run);
+  history.replaceState(null, "", taskWorkspaceUrl());
+}
+
+function routineRunStatusText(status) {
+  const labels = {
+    completed: "Completed",
+    failed: "Failed",
+    running: "Running",
+    unknown: "Unknown"
+  };
+  return labels[status] ?? status ?? "Unknown";
+}
+
+function shortRoutineRunId(id) {
+  const value = String(id ?? "");
+  const match = value.match(/^(\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2})/);
+  return match?.[1] ?? value.slice(0, 18);
+}
+
+function routineRunReviewPrompt(run) {
+  const findings = (run.findings ?? []).slice(0, 5);
+  const suggested = findings.filter((finding) => finding.suggestedRun);
+  const commands = [
+    `pnpm ai:loop-routine-show -- --routine-run ${run.routineRunId}`,
+    `pnpm ai:loop-routine-findings -- --routine-run ${run.routineRunId} --with-suggested-run`
+  ];
+  if (suggested.length > 0) {
+    commands.push(`pnpm ai:loop-routine-fanout-plan -- --routine-run ${run.routineRunId}`);
+    commands.push(`pnpm ai:loop-routine-fanout-execute -- --routine-run ${run.routineRunId} --approval "operator approved planning-only fanout"`);
+  }
+  return [
+    `Review loop routine run ${run.routineRunId}.`,
+    "",
+    `Routine: ${run.routineId}`,
+    `Status: ${run.status}`,
+    `Findings: ${run.summary?.findingCount ?? 0}`,
+    `Suggested runs: ${run.summary?.suggestedRunCount ?? 0}`,
+    "",
+    "Findings:",
+    ...(findings.length ? findings.map((finding) => `- [${finding.severity}] ${finding.title}: ${finding.proposedAction}`) : ["- None."]),
+    "",
+    "Read-only inspection commands:",
+    ...commands.slice(0, 2).map((command) => `- ${command}`),
+    "",
+    "Mutation commands require explicit operator approval:",
+    ...(commands.length > 2 ? commands.slice(2).map((command) => `- ${command}`) : ["- None."])
+  ].join("\n");
+}
+
+function applyTaskListSurface() {
+  const showTaskListSurface = activePage === "tasks";
+  els.workspace.dataset.taskList = String(showTaskListSurface);
+  els.taskListPanel.hidden = !showTaskListSurface;
+  els.workspaceTabStrip.hidden = showTaskListSurface;
+  els.contextPanel.hidden = showTaskListSurface;
+  els.commandPanel.querySelector(".chat-header").hidden = showTaskListSurface;
+  els.commandPanel.querySelector(".chat-toolbar").hidden = showTaskListSurface;
+  els.approvalPanel.hidden = showTaskListSurface || els.approvalPanel.hidden;
+  els.eventList.hidden = showTaskListSurface;
+  els.comparePanel.hidden = showTaskListSurface || els.comparePanel.hidden;
+  els.commandPanel.querySelector(".chat-composer").hidden = showTaskListSurface;
+  els.commandPanel.querySelector(".chat-details").hidden = showTaskListSurface;
 }
 
 function renderWorkspaceTabs(state) {
@@ -3681,9 +3868,8 @@ function workspaceNewTabButton() {
   button.setAttribute("aria-label", "新建任务标签页");
   button.textContent = "+";
   button.addEventListener("click", () => {
-    workspaceDraftTabOpen = true;
-    currentInvocationId = null;
-    activeMode = "run_task";
+    showWorkspacePage({ draft: true });
+    history.replaceState(null, "", taskWorkspaceUrl());
     render(lastState);
   });
   return button;
@@ -3709,8 +3895,7 @@ function workspaceDraftTabButton() {
   close.setAttribute("aria-label", "关闭标签页");
   close.textContent = "×";
   close.addEventListener("click", () => {
-    workspaceDraftTabOpen = false;
-    currentInvocationId = workspaceTabs.at(-1)?.id ?? lastState?.invocations?.[0]?.id ?? null;
+    showTasksPage();
     render(lastState);
   });
 
@@ -3940,7 +4125,7 @@ function renderOffline() {
 }
 
 function renderTimeline(events, invocation = null, state = null) {
-  if (events.length === 0) {
+  if (events.length === 0 && !invocation?.input?.task) {
     const empty = document.createElement("div");
     empty.className = "timeline-empty";
     empty.innerHTML = "<strong>Start a Codex conversation</strong><span>Describe a task below. The center workspace stays in conversation mode while terminal output remains in Terminal.</span>";
@@ -4373,9 +4558,18 @@ function initializeRouteState() {
   const params = new URLSearchParams(window.location.search);
   const invocationId = params.get("invocation");
   const mode = params.get("mode");
-  if (invocationId) currentInvocationId = invocationId;
+  if (invocationId) {
+    showWorkspacePage({ invocationId });
+  }
+  if (mode === "task_workspace") {
+    showWorkspacePage({ draft: !invocationId, invocationId });
+    return;
+  }
   if (mode && ["run_task", "session", "diff", "terminal", "evidence_center", "approval", "setup", "import_session", "managed_codex"].includes(mode)) {
     activeMode = mode;
+    if (mode === "run_task" && !invocationId) {
+      showTasksPage();
+    }
   }
 }
 

@@ -320,6 +320,9 @@ for smoke tests and alternate installations.
 - Routine fanout worker execution can create local isolated worktrees with
   `--isolate-worktree`; it still does not push, create PRs, or merge PRs.
 - GitHub inputs are read-only collectors for issues, PRs, checks, and commits.
+- The Web Console routine browser is read-only. It exposes routine run history,
+  findings, checks, skill snapshots, and fanout evidence as local review
+  prompts; it does not run fanout or workers.
 - Remote or GitHub writes must remain explicit execute commands with human
   approval gates.
 
@@ -345,8 +348,11 @@ for smoke tests and alternate installations.
     cooldown, max concurrency state, and simple `@hourly` / `@daily` aliases.
 11. Routine history and finding inspection CLI. Implemented as read-only local
     commands over `.myagenttool/routine-runs/`.
-12. Full cron/event scheduler and long-lived daemon.
-13. UI for routine history, findings, approvals, and fanout.
+12. Read-only Web Console routine browser. Implemented over local routine-run
+    evidence exposed by the server read model.
+13. Full cron/event scheduler and long-lived daemon.
+14. UI actions for routine approvals, enqueue, worker execution, and fanout
+    mutation.
 
 ## Verification
 
@@ -368,6 +374,8 @@ pnpm smoke:loop-routine-fanout-plan
 pnpm smoke:loop-routine-fanout-execute
 pnpm smoke:loop-routine-fanout-enqueue
 pnpm smoke:loop-routine-fanout-worker
+pnpm --filter @myagenttool/server test
+pnpm --filter @myagenttool/web test
 pnpm ai:check
 pnpm typecheck
 pnpm test

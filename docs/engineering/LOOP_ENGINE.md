@@ -974,6 +974,9 @@ Implemented routine capabilities:
   max-concurrency state, and simple `@hourly` / `@daily` aliases.
 - Read-only routine history and findings inspection over local routine-run
   evidence.
+- Web/server routine read model over `.myagenttool/routine-runs/`, exposed in
+  the local console as a read-only routine run browser with finding and fanout
+  inspection prompts.
 
 Implemented verification assets:
 
@@ -1034,6 +1037,9 @@ Operations that can change only local state:
 - `ai:loop-routine-list`, `ai:loop-routine-latest`,
   `ai:loop-routine-show`, and `ai:loop-routine-findings` are read-only local
   inspection commands.
+- The Web Console routine browser reads local routine-run evidence through
+  `/api/state` and does not run routines, enqueue child runs, execute workers,
+  push, create pull requests, or merge pull requests.
 
 Operations that can change remote or GitHub state:
 
@@ -1057,7 +1063,8 @@ Future slices:
   sections of the CLI entrypoint into focused command modules as those surfaces
   evolve.
 - Full cron parsing, event triggers, and a long-lived routine daemon.
-- Routine UI/read-model surfaces for history, findings, approvals, and fanout.
+- Routine UI actions for approvals, enqueue, worker execution, and fanout
+  mutation. The current Web Console routine surface is read-only.
 - A long-lived worker daemon or worker pool.
 - UI surfaces for loop run history, worktree evidence, approvals, and promotion
   gates.

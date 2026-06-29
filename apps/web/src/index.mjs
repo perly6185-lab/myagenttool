@@ -43,7 +43,9 @@ if (process.argv.includes("--check")) {
     [html, "id=\"codexWorkspacePolicy\"", "Codex workspace policy control"],
     [html, "id=\"compareAgentList\"", "compare agent selector"],
     [html, "id=\"comparePanel\"", "compare results panel"],
-    [html, "data-workspace-mode=\"evidence_center\"", "evidence center advanced mode"],
+    [html, "id=\"taskListPanel\"", "routine run list panel"],
+    [html, "Loop routine runs", "routine read model surface"],
+    [html, "Routine runs", "routine run tab"],
     [html, "id=\"healthCheckButton\"", "agent health check action"],
     [html, "id=\"toggleAgentButton\"", "agent enable disable action"],
     [html, "id=\"agentHealth\"", "agent health state"],
@@ -125,6 +127,9 @@ if (process.argv.includes("--check")) {
     [css, ".permission-popover", "permission popover styling"],
     [css, ".inline-approval-actions", "inline approval action styling"],
     [js, "readableStatus", "plain-language state mapper"],
+    [js, "loopRoutines", "routine read model state"],
+    [js, "routineRunReviewPrompt", "routine run review prompt"],
+    [js, "pnpm ai:loop-routine-show", "routine read-only inspection command"],
     [js, "readableEventType", "plain-language event mapper"],
     [js, "submitTaskFromComposer", "chat composer submit handler"],
     [js, "selectedPermissionMode", "composer permission mode state"],
@@ -244,9 +249,7 @@ if (process.argv.includes("--check")) {
     ["data-workspace-mode=\"session\"", "Session workspace surface"],
     ["data-workspace-mode=\"diff\"", "Diff workspace surface"],
     ["data-workspace-mode=\"terminal\"", "Terminal workspace surface"],
-    ["data-workspace-mode=\"evidence_center\"", "Evidence workspace surface"],
-    ["data-workspace-mode=\"approval\"", "Approval workspace surface"],
-    ["data-workspace-mode=\"setup\"", "Setup workspace surface"]
+    ["data-workspace-mode=\"approval\"", "Approval workspace surface"]
   ].filter(([marker]) => !workspaceNav.includes(marker));
   const missingContextPanelMarkers = [
     ["connectAgentPanel", "setup-owned connect agent panel"],
@@ -284,7 +287,10 @@ const server = http.createServer((req, res) => {
   const url = new URL(req.url ?? "/", `http://${host}:${port}`);
   const vendorPath = resolveVendorPath(url.pathname);
   if (vendorPath) {
-    res.writeHead(200, { "Content-Type": contentType(vendorPath) });
+    res.writeHead(200, {
+      "Content-Type": contentType(vendorPath),
+      "Cache-Control": "no-store"
+    });
     createReadStream(vendorPath).pipe(res);
     return;
   }
@@ -299,7 +305,10 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  res.writeHead(200, { "Content-Type": contentType(filePath) });
+  res.writeHead(200, {
+    "Content-Type": contentType(filePath),
+    "Cache-Control": "no-store"
+  });
   createReadStream(filePath).pipe(res);
 });
 

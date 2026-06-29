@@ -4641,6 +4641,193 @@ function unlinkDevice() {
   });
 }
 
+function loopRoutineReadModelForCurrentProject() {
+  const project = currentProject();
+  const root = project?.path ?? defaultProjectPath;
+  const runsRoot = resolve(root, ".myagenttool/routine-runs");
+  const runs = existsSync(runsRoot)
+    ? readdirSync(runsRoot, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => loopRoutineRunSummary(root, resolve(runsRoot, entry.name), entry.name))
+      .filter(Boolean)
+      .sort((left, right) => String(right.startedAt ?? right.routineRunId).localeCompare(String(left.startedAt ?? left.routineRunId)))
+      .slice(0, 50)
+    : [];
+  return {
+    generatedAt: now(),
+    projectId: project?.id ?? null,
+    projectPath: root,
+    runCount: runs.length,
+    latestRunId: runs[0]?.routineRunId ?? null,
+    runs,
+    boundaries: [
+      "This read model is local and read-only.",
+      "It does not start routines, enqueue fanout, run workers, push, create PRs, or merge PRs.",
+      "Mutation still requires explicit Loop Routine CLI commands and approval flags."
+    ]
+  };
+}
+
+function loopRoutineRunSummary(root, runDir, routineRunId) {
+  const routine = readOptionalJson(resolve(runDir, "routine.json"));
+  const inputSnapshot = readOptionalJson(resolve(runDir, "input-snapshot.json"));
+  const skillSnapshot = readOptionalJson(resolve(runDir, "skill-snapshot.json"));
+  const checksResult = readOptionalJson(resolve(runDir, "checks-result.json"));
+  const findings = arrayOr(readOptionalJson(resolve(runDir, "findings.json")), []);
+  const fanoutPlan = readOptionalJson(resolve(runDir, "fanout-plan.json"));
+  const fanoutResult = readOptionalJson(resolve(runDir, "fanout-result.json"));
+  const events = readJsonLines(resolve(runDir, "events.jsonl"));
+  if (!routine && events.length === 0) return null;
+  return {
+    routineRunId,
+    routineId: routine?.metadata?.id ?? events[0]?.routineId ?? "routine",
+    name: routine?.metadata?.name ?? routine?.metadata?.id ?? "Routine",
+    status: loopRoutineStatus(events, checksResult),
+    startedAt: events[0]?.createdAt ?? null,
+    completedAt: loopRoutineCompletedAt(events),
+    runDir: relativePath(root, runDir),
+    evidence: loopRoutineEvidence(root, runDir),
+    summary: {
+      inputCount: arrayOr(inputSnapshot?.inputs, []).length,
+      skillCount: arrayOr(skillSnapshot?.skills, []).length,
+      checkCount: arrayOr(checksResult?.checks, []).length,
+      failedCheckCount: arrayOr(checksResult?.checks, []).filter((check) => check.status === "failed").length,
+      findingCount: findings.length,
+      suggestedRunCount: findings.filter((finding) => finding.suggestedRun).length,
+      fanoutCandidateCount: fanoutPlan?.candidateCount ?? null,
+      fanoutCreatedCount: fanoutResult?.createdRuns?.length ?? null,
+      fanoutEnqueuedCount: fanoutResult?.enqueuedCount ?? null,
+      fanoutWorkerCompletedCount: fanoutResult?.workerCompletedCount ?? null
+    },
+    inputs: arrayOr(inputSnapshot?.inputs, []).map((input) => ({
+      id: input.id,
+      type: input.type,
+      status: input.status,
+      summary: input.summary ?? null
+    })),
+    skills: arrayOr(skillSnapshot?.skills, []).map((skill) => ({
+      id: skill.id,
+      status: skill.status,
+      title: skill.title,
+      path: skill.path,
+      acceptance: arrayOr(skill.acceptance, []).slice(0, 6),
+      checks: arrayOr(skill.checks, []).slice(0, 6)
+    })),
+    checks: arrayOr(checksResult?.checks, []).map((check) => ({
+      id: check.id,
+      status: check.status,
+      command: check.command,
+      required: check.required,
+      exitCode: check.exitCode
+    })),
+    findings: findings.slice(0, 20).map((finding) => ({
+      id: finding.id,
+      title: finding.title,
+      severity: finding.severity,
+      source: finding.source ?? null,
+      proposedAction: finding.proposedAction ?? "",
+      suggestedRun: finding.suggestedRun ?? null,
+      evidence: arrayOr(finding.evidence, []).slice(0, 6),
+      skillBindings: arrayOr(finding.skillBindings, []).map((skill) => ({
+        id: skill.id,
+        title: skill.title,
+        path: skill.path,
+        acceptance: arrayOr(skill.acceptance, []).slice(0, 4)
+      }))
+    })),
+    fanout: {
+      plan: fanoutPlan ? {
+        candidateCount: fanoutPlan.candidateCount,
+        skippedCount: fanoutPlan.skippedCount,
+        candidates: arrayOr(fanoutPlan.candidates, []).map((candidate) => ({
+          findingId: candidate.findingId,
+          childRunId: candidate.childRunId,
+          priority: candidate.priority
+        }))
+      } : null,
+      result: fanoutResult ? {
+        createdCount: fanoutResult.createdCount,
+        skippedCount: fanoutResult.skippedCount,
+        enqueuedCount: fanoutResult.enqueuedCount,
+        workerCompletedCount: fanoutResult.workerCompletedCount,
+        workerFailedCount: fanoutResult.workerFailedCount,
+        createdRuns: arrayOr(fanoutResult.createdRuns, []),
+        enqueuedRuns: arrayOr(fanoutResult.enqueuedRuns, []),
+        workerRuns: arrayOr(fanoutResult.workerRuns, [])
+      } : null
+    }
+  };
+}
+
+function readOptionalJson(path) {
+  if (!existsSync(path)) return null;
+  try {
+    return JSON.parse(readFileSync(path, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
+function readJsonLines(path) {
+  if (!existsSync(path)) return [];
+  return readFileSync(path, "utf8")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => {
+      try {
+        return JSON.parse(line);
+      } catch {
+        return null;
+      }
+    })
+    .filter(Boolean);
+}
+
+function loopRoutineStatus(events, checksResult) {
+  const terminal = [...events].reverse().find((event) => [
+    "loop_routine_run_completed",
+    "loop_routine_run_failed",
+    "loop_routine_checks_failed"
+  ].includes(event.type));
+  if (terminal?.type === "loop_routine_run_completed") return "completed";
+  if (terminal) return "failed";
+  if (arrayOr(checksResult?.checks, []).some((check) => check.required !== false && check.status === "failed")) return "failed";
+  if (events.some((event) => event.type === "loop_routine_run_created")) return "running";
+  return "unknown";
+}
+
+function loopRoutineCompletedAt(events) {
+  return [...events].reverse().find((event) => [
+    "loop_routine_run_completed",
+    "loop_routine_run_failed",
+    "loop_routine_checks_failed"
+  ].includes(event.type))?.createdAt ?? null;
+}
+
+function loopRoutineEvidence(root, runDir) {
+  return [
+    "routine.json",
+    "plan.json",
+    "events.jsonl",
+    "input-snapshot.json",
+    "skill-snapshot.json",
+    "checks-result.json",
+    "summary.md",
+    "findings.json",
+    "fanout-plan.json",
+    "fanout-result.json"
+  ].filter((file) => existsSync(resolve(runDir, file))).map((file) => relativePath(root, resolve(runDir, file)));
+}
+
+function relativePath(root, target) {
+  return relative(root, target).replace(/\\/g, "/");
+}
+
+function arrayOr(value, fallback = []) {
+  return Array.isArray(value) ? value : fallback;
+}
+
 function publicState() {
   expireCodexApprovalBrokerRequests();
   return {
@@ -4650,6 +4837,7 @@ function publicState() {
     projects: state.projects,
     currentProjectId: state.currentProjectId,
     currentProject: currentProject(),
+    loopRoutines: loopRoutineReadModelForCurrentProject(),
     worktrees: state.worktrees,
     agent: defaultAgent(),
     agents: state.agents,

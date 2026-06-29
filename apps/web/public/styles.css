@@ -111,6 +111,14 @@ h2 {
   align-items: start;
 }
 
+.workspace[data-task-list="true"] {
+  grid-template-columns: 276px minmax(0, 1fr);
+}
+
+.workspace[data-task-list="true"] .command-panel {
+  grid-column: 2;
+}
+
 .workspace-nav,
 .command-panel,
 .run-panel,
@@ -293,6 +301,218 @@ h2 {
   background: #f2f5f3;
   color: #46524e;
   font-weight: 900;
+}
+
+.task-list-panel {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 12px;
+  min-height: 0;
+  height: 100%;
+  padding: 12px;
+  background: #fbfbfb;
+}
+
+.task-list-panel[hidden] {
+  display: none;
+}
+
+.task-list-topbar {
+  display: grid;
+  grid-template-columns: auto auto auto minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+}
+
+.task-list-tabs,
+.task-list-filters {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.task-list-tabs button,
+.task-list-filters button,
+.task-list-project,
+.task-list-open,
+.task-list-icon {
+  min-height: 34px;
+  border: 1px solid #e5e8e6;
+  border-radius: 8px;
+  background: #ffffff;
+  color: #232b28;
+  font-weight: 750;
+}
+
+.task-list-tabs button,
+.task-list-filters button {
+  padding: 0 13px;
+}
+
+.task-list-tabs button[data-active="true"],
+.task-list-filters button[data-active="true"] {
+  border-color: #151918;
+  background: #151918;
+  color: #ffffff;
+}
+
+.task-list-project {
+  padding: 0 16px;
+}
+
+.task-list-open,
+.task-list-icon {
+  display: grid;
+  width: 38px;
+  place-items: center;
+  font-size: 18px;
+}
+
+.task-list-card {
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  min-height: 0;
+  border: 1px solid #e5e8e6;
+  border-radius: 10px;
+  background: #ffffff;
+  overflow: hidden;
+}
+
+.task-list-toolbar {
+  display: grid;
+  grid-template-columns: auto minmax(260px, 1fr) auto auto;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 16px;
+  border-bottom: 1px solid #edf0ee;
+}
+
+.task-list-search {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 9px;
+  min-height: 40px;
+  padding: 0 12px;
+  border: 1px solid #e5e8e6;
+  border-radius: 8px;
+  background: #ffffff;
+  color: #7a8581;
+}
+
+.task-list-search input {
+  min-width: 0;
+  border: 0;
+  outline: 0;
+  font: inherit;
+}
+
+.task-list-columns,
+.task-list-row {
+  display: grid;
+  grid-template-columns: 92px minmax(260px, 1.35fr) minmax(90px, 0.42fr) minmax(105px, 0.42fr) minmax(110px, 0.42fr) 102px;
+  align-items: center;
+  gap: 14px;
+}
+
+.task-list-columns {
+  padding: 10px 16px;
+  border-bottom: 1px solid #edf0ee;
+  color: #8a9490;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.task-list-rows {
+  min-height: 0;
+  overflow: auto;
+}
+
+.task-list-row {
+  width: 100%;
+  min-height: 74px;
+  padding: 12px 16px;
+  border: 0;
+  border-bottom: 1px solid #edf0ee;
+  background: #ffffff;
+  color: #17201d;
+  text-align: left;
+}
+
+.task-list-row:hover {
+  background: #f7faf8;
+}
+
+.task-list-id {
+  color: #6f7b77;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.task-list-body {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+
+.task-list-body strong,
+.task-list-body small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.task-list-body strong {
+  font-size: 15px;
+}
+
+.task-list-body small {
+  color: #6f7b77;
+  font-size: 12px;
+}
+
+.task-list-owner,
+.task-list-updated {
+  color: #7a8581;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.task-list-status {
+  justify-self: start;
+  min-width: 76px;
+  padding: 5px 10px;
+  border-radius: 999px;
+  background: #eef2f0;
+  color: #46524e;
+  font-size: 12px;
+  font-weight: 800;
+  text-align: center;
+}
+
+.task-list-status[data-status="succeeded"],
+.task-list-status[data-status="completed"] {
+  background: #e7f6eb;
+  color: #1f6f3b;
+}
+
+.task-list-status[data-status="running"],
+.task-list-status[data-status="queued"],
+.task-list-status[data-status="dispatching"] {
+  background: #e5f7f1;
+  color: #16745a;
+}
+
+.task-list-action {
+  justify-self: end;
+  padding: 7px 11px;
+  border: 1px solid #e9edeb;
+  border-radius: 8px;
+  background: #ffffff;
+  color: #17201d;
+  font-size: 13px;
+  font-weight: 850;
 }
 
 .chat-header {
