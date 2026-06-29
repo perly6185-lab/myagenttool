@@ -899,30 +899,53 @@ whether to cancel or retry.
 
 ## Closeout Status
 
-Status as of 2026-06-29: the Loop Engine local orchestration and worktree
+Status as of 2026-06-30: the Loop Engine local orchestration and worktree
 promotion chain are implemented through the human-gated PR merge execute
 boundary. The registry, queue, lease, event replay, and human-gate state
-helpers have been split from the CLI entrypoint into
-`tools/ai/src/loop/registry.mjs`. Structured AI provider dispatch has also
-been split into `tools/ai/src/providers/structured.mjs`. Worktree and
-promotion markdown formatters have been split into
-`tools/ai/src/loop/formatters.mjs`. Worktree records, path-boundary checks,
-worker-result updates, isolated worktree creation, and git worktree helpers have
-been split into `tools/ai/src/loop/worktree.mjs`. Promotion command helpers for
-verification, push preflight/execute, remote-head reads, GitHub PR create/merge
-calls, PR JSON parsing, PR merge readiness assessment, default promotion titles,
-promotion result builders, and promotion evidence writers have been split into
-`tools/ai/src/loop/promotion.mjs`. CLI command handlers have been split by
-surface into `tools/ai/src/commands/registry.mjs`,
-`tools/ai/src/commands/worktree.mjs`, `tools/ai/src/commands/worker.mjs`, and
-`tools/ai/src/commands/promotion.mjs`; `tools/ai/src/index.mjs` now acts mostly
-as the CLI router plus the legacy work-runner and review/generation commands.
-Routine read models and index handling live in
-`tools/ai/src/loop/routine-inspect.mjs`. Routine display formatting, routine
-check execution, and the small YAML parser have been split into
-`tools/ai/src/loop/routine-formatters.mjs`,
-`tools/ai/src/loop/routine-checks.mjs`, and
-`tools/ai/src/loop/routine-yaml.mjs`.
+helpers live in `tools/ai/src/loop/registry.mjs`. Structured AI provider
+dispatch lives in `tools/ai/src/providers/structured.mjs`. Worktree and
+promotion markdown formatters live in `tools/ai/src/loop/formatters.mjs`.
+Worktree records, path-boundary checks, worker-result updates, isolated
+worktree creation, and git worktree helpers live in
+`tools/ai/src/loop/worktree.mjs`.
+
+The routine implementation is now split by domain:
+
+- `tools/ai/src/loop/routine.mjs`: routine orchestration, validation, schedule
+  tick, output writing, and index update boundaries.
+- `tools/ai/src/loop/routine-inputs.mjs`: local, git, GitHub, filesystem, and
+  registry input collection plus input summaries.
+- `tools/ai/src/loop/routine-findings.mjs`: morning triage and generic finding
+  generation plus skill-to-finding binding.
+- `tools/ai/src/loop/routine-skills.mjs`: `SKILL.md` resolution, parsing,
+  hashing, and acceptance/check extraction.
+- `tools/ai/src/loop/routine-fanout.mjs`: fanout planning, planned child run
+  creation, optional enqueue, and optional worker execution.
+- `tools/ai/src/loop/routine-runs.mjs`: routine-run paths, JSON reads, and
+  routine-run event appends.
+- `tools/ai/src/loop/routine-utils.mjs`: shared normalization, path, list, and
+  failure helpers.
+- `tools/ai/src/loop/routine-inspect.mjs`: compact index and read model.
+- `tools/ai/src/loop/routine-formatters.mjs`,
+  `tools/ai/src/loop/routine-checks.mjs`, and
+  `tools/ai/src/loop/routine-yaml.mjs`: display, check execution, and YAML
+  parsing.
+
+The promotion implementation has started its second split wave:
+
+- `tools/ai/src/loop/promotion.mjs`: promotion orchestration, result builders,
+  evidence writers, input readers, and finish helpers.
+- `tools/ai/src/loop/promotion-github.mjs`: GitHub command resolution, PR
+  create/merge command execution, GitHub JSON parsing, PR merge readiness
+  assessment, and GitHub command result normalization.
+- `tools/ai/src/loop/promotion-push.mjs`: push plan risks, push preflight
+  checks, push execution command, and remote-head reads.
+
+CLI command handlers are split by surface into
+`tools/ai/src/commands/registry.mjs`, `tools/ai/src/commands/worktree.mjs`,
+`tools/ai/src/commands/worker.mjs`, `tools/ai/src/commands/promotion.mjs`, and
+`tools/ai/src/commands/routine.mjs`; `tools/ai/src/index.mjs` now acts as the
+CLI router plus the legacy work-runner and review/generation commands.
 
 Remaining split plan:
 
@@ -936,11 +959,13 @@ Remaining split plan:
   evidence, terminal, project browser, and responsive rules.
 - `tools/ai/src/index.mjs`: continue moving legacy work-runner, review,
   manifest, scope, and planning commands into `tools/ai/src/commands/*`.
-- `tools/ai/src/loop/routine.mjs`: next slices are `routine-inputs.mjs`,
-  `routine-findings.mjs`, `routine-skills.mjs`, `routine-scheduler.mjs`, and
-  `routine-fanout.mjs`.
-- `tools/ai/src/loop/promotion.mjs`: split command adapters, result builders,
-  evidence writers, input readers, and finish/apply orchestration.
+- `tools/ai/src/loop/routine.mjs`: split the remaining schedule state and
+  summary/output writer helpers only after scheduler behavior needs another
+  functional slice; the large input/finding/skill/fanout domains are already
+  separated.
+- `tools/ai/src/loop/promotion.mjs`: next slices are result builders, evidence
+  writers, input readers, and finish/apply orchestration. Keep each slice tied
+  to existing promotion smoke tests.
 
 Implemented command surfaces:
 

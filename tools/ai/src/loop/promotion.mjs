@@ -27,6 +27,36 @@ import {
   formatLoopWorktreePromotionPushPreflightResult,
   formatLoopWorktreePromotionVerifyResult,
 } from "./formatters.mjs";
+import {
+  assessLoopWorktreePromotionPrMergePrep,
+  isPassingLoopWorktreePromotionPrCheck,
+  normalizeLoopWorktreePromotionGhResult,
+  normalizeLoopWorktreePromotionMergeMethod,
+  parseLoopWorktreePromotionGhJsonArray,
+  parseLoopWorktreePromotionGhJsonObject,
+  parseLoopWorktreePromotionGhPrCreateOutput,
+  runLoopWorktreePromotionGhCommand as runLoopWorktreePromotionGhCommandCore,
+  runLoopWorktreePromotionPrCreateCommand as runLoopWorktreePromotionPrCreateCommandCore,
+  runLoopWorktreePromotionPrMergeCommand as runLoopWorktreePromotionPrMergeCommandCore,
+} from "./promotion-github.mjs";
+import {
+  buildLoopPromotionPushPlanRisks,
+  readLoopWorktreePromotionRemoteHead,
+  runLoopWorktreePromotionPushExecuteCommand as runLoopWorktreePromotionPushExecuteCommandCore,
+  runLoopWorktreePromotionPushPreflightChecks as runLoopWorktreePromotionPushPreflightChecksCore,
+} from "./promotion-push.mjs";
+
+export {
+  assessLoopWorktreePromotionPrMergePrep,
+  buildLoopPromotionPushPlanRisks,
+  isPassingLoopWorktreePromotionPrCheck,
+  normalizeLoopWorktreePromotionGhResult,
+  normalizeLoopWorktreePromotionMergeMethod,
+  parseLoopWorktreePromotionGhJsonArray,
+  parseLoopWorktreePromotionGhJsonObject,
+  parseLoopWorktreePromotionGhPrCreateOutput,
+  readLoopWorktreePromotionRemoteHead,
+};
 
 const loopPromotionContext = {
   repoRoot: null,
@@ -75,256 +105,18 @@ function safePathSegment(text) {
 }
 
 export function runLoopWorktreePromotionPrCreateCommand(prCreatePrep) {
-  const startedAt = new Date().toISOString();
-  let ghCommand;
-  try {
-    ghCommand = resolveLoopWorktreePromotionPrCreateCommand();
-  } catch (error) {
-    const completedAt = new Date().toISOString();
-    return {
-      command: null,
-      executable: null,
-      args: [],
-      startedAt,
-      completedAt,
-      exitCode: 1,
-      signal: null,
-      error: error.message,
-      stdoutBytes: 0,
-      stderrBytes: 0,
-      stdout: "",
-      stderr: "",
-    };
-  }
-  const args = [
-    ...ghCommand.args,
-    "pr",
-    "create",
-    "--base",
-    prCreatePrep.baseBranch,
-    "--head",
-    prCreatePrep.headBranch,
-    "--title",
-    prCreatePrep.title,
-    "--body-file",
-    resolve(requireLoopPromotionRepoRoot(), prCreatePrep.bodyFile),
-    "--json",
-    "number,url,state",
-  ];
-  const result = spawnSync(ghCommand.command, args, {
-    cwd: prCreatePrep.integrationWorktreePath,
-    encoding: "utf8",
-    env: {
-      ...process.env,
-      GH_PROMPT_DISABLED: "1",
-    },
+  return runLoopWorktreePromotionPrCreateCommandCore(prCreatePrep, {
+    repoRoot: requireLoopPromotionRepoRoot(),
+    truncate,
   });
-  const completedAt = new Date().toISOString();
-  const stdout = result.stdout ?? "";
-  const stderr = result.stderr ?? "";
-  return {
-    command: [ghCommand.command, ...args].join(" "),
-    executable: ghCommand.command,
-    args,
-    startedAt,
-    completedAt,
-    exitCode: result.status ?? (result.error ? 1 : 0),
-    signal: result.signal ?? null,
-    error: result.error ? childProcessErrorMessage(result.error) : null,
-    stdoutBytes: Buffer.byteLength(stdout, "utf8"),
-    stderrBytes: Buffer.byteLength(stderr, "utf8"),
-    stdout: truncate(stdout.trim(), 4000),
-    stderr: truncate(stderr.trim(), 4000),
-  };
-}
-
-function resolveLoopWorktreePromotionPrCreateCommand() {
-  const rawJson = process.env.MYAGENTTOOL_GH_COMMAND_JSON;
-  if (rawJson) {
-    let parsed;
-    try {
-      parsed = JSON.parse(rawJson);
-    } catch (error) {
-      throw new Error(`MYAGENTTOOL_GH_COMMAND_JSON must be JSON, for example ["gh"]. Parse error: ${error.message}`);
-    }
-    if (!Array.isArray(parsed) || parsed.length === 0 || parsed.some((item) => typeof item !== "string" || item.length === 0)) {
-      throw new Error('MYAGENTTOOL_GH_COMMAND_JSON must be a non-empty string array, for example ["gh"].');
-    }
-    const [command, ...args] = parsed;
-    return { command, args };
-  }
-  return { command: process.env.MYAGENTTOOL_GH_COMMAND || "gh", args: [] };
 }
 
 export function runLoopWorktreePromotionGhCommand(context, commandArgs) {
-  const startedAt = new Date().toISOString();
-  let ghCommand;
-  try {
-    ghCommand = resolveLoopWorktreePromotionPrCreateCommand();
-  } catch (error) {
-    const completedAt = new Date().toISOString();
-    return {
-      command: null,
-      executable: null,
-      args: [],
-      startedAt,
-      completedAt,
-      exitCode: 1,
-      signal: null,
-      error: error.message,
-      stdoutBytes: 0,
-      stderrBytes: 0,
-      stdout: "",
-      stderr: "",
-    };
-  }
-  const args = [...ghCommand.args, ...commandArgs];
-  const result = spawnSync(ghCommand.command, args, {
-    cwd: context.integrationWorktreePath,
-    encoding: "utf8",
-    env: {
-      ...process.env,
-      GH_PROMPT_DISABLED: "1",
-    },
-  });
-  const completedAt = new Date().toISOString();
-  const stdout = result.stdout ?? "";
-  const stderr = result.stderr ?? "";
-  return {
-    command: [ghCommand.command, ...args].join(" "),
-    executable: ghCommand.command,
-    args,
-    startedAt,
-    completedAt,
-    exitCode: result.status ?? (result.error ? 1 : 0),
-    signal: result.signal ?? null,
-    error: result.error ? childProcessErrorMessage(result.error) : null,
-    stdoutBytes: Buffer.byteLength(stdout, "utf8"),
-    stderrBytes: Buffer.byteLength(stderr, "utf8"),
-    stdout: truncate(stdout.trim(), 4000),
-    stderr: truncate(stderr.trim(), 4000),
-  };
-}
-
-export function normalizeLoopWorktreePromotionMergeMethod(method) {
-  const normalized = String(method ?? "").toLowerCase();
-  return ["squash", "merge", "rebase"].includes(normalized) ? normalized : null;
+  return runLoopWorktreePromotionGhCommandCore(context, commandArgs, { truncate });
 }
 
 export function runLoopWorktreePromotionPrMergeCommand(context, mergeMethod) {
-  const methodFlag = `--${mergeMethod}`;
-  return runLoopWorktreePromotionGhCommand(context, [
-    "pr",
-    "merge",
-    String(context.prNumber),
-    methodFlag,
-  ]);
-}
-
-export function parseLoopWorktreePromotionGhPrCreateOutput(stdout) {
-  const text = stdout.trim();
-  if (!text) return { number: null, url: null, state: null, raw: "" };
-  try {
-    const parsed = JSON.parse(text);
-    return {
-      number: parsed.number ?? null,
-      url: parsed.url ?? null,
-      state: parsed.state ?? null,
-      raw: text,
-    };
-  } catch {
-    const urlMatch = text.match(/https?:\/\/\S+/);
-    return {
-      number: null,
-      url: urlMatch?.[0] ?? null,
-      state: null,
-      raw: text,
-    };
-  }
-}
-
-export function parseLoopWorktreePromotionGhJsonObject(stdout) {
-  const text = stdout.trim();
-  if (!text) return null;
-  try {
-    const parsed = JSON.parse(text);
-    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : null;
-  } catch {
-    return null;
-  }
-}
-
-export function parseLoopWorktreePromotionGhJsonArray(stdout) {
-  const text = stdout.trim();
-  if (!text) return null;
-  try {
-    const parsed = JSON.parse(text);
-    return Array.isArray(parsed) ? parsed : null;
-  } catch {
-    return null;
-  }
-}
-
-export function assessLoopWorktreePromotionPrMergePrep({ prCreateExecute, remoteHead, prView, prViewData, checks, checksData, allowNoChecks }) {
-  const blockers = [];
-  if (remoteHead !== prCreateExecute.commitSha) blockers.push("remote-head-mismatch");
-  if (prView.exitCode !== 0) blockers.push("gh-pr-view-failed");
-  if (!prViewData) blockers.push("gh-pr-view-invalid-json");
-  if (checks.exitCode !== 0) blockers.push("gh-pr-checks-failed");
-  if (checks.exitCode === 0 && !Array.isArray(checksData)) blockers.push("gh-pr-checks-invalid-json");
-  if (prViewData) {
-    if (!hasLoopWorktreePromotionValue(prViewData.number)) blockers.push("pr-number-missing");
-    else if (String(prViewData.number) !== String(prCreateExecute.prNumber)) blockers.push("pr-number-mismatch");
-    if (!hasLoopWorktreePromotionValue(prViewData.url)) blockers.push("pr-url-missing");
-    else if (prViewData.url !== prCreateExecute.prUrl) blockers.push("pr-url-mismatch");
-    if (!hasLoopWorktreePromotionValue(prViewData.state)) blockers.push("pr-state-missing");
-    else if (prViewData.state !== "OPEN") blockers.push("pr-not-open");
-    if (typeof prViewData.isDraft !== "boolean") blockers.push("pr-draft-state-missing");
-    else if (prViewData.isDraft === true) blockers.push("pr-is-draft");
-    if (!hasLoopWorktreePromotionValue(prViewData.headRefName)) blockers.push("pr-head-branch-missing");
-    else if (prViewData.headRefName !== prCreateExecute.headBranch) blockers.push("pr-head-branch-mismatch");
-    if (!hasLoopWorktreePromotionValue(prViewData.baseRefName)) blockers.push("pr-base-branch-missing");
-    else if (prViewData.baseRefName !== prCreateExecute.baseBranch) blockers.push("pr-base-branch-mismatch");
-    if (!hasLoopWorktreePromotionValue(prViewData.headRefOid)) blockers.push("pr-head-commit-missing");
-    else if (prViewData.headRefOid !== prCreateExecute.commitSha) blockers.push("pr-head-commit-mismatch");
-    if (!hasLoopWorktreePromotionValue(prViewData.mergeable)) blockers.push("pr-mergeable-missing");
-    else if (!["MERGEABLE", "UNKNOWN"].includes(String(prViewData.mergeable))) blockers.push("pr-not-mergeable");
-  }
-  const normalizedChecksData = Array.isArray(checksData) ? checksData : [];
-  const failedChecks = normalizedChecksData.filter((check) => !isPassingLoopWorktreePromotionPrCheck(check));
-  if (checks.exitCode === 0 && normalizedChecksData.length === 0 && !allowNoChecks) blockers.push("pr-checks-missing");
-  if (failedChecks.length > 0) blockers.push("pr-checks-not-passing");
-  return {
-    status: blockers.length === 0 ? "ready" : "blocked",
-    reason: blockers.length === 0 ? null : `Promotion PR merge prep blocked: ${blockers.join(", ")}.`,
-    blockers,
-  };
-}
-
-function hasLoopWorktreePromotionValue(value) {
-  return value !== null && value !== undefined && String(value).length > 0;
-}
-
-export function isPassingLoopWorktreePromotionPrCheck(check) {
-  const state = String(check?.state ?? check?.bucket ?? "").toUpperCase();
-  return ["SUCCESS", "PASSING", "PASSED", "SKIPPED", "NEUTRAL"].includes(state);
-}
-
-export function normalizeLoopWorktreePromotionGhResult(result) {
-  return result ?? {
-    command: null,
-    executable: null,
-    args: [],
-    startedAt: null,
-    completedAt: null,
-    exitCode: null,
-    signal: null,
-    error: null,
-    stdoutBytes: 0,
-    stderrBytes: 0,
-    stdout: "",
-    stderr: "",
-  };
+  return runLoopWorktreePromotionPrMergeCommandCore(context, mergeMethod, { truncate });
 }
 
 export function loopPromotionVerifyCommand(commandId) {
@@ -356,105 +148,12 @@ export function runLoopPromotionVerifyCommand(command, cwd) {
   };
 }
 
-export function buildLoopPromotionPushPlanRisks({ remote, remoteUrl, remoteNames, branch }) {
-  const risks = [];
-  if (!remoteNames.includes(remote)) risks.push(`Remote not configured: ${remote}`);
-  if (!remoteUrl.trim()) risks.push(`Remote URL not available for ${remote}`);
-  if (!/^[-./A-Za-z0-9_]+$/.test(branch ?? "")) risks.push(`Integration branch has unusual characters: ${branch ?? "missing"}`);
-  if (!branch?.startsWith("loop/promotion/")) risks.push(`Integration branch does not use loop/promotion prefix: ${branch ?? "missing"}`);
-  return risks;
-}
-
 export function runLoopWorktreePromotionPushPreflightChecks(pushPlan, { includeDryRun, worktreePath }) {
-  const checks = [
-    {
-      id: "remote-url",
-      description: "Confirm the configured remote URL is still available.",
-      args: ["remote", "get-url", pushPlan.remote],
-    },
-    {
-      id: "remote-head",
-      description: "Read remote branch state without modifying the remote.",
-      args: ["ls-remote", "--heads", pushPlan.remote, pushPlan.integrationBranch],
-    },
-  ];
-  if (includeDryRun) {
-    checks.push({
-      id: "push-dry-run",
-      description: "Run git push --dry-run for the planned refspec.",
-      args: ["push", "--dry-run", pushPlan.remote, pushPlan.refspec],
-    });
-  }
-  return checks.map((check) => runLoopWorktreePromotionPushPreflightCheck(worktreePath, check));
-}
-
-function runLoopWorktreePromotionPushPreflightCheck(worktreePath, check) {
-  const startedAt = new Date().toISOString();
-  const result = spawnSync("git", check.args, {
-    cwd: worktreePath,
-    encoding: "utf8",
-    env: {
-      ...process.env,
-      GIT_TERMINAL_PROMPT: "0",
-    },
-  });
-  const completedAt = new Date().toISOString();
-  const stdout = result.stdout ?? "";
-  const stderr = result.stderr ?? "";
-  return {
-    id: check.id,
-    description: check.description,
-    command: ["git", ...check.args].join(" "),
-    startedAt,
-    completedAt,
-    exitCode: result.status ?? (result.error ? 1 : 0),
-    signal: result.signal ?? null,
-    error: result.error ? childProcessErrorMessage(result.error) : null,
-    stdoutBytes: Buffer.byteLength(stdout, "utf8"),
-    stderrBytes: Buffer.byteLength(stderr, "utf8"),
-    stdout: truncate(stdout.trim(), 4000),
-    stderr: truncate(stderr.trim(), 4000),
-  };
+  return runLoopWorktreePromotionPushPreflightChecksCore(pushPlan, { includeDryRun, worktreePath, truncate });
 }
 
 export function runLoopWorktreePromotionPushExecuteCommand(worktreePath, preflight) {
-  const startedAt = new Date().toISOString();
-  const args = ["push", preflight.remote, preflight.refspec];
-  const result = spawnSync("git", args, {
-    cwd: worktreePath,
-    encoding: "utf8",
-    env: {
-      ...process.env,
-      GIT_TERMINAL_PROMPT: "0",
-    },
-  });
-  const completedAt = new Date().toISOString();
-  const stdout = result.stdout ?? "";
-  const stderr = result.stderr ?? "";
-  return {
-    command: ["git", ...args].join(" "),
-    startedAt,
-    completedAt,
-    exitCode: result.status ?? (result.error ? 1 : 0),
-    signal: result.signal ?? null,
-    error: result.error ? childProcessErrorMessage(result.error) : null,
-    stdoutBytes: Buffer.byteLength(stdout, "utf8"),
-    stderrBytes: Buffer.byteLength(stderr, "utf8"),
-    stdout: truncate(stdout.trim(), 4000),
-    stderr: truncate(stderr.trim(), 4000),
-  };
-}
-
-export function readLoopWorktreePromotionRemoteHead(worktreePath, preflight) {
-  try {
-    const branch = preflight.integrationBranch ?? preflight.headBranch;
-    if (!branch) return null;
-    const output = gitOutputForRoot(worktreePath, ["ls-remote", "--heads", preflight.remote, branch]);
-    const first = output.split(/\r?\n/).find(Boolean);
-    return first?.split(/\s+/)[0] ?? null;
-  } catch {
-    return null;
-  }
+  return runLoopWorktreePromotionPushExecuteCommandCore(worktreePath, preflight, { truncate });
 }
 
 export function buildLoopWorktreePromotionPlan({ record, review, approval }) {
