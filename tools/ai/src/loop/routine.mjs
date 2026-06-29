@@ -22,6 +22,24 @@ import {
   showLoopRoutineRunReadModel,
   updateLoopRoutineRunIndex,
 } from "./routine-inspect.mjs";
+export {
+  formatLoopRoutineCheck,
+  formatLoopRoutineFanoutPlan,
+  formatLoopRoutineFanoutResult,
+  formatLoopRoutineFindings,
+  formatLoopRoutineLatest,
+  formatLoopRoutinePlan,
+  formatLoopRoutineRunList,
+  formatLoopRoutineSchedulePlan,
+  formatLoopRoutineScheduleRun,
+  formatLoopRoutineShow,
+} from "./routine-formatters.mjs";
+import {
+  formatLoopRoutineFanoutPlan,
+  formatLoopRoutineFanoutResult,
+} from "./routine-formatters.mjs";
+import { executeRoutineChecks, resolveRoutineCheckCommand } from "./routine-checks.mjs";
+import { parseSimpleYaml } from "./routine-yaml.mjs";
 
 export { rebuildLoopRoutineRunsIndex };
 
@@ -258,60 +276,6 @@ export function buildLoopRoutinePlan({ routine, sourcePath, root = repoRoot }) {
   };
 }
 
-export function formatLoopRoutineCheck({ routine, sourcePath, validation }) {
-  return `# Loop Routine Check
-
-Routine: ${routine.metadata.id}
-Source: ${sourcePath}
-OK: ${validation.ok ? "yes" : "no"}
-
-Errors:
-${list(validation.errors)}
-
-Warnings:
-${list(validation.warnings)}
-`;
-}
-
-export function formatLoopRoutinePlan(plan) {
-  return `# Loop Routine Plan
-
-Routine: ${plan.routineId}
-Source: ${plan.sourcePath}
-Valid: ${plan.valid ? "yes" : "no"}
-Can run now: ${plan.execution.canRunNow ? "yes" : "no"}
-Schedule: ${plan.schedule.mode}${plan.schedule.cron ? ` (${plan.schedule.cron})` : ""}
-
-## Inputs
-
-${plan.inputs.map((input) => `- ${input.id}: ${input.type} (${input.supportedInRun ? "implemented" : "planned"}) - ${input.summary}`).join("\n") || "- None."}
-
-## Skills
-
-${plan.skills.map((skill) => `- ${skill.id}: ${skill.path} (${skill.exists ? "found" : "missing"}${skill.required ? ", required" : ""})`).join("\n") || "- None."}
-
-## Checks
-
-${plan.checks.map((check) => `- ${check.id}: ${check.type}${check.command ? ` ${check.command}` : ""} (${check.allowed ? "allowed" : "blocked"})`).join("\n") || "- None."}
-
-## Outputs
-
-- Summary: ${plan.outputs.summary}
-- Findings: ${plan.outputs.findings}
-- Enqueue findings: ${plan.outputs.enqueueFindings ? "yes" : "no"}
-
-## Safety
-
-- Remote writes: ${plan.safety.remoteWrites}
-- GitHub writes: ${plan.safety.githubWrites}
-- Approval gates: ${plan.safety.requiresApprovalFor.join(", ") || "none"}
-
-## Risks
-
-${list(plan.risks)}
-`;
-}
-
 export function runLoopRoutine({ routine, sourcePath, dryRun = false, root = repoRoot }) {
   const plan = buildLoopRoutinePlan({ routine, sourcePath, root });
   if (!plan.valid) fail(`Loop routine is invalid:\n${plan.validation.errors.map((error) => `- ${error}`).join("\n")}`);
@@ -364,7 +328,7 @@ export function runLoopRoutine({ routine, sourcePath, dryRun = false, root = rep
     requiredMissingCount: skillSnapshot.skills.filter((skill) => skill.required && skill.status !== "found").length,
   });
 
-  const checksResult = executeRoutineChecks(routine, root);
+  const checksResult = executeRoutineChecks(routine, root, { cliPath });
   writeFileSync(resolve(runDir, "checks-result.json"), `${JSON.stringify(checksResult, null, 2)}\n`, "utf8");
   appendEvent("loop_routine_checks_completed", "Loop routine checks completed.", {
     checkCount: checksResult.checks.length,
@@ -587,97 +551,6 @@ export function listLoopRoutineFindings({ routineRunId, severity = null, withSug
   }
 }
 
-export function formatLoopRoutineRunList(result) {
-  return `# Loop Routine Runs
-
-Runs: ${result.routineRunCount}
-Routine filter: ${result.filters.routineId ?? "all"}
-Status filter: ${result.filters.status ?? "all"}
-Limit: ${result.filters.limit}
-
-## Runs
-
-${result.runs.map((run) => `- ${run.routineRunId}: ${run.routineId} ${run.status} findings=${run.findingCount} suggested=${run.suggestedRunCount} started=${run.startedAt ?? "unknown"}`).join("\n") || "- None."}
-`;
-}
-
-export function formatLoopRoutineLatest(result) {
-  if (!result.routineRun) {
-    return `# Latest Loop Routine Run
-
-Routine: ${result.routineId}
-Run: none
-`;
-  }
-  return `# Latest Loop Routine Run
-
-Routine: ${result.routineId}
-Run: ${result.routineRun.routineRunId}
-Status: ${result.routineRun.status}
-Started: ${result.routineRun.startedAt ?? "unknown"}
-Completed: ${result.routineRun.completedAt ?? "unknown"}
-Findings: ${result.routineRun.findingCount}
-Suggested runs: ${result.routineRun.suggestedRunCount}
-`;
-}
-
-export function formatLoopRoutineShow(result) {
-  return `# Loop Routine Run
-
-Run: ${result.routineRunId}
-Routine: ${result.routineId}
-Status: ${result.status}
-Started: ${result.startedAt ?? "unknown"}
-Completed: ${result.completedAt ?? "unknown"}
-Run dir: ${result.runDir}
-
-## Summary
-
-- Inputs: ${result.summary.inputCount}
-- Skills: ${result.summary.skillCount}
-- Checks: ${result.summary.checkCount}
-- Failed checks: ${result.summary.failedCheckCount}
-- Findings: ${result.summary.findingCount}
-- Suggested runs: ${result.summary.suggestedRunCount}
-- Fanout candidates: ${result.summary.fanoutCandidateCount ?? "not planned"}
-- Fanout created: ${result.summary.fanoutCreatedCount ?? "not executed"}
-- Fanout enqueued: ${result.summary.fanoutEnqueuedCount ?? "not executed"}
-- Fanout worker completed: ${result.summary.fanoutWorkerCompletedCount ?? "not executed"}
-
-## Evidence
-
-${list(result.evidence)}
-
-## Findings
-
-${result.findings.map((finding) => `- ${finding.id}: ${finding.severity} ${finding.title}${finding.suggestedRun ? " -> suggested-run" : ""}`).join("\n") || "- None."}
-
-## Fanout
-
-- Plan: ${result.fanout.plan ? `${result.fanout.plan.candidateCount} candidates` : "none"}
-- Result: ${result.fanout.result ? `${result.fanout.result.createdCount} created, ${result.fanout.result.enqueuedCount ?? 0} enqueued` : "none"}
-`;
-}
-
-export function formatLoopRoutineFindings(result) {
-  return `# Loop Routine Findings
-
-Routine run: ${result.routineRunId}
-Findings: ${result.findingCount}
-Severity filter: ${result.filters.severity ?? "all"}
-Suggested-run filter: ${result.filters.withSuggestedRun ? "yes" : "no"}
-
-## Findings
-
-${result.findings.map((finding) => [
-    `- ${finding.id}: ${finding.severity} ${finding.title}`,
-    `  Source: ${formatFindingSource(finding.source)}`,
-    `  Proposed action: ${finding.proposedAction || "none"}`,
-    `  Suggested run: ${finding.suggestedRun ? "yes" : "no"}`,
-  ].join("\n")).join("\n") || "- None."}
-`;
-}
-
 export function planLoopRoutineFanout({ routineRunId, root = repoRoot }) {
   const run = loadRoutineRun(routineRunId, root);
   const routine = readJsonFile(resolve(run.runDir, "routine.json"));
@@ -833,96 +706,6 @@ export function executeLoopRoutineFanout({
   };
 }
 
-export function formatLoopRoutineFanoutPlan(plan) {
-  return `# Loop Routine Fanout Plan
-
-Routine run: ${plan.routineRunId}
-Routine: ${plan.routineId}
-Enabled: ${plan.enabled ? "yes" : "no"}
-Mode: ${plan.mode}
-Approval required: ${plan.approvalRequired ? "yes" : "no"}
-Candidates: ${plan.candidateCount}
-Skipped findings: ${plan.skippedCount}
-
-## Candidates
-
-${arrayOr(plan.candidates, []).map((candidate) => `- ${candidate.findingId}: ${candidate.title} -> ${candidate.childRunId} (${candidate.priority})`).join("\n") || "- None."}
-
-## Boundaries
-
-${list(plan.boundaries)}
-`;
-}
-
-export function formatLoopRoutineSchedulePlan(plan) {
-  return `# Loop Routine Schedule Plan
-
-Planned: ${plan.plannedAt}
-Routines: ${plan.routineCount}
-Due: ${plan.dueCount}
-
-## Routines
-
-${plan.routines.map((routine) => `- ${routine.routineId ?? "(invalid)"}: ${routine.due ? "due" : "blocked"} (${routine.reason}) ${routine.sourcePath}`).join("\n") || "- None."}
-
-## Boundaries
-
-${list(plan.boundaries ?? [])}
-`;
-}
-
-export function formatLoopRoutineScheduleRun(result) {
-  return `# Loop Routine Schedule Run
-
-Ran: ${result.ranAt}
-Dry run: ${result.dryRun ? "yes" : "no"}
-Due: ${result.dueCount}
-Runs: ${result.runCount}
-
-## Runs
-
-${result.runs.map((run) => `- ${run.routineId}: ${run.status}${run.routineRunId ? ` (${run.routineRunId})` : ""}${run.error ? ` - ${run.error}` : ""}`).join("\n") || "- None."}
-
-## Skipped
-
-${result.skipped.map((run) => `- ${run.routineId ?? "(invalid)"}: ${run.reason}`).join("\n") || "- None."}
-`;
-}
-
-export function formatLoopRoutineFanoutResult(result) {
-  return `# Loop Routine Fanout Result
-
-Routine run: ${result.routineRunId}
-Routine: ${result.routineId}
-Created: ${result.createdCount}
-Skipped: ${result.skippedCount}
-Enqueued: ${result.enqueuedCount ?? 0}
-Worker completed: ${result.workerCompletedCount ?? 0}
-Worker failed: ${result.workerFailedCount ?? 0}
-Executed: ${result.executedAt}
-
-## Created Runs
-
-${arrayOr(result.createdRuns, []).map((run) => `- ${run.findingId}: ${run.loopRunId} (${run.runDir})`).join("\n") || "- None."}
-
-## Skipped Runs
-
-${arrayOr(result.skippedRuns, []).map((run) => `- ${run.findingId}: ${run.loopRunId} (${run.reason})`).join("\n") || "- None."}
-
-## Enqueued Runs
-
-${arrayOr(result.enqueuedRuns, []).map((run) => `- ${run.loopRunId}: ${run.status} (${run.state ?? "unknown"})`).join("\n") || "- None."}
-
-## Worker Runs
-
-${arrayOr(result.workerRuns, []).map((run) => `- ${run.loopRunId}: ${run.status}${run.childRunId ? ` child=${run.childRunId}` : ""}${run.error ? ` error=${run.error}` : ""}`).join("\n") || "- None."}
-
-## Boundaries
-
-${list(result.boundaries ?? [])}
-`;
-}
-
 function enqueueFanoutRuns({ runs, priority, timeoutMs, root }) {
   const queuePriority = normalizeLoopQueuePriority(priority ?? "normal");
   return arrayOr(runs, []).map((run) => enqueueFanoutRun({ run, priority: queuePriority, timeoutMs, root }));
@@ -1053,19 +836,6 @@ function loadRoutineRun(routineRunId, root) {
     routineId: routine.metadata?.id ?? "routine",
     runDir,
   };
-}
-
-function formatFindingSource(source) {
-  if (!isObject(source)) return "unknown";
-  const parts = [
-    source.type,
-    source.runId,
-    source.repo,
-    source.issue ? `issue=${source.issue}` : null,
-    source.pr ? `pr=${source.pr}` : null,
-    source.check ? `check=${source.check}` : null,
-  ].filter(Boolean);
-  return parts.join(" ");
 }
 
 function fanoutCandidate({ routine, routineRunId, finding, index, skillSnapshot }) {
@@ -1453,74 +1223,6 @@ function childProcessErrorMessage(error) {
   const stderr = typeof error?.stderr === "string" ? error.stderr.trim() : "";
   const stdout = typeof error?.stdout === "string" ? error.stdout.trim() : "";
   return [error?.message ?? String(error), stdout, stderr].filter(Boolean).join("\n");
-}
-
-function executeRoutineChecks(routine, root) {
-  const checks = routine.checks.map((check) => {
-    const startedAt = new Date().toISOString();
-    const command = resolveRoutineCheckCommand(check);
-    const required = booleanOr(check.required, true);
-    if (!command) {
-      return {
-        id: check.id,
-        type: check.type,
-        command: check.command ?? null,
-        required,
-        status: required ? "failed" : "skipped",
-        exitCode: null,
-        startedAt,
-        completedAt: new Date().toISOString(),
-        stdout: "",
-        stderr: "",
-        error: `Unsupported routine check type: ${check.type}`,
-      };
-    }
-    const result = spawnSync(command.bin, command.args, {
-      cwd: root,
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "pipe"],
-      shell: false,
-    });
-    const exitCode = result.status ?? (result.error ? 1 : 0);
-    return {
-      id: check.id,
-      type: check.type,
-      command: command.id,
-      required,
-      status: exitCode === 0 ? "passed" : "failed",
-      exitCode,
-      startedAt,
-      completedAt: new Date().toISOString(),
-      stdout: result.stdout ?? "",
-      stderr: result.stderr ?? "",
-      error: result.error?.message ?? null,
-    };
-  });
-  return {
-    completedAt: new Date().toISOString(),
-    ok: checks.every((check) => check.status !== "failed" || !check.required),
-    checks,
-  };
-}
-
-function resolveRoutineCheckCommand(check) {
-  const id = check.type === "command" ? check.command : check.type;
-  const commands = {
-    "ai:loop-registry-check": ["node", [cliPath, "loop-registry-check"]],
-    "loop-registry": ["node", [cliPath, "loop-registry-check"]],
-    "docs-check": ["pnpm", ["docs:check"]],
-    "docs:check": ["pnpm", ["docs:check"]],
-    typecheck: ["pnpm", ["typecheck"]],
-    test: ["pnpm", ["test"]],
-    "ai:check": ["node", [cliPath, "--check"]],
-  };
-  const command = commands[id];
-  if (!command) return null;
-  return {
-    id,
-    bin: command[0],
-    args: command[1],
-  };
 }
 
 function generateRoutineFindings({ routine, inputSnapshot, checksResult, skillSnapshot }) {
@@ -2275,108 +1977,6 @@ function loopRoutinePlanRisks({ routine, inputPlan, skillPlan, checkPlan }) {
   if (routine.outputs.enqueueFindings) risks.push("Output enqueueFindings is recorded but not executed by this slice.");
   if (risks.length === 0) risks.push("No known routine plan risks.");
   return risks;
-}
-
-function parseSimpleYaml(source) {
-  const lines = source
-    .split(/\r?\n/)
-    .map((raw) => raw.replace(/\t/g, "  "))
-    .map((raw) => ({ indent: raw.match(/^ */)[0].length, text: raw.trim() }))
-    .filter((line) => line.text && !line.text.startsWith("#"));
-  if (lines.length === 0) return {};
-  const [value, index] = parseYamlBlock(lines, 0, lines[0].indent);
-  if (index < lines.length) fail(`Invalid YAML near: ${lines[index].text}`);
-  return value;
-}
-
-function parseYamlBlock(lines, index, indent) {
-  const line = lines[index];
-  if (!line || line.indent < indent) return [null, index];
-  if (line.text.startsWith("- ")) return parseYamlArray(lines, index, indent);
-  return parseYamlObject(lines, index, indent);
-}
-
-function parseYamlArray(lines, index, indent) {
-  const items = [];
-  let cursor = index;
-  while (cursor < lines.length) {
-    const line = lines[cursor];
-    if (line.indent < indent) break;
-    if (line.indent !== indent || !line.text.startsWith("- ")) break;
-    const rest = line.text.slice(2).trim();
-    cursor += 1;
-    if (!rest) {
-      const [value, next] = parseYamlBlock(lines, cursor, lines[cursor]?.indent ?? indent + 2);
-      items.push(value);
-      cursor = next;
-      continue;
-    }
-    if (isYamlKeyValue(rest)) {
-      const item = {};
-      cursor = assignYamlKeyValue(item, rest, lines, cursor);
-      while (cursor < lines.length && lines[cursor].indent === indent + 2 && !lines[cursor].text.startsWith("- ")) {
-        const propertyLine = lines[cursor];
-        cursor += 1;
-        cursor = assignYamlKeyValue(item, propertyLine.text, lines, cursor);
-      }
-      items.push(item);
-    } else {
-      items.push(parseYamlScalar(rest));
-    }
-  }
-  return [items, cursor];
-}
-
-function parseYamlObject(lines, index, indent) {
-  const object = {};
-  let cursor = index;
-  while (cursor < lines.length) {
-    const line = lines[cursor];
-    if (line.indent < indent) break;
-    if (line.indent !== indent || line.text.startsWith("- ")) break;
-    cursor += 1;
-    cursor = assignYamlKeyValue(object, line.text, lines, cursor);
-  }
-  return [object, cursor];
-}
-
-function assignYamlKeyValue(object, text, lines, cursor) {
-  const match = text.match(/^([^:]+):(.*)$/);
-  if (!match) fail(`Invalid YAML key/value line: ${text}`);
-  const key = match[1].trim();
-  const rawValue = match[2].trim();
-  if (rawValue) {
-    object[key] = parseYamlScalar(rawValue);
-    return cursor;
-  }
-  if (cursor < lines.length && lines[cursor].indent > 0) {
-    const [value, next] = parseYamlBlock(lines, cursor, lines[cursor].indent);
-    object[key] = value;
-    return next;
-  }
-  object[key] = null;
-  return cursor;
-}
-
-function isYamlKeyValue(text) {
-  return /^[^:]+:/.test(text);
-}
-
-function parseYamlScalar(raw) {
-  const value = raw.trim();
-  if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
-    return value.slice(1, -1);
-  }
-  if (value === "true") return true;
-  if (value === "false") return false;
-  if (value === "null" || value === "~") return null;
-  if (/^\[[\s\S]*\]$/.test(value)) {
-    const inner = value.slice(1, -1).trim();
-    if (!inner) return [];
-    return inner.split(",").map((item) => parseYamlScalar(item.trim()));
-  }
-  if (/^-?\d+$/.test(value)) return Number(value);
-  return value;
 }
 
 function globMatcher(pattern) {

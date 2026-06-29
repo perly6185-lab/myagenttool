@@ -917,6 +917,30 @@ surface into `tools/ai/src/commands/registry.mjs`,
 `tools/ai/src/commands/worktree.mjs`, `tools/ai/src/commands/worker.mjs`, and
 `tools/ai/src/commands/promotion.mjs`; `tools/ai/src/index.mjs` now acts mostly
 as the CLI router plus the legacy work-runner and review/generation commands.
+Routine read models and index handling live in
+`tools/ai/src/loop/routine-inspect.mjs`. Routine display formatting, routine
+check execution, and the small YAML parser have been split into
+`tools/ai/src/loop/routine-formatters.mjs`,
+`tools/ai/src/loop/routine-checks.mjs`, and
+`tools/ai/src/loop/routine-yaml.mjs`.
+
+Remaining split plan:
+
+- `apps/server/src/index.mjs`: split into `routes/*`, `state/store`,
+  `projects/git`, `agents`, `codex`, `terminal`, and `routine-api` modules.
+  Keep the HTTP router thin and leave mutation boundaries explicit.
+- `apps/web/public/app.js`: split by surface into task/routine browser,
+  workspace/session, evidence center, terminal, project browser, integration,
+  and shared API/render utilities.
+- `apps/web/public/styles.css`: split by shell, composer, task/routine list,
+  evidence, terminal, project browser, and responsive rules.
+- `tools/ai/src/index.mjs`: continue moving legacy work-runner, review,
+  manifest, scope, and planning commands into `tools/ai/src/commands/*`.
+- `tools/ai/src/loop/routine.mjs`: next slices are `routine-inputs.mjs`,
+  `routine-findings.mjs`, `routine-skills.mjs`, `routine-scheduler.mjs`, and
+  `routine-fanout.mjs`.
+- `tools/ai/src/loop/promotion.mjs`: split command adapters, result builders,
+  evidence writers, input readers, and finish/apply orchestration.
 
 Implemented command surfaces:
 
