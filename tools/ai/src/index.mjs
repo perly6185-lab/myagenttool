@@ -1,12 +1,139 @@
 #!/usr/bin/env node
 import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import https from "node:https";
+import {
+  LOOP_ENQUEUEABLE_STATES,
+  LOOP_EVENT_TYPES,
+  LOOP_HUMAN_GATE_STATES,
+  LOOP_RESUMABLE_STATES,
+  LOOP_RUN_STATES,
+  appendLoopEvent,
+  applyLoopHumanGate,
+  createLoopHumanGate,
+  createLoopRegistryEntry,
+  findLoopRegistryEntry,
+  loopRegistryLockPath,
+  loopRunPath,
+  readLoopRegistry,
+  readOptionalJson,
+  requireLoopRegistryEntry,
+  safeIsDirectory,
+  updateLoopEvidence,
+  updateLoopRun,
+  upsertLoopRegistryEntry,
+} from "./loop/registry.mjs";
+import { runStructuredAgent as runStructuredAgentWithProvider } from "./providers/structured.mjs";
+import { configureLoopWorktreeContext } from "./loop/worktree.mjs";
+import { configureLoopPromotionContext } from "./loop/promotion.mjs";
+import {
+  configureLoopWorktreeCommandsContext,
+  loopWorktreeCleanup,
+  loopWorktreeDiff,
+  loopWorktreeList,
+  loopWorktreeReview,
+  loopWorktreeShow,
+  requireLoopWorktreeEntry,
+} from "./commands/worktree.mjs";
+import {
+  configureLoopRegistryCommandsContext,
+  loopCancel,
+  loopClaim,
+  loopEnqueue,
+  loopGateApprove,
+  loopGateReject,
+  loopGateRequest,
+  loopHeartbeat,
+  loopList,
+  loopRegistryCheck,
+  loopRegistryRebuild,
+  loopRelease,
+  loopResume,
+  loopShow,
+  loopTimeoutCheck,
+} from "./commands/registry.mjs";
+import {
+  configureLoopWorkerCommandsContext,
+  loopWorkerOnce,
+} from "./commands/worker.mjs";
+import {
+  configureLoopPromotionCommandsContext,
+  loopWorktreePromote,
+  loopWorktreePromotionApply,
+  loopWorktreePromotionCommit,
+  loopWorktreePromotionPrCreateExecute,
+  loopWorktreePromotionPrCreatePrep,
+  loopWorktreePromotionPrMergeExecute,
+  loopWorktreePromotionPrMergePrep,
+  loopWorktreePromotionPrPrep,
+  loopWorktreePromotionPushExecute,
+  loopWorktreePromotionPushPlan,
+  loopWorktreePromotionPushPreflight,
+  loopWorktreePromotionVerify,
+} from "./commands/promotion.mjs";
+import {
+  configureLoopRoutineCommandsContext,
+  loopRoutineCheck,
+  loopRoutinePlan,
+  loopRoutineRun,
+} from "./commands/routine.mjs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const repoRoot = resolve(__dirname, "../../..");
+const scriptPath = fileURLToPath(import.meta.url);
+const __dirname = dirname(scriptPath);
+const defaultRepoRoot = resolve(__dirname, "../../..");
+const repoRoot = resolve(process.env.MYAGENTTOOL_REPO_ROOT ?? defaultRepoRoot);
+
+configureLoopWorktreeContext({
+  repoRoot,
+  commandOutput,
+  isSubpath,
+  readLoopRegistry,
+  readOptionalJson,
+  safeIsDirectory,
+  safePathSegment,
+  updateLoopRun,
+});
+
+configureLoopPromotionContext({
+  repoRoot,
+  readOptionalJson,
+  safeIsDirectory,
+  safePathSegment,
+});
+
+configureLoopWorktreeCommandsContext({
+  repoRoot,
+  fail,
+  option,
+});
+
+configureLoopRegistryCommandsContext({
+  fail,
+  option,
+});
+
+configureLoopWorkerCommandsContext({
+  repoRoot,
+  scriptPath,
+  fail,
+  option,
+});
+
+configureLoopPromotionCommandsContext({
+  repoRoot,
+  fail,
+  lines,
+  option,
+  requireLoopWorktreeEntry,
+  uniqueStrings,
+});
+
+configureLoopRoutineCommandsContext({
+  repoRoot,
+  fail,
+  option,
+});
 
 const HELP = `MyAgentTool AI delivery helpers
 
@@ -20,6 +147,42 @@ Usage:
   node tools/ai/src/index.mjs scope-check [--plan-file path] [--base REF] [--out path] [--json] [--allow-drift "reason"]
   node tools/ai/src/index.mjs testing-plan [--change docs|web|server|desktop|protocol|security|release|adapter] [--changes docs,security,release] [--risk low|medium|high|critical] [--out path] [--json]
   node tools/ai/src/index.mjs run-work|work-runner --issue NUMBER [--repo OWNER/REPO] --provider openai|command|mock [--apply] [--coding-adapter NAME] [--adapter-command-json JSON] [--verify] [--skip-verify] [--open-pr] [--allow-drift "reason"]
+  node tools/ai/src/index.mjs loop-list [--json]
+  node tools/ai/src/index.mjs loop-show --run RUN_ID [--json]
+  node tools/ai/src/index.mjs loop-cancel --run RUN_ID [--reason "..."] [--force]
+  node tools/ai/src/index.mjs loop-resume --run RUN_ID [--reason "..."]
+  node tools/ai/src/index.mjs loop-retry --run RUN_ID [--apply] [--open-pr] [--skip-verify]
+  node tools/ai/src/index.mjs loop-gate-request --run RUN_ID --reason "..." --scope "..." --requested-action "..." [--risk low|medium|high|critical] [--by NAME] [--expires-at ISO]
+  node tools/ai/src/index.mjs loop-gate-approve --run RUN_ID --by NAME [--evidence "..."] [--expires-at ISO]
+  node tools/ai/src/index.mjs loop-gate-reject --run RUN_ID --by NAME --reason "..."
+  node tools/ai/src/index.mjs loop-enqueue --run RUN_ID [--priority normal|high|low|p0|p1|p2|p3] [--timeout-ms N] [--json]
+  node tools/ai/src/index.mjs loop-claim --worker WORKER_ID [--run RUN_ID] [--lease-ms N] [--json]
+  node tools/ai/src/index.mjs loop-heartbeat --run RUN_ID --worker WORKER_ID [--lease-ms N] [--json]
+  node tools/ai/src/index.mjs loop-release --run RUN_ID --worker WORKER_ID [--to queued|planned] [--reason "..."] [--json]
+  node tools/ai/src/index.mjs loop-timeout-check [--json]
+  node tools/ai/src/index.mjs loop-worker-once --worker WORKER_ID [--run RUN_ID] [--lease-ms N] [--mode mock|child-run] [--child-provider mock] [--child-apply] [--approval "..."] [--isolate-worktree] [--base-ref REF] [--child-skip-verify] [--fail] [--json]
+  node tools/ai/src/index.mjs loop-worktree-list [--json]
+  node tools/ai/src/index.mjs loop-worktree-show --run RUN_ID [--json]
+  node tools/ai/src/index.mjs loop-worktree-cleanup --run RUN_ID --approval "..." [--json]
+  node tools/ai/src/index.mjs loop-worktree-diff --run RUN_ID [--patch] [--json]
+  node tools/ai/src/index.mjs loop-worktree-review --run RUN_ID [--json]
+  node tools/ai/src/index.mjs loop-worktree-promote --run RUN_ID --approval "..." [--json]
+  node tools/ai/src/index.mjs loop-worktree-promotion-apply --run RUN_ID --approval "..." [--json]
+  node tools/ai/src/index.mjs loop-worktree-promotion-verify --run RUN_ID --approval "..." [--command ID] [--json]
+  node tools/ai/src/index.mjs loop-worktree-promotion-pr-prep --run RUN_ID --approval "..." [--json]
+  node tools/ai/src/index.mjs loop-worktree-promotion-commit --run RUN_ID --approval "..." [--message "..."] [--json]
+  node tools/ai/src/index.mjs loop-worktree-promotion-push-plan --run RUN_ID --approval "..." [--remote origin] [--json]
+  node tools/ai/src/index.mjs loop-worktree-promotion-push-preflight --run RUN_ID --approval "..." [--dry-run] [--json]
+  node tools/ai/src/index.mjs loop-worktree-promotion-push-execute --run RUN_ID --approval "..." --confirm-commit SHA [--json]
+  node tools/ai/src/index.mjs loop-worktree-promotion-pr-create-prep --run RUN_ID --approval "..." [--base main] [--json]
+  node tools/ai/src/index.mjs loop-worktree-promotion-pr-create-execute --run RUN_ID --approval "..." --confirm-head BRANCH [--json]
+  node tools/ai/src/index.mjs loop-worktree-promotion-pr-merge-prep --run RUN_ID --approval "..." --confirm-pr NUMBER [--allow-no-checks] [--json]
+  node tools/ai/src/index.mjs loop-worktree-promotion-pr-merge-execute --run RUN_ID --approval "..." --confirm-pr NUMBER --confirm-commit SHA --merge-method squash|merge|rebase [--json]
+  node tools/ai/src/index.mjs loop-routine-check --file path [--json]
+  node tools/ai/src/index.mjs loop-routine-plan --file path [--json]
+  node tools/ai/src/index.mjs loop-routine-run --file path [--dry-run] [--json]
+  node tools/ai/src/index.mjs loop-registry-check [--json]
+  node tools/ai/src/index.mjs loop-registry-rebuild [--json]
   node tools/ai/src/index.mjs review-pr|review-agent --pr NUMBER [--repo OWNER/REPO] --provider openai|command|mock [--out path] [--json] [--comment]
   node tools/ai/src/index.mjs work-manifest [--issue NUMBER] [--pr NUMBER] [--out path]
   node tools/ai/src/index.mjs coding-adapter-contract [--adapter NAME] [--out path]
@@ -289,6 +452,186 @@ function main() {
     return;
   }
 
+  if (command === "loop-list") {
+    loopList(args);
+    return;
+  }
+
+  if (command === "loop-show") {
+    loopShow(args);
+    return;
+  }
+
+  if (command === "loop-cancel") {
+    loopCancel(args);
+    return;
+  }
+
+  if (command === "loop-resume") {
+    loopResume(args);
+    return;
+  }
+
+  if (command === "loop-retry") {
+    loopRetry(args).catch(failFromError);
+    return;
+  }
+
+  if (command === "loop-gate-request") {
+    loopGateRequest(args);
+    return;
+  }
+
+  if (command === "loop-gate-approve") {
+    loopGateApprove(args);
+    return;
+  }
+
+  if (command === "loop-gate-reject") {
+    loopGateReject(args);
+    return;
+  }
+
+  if (command === "loop-enqueue") {
+    loopEnqueue(args);
+    return;
+  }
+
+  if (command === "loop-claim") {
+    loopClaim(args);
+    return;
+  }
+
+  if (command === "loop-heartbeat") {
+    loopHeartbeat(args);
+    return;
+  }
+
+  if (command === "loop-release") {
+    loopRelease(args);
+    return;
+  }
+
+  if (command === "loop-timeout-check") {
+    loopTimeoutCheck(args);
+    return;
+  }
+
+  if (command === "loop-worker-once") {
+    loopWorkerOnce(args);
+    return;
+  }
+
+  if (command === "loop-worktree-list") {
+    loopWorktreeList(args);
+    return;
+  }
+
+  if (command === "loop-worktree-show") {
+    loopWorktreeShow(args);
+    return;
+  }
+
+  if (command === "loop-worktree-cleanup") {
+    loopWorktreeCleanup(args);
+    return;
+  }
+
+  if (command === "loop-worktree-diff") {
+    loopWorktreeDiff(args);
+    return;
+  }
+
+  if (command === "loop-worktree-review") {
+    loopWorktreeReview(args);
+    return;
+  }
+
+  if (command === "loop-worktree-promote") {
+    loopWorktreePromote(args);
+    return;
+  }
+
+  if (command === "loop-worktree-promotion-apply") {
+    loopWorktreePromotionApply(args);
+    return;
+  }
+
+  if (command === "loop-worktree-promotion-verify") {
+    loopWorktreePromotionVerify(args);
+    return;
+  }
+
+  if (command === "loop-worktree-promotion-pr-prep") {
+    loopWorktreePromotionPrPrep(args);
+    return;
+  }
+
+  if (command === "loop-worktree-promotion-commit") {
+    loopWorktreePromotionCommit(args);
+    return;
+  }
+
+  if (command === "loop-worktree-promotion-push-plan") {
+    loopWorktreePromotionPushPlan(args);
+    return;
+  }
+
+  if (command === "loop-worktree-promotion-push-preflight") {
+    loopWorktreePromotionPushPreflight(args);
+    return;
+  }
+
+  if (command === "loop-worktree-promotion-push-execute") {
+    loopWorktreePromotionPushExecute(args);
+    return;
+  }
+
+  if (command === "loop-worktree-promotion-pr-create-prep") {
+    loopWorktreePromotionPrCreatePrep(args);
+    return;
+  }
+
+  if (command === "loop-worktree-promotion-pr-create-execute") {
+    loopWorktreePromotionPrCreateExecute(args);
+    return;
+  }
+
+  if (command === "loop-worktree-promotion-pr-merge-prep") {
+    loopWorktreePromotionPrMergePrep(args);
+    return;
+  }
+
+  if (command === "loop-worktree-promotion-pr-merge-execute") {
+    loopWorktreePromotionPrMergeExecute(args);
+    return;
+  }
+
+  if (command === "loop-registry-check") {
+    loopRegistryCheck(args);
+    return;
+  }
+
+  if (command === "loop-registry-rebuild") {
+    loopRegistryRebuild(args);
+    return;
+  }
+
+  if (command === "loop-routine-check") {
+    loopRoutineCheck(args);
+    return;
+  }
+
+  if (command === "loop-routine-plan") {
+    loopRoutinePlan(args);
+    return;
+  }
+
+  if (command === "loop-routine-run") {
+    loopRoutineRun(args);
+    return;
+  }
+
   if (command === "review-pr" || command === "review-agent") {
     reviewPullRequest(args).catch(failFromError);
     return;
@@ -317,6 +660,8 @@ function check() {
     "docs/engineering/FULL_FLOW_AI_DELIVERY.md",
     "docs/engineering/AI_DEVELOPMENT_WORKFLOW.md",
     "docs/engineering/MODEL_DRIVEN_DELIVERY.md",
+    "docs/engineering/LOOP_ENGINE.md",
+    "docs/engineering/LOOP_ROUTINES.md",
     "docs/engineering/DEPLOYMENT_PIPELINE.md",
     "docs/design/MYAGENTTOOL_DESIGN.md",
     "docs/design/PRODUCT_FLOWS.md",
@@ -431,6 +776,40 @@ function check() {
 
   if (!existsSync(resolve(repoRoot, "tools/ai/src/coding-wrapper.mjs"))) {
     fail("Trusted coding wrapper missing.");
+  }
+
+  if (!LOOP_RUN_STATES.includes("awaiting_human") || !LOOP_EVENT_TYPES.includes("loop_state_changed")) {
+    fail("Loop engine vocabulary sanity check failed.");
+  }
+  if (!LOOP_EVENT_TYPES.includes("loop_retry_requested") || !LOOP_RESUMABLE_STATES.includes("failed")) {
+    fail("Loop control vocabulary sanity check failed.");
+  }
+  if (!LOOP_EVENT_TYPES.includes("loop_human_gate_approved") || !LOOP_HUMAN_GATE_STATES.includes("requested")) {
+    fail("Loop human gate vocabulary sanity check failed.");
+  }
+  if (!LOOP_RUN_STATES.includes("queued") || !LOOP_EVENT_TYPES.includes("loop_claimed") || !LOOP_ENQUEUEABLE_STATES.includes("timed_out")) {
+    fail("Loop scheduler vocabulary sanity check failed.");
+  }
+  if (!LOOP_EVENT_TYPES.includes("loop_worker_started") || !LOOP_EVENT_TYPES.includes("loop_worker_failed")) {
+    fail("Loop worker vocabulary sanity check failed.");
+  }
+  if (!loopRegistryLockPath().endsWith("registry.lock")) {
+    fail("Loop registry lock path sanity check failed.");
+  }
+  const sampleLoopEntry = createLoopRegistryEntry({
+    runId: "check-run",
+    issue: "0",
+    repo: "OWNER/REPO",
+    branch: "feat/check-run",
+    adapter: { name: "mock" },
+    apply: false,
+    verify: false,
+    openPr: false,
+    runDir: resolve(repoRoot, ".myagenttool/runs/check-run"),
+    createdAt: "2026-01-01T00:00:00.000Z",
+  });
+  if (sampleLoopEntry.state !== "created" || !sampleLoopEntry.evidence || sampleLoopEntry.humanGate !== null || sampleLoopEntry.workerId !== null || sampleLoopEntry.queuePriority !== null || sampleLoopEntry.evidence.workerResult !== null || !sampleLoopEntry.eventLog.endsWith("events.jsonl")) {
+    fail("Loop registry entry sanity check failed.");
   }
 
   console.log("[tools-ai:check] AI delivery helpers check OK");
@@ -627,53 +1006,141 @@ async function runWork(args) {
   const openPr = args.includes("--open-pr");
   const verify = apply && !args.includes("--skip-verify");
   const repo = option(args, "--repo") ?? process.env.GITHUB_REPOSITORY ?? defaultRepo();
-  const plan = await createCodePlan(args);
   const runId = `${new Date().toISOString().replace(/[:.]/g, "-")}-issue-${issue}`;
   const runDir = resolve(repoRoot, ".myagenttool/runs", runId);
   const contextFile = resolve(runDir, "context.json");
   const adapter = resolveCodingAdapter(args);
-  const branch = sanitizeBranch(plan.branch || buildBranchName(issue, `issue-${issue}`, "feat"));
   mkdirSync(runDir, { recursive: true });
+  const createdAt = new Date().toISOString();
+  let entry = createLoopRegistryEntry({
+    runId,
+    issue,
+    repo,
+    branch: "",
+    adapter,
+    apply,
+    verify,
+    openPr,
+    runDir,
+    createdAt,
+  });
+  upsertLoopRegistryEntry(entry);
+  appendLoopEvent(entry, "loop_run_created", "created", "Loop run registered.", { apply, verify, openPr, repo, adapter: adapter.name, branch: "" });
 
-  writeFileSync(resolve(runDir, "code-plan.json"), `${JSON.stringify(plan, null, 2)}\n`, "utf8");
-  writeFileSync(contextFile, `${JSON.stringify(workContext({ issue, repo, branch, plan, runId, adapter }), null, 2)}\n`, "utf8");
-  writeFileSync(resolve(runDir, "coding-adapter-contract.json"), `${JSON.stringify(codingAdapterContractJson(adapter), null, 2)}\n`, "utf8");
-  const testPlan = testingPlanFor({ changes: inferChangeTypes(plan.filesToTouch), risk: inferRiskLevel(plan) });
-  writeFileSync(resolve(runDir, "testing-plan.json"), `${JSON.stringify(testPlan, null, 2)}\n`, "utf8");
-  writeFileSync(resolve(runDir, "testing-plan.md"), formatTestingPlan(testPlan), "utf8");
-  writeFileSync(resolve(runDir, "manifest.md"), formatRunManifest({ issue, repo, plan, apply, adapter, verify, openPr, testPlan }), "utf8");
+  try {
+    entry = updateLoopRun(entry, { state: "planning" }, "Planning issue work.");
+    const plan = await createCodePlan(args);
+    const branch = sanitizeBranch(plan.branch || buildBranchName(issue, `issue-${issue}`, "feat"));
+    entry = updateLoopRun(entry, { branch });
 
-  if (!apply) {
-    console.log(`AI work dry-run created .myagenttool/runs/${runId}`);
-    console.log("Re-run with --apply to create the branch, run the trusted coding adapter, verify, and optionally open a PR.");
-    return;
+    writeFileSync(resolve(runDir, "code-plan.json"), `${JSON.stringify(plan, null, 2)}\n`, "utf8");
+    entry = updateLoopEvidence(entry, { codePlan: loopRunPath(runId, "code-plan.json") });
+    appendLoopEvent(entry, "loop_plan_written", "planning", "Code plan written.", { path: entry.evidence.codePlan });
+
+    writeFileSync(contextFile, `${JSON.stringify(workContext({ issue, repo, branch, plan, runId, adapter }), null, 2)}\n`, "utf8");
+    writeFileSync(resolve(runDir, "coding-adapter-contract.json"), `${JSON.stringify(codingAdapterContractJson(adapter), null, 2)}\n`, "utf8");
+    entry = updateLoopEvidence(entry, { adapterContract: loopRunPath(runId, "coding-adapter-contract.json") });
+    appendLoopEvent(entry, "loop_adapter_contract_written", "planning", "Coding adapter contract written.", { path: entry.evidence.adapterContract });
+
+    const testPlan = testingPlanFor({ changes: inferChangeTypes(plan.filesToTouch), risk: inferRiskLevel(plan) });
+    writeFileSync(resolve(runDir, "testing-plan.json"), `${JSON.stringify(testPlan, null, 2)}\n`, "utf8");
+    writeFileSync(resolve(runDir, "testing-plan.md"), formatTestingPlan(testPlan), "utf8");
+    entry = updateLoopEvidence(entry, {
+      testingPlan: loopRunPath(runId, "testing-plan.md"),
+      testingPlanJson: loopRunPath(runId, "testing-plan.json"),
+    });
+    appendLoopEvent(entry, "loop_testing_plan_written", "planning", "Testing skills plan written.", { changes: testPlan.changes, risk: testPlan.risk });
+
+    writeFileSync(resolve(runDir, "manifest.md"), formatRunManifest({ issue, repo, plan, apply, adapter, verify, openPr, testPlan }), "utf8");
+    entry = updateLoopEvidence(entry, { manifest: loopRunPath(runId, "manifest.md") });
+    appendLoopEvent(entry, "loop_manifest_written", "planning", "Run manifest written.", { path: entry.evidence.manifest });
+    entry = updateLoopRun(entry, { state: "planned" }, "Loop run planned.");
+
+    if (!apply) {
+      console.log(`AI work dry-run created .myagenttool/runs/${runId}`);
+      console.log("Re-run with --apply to create the branch, run the trusted coding adapter, verify, and optionally open a PR.");
+      return;
+    }
+
+    entry = updateLoopRun(entry, { state: "applying" }, "Apply mode started.");
+    ensureCleanWorktree();
+    runCommand("git", ["switch", "-c", branch], { label: `create branch ${branch}` });
+
+    entry = updateLoopRun(entry, { state: "running_adapter" }, `Running ${adapter.name} coding adapter.`);
+    appendLoopEvent(entry, "loop_adapter_started", "running_adapter", "Coding adapter started.", { adapter: adapter.name });
+    const adapterResult = runCodingAdapter({ args, adapter, issue, repo, branch, plan, runId, runDir, contextFile });
+    writeFileSync(resolve(runDir, "coding-adapter-result.json"), `${JSON.stringify(adapterResult.summary, null, 2)}\n`, "utf8");
+    entry = updateLoopEvidence(entry, { adapterResult: loopRunPath(runId, "coding-adapter-result.json") });
+    appendLoopEvent(entry, "loop_adapter_completed", "running_adapter", "Coding adapter completed.", { status: adapterResult.summary.status, changedFiles: adapterResult.summary.changedFiles });
+
+    entry = updateLoopRun(entry, { state: "checking_scope" }, "Checking scope drift.");
+    const scopeResult = buildScopeCheckResult({ plan, planFile: `.myagenttool/runs/${runId}/code-plan.json`, base: "HEAD", allowDrift: option(args, "--allow-drift") ?? "" });
+    writeFileSync(resolve(runDir, "scope-check.json"), `${JSON.stringify(scopeResult, null, 2)}\n`, "utf8");
+    writeFileSync(resolve(runDir, "scope-check.md"), formatScopeCheck(scopeResult), "utf8");
+    entry = updateLoopEvidence(entry, {
+      scopeCheck: loopRunPath(runId, "scope-check.md"),
+      scopeCheckJson: loopRunPath(runId, "scope-check.json"),
+    });
+    appendLoopEvent(entry, "loop_scope_checked", "checking_scope", "Scope drift checked.", { allowed: scopeResult.allowed, driftLevel: scopeResult.driftLevel });
+    if (!scopeResult.allowed) {
+      if (scopeResult.driftLevel === "high") {
+        const gate = createLoopHumanGate({
+          reason: "High scope drift requires human approval.",
+          risk: "high",
+          scope: `Scope drift level ${scopeResult.driftLevel}`,
+          requestedAction: "Approve scope drift or reduce the diff.",
+          requestedBy: "work-runner",
+          expiresAt: null,
+          evidence: entry.evidence.scopeCheck,
+        });
+        entry = applyLoopHumanGate(entry, gate, "Human approval required for scope drift.");
+      }
+      throw new Error(`Scope or Product Flow drift is not allowed. See .myagenttool/runs/${runId}/scope-check.md.`);
+    }
+
+    if (verify) {
+      entry = updateLoopRun(entry, { state: "verifying" }, "Running repository verification.");
+      const verification = runVerification();
+      writeFileSync(resolve(runDir, "verification.md"), verification, "utf8");
+      entry = updateLoopEvidence(entry, { verification: loopRunPath(runId, "verification.md") });
+      appendLoopEvent(entry, "loop_verification_completed", "verifying", "Repository verification completed.", { path: entry.evidence.verification });
+    }
+
+    if (openPr) {
+      if (!repo) throw new Error("Cannot open PR without --repo or GITHUB_REPOSITORY.");
+      const body = formatPrBody({ issue, plan, runId, adapter, verified: verify, testPlan, scopeResult });
+      writeFileSync(resolve(runDir, "pr-body.md"), body, "utf8");
+      entry = updateLoopEvidence(entry, { prBody: loopRunPath(runId, "pr-body.md") });
+      appendLoopEvent(entry, "loop_pr_requested", entry.state, "Opening pull request.", { path: entry.evidence.prBody });
+      runGh(["pr", "create", "--repo", repo, "--title", plan.prSummary || `Work for #${issue}`, "--body", body]);
+    }
+
+    entry = updateLoopRun(entry, { state: "completed" }, "Loop run completed.");
+    appendLoopEvent(entry, "loop_completed", "completed", "Loop run completed.", { manifest: entry.evidence.manifest });
+    console.log(`AI work apply completed. Manifest: .myagenttool/runs/${runId}/manifest.md`);
+  } catch (error) {
+    const message = error?.message || String(error);
+    entry = updateLoopRun(entry, { state: "failed", lastError: message }, "Loop run failed.");
+    appendLoopEvent(entry, "loop_failed", "failed", message, {});
+    throw error;
   }
+}
 
-  ensureCleanWorktree();
-  runCommand("git", ["switch", "-c", branch], { label: `create branch ${branch}` });
+async function loopRetry(args) {
+  const entry = requireLoopRegistryEntry(args);
+  const apply = args.includes("--apply");
+  const openPr = args.includes("--open-pr");
+  const skipVerify = args.includes("--skip-verify");
+  const provider = option(args, "--provider") ?? "mock";
+  const retryArgs = ["run-work", "--issue", entry.issue, "--provider", provider, "--coding-adapter", entry.adapter];
+  if (entry.repo) retryArgs.push("--repo", entry.repo);
+  if (apply) retryArgs.push("--apply");
+  if (openPr) retryArgs.push("--open-pr");
+  if (skipVerify) retryArgs.push("--skip-verify");
 
-  const adapterResult = runCodingAdapter({ args, adapter, issue, repo, branch, plan, runId, runDir, contextFile });
-  writeFileSync(resolve(runDir, "coding-adapter-result.json"), `${JSON.stringify(adapterResult.summary, null, 2)}\n`, "utf8");
-
-  const scopeResult = buildScopeCheckResult({ plan, planFile: `.myagenttool/runs/${runId}/code-plan.json`, base: "HEAD", allowDrift: option(args, "--allow-drift") ?? "" });
-  writeFileSync(resolve(runDir, "scope-check.json"), `${JSON.stringify(scopeResult, null, 2)}\n`, "utf8");
-  writeFileSync(resolve(runDir, "scope-check.md"), formatScopeCheck(scopeResult), "utf8");
-  if (!scopeResult.allowed) {
-    fail(`Scope or Product Flow drift is not allowed. See .myagenttool/runs/${runId}/scope-check.md.`);
-  }
-
-  if (verify) {
-    const verification = runVerification();
-    writeFileSync(resolve(runDir, "verification.md"), verification, "utf8");
-  }
-
-  if (openPr) {
-    if (!repo) fail("Cannot open PR without --repo or GITHUB_REPOSITORY.");
-    const body = formatPrBody({ issue, plan, runId, adapter, verified: verify, testPlan, scopeResult });
-    runGh(["pr", "create", "--repo", repo, "--title", plan.prSummary || `Work for #${issue}`, "--body", body]);
-  }
-
-  console.log(`AI work apply completed. Manifest: .myagenttool/runs/${runId}/manifest.md`);
+  appendLoopEvent(entry, "loop_retry_requested", entry.state, "Loop retry requested.", { provider, apply, openPr, skipVerify });
+  console.log(`Retrying loop run ${entry.runId} with provider ${provider}${apply ? " in apply mode" : " as dry-run"}.`);
+  await runWork(retryArgs);
 }
 
 async function reviewPullRequest(args) {
@@ -952,113 +1419,17 @@ async function createCodePlan(args) {
 }
 
 async function runStructuredAgent({ args, agentName, schema, systemPrompt, userPrompt }) {
-  const provider = resolveProvider(args);
-  if (provider === "mock") {
-    return mockStructuredOutput({
-      agentName,
-      schema,
-      prompt: userPrompt,
-      issue: option(args, "--issue"),
-      title: option(args, "--title"),
-    });
-  }
-
-  const request = {
+  return runStructuredAgentWithProvider({
+    args,
     agentName,
     schema,
     systemPrompt,
     userPrompt,
-    metadata: {
-      repository: commandOutput("git", ["remote", "get-url", "origin"]),
-      branch: commandOutput("git", ["branch", "--show-current"]),
-      head: commandOutput("git", ["rev-parse", "--short", "HEAD"]),
-    },
-  };
-
-  if (provider === "command") {
-    return callCommandProvider(args, request);
-  }
-
-  if (provider === "openai") {
-    return callOpenAiProvider(args, request);
-  }
-
-  fail(`Unsupported provider: ${provider}`);
-}
-
-function resolveProvider(args) {
-  const provider = option(args, "--provider") ?? process.env.MYAGENTTOOL_AI_PROVIDER;
-  if (provider) return provider.toLowerCase();
-  fail("Missing --provider or MYAGENTTOOL_AI_PROVIDER. Use openai, command, or mock for deterministic validation.");
-}
-
-async function callOpenAiProvider(args, request) {
-  const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) fail("OPENAI_API_KEY is required for --provider openai.");
-
-  const model = option(args, "--model") ?? process.env.OPENAI_MODEL;
-  if (!model) fail("OPENAI_MODEL or --model is required for --provider openai so model choice stays auditable.");
-  const baseUrl = process.env.OPENAI_BASE_URL ?? "https://api.openai.com/v1";
-  const url = new URL("/v1/responses", baseUrl.endsWith("/v1") ? baseUrl.slice(0, -3) : baseUrl);
-  const body = {
-    model,
-    input: [
-      {
-        role: "system",
-        content: [{ type: "input_text", text: request.systemPrompt }],
-      },
-      {
-        role: "user",
-        content: [{ type: "input_text", text: request.userPrompt }],
-      },
-    ],
-    text: {
-      format: {
-        type: "json_schema",
-        name: request.schema.name,
-        schema: request.schema.schema,
-        strict: true,
-      },
-    },
-  };
-
-  const response = await httpsJson(url, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(body),
+    repoRoot,
+    option,
+    commandOutput,
+    mockStructuredOutput,
   });
-
-  const outputText = response.output_text ?? extractResponseText(response);
-  if (!outputText) {
-    throw new Error("OpenAI response did not include output text.");
-  }
-  return JSON.parse(outputText);
-}
-
-function callCommandProvider(args, request) {
-  const command = option(args, "--provider-command") ?? process.env.MYAGENTTOOL_AI_COMMAND;
-  if (!command) fail("MYAGENTTOOL_AI_COMMAND or --provider-command is required for --provider command.");
-
-  const result = spawnSync(command, {
-    cwd: repoRoot,
-    input: `${JSON.stringify(request, null, 2)}\n`,
-    encoding: "utf8",
-    shell: true,
-    stdio: ["pipe", "pipe", "pipe"],
-  });
-
-  if (result.status !== 0) {
-    throw new Error(`Command provider failed with exit ${result.status}:\n${result.stderr}`);
-  }
-
-  try {
-    return JSON.parse(result.stdout);
-  } catch (error) {
-    throw new Error(`Command provider did not return valid JSON: ${error.message}\n${result.stdout}`);
-  }
 }
 
 function mockStructuredOutput({ agentName, prompt, issue, title }) {
@@ -1789,7 +2160,7 @@ function runVerification() {
     });
     sections.push(`## ${label}\n\nExit: ${result.status}\n\n\`\`\`text\n${result.stdout ?? ""}${result.stderr ?? ""}\n\`\`\`\n`);
     if (result.status !== 0) {
-      fail(`Verification command failed: ${label}`);
+      throw new Error(`Verification command failed: ${label}`);
     }
   }
 
@@ -1903,11 +2274,11 @@ function runCodingAdapter({ args, adapter, issue, repo, branch, plan, runId, run
   });
 
   if (result.status !== 0) {
-    fail(`Coding adapter ${adapter.name} failed with exit ${result.status}. See .myagenttool/runs/${runId}/coding-adapter.`);
+    throw new Error(`Coding adapter ${adapter.name} failed with exit ${result.status}. See .myagenttool/runs/${runId}/coding-adapter.`);
   }
 
   if (adapterResult.status !== "completed") {
-    fail(`Coding adapter ${adapter.name} did not produce completed evidence. See .myagenttool/runs/${runId}/coding-adapter.`);
+    throw new Error(`Coding adapter ${adapter.name} did not produce completed evidence. See .myagenttool/runs/${runId}/coding-adapter.`);
   }
 
   return { summary: adapterResult };
@@ -2396,6 +2767,19 @@ function normalizePath(path) {
   return path.replace(/\\/g, "/");
 }
 
+function safePathSegment(text) {
+  return String(text)
+    .replace(/[^a-zA-Z0-9._-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 120) || "loop-run";
+}
+
+function isSubpath(root, target) {
+  const normalizedRoot = normalizePath(resolve(root)).toLowerCase().replace(/\/+$/, "");
+  const normalizedTarget = normalizePath(resolve(target)).toLowerCase();
+  return normalizedTarget === normalizedRoot || normalizedTarget.startsWith(`${normalizedRoot}/`);
+}
+
 function lines(output) {
   return output.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
 }
@@ -2547,7 +2931,7 @@ function commandOutput(command, args) {
 function ensureCleanWorktree() {
   const status = commandOutput("git", ["status", "--short"]);
   if (status.trim()) {
-    fail("Refusing to apply AI work on a dirty worktree. Commit, stash, or run without --apply.");
+    throw new Error("Refusing to apply AI work on a dirty worktree. Commit, stash, or run without --apply.");
   }
 }
 
@@ -2565,43 +2949,6 @@ function runCommand(command, args, { label }) {
 function truncate(text, max) {
   if (!text || text.length <= max) return text ?? "";
   return `${text.slice(0, max)}\n\n[truncated ${text.length - max} chars]`;
-}
-
-function extractResponseText(response) {
-  const chunks = [];
-  for (const item of response.output ?? []) {
-    for (const content of item.content ?? []) {
-      if (typeof content.text === "string") chunks.push(content.text);
-    }
-  }
-  return chunks.join("\n").trim();
-}
-
-function httpsJson(url, options) {
-  return new Promise((resolvePromise, reject) => {
-    const request = https.request(url, {
-      method: options.method,
-      headers: options.headers,
-    }, (response) => {
-      const chunks = [];
-      response.on("data", (chunk) => chunks.push(chunk));
-      response.on("end", () => {
-        const text = Buffer.concat(chunks).toString("utf8");
-        if (response.statusCode < 200 || response.statusCode >= 300) {
-          reject(new Error(`HTTP ${response.statusCode}: ${text}`));
-          return;
-        }
-        try {
-          resolvePromise(JSON.parse(text));
-        } catch (error) {
-          reject(new Error(`Invalid JSON response: ${error.message}`));
-        }
-      });
-    });
-    request.on("error", reject);
-    request.write(options.body);
-    request.end();
-  });
 }
 
 function ghJson(args) {
@@ -2652,3 +2999,6 @@ function fail(message) {
 }
 
 main();
+
+
+
