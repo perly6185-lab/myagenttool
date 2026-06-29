@@ -182,6 +182,19 @@ Routine inspection commands are read-only:
 These commands do not create routine runs, loop runs, scheduler state, worktrees,
 remote Git state, or GitHub state.
 
+The CLI, local server, and Web Console share the routine read model in
+`tools/ai/src/loop/routine-inspect.mjs`. This keeps run summaries, finding
+fields, fanout counts, and evidence paths from drifting between surfaces.
+
+The local server exposes dedicated read-only routine APIs:
+
+- `GET /api/loop-routines`
+- `GET /api/loop-routines/:runId`
+- `GET /api/loop-routines/:runId/findings`
+
+`GET /api/state` only includes compact routine state, such as the latest run id
+and API links. It does not include the full routine run list or findings.
+
 Routine checks execute during non-dry-run execution only. Check commands must
 resolve to an allowlisted command id. The first local allowlist maps:
 

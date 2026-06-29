@@ -302,6 +302,10 @@ let projectContentSearchData = null;
 let projectContentSearchLoading = false;
 let repoGitSummaryData = null;
 let repoGitSummaryLoading = false;
+let routineRunsState = null;
+let routineRunsRefreshInFlight = false;
+let routineRunsLastProjectId = null;
+let routineRunsLastRefreshMs = 0;
 const selectedCompareAgentIds = new Set();
 const terminalView = createTerminalView();
 let pendingTerminalInput = "";
@@ -331,7 +335,7 @@ els.taskListRows.addEventListener("click", (event) => {
   const button = event.target.closest("button[data-routine-run-id]");
   if (!button) return;
   selectedRoutineRunId = button.dataset.routineRunId;
-  render(lastState);
+  renderTaskList(lastState);
 });
 
 els.newTaskFromListButton.addEventListener("click", () => {
@@ -1535,9 +1539,14 @@ async function refresh() {
     const response = await fetch(`${apiBase}/api/state`);
     const state = await response.json();
     lastState = state;
+    if (routineRunsLastProjectId !== state.currentProjectId) {
+      routineRunsState = null;
+      routineRunsLastProjectId = state.currentProjectId ?? null;
+    }
     els.connectionStatus.textContent = "Connected";
     els.connectionStatus.dataset.state = "ok";
     render(state);
+    refreshRoutineRuns({ force: activePage === "tasks" });
   } catch {
     els.connectionStatus.textContent = "Server offline";
     els.connectionStatus.dataset.state = "bad";
@@ -3656,6 +3665,7 @@ function showTasksPage() {
   workspaceDraftTabOpen = false;
   currentInvocationId = null;
   workspaceTabs.splice(0, workspaceTabs.length);
+  refreshRoutineRuns({ force: true });
 }
 
 function showWorkspacePage({ draft = false, invocationId = null } = {}) {
@@ -3705,11 +3715,12 @@ function syncWorkspaceTabs(state) {
 }
 
 function renderTaskList(state) {
-  const runs = [...(state?.loopRoutines?.runs ?? [])]
+  const routineState = routineRunsState ?? state?.loopRoutines ?? null;
+  const runs = [...(routineState?.runs ?? [])]
     .sort((a, b) => String(b.startedAt ?? b.routineRunId).localeCompare(String(a.startedAt ?? a.routineRunId)))
     .slice(0, 50);
   if (!runs.length) {
-    els.taskListRows.replaceChildren(emptyMiniCard("No routine runs found for this project."));
+    els.taskListRows.replaceChildren(emptyMiniCard(routineRunsRefreshInFlight ? "Loading routine runs..." : "No routine runs found for this project."));
     els.routineRunDetail.replaceChildren(emptyMiniCard("Routine evidence appears here after a local routine run completes."));
     return;
   }
@@ -4663,6 +4674,28 @@ async function fetchState() {
     throw new Error("Unable to refresh state.");
   }
   return response.json();
+}
+
+async function refreshRoutineRuns({ force = false } = {}) {
+  if (routineRunsRefreshInFlight) return;
+  if (!force && activePage !== "tasks") return;
+  if (!force && Date.now() - routineRunsLastRefreshMs < 2000) return;
+  routineRunsRefreshInFlight = true;
+  try {
+    const response = await fetch(`${apiBase}/api/loop-routines?limit=50`);
+    if (!response.ok) throw new Error("Unable to refresh loop routines.");
+    routineRunsState = await response.json();
+    routineRunsLastProjectId = lastState?.currentProjectId ?? null;
+    routineRunsLastRefreshMs = Date.now();
+    if (activePage === "tasks") renderTaskList(lastState);
+  } catch {
+    if (activePage === "tasks") {
+      els.taskListRows.replaceChildren(emptyMiniCard("Routine read model is unavailable."));
+      els.routineRunDetail.replaceChildren(emptyMiniCard("Check the local server and retry."));
+    }
+  } finally {
+    routineRunsRefreshInFlight = false;
+  }
 }
 
 function ensureListValue(input, value) {

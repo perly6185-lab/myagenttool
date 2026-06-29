@@ -1038,7 +1038,13 @@ Operations that can change only local state:
   `ai:loop-routine-show`, and `ai:loop-routine-findings` are read-only local
   inspection commands.
 - The Web Console routine browser reads local routine-run evidence through
-  `/api/state` and does not run routines, enqueue child runs, execute workers,
+  dedicated read-only endpoints: `GET /api/loop-routines`,
+  `GET /api/loop-routines/:runId`, and
+  `GET /api/loop-routines/:runId/findings`. `/api/state` now carries only a
+  compact routine summary/latest id for the current project.
+- CLI inspection, server APIs, and the Web Console use
+  `tools/ai/src/loop/routine-inspect.mjs` as the shared routine read model.
+  This API surface does not run routines, enqueue child runs, execute workers,
   push, create pull requests, or merge pull requests.
 
 Operations that can change remote or GitHub state:

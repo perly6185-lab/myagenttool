@@ -115,6 +115,7 @@
     "smoke:loop-routine-schedule-plan": "node tools/dev/loop-routine-schedule-plan-smoke.mjs",
     "smoke:loop-routine-schedule-run": "node tools/dev/loop-routine-schedule-run-smoke.mjs",
     "smoke:loop-routine-inspect": "node tools/dev/loop-routine-inspect-smoke.mjs",
+    "smoke:loop-routine-api": "node tools/dev/loop-routine-api-smoke.mjs",
     "smoke:loop-routine-fanout-plan": "node tools/dev/loop-routine-fanout-plan-smoke.mjs",
     "smoke:loop-routine-fanout-execute": "node tools/dev/loop-routine-fanout-execute-smoke.mjs",
     "smoke:loop-routine-fanout-enqueue": "node tools/dev/loop-routine-fanout-enqueue-smoke.mjs",

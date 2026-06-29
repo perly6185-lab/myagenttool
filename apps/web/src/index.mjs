@@ -128,6 +128,7 @@ if (process.argv.includes("--check")) {
     [css, ".inline-approval-actions", "inline approval action styling"],
     [js, "readableStatus", "plain-language state mapper"],
     [js, "loopRoutines", "routine read model state"],
+    [js, "/api/loop-routines", "dedicated routine read model API"],
     [js, "renderRoutineRunDetail", "routine run detail renderer"],
     [js, "routineRunCommands", "routine run command list"],
     [js, "pnpm ai:loop-routine-show", "routine read-only inspection command"],

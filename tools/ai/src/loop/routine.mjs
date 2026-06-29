@@ -14,6 +14,12 @@ import {
   updateLoopRun,
   upsertLoopRegistryEntry,
 } from "./registry.mjs";
+import {
+  latestLoopRoutineRunReadModel,
+  listLoopRoutineFindingsReadModel,
+  listLoopRoutineRunsReadModel,
+  showLoopRoutineRunReadModel,
+} from "./routine-inspect.mjs";
 
 const scriptPath = fileURLToPath(import.meta.url);
 const __dirname = dirname(scriptPath);
@@ -549,113 +555,31 @@ export function runLoopRoutineSchedule({
 }
 
 export function listLoopRoutineRuns({ routineId = null, status = null, limit = 20, root = repoRoot } = {}) {
-  const runs = discoverRoutineRunIds(root)
-    .map((routineRunId) => routineRunSummary({ routineRunId, root }))
-    .filter(Boolean)
-    .filter((run) => !routineId || run.routineId === routineId)
-    .filter((run) => !status || run.status === status)
-    .sort((left, right) => String(right.startedAt ?? right.routineRunId).localeCompare(String(left.startedAt ?? left.routineRunId)))
-    .slice(0, limit);
-  return {
-    schemaVersion: LOOP_ROUTINE_SCHEMA_VERSION,
-    routineRunCount: runs.length,
-    filters: { routineId, status, limit },
-    runs,
-  };
+  return listLoopRoutineRunsReadModel({ routineId, status, limit, root });
 }
 
 export function latestLoopRoutineRun({ routineId, root = repoRoot } = {}) {
-  if (!routineId) fail("Missing --routine.");
-  const result = listLoopRoutineRuns({ routineId, limit: 1, root });
-  return {
-    schemaVersion: LOOP_ROUTINE_SCHEMA_VERSION,
-    routineId,
-    routineRun: result.runs[0] ?? null,
-  };
+  try {
+    return latestLoopRoutineRunReadModel({ routineId, root });
+  } catch (error) {
+    fail(error?.message ?? String(error));
+  }
 }
 
 export function showLoopRoutineRun({ routineRunId, root = repoRoot }) {
-  const run = loadRoutineRun(routineRunId, root);
-  const routine = readOptionalJsonFile(resolve(run.runDir, "routine.json"));
-  const plan = readOptionalJsonFile(resolve(run.runDir, "plan.json"));
-  const inputSnapshot = readOptionalJsonFile(resolve(run.runDir, "input-snapshot.json"));
-  const skillSnapshot = readOptionalJsonFile(resolve(run.runDir, "skill-snapshot.json"));
-  const checksResult = readOptionalJsonFile(resolve(run.runDir, "checks-result.json"));
-  const findings = readOptionalJsonFile(resolve(run.runDir, "findings.json")) ?? [];
-  const fanoutPlan = readOptionalJsonFile(resolve(run.runDir, "fanout-plan.json"));
-  const fanoutResult = readOptionalJsonFile(resolve(run.runDir, "fanout-result.json"));
-  const events = readRoutineRunEvents(run.runDir);
-  return {
-    schemaVersion: LOOP_ROUTINE_SCHEMA_VERSION,
-    routineRunId,
-    routineId: routine?.metadata?.id ?? run.routineId,
-    status: routineRunStatusFromEvents(events, checksResult),
-    runDir: relativeRepoPath(run.runDir, root),
-    startedAt: events[0]?.createdAt ?? null,
-    completedAt: routineRunCompletedAt(events),
-    evidence: routineRunEvidencePaths(routineRunId, run.runDir),
-    summary: {
-      name: routine?.metadata?.name ?? null,
-      sourcePath: events.find((event) => event.type === "loop_routine_run_created")?.data?.sourcePath ?? null,
-      inputCount: inputSnapshot?.inputs?.length ?? 0,
-      skillCount: skillSnapshot?.skills?.length ?? 0,
-      checkCount: checksResult?.checks?.length ?? 0,
-      failedCheckCount: checksResult?.checks?.filter((check) => check.status === "failed").length ?? 0,
-      findingCount: arrayOr(findings, []).length,
-      suggestedRunCount: arrayOr(findings, []).filter((finding) => finding.suggestedRun).length,
-      fanoutCandidateCount: fanoutPlan?.candidateCount ?? null,
-      fanoutCreatedCount: fanoutResult?.createdRuns?.length ?? null,
-      fanoutEnqueuedCount: fanoutResult?.enqueuedCount ?? null,
-      fanoutWorkerCompletedCount: fanoutResult?.workerCompletedCount ?? null,
-    },
-    routine,
-    plan,
-    inputs: inputSnapshot?.inputs ?? [],
-    skills: skillSnapshot?.skills ?? [],
-    checks: checksResult?.checks ?? [],
-    findings: arrayOr(findings, []).map(compactRoutineFinding),
-    fanout: {
-      plan: fanoutPlan ? {
-        candidateCount: fanoutPlan.candidateCount,
-        skippedCount: fanoutPlan.skippedCount,
-        candidates: fanoutPlan.candidates?.map((candidate) => ({
-          findingId: candidate.findingId,
-          childRunId: candidate.childRunId,
-          priority: candidate.priority,
-        })) ?? [],
-      } : null,
-      result: fanoutResult ? {
-        createdCount: fanoutResult.createdCount,
-        skippedCount: fanoutResult.skippedCount,
-        enqueuedCount: fanoutResult.enqueuedCount,
-        workerCompletedCount: fanoutResult.workerCompletedCount,
-        workerFailedCount: fanoutResult.workerFailedCount,
-        createdRuns: fanoutResult.createdRuns ?? [],
-        enqueuedRuns: fanoutResult.enqueuedRuns ?? [],
-        workerRuns: fanoutResult.workerRuns ?? [],
-      } : null,
-    },
-  };
+  try {
+    return showLoopRoutineRunReadModel({ routineRunId, root });
+  } catch (error) {
+    fail(error?.message ?? String(error));
+  }
 }
 
 export function listLoopRoutineFindings({ routineRunId, severity = null, withSuggestedRun = false, root = repoRoot }) {
-  const run = loadRoutineRun(routineRunId, root);
-  const findings = arrayOr(readOptionalJsonFile(resolve(run.runDir, "findings.json")), [])
-    .filter((finding) => !severity || finding.severity === severity)
-    .filter((finding) => !withSuggestedRun || Boolean(finding.suggestedRun))
-    .map((finding) => ({
-      ...compactRoutineFinding(finding),
-      evidence: arrayOr(finding.evidence, []),
-      skillBindings: arrayOr(finding.skillBindings, []),
-      suggestedRun: finding.suggestedRun ?? null,
-    }));
-  return {
-    schemaVersion: LOOP_ROUTINE_SCHEMA_VERSION,
-    routineRunId,
-    filters: { severity, withSuggestedRun },
-    findingCount: findings.length,
-    findings,
-  };
+  try {
+    return listLoopRoutineFindingsReadModel({ routineRunId, severity, withSuggestedRun, root });
+  } catch (error) {
+    fail(error?.message ?? String(error));
+  }
 }
 
 export function formatLoopRoutineRunList(result) {
@@ -1121,118 +1045,6 @@ function loadRoutineRun(routineRunId, root) {
     routineRunId,
     routineId: routine.metadata?.id ?? "routine",
     runDir,
-  };
-}
-
-function discoverRoutineRunIds(root) {
-  const runsDir = resolve(root, ".myagenttool/routine-runs");
-  if (!existsSync(runsDir)) return [];
-  return readdirSync(runsDir, { withFileTypes: true })
-    .filter((entry) => entry.isDirectory())
-    .map((entry) => entry.name)
-    .filter((name) => safePathSegment(name) === name);
-}
-
-function routineRunSummary({ routineRunId, root }) {
-  const runDir = resolve(root, ".myagenttool/routine-runs", routineRunId);
-  const routine = readOptionalJsonFile(resolve(runDir, "routine.json"));
-  const checksResult = readOptionalJsonFile(resolve(runDir, "checks-result.json"));
-  const findings = arrayOr(readOptionalJsonFile(resolve(runDir, "findings.json")), []);
-  const fanoutPlan = readOptionalJsonFile(resolve(runDir, "fanout-plan.json"));
-  const fanoutResult = readOptionalJsonFile(resolve(runDir, "fanout-result.json"));
-  const events = readRoutineRunEvents(runDir);
-  if (!routine && events.length === 0) return null;
-  return {
-    routineRunId,
-    routineId: routine?.metadata?.id ?? events[0]?.routineId ?? "routine",
-    status: routineRunStatusFromEvents(events, checksResult),
-    runDir: relativeRepoPath(runDir, root),
-    startedAt: events[0]?.createdAt ?? null,
-    completedAt: routineRunCompletedAt(events),
-    findingCount: findings.length,
-    suggestedRunCount: findings.filter((finding) => finding.suggestedRun).length,
-    failedCheckCount: arrayOr(checksResult?.checks, []).filter((check) => check.status === "failed").length,
-    fanoutCandidateCount: fanoutPlan?.candidateCount ?? null,
-    fanoutCreatedCount: fanoutResult?.createdRuns?.length ?? null,
-    evidence: routineRunEvidencePaths(routineRunId, runDir),
-  };
-}
-
-function readOptionalJsonFile(path) {
-  if (!existsSync(path)) return null;
-  try {
-    return JSON.parse(readFileSync(path, "utf8"));
-  } catch {
-    return null;
-  }
-}
-
-function readRoutineRunEvents(runDir) {
-  const path = resolve(runDir, "events.jsonl");
-  if (!existsSync(path)) return [];
-  return readFileSync(path, "utf8")
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .map((line) => {
-      try {
-        return JSON.parse(line);
-      } catch {
-        return null;
-      }
-    })
-    .filter(Boolean);
-}
-
-function routineRunStatusFromEvents(events, checksResult) {
-  const terminal = [...events].reverse().find((event) => [
-    "loop_routine_run_completed",
-    "loop_routine_run_failed",
-    "loop_routine_checks_failed",
-  ].includes(event.type));
-  if (terminal?.type === "loop_routine_run_failed" || terminal?.type === "loop_routine_checks_failed") return "failed";
-  if (terminal?.type === "loop_routine_run_completed") return "completed";
-  if (arrayOr(checksResult?.checks, []).some((check) => check.required !== false && check.status === "failed")) return "failed";
-  if (events.some((event) => event.type === "loop_routine_run_created")) return "running";
-  return "unknown";
-}
-
-function routineRunCompletedAt(events) {
-  return [...events].reverse().find((event) => [
-    "loop_routine_run_completed",
-    "loop_routine_run_failed",
-    "loop_routine_checks_failed",
-  ].includes(event.type))?.createdAt ?? null;
-}
-
-function routineRunEvidencePaths(routineRunId, runDir) {
-  const files = [
-    "routine.json",
-    "plan.json",
-    "events.jsonl",
-    "input-snapshot.json",
-    "skill-snapshot.json",
-    "checks-result.json",
-    "summary.md",
-    "findings.json",
-    "fanout-plan.json",
-    "fanout-plan.md",
-    "fanout-result.json",
-    "fanout-result.md",
-  ];
-  return files
-    .filter((file) => existsSync(resolve(runDir, file)))
-    .map((file) => routineRunPath(routineRunId, file));
-}
-
-function compactRoutineFinding(finding) {
-  return {
-    id: stringOr(finding?.id, ""),
-    severity: stringOr(finding?.severity, "medium"),
-    title: stringOr(finding?.title, ""),
-    source: finding?.source ?? null,
-    proposedAction: stringOr(finding?.proposedAction, ""),
-    suggestedRun: finding?.suggestedRun ?? null,
   };
 }
 
