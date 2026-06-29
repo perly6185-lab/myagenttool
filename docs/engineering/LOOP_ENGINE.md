@@ -944,6 +944,36 @@ Implemented command surfaces:
   `ai:loop-worktree-promotion-pr-create-execute`,
   `ai:loop-worktree-promotion-pr-merge-prep`, and
   `ai:loop-worktree-promotion-pr-merge-execute`.
+- Loop routines: `ai:loop-routine-check`, `ai:loop-routine-plan`,
+  `ai:loop-routine-run`, `ai:loop-routine-list`,
+  `ai:loop-routine-latest`, `ai:loop-routine-show`,
+  `ai:loop-routine-findings`, `ai:loop-routine-schedule-plan`,
+  `ai:loop-routine-schedule-run`, `ai:loop-routine-fanout-plan`, and
+  `ai:loop-routine-fanout-execute`.
+
+Implemented routine capabilities:
+
+- YAML/JSON routine specifications for schedule, inputs, skills, goal, checks,
+  outputs, and safety policy.
+- Local morning triage execution that writes routine-run evidence under
+  `.myagenttool/routine-runs/` and summary/finding outputs under
+  `.myagenttool/state/`.
+- Read-only input collectors for git commits, filesystem globs, loop registry
+  state, GitHub issues, GitHub pull requests, GitHub checks, and GitHub
+  commits.
+- Skill binding snapshots from `SKILL.md`, including title, summary,
+  acceptance bullets, check bullets, sha256, and fanout context injection.
+- Routine checks with allowlisted local command ids and `checks-result.json`
+  evidence.
+- Deterministic findings for failed loop runs, failed checks, failed inputs,
+  GitHub issue hygiene, PR review/draft state, and failing or pending checks.
+- Fanout planning and explicit fanout execution into normal planned loop runs.
+- Optional child enqueue and one-pass child-run worker execution with isolated
+  worktree support.
+- Local scheduler plan/run ticks for manual first-run, cooldown,
+  max-concurrency state, and simple `@hourly` / `@daily` aliases.
+- Read-only routine history and findings inspection over local routine-run
+  evidence.
 
 Implemented verification assets:
 
@@ -966,6 +996,14 @@ Implemented verification assets:
   `smoke:loop-worktree-promotion-pr-create-execute`,
   `smoke:loop-worktree-promotion-pr-merge-prep`, and
   `smoke:loop-worktree-promotion-pr-merge-execute`.
+- Routine smoke checks: `smoke:loop-routine-check`,
+  `smoke:loop-routine-plan`, `smoke:loop-routine-run-dry`,
+  `smoke:loop-routine-run-findings`, `smoke:loop-routine-github-inputs`,
+  `smoke:loop-routine-schedule-plan`, `smoke:loop-routine-schedule-run`,
+  `smoke:loop-routine-inspect`, `smoke:loop-routine-fanout-plan`,
+  `smoke:loop-routine-fanout-execute`,
+  `smoke:loop-routine-fanout-enqueue`, and
+  `smoke:loop-routine-fanout-worker`.
 
 Validation notes:
 
@@ -984,6 +1022,18 @@ Operations that can change only local state:
   commands write local evidence and local git worktrees only.
 - `ai:loop-worktree-promotion-commit` creates a commit only inside the isolated
   integration worktree.
+- `ai:loop-routine-run` writes local routine-run evidence and configured local
+  outputs.
+- `ai:loop-routine-schedule-plan` and `ai:loop-routine-schedule-run` write
+  local scheduler state/result evidence only.
+- `ai:loop-routine-fanout-plan` writes local fanout plan evidence only.
+- `ai:loop-routine-fanout-execute` creates planned local loop runs by default.
+  With `--enqueue` or `--run-worker`, it can advance those local child runs
+  through the queue or one worker pass; with `--isolate-worktree`, that worker
+  pass can create local git worktrees.
+- `ai:loop-routine-list`, `ai:loop-routine-latest`,
+  `ai:loop-routine-show`, and `ai:loop-routine-findings` are read-only local
+  inspection commands.
 
 Operations that can change remote or GitHub state:
 
@@ -998,17 +1048,16 @@ Operations that can change remote or GitHub state:
 - `ai:loop-worktree-promotion-pr-merge-execute` re-runs read-only PR checks and
   then calls `gh pr merge`; it may merge the confirmed pull request. It does
   not delete branches.
+- Routine GitHub inputs are read-only GitHub CLI calls. Routine fanout and
+  worker execution do not push, create pull requests, or merge pull requests.
 
 Future slices:
 
 - Continue reducing the legacy work-runner, review, and document-generation
   sections of the CLI entrypoint into focused command modules as those surfaces
   evolve.
-- Loop routines as reusable workflow specifications for schedule, inputs,
-  skills, goals, checks, outputs, and safety policy. The first routine slice is
-  implemented as `ai:loop-routine-check`, `ai:loop-routine-plan`, and
-  `ai:loop-routine-run`; it writes local routine-run evidence only and does not
-  start a daemon, enqueue findings, push, create pull requests, or merge.
+- Full cron parsing, event triggers, and a long-lived routine daemon.
+- Routine UI/read-model surfaces for history, findings, approvals, and fanout.
 - A long-lived worker daemon or worker pool.
 - UI surfaces for loop run history, worktree evidence, approvals, and promotion
   gates.
@@ -1167,4 +1216,28 @@ pnpm ai:loop-registry-check
 pnpm smoke:loop-worktree-promotion-pr-merge-execute
 pnpm smoke:loop-worktree-promotion-pr-merge-prep
 pnpm smoke:loop-worktree-promotion-pr-create-execute
+```
+
+The loop routine slice is valid when:
+
+```text
+pnpm ai:loop-routine-check -- --file docs/examples/loop-routines/morning-triage.json
+pnpm ai:loop-routine-plan -- --file docs/examples/loop-routines/morning-triage.json --json
+pnpm ai:loop-routine-run -- --file docs/examples/loop-routines/morning-triage.json --dry-run --json
+pnpm smoke:loop-routine-check
+pnpm smoke:loop-routine-plan
+pnpm smoke:loop-routine-run-dry
+pnpm smoke:loop-routine-run-findings
+pnpm smoke:loop-routine-github-inputs
+pnpm smoke:loop-routine-schedule-plan
+pnpm smoke:loop-routine-schedule-run
+pnpm smoke:loop-routine-inspect
+pnpm smoke:loop-routine-fanout-plan
+pnpm smoke:loop-routine-fanout-execute
+pnpm smoke:loop-routine-fanout-enqueue
+pnpm smoke:loop-routine-fanout-worker
+pnpm ai:check
+pnpm typecheck
+pnpm test
+pnpm docs:check
 ```

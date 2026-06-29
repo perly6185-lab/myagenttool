@@ -13,9 +13,9 @@ remote state.
 A loop run is an implementation attempt with registry state, events, evidence,
 queue leases, workers, worktrees, and promotion gates.
 
-A loop routine is an upstream orchestration contract. It may inspect inputs and
-produce findings. Future slices may fan out findings into normal loop runs, but
-routine-run evidence stays separate under `.myagenttool/routine-runs/` so it
+A loop routine is an upstream orchestration contract. It may inspect inputs,
+produce findings, and fan out approved findings into normal planned loop runs.
+Routine-run evidence stays separate under `.myagenttool/routine-runs/` so it
 does not mix with `.myagenttool/runs/registry.json`.
 
 ```text
@@ -115,9 +115,11 @@ limited to the simple object/list/scalar shape used by routine specs.
 - `schedule.mode` may be `manual`, `cron`, or `event`; only `manual` execution
   is implemented in the first slice.
 - `inputs` declare read-only sources. Local execution currently collects
-  `git.commits`, `filesystem.glob`, and `loop.registry`.
+  `git.commits`, `filesystem.glob`, `loop.registry`, `github.issues`,
+  `github.prs`, `github.checks`, and `github.commits`.
 - `skills` bind reusable context such as `SKILL.md` files. Required skills must
-  exist locally.
+  exist locally. Routine runs snapshot bound skills with sha256, summary,
+  acceptance bullets, and check bullets.
 - `goal` describes the routine objective and future fanout behavior.
 - `checks` declare validation commands. Command checks must be present in
   `safety.commandAllowlist`.
@@ -131,6 +133,16 @@ pnpm ai:loop-routine-check -- --file docs/examples/loop-routines/morning-triage.
 pnpm ai:loop-routine-plan -- --file docs/examples/loop-routines/morning-triage.json
 pnpm ai:loop-routine-run -- --file docs/examples/loop-routines/morning-triage.json --dry-run
 pnpm ai:loop-routine-run -- --file docs/examples/loop-routines/morning-triage.json
+pnpm ai:loop-routine-list
+pnpm ai:loop-routine-latest -- --routine morning-triage
+pnpm ai:loop-routine-show -- --routine-run <routine-run-id>
+pnpm ai:loop-routine-findings -- --routine-run <routine-run-id> --with-suggested-run
+pnpm ai:loop-routine-schedule-plan
+pnpm ai:loop-routine-schedule-run
+pnpm ai:loop-routine-fanout-plan -- --routine-run <routine-run-id>
+pnpm ai:loop-routine-fanout-execute -- --routine-run <routine-run-id> --approval "operator approved planning-only fanout"
+pnpm ai:loop-routine-fanout-execute -- --routine-run <routine-run-id> --approval "operator approved enqueue" --enqueue
+pnpm ai:loop-routine-fanout-execute -- --routine-run <routine-run-id> --approval "operator approved isolated worker" --run-worker --worker routine-fanout --isolate-worktree
 ```
 
 `loop-routine-check` validates the file.
@@ -147,6 +159,8 @@ known risks.
 .myagenttool/routine-runs/<routine-run-id>/plan.json
 .myagenttool/routine-runs/<routine-run-id>/events.jsonl
 .myagenttool/routine-runs/<routine-run-id>/input-snapshot.json
+.myagenttool/routine-runs/<routine-run-id>/skill-snapshot.json
+.myagenttool/routine-runs/<routine-run-id>/checks-result.json
 .myagenttool/routine-runs/<routine-run-id>/summary.md
 .myagenttool/routine-runs/<routine-run-id>/findings.json
 ```
@@ -154,29 +168,185 @@ known risks.
 It also writes the configured local output files, such as
 `.myagenttool/state/triage.md` and `.myagenttool/state/triage-findings.json`.
 
+Routine inspection commands are read-only:
+
+- `loop-routine-list` scans `.myagenttool/routine-runs/` and summarizes recent
+  runs, optionally filtered by `--routine`, `--status`, and `--limit`.
+- `loop-routine-latest --routine <id>` returns the newest run summary for one
+  routine id.
+- `loop-routine-show --routine-run <id>` reads the run evidence bundle and
+  summarizes inputs, skills, checks, findings, and fanout evidence.
+- `loop-routine-findings --routine-run <id>` lists findings and can filter by
+  `--severity` or `--with-suggested-run`.
+
+These commands do not create routine runs, loop runs, scheduler state, worktrees,
+remote Git state, or GitHub state.
+
+Routine checks execute during non-dry-run execution only. Check commands must
+resolve to an allowlisted command id. The first local allowlist maps:
+
+- `ai:loop-registry-check` and `loop-registry` to
+  `pnpm ai:loop-registry-check`
+- `docs:check` and `docs-check` to `pnpm docs:check`
+- `typecheck` to `pnpm typecheck`
+- `test` to `pnpm test`
+- `ai:check` to `pnpm ai:check`
+
+Required check failures are written to evidence before the routine command
+fails.
+
+`loop-routine-schedule-plan` performs a local scheduler planning tick. It scans
+`.myagenttool/routines/*.json|yaml` and, by default,
+`docs/examples/loop-routines/*.json|yaml`, then writes:
+
+```text
+.myagenttool/state/routine-schedule-plan.json
+```
+
+`loop-routine-schedule-run` performs one local scheduler run tick. It is not a
+daemon. It runs due routines, writes normal routine-run evidence, and updates:
+
+```text
+.myagenttool/state/routine-scheduler.json
+.myagenttool/state/routine-schedule-result.json
+```
+
+The scheduler MVP supports manual first-run gating, `cooldownMs`,
+`maxConcurrency` from local scheduler state, and simple cron aliases `@hourly`
+and `@daily`. Full cron parsing, event triggers, and long-lived daemon behavior
+remain future slices.
+
+Skill binding snapshots are written during non-dry-run execution. The runner
+extracts the skill title, first descriptive paragraph, `Acceptance` bullets, and
+`Checks` bullets from each bound `SKILL.md`. Findings include the bound skill
+metadata, and fanout child runs copy those bindings into `context.json`,
+`code-plan.json`, `testing-plan.json`, and `manifest.md` so downstream workers
+can see the routine-specific acceptance rules.
+
+`loop-routine-fanout-plan` reads a completed routine run and writes local fanout
+evidence:
+
+```text
+.myagenttool/routine-runs/<routine-run-id>/fanout-plan.json
+.myagenttool/routine-runs/<routine-run-id>/fanout-plan.md
+```
+
+Only findings with `suggestedRun` are fanout candidates.
+
+`loop-routine-fanout-execute` requires `--approval` and creates one normal loop
+run per new fanout candidate. The child runs are registry-backed and
+rebuildable from events. By default they stop in `planned` state. Passing
+`--enqueue` moves eligible child runs to `queued`. Passing `--run-worker
+--worker <id>` first enqueues eligible child runs and then runs one child-run
+worker pass per child. `--isolate-worktree` forwards to the worker and keeps
+child execution evidence in `.myagenttool/worktrees/`.
+
+Execute also writes:
+
+```text
+.myagenttool/routine-runs/<routine-run-id>/fanout-result.json
+.myagenttool/routine-runs/<routine-run-id>/fanout-result.md
+.myagenttool/runs/<child-run-id>/context.json
+.myagenttool/runs/<child-run-id>/code-plan.json
+.myagenttool/runs/<child-run-id>/testing-plan.json
+.myagenttool/runs/<child-run-id>/testing-plan.md
+.myagenttool/runs/<child-run-id>/manifest.md
+.myagenttool/runs/<child-run-id>/events.jsonl
+```
+
+Fanout execute is idempotent for an existing routine run: findings already
+listed in `fanout-result.json` are not created again. Re-running with
+`--enqueue` or `--run-worker` can still advance existing child runs when their
+state allows it.
+
+## Finding Schema
+
+Routine findings are deterministic local facts. They are proposal data until a
+human-approved fanout command turns them into normal planned loop runs.
+
+```json
+{
+  "id": "loop-run-failed-2026-06-29T00-00-00-000Z-issue-123",
+  "title": "Loop run failed: 2026-06-29T00-00-00-000Z-issue-123",
+  "severity": "high",
+  "source": {
+    "type": "loop.registry",
+    "inputId": "loop-registry",
+    "runId": "2026-06-29T00-00-00-000Z-issue-123",
+    "state": "failed"
+  },
+  "evidence": [
+    "Run: 2026-06-29T00-00-00-000Z-issue-123",
+    "State: failed",
+    "Last error: verification failed"
+  ],
+  "proposedAction": "Inspect the last error, then run loop-resume or loop-retry with an explicit operator decision.",
+  "suggestedRun": {
+    "mode": "retry",
+    "runId": "2026-06-29T00-00-00-000Z-issue-123",
+    "priority": "high",
+    "apply": false,
+    "verify": true,
+    "isolateWorktree": true
+  },
+  "createdAt": "2026-06-29T00:00:00.000Z"
+}
+```
+
+The current morning triage routine generates findings for:
+
+- failed, timed-out, and awaiting-human loop runs found through `loop.registry`
+- failed local routine inputs
+- failed routine checks
+- GitHub issues without assignees or labels
+- GitHub pull requests that are draft or require review
+- GitHub checks or workflow runs that are failed or pending
+
+GitHub collectors are read-only and use the GitHub CLI. They honor `GH_PATH`
+for smoke tests and alternate installations.
+
 ## Boundaries
 
 - Routine execution is local in this slice.
 - Routine execution does not start a daemon.
 - Routine execution does not push.
 - Routine execution does not create or merge pull requests.
-- Routine execution does not enqueue findings yet, even when the spec declares
-  future fanout behavior.
-- GitHub inputs are valid routine plan inputs, but local collection is a future
-  slice.
+- Routine execution snapshots `SKILL.md` files as local evidence; it does not
+  execute arbitrary skill instructions as commands.
+- Routine fanout execute creates planned child loop runs by default.
+- Routine fanout execute enqueues child runs only with `--enqueue` or
+  `--run-worker`.
+- Routine fanout worker execution runs only with `--run-worker --worker <id>`.
+- Routine fanout worker execution can create local isolated worktrees with
+  `--isolate-worktree`; it still does not push, create PRs, or merge PRs.
+- GitHub inputs are read-only collectors for issues, PRs, checks, and commits.
 - Remote or GitHub writes must remain explicit execute commands with human
   approval gates.
 
 ## Development Slices
 
-1. Routine schema, validation, planning, and local evidence.
+1. Routine schema, validation, planning, and local evidence. Implemented.
 2. Local input collectors for commits, filesystem files, and loop registry.
-3. GitHub read-only input collectors.
-4. Finding generation and deterministic triage rules.
-5. Finding fanout into planned loop runs.
-6. Optional enqueue.
-7. Long-lived scheduler or daemon.
-8. UI for routine history, findings, approvals, and fanout.
+   Implemented.
+3. Local checks execution and checks evidence. Implemented.
+4. Finding schema and deterministic morning triage rules. Implemented for local
+   loop registry, input failures, unsupported inputs, and check failures.
+5. GitHub read-only input collectors. Implemented for issues, PRs, checks, and
+   commits.
+6. Broader deterministic triage rules for GitHub issues, PRs, and checks.
+   Implemented for missing issue owners/labels, draft or review-required PRs,
+   and failed or pending checks.
+7. Finding fanout into planned loop runs. Implemented.
+8. Optional enqueue and child-run worker execution. Implemented with explicit
+   `--enqueue` / `--run-worker` gates.
+9. Skill binding snapshots and fanout context injection. Implemented for
+   `SKILL.md` title, summary, acceptance bullets, check bullets, and sha256.
+10. Local routine scheduler plan/run tick. Implemented for manual first-run,
+    cooldown, max concurrency state, and simple `@hourly` / `@daily` aliases.
+11. Routine history and finding inspection CLI. Implemented as read-only local
+    commands over `.myagenttool/routine-runs/`.
+12. Full cron/event scheduler and long-lived daemon.
+13. UI for routine history, findings, approvals, and fanout.
 
 ## Verification
 
@@ -189,6 +359,15 @@ pnpm ai:loop-routine-run -- --file docs/examples/loop-routines/morning-triage.js
 pnpm smoke:loop-routine-check
 pnpm smoke:loop-routine-plan
 pnpm smoke:loop-routine-run-dry
+pnpm smoke:loop-routine-run-findings
+pnpm smoke:loop-routine-github-inputs
+pnpm smoke:loop-routine-schedule-plan
+pnpm smoke:loop-routine-schedule-run
+pnpm smoke:loop-routine-inspect
+pnpm smoke:loop-routine-fanout-plan
+pnpm smoke:loop-routine-fanout-execute
+pnpm smoke:loop-routine-fanout-enqueue
+pnpm smoke:loop-routine-fanout-worker
 pnpm ai:check
 pnpm typecheck
 pnpm test

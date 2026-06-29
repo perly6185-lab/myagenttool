@@ -72,9 +72,17 @@ import {
 } from "./commands/promotion.mjs";
 import {
   configureLoopRoutineCommandsContext,
+  loopRoutineFanoutExecute,
+  loopRoutineFanoutPlan,
+  loopRoutineFindings,
   loopRoutineCheck,
+  loopRoutineLatest,
+  loopRoutineList,
   loopRoutinePlan,
   loopRoutineRun,
+  loopRoutineSchedulePlan,
+  loopRoutineScheduleRun,
+  loopRoutineShow,
 } from "./commands/routine.mjs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -181,6 +189,14 @@ Usage:
   node tools/ai/src/index.mjs loop-routine-check --file path [--json]
   node tools/ai/src/index.mjs loop-routine-plan --file path [--json]
   node tools/ai/src/index.mjs loop-routine-run --file path [--dry-run] [--json]
+  node tools/ai/src/index.mjs loop-routine-list [--routine ID] [--status completed|failed|running|unknown] [--limit N] [--json]
+  node tools/ai/src/index.mjs loop-routine-latest --routine ID [--json]
+  node tools/ai/src/index.mjs loop-routine-show --routine-run RUN_ID [--json]
+  node tools/ai/src/index.mjs loop-routine-findings --routine-run RUN_ID [--severity low|medium|high] [--with-suggested-run] [--json]
+  node tools/ai/src/index.mjs loop-routine-schedule-plan [--no-examples] [--json]
+  node tools/ai/src/index.mjs loop-routine-schedule-run [--no-examples] [--dry-run] [--limit N] [--json]
+  node tools/ai/src/index.mjs loop-routine-fanout-plan --routine-run RUN_ID [--json]
+  node tools/ai/src/index.mjs loop-routine-fanout-execute --routine-run RUN_ID --approval "..." [--enqueue] [--priority normal|high|low|p0|p1|p2|p3] [--timeout-ms N] [--run-worker --worker WORKER_ID --child-provider mock --isolate-worktree] [--child-apply] [--child-skip-verify] [--json]
   node tools/ai/src/index.mjs loop-registry-check [--json]
   node tools/ai/src/index.mjs loop-registry-rebuild [--json]
   node tools/ai/src/index.mjs review-pr|review-agent --pr NUMBER [--repo OWNER/REPO] --provider openai|command|mock [--out path] [--json] [--comment]
@@ -629,6 +645,46 @@ function main() {
 
   if (command === "loop-routine-run") {
     loopRoutineRun(args);
+    return;
+  }
+
+  if (command === "loop-routine-list") {
+    loopRoutineList(args);
+    return;
+  }
+
+  if (command === "loop-routine-latest") {
+    loopRoutineLatest(args);
+    return;
+  }
+
+  if (command === "loop-routine-show") {
+    loopRoutineShow(args);
+    return;
+  }
+
+  if (command === "loop-routine-findings") {
+    loopRoutineFindings(args);
+    return;
+  }
+
+  if (command === "loop-routine-schedule-plan") {
+    loopRoutineSchedulePlan(args);
+    return;
+  }
+
+  if (command === "loop-routine-schedule-run") {
+    loopRoutineScheduleRun(args);
+    return;
+  }
+
+  if (command === "loop-routine-fanout-plan") {
+    loopRoutineFanoutPlan(args);
+    return;
+  }
+
+  if (command === "loop-routine-fanout-execute") {
+    loopRoutineFanoutExecute(args);
     return;
   }
 

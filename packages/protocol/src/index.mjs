@@ -157,6 +157,7 @@ export const loopRoutineInputTypes = [
   "github.issues",
   "github.prs",
   "github.checks",
+  "github.commits",
   "loop.registry",
 ];
 
@@ -342,6 +343,7 @@ const loopRequiredRoutineInputTypes = [
   "github.issues",
   "github.prs",
   "github.checks",
+  "github.commits",
   "loop.registry",
 ];
 

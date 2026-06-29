@@ -12,6 +12,7 @@ export const loopRoutineInputTypes = [
   "github.issues",
   "github.prs",
   "github.checks",
+  "github.commits",
   "loop.registry",
 ] as const;
 
@@ -63,6 +64,7 @@ export type LoopRoutineSpec = {
     id: string;
     path: string;
     required: boolean;
+    sourcePath?: string;
   }>;
   goal: {
     summary: string;
@@ -94,4 +96,52 @@ export type LoopRoutineSpec = {
     requiresApprovalFor: string[];
     commandAllowlist: string[];
   };
+};
+
+export type LoopRoutineFindingSeverity = "low" | "medium" | "high" | "critical";
+
+export type LoopRoutineFinding = {
+  id: string;
+  title: string;
+  severity: LoopRoutineFindingSeverity;
+  source: {
+    type: string;
+    [key: string]: unknown;
+  };
+  evidence: string[];
+  proposedAction: string;
+  skillBindings?: Array<{
+    id: string;
+    path: string;
+    title: string;
+    summary: string;
+    sha256: string;
+    acceptance: string[];
+    checks: string[];
+  }>;
+  suggestedRun: {
+    mode: string;
+    runId?: string;
+    issue?: string | null;
+    priority?: string;
+    apply?: boolean;
+    verify?: boolean;
+    isolateWorktree?: boolean;
+    [key: string]: unknown;
+  } | null;
+  createdAt: string;
+};
+
+export type LoopRoutineCheckResult = {
+  id: string;
+  type: LoopRoutineCheckType;
+  command: string | null;
+  required: boolean;
+  status: "passed" | "failed" | "skipped";
+  exitCode: number | null;
+  startedAt: string;
+  completedAt: string;
+  stdout: string;
+  stderr: string;
+  error: string | null;
 };

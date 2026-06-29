@@ -60,7 +60,7 @@ export function worktreeDirtyReason() {
 export function createIsolatedLoopWorktree({ parentRunId, baseRef }) {
   const root = loopWorktreeRoot();
   mkdirSync(root, { recursive: true });
-  const name = `${safePathSegment(parentRunId)}-${Date.now()}`;
+  const name = `${safePathSegment(parentRunId).slice(0, 48)}-${shortStableId(parentRunId)}-${Date.now()}`;
   const worktreePath = resolve(root, name);
   if (!isSubpath(root, worktreePath)) {
     throw new Error(`Refusing to create isolated worktree outside ${root}`);
@@ -278,6 +278,15 @@ export function childProcessErrorMessage(error) {
 
 function uniqueStrings(items) {
   return [...new Set((items ?? []).filter(Boolean))];
+}
+
+function shortStableId(text) {
+  let hash = 2166136261;
+  for (const char of String(text)) {
+    hash ^= char.charCodeAt(0);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(16).padStart(8, "0");
 }
 
 function lines(output) {

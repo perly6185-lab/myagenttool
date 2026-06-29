@@ -35,13 +35,41 @@
       "type": "filesystem.glob",
       "pattern": "docs/engineering/*.md",
       "limit": 50
+    },
+    {
+      "id": "github-issues",
+      "type": "github.issues",
+      "repo": "perly6185-lab/myagenttool",
+      "state": "open",
+      "limit": 20
+    },
+    {
+      "id": "github-prs",
+      "type": "github.prs",
+      "repo": "perly6185-lab/myagenttool",
+      "state": "open",
+      "limit": 20
+    },
+    {
+      "id": "github-checks",
+      "type": "github.checks",
+      "repo": "perly6185-lab/myagenttool",
+      "branch": "main",
+      "limit": 20
+    },
+    {
+      "id": "github-commits",
+      "type": "github.commits",
+      "repo": "perly6185-lab/myagenttool",
+      "sha": "main",
+      "limit": 20
     }
   ],
   "skills": [
     {
       "id": "triage",
       "path": "skills/morning-triage/SKILL.md",
-      "required": false
+      "required": true
     }
   ],
   "goal": {
