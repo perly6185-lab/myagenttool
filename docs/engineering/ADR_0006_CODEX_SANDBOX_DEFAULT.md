@@ -82,7 +82,17 @@ This decision does not commit to:
 - Server: `codexCliArgs(sandbox = "read-only")`, `normalizeCodexSandbox()`, and
   custom registration (`POST /api/agents`) deriving Codex args + sandbox metadata
   from the chosen sandbox while keeping Codex high-risk.
-- Web: `RegisterCodexCard` sandbox selector in the Discovery view.
+- Web: a coding-agent registration card with a mode selector in the Discovery view.
 - Verification: read-only default is covered by the local smoke test; a real
   `codex exec --sandbox workspace-write` run was confirmed to create a file only
   after explicit approval.
+
+## Generalization to Claude Code
+
+The same policy — safe-by-default, writable opt-in, always approval-gated —
+applies to Claude Code via its `--permission-mode`: `plan` is the safe default
+(no edits), while `acceptEdits` and `bypassPermissions` are the writable opt-ins.
+`default`/`auto` are excluded because they block on interactive prompts in the
+headless bridge. Claude runs as `claude -p ... --output-format stream-json`, and
+the bridge parses its `result` event for the answer. Both coding agents share one
+registration path, one risk classification (high), and one approval gate.

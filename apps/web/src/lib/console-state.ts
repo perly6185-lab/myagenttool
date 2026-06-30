@@ -12,6 +12,8 @@ export interface DeviceSnapshot {
   platform: string;
   architecture: string;
   lastSeenAt: string | null;
+  /** Max invocations this machine runs at once (across distinct worktrees). */
+  maxConcurrency?: number;
 }
 
 export interface AgentHealth {
@@ -29,6 +31,7 @@ export interface AgentAdapter {
   cancellation?: string;
   outputFormat?: string;
   sandbox?: string;
+  permissionMode?: string;
   args?: string[];
 }
 
@@ -70,6 +73,8 @@ export interface InvocationSnapshot {
   id: string;
   status?: string;
   agentId?: string;
+  projectId?: string;
+  worktreeId?: string | null;
   traceId?: string;
   rootSpanId?: string;
   approvalRequestId?: string;
@@ -77,6 +82,7 @@ export interface InvocationSnapshot {
   delivery?: { state?: string; dispatchAttempts?: number };
   cancellation?: { state?: string };
   result?: { summary?: string; touchedUserFiles?: boolean };
+  options?: { metadata?: { automationId?: string; automationName?: string; scheduled?: boolean } };
 }
 
 export interface InvocationEventSnapshot {
@@ -85,7 +91,9 @@ export interface InvocationEventSnapshot {
   type: string;
   message?: string;
   createdAt: string;
-  data?: { agentId?: string; source?: string };
+  // `artifactId` / `targetInvocationId` let a platform-agent "action requested"
+  // event deep-link to the surface where its decision is actually made.
+  data?: { agentId?: string; source?: string; artifactId?: string; targetInvocationId?: string; reportId?: string };
 }
 
 export interface AuditSnapshot {
@@ -156,6 +164,138 @@ export interface AgentUsageSummary {
   succeededCount: number;
   failedCount: number;
   cancelledCount: number;
+  totalCostUsd?: number;
+  billableInvocations?: number;
+  unknownCostInvocations?: number;
+}
+
+export interface LedgerEntry {
+  id: string;
+  invocationId?: string;
+  agentId?: string;
+  agentName?: string;
+  provider?: string;
+  economicModel?: string;
+  inputTokens?: number;
+  outputTokens?: number;
+  currency?: string;
+  amountUsd?: number | null;
+  amountText?: string;
+  amountSource?: "reported" | "estimated" | "unknown";
+  billable?: boolean;
+  status?: string;
+  costOwner?: string;
+  projectId?: string;
+  invocationStatus?: string;
+  createdAt: string;
+}
+
+export interface LedgerOwnerRollup {
+  costOwner: string;
+  entries: number;
+  knownCostUsd: number;
+  estimatedCostUsd: number;
+  unknownEntries: number;
+}
+
+export interface LedgerProjectRollup {
+  projectId: string;
+  projectName?: string;
+  entries: number;
+  knownCostUsd: number;
+  estimatedCostUsd: number;
+  unknownEntries: number;
+}
+
+export interface LedgerAgentRollup {
+  agentId: string;
+  agentName?: string;
+  provider?: string;
+  entries: number;
+  knownCostUsd: number;
+  estimatedCostUsd: number;
+  unknownEntries: number;
+}
+
+export interface LedgerSummary {
+  currency: string;
+  totalCostUsd: number;
+  finalizedUsd: number;
+  estimatedUsd: number;
+  entryCount: number;
+  knownEntries: number;
+  estimatedEntries: number;
+  unknownEntries: number;
+  voidedEntries?: number;
+  billableEntries: number;
+  byCostOwner: LedgerOwnerRollup[];
+  byProject: LedgerProjectRollup[];
+  byAgent: LedgerAgentRollup[];
+}
+
+export interface ProjectSnapshot {
+  id: string;
+  name: string;
+  color: string;
+  ownerTeamId: string;
+  budgetPoolId: string | null;
+  defaultAgentId: string | null;
+  status: "active" | "archived";
+  isolation: "shared" | "worktree";
+  createdAt: string;
+  updatedAt?: string;
+}
+
+export interface ProjectTargetSnapshot {
+  id: string;
+  projectId: string;
+  deviceId: string;
+  kind: "clone" | "local";
+  remoteUrl: string | null;
+  rootPath: string;
+  defaultBranch: string | null;
+  state: "cloning" | "ready" | "failed";
+  progress: number;
+  message: string;
+  createdAt: string;
+  updatedAt?: string;
+}
+
+export interface WorktreeLink {
+  type: "issue" | "pr";
+  number: number;
+  title: string;
+  url: string | null;
+  state: string;
+}
+
+export interface WorktreeSnapshot {
+  id: string;
+  projectId: string;
+  targetId: string;
+  invocationId?: string;
+  branch: string;
+  path: string;
+  isMain: boolean;
+  ephemeral?: boolean;
+  agentId?: string | null;
+  link?: WorktreeLink | null;
+  createdAt: string;
+}
+
+export interface BudgetStatus {
+  projectId: string;
+  projectName?: string;
+  exists: boolean;
+  budgetId?: string;
+  limitUsd: number | null;
+  policy: string;
+  currency?: string;
+  spentUsd: number;
+  finalizedUsd?: number;
+  estimatedUsd?: number;
+  remainingUsd: number | null;
+  over: boolean;
 }
 
 export interface IntegrationArtifact {
@@ -199,8 +339,39 @@ export interface RetentionSettings {
   artifactsDays: number;
 }
 
+export interface AutomationSchedule {
+  kind: "interval" | "daily" | "weekdays";
+  everyMinutes?: number;
+  time?: string;
+  label: string;
+}
+
+export interface AutomationSnapshot {
+  id: string;
+  name: string;
+  enabled: boolean;
+  projectId: string;
+  branch?: string;
+  schedule: AutomationSchedule;
+  nextRunAt: string | null;
+  sessionMode?: string;
+  graceHours?: number;
+  precheck?: string;
+  agentId: string;
+  prompt: string;
+  lastRunAt: string | null;
+  runCount?: number;
+  tokens?: number;
+}
+
 export interface ConsoleSnapshot {
+  /** Server-resolved defaults the browser can't compute (e.g. home-relative paths). */
+  defaults?: { cloneParentDir?: string };
+  automations?: AutomationSnapshot[];
   device: DeviceSnapshot;
+  projects?: ProjectSnapshot[];
+  projectTargets?: ProjectTargetSnapshot[];
+  worktrees?: WorktreeSnapshot[];
   agent: AgentSnapshot | null;
   agents: AgentSnapshot[];
   invocations: InvocationSnapshot[];
@@ -217,4 +388,7 @@ export interface ConsoleSnapshot {
   integrationProbeRuns?: IntegrationProbeRun[];
   quotaDecisionRecords?: QuotaDecisionRecord[];
   retentionSettings?: RetentionSettings;
+  ledgerEntries?: LedgerEntry[];
+  ledgerSummary?: LedgerSummary;
+  budgetStatuses?: BudgetStatus[];
 }
