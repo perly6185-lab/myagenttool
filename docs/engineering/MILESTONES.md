@@ -58,6 +58,12 @@ Primary source docs:
 - `docs/engineering/M1_ISSUE_PLAN.md`
 - `docs/engineering/M1_ACCEPTANCE_CLOSEOUT.md`
 
+Accepted M1 architecture decisions:
+
+- Codex sandbox: `read-only` by default; writable (`workspace-write` /
+  `danger-full-access`) is an explicit opt-in and always passes the local
+  approval gate ([ADR 0006](ADR_0006_CODEX_SANDBOX_DEFAULT.md)).
+
 ## M2: Integration Builder and Governance
 
 Goal:
