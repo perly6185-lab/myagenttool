@@ -1000,10 +1000,12 @@ Remaining split plan:
   for project/worktree HTTP routing through
   `apps/server/src/routes/projects.mjs`. Phase 3 split is complete for
   terminal, SSH target, and terminal bridge HTTP routing through
-  `apps/server/src/routes/terminal.mjs`. Remaining server phases should move
-  project/git and terminal business helpers into service modules and split
-  `agents`, `codex`, and persistence helpers while keeping mutation boundaries
-  explicit.
+  `apps/server/src/routes/terminal.mjs`. Phase 4 split is complete for
+  bridge registration, agent registration/actions, and device unlink routing
+  through `apps/server/src/routes/agents.mjs`. Remaining server phases should
+  move project/git, terminal, and agent business helpers into service modules
+  and split `codex`, integration/discovery, bridge dispatch, and persistence
+  helpers while keeping mutation boundaries explicit.
 - `apps/web/public/app.js`: split by surface into task/routine browser,
   workspace/session, evidence center, terminal, project browser, integration,
   and shared API/render utilities.
