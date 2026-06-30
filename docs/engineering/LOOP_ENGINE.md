@@ -1012,8 +1012,10 @@ Remaining split plan:
   into service modules. Phase 7 split is complete for Desktop Bridge dispatch,
   health, discovery, probe, cancellation status, ack, event, and completion
   routing through `apps/server/src/routes/bridge.mjs`. Remaining server phases
-  should split invocation/approval routing and persistence helpers while
-  keeping mutation boundaries explicit.
+  should move route-injected business helpers into service modules and split
+  persistence helpers while keeping mutation boundaries explicit. Phase 8 split
+  is complete for approval, invocation creation, compare runs, cancellation,
+  and troubleshooting routing through `apps/server/src/routes/invocations.mjs`.
 - `apps/web/public/app.js`: split by surface into task/routine browser,
   workspace/session, evidence center, terminal, project browser, integration,
   and shared API/render utilities.

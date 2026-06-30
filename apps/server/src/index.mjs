@@ -8,6 +8,7 @@ import { handleAgentRoutes } from "./routes/agents.mjs";
 import { handleBridgeRoutes } from "./routes/bridge.mjs";
 import { handleCodexRoutes } from "./routes/codex.mjs";
 import { handleIntegrationRoutes } from "./routes/integrations.mjs";
+import { handleInvocationRoutes } from "./routes/invocations.mjs";
 import { handleLoopRoutineRoutes } from "./routes/loop-routines.mjs";
 import { handleProjectRoutes } from "./routes/projects.mjs";
 import { handleTerminalRoutes } from "./routes/terminal.mjs";
@@ -464,117 +465,26 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
-    const approvalMatch = url.pathname.match(/^\/api\/approvals\/([^/]+)\/(approve|deny)$/);
-    if (req.method === "POST" && approvalMatch) {
-      const approval = findApprovalRequest(decodeURIComponent(approvalMatch[1]));
-      if (!approval) {
-        sendJson(res, 404, { error: "approval_not_found" });
-        return;
-      }
-      const invocation = findInvocation(approval.invocationId);
-      if (!invocation) {
-        sendJson(res, 404, { error: "invocation_not_found" });
-        return;
-      }
-
-      if (approvalMatch[2] === "approve") {
-        approveInvocation(approval, invocation);
-      } else {
-        denyInvocation(approval, invocation);
-      }
-      sendJson(res, 200, { approval, invocation });
-      return;
-    }
-
-    if (req.method === "POST" && url.pathname === "/api/invocations") {
-      const body = await readJson(req);
-      const task = String(body.task ?? "").trim();
-      if (!task) {
-        sendJson(res, 400, { error: "task_required" });
-        return;
-      }
-      const agent = body.agentId ? findAgent(body.agentId) : defaultAgent();
-      if (!agent) {
-        sendJson(res, 404, { error: "agent_not_found" });
-        return;
-      }
-      if (agent.status === "disabled") {
-        sendJson(res, 409, { error: "agent_disabled" });
-        return;
-      }
-      if (agent.health?.status === "unhealthy") {
-        sendJson(res, 409, {
-          error: "agent_unhealthy",
-          message: agent.health.message
-        });
-        return;
-      }
-      if (agent.location.type === "local_device" && state.device.unlinkState !== "linked") {
-        sendJson(res, 409, { error: "device_unlinked" });
-        return;
-      }
-      const invocation = createInvocation(task, agent, body.options ?? {});
-      startInvocationIfAllowed(invocation, agent);
-      sendJson(res, 201, { invocation });
-      return;
-    }
-
-    if (req.method === "POST" && url.pathname === "/api/compare-runs") {
-      const body = await readJson(req);
-      const task = String(body.task ?? "").trim();
-      const agentIds = normalizeStringArray(body.agentIds);
-      if (!task) {
-        sendJson(res, 400, { error: "task_required" });
-        return;
-      }
-      if (agentIds.length < 2) {
-        sendJson(res, 400, { error: "compare_agents_required" });
-        return;
-      }
-      const agents = agentIds.map((id) => findAgent(id));
-      if (agents.some((agent) => !agent)) {
-        sendJson(res, 404, { error: "agent_not_found" });
-        return;
-      }
-      const blocked = agents.find((agent) => agent.status === "disabled" || agent.health?.status === "unhealthy");
-      if (blocked) {
-        sendJson(res, 409, { error: "agent_not_ready", agentId: blocked.id });
-        return;
-      }
-      const compareRun = createCompareRun(task, agents, body.options ?? {});
-      sendJson(res, 201, {
-        compareRun,
-        invocations: compareRun.childInvocationIds.map((id) => findInvocation(id)).filter(Boolean)
-      });
-      return;
-    }
-
-    const cancelMatch = url.pathname.match(/^\/api\/invocations\/([^/]+)\/cancel$/);
-    if (req.method === "POST" && cancelMatch) {
-      const invocation = findInvocation(cancelMatch[1]);
-      if (!invocation) {
-        sendJson(res, 404, { error: "invocation_not_found" });
-        return;
-      }
-      cancelInvocation(invocation);
-      sendJson(res, 200, { invocation });
-      return;
-    }
-
-    const troubleshootMatch = url.pathname.match(/^\/api\/invocations\/([^/]+)\/troubleshoot$/);
-    if (req.method === "POST" && troubleshootMatch) {
-      const invocation = findInvocation(troubleshootMatch[1]);
-      if (!invocation) {
-        sendJson(res, 404, { error: "invocation_not_found" });
-        return;
-      }
-      if (!["failed", "cancelled", "timed_out", "expired", "rejected"].includes(invocation.status)) {
-        sendJson(res, 409, { error: "invocation_not_troubleshootable" });
-        return;
-      }
-
-      const report = createTroubleshootingReport(invocation);
-      sendJson(res, 201, { report });
+    if (await handleInvocationRoutes({
+      req,
+      res,
+      url,
+      sendJson,
+      readJson,
+      state,
+      findApprovalRequest,
+      findInvocation,
+      approveInvocation,
+      denyInvocation,
+      findAgent,
+      defaultAgent,
+      createInvocation,
+      startInvocationIfAllowed,
+      normalizeStringArray,
+      createCompareRun,
+      cancelInvocation,
+      createTroubleshootingReport,
+    })) {
       return;
     }
 
