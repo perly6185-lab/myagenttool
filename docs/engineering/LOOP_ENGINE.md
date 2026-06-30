@@ -992,9 +992,13 @@ lines and `tools/ai/src/loop/promotion.mjs` is about 256 lines.
 
 Remaining split plan:
 
-- `apps/server/src/index.mjs`: split into `routes/*`, `state/store`,
-  `projects/git`, `agents`, `codex`, `terminal`, and `routine-api` modules.
-  Keep the HTTP router thin and leave mutation boundaries explicit.
+- `apps/server/src/index.mjs`: Phase 1 split is complete for read-only state
+  and routine APIs. `/api/state` now uses `apps/server/src/read-models/state.mjs`;
+  `/api/loop-routines*` now uses
+  `apps/server/src/routes/loop-routines.mjs` and
+  `apps/server/src/read-models/loop-routines.mjs`. Remaining server phases
+  should split `projects/git`, `agents`, `codex`, `terminal`, and persistence
+  helpers while keeping mutation boundaries explicit.
 - `apps/web/public/app.js`: split by surface into task/routine browser,
   workspace/session, evidence center, terminal, project browser, integration,
   and shared API/render utilities.

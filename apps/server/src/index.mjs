@@ -2,12 +2,9 @@ import http from "node:http";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, relative, resolve } from "node:path";
-import {
-  compactLoopRoutineStateSummary,
-  listLoopRoutineFindingsReadModel,
-  listLoopRoutineRunsReadModel,
-  showLoopRoutineRunReadModel
-} from "../../../tools/ai/src/loop/routine-inspect.mjs";
+import { buildLoopRoutineStateSummary } from "./read-models/loop-routines.mjs";
+import { buildPublicState } from "./read-models/state.mjs";
+import { handleLoopRoutineRoutes } from "./routes/loop-routines.mjs";
 
 const namespace = "com.myagenttool";
 const protocolVersion = "0.0.0";
@@ -323,53 +320,7 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
-    if (req.method === "GET" && url.pathname === "/api/loop-routines") {
-      const context = currentLoopRoutineProjectContext();
-      sendJson(res, 200, listLoopRoutineRunsReadModel({
-        ...context,
-        routineId: url.searchParams.get("routine") ?? null,
-        status: url.searchParams.get("status") ?? null,
-        limit: Number(url.searchParams.get("limit") ?? 50),
-        mode: "ui",
-        useCache: true
-      }));
-      return;
-    }
-
-    const loopRoutineFindingsMatch = url.pathname.match(/^\/api\/loop-routines\/([^/]+)\/findings$/);
-    if (req.method === "GET" && loopRoutineFindingsMatch) {
-      const context = currentLoopRoutineProjectContext();
-      try {
-        sendJson(res, 200, listLoopRoutineFindingsReadModel({
-          ...context,
-          routineRunId: decodeURIComponent(loopRoutineFindingsMatch[1]),
-          severity: url.searchParams.get("severity") ?? null,
-          withSuggestedRun: url.searchParams.get("withSuggestedRun") === "1" || url.searchParams.get("withSuggestedRun") === "true"
-        }));
-      } catch (error) {
-        sendJson(res, 404, {
-          error: "loop_routine_run_not_found",
-          message: error instanceof Error ? error.message : String(error)
-        });
-      }
-      return;
-    }
-
-    const loopRoutineRunMatch = url.pathname.match(/^\/api\/loop-routines\/([^/]+)$/);
-    if (req.method === "GET" && loopRoutineRunMatch) {
-      const context = currentLoopRoutineProjectContext();
-      try {
-        sendJson(res, 200, showLoopRoutineRunReadModel({
-          ...context,
-          routineRunId: decodeURIComponent(loopRoutineRunMatch[1]),
-          mode: "ui"
-        }));
-      } catch (error) {
-        sendJson(res, 404, {
-          error: "loop_routine_run_not_found",
-          message: error instanceof Error ? error.message : String(error)
-        });
-      }
+    if (handleLoopRoutineRoutes({ req, res, url, sendJson, currentLoopRoutineProjectContext })) {
       return;
     }
 
@@ -4698,7 +4649,7 @@ function unlinkDevice() {
 }
 
 function loopRoutineReadModelForCurrentProject() {
-  return compactLoopRoutineStateSummary(currentLoopRoutineProjectContext());
+  return buildLoopRoutineStateSummary(currentLoopRoutineProjectContext());
 }
 
 function currentLoopRoutineProjectContext() {
@@ -4713,50 +4664,16 @@ function currentLoopRoutineProjectContext() {
 
 function publicState() {
   expireCodexApprovalBrokerRequests();
-  return {
+  return buildPublicState({
     namespace,
     protocolVersion,
-    device: state.device,
-    projects: state.projects,
-    currentProjectId: state.currentProjectId,
-    currentProject: currentProject(),
-    loopRoutines: loopRoutineReadModelForCurrentProject(),
-    worktrees: state.worktrees,
-    agent: defaultAgent(),
-    agents: state.agents,
-    invocations: state.invocations,
-    compareRuns: state.compareRuns,
-    events: state.events,
-    traces: state.traces,
-    spans: state.spans,
-    auditSummaries: state.auditSummaries,
-    healthChecks: state.healthChecks,
-    lifecycleAuditRecords: state.lifecycleAuditRecords,
-    discoveryRuns: state.discoveryRuns,
-    integrationArtifacts: state.integrationArtifacts,
-    integrationProbeRuns: state.integrationProbeRuns,
-    quotaDecisionRecords: state.quotaDecisionRecords,
-    retentionSettings: state.retentionSettings,
-    approvalRequests: state.approvalRequests,
-    policyDecisionRecords: state.policyDecisionRecords,
-    troubleshootingReports: state.troubleshootingReports,
-    agentUsageSummaries: state.agentUsageSummaries,
-    codexSessions: state.codexSessions,
-    codexWorkspaces: state.codexWorkspaces,
-    codexEvidenceRecords: state.codexEvidenceRecords,
-    codexChangeReviews: state.codexChangeReviews,
-    codexHookEvents: state.codexHookEvents,
-    codexApprovalQueue: codexApprovalQueue(),
-    evidenceCenterRecords: evidenceCenterRecords(),
-    codexApprovalBrokerRequests: state.codexApprovalBrokerRequests,
-    codexImportedEvidenceRecords: state.codexImportedEvidenceRecords,
-    terminalRuntimeCapability: state.terminalRuntimeCapability,
-    terminalSessions: state.terminalSessions,
-    terminalEvidenceRecords: state.terminalEvidenceRecords,
-    terminalBridgeActions: state.terminalBridgeActions,
-    sshTargets: state.sshTargets,
-    sshConnectionTests: state.sshConnectionTests
-  };
+    state,
+    currentProject,
+    defaultAgent,
+    loopRoutineReadModel: loopRoutineReadModelForCurrentProject,
+    codexApprovalQueue,
+    evidenceCenterRecords,
+  });
 }
 
 function createTerminalRuntimeCapability() {
