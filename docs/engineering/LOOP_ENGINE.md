@@ -1165,7 +1165,10 @@ Remaining split plan:
   in-flight HTTP response is closed by the abort path.
 - `apps/web/public/app.js`: split by surface into task/routine browser,
   workspace/session, evidence center, terminal, project browser, integration,
-  and shared API/render utilities.
+  and shared API/render utilities. Web app Phase 1 is complete for formatter
+  extraction: plain-language status, health, cost, delivery, cancellation,
+  result, event, audit, adapter, time, and task summary helpers now live in
+  `apps/web/public/app/formatters.js`.
 - `apps/web/public/styles.css`: split by shell, composer, task/routine list,
   evidence, terminal, project browser, and responsive rules.
 - `tools/ai/src/loop/routine.mjs`: split the remaining schedule state and
