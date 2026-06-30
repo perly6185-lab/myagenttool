@@ -18,6 +18,7 @@ npm-debug.log*
 pnpm-debug.log*
 
 # Local agent/run evidence
+.myagenttool/
 .myagenttool/runs/
 .myagenttool/deploy-runs/
 .myagenttool/screenshots/

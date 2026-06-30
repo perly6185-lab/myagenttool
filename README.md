@@ -241,13 +241,13 @@ pnpm dev
 Then open:
 
 ```text
-http://127.0.0.1:3000
+http://127.0.0.1:5000
 ```
 
 The demo starts:
 
-- Web Console on `127.0.0.1:3000`
-- Server API on `127.0.0.1:3001`
+- Web Console on `127.0.0.1:5000`
+- Server API on `127.0.0.1:5001`
 - Desktop Bridge process connected to the local server
 - Safe Demo CLI Agent invoked only by the bridge
 

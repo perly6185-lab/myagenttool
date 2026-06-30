@@ -25,6 +25,7 @@ Root commands:
 ```text
 pnpm install
 pnpm dev
+pnpm dev:restart-changed
 pnpm test
 pnpm lint
 pnpm typecheck
@@ -37,8 +38,17 @@ pnpm github:check:branch
 pnpm smoke:local
 ```
 
-`pnpm dev` starts the local server, Desktop Bridge, and web console. `pnpm test`
-runs workspace checks plus the local invocation smoke test.
+`pnpm dev` starts the local server, Desktop Bridge, and web console. It also
+starts a localhost-only development control endpoint on `127.0.0.1:3999`.
+After a validation pass, run `pnpm dev:restart-changed` to inspect changed git
+paths and restart only affected local services:
+
+- `apps/web/**` restarts the Web Console.
+- `apps/server/**` restarts the API server.
+- `apps/desktop/**` restarts the Desktop Bridge.
+- shared package or workspace metadata changes restart the affected service set.
+
+`pnpm test` runs workspace checks plus the local invocation smoke test.
 GitHub governance commands are read-only by default. Project sync is a dry-run
 unless `--apply` is explicitly passed.
 
@@ -66,9 +76,9 @@ M0 local development should include:
 Current local URLs:
 
 ```text
-Web Console: http://127.0.0.1:3000
-API Server:  http://127.0.0.1:3001
-Health:      http://127.0.0.1:3001/health
+Web Console: http://127.0.0.1:5000
+API Server:  http://127.0.0.1:5001
+Health:      http://127.0.0.1:5001/health
 ```
 
 ## Planned Workspace Shape

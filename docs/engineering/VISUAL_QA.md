@@ -2,6 +2,12 @@
 
 This document defines the M0 visual QA path for the Web Console.
 
+Use the repo-level [DESIGN.md](../../DESIGN.md) as the visual consistency
+baseline for product-facing Web Console changes. Use
+[PRODUCT_FLOWS.md](../design/PRODUCT_FLOWS.md) to choose the role flow,
+scenario, prototype state, and usability task that the screenshot or visual
+artifact must prove.
+
 ## Current M0 Level
 
 M0 uses lightweight visual QA until a browser automation dependency is added.
@@ -19,8 +25,27 @@ These checks run through:
 
 ```text
 pnpm --filter @myagenttool/web test
+pnpm visual:qa
+pnpm visual:qa:browser
 pnpm test
 ```
+
+`pnpm visual:qa` writes repeatable local artifacts:
+
+```text
+.myagenttool/visual-qa/latest.json
+.myagenttool/visual-qa/latest.md
+```
+
+The current tool records desktop and mobile viewport metadata, key Web Console
+state markers, column ownership checks, overflow guards, and a scripted IA
+violation fixture. Browser screenshot automation is still optional until a
+project-managed browser dependency is added.
+
+Use `pnpm visual:qa:browser` when closing work that explicitly requires browser
+screenshot automation. It fails until Playwright or Puppeteer is installed, so a
+phase that requires screenshots should not be marked fully verified from the
+lightweight artifact alone.
 
 ## Manual Screenshot Checklist
 
@@ -28,6 +53,8 @@ Before closing a UI issue, capture or inspect:
 
 - Desktop viewport around 1366 x 768.
 - Mobile viewport around 390 x 844.
+- The role flow and owner surface from
+  [PRODUCT_FLOWS.md](../design/PRODUCT_FLOWS.md).
 - Empty/no-result state.
 - Running state.
 - Succeeded state with result.
@@ -44,8 +71,8 @@ Confirm:
 
 ## Future Browser Automation
 
-Issue #36 should add Playwright or an equivalent browser tool when the frontend
-stack is stable enough.
+Issue #125 tracks browser screenshot automation for Web Console visual QA.
+Issue #136 tracks Visual QA and Design Mode for AI-assisted frontend work.
 
 Target automation:
 

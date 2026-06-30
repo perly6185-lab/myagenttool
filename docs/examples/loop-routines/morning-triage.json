@@ -1,0 +1,110 @@
+{
+  "apiVersion": "myagenttool.dev/v1",
+  "kind": "LoopRoutine",
+  "metadata": {
+    "id": "morning-triage",
+    "name": "Morning Triage",
+    "description": "Review recent local project activity and prepare follow-up findings.",
+    "owner": "engineering",
+    "enabled": true
+  },
+  "schedule": {
+    "mode": "manual",
+    "timezone": "Asia/Shanghai",
+    "cron": "0 9 * * 1-5",
+    "maxConcurrency": 1,
+    "cooldownMs": 3600000,
+    "deadlineMs": 1800000
+  },
+  "inputs": [
+    {
+      "id": "recent-commits",
+      "type": "git.commits",
+      "ref": "HEAD",
+      "since": "24 hours ago",
+      "limit": 20
+    },
+    {
+      "id": "loop-registry",
+      "type": "loop.registry",
+      "states": ["failed", "timed_out", "awaiting_human"],
+      "limit": 20
+    },
+    {
+      "id": "engineering-docs",
+      "type": "filesystem.glob",
+      "pattern": "docs/engineering/*.md",
+      "limit": 50
+    },
+    {
+      "id": "github-issues",
+      "type": "github.issues",
+      "repo": "perly6185-lab/myagenttool",
+      "state": "open",
+      "limit": 20
+    },
+    {
+      "id": "github-prs",
+      "type": "github.prs",
+      "repo": "perly6185-lab/myagenttool",
+      "state": "open",
+      "limit": 20
+    },
+    {
+      "id": "github-checks",
+      "type": "github.checks",
+      "repo": "perly6185-lab/myagenttool",
+      "branch": "main",
+      "limit": 20
+    },
+    {
+      "id": "github-commits",
+      "type": "github.commits",
+      "repo": "perly6185-lab/myagenttool",
+      "sha": "main",
+      "limit": 20
+    }
+  ],
+  "skills": [
+    {
+      "id": "triage",
+      "path": "skills/morning-triage/SKILL.md",
+      "required": true
+    }
+  ],
+  "goal": {
+    "summary": "Identify actionable regressions, blocked work, and follow-up tasks from recent repository activity.",
+    "successCriteria": [
+      "Routine writes a triage summary.",
+      "Each actionable finding has severity, evidence, and a proposed next action.",
+      "No remote state is changed unless an execute command is explicitly approved."
+    ],
+    "fanout": {
+      "enabled": true,
+      "mode": "one-run-per-finding",
+      "priority": "normal",
+      "apply": false,
+      "verify": true,
+      "isolateWorktree": true
+    }
+  },
+  "checks": [
+    {
+      "id": "registry",
+      "type": "command",
+      "command": "ai:loop-registry-check",
+      "required": true
+    }
+  ],
+  "outputs": {
+    "summary": ".myagenttool/state/triage.md",
+    "findings": ".myagenttool/state/triage-findings.json",
+    "enqueueFindings": false
+  },
+  "safety": {
+    "remoteWrites": "forbidden",
+    "githubWrites": "forbidden",
+    "requiresApprovalFor": ["apply", "push", "pr-create", "pr-merge"],
+    "commandAllowlist": ["ai:loop-registry-check", "ai:check", "docs:check", "typecheck", "test"]
+  }
+}

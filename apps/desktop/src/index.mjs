@@ -1,104 +1,465 @@
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { dirname, resolve } from "node:path";
+import { dirname, isAbsolute, relative, resolve } from "node:path";
+import { delimiter } from "node:path";
+import * as pty from "node-pty";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const serverUrl = process.env.BRIDGE_SERVER_URL ?? "http://127.0.0.1:3001";
+const serverUrl = process.env.BRIDGE_SERVER_URL ?? "http://127.0.0.1:5001";
 const pollIntervalMs = Number(process.env.BRIDGE_POLL_INTERVAL_MS ?? 700);
+const terminalPollIntervalMs = Number(process.env.BRIDGE_TERMINAL_POLL_INTERVAL_MS ?? 40);
 const demoAgentPath = resolve(__dirname, "demo-agent.mjs");
 const codexFixtureAgentPath = resolve(__dirname, "codex-fixture-agent.mjs");
+const remoteRelayPath = resolve(__dirname, "remote-relay.mjs");
 
 if (process.argv.includes("--check")) {
-  if (!existsSync(demoAgentPath) || !existsSync(codexFixtureAgentPath)) {
+  if (!existsSync(demoAgentPath) || !existsSync(codexFixtureAgentPath) || !existsSync(remoteRelayPath)) {
     throw new Error("Desktop agent fixtures are not configured.");
+  }
+  const lifecycleWorkContract = {
+    lifecycleActionId: "lco_self_check",
+    recipeId: "lcr_self_check",
+    executionEnabled: true,
+    command: {
+      commandId: "demo_agent_version",
+      executable: "demo-agent",
+      args: ["--version"],
+      shell: false,
+      packageManager: null
+    }
+  };
+  const lifecyclePlan = lifecycleCommandPlan(lifecycleWorkContract.command);
+  if (!lifecycleWorkContract.executionEnabled || lifecyclePlan?.command !== process.execPath || !lifecyclePlan.args.includes("--version")) {
+    throw new Error("Lifecycle bridge work contract is not mapped to a local allowlisted command.");
+  }
+  const blockedLifecyclePlan = lifecycleCommandPlan({ commandId: "not_allowlisted", executable: "demo-agent", args: [], shell: false });
+  if (blockedLifecyclePlan) {
+    throw new Error("Lifecycle bridge execution must reject non-allowlisted command identifiers.");
+  }
+  const resumeArgs = codexArgsTemplate({ command: "codex", args: codexCliArgs() }, { options: { codexSessionMode: "continue_last" } });
+  if (!resumeArgs.includes("resume") || resumeArgs.includes("--ephemeral")) {
+    throw new Error("Codex continuation args are not configured.");
+  }
+  const imageArgs = insertCodexImageArgs(["exec", "--json", "{{task}}"], [{ path: "composer-image.png" }]);
+  const taskArgIndex = imageArgs.indexOf("{{task}}");
+  if (!imageArgs.includes("--image") || imageArgs[taskArgIndex - 1] !== "--") {
+    throw new Error("Codex image attachment args are not configured.");
+  }
+  const fullAccessArgs = applyCodexPermissionMode(["exec", "--json", "{{task}}"], { options: { approvalMode: "full" } });
+  if (fullAccessArgs[1] !== "--dangerously-bypass-approvals-and-sandbox") {
+    throw new Error("Codex full-access permission mode is not configured.");
+  }
+  if (typeof pty.spawn !== "function") {
+    throw new Error("node-pty is not available.");
+  }
+  const inheritedEnv = {
+    CODEX_SANDBOX_NETWORK_DISABLED: "1",
+    CODEX_CI: "1",
+    CODEX_THREAD_ID: "thread-from-parent",
+    CODEX_HOME: "C:\\Users\\demo\\.codex",
+    HTTPS_PROXY: "http://127.0.0.1:7890",
+    MYAGENTTOOL_CODEX_ENV_JSON: "{\"OPENAI_BASE_URL\":\"http://127.0.0.1:8787/v1\"}"
+  };
+  const codexEnv = buildEnv({ command: "codex", environmentPolicy: "inherit_safe", env: inheritedEnv });
+  if (codexEnv.CODEX_SANDBOX_NETWORK_DISABLED || codexEnv.CODEX_CI || codexEnv.CODEX_THREAD_ID) {
+    throw new Error("Codex child environment isolation is not configured.");
+  }
+  if (codexEnv.CODEX_HOME !== inheritedEnv.CODEX_HOME || codexEnv.HTTPS_PROXY !== inheritedEnv.HTTPS_PROXY) {
+    throw new Error("Codex child environment stripped user configuration.");
+  }
+  const defaultHomeEnv = buildEnv({ command: "codex", environmentPolicy: "inherit_safe", env: { USERPROFILE: "C:\\Users\\demo" } });
+  if (process.platform === "win32" && defaultHomeEnv.CODEX_HOME !== "C:\\Users\\demo\\.codex") {
+    throw new Error("Codex child environment should default to the user Codex home.");
+  }
+  if (codexEnv.OPENAI_BASE_URL !== "http://127.0.0.1:8787/v1") {
+    throw new Error("Codex child local env injection is not configured.");
+  }
+  const commandJsonPlan = codexCommandPlan({ command: "codex" }, ["exec", "--json", "{{task}}"], "fixture-task");
+  if (commandJsonPlan.command !== process.execPath || !commandJsonPlan.args[0]?.toLowerCase().endsWith("\\node_modules\\@openai\\codex\\bin\\codex.js") || commandJsonPlan.args[1] !== "exec") {
+    throw new Error("Codex command plan is not configured.");
+  }
+  const codexCommand = resolveCodexCommandPlan("codex", [], { PATH: `${resolve(process.env.APPDATA ?? "", "npm")}${delimiter}${process.env.PATH ?? ""}`, APPDATA: process.env.APPDATA });
+  if (process.platform === "win32" && !codexCommand.args[0]?.toLowerCase().endsWith("\\node_modules\\@openai\\codex\\bin\\codex.js")) {
+    throw new Error("Codex command resolution should prefer the user npm shim on Windows.");
+  }
+  const shellPlan = resolveTerminalShell(process.platform === "win32" ? "powershell" : "bash");
+  if (!shellPlan.file) {
+    throw new Error("Managed terminal shell resolver is not configured.");
   }
   console.log("[desktop:check] local demo bridge check OK");
   process.exit(0);
 }
 
-// Concurrency pool: run up to BRIDGE_MAX_CONCURRENT work items at once. Per-cwd
-// safety is enforced server-side (nextDispatchableInvocation won't hand out two
-// tasks for the same working directory), so distinct worktrees run in parallel
-// while the same worktree stays serial. `polling` guards against overlapping
-// fill passes from the interval; `inFlight` counts running work.
-// Pool size. The device's maxConcurrency (set on the server, tunable in the
-// Devices UI) is authoritative — the server won't dispatch past it — so this is
-// just the bridge's local ceiling, seeded from the device value at register with
-// the env as a fallback. A live increase applies on the next reconnect; the
-// server enforces decreases immediately.
-const envMaxConcurrent = Math.floor(Number(process.env.BRIDGE_MAX_CONCURRENT));
-let maxConcurrent = Number.isFinite(envMaxConcurrent) ? Math.max(1, Math.min(16, envMaxConcurrent)) : 3;
-const inFlight = new Set();
-let polling = false;
+let busy = false;
+let terminalBusy = false;
 let stopped = false;
+const terminalSessions = new Map();
 
 process.on("SIGINT", stop);
 process.on("SIGTERM", stop);
 
 await waitForServer();
-const registration = await request("POST", "/api/bridge/register", {
+await request("POST", "/api/bridge/register", {
   bridgeVersion: "0.0.0",
-  capabilities: ["demo_cli_agent"]
+  capabilities: ["demo_cli_agent", "managed_terminal_pty", "remote_ssh_relay"]
 });
-const deviceMax = Math.floor(Number(registration?.device?.maxConcurrency));
-if (Number.isFinite(deviceMax) && deviceMax >= 1) {
-  maxConcurrent = deviceMax;
-}
-console.log(`[desktop] registered with ${serverUrl} (max concurrency ${maxConcurrent})`);
+console.log(`[desktop] registered with ${serverUrl}`);
 
 poll();
 const timer = setInterval(poll, pollIntervalMs);
+pollTerminal();
+const terminalTimer = setInterval(pollTerminal, terminalPollIntervalMs);
 
-// Track a running work promise so the pool knows when a slot frees up.
-function track(promise) {
-  const token = Symbol("work");
-  inFlight.add(token);
-  Promise.resolve(promise)
-    .catch((error) => console.error("[desktop] work failed:", error?.message ?? error))
-    .finally(() => inFlight.delete(token));
-}
-
-// Fill open slots: pull invocations first (the server skips cwd-busy ones), then
-// health/discovery/probe work, until the pool is full or nothing is available.
 async function poll() {
-  if (stopped || polling) {
+  if (busy || stopped) {
     return;
   }
-  polling = true;
+
+  const response = await request("GET", "/api/bridge/next");
+  if (response) {
+    busy = true;
+    try {
+      await runInvocation(response);
+    } finally {
+      busy = false;
+    }
+    return;
+  }
+
+  const healthWork = await request("GET", "/api/bridge/health-next");
+  if (healthWork) {
+    busy = true;
+    try {
+      await runHealthCheck(healthWork);
+    } finally {
+      busy = false;
+    }
+    return;
+  }
+
+  const discoveryWork = await request("GET", "/api/bridge/discovery-next");
+  if (discoveryWork) {
+    busy = true;
+    try {
+      await runDiscovery(discoveryWork);
+    } finally {
+      busy = false;
+    }
+    return;
+  }
+
+  const probeWork = await request("GET", "/api/bridge/probe-next");
+  if (probeWork) {
+    busy = true;
+    try {
+      await runIntegrationProbe(probeWork);
+    } finally {
+      busy = false;
+    }
+    return;
+  }
+
+  const lifecycleWork = await request("GET", "/api/bridge/lifecycle-next");
+  if (lifecycleWork) {
+    busy = true;
+    try {
+      await runLifecycleAction(lifecycleWork);
+    } finally {
+      busy = false;
+    }
+  }
+
+}
+
+async function runLifecycleAction(work) {
+  if (!work?.lifecycleActionId) {
+    throw new Error("Lifecycle work item is missing lifecycleActionId.");
+  }
+  const plan = work.executionEnabled === true ? lifecycleCommandPlan(work.command) : null;
+  if (!plan) {
+    await postLifecycleResult({
+      lifecycleActionId: work.lifecycleActionId,
+      status: "failed",
+      summary: "Lifecycle command is not allowlisted for this Desktop Bridge build.",
+      exitCode: null,
+      stdout: "",
+      stderr: "",
+      durationMs: null,
+      healthStatus: "unknown"
+    });
+    return;
+  }
+
+  console.log(`[desktop] lifecycle action ${work.lifecycleActionId}: ${work.command.commandId}`);
+  const startedAt = Date.now();
+  const result = spawnSync(plan.command, plan.args, {
+    cwd: process.cwd(),
+    env: buildEnv({ command: "demo-agent", environmentPolicy: "inherit_safe" }),
+    timeout: 10_000,
+    windowsHide: true,
+    encoding: "utf8",
+    shell: false,
+    stdio: ["ignore", "pipe", "pipe"]
+  });
+  const durationMs = Date.now() - startedAt;
+  const succeeded = result.status === 0 && !result.error;
+  const summary = lifecycleResultSummary({
+    commandId: work.command.commandId,
+    error: result.error,
+    signal: result.signal,
+    status: result.status,
+    succeeded,
+  });
+  await postLifecycleResult({
+    lifecycleActionId: work.lifecycleActionId,
+    status: succeeded ? "succeeded" : "failed",
+    summary,
+    exitCode: result.status,
+    stdout: result.stdout ?? "",
+    stderr: result.stderr ?? "",
+    durationMs,
+    healthStatus: succeeded ? "healthy" : "unhealthy"
+  });
+}
+
+function lifecycleResultSummary({ commandId, error, signal, status, succeeded }) {
+  if (succeeded) {
+    return `Lifecycle command ${commandId} completed.`;
+  }
+  if (error?.code === "ETIMEDOUT" || signal) {
+    return `Lifecycle command ${commandId} timed out.`;
+  }
+  if (error) {
+    return `Lifecycle command ${commandId} failed to start: ${error.message}.`;
+  }
+  return `Lifecycle command ${commandId} failed with exit code ${status ?? "unknown"}.`;
+}
+
+function lifecycleCommandPlan(command) {
+  if (!command || command.shell !== false || command.packageManager) {
+    return null;
+  }
+  const commandId = String(command.commandId ?? "");
+  const commands = {
+    demo_agent_version: [demoAgentPath, "--version"],
+    demo_agent_update: [demoAgentPath, "--self-check-update"],
+    demo_agent_health: [demoAgentPath, "--self-check-health"],
+    demo_agent_rollback: [demoAgentPath, "--self-check-rollback"],
+  };
+  const args = commands[commandId];
+  if (!args) {
+    return null;
+  }
+  return {
+    command: process.execPath,
+    args,
+  };
+}
+
+async function postLifecycleResult(payload) {
+  await request("POST", "/api/bridge/lifecycle-complete", payload);
+}
+
+async function pollTerminal() {
+  if (terminalBusy || stopped) {
+    return;
+  }
+  terminalBusy = true;
   try {
-    while (!stopped && inFlight.size < maxConcurrent) {
-      const invocationWork = await request("GET", "/api/bridge/next");
-      if (invocationWork) {
-        track(runInvocation(invocationWork));
-        continue;
+    for (let index = 0; index < 25 && !stopped; index += 1) {
+      const terminalWork = await request("GET", "/api/bridge/terminal-next");
+      if (!terminalWork) {
+        break;
       }
-      const healthWork = await request("GET", "/api/bridge/health-next");
-      if (healthWork) {
-        track(runHealthCheck(healthWork));
-        continue;
-      }
-      const discoveryWork = await request("GET", "/api/bridge/discovery-next");
-      if (discoveryWork) {
-        track(runDiscovery(discoveryWork));
-        continue;
-      }
-      const probeWork = await request("GET", "/api/bridge/probe-next");
-      if (probeWork) {
-        track(runIntegrationProbe(probeWork));
-        continue;
-      }
-      break; // nothing dispatchable right now
+      await runTerminalAction(terminalWork);
     }
   } finally {
-    polling = false;
+    terminalBusy = false;
   }
+}
+
+async function runTerminalAction(action) {
+  const sessionId = action.terminalSessionId;
+  const actionId = action.id;
+  try {
+    if (action.session?.runtimeKind === "remote_ssh_relay") {
+      await runRemoteRelayAction(action);
+      return;
+    }
+    if (action.actionType === "create") {
+      await createPtySession(action);
+      return;
+    }
+    const current = terminalSessions.get(sessionId);
+    if (!current) {
+      await postTerminalEvent({
+        terminalSessionId: sessionId,
+        actionId,
+        type: "terminal.runtime.warning",
+        summary: "Managed terminal session is not active in Desktop Bridge."
+      });
+      return;
+    }
+    if (action.actionType === "input") {
+      current.pty.write(String(action.payload?.input ?? ""));
+      await postTerminalEvent({
+        terminalSessionId: sessionId,
+        actionId,
+        type: "terminal.input.submit",
+        summary: "Managed terminal input submitted."
+      });
+      return;
+    }
+    if (action.actionType === "resize") {
+      const cols = Math.max(20, Number(action.payload?.cols ?? 100));
+      const rows = Math.max(5, Number(action.payload?.rows ?? 30));
+      current.pty.resize(cols, rows);
+      await postTerminalEvent({
+        terminalSessionId: sessionId,
+        actionId,
+        type: "terminal.resize",
+        summary: `Managed terminal resized to ${cols}x${rows}.`,
+        cols,
+        rows
+      });
+      return;
+    }
+    if (action.actionType === "close") {
+      current.pty.kill();
+      terminalSessions.delete(sessionId);
+      await postTerminalEvent({
+        terminalSessionId: sessionId,
+        actionId,
+        type: "terminal.close",
+        summary: "Managed terminal close requested."
+      });
+    }
+  } catch (error) {
+    await postTerminalEvent({
+      terminalSessionId: sessionId,
+      actionId,
+      type: "terminal.runtime.warning",
+      summary: error instanceof Error ? error.message : String(error)
+    });
+  }
+}
+
+async function runRemoteRelayAction(action) {
+  const sessionId = action.terminalSessionId;
+  const actionId = action.id;
+  if (action.actionType === "create") {
+    await createRemoteRelaySession(action);
+    return;
+  }
+  const current = terminalSessions.get(sessionId);
+  if (!current?.relay) {
+    await postTerminalEvent({
+      terminalSessionId: sessionId,
+      actionId,
+      type: "terminal.runtime.warning",
+      summary: "Remote relay session is not active in Desktop Bridge."
+    });
+    return;
+  }
+  if (action.actionType === "input") {
+    writeRelay(current.relay, { type: "input", sessionId, actionId, input: String(action.payload?.input ?? "") });
+    return;
+  }
+  if (action.actionType === "resize") {
+    writeRelay(current.relay, {
+      type: "resize",
+      sessionId,
+      actionId,
+      cols: Math.max(20, Number(action.payload?.cols ?? 100)),
+      rows: Math.max(5, Number(action.payload?.rows ?? 30))
+    });
+    return;
+  }
+  if (action.actionType === "close") {
+    writeRelay(current.relay, { type: "close", sessionId, actionId });
+  }
+}
+
+async function createPtySession(action) {
+  const session = action.session ?? {};
+  const shellPlan = resolveTerminalShell(action.payload?.shell ?? session.shell);
+  const cwd = String(action.payload?.cwd ?? session.cwd ?? process.cwd());
+  const cols = Math.max(20, Number(action.payload?.cols ?? 100));
+  const rows = Math.max(5, Number(action.payload?.rows ?? 30));
+  const child = pty.spawn(shellPlan.file, shellPlan.args, {
+    name: "xterm-256color",
+    cols,
+    rows,
+    cwd,
+    env: { ...process.env, TERM: process.env.TERM && process.env.TERM !== "dumb" ? process.env.TERM : "xterm-256color" }
+  });
+  terminalSessions.set(action.terminalSessionId, { pty: child, shellPlan, cwd });
+  child.onData((output) => {
+    postTerminalEvent({
+      terminalSessionId: action.terminalSessionId,
+      type: "terminal.output.chunk",
+      stream: "stdout",
+      output,
+      byteCount: Buffer.byteLength(output),
+      summary: summarizeTerminalOutput(output)
+    });
+  });
+  child.onExit(({ exitCode }) => {
+    terminalSessions.delete(action.terminalSessionId);
+    postTerminalEvent({
+      terminalSessionId: action.terminalSessionId,
+      type: "terminal.exit",
+      exitCode,
+      summary: `Managed terminal exited with code ${exitCode}.`
+    });
+  });
+  await postTerminalEvent({
+    terminalSessionId: action.terminalSessionId,
+    actionId: action.id,
+    type: "terminal.session.attached",
+    summary: `Managed terminal attached to ${shellPlan.label}.`
+  });
+}
+
+async function postTerminalEvent(event) {
+  await request("POST", "/api/bridge/terminal-events", event);
+}
+
+function resolveTerminalShell(requested) {
+  const normalized = String(requested ?? "").trim().toLowerCase();
+  if (process.platform === "win32") {
+    const gitBash = "C:\\Program Files\\Git\\bin\\bash.exe";
+    const candidates = {
+      cmd: { file: "cmd.exe", args: [], label: "cmd.exe" },
+      "cmd.exe": { file: "cmd.exe", args: [], label: "cmd.exe" },
+      powershell: { file: "powershell.exe", args: ["-NoLogo"], label: "powershell.exe" },
+      "powershell.exe": { file: "powershell.exe", args: ["-NoLogo"], label: "powershell.exe" },
+      pwsh: { file: "pwsh.exe", args: ["-NoLogo"], label: "pwsh.exe" },
+      "pwsh.exe": { file: "pwsh.exe", args: ["-NoLogo"], label: "pwsh.exe" },
+      wsl: { file: "wsl.exe", args: [], label: "wsl.exe" },
+      "wsl.exe": { file: "wsl.exe", args: [], label: "wsl.exe" },
+      "git-bash": { file: existsSync(gitBash) ? gitBash : "bash.exe", args: ["--login"], label: "Git Bash" }
+    };
+    return candidates[normalized] ?? candidates.powershell;
+  }
+  const fallback = process.env.SHELL || "/bin/bash";
+  if (normalized === "zsh") return { file: "/bin/zsh", args: [], label: "zsh" };
+  if (normalized === "sh") return { file: "/bin/sh", args: [], label: "sh" };
+  if (normalized === "bash") return { file: "/bin/bash", args: [], label: "bash" };
+  return { file: fallback, args: [], label: fallback };
+}
+
+function summarizeTerminalOutput(output) {
+  const clean = String(output ?? "").replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, "").replace(/\s+/g, " ").trim();
+  return clean ? `Terminal output: ${clean.slice(0, 180)}` : "Terminal output received.";
 }
 
 async function runInvocation(work) {
   const invocationId = work.invocationId;
   const task = String(work.input?.task ?? "");
   const adapter = work.adapter;
+  const runtimeName = agentRuntimeName(adapter);
   console.log(`[desktop] running ${invocationId}: ${task}`);
 
   await request("POST", "/api/bridge/ack", { invocationId });
@@ -109,6 +470,7 @@ async function runInvocation(work) {
   let stderrBuffer = "";
   let cancelResult = null;
   let timedOut = false;
+  let spawnError = null;
 
   if (!adapter || adapter.type !== "cli") {
     await request("POST", "/api/bridge/complete", {
@@ -120,14 +482,84 @@ async function runInvocation(work) {
     return;
   }
 
-  const spawnPlan = createCliSpawnPlan(adapter, { invocationId, task });
-  const child = spawn(spawnPlan.command, spawnPlan.args, {
-    cwd: spawnPlan.cwd,
-    env: spawnPlan.env,
-    detached: process.platform !== "win32",
-    windowsHide: true,
-    stdio: ["ignore", "pipe", "pipe"]
+  const spawnPlan = createCliSpawnPlan(adapter, { invocationId, task, options: work.options ?? {} });
+  const preview = executionPreview(adapter, spawnPlan, task);
+  await sendCodexHookEvent(invocationId, adapter, {
+    eventName: "SessionStart",
+    summary: `Managed Codex launcher started with ${preview.sessionMode}.`
   });
+  const promptHook = await sendCodexHookEvent(invocationId, adapter, {
+    eventName: "UserPromptSubmit",
+    summary: summarizeTaskForHook(task)
+  });
+  if (promptHook?.policyDecision === "blocked") {
+    await request("POST", "/api/bridge/complete", {
+      invocationId,
+      status: "failed",
+      summary: promptHook.hookEvent?.policyReason ?? "Codex prompt was blocked by policy.",
+      result: {
+        touchedUserFiles: false,
+        policyDecision: "blocked"
+      }
+    });
+    return;
+  }
+  await request("POST", "/api/bridge/events", {
+    invocationId,
+    type: "execution_preview",
+    level: "info",
+    message: `Execution preview: ${preview.commandLine}`,
+    data: preview
+  });
+  await sendCodexHookEvent(invocationId, adapter, {
+    eventName: "PreToolUse",
+    toolName: "Bash",
+    summary: preview.commandLine
+  });
+  const permissionHook = await sendCodexHookEvent(invocationId, adapter, {
+    eventName: "PermissionRequest",
+    toolName: "Bash",
+    summary: "Codex requested permission for a sandbox-bound command preview.",
+    timeoutSeconds: process.env.MYAGENTTOOL_CODEX_APPROVAL_TIMEOUT_SECONDS
+  });
+  const permissionDecision = await waitForCodexApprovalDecision(permissionHook);
+  if (permissionDecision === "denied" || permissionDecision === "timed_out") {
+    await request("POST", "/api/bridge/complete", {
+      invocationId,
+      status: "failed",
+      summary: permissionDecision === "timed_out"
+        ? "Codex approval broker timed out before execution."
+        : "Codex approval broker denied the request before execution.",
+      result: {
+        touchedUserFiles: false,
+        policyDecision: permissionDecision
+      }
+    });
+    return;
+  }
+
+  let child;
+  try {
+    child = spawn(spawnPlan.command, spawnPlan.args, {
+      cwd: spawnPlan.cwd,
+      env: spawnPlan.env,
+      detached: process.platform !== "win32",
+      windowsHide: true,
+      stdio: ["ignore", "pipe", "pipe"]
+    });
+  } catch (error) {
+    await sendCodexHookEvent(invocationId, adapter, {
+      eventName: "Stop",
+      summary: `${runtimeName} failed to start.`
+    });
+    await request("POST", "/api/bridge/complete", {
+      invocationId,
+      status: "failed",
+      summary: `${runtimeName} failed to start: ${error instanceof Error ? error.message : String(error)}.`,
+      result: finalResult
+    });
+    return;
+  }
 
   const timeoutMs = Number(adapter.timeoutSeconds ?? work.options?.timeoutSeconds ?? 30) * 1000;
   const timeoutTimer = setTimeout(async () => {
@@ -139,10 +571,10 @@ async function runInvocation(work) {
       invocationId,
       type: "invocation_timed_out",
       level: "warn",
-      message: "CLI Agent exceeded its configured timeout."
+      message: `${runtimeName} exceeded its configured timeout.`
     });
     cancelResult = await terminateProcessTree(child);
-    await reportForcedKill(invocationId, cancelResult, "Timeout");
+    await reportForcedKill(invocationId, runtimeName, cancelResult);
   }, timeoutMs);
 
   const cancelTimer = setInterval(async () => {
@@ -153,10 +585,10 @@ async function runInvocation(work) {
         invocationId,
         type: "cancel_dispatched",
         level: "info",
-        message: "Desktop Bridge sent cancellation to Demo CLI Agent."
+        message: `Desktop Bridge sent cancellation to ${runtimeName}.`
       });
       cancelResult = await terminateProcessTree(child);
-      await reportForcedKill(invocationId, cancelResult, "Cancellation");
+      await reportForcedKill(invocationId, runtimeName, cancelResult);
       if (!cancelResult.ok) {
         await request("POST", "/api/bridge/events", {
           invocationId,
@@ -187,26 +619,17 @@ async function runInvocation(work) {
     stderrBuffer = lines.pop() ?? "";
     for (const line of lines) {
       if (line.trim()) {
-        request("POST", "/api/bridge/events", {
-          invocationId,
-          type: adapter.outputFormat === "codex_jsonl" ? "agent_output" : "log",
-          level: "warn",
-          message: line.trim()
-        });
+        emitAgentStderrLine(invocationId, adapter, line);
       }
     }
   });
 
-  let spawnError = null;
+  child.on("error", (error) => {
+    spawnError = error;
+  });
+
   const exitCode = await new Promise((resolveExit) => {
     child.on("close", resolveExit);
-    // A spawn failure (missing cwd/binary, e.g. a deleted worktree) emits 'error';
-    // without this listener it would be unhandled and crash the whole bridge.
-    // Resolve as a non-zero exit so the run completes and the pool frees the slot.
-    child.on("error", (error) => {
-      spawnError = error;
-      resolveExit(typeof child.exitCode === "number" ? child.exitCode : -1);
-    });
   });
   clearInterval(cancelTimer);
   clearTimeout(timeoutTimer);
@@ -218,54 +641,75 @@ async function runInvocation(work) {
     }
   }
   if (stderrBuffer.trim()) {
-    await request("POST", "/api/bridge/events", {
-      invocationId,
-      type: adapter.outputFormat === "codex_jsonl" ? "agent_output" : "log",
-      level: "warn",
-      message: stderrBuffer.trim()
-    });
+    await emitAgentStderrLine(invocationId, adapter, stderrBuffer);
   }
 
-  // Carry the forced-kill fact into the terminal completion so the audit records
-  // it even if the separate cancel_force_killed event is lost or arrives late.
-  const forcedNote = cancelResult?.signal === "SIGKILL"
-    ? " Process tree was force-killed (SIGKILL) after ignoring graceful stop."
-    : "";
-
   if (timedOut) {
+    const forcedNote = cancelResult?.message ? ` ${cancelResult.message}` : "";
+    await sendCodexHookEvent(invocationId, adapter, {
+      eventName: "Stop",
+      summary: "Codex run timed out."
+    });
     await request("POST", "/api/bridge/complete", {
       invocationId,
       status: "timed_out",
-      summary: `CLI Agent exceeded its configured timeout.${forcedNote}`,
+      summary: `${runtimeName} exceeded its configured timeout.${forcedNote}`,
       result: finalResult
     });
     return;
   }
 
   if (cancelled) {
+    const forcedNote = cancelResult?.message ? ` ${cancelResult.message}` : "";
+    await sendCodexHookEvent(invocationId, adapter, {
+      eventName: "Stop",
+      summary: "Codex run was cancelled."
+    });
     await request("POST", "/api/bridge/complete", {
       invocationId,
       status: cancelResult?.ok === false ? "failed" : "cancelled",
-      summary: cancelResult?.ok === false ? cancelResult.message : `CLI Agent was cancelled locally.${forcedNote}`,
+      summary: cancelResult?.ok === false
+        ? `${runtimeName} cancellation failed.${forcedNote}`
+        : `${runtimeName} was cancelled locally.${forcedNote}`,
       result: finalResult
     });
     return;
   }
 
   if (exitCode === 0) {
+    await sendCodexHookEvent(invocationId, adapter, {
+      eventName: "PostToolUse",
+      toolName: "Bash",
+      summary: "Codex command completed."
+    });
+    await sendCodexHookEvent(invocationId, adapter, {
+      eventName: "Stop",
+      summary: "Codex run stopped after completion."
+    });
     await request("POST", "/api/bridge/complete", {
       invocationId,
       status: "succeeded",
-      summary: finalResult?.summary ?? "Demo CLI Agent completed.",
+      summary: finalResult?.summary ?? `${runtimeName} completed.`,
       result: finalResult
     });
     return;
   }
 
+  await sendCodexHookEvent(invocationId, adapter, {
+    eventName: "PostToolUse",
+    toolName: "Bash",
+    summary: `Codex command exited with code ${exitCode}.`
+  });
+  await sendCodexHookEvent(invocationId, adapter, {
+    eventName: "Stop",
+    summary: "Codex run stopped after failure."
+  });
   await request("POST", "/api/bridge/complete", {
     invocationId,
     status: "failed",
-    summary: spawnError ? `Agent could not start: ${spawnError.message}` : `Demo CLI Agent exited with code ${exitCode}.`,
+    summary: spawnError
+      ? `${runtimeName} could not start: ${spawnError.message}`
+      : `${runtimeName} exited with code ${exitCode}.`,
     result: finalResult
   });
 }
@@ -306,8 +750,8 @@ function checkCliAgentHealth(adapter) {
     const probe = probeClaudeCli(adapter);
     return {
       ok: probe.ok,
-      message: probe.ok ? "Claude Code CLI non-interactive surface is reachable." : probe.summary,
-      nextAction: probe.ok ? null : "Verify Claude Code CLI installation and authentication."
+      message: probe.ok ? "Claude CLI surface is reachable." : probe.summary,
+      nextAction: probe.ok ? null : "Verify Claude CLI installation and authentication."
     };
   }
   if (adapter.command === "demo-agent") {
@@ -367,11 +811,11 @@ async function runDiscovery(work) {
           "Found from a user-provided command path.",
           "No broad filesystem scan was performed.",
           codexCommand
-            ? "Codex CLI is configured for codex exec, JSONL output, and read-only sandbox by default."
+            ? "Codex CLI is configured for codex exec and JSONL output; permissions stay with Codex CLI native controls."
             : highRiskCliCommand(path)
             ? "High-risk coding CLI commands still require local approval before invocation."
             : "Review shell execution risk before enabling.",
-          codexCommand ? "Local approval is required before invoking this coding agent." : "Generated integrations stay disabled until explicit registration."
+          codexCommand ? "MyAgentTool records invocation evidence but does not replace Codex CLI authorization." : "Generated integrations stay disabled until explicit registration."
         ]
       }));
     }
@@ -483,7 +927,7 @@ function cliCandidate({ id, name, command, source, confidence, riskLevel, riskTa
       timeoutSeconds: codexCommand ? 120 : 30,
       cancellation: "supported",
       outputFormat: codexCommand ? "codex_jsonl" : "plain_result",
-      sandbox: codexCommand ? "read-only" : null
+      sandbox: null
     },
     source,
     confidence,
@@ -535,34 +979,370 @@ function uniqueCandidates(candidates) {
 function createCliSpawnPlan(adapter, payload) {
   const payloadJson = JSON.stringify(payload);
   const codexCommandOverride = isCodexCliCommand(adapter.command) ? process.env.MYAGENTTOOL_CODEX_COMMAND : null;
+  const codexImageAttachments = isCodexCliCommand(adapter.command) ? prepareCodexImageAttachments(payload) : [];
+  const argsTemplate = isCodexCliCommand(adapter.command)
+    ? insertCodexImageArgs(codexArgsTemplate(adapter, payload), codexImageAttachments)
+    : codexArgsTemplate(adapter, payload);
+  const renderedArgs = isCodexCliCommand(adapter.command)
+    ? applyCodexPermissionMode(renderArgs(argsTemplate, payloadJson, payload), payload)
+    : renderArgs(argsTemplate, payloadJson, payload);
+  const baseCommand = codexCommandOverride || String(adapter.command);
   const command = adapter.command === "demo-agent" || codexCommandOverride === "fixture"
     ? process.execPath
-    : codexCommandOverride || String(adapter.command);
-  const argsTemplate = Array.isArray(adapter.args) && adapter.args.length > 0 ? adapter.args : ["{{payloadJson}}"];
+    : isCodexCliCommand(adapter.command)
+      ? codexCommandPlan(adapter, renderedArgs, payload.task).command
+      : baseCommand;
   const args = adapter.command === "demo-agent"
     ? [demoAgentPath, ...renderArgs(argsTemplate, payloadJson, payload)]
     : codexCommandOverride === "fixture"
-      ? [codexFixtureAgentPath, ...renderArgs(argsTemplate, payloadJson, payload)]
-    : renderArgs(argsTemplate, payloadJson, payload);
+      ? [codexFixtureAgentPath, ...renderedArgs]
+      : isCodexCliCommand(adapter.command)
+        ? codexCommandPlan(adapter, renderedArgs, payload.task).args
+        : renderedArgs;
   const env = buildEnv(adapter);
   const cwd = adapter.workingDirectoryPolicy === "explicit" && adapter.workingDirectory
     ? String(adapter.workingDirectory)
-    : process.cwd();
-  return { command, args, env, cwd };
+    : projectCwd(payload);
+  return {
+    command,
+    args,
+    env,
+    cwd,
+    sessionMode: payload.options?.codexSessionMode ?? "not_applicable",
+    workspacePolicy: payload.options?.codexWorkspacePolicy ?? "current_repo",
+    attachments: codexImageAttachments
+  };
+}
+
+function projectCwd(payload) {
+  const projectPath = String(payload.project?.path ?? payload.options?.metadata?.projectPath ?? "").trim();
+  if (projectPath && isAbsolute(projectPath) && existsSync(projectPath)) {
+    return projectPath;
+  }
+  return process.cwd();
+}
+
+function codexArgsTemplate(adapter, payload) {
+  const args = Array.isArray(adapter.args) && adapter.args.length > 0 ? adapter.args : ["{{payloadJson}}"];
+  if (isCodexCliCommand(adapter.command) && payload.options?.codexSessionMode === "continue_last") {
+    return ["exec", "resume", "--last", "--skip-git-repo-check", "--json", "{{task}}"];
+  }
+  return args;
+}
+
+function applyCodexPermissionMode(args, payload) {
+  if (normalizeCodexApprovalMode(payload.options?.approvalMode ?? payload.options?.metadata?.permissionMode) !== "full") {
+    return args;
+  }
+  if (args.includes("--dangerously-bypass-approvals-and-sandbox")) {
+    return args;
+  }
+  const insertionIndex = args[0] === "exec" ? 1 : 0;
+  return [
+    ...args.slice(0, insertionIndex),
+    "--dangerously-bypass-approvals-and-sandbox",
+    ...args.slice(insertionIndex)
+  ];
+}
+
+function normalizeCodexApprovalMode(value) {
+  const normalized = String(value ?? "ask").trim().toLowerCase();
+  return ["ask", "auto", "full"].includes(normalized) ? normalized : "ask";
+}
+
+function codexCommandPlan(adapter, renderedArgs, task) {
+  const commandPrefix = parseCodexCommandJson();
+  if (!commandPrefix) {
+    return resolveCodexCommandPlan(adapter.command, renderedArgs);
+  }
+  const [command, ...prefixArgs] = commandPrefix;
+  const args = [...prefixArgs, ...dedupeCommandPrefixArgs(prefixArgs, renderedArgs)];
+  return {
+    command,
+    args
+  };
+}
+
+function resolveCodexCommandPlan(command, args, env = process.env) {
+  const rawCommand = String(command ?? "codex");
+  if (!isCodexCliCommand(rawCommand) || rawCommand.includes("\\") || rawCommand.includes("/")) {
+    return { command: rawCommand, args };
+  }
+  if (process.platform !== "win32") {
+    return { command: rawCommand, args };
+  }
+  const appDataNpm = env.APPDATA ? resolve(String(env.APPDATA), "npm") : null;
+  const appDataPlan = appDataNpm ? codexNpmShimPlan(appDataNpm, args) : null;
+  if (appDataPlan) {
+    return appDataPlan;
+  }
+  for (const pathEntry of String(env.PATH ?? "").split(delimiter)) {
+    if (!pathEntry) {
+      continue;
+    }
+    const plan = codexNpmShimPlan(pathEntry, args);
+    if (plan) {
+      return plan;
+    }
+  }
+  return { command: rawCommand, args };
+}
+
+function codexNpmShimPlan(directory, args) {
+  const commandShim = resolve(directory, "codex.cmd");
+  const script = resolve(directory, "node_modules", "@openai", "codex", "bin", "codex.js");
+  if (!existsSync(commandShim) || !existsSync(script)) {
+    return null;
+  }
+  return {
+    command: process.execPath,
+    args: [script, ...args]
+  };
+}
+
+function parseCodexCommandJson() {
+  const raw = String(process.env.MYAGENTTOOL_CODEX_COMMAND_JSON ?? "").trim();
+  if (!raw) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed) || parsed.length === 0 || parsed.some((item) => typeof item !== "string" || !item.trim())) {
+      console.error("[desktop] MYAGENTTOOL_CODEX_COMMAND_JSON must be a non-empty JSON string array; ignoring it.");
+      return null;
+    }
+    return parsed.map((item) => item.trim());
+  } catch (error) {
+    console.error(`[desktop] could not parse MYAGENTTOOL_CODEX_COMMAND_JSON; ignoring it: ${error instanceof Error ? error.message : String(error)}`);
+    return null;
+  }
+}
+
+function dedupeCommandPrefixArgs(prefixArgs, renderedArgs) {
+  if (!prefixArgs.length || !renderedArgs.length) {
+    return renderedArgs;
+  }
+  const lastPrefixArg = String(prefixArgs[prefixArgs.length - 1]).toLowerCase();
+  const firstRenderedArg = String(renderedArgs[0]).toLowerCase();
+  return lastPrefixArg === firstRenderedArg ? renderedArgs.slice(1) : renderedArgs;
+}
+
+function executionPreview(adapter, spawnPlan, task) {
+  const args = previewArgs(adapter, spawnPlan.args, task);
+  return {
+    adapterType: adapter.type,
+    command: spawnPlan.command,
+    args,
+    commandLine: [spawnPlan.command, ...args].map(shellQuote).join(" "),
+    cwd: spawnPlan.cwd,
+    taskSummary: summarizeTask(task),
+    sessionMode: spawnPlan.sessionMode,
+    workspace: workspacePreview(adapter, spawnPlan),
+    environmentPolicy: adapter.environmentPolicy ?? "inherit_safe",
+    envVisible: false,
+    attachments: spawnPlan.attachments?.map((attachment) => ({
+      name: attachment.name,
+      type: attachment.type,
+      size: attachment.size,
+      path: attachment.path,
+      transport: "codex_image_arg"
+    })) ?? []
+  };
+}
+
+function workspacePreview(adapter, spawnPlan) {
+  if (!isCodexCliCommand(adapter.command)) {
+    return null;
+  }
+  const git = inspectGitWorkspace(spawnPlan.cwd);
+  return {
+    policy: spawnPlan.workspacePolicy,
+    repoPath: git.repoPath ?? spawnPlan.cwd,
+    worktreePath: spawnPlan.workspacePolicy === "current_repo" ? null : "pending_explicit_worktree",
+    baseBranch: git.baseBranch,
+    branchName: git.branchName,
+    dirtyState: git.dirtyState,
+    lastCommit: git.lastCommit,
+    status: spawnPlan.workspacePolicy === "new_worktree" ? "pending_explicit_creation" : git.status
+  };
+}
+
+function inspectGitWorkspace(cwd) {
+  const root = gitOutput(cwd, ["rev-parse", "--show-toplevel"]);
+  if (!root.ok) {
+    return {
+      status: "unknown",
+      repoPath: cwd,
+      baseBranch: null,
+      branchName: null,
+      dirtyState: "unknown",
+      lastCommit: null
+    };
+  }
+  const branch = gitOutput(cwd, ["rev-parse", "--abbrev-ref", "HEAD"]);
+  const commit = gitOutput(cwd, ["rev-parse", "--short", "HEAD"]);
+  const dirty = gitOutput(cwd, ["status", "--porcelain"]);
+  return {
+    status: "observed",
+    repoPath: root.stdout,
+    baseBranch: null,
+    branchName: branch.ok ? branch.stdout : "unknown",
+    dirtyState: dirty.ok ? dirty.stdout ? "dirty" : "clean" : "unknown",
+    lastCommit: commit.ok ? commit.stdout : null
+  };
+}
+
+function gitOutput(cwd, args) {
+  const result = spawnSync("git", args, {
+    cwd,
+    encoding: "utf8",
+    windowsHide: true,
+    timeout: 2000
+  });
+  return {
+    ok: result.status === 0,
+    stdout: String(result.stdout ?? "").trim()
+  };
+}
+
+function previewArgs(adapter, renderedArgs, task) {
+  const templates = Array.isArray(adapter.args) && adapter.args.length > 0 ? adapter.args : ["{{payloadJson}}"];
+  const sanitizedTemplates = templates.map((arg) => String(arg).replaceAll("{{payloadJson}}", "<payload-json>").replaceAll("{{task}}", "<task>"));
+  if (adapter.command === "demo-agent") {
+    return [demoAgentPath, ...sanitizedTemplates];
+  }
+  if (isCodexCliCommand(adapter.command) && process.env.MYAGENTTOOL_CODEX_COMMAND === "fixture") {
+    return [codexFixtureAgentPath, ...sanitizeRenderedArgs(renderedArgs.slice(1), task)];
+  }
+  return sanitizeRenderedArgs(renderedArgs, task);
+}
+
+function sanitizeRenderedArgs(renderedArgs, task) {
+  const taskText = String(task ?? "");
+  return renderedArgs.map((arg) => {
+    const text = String(arg);
+    if (taskText && text === taskText) {
+      return "[task redacted]";
+    }
+    if (taskText && text.includes(taskText)) {
+      return text.replaceAll(taskText, "[task redacted]");
+    }
+    return text;
+  });
+}
+
+function summarizeTask(task) {
+  const normalized = String(task ?? "").replace(/\s+/g, " ").trim();
+  if (normalized.length <= 120) {
+    return normalized;
+  }
+  return `${normalized.slice(0, 117)}...`;
+}
+
+function shellQuote(value) {
+  const text = String(value ?? "");
+  if (/^[a-zA-Z0-9_./:=@{}-]+$/.test(text)) {
+    return text;
+  }
+  return JSON.stringify(text);
 }
 
 function renderArgs(args, payloadJson, payload) {
   return args.map((arg) => String(arg).replaceAll("{{payloadJson}}", payloadJson).replaceAll("{{task}}", String(payload.task ?? "")));
 }
 
+function insertCodexImageArgs(args, attachments) {
+  if (!attachments.length) {
+    return args;
+  }
+  const imageArgs = attachments.flatMap((attachment) => ["--image", attachment.path]);
+  const taskIndex = args.findIndex((arg) => String(arg).includes("{{task}}"));
+  if (taskIndex >= 0) {
+    return [...args.slice(0, taskIndex), ...imageArgs, "--", ...args.slice(taskIndex)];
+  }
+  return [...args, ...imageArgs];
+}
+
+function prepareCodexImageAttachments(payload) {
+  const attachments = Array.isArray(payload.options?.metadata?.attachments)
+    ? payload.options.metadata.attachments
+    : [];
+  return attachments
+    .filter((attachment) => attachment?.included && attachment?.kind === "image" && attachment?.transport?.kind === "data_url")
+    .map((attachment, index) => writeCodexImageAttachment(payload, attachment, index))
+    .filter(Boolean);
+}
+
+function writeCodexImageAttachment(payload, attachment, index) {
+  const parsed = parseDataUrl(attachment.transport?.dataUrl);
+  if (!parsed || !parsed.mimeType.startsWith("image/")) {
+    return null;
+  }
+  const attachmentRoot = resolve(process.cwd(), ".myagenttool", "attachments", safeId(payload.invocationId ?? "invocation"));
+  mkdirSync(attachmentRoot, { recursive: true });
+  const fileName = `${String(index + 1).padStart(2, "0")}-${safeAttachmentFileName(attachment.name, parsed.mimeType)}`;
+  const filePath = resolve(attachmentRoot, fileName);
+  const relativePath = relative(attachmentRoot, filePath);
+  if (!relativePath || relativePath.startsWith("..") || isAbsolute(relativePath)) {
+    throw new Error("Attachment path escaped managed attachment directory.");
+  }
+  writeFileSync(filePath, parsed.buffer);
+  return {
+    name: String(attachment.name ?? fileName),
+    type: parsed.mimeType,
+    size: parsed.buffer.byteLength,
+    path: filePath
+  };
+}
+
+function parseDataUrl(value) {
+  const match = String(value ?? "").match(/^data:([^;,]+)?(;base64)?,([\s\S]*)$/);
+  if (!match) {
+    return null;
+  }
+  const mimeType = match[1] || "application/octet-stream";
+  const isBase64 = Boolean(match[2]);
+  try {
+    const buffer = isBase64
+      ? Buffer.from(match[3], "base64")
+      : Buffer.from(decodeURIComponent(match[3]), "utf8");
+    return { mimeType, buffer };
+  } catch {
+    return null;
+  }
+}
+
+function safeAttachmentFileName(name, mimeType) {
+  const raw = String(name ?? "composer-image").split(/[\\/]/).filter(Boolean).pop() || "composer-image";
+  const cleaned = raw.replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, 96) || "composer-image";
+  if (/\.[a-zA-Z0-9]{1,8}$/.test(cleaned)) {
+    return cleaned;
+  }
+  return `${cleaned}${extensionForMime(mimeType)}`;
+}
+
+function extensionForMime(mimeType) {
+  const map = {
+    "image/png": ".png",
+    "image/jpeg": ".jpg",
+    "image/jpg": ".jpg",
+    "image/gif": ".gif",
+    "image/webp": ".webp"
+  };
+  return map[String(mimeType ?? "").toLowerCase()] ?? ".img";
+}
+
 function buildEnv(adapter) {
   if (adapter.environmentPolicy === "none") {
     return {};
   }
+  const explicitEnv = normalizeEnv(adapter.env);
   if (adapter.environmentPolicy === "explicit_only") {
-    return normalizeEnv(adapter.env);
+    return isCodexCliCommand(adapter.command) ? sanitizeCodexChildEnv(withCodexUserDefaults({ ...explicitEnv, ...codexLocalEnv(explicitEnv) })) : explicitEnv;
   }
-  return { ...process.env, ...normalizeEnv(adapter.env) };
+  const baseEnv = { ...process.env, ...explicitEnv };
+  const inheritedEnv = { ...baseEnv, ...codexLocalEnv(baseEnv), ...explicitEnv };
+  return isCodexCliCommand(adapter.command) ? sanitizeCodexChildEnv(withCodexUserDefaults(inheritedEnv)) : inheritedEnv;
 }
 
 function normalizeEnv(env) {
@@ -570,6 +1350,92 @@ function normalizeEnv(env) {
     return {};
   }
   return Object.fromEntries(Object.entries(env).map(([key, value]) => [String(key), String(value)]));
+}
+
+function sanitizeCodexChildEnv(env) {
+  const clean = { ...env };
+  for (const key of codexParentRuntimeEnvKeys()) {
+    delete clean[key];
+  }
+  return clean;
+}
+
+function withCodexUserDefaults(env) {
+  const nextEnv = { ...env };
+  if (!nextEnv.CODEX_HOME) {
+    const userProfile = String(nextEnv.USERPROFILE ?? "").trim();
+    const home = String(nextEnv.HOME ?? "").trim();
+    const root = process.platform === "win32" ? userProfile || home : home || userProfile;
+    if (root) {
+      nextEnv.CODEX_HOME = resolve(root, ".codex");
+    }
+  }
+  return nextEnv;
+}
+
+function codexLocalEnv(env = process.env) {
+  return {
+    ...parseEnvFile(resolve(process.cwd(), ".env.local")),
+    ...parseEnvFile(resolve(process.cwd(), ".myagenttool", "codex.env")),
+    ...parseEnvJson(env.MYAGENTTOOL_CODEX_ENV_JSON, "MYAGENTTOOL_CODEX_ENV_JSON")
+  };
+}
+
+function parseEnvFile(filePath) {
+  if (!existsSync(filePath)) {
+    return {};
+  }
+  const entries = {};
+  const content = readFileSync(filePath, "utf8");
+  for (const rawLine of content.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith("#")) {
+      continue;
+    }
+    const separatorIndex = line.indexOf("=");
+    if (separatorIndex <= 0) {
+      continue;
+    }
+    const key = line.slice(0, separatorIndex).trim();
+    const value = unquoteEnvValue(line.slice(separatorIndex + 1).trim());
+    if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) {
+      entries[key] = value;
+    }
+  }
+  return entries;
+}
+
+function parseEnvJson(raw, label) {
+  const text = String(raw ?? "").trim();
+  if (!text) {
+    return {};
+  }
+  try {
+    const parsed = JSON.parse(text);
+    return normalizeEnv(parsed);
+  } catch (error) {
+    console.error(`[desktop] could not parse ${label}; ignoring it: ${error instanceof Error ? error.message : String(error)}`);
+    return {};
+  }
+}
+
+function unquoteEnvValue(value) {
+  const text = String(value ?? "");
+  if ((text.startsWith("\"") && text.endsWith("\"")) || (text.startsWith("'") && text.endsWith("'"))) {
+    return text.slice(1, -1);
+  }
+  return text;
+}
+
+function codexParentRuntimeEnvKeys() {
+  return [
+    "CODEX_SANDBOX_NETWORK_DISABLED",
+    "CODEX_CI",
+    "CODEX_INTERNAL_ORIGINATOR_OVERRIDE",
+    "CODEX_THREAD_ID",
+    "CODEX_SESSION_ID",
+    "CODEX_PARENT_PID"
+  ];
 }
 
 function normalizeStringArray(value) {
@@ -587,12 +1453,14 @@ function highRiskCliCommand(command) {
 
 function probeCodexCli(adapter) {
   const codexCommandOverride = process.env.MYAGENTTOOL_CODEX_COMMAND;
+  const helpArgs = ["exec", "--help"];
+  const commandPlan = codexCommandPlan({ ...adapter, command: adapter.command ?? "codex" }, helpArgs, "");
   const command = codexCommandOverride === "fixture"
     ? process.execPath
-    : codexCommandOverride || String(adapter.command ?? "codex");
+    : codexCommandOverride || commandPlan.command;
   const args = codexCommandOverride === "fixture"
     ? [codexFixtureAgentPath, "exec", "--help"]
-    : ["exec", "--help"];
+    : commandPlan.args;
   const result = spawnSync(command, args, {
     cwd: process.cwd(),
     env: buildEnv({ ...adapter, environmentPolicy: "inherit_safe" }),
@@ -618,20 +1486,9 @@ function probeCodexCli(adapter) {
   };
 }
 
-function isCodexCliCommand(command) {
-  const normalized = String(command ?? "").trim().toLowerCase();
-  return ["codex", "codex.cmd", "codex.ps1", "codex.exe"].some((name) => normalized === name || normalized.endsWith(`/${name}`) || normalized.endsWith(`\\${name}`));
-}
-
-function isClaudeCliCommand(command) {
-  const normalized = String(command ?? "").trim().toLowerCase();
-  return ["claude", "claude.cmd", "claude.exe"].some((name) => normalized === name || normalized.endsWith(`/${name}`) || normalized.endsWith(`\\${name}`));
-}
-
-// Restricted Claude probe: `claude --version` only, no prompt is executed.
 function probeClaudeCli(adapter) {
   const command = String(adapter.command ?? "claude");
-  const result = spawnSync(command, ["--version"], {
+  const result = spawnSync(command, ["--help"], {
     cwd: process.cwd(),
     env: buildEnv({ ...adapter, environmentPolicy: "inherit_safe" }),
     windowsHide: true,
@@ -639,114 +1496,129 @@ function probeClaudeCli(adapter) {
     shell: false,
     stdio: ["ignore", "pipe", "pipe"]
   });
-  // Require BOTH a version and a "claude" token in stdout — a stray x.y.z in a
-  // stderr warning (e.g. a deprecation notice) must not be read as healthy.
-  const stdout = result.stdout ?? "";
-  const ok = result.status === 0 && /\d+\.\d+\.\d+/.test(stdout) && /claude/i.test(stdout);
+  const combined = `${result.stdout ?? ""}\n${result.stderr ?? ""}`;
+  const hasHelp = result.status === 0 && /claude|anthropic|usage/i.test(combined);
   return {
-    ok,
-    summary: ok ? "Restricted Claude CLI probe passed." : "Restricted Claude CLI probe failed."
+    ok: hasHelp,
+    summary: hasHelp ? "Restricted Claude CLI probe passed." : "Restricted Claude CLI probe failed.",
+    details: [
+      "Probe used claude --help only.",
+      "No prompt was executed.",
+      "No install scripts were run.",
+      `Configured output format: ${adapter.outputFormat ?? "unknown"}.`,
+      hasHelp ? "Claude CLI help is available." : `Claude help was not detected. Exit: ${result.status ?? "unknown"}.`
+    ]
   };
 }
 
+function isCodexCliCommand(command) {
+  const normalized = String(command ?? "").trim().toLowerCase();
+  return ["codex", "codex.cmd", "codex.ps1", "codex.exe"].some((name) => normalized === name || normalized.endsWith(`/${name}`) || normalized.endsWith(`\\${name}`));
+}
+
+function isClaudeCliCommand(command) {
+  const normalized = String(command ?? "").trim().toLowerCase();
+  return ["claude", "claude.cmd", "claude.ps1", "claude.exe"].some((name) => normalized === name || normalized.endsWith(`/${name}`) || normalized.endsWith(`\\${name}`));
+}
+
+function agentRuntimeName(adapter) {
+  if (isCodexCliCommand(adapter?.command)) return "Codex CLI";
+  if (isClaudeCliCommand(adapter?.command)) return "Claude CLI";
+  return "Demo CLI Agent";
+}
+
 function codexCliArgs() {
-  return ["exec", "--json", "--sandbox", "read-only", "--ephemeral", "{{task}}"];
+  return ["exec", "--skip-git-repo-check", "--json", "{{task}}"];
 }
 
 function codexRiskTags() {
   return ["read_local", "write_local", "shell_exec", "network_access", "repo_context", "code_change"];
 }
 
-// Terminate the agent's whole process tree, gracefully then forcefully, and
-// confirm it actually died. A coding agent spawns child processes (shells, model
-// calls); killing only the parent leaves orphans running. On posix the child is
-// a process-group leader (spawned detached), so we signal the negative pid to
-// reach the whole group; on Windows we use taskkill /t. SIGTERM is given a grace
-// period, then escalated to SIGKILL if the tree is still alive.
 async function terminateProcessTree(child, { graceMs = 2000 } = {}) {
-  if (!child || child.pid == null) {
+  if (!child.pid) {
     return { ok: false, message: "Cannot cancel CLI process because no process id was assigned." };
   }
   if (child.exitCode !== null || child.killed) {
-    return { ok: true, message: "Process already exited.", signal: null };
+    return { ok: true, message: "Process already exited." };
   }
 
   if (process.platform === "win32") {
-    const result = await taskkillTree(child);
-    await awaitChildExit(child, graceMs);
-    return result;
-  }
-
-  // posix: signal the process group, escalating SIGTERM -> SIGKILL.
-  safeGroupKill(child.pid, "SIGTERM");
-  if (await awaitChildExit(child, graceMs)) {
-    return { ok: true, message: "Process tree terminated with SIGTERM.", signal: "SIGTERM" };
-  }
-  safeGroupKill(child.pid, "SIGKILL");
-  if (await awaitChildExit(child, graceMs)) {
-    return { ok: true, message: "Process tree force-killed with SIGKILL after grace period.", signal: "SIGKILL" };
-  }
-  return { ok: false, message: "Process tree did not exit after SIGTERM and SIGKILL.", signal: "SIGKILL" };
-}
-
-// Make a forced kill observable: when a process tree ignored the graceful stop
-// and had to be SIGKILLed, record it so the timeline and audit show that a hard
-// kill was needed (not a clean cooperative stop).
-async function reportForcedKill(invocationId, result, context) {
-  if (result?.signal !== "SIGKILL") {
-    return;
-  }
-  await request("POST", "/api/bridge/events", {
-    invocationId,
-    type: "cancel_force_killed",
-    level: "warn",
-    message: `${context}: the agent process tree ignored the graceful stop and was force-killed (SIGKILL).`,
-    data: { signal: "SIGKILL", reason: result.message }
-  });
-}
-
-// Resolve true if the child exits within ms, false otherwise.
-function awaitChildExit(child, ms) {
-  if (child.exitCode !== null || child.killed) {
-    return Promise.resolve(true);
-  }
-  return new Promise((resolve) => {
-    let settled = false;
-    const finish = (value) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      child.removeListener("exit", onExit);
-      resolve(value);
+    const graceful = await taskkillTree(child.pid, false);
+    if (graceful.ok) {
+      const exited = await awaitChildExit(child, graceMs);
+      if (exited) return { ok: true, message: "Windows process tree terminated." };
+    }
+    const forced = await taskkillTree(child.pid, true);
+    const alreadyExited = child.exitCode !== null || child.killed;
+    return {
+      ok: forced.ok || alreadyExited,
+      forced: true,
+      message: forced.ok
+        ? "Windows process tree force-terminated."
+        : alreadyExited
+          ? "Process already exited before Windows force cancellation completed."
+          : forced.message
     };
-    const onExit = () => finish(true);
-    child.once("exit", onExit);
-    const timer = setTimeout(() => finish(false), ms);
+  }
+
+  const graceful = safeGroupKill(child.pid, "SIGTERM");
+  if (!graceful.ok) return graceful;
+  const exited = await awaitChildExit(child, graceMs);
+  if (exited) {
+    return { ok: true, message: "SIGTERM cancellation terminated the CLI process." };
+  }
+  const forced = safeGroupKill(child.pid, "SIGKILL");
+  return {
+    ok: forced.ok || child.exitCode !== null || child.killed,
+    forced: true,
+    message: forced.ok ? "SIGKILL force-terminated the CLI process group." : forced.message
+  };
+}
+
+function awaitChildExit(child, timeoutMs) {
+  if (child.exitCode !== null || child.killed) return Promise.resolve(true);
+  return new Promise((resolveExit) => {
+    const timer = setTimeout(() => {
+      cleanup();
+      resolveExit(child.exitCode !== null || child.killed);
+    }, timeoutMs);
+    const onClose = () => {
+      cleanup();
+      resolveExit(true);
+    };
+    const cleanup = () => {
+      clearTimeout(timer);
+      child.off("close", onClose);
+      child.off("exit", onClose);
+    };
+    child.once("close", onClose);
+    child.once("exit", onClose);
   });
 }
 
-// Signal a process group, tolerating an already-gone group (ESRCH) and falling
-// back to the single pid if the group signal is not permitted.
 function safeGroupKill(pid, signal) {
   try {
     process.kill(-pid, signal);
-    return true;
+    return { ok: true, message: `${signal} sent to CLI process group.` };
   } catch (error) {
-    if (error && error.code === "ESRCH") {
-      return false;
-    }
     try {
       process.kill(pid, signal);
-      return true;
-    } catch {
-      return false;
+      return { ok: true, message: `${signal} sent to CLI process.` };
+    } catch (fallbackError) {
+      return {
+        ok: false,
+        message: `${signal} cancellation failed: ${fallbackError instanceof Error ? fallbackError.message : String(fallbackError)}`
+      };
     }
   }
 }
 
-function taskkillTree(child) {
-  return new Promise((resolve) => {
-    const killer = spawn("taskkill", ["/pid", String(child.pid), "/t", "/f"], {
+function taskkillTree(pid, force) {
+  return new Promise((resolveResult) => {
+    const args = ["/pid", String(pid), "/t"];
+    if (force) args.push("/f");
+    const killer = spawn("taskkill", args, {
       windowsHide: true,
       stdio: ["ignore", "pipe", "pipe"]
     });
@@ -754,22 +1626,30 @@ function taskkillTree(child) {
     killer.stderr.on("data", (chunk) => {
       stderr += chunk.toString("utf8");
     });
-    killer.on("error", (error) => {
-      resolve({ ok: false, message: `taskkill could not run: ${error.message}`, signal: null });
-    });
     killer.on("close", (code) => {
-      const gone = child.exitCode !== null || /not found|128/i.test(stderr);
-      resolve({
-        ok: code === 0 || gone,
-        message:
-          code === 0
-            ? "Windows process tree terminated (taskkill /t /f)."
-            : gone
-              ? "Process already exited."
-              : `Windows process-tree cancellation failed: ${stderr.trim() || `taskkill exited ${code}`}`,
-        signal: "taskkill"
+      resolveResult({
+        ok: code === 0,
+        message: code === 0
+          ? `taskkill ${force ? "force " : ""}terminated the process tree.`
+          : `taskkill ${force ? "/f " : ""}failed: ${stderr.trim() || `exit ${code}`}`
       });
     });
+    killer.on("error", (error) => {
+      resolveResult({
+        ok: false,
+        message: `taskkill failed to start: ${error instanceof Error ? error.message : String(error)}`
+      });
+    });
+  });
+}
+
+async function reportForcedKill(invocationId, runtimeName, result) {
+  if (!result?.forced) return;
+  await request("POST", "/api/bridge/events", {
+    invocationId,
+    type: result.ok ? "process_force_killed" : "process_force_kill_failed",
+    level: result.ok ? "warn" : "error",
+    message: `${runtimeName}: ${result.message}`
   });
 }
 
@@ -793,6 +1673,206 @@ async function handleAgentLine(invocationId, line, adapter = {}) {
     message: line
   });
   return null;
+}
+
+async function emitAgentStderrLine(invocationId, adapter = {}, line) {
+  const trimmed = String(line ?? "").trim();
+  if (!trimmed) {
+    return;
+  }
+  if (adapter.outputFormat === "codex_jsonl") {
+    await request("POST", "/api/bridge/events", codexRuntimeWarningEvent(invocationId, trimmed));
+    return;
+  }
+  await request("POST", "/api/bridge/events", {
+    invocationId,
+    type: "log",
+    level: "warn",
+    message: trimmed
+  });
+}
+
+function codexRuntimeWarningEvent(invocationId, line) {
+  const summary = codexRuntimeWarningSummary(line);
+  return {
+    invocationId,
+    type: "codex_runtime_warning",
+    level: summary.level,
+    message: summary.message,
+    data: {
+      source: "codex_stderr",
+      warningCategory: summary.category,
+      redactionState: "summary_only"
+    }
+  };
+}
+
+function codexRuntimeWarningSummary(line) {
+  const normalized = String(line ?? "").replace(/\s+/g, " ").trim();
+  if (/featured plugins?/i.test(normalized) && /401|unauthorized/i.test(normalized)) {
+    return {
+      level: "warn",
+      category: "plugin_catalog_auth",
+      message: "Codex plugin catalog warning: Codex CLI could not refresh featured plugins authorization. The task can still complete."
+    };
+  }
+  if (/command timed out after \d+ milliseconds/i.test(normalized)) {
+    const redacted = redactLocalPaths(normalized);
+    return {
+      level: "info",
+      category: "command_timeout",
+      message: `Codex command note: ${redacted.length > 180 ? `${redacted.slice(0, 177)}...` : redacted}`
+    };
+  }
+  if (looksLikeImageFileListing(normalized)) {
+    const redacted = redactLocalPaths(normalized);
+    return {
+      level: "info",
+      category: "command_output_noise",
+      message: `Codex command output note: ignored unrelated local image listing (${redacted.length > 140 ? `${redacted.slice(0, 137)}...` : redacted}).`
+    };
+  }
+  const redacted = redactLocalPaths(normalized);
+  return {
+    level: "info",
+    category: "codex_cli_stderr",
+    message: `Codex runtime note: ${redacted.length > 180 ? `${redacted.slice(0, 177)}...` : redacted}`
+  };
+}
+
+function redactLocalPaths(value) {
+  let redacted = String(value ?? "");
+  for (const home of [process.env.HOME, process.env.USERPROFILE]) {
+    if (home) {
+      redacted = redacted.split(home).join("<home>");
+    }
+  }
+  return redacted;
+}
+
+function looksLikeImageFileListing(value) {
+  return /(?:^|\s)[A-Za-z]:\\[^\n]+?\.(?:png|jpe?g|gif|webp|bmp|tiff?)\b/i.test(value)
+    && /\b\d{4}[/-]\d{1,2}[/-]\d{1,2}\b/.test(value)
+    && /\b\d{2}:\d{2}(?::\d{2})?\b/.test(value);
+}
+
+async function sendCodexHookEvent(invocationId, adapter, event) {
+  if (adapter?.outputFormat !== "codex_jsonl") {
+    return null;
+  }
+  return request("POST", "/api/codex/hooks", {
+    invocationId,
+    eventName: event.eventName,
+    toolName: event.toolName ?? null,
+    summary: event.summary ?? event.eventName,
+    timeoutSeconds: event.timeoutSeconds ?? null
+  });
+}
+
+async function waitForCodexApprovalDecision(hookResult) {
+  const requestId = hookResult?.brokerRequest?.id;
+  if (!requestId) {
+    return "not_required";
+  }
+  const deadline = Date.now() + 5 * 60 * 1000;
+  while (Date.now() < deadline) {
+    const response = await request("GET", `/api/codex/approval-broker/${encodeURIComponent(requestId)}`);
+    const status = response?.approvalRequest?.status;
+    if (status === "approved" || status === "denied" || status === "timed_out") {
+      return status;
+    }
+    await delay(250);
+  }
+  return "denied";
+}
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function summarizeTaskForHook(task) {
+  const normalized = String(task ?? "").replace(/\s+/g, " ").trim();
+  if (!normalized) {
+    return "Empty prompt";
+  }
+  return normalized.length <= 180 ? normalized : `${normalized.slice(0, 177)}...`;
+}
+
+async function handleClaudeJsonLine(invocationId, line) {
+  let event;
+  try {
+    event = JSON.parse(line);
+  } catch {
+    await request("POST", "/api/bridge/events", {
+      invocationId,
+      type: "agent_output",
+      level: "info",
+      message: line
+    });
+    return null;
+  }
+
+  const message = claudeEventMessage(event);
+  if (message) {
+    await request("POST", "/api/bridge/events", {
+      invocationId,
+      type: "agent_output",
+      level: event.type === "error" ? "warn" : "info",
+      message,
+      data: {
+        source: "claude_jsonl",
+        eventType: event.type ?? null,
+        subtype: event.subtype ?? null,
+        sessionId: event.session_id ?? event.sessionId ?? null,
+        model: event.message?.model ?? event.model ?? null,
+        usage: event.usage ?? event.message?.usage ?? null,
+      }
+    });
+  }
+
+  if (event.type === "result" || event.subtype === "success" || event.result || event.summary) {
+    const summary = String(event.result ?? event.summary ?? message ?? "Claude CLI completed.").trim();
+    return {
+      summary: summary.length > 240 ? `${summary.slice(0, 237)}...` : summary,
+      touchedUserFiles: false,
+      output: {
+        latestMessage: summary,
+        usage: event.usage ?? event.message?.usage ?? null,
+      },
+      cost: { model: event.message?.model ?? event.model ?? "claude", billable: true, unknown: true }
+    };
+  }
+
+  return null;
+}
+
+function claudeEventMessage(event) {
+  if (event.type === "system" && event.subtype === "init") return `Claude session started: ${event.session_id ?? "unknown"}.`;
+  if (event.type === "assistant") {
+    const text = claudeMessageText(event.message?.content ?? event.content);
+    return text || "Claude assistant message received.";
+  }
+  if (event.type === "user") return "Claude user message acknowledged.";
+  if (event.type === "result") return String(event.result ?? event.summary ?? "Claude result received.");
+  if (event.type === "error") return `Claude error: ${event.message ?? event.error?.message ?? "unknown error"}.`;
+  if (event.message?.content) return claudeMessageText(event.message.content);
+  return event.type ? `Claude event: ${event.type}.` : null;
+}
+
+function claudeMessageText(content) {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  const text = content
+    .map((part) => {
+      if (typeof part === "string") return part;
+      if (part?.type === "text") return part.text;
+      if (part?.type === "tool_use") return `[tool: ${part.name ?? "unknown"}]`;
+      if (part?.type === "tool_result") return "[tool result]";
+      return "";
+    })
+    .filter(Boolean)
+    .join(" ");
+  return text.length > 240 ? `${text.slice(0, 237)}...` : text;
 }
 
 async function handleCodexJsonLine(invocationId, line) {
@@ -819,7 +1899,15 @@ async function handleCodexJsonLine(invocationId, line) {
       data: {
         source: "codex_jsonl",
         eventType: event.type,
-        itemType: event.item?.type ?? null
+        itemType: event.item?.type ?? null,
+        threadId: event.thread_id ?? null,
+        sessionId: event.session_id ?? event.sessionId ?? null,
+        commandSummary: codexCommandSummary(event),
+        fileChangeSummary: codexFileChangeSummary(event),
+        fileChangePath: codexFileChangePath(event),
+        fileChangeAction: codexFileChangeAction(event),
+        diffPreview: codexDiffPreview(event),
+        changeRisk: codexChangeRisk(event)
       }
     });
   }
@@ -829,14 +1917,7 @@ async function handleCodexJsonLine(invocationId, line) {
       summary: "Codex CLI completed.",
       touchedUserFiles: false,
       output: { usage: event.usage ?? null },
-      cost: {
-        model: "codex",
-        billable: true,
-        unknown: true,
-        amountUsd: null,
-        inputTokens: Number(event.usage?.input_tokens ?? 0) || 0,
-        outputTokens: Number(event.usage?.output_tokens ?? 0) || 0
-      }
+      cost: { model: "codex", billable: true, unknown: true }
     };
   }
 
@@ -863,70 +1944,62 @@ function codexEventMessage(event) {
   return null;
 }
 
-// Parse one Claude Code stream-json line. The final `result` event carries the
-// answer text; assistant events stream interim output as evidence.
-async function handleClaudeJsonLine(invocationId, line) {
-  let event;
-  try {
-    event = JSON.parse(line);
-  } catch {
-    await request("POST", "/api/bridge/events", {
-      invocationId,
-      type: "agent_output",
-      level: "info",
-      message: line
-    });
+function codexCommandSummary(event) {
+  if (event.item?.type !== "command_execution") {
     return null;
   }
-
-  const message = claudeEventMessage(event);
-  if (message) {
-    await request("POST", "/api/bridge/events", {
-      invocationId,
-      type: "agent_output",
-      level: event.type === "result" && event.subtype !== "success" ? "warn" : "info",
-      message,
-      data: {
-        source: "claude_jsonl",
-        eventType: event.type,
-        subtype: event.subtype ?? null
-      }
-    });
+  const command = String(event.item.command ?? "").replace(/\s+/g, " ").trim();
+  if (!command) {
+    return "Command execution";
   }
-
-  if (event.type === "result") {
-    const text = typeof event.result === "string" ? event.result : `Claude result: ${event.subtype ?? "done"}`;
-    return {
-      summary: String(text),
-      touchedUserFiles: false,
-      output: { subtype: event.subtype ?? null, numTurns: event.num_turns ?? null },
-      cost: {
-        model: "claude",
-        billable: true,
-        unknown: typeof event.total_cost_usd !== "number",
-        amountUsd: typeof event.total_cost_usd === "number" ? event.total_cost_usd : null,
-        inputTokens: Number(event.usage?.input_tokens ?? 0) || 0,
-        outputTokens: Number(event.usage?.output_tokens ?? 0) || 0
-      }
-    };
-  }
-
-  return null;
+  return command.length > 160 ? `${command.slice(0, 157)}...` : command;
 }
 
-function claudeEventMessage(event) {
-  if (event.type === "assistant" && Array.isArray(event.message?.content)) {
-    const text = event.message.content
-      .filter((block) => block.type === "text")
-      .map((block) => block.text)
-      .join("")
-      .trim();
-    return text || null;
+function codexFileChangeSummary(event) {
+  const item = event.item ?? {};
+  if (!["file_change", "file_changes"].includes(item.type)) {
+    return null;
   }
-  if (event.type === "result") {
-    return typeof event.result === "string" ? event.result : `Claude result: ${event.subtype ?? "done"}.`;
+  const path = codexFileChangePath(event);
+  const action = codexFileChangeAction(event);
+  return path ? `${action}: ${path}` : action;
+}
+
+function codexFileChangePath(event) {
+  const item = event.item ?? {};
+  if (!["file_change", "file_changes"].includes(item.type)) {
+    return null;
   }
-  return null;
+  return String(item.path ?? item.file ?? item.files?.[0]?.path ?? "").trim() || null;
+}
+
+function codexFileChangeAction(event) {
+  const item = event.item ?? {};
+  if (!["file_change", "file_changes"].includes(item.type)) {
+    return null;
+  }
+  return String(item.action ?? item.change_type ?? item.status ?? "changed").trim() || "changed";
+}
+
+function codexDiffPreview(event) {
+  const item = event.item ?? {};
+  if (!["file_change", "file_changes"].includes(item.type)) {
+    return null;
+  }
+  const diff = String(item.diff ?? item.patch ?? item.diffPreview ?? item.summary ?? "").trim();
+  if (!diff) {
+    return null;
+  }
+  return diff.length <= 4000 ? diff : `${diff.slice(0, 3997)}...`;
+}
+
+function codexChangeRisk(event) {
+  const item = event.item ?? {};
+  if (!["file_change", "file_changes"].includes(item.type)) {
+    return null;
+  }
+  const normalized = String(item.risk ?? item.riskLevel ?? "unknown").trim().toLowerCase();
+  return ["low", "medium", "high", "critical"].includes(normalized) ? normalized : "unknown";
 }
 
 async function waitForServer() {
@@ -966,5 +2039,6 @@ function sleep(ms) {
 function stop() {
   stopped = true;
   clearInterval(timer);
+  clearInterval(terminalTimer);
   process.exit(0);
 }

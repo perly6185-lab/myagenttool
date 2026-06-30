@@ -8,6 +8,7 @@ import type {
   InvocationId,
   IsoDateTime,
   LedgerEntryId,
+  QuotaPolicyId,
   QuotaDecisionId,
   TeamId,
   UserId,
@@ -70,19 +71,23 @@ export interface AgentUsageSummary {
 export interface AIProvider {
   id: AIProviderId;
   ownerUserId: UserId;
+  teamId?: TeamId | null;
   provider: string;
   mode: AIProviderMode;
   allowedModels: string[];
   status: "enabled" | "disabled";
+  credentialState?: "configured" | "missing" | "external_reference" | "not_required";
   createdAt: IsoDateTime;
 }
 
 export interface AIUsageRecord {
   id: AIUsageRecordId;
   userId: UserId;
+  teamId?: TeamId | null;
   agentId?: AgentId;
   invocationId?: InvocationId;
   deviceId?: DeviceId;
+  quotaDecisionId?: QuotaDecisionId | null;
   provider: string;
   model: string;
   providerMode: AIProviderMode;
@@ -91,9 +96,11 @@ export interface AIUsageRecord {
   cachedTokens: number;
   reasoningTokens: number;
   requestCount?: number;
+  latencyMs?: number | null;
   estimatedCost: DecimalString;
   ledgerEntryIds: LedgerEntryId[];
-  status: "succeeded" | "failed" | "cancelled";
+  status: "succeeded" | "failed" | "cancelled" | "blocked";
+  errorCode?: string | null;
   createdAt: IsoDateTime;
 }
 
@@ -190,6 +197,7 @@ export interface AgentEconomicRecord {
 
 export interface QuotaDecision {
   id: QuotaDecisionId;
+  policyId?: QuotaPolicyId | null;
   subjectType: "user" | "team" | "agent";
   subjectId: string;
   resourceType: "ai_model" | "agent" | "budget_pool" | "provider";
@@ -201,5 +209,54 @@ export interface QuotaDecision {
     | "blocked_provider_disabled"
     | "blocked_missing_credential";
   reason: string;
+  enforce: boolean;
+  providerMode?: AIProviderMode;
+  estimatedCost?: DecimalString | null;
+  createdUsageRecordId?: AIUsageRecordId | null;
+  createdLedgerEntryIds?: LedgerEntryId[];
+  createdAt: IsoDateTime;
+}
+
+export type QuotaPolicyDimension =
+  | "user"
+  | "team"
+  | "provider"
+  | "model"
+  | "agent"
+  | "time_window";
+
+export interface QuotaPolicy {
+  id: QuotaPolicyId;
+  name: string;
+  status: "enabled" | "disabled";
+  providerMode: AIProviderMode;
+  dimensions: QuotaPolicyDimension[];
+  subjectType: "user" | "team" | "agent";
+  subjectId: string;
+  provider: string;
+  model: string;
+  limit: number;
+  used: number;
+  window: "daily" | "monthly" | "custom";
+  currency: CurrencyCode;
+  costOwner: UserId | TeamId | "unknown";
+  teamId: TeamId | null;
+  createdAt: IsoDateTime;
+  updatedAt?: IsoDateTime;
+}
+
+export interface ChargebackExportRow {
+  ledgerEntryId: LedgerEntryId;
+  userId: UserId | null;
+  teamId: TeamId | null;
+  agentId: AgentId | null;
+  invocationId: InvocationId | null;
+  provider: string | null;
+  model?: string | null;
+  costOwner: UserId | TeamId | "unknown" | null;
+  amount: DecimalString;
+  currency: CurrencyCode;
+  billable: boolean;
+  status: LedgerEntryStatus;
   createdAt: IsoDateTime;
 }

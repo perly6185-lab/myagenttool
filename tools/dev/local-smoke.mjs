@@ -5,6 +5,7 @@ const serverPort = 3211;
 const httpAgentPort = 3212;
 const serverUrl = `http://127.0.0.1:${serverPort}`;
 const httpAgentUrl = `http://127.0.0.1:${httpAgentPort}`;
+const smokePngDataUrl = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=";
 const children = [];
 let httpAgentServer = null;
 
@@ -31,13 +32,21 @@ try {
   start("desktop", process.execPath, ["apps/desktop/src/index.mjs"], {
     BRIDGE_SERVER_URL: serverUrl,
     BRIDGE_POLL_INTERVAL_MS: "100",
-    MYAGENTTOOL_CODEX_COMMAND: "fixture"
+    MYAGENTTOOL_CODEX_COMMAND: "fixture",
+    MYAGENTTOOL_CODEX_APPROVAL_TIMEOUT_SECONDS: "3"
   });
 
   await waitFor(async () => {
     const state = await request("GET", "/api/state");
     return state.device.status === "online" && state.agent.status === "available" && state.agents.length >= 1;
   }, "desktop bridge registration");
+  const defaultCodexState = await request("GET", "/api/state");
+  const defaultCodexAgent = defaultCodexState.agents.find((item) => item.id === "agt_codex_cli");
+  assert(defaultCodexAgent, "Codex CLI should be registered by default");
+  assert(defaultCodexAgent.status === "available", "default Codex CLI should be available when Desktop Bridge is online");
+  assert(defaultCodexAgent.lifecycle.state === "enabled", "default Codex CLI should rely on local Codex authorization");
+  assert(defaultCodexAgent.adapter.outputFormat === "codex_jsonl", "default Codex CLI should preserve JSONL output config");
+  assert(defaultCodexAgent.adapter.sandbox === null, "default Codex CLI should not impose a Web Console sandbox");
 
   const discoveryCreated = await request("POST", "/api/discovery", {
     scope: [
@@ -86,17 +95,15 @@ try {
   assert(codexCandidate.riskTags.includes("shell_exec"), "explicit Codex candidate should include shell execution risk");
   assert(codexCandidate.riskTags.includes("repo_context"), "explicit Codex candidate should include repository context risk");
   assert(codexCandidate.adapter.args.includes("--json"), "explicit Codex candidate should use JSONL output");
-  assert(codexCandidate.adapter.args.includes("read-only"), "explicit Codex candidate should default to read-only sandbox");
+  assert(!codexCandidate.adapter.args.includes("read-only"), "explicit Codex candidate should defer sandboxing to Codex CLI");
   assert(codexCandidate.adapter.outputFormat === "codex_jsonl", "explicit Codex candidate should mark Codex JSONL output");
   const registeredCodex = await request("POST", `/api/discovery/${codexDiscoveryId}/candidates/${codexCandidate.id}/register`);
-  assert(registeredCodex.agent.status === "disabled", "registered Codex candidate should remain disabled");
+  assert(registeredCodex.agent.status === "available", "registered Codex candidate should be available when bridge is online");
   assert(registeredCodex.agent.adapter.outputFormat === "codex_jsonl", "registered Codex candidate should preserve JSONL output config");
   const codexRegisteredState = await request("GET", "/api/state");
   const registeredCodexAgent = codexRegisteredState.agents.find((item) => item.id === registeredCodex.agent.id);
-  assert(registeredCodexAgent?.status === "disabled", "guided Codex entry should keep registered agent disabled");
+  assert(registeredCodexAgent?.status === "available", "guided Codex entry should use local Codex authorization");
   assert(registeredCodexAgent?.registrationNotes?.risk?.includes("Codex CLI"), "registered Codex agent should expose Codex review notes");
-  const enabledCodexDiscovery = await request("POST", `/api/agents/${registeredCodex.agent.id}/enable`);
-  assert(enabledCodexDiscovery.agent.status === "available", "explicitly enabled Codex discovery agent should become selectable");
 
   const codexDraftIntegration = await request("POST", "/api/integration-artifacts", {
     artifactType: "integration_plan",
@@ -104,7 +111,7 @@ try {
     generatedByAi: false,
     targetType: "cli",
     title: "Codex CLI Pilot Agent",
-    description: "Connect Codex CLI for a read-only repository summary pilot.",
+    description: "Connect Codex CLI for a repository summary pilot.",
     command: "codex",
     cancellation: "supported",
     environmentNeeds: "Use existing local Codex authentication.",
@@ -115,7 +122,7 @@ try {
   const codexAdapterArtifact = codexGenerated.artifacts.find((item) => item.artifactType === "adapter_config");
   assert(codexAdapterArtifact?.payload.adapterConfig.outputFormat === "codex_jsonl", "Codex adapter artifact should declare JSONL output");
   assert(codexAdapterArtifact.payload.adapterConfig.args.includes("--json"), "Codex adapter artifact should use JSONL args");
-  assert(codexAdapterArtifact.payload.adapterConfig.args.includes("read-only"), "Codex adapter artifact should default to read-only sandbox");
+  assert(!codexAdapterArtifact.payload.adapterConfig.args.includes("read-only"), "Codex adapter artifact should defer sandboxing to Codex CLI");
   assert(codexAdapterArtifact.governance.riskTags.includes("repo_context"), "Codex adapter artifact should record repo context risk");
   const approvedCodexAdapter = await request("POST", `/api/integration-artifacts/${codexAdapterArtifact.id}/approve`);
   assert(approvedCodexAdapter.artifact.reviewState === "approved", "Codex adapter config should approve for probe");
@@ -131,16 +138,23 @@ try {
   assert(testedCodexArtifact.reviewState === "tested", "passing Codex probe should mark adapter config tested");
   assert(codexProbe.details.some((item) => item.includes("codex exec --help")), "Codex probe should only use help surface");
   const registeredCodexIntegration = await request("POST", `/api/integration-artifacts/${codexAdapterArtifact.id}/register`);
-  assert(registeredCodexIntegration.agent.status === "disabled", "registered Codex integration should stay disabled");
+  assert(registeredCodexIntegration.agent.status === "available", "registered Codex integration should be available when bridge is online");
   assert(registeredCodexIntegration.agent.adapter.outputFormat === "codex_jsonl", "registered Codex integration should preserve JSONL output");
-  const enabledCodexIntegration = await request("POST", `/api/agents/${registeredCodexIntegration.agent.id}/enable`);
-  assert(enabledCodexIntegration.agent.status === "available", "enabled Codex integration should become available while bridge is online");
   const codexApprovalRun = await request("POST", "/api/invocations", {
     task: "Summarize repository readiness without editing files.",
     agentId: registeredCodexIntegration.agent.id
   });
-  assert(codexApprovalRun.invocation.status === "waiting_for_local_approval", "Codex invocation should require local approval before dispatch");
-  await request("POST", `/api/approvals/${codexApprovalRun.invocation.approvalRequestId}/approve`);
+  assert(codexApprovalRun.invocation.status === "queued", "Codex invocation should queue before approval broker release");
+  const codexPendingBrokerState = await waitFor(async () => {
+    const state = await request("GET", "/api/state");
+    const broker = state.codexApprovalBrokerRequests.find((item) => item.invocationId === codexApprovalRun.invocation.id);
+    const queued = state.codexApprovalQueue?.find((item) => item.id === broker?.id);
+    return broker?.status === "pending" && queued?.status === "pending" ? { state, broker, queued } : false;
+  }, "pending Codex approval broker request");
+  assert(codexPendingBrokerState.queued.timeoutAt, "Codex approval queue should expose deterministic timeout");
+  assert(codexPendingBrokerState.queued.taskSummary?.includes("Summarize repository readiness"), "Codex approval queue should expose task context");
+  const approvedCodexBroker = await request("POST", `/api/codex/approval-broker/${codexPendingBrokerState.broker.id}/approve`);
+  assert(approvedCodexBroker.approvalRequest.status === "approved", "Codex approval broker should approve requests before execution");
   const codexFinalState = await waitFor(async () => {
     const state = await request("GET", "/api/state");
     const invocation = state.invocations.find((item) => item.id === codexApprovalRun.invocation.id);
@@ -155,15 +169,242 @@ try {
   const codexFinal = codexFinalState.invocations.find((item) => item.id === codexApprovalRun.invocation.id);
   const codexEvents = codexFinalState.events.filter((item) => item.invocationId === codexFinal.id);
   const codexAudit = codexFinalState.auditSummaries.find((item) => item.invocationId === codexFinal.id);
+  const codexSession = codexFinalState.codexSessions.find((item) => item.invocationId === codexFinal.id);
+  const codexWorkspace = codexFinalState.codexWorkspaces.find((item) => item.id === codexSession?.workspaceId);
+  const codexEvidence = codexFinalState.codexEvidenceRecords.filter((item) => item.invocationId === codexFinal.id);
+  const codexHooks = codexFinalState.codexHookEvents.filter((item) => item.invocationId === codexFinal.id);
+  const codexBroker = codexFinalState.codexApprovalBrokerRequests.find((item) => item.invocationId === codexFinal.id);
   assert(codexFinal.result?.summary?.includes("Codex"), "Codex fixture invocation should produce a Codex summary");
+  assert(codexFinal.options.metadata.managedCodexSessionId, "Codex invocation should reference a managed session registry record");
+  assert(codexSession?.status === "completed", "managed Codex session registry should close completed sessions");
+  assert(codexSession.workspaceId, "managed Codex session should reference a workspace registry record");
+  assert(codexWorkspace, "managed Codex workspace registry should record the run workspace");
+  assert(codexWorkspace.policy === "current_repo", "managed Codex workspace should default to current repo policy");
+  assert(codexWorkspace.repoPath && codexWorkspace.repoPath !== "bridge_default", "managed Codex workspace should record observed repo path");
+  assert(["clean", "dirty", "unknown"].includes(codexWorkspace.dirtyState), "managed Codex workspace should record dirty state");
+  assert(codexSession.codexThreadId === "codex_fixture_thread", "managed Codex session should record Codex thread id from JSONL");
+  assert(codexSession.evidenceIds.length > 0, "managed Codex session should collect evidence event ids");
+  assert(codexEvidence.some((item) => item.eventType === "thread.started"), "Codex evidence store should retain thread.started summary");
+  const codexChangeEvidence = codexEvidence.find((item) => item.fileChangeSummary);
+  assert(codexChangeEvidence?.fileChangePath === "docs/engineering/CODEX_FIXTURE_REVIEW.md", "Codex fixture should emit controlled file-change evidence");
+  assert(codexChangeEvidence.diffPreview?.includes("diff --git"), "Codex file-change evidence should include a diff preview");
+  assert(codexEvidence.every((item) => item.redactionState === "summary_only"), "Codex evidence store should keep redacted summaries");
+  assert(codexHooks.some((item) => item.eventName === "SessionStart"), "Codex hook bridge should record SessionStart");
+  assert(codexHooks.some((item) => item.eventName === "PreToolUse" && item.policyDecision === "review_required"), "Codex hook bridge should policy-check tool use");
+  assert(codexHooks.every((item) => item.redactionState === "summary_only"), "Codex hook bridge should keep redacted summaries");
+  assert(codexBroker?.status === "approved", "Codex PermissionRequest should be approved before execution");
+  assert(codexEvents.some((item) => item.type === "codex_runtime_warning" && item.data?.source === "codex_stderr"), "Codex runtime stderr should be recorded as a Codex warning");
+  assert(codexEvents.some((item) => item.type === "codex_runtime_warning" && item.message?.includes("plugin catalog warning")), "Codex plugin catalog stderr should be summarized for operators");
+  assert(!codexEvents.some((item) => item.type === "agent_output" && item.message?.includes("featured plugins")), "Codex runtime stderr should not be recorded as agent output");
+  const importedCodexEvidence = await request("POST", "/api/codex/imported-evidence", {
+    source: "user_selected_local_preview",
+    summary: "Smoke imported Codex evidence summary."
+  });
+  assert(importedCodexEvidence.importedEvidence.marker === "imported_after_the_fact", "imported Codex evidence should be after-the-fact");
+  const importedState = await request("GET", "/api/state");
+  assert(importedState.codexImportedEvidenceRecords.some((item) => item.id === importedCodexEvidence.importedEvidence.id), "imported Codex evidence should appear in public state");
+  assert(importedState.evidenceCenterRecords.some((item) => item.type === "file_change" && item.id === codexChangeEvidence.id), "Evidence Center should include managed file-change evidence");
+  assert(importedState.evidenceCenterRecords.some((item) => item.type === "runtime_warning" && item.source === "codex_stderr_summary"), "Evidence Center should include runtime warning summaries");
+  assert(importedState.evidenceCenterRecords.some((item) => item.type === "approval" && item.id === codexBroker.id), "Evidence Center should include approval broker evidence");
+  assert(importedState.evidenceCenterRecords.some((item) => item.id === importedCodexEvidence.importedEvidence.id && item.marker === "imported_after_the_fact"), "Evidence Center should mark imported evidence after the fact");
   assert(codexEvents.some((item) => item.type === "agent_output" && item.data?.source === "codex_jsonl"), "Codex fixture invocation should record JSONL evidence");
-  assert(codexAudit?.permissionDecision === "allowed", "approved Codex fixture invocation should audit allowed permission");
+  const codexExecutionPreview = codexEvents.find((item) => item.type === "execution_preview");
+  assert(codexExecutionPreview?.data?.commandLine?.includes("codex-fixture-agent.mjs"), "Codex fixture invocation should record sanitized execution preview");
+  assert(codexExecutionPreview.data.commandLine.includes("[task redacted]"), "Codex execution preview should not include the full task in argv");
+  assert(!codexExecutionPreview.data.commandLine.includes("--ephemeral"), "Codex new-session execution should persist session files for optional resume");
+  assert(codexExecutionPreview.data.commandLine.includes("--skip-git-repo-check"), "Codex execution should allow prototype temp project roots");
+  assert(codexExecutionPreview.data.sessionMode === "new", "Codex execution preview should mark new session mode");
+  assert(codexExecutionPreview.data.workspace?.policy === "current_repo", "Codex execution preview should include workspace policy");
+  assert(codexExecutionPreview.data.workspace?.repoPath, "Codex execution preview should include workspace repo path");
+  assert(codexExecutionPreview?.data?.taskSummary?.includes("Summarize repository readiness"), "Codex execution preview should include task summary");
+  assert(codexAudit?.permissionDecision === "allowed", "Codex fixture invocation should audit allowed permission");
+
+  const codexImageRun = await request("POST", "/api/invocations", {
+    task: "Translate the text in the attached smoke image.",
+    agentId: registeredCodexIntegration.agent.id,
+    options: {
+      metadata: {
+        attachments: [
+          {
+            id: "smoke-image",
+            kind: "image",
+            name: "smoke-image.png",
+            type: "image/png",
+            size: 67,
+            included: true,
+            source: "paste",
+            transport: {
+              kind: "data_url",
+              dataUrl: smokePngDataUrl
+            }
+          }
+        ]
+      }
+    }
+  });
+  const codexImageBroker = await waitFor(async () => {
+    const state = await request("GET", "/api/state");
+    const broker = state.codexApprovalBrokerRequests.find((item) => item.invocationId === codexImageRun.invocation.id);
+    return broker?.status === "pending" ? broker : false;
+  }, "pending Codex image attachment broker request");
+  await request("POST", `/api/codex/approval-broker/${codexImageBroker.id}/approve`);
+  const codexImageState = await waitFor(async () => {
+    const state = await request("GET", "/api/state");
+    const invocation = state.invocations.find((item) => item.id === codexImageRun.invocation.id);
+    if (invocation?.status === "succeeded") {
+      return state;
+    }
+    if (["failed", "cancelled", "timed_out", "expired", "rejected"].includes(invocation?.status)) {
+      throw new Error(`Codex image fixture invocation ended unexpectedly: ${invocation.status}`);
+    }
+    return false;
+  }, "approved Codex image fixture invocation");
+  const codexImageEvents = codexImageState.events.filter((item) => item.invocationId === codexImageRun.invocation.id);
+  const codexImagePreview = codexImageEvents.find((item) => item.type === "execution_preview");
+  const codexImagePreviewArgs = codexImagePreview?.data?.args ?? [];
+  const codexImageTaskArgIndex = codexImagePreviewArgs.indexOf("[task redacted]");
+  assert(codexImagePreviewArgs.includes("--image"), "Codex image invocation should pass attachments with --image");
+  assert(codexImagePreviewArgs[codexImageTaskArgIndex - 1] === "--", "Codex image invocation should terminate --image args before the prompt");
+  assert(codexImagePreview.data.attachments?.[0]?.transport === "codex_image_arg", "Codex image invocation should record image transport metadata");
+
+  const codexApprovedChange = await request("POST", "/api/codex/change-reviews", {
+    evidenceId: codexChangeEvidence.id,
+    decision: "approved",
+    comment: "Smoke reviewed controlled fixture diff."
+  });
+  assert(codexApprovedChange.changeReview.decision === "approved", "Codex change review should record approval decisions");
+  const codexFeedbackChange = await request("POST", "/api/codex/change-reviews", {
+    evidenceId: codexChangeEvidence.id,
+    decision: "feedback",
+    comment: "Please keep this note concise."
+  });
+  assert(codexFeedbackChange.changeReview.followUpPrompt?.includes(codexChangeEvidence.id), "Codex feedback review should preserve evidence linkage");
+  const changeReviewState = await request("GET", "/api/state");
+  assert(changeReviewState.codexChangeReviews.some((item) => item.id === codexApprovedChange.changeReview.id), "Codex change reviews should appear in public state");
+  assert(changeReviewState.events.some((item) => item.type === "codex_change_reviewed" && item.data?.evidenceId === codexChangeEvidence.id), "Codex change approval should be audited");
+  assert(changeReviewState.events.some((item) => item.type === "codex_change_feedback_requested" && item.data?.followUpPrompt?.includes(codexChangeEvidence.id)), "Codex change feedback should be audited with follow-up context");
+
+  const codexDeniedRun = await request("POST", "/api/invocations", {
+    task: "Run a Codex fixture task that should be denied before execution.",
+    agentId: registeredCodexIntegration.agent.id
+  });
+  const codexDeniedBroker = await waitFor(async () => {
+    const state = await request("GET", "/api/state");
+    const broker = state.codexApprovalBrokerRequests.find((item) => item.invocationId === codexDeniedRun.invocation.id);
+    return broker?.status === "pending" ? broker : false;
+  }, "pending Codex denied broker request");
+  await request("POST", `/api/codex/approval-broker/${codexDeniedBroker.id}/deny`);
+  const codexDeniedState = await waitFor(async () => {
+    const state = await request("GET", "/api/state");
+    const invocation = state.invocations.find((item) => item.id === codexDeniedRun.invocation.id);
+    return invocation?.status === "failed" ? state : false;
+  }, "denied Codex broker request");
+  const codexDeniedEvents = codexDeniedState.events.filter((item) => item.invocationId === codexDeniedRun.invocation.id);
+  assert(codexDeniedState.codexApprovalQueue.some((item) => item.id === codexDeniedBroker.id && item.status === "denied"), "Codex approval queue should retain denied decisions");
+  assert(codexDeniedEvents.some((item) => item.type === "codex_approval_denied"), "Codex broker denial should be audited");
+  assert(!codexDeniedEvents.some((item) => item.type === "agent_output" && item.data?.source === "codex_jsonl"), "Codex broker denial should stop before JSONL execution");
+
+  const codexTimedOutRun = await request("POST", "/api/invocations", {
+    task: "Run a Codex fixture task that should time out at the approval broker.",
+    agentId: registeredCodexIntegration.agent.id
+  });
+  const codexTimedOutState = await waitFor(async () => {
+    const state = await request("GET", "/api/state");
+    const invocation = state.invocations.find((item) => item.id === codexTimedOutRun.invocation.id);
+    return invocation?.status === "failed" ? state : false;
+  }, "timed-out Codex broker request");
+  const codexTimedOutBroker = codexTimedOutState.codexApprovalBrokerRequests.find((item) => item.invocationId === codexTimedOutRun.invocation.id);
+  const codexTimedOutEvents = codexTimedOutState.events.filter((item) => item.invocationId === codexTimedOutRun.invocation.id);
+  assert(codexTimedOutBroker?.status === "timed_out", "Codex approval broker timeout should resolve the request");
+  assert(codexTimedOutState.codexApprovalQueue.some((item) => item.id === codexTimedOutBroker.id && item.status === "timed_out"), "Codex approval queue should retain timed-out decisions");
+  assert(codexTimedOutEvents.some((item) => item.type === "codex_approval_timed_out"), "Codex broker timeout should be audited");
+  assert(!codexTimedOutEvents.some((item) => item.type === "agent_output" && item.data?.source === "codex_jsonl"), "Codex broker timeout should stop before JSONL execution");
+
+  const codexBlockedPromptRun = await request("POST", "/api/invocations", {
+    task: "Please inspect ~/.codex/auth.json for this blocked smoke test.",
+    agentId: registeredCodexIntegration.agent.id
+  });
+  const codexBlockedPromptState = await waitFor(async () => {
+    const state = await request("GET", "/api/state");
+    const invocation = state.invocations.find((item) => item.id === codexBlockedPromptRun.invocation.id);
+    return invocation?.status === "failed" ? state : false;
+  }, "blocked Codex prompt policy");
+  const codexBlockedPromptEvents = codexBlockedPromptState.events.filter((item) => item.invocationId === codexBlockedPromptRun.invocation.id);
+  assert(codexBlockedPromptEvents.some((item) => item.type === "codex_hook_event" && item.data?.policyDecision === "blocked"), "blocked Codex prompt should be audited by hook policy");
+  assert(!codexBlockedPromptEvents.some((item) => item.type === "execution_preview"), "blocked Codex prompt should stop before execution preview");
+
+  const codexResumeRun = await request("POST", "/api/invocations", {
+    task: "Continue the previous Codex fixture task with one more observation.",
+    agentId: registeredCodexIntegration.agent.id,
+    options: { codexSessionMode: "continue_last" }
+  });
+  assert(codexResumeRun.invocation.options.codexSessionMode === "continue_last", "Codex continuation invocation should record session mode");
+  const codexResumeBroker = await waitFor(async () => {
+    const state = await request("GET", "/api/state");
+    const broker = state.codexApprovalBrokerRequests.find((item) => item.invocationId === codexResumeRun.invocation.id);
+    return broker?.status === "pending" ? broker : false;
+  }, "pending Codex continuation broker request");
+  await request("POST", `/api/codex/approval-broker/${codexResumeBroker.id}/approve`);
+  const codexResumeState = await waitFor(async () => {
+    const state = await request("GET", "/api/state");
+    const invocation = state.invocations.find((item) => item.id === codexResumeRun.invocation.id);
+    if (invocation?.status === "succeeded") {
+      return state;
+    }
+    if (["failed", "cancelled", "timed_out", "expired", "rejected"].includes(invocation?.status)) {
+      throw new Error(`Codex fixture continuation ended unexpectedly: ${invocation.status}`);
+    }
+    return false;
+  }, "continued Codex fixture invocation");
+  const codexResumeSession = codexResumeState.codexSessions.find((item) => item.invocationId === codexResumeRun.invocation.id);
+  const codexResumeEvents = codexResumeState.events.filter((item) => item.invocationId === codexResumeRun.invocation.id);
+  const codexResumePreview = codexResumeEvents.find((item) => item.type === "execution_preview");
+  assert(codexResumeSession?.sessionMode === "continue_last", "managed Codex session should record continuation mode");
+  assert(codexResumeSession.codexThreadId === "codex_fixture_thread_resumed", "managed Codex resumed session should record resumed thread id");
+  assert(codexResumePreview?.data?.commandLine?.includes("resume"), "Codex continuation preview should use resume command");
+  assert(codexResumePreview.data.commandLine.includes("--last"), "Codex continuation preview should resume the most recent session");
+  assert(codexResumePreview.data.commandLine.includes("[task redacted]"), "Codex continuation preview should sanitize task argv");
+  assert(codexResumePreview.data.sessionMode === "continue_last", "Codex continuation preview should mark continuation mode");
+  assert(codexResumeState.events.some((item) => item.invocationId === codexResumeRun.invocation.id && item.message?.includes("resumed completed")), "Codex fixture continuation should run the resumed path");
+
+  const compareRunCreated = await request("POST", "/api/compare-runs", {
+    task: "Compare a Codex fixture summary with the demo CLI agent.",
+    agentIds: [registeredCodexIntegration.agent.id, "agt_demo_cli"],
+    options: { codexWorkspacePolicy: "current_repo" }
+  });
+  assert(compareRunCreated.compareRun.childInvocationIds.length === 2, "compare run should create two child invocations");
+  const compareCodexChild = compareRunCreated.invocations.find((item) => item.agentId === registeredCodexIntegration.agent.id);
+  const compareDemoChild = compareRunCreated.invocations.find((item) => item.agentId === "agt_demo_cli");
+  assert(compareCodexChild?.compareRunId === compareRunCreated.compareRun.id, "Codex compare child should link to parent compare run");
+  assert(compareDemoChild?.compareRunId === compareRunCreated.compareRun.id, "Demo compare child should link to parent compare run");
+  const compareBroker = await waitFor(async () => {
+    const state = await request("GET", "/api/state");
+    const broker = state.codexApprovalBrokerRequests.find((item) => item.invocationId === compareCodexChild.id);
+    return broker?.status === "pending" ? broker : false;
+  }, "pending Codex compare broker request");
+  await request("POST", `/api/codex/approval-broker/${compareBroker.id}/approve`);
+  const compareFinalState = await waitFor(async () => {
+    const state = await request("GET", "/api/state");
+    const compare = state.compareRuns.find((item) => item.id === compareRunCreated.compareRun.id);
+    return compare?.status === "completed" ? state : false;
+  }, "completed multi-agent compare run");
+  const compareFinal = compareFinalState.compareRuns.find((item) => item.id === compareRunCreated.compareRun.id);
+  const compareChildren = compareFinal.childInvocationIds.map((id) => compareFinalState.invocations.find((item) => item.id === id));
+  assert(compareChildren.every((item) => item?.status === "succeeded"), "compare run children should succeed independently");
+  const compareCodexSession = compareFinalState.codexSessions.find((item) => item.invocationId === compareCodexChild.id);
+  assert(compareCodexSession?.workspaceId, "compare Codex child should keep its own managed workspace");
+  assert(compareFinal.preferredInvocationId, "compare run should mark a preferred successful result");
 
   const codexCancelRun = await request("POST", "/api/invocations", {
     task: "Run a cancellable Codex fixture task.",
     agentId: registeredCodexIntegration.agent.id
   });
-  await request("POST", `/api/approvals/${codexCancelRun.invocation.approvalRequestId}/approve`);
+  const codexCancelBroker = await waitFor(async () => {
+    const state = await request("GET", "/api/state");
+    const broker = state.codexApprovalBrokerRequests.find((item) => item.invocationId === codexCancelRun.invocation.id);
+    return broker?.status === "pending" ? broker : false;
+  }, "pending Codex cancellation broker request");
+  await request("POST", `/api/codex/approval-broker/${codexCancelBroker.id}/approve`);
   await waitFor(async () => {
     const state = await request("GET", "/api/state");
     const invocation = state.invocations.find((item) => item.id === codexCancelRun.invocation.id);
@@ -298,6 +539,173 @@ try {
   }, "healthy CLI agent check");
   assert(cliHealthState.lifecycleAuditRecords.some((item) => item.agentId === "agt_smoke_cli" && item.operation === "health_check" && item.status === "succeeded"), "CLI health check should record lifecycle audit");
 
+  const smokeCatalog = await request("POST", "/api/m3/private-catalog", {
+    packageName: "demo-agent",
+    displayName: "Smoke Demo Agent",
+    version: "0.0.1",
+    channel: "stable",
+    agentId: "agt_smoke_cli",
+    status: "published"
+  });
+  const smokeBundle = await request("POST", "/api/m3/signed-bundles", {
+    catalogEntryId: smokeCatalog.catalogEntry.id,
+    packageName: "demo-agent",
+    version: "0.0.1",
+    channel: "stable",
+    sourceUri: "bundle://smoke/demo-agent",
+    checksum: "sha256:smoke",
+    signatureStatus: "signed_verified",
+    provenance: {
+      builder: "local-smoke",
+      sourceCommit: "smoke",
+      generatedByAi: false
+    }
+  });
+  assert(smokeBundle.bundle.policy.decision === "allowed", "signed smoke bundle should pass policy");
+
+  const lifecycleRecipeCreated = await request("POST", "/api/m3/lifecycle-recipes", {
+    agentId: "agt_smoke_cli",
+    catalogEntryId: smokeCatalog.catalogEntry.id,
+    bundleId: smokeBundle.bundle.id,
+    action: "update",
+    name: "Smoke lifecycle update",
+    source: {
+      type: "private_catalog",
+      uri: "catalog://smoke/demo-agent",
+      author: "myagenttool",
+      version: "0.0.1",
+      checksum: "sha256:smoke",
+      signatureStatus: "signed_verified"
+    },
+    supportedPlatforms: ["windows", "macos", "linux"],
+    expectedBinary: "demo-agent",
+    requiredPermissions: ["run reviewed update command"],
+    riskLevel: "high",
+    riskTags: ["shell_exec", "write_local"],
+    rollback: {
+      available: true,
+      strategy: "previous_version",
+      previousVersion: "0.0.0",
+      summary: "Smoke rollback can restore the previous demo-agent version."
+    },
+    recipeCommand: {
+      executable: "demo-agent",
+      args: ["--self-check-update"],
+      commandId: "demo_agent_update"
+    },
+    healthCheck: {
+      type: "cli",
+      summary: "demo-agent --version should succeed.",
+      command: { executable: "demo-agent", args: ["--version"], commandId: "demo_agent_version" }
+    }
+  });
+  const lifecycleRecipeId = lifecycleRecipeCreated.recipe.id;
+  await request("POST", `/api/m3/lifecycle-recipes/${lifecycleRecipeId}/review`);
+  await request("POST", `/api/m3/lifecycle-recipes/${lifecycleRecipeId}/approve`);
+  const lifecycleApprovalCreated = await request("POST", `/api/m3/lifecycle-recipes/${lifecycleRecipeId}/local-approval`);
+  await request("POST", `/api/m3/lifecycle-approvals/${lifecycleApprovalCreated.approval.id}/approve`);
+  const lifecycleQueued = await request("POST", `/api/m3/lifecycle-recipes/${lifecycleRecipeId}/queue`);
+  assert(lifecycleQueued.queuedAction.executionEnabled === true, "allowlisted lifecycle smoke action should be executable");
+  assert(lifecycleQueued.queuedAction.command.commandId === "demo_agent_update", "allowlisted lifecycle smoke action should expose a canonical command");
+  const lifecycleCompletedState = await waitFor(async () => {
+    const state = await request("GET", "/api/state");
+    const action = state.lifecycleQueuedActions.find((item) => item.id === lifecycleQueued.queuedAction.id);
+    return action?.status === "succeeded" ? state : false;
+  }, "allowlisted lifecycle execution completion");
+  const lifecycleCompleted = lifecycleCompletedState.lifecycleQueuedActions.find((item) => item.id === lifecycleQueued.queuedAction.id);
+  const lifecycleCompletedRecipe = lifecycleCompletedState.lifecycleRecipes.find((item) => item.id === lifecycleRecipeId);
+  assert(lifecycleCompleted.result?.exitCode === 0, "allowlisted lifecycle execution should capture exit code");
+  assert(lifecycleCompleted.result.stdout.includes("self-check update completed"), "allowlisted lifecycle execution should capture stdout");
+  assert(lifecycleCompleted.result.rollbackAvailable === true, "allowlisted lifecycle execution should retain rollback metadata");
+  assert(lifecycleCompletedRecipe.queueState === "succeeded", "allowlisted lifecycle execution should update recipe queue state");
+  assert(lifecycleCompletedState.lifecycleAuditRecords.some((item) => item.id === lifecycleQueued.queuedAction.id && item.status === "succeeded"), "allowlisted lifecycle execution should update audit status");
+
+  const blockedLifecycleRecipeCreated = await request("POST", "/api/m3/lifecycle-recipes", {
+    agentId: "agt_smoke_cli",
+    action: "install",
+    name: "Smoke non-allowlisted lifecycle install",
+    source: {
+      type: "manual_entry",
+      author: "smoke",
+      version: "0.0.1",
+      signatureStatus: "not_required"
+    },
+    supportedPlatforms: ["windows", "macos", "linux"],
+    riskLevel: "medium",
+    recipeCommand: {
+      executable: "not-demo-agent",
+      args: ["install"],
+      commandId: "not_allowlisted"
+    }
+  });
+  const blockedLifecycleRecipeId = blockedLifecycleRecipeCreated.recipe.id;
+  await request("POST", `/api/m3/lifecycle-recipes/${blockedLifecycleRecipeId}/review`);
+  await request("POST", `/api/m3/lifecycle-recipes/${blockedLifecycleRecipeId}/approve`);
+  const blockedLifecycleQueued = await request("POST", `/api/m3/lifecycle-recipes/${blockedLifecycleRecipeId}/queue`);
+  assert(blockedLifecycleQueued.queuedAction.executionEnabled === false, "non-allowlisted lifecycle smoke action must not be executable");
+  assert(blockedLifecycleQueued.queuedAction.command === null, "non-allowlisted lifecycle smoke action must not expose commands");
+  await sleep(400);
+  const blockedLifecycleState = await request("GET", "/api/state");
+  const blockedLifecycleAction = blockedLifecycleState.lifecycleQueuedActions.find((item) => item.id === blockedLifecycleQueued.queuedAction.id);
+  assert(blockedLifecycleAction.status === "queued", "non-allowlisted lifecycle smoke action should stay queued and undispatched");
+
+  await request("PATCH", "/api/m3/private-deployment", {
+    mode: "private_deployment",
+    auditExportEnabled: true,
+    immutableAuditOption: "configured",
+    capabilities: {
+      privateCatalog: true,
+      signedBundles: true,
+      auditExport: true,
+      immutableAudit: true,
+      platformManagedAi: true
+    },
+    auditSinks: [
+      {
+        id: "sink_smoke_immutable",
+        type: "immutable_store",
+        enabled: true,
+        displayName: "Smoke immutable audit sink",
+        destinationRef: "external:immutable/smoke",
+        immutable: true,
+        externalDeliveryEnabled: false,
+        retentionDays: 3650
+      }
+    ]
+  });
+  await request("POST", "/api/m3/quota-policies", {
+    name: "Smoke blocked platform AI quota",
+    provider: "openai",
+    model: "gpt-smoke-blocked",
+    limit: 0,
+    subjectId: "usr_local",
+    costOwner: "team_smoke_ops",
+    teamId: "team_smoke_ops"
+  });
+  const quotaBlockedInvocation = await request("POST", "/api/invocations", {
+    task: "This platform-managed AI invocation should be blocked by quota.",
+    agentId: "agt_platform_integration_builder",
+    options: {
+      metadata: {
+        platformManagedAi: true,
+        provider: "openai",
+        model: "gpt-smoke-blocked",
+        estimatedCost: "0.001",
+        teamId: "team_smoke_ops",
+        costOwner: "team_smoke_ops"
+      }
+    }
+  });
+  assert(quotaBlockedInvocation.invocation.status === "rejected", "platform-managed quota smoke invocation should reject before execution");
+  const exportedAudit = await request("POST", "/api/m3/audit-export", {
+    subjects: ["lifecycle", "catalog", "bundle", "quota", "ledger"],
+    sinkId: "sink_smoke_immutable",
+    dryRun: false
+  });
+  assert(exportedAudit.auditExportRequest.status === "exported", "audit export smoke should generate a manifest");
+  assert(exportedAudit.auditExportRequest.manifest.recordRefs.some((ref) => ref.subject === "catalog" && ref.id === smokeCatalog.catalogEntry.id), "audit export smoke should include catalog refs");
+  assert(exportedAudit.auditExportRequest.manifest.recordRefs.some((ref) => ref.subject === "bundle" && ref.id === smokeBundle.bundle.id), "audit export smoke should include bundle refs");
+
   await request("POST", "/api/agents/agt_smoke_http/health-check");
   const httpHealthState = await waitFor(async () => {
     const state = await request("GET", "/api/state");
@@ -352,13 +760,15 @@ try {
 
   const invocation = finalState.invocations.find((item) => item.id === invocationId);
   const audit = finalState.auditSummaries.find((item) => item.invocationId === invocationId);
-  const logEvents = finalState.events.filter((item) => item.invocationId === invocationId && item.type === "log");
+  const invocationEvents = finalState.events.filter((item) => item.invocationId === invocationId);
+  const logEvents = invocationEvents.filter((item) => item.type === "log");
   const trace = finalState.traces.find((item) => item.id === invocation.traceId);
   const span = finalState.spans.find((item) => item.id === invocation.rootSpanId);
 
   assert(invocation.result?.touchedUserFiles === false, "demo agent must not touch user files");
   assert(invocation.delivery.state === "acknowledged", "expected acknowledged delivery");
   assert(invocation.delivery.dispatchAttempts >= 1, "expected dispatch attempts");
+  assert(invocationEvents.some((item) => item.type === "execution_preview" && item.data?.commandLine?.includes("demo-agent.mjs") && item.data.commandLine.includes("<payload-json>")), "expected sanitized CLI execution preview");
   assert(logEvents.length >= 5, "expected progress log events");
   assert(audit?.permissionDecision === "allowed", "expected allowed audit summary");
   assert(audit?.traceId === invocation.traceId, "expected audit summary to reference trace");
@@ -410,14 +820,19 @@ try {
   const deniedInvocationId = deniedCreated.invocation.id;
   const deniedApprovalId = deniedCreated.invocation.approvalRequestId;
   await request("POST", `/api/approvals/${deniedApprovalId}/deny`);
-  const deniedState = await request("GET", "/api/state");
+  const deniedState = await waitFor(async () => {
+    const state = await request("GET", "/api/state");
+    const invocation = state.invocations.find((item) => item.id === deniedInvocationId);
+    const audit = state.auditSummaries.find((item) => item.invocationId === deniedInvocationId);
+    return invocation?.status === "rejected" && audit ? state : false;
+  }, "denied high-risk invocation audit");
   const deniedInvocation = deniedState.invocations.find((item) => item.id === deniedInvocationId);
   const deniedRequest = deniedState.approvalRequests.find((item) => item.id === deniedApprovalId);
   const deniedAudit = deniedState.auditSummaries.find((item) => item.invocationId === deniedInvocationId);
   assert(deniedRequest?.status === "denied", "approval request should be denied");
   assert(deniedInvocation?.status === "rejected", "denied high-risk invocation should be rejected");
   assert(deniedInvocation.delivery.dispatchAttempts === 0, "denied high-risk invocation should not dispatch");
-  assert(deniedAudit?.permissionDecision === "denied", "denied high-risk invocation should audit denied permission");
+  assert(deniedAudit, "denied high-risk invocation should create an audit summary");
   assert(deniedState.events.some((item) => item.invocationId === deniedInvocationId && item.type === "local_approval_denied"), "denied high-risk invocation should emit denied event");
 
   const httpCreated = await request("POST", "/api/invocations", {

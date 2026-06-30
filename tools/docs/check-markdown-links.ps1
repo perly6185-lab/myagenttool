@@ -4,7 +4,12 @@ $root = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
 $pattern = [regex]::new('\[[^\]]+\]\(([^)]+)\)')
 $failures = New-Object System.Collections.Generic.List[string]
 
-Get-ChildItem -Path $root -Recurse -Filter "*.md" -File | ForEach-Object {
+Get-ChildItem -Path $root -Recurse -Filter "*.md" -File |
+  Where-Object {
+    $relative = $_.FullName.Substring($root.Length).TrimStart("\", "/")
+    -not ($relative -like "node_modules*" -or $relative -like ".git*")
+  } |
+  ForEach-Object {
   $path = $_.FullName
   $text = Get-Content -LiteralPath $path -Raw -Encoding UTF8
   foreach ($match in $pattern.Matches($text)) {

@@ -99,6 +99,16 @@ Use this for security, billing, desktop, and local execution changes:
 
 Use this for Web Console, onboarding, task flow, and demo experience changes:
 
+- Does the PR cite
+  [PRODUCT_FLOWS.md](../design/PRODUCT_FLOWS.md)?
+- Which role flow applies: ordinary developer, advanced developer, team
+  administrator, auditor, or an explicit multi-role combination?
+- Does the change preserve the separation between high-frequency tasks,
+  low-frequency configuration, governance evidence, and advanced controls?
+- Are the relevant usability task and four acceptance signals covered?
+- Is the role-specific "what not to show" list respected?
+- Is partial acceptance or follow-up work stated when a role/state is not yet
+  covered?
 - Is the first screen a usable task workspace rather than a landing page?
 - Can a non-professional user tell what will happen before running the task?
 - Are device, agent, safety, data, cost, cancellation, and audit visible in

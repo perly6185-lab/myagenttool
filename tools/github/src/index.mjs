@@ -20,12 +20,14 @@ const FIELD_GROUPS = {
 const READY_LABEL = "status/ready";
 const REVIEW_LABEL = "status/review";
 const VERIFIED_LABEL = "acceptance/verified";
+const DONE_LABEL = "status/done";
 
 const REQUIRED_PR_SECTIONS = [
   "## Summary",
   "## Type",
   "## Milestone / Area",
   "## Acceptance",
+  "## Product Flow",
   "## Verification",
   "## Risk Gates",
 ];
@@ -35,6 +37,7 @@ const DOCS = {
   workflow: "docs/engineering/AI_DEVELOPMENT_WORKFLOW.md",
   review: "docs/engineering/PR_REVIEW_POLICY.md",
   github: "docs/engineering/GITHUB_SETUP.md",
+  productFlows: "docs/design/PRODUCT_FLOWS.md",
 };
 
 const HELP = `MyAgentTool GitHub governance
@@ -111,7 +114,10 @@ function normalizeCommand(args) {
 function checkLocal() {
   const requiredFiles = [
     ".github/PULL_REQUEST_TEMPLATE.md",
+    ".github/ISSUE_TEMPLATE/epic.yml",
     ".github/ISSUE_TEMPLATE/feedback.yml",
+    ".github/ISSUE_TEMPLATE/initiative.yml",
+    ".github/ISSUE_TEMPLATE/task.yml",
     ".github/workflows/ai-review.yml",
     ".github/workflows/ci.yml",
     ".github/workflows/deploy.yml",
@@ -122,6 +128,9 @@ function checkLocal() {
     DOCS.workflow,
     DOCS.review,
     DOCS.github,
+    DOCS.productFlows,
+    "docs/engineering/PROJECT_STATUS_FLOW.md",
+    "tools/ai/src/index.mjs",
     "docs/engineering/MODEL_DRIVEN_DELIVERY.md",
     "docs/engineering/DEPLOYMENT_PIPELINE.md",
   ];
@@ -133,6 +142,16 @@ function checkLocal() {
 
   const template = readFileSync(resolve(repoRoot, ".github/PULL_REQUEST_TEMPLATE.md"), "utf8");
   const packageJson = readFileSync(resolve(repoRoot, "package.json"), "utf8");
+  const aiTool = [
+    "tools/ai/src/index.mjs",
+    "tools/ai/src/legacy/config.mjs",
+    "tools/ai/src/legacy/formatters.mjs",
+    "tools/ai/src/legacy/issue-tree.mjs",
+    "tools/ai/src/legacy/pm-commands.mjs",
+    "tools/ai/src/legacy/scope-testing.mjs",
+  ]
+    .map((path) => readFileSync(resolve(repoRoot, path), "utf8"))
+    .join("\n");
   const githubTool = readFileSync(resolve(repoRoot, "tools/github/src/index.mjs"), "utf8");
   const projectFieldsDoc = readFileSync(resolve(repoRoot, "docs/engineering/PROJECT_FIELDS.md"), "utf8");
   const missingSections = REQUIRED_PR_SECTIONS.filter((section) => !template.includes(section));
@@ -140,6 +159,55 @@ function checkLocal() {
     failReport(
       "Pull request template is missing required sections",
       missingSections.map((section) => `missing ${section}`),
+    );
+  }
+
+  const missingProductFlowTemplateItems = [
+    [template, "Role flow:", "PR template Role flow field"],
+    [template, "Usability task:", "PR template Usability task field"],
+    [template, "What not to show:", "PR template What not to show field"],
+    [template, "Partial acceptance or follow-up:", "PR template follow-up field"],
+  ]
+    .filter(([content, needle]) => !content.includes(needle))
+    .map(([, , label]) => label);
+  if (missingProductFlowTemplateItems.length > 0) {
+    failReport(
+      "Product Flow PR template check failed",
+      missingProductFlowTemplateItems.map((label) => `missing ${label}`),
+    );
+  }
+
+  const issueTemplates = [
+    ".github/ISSUE_TEMPLATE/task.yml",
+    ".github/ISSUE_TEMPLATE/epic.yml",
+    ".github/ISSUE_TEMPLATE/initiative.yml",
+  ].map((path) => [path, readFileSync(resolve(repoRoot, path), "utf8")]);
+  const missingIssueProductFlow = issueTemplates
+    .filter(([, content]) => !content.includes("product_flow") || !content.includes("docs/design/PRODUCT_FLOWS.md"))
+    .map(([path]) => `${path} product_flow field`);
+  if (missingIssueProductFlow.length > 0) {
+    failReport(
+      "Product Flow issue template check failed",
+      missingIssueProductFlow.map((label) => `missing ${label}`),
+    );
+  }
+
+  const missingAiIssueTreeProductFlow = [
+    [aiTool, "## Product Flow", "AI issue-tree Product Flow body section"],
+    [aiTool, "formatProductFlow", "AI issue-tree Product Flow formatter"],
+    [aiTool, "docs/design/PRODUCT_FLOWS.md", "AI issue-tree Product Flow source doc prompt"],
+    [aiTool, "affectedSurfaces", "AI code plan affected surfaces field"],
+    [aiTool, "prototypeStates", "AI code plan prototype states field"],
+    [aiTool, "acceptanceSignals", "AI code plan acceptance signals field"],
+    [aiTool, "visualQaTasks", "AI code plan visual QA tasks field"],
+    [aiTool, "productFlowPlanGaps", "AI code plan Product Flow drift check"],
+  ]
+    .filter(([content, needle]) => !content.includes(needle))
+    .map(([, , label]) => label);
+  if (missingAiIssueTreeProductFlow.length > 0) {
+    failReport(
+      "Product Flow AI issue-tree check failed",
+      missingAiIssueTreeProductFlow.map((label) => `missing ${label}`),
     );
   }
 
@@ -175,6 +243,9 @@ function checkLocal() {
   if (sampleProjectValues.status !== "done" || sampleProjectValues.agentTarget !== "platform") {
     failReport("Project sync command check failed", ["Project single-select field objects should compare by name"]);
   }
+  if (normalizeValue("in-progress") !== normalizeValue("in progress")) {
+    failReport("Project sync command check failed", ["Project values should normalize label slugs and option names"]);
+  }
 
   const visualResult = reviewRiskGates(["apps/web/src/App.tsx"], "## Verification\n- pnpm test\n", 0);
   if (!visualResult.warnings.some((warning) => warning.includes("visual QA"))) {
@@ -188,6 +259,33 @@ function checkLocal() {
   );
   if (coveredVisualResult.warnings.some((warning) => warning.includes("visual QA"))) {
     failReport("Pull request risk routing check failed", ["web visual QA evidence should satisfy the route"]);
+  }
+
+  const missingProductFlowResult = reviewRiskGates(
+    ["apps/web/src/App.tsx"],
+    "## Verification\n- pnpm test\n## Risk Gates\n- Visual QA screenshots captured for desktop and mobile viewports.\n",
+    0,
+  );
+  if (!missingProductFlowResult.warnings.some((warning) => warning.includes("Product Flow"))) {
+    failReport("Pull request risk routing check failed", ["web changes should warn when Product Flow coverage is missing"]);
+  }
+
+  const coveredProductFlowResult = reviewRiskGates(
+    ["apps/web/src/App.tsx"],
+    "## Product Flow\n- Role flow: ordinary developer\n- Scenario: run an agent task\n- Frequency: high\n- Owner surface: Home task workspace\n- Usability task: use Codex to run a repository task\n- What not to show: raw JSONL and hook event names\n- Partial acceptance or follow-up: none\n## Verification\n- pnpm test\n## Risk Gates\n- Visual QA screenshots captured for desktop and mobile viewports.\n",
+    0,
+  );
+  if (coveredProductFlowResult.warnings.some((warning) => warning.includes("Product Flow"))) {
+    failReport("Pull request risk routing check failed", ["specific Product Flow coverage should satisfy the route"]);
+  }
+
+  const placeholderProductFlowResult = reviewRiskGates(
+    ["apps/web/src/App.tsx"],
+    "## Product Flow\n- Role flow: Not applicable or requires product-flow triage\n- Scenario: update if this changes UI\n- Frequency: Not applicable\n- Owner surface: Not applicable\n- Usability task: Not applicable\n- What not to show: Internal automation details\n- Partial acceptance or follow-up: Product-facing changes must cite docs/design/PRODUCT_FLOWS.md before review\n## Verification\n- pnpm test\n## Risk Gates\n- Visual QA screenshots captured for desktop and mobile viewports.\n",
+    0,
+  );
+  if (!placeholderProductFlowResult.warnings.some((warning) => warning.includes("Product Flow"))) {
+    failReport("Pull request risk routing check failed", ["placeholder Product Flow coverage should not satisfy web UI route"]);
   }
 
   const weakSecurityResult = reviewRiskGates(
@@ -257,6 +355,58 @@ function checkLocal() {
     failReport("Pull request issue guard check failed", ["Project-tracked task issue should satisfy the guard"]);
   }
 
+  const readyProductFlowIssue = {
+    number: 4,
+    title: "[Task]: Improve Web Console task flow",
+    body: "## Acceptance\n- [ ] User can run a task\n\n## Project Fields\nMilestone: M2\nArea: web\nType: task\nStatus: ready\nRisk: medium\nAcceptance: defined\nPlatform: web\nAgent Target: platform\nPriority: p1\nSource Doc: docs/design/PRODUCT_FLOWS.md",
+    milestone: { title: "M2" },
+    labels: labelsForDesiredProjectValues({
+      milestone: "M2",
+      area: "web",
+      type: "task",
+      status: "ready",
+      risk: "medium",
+      acceptance: "defined",
+      platform: "web",
+      agentTarget: "platform",
+      priority: "p1",
+      sourceDoc: "docs/design/PRODUCT_FLOWS.md",
+    }),
+  };
+  const missingProductFlowIssueResult = reviewIssueHygiene([readyProductFlowIssue]);
+  if (!missingProductFlowIssueResult.failures.some((failure) => failure.includes("Product Flow"))) {
+    failReport("Issue status gate check failed", ["ready UI issue without Product Flow should fail"]);
+  }
+
+  const concreteProductFlowIssueResult = reviewIssueHygiene([{
+    ...readyProductFlowIssue,
+    body: `${readyProductFlowIssue.body}\n\n## Product Flow\n- Role flow: ordinary developer\n- Scenario: run an agent task\n- Frequency: high\n- Owner surface: Home task workspace\n- Usability task: use Codex to run a repository task\n- What not to show: raw JSONL and hook event names\n- Partial acceptance or follow-up: none\n`,
+  }]);
+  if (concreteProductFlowIssueResult.failures.some((failure) => failure.includes("Product Flow"))) {
+    failReport("Issue status gate check failed", ["ready UI issue with concrete Product Flow should pass"]);
+  }
+
+  const doneWithoutVerifiedResult = reviewIssueHygiene([{
+    ...readyProductFlowIssue,
+    number: 5,
+    title: "[Task]: Done without verification",
+    labels: labelsForDesiredProjectValues({
+      milestone: "M2",
+      area: "web",
+      type: "task",
+      status: "done",
+      risk: "medium",
+      acceptance: "defined",
+      platform: "web",
+      agentTarget: "platform",
+      priority: "p1",
+      sourceDoc: "docs/design/PRODUCT_FLOWS.md",
+    }),
+  }]);
+  if (!doneWithoutVerifiedResult.failures.some((failure) => failure.includes("done issue is not acceptance/verified"))) {
+    failReport("Issue status gate check failed", ["done issue without acceptance/verified should fail"]);
+  }
+
   console.log("[tools-github:check] GitHub governance local check OK");
 }
 
@@ -265,11 +415,17 @@ function checkIssues(args) {
   if (!repo) fail("Missing --repo or GITHUB_REPOSITORY.");
 
   const issues = ghJson(["issue", "list", "--repo", repo, "--state", "open", "--limit", "200", "--json", "number,title,body,labels,milestone"]);
+  const { failures, warnings } = reviewIssueHygiene(issues);
+
+  printReport("Issue hygiene", failures, warnings);
+}
+
+function reviewIssueHygiene(issues) {
   const failures = [];
   const warnings = [];
 
   for (const issue of issues) {
-    const labels = new Set(issue.labels.map((label) => label.name));
+    const labels = new Set(issue.labels.map(labelName));
     if (!issue.milestone) {
       failures.push(`#${issue.number} ${issue.title}: missing milestone`);
     }
@@ -284,8 +440,20 @@ function checkIssues(args) {
       failures.push(`#${issue.number} ${issue.title}: ready issue has no acceptance criteria`);
     }
 
+    if (labels.has(READY_LABEL) && isProductFlowIssue(issue) && !hasProductFlowEvidence(issue.body ?? "")) {
+      failures.push(`#${issue.number} ${issue.title}: ready UI/workflow issue has missing or placeholder Product Flow`);
+    }
+
     if (labels.has(REVIEW_LABEL) && !labels.has(VERIFIED_LABEL)) {
       warnings.push(`#${issue.number} ${issue.title}: review issue is not acceptance/verified`);
+    }
+
+    if (labels.has(DONE_LABEL) && !labels.has(VERIFIED_LABEL)) {
+      failures.push(`#${issue.number} ${issue.title}: done issue is not acceptance/verified`);
+    }
+
+    if (labels.has(VERIFIED_LABEL) && !labels.has(DONE_LABEL) && !labels.has(REVIEW_LABEL)) {
+      warnings.push(`#${issue.number} ${issue.title}: verified issue is not status/review or status/done`);
     }
 
     if (!hasProjectFields(issue.body)) {
@@ -303,7 +471,7 @@ function checkIssues(args) {
     }
   }
 
-  printReport("Issue hygiene", failures, warnings);
+  return { failures, warnings };
 }
 
 function checkPullRequest(args) {
@@ -974,7 +1142,7 @@ function normalizeValue(value) {
     .trim()
     .toLowerCase()
     .replace(/^m(\d).*$/, "m$1")
-    .replace(/_/g, "-")
+    .replace(/[_-]/g, " ")
     .replace(/\s+/g, " ");
 }
 
@@ -1002,6 +1170,10 @@ function reviewRiskGates(files, body, prNumber, options = {}) {
 
   if (normalizedFiles.some(isWebFile) && !hasVisualEvidence(body)) {
     missing(`${prefix} changes web UI files but does not mention visual QA screenshot evidence`);
+  }
+
+  if (normalizedFiles.some(isProductFacingFile) && !hasProductFlowEvidence(body)) {
+    missing(`${prefix} changes product-facing UI/workflow files but does not mention Product Flow coverage`);
   }
 
   if (normalizedFiles.some(isDesktopOrLocalExecutionFile) && !hasDesktopEvidence(body)) {
@@ -1035,6 +1207,33 @@ function isWebFile(file) {
   return file.startsWith("apps/web/") || file === "docs/engineering/VISUAL_QA.md";
 }
 
+function isProductFacingFile(file) {
+  return file.startsWith("apps/web/")
+    || file === "DESIGN.md"
+    || file.startsWith("docs/design/")
+    || file === "docs/engineering/VISUAL_QA.md";
+}
+
+function isProductFlowIssue(issue) {
+  const labels = (issue.labels ?? []).map(labelName);
+  const text = [
+    issue.title,
+    issue.body,
+    issue.milestone?.title,
+    ...labels,
+  ]
+    .filter(Boolean)
+    .join("\n")
+    .toLowerCase();
+  return /\b(web|ui|ux|workflow|user-facing|console|homepage|visual|design)\b/.test(text)
+    || labels.includes("area/web")
+    || labels.includes("platform/web");
+}
+
+function labelName(label) {
+  return typeof label === "string" ? label : label.name;
+}
+
 function isDesktopOrLocalExecutionFile(file) {
   return file.startsWith("apps/desktop/") || /desktop|bridge|local-execution|process|cancel/i.test(file);
 }
@@ -1057,6 +1256,33 @@ function isReleaseFile(file) {
 
 function hasVisualEvidence(body) {
   return /visual qa.*(screenshot|desktop|mobile|viewport)|screenshot.*(desktop|mobile|viewport)|desktop viewport.*mobile viewport/i.test(body);
+}
+
+function hasProductFlowEvidence(body) {
+  const flow = parseProductFlowEvidence(body);
+  return Boolean(flow)
+    && /^(ordinary developer|advanced developer|team administrator|auditor|multi-role)/i.test(flow.roleFlow)
+    && [flow.scenario, flow.frequency, flow.ownerSurface, flow.usabilityTask, flow.whatNotToShow, flow.partialAcceptanceOrFollowUp]
+      .every((value) => value && !isPlaceholderProductFlowValue(value));
+}
+
+function parseProductFlowEvidence(body) {
+  if (!/##\s+Product Flow/i.test(body)) return null;
+  const section = body.match(/##\s+Product Flow\s*([\s\S]*?)(?:\n##\s+|$)/i)?.[1] ?? "";
+  const field = (label) => section.match(new RegExp(`${label}:\\s*(.+)`, "i"))?.[1]?.trim() ?? "";
+  return {
+    roleFlow: field("Role flow"),
+    scenario: field("Scenario"),
+    frequency: field("Frequency"),
+    ownerSurface: field("Owner surface"),
+    usabilityTask: field("Usability task"),
+    whatNotToShow: field("What not to show"),
+    partialAcceptanceOrFollowUp: field("Partial acceptance or follow-up"),
+  };
+}
+
+function isPlaceholderProductFlowValue(value) {
+  return /not applicable|requires product-flow triage|update if|must cite docs\/design\/product_flows|todo|n\/a/i.test(String(value ?? ""));
 }
 
 function hasDesktopEvidence(body) {

@@ -3,13 +3,26 @@ import type {
   AgentDiscoveryRun,
   AgentLifecycleOperation,
   AgentUsageSummary,
+  AIUsageRecord,
   ApprovalRequest,
+  AuditExportRequest,
   AuditSummary,
+  LedgerEntry,
+  LifecycleLocalApprovalRequest,
+  LifecyclePolicyDecision,
+  LifecycleRollbackRequest,
+  LifecycleQueuedAction,
+  LifecycleRecipeArtifact,
+  PrivateCatalogEntry,
   Device,
   Invocation,
   InvocationEvent,
   InvocationTroubleshootingReport,
   PolicyDecisionRecord,
+  PrivateDeploymentConfig,
+  QuotaDecision,
+  QuotaPolicy,
+  SignedBundleManifest,
   Span,
   Trace,
 } from "@myagenttool/protocol";
@@ -24,7 +37,20 @@ export type LocalDemoServerState = {
   auditSummaries: AuditSummary[];
   healthChecks: AgentLifecycleOperation[];
   lifecycleAuditRecords: AgentLifecycleOperation[];
+  lifecycleRecipes: LifecycleRecipeArtifact[];
+  lifecyclePolicyDecisions: LifecyclePolicyDecision[];
+  lifecycleLocalApprovals: LifecycleLocalApprovalRequest[];
+  lifecycleQueuedActions: LifecycleQueuedAction[];
+  lifecycleRollbackRequests: LifecycleRollbackRequest[];
+  privateCatalogEntries: PrivateCatalogEntry[];
+  signedBundleManifests: SignedBundleManifest[];
   discoveryRuns: AgentDiscoveryRun[];
+  quotaDecisionRecords: QuotaDecision[];
+  quotaPolicies: QuotaPolicy[];
+  aiUsageRecords: AIUsageRecord[];
+  ledgerEntries: LedgerEntry[];
+  privateDeploymentConfig: PrivateDeploymentConfig;
+  auditExportRequests: AuditExportRequest[];
   approvalRequests: ApprovalRequest[];
   policyDecisionRecords: PolicyDecisionRecord[];
   troubleshootingReports: InvocationTroubleshootingReport[];

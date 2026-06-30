@@ -6,6 +6,7 @@
   "type": "module",
   "scripts": {
     "dev": "node ./run-local-demo.mjs",
+    "restart-changed": "node ./restart-changed-services.mjs",
     "test": "node ./check.mjs",
     "lint": "node ./check.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.json"

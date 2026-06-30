@@ -1,0 +1,41 @@
+{
+  "name": "Managed Session Context Rail Prototype",
+  "source": ".myagenttool/runs/flow-validation-managed-session-history/ascii-prototype.md",
+  "roleFlow": "ordinary developer",
+  "scenario": "Find and continue the latest Managed Codex session from the Web Console context rail.",
+  "frequency": "high",
+  "ownerSurface": "Right rail: context, history, and governance",
+  "viewports": [
+    { "name": "desktop", "width": 1366, "height": 768 },
+    { "name": "mobile", "width": 390, "height": 844 }
+  ],
+  "frames": [
+    "Desktop / Ready",
+    "Desktop / Running",
+    "Desktop / Approval Needed",
+    "Desktop / Succeeded With Changes",
+    "Desktop / Session Detail With Follow-up",
+    "Mobile / Stacked"
+  ],
+  "sessionTaskModel": {
+    "session": "Managed Codex session",
+    "childUnitName": "turn",
+    "allowedTurnModes": ["initial", "follow_up", "feedback", "retry"],
+    "primaryHomepageActions": ["Continue", "Result", "Open session"],
+    "detailActions": ["Send follow-up", "Attach diff context"]
+  },
+  "whatNotToShowInTaskComposer": [
+    "Evidence Center",
+    "Import evidence",
+    "raw JSONL",
+    "hook event names",
+    "integration builder controls"
+  ],
+  "visualQaTasks": [
+    "Confirm latest Managed Codex session appears in the right rail.",
+    "Confirm session turns and Add follow-up appear in session detail, not in the task composer.",
+    "Confirm task composer does not contain Evidence Center, Import evidence, raw JSONL, hook names, or integration builder controls.",
+    "Confirm task input, status, latest session, and needs attention stack without overlap on mobile.",
+    "Confirm long session titles and result summaries wrap without pushing run controls."
+  ]
+}

@@ -69,6 +69,7 @@ M0 must also cover:
 
 Product and roadmap:
 
+- `DESIGN.md`
 - `docs/vision/PRODUCT.md`
 - `docs/vision/ROADMAP.md`
 - `docs/vision/ACCEPTANCE_CRITERIA.md`
@@ -93,6 +94,7 @@ Safety, data, and economics:
 User and platform experience:
 
 - `docs/vision/USER_EXPERIENCE.md`
+- `docs/design/MYAGENTTOOL_DESIGN.md`
 - `docs/vision/IDEA_TO_OUTCOME.md`
 - `docs/vision/PLATFORM_SUPPORT.md`
 - `docs/vision/AGENT_LIFECYCLE.md`
@@ -111,6 +113,8 @@ Engineering management:
 - Do not undo user changes.
 - Add or update tests when behavior changes.
 - Keep user-facing language plain.
+- For product-facing Web Console changes, read `DESIGN.md` before editing and
+  preserve its visual, copy, state, and responsive layout rules.
 - Record risky assumptions as ADRs or risk issues.
 - Do not hide cost, data access, or cancellation limitations.
 
@@ -135,6 +139,11 @@ Engineering management:
 
 A change is not complete just because code was written.
 
+For non-trivial AI-assisted implementation, first confirm an existing GitHub
+issue or create one before changing code. If the work expands into a new
+feature surface, tool, validation mechanism, or governance behavior, update the
+current issue scope or create and sync a new issue before continuing.
+
 It is complete when:
 
 - Acceptance criteria are met.
@@ -142,3 +151,4 @@ It is complete when:
 - Docs are updated when behavior changes.
 - Risks are filed or resolved.
 - The GitHub issue and Project fields reflect the true state.
+- The final handoff names the tracking issue IDs and Project sync result.

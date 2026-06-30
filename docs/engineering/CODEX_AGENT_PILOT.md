@@ -30,7 +30,11 @@ Acceptance:
   health check, and local approval for high-risk capabilities.
 - M2 still owns reviewable adapter config, probe, disabled registration, and
   no automatic enablement.
-- Codex CLI is treated as high risk and not as a normal demo command.
+- Codex CLI is treated as a high-risk local CLI, but its repository permission,
+  sandbox, and approval behavior remain native to Codex CLI.
+- The default Codex CLI entry is an exception to generic disabled-registration
+  gates because it represents a CLI already installed and authenticated by the
+  local user.
 
 ## Stage 2: Codex Discovery And Adapter Config
 
@@ -47,17 +51,18 @@ Acceptance:
   Codex command path.
 - Codex candidates are marked high risk with shell execution, repository read,
   repository write, and network risk tags.
-- Generated adapter config uses `codex exec` in non-interactive mode, a
-  read-only sandbox by default, JSONL output, and no shell wrapper.
-- Generated artifacts remain reviewable and disabled until explicit action.
+- Generated adapter config uses `codex exec` in non-interactive mode, JSONL
+  output, no shell wrapper, and no MyAgentTool sandbox override.
+- Generated non-Codex artifacts remain reviewable and disabled until explicit
+  action.
 
 ## Stage 3: Probe, Registration, And Enable Flow
 
 Goal:
 
 ```text
-Codex adapter config can be probed safely and registered as a disabled local
-agent before explicit enablement.
+Codex adapter config can be probed safely and registered as a local agent while
+deferring permission control to the installed Codex CLI.
 ```
 
 Acceptance:
@@ -65,8 +70,10 @@ Acceptance:
 - Probe checks the local Codex CLI surface without running model-proposed
   commands, install scripts, or broad scans.
 - Passing probe marks the adapter config tested.
-- Registering a tested artifact creates a disabled Codex agent.
-- Enabling is explicit and high-risk invocation still requires local approval.
+- Registering a tested Codex artifact creates an available Codex agent when the
+  Desktop Bridge is online.
+- Codex invocation does not add a Web Console approval gate; Codex CLI native
+  controls own permissions.
 
 ## Stage 4: Real Invocation, Cancellation, And Evidence
 
@@ -90,6 +97,6 @@ Acceptance:
 
 - No M3 billing automation.
 - No marketplace or extension distribution.
-- No automatic install, update, or enablement.
+- No automatic install or update.
 - No broad filesystem or network scan.
-- No default write-capable Codex sandbox.
+- No MyAgentTool sandbox override for Codex CLI.

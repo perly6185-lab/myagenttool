@@ -34,6 +34,9 @@ Start simple:
 - Use `--apply` only after the user approves GitHub mutation; add `--done` when
   closing completed milestone work so issue labels and Project fields move to
   `done` and `verified`.
+- Product Flow details stay in issue bodies, not Project fields. Use
+  [PROJECT_STATUS_FLOW.md](PROJECT_STATUS_FLOW.md) and governance checks to keep
+  Project status aligned with Product Flow evidence.
 
 Examples:
 

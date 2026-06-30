@@ -70,6 +70,19 @@ body:
       placeholder: "- [ ] ..."
     validations:
       required: true
+  - type: textarea
+    id: product_flow
+    attributes:
+      label: Product flow impact
+      description: For UI, workflow, or user-facing capabilities, cite docs/design/PRODUCT_FLOWS.md and summarize role flows, scenarios, owner surfaces, usability tasks, and what not to show. Use "Not applicable" only for internal platform work.
+      placeholder: |
+        Role flows:
+        Scenarios:
+        Owner surfaces:
+        Usability tasks:
+        What not to show:
+    validations:
+      required: true
   - type: input
     id: source_doc
     attributes:
