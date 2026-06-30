@@ -1182,6 +1182,10 @@ Remaining split plan:
   page switching, draft tab state, invocation tab activation/close behavior,
   task-list surface visibility, and tab rendering now live in
   `apps/web/public/app/workspace-tabs.js`.
+  Web app Phase 5 is complete for terminal surface extraction: xterm/FitAddon
+  setup, managed terminal summaries, SSH target summaries, terminal evidence
+  replay, progress timelines, resize fitting, and terminal size reporting now
+  live in `apps/web/public/app/terminal-surface.js`.
 - `apps/web/public/styles.css`: split by shell, composer, task/routine list,
   evidence, terminal, project browser, and responsive rules.
 - `tools/ai/src/loop/routine.mjs`: split the remaining schedule state and
