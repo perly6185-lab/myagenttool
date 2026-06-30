@@ -1066,11 +1066,17 @@ Remaining split plan:
   and persistence scheduling now live in
   `apps/server/src/runtime/event-log.mjs`; `apps/server/src/index.mjs` only
   wires Codex event handlers after service initialization.
+  Server runtime Phase 5 is complete for read-model composition:
+  `/api/state` public payload composition, loop routine project context,
+  compact loop routine summary wiring, and Evidence Center read-model wiring now
+  live in `apps/server/src/runtime/read-models.mjs`; `apps/server/src/index.mjs`
+  only passes project, Codex, invocation, and state dependencies into the
+  composer.
   Phase 7 split is complete for Desktop Bridge dispatch,
   health, discovery, probe, cancellation status, ack, event, and completion
   routing through `apps/server/src/routes/bridge.mjs`. Remaining server phases
-  should split public-state orchestration while keeping mutation boundaries
-  explicit. Phase 8 split
+  should split service composition and self-check harness orchestration while
+  keeping mutation boundaries explicit. Phase 8 split
   is complete for approval, invocation creation, compare runs, cancellation,
   and troubleshooting routing through `apps/server/src/routes/invocations.mjs`.
 - `apps/web/public/app.js`: split by surface into task/routine browser,

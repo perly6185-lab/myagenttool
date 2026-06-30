@@ -1,10 +1,8 @@
 import { resolve } from "node:path";
-import { buildEvidenceCenterRecords } from "./read-models/evidence-center.mjs";
-import { buildLoopRoutineStateSummary } from "./read-models/loop-routines.mjs";
-import { buildPublicState } from "./read-models/state.mjs";
 import { createEventLogRuntime } from "./runtime/event-log.mjs";
 import { createHttpServer } from "./runtime/http-server.mjs";
 import { createPersistenceRuntime } from "./runtime/persistence.mjs";
+import { createReadModelRuntime } from "./runtime/read-models.mjs";
 import { createServerState, resetStateForSelfCheck } from "./runtime/state-factory.mjs";
 import {
   codexCliResumeArgs,
@@ -207,6 +205,24 @@ const {
   registerAgent,
 });
 
+const {
+  currentLoopRoutineProjectContext,
+  evidenceCenterRecords,
+  publicState,
+} = createReadModelRuntime({
+  namespace,
+  protocolVersion,
+  state,
+  defaultProjectPath,
+  currentProject,
+  defaultAgent,
+  codexApprovalQueue,
+  codexSessionForInvocation,
+  findInvocation,
+  repoPathForEvidence,
+  expireCodexApprovalBrokerRequests,
+});
+
 if (isSelfCheck) {
   runProtocolSelfCheck();
   console.log("[server:check] local demo server check OK");
@@ -359,43 +375,6 @@ function unlinkDevice() {
     type: "device_unlinked",
     level: "info",
     message: "Desktop Bridge device credentials were revoked for unlink."
-  });
-}
-
-function loopRoutineReadModelForCurrentProject() {
-  return buildLoopRoutineStateSummary(currentLoopRoutineProjectContext());
-}
-
-function currentLoopRoutineProjectContext() {
-  const project = currentProject();
-  const root = project?.path ?? defaultProjectPath;
-  return {
-    root,
-    projectId: project?.id ?? null,
-    projectPath: root
-  };
-}
-
-function publicState() {
-  expireCodexApprovalBrokerRequests();
-  return buildPublicState({
-    namespace,
-    protocolVersion,
-    state,
-    currentProject,
-    defaultAgent,
-    loopRoutineReadModel: loopRoutineReadModelForCurrentProject,
-    codexApprovalQueue,
-    evidenceCenterRecords,
-  });
-}
-
-function evidenceCenterRecords() {
-  return buildEvidenceCenterRecords({
-    state,
-    findInvocation,
-    codexSessionForInvocation,
-    repoPathForEvidence,
   });
 }
 
