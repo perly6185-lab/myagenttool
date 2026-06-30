@@ -1016,9 +1016,14 @@ Remaining split plan:
   capability, SSH target registration and preflight, managed terminal sessions,
   terminal bridge actions, bridge event handling, and terminal evidence records
   now live in `apps/server/src/services/terminal.mjs`; terminal HTTP routing
-  still lives in `apps/server/src/routes/terminal.mjs`. Remaining server phases
-  should move agent, Codex, and integration business helpers into service
-  modules. Phase 7 split is complete for Desktop Bridge dispatch,
+  still lives in `apps/server/src/routes/terminal.mjs`. Server service Phase 3
+  is complete for agent registry and lifecycle helpers: manual CLI/HTTP agent
+  registration, enable/disable, lifecycle audit records, bridge-visible health
+  checks, Codex CLI defaults, risk/economics normalization, and agent lookup now
+  live in `apps/server/src/services/agents.mjs`; agent HTTP routing still lives
+  in `apps/server/src/routes/agents.mjs`. Remaining server phases should move
+  Codex, invocation, and integration business helpers into service modules.
+  Phase 7 split is complete for Desktop Bridge dispatch,
   health, discovery, probe, cancellation status, ack, event, and completion
   routing through `apps/server/src/routes/bridge.mjs`. Remaining server phases
   should move route-injected business helpers into service modules and split
