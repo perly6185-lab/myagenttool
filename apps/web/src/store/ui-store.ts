@@ -2,6 +2,9 @@ import { create } from "zustand";
 
 export type SectionKey =
   | "dashboard"
+  | "projects"
+  | "task"
+  | "automation"
   | "invocations"
   | "agents"
   | "devices"
@@ -15,14 +18,21 @@ interface UiState {
   selectedAgentId: string | null;
   selectedInvocationId: string | null;
   selectedArtifactId: string | null;
+  selectedProjectId: string | null;
+  selectedWorktreeId: string | null;
   setSection: (section: SectionKey) => void;
   setSelectedAgentId: (id: string | null) => void;
   setSelectedInvocationId: (id: string | null) => void;
   setSelectedArtifactId: (id: string | null) => void;
+  setSelectedProjectId: (id: string | null) => void;
+  setSelectedWorktreeId: (id: string | null) => void;
 }
 
 const SECTION_KEYS: SectionKey[] = [
   "dashboard",
+  "projects",
+  "task",
+  "automation",
   "invocations",
   "agents",
   "devices",
@@ -45,8 +55,12 @@ export const useUiStore = create<UiState>((set) => ({
   selectedAgentId: null,
   selectedInvocationId: null,
   selectedArtifactId: null,
+  selectedProjectId: null,
+  selectedWorktreeId: null,
   setSection: (section) => set({ section }),
   setSelectedAgentId: (selectedAgentId) => set({ selectedAgentId }),
   setSelectedInvocationId: (selectedInvocationId) => set({ selectedInvocationId }),
   setSelectedArtifactId: (selectedArtifactId) => set({ selectedArtifactId }),
+  setSelectedProjectId: (selectedProjectId) => set({ selectedProjectId }),
+  setSelectedWorktreeId: (selectedWorktreeId) => set({ selectedWorktreeId }),
 }));

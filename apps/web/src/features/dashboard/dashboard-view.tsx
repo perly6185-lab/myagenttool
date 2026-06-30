@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { StatusBadge } from "@/components/ui/badge";
@@ -7,6 +7,7 @@ import { Field } from "@/components/common/field";
 import { FactList } from "@/components/common/fact-list";
 import { SectionHeading } from "@/components/common/section-heading";
 import { EventTimeline } from "@/features/invocations/event-timeline";
+import { DecisionAction } from "@/features/invocations/decision-action";
 import { useConsoleState } from "@/data/use-console-state";
 import { useAsyncAction, api } from "@/data/use-console-actions";
 import { resolveAgents, resolveInvocation } from "@/features/selection";
@@ -51,7 +52,22 @@ export function DashboardView() {
   const setSelectedAgentId = useUiStore((s) => s.setSelectedAgentId);
   const selectedInvocationId = useUiStore((s) => s.selectedInvocationId);
   const setSelectedInvocationId = useUiStore((s) => s.setSelectedInvocationId);
+  const selectedProjectId = useUiStore((s) => s.selectedProjectId);
+  const setSelectedProjectId = useUiStore((s) => s.setSelectedProjectId);
+  const selectedWorktreeId = useUiStore((s) => s.selectedWorktreeId);
+  const setSelectedWorktreeId = useUiStore((s) => s.setSelectedWorktreeId);
   const { execute, pending, error } = useAsyncAction();
+
+  const projects = state?.projects ?? [];
+  const projectId = selectedProjectId ?? projects[0]?.id ?? null;
+  // Run target: a specific worktree (its checkout becomes the agent's cwd).
+  const targetWorktree =
+    (state?.worktrees ?? []).find((w) => w.id === selectedWorktreeId && w.projectId === projectId) ?? null;
+
+  // Default to the worktree's own agent when one is selected.
+  useEffect(() => {
+    if (targetWorktree?.agentId) setSelectedAgentId(targetWorktree.agentId);
+  }, [targetWorktree?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const [task, setTask] = useState(
     "Summarize the local demo state and confirm the bridge is working.",
@@ -82,7 +98,7 @@ export function DashboardView() {
 
   async function runTask() {
     await execute(async () => {
-      const created = (await api.createInvocation(task.trim(), agent?.id ?? null)) as {
+      const created = (await api.createInvocation(task.trim(), agent?.id ?? null, projectId, targetWorktree?.id ?? null)) as {
         invocation: { id: string };
       };
       setSelectedInvocationId(created.invocation.id);
@@ -98,6 +114,37 @@ export function DashboardView() {
         </CardHeader>
         <CardContent className="space-y-4">
           <Textarea rows={6} value={task} onChange={(e) => setTask(e.target.value)} aria-label="Task" />
+
+          <Field label="Project">
+            <Select
+              value={projectId ?? ""}
+              onChange={(e) => setSelectedProjectId(e.target.value || null)}
+              aria-label="Project"
+            >
+              {projects.length === 0 ? <option value="">No project</option> : null}
+              {projects.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name}
+                </option>
+              ))}
+            </Select>
+          </Field>
+
+          {targetWorktree ? (
+            <div className="flex items-center justify-between gap-2 rounded-md border border-primary/40 bg-primary/5 px-3 py-2 text-xs">
+              <span className="min-w-0">
+                Running in worktree <span className="font-medium">{targetWorktree.branch}</span>
+                <span className="block truncate font-mono text-[11px] text-muted-foreground">{targetWorktree.path}</span>
+              </span>
+              <button
+                type="button"
+                onClick={() => setSelectedWorktreeId(null)}
+                className="shrink-0 text-muted-foreground hover:text-foreground"
+              >
+                Use project default
+              </button>
+            </div>
+          ) : null}
 
           <div className="grid gap-3 sm:grid-cols-2">
             <Field label="Computer">
@@ -184,7 +231,7 @@ export function DashboardView() {
           />
         </CardHeader>
         <CardContent>
-          <EventTimeline events={events} />
+          <EventTimeline events={events} renderAction={(event) => <DecisionAction event={event} />} />
         </CardContent>
       </Card>
     </div>

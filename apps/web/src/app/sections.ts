@@ -1,12 +1,15 @@
 import {
   Boxes,
+  FolderKanban,
   LayoutDashboard,
   ListChecks,
+  ListTodo,
   MonitorSmartphone,
   Puzzle,
   Radar,
   Receipt,
   ScrollText,
+  Workflow,
   type LucideIcon,
 } from "lucide-react";
 import type { SectionKey } from "@/store/ui-store";
@@ -21,6 +24,9 @@ export interface SectionDef {
 /** Top-level control-plane domains shown in the nav rail, in order. */
 export const SECTIONS: SectionDef[] = [
   { key: "dashboard", label: "Overview", icon: LayoutDashboard, blurb: "Start a task and watch it run" },
+  { key: "projects", label: "Projects", icon: FolderKanban, blurb: "Group work and own budgets" },
+  { key: "task", label: "Task", icon: ListTodo, blurb: "GitHub issues and PRs as work items" },
+  { key: "automation", label: "Automation", icon: Workflow, blurb: "Rules that run agents on a trigger" },
   { key: "invocations", label: "Invocations", icon: ListChecks, blurb: "Every call, status, and result" },
   { key: "agents", label: "Agents", icon: Boxes, blurb: "Registered agents and health" },
   { key: "devices", label: "Devices", icon: MonitorSmartphone, blurb: "Local bridges and platforms" },

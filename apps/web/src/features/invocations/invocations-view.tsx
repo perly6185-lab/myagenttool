@@ -2,6 +2,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { StatusBadge } from "@/components/ui/badge";
 import { EmptyState } from "@/components/common/empty-state";
 import { EventTimeline } from "@/features/invocations/event-timeline";
+import { DecisionAction } from "@/features/invocations/decision-action";
 import { useConsoleState } from "@/data/use-console-state";
 import { resolveInvocation } from "@/features/selection";
 import { useUiStore } from "@/store/ui-store";
@@ -76,7 +77,7 @@ export function InvocationsView() {
           <CardTitle>{selected ? `Timeline · ${selected.id}` : "Timeline"}</CardTitle>
         </CardHeader>
         <CardContent>
-          <EventTimeline events={events} />
+          <EventTimeline events={events} renderAction={(event) => <DecisionAction event={event} />} />
         </CardContent>
       </Card>
     </div>

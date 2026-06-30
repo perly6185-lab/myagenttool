@@ -26,16 +26,77 @@ export function resolveApiBase(): string {
 
 const apiBase = resolveApiBase();
 
+// --- Identity Phase 2: bearer token (see docs/engineering/IDENTITY_PLAN.md) ---
+// The web client carries a token on every call. In local dev there is no
+// password yet, so the first request transparently logs in as the seeded user
+// (POST /api/session) and stores the token. This is a no-op when the server has
+// MYAGENT_REQUIRE_AUTH off, and satisfies the 401 gate when it is on.
+const TOKEN_KEY = "myagenttool.token";
+
+let memoryToken: string | null = null;
+let sessionPromise: Promise<string | null> | null = null;
+
+function getToken(): string | null {
+  try {
+    return window.localStorage.getItem(TOKEN_KEY) ?? memoryToken;
+  } catch {
+    return memoryToken;
+  }
+}
+
+function setToken(token: string | null): void {
+  memoryToken = token;
+  try {
+    if (token) window.localStorage.setItem(TOKEN_KEY, token);
+    else window.localStorage.removeItem(TOKEN_KEY);
+  } catch {
+    /* private mode / storage disabled — memoryToken still holds it this session */
+  }
+}
+
+async function login(): Promise<string | null> {
+  const response = await fetch(`${apiBase}/api/session`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({}),
+  });
+  if (!response.ok) return null;
+  const data = (await response.json().catch(() => ({}))) as { token?: string };
+  const token = data.token ?? null;
+  if (token) setToken(token);
+  return token;
+}
+
+/** Guarantee a token exists, de-duping concurrent first-call logins. */
+function ensureSession(): Promise<string | null> {
+  const existing = getToken();
+  if (existing) return Promise.resolve(existing);
+  if (!sessionPromise) sessionPromise = login().finally(() => (sessionPromise = null));
+  return sessionPromise;
+}
+
 async function request<T = unknown>(
   method: string,
   path: string,
   body?: unknown,
+  retry = true,
 ): Promise<T> {
+  await ensureSession();
+  const token = getToken();
+  const headers: Record<string, string> = {};
+  if (body) headers["Content-Type"] = "application/json";
+  if (token) headers.Authorization = `Bearer ${token}`;
   const response = await fetch(`${apiBase}${path}`, {
     method,
-    headers: body ? { "Content-Type": "application/json" } : undefined,
+    headers: Object.keys(headers).length ? headers : undefined,
     body: body ? JSON.stringify(body) : undefined,
   });
+  // Token rejected/expired: drop it, re-login once, replay the request.
+  if (response.status === 401 && retry) {
+    setToken(null);
+    await ensureSession();
+    return request<T>(method, path, body, false);
+  }
   if (response.status === 204) return undefined as T;
   const data = await response.json().catch(() => ({}));
   if (!response.ok) {
@@ -73,8 +134,16 @@ export interface IntegrationPayload {
 }
 
 export const api = {
-  createInvocation: (task: string, agentId: string | null) =>
-    request("POST", "/api/invocations", { task, agentId }),
+  updateDevice: (payload: { maxConcurrency?: number }) => request("PATCH", "/api/device", payload),
+  createInvocation: (
+    task: string,
+    agentId: string | null,
+    projectId?: string | null,
+    worktreeId?: string | null,
+    options?: Record<string, unknown>,
+  ) => request("POST", "/api/invocations", { task, agentId, projectId, worktreeId, options }),
+  uploadWorktreeAttachments: (id: string, files: { name: string; dataBase64: string }[]) =>
+    request("POST", `/api/worktrees/${encodeURIComponent(id)}/attachments`, { files }),
   cancelInvocation: (id: string) =>
     request("POST", `/api/invocations/${encodeURIComponent(id)}/cancel`),
   troubleshoot: (id: string) =>
@@ -102,6 +171,52 @@ export const api = {
     request("POST", "/api/integration-builder/draft", payload),
   updateRetention: (payload: Record<string, number>) =>
     request("PATCH", "/api/integration-retention", payload),
+  setBudget: (payload: { projectId: string; limitUsd: number; policy: string }) =>
+    request("PUT", "/api/budgets", payload),
+
+  createProject: (payload: { name: string; color?: string }) =>
+    request("POST", "/api/projects", payload),
+  cloneProject: (payload: { repoUrl: string; parentDir: string; name?: string; color?: string }) =>
+    request("POST", "/api/projects", payload),
+  bindProject: (payload: { repoPath: string; name?: string; color?: string }) =>
+    request("POST", "/api/projects", payload),
+  updateProject: (id: string, payload: Record<string, unknown>) =>
+    request("PATCH", `/api/projects/${encodeURIComponent(id)}`, payload),
+  createWorktree: (
+    projectId: string,
+    payload: {
+      name?: string;
+      ref?: string;
+      prNumber?: number;
+      agentId?: string;
+      startPoint?: string;
+      link?: { type: "issue" | "pr"; number: number; title: string; url: string | null; state: string };
+    },
+  ) =>
+    request("POST", `/api/projects/${encodeURIComponent(projectId)}/worktrees`, payload),
+  removeWorktree: (id: string) => request("DELETE", `/api/worktrees/${encodeURIComponent(id)}`),
+  listWorktreeFiles: (id: string) => request("GET", `/api/worktrees/${encodeURIComponent(id)}/files`),
+  searchWorktree: (id: string, q: string, mode: "name" | "content") =>
+    request("GET", `/api/worktrees/${encodeURIComponent(id)}/search?mode=${mode}&q=${encodeURIComponent(q)}`),
+  readWorktreeFile: (id: string, filePath: string) =>
+    request("GET", `/api/worktrees/${encodeURIComponent(id)}/file?path=${encodeURIComponent(filePath)}`),
+  worktreeGit: (id: string) => request("GET", `/api/worktrees/${encodeURIComponent(id)}/git`),
+  worktreeDiff: (id: string) => request("GET", `/api/worktrees/${encodeURIComponent(id)}/diff`),
+  publishWorktreeBranch: (id: string) => request("POST", `/api/worktrees/${encodeURIComponent(id)}/push`),
+  createWorktreePr: (id: string, payload: { title: string; body: string }) =>
+    request("POST", `/api/worktrees/${encodeURIComponent(id)}/pr`, payload),
+  listGithubItems: (projectId: string) =>
+    request("GET", `/api/projects/${encodeURIComponent(projectId)}/github`),
+  listBranches: (projectId: string) =>
+    request("GET", `/api/projects/${encodeURIComponent(projectId)}/branches`),
+  suggestWorktreeName: (description: string) =>
+    request("POST", "/api/worktree-name-suggestion", { description }),
+
+  createAutomation: (payload: Record<string, unknown>) => request("POST", "/api/automations", payload),
+  runAutomation: (id: string) => request("POST", `/api/automations/${encodeURIComponent(id)}/run`),
+  updateAutomation: (id: string, patch: Record<string, unknown>) =>
+    request("PATCH", `/api/automations/${encodeURIComponent(id)}`, patch),
+  deleteAutomation: (id: string) => request("DELETE", `/api/automations/${encodeURIComponent(id)}`),
 
   approveApproval: (id: string) =>
     request("POST", `/api/approvals/${encodeURIComponent(id)}/approve`),

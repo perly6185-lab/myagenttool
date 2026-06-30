@@ -10,6 +10,7 @@ import type {
   JsonObject,
   JsonValue,
   PolicyDecisionId,
+  ProjectId,
   SpanId,
   TraceId,
   TroubleshootingReportId,
@@ -121,6 +122,10 @@ export interface InvocationTroubleshootingReport {
 export interface Invocation {
   id: InvocationId;
   ideaSessionId: IdeaSessionId | null;
+  projectId: ProjectId;
+  // Resolved at creation from the project's main worktree, when repo-backed.
+  // The bridge runs the agent here (overriding the agent adapter's cwd).
+  workingDirectory?: string | null;
   agentId: AgentId;
   requestedBy: UserId;
   status: InvocationStatus;
