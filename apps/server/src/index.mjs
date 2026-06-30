@@ -33,7 +33,7 @@ const {
 });
 
 if (isSelfCheck) {
-  runProtocolSelfCheck(selfCheckDependencies);
+  await runProtocolSelfCheck(selfCheckDependencies);
   console.log("[server:check] local demo server check OK");
   process.exit(0);
 }

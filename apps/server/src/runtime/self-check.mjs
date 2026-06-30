@@ -1,7 +1,8 @@
+import http from "node:http";
 import { codexCliResumeArgs } from "../services/agents.mjs";
 import { resetStateForSelfCheck } from "./state-factory.mjs";
 
-export function runProtocolSelfCheck(deps) {
+export async function runProtocolSelfCheck(deps) {
   const {
   appendEvent,
   approveInvocation,
@@ -52,6 +53,7 @@ export function runProtocolSelfCheck(deps) {
   registerIntegrationArtifact,
   resolveCodexApprovalBrokerRequest,
   state,
+  startInvocationIfAllowed,
   transitionIntegrationArtifact,
   unlinkDevice,
   acknowledgeInvocation,
@@ -364,6 +366,14 @@ export function runProtocolSelfCheck(deps) {
   assert(httpAgent.adapter.baseUrl === "http://127.0.0.1:1", "HTTP agent should keep base URL");
   assert(httpAgent.adapter.healthPath === "/health", "HTTP agent should default health path");
   assert(findAgent("agt_platform_troubleshooter")?.adapter.type === "platform", "platform troubleshooter should be registered");
+  await assertDirectHttpCancellation({
+    cancelInvocation,
+    createInvocation,
+    findAgent,
+    registerAgent,
+    startInvocationIfAllowed,
+    state,
+  });
 
   const disableOperation = disableAgent(cliAgent);
   assert(cliAgent.status === "disabled", "disabled CLI agent should report disabled");
@@ -503,6 +513,88 @@ export function runProtocolSelfCheck(deps) {
   unlinkDevice();
   assert(runningCancel.status === "cancelling", "unlink should request cancellation for running local invocations");
   assert(runningCancel.cancellation.state === "requested", "running unlink cancellation should be requested");
+}
+
+async function assertDirectHttpCancellation({
+  cancelInvocation,
+  createInvocation,
+  findAgent,
+  registerAgent,
+  startInvocationIfAllowed,
+  state,
+}) {
+  const serverState = {
+    requestStarted: false,
+    responseClosed: false,
+  };
+  let resolveRequestStarted = null;
+  const requestStarted = new Promise((resolve) => {
+    resolveRequestStarted = resolve;
+  });
+  const server = http.createServer((req, res) => {
+    if (req.url !== "/invoke") {
+      res.writeHead(404);
+      res.end();
+      return;
+    }
+    serverState.requestStarted = true;
+    resolveRequestStarted();
+    res.on("close", () => {
+      serverState.responseClosed = true;
+    });
+  });
+
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+
+  try {
+    const address = server.address();
+    const port = typeof address === "object" && address ? address.port : null;
+    assert(port, "HTTP cancellation fixture should bind a local port");
+    const directHttpAgent = registerAgent({
+      id: "agt_self_http_cancel",
+      type: "http",
+      name: "Self-check HTTP cancellation",
+      baseUrl: `http://127.0.0.1:${port}`,
+      requestPath: "/invoke",
+      timeoutSeconds: 30,
+      cancellation: "supported"
+    });
+    const invocation = createInvocation("self-check direct HTTP cancellation", directHttpAgent, { timeoutSeconds: 30 });
+    assert(invocation.status === "running", "direct HTTP invocation should start in running state");
+    startInvocationIfAllowed(invocation, findAgent(directHttpAgent.id));
+    await withTimeout(requestStarted, 2000, "direct HTTP cancellation fixture should receive request");
+    cancelInvocation(invocation);
+    await waitFor(() => invocation.status === "cancelled", 2000, "direct HTTP cancellation should complete as cancelled");
+    const events = state.events.filter((item) => item.invocationId === invocation.id);
+    assert(events.some((item) => item.type === "cancel_dispatched"), "direct HTTP cancellation should dispatch abort");
+    assert(events.some((item) => item.type === "cancel_applied"), "direct HTTP cancellation should complete through invocation completion");
+    assert(invocation.cancellation.state === "applied", "direct HTTP cancellation should mark cancellation applied");
+    assert(serverState.requestStarted, "direct HTTP cancellation fixture should observe the request");
+    assert(serverState.responseClosed, "direct HTTP cancellation should close the in-flight response");
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+}
+
+async function waitFor(predicate, timeoutMs, message) {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    if (predicate()) {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(message);
+}
+
+function withTimeout(promise, timeoutMs, message) {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => setTimeout(() => reject(new Error(message)), timeoutMs)),
+  ]);
 }
 
 function assert(condition, message) {

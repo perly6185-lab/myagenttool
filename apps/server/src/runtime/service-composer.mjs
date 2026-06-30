@@ -325,6 +325,7 @@ export function createServerRuntimeServices({
       idCounter = 1;
     },
     resolveCodexApprovalBrokerRequest,
+    startInvocationIfAllowed,
     state,
     transitionIntegrationArtifact,
     unlinkDevice,

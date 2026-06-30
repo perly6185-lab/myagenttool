@@ -1159,6 +1159,10 @@ Remaining split plan:
   queued cancellation, pending approval denial, device-unlink cancellation,
   running cancellation requests, HTTP abort handoff, and cancellation auditing
   now live in `apps/server/src/services/invocations/cancellation.mjs`.
+  Invocation service split quality review is complete: the server self-check
+  now covers direct HTTP cancellation through the cancellation-to-abort handoff,
+  verifies `cancel_dispatched` and `cancel_applied` events, and confirms the
+  in-flight HTTP response is closed by the abort path.
 - `apps/web/public/app.js`: split by surface into task/routine browser,
   workspace/session, evidence center, terminal, project browser, integration,
   and shared API/render utilities.
