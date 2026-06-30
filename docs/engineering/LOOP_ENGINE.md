@@ -1040,6 +1040,11 @@ Remaining split plan:
   `apps/server/src/services/invocations.mjs`; invocation and bridge HTTP
   routing still live in `apps/server/src/routes/invocations.mjs` and
   `apps/server/src/routes/bridge.mjs`.
+  Server read-model Phase 2 is complete for Evidence Center projection:
+  Codex JSONL evidence, hook events, approval broker requests, change reviews,
+  runtime warnings, terminal evidence, and imported Codex evidence are projected
+  by `apps/server/src/read-models/evidence-center.mjs`; `/api/state` still
+  composes the final public payload through `apps/server/src/read-models/state.mjs`.
   Phase 7 split is complete for Desktop Bridge dispatch,
   health, discovery, probe, cancellation status, ack, event, and completion
   routing through `apps/server/src/routes/bridge.mjs`. Remaining server phases
