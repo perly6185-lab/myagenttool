@@ -2,6 +2,7 @@ import { resolve } from "node:path";
 import { buildEvidenceCenterRecords } from "./read-models/evidence-center.mjs";
 import { buildLoopRoutineStateSummary } from "./read-models/loop-routines.mjs";
 import { buildPublicState } from "./read-models/state.mjs";
+import { createEventLogRuntime } from "./runtime/event-log.mjs";
 import { createHttpServer } from "./runtime/http-server.mjs";
 import { createPersistenceRuntime } from "./runtime/persistence.mjs";
 import { createServerState, resetStateForSelfCheck } from "./runtime/state-factory.mjs";
@@ -31,6 +32,10 @@ const { defaultProject, state } = createServerState({ defaultProjectPath, now })
 
 let idCounter = 1;
 let invocationService = null;
+let codexEventHandlers = {
+  createCodexEvidenceRecord: () => null,
+  updateCodexSessionFromEvent: () => null,
+};
 const {
   persistStateSoon,
   restorePersistentState,
@@ -45,6 +50,13 @@ const {
   sameProjectPath,
 });
 restorePersistentState();
+const { appendEvent } = createEventLogRuntime({
+  state,
+  now,
+  nextId,
+  persistStateSoon,
+  getCodexEventHandlers: () => codexEventHandlers,
+});
 
 const {
   addProject,
@@ -101,6 +113,10 @@ const {
   uniqueStrings,
   worktreeForProject,
 });
+codexEventHandlers = {
+  createCodexEvidenceRecord,
+  updateCodexSessionFromEvent,
+};
 
 const {
   createManagedTerminalSession,
@@ -298,24 +314,6 @@ function nextId(prefix) {
   const id = `${prefix}_${String(idCounter).padStart(4, "0")}`;
   idCounter += 1;
   return id;
-}
-
-function appendEvent(event) {
-  const record = {
-    id: nextId("evt_demo"),
-    invocationId: event.invocationId,
-    type: event.type,
-    level: event.level,
-    message: event.message,
-    data: event.data ?? null,
-    createdAt: now()
-  };
-  state.events.unshift(record);
-  state.events = state.events.slice(0, 200);
-  updateCodexSessionFromEvent(record);
-  createCodexEvidenceRecord(record);
-  persistStateSoon();
-  return record;
 }
 
 function findInvocation(id) {
