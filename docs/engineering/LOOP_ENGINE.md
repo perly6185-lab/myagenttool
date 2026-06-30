@@ -1118,6 +1118,10 @@ Remaining split plan:
   registration notes, disabled-by-default behavior, artifact enablement, and
   integration-enabled audit events now live in
   `apps/server/src/services/integrations/registration.mjs`.
+  Integration service Phase 7 is complete for governance runtime extraction:
+  governance payload construction, quota decision records, and retention
+  settings updates now live in
+  `apps/server/src/services/integrations/governance.mjs`.
 - `apps/web/public/app.js`: split by surface into task/routine browser,
   workspace/session, evidence center, terminal, project browser, integration,
   and shared API/render utilities.
