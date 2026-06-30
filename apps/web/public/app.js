@@ -27,6 +27,7 @@ import {
   usageText,
 } from "./app/formatters.js";
 import { createRoutineRunSurface } from "./app/routine-surface.js";
+import { createWorkspaceTabSurface } from "./app/workspace-tabs.js";
 
 const apiBase = resolveApiBase();
 const api = createApiClient(apiBase);
@@ -298,10 +299,8 @@ const els = {
 };
 
 let currentInvocationId = null;
-const workspaceTabs = [];
 let activePage = "tasks";
 let selectedRoutineRunId = null;
-let workspaceDraftTabOpen = false;
 let selectedAgentId = null;
 let selectedArtifactId = null;
 let activeMode = "run_task";
@@ -356,6 +355,28 @@ const {
     selectedRoutineRunId = value;
   },
   shortTime,
+});
+const workspaceTabSurface = createWorkspaceTabSurface({
+  els,
+  getActivePage: () => activePage,
+  getCurrentInvocationId: () => currentInvocationId,
+  getLastState: () => lastState,
+  getTaskWorkspaceUrl: taskWorkspaceUrl,
+  onCurrentInvocationChange: (value) => {
+    currentInvocationId = value;
+  },
+  onModeChange: (value) => {
+    activeMode = value;
+  },
+  onPageChange: (value) => {
+    activePage = value;
+  },
+  readableStatus,
+  render: (state) => render(state),
+  replaceHistory: (invocationId) => history.replaceState(null, "", repoSessionUrl(invocationId)),
+  showTasksPage: () => showTasksPage(),
+  showWorkspacePage: (options) => showWorkspacePage(options),
+  taskSummary,
 });
 
 initializeRouteState();
@@ -756,7 +777,6 @@ async function submitTaskFromComposer() {
         }
       }));
     currentInvocationId = data.invocation?.id ?? data.compareRun?.childInvocationIds?.[0] ?? null;
-    workspaceDraftTabOpen = false;
     if (currentInvocationId) openWorkspaceTab(currentInvocationId, { activate: true });
     resetComposerAfterSubmit();
     await refresh();
@@ -1526,15 +1546,15 @@ function render(state) {
   renderSelectors(state, agents);
   renderCompareAgentChoices(agents);
 
-  if (activePage === "workspace" && !workspaceDraftTabOpen && (!currentInvocationId || !state.invocations.some((item) => item.id === currentInvocationId))) {
-    currentInvocationId = workspaceTabs.find((tab) => state.invocations.some((item) => item.id === tab.id))?.id ?? null;
+  if (activePage === "workspace" && !workspaceTabSurface.isDraftTabOpen() && (!currentInvocationId || !state.invocations.some((item) => item.id === currentInvocationId))) {
+    currentInvocationId = workspaceTabSurface.fallbackInvocationId(state);
   }
   if (activePage === "workspace" && currentInvocationId && state.invocations.some((item) => item.id === currentInvocationId)) {
     openWorkspaceTab(currentInvocationId, { activate: false });
   }
   syncWorkspaceTabs(state);
   const taskListActive = activePage === "tasks";
-  const draftActive = workspaceDraftTabOpen && !currentInvocationId;
+  const draftActive = workspaceTabSurface.isDraftTabOpen() && !currentInvocationId;
   const invocation = taskListActive || draftActive ? null : currentInvocation();
   const audit = invocation
     ? state.auditSummaries.find((item) => item.invocationId === invocation.id)
@@ -3598,149 +3618,24 @@ function shortInvocationId(id) {
 function showTasksPage() {
   activePage = "tasks";
   activeMode = "run_task";
-  workspaceDraftTabOpen = false;
-  currentInvocationId = null;
-  workspaceTabs.splice(0, workspaceTabs.length);
+  workspaceTabSurface.showTasks();
   refreshRoutineRuns({ force: true });
 }
 
 function showWorkspacePage({ draft = false, invocationId = null } = {}) {
   activePage = "workspace";
   activeMode = "run_task";
-  workspaceDraftTabOpen = draft && !invocationId;
-  currentInvocationId = invocationId;
-  workspaceTabs.splice(0, workspaceTabs.length);
+  workspaceTabSurface.showWorkspace({ draft, invocationId });
 }
 
-function openWorkspaceTab(invocationId, { activate = true } = {}) {
-  if (!invocationId) return;
-  activePage = "workspace";
-  workspaceTabs.splice(0, workspaceTabs.length, { id: invocationId });
-  if (activate) {
-    workspaceDraftTabOpen = false;
-    currentInvocationId = invocationId;
-    activeMode = "run_task";
-  }
-}
-
-function activateWorkspaceTab(invocationId) {
-  if (!invocationId) return;
-  activePage = "workspace";
-  workspaceDraftTabOpen = false;
-  currentInvocationId = invocationId;
-  activeMode = "run_task";
-  history.replaceState(null, "", repoSessionUrl(invocationId));
-  render(lastState);
-}
-
-function closeWorkspaceTab(invocationId) {
-  const index = workspaceTabs.findIndex((tab) => tab.id === invocationId);
-  if (index === -1) return;
-  workspaceTabs.splice(index, 1);
-  if (currentInvocationId === invocationId) {
-    showTasksPage();
-  }
-  render(lastState);
-}
-
-function syncWorkspaceTabs(state) {
-  const invocationIds = new Set((state?.invocations ?? []).map((invocation) => invocation.id));
-  for (let index = workspaceTabs.length - 1; index >= 0; index -= 1) {
-    if (!invocationIds.has(workspaceTabs[index].id)) workspaceTabs.splice(index, 1);
-  }
-}
-
-function applyTaskListSurface() {
-  const showTaskListSurface = activePage === "tasks";
-  els.workspace.dataset.taskList = String(showTaskListSurface);
-  els.taskListPanel.hidden = !showTaskListSurface;
-  els.workspaceTabStrip.hidden = showTaskListSurface;
-  els.contextPanel.hidden = showTaskListSurface;
-  els.commandPanel.querySelector(".chat-header").hidden = showTaskListSurface;
-  els.commandPanel.querySelector(".chat-toolbar").hidden = showTaskListSurface;
-  els.approvalPanel.hidden = showTaskListSurface || els.approvalPanel.hidden;
-  els.eventList.hidden = showTaskListSurface;
-  els.comparePanel.hidden = showTaskListSurface || els.comparePanel.hidden;
-  els.commandPanel.querySelector(".chat-composer").hidden = showTaskListSurface;
-  els.commandPanel.querySelector(".chat-details").hidden = showTaskListSurface;
-}
-
-function renderWorkspaceTabs(state) {
-  const tabs = workspaceTabs
-    .map((tab) => state?.invocations?.find((invocation) => invocation.id === tab.id))
-    .filter(Boolean);
-  const renderedTabs = tabs.map(workspaceTabButton);
-  if (workspaceDraftTabOpen) renderedTabs.push(workspaceDraftTabButton());
-  els.workspaceTabStrip.replaceChildren(...renderedTabs, workspaceNewTabButton());
-}
-
-function workspaceTabButton(invocation) {
-  const tab = document.createElement("span");
-  tab.className = "workspace-tab";
-  tab.dataset.active = String(invocation.id === currentInvocationId);
-
-  const button = document.createElement("button");
-  button.type = "button";
-  button.dataset.workspaceTabId = invocation.id;
-  button.setAttribute("role", "tab");
-  button.setAttribute("aria-selected", String(invocation.id === currentInvocationId));
-  const title = document.createElement("strong");
-  title.textContent = taskSummary(invocation.input?.task) ?? invocation.id;
-  const status = document.createElement("small");
-  status.textContent = readableStatus(invocation.status);
-  button.append(title, status);
-
-  const close = document.createElement("button");
-  close.type = "button";
-  close.dataset.workspaceTabClose = invocation.id;
-  close.setAttribute("aria-label", "关闭标签页");
-  close.textContent = "×";
-
-  tab.append(button, close);
-  return tab;
-}
-
-function workspaceNewTabButton() {
-  const button = document.createElement("button");
-  button.type = "button";
-  button.className = "workspace-tab-new";
-  button.setAttribute("aria-label", "新建任务标签页");
-  button.textContent = "+";
-  button.addEventListener("click", () => {
-    showWorkspacePage({ draft: true });
-    history.replaceState(null, "", taskWorkspaceUrl());
-    render(lastState);
-  });
-  return button;
-}
-
-function workspaceDraftTabButton() {
-  const tab = document.createElement("span");
-  tab.className = "workspace-tab";
-  tab.dataset.active = "true";
-
-  const button = document.createElement("button");
-  button.type = "button";
-  button.setAttribute("role", "tab");
-  button.setAttribute("aria-selected", "true");
-  const title = document.createElement("strong");
-  title.textContent = "新任务";
-  const status = document.createElement("small");
-  status.textContent = "Draft";
-  button.append(title, status);
-
-  const close = document.createElement("button");
-  close.type = "button";
-  close.setAttribute("aria-label", "关闭标签页");
-  close.textContent = "×";
-  close.addEventListener("click", () => {
-    showTasksPage();
-    render(lastState);
-  });
-
-  tab.append(button, close);
-  return tab;
-}
+const {
+  activateWorkspaceTab,
+  applyTaskListSurface,
+  closeWorkspaceTab,
+  openWorkspaceTab,
+  renderWorkspaceTabs,
+  syncWorkspaceTabs,
+} = workspaceTabSurface;
 
 function currentApproval(state, invocation) {
   if (!state || !invocation?.approvalRequestId) {

@@ -1178,6 +1178,10 @@ Remaining split plan:
   rows, status labels, detail cards, metrics, finding summaries, and read-only
   CLI command rendering now live in
   `apps/web/public/app/routine-surface.js`.
+  Web app Phase 4 is complete for workspace tab extraction: task/workspace
+  page switching, draft tab state, invocation tab activation/close behavior,
+  task-list surface visibility, and tab rendering now live in
+  `apps/web/public/app/workspace-tabs.js`.
 - `apps/web/public/styles.css`: split by shell, composer, task/routine list,
   evidence, terminal, project browser, and responsive rules.
 - `tools/ai/src/loop/routine.mjs`: split the remaining schedule state and
