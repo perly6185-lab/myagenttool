@@ -17,68 +17,81 @@ if (process.argv.includes("--check")) {
   process.exit(0);
 }
 
-let busy = false;
+// Concurrency pool: run up to BRIDGE_MAX_CONCURRENT work items at once. Per-cwd
+// safety is enforced server-side (nextDispatchableInvocation won't hand out two
+// tasks for the same working directory), so distinct worktrees run in parallel
+// while the same worktree stays serial. `polling` guards against overlapping
+// fill passes from the interval; `inFlight` counts running work.
+// Pool size. The device's maxConcurrency (set on the server, tunable in the
+// Devices UI) is authoritative — the server won't dispatch past it — so this is
+// just the bridge's local ceiling, seeded from the device value at register with
+// the env as a fallback. A live increase applies on the next reconnect; the
+// server enforces decreases immediately.
+const envMaxConcurrent = Math.floor(Number(process.env.BRIDGE_MAX_CONCURRENT));
+let maxConcurrent = Number.isFinite(envMaxConcurrent) ? Math.max(1, Math.min(16, envMaxConcurrent)) : 3;
+const inFlight = new Set();
+let polling = false;
 let stopped = false;
 
 process.on("SIGINT", stop);
 process.on("SIGTERM", stop);
 
 await waitForServer();
-await request("POST", "/api/bridge/register", {
+const registration = await request("POST", "/api/bridge/register", {
   bridgeVersion: "0.0.0",
   capabilities: ["demo_cli_agent"]
 });
-console.log(`[desktop] registered with ${serverUrl}`);
+const deviceMax = Math.floor(Number(registration?.device?.maxConcurrency));
+if (Number.isFinite(deviceMax) && deviceMax >= 1) {
+  maxConcurrent = deviceMax;
+}
+console.log(`[desktop] registered with ${serverUrl} (max concurrency ${maxConcurrent})`);
 
 poll();
 const timer = setInterval(poll, pollIntervalMs);
 
+// Track a running work promise so the pool knows when a slot frees up.
+function track(promise) {
+  const token = Symbol("work");
+  inFlight.add(token);
+  Promise.resolve(promise)
+    .catch((error) => console.error("[desktop] work failed:", error?.message ?? error))
+    .finally(() => inFlight.delete(token));
+}
+
+// Fill open slots: pull invocations first (the server skips cwd-busy ones), then
+// health/discovery/probe work, until the pool is full or nothing is available.
 async function poll() {
-  if (busy || stopped) {
+  if (stopped || polling) {
     return;
   }
-
-  const response = await request("GET", "/api/bridge/next");
-  if (response) {
-    busy = true;
-    try {
-      await runInvocation(response);
-    } finally {
-      busy = false;
+  polling = true;
+  try {
+    while (!stopped && inFlight.size < maxConcurrent) {
+      const invocationWork = await request("GET", "/api/bridge/next");
+      if (invocationWork) {
+        track(runInvocation(invocationWork));
+        continue;
+      }
+      const healthWork = await request("GET", "/api/bridge/health-next");
+      if (healthWork) {
+        track(runHealthCheck(healthWork));
+        continue;
+      }
+      const discoveryWork = await request("GET", "/api/bridge/discovery-next");
+      if (discoveryWork) {
+        track(runDiscovery(discoveryWork));
+        continue;
+      }
+      const probeWork = await request("GET", "/api/bridge/probe-next");
+      if (probeWork) {
+        track(runIntegrationProbe(probeWork));
+        continue;
+      }
+      break; // nothing dispatchable right now
     }
-    return;
-  }
-
-  const healthWork = await request("GET", "/api/bridge/health-next");
-  if (healthWork) {
-    busy = true;
-    try {
-      await runHealthCheck(healthWork);
-    } finally {
-      busy = false;
-    }
-    return;
-  }
-
-  const discoveryWork = await request("GET", "/api/bridge/discovery-next");
-  if (discoveryWork) {
-    busy = true;
-    try {
-      await runDiscovery(discoveryWork);
-    } finally {
-      busy = false;
-    }
-    return;
-  }
-
-  const probeWork = await request("GET", "/api/bridge/probe-next");
-  if (probeWork) {
-    busy = true;
-    try {
-      await runIntegrationProbe(probeWork);
-    } finally {
-      busy = false;
-    }
+  } finally {
+    polling = false;
   }
 }
 
@@ -129,6 +142,7 @@ async function runInvocation(work) {
       message: "CLI Agent exceeded its configured timeout."
     });
     cancelResult = await terminateProcessTree(child);
+    await reportForcedKill(invocationId, cancelResult, "Timeout");
   }, timeoutMs);
 
   const cancelTimer = setInterval(async () => {
@@ -142,6 +156,7 @@ async function runInvocation(work) {
         message: "Desktop Bridge sent cancellation to Demo CLI Agent."
       });
       cancelResult = await terminateProcessTree(child);
+      await reportForcedKill(invocationId, cancelResult, "Cancellation");
       if (!cancelResult.ok) {
         await request("POST", "/api/bridge/events", {
           invocationId,
@@ -182,8 +197,16 @@ async function runInvocation(work) {
     }
   });
 
+  let spawnError = null;
   const exitCode = await new Promise((resolveExit) => {
     child.on("close", resolveExit);
+    // A spawn failure (missing cwd/binary, e.g. a deleted worktree) emits 'error';
+    // without this listener it would be unhandled and crash the whole bridge.
+    // Resolve as a non-zero exit so the run completes and the pool frees the slot.
+    child.on("error", (error) => {
+      spawnError = error;
+      resolveExit(typeof child.exitCode === "number" ? child.exitCode : -1);
+    });
   });
   clearInterval(cancelTimer);
   clearTimeout(timeoutTimer);
@@ -203,11 +226,17 @@ async function runInvocation(work) {
     });
   }
 
+  // Carry the forced-kill fact into the terminal completion so the audit records
+  // it even if the separate cancel_force_killed event is lost or arrives late.
+  const forcedNote = cancelResult?.signal === "SIGKILL"
+    ? " Process tree was force-killed (SIGKILL) after ignoring graceful stop."
+    : "";
+
   if (timedOut) {
     await request("POST", "/api/bridge/complete", {
       invocationId,
       status: "timed_out",
-      summary: "CLI Agent exceeded its configured timeout.",
+      summary: `CLI Agent exceeded its configured timeout.${forcedNote}`,
       result: finalResult
     });
     return;
@@ -217,7 +246,7 @@ async function runInvocation(work) {
     await request("POST", "/api/bridge/complete", {
       invocationId,
       status: cancelResult?.ok === false ? "failed" : "cancelled",
-      summary: cancelResult?.ok === false ? cancelResult.message : "CLI Agent was cancelled locally.",
+      summary: cancelResult?.ok === false ? cancelResult.message : `CLI Agent was cancelled locally.${forcedNote}`,
       result: finalResult
     });
     return;
@@ -236,7 +265,7 @@ async function runInvocation(work) {
   await request("POST", "/api/bridge/complete", {
     invocationId,
     status: "failed",
-    summary: `Demo CLI Agent exited with code ${exitCode}.`,
+    summary: spawnError ? `Agent could not start: ${spawnError.message}` : `Demo CLI Agent exited with code ${exitCode}.`,
     result: finalResult
   });
 }
@@ -271,6 +300,14 @@ function checkCliAgentHealth(adapter) {
       ok: probe.ok,
       message: probe.ok ? "Codex CLI non-interactive surface is reachable." : probe.summary,
       nextAction: probe.ok ? null : "Verify Codex CLI installation and authentication."
+    };
+  }
+  if (isClaudeCliCommand(adapter.command)) {
+    const probe = probeClaudeCli(adapter);
+    return {
+      ok: probe.ok,
+      message: probe.ok ? "Claude Code CLI non-interactive surface is reachable." : probe.summary,
+      nextAction: probe.ok ? null : "Verify Claude Code CLI installation and authentication."
     };
   }
   if (adapter.command === "demo-agent") {
@@ -586,6 +623,32 @@ function isCodexCliCommand(command) {
   return ["codex", "codex.cmd", "codex.ps1", "codex.exe"].some((name) => normalized === name || normalized.endsWith(`/${name}`) || normalized.endsWith(`\\${name}`));
 }
 
+function isClaudeCliCommand(command) {
+  const normalized = String(command ?? "").trim().toLowerCase();
+  return ["claude", "claude.cmd", "claude.exe"].some((name) => normalized === name || normalized.endsWith(`/${name}`) || normalized.endsWith(`\\${name}`));
+}
+
+// Restricted Claude probe: `claude --version` only, no prompt is executed.
+function probeClaudeCli(adapter) {
+  const command = String(adapter.command ?? "claude");
+  const result = spawnSync(command, ["--version"], {
+    cwd: process.cwd(),
+    env: buildEnv({ ...adapter, environmentPolicy: "inherit_safe" }),
+    windowsHide: true,
+    encoding: "utf8",
+    shell: false,
+    stdio: ["ignore", "pipe", "pipe"]
+  });
+  // Require BOTH a version and a "claude" token in stdout — a stray x.y.z in a
+  // stderr warning (e.g. a deprecation notice) must not be read as healthy.
+  const stdout = result.stdout ?? "";
+  const ok = result.status === 0 && /\d+\.\d+\.\d+/.test(stdout) && /claude/i.test(stdout);
+  return {
+    ok,
+    summary: ok ? "Restricted Claude CLI probe passed." : "Restricted Claude CLI probe failed."
+  };
+}
+
 function codexCliArgs() {
   return ["exec", "--json", "--sandbox", "read-only", "--ephemeral", "{{task}}"];
 }
@@ -594,42 +657,120 @@ function codexRiskTags() {
   return ["read_local", "write_local", "shell_exec", "network_access", "repo_context", "code_change"];
 }
 
-async function terminateProcessTree(child) {
-  if (!child.pid) {
+// Terminate the agent's whole process tree, gracefully then forcefully, and
+// confirm it actually died. A coding agent spawns child processes (shells, model
+// calls); killing only the parent leaves orphans running. On posix the child is
+// a process-group leader (spawned detached), so we signal the negative pid to
+// reach the whole group; on Windows we use taskkill /t. SIGTERM is given a grace
+// period, then escalated to SIGKILL if the tree is still alive.
+async function terminateProcessTree(child, { graceMs = 2000 } = {}) {
+  if (!child || child.pid == null) {
     return { ok: false, message: "Cannot cancel CLI process because no process id was assigned." };
   }
   if (child.exitCode !== null || child.killed) {
-    return { ok: true, message: "Process already exited." };
+    return { ok: true, message: "Process already exited.", signal: null };
   }
 
   if (process.platform === "win32") {
-    return new Promise((resolveResult) => {
-      const killer = spawn("taskkill", ["/pid", String(child.pid), "/t", "/f"], {
-        windowsHide: true,
-        stdio: ["ignore", "pipe", "pipe"]
-      });
-      let stderr = "";
-      killer.stderr.on("data", (chunk) => {
-        stderr += chunk.toString("utf8");
-      });
-      killer.on("close", (code) => {
-        resolveResult({
-          ok: code === 0,
-          message: code === 0 ? "Windows process tree terminated." : `Windows process-tree cancellation failed: ${stderr.trim() || `taskkill exited ${code}`}`
-        });
-      });
-    });
+    const result = await taskkillTree(child);
+    await awaitChildExit(child, graceMs);
+    return result;
   }
 
-  try {
-    process.kill(-child.pid, "SIGTERM");
-  } catch (error) {
-    return {
-      ok: false,
-      message: `SIGTERM process-group cancellation failed: ${error instanceof Error ? error.message : String(error)}`
-    };
+  // posix: signal the process group, escalating SIGTERM -> SIGKILL.
+  safeGroupKill(child.pid, "SIGTERM");
+  if (await awaitChildExit(child, graceMs)) {
+    return { ok: true, message: "Process tree terminated with SIGTERM.", signal: "SIGTERM" };
   }
-  return { ok: true, message: "SIGTERM cancellation sent to CLI process." };
+  safeGroupKill(child.pid, "SIGKILL");
+  if (await awaitChildExit(child, graceMs)) {
+    return { ok: true, message: "Process tree force-killed with SIGKILL after grace period.", signal: "SIGKILL" };
+  }
+  return { ok: false, message: "Process tree did not exit after SIGTERM and SIGKILL.", signal: "SIGKILL" };
+}
+
+// Make a forced kill observable: when a process tree ignored the graceful stop
+// and had to be SIGKILLed, record it so the timeline and audit show that a hard
+// kill was needed (not a clean cooperative stop).
+async function reportForcedKill(invocationId, result, context) {
+  if (result?.signal !== "SIGKILL") {
+    return;
+  }
+  await request("POST", "/api/bridge/events", {
+    invocationId,
+    type: "cancel_force_killed",
+    level: "warn",
+    message: `${context}: the agent process tree ignored the graceful stop and was force-killed (SIGKILL).`,
+    data: { signal: "SIGKILL", reason: result.message }
+  });
+}
+
+// Resolve true if the child exits within ms, false otherwise.
+function awaitChildExit(child, ms) {
+  if (child.exitCode !== null || child.killed) {
+    return Promise.resolve(true);
+  }
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      child.removeListener("exit", onExit);
+      resolve(value);
+    };
+    const onExit = () => finish(true);
+    child.once("exit", onExit);
+    const timer = setTimeout(() => finish(false), ms);
+  });
+}
+
+// Signal a process group, tolerating an already-gone group (ESRCH) and falling
+// back to the single pid if the group signal is not permitted.
+function safeGroupKill(pid, signal) {
+  try {
+    process.kill(-pid, signal);
+    return true;
+  } catch (error) {
+    if (error && error.code === "ESRCH") {
+      return false;
+    }
+    try {
+      process.kill(pid, signal);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+}
+
+function taskkillTree(child) {
+  return new Promise((resolve) => {
+    const killer = spawn("taskkill", ["/pid", String(child.pid), "/t", "/f"], {
+      windowsHide: true,
+      stdio: ["ignore", "pipe", "pipe"]
+    });
+    let stderr = "";
+    killer.stderr.on("data", (chunk) => {
+      stderr += chunk.toString("utf8");
+    });
+    killer.on("error", (error) => {
+      resolve({ ok: false, message: `taskkill could not run: ${error.message}`, signal: null });
+    });
+    killer.on("close", (code) => {
+      const gone = child.exitCode !== null || /not found|128/i.test(stderr);
+      resolve({
+        ok: code === 0 || gone,
+        message:
+          code === 0
+            ? "Windows process tree terminated (taskkill /t /f)."
+            : gone
+              ? "Process already exited."
+              : `Windows process-tree cancellation failed: ${stderr.trim() || `taskkill exited ${code}`}`,
+        signal: "taskkill"
+      });
+    });
+  });
 }
 
 async function handleAgentLine(invocationId, line, adapter = {}) {
@@ -638,6 +779,9 @@ async function handleAgentLine(invocationId, line, adapter = {}) {
   }
   if (adapter.outputFormat === "codex_jsonl") {
     return handleCodexJsonLine(invocationId, line);
+  }
+  if (adapter.outputFormat === "claude_jsonl") {
+    return handleClaudeJsonLine(invocationId, line);
   }
   if (line.startsWith("RESULT ")) {
     return JSON.parse(line.slice("RESULT ".length));
@@ -685,7 +829,14 @@ async function handleCodexJsonLine(invocationId, line) {
       summary: "Codex CLI completed.",
       touchedUserFiles: false,
       output: { usage: event.usage ?? null },
-      cost: { model: "codex", billable: true, unknown: true }
+      cost: {
+        model: "codex",
+        billable: true,
+        unknown: true,
+        amountUsd: null,
+        inputTokens: Number(event.usage?.input_tokens ?? 0) || 0,
+        outputTokens: Number(event.usage?.output_tokens ?? 0) || 0
+      }
     };
   }
 
@@ -709,6 +860,72 @@ function codexEventMessage(event) {
   if (event.type === "error") return `Codex error: ${event.message ?? event.error?.message ?? "unknown error"}.`;
   if (event.item?.type === "agent_message" && event.item?.text) return String(event.item.text);
   if (event.item?.type) return `Codex event: ${event.item.type}.`;
+  return null;
+}
+
+// Parse one Claude Code stream-json line. The final `result` event carries the
+// answer text; assistant events stream interim output as evidence.
+async function handleClaudeJsonLine(invocationId, line) {
+  let event;
+  try {
+    event = JSON.parse(line);
+  } catch {
+    await request("POST", "/api/bridge/events", {
+      invocationId,
+      type: "agent_output",
+      level: "info",
+      message: line
+    });
+    return null;
+  }
+
+  const message = claudeEventMessage(event);
+  if (message) {
+    await request("POST", "/api/bridge/events", {
+      invocationId,
+      type: "agent_output",
+      level: event.type === "result" && event.subtype !== "success" ? "warn" : "info",
+      message,
+      data: {
+        source: "claude_jsonl",
+        eventType: event.type,
+        subtype: event.subtype ?? null
+      }
+    });
+  }
+
+  if (event.type === "result") {
+    const text = typeof event.result === "string" ? event.result : `Claude result: ${event.subtype ?? "done"}`;
+    return {
+      summary: String(text),
+      touchedUserFiles: false,
+      output: { subtype: event.subtype ?? null, numTurns: event.num_turns ?? null },
+      cost: {
+        model: "claude",
+        billable: true,
+        unknown: typeof event.total_cost_usd !== "number",
+        amountUsd: typeof event.total_cost_usd === "number" ? event.total_cost_usd : null,
+        inputTokens: Number(event.usage?.input_tokens ?? 0) || 0,
+        outputTokens: Number(event.usage?.output_tokens ?? 0) || 0
+      }
+    };
+  }
+
+  return null;
+}
+
+function claudeEventMessage(event) {
+  if (event.type === "assistant" && Array.isArray(event.message?.content)) {
+    const text = event.message.content
+      .filter((block) => block.type === "text")
+      .map((block) => block.text)
+      .join("")
+      .trim();
+    return text || null;
+  }
+  if (event.type === "result") {
+    return typeof event.result === "string" ? event.result : `Claude result: ${event.subtype ?? "done"}.`;
+  }
   return null;
 }
 

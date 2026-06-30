@@ -1,12 +1,103 @@
 import http from "node:http";
+import fs from "node:fs";
+import path from "node:path";
+import { spawn, execFileSync as nodeExecFileSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
+import crypto from "node:crypto";
+import os from "node:os";
+
+// Durable default parent for repo-backed projects. The Register dialog pre-fills
+// this so clones land in a persistent home dir instead of a transient cwd (the
+// old default was process.cwd() — the server's own repo). Overridable per clone.
+const DEFAULT_CLONE_PARENT = path.join(os.homedir(), ".myagenttool", "repos");
+
+// Expand a leading "~" to the home dir so a user-typed "~/repos" resolves.
+function expandHome(p) {
+  const s = String(p ?? "").trim();
+  if (s === "~") return os.homedir();
+  if (s.startsWith("~/")) return path.join(os.homedir(), s.slice(2));
+  return s;
+}
+
+// All synchronous git/gh calls run inside the single HTTP handler and block the
+// event loop, so a slow/hung subprocess (e.g. `gh pr list` on a flaky network,
+// `git fetch`, `git grep`/`git status` on a huge repo) would freeze the whole
+// server for every client. Inject a default timeout + SIGKILL + larger buffer so
+// a stuck process is killed and the call's existing catch degrades gracefully.
+// Per-call options still override these defaults (e.g. a shorter timeout).
+function execFileSync(file, args, options = {}) {
+  return nodeExecFileSync(file, args, { timeout: 8000, killSignal: "SIGKILL", maxBuffer: 16 * 1024 * 1024, ...options });
+}
 
 const namespace = "com.myagenttool";
 const protocolVersion = "0.0.0";
 const host = process.env.SERVER_HOST ?? "127.0.0.1";
 const port = Number(process.env.SERVER_PORT ?? 3001);
 const dispatchLeaseMs = Number(process.env.SERVER_DISPATCH_LEASE_MS ?? 30_000);
+// Default cross-worktree concurrency for the device. The authoritative limit
+// lives on the device record (state.device.maxConcurrency, tunable via the
+// Devices UI); this env only seeds the initial value. Clamped to the same 1–16
+// range PATCH/load enforce so the env can't seed an unbounded cap.
+const ENV_MAX_CONCURRENCY = Math.floor(Number(process.env.BRIDGE_MAX_CONCURRENT));
+const DEFAULT_MAX_CONCURRENCY = Number.isFinite(ENV_MAX_CONCURRENCY) ? Math.max(1, Math.min(16, ENV_MAX_CONCURRENCY)) : 3;
+
+// JSON snapshot persistence (orca-style flat file + schema version). SQLite is a
+// P1+ concern; for now durability matters most for projects/ledger/budgets.
+const PERSIST_VERSION = 2;
+const PERSIST_FILE = process.env.SERVER_STATE_FILE
+  ? path.resolve(process.env.SERVER_STATE_FILE)
+  : path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "data", "state.json");
+// "device" is written so its maxConcurrency setting survives restarts; the load
+// path restores only that field (the rest of the device is runtime state).
+const PERSIST_KEYS = ["device", "users", "teams", "tokens", "projects", "projectTargets", "worktrees", "agents", "skills", "automations", "invocations", "ledgerEntries", "budgets", "quotaDecisionRecords"];
+let persistTimer = null;
+
+// Identity Phase 2 (auth). When MYAGENT_REQUIRE_AUTH=1, every non-public route
+// demands a valid Bearer token (resolveActor().authenticated) or answers 401.
+// Default off so the single-user demo and the Desktop Bridge keep working while
+// the web client carries a token; flip it on to make authentication mandatory.
+// Bridge (`/api/bridge/*`) stays on the device trust boundary (a separate
+// concern, IDENTITY_PLAN.md gap #3) and is always exempt. See IDENTITY_PLAN.md.
+const REQUIRE_AUTH = process.env.MYAGENT_REQUIRE_AUTH === "1";
+// Guard against a non-numeric override (e.g. "30d") that would make Number()
+// NaN and mint instantly-expired tokens — a login→401→relogin lockout loop.
+const TOKEN_TTL_DEFAULT_MS = 30 * 24 * 60 * 60 * 1000;
+const TOKEN_TTL_ENV = Number(process.env.MYAGENT_TOKEN_TTL_MS);
+const TOKEN_TTL_MS = Number.isFinite(TOKEN_TTL_ENV) && TOKEN_TTL_ENV > 0 ? TOKEN_TTL_ENV : TOKEN_TTL_DEFAULT_MS;
 
 const state = {
+  // Identity floor (see docs/engineering/IDENTITY_PLAN.md). Phase 1 seeds a
+  // single local user/team and propagates them via resolveActor; tokens are a
+  // Phase 2 concern.
+  users: [{ id: "usr_local", name: "Local User", teamId: "team_local" }],
+  teams: [{ id: "team_local", name: "Local Team" }],
+  tokens: [],
+  // Automation rules: a saved task that runs an agent on a schedule/trigger.
+  // The schedule is descriptive metadata for now — the cron scheduler that fires
+  // it is a follow-up; "Run now" already creates a real invocation.
+  automations: [
+    {
+      id: "atm_demo_audit",
+      name: "Weekday repo audit",
+      enabled: true,
+      projectId: "prj_default",
+      branch: "main",
+      schedule: { kind: "weekdays", time: "09:00", label: "Weekdays at 9:00" },
+      nextRunAt: null,
+      sessionMode: "fresh",
+      graceHours: 12,
+      precheck: "None",
+      agentId: "agt_demo_cli",
+      prompt:
+        "Check the repository's health: dependency updates, failing tests, lint/type-check status, and risky open changes. Summarize findings and recommend next steps.",
+      lastRunAt: null,
+      lastInvocationId: null,
+      runCount: 0,
+      tokens: 0,
+      createdBy: "usr_local",
+      createdAt: now()
+    }
+  ],
   device: {
     id: "dev_local_001",
     ownerUserId: "usr_local",
@@ -17,15 +108,60 @@ const state = {
     pathFormat: process.platform === "win32" ? "windows" : "posix",
     bridgeVersion: "0.0.0",
     status: "offline",
+    // Max invocations this machine runs at once (across distinct worktrees).
+    maxConcurrency: DEFAULT_MAX_CONCURRENCY,
     unlinkState: "linked",
     lastSeenAt: null,
     registeredCapabilities: [],
     credentialRevokedAt: null,
     createdAt: now()
   },
+  projects: [
+    {
+      id: "prj_default",
+      name: "Default Project",
+      color: "#6366f1",
+      ownerTeamId: "team_local",
+      budgetPoolId: null,
+      defaultAgentId: "agt_demo_cli",
+      status: "active",
+      isolation: "shared",
+      createdAt: now()
+    }
+  ],
+  projectTargets: [],
+  worktrees: [],
+  // Skill library: agent-targeted instruction docs rendered into ephemeral
+  // worktrees in each agent's native format. The seed "image-edit" skill drives
+  // the shared image-tool capability (claude via MCP, codex via CLI).
+  skills: [
+    {
+      id: "skl_image_edit",
+      name: "Image Edit",
+      slug: "image-edit",
+      description: "Edit or generate images from a reference image and a text prompt.",
+      body: [
+        "Use this when the task asks to edit, retouch, restyle, or generate an image",
+        "(改图 / 编辑图片 / 抠图 / 换背景 / 生成图片).",
+        "",
+        "- claude: call the `edit_image` tool exposed by the `image-tool` MCP server.",
+        "- codex: run the CLI `node packages/image-tool/cli.mjs --input <path> --prompt <text> --output <path>`.",
+        "",
+        "Always pass an explicit output path and report it back when done."
+      ].join("\n"),
+      targets: ["claude", "codex"],
+      tool: {
+        cli: "node packages/image-tool/cli.mjs",
+        mcp: { name: "image-tool", command: "node", args: ["packages/image-tool/mcp-server.mjs"] }
+      },
+      enabled: true,
+      createdAt: now()
+    }
+  ],
   agents: [
     {
       id: "agt_demo_cli",
+      projectId: "prj_default",
       name: "Demo CLI Agent",
       description: "Safe local demo agent for M0 smoke tests.",
       ownerUserId: "usr_local",
@@ -78,6 +214,7 @@ const state = {
     },
     {
       id: "agt_platform_troubleshooter",
+      projectId: "prj_default",
       name: "Invocation Troubleshooter",
       description: "Platform-owned agent that explains failed invocations and suggested fixes.",
       ownerUserId: "system",
@@ -190,11 +327,57 @@ const state = {
   approvalRequests: [],
   policyDecisionRecords: [],
   troubleshootingReports: [],
-  agentUsageSummaries: []
+  agentUsageSummaries: [],
+  ledgerEntries: [],
+  budgets: []
 };
 
 let idCounter = 1;
 const directHttpRuns = new Map();
+
+// Token price book (USD per 1M tokens) for estimating cost when an agent reports
+// no billed amount (e.g. Codex). Declared before the module-load self-check so
+// estimateCostUsd can reference it without a const TDZ.
+const TOKEN_PRICING = {
+  codex: { inputPerMTok: 1.25, outputPerMTok: 10 },
+  claude: { inputPerMTok: 3, outputPerMTok: 15 }
+};
+// Best-effort hold per in-flight run for budget admission; the true per-run cost
+// is unknown until completion, so this only bounds concurrent bursts.
+const BUDGET_RESERVATION_USD = 0.05;
+
+// One descriptor per first-class coding agent collapses the Codex/Claude special
+// cases (id, mode key, default args, timeout, risk tags, notes) into a single
+// entry. Adding a provider = one entry here (+ a TOKEN_PRICING row). Declared
+// before the self-check; the values only reference hoisted functions.
+const CODING_AGENTS = {
+  codex: {
+    matches: (command) => isCodexCliCommand(command),
+    idPrefix: "agt_codex_",
+    modeKey: "sandbox",
+    normalizeMode: (value) => normalizeCodexSandbox(value),
+    defaultArgs: (mode) => codexCliArgs(mode),
+    timeoutSeconds: 120,
+    riskTags: () => codexRiskTags(),
+    notes: () => codexRegistrationNotes()
+  },
+  claude: {
+    matches: (command) => isClaudeCliCommand(command),
+    idPrefix: "agt_claude_",
+    modeKey: "permissionMode",
+    normalizeMode: (value) => normalizeClaudePermissionMode(value),
+    defaultArgs: (mode) => claudeCliArgs(mode),
+    timeoutSeconds: 180,
+    riskTags: () => claudeRiskTags(),
+    notes: () => claudeRegistrationNotes()
+  }
+};
+function codingAgentProfile(command) {
+  for (const profile of Object.values(CODING_AGENTS)) {
+    if (profile.matches(command)) return profile;
+  }
+  return null;
+}
 
 if (process.argv.includes("--check")) {
   runProtocolSelfCheck();
@@ -225,8 +408,80 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    // Identity Phase 2 auth gate — one choke point in front of every route below.
+    // OPTIONS and /health already returned above. The login endpoint and the
+    // device-boundary bridge are exempt; everything else needs a valid token
+    // when REQUIRE_AUTH is on. Off by default (single-user demo unchanged).
+    if (
+      REQUIRE_AUTH &&
+      !(req.method === "POST" && url.pathname === "/api/session") &&
+      !url.pathname.startsWith("/api/bridge/") &&
+      !resolveActor(req).authenticated
+    ) {
+      sendJson(res, 401, { error: "unauthenticated", message: "A valid Bearer token is required." });
+      return;
+    }
+
+    // Phase 3 tenancy gate (one choke point, mirrors the auth gate). Project-,
+    // worktree-, and invocation-scoped routes are reachable only by the owning
+    // team: resolve the target's team from the path id and 403 on mismatch.
+    // Unknown ids fall through to the route's own 404. No-op in single-team
+    // setups (everything is team_local). See docs/engineering/IDENTITY_PLAN.md.
+    {
+      let scopedTeam = null;
+      let m;
+      if ((m = url.pathname.match(/^\/api\/projects\/([^/]+)(?:\/|$)/))) {
+        const proj = findProject(decodeURIComponent(m[1]));
+        if (proj) scopedTeam = teamOf(proj);
+      } else if ((m = url.pathname.match(/^\/api\/worktrees\/([^/]+)(?:\/|$)/))) {
+        const wt = state.worktrees.find((w) => w.id === decodeURIComponent(m[1]));
+        if (wt) scopedTeam = projectTeam(wt.projectId);
+      } else if ((m = url.pathname.match(/^\/api\/invocations\/([^/]+)(?:\/|$)/))) {
+        const inv = findInvocation(decodeURIComponent(m[1]));
+        if (inv) scopedTeam = projectTeam(inv.projectId);
+      }
+      if (scopedTeam && scopedTeam !== resolveActor(req).teamId) {
+        sendJson(res, 403, { error: "forbidden", message: "Resource belongs to another team." });
+        return;
+      }
+    }
+
+    // Local dev login: issue a bearer token for a known user. There is no
+    // password yet (Phase 2 scope is token plumbing, not credential storage —
+    // OIDC/SSO is explicitly out of scope, IDENTITY_PLAN.md), so this trusts the
+    // requested userId and defaults to the seeded local user.
+    if (req.method === "POST" && url.pathname === "/api/session") {
+      const body = await readJson(req).catch(() => ({}));
+      const userId = String(body?.userId ?? "usr_local");
+      const user = findUser(userId);
+      if (!user) {
+        sendJson(res, 400, { error: "unknown_user", message: `No such user: ${userId}` });
+        return;
+      }
+      const record = issueToken(user.id);
+      sendJson(res, 200, {
+        token: record.token,
+        expiresAt: record.expiresAt,
+        user: { id: user.id, name: user.name, teamId: user.teamId }
+      });
+      return;
+    }
+
+    // Logout: revoke the presented token (idempotent).
+    if (req.method === "DELETE" && url.pathname === "/api/session") {
+      const token = String(req.headers?.authorization ?? "").replace(/^Bearer\s+/i, "");
+      if (token) {
+        const before = state.tokens.length;
+        state.tokens = state.tokens.filter((t) => t.token !== token);
+        if (before !== state.tokens.length) persistState();
+      }
+      res.writeHead(204);
+      res.end();
+      return;
+    }
+
     if (req.method === "GET" && url.pathname === "/api/state") {
-      sendJson(res, 200, publicState());
+      sendJson(res, 200, publicState(resolveActor(req)));
       return;
     }
 
@@ -248,6 +503,12 @@ const server = http.createServer(async (req, res) => {
         }
         agent.status = "available";
         agent.updatedAt = now();
+        // Local CLI agents have no health endpoint; probe them once the bridge
+        // is online so a fresh/restarted agent doesn't sit at "Not checked".
+        // Only when health is unknown, so reconnects don't re-probe endlessly.
+        if (agent.adapter?.type === "cli" && (!agent.health || agent.health.status === "unknown")) {
+          createAgentHealthCheck(agent);
+        }
       }
       redeliverExpiredDispatches();
       appendEvent({
@@ -272,6 +533,12 @@ const server = http.createServer(async (req, res) => {
         });
         return;
       }
+      // Coding agents have no health endpoint, so auto-run the restricted CLI
+      // probe (codex exec --help / claude --version) on manual registration —
+      // a fresh agent reports Healthy/Needs attention instead of "Not checked".
+      if (agent.adapter?.type === "cli" && (isCodexCliCommand(agent.adapter.command) || isClaudeCliCommand(agent.adapter.command))) {
+        createAgentHealthCheck(agent);
+      }
       sendJson(res, 201, { agent });
       return;
     }
@@ -280,6 +547,451 @@ const server = http.createServer(async (req, res) => {
       const body = await readJson(req);
       const discoveryRun = createDiscoveryRun(body);
       sendJson(res, 202, { discoveryRun });
+      return;
+    }
+
+    if (req.method === "GET" && url.pathname === "/api/projects") {
+      const teamId = resolveActor(req).teamId;
+      sendJson(res, 200, { projects: state.projects.filter((p) => teamOf(p) === teamId) });
+      return;
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/projects") {
+      const body = await readJson(req);
+      // Phase 3: a new project is owned by the creator's team by default.
+      if (body.ownerTeamId == null) body.ownerTeamId = resolveActor(req).teamId;
+      try {
+        if (body.repoUrl || body.repoPath) {
+          const result = createProjectWithRepo(body);
+          sendJson(res, 201, result);
+          return;
+        }
+        sendJson(res, 201, { project: createProject(body) });
+      } catch (error) {
+        sendJson(res, 400, { error: "invalid_project", message: error instanceof Error ? error.message : String(error) });
+      }
+      return;
+    }
+
+    const projectMatch = url.pathname.match(/^\/api\/projects\/([^/]+)$/);
+    if (req.method === "PATCH" && projectMatch) {
+      const body = await readJson(req);
+      let project;
+      try {
+        project = updateProject(decodeURIComponent(projectMatch[1]), body);
+      } catch (error) {
+        sendJson(res, 404, { error: "project_not_found", message: error instanceof Error ? error.message : String(error) });
+        return;
+      }
+      sendJson(res, 200, { project });
+      return;
+    }
+
+    if (req.method === "GET" && url.pathname === "/api/skills") {
+      sendJson(res, 200, { skills: state.skills });
+      return;
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/skills") {
+      const body = await readJson(req);
+      try {
+        sendJson(res, 201, { skill: createSkill(body) });
+      } catch (error) {
+        sendJson(res, 400, { error: "invalid_skill", message: error instanceof Error ? error.message : String(error) });
+      }
+      return;
+    }
+
+    const skillMatch = url.pathname.match(/^\/api\/skills\/([^/]+)$/);
+    if (req.method === "PATCH" && skillMatch) {
+      const body = await readJson(req);
+      try {
+        sendJson(res, 200, { skill: updateSkill(decodeURIComponent(skillMatch[1]), body) });
+      } catch (error) {
+        sendJson(res, 404, { error: "skill_not_found", message: error instanceof Error ? error.message : String(error) });
+      }
+      return;
+    }
+    if (req.method === "DELETE" && skillMatch) {
+      try {
+        deleteSkill(decodeURIComponent(skillMatch[1]));
+        sendJson(res, 200, { ok: true });
+      } catch (error) {
+        sendJson(res, 404, { error: "skill_not_found", message: error instanceof Error ? error.message : String(error) });
+      }
+      return;
+    }
+
+    const githubMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/github$/);
+    if (req.method === "GET" && githubMatch) {
+      const project = findProject(decodeURIComponent(githubMatch[1]));
+      if (!project) {
+        sendJson(res, 404, { error: "project_not_found" });
+        return;
+      }
+      sendJson(res, 200, projectGithubItems(project));
+      return;
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/worktree-name-suggestion") {
+      const body = await readJson(req);
+      sendJson(res, 200, suggestBranchName(body.description));
+      return;
+    }
+
+    const branchesMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/branches$/);
+    if (req.method === "GET" && branchesMatch) {
+      const project = findProject(decodeURIComponent(branchesMatch[1]));
+      if (!project) {
+        sendJson(res, 404, { error: "project_not_found" });
+        return;
+      }
+      sendJson(res, 200, listProjectBranches(project));
+      return;
+    }
+
+    const worktreeCreateMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/worktrees$/);
+    if (req.method === "POST" && worktreeCreateMatch) {
+      const body = await readJson(req);
+      const project = findProject(decodeURIComponent(worktreeCreateMatch[1]));
+      if (!project) {
+        sendJson(res, 404, { error: "project_not_found" });
+        return;
+      }
+      try {
+        const link = normalizeWorktreeLink(body.link);
+        const worktree = body.prNumber
+          ? createWorktreeFromPr(project, body.prNumber, { agentId: body.agentId, link })
+          : body.ref
+            ? createWorktreeFromRef(project, body.ref, { agentId: body.agentId })
+            : createNamedWorktree(project, body.name, { agentId: body.agentId, startPoint: body.startPoint, link });
+        sendJson(res, 201, { worktree });
+      } catch (error) {
+        sendJson(res, 400, { error: "invalid_worktree", message: error instanceof Error ? error.message : String(error) });
+      }
+      return;
+    }
+
+    const worktreeFilesMatch = url.pathname.match(/^\/api\/worktrees\/([^/]+)\/files$/);
+    if (req.method === "GET" && worktreeFilesMatch) {
+      const worktree = state.worktrees.find((w) => w.id === decodeURIComponent(worktreeFilesMatch[1]));
+      if (!worktree) {
+        sendJson(res, 404, { error: "worktree_not_found" });
+        return;
+      }
+      sendJson(res, 200, { path: worktree.path, tree: worktreeTree(worktree.path) });
+      return;
+    }
+
+    const worktreeFileMatch = url.pathname.match(/^\/api\/worktrees\/([^/]+)\/file$/);
+    if (req.method === "GET" && worktreeFileMatch) {
+      const worktree = state.worktrees.find((w) => w.id === decodeURIComponent(worktreeFileMatch[1]));
+      if (!worktree) {
+        sendJson(res, 404, { error: "worktree_not_found" });
+        return;
+      }
+      const rel = url.searchParams.get("path") ?? "";
+      const root = path.resolve(worktree.path);
+      const abs = path.resolve(root, rel);
+      // Guard against path traversal — lexically, then resolve symlinks and
+      // re-check so an in-tree symlink pointing outside can't escape.
+      if (abs !== root && !abs.startsWith(root + path.sep)) {
+        sendJson(res, 400, { error: "invalid_path" });
+        return;
+      }
+      try {
+        const realRoot = fs.realpathSync(root);
+        const realAbs = fs.realpathSync(abs);
+        if (realAbs !== realRoot && !realAbs.startsWith(realRoot + path.sep)) {
+          sendJson(res, 400, { error: "invalid_path" });
+          return;
+        }
+        const stat = fs.statSync(realAbs);
+        if (stat.isDirectory()) {
+          sendJson(res, 400, { error: "is_directory" });
+          return;
+        }
+        if (stat.size > 512 * 1024) {
+          sendJson(res, 200, { path: rel, content: "", truncated: true, message: "File too large to preview." });
+          return;
+        }
+        sendJson(res, 200, { path: rel, content: fs.readFileSync(realAbs, "utf8") });
+      } catch (error) {
+        sendJson(res, 404, { error: "file_not_found", message: error instanceof Error ? error.message : String(error) });
+      }
+      return;
+    }
+
+    // Save pasted/attached files into the worktree so the agent (whose cwd is the
+    // worktree) can read them. Files land in .agent-attachments/; names are
+    // sanitized to a basename and prefixed to avoid collisions/traversal.
+    const worktreeAttachMatch = url.pathname.match(/^\/api\/worktrees\/([^/]+)\/attachments$/);
+    if (req.method === "POST" && worktreeAttachMatch) {
+      const worktree = state.worktrees.find((w) => w.id === decodeURIComponent(worktreeAttachMatch[1]));
+      if (!worktree) {
+        sendJson(res, 404, { error: "worktree_not_found" });
+        return;
+      }
+      let body;
+      try {
+        // Bound the body so a flood of large base64 can't OOM the single process.
+        body = await readJson(req, 40 * 1024 * 1024);
+      } catch (error) {
+        sendJson(res, error?.statusCode === 413 ? 413 : 400, { error: "invalid_body", message: error instanceof Error ? error.message : String(error) });
+        return;
+      }
+      const files = Array.isArray(body.files) ? body.files.slice(0, 6) : [];
+      const MAX_BYTES = 5 * 1024 * 1024;
+      const root = path.resolve(worktree.path);
+      const dir = path.join(root, ".agent-attachments");
+      const saved = [];
+      const skipped = [];
+      try {
+        // Mirror the /file read guard: a symlinked attachments dir (or worktree)
+        // must not let writes escape the tree. Reject a symlinked dir, then
+        // realpath-verify the dir resolves under the worktree root.
+        if (fs.existsSync(dir) && fs.lstatSync(dir).isSymbolicLink()) {
+          sendJson(res, 400, { error: "invalid_path" });
+          return;
+        }
+        fs.mkdirSync(dir, { recursive: true });
+        const realRoot = fs.realpathSync(root);
+        const realDir = fs.realpathSync(dir);
+        if (realDir !== realRoot && !realDir.startsWith(realRoot + path.sep)) {
+          sendJson(res, 400, { error: "invalid_path" });
+          return;
+        }
+        // Keep attachments out of git (untracked clutter + the ephemeral-cleanup
+        // `git add -A` would otherwise commit binaries onto the kept branch). A
+        // self-contained ignore is worktree-type-agnostic.
+        fs.writeFileSync(path.join(dir, ".gitignore"), "*\n");
+        for (const file of files) {
+          const declaredName = path.basename(String(file?.name ?? "file")).replace(/[^A-Za-z0-9._-]/g, "_").slice(0, 80) || "file";
+          const raw = String(file?.dataBase64 ?? "");
+          const buf = raw ? Buffer.from(raw, "base64") : Buffer.alloc(0);
+          if (buf.length === 0 || buf.length > MAX_BYTES) {
+            skipped.push({ name: declaredName, reason: buf.length === 0 ? "empty" : "too_large" });
+            continue;
+          }
+          const name = `${crypto.randomBytes(3).toString("hex")}-${declaredName}`;
+          fs.writeFileSync(path.join(dir, name), buf);
+          saved.push({ name: declaredName, path: `.agent-attachments/${name}`, bytes: buf.length });
+        }
+      } catch (error) {
+        sendJson(res, 500, { error: "attachment_write_failed", message: error instanceof Error ? error.message : String(error) });
+        return;
+      }
+      sendJson(res, 201, { attachments: saved, skipped });
+      return;
+    }
+
+    const worktreeSearchMatch = url.pathname.match(/^\/api\/worktrees\/([^/]+)\/search$/);
+    if (req.method === "GET" && worktreeSearchMatch) {
+      const worktree = state.worktrees.find((w) => w.id === decodeURIComponent(worktreeSearchMatch[1]));
+      if (!worktree) {
+        sendJson(res, 404, { error: "worktree_not_found" });
+        return;
+      }
+      const q = url.searchParams.get("q") ?? "";
+      const mode = url.searchParams.get("mode") === "content" ? "content" : "name";
+      sendJson(res, 200, searchWorktree(worktree, q, mode));
+      return;
+    }
+
+    const worktreeGitMatch = url.pathname.match(/^\/api\/worktrees\/([^/]+)\/git$/);
+    if (req.method === "GET" && worktreeGitMatch) {
+      const worktree = state.worktrees.find((w) => w.id === decodeURIComponent(worktreeGitMatch[1]));
+      if (!worktree) {
+        sendJson(res, 404, { error: "worktree_not_found" });
+        return;
+      }
+      sendJson(res, 200, worktreeGitStatus(worktree));
+      return;
+    }
+
+    const worktreeDiffMatch = url.pathname.match(/^\/api\/worktrees\/([^/]+)\/diff$/);
+    if (req.method === "GET" && worktreeDiffMatch) {
+      const worktree = state.worktrees.find((w) => w.id === decodeURIComponent(worktreeDiffMatch[1]));
+      if (!worktree) {
+        sendJson(res, 404, { error: "worktree_not_found" });
+        return;
+      }
+      sendJson(res, 200, worktreeDiff(worktree));
+      return;
+    }
+
+    const worktreePushMatch = url.pathname.match(/^\/api\/worktrees\/([^/]+)\/push$/);
+    if (req.method === "POST" && worktreePushMatch) {
+      const worktree = state.worktrees.find((w) => w.id === decodeURIComponent(worktreePushMatch[1]));
+      if (!worktree) {
+        sendJson(res, 404, { error: "worktree_not_found" });
+        return;
+      }
+      try {
+        sendJson(res, 200, { git: publishWorktreeBranch(worktree) });
+      } catch (error) {
+        sendJson(res, 502, { error: "push_failed", message: error instanceof Error ? error.message : String(error) });
+      }
+      return;
+    }
+
+    const worktreePrMatch = url.pathname.match(/^\/api\/worktrees\/([^/]+)\/pr$/);
+    if (req.method === "POST" && worktreePrMatch) {
+      const worktree = state.worktrees.find((w) => w.id === decodeURIComponent(worktreePrMatch[1]));
+      if (!worktree) {
+        sendJson(res, 404, { error: "worktree_not_found" });
+        return;
+      }
+      const body = await readJson(req);
+      try {
+        const pr = createWorktreePr(worktree, { title: body.title, body: body.body });
+        sendJson(res, 201, { pr, link: worktree.link });
+      } catch (error) {
+        sendJson(res, 502, { error: "pr_failed", message: error instanceof Error ? error.message : String(error) });
+      }
+      return;
+    }
+
+    const worktreeDeleteMatch = url.pathname.match(/^\/api\/worktrees\/([^/]+)$/);
+    if (req.method === "DELETE" && worktreeDeleteMatch) {
+      try {
+        removeNamedWorktree(decodeURIComponent(worktreeDeleteMatch[1]));
+        sendJson(res, 200, { ok: true });
+      } catch (error) {
+        sendJson(res, 404, { error: "worktree_not_found", message: error instanceof Error ? error.message : String(error) });
+      }
+      return;
+    }
+
+    if ((req.method === "PUT" || req.method === "POST") && url.pathname === "/api/budgets") {
+      const body = await readJson(req);
+      // Phase 3: can't set a budget on another team's project (projectId is in
+      // the body, not the path, so it bypasses the central gate). Unknown ids
+      // fall through to upsertBudget's own 400 "must reference a known project".
+      const targetProject = body?.projectId ? findProject(String(body.projectId)) : null;
+      if (targetProject && denyForeignProject(res, resolveActor(req), targetProject.id)) return;
+      let budget;
+      try {
+        budget = upsertBudget(body);
+      } catch (error) {
+        sendJson(res, 400, { error: "invalid_budget", message: error instanceof Error ? error.message : String(error) });
+        return;
+      }
+      sendJson(res, 200, { budget, status: budgetStatusFor(budget.projectId) });
+      return;
+    }
+
+    // Automation rules. Project-scoped, but the id isn't a project path, so each
+    // handler checks the owning team explicitly (denyForeignProject).
+    if (req.method === "POST" && url.pathname === "/api/automations") {
+      const body = await readJson(req);
+      const actor = resolveActor(req);
+      const name = String(body.name ?? "").trim();
+      const projectId = String(body.projectId ?? "");
+      if (!name) {
+        sendJson(res, 400, { error: "invalid_automation", message: "Name is required." });
+        return;
+      }
+      if (!findProject(projectId)) {
+        sendJson(res, 400, { error: "invalid_automation", message: "A known projectId is required." });
+        return;
+      }
+      if (denyForeignProject(res, actor, projectId)) return;
+      const schedule = normalizeSchedule(body.schedule);
+      const enabled = body.enabled !== false;
+      const automation = {
+        id: nextId("atm"),
+        name,
+        enabled,
+        projectId,
+        branch: String(body.branch ?? "main"),
+        schedule,
+        nextRunAt: enabled ? computeNextRun(schedule) : null,
+        sessionMode: body.sessionMode === "reuse" ? "reuse" : "fresh",
+        graceHours: Number.isFinite(Number(body.graceHours)) ? Number(body.graceHours) : 12,
+        precheck: typeof body.precheck === "string" && body.precheck.trim() ? body.precheck.trim() : "None",
+        agentId: findAgent(body.agentId) ? body.agentId : defaultAgent()?.id ?? null,
+        prompt: String(body.prompt ?? ""),
+        lastRunAt: null,
+        lastInvocationId: null,
+        runCount: 0,
+        tokens: 0,
+        // Scheduled runs are attributed to whoever created the rule (the manual
+        // /run path uses the requester) so cross-team accounting stays correct.
+        createdBy: actor.userId,
+        createdAt: now()
+      };
+      state.automations.unshift(automation);
+      persistState();
+      sendJson(res, 201, { automation });
+      return;
+    }
+
+    const automationRunMatch = url.pathname.match(/^\/api\/automations\/([^/]+)\/run$/);
+    if (req.method === "POST" && automationRunMatch) {
+      const automation = state.automations.find((a) => a.id === decodeURIComponent(automationRunMatch[1]));
+      if (!automation) {
+        sendJson(res, 404, { error: "automation_not_found" });
+        return;
+      }
+      const actor = resolveActor(req);
+      if (denyForeignProject(res, actor, automation.projectId)) return;
+      const agent = findAgent(automation.agentId) ?? defaultAgent();
+      if (!agent) {
+        sendJson(res, 404, { error: "agent_not_found" });
+        return;
+      }
+      const invocation = createInvocation(automation.prompt, agent, {
+        projectId: automation.projectId,
+        requestedBy: actor.userId,
+        metadata: { automationId: automation.id, automationName: automation.name }
+      });
+      startInvocationIfAllowed(invocation, agent);
+      automation.lastInvocationId = invocation.id;
+      automation.lastRunAt = now();
+      automation.runCount = (automation.runCount ?? 0) + 1;
+      persistState();
+      sendJson(res, 201, { invocation, automation });
+      return;
+    }
+
+    const automationIdMatch = url.pathname.match(/^\/api\/automations\/([^/]+)$/);
+    if (automationIdMatch && (req.method === "PATCH" || req.method === "DELETE")) {
+      const automation = state.automations.find((a) => a.id === decodeURIComponent(automationIdMatch[1]));
+      if (!automation) {
+        sendJson(res, 404, { error: "automation_not_found" });
+        return;
+      }
+      if (denyForeignProject(res, resolveActor(req), automation.projectId)) return;
+      if (req.method === "DELETE") {
+        state.automations = state.automations.filter((a) => a.id !== automation.id);
+        persistState();
+        res.writeHead(204);
+        res.end();
+        return;
+      }
+      const patch = await readJson(req);
+      // Moving a rule to another project requires owning the destination too.
+      if (patch.projectId !== undefined && patch.projectId !== automation.projectId && findProject(patch.projectId)) {
+        if (denyForeignProject(res, resolveActor(req), patch.projectId)) return;
+        automation.projectId = patch.projectId;
+      }
+      if (patch.name !== undefined) automation.name = String(patch.name).trim() || automation.name;
+      if (patch.prompt !== undefined) automation.prompt = String(patch.prompt);
+      if (patch.schedule !== undefined) automation.schedule = normalizeSchedule(patch.schedule);
+      if (patch.agentId !== undefined && findAgent(patch.agentId)) automation.agentId = patch.agentId;
+      if (patch.branch !== undefined) automation.branch = String(patch.branch);
+      if (patch.precheck !== undefined) automation.precheck = String(patch.precheck).trim() || "None";
+      if (patch.sessionMode !== undefined) automation.sessionMode = patch.sessionMode === "reuse" ? "reuse" : "fresh";
+      if (patch.graceHours !== undefined && Number.isFinite(Number(patch.graceHours))) automation.graceHours = Number(patch.graceHours);
+      if (patch.enabled !== undefined) automation.enabled = Boolean(patch.enabled);
+      // Recompute the next fire time whenever the rule is enabled or its schedule
+      // changes; clear it when paused so the scheduler skips it.
+      if (patch.enabled !== undefined || patch.schedule !== undefined) {
+        automation.nextRunAt = automation.enabled ? computeNextRun(automation.schedule) : null;
+      }
+      persistState();
+      sendJson(res, 200, { automation });
       return;
     }
 
@@ -420,6 +1132,23 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    // Tune device-level settings (currently the cross-worktree concurrency cap).
+    if (req.method === "PATCH" && url.pathname === "/api/device") {
+      const body = await readJson(req).catch(() => ({}));
+      if (body.maxConcurrency !== undefined) {
+        const n = Math.floor(Number(body.maxConcurrency));
+        if (!Number.isFinite(n) || n < 1 || n > 16) {
+          sendJson(res, 400, { error: "invalid_max_concurrency", message: "maxConcurrency must be an integer in 1–16." });
+          return;
+        }
+        state.device.maxConcurrency = n;
+        state.device.updatedAt = now();
+        persistState();
+      }
+      sendJson(res, 200, { device: state.device });
+      return;
+    }
+
     if (req.method === "GET" && url.pathname === "/api/bridge/next") {
       state.device.lastSeenAt = now();
       if (state.device.unlinkState !== "linked") {
@@ -427,6 +1156,7 @@ const server = http.createServer(async (req, res) => {
         return;
       }
       redeliverExpiredDispatches();
+      reclaimStuckCancellations();
       const invocation = nextDispatchableInvocation();
 
       if (!invocation) {
@@ -436,12 +1166,26 @@ const server = http.createServer(async (req, res) => {
 
       markDispatched(invocation);
 
+      // Run the agent in the project's worktree when repo-backed: override the
+      // adapter's cwd for this dispatch only (the stored agent is untouched).
+      const baseAdapter = findAgent(invocation.agentId)?.adapter ?? null;
+      let adapter = baseAdapter && invocation.workingDirectory
+        ? { ...baseAdapter, workingDirectory: invocation.workingDirectory, workingDirectoryPolicy: "explicit" }
+        : baseAdapter;
+      // Push this run's permission level into the Codex sandbox flag for this
+      // dispatch only (the stored agent's args are untouched).
+      const permissionLevel = invocation.options?.metadata?.permissionLevel;
+      if (adapter?.type === "cli" && permissionLevel && isCodexCliCommand(adapter.command)) {
+        adapter = { ...adapter, args: withCodexSandbox(adapter.args, sandboxForPermission(permissionLevel)) };
+      }
+
       sendJson(res, 200, {
         namespace,
         protocolVersion,
         invocationId: invocation.id,
         agentId: invocation.agentId,
-        adapter: findAgent(invocation.agentId)?.adapter ?? null,
+        adapter,
+        workingDirectory: invocation.workingDirectory ?? null,
         input: invocation.input,
         options: invocation.options
       });
@@ -639,10 +1383,16 @@ const server = http.createServer(async (req, res) => {
         return;
       }
 
+      // Phase 3: only the owning team may decide an approval. (The approval id
+      // isn't a project/worktree path, so the central gate can't see it.)
+      const actor = resolveActor(req);
+      if (denyForeignProject(res, actor, invocation.projectId)) return;
+
+      const decider = actor.userId;
       if (approvalMatch[2] === "approve") {
-        approveInvocation(approval, invocation);
+        approveInvocation(approval, invocation, decider);
       } else {
-        denyInvocation(approval, invocation);
+        denyInvocation(approval, invocation, decider);
       }
       sendJson(res, 200, { approval, invocation });
       return;
@@ -655,7 +1405,14 @@ const server = http.createServer(async (req, res) => {
         sendJson(res, 400, { error: "task_required" });
         return;
       }
-      const agent = body.agentId ? findAgent(body.agentId) : defaultAgent();
+      // Running "in a worktree": cwd is that worktree and, unless overridden, the
+      // agent the worktree was created with.
+      const targetWorktree = body.worktreeId ? state.worktrees.find((w) => w.id === body.worktreeId) : null;
+      const agent = body.agentId
+        ? findAgent(body.agentId)
+        : targetWorktree?.agentId
+          ? findAgent(targetWorktree.agentId)
+          : defaultAgent();
       if (!agent) {
         sendJson(res, 404, { error: "agent_not_found" });
         return;
@@ -675,7 +1432,35 @@ const server = http.createServer(async (req, res) => {
         sendJson(res, 409, { error: "device_unlinked" });
         return;
       }
-      const invocation = createInvocation(task, agent, body.options ?? {});
+      // A targeted worktree defines the project (so the cwd binding can't be
+      // silently dropped by a mismatched body.projectId).
+      const projectId = resolveProjectId(targetWorktree?.projectId ?? body.projectId ?? agent.projectId);
+      const actor = resolveActor(req);
+      // Phase 3: can't run against another team's project/worktree (both arrive
+      // in the body, so they bypass the central path gate).
+      if (denyForeignProject(res, actor, projectId)) return;
+      const budget = enforceBudgetForProject(projectId);
+      if (budget.action === "block") {
+        sendJson(res, 409, { error: "budget_exceeded", message: budget.reason, budget: budget.status });
+        return;
+      }
+      const permissionLevel = ["ask", "auto", "full"].includes(body.options?.permissionLevel) ? body.options.permissionLevel : "ask";
+      const invocationOptions = {
+        ...(body.options ?? {}),
+        permissionLevel,
+        projectId,
+        worktreeId: targetWorktree?.id ?? null,
+        requestedBy: actor.userId,
+        metadata: { ...(body.options?.metadata && typeof body.options.metadata === "object" ? body.options.metadata : {}), permissionLevel }
+      };
+      if (budget.action === "require_approval") {
+        invocationOptions.requireLocalApproval = true;
+        invocationOptions.metadata = {
+          ...(invocationOptions.metadata && typeof invocationOptions.metadata === "object" ? invocationOptions.metadata : {}),
+          budgetApprovalReason: budget.reason
+        };
+      }
+      const invocation = createInvocation(task, agent, invocationOptions);
       startInvocationIfAllowed(invocation, agent);
       sendJson(res, 201, { invocation });
       return;
@@ -719,6 +1504,33 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
+loadPersistedState();
+
+// Normalize schedules to the structured shape (migrates any legacy string-form
+// schedule from an older persisted snapshot) and give every enabled automation a
+// next-run time on boot — a restart shouldn't strand an enabled rule.
+for (const automation of state.automations) {
+  // Always normalize: migrates a legacy string schedule AND repairs a malformed
+  // object (e.g. interval with no everyMinutes) so computeNextRun can't return
+  // null and strand an "enabled" rule that never fires.
+  automation.schedule = normalizeSchedule(automation.schedule);
+  if (automation.enabled && !automation.nextRunAt) automation.nextRunAt = computeNextRun(automation.schedule);
+}
+// The automation scheduler: every 30s, fire enabled rules whose next-run time
+// has passed and roll their schedule forward. Unref'd so it never holds the
+// process open by itself.
+const automationTimer = setInterval(runDueAutomations, 30_000);
+automationTimer.unref?.();
+
+// Flush any debounced state on shutdown so the last mutation isn't lost.
+for (const signal of ["SIGINT", "SIGTERM"]) {
+  process.on(signal, () => {
+    flushState();
+    process.exit(0);
+  });
+}
+process.on("beforeExit", flushState);
+
 server.listen(port, host, () => {
   console.log(`[server] http://${host}:${port}`);
 });
@@ -727,10 +1539,1199 @@ function now() {
   return new Date().toISOString();
 }
 
+// Coerce a client-supplied schedule into the stored shape + a human label.
+// Three kinds: interval (every N min), daily (HH:MM), weekdays (Mon–Fri HH:MM).
+function normalizeSchedule(input) {
+  const s = input && typeof input === "object" ? input : {};
+  const kind = ["interval", "daily", "weekdays"].includes(s.kind) ? s.kind : "daily";
+  if (kind === "interval") {
+    const everyMinutes = Math.max(1, Math.floor(Number(s.everyMinutes) || 60));
+    return { kind, everyMinutes, label: `Every ${everyMinutes} min` };
+  }
+  const time = /^\d{2}:\d{2}$/.test(String(s.time)) ? s.time : "09:00";
+  return { kind, time, label: `${kind === "weekdays" ? "Weekdays" : "Daily"} at ${time}` };
+}
+
+// Next fire time (ISO) for a schedule, computed in the server's local timezone.
+function computeNextRun(schedule, fromMs = Date.now()) {
+  if (!schedule) return null;
+  if (schedule.kind === "interval") {
+    const m = Number(schedule.everyMinutes) || 0;
+    return m > 0 ? new Date(fromMs + m * 60_000).toISOString() : null;
+  }
+  const [hh, mm] = String(schedule.time ?? "09:00").split(":").map((n) => Number(n) || 0);
+  const cand = new Date(fromMs);
+  cand.setHours(hh, mm, 0, 0);
+  if (cand.getTime() <= fromMs) cand.setDate(cand.getDate() + 1);
+  if (schedule.kind === "weekdays") {
+    while (cand.getDay() === 0 || cand.getDay() === 6) cand.setDate(cand.getDate() + 1);
+  }
+  return cand.toISOString();
+}
+
+// Scheduler tick: fire any enabled automation whose next-run time has passed,
+// then roll its schedule forward. Mirrors the manual /run handler.
+function runDueAutomations() {
+  const nowMs = Date.now();
+  let changed = false;
+  for (const automation of state.automations) {
+    if (!automation.enabled || !automation.nextRunAt || Date.parse(automation.nextRunAt) > nowMs) continue;
+    // Don't stack a new run while the previous one is still in flight — otherwise
+    // an approval-gated agent (which parks at waiting_for_local_approval) would
+    // pile up a fresh unresolved invocation + approval every tick. Roll the
+    // schedule forward and try again next period.
+    const prev = automation.lastInvocationId ? findInvocation(automation.lastInvocationId) : null;
+    if (prev && !isTerminal(prev.status)) {
+      automation.nextRunAt = computeNextRun(automation.schedule, nowMs);
+      changed = true;
+      continue;
+    }
+    const agent = findAgent(automation.agentId) ?? defaultAgent();
+    if (agent) {
+      try {
+        const invocation = createInvocation(automation.prompt, agent, {
+          projectId: automation.projectId,
+          requestedBy: automation.createdBy ?? "usr_local",
+          metadata: { automationId: automation.id, automationName: automation.name, scheduled: true }
+        });
+        startInvocationIfAllowed(invocation, agent);
+        automation.lastInvocationId = invocation.id;
+        automation.lastRunAt = now();
+        automation.runCount = (automation.runCount ?? 0) + 1;
+      } catch {
+        // A bad agent/project shouldn't wedge the scheduler; skip and roll forward.
+      }
+    }
+    automation.nextRunAt = computeNextRun(automation.schedule, nowMs);
+    changed = true;
+  }
+  if (changed) persistState();
+}
+
+// Restore persisted slices on boot. A version mismatch drops the file wholesale
+// (e.g. pre-project budgets keyed by costOwner) so the seed state takes over.
+function loadPersistedState() {
+  try {
+    if (!fs.existsSync(PERSIST_FILE)) return;
+    const snapshot = JSON.parse(fs.readFileSync(PERSIST_FILE, "utf8"));
+    if (!snapshot || snapshot.version !== PERSIST_VERSION) {
+      console.warn(`[server] ignoring incompatible state snapshot (version ${snapshot?.version})`);
+      return;
+    }
+    for (const key of PERSIST_KEYS) {
+      if (Array.isArray(snapshot[key])) state[key] = snapshot[key];
+    }
+    // Restore the device's concurrency setting only (not the whole device — its
+    // status/lastSeenAt are runtime and get reset on register).
+    const savedMax = Math.floor(Number(snapshot.device?.maxConcurrency));
+    if (Number.isFinite(savedMax) && savedMax >= 1 && savedMax <= 16) {
+      state.device.maxConcurrency = savedMax;
+    }
+    // Drop ephemeral worktree records whose directories no longer exist (a prior
+    // run's isolated worktrees do not survive a restart).
+    state.worktrees = state.worktrees.filter((w) => !w.ephemeral || fs.existsSync(w.path));
+    // A clone interrupted by a restart can never resume — roll back the orphan
+    // (partial checkout dir + target + project + its worktrees) so the repo can
+    // be registered again instead of being stuck "cloning" forever.
+    const interrupted = state.projectTargets.filter((t) => t.state === "cloning");
+    if (interrupted.length > 0) {
+      const orphanProjectIds = new Set(interrupted.map((t) => t.projectId));
+      for (const target of interrupted) {
+        try {
+          if (target.rootPath) fs.rmSync(target.rootPath, { recursive: true, force: true });
+        } catch {
+          // Best effort: leave the partial dir if it cannot be removed.
+        }
+      }
+      state.projectTargets = state.projectTargets.filter((t) => t.state !== "cloning");
+      state.worktrees = state.worktrees.filter((w) => !orphanProjectIds.has(w.projectId));
+      state.projects = state.projects.filter((p) => !orphanProjectIds.has(p.id));
+      console.warn(`[server] rolled back ${interrupted.length} clone(s) interrupted by restart`);
+    }
+    if (Number.isFinite(snapshot.idCounter)) idCounter = snapshot.idCounter;
+    console.log(`[server] restored state from ${PERSIST_FILE}`);
+  } catch (error) {
+    console.warn(`[server] failed to load state snapshot: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+function writeSnapshot() {
+  try {
+    fs.mkdirSync(path.dirname(PERSIST_FILE), { recursive: true });
+    const snapshot = { version: PERSIST_VERSION, savedAt: now(), idCounter };
+    for (const key of PERSIST_KEYS) snapshot[key] = state[key];
+    fs.writeFileSync(PERSIST_FILE, JSON.stringify(snapshot, null, 2));
+  } catch (error) {
+    console.warn(`[server] failed to persist state: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+// Debounced write so a burst of mutations coalesces into one disk write.
+function persistState() {
+  if (persistTimer) return;
+  persistTimer = setTimeout(() => {
+    persistTimer = null;
+    writeSnapshot();
+  }, 500);
+  if (typeof persistTimer.unref === "function") persistTimer.unref();
+}
+
+// Write any pending state immediately — used by exit handlers so the last
+// mutation isn't lost inside the debounce window on shutdown.
+function flushState() {
+  if (!persistTimer) return;
+  clearTimeout(persistTimer);
+  persistTimer = null;
+  writeSnapshot();
+}
+
 function nextId(prefix) {
   const id = `${prefix}_${String(idCounter).padStart(4, "0")}`;
   idCounter += 1;
   return id;
+}
+
+// --- Projects ------------------------------------------------------------
+// A Project is the attribution floor every invocation rolls up to. Resolve any
+// caller-supplied id to a known project, falling back to the default so headless
+// and bridge runs always have a valid owner.
+function findProject(projectId) {
+  return state.projects.find((item) => item.id === projectId) ?? null;
+}
+
+// --- Identity ------------------------------------------------------------
+// Single resolution point for "who is acting". Phase 1 falls back to the seeded
+// local user when there's no token, so behaviour is unchanged; Phase 2 will
+// return 401 for an unauthenticated request instead. See IDENTITY_PLAN.md.
+function findUser(userId) {
+  return state.users.find((u) => u.id === userId) ?? null;
+}
+
+function resolveActor(req) {
+  const token = String(req.headers?.authorization ?? "").replace(/^Bearer\s+/i, "");
+  const record = token ? state.tokens.find((t) => t.token === token && t.expiresAt > Date.now()) : null;
+  // Behaviour-preserving fallback to the seeded user when unauthenticated; the
+  // `authenticated` flag lets the auth gate decide whether that's acceptable.
+  const user = (record && findUser(record.userId)) || findUser("usr_local") || state.users[0];
+  return { userId: user?.id ?? "usr_local", teamId: user?.teamId ?? "team_local", authenticated: Boolean(record) };
+}
+
+// Drop expired tokens (called before issuing/checking so state.tokens stays
+// bounded across restarts since tokens are now persisted).
+function pruneTokens() {
+  const t = Date.now();
+  const before = state.tokens.length;
+  state.tokens = state.tokens.filter((r) => r.expiresAt > t);
+  return before !== state.tokens.length;
+}
+
+// Mint a bearer token for a user. Random 256-bit hex; persisted so a token kept
+// by the web client survives a server restart.
+function issueToken(userId, ttlMs = TOKEN_TTL_MS) {
+  pruneTokens();
+  const record = { token: crypto.randomBytes(32).toString("hex"), userId, expiresAt: Date.now() + ttlMs };
+  state.tokens.push(record);
+  persistState();
+  return record;
+}
+
+function resolveProjectId(projectId) {
+  return findProject(projectId) ? projectId : "prj_default";
+}
+
+// Identity Phase 3 (tenancy). The owning team of a project — the unit every
+// project-scoped resource (worktrees, invocations, budgets, ledger, approvals)
+// inherits its tenancy from. Unknown/legacy projects fall back to the seed team
+// so a stray projectId stays visible to the single-team demo rather than
+// vanishing. Real isolation kicks in only once a second team exists. `teamOf`
+// is the single source for the ownership rule + default so the four call sites
+// (state filter, project list, budget guard, tenancy gate) can't drift apart.
+function teamOf(project) {
+  return project?.ownerTeamId ?? "team_local";
+}
+function projectTeam(projectId) {
+  return teamOf(findProject(projectId));
+}
+
+// Phase 3: ids carried in the request BODY bypass the path-based tenancy gate,
+// so every handler that resolves a project from the body funnels its check
+// through this one guard (invocation-create, approval, budget). Returns true —
+// after sending the 403 — when `projectId` is owned by another team; the caller
+// must `return` on true. Single-sourcing the rule here means a new body-id route
+// only needs to call this, not re-derive the comparison.
+function denyForeignProject(res, actor, projectId) {
+  if (projectTeam(projectId) !== actor.teamId) {
+    sendJson(res, 403, { error: "forbidden", message: "Resource belongs to another team." });
+    return true;
+  }
+  return false;
+}
+
+function createProject(body) {
+  const name = String(body.name ?? "").trim();
+  if (!name) throw new Error("Project name is required.");
+  const project = {
+    id: nextId("prj"),
+    name,
+    color: String(body.color ?? "#6366f1"),
+    ownerTeamId: String(body.ownerTeamId ?? "team_local"),
+    budgetPoolId: body.budgetPoolId ?? null,
+    defaultAgentId: body.defaultAgentId ?? null,
+    status: "active",
+    isolation: body.isolation === "worktree" ? "worktree" : "shared",
+    createdAt: now(),
+    updatedAt: now()
+  };
+  state.projects.push(project);
+  persistState();
+  return project;
+}
+
+function updateProject(projectId, patch) {
+  const project = findProject(projectId);
+  if (!project) throw new Error("Project not found.");
+  if (patch.name !== undefined) project.name = String(patch.name).trim() || project.name;
+  if (patch.color !== undefined) project.color = String(patch.color);
+  if (patch.defaultAgentId !== undefined) project.defaultAgentId = patch.defaultAgentId ?? null;
+  if (patch.budgetPoolId !== undefined) project.budgetPoolId = patch.budgetPoolId ?? null;
+  if (patch.status !== undefined && ["active", "archived"].includes(patch.status)) project.status = patch.status;
+  if (patch.isolation !== undefined && ["shared", "worktree"].includes(patch.isolation)) project.isolation = patch.isolation;
+  project.updatedAt = now();
+  persistState();
+  return project;
+}
+
+// --- Skills: agent-targeted instruction docs -----------------------------
+// A Skill is stored centrally and rendered into an invocation's ephemeral
+// worktree in the running agent's native format. `targets` decides which agent
+// kinds (codex/claude) receive it.
+const SKILL_TARGETS = ["claude", "codex"];
+
+function slugify(value) {
+  return String(value ?? "")
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 64);
+}
+
+function findSkill(skillId) {
+  return state.skills.find((s) => s.id === skillId) ?? null;
+}
+
+function normalizeSkillTargets(value, fallback = []) {
+  if (!Array.isArray(value)) return fallback;
+  const seen = SKILL_TARGETS.filter((t) => value.includes(t));
+  return seen;
+}
+
+function normalizeSkillTool(value) {
+  if (!value || typeof value !== "object") return undefined;
+  const tool = {};
+  if (typeof value.cli === "string" && value.cli.trim()) tool.cli = value.cli.trim();
+  if (value.mcp && typeof value.mcp === "object" && typeof value.mcp.name === "string" && typeof value.mcp.command === "string") {
+    tool.mcp = {
+      name: value.mcp.name,
+      command: value.mcp.command,
+      args: Array.isArray(value.mcp.args) ? value.mcp.args.map(String) : undefined,
+      env: value.mcp.env && typeof value.mcp.env === "object" ? value.mcp.env : undefined
+    };
+  }
+  return Object.keys(tool).length ? tool : undefined;
+}
+
+function createSkill(body) {
+  const name = String(body.name ?? "").trim();
+  if (!name) throw new Error("Skill name is required.");
+  const slug = slugify(body.slug || name) || `skill-${state.skills.length + 1}`;
+  const skill = {
+    id: nextId("skl"),
+    name,
+    slug,
+    description: String(body.description ?? "").trim(),
+    body: String(body.body ?? ""),
+    targets: normalizeSkillTargets(body.targets, ["claude"]),
+    tool: normalizeSkillTool(body.tool),
+    enabled: body.enabled === undefined ? true : Boolean(body.enabled),
+    createdAt: now(),
+    updatedAt: now()
+  };
+  state.skills.push(skill);
+  persistState();
+  return skill;
+}
+
+function updateSkill(skillId, patch) {
+  const skill = findSkill(skillId);
+  if (!skill) throw new Error("Skill not found.");
+  if (patch.name !== undefined) skill.name = String(patch.name).trim() || skill.name;
+  if (patch.slug !== undefined) skill.slug = slugify(patch.slug) || skill.slug;
+  if (patch.description !== undefined) skill.description = String(patch.description).trim();
+  if (patch.body !== undefined) skill.body = String(patch.body);
+  if (patch.targets !== undefined) skill.targets = normalizeSkillTargets(patch.targets, skill.targets);
+  if (patch.tool !== undefined) skill.tool = normalizeSkillTool(patch.tool);
+  if (patch.enabled !== undefined) skill.enabled = Boolean(patch.enabled);
+  skill.updatedAt = now();
+  persistState();
+  return skill;
+}
+
+function deleteSkill(skillId) {
+  const before = state.skills.length;
+  state.skills = state.skills.filter((s) => s.id !== skillId);
+  if (state.skills.length === before) throw new Error("Skill not found.");
+  persistState();
+}
+
+// Which coding-agent CLI an agent wraps, so we can pick its native skill format.
+// Reuses the same command detection the registration path uses.
+function agentKind(agent) {
+  const command = agent?.adapter?.type === "cli" ? agent.adapter.command : null;
+  if (!command) return null;
+  if (isCodexCliCommand(command)) return "codex";
+  if (isClaudeCliCommand(command)) return "claude";
+  return null;
+}
+
+// Render the skills that apply to `agent` into its ephemeral worktree, in the
+// agent's native format. Only ever called for freshly-created ephemeral
+// worktrees, so the user's persistent checkout is never touched. Best-effort:
+// any failure is logged and skipped rather than blocking the invocation.
+const SKILL_BLOCK_START = "<!-- myagent:skills:start -->";
+const SKILL_BLOCK_END = "<!-- myagent:skills:end -->";
+
+function gitExclude(wtPath, entries) {
+  // Keep rendered files out of the branch so worktree cleanup never commits them.
+  try {
+    const excludePath = path.join(wtPath, ".git", "info", "exclude");
+    if (!fs.existsSync(path.dirname(excludePath))) return;
+    const existing = fs.existsSync(excludePath) ? fs.readFileSync(excludePath, "utf8") : "";
+    const missing = entries.filter((e) => !existing.split(/\r?\n/).includes(e));
+    if (missing.length) fs.appendFileSync(excludePath, (existing.endsWith("\n") || !existing ? "" : "\n") + missing.join("\n") + "\n");
+  } catch {
+    // Non-fatal: exclude is a tidiness optimization, not correctness.
+  }
+}
+
+function renderSkillsIntoWorktree(agent, wtPath) {
+  const kind = agentKind(agent);
+  if (!kind || !wtPath) return;
+  const applicable = state.skills.filter((s) => s.enabled && Array.isArray(s.targets) && s.targets.includes(kind));
+  if (!applicable.length) return;
+  const root = path.resolve(wtPath);
+  const inside = (p) => {
+    const resolved = path.resolve(root, p);
+    return resolved === root || resolved.startsWith(root + path.sep);
+  };
+  try {
+    if (kind === "claude") {
+      const mcpServers = {};
+      for (const skill of applicable) {
+        const dir = path.join(root, ".claude", "skills", skill.slug);
+        if (!inside(dir)) continue;
+        fs.mkdirSync(dir, { recursive: true });
+        const frontmatter = `---\nname: ${skill.name}\ndescription: ${skill.description}\n---\n\n`;
+        fs.writeFileSync(path.join(dir, "SKILL.md"), frontmatter + skill.body + "\n");
+        if (skill.tool?.mcp) {
+          mcpServers[skill.tool.mcp.name] = {
+            command: skill.tool.mcp.command,
+            ...(skill.tool.mcp.args ? { args: skill.tool.mcp.args } : {}),
+            ...(skill.tool.mcp.env ? { env: skill.tool.mcp.env } : {})
+          };
+        }
+      }
+      if (Object.keys(mcpServers).length) {
+        fs.writeFileSync(path.join(root, ".mcp.json"), JSON.stringify({ mcpServers }, null, 2) + "\n");
+      }
+      gitExclude(root, [".claude/", ".mcp.json"]);
+    } else if (kind === "codex") {
+      const sections = applicable.map((skill) => {
+        const lines = [`## ${skill.name}`, "", skill.description, "", skill.body];
+        if (skill.tool?.cli) lines.push("", `Tool: run \`${skill.tool.cli}\` to invoke this capability.`);
+        return lines.join("\n");
+      });
+      const block = `${SKILL_BLOCK_START}\n# Skills\n\n${sections.join("\n\n---\n\n")}\n${SKILL_BLOCK_END}`;
+      const agentsPath = path.join(root, "AGENTS.md");
+      let existing = "";
+      const preexisting = fs.existsSync(agentsPath);
+      if (preexisting) existing = fs.readFileSync(agentsPath, "utf8");
+      let next;
+      if (existing.includes(SKILL_BLOCK_START) && existing.includes(SKILL_BLOCK_END)) {
+        next = existing.replace(new RegExp(`${SKILL_BLOCK_START}[\\s\\S]*?${SKILL_BLOCK_END}`), block);
+      } else {
+        next = existing ? `${existing.replace(/\s*$/, "")}\n\n${block}\n` : `${block}\n`;
+      }
+      fs.writeFileSync(agentsPath, next);
+      // Only exclude AGENTS.md when we created it (don't hide a tracked file's diff).
+      if (!preexisting) gitExclude(root, ["AGENTS.md"]);
+    }
+  } catch (error) {
+    console.warn(`[server] skill render failed for ${agent?.id}: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+// --- Project repositories (targets) + worktrees --------------------------
+// A ProjectTarget materializes a project on a device at a real git checkout
+// (the "where it runs" axis). A clone runs async with progress; a local bind
+// links an existing repo. The main worktree mirrors orca's project → worktree.
+function repoNameFromUrl(url) {
+  const last = String(url).split(/[\\/]/).filter(Boolean).pop() || "repo";
+  return last.replace(/\.git$/i, "") || "repo";
+}
+
+function detectDefaultBranch(repoPath) {
+  try {
+    const head = execFileSync("git", ["-C", repoPath, "symbolic-ref", "--short", "HEAD"], { encoding: "utf8" });
+    return head.trim() || "main";
+  } catch {
+    return "main";
+  }
+}
+
+// The directory an invocation runs in: a repo-backed project's ready main
+// worktree. Null when the project is logical-only (falls back to the agent
+// adapter's own cwd policy).
+function projectWorkingDirectory(projectId) {
+  const ready = state.projectTargets.some((t) => t.projectId === projectId && t.state === "ready");
+  if (!ready) return null;
+  const main = state.worktrees.find((w) => w.projectId === projectId && w.isMain);
+  return main?.path ?? null;
+}
+
+// Per-invocation isolation: add a dedicated git worktree on a fresh branch so
+// concurrent runs on the same repo never collide. Returns the worktree record
+// or null (no ready repo / git failed — caller falls back to the shared cwd).
+function createEphemeralWorktree(project, invocationId) {
+  const target = state.projectTargets.find((t) => t.projectId === project.id && t.state === "ready");
+  if (!target) return null;
+  const base = path.join(path.dirname(target.rootPath), `.${path.basename(target.rootPath)}.worktrees`);
+  const wtPath = path.join(base, invocationId);
+  const branch = `agent/${invocationId}`;
+  try {
+    fs.mkdirSync(base, { recursive: true });
+    execFileSync("git", ["-C", target.rootPath, "worktree", "add", "-b", branch, wtPath, target.defaultBranch ?? "HEAD"], {
+      stdio: "ignore"
+    });
+  } catch (error) {
+    console.warn(`[server] worktree add failed for ${invocationId}: ${error instanceof Error ? error.message : String(error)}`);
+    return null;
+  }
+  const worktree = {
+    id: nextId("wkt"),
+    projectId: project.id,
+    targetId: target.id,
+    invocationId,
+    branch,
+    path: wtPath,
+    isMain: false,
+    ephemeral: true,
+    createdAt: now()
+  };
+  state.worktrees.push(worktree);
+  return worktree;
+}
+
+// Tear down an invocation's ephemeral worktree without losing the agent's work.
+// Uncommitted edits are committed to the branch first (so removing the directory
+// can't discard them), then the branch is kept whenever it carries commits and
+// deleted only when provably empty. If the work can't be auto-saved, the worktree
+// is kept (flipped to persistent) rather than destroyed. Idempotent.
+function cleanupEphemeralWorktree(invocation) {
+  const worktree = state.worktrees.find((w) => w.ephemeral && w.invocationId === invocation.id);
+  if (!worktree) return;
+  const target = state.projectTargets.find((t) => t.id === worktree.targetId);
+  if (!target) {
+    // No repo to reconcile against; just drop the record.
+    state.worktrees = state.worktrees.filter((w) => w.id !== worktree.id);
+    persistState();
+    return;
+  }
+  const gitWt = (args, opts = {}) => execFileSync("git", ["-C", worktree.path, ...args], { encoding: "utf8", ...opts });
+  const gitRepo = (args, opts = {}) => execFileSync("git", ["-C", target.rootPath, ...args], { stdio: "ignore", ...opts });
+
+  // 1. Preserve uncommitted work: stage everything and commit it to the branch.
+  //    Identity is forced inline so this succeeds without global git config.
+  let dirty = false;
+  try {
+    dirty = Boolean(gitWt(["status", "--porcelain"]).trim());
+  } catch {
+    // Worktree directory may already be gone — nothing to preserve.
+  }
+  if (dirty) {
+    try {
+      gitWt(["add", "-A"], { stdio: "ignore", encoding: undefined });
+      gitWt(
+        ["-c", "user.email=agent@myagenttool.local", "-c", "user.name=Agent", "commit", "-m", `agent: uncommitted changes from ${invocation.id}`],
+        { stdio: "ignore", encoding: undefined }
+      );
+    } catch {
+      // Couldn't auto-commit: keep the worktree intact so the user can recover
+      // the changes by hand, rather than destroying them with a forced remove.
+      worktree.ephemeral = false;
+      appendEvent({
+        invocationId: invocation.id,
+        type: "log",
+        level: "warn",
+        message: `Isolated worktree kept: uncommitted changes could not be auto-saved`,
+        data: { worktreeId: worktree.id, branch: worktree.branch, path: worktree.path }
+      });
+      persistState();
+      return;
+    }
+  }
+
+  // 2. Remove the worktree directory (work is now committed on the branch).
+  try {
+    gitRepo(["worktree", "remove", "--force", worktree.path]);
+  } catch {
+    // Directory may already be gone; prune reconciles git's metadata.
+  }
+  try {
+    gitRepo(["worktree", "prune"]);
+  } catch {
+    /* best effort */
+  }
+
+  // 3. Delete the branch ONLY when it provably carries no commits beyond the
+  //    base. Anything else — commits present, or the count is unknown — keeps
+  //    the branch so the agent's work stays recoverable (push it, or create a
+  //    worktree from agent/<id> later). This is the non-destructive guarantee.
+  let uniqueCommits = null;
+  try {
+    const base = target.defaultBranch || "HEAD";
+    const n = Number(gitRepo(["rev-list", "--count", `${base}..${worktree.branch}`], { stdio: undefined, encoding: "utf8" }).trim());
+    uniqueCommits = Number.isFinite(n) ? n : null;
+  } catch {
+    uniqueCommits = null;
+  }
+  const branchKept = uniqueCommits !== 0;
+  if (!branchKept) {
+    try {
+      gitRepo(["branch", "-D", worktree.branch]);
+    } catch {
+      /* already gone — best effort */
+    }
+  }
+
+  state.worktrees = state.worktrees.filter((w) => w.id !== worktree.id);
+  appendEvent({
+    invocationId: invocation.id,
+    type: "log",
+    level: "info",
+    message: branchKept
+      ? `Isolated worktree removed; branch ${worktree.branch} kept with ${uniqueCommits ?? "unknown"} commit(s)`
+      : `Isolated worktree removed: ${worktree.path}`,
+    data: { worktreeId: worktree.id, branch: worktree.branch, branchKept, commits: uniqueCommits }
+  });
+  persistState();
+}
+
+// User-created persistent worktree under a project (orca's "Create worktree").
+// Names a branch: checks out an existing one, or creates it from the default
+// branch. Unlike ephemeral worktrees these are kept until removed by the user.
+function createNamedWorktree(project, name, opts = {}) {
+  const target = state.projectTargets.find((t) => t.projectId === project.id && t.state === "ready");
+  if (!target) throw new Error("Project has no ready repository.");
+  const branch = String(name ?? "").trim();
+  if (!branch) throw new Error("Worktree name is required.");
+  if (state.worktrees.some((w) => w.projectId === project.id && w.branch === branch)) {
+    throw new Error(`A worktree for "${branch}" already exists.`);
+  }
+  // The on-disk dir name is a lossy slug of the branch, so distinct branches can
+  // map to the same slug ("feat/x" and "feat-x"). Suffix until unique instead of
+  // failing, so a legitimately-different branch always gets a worktree.
+  const safe = branch.replace(/[^a-zA-Z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") || "worktree";
+  const base = path.join(path.dirname(target.rootPath), `.${path.basename(target.rootPath)}.worktrees`);
+  let wtPath = path.join(base, safe);
+  for (let n = 2; fs.existsSync(wtPath) || state.worktrees.some((w) => w.path === wtPath); n += 1) {
+    wtPath = path.join(base, `${safe}-${n}`);
+  }
+  let branchExists = false;
+  try {
+    execFileSync("git", ["-C", target.rootPath, "rev-parse", "--verify", "--quiet", `refs/heads/${branch}`], { stdio: "ignore" });
+    branchExists = true;
+  } catch {
+    branchExists = false;
+  }
+  // A caller that asked to base on a specific ref (a remote branch) must not be
+  // silently given a pre-existing, possibly-divergent local branch of that name.
+  if (branchExists && opts.startPoint) {
+    throw new Error(`Local branch "${branch}" already exists; cannot base a new worktree on ${opts.startPoint}.`);
+  }
+  const startPoint = opts.startPoint || target.defaultBranch || "HEAD";
+  try {
+    fs.mkdirSync(base, { recursive: true });
+    const args = branchExists
+      ? ["-C", target.rootPath, "worktree", "add", wtPath, branch]
+      : ["-C", target.rootPath, "worktree", "add", "-b", branch, wtPath, startPoint];
+    execFileSync("git", args, { stdio: "ignore" });
+  } catch (error) {
+    throw new Error(`git worktree add failed: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  const worktree = {
+    id: nextId("wkt"),
+    projectId: project.id,
+    targetId: target.id,
+    branch,
+    path: wtPath,
+    isMain: false,
+    ephemeral: false,
+    agentId: opts.agentId ?? null,
+    link: opts.link ?? null,
+    createdAt: now()
+  };
+  state.worktrees.push(worktree);
+  persistState();
+  return worktree;
+}
+
+// Normalize a caller-supplied GitHub link (issue/PR) for storage on a worktree.
+function normalizeWorktreeLink(link) {
+  if (!link || (link.type !== "issue" && link.type !== "pr")) return null;
+  const number = Number(link.number);
+  if (!Number.isInteger(number)) return null;
+  return {
+    type: link.type,
+    number,
+    title: String(link.title ?? ""),
+    url: typeof link.url === "string" ? link.url : null,
+    state: String(link.state ?? "open")
+  };
+}
+
+// Branch mode: list local + remote branches so the dialog can offer a
+// searchable "create from" list (orca's 分支 tab).
+function listProjectBranches(project) {
+  const target = state.projectTargets.find((t) => t.projectId === project.id && t.state === "ready");
+  if (!target) return { branches: [] };
+  try {
+    const out = execFileSync(
+      "git",
+      ["-C", target.rootPath, "for-each-ref", "--format=%(refname:short)", "refs/heads", "refs/remotes"],
+      { encoding: "utf8" }
+    );
+    const branches = out
+      .split("\n")
+      .map((s) => s.trim())
+      .filter(Boolean)
+      .filter((b) => !b.endsWith("/HEAD"))
+      .map((name) => ({ name, remote: name.startsWith("origin/") }));
+    return { branches };
+  } catch {
+    return { branches: [] };
+  }
+}
+
+const TREE_SKIP = new Set([".git", "node_modules", ".DS_Store", "dist", "build"]);
+
+// Recursive file tree for the Project tab (bounded depth + entry budget so a
+// huge repo can't blow up the response).
+function worktreeTree(root, rel = "", depth = 0, budget = { n: 0 }) {
+  if (depth > 6 || budget.n > 1500) return [];
+  let entries;
+  try {
+    entries = fs.readdirSync(path.join(root, rel), { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  return entries
+    .filter((e) => !TREE_SKIP.has(e.name))
+    .sort((a, b) => (a.isDirectory() === b.isDirectory() ? a.name.localeCompare(b.name) : a.isDirectory() ? -1 : 1))
+    .map((e) => {
+      budget.n += 1;
+      const childRel = rel ? `${rel}/${e.name}` : e.name;
+      if (e.isDirectory()) {
+        return { name: e.name, path: childRel, dir: true, children: worktreeTree(root, childRel, depth + 1, budget) };
+      }
+      return { name: e.name, path: childRel, dir: false };
+    });
+}
+
+// Search a worktree by file name (recursive walk) or by content (git grep over
+// tracked files). Returns a capped, flat result list for the Project tab.
+function searchWorktree(worktree, query, mode) {
+  const q = String(query ?? "").trim();
+  if (!q) return { mode, matches: [] };
+  if (mode === "content") {
+    try {
+      // -F: literal (fixed-string) search, matching the "find by content" intent
+      // rather than treating the query as a regex.
+      const out = execFileSync("git", ["-C", worktree.path, "grep", "-n", "-I", "-i", "-F", "--no-color", "-e", q, "--", "."], {
+        encoding: "utf8"
+      });
+      const matches = out
+        .split("\n")
+        .filter(Boolean)
+        .slice(0, 60)
+        .map((line) => {
+          const m = line.match(/^([^:]+):(\d+):(.*)$/);
+          return m ? { path: m[1], line: Number(m[2]), text: m[3].slice(0, 200) } : null;
+        })
+        .filter(Boolean);
+      return { mode, matches };
+    } catch {
+      // git grep exits non-zero when there are no matches (or not a repo).
+      return { mode, matches: [] };
+    }
+  }
+  // Name mode: flatten the tree and match basenames. Check the cap at the top of
+  // each frame so the walk short-circuits globally (not just the current frame).
+  const needle = q.toLowerCase();
+  const out = [];
+  const walk = (nodes) => {
+    for (const n of nodes) {
+      if (out.length >= 100) return;
+      if (!n.dir && n.name.toLowerCase().includes(needle)) out.push({ path: n.path });
+      if (n.dir && n.children) walk(n.children);
+    }
+  };
+  walk(worktreeTree(worktree.path));
+  return { mode, matches: out };
+}
+
+// Git status for a worktree: branch, change count, and ahead/behind vs its
+// upstream (whether the branch is published). Powers the worktree's Changes tab.
+function worktreeGitStatus(worktree) {
+  const cwd = worktree.path;
+  const git = (args) => execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8" }).trim();
+  const result = {
+    branch: worktree.branch,
+    changedFiles: 0,
+    clean: true,
+    hasUpstream: false,
+    upstream: null,
+    ahead: 0,
+    behind: 0
+  };
+  try {
+    result.branch = git(["rev-parse", "--abbrev-ref", "HEAD"]) || worktree.branch;
+  } catch {
+    /* keep recorded branch */
+  }
+  try {
+    const porcelain = git(["status", "--porcelain"]);
+    result.changedFiles = porcelain ? porcelain.split("\n").filter(Boolean).length : 0;
+    result.clean = result.changedFiles === 0;
+  } catch {
+    /* leave defaults */
+  }
+  try {
+    result.upstream = git(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"]);
+    result.hasUpstream = Boolean(result.upstream);
+  } catch {
+    result.hasUpstream = false;
+  }
+  if (result.hasUpstream) {
+    try {
+      const [behind, ahead] = git(["rev-list", "--left-right", "--count", "@{u}...HEAD"]).split(/\s+/).map(Number);
+      result.behind = behind || 0;
+      result.ahead = ahead || 0;
+    } catch {
+      /* leave 0/0 */
+    }
+  }
+  return result;
+}
+
+// Unified diff for a worktree: the full change set the agent produced — commits
+// on this branch plus uncommitted working-tree edits — measured against the
+// merge-base with the branch's upstream (or the project's default branch), with
+// untracked files rendered as additions. Powers the Changes tab's diff view.
+function worktreeDiff(worktree) {
+  const cwd = worktree.path;
+  const git = (args) => execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8" });
+  // `git diff --no-index` exits non-zero when the files differ; that surfaces as
+  // a throw whose stdout still holds the patch we want.
+  const gitDiffSafe = (args) => {
+    try {
+      return git(args);
+    } catch (error) {
+      return typeof error?.stdout === "string" ? error.stdout : "";
+    }
+  };
+  const MAX_DIFF_BYTES = 1024 * 1024;
+  const result = { files: [], base: "HEAD", diff: "", truncated: false };
+  // Changed-file list with porcelain status letters (index/work-tree).
+  // `core.quotepath=false` keeps non-ASCII paths literal instead of octal-escaped.
+  try {
+    const porcelain = git(["-c", "core.quotepath=false", "status", "--porcelain"]).split("\n").filter(Boolean);
+    result.files = porcelain.map((line) => {
+      const index = line[0];
+      const work = line[1];
+      let p = line.slice(3);
+      // Renames are reported as "old -> new"; show the new path.
+      if (p.includes(" -> ")) p = p.split(" -> ")[1];
+      return { path: p, index, work, untracked: index === "?" };
+    });
+  } catch {
+    /* leave empty */
+  }
+  // Resolve the base to diff against: merge-base with the upstream if published,
+  // else with the project's default branch, else HEAD (uncommitted only).
+  let base = "HEAD";
+  try {
+    const upstream = git(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"]).trim();
+    base = git(["merge-base", upstream, "HEAD"]).trim() || "HEAD";
+  } catch {
+    const target = state.projectTargets.find((t) => t.id === worktree.targetId);
+    const def = target?.defaultBranch;
+    if (def) {
+      try {
+        base = git(["merge-base", def, "HEAD"]).trim() || "HEAD";
+      } catch {
+        base = "HEAD";
+      }
+    }
+  }
+  result.base = base;
+  // Tracked changes (branch commits + working tree) vs the base.
+  let diff = "";
+  try {
+    diff = git(["diff", "--no-color", base, "--"]);
+  } catch {
+    /* no commits yet, or bad base */
+  }
+  // Untracked files never appear in `git diff`; render each as an addition.
+  // Bounded on both output size and file count so a worktree with many untracked
+  // files (e.g. a missing .gitignore) can't blow the size cap or spawn an
+  // unbounded number of `git diff` subprocesses on this request path.
+  const MAX_UNTRACKED = 200;
+  let untrackedSeen = 0;
+  for (const f of result.files) {
+    if (!f.untracked) continue;
+    if (diff.length > MAX_DIFF_BYTES || untrackedSeen >= MAX_UNTRACKED) {
+      result.truncated = true;
+      break;
+    }
+    untrackedSeen += 1;
+    const patch = gitDiffSafe(["diff", "--no-color", "--no-index", "--", "/dev/null", f.path]);
+    if (patch) diff += (diff && !diff.endsWith("\n") ? "\n" : "") + patch;
+  }
+  if (diff.length > MAX_DIFF_BYTES) {
+    diff = diff.slice(0, MAX_DIFF_BYTES);
+    result.truncated = true;
+  }
+  result.diff = diff;
+  return result;
+}
+
+// Create a worktree from an existing local or remote branch ref. A remote
+// "origin/x" ref creates a local branch "x" tracking it.
+function createWorktreeFromRef(project, ref, opts = {}) {
+  const r = String(ref ?? "").trim();
+  if (!r) throw new Error("A branch ref is required.");
+  const isRemote = r.startsWith("origin/");
+  const localName = isRemote ? r.slice("origin/".length) : r;
+  const worktree = createNamedWorktree(project, localName, { startPoint: isRemote ? r : undefined, agentId: opts.agentId });
+  // Track the remote branch so the Changes tab reflects ahead/behind instead of
+  // reporting the branch as unpublished.
+  if (isRemote) {
+    const target = state.projectTargets.find((t) => t.id === worktree.targetId);
+    try {
+      execFileSync("git", ["-C", target.rootPath, "branch", `--set-upstream-to=${r}`, localName], { stdio: "ignore" });
+    } catch {
+      // Non-fatal: the worktree is created either way.
+    }
+  }
+  return worktree;
+}
+
+// GitHub mode: list open PRs and issues via the gh CLI (orca lists both).
+// Degrades gracefully when the repo has no GitHub remote or gh is unavailable.
+function projectGithubItems(project) {
+  const target = state.projectTargets.find((t) => t.projectId === project.id && t.state === "ready");
+  if (!target) return { available: false, message: "Project has no ready repository.", items: [] };
+  let remote = "";
+  try {
+    remote = execFileSync("git", ["-C", target.rootPath, "remote", "get-url", "origin"], { encoding: "utf8" }).trim();
+  } catch {
+    remote = "";
+  }
+  if (!/github\.com/i.test(remote)) {
+    return { available: false, message: "No GitHub remote (origin) on this repository.", items: [] };
+  }
+  const ghJson = (args) => {
+    try {
+      return JSON.parse(execFileSync("gh", args, { cwd: target.rootPath, encoding: "utf8" }) || "[]") || [];
+    } catch {
+      return null;
+    }
+  };
+  const prsRaw = ghJson(["pr", "list", "--json", "number,title,headRefName,author,url,state", "--limit", "30"]);
+  const issuesRaw = ghJson(["issue", "list", "--json", "number,title,author,url,state", "--limit", "30"]);
+  if (prsRaw === null && issuesRaw === null) {
+    return { available: false, message: "gh list failed (auth or remote?).", items: [] };
+  }
+  const items = [
+    ...(prsRaw ?? []).map((p) => ({ type: "pr", number: p.number, title: p.title, headRefName: p.headRefName, author: p.author?.login ?? "", url: p.url, state: (p.state ?? "open").toLowerCase() })),
+    ...(issuesRaw ?? []).map((i) => ({ type: "issue", number: i.number, title: i.title, headRefName: null, author: i.author?.login ?? "", url: i.url, state: (i.state ?? "open").toLowerCase() }))
+  ].sort((a, b) => b.number - a.number);
+  const prCount = (prsRaw ?? []).length;
+  const issueCount = (issuesRaw ?? []).length;
+  return { available: true, message: `${prCount} open PR(s), ${issueCount} open issue(s).`, items };
+}
+
+// Create a worktree for a GitHub PR: resolve the PR head branch, fetch it, and
+// check it out into a new worktree.
+function createWorktreeFromPr(project, prNumber, opts = {}) {
+  const target = state.projectTargets.find((t) => t.projectId === project.id && t.state === "ready");
+  if (!target) throw new Error("Project has no ready repository.");
+  const n = Number(prNumber);
+  if (!Number.isInteger(n) || n <= 0) throw new Error("A valid PR number is required.");
+  let headRef = "";
+  try {
+    headRef = JSON.parse(
+      execFileSync("gh", ["pr", "view", String(n), "--json", "headRefName"], { cwd: target.rootPath, encoding: "utf8" })
+    ).headRefName;
+  } catch (error) {
+    throw new Error(`gh pr view failed: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  if (!headRef) throw new Error("Could not resolve the PR head branch.");
+  try {
+    execFileSync("git", ["-C", target.rootPath, "fetch", "origin", `pull/${n}/head:${headRef}`], { stdio: "ignore" });
+  } catch {
+    // The branch may already exist locally; createNamedWorktree checks it out.
+  }
+  return createNamedWorktree(project, headRef, { agentId: opts.agentId, link: opts.link });
+}
+
+// Network ops (push/PR) can outlast the default 8s subprocess bound; give them
+// room while still capping a stuck remote.
+const REMOTE_GIT_TIMEOUT_MS = 60_000;
+
+// Publish a worktree's branch to origin (`git push -u`), so it can back a PR.
+// Outward-facing write: the caller (UI) confirms before invoking this.
+function publishWorktreeBranch(worktree) {
+  const target = state.projectTargets.find((t) => t.id === worktree.targetId);
+  if (!target) throw new Error("Worktree has no repository to push from.");
+  try {
+    execFileSync("git", ["-C", worktree.path, "push", "-u", "origin", worktree.branch], {
+      encoding: "utf8",
+      timeout: REMOTE_GIT_TIMEOUT_MS
+    });
+  } catch (error) {
+    const detail = (error?.stderr || error?.message || String(error)).toString().trim();
+    throw new Error(`git push failed: ${detail}`);
+  }
+  return worktreeGitStatus(worktree);
+}
+
+// Open a pull request for a worktree's branch via the gh CLI. Pushes the branch
+// first (gh needs a remote head), then links the new PR back onto the worktree.
+// Outward-facing write: the caller (UI) confirms before invoking this.
+function createWorktreePr(worktree, opts = {}) {
+  const target = state.projectTargets.find((t) => t.id === worktree.targetId);
+  if (!target) throw new Error("Worktree has no repository to open a PR from.");
+  // Ensure the branch is on origin first.
+  try {
+    execFileSync("git", ["-C", worktree.path, "push", "-u", "origin", worktree.branch], {
+      encoding: "utf8",
+      timeout: REMOTE_GIT_TIMEOUT_MS
+    });
+  } catch (error) {
+    const detail = (error?.stderr || error?.message || String(error)).toString().trim();
+    throw new Error(`git push failed: ${detail}`);
+  }
+  const title = String(opts.title ?? "").trim() || worktree.branch;
+  const bodyText = String(opts.body ?? "").trim();
+  const args = ["pr", "create", "--head", worktree.branch, "--title", title, "--body", bodyText || title];
+  if (target.defaultBranch) args.push("--base", target.defaultBranch);
+  let out = "";
+  try {
+    out = execFileSync("gh", args, { cwd: target.rootPath, encoding: "utf8", timeout: REMOTE_GIT_TIMEOUT_MS }).trim();
+  } catch (error) {
+    const detail = (error?.stderr || error?.message || String(error)).toString().trim();
+    throw new Error(`gh pr create failed: ${detail}`);
+  }
+  // gh prints the new PR's URL on success; pull the number out of it.
+  const prUrl = (out.match(/https?:\/\/\S+/) || [])[0] || out;
+  const number = Number((prUrl.match(/\/pull\/(\d+)/) || [])[1]) || null;
+  if (number) {
+    worktree.link = normalizeWorktreeLink({ type: "pr", number, title, url: prUrl, state: "open" });
+    persistState();
+  }
+  return { url: prUrl, number };
+}
+
+// Smart mode: derive a conventional, git-safe branch name from a free-text
+// description (local heuristic; an LLM namer can plug in here later).
+function suggestBranchName(description) {
+  const text = String(description ?? "").trim().toLowerCase();
+  if (!text) return { name: "", source: "heuristic" };
+  const prefix = /\b(fix|bug|bugfix|error|crash|broken|regression)\b/.test(text)
+    ? "fix"
+    : /\b(refactor|cleanup|rename|restructure|tidy)\b/.test(text)
+      ? "refactor"
+      : /\b(docs?|readme|comment)\b/.test(text)
+        ? "docs"
+        : /\b(test|tests|spec|coverage)\b/.test(text)
+          ? "test"
+          : /\b(chore|bump|deps|dependency|release)\b/.test(text)
+            ? "chore"
+            : "feat";
+  const stop = new Set(["the", "a", "an", "to", "for", "of", "and", "in", "on", "with", "add", "added", "adds", "make"]);
+  const slug =
+    text
+      .replace(/[^a-z0-9]+/g, " ")
+      .trim()
+      .split(/\s+/)
+      .filter((w) => !stop.has(w))
+      .slice(0, 6)
+      .join("-")
+      .replace(new RegExp(`^${prefix}-`), "") // avoid feat/feat-… style redundancy
+      .split("-")
+      .slice(0, 5)
+      .join("-")
+      .replace(/^-+|-+$/g, "") || "change";
+  return { name: `${prefix}/${slug}`, source: "heuristic" };
+}
+
+// Remove a user-created worktree's directory but keep its branch — the named
+// work is preserved. The main worktree cannot be removed.
+function removeNamedWorktree(worktreeId) {
+  const worktree = state.worktrees.find((w) => w.id === worktreeId);
+  if (!worktree) throw new Error("Worktree not found.");
+  if (worktree.isMain) throw new Error("Cannot remove the main worktree.");
+  const target = state.projectTargets.find((t) => t.id === worktree.targetId);
+  if (target) {
+    try {
+      execFileSync("git", ["-C", target.rootPath, "worktree", "remove", "--force", worktree.path], { stdio: "ignore" });
+      execFileSync("git", ["-C", target.rootPath, "worktree", "prune"], { stdio: "ignore" });
+    } catch {
+      // Best effort: directory may already be gone.
+    }
+  }
+  state.worktrees = state.worktrees.filter((w) => w.id !== worktreeId);
+  persistState();
+  return worktree;
+}
+
+function createMainWorktree(target) {
+  // One project keeps one main worktree for now; replace any prior one.
+  state.worktrees = state.worktrees.filter((w) => w.targetId !== target.id);
+  const worktree = {
+    id: nextId("wkt"),
+    projectId: target.projectId,
+    targetId: target.id,
+    branch: target.defaultBranch ?? "main",
+    path: target.rootPath,
+    isMain: true,
+    createdAt: now()
+  };
+  state.worktrees.push(worktree);
+  return worktree;
+}
+
+function startClone(target) {
+  const child = spawn("git", ["clone", "--progress", target.remoteUrl, target.rootPath]);
+  const apply = (chunk) => {
+    const text = chunk.toString();
+    // Prefer "Receiving objects: NN%"; fall back to any trailing percentage.
+    const recv = [...text.matchAll(/Receiving objects:\s+(\d+)%/g)].pop();
+    const any = recv ?? [...text.matchAll(/(\d+)%/g)].pop();
+    if (any) {
+      target.progress = Math.min(99, Number(any[1]));
+      target.message = recv ? `Receiving objects ${target.progress}%` : `Cloning ${target.progress}%`;
+      target.updatedAt = now();
+    }
+  };
+  child.stderr.on("data", apply);
+  child.stdout.on("data", apply);
+  child.on("error", (err) => {
+    target.state = "failed";
+    target.message = `git clone failed: ${err instanceof Error ? err.message : String(err)}`;
+    target.updatedAt = now();
+    persistState();
+  });
+  child.on("close", (code) => {
+    if (code === 0) {
+      target.state = "ready";
+      target.progress = 100;
+      target.defaultBranch = detectDefaultBranch(target.rootPath);
+      target.message = "Clone complete.";
+      createMainWorktree(target);
+    } else {
+      target.state = "failed";
+      target.message = `git clone exited with code ${code}.`;
+    }
+    target.updatedAt = now();
+    persistState();
+  });
+}
+
+function cloneProjectRepo(project, repoUrl, parentDir) {
+  const base = path.resolve(expandHome(parentDir) || DEFAULT_CLONE_PARENT);
+  // The durable default may not exist yet on a fresh machine; git clone needs
+  // the parent present.
+  fs.mkdirSync(base, { recursive: true });
+  const rootPath = path.join(base, repoNameFromUrl(repoUrl));
+  if (fs.existsSync(rootPath)) throw new Error(`Destination already exists: ${rootPath}`);
+  const target = {
+    id: nextId("tgt"),
+    projectId: project.id,
+    deviceId: state.device.id,
+    kind: "clone",
+    remoteUrl: String(repoUrl),
+    rootPath,
+    defaultBranch: null,
+    state: "cloning",
+    progress: 0,
+    message: "Starting clone…",
+    createdAt: now(),
+    updatedAt: now()
+  };
+  state.projectTargets.push(target);
+  startClone(target);
+  return target;
+}
+
+function bindLocalRepo(project, repoPath) {
+  const rootPath = path.resolve(expandHome(repoPath));
+  if (!fs.existsSync(rootPath) || !fs.existsSync(path.join(rootPath, ".git"))) {
+    throw new Error(`Not a git repository: ${rootPath}`);
+  }
+  const target = {
+    id: nextId("tgt"),
+    projectId: project.id,
+    deviceId: state.device.id,
+    kind: "local",
+    remoteUrl: null,
+    rootPath,
+    defaultBranch: detectDefaultBranch(rootPath),
+    state: "ready",
+    progress: 100,
+    message: "Local repository linked.",
+    createdAt: now(),
+    updatedAt: now()
+  };
+  state.projectTargets.push(target);
+  createMainWorktree(target);
+  return target;
+}
+
+// Register a repository-backed project: clone a remote URL (async) or bind an
+// existing local checkout. The project is the logical owner; the target is the
+// materialization. Throws synchronously on bad input.
+function createProjectWithRepo(body) {
+  const isClone = Boolean(body.repoUrl);
+  const derived = isClone
+    ? repoNameFromUrl(body.repoUrl)
+    : path.basename(path.resolve(String(body.repoPath ?? "").trim() || "."));
+  const project = createProject({ name: String(body.name ?? "").trim() || derived, color: body.color, ownerTeamId: body.ownerTeamId });
+  let target;
+  try {
+    target = isClone
+      ? cloneProjectRepo(project, String(body.repoUrl), body.parentDir)
+      : bindLocalRepo(project, String(body.repoPath));
+  } catch (error) {
+    // Roll back the logical project so a bad path/URL leaves no orphan.
+    state.projects = state.projects.filter((p) => p.id !== project.id);
+    persistState();
+    throw error;
+  }
+  persistState();
+  return { project, target };
 }
 
 function registerAgent(body) {
@@ -762,14 +2763,22 @@ function registerAgent(body) {
 }
 
 function createCliAgent(body) {
-  const id = sanitizeAgentId(body.id ?? nextId("agt_cli"));
   const command = String(body.command ?? body.adapter?.command ?? "").trim();
   if (!command) {
     throw new Error("CLI agent command is required.");
   }
   const args = Array.isArray(body.args ?? body.adapter?.args) ? (body.args ?? body.adapter.args).map(String) : [];
-  const codexCommand = isCodexCliCommand(command);
-  const normalizedArgs = args.length > 0 ? args : codexCommand ? codexCliArgs() : [];
+  const profile = codingAgentProfile(command);
+  // A coding agent's "mode" is its sandbox (Codex) or permission mode (Claude);
+  // accept the profile's key, the adapter copy, or a generic `sandbox`.
+  const mode = profile
+    ? profile.normalizeMode(body[profile.modeKey] ?? body.adapter?.[profile.modeKey] ?? body.sandbox)
+    : null;
+  // Deterministic id per (coding command + mode) so re-registering the same
+  // config upserts in place instead of piling up duplicates; a different mode is
+  // a distinct agent. Non-coding CLI agents get a generated id; explicit body.id wins.
+  const id = sanitizeAgentId(body.id ?? (profile ? `${profile.idPrefix}${mode}` : nextId("agt_cli")));
+  const normalizedArgs = args.length > 0 ? args : profile ? profile.defaultArgs(mode) : [];
   return baseAgent({
     id,
     type: "cli",
@@ -784,26 +2793,33 @@ function createCliAgent(body) {
       workingDirectoryPolicy: body.workingDirectory ? "explicit" : "bridge_default",
       environmentPolicy: body.env ? "explicit_only" : "inherit_safe",
       env: normalizeEnv(body.env),
-      timeoutSeconds: Number(body.timeoutSeconds ?? (codexCommand ? 120 : 30)),
+      timeoutSeconds: Number(body.timeoutSeconds ?? profile?.timeoutSeconds ?? 30),
       cancellation: "supported",
       outputFormat: normalizeCliOutputFormat(body.outputFormat ?? body.adapter?.outputFormat, command),
-      sandbox: body.sandbox ?? body.adapter?.sandbox ?? (codexCommand ? "read-only" : null)
+      sandbox: profile?.modeKey === "sandbox" ? mode : (body.sandbox ?? body.adapter?.sandbox ?? null),
+      permissionMode: profile?.modeKey === "permissionMode" ? mode : null
     },
     capabilities: [
       {
         name: body.capabilityName ?? "manual_cli_task",
         description: body.capabilityDescription ?? "Runs a manually registered local CLI command.",
-        riskLevel: normalizeRiskLevel(body.riskLevel, codexCommand ? "high" : "medium"),
-        riskTags: normalizeRiskTags(body.riskTags ?? body.capabilityRiskTags, codexCommand ? codexRiskTags() : ["read_local", "shell_exec"])
+        riskLevel: normalizeRiskLevel(body.riskLevel, profile ? "high" : "medium"),
+        riskTags: normalizeRiskTags(
+          body.riskTags ?? body.capabilityRiskTags,
+          profile ? profile.riskTags() : ["read_local", "shell_exec"]
+        )
       }
     ],
     status: state.device.status === "online" ? "available" : "unavailable",
-    registrationNotes: codexCommand ? codexRegistrationNotes() : {
-      risk: "Runs a local command with structured argv. Review the command, arguments, working directory, and environment before invoking.",
-      data: "Task input and command output are streamed to the local demo server as invocation events.",
-      cost: "Cost is external or unknown unless the registered command reports it.",
-      cancellation: "The Desktop Bridge attempts to terminate the process tree when cancellation is requested."
-    },
+    projectId: body.projectId,
+    registrationNotes: profile
+      ? profile.notes()
+      : {
+          risk: "Runs a local command with structured argv. Review the command, arguments, working directory, and environment before invoking.",
+          data: "Task input and command output are streamed to the local demo server as invocation events.",
+          cost: "Cost is external or unknown unless the registered command reports it.",
+          cancellation: "The Desktop Bridge attempts to terminate the process tree when cancellation is requested."
+        },
     economics: normalizeAgentEconomics(body)
   });
 }
@@ -843,6 +2859,7 @@ function createHttpAgent(body) {
       }
     ],
     status: "available",
+    projectId: body.projectId,
     registrationNotes: {
       risk: "Sends invocation input to the configured HTTP endpoint.",
       data: "Task input leaves the local demo server and endpoint response is stored as the result.",
@@ -853,10 +2870,11 @@ function createHttpAgent(body) {
   });
 }
 
-function baseAgent({ id, name, description, location, adapter, capabilities, status, registrationNotes, economics = {} }) {
+function baseAgent({ id, name, description, location, adapter, capabilities, status, registrationNotes, economics = {}, projectId }) {
   const createdAt = now();
   return {
     id,
+    projectId: resolveProjectId(projectId),
     name: String(name),
     description: String(description),
     ownerUserId: "usr_local",
@@ -1946,8 +3964,34 @@ function isCodexCliCommand(command) {
   return ["codex", "codex.cmd", "codex.ps1", "codex.exe"].some((name) => normalized === name || normalized.endsWith(`/${name}`) || normalized.endsWith(`\\${name}`));
 }
 
-function codexCliArgs() {
-  return ["exec", "--json", "--sandbox", "read-only", "--ephemeral", "{{task}}"];
+function codexCliArgs(sandbox = "read-only") {
+  return ["exec", "--json", "--sandbox", normalizeCodexSandbox(sandbox), "--ephemeral", "{{task}}"];
+}
+
+// Codex sandbox modes, safest first. read-only stays the default everywhere a
+// sandbox is not explicitly chosen, so conservative discovery/builder paths are
+// unchanged; writable modes are opt-in and remain high-risk (approval-gated).
+function normalizeCodexSandbox(value) {
+  const normalized = String(value ?? "").trim().toLowerCase();
+  return ["read-only", "workspace-write", "danger-full-access"].includes(normalized)
+    ? normalized
+    : "read-only";
+}
+
+// Map a run's permission level onto a Codex sandbox mode.
+function sandboxForPermission(level) {
+  return level === "full" ? "danger-full-access" : level === "auto" ? "workspace-write" : "read-only";
+}
+
+// Rewrite a Codex args template's `--sandbox <mode>` (or append it) so a run's
+// permission level controls the actual sandbox, overriding the value baked in at
+// registration. Returns a new array; leaves non-codex args untouched.
+function withCodexSandbox(args, mode) {
+  const list = Array.isArray(args) ? [...args] : [];
+  const i = list.indexOf("--sandbox");
+  if (i >= 0 && i + 1 < list.length) list[i + 1] = mode;
+  else list.push("--sandbox", mode);
+  return list;
 }
 
 function codexRiskTags() {
@@ -1957,7 +4001,10 @@ function codexRiskTags() {
 function normalizeCliOutputFormat(value, command) {
   const normalized = String(value ?? "").trim().toLowerCase();
   if (normalized === "codex_jsonl") return "codex_jsonl";
-  return isCodexCliCommand(command) ? "codex_jsonl" : "plain_result";
+  if (normalized === "claude_jsonl") return "claude_jsonl";
+  if (isCodexCliCommand(command)) return "codex_jsonl";
+  if (isClaudeCliCommand(command)) return "claude_jsonl";
+  return "plain_result";
 }
 
 function codexRegistrationNotes() {
@@ -1966,6 +4013,37 @@ function codexRegistrationNotes() {
     data: "Task input, Codex JSONL events, command output, trace, and result summary are recorded by the local demo server.",
     cost: "Codex cost is external or unknown to the demo server and remains visible for review.",
     cancellation: "The Desktop Bridge attempts to terminate the Codex process tree when cancellation is requested."
+  };
+}
+
+function isClaudeCliCommand(command) {
+  const normalized = String(command ?? "").trim().toLowerCase();
+  return ["claude", "claude.cmd", "claude.exe"].some((name) => normalized === name || normalized.endsWith(`/${name}`) || normalized.endsWith(`\\${name}`));
+}
+
+// Claude Code runs non-interactively via `claude -p` with stream-json events.
+// plan is the safe default (no edits); acceptEdits and bypassPermissions are
+// writable opt-ins. "default"/"auto" are excluded because they block on
+// interactive prompts in a headless bridge.
+function normalizeClaudePermissionMode(value) {
+  const normalized = String(value ?? "").trim();
+  return ["plan", "acceptEdits", "bypassPermissions"].includes(normalized) ? normalized : "plan";
+}
+
+function claudeCliArgs(permissionMode = "plan") {
+  return ["-p", "{{task}}", "--output-format", "stream-json", "--verbose", "--permission-mode", normalizeClaudePermissionMode(permissionMode)];
+}
+
+function claudeRiskTags() {
+  return ["read_local", "write_local", "shell_exec", "network_access", "repo_context", "code_change"];
+}
+
+function claudeRegistrationNotes() {
+  return {
+    risk: "Runs Claude Code non-interactively (claude -p). Review repository access, permission mode, tool use, and proposed file changes before invoking.",
+    data: "Task input, Claude stream-json events, result text, trace, and result summary are recorded by the local demo server.",
+    cost: "Claude cost is external or unknown to the demo server and remains visible for review.",
+    cancellation: "The Desktop Bridge attempts to terminate the Claude process tree when cancellation is requested."
   };
 }
 
@@ -2015,11 +4093,34 @@ function createInvocation(task, agent = defaultAgent(), options = {}) {
   const trace = createTrace(id, agent);
   const policy = evaluateInvocationPolicy(agent, options);
   const directRun = runsWithoutBridge(agent);
+  const projectId = resolveProjectId(options.projectId ?? agent.projectId);
+  const project = findProject(projectId);
+  // An explicit worktree wins: run directly in it. Otherwise default to the
+  // project's shared worktree; an isolated project gets a fresh ephemeral
+  // worktree per CLI run (the only adapter that uses a cwd).
+  const explicitWorktree = options.worktreeId
+    ? state.worktrees.find((w) => w.id === options.worktreeId && w.projectId === projectId)
+    : null;
+  // Only honor the worktree if its checkout still exists on disk (a stale named
+  // worktree whose dir was removed would otherwise be a non-existent cwd).
+  const explicitOk = Boolean(explicitWorktree && fs.existsSync(explicitWorktree.path));
+  let workingDirectory = explicitOk ? explicitWorktree.path : projectWorkingDirectory(projectId);
+  if (!explicitOk && project?.isolation === "worktree" && agent.adapter?.type === "cli") {
+    const ephemeral = createEphemeralWorktree(project, id);
+    if (ephemeral) {
+      workingDirectory = ephemeral.path;
+      // Render skills targeting this agent into the throwaway worktree only.
+      renderSkillsIntoWorktree(agent, ephemeral.path);
+    }
+  }
   const invocation = {
     id,
     ideaSessionId: null,
+    projectId,
+    worktreeId: explicitOk ? explicitWorktree.id : null,
+    workingDirectory,
     agentId: agent.id,
-    requestedBy: "usr_local",
+    requestedBy: options.requestedBy ?? "usr_local",
     status: policy.decision === "requires_local_approval" ? "waiting_for_local_approval" : directRun ? "running" : "queued",
     delivery: {
       deliveryId: nextId("del_demo"),
@@ -2062,6 +4163,21 @@ function createInvocation(task, agent = defaultAgent(), options = {}) {
     level: "info",
     message: "Invocation created from Web Console."
   });
+  if (workingDirectory) {
+    const isolated = !explicitOk && project?.isolation === "worktree" && agent.adapter?.type === "cli";
+    const where = explicitOk
+      ? `Runs in worktree ${explicitWorktree.branch}`
+      : isolated
+        ? "Runs in isolated worktree"
+        : "Runs in project worktree";
+    appendEvent({
+      invocationId: invocation.id,
+      type: "log",
+      level: "info",
+      message: `${where}: ${workingDirectory}`,
+      data: { workingDirectory, projectId, worktreeId: explicitOk ? explicitWorktree.id : null, isolated }
+    });
+  }
   appendEvent({
     invocationId: invocation.id,
     type: "policy_decision_recorded",
@@ -2094,6 +4210,7 @@ function createInvocation(task, agent = defaultAgent(), options = {}) {
       message: `Demo invocation authorized for ${agent.name}.`
     });
   }
+  persistState();
   return invocation;
 }
 
@@ -2101,7 +4218,12 @@ function evaluateInvocationPolicy(agent, options = {}) {
   const capabilities = Array.isArray(agent.capabilities) ? agent.capabilities : [];
   const riskLevel = highestRiskLevel(capabilities.map((capability) => capability.riskLevel));
   const riskTags = uniqueStrings(capabilities.flatMap((capability) => capability.riskTags ?? []));
-  const requiresApproval = Boolean(options.requireLocalApproval) || ["high", "critical"].includes(riskLevel);
+  // Permission level: "auto"/"full" pre-authorize risky operations (no manual
+  // approval); "ask" (default) keeps the risk gate. An explicit
+  // requireLocalApproval (e.g. budget enforcement) always wins.
+  const preauthorized = options.permissionLevel === "auto" || options.permissionLevel === "full";
+  const requiresApproval =
+    Boolean(options.requireLocalApproval) || (!preauthorized && ["high", "critical"].includes(riskLevel));
   return {
     decision: requiresApproval ? "requires_local_approval" : "allowed",
     reason: requiresApproval
@@ -2198,14 +4320,14 @@ function runsWithoutBridge(agent) {
   return agent.adapter.type === "platform" || (agent.adapter.type === "http" && agent.location.type === "remote_http");
 }
 
-function approveInvocation(approval, invocation) {
+function approveInvocation(approval, invocation, decidedBy = "usr_local") {
   if (approval.status !== "pending" || invocation.status !== "waiting_for_local_approval") {
     return;
   }
   const agent = findAgent(invocation.agentId);
   approval.status = "approved";
   approval.decidedAt = now();
-  approval.decidedBy = "usr_local";
+  approval.decidedBy = decidedBy;
   invocation.status = agent?.adapter.type === "http" ? "running" : "queued";
   invocation.delivery.state = agent?.adapter.type === "http" ? "not_required" : "queued";
   invocation.delivery.dispatchAttempts = agent?.adapter.type === "http" ? 1 : 0;
@@ -2240,13 +4362,13 @@ function approveInvocation(approval, invocation) {
   startInvocationIfAllowed(invocation, agent);
 }
 
-function denyInvocation(approval, invocation) {
+function denyInvocation(approval, invocation, decidedBy = "usr_local") {
   if (approval.status !== "pending" || invocation.status !== "waiting_for_local_approval") {
     return;
   }
   approval.status = "denied";
   approval.decidedAt = now();
-  approval.decidedBy = "usr_local";
+  approval.decidedBy = decidedBy;
   invocation.status = "rejected";
   invocation.completedAt = now();
   invocation.updatedAt = now();
@@ -2272,11 +4394,63 @@ function denyInvocation(approval, invocation) {
   });
   state.auditSummaries.push(createAuditSummary(invocation, "Local approval denied before execution."));
   recordAgentUsage(invocation, "rejected");
+  cleanupEphemeralWorktree(invocation);
+}
+
+// The working directory an invocation runs in. Two invocations that share a cwd
+// must not run concurrently (their writes would collide); distinct worktrees
+// (and per-run ephemeral worktrees) have distinct cwds and can run in parallel.
+function invocationDirKey(invocation) {
+  return invocation.workingDirectory || "__default__";
+}
+
+// Force a terminal status on runs stuck in "cancelling" past a grace (e.g. the
+// bridge died mid-cancel). Otherwise they'd hold a concurrency slot + lock their
+// worktree forever. Grace ≥ the dispatch lease so a legitimately-still-killing
+// process isn't reclaimed early.
+const CANCEL_GRACE_MS = Math.max(60_000, dispatchLeaseMs * 2);
+function reclaimStuckCancellations() {
+  const cutoff = Date.now() - CANCEL_GRACE_MS;
+  for (const invocation of state.invocations) {
+    if (invocation.status !== "cancelling") continue;
+    const since = Date.parse(invocation.cancellation?.requestedAt ?? invocation.updatedAt ?? "");
+    if (Number.isFinite(since) && since > cutoff) continue;
+    completeInvocation(invocation, {
+      status: "cancelled",
+      summary: "Cancellation reclaimed after grace — the bridge did not confirm completion.",
+      result: null,
+    });
+  }
+}
+
+// Bridge-executed = runs on this device's bridge (not a platform/remote-http
+// agent that runs elsewhere). Only these consume the device's concurrency.
+function isBridgeExecuted(invocation) {
+  const agent = findAgent(invocation.agentId);
+  return agent ? !runsWithoutBridge(agent) : true;
 }
 
 function nextDispatchableInvocation() {
+  // Only count bridge-executed runs: a long-running platform/HTTP agent (which
+  // runs off-device and never touches the bridge) must not consume a bridge slot
+  // and starve CLI dispatch.
+  const inFlight = state.invocations.filter(
+    (i) => ["dispatching", "running", "cancelling"].includes(i.status) && isBridgeExecuted(i),
+  );
+  // Authoritative cross-worktree concurrency cap: don't dispatch once the device
+  // is at its limit, regardless of how the bridge polls.
+  if (inFlight.length >= (state.device.maxConcurrency ?? DEFAULT_MAX_CONCURRENCY)) {
+    return undefined;
+  }
+  // Directories occupied by an in-flight invocation — skip a queued task whose
+  // cwd is busy so the bridge can run other worktrees concurrently without two
+  // agents writing the same directory.
+  const busyDirs = new Set(inFlight.map(invocationDirKey));
   return state.invocations.find((item) => {
     if (item.status !== "queued" || !["queued", "redelivering"].includes(item.delivery.state)) {
+      return false;
+    }
+    if (busyDirs.has(invocationDirKey(item))) {
       return false;
     }
     const agent = findAgent(item.agentId);
@@ -2368,11 +4542,101 @@ function completeInvocation(invocation, body) {
   });
   state.auditSummaries.push(createAuditSummary(invocation, body.summary ?? null));
   recordAgentUsage(invocation, terminalStatus);
+  recordLedgerEntry(invocation, terminalStatus);
+  cleanupEphemeralWorktree(invocation);
+}
+
+// One finalized economic ledger entry per completed invocation, derived from the
+// cost the agent reported (Claude returns real total_cost_usd; Codex/demo report
+// unknown). This is the spine of the agent-economics differentiator: every run is
+// attributable to a cost owner and rolls up through one ledger.
+function recordLedgerEntry(invocation, terminalStatus) {
+  const agent = findAgent(invocation.agentId);
+  // Spend is owned by the project's team (who pays); attribute the run to the
+  // user who requested it. Fall back to the agent's configured owner.
+  const costOwner = findProject(invocation.projectId)?.ownerTeamId ?? agent?.economics?.costOwner ?? "unknown";
+  const cost = invocation.result?.cost ?? {};
+  const inputTokens = Number(cost.inputTokens ?? 0) || 0;
+  const outputTokens = Number(cost.outputTokens ?? 0) || 0;
+  const reported = finiteUsd(cost.amountUsd);
+  // No provider-reported amount? Estimate from tokens x the price book (Codex).
+  const estimate = reported === null ? estimateCostUsd(cost.model, inputTokens, outputTokens) : null;
+  const effective = reported ?? estimate;
+  const amountSource = reported !== null ? "reported" : estimate !== null ? "estimated" : "unknown";
+  const economicModel = agent?.economics?.model ?? "unknown";
+  const ledgerStatus = terminalStatus === "cancelled" ? "voided" : reported !== null ? "finalized" : "estimated";
+  const entry = {
+    id: nextId("led_demo"),
+    invocationId: invocation.id,
+    projectId: invocation.projectId ?? "prj_default",
+    agentId: invocation.agentId,
+    agentName: agent?.name ?? invocation.agentId,
+    deviceId: invocation.delivery?.deviceId ?? state.device.id,
+    userId: invocation.requestedBy ?? "unknown",
+    sourceType: TOKEN_PRICING[String(cost.model ?? "").toLowerCase()] ? "ai_usage" : "agent_invocation",
+    entryType: "cost",
+    economicModel,
+    meterName: amountSource === "estimated" ? "per_token" : "per_invocation",
+    provider: cost.model ?? "unknown",
+    quantity: 1,
+    inputTokens,
+    outputTokens,
+    currency: agent?.economics?.currency ?? "USD",
+    amountUsd: effective,
+    amountSource,
+    amountText: reported !== null ? `$${reported.toFixed(4)}` : estimate !== null ? `~$${estimate.toFixed(4)}` : "unknown",
+    amountDirection: cost.billable ? "payable" : "informational",
+    costOwner,
+    billable: Boolean(cost.billable),
+    status: ledgerStatus,
+    invocationStatus: terminalStatus,
+    createdAt: now(),
+    finalizedAt: reported !== null ? now() : null
+  };
+  state.ledgerEntries.unshift(entry);
+  state.ledgerEntries = state.ledgerEntries.slice(0, 200);
+  persistState();
+  return entry;
+}
+
+// Estimate cost from tokens x the price book, used only when an agent reports no
+// billed amount (e.g. Codex). Estimates are tracked separately from finalized
+// (reported) spend, but DO count toward budget caps (see ledgerEntrySpend).
+function estimateCostUsd(model, inputTokens, outputTokens) {
+  const price = TOKEN_PRICING[String(model ?? "").toLowerCase()];
+  if (!price || (inputTokens <= 0 && outputTokens <= 0)) return null;
+  const amount = (inputTokens / 1_000_000) * price.inputPerMTok + (outputTokens / 1_000_000) * price.outputPerMTok;
+  return Number(amount.toFixed(6));
+}
+
+// A finite, non-negative USD number, or null. Guards spend totals and budget
+// comparisons against NaN / Infinity / negative amounts from an agent.
+function finiteUsd(value) {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
+}
+
+// What a ledger entry contributes to spend and budgets: voided (cancelled)
+// entries contribute nothing; reported and estimated amounts both count. This is
+// the single spend rule shared by the ledger summary and budget enforcement.
+function ledgerEntrySpend(entry) {
+  if (entry.status === "voided") return 0;
+  return finiteUsd(entry.amountUsd) ?? 0;
 }
 
 function recordAgentUsage(invocation, terminalStatus) {
   const agent = findAgent(invocation.agentId);
   const summary = getAgentUsageSummary(invocation.agentId);
+  const cost = invocation.result?.cost ?? {};
+  const reported = finiteUsd(cost.amountUsd);
+  // Cancelled runs are voided — they do not add to billed spend.
+  if (terminalStatus !== "cancelled") {
+    if (reported !== null) {
+      summary.totalCostUsd = Number((Number(summary.totalCostUsd ?? 0) + reported).toFixed(6));
+      summary.billableInvocations = (summary.billableInvocations ?? 0) + 1;
+    } else {
+      summary.unknownCostInvocations = (summary.unknownCostInvocations ?? 0) + 1;
+    }
+  }
   summary.invocationCount += 1;
   if (terminalStatus === "succeeded") {
     summary.succeededCount += 1;
@@ -2406,6 +4670,9 @@ function getAgentUsageSummary(agentId) {
       economicModel: agent?.economics?.model ?? "unknown",
       currency: agent?.economics?.currency ?? "USD",
       unknownCostVisible: (agent?.economics?.model ?? "unknown") === "unknown",
+      totalCostUsd: 0,
+      billableInvocations: 0,
+      unknownCostInvocations: 0,
       updatedAt: null
     };
     state.agentUsageSummaries.push(summary);
@@ -2680,6 +4947,7 @@ function cancelInvocation(invocation) {
     });
     state.auditSummaries.push(createAuditSummary(invocation, "Cancelled before local execution."));
     recordAgentUsage(invocation, "cancelled");
+    cleanupEphemeralWorktree(invocation);
     return;
   }
 
@@ -2732,9 +5000,19 @@ function createAuditSummary(invocation, summary) {
     resultSummary: invocation.status === "succeeded" ? summary : null,
     errorSummary: invocation.status === "succeeded" ? null : summary,
     dataStored: true,
-    costSummary: "Demo agent cost is unknown; no billing was performed.",
+    costSummary: costSummaryForInvocation(invocation),
     metadata: { namespace, protocolVersion }
   };
+}
+
+// Keep the word "unknown" when there is no metered amount; surface the real
+// figure when an agent (e.g. Claude) reports one.
+function costSummaryForInvocation(invocation) {
+  const cost = invocation.result?.cost ?? {};
+  if (typeof cost.amountUsd === "number") {
+    return `Metered $${cost.amountUsd.toFixed(4)} via ${cost.model ?? "agent"}${cost.billable ? " (billable)" : ""}.`;
+  }
+  return "Cost is unknown; no billing was performed.";
 }
 
 function createTrace(invocationId, agent = defaultAgent()) {
@@ -2912,6 +5190,7 @@ function unlinkDevice() {
     });
     state.auditSummaries.push(createAuditSummary(invocation, "Device unlink cancelled queued local work."));
     recordAgentUsage(invocation, "cancelled");
+    cleanupEphemeralWorktree(invocation);
   }
   for (const invocation of state.invocations.filter((item) => ["dispatching", "running"].includes(item.status))) {
     invocation.status = "cancelling";
@@ -2935,14 +5214,50 @@ function unlinkDevice() {
   });
 }
 
-function publicState() {
+// Phase 3 tenancy: the snapshot is scoped to the actor's team. Project-derived
+// collections (targets/worktrees/invocations/budgets/approvals) and the ledger
+// are filtered to what this team owns; the ledger summary + budget statuses are
+// recomputed from the filtered slice so totals match the visible rows. With a
+// single seeded team this filters nothing (everything is team_local). Device,
+// agents, discovery and other shared local infra stay global for now.
+function publicState(actor) {
+  const teamId = actor?.teamId ?? "team_local";
+  const visibleProjectIds = new Set(
+    state.projects.filter((p) => teamOf(p) === teamId).map((p) => p.id)
+  );
+  const ownsProject = (projectId) => visibleProjectIds.has(projectId ?? "prj_default");
+
+  const projects = state.projects.filter((p) => visibleProjectIds.has(p.id));
+  const projectTargets = state.projectTargets.filter((t) => ownsProject(t.projectId));
+  const worktrees = state.worktrees.filter((w) => ownsProject(w.projectId));
+  const invocations = state.invocations.filter((i) => ownsProject(i.projectId));
+  const visibleInvocationIds = new Set(invocations.map((i) => i.id));
+  // Scope the ledger by the SAME key as enforcement (projectSpend filters by
+  // projectId) and the rest of this snapshot — not by costOwner. costOwner is a
+  // team id today but can diverge from the project's team on the missing-project
+  // fallback, which would make the shown budget under-count vs what runs enforce
+  // and could leak an entry with no costOwner to every team. projectId is always
+  // set (defaults to prj_default), so this is exact and leak-free.
+  const ledgerEntries = state.ledgerEntries.filter((e) => ownsProject(e.projectId));
+  const budgets = state.budgets.filter((b) => ownsProject(b.projectId));
+  const approvalRequests = state.approvalRequests.filter((a) => visibleInvocationIds.has(a.invocationId));
+  const automations = state.automations.filter((a) => ownsProject(a.projectId));
+
+  const ledgerSummary = summarizeLedger(ledgerEntries);
   return {
     namespace,
     protocolVersion,
+    // Server-resolved defaults the web can't compute itself (no home dir in the
+    // browser). Pre-fills the Register dialog's clone parent folder.
+    defaults: { cloneParentDir: DEFAULT_CLONE_PARENT },
     device: state.device,
+    projects,
+    projectTargets,
+    worktrees,
     agent: defaultAgent(),
     agents: state.agents,
-    invocations: state.invocations,
+    skills: state.skills,
+    invocations,
     events: state.events,
     traces: state.traces,
     spans: state.spans,
@@ -2954,11 +5269,251 @@ function publicState() {
     integrationProbeRuns: state.integrationProbeRuns,
     quotaDecisionRecords: state.quotaDecisionRecords,
     retentionSettings: state.retentionSettings,
-    approvalRequests: state.approvalRequests,
+    approvalRequests,
+    automations,
     policyDecisionRecords: state.policyDecisionRecords,
     troubleshootingReports: state.troubleshootingReports,
-    agentUsageSummaries: state.agentUsageSummaries
+    agentUsageSummaries: state.agentUsageSummaries,
+    ledgerEntries,
+    ledgerSummary,
+    budgets,
+    budgetStatuses: budgetStatuses(ledgerSummary, budgets)
   };
+}
+
+// Roll the per-invocation ledger up into the views the console shows: a total,
+// and breakdowns by cost owner and by agent. Known USD amounts sum; unmetered
+// runs are surfaced as a visible count, never hidden.
+function summarizeLedger(entries = state.ledgerEntries) {
+  const byOwner = new Map();
+  const byAgent = new Map();
+  const byProject = new Map();
+  let finalizedUsd = 0;
+  let estimatedUsd = 0;
+  let knownEntries = 0;
+  let estimatedEntries = 0;
+  let unknownEntries = 0;
+  let voidedEntries = 0;
+  let billableEntries = 0;
+
+  for (const entry of entries) {
+    // Voided (cancelled) entries stay visible in the ledger but contribute no
+    // spend — same rule budget enforcement uses (ledgerEntrySpend).
+    if (entry.status === "voided") {
+      voidedEntries += 1;
+      continue;
+    }
+    const amount = ledgerEntrySpend(entry);
+    if (entry.amountSource === "reported") {
+      finalizedUsd += amount;
+      knownEntries += 1;
+    } else if (entry.amountSource === "estimated") {
+      estimatedUsd += amount;
+      estimatedEntries += 1;
+    } else {
+      unknownEntries += 1;
+    }
+    if (entry.billable) billableEntries += 1;
+
+    const owner = byOwner.get(entry.costOwner) ?? { costOwner: entry.costOwner, entries: 0, knownCostUsd: 0, estimatedCostUsd: 0, unknownEntries: 0 };
+    owner.entries += 1;
+    if (entry.amountSource === "reported") owner.knownCostUsd += amount;
+    else if (entry.amountSource === "estimated") owner.estimatedCostUsd += amount;
+    else owner.unknownEntries += 1;
+    byOwner.set(entry.costOwner, owner);
+
+    const projectId = entry.projectId ?? "prj_default";
+    const project = byProject.get(projectId) ?? { projectId, projectName: findProject(projectId)?.name ?? projectId, entries: 0, knownCostUsd: 0, estimatedCostUsd: 0, unknownEntries: 0 };
+    project.entries += 1;
+    if (entry.amountSource === "reported") project.knownCostUsd += amount;
+    else if (entry.amountSource === "estimated") project.estimatedCostUsd += amount;
+    else project.unknownEntries += 1;
+    byProject.set(projectId, project);
+
+    const agent = byAgent.get(entry.agentId) ?? { agentId: entry.agentId, agentName: entry.agentName, provider: entry.provider, entries: 0, knownCostUsd: 0, estimatedCostUsd: 0, unknownEntries: 0 };
+    agent.entries += 1;
+    if (entry.amountSource === "reported") agent.knownCostUsd += amount;
+    else if (entry.amountSource === "estimated") agent.estimatedCostUsd += amount;
+    else agent.unknownEntries += 1;
+    byAgent.set(entry.agentId, agent);
+  }
+
+  const round = (value) => Number(value.toFixed(6));
+  const roundOwner = (o) => ({ ...o, knownCostUsd: round(o.knownCostUsd), estimatedCostUsd: round(o.estimatedCostUsd) });
+  return {
+    currency: "USD",
+    totalCostUsd: round(finalizedUsd + estimatedUsd),
+    finalizedUsd: round(finalizedUsd),
+    estimatedUsd: round(estimatedUsd),
+    entryCount: entries.length,
+    knownEntries,
+    estimatedEntries,
+    unknownEntries,
+    voidedEntries,
+    billableEntries,
+    byCostOwner: [...byOwner.values()].map(roundOwner),
+    byProject: [...byProject.values()].map(roundOwner),
+    byAgent: [...byAgent.values()].map(roundOwner)
+  };
+}
+
+// --- Budgets and quota enforcement ---------------------------------------
+// A budget pool caps a cost owner's metered spend. When spend reaches the
+// limit, the owner's policy decides: warn (allow), require_approval (force the
+// approval gate), or block (refuse new invocations). No budgets are seeded, so
+// enforcement is opt-in and existing flows are unaffected until one is set.
+
+function normalizeBudgetPolicy(value) {
+  const normalized = String(value ?? "").trim();
+  return ["warn", "require_approval", "block"].includes(normalized) ? normalized : "warn";
+}
+
+function upsertBudget(body) {
+  const projectId = String(body.projectId ?? "").trim();
+  if (!projectId) throw new Error("Budget projectId is required.");
+  if (!findProject(projectId)) throw new Error("Budget projectId must reference a known project.");
+  const limitUsd = Number(body.limitUsd);
+  if (!Number.isFinite(limitUsd) || limitUsd < 0) throw new Error("Budget limitUsd must be a non-negative number.");
+  const policy = normalizeBudgetPolicy(body.policy);
+  const existing = state.budgets.find((item) => item.projectId === projectId);
+  if (existing) {
+    existing.limitUsd = limitUsd;
+    existing.policy = policy;
+    existing.updatedAt = now();
+    persistState();
+    return existing;
+  }
+  const budget = {
+    id: nextId("bgt_demo"),
+    projectId,
+    limitUsd,
+    policy,
+    currency: "USD",
+    createdAt: now(),
+    updatedAt: now()
+  };
+  state.budgets.push(budget);
+  persistState();
+  return budget;
+}
+
+// Committed spend for a project (reported + estimated, excluding voided),
+// split so the UI can show the breakdown. This is the budget basis.
+function projectSpend(projectId) {
+  let finalizedUsd = 0;
+  let estimatedUsd = 0;
+  for (const entry of state.ledgerEntries) {
+    if ((entry.projectId ?? "prj_default") !== projectId || entry.status === "voided") continue;
+    const amount = ledgerEntrySpend(entry);
+    if (entry.amountSource === "reported") finalizedUsd += amount;
+    else if (entry.amountSource === "estimated") estimatedUsd += amount;
+  }
+  const round = (v) => Number(v.toFixed(6));
+  return { finalizedUsd: round(finalizedUsd), estimatedUsd: round(estimatedUsd), spentUsd: round(finalizedUsd + estimatedUsd) };
+}
+
+// Best-effort reservation against concurrent bursts: each in-flight (non-terminal)
+// run for this project holds a nominal amount, since the real per-run cost is not
+// known until completion.
+function projectInFlightReservation(projectId) {
+  let active = 0;
+  for (const inv of state.invocations) {
+    if (!["queued", "dispatching", "running", "waiting_for_local_approval", "cancelling"].includes(inv.status)) continue;
+    if ((inv.projectId ?? "prj_default") === projectId) active += 1;
+  }
+  return Number((active * BUDGET_RESERVATION_USD).toFixed(6));
+}
+
+function budgetStatusFor(projectId, spend = projectSpend(projectId)) {
+  const budget = state.budgets.find((item) => item.projectId === projectId);
+  const base = {
+    projectId,
+    projectName: findProject(projectId)?.name ?? projectId,
+    spentUsd: spend.spentUsd,
+    finalizedUsd: spend.finalizedUsd,
+    estimatedUsd: spend.estimatedUsd
+  };
+  if (!budget) {
+    return { ...base, exists: false, limitUsd: null, policy: "warn", remainingUsd: null, over: false };
+  }
+  // A limit of 0 is a deliberate "freeze" (block every run): spend >= 0 is always
+  // true. For limit > 0, at-or-over the cap is over-budget.
+  const over = spend.spentUsd >= budget.limitUsd;
+  return {
+    ...base,
+    exists: true,
+    budgetId: budget.id,
+    limitUsd: budget.limitUsd,
+    policy: budget.policy,
+    currency: budget.currency,
+    remainingUsd: Number((budget.limitUsd - spend.spentUsd).toFixed(6)),
+    over
+  };
+}
+
+// Derive every budget's status from the ledger summary's per-project rollup so the
+// hot /api/state path scans the ledger once (via summarizeLedger) instead of
+// re-scanning per budget.
+function budgetStatuses(summary = summarizeLedger(), budgets = state.budgets) {
+  const spendByProject = new Map(
+    (summary.byProject ?? []).map((p) => [
+      p.projectId,
+      {
+        finalizedUsd: p.knownCostUsd,
+        estimatedUsd: p.estimatedCostUsd,
+        spentUsd: Number((p.knownCostUsd + p.estimatedCostUsd).toFixed(6))
+      }
+    ])
+  );
+  return budgets.map((budget) =>
+    budgetStatusFor(budget.projectId, spendByProject.get(budget.projectId) ?? { finalizedUsd: 0, estimatedUsd: 0, spentUsd: 0 })
+  );
+}
+
+function recordBudgetQuotaDecision(status, decision, reason) {
+  const record = {
+    id: nextId("qd_demo"),
+    subjectType: "team",
+    subjectId: status.projectId,
+    resourceType: "budget_pool",
+    resourceId: status.budgetId ?? status.projectId,
+    decision,
+    reason,
+    createdAt: now()
+  };
+  state.quotaDecisionRecords.unshift(record);
+  state.quotaDecisionRecords = state.quotaDecisionRecords.slice(0, 100);
+  return record;
+}
+
+// Evaluate the project's budget before an invocation is created. Returns the
+// action to take; only an over-budget project with a budget set is affected.
+function enforceBudgetForProject(projectId) {
+  const status = budgetStatusFor(projectId);
+  const label = status.projectName ?? projectId;
+  if (!status.exists) {
+    return { action: "allow", status };
+  }
+  // Project committed spend plus a hold for in-flight runs, so a burst of
+  // concurrent invocations cannot all slip through on the same pre-completion
+  // snapshot.
+  const reservation = projectInFlightReservation(projectId);
+  const projectedUsd = Number((status.spentUsd + reservation).toFixed(6));
+  if (projectedUsd < status.limitUsd) {
+    return { action: "allow", status };
+  }
+  const projected = `$${projectedUsd.toFixed(4)}`;
+  const limit = `$${Number(status.limitUsd).toFixed(2)}`;
+  if (status.policy === "block") {
+    recordBudgetQuotaDecision(status, "blocked_quota_exceeded", `${label} projected ${projected} against ${limit} budget; new runs are blocked.`);
+    return { action: "block", status, reason: `Budget exceeded for ${label}: ${projected} of ${limit}.` };
+  }
+  if (status.policy === "require_approval") {
+    recordBudgetQuotaDecision(status, "allowed", `${label} is over budget (${projected} of ${limit}); local approval required.`);
+    return { action: "require_approval", status, reason: `Over budget for ${label}: ${projected} of ${limit}.` };
+  }
+  recordBudgetQuotaDecision(status, "allowed", `${label} is over budget (${projected} of ${limit}); allowed with warning.`);
+  return { action: "warn", status };
 }
 
 function runProtocolSelfCheck() {
@@ -3234,6 +5789,9 @@ function resetDemoStateForCheck() {
   state.device.unlinkState = "linked";
   state.device.credentialRevokedAt = null;
   state.agents = state.agents.filter((agent) => ["agt_demo_cli", "agt_platform_troubleshooter", "agt_platform_integration_builder"].includes(agent.id));
+  state.projects = state.projects.filter((project) => project.id === "prj_default");
+  state.projectTargets = [];
+  state.worktrees = [];
   const demoAgent = defaultAgent();
   if (demoAgent) {
     demoAgent.status = "unavailable";
@@ -3262,6 +5820,8 @@ function resetDemoStateForCheck() {
   state.policyDecisionRecords = [];
   state.troubleshootingReports = [];
   state.agentUsageSummaries = [];
+  state.ledgerEntries = [];
+  state.budgets = [];
   idCounter = 1;
 }
 
@@ -3273,13 +5833,20 @@ function assert(condition, message) {
 
 function setCors(res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "GET,POST,PATCH,OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+  res.setHeader("Access-Control-Allow-Methods", "GET,POST,PATCH,DELETE,OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
 }
 
-async function readJson(req) {
+async function readJson(req, maxBytes = Infinity) {
   const chunks = [];
+  let total = 0;
   for await (const chunk of req) {
+    total += chunk.length;
+    if (total > maxBytes) {
+      const error = new Error("payload_too_large");
+      error.statusCode = 413;
+      throw error;
+    }
     chunks.push(chunk);
   }
   const text = Buffer.concat(chunks).toString("utf8");

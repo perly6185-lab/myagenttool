@@ -1,0 +1,30 @@
+import { NavRail } from "@/components/layout/nav-rail";
+import { Topbar } from "@/components/layout/topbar";
+import { Inspector } from "@/components/layout/inspector";
+import { SECTION_VIEWS } from "@/app/routes";
+import { useUiStore } from "@/store/ui-store";
+
+/**
+ * Three-pane control-plane shell: nav rail (domains) · main outlet (active
+ * screen) · inspector (selection context). The main column scrolls; the rails
+ * stay fixed.
+ */
+export function App() {
+  const section = useUiStore((s) => s.section);
+  const View = SECTION_VIEWS[section];
+
+  return (
+    <div className="flex h-full overflow-hidden">
+      <NavRail />
+      <div className="flex min-w-0 flex-1 flex-col">
+        <Topbar />
+        <div className="flex min-h-0 flex-1">
+          <main className="min-w-0 flex-1 overflow-y-auto px-6 py-6">
+            <View />
+          </main>
+          <Inspector />
+        </div>
+      </div>
+    </div>
+  );
+}
