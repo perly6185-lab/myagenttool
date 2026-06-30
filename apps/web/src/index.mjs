@@ -1,5 +1,5 @@
 import http from "node:http";
-import { createReadStream, existsSync, readFileSync } from "node:fs";
+import { createReadStream, existsSync, readdirSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, extname, join, normalize } from "node:path";
 
@@ -22,7 +22,10 @@ if (process.argv.includes("--check")) {
 
   const html = readFileSync(join(publicDir, "index.html"), "utf8");
   const css = readFileSync(join(publicDir, "styles.css"), "utf8");
-  const js = readFileSync(join(publicDir, "app.js"), "utf8");
+  const js = [
+    readFileSync(join(publicDir, "app.js"), "utf8"),
+    ...readPublicAppModuleSources()
+  ].join("\n");
   const productFlowsPath = join(publicDir, "..", "..", "..", "docs", "design", "PRODUCT_FLOWS.md");
   const productFlows = existsSync(productFlowsPath) ? readFileSync(productFlowsPath, "utf8") : "";
   const expectations = [
@@ -286,6 +289,17 @@ if (process.argv.includes("--check")) {
 
   console.log("[web:check] local demo web console check OK");
   process.exit(0);
+}
+
+function readPublicAppModuleSources() {
+  const appModuleDir = join(publicDir, "app");
+  if (!existsSync(appModuleDir)) {
+    return [];
+  }
+  return readdirSync(appModuleDir)
+    .filter((item) => item.endsWith(".js"))
+    .sort()
+    .map((item) => readFileSync(join(appModuleDir, item), "utf8"));
 }
 
 const server = http.createServer((req, res) => {

@@ -1169,6 +1169,11 @@ Remaining split plan:
   extraction: plain-language status, health, cost, delivery, cancellation,
   result, event, audit, adapter, time, and task summary helpers now live in
   `apps/web/public/app/formatters.js`.
+  Web app Phase 2 is complete for API client extraction: localhost API base
+  resolution, JSON request/error handling, and project, terminal, invocation,
+  integration, Codex approval, SSH, routine, and state endpoints now live in
+  `apps/web/public/app/api-client.js`; `apps/web/src/index.mjs` checks the
+  combined public app module sources.
 - `apps/web/public/styles.css`: split by shell, composer, task/routine list,
   evidence, terminal, project browser, and responsive rules.
 - `tools/ai/src/loop/routine.mjs`: split the remaining schedule state and

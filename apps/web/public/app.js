@@ -1,6 +1,7 @@
 import { Terminal } from "/vendor/xterm/lib/xterm.mjs";
 import { FitAddon } from "/vendor/xterm-addon-fit/lib/addon-fit.mjs";
 
+import { createApiClient, resolveApiBase } from "./app/api-client.js";
 import {
   activityTitle,
   adapterText,
@@ -26,8 +27,8 @@ import {
   usageText,
 } from "./app/formatters.js";
 
-const defaultApiBase = "http://127.0.0.1:5001";
 const apiBase = resolveApiBase();
+const api = createApiClient(apiBase);
 
 const els = {
   connectionStatus: document.querySelector("#connectionStatus"),
@@ -421,9 +422,7 @@ els.projectList.addEventListener("click", async (event) => {
 async function selectProjectById(projectId) {
   els.projectRegistryStatus.textContent = "Switching project...";
   try {
-    const response = await fetch(`${apiBase}/api/projects/${encodeURIComponent(projectId)}`, { method: "POST" });
-    const data = await response.json();
-    if (!response.ok) throw new Error(data.message ?? data.error ?? "Unable to switch project.");
+    const data = await api.switchProject(projectId);
     els.projectRegistryStatus.textContent = `${data.project.name} selected.`;
     await refresh();
     linkProjectSelectionToSession(data.project);
@@ -529,13 +528,7 @@ els.addProjectButton.addEventListener("click", async () => {
   els.addProjectButton.disabled = true;
   els.projectRegistryStatus.textContent = "Adding project...";
   try {
-    const response = await fetch(`${apiBase}/api/projects`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name: els.projectNameInput.value.trim(), path })
-    });
-    const data = await response.json();
-    if (!response.ok) throw new Error(data.message ?? data.error ?? "Unable to add project.");
+    const data = await api.addProject({ name: els.projectNameInput.value.trim(), path });
     els.projectNameInput.value = "";
     els.projectPathInput.value = "";
     els.projectRegistryStatus.textContent = `${data.project.name} added.`;
@@ -554,9 +547,7 @@ els.removeProjectButton.addEventListener("click", async () => {
   els.removeProjectButton.disabled = true;
   els.projectRegistryStatus.textContent = "Removing project...";
   try {
-    const response = await fetch(`${apiBase}/api/projects/${encodeURIComponent(project.id)}`, { method: "DELETE" });
-    const data = await response.json();
-    if (!response.ok) throw new Error(data.message ?? data.error ?? "Unable to remove project.");
+    await api.removeProject(project.id);
     els.projectRegistryStatus.textContent = `${project.name} removed.`;
     await refresh();
   } catch (error) {
@@ -576,17 +567,11 @@ els.cloneProjectButton.addEventListener("click", async () => {
   els.cloneProjectButton.disabled = true;
   els.projectRegistryStatus.textContent = "Cloning project...";
   try {
-    const response = await fetch(`${apiBase}/api/projects/clone`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        gitUrl,
-        parentPath,
-        name: els.cloneNameInput.value.trim()
-      })
+    const data = await api.cloneProject({
+      gitUrl,
+      parentPath,
+      name: els.cloneNameInput.value.trim()
     });
-    const data = await response.json();
-    if (!response.ok) throw new Error(data.message ?? data.error ?? "Unable to clone project.");
     els.cloneUrlInput.value = "";
     els.cloneNameInput.value = "";
     els.projectRegistryStatus.textContent = `${data.project.name} cloned.`;
@@ -609,13 +594,7 @@ els.createProjectButton.addEventListener("click", async () => {
   els.createProjectButton.disabled = true;
   els.projectRegistryStatus.textContent = "Creating project...";
   try {
-    const response = await fetch(`${apiBase}/api/projects/create`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name, path })
-    });
-    const data = await response.json();
-    if (!response.ok) throw new Error(data.message ?? data.error ?? "Unable to create project.");
+    const data = await api.createProject({ name, path });
     els.createProjectNameInput.value = "";
     els.createProjectPathInput.value = "";
     els.projectRegistryStatus.textContent = `${data.project.name} created.`;
@@ -644,13 +623,7 @@ els.createWorktreeButton.addEventListener("click", async () => {
       baseBranch: els.worktreeBaseInput.value.trim(),
       path: els.worktreePathInput.value.trim()
     };
-    const response = await fetch(`${apiBase}/api/worktrees`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload)
-    });
-    const data = await response.json();
-    if (!response.ok) throw new Error(data.message ?? data.error ?? "Unable to create worktree.");
+    const data = await api.createWorktree(payload);
     els.worktreeNameInput.value = "";
     els.worktreeBranchInput.value = "";
     els.worktreeBaseInput.value = "";
@@ -746,10 +719,8 @@ async function submitTaskFromComposer() {
   try {
     const compareAgentIds = [...selectedCompareAgentIds].filter((id) => id !== selectedAgentId);
     const isCompareRun = compareAgentIds.length > 0;
-    const response = await fetch(`${apiBase}${isCompareRun ? "/api/compare-runs" : "/api/invocations"}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(isCompareRun ? {
+    const data = await (isCompareRun
+      ? api.createCompareRun({
         task,
         agentIds: [selectedAgentId, ...compareAgentIds],
         options: {
@@ -758,7 +729,8 @@ async function submitTaskFromComposer() {
           approvalMode: selectedPermissionMode,
           metadata: composerMetadata()
         }
-      } : {
+      })
+      : api.createInvocation({
         task,
         agentId: selectedAgentId,
         options: {
@@ -767,12 +739,7 @@ async function submitTaskFromComposer() {
           approvalMode: selectedPermissionMode,
           metadata: composerMetadata()
         }
-      })
-    });
-    const data = await response.json();
-    if (!response.ok) {
-      throw new Error(data.message ?? data.error ?? "Unable to start task.");
-    }
+      }));
     currentInvocationId = data.invocation?.id ?? data.compareRun?.childInvocationIds?.[0] ?? null;
     workspaceDraftTabOpen = false;
     if (currentInvocationId) openWorkspaceTab(currentInvocationId, { activate: true });
@@ -1166,16 +1133,11 @@ els.feedbackChangeButton.addEventListener("click", () => submitSelectedChangeRev
 
 els.createTerminalSessionButton.addEventListener("click", async () => {
   try {
-    const response = await fetch(`${apiBase}/api/terminal/sessions`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        shell: lastState?.terminalRuntimeCapability?.defaultShell ?? "powershell",
-        ownerCodexSessionId: latestCodexSession(lastState)?.id ?? null,
-        ownerInvocationId: latestCodexSession(lastState)?.invocationId ?? null
-      })
+    await api.createTerminalSession({
+      shell: lastState?.terminalRuntimeCapability?.defaultShell ?? "powershell",
+      ownerCodexSessionId: latestCodexSession(lastState)?.id ?? null,
+      ownerInvocationId: latestCodexSession(lastState)?.invocationId ?? null
     });
-    if (!response.ok) throw new Error("Unable to register managed terminal session.");
     els.terminalActionStatus.textContent = "Managed terminal session registry updated.";
     await refresh();
   } catch (error) {
@@ -1187,12 +1149,7 @@ async function sendTerminalBytes(input, successMessage) {
   const session = latestTerminalSession(lastState);
   if (!session) return;
   try {
-    const response = await fetch(`${apiBase}/api/terminal/sessions/${encodeURIComponent(session.terminalSessionId)}/input`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ input })
-    });
-    if (!response.ok) throw new Error("Unable to send managed terminal input.");
+    await api.sendTerminalInput(session.terminalSessionId, { input });
     els.terminalActionStatus.textContent = successMessage;
   } catch (error) {
     els.terminalActionStatus.textContent = error instanceof Error ? error.message : "Unable to send managed terminal input.";
@@ -1221,12 +1178,7 @@ els.resizeTerminalButton.addEventListener("click", async () => {
   if (!session) return;
   try {
     fitTerminalView();
-    const response = await fetch(`${apiBase}/api/terminal/sessions/${encodeURIComponent(session.terminalSessionId)}/resize`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ cols: terminalView.terminal.cols, rows: terminalView.terminal.rows })
-    });
-    if (!response.ok) throw new Error("Unable to resize managed terminal.");
+    await api.resizeTerminalSession(session.terminalSessionId, { cols: terminalView.terminal.cols, rows: terminalView.terminal.rows });
     els.terminalActionStatus.textContent = "Managed terminal resize queued.";
     await refresh();
   } catch (error) {
@@ -1238,8 +1190,7 @@ els.closeTerminalSessionButton.addEventListener("click", async () => {
   const session = latestTerminalSession(lastState);
   if (!session) return;
   try {
-    const response = await fetch(`${apiBase}/api/terminal/sessions/${encodeURIComponent(session.terminalSessionId)}/close`, { method: "POST" });
-    if (!response.ok) throw new Error("Unable to close managed terminal session.");
+    await api.closeTerminalSession(session.terminalSessionId);
     els.terminalActionStatus.textContent = "Managed terminal session closed.";
     await refresh();
   } catch (error) {
@@ -1252,9 +1203,7 @@ els.cancelButton.addEventListener("click", async () => {
 
   els.cancelButton.disabled = true;
   try {
-    await fetch(`${apiBase}/api/invocations/${currentInvocationId}/cancel`, {
-      method: "POST"
-    });
+    await api.cancelInvocation(currentInvocationId);
     await refresh();
   } finally {
     updateActions(lastState, currentInvocation());
@@ -1266,9 +1215,7 @@ els.healthCheckButton.addEventListener("click", async () => {
 
   els.healthCheckButton.disabled = true;
   try {
-    await fetch(`${apiBase}/api/agents/${encodeURIComponent(selectedAgentId)}/health-check`, {
-      method: "POST"
-    });
+    await api.requestAgentHealth(selectedAgentId);
     await refresh();
   } finally {
     updateActions(lastState, currentInvocation());
@@ -1282,9 +1229,7 @@ els.toggleAgentButton.addEventListener("click", async () => {
   const action = agent.status === "disabled" ? "enable" : "disable";
   els.toggleAgentButton.disabled = true;
   try {
-    await fetch(`${apiBase}/api/agents/${encodeURIComponent(agent.id)}/${action}`, {
-      method: "POST"
-    });
+    await api.setAgentLifecycle(agent.id, action);
     await refresh();
   } finally {
     updateActions(lastState, currentInvocation());
@@ -1325,9 +1270,7 @@ els.addCodexButton.addEventListener("click", async () => {
 
     if (codexAgent.health?.status !== "healthy") {
       els.addCodexButton.disabled = true;
-      await fetch(`${apiBase}/api/agents/${encodeURIComponent(codexAgent.id)}/health-check`, {
-        method: "POST"
-      });
+      await api.requestAgentHealth(codexAgent.id);
       els.discoverySummary.textContent = "Checking Codex CLI setup with a restricted help probe.";
       await refresh();
       return;
@@ -1389,11 +1332,7 @@ els.candidateList.addEventListener("click", async (event) => {
 
   button.disabled = true;
   try {
-    const runId = encodeURIComponent(button.dataset.discoveryRunId);
-    const candidateId = encodeURIComponent(button.dataset.candidateId);
-    await fetch(`${apiBase}/api/discovery/${runId}/candidates/${candidateId}/register`, {
-      method: "POST"
-    });
+    await api.registerDiscoveryCandidate(button.dataset.discoveryRunId, button.dataset.candidateId);
     const state = await fetchState();
     const run = state.discoveryRuns?.find((item) => item.id === button.dataset.discoveryRunId);
     const candidate = run?.candidates?.find((item) => item.id === button.dataset.candidateId);
@@ -1425,9 +1364,7 @@ els.generateIntegrationButton.addEventListener("click", async () => {
 
   els.generateIntegrationButton.disabled = true;
   try {
-    await fetch(`${apiBase}/api/integration-artifacts/${encodeURIComponent(artifact.id)}/generate`, {
-      method: "POST"
-    });
+    await api.generateIntegrationArtifact(artifact.id);
     await refresh();
   } finally {
     updateActions(lastState, currentInvocation());
@@ -1437,15 +1374,7 @@ els.generateIntegrationButton.addEventListener("click", async () => {
 els.builderDraftButton.addEventListener("click", async () => {
   els.builderDraftButton.disabled = true;
   try {
-    const response = await fetch(`${apiBase}/api/integration-builder/draft`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(integrationPayload())
-    });
-    const data = await response.json();
-    if (!response.ok) {
-      throw new Error(data.message ?? data.error ?? "Unable to draft integration plan.");
-    }
+    const data = await api.createIntegrationBuilderDraft(integrationPayload());
     selectedArtifactId = data.artifact.id;
     await refresh();
   } catch (error) {
@@ -1462,11 +1391,8 @@ els.artifactList.addEventListener("click", async (event) => {
   button.disabled = true;
   selectedArtifactId = button.dataset.artifactId;
   try {
-    const artifactId = encodeURIComponent(button.dataset.artifactId);
     const action = button.dataset.artifactAction;
-    await fetch(`${apiBase}/api/integration-artifacts/${artifactId}/${action}`, {
-      method: "POST"
-    });
+    await api.transitionIntegrationArtifact(button.dataset.artifactId, action);
     await refresh();
   } finally {
     updateActions(lastState, currentInvocation());
@@ -1479,9 +1405,7 @@ els.approveButton.addEventListener("click", async () => {
 
   els.approveButton.disabled = true;
   try {
-    await fetch(`${apiBase}/api/approvals/${encodeURIComponent(approval.id)}/approve`, {
-      method: "POST"
-    });
+    await api.resolveLocalApproval(approval.id, "approve");
     await refresh();
   } finally {
     updateActions(lastState, currentInvocation());
@@ -1494,9 +1418,7 @@ els.denyButton.addEventListener("click", async () => {
 
   els.denyButton.disabled = true;
   try {
-    await fetch(`${apiBase}/api/approvals/${encodeURIComponent(approval.id)}/deny`, {
-      method: "POST"
-    });
+    await api.resolveLocalApproval(approval.id, "deny");
     await refresh();
   } finally {
     updateActions(lastState, currentInvocation());
@@ -1517,13 +1439,9 @@ els.importEvidenceButton.addEventListener("click", async () => {
 
   els.importEvidenceButton.disabled = true;
   try {
-    await fetch(`${apiBase}/api/codex/imported-evidence`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        source: "user_selected_local_preview",
-        summary
-      })
+    await api.importCodexEvidence({
+      source: "user_selected_local_preview",
+      summary
     });
     await refresh();
   } finally {
@@ -1537,9 +1455,7 @@ els.troubleshootButton.addEventListener("click", async () => {
 
   els.troubleshootButton.disabled = true;
   try {
-    await fetch(`${apiBase}/api/invocations/${encodeURIComponent(invocation.id)}/troubleshoot`, {
-      method: "POST"
-    });
+    await api.troubleshootInvocation(invocation.id);
     await refresh();
   } finally {
     updateActions(lastState, currentInvocation());
@@ -1561,8 +1477,7 @@ async function refresh() {
   if (refreshInFlight) return;
   refreshInFlight = true;
   try {
-    const response = await fetch(`${apiBase}/api/state`);
-    const state = await response.json();
+    const state = await fetchState();
     lastState = state;
     if (routineRunsLastProjectId !== state.currentProjectId) {
       routineRunsState = null;
@@ -2017,10 +1932,7 @@ async function fetchProjectTreeNode(projectId, path, search) {
   const params = new URLSearchParams();
   if (path) params.set("path", path);
   if (search) params.set("search", search);
-  const response = await fetch(`${apiBase}/api/projects/${encodeURIComponent(projectId)}/tree?${params.toString()}`);
-  const data = await response.json();
-  if (!response.ok) throw new Error(data.message ?? data.error ?? "Unable to load project files.");
-  return data;
+  return api.fetchProjectTree(projectId, params);
 }
 
 function refreshRepoBrowser({ force = false } = {}) {
@@ -2062,10 +1974,7 @@ async function loadProjectContentSearch({ force = false } = {}) {
     const params = new URLSearchParams({ q: query });
     if (include) params.set("include", include);
     if (exclude) params.set("exclude", exclude);
-    const response = await fetch(`${apiBase}/api/projects/${encodeURIComponent(project.id)}/search?${params.toString()}`);
-    const data = await response.json();
-    if (!response.ok) throw new Error(data.message ?? data.error ?? "Unable to search project content.");
-    projectContentSearchData = { ...data, cacheKey };
+    projectContentSearchData = { ...await api.fetchProjectSearch(project.id, params), cacheKey };
   } catch (error) {
     projectContentSearchData = {
       projectId: project.id,
@@ -2492,10 +2401,7 @@ async function loadRepoGitSummary({ force = false } = {}) {
   repoGitSummaryLoading = true;
   renderProjectTree();
   try {
-    const response = await fetch(`${apiBase}/api/projects/${encodeURIComponent(project.id)}/git-summary`);
-    const data = await response.json();
-    if (!response.ok) throw new Error(data.message ?? data.error ?? "Unable to load source control.");
-    repoGitSummaryData = data;
+    repoGitSummaryData = await api.fetchProjectGitSummary(project.id);
   } catch (error) {
     repoGitSummaryData = {
       projectId: project.id,
@@ -3613,19 +3519,11 @@ async function submitSelectedChangeReview(decision) {
   }
   setChangeReviewButtonsDisabled(true);
   try {
-    const response = await fetch(`${apiBase}/api/codex/change-reviews`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        evidenceId: selectedManagedChangeEvidenceId,
-        decision,
-        comment: els.managedChangeReviewComment.value.trim()
-      })
+    await api.reviewCodexChange({
+      evidenceId: selectedManagedChangeEvidenceId,
+      decision,
+      comment: els.managedChangeReviewComment.value.trim()
     });
-    const data = await response.json();
-    if (!response.ok) {
-      throw new Error(data.message ?? data.error ?? "Unable to record change review.");
-    }
     els.managedChangeReviewComment.value = "";
     await refresh();
   } catch (error) {
@@ -3649,9 +3547,7 @@ async function resolveCodexApprovalRequest(requestId, action) {
   els.managedApproveButton.disabled = true;
   els.managedDenyButton.disabled = true;
   try {
-    await fetch(`${apiBase}/api/codex/approval-broker/${encodeURIComponent(requestId)}/${action}`, {
-      method: "POST"
-    });
+    await api.resolveCodexApprovalRequest(requestId, action);
     await refresh();
   } finally {
     updateActions(lastState, currentInvocation());
@@ -4605,73 +4501,19 @@ function readableAdapterType(type) {
 }
 
 async function postIntegrationArtifact(overrides = {}) {
-  const response = await fetch(`${apiBase}/api/integration-artifacts`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ ...integrationPayload(), ...overrides })
-  });
-  const data = await response.json();
-  if (!response.ok) {
-    throw new Error(data.message ?? data.error ?? "Unable to create integration artifact.");
-  }
-  return data;
+  return api.createIntegrationArtifact({ ...integrationPayload(), ...overrides });
 }
 
 async function createDiscovery(payload) {
-  const response = await fetch(`${apiBase}/api/discovery`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload)
-  });
-  if (!response.ok) {
-    const data = await response.json();
-    throw new Error(data.message ?? data.error ?? "Unable to start discovery.");
-  }
-  return response.json();
+  return api.createDiscovery(payload);
 }
 
 async function registerSshTarget(payload) {
-  const response = await fetch(`${apiBase}/api/ssh-targets`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload)
-  });
-  const data = await response.json();
-  if (!response.ok) {
-    throw new Error(data.message ?? data.error ?? "Unable to register SSH target.");
-  }
-  return data;
+  return api.registerSshTarget(payload);
 }
 
 async function testSshTarget(targetId) {
-  const response = await fetch(`${apiBase}/api/ssh-targets/${encodeURIComponent(targetId)}/test`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ expectLiveConnection: false })
-  });
-  const data = await response.json();
-  if (!response.ok) {
-    throw new Error(data.message ?? data.error ?? "Unable to test SSH target.");
-  }
-  return data;
-}
-
-function resolveApiBase() {
-  const override = new URLSearchParams(window.location.search).get("api");
-  if (!override) {
-    return defaultApiBase;
-  }
-
-  try {
-    const url = new URL(override);
-    if (url.protocol === "http:" && ["127.0.0.1", "localhost"].includes(url.hostname)) {
-      return url.origin;
-    }
-  } catch {
-    return defaultApiBase;
-  }
-
-  return defaultApiBase;
+  return api.testSshTarget(targetId);
 }
 
 function initializeRouteState() {
@@ -4694,11 +4536,7 @@ function initializeRouteState() {
 }
 
 async function fetchState() {
-  const response = await fetch(`${apiBase}/api/state`);
-  if (!response.ok) {
-    throw new Error("Unable to refresh state.");
-  }
-  return response.json();
+  return api.fetchState();
 }
 
 async function refreshRoutineRuns({ force = false } = {}) {
@@ -4707,9 +4545,7 @@ async function refreshRoutineRuns({ force = false } = {}) {
   if (!force && Date.now() - routineRunsLastRefreshMs < 2000) return;
   routineRunsRefreshInFlight = true;
   try {
-    const response = await fetch(`${apiBase}/api/loop-routines?limit=50`);
-    if (!response.ok) throw new Error("Unable to refresh loop routines.");
-    routineRunsState = await response.json();
+    routineRunsState = await api.fetchRoutineRuns();
     routineRunsLastProjectId = lastState?.currentProjectId ?? null;
     routineRunsLastRefreshMs = Date.now();
     if (activePage === "tasks") renderTaskList(lastState);
