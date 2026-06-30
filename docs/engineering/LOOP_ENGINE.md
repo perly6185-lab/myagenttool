@@ -1002,9 +1002,11 @@ Remaining split plan:
   terminal, SSH target, and terminal bridge HTTP routing through
   `apps/server/src/routes/terminal.mjs`. Phase 4 split is complete for
   bridge registration, agent registration/actions, and device unlink routing
-  through `apps/server/src/routes/agents.mjs`. Remaining server phases should
-  move project/git, terminal, and agent business helpers into service modules
-  and split `codex`, integration/discovery, bridge dispatch, and persistence
+  through `apps/server/src/routes/agents.mjs`. Phase 5 split is complete for
+  Codex hook, approval broker, imported evidence, and change review routing
+  through `apps/server/src/routes/codex.mjs`. Remaining server phases should
+  move project/git, terminal, agent, and Codex business helpers into service
+  modules and split integration/discovery, bridge dispatch, and persistence
   helpers while keeping mutation boundaries explicit.
 - `apps/web/public/app.js`: split by surface into task/routine browser,
   workspace/session, evidence center, terminal, project browser, integration,

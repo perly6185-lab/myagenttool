@@ -5,6 +5,7 @@ import { basename, dirname, isAbsolute, relative, resolve } from "node:path";
 import { buildLoopRoutineStateSummary } from "./read-models/loop-routines.mjs";
 import { buildPublicState } from "./read-models/state.mjs";
 import { handleAgentRoutes } from "./routes/agents.mjs";
+import { handleCodexRoutes } from "./routes/codex.mjs";
 import { handleLoopRoutineRoutes } from "./routes/loop-routines.mjs";
 import { handleProjectRoutes } from "./routes/projects.mjs";
 import { handleTerminalRoutes } from "./routes/terminal.mjs";
@@ -388,78 +389,19 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
-    if (req.method === "POST" && url.pathname === "/api/codex/hooks") {
-      const body = await readJson(req);
-      let result;
-      try {
-        result = recordCodexHookEvent(body);
-      } catch (error) {
-        sendJson(res, 400, {
-          error: "invalid_codex_hook_event",
-          message: error instanceof Error ? error.message : String(error)
-        });
-        return;
-      }
-      sendJson(res, 202, result);
-      return;
-    }
-
-    const codexApprovalReadMatch = url.pathname.match(/^\/api\/codex\/approval-broker\/([^/]+)$/);
-    if (req.method === "GET" && codexApprovalReadMatch) {
-      expireCodexApprovalBrokerRequests();
-      const requestId = decodeURIComponent(codexApprovalReadMatch[1]);
-      const request = state.codexApprovalBrokerRequests.find((item) => item.id === requestId);
-      if (!request) {
-        sendJson(res, 404, { error: "codex_approval_request_not_found" });
-        return;
-      }
-      sendJson(res, 200, { approvalRequest: request });
-      return;
-    }
-
-    const codexApprovalMatch = url.pathname.match(/^\/api\/codex\/approval-broker\/([^/]+)\/(approve|deny)$/);
-    if (req.method === "POST" && codexApprovalMatch) {
-      expireCodexApprovalBrokerRequests();
-      const requestId = decodeURIComponent(codexApprovalMatch[1]);
-      const request = state.codexApprovalBrokerRequests.find((item) => item.id === requestId);
-      if (!request) {
-        sendJson(res, 404, { error: "codex_approval_request_not_found" });
-        return;
-      }
-      const updated = resolveCodexApprovalBrokerRequest(request, codexApprovalMatch[2]);
-      sendJson(res, 200, { approvalRequest: updated });
-      return;
-    }
-
-    if (req.method === "POST" && url.pathname === "/api/codex/imported-evidence") {
-      const body = await readJson(req);
-      let record;
-      try {
-        record = createCodexImportedEvidenceRecord(body);
-      } catch (error) {
-        sendJson(res, 400, {
-          error: "invalid_codex_imported_evidence",
-          message: error instanceof Error ? error.message : String(error)
-        });
-        return;
-      }
-      sendJson(res, 201, { importedEvidence: record });
-      return;
-    }
-
-    if (req.method === "POST" && url.pathname === "/api/codex/change-reviews") {
-      const body = await readJson(req);
-      let review;
-      try {
-        review = createCodexChangeReview(body);
-      } catch (error) {
-        sendJson(res, 400, {
-          error: "invalid_codex_change_review",
-          message: error instanceof Error ? error.message : String(error)
-        });
-        return;
-      }
-      sendJson(res, 201, { changeReview: review });
+    if (await handleCodexRoutes({
+      req,
+      res,
+      url,
+      sendJson,
+      readJson,
+      state,
+      recordCodexHookEvent,
+      expireCodexApprovalBrokerRequests,
+      resolveCodexApprovalBrokerRequest,
+      createCodexImportedEvidenceRecord,
+      createCodexChangeReview,
+    })) {
       return;
     }
 
