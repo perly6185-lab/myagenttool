@@ -5,6 +5,7 @@ import { basename, dirname, isAbsolute, relative, resolve } from "node:path";
 import { buildLoopRoutineStateSummary } from "./read-models/loop-routines.mjs";
 import { buildPublicState } from "./read-models/state.mjs";
 import { handleAgentRoutes } from "./routes/agents.mjs";
+import { handleBridgeRoutes } from "./routes/bridge.mjs";
 import { handleCodexRoutes } from "./routes/codex.mjs";
 import { handleIntegrationRoutes } from "./routes/integrations.mjs";
 import { handleLoopRoutineRoutes } from "./routes/loop-routines.mjs";
@@ -427,210 +428,39 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
-    if (req.method === "GET" && url.pathname === "/api/bridge/next") {
-      state.device.lastSeenAt = now();
-      if (state.device.unlinkState !== "linked") {
-        sendJson(res, 204, null);
-        return;
-      }
-      redeliverExpiredDispatches();
-      const invocation = nextDispatchableInvocation();
-
-      if (!invocation) {
-        sendJson(res, 204, null);
-        return;
-      }
-
-      markDispatched(invocation);
-
-      sendJson(res, 200, {
-        namespace,
-        protocolVersion,
-        invocationId: invocation.id,
-        agentId: invocation.agentId,
-        adapter: findAgent(invocation.agentId)?.adapter ?? null,
-        input: invocation.input,
-        options: invocation.options,
-        project: projectForInvocation(invocation)
-      });
-      return;
-    }
-
-    if (req.method === "GET" && url.pathname === "/api/bridge/health-next") {
-      state.device.lastSeenAt = now();
-      if (state.device.unlinkState !== "linked") {
-        sendJson(res, 204, null);
-        return;
-      }
-
-      const operation = nextBridgeHealthCheck();
-      if (!operation) {
-        sendJson(res, 204, null);
-        return;
-      }
-
-      markHealthCheckStarted(operation);
-      sendJson(res, 200, {
-        namespace,
-        protocolVersion,
-        checkId: operation.id,
-        agentId: operation.agentId,
-        adapter: findAgent(operation.agentId)?.adapter ?? null
-      });
-      return;
-    }
-
-    if (req.method === "POST" && url.pathname === "/api/bridge/health-complete") {
-      const body = await readJson(req);
-      const operation = state.healthChecks.find((item) => item.id === body.checkId && item.agentId === body.agentId);
-      if (!operation) {
-        sendJson(res, 404, { error: "health_check_not_found" });
-        return;
-      }
-
-      completeHealthCheck(operation, {
-        status: body.status,
-        message: body.message,
-        nextAction: body.nextAction
-      });
-      sendJson(res, 200, { ok: true, operation, agent: findAgent(operation.agentId) });
-      return;
-    }
-
-    if (req.method === "GET" && url.pathname === "/api/bridge/discovery-next") {
-      state.device.lastSeenAt = now();
-      if (state.device.unlinkState !== "linked") {
-        sendJson(res, 204, null);
-        return;
-      }
-
-      const discoveryRun = nextBridgeDiscoveryRun();
-      if (!discoveryRun) {
-        sendJson(res, 204, null);
-        return;
-      }
-
-      markDiscoveryStarted(discoveryRun);
-      sendJson(res, 200, {
-        namespace,
-        protocolVersion,
-        discoveryRunId: discoveryRun.id,
-        deviceId: discoveryRun.deviceId,
-        scope: discoveryRun.scope,
-        knownCommands: ["demo-agent"],
-        knownLocalEndpoints: [
-          {
-            name: "Smoke HTTP Agent",
-            baseUrl: "http://127.0.0.1:3212",
-            requestPath: "/invoke",
-            healthPath: "/health"
-          }
-        ],
-        userProvidedPaths: normalizeStringArray(discoveryRun.options?.userProvidedPaths),
-        userProvidedEndpoints: normalizeStringArray(discoveryRun.options?.userProvidedEndpoints)
-      });
-      return;
-    }
-
-    if (req.method === "POST" && url.pathname === "/api/bridge/discovery-complete") {
-      const body = await readJson(req);
-      const discoveryRun = findDiscoveryRun(body.discoveryRunId);
-      if (!discoveryRun) {
-        sendJson(res, 404, { error: "discovery_run_not_found" });
-        return;
-      }
-
-      completeDiscoveryRun(discoveryRun, body);
-      sendJson(res, 200, { ok: true, discoveryRun });
-      return;
-    }
-
-    if (req.method === "GET" && url.pathname === "/api/bridge/probe-next") {
-      state.device.lastSeenAt = now();
-      if (state.device.unlinkState !== "linked") {
-        sendJson(res, 204, null);
-        return;
-      }
-
-      const probeRun = nextBridgeProbeRun();
-      if (!probeRun) {
-        sendJson(res, 204, null);
-        return;
-      }
-
-      markIntegrationProbeStarted(probeRun);
-      sendJson(res, 200, {
-        namespace,
-        protocolVersion,
-        probeRunId: probeRun.id,
-        artifactId: probeRun.artifactId,
-        deviceId: probeRun.deviceId,
-        adapter: probeRun.adapter
-      });
-      return;
-    }
-
-    if (req.method === "POST" && url.pathname === "/api/bridge/probe-complete") {
-      const body = await readJson(req);
-      const probeRun = findIntegrationProbeRun(body.probeRunId);
-      if (!probeRun) {
-        sendJson(res, 404, { error: "probe_run_not_found" });
-        return;
-      }
-      completeIntegrationProbeRun(probeRun, body);
-      sendJson(res, 200, { ok: true, probeRun, artifact: findIntegrationArtifact(probeRun.artifactId) });
-      return;
-    }
-
-    if (req.method === "GET" && url.pathname === "/api/bridge/cancel-status") {
-      const invocation = findInvocation(url.searchParams.get("invocationId"));
-      sendJson(res, 200, {
-        cancelRequested: invocation?.cancellation.state === "requested"
-      });
-      return;
-    }
-
-    if (req.method === "POST" && url.pathname === "/api/bridge/ack") {
-      const body = await readJson(req);
-      const invocation = findInvocation(body.invocationId);
-      if (!invocation) {
-        sendJson(res, 404, { error: "invocation_not_found" });
-        return;
-      }
-
-      acknowledgeInvocation(invocation);
-      sendJson(res, 200, { ok: true });
-      return;
-    }
-
-    if (req.method === "POST" && url.pathname === "/api/bridge/events") {
-      const body = await readJson(req);
-      const invocation = findInvocation(body.invocationId);
-      if (!invocation) {
-        sendJson(res, 404, { error: "invocation_not_found" });
-        return;
-      }
-      appendEvent({
-        invocationId: invocation.id,
-        type: body.type ?? "log",
-        level: body.level ?? "info",
-        message: body.message ?? "",
-        data: body.data
-      });
-      sendJson(res, 200, { ok: true });
-      return;
-    }
-
-    if (req.method === "POST" && url.pathname === "/api/bridge/complete") {
-      const body = await readJson(req);
-      const invocation = findInvocation(body.invocationId);
-      if (!invocation) {
-        sendJson(res, 404, { error: "invocation_not_found" });
-        return;
-      }
-
-      completeInvocation(invocation, body);
-      sendJson(res, 200, { ok: true, invocation });
+    if (await handleBridgeRoutes({
+      req,
+      res,
+      url,
+      sendJson,
+      readJson,
+      state,
+      namespace,
+      protocolVersion,
+      now,
+      redeliverExpiredDispatches,
+      nextDispatchableInvocation,
+      markDispatched,
+      findAgent,
+      projectForInvocation,
+      nextBridgeHealthCheck,
+      markHealthCheckStarted,
+      completeHealthCheck,
+      nextBridgeDiscoveryRun,
+      markDiscoveryStarted,
+      normalizeStringArray,
+      findDiscoveryRun,
+      completeDiscoveryRun,
+      nextBridgeProbeRun,
+      markIntegrationProbeStarted,
+      findIntegrationProbeRun,
+      completeIntegrationProbeRun,
+      findIntegrationArtifact,
+      findInvocation,
+      acknowledgeInvocation,
+      appendEvent,
+      completeInvocation,
+    })) {
       return;
     }
 

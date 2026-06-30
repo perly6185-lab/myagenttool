@@ -1009,7 +1009,10 @@ Remaining split plan:
   discovered-candidate registration routing through
   `apps/server/src/routes/integrations.mjs`. Remaining server phases should
   move project/git, terminal, agent, Codex, and integration business helpers
-  into service modules and split bridge dispatch and persistence helpers while
+  into service modules. Phase 7 split is complete for Desktop Bridge dispatch,
+  health, discovery, probe, cancellation status, ack, event, and completion
+  routing through `apps/server/src/routes/bridge.mjs`. Remaining server phases
+  should split invocation/approval routing and persistence helpers while
   keeping mutation boundaries explicit.
 - `apps/web/public/app.js`: split by surface into task/routine browser,
   workspace/session, evidence center, terminal, project browser, integration,
