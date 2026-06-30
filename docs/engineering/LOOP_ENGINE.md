@@ -1135,6 +1135,10 @@ Remaining split plan:
   risk policy evaluation, policy decision records, approval request creation,
   approval grant handling, and approval denial auditing now live in
   `apps/server/src/services/invocations/approval.mjs`.
+  Invocation service Phase 3 is complete for completion/audit extraction:
+  terminal status transitions, root span completion, audit summaries, agent
+  usage counters, Codex session closeout, and compare-run completion updates
+  now live in `apps/server/src/services/invocations/completion.mjs`.
 - `apps/web/public/app.js`: split by surface into task/routine browser,
   workspace/session, evidence center, terminal, project browser, integration,
   and shared API/render utilities.
