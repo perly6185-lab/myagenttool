@@ -1101,6 +1101,10 @@ Remaining split plan:
   candidate normalization, lifecycle audit updates, discovered-agent
   registration, and discovery lookup now live in
   `apps/server/src/services/integrations/discovery.mjs`.
+  Integration service Phase 3 is complete for probe runtime extraction:
+  adapter probe creation, bridge probe queue lookup, start/complete transitions,
+  HTTP health probing, tested-artifact promotion, and probe lookup now live in
+  `apps/server/src/services/integrations/probes.mjs`.
 - `apps/web/public/app.js`: split by surface into task/routine browser,
   workspace/session, evidence center, terminal, project browser, integration,
   and shared API/render utilities.
