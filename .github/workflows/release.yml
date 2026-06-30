@@ -30,6 +30,7 @@ permissions:
 
 jobs:
   draft:
+    if: vars.ENABLE_GITHUB_HOSTED_RUNNERS == 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
