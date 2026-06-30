@@ -226,6 +226,25 @@ export function readableLifecycleRecipe(recipe) {
   return `${action}: ${review}, ${queue}. ${recipe.summary?.risk ?? "Risk summary pending."}`;
 }
 
+export function readableLifecycleAction(action) {
+  if (!action) return "No lifecycle action queued";
+  const lifecycleAction = String(action.action ?? "lifecycle").replaceAll("_", " ");
+  const status = String(action.status ?? "queued").replaceAll("_", " ");
+  const result = action.result?.summary ? ` ${action.result.summary}` : "";
+  const execution = action.executionEnabled ? "allowlisted execution" : "audit only";
+  return `${lifecycleAction} ${status} (${execution}).${result}`;
+}
+
+export function readablePrivateCatalogEntry(entry) {
+  if (!entry) return "No private catalog entry";
+  return `${entry.packageName}@${entry.version} on ${entry.channel} (${entry.status})`;
+}
+
+export function readableSignedBundle(bundle) {
+  if (!bundle) return "No signed bundle";
+  return `${bundle.packageName}@${bundle.version}: ${bundle.signatureStatus}, ${bundle.policy?.decision ?? "unknown"}`;
+}
+
 export function readableQuotaDecision(decision) {
   if (!decision) return "No quota decision recorded";
   if (decision.decision === "allowed") return `Allowed: ${decision.reason}`;

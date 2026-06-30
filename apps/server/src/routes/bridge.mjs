@@ -22,7 +22,8 @@ export async function handleBridgeRoutes({
   findDiscoveryRun,
   completeDiscoveryRun,
   nextBridgeProbeRun,
-  markLifecycleActionObserved,
+  markLifecycleActionStarted,
+  completeLifecycleAction,
   nextBridgeLifecycleAction,
   markIntegrationProbeStarted,
   findIntegrationProbeRun,
@@ -188,7 +189,7 @@ export async function handleBridgeRoutes({
       sendJson(res, 204, null);
       return true;
     }
-    markLifecycleActionObserved(lifecycleAction);
+    markLifecycleActionStarted(lifecycleAction);
 
     sendJson(res, 200, {
       namespace,
@@ -198,10 +199,31 @@ export async function handleBridgeRoutes({
       agentId: lifecycleAction.agentId,
       deviceId: lifecycleAction.deviceId,
       action: lifecycleAction.action,
-      executionEnabled: false,
-      command: null,
+      executionEnabled: lifecycleAction.executionEnabled,
+      command: lifecycleAction.command,
       summary: lifecycleAction.summary,
     });
+    return true;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/bridge/lifecycle-complete") {
+    const body = await readJson(req);
+    const lifecycleAction = state.lifecycleQueuedActions.find((item) => item.id === body.lifecycleActionId);
+    if (!lifecycleAction) {
+      sendJson(res, 404, { error: "lifecycle_action_not_found" });
+      return true;
+    }
+
+    try {
+      completeLifecycleAction(lifecycleAction, body);
+    } catch (error) {
+      sendJson(res, 409, {
+        error: "lifecycle_action_not_completable",
+        message: error instanceof Error ? error.message : String(error),
+      });
+      return true;
+    }
+    sendJson(res, 200, { ok: true, lifecycleAction });
     return true;
   }
 

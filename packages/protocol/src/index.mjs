@@ -194,6 +194,10 @@ export const lifecycleRecipeQueueStates = [
   "local_approval_required",
   "queued",
   "observed",
+  "running",
+  "succeeded",
+  "failed",
+  "cancelled",
   "blocked",
   "expired",
 ];
@@ -417,6 +421,10 @@ const m3RequiredLifecycleRecipeQueueStates = [
   "local_approval_required",
   "queued",
   "observed",
+  "running",
+  "succeeded",
+  "failed",
+  "cancelled",
   "blocked",
   "expired",
 ];

@@ -17,6 +17,7 @@ export function createInvocationService({
   namespace,
   protocolVersion,
   findAgent,
+  enforcePlatformAiQuota,
   currentProject,
   worktreeForProject,
   uniqueStrings,
@@ -88,8 +89,12 @@ export function createInvocationService({
     createManagedCodexWorkspace,
     createManagedCodexSession,
     evaluateInvocationPolicy,
+    enforcePlatformAiQuota,
     createPolicyDecisionRecord,
     createApprovalRequest,
+    completeRootSpan,
+    createAuditSummary,
+    recordAgentUsage,
   });
   const {
     acknowledgeInvocation,

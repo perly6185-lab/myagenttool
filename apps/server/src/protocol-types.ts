@@ -10,8 +10,10 @@ import type {
   LedgerEntry,
   LifecycleLocalApprovalRequest,
   LifecyclePolicyDecision,
+  LifecycleRollbackRequest,
   LifecycleQueuedAction,
   LifecycleRecipeArtifact,
+  PrivateCatalogEntry,
   Device,
   Invocation,
   InvocationEvent,
@@ -20,6 +22,7 @@ import type {
   PrivateDeploymentConfig,
   QuotaDecision,
   QuotaPolicy,
+  SignedBundleManifest,
   Span,
   Trace,
 } from "@myagenttool/protocol";
@@ -38,6 +41,9 @@ export type LocalDemoServerState = {
   lifecyclePolicyDecisions: LifecyclePolicyDecision[];
   lifecycleLocalApprovals: LifecycleLocalApprovalRequest[];
   lifecycleQueuedActions: LifecycleQueuedAction[];
+  lifecycleRollbackRequests: LifecycleRollbackRequest[];
+  privateCatalogEntries: PrivateCatalogEntry[];
+  signedBundleManifests: SignedBundleManifest[];
   discoveryRuns: AgentDiscoveryRun[];
   quotaDecisionRecords: QuotaDecision[];
   quotaPolicies: QuotaPolicy[];

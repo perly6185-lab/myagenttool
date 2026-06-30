@@ -11,6 +11,7 @@ import type {
 } from "./common.js";
 import type { AgentLifecycleState, IntegrationReviewState } from "./states.js";
 import type { AgentEconomicsMetadata } from "./economics.js";
+import type { LifecycleQueuedActionResult, LifecycleRecipeRollbackMetadata } from "./lifecycle.js";
 
 export type AgentLocation =
   | { type: "local_device"; deviceId: DeviceId }
@@ -130,6 +131,7 @@ export type AgentLifecycleOperationType =
   | "disable"
   | "update"
   | "uninstall"
+  | "rollback"
   | "health_check";
 
 export interface AgentLifecycleOperation {
@@ -141,6 +143,8 @@ export interface AgentLifecycleOperation {
   status: "queued" | "running" | "succeeded" | "failed" | "cancelled";
   reason: string | null;
   message?: string | null;
+  result?: LifecycleQueuedActionResult | null;
+  rollback?: LifecycleRecipeRollbackMetadata | null;
   createdAt: IsoDateTime;
   completedAt?: IsoDateTime | null;
 }

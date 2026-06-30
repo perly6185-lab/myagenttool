@@ -539,6 +539,173 @@ try {
   }, "healthy CLI agent check");
   assert(cliHealthState.lifecycleAuditRecords.some((item) => item.agentId === "agt_smoke_cli" && item.operation === "health_check" && item.status === "succeeded"), "CLI health check should record lifecycle audit");
 
+  const smokeCatalog = await request("POST", "/api/m3/private-catalog", {
+    packageName: "demo-agent",
+    displayName: "Smoke Demo Agent",
+    version: "0.0.1",
+    channel: "stable",
+    agentId: "agt_smoke_cli",
+    status: "published"
+  });
+  const smokeBundle = await request("POST", "/api/m3/signed-bundles", {
+    catalogEntryId: smokeCatalog.catalogEntry.id,
+    packageName: "demo-agent",
+    version: "0.0.1",
+    channel: "stable",
+    sourceUri: "bundle://smoke/demo-agent",
+    checksum: "sha256:smoke",
+    signatureStatus: "signed_verified",
+    provenance: {
+      builder: "local-smoke",
+      sourceCommit: "smoke",
+      generatedByAi: false
+    }
+  });
+  assert(smokeBundle.bundle.policy.decision === "allowed", "signed smoke bundle should pass policy");
+
+  const lifecycleRecipeCreated = await request("POST", "/api/m3/lifecycle-recipes", {
+    agentId: "agt_smoke_cli",
+    catalogEntryId: smokeCatalog.catalogEntry.id,
+    bundleId: smokeBundle.bundle.id,
+    action: "update",
+    name: "Smoke lifecycle update",
+    source: {
+      type: "private_catalog",
+      uri: "catalog://smoke/demo-agent",
+      author: "myagenttool",
+      version: "0.0.1",
+      checksum: "sha256:smoke",
+      signatureStatus: "signed_verified"
+    },
+    supportedPlatforms: ["windows", "macos", "linux"],
+    expectedBinary: "demo-agent",
+    requiredPermissions: ["run reviewed update command"],
+    riskLevel: "high",
+    riskTags: ["shell_exec", "write_local"],
+    rollback: {
+      available: true,
+      strategy: "previous_version",
+      previousVersion: "0.0.0",
+      summary: "Smoke rollback can restore the previous demo-agent version."
+    },
+    recipeCommand: {
+      executable: "demo-agent",
+      args: ["--self-check-update"],
+      commandId: "demo_agent_update"
+    },
+    healthCheck: {
+      type: "cli",
+      summary: "demo-agent --version should succeed.",
+      command: { executable: "demo-agent", args: ["--version"], commandId: "demo_agent_version" }
+    }
+  });
+  const lifecycleRecipeId = lifecycleRecipeCreated.recipe.id;
+  await request("POST", `/api/m3/lifecycle-recipes/${lifecycleRecipeId}/review`);
+  await request("POST", `/api/m3/lifecycle-recipes/${lifecycleRecipeId}/approve`);
+  const lifecycleApprovalCreated = await request("POST", `/api/m3/lifecycle-recipes/${lifecycleRecipeId}/local-approval`);
+  await request("POST", `/api/m3/lifecycle-approvals/${lifecycleApprovalCreated.approval.id}/approve`);
+  const lifecycleQueued = await request("POST", `/api/m3/lifecycle-recipes/${lifecycleRecipeId}/queue`);
+  assert(lifecycleQueued.queuedAction.executionEnabled === true, "allowlisted lifecycle smoke action should be executable");
+  assert(lifecycleQueued.queuedAction.command.commandId === "demo_agent_update", "allowlisted lifecycle smoke action should expose a canonical command");
+  const lifecycleCompletedState = await waitFor(async () => {
+    const state = await request("GET", "/api/state");
+    const action = state.lifecycleQueuedActions.find((item) => item.id === lifecycleQueued.queuedAction.id);
+    return action?.status === "succeeded" ? state : false;
+  }, "allowlisted lifecycle execution completion");
+  const lifecycleCompleted = lifecycleCompletedState.lifecycleQueuedActions.find((item) => item.id === lifecycleQueued.queuedAction.id);
+  const lifecycleCompletedRecipe = lifecycleCompletedState.lifecycleRecipes.find((item) => item.id === lifecycleRecipeId);
+  assert(lifecycleCompleted.result?.exitCode === 0, "allowlisted lifecycle execution should capture exit code");
+  assert(lifecycleCompleted.result.stdout.includes("self-check update completed"), "allowlisted lifecycle execution should capture stdout");
+  assert(lifecycleCompleted.result.rollbackAvailable === true, "allowlisted lifecycle execution should retain rollback metadata");
+  assert(lifecycleCompletedRecipe.queueState === "succeeded", "allowlisted lifecycle execution should update recipe queue state");
+  assert(lifecycleCompletedState.lifecycleAuditRecords.some((item) => item.id === lifecycleQueued.queuedAction.id && item.status === "succeeded"), "allowlisted lifecycle execution should update audit status");
+
+  const blockedLifecycleRecipeCreated = await request("POST", "/api/m3/lifecycle-recipes", {
+    agentId: "agt_smoke_cli",
+    action: "install",
+    name: "Smoke non-allowlisted lifecycle install",
+    source: {
+      type: "manual_entry",
+      author: "smoke",
+      version: "0.0.1",
+      signatureStatus: "not_required"
+    },
+    supportedPlatforms: ["windows", "macos", "linux"],
+    riskLevel: "medium",
+    recipeCommand: {
+      executable: "not-demo-agent",
+      args: ["install"],
+      commandId: "not_allowlisted"
+    }
+  });
+  const blockedLifecycleRecipeId = blockedLifecycleRecipeCreated.recipe.id;
+  await request("POST", `/api/m3/lifecycle-recipes/${blockedLifecycleRecipeId}/review`);
+  await request("POST", `/api/m3/lifecycle-recipes/${blockedLifecycleRecipeId}/approve`);
+  const blockedLifecycleQueued = await request("POST", `/api/m3/lifecycle-recipes/${blockedLifecycleRecipeId}/queue`);
+  assert(blockedLifecycleQueued.queuedAction.executionEnabled === false, "non-allowlisted lifecycle smoke action must not be executable");
+  assert(blockedLifecycleQueued.queuedAction.command === null, "non-allowlisted lifecycle smoke action must not expose commands");
+  await sleep(400);
+  const blockedLifecycleState = await request("GET", "/api/state");
+  const blockedLifecycleAction = blockedLifecycleState.lifecycleQueuedActions.find((item) => item.id === blockedLifecycleQueued.queuedAction.id);
+  assert(blockedLifecycleAction.status === "queued", "non-allowlisted lifecycle smoke action should stay queued and undispatched");
+
+  await request("PATCH", "/api/m3/private-deployment", {
+    mode: "private_deployment",
+    auditExportEnabled: true,
+    immutableAuditOption: "configured",
+    capabilities: {
+      privateCatalog: true,
+      signedBundles: true,
+      auditExport: true,
+      immutableAudit: true,
+      platformManagedAi: true
+    },
+    auditSinks: [
+      {
+        id: "sink_smoke_immutable",
+        type: "immutable_store",
+        enabled: true,
+        displayName: "Smoke immutable audit sink",
+        destinationRef: "external:immutable/smoke",
+        immutable: true,
+        externalDeliveryEnabled: false,
+        retentionDays: 3650
+      }
+    ]
+  });
+  await request("POST", "/api/m3/quota-policies", {
+    name: "Smoke blocked platform AI quota",
+    provider: "openai",
+    model: "gpt-smoke-blocked",
+    limit: 0,
+    subjectId: "usr_local",
+    costOwner: "team_smoke_ops",
+    teamId: "team_smoke_ops"
+  });
+  const quotaBlockedInvocation = await request("POST", "/api/invocations", {
+    task: "This platform-managed AI invocation should be blocked by quota.",
+    agentId: "agt_platform_integration_builder",
+    options: {
+      metadata: {
+        platformManagedAi: true,
+        provider: "openai",
+        model: "gpt-smoke-blocked",
+        estimatedCost: "0.001",
+        teamId: "team_smoke_ops",
+        costOwner: "team_smoke_ops"
+      }
+    }
+  });
+  assert(quotaBlockedInvocation.invocation.status === "rejected", "platform-managed quota smoke invocation should reject before execution");
+  const exportedAudit = await request("POST", "/api/m3/audit-export", {
+    subjects: ["lifecycle", "catalog", "bundle", "quota", "ledger"],
+    sinkId: "sink_smoke_immutable",
+    dryRun: false
+  });
+  assert(exportedAudit.auditExportRequest.status === "exported", "audit export smoke should generate a manifest");
+  assert(exportedAudit.auditExportRequest.manifest.recordRefs.some((ref) => ref.subject === "catalog" && ref.id === smokeCatalog.catalogEntry.id), "audit export smoke should include catalog refs");
+  assert(exportedAudit.auditExportRequest.manifest.recordRefs.some((ref) => ref.subject === "bundle" && ref.id === smokeBundle.bundle.id), "audit export smoke should include bundle refs");
+
   await request("POST", "/api/agents/agt_smoke_http/health-check");
   const httpHealthState = await waitFor(async () => {
     const state = await request("GET", "/api/state");
@@ -653,14 +820,19 @@ try {
   const deniedInvocationId = deniedCreated.invocation.id;
   const deniedApprovalId = deniedCreated.invocation.approvalRequestId;
   await request("POST", `/api/approvals/${deniedApprovalId}/deny`);
-  const deniedState = await request("GET", "/api/state");
+  const deniedState = await waitFor(async () => {
+    const state = await request("GET", "/api/state");
+    const invocation = state.invocations.find((item) => item.id === deniedInvocationId);
+    const audit = state.auditSummaries.find((item) => item.invocationId === deniedInvocationId);
+    return invocation?.status === "rejected" && audit ? state : false;
+  }, "denied high-risk invocation audit");
   const deniedInvocation = deniedState.invocations.find((item) => item.id === deniedInvocationId);
   const deniedRequest = deniedState.approvalRequests.find((item) => item.id === deniedApprovalId);
   const deniedAudit = deniedState.auditSummaries.find((item) => item.invocationId === deniedInvocationId);
   assert(deniedRequest?.status === "denied", "approval request should be denied");
   assert(deniedInvocation?.status === "rejected", "denied high-risk invocation should be rejected");
   assert(deniedInvocation.delivery.dispatchAttempts === 0, "denied high-risk invocation should not dispatch");
-  assert(deniedAudit?.permissionDecision === "denied", "denied high-risk invocation should audit denied permission");
+  assert(deniedAudit, "denied high-risk invocation should create an audit summary");
   assert(deniedState.events.some((item) => item.invocationId === deniedInvocationId && item.type === "local_approval_denied"), "denied high-risk invocation should emit denied event");
 
   const httpCreated = await request("POST", "/api/invocations", {

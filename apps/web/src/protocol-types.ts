@@ -14,12 +14,15 @@ import type {
   LedgerEntry,
   LifecycleLocalApprovalRequest,
   LifecyclePolicyDecision,
+  LifecycleRollbackRequest,
   LifecycleQueuedAction,
   LifecycleRecipeArtifact,
   PolicyDecisionRecord,
+  PrivateCatalogEntry,
   PrivateDeploymentConfig,
   QuotaDecision,
   QuotaPolicy,
+  SignedBundleManifest,
 } from "@myagenttool/protocol";
 
 export type WebConsoleSnapshot = {
@@ -35,6 +38,9 @@ export type WebConsoleSnapshot = {
   lifecyclePolicyDecisions: LifecyclePolicyDecision[];
   lifecycleLocalApprovals: LifecycleLocalApprovalRequest[];
   lifecycleQueuedActions: LifecycleQueuedAction[];
+  lifecycleRollbackRequests: LifecycleRollbackRequest[];
+  privateCatalogEntries: PrivateCatalogEntry[];
+  signedBundleManifests: SignedBundleManifest[];
   discoveryRuns: AgentDiscoveryRun[];
   quotaDecisionRecords: QuotaDecision[];
   quotaPolicies: QuotaPolicy[];

@@ -21,6 +21,8 @@ export async function runProtocolSelfCheck(deps) {
   createIntegrationProbeRun,
   createInvocation,
   createLifecycleRecipe,
+  createPrivateCatalogEntry,
+  createSignedBundleManifest,
   createManagedCodexSession,
   createManagedCodexWorkspace,
   createManagedTerminalSession,
@@ -28,6 +30,7 @@ export async function runProtocolSelfCheck(deps) {
   createSshConnectionTest,
   createSshTarget,
   createAuditExportRequest,
+  completeLifecycleAction,
   defaultAgent,
   disableAgent,
   denyInvocation,
@@ -38,6 +41,7 @@ export async function runProtocolSelfCheck(deps) {
   findApprovalRequest,
   findInvocation,
   findLifecycleLocalApproval,
+  findLifecycleRollbackRequest,
   findLifecycleRecipe,
   generateIntegrationArtifacts,
   getAgentUsageSummary,
@@ -48,7 +52,7 @@ export async function runProtocolSelfCheck(deps) {
   markDiscoveryStarted,
   markHealthCheckStarted,
   markIntegrationProbeStarted,
-  markLifecycleActionObserved,
+  markLifecycleActionStarted,
   nextBridgeDiscoveryRun,
   nextBridgeHealthCheck,
   nextBridgeLifecycleAction,
@@ -62,6 +66,7 @@ export async function runProtocolSelfCheck(deps) {
   registerDiscoveredCandidate,
   registerIntegrationArtifact,
   queueLifecycleAction,
+  queueRollbackAction,
   recordAiUsage,
   requestLifecycleLocalApproval,
   resolveCodexApprovalBrokerRequest,
@@ -367,8 +372,36 @@ export async function runProtocolSelfCheck(deps) {
   assert(adapterArtifact.reviewState === "enabled", "explicit registration should record enabled artifact state");
   assert(state.quotaDecisionRecords.some((item) => item.artifactId === draftArtifact.id), "integration artifact should record quota decision");
 
+  const catalogEntry = createPrivateCatalogEntry({
+    packageName: "demo-agent",
+    displayName: "Self-check Demo Agent",
+    version: "0.0.1",
+    channel: "stable",
+    agentId: cliAgent.id,
+    status: "published"
+  });
+  assert(catalogEntry.id.startsWith("cat_"), "private catalog entry should allocate catalog ids");
+  const signedBundle = createSignedBundleManifest({
+    catalogEntryId: catalogEntry.id,
+    packageName: "demo-agent",
+    version: "0.0.1",
+    channel: "stable",
+    sourceUri: "bundle://self-check/demo-agent",
+    checksum: "sha256:selfcheck",
+    signatureStatus: "signed_verified",
+    provenance: {
+      builder: "self-check",
+      sourceCommit: "self-check",
+      generatedByAi: false
+    }
+  });
+  assert(signedBundle.policy.decision === "allowed", "signed bundle metadata should pass policy");
+  assert(state.privateCatalogEntries.find((item) => item.id === catalogEntry.id)?.bundleIds.includes(signedBundle.id), "signed bundle should link to private catalog entry");
+
   const updateRecipe = createLifecycleRecipe({
     agentId: cliAgent.id,
+    catalogEntryId: catalogEntry.id,
+    bundleId: signedBundle.id,
     action: "update",
     name: "Self-check lifecycle update",
     source: {
@@ -404,6 +437,7 @@ export async function runProtocolSelfCheck(deps) {
   });
   assert(updateRecipe.reviewState === "draft", "lifecycle recipe should be created as draft");
   assert(updateRecipe.recipeCommand?.shell === false, "lifecycle recipe command should be structured and shell-free");
+  assert(state.privateCatalogEntries.find((item) => item.id === catalogEntry.id)?.recipeIds.includes(updateRecipe.id), "lifecycle recipe should link back to private catalog entry");
   assert(updateRecipe.summary.localApproval.includes("Local approval"), "lifecycle recipe should include plain-language local approval summary");
   assert(findLifecycleRecipe(updateRecipe.id)?.id === updateRecipe.id, "lifecycle recipe should be discoverable");
   transitionLifecycleRecipe(updateRecipe, "review");
@@ -416,13 +450,93 @@ export async function runProtocolSelfCheck(deps) {
   decideLifecycleLocalApproval(lifecycleApproval, "approve");
   assert(lifecycleApproval.status === "approved", "lifecycle local approval should be approvable");
   const queuedLifecycleAction = queueLifecycleAction(updateRecipe);
-  assert(queuedLifecycleAction.executionEnabled === false, "first-batch lifecycle queue must not enable execution");
-  assert(queuedLifecycleAction.command === null, "first-batch lifecycle queue must not expose commands to bridge");
+  assert(queuedLifecycleAction.executionEnabled === true, "allowlisted lifecycle queue should enable Desktop Bridge execution");
+  assert(queuedLifecycleAction.command?.commandId === "demo_agent_update", "allowlisted lifecycle queue should expose only a canonical command descriptor");
+  assert(queuedLifecycleAction.command.executable === "demo-agent", "allowlisted lifecycle command should be canonicalized");
+  let earlyLifecycleCompletionError = null;
+  try {
+    completeLifecycleAction(queuedLifecycleAction, {
+      status: "succeeded",
+      summary: "This should not complete before bridge start."
+    });
+  } catch (error) {
+    earlyLifecycleCompletionError = error;
+  }
+  assert(earlyLifecycleCompletionError, "queued lifecycle action should not complete before Desktop Bridge starts it");
   const bridgeLifecycleAction = nextBridgeLifecycleAction();
-  assert(bridgeLifecycleAction?.id === queuedLifecycleAction.id, "queued lifecycle action should be bridge-visible as evidence only");
-  markLifecycleActionObserved(bridgeLifecycleAction);
-  assert(queuedLifecycleAction.status === "observed", "observed lifecycle action should stop repeated bridge dispatch");
-  assert(updateRecipe.queueState === "observed", "observed lifecycle action should update recipe queue state");
+  assert(bridgeLifecycleAction?.id === queuedLifecycleAction.id, "queued executable lifecycle action should be bridge-visible");
+  markLifecycleActionStarted(bridgeLifecycleAction);
+  assert(queuedLifecycleAction.status === "running", "started lifecycle action should stop repeated bridge dispatch");
+  assert(updateRecipe.queueState === "running", "started lifecycle action should update recipe queue state");
+  completeLifecycleAction(queuedLifecycleAction, {
+    status: "succeeded",
+    summary: "Self-check lifecycle execution passed.",
+    exitCode: "not-a-number",
+    stdout: "demo-agent self-check update completed",
+    stderr: "",
+    durationMs: "not-a-number",
+    healthStatus: "healthy"
+  });
+  assert(queuedLifecycleAction.status === "succeeded", "completed lifecycle action should succeed");
+  assert(updateRecipe.queueState === "succeeded", "completed lifecycle action should update recipe queue state");
+  assert(queuedLifecycleAction.result?.exitCode === null, "invalid lifecycle exit code should normalize to null");
+  assert(queuedLifecycleAction.result?.durationMs === null, "invalid lifecycle duration should normalize to null");
+  assert(queuedLifecycleAction.result?.rollbackAvailable === true, "completed lifecycle action should retain rollback availability");
+  assert(state.lifecycleAuditRecords.some((item) => item.id === queuedLifecycleAction.id && item.status === "succeeded"), "lifecycle completion should update audit records");
+
+  const failedLifecycleAction = queueLifecycleAction(updateRecipe);
+  markLifecycleActionStarted(failedLifecycleAction);
+  completeLifecycleAction(failedLifecycleAction, {
+    status: "failed",
+    summary: "Self-check lifecycle execution failed for rollback.",
+    exitCode: 1,
+    stdout: "",
+    stderr: "simulated failure",
+    durationMs: 5,
+    healthStatus: "unhealthy"
+  });
+  const rollbackRequest = state.lifecycleRollbackRequests.find((item) => item.failedActionId === failedLifecycleAction.id);
+  assert(rollbackRequest?.status === "available", "failed lifecycle action should create an available rollback request");
+  assert(findLifecycleRollbackRequest(rollbackRequest.id)?.id === rollbackRequest.id, "rollback request should be discoverable");
+  const rollbackQueuedAction = queueRollbackAction(rollbackRequest);
+  assert(rollbackQueuedAction.action === "rollback", "rollback queue should create rollback lifecycle action");
+  assert(rollbackQueuedAction.command?.commandId === "demo_agent_rollback", "rollback queue should use canonical rollback command");
+  markLifecycleActionStarted(rollbackQueuedAction);
+  completeLifecycleAction(rollbackQueuedAction, {
+    status: "succeeded",
+    summary: "Self-check rollback completed.",
+    exitCode: 0,
+    stdout: "demo-agent self-check rollback completed",
+    stderr: "",
+    durationMs: 8,
+    healthStatus: "healthy"
+  });
+  assert(rollbackRequest.status === "succeeded", "rollback request should complete with queued action");
+
+  const blockedRecipe = createLifecycleRecipe({
+    agentId: cliAgent.id,
+    action: "install",
+    name: "Self-check non-allowlisted lifecycle install",
+    source: {
+      type: "manual_entry",
+      author: "self-check",
+      version: "0.0.1",
+      signatureStatus: "not_required"
+    },
+    supportedPlatforms: [state.device.platform],
+    riskLevel: "medium",
+    recipeCommand: {
+      executable: "not-demo-agent",
+      args: ["install"],
+      commandId: "not_allowlisted"
+    }
+  });
+  transitionLifecycleRecipe(blockedRecipe, "review");
+  transitionLifecycleRecipe(blockedRecipe, "approve");
+  const blockedQueuedLifecycleAction = queueLifecycleAction(blockedRecipe);
+  assert(blockedQueuedLifecycleAction.executionEnabled === false, "non-allowlisted lifecycle queue must not enable execution");
+  assert(blockedQueuedLifecycleAction.command === null, "non-allowlisted lifecycle queue must not expose commands to bridge");
+  assert(nextBridgeLifecycleAction()?.id !== blockedQueuedLifecycleAction.id, "non-allowlisted lifecycle action should not be bridge-dispatched");
 
   const blockedUninstallAgent = registerAgent({
     id: "agt_self_external_uninstall",
@@ -490,6 +604,28 @@ export async function runProtocolSelfCheck(deps) {
   });
   assert(blockedUsageResult.blocked === true, "platform-managed AI call should be blocked when quota is exceeded");
   assert(blockedUsageResult.usageRecord === null, "blocked AI usage should not create a usage record");
+  createQuotaPolicy({
+    name: "Self-check invocation quota block",
+    provider: "openai",
+    model: "gpt-blocked-invocation",
+    limit: 0,
+    subjectId: "usr_local",
+    costOwner: "team_self_check",
+    teamId: "team_self_check"
+  });
+  const usageCountBeforeQuotaBlockedInvocation = state.aiUsageRecords.length;
+  const quotaBlockedInvocation = createInvocation("platform-managed quota should block this invocation", findAgent("agt_platform_integration_builder"), {
+    metadata: {
+      platformManagedAi: true,
+      provider: "openai",
+      model: "gpt-blocked-invocation",
+      estimatedCost: "0.001",
+      teamId: "team_self_check",
+      costOwner: "team_self_check"
+    }
+  });
+  assert(quotaBlockedInvocation.status === "rejected", "platform-managed quota should reject invocation before execution");
+  assert(state.aiUsageRecords.length === usageCountBeforeQuotaBlockedInvocation, "quota-blocked invocation should not create billable usage");
   const byokUsageResult = recordAiUsage({
     userId: "usr_local",
     provider: "openai",
@@ -499,7 +635,7 @@ export async function runProtocolSelfCheck(deps) {
     estimatedCost: "unknown"
   });
   assert(byokUsageResult.blocked === false, "BYOK usage should remain attributable without SaaS billing enforcement");
-  assert(chargebackExport().rows.some((row) => row.costOwner === "team_self_check"), "chargeback export should include cost owner rows");
+  assert(chargebackExport().rows.some((row) => row.costOwner === "team_self_check" && row.quotaDecision), "chargeback export should include cost owner and quota outcome rows");
 
   const privateDeploymentConfig = updatePrivateDeploymentConfig({
     mode: "private_deployment",
@@ -539,12 +675,22 @@ export async function runProtocolSelfCheck(deps) {
   assert(privateDeploymentConfig.entitlementPolicy.canDeleteUserData === false, "private deployment entitlements must not delete user data");
   assert(privateDeploymentConfig.entitlementPolicy.canRemoveLocalSoftware === false, "private deployment entitlements must not remove local software");
   const auditExportRequest = createAuditExportRequest({
-    subjects: ["invocation", "lifecycle", "quota", "usage", "ledger", "policy", "audit"],
+    subjects: ["invocation", "lifecycle", "quota", "usage", "ledger", "policy", "audit", "catalog", "bundle"],
     sinkId: "sink_self_check_immutable",
     dryRun: true
   });
   assert(auditExportRequest.status === "validated", "audit export dry run should validate with configured sink");
   assert(auditExportRequest.recordCounts.lifecycle >= 1, "audit export should count lifecycle evidence");
+  assert(auditExportRequest.recordCounts.catalog >= 1, "audit export should count private catalog records");
+  assert(auditExportRequest.recordCounts.bundle >= 1, "audit export should count signed bundle records");
+  const exportedAuditRequest = createAuditExportRequest({
+    subjects: ["lifecycle", "catalog", "bundle"],
+    sinkId: "sink_self_check_immutable",
+    dryRun: false
+  });
+  assert(exportedAuditRequest.status === "exported", "audit export should generate manifest when not a dry run");
+  assert(exportedAuditRequest.manifest?.recordRefs.some((ref) => ref.subject === "catalog" && ref.id === catalogEntry.id), "audit export manifest should reference catalog records");
+  assert(exportedAuditRequest.manifest?.recordRefs.some((ref) => ref.subject === "bundle" && ref.id === signedBundle.id), "audit export manifest should reference signed bundle records");
   state.device.status = "offline";
 
   const httpAgent = registerAgent({

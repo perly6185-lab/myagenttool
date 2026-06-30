@@ -146,7 +146,11 @@ export function createInvocationApprovalRuntime({
       level: "warn",
       message: "Invocation rejected before execution."
     });
-    state.auditSummaries.push(createAuditSummary(invocation, "Local approval denied before execution."));
+    state.auditSummaries.push({
+      ...createAuditSummary(invocation, "Local approval denied before execution."),
+      permissionDecision: "denied",
+      errorSummary: "Local approval denied before execution.",
+    });
     recordAgentUsage(invocation, "rejected");
   }
 

@@ -10,7 +10,20 @@ const allowedLifecycleActions = ["install", "update", "uninstall"];
 const allowedRecipeSources = ["local_file", "workspace_catalog", "private_catalog", "generated_artifact", "manual_entry"];
 const allowedSignatureStatuses = ["unsigned", "signed_verified", "signed_unverified", "signature_missing", "not_required"];
 const allowedDeploymentModes = ["local_developer", "self_hosted", "saas", "private_deployment"];
-const allowedAuditSubjects = ["invocation", "lifecycle", "quota", "usage", "ledger", "policy", "audit"];
+const allowedAuditSubjects = ["invocation", "lifecycle", "quota", "usage", "ledger", "policy", "audit", "catalog", "bundle"];
+const allowedCatalogChannels = ["stable", "beta", "dev"];
+const allowedCatalogVisibility = ["private", "team", "workspace"];
+const lifecycleCommandAllowlist = new Set([
+  "demo_agent_version",
+  "demo_agent_update",
+  "demo_agent_health",
+  "demo_agent_rollback",
+]);
+const lifecycleRecipeCommandAllowlistByAction = {
+  install: new Set(),
+  update: new Set(["demo_agent_update"]),
+  uninstall: new Set(),
+};
 
 export function createM3Service({
   state,
@@ -19,6 +32,71 @@ export function createM3Service({
   appendEvent,
   findAgent,
 }) {
+  function createPrivateCatalogEntry(body = {}) {
+    const createdAt = now();
+    const entry = {
+      id: nextId("cat_demo"),
+      packageName: normalizePackageName(body.packageName ?? body.name ?? "demo-agent"),
+      displayName: String(body.displayName ?? body.name ?? "Demo Agent").trim(),
+      description: String(body.description ?? "Private catalog entry for reviewed agent distribution.").trim(),
+      ownerTeamId: stringOrNull(body.ownerTeamId),
+      visibility: allowedCatalogVisibility.includes(body.visibility) ? body.visibility : "private",
+      channel: allowedCatalogChannels.includes(body.channel) ? body.channel : "stable",
+      version: String(body.version ?? "0.0.0"),
+      agentId: body.agentId ? String(body.agentId) : null,
+      recipeIds: normalizeStringArray(body.recipeIds),
+      bundleIds: normalizeStringArray(body.bundleIds),
+      status: ["draft", "published", "archived"].includes(body.status) ? body.status : "draft",
+      createdAt,
+      updatedAt: createdAt,
+    };
+    state.privateCatalogEntries.unshift(entry);
+    state.privateCatalogEntries = state.privateCatalogEntries.slice(0, 100);
+    appendEvent({
+      invocationId: null,
+      type: "lifecycle_requested",
+      level: "info",
+      message: `Private catalog entry ${entry.packageName}@${entry.version} created.`,
+      data: { catalogEntryId: entry.id, packageName: entry.packageName, version: entry.version },
+    });
+    return entry;
+  }
+
+  function createSignedBundleManifest(body = {}) {
+    const createdAt = now();
+    const signatureStatus = normalizeSignatureStatus(body.signatureStatus);
+    const manifest = {
+      id: nextId("bun_demo"),
+      catalogEntryId: stringOrNull(body.catalogEntryId),
+      artifactId: stringOrNull(body.artifactId),
+      packageName: normalizePackageName(body.packageName ?? "demo-agent"),
+      version: String(body.version ?? "0.0.0"),
+      channel: allowedCatalogChannels.includes(body.channel) ? body.channel : "stable",
+      sourceUri: String(body.sourceUri ?? "bundle://manual"),
+      checksum: stringOrNull(body.checksum),
+      signatureStatus,
+      provenance: {
+        builder: stringOrNull(body.provenance?.builder ?? body.builder),
+        sourceCommit: stringOrNull(body.provenance?.sourceCommit ?? body.sourceCommit),
+        generatedByAi: Boolean(body.provenance?.generatedByAi ?? body.generatedByAi ?? false),
+      },
+      policy: signedBundlePolicy(signatureStatus, body),
+      createdAt,
+      updatedAt: createdAt,
+    };
+    state.signedBundleManifests.unshift(manifest);
+    state.signedBundleManifests = state.signedBundleManifests.slice(0, 100);
+    linkBundleToCatalog(manifest.catalogEntryId, manifest.id);
+    appendEvent({
+      invocationId: null,
+      type: "policy_decision_recorded",
+      level: manifest.policy.decision === "blocked" ? "warn" : "info",
+      message: `Signed bundle policy: ${manifest.policy.decision}.`,
+      data: { bundleId: manifest.id, signatureStatus: manifest.signatureStatus, decision: manifest.policy.decision },
+    });
+    return manifest;
+  }
+
   function createLifecycleRecipe(body = {}) {
     const action = normalizeLifecycleAction(body.action);
     const agent = body.agentId ? findAgent(String(body.agentId)) : null;
@@ -44,6 +122,8 @@ export function createM3Service({
     const recipe = {
       id: nextId("lcr_demo"),
       agentId: agent?.id ?? (body.agentId ? String(body.agentId) : null),
+      catalogEntryId: stringOrNull(body.catalogEntryId),
+      bundleId: stringOrNull(body.bundleId),
       requestedBy: "usr_local",
       action,
       reviewState: normalizeReviewState(body.reviewState, "draft"),
@@ -71,6 +151,7 @@ export function createM3Service({
     };
     state.lifecycleRecipes.unshift(recipe);
     state.lifecycleRecipes = state.lifecycleRecipes.slice(0, 100);
+    linkRecipeToCatalog(recipe.catalogEntryId, recipe.id);
     appendEvent({
       invocationId: null,
       type: "lifecycle_requested",
@@ -115,7 +196,13 @@ export function createM3Service({
     const agent = recipe.agentId ? findAgent(recipe.agentId) : null;
     addCheck(checks, "review_state", recipe.reviewState === "approved", `Recipe review state is ${recipe.reviewState}.`);
     addCheck(checks, "source_metadata", Boolean(recipe.source?.type && recipe.source?.author && recipe.source?.version), "Recipe source metadata is present.");
-    addCheck(checks, "signature_status", recipe.source.signatureStatus === "signed_verified" || recipe.source.signatureStatus === "not_required", `Signature status is ${recipe.source.signatureStatus}.`, true);
+    const bundle = findSignedBundleManifest(recipe.bundleId);
+    const signatureStatus = bundle?.signatureStatus ?? recipe.source.signatureStatus;
+    const signaturePolicy = bundle?.policy ?? signedBundlePolicy(signatureStatus, {});
+    addCheck(checks, "signature_status", signaturePolicy.decision !== "blocked", `Signature status is ${signatureStatus}: ${signaturePolicy.reason}.`, signaturePolicy.decision === "requires_local_approval");
+    if (recipe.source.type === "private_catalog") {
+      addCheck(checks, "private_catalog_entry", Boolean(recipe.catalogEntryId && findPrivateCatalogEntry(recipe.catalogEntryId)), "Private catalog source must reference an existing catalog entry.");
+    }
     addCheck(checks, "platform", recipe.supportedPlatforms.includes(state.device.platform), `Device platform is ${state.device.platform}.`);
     addCheck(checks, "rollback", recipe.action !== "update" || recipe.rollback.available || recipe.rollback.strategy === "manual", recipe.rollback.summary, true);
     if (recipe.action === "uninstall") {
@@ -244,6 +331,8 @@ export function createM3Service({
       throw new Error("Lifecycle action requires approved local approval before queueing.");
     }
     const createdAt = now();
+    const command = buildExecutableLifecycleCommand(recipe);
+    const executionEnabled = Boolean(command);
     const queued = {
       id: nextId("lco_demo"),
       recipeId: recipe.id,
@@ -252,10 +341,15 @@ export function createM3Service({
       requestedBy: "usr_local",
       action: recipe.action,
       status: "queued",
-      executionEnabled: false,
-      command: null,
-      summary: `${recipe.name} is queued as audited evidence only. Lifecycle execution is not enabled in this PR batch.`,
+      executionEnabled,
+      command,
+      summary: executionEnabled
+        ? `${recipe.name} is queued for allowlisted Desktop Bridge lifecycle execution.`
+        : `${recipe.name} is queued as audit evidence only because no allowlisted lifecycle command is available.`,
+      result: null,
       createdAt,
+      startedAt: null,
+      completedAt: null,
     };
     state.lifecycleQueuedActions.unshift(queued);
     state.lifecycleQueuedActions = state.lifecycleQueuedActions.slice(0, 100);
@@ -266,7 +360,9 @@ export function createM3Service({
       requestedBy: queued.requestedBy,
       operation: recipe.action,
       status: "queued",
-      reason: "Lifecycle review gates completed; execution remains disabled in the first PR batch.",
+      reason: executionEnabled
+        ? "Lifecycle review gates completed; allowlisted Desktop Bridge execution is available."
+        : "Lifecycle review gates completed; no allowlisted Desktop Bridge execution is available.",
       message: queued.summary,
       createdAt,
       completedAt: null,
@@ -279,33 +375,224 @@ export function createM3Service({
       type: "lifecycle_requested",
       level: "info",
       message: queued.summary,
-      data: { queuedActionId: queued.id, recipeId: recipe.id, executionEnabled: false },
+      data: { queuedActionId: queued.id, recipeId: recipe.id, executionEnabled },
     });
     return queued;
   }
 
   function nextBridgeLifecycleAction() {
-    return state.lifecycleQueuedActions.find((item) => item.status === "queued") ?? null;
+    return state.lifecycleQueuedActions.find((item) => item.status === "queued" && item.executionEnabled === true) ?? null;
   }
 
-  function markLifecycleActionObserved(lifecycleAction) {
+  function markLifecycleActionStarted(lifecycleAction) {
     if (!lifecycleAction || lifecycleAction.status !== "queued") {
       return lifecycleAction;
     }
-    lifecycleAction.status = "observed";
+    if (!lifecycleAction.executionEnabled || !isExecutableLifecycleActionCommand(lifecycleAction.command, lifecycleAction.action)) {
+      const completedAt = now();
+      lifecycleAction.status = "observed";
+      lifecycleAction.result = {
+        status: "failed",
+        summary: "Lifecycle action was observed but not executed because the command is not allowlisted.",
+        exitCode: null,
+        stdout: "",
+        stderr: "",
+        durationMs: null,
+        healthStatus: "unknown",
+        rollbackAvailable: Boolean(findLifecycleRecipe(lifecycleAction.recipeId)?.rollback?.available),
+      };
+      lifecycleAction.completedAt = completedAt;
+      const recipe = findLifecycleRecipe(lifecycleAction.recipeId);
+      if (recipe) {
+        recipe.queueState = "observed";
+        recipe.updatedAt = completedAt;
+      }
+      const auditRecord = findLifecycleAuditRecord(lifecycleAction.id);
+      if (auditRecord) {
+        auditRecord.status = "failed";
+        auditRecord.message = lifecycleAction.result.summary;
+        auditRecord.completedAt = completedAt;
+        auditRecord.result = lifecycleAction.result;
+        auditRecord.rollback = recipe?.rollback ?? null;
+      }
+      appendEvent({
+        invocationId: null,
+        type: "lifecycle_failed",
+        level: "warn",
+        message: lifecycleAction.result.summary,
+        data: { queuedActionId: lifecycleAction.id, recipeId: lifecycleAction.recipeId, executionEnabled: false },
+      });
+      return lifecycleAction;
+    }
+    lifecycleAction.status = "running";
+    lifecycleAction.startedAt = now();
     const recipe = findLifecycleRecipe(lifecycleAction.recipeId);
     if (recipe) {
-      recipe.queueState = "observed";
+      recipe.queueState = "running";
       recipe.updatedAt = now();
     }
+    const auditRecord = findLifecycleAuditRecord(lifecycleAction.id);
+    if (auditRecord) {
+      auditRecord.status = "running";
+      auditRecord.message = "Desktop Bridge is executing an allowlisted lifecycle command.";
+    }
+    appendEvent({
+      invocationId: null,
+      type: "lifecycle_started",
+      level: "info",
+      message: "Desktop Bridge started allowlisted lifecycle execution.",
+      data: { queuedActionId: lifecycleAction.id, recipeId: lifecycleAction.recipeId, commandId: lifecycleAction.command.commandId },
+    });
+    return lifecycleAction;
+  }
+
+  function completeLifecycleAction(lifecycleAction, body = {}) {
+    if (!lifecycleAction) {
+      throw new Error("Lifecycle action not found.");
+    }
+    if (lifecycleAction.status !== "running") {
+      throw new Error(`Lifecycle action is not completable from ${lifecycleAction.status}.`);
+    }
+    const status = normalizeLifecycleResultStatus(body.status);
+    const recipe = findLifecycleRecipe(lifecycleAction.recipeId);
+    const completedAt = now();
+    lifecycleAction.status = status;
+    lifecycleAction.completedAt = completedAt;
+    lifecycleAction.result = {
+      status,
+      summary: String(body.summary ?? (status === "succeeded" ? "Lifecycle action completed." : "Lifecycle action failed.")),
+      exitCode: normalizeNullableNumber(body.exitCode),
+      stdout: truncateLog(body.stdout),
+      stderr: truncateLog(body.stderr),
+      durationMs: normalizeNullableNumber(body.durationMs, { min: 0 }),
+      healthStatus: normalizeHealthStatus(body.healthStatus),
+      rollbackAvailable: Boolean(body.rollbackAvailable ?? recipe?.rollback?.available),
+    };
+    if (recipe) {
+      recipe.queueState = status;
+      recipe.updatedAt = completedAt;
+    }
+    const auditRecord = findLifecycleAuditRecord(lifecycleAction.id);
+    if (auditRecord) {
+      auditRecord.status = status;
+      auditRecord.message = lifecycleAction.result.summary;
+      auditRecord.completedAt = completedAt;
+      auditRecord.result = lifecycleAction.result;
+      auditRecord.rollback = recipe?.rollback ?? null;
+    }
+    const rollbackRequest = state.lifecycleRollbackRequests.find((item) => item.queuedActionId === lifecycleAction.id);
+    if (rollbackRequest) {
+      rollbackRequest.status = status;
+      rollbackRequest.updatedAt = completedAt;
+    }
+    appendEvent({
+      invocationId: null,
+      type: status === "succeeded" ? "lifecycle_completed" : "lifecycle_failed",
+      level: status === "succeeded" ? "info" : "warn",
+      message: lifecycleAction.result.summary,
+      data: {
+        queuedActionId: lifecycleAction.id,
+        recipeId: lifecycleAction.recipeId,
+        status,
+        exitCode: lifecycleAction.result.exitCode,
+        rollbackAvailable: lifecycleAction.result.rollbackAvailable,
+      },
+    });
+    if (status === "failed" && lifecycleAction.result.rollbackAvailable) {
+      createRollbackRequest(lifecycleAction, recipe);
+    }
+    return lifecycleAction;
+  }
+
+  function createRollbackRequest(failedAction, recipe = findLifecycleRecipe(failedAction?.recipeId)) {
+    if (!failedAction || !recipe?.rollback?.available) {
+      throw new Error("Rollback is not available for this lifecycle action.");
+    }
+    const existing = state.lifecycleRollbackRequests.find((item) => item.failedActionId === failedAction.id);
+    if (existing) {
+      return existing;
+    }
+    const createdAt = now();
+    const rollback = {
+      id: nextId("lco_demo"),
+      recipeId: recipe.id,
+      failedActionId: failedAction.id,
+      agentId: recipe.agentId,
+      requestedBy: "usr_local",
+      status: "available",
+      strategy: recipe.rollback.strategy,
+      command: buildRollbackLifecycleCommand(recipe),
+      summary: `Rollback available for ${recipe.name}: ${recipe.rollback.summary}`,
+      queuedActionId: null,
+      createdAt,
+      updatedAt: createdAt,
+    };
+    state.lifecycleRollbackRequests.unshift(rollback);
+    state.lifecycleRollbackRequests = state.lifecycleRollbackRequests.slice(0, 100);
+    appendEvent({
+      invocationId: null,
+      type: "lifecycle_failed",
+      level: "warn",
+      message: rollback.summary,
+      data: { rollbackRequestId: rollback.id, failedActionId: failedAction.id, recipeId: recipe.id },
+    });
+    return rollback;
+  }
+
+  function queueRollbackAction(rollback) {
+    if (!rollback) {
+      throw new Error("Rollback request not found.");
+    }
+    if (rollback.status !== "available" && rollback.status !== "failed") {
+      throw new Error(`Rollback request is not queueable from ${rollback.status}.`);
+    }
+    const createdAt = now();
+    const executionEnabled = Boolean(rollback.command);
+    const queued = {
+      id: nextId("lco_demo"),
+      recipeId: rollback.recipeId,
+      rollbackForActionId: rollback.failedActionId,
+      agentId: rollback.agentId,
+      deviceId: rollback.agentId ? agentDeviceId(findAgent(rollback.agentId)) : state.device.id,
+      requestedBy: "usr_local",
+      action: "rollback",
+      status: "queued",
+      executionEnabled,
+      command: rollback.command,
+      summary: executionEnabled
+        ? rollback.summary
+        : `${rollback.summary} Manual rollback is required because no allowlisted rollback command is available.`,
+      result: null,
+      createdAt,
+      startedAt: null,
+      completedAt: null,
+    };
+    state.lifecycleQueuedActions.unshift(queued);
+    state.lifecycleQueuedActions = state.lifecycleQueuedActions.slice(0, 100);
+    state.lifecycleAuditRecords.unshift({
+      id: queued.id,
+      agentId: queued.agentId ?? "agt_lifecycle_pending",
+      deviceId: queued.deviceId ?? undefined,
+      requestedBy: queued.requestedBy,
+      operation: "rollback",
+      status: "queued",
+      reason: "Rollback requested for failed lifecycle action.",
+      message: queued.summary,
+      createdAt,
+      completedAt: null,
+    });
+    state.lifecycleAuditRecords = state.lifecycleAuditRecords.slice(0, 100);
+    rollback.status = "queued";
+    rollback.queuedActionId = queued.id;
+    rollback.updatedAt = createdAt;
     appendEvent({
       invocationId: null,
       type: "lifecycle_requested",
       level: "info",
-      message: "Desktop Bridge observed lifecycle action evidence. Execution remains disabled.",
-      data: { queuedActionId: lifecycleAction.id, recipeId: lifecycleAction.recipeId, executionEnabled: false },
+      message: queued.summary,
+      data: { rollbackRequestId: rollback.id, queuedActionId: queued.id, executionEnabled },
     });
-    return lifecycleAction;
+    return queued;
   }
 
   function createQuotaPolicy(body = {}) {
@@ -413,6 +700,19 @@ export function createM3Service({
     };
   }
 
+  function enforcePlatformAiQuota(body = {}) {
+    const result = recordAiUsage({
+      ...body,
+      providerMode: "platform_managed",
+      requestCount: body.requestCount ?? 1,
+      estimatedCost: body.estimatedCost ?? "0",
+    });
+    return {
+      allowed: !result.blocked,
+      ...result,
+    };
+  }
+
   function chargebackExport() {
     return {
       generatedAt: now(),
@@ -429,6 +729,7 @@ export function createM3Service({
         currency: entry.currency,
         billable: entry.billable,
         status: entry.status,
+        quotaDecision: state.quotaDecisionRecords.find((decision) => decision.createdLedgerEntryIds?.includes(entry.id))?.decision ?? null,
         createdAt: entry.createdAt,
       })),
     };
@@ -476,25 +777,35 @@ export function createM3Service({
     const subjects = normalizeAuditSubjects(body.subjects);
     const sinkId = stringOrNull(body.sinkId);
     const validation = validateAuditExport({ subjects, sinkId });
+    const dryRun = body.dryRun !== false;
+    const createdAt = now();
     const request = {
       id: nextId("aex_demo"),
       requestedBy: "usr_local",
       mode: state.privateDeploymentConfig.mode,
       subjects,
-      status: validation.ok ? "validated" : "blocked",
-      dryRun: body.dryRun !== false,
+      status: validation.ok ? dryRun ? "validated" : "exported" : "blocked",
+      dryRun,
       sinkId,
       recordCounts: auditExportRecordCounts(subjects),
+      manifest: null,
       validation,
-      createdAt: now(),
+      createdAt,
+      exportedAt: null,
     };
+    if (validation.ok && !dryRun) {
+      request.manifest = createAuditExportManifest(request);
+      request.exportedAt = request.manifest.generatedAt;
+    }
     state.auditExportRequests.unshift(request);
     state.auditExportRequests = state.auditExportRequests.slice(0, 100);
     appendEvent({
       invocationId: null,
       type: "billing_recorded",
       level: validation.ok ? "info" : "warn",
-      message: validation.ok ? "Audit export dry-run validated." : "Audit export dry-run blocked by configuration findings.",
+      message: validation.ok
+        ? dryRun ? "Audit export dry-run validated." : "Audit export manifest generated."
+        : "Audit export blocked by configuration findings.",
       data: { auditExportId: request.id, status: request.status, dryRun: request.dryRun },
     });
     return request;
@@ -503,15 +814,22 @@ export function createM3Service({
   return {
     chargebackExport,
     createAuditExportRequest,
+    createPrivateCatalogEntry,
+    createSignedBundleManifest,
     createLifecycleRecipe,
     createQuotaPolicy,
     decideLifecycleLocalApproval,
     evaluateLifecyclePolicy,
+    enforcePlatformAiQuota,
     findLifecycleLocalApproval,
+    completeLifecycleAction,
+    findLifecycleRollbackRequest,
     findLifecycleRecipe,
-    markLifecycleActionObserved,
+    findPrivateCatalogEntry,
+    markLifecycleActionStarted,
     nextBridgeLifecycleAction,
     queueLifecycleAction,
+    queueRollbackAction,
     recordAiUsage,
     requestLifecycleLocalApproval,
     transitionLifecycleRecipe,
@@ -520,6 +838,38 @@ export function createM3Service({
 
   function latestLifecyclePolicy(recipeId) {
     return state.lifecyclePolicyDecisions.find((item) => item.recipeId === recipeId);
+  }
+
+  function findLifecycleAuditRecord(id) {
+    return state.lifecycleAuditRecords.find((item) => item.id === id) ?? null;
+  }
+
+  function findPrivateCatalogEntry(id) {
+    return state.privateCatalogEntries.find((item) => item.id === id) ?? null;
+  }
+
+  function findSignedBundleManifest(id) {
+    return state.signedBundleManifests.find((item) => item.id === id) ?? null;
+  }
+
+  function findLifecycleRollbackRequest(id) {
+    return state.lifecycleRollbackRequests.find((item) => item.id === id) ?? null;
+  }
+
+  function linkRecipeToCatalog(catalogEntryId, recipeId) {
+    const entry = catalogEntryId ? findPrivateCatalogEntry(catalogEntryId) : null;
+    if (entry && !entry.recipeIds.includes(recipeId)) {
+      entry.recipeIds.unshift(recipeId);
+      entry.updatedAt = now();
+    }
+  }
+
+  function linkBundleToCatalog(catalogEntryId, bundleId) {
+    const entry = catalogEntryId ? findPrivateCatalogEntry(catalogEntryId) : null;
+    if (entry && !entry.bundleIds.includes(bundleId)) {
+      entry.bundleIds.unshift(bundleId);
+      entry.updatedAt = now();
+    }
   }
 
   function findQuotaPolicy({ provider, model, providerMode, subjectId }) {
@@ -649,8 +999,54 @@ export function createM3Service({
       ledger: state.ledgerEntries.length,
       policy: state.policyDecisionRecords.length + state.lifecyclePolicyDecisions.length,
       audit: state.auditSummaries.length,
+      catalog: state.privateCatalogEntries.length,
+      bundle: state.signedBundleManifests.length,
     };
     return Object.fromEntries(subjects.map((subject) => [subject, counts[subject] ?? 0]));
+  }
+
+  function createAuditExportManifest(request) {
+    const recordRefs = auditExportRecordRefs(request.subjects);
+    const sink = request.sinkId ? state.privateDeploymentConfig.auditSinks.find((item) => item.id === request.sinkId) : null;
+    return {
+      id: `manifest_${request.id}`,
+      requestId: request.id,
+      generatedAt: now(),
+      immutable: Boolean(sink?.immutable || state.privateDeploymentConfig.immutableAuditOption !== "disabled"),
+      sinkId: request.sinkId,
+      subjects: request.subjects,
+      recordRefs,
+      checksum: `sha256:${recordRefs.length}:${request.subjects.join(".")}`,
+      delivery: {
+        externalDeliveryEnabled: Boolean(sink?.externalDeliveryEnabled),
+        destinationRef: sink?.destinationRef ?? null,
+      },
+    };
+  }
+
+  function auditExportRecordRefs(subjects) {
+    const refs = [];
+    const pushRefs = (subject, records) => {
+      if (!subjects.includes(subject)) {
+        return;
+      }
+      for (const record of records) {
+        const id = record.id ?? record.invocationId ?? record.ledgerEntryId ?? record.policyDecisionId ?? record.traceId;
+        if (id) {
+          refs.push({ subject, id: String(id) });
+        }
+      }
+    };
+    pushRefs("invocation", state.invocations);
+    pushRefs("lifecycle", [...state.lifecycleAuditRecords, ...state.lifecycleRecipes, ...state.lifecycleRollbackRequests]);
+    pushRefs("quota", state.quotaDecisionRecords);
+    pushRefs("usage", state.aiUsageRecords);
+    pushRefs("ledger", state.ledgerEntries);
+    pushRefs("policy", [...state.policyDecisionRecords, ...state.lifecyclePolicyDecisions]);
+    pushRefs("audit", state.auditSummaries);
+    pushRefs("catalog", state.privateCatalogEntries);
+    pushRefs("bundle", state.signedBundleManifests);
+    return refs;
   }
 }
 
@@ -698,16 +1094,42 @@ function normalizeLifecycleAction(value) {
 
 function normalizeRecipeSource(source = {}) {
   const raw = source && typeof source === "object" && !Array.isArray(source) ? source : {};
-  const signatureStatus = String(raw.signatureStatus ?? "unsigned");
+  const signatureStatus = normalizeSignatureStatus(raw.signatureStatus);
   return {
     type: allowedRecipeSources.includes(raw.type) ? raw.type : "manual_entry",
     uri: String(raw.uri ?? "manual://lifecycle-recipe"),
     author: String(raw.author ?? "").trim(),
     version: String(raw.version ?? "").trim(),
     checksum: stringOrNull(raw.checksum),
-    signatureStatus: allowedSignatureStatuses.includes(signatureStatus) ? signatureStatus : "unsigned",
+    signatureStatus,
     compatibilityRange: String(raw.compatibilityRange ?? ">=0.0.0"),
   };
+}
+
+function normalizeSignatureStatus(value) {
+  const signatureStatus = String(value ?? "unsigned");
+  return allowedSignatureStatuses.includes(signatureStatus) ? signatureStatus : "unsigned";
+}
+
+function signedBundlePolicy(signatureStatus, body = {}) {
+  if (signatureStatus === "signed_verified" || signatureStatus === "not_required") {
+    return { decision: "allowed", reason: "Bundle signature policy passed." };
+  }
+  if (signatureStatus === "signature_missing" && body.blockMissingSignature === true) {
+    return { decision: "blocked", reason: "Bundle signature is missing and policy requires a signature." };
+  }
+  if (signatureStatus === "signed_unverified") {
+    return { decision: "blocked", reason: "Bundle signature could not be verified." };
+  }
+  return { decision: "requires_local_approval", reason: `Bundle signature status is ${signatureStatus}.` };
+}
+
+function normalizePackageName(value) {
+  return String(value ?? "demo-agent")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, "-")
+    .replace(/^-+|-+$/g, "") || "demo-agent";
 }
 
 function normalizeSupportedPlatforms(value) {
@@ -764,6 +1186,105 @@ function normalizeRecipeCommand(value, action) {
     shell: false,
     packageManager: stringOrNull(raw.packageManager),
   };
+}
+
+function buildExecutableLifecycleCommand(recipe) {
+  const command = recipe.recipeCommand ?? null;
+  if (!isAllowlistedLifecycleCommandForAction(command, recipe.action)) {
+    return null;
+  }
+  return canonicalLifecycleCommand(command.commandId);
+}
+
+function buildRollbackLifecycleCommand(recipe) {
+  if (!recipe?.rollback?.available || recipe.rollback.strategy === "not_supported" || recipe.rollback.strategy === "unknown") {
+    return null;
+  }
+  return canonicalLifecycleCommand("demo_agent_rollback");
+}
+
+function isAllowlistedLifecycleCommandForAction(command, action) {
+  const commandId = String(command?.commandId ?? "");
+  return isAllowlistedLifecycleCommand(command)
+    && (lifecycleRecipeCommandAllowlistByAction[action]?.has(commandId) ?? false);
+}
+
+function isExecutableLifecycleActionCommand(command, action) {
+  if (action === "rollback") {
+    return isAllowlistedLifecycleCommand(command) && String(command.commandId ?? "") === "demo_agent_rollback";
+  }
+  return isAllowlistedLifecycleCommandForAction(command, action);
+}
+
+function isAllowlistedLifecycleCommand(command) {
+  return Boolean(command)
+    && lifecycleCommandAllowlist.has(String(command.commandId ?? ""))
+    && command.shell === false
+    && !command.packageManager;
+}
+
+function canonicalLifecycleCommand(commandId) {
+  const commands = {
+    demo_agent_version: {
+      summary: "Run the bridge-managed demo agent version check.",
+      commandId: "demo_agent_version",
+      executable: "demo-agent",
+      args: ["--version"],
+      shell: false,
+      packageManager: null,
+    },
+    demo_agent_update: {
+      summary: "Run the bridge-managed demo agent update fixture.",
+      commandId: "demo_agent_update",
+      executable: "demo-agent",
+      args: ["--self-check-update"],
+      shell: false,
+      packageManager: null,
+    },
+    demo_agent_health: {
+      summary: "Run the bridge-managed demo agent health fixture.",
+      commandId: "demo_agent_health",
+      executable: "demo-agent",
+      args: ["--self-check-health"],
+      shell: false,
+      packageManager: null,
+    },
+    demo_agent_rollback: {
+      summary: "Run the bridge-managed demo agent rollback fixture.",
+      commandId: "demo_agent_rollback",
+      executable: "demo-agent",
+      args: ["--self-check-rollback"],
+      shell: false,
+      packageManager: null,
+    },
+  };
+  return commands[String(commandId ?? "")] ?? null;
+}
+
+function normalizeLifecycleResultStatus(value) {
+  const normalized = String(value ?? "").trim();
+  return ["succeeded", "failed", "cancelled"].includes(normalized) ? normalized : "failed";
+}
+
+function normalizeHealthStatus(value) {
+  const normalized = String(value ?? "").trim();
+  return ["healthy", "unhealthy", "unknown"].includes(normalized) ? normalized : "unknown";
+}
+
+function normalizeNullableNumber(value, { min = null } = {}) {
+  if (value === undefined || value === null || value === "") {
+    return null;
+  }
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) {
+    return null;
+  }
+  return min === null ? numeric : Math.max(min, numeric);
+}
+
+function truncateLog(value) {
+  const text = String(value ?? "");
+  return text.length <= 4000 ? text : `${text.slice(0, 3997)}...`;
 }
 
 function normalizeHealthCheck(value = {}) {

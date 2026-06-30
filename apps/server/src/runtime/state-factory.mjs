@@ -39,6 +39,9 @@ export function createServerState({ defaultProjectPath, now }) {
     lifecyclePolicyDecisions: [],
     lifecycleLocalApprovals: [],
     lifecycleQueuedActions: [],
+    lifecycleRollbackRequests: [],
+    privateCatalogEntries: [],
+    signedBundleManifests: [],
     discoveryRuns: [],
     integrationArtifacts: [],
     integrationProbeRuns: [],
@@ -103,6 +106,9 @@ export function resetStateForSelfCheck({ state, now }) {
   state.lifecyclePolicyDecisions = [];
   state.lifecycleLocalApprovals = [];
   state.lifecycleQueuedActions = [];
+  state.lifecycleRollbackRequests = [];
+  state.privateCatalogEntries = [];
+  state.signedBundleManifests = [];
   state.discoveryRuns = [];
   state.integrationArtifacts = [];
   state.integrationProbeRuns = [];

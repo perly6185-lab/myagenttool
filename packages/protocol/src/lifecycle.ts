@@ -2,6 +2,7 @@ import type {
   AgentId,
   ApprovalRequestId,
   DeviceId,
+  IntegrationArtifactId,
   IsoDateTime,
   JsonObject,
   LifecycleOperationId,
@@ -14,6 +15,7 @@ import type {
 import type { CapabilityRiskTag } from "./agent.js";
 
 export type LifecycleRecipeAction = "install" | "update" | "uninstall";
+export type LifecycleRollbackAction = "rollback";
 
 export type LifecycleRecipeSourceType =
   | "local_file"
@@ -41,6 +43,10 @@ export type LifecycleRecipeQueueState =
   | "local_approval_required"
   | "queued"
   | "observed"
+  | "running"
+  | "succeeded"
+  | "failed"
+  | "cancelled"
   | "blocked"
   | "expired";
 
@@ -88,6 +94,8 @@ export interface LifecycleRecipePlainLanguageSummary {
 export interface LifecycleRecipeArtifact {
   id: LifecycleRecipeId;
   agentId: AgentId | null;
+  catalogEntryId?: string | null;
+  bundleId?: string | null;
   requestedBy: UserId;
   action: LifecycleRecipeAction;
   reviewState: LifecycleRecipeReviewState;
@@ -118,6 +126,46 @@ export interface LifecycleRecipeArtifact {
   uninstall: LifecycleRecipeUninstallPolicy;
   summary: LifecycleRecipePlainLanguageSummary;
   payload: JsonObject;
+  createdAt: IsoDateTime;
+  updatedAt: IsoDateTime;
+}
+
+export interface PrivateCatalogEntry {
+  id: string;
+  packageName: string;
+  displayName: string;
+  description: string;
+  ownerTeamId: string | null;
+  visibility: "private" | "team" | "workspace";
+  channel: "stable" | "beta" | "dev";
+  version: string;
+  agentId: AgentId | null;
+  recipeIds: LifecycleRecipeId[];
+  bundleIds: string[];
+  status: "draft" | "published" | "archived";
+  createdAt: IsoDateTime;
+  updatedAt: IsoDateTime;
+}
+
+export interface SignedBundleManifest {
+  id: string;
+  catalogEntryId: string | null;
+  artifactId?: IntegrationArtifactId | null;
+  packageName: string;
+  version: string;
+  channel: "stable" | "beta" | "dev";
+  sourceUri: string;
+  checksum: string | null;
+  signatureStatus: LifecycleRecipeSignatureStatus;
+  provenance: {
+    builder: string | null;
+    sourceCommit: string | null;
+    generatedByAi: boolean;
+  };
+  policy: {
+    decision: "allowed" | "requires_local_approval" | "blocked";
+    reason: string;
+  };
   createdAt: IsoDateTime;
   updatedAt: IsoDateTime;
 }
@@ -156,13 +204,43 @@ export interface LifecycleLocalApprovalRequest {
 export interface LifecycleQueuedAction {
   id: LifecycleOperationId;
   recipeId: LifecycleRecipeId;
+  rollbackForActionId?: LifecycleOperationId | null;
   agentId: AgentId | null;
   deviceId: DeviceId | null;
   requestedBy: UserId;
-  action: LifecycleRecipeAction;
-  status: "queued" | "observed";
-  executionEnabled: false;
-  command: null;
+  action: LifecycleRecipeAction | LifecycleRollbackAction;
+  status: "queued" | "observed" | "running" | "succeeded" | "failed" | "cancelled";
+  executionEnabled: boolean;
+  command: LifecycleRecipeCommandDescriptor | null;
   summary: string;
+  result?: LifecycleQueuedActionResult | null;
   createdAt: IsoDateTime;
+  startedAt?: IsoDateTime | null;
+  completedAt?: IsoDateTime | null;
+}
+
+export interface LifecycleRollbackRequest {
+  id: LifecycleOperationId;
+  recipeId: LifecycleRecipeId;
+  failedActionId: LifecycleOperationId;
+  agentId: AgentId | null;
+  requestedBy: UserId;
+  status: "available" | "queued" | "running" | "succeeded" | "failed" | "blocked";
+  strategy: LifecycleRecipeRollbackMetadata["strategy"];
+  command: LifecycleRecipeCommandDescriptor | null;
+  summary: string;
+  queuedActionId?: LifecycleOperationId | null;
+  createdAt: IsoDateTime;
+  updatedAt: IsoDateTime;
+}
+
+export interface LifecycleQueuedActionResult {
+  status: "succeeded" | "failed" | "cancelled";
+  summary: string;
+  exitCode: number | null;
+  stdout: string;
+  stderr: string;
+  durationMs: number | null;
+  healthStatus: "healthy" | "unhealthy" | "unknown";
+  rollbackAvailable: boolean;
 }

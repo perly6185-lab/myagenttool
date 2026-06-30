@@ -16,7 +16,9 @@ export type AuditExportSubject =
   | "usage"
   | "ledger"
   | "policy"
-  | "audit";
+  | "audit"
+  | "catalog"
+  | "bundle";
 
 export type AuditSinkType =
   | "local_file"
@@ -84,6 +86,7 @@ export interface AuditExportRequest {
   dryRun: boolean;
   sinkId: string | null;
   recordCounts: Record<AuditExportSubject, number>;
+  manifest?: AuditExportManifest | null;
   validation: {
     ok: boolean;
     findings: Array<{
@@ -93,4 +96,23 @@ export interface AuditExportRequest {
     }>;
   };
   createdAt: IsoDateTime;
+  exportedAt?: IsoDateTime | null;
+}
+
+export interface AuditExportManifest {
+  id: string;
+  requestId: AuditExportId;
+  generatedAt: IsoDateTime;
+  immutable: boolean;
+  sinkId: string | null;
+  subjects: AuditExportSubject[];
+  recordRefs: Array<{
+    subject: AuditExportSubject;
+    id: string;
+  }>;
+  checksum: string;
+  delivery: {
+    externalDeliveryEnabled: boolean;
+    destinationRef: string | null;
+  };
 }

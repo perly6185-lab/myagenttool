@@ -7,13 +7,18 @@ export async function handleM3Routes({
   state,
   chargebackExport,
   createAuditExportRequest,
+  createPrivateCatalogEntry,
+  createSignedBundleManifest,
   createLifecycleRecipe,
   createQuotaPolicy,
   decideLifecycleLocalApproval,
   evaluateLifecyclePolicy,
   findLifecycleLocalApproval,
+  findLifecycleRollbackRequest,
   findLifecycleRecipe,
+  findPrivateCatalogEntry,
   queueLifecycleAction,
+  queueRollbackAction,
   recordAiUsage,
   requestLifecycleLocalApproval,
   transitionLifecycleRecipe,
@@ -25,6 +30,9 @@ export async function handleM3Routes({
       lifecyclePolicyDecisions: state.lifecyclePolicyDecisions,
       lifecycleLocalApprovals: state.lifecycleLocalApprovals,
       lifecycleQueuedActions: state.lifecycleQueuedActions,
+      lifecycleRollbackRequests: state.lifecycleRollbackRequests,
+      privateCatalogEntries: state.privateCatalogEntries,
+      signedBundleManifests: state.signedBundleManifests,
       quotaPolicies: state.quotaPolicies,
       quotaDecisionRecords: state.quotaDecisionRecords,
       aiUsageRecords: state.aiUsageRecords,
@@ -32,6 +40,30 @@ export async function handleM3Routes({
       privateDeploymentConfig: state.privateDeploymentConfig,
       auditExportRequests: state.auditExportRequests,
     });
+    return true;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/m3/private-catalog") {
+    const body = await readJson(req);
+    const catalogEntry = createPrivateCatalogEntry(body);
+    sendJson(res, 201, { catalogEntry });
+    return true;
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/m3/private-catalog") {
+    sendJson(res, 200, { catalogEntries: state.privateCatalogEntries });
+    return true;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/m3/signed-bundles") {
+    const body = await readJson(req);
+    const bundle = createSignedBundleManifest(body);
+    sendJson(res, bundle.policy.decision === "blocked" ? 409 : 201, { bundle });
+    return true;
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/m3/signed-bundles") {
+    sendJson(res, 200, { bundles: state.signedBundleManifests });
     return true;
   }
 
@@ -81,6 +113,26 @@ export async function handleM3Routes({
         error: "lifecycle_gate_blocked",
         message: error instanceof Error ? error.message : String(error),
         recipe,
+      });
+      return true;
+    }
+  }
+
+  const rollbackActionMatch = url.pathname.match(/^\/api\/m3\/lifecycle-rollbacks\/([^/]+)\/queue$/);
+  if (req.method === "POST" && rollbackActionMatch) {
+    const rollback = findLifecycleRollbackRequest(decodeURIComponent(rollbackActionMatch[1]));
+    if (!rollback) {
+      sendJson(res, 404, { error: "lifecycle_rollback_not_found" });
+      return true;
+    }
+    try {
+      sendJson(res, 202, { rollback, queuedAction: queueRollbackAction(rollback) });
+      return true;
+    } catch (error) {
+      sendJson(res, 409, {
+        error: "rollback_gate_blocked",
+        message: error instanceof Error ? error.message : String(error),
+        rollback,
       });
       return true;
     }

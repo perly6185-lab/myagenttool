@@ -13,8 +13,12 @@ export function createInvocationCreationRuntime({
   createManagedCodexWorkspace,
   createManagedCodexSession,
   evaluateInvocationPolicy,
+  enforcePlatformAiQuota,
   createPolicyDecisionRecord,
   createApprovalRequest,
+  completeRootSpan,
+  createAuditSummary,
+  recordAgentUsage,
 }) {
   function createInvocation(task, agent = defaultAgent(), options = {}) {
     if (!agent) {
@@ -24,6 +28,12 @@ export function createInvocationCreationRuntime({
     const createdAt = now();
     const trace = createTrace(id, agent);
     const policy = evaluateInvocationPolicy(agent, options);
+    const quotaGate = maybeEnforcePlatformAiQuota({
+      invocationId: id,
+      agent,
+      options,
+      enforcePlatformAiQuota,
+    });
     const directRun = runsWithoutBridge(agent);
     const codexSessionMode = normalizeCodexSessionMode(options.codexSessionMode, agent);
     const codexWorkspacePolicy = normalizeCodexWorkspacePolicy(options.codexWorkspacePolicy, agent);
@@ -37,16 +47,16 @@ export function createInvocationCreationRuntime({
       compareRunId: null,
       agentId: agent.id,
       requestedBy: "usr_local",
-      status: policy.decision === "requires_local_approval" ? "waiting_for_local_approval" : directRun ? "running" : "queued",
+      status: quotaGate?.allowed === false ? "rejected" : policy.decision === "requires_local_approval" ? "waiting_for_local_approval" : directRun ? "running" : "queued",
       delivery: {
         deliveryId: nextId("del_demo"),
         deviceId: agent.location.type === "local_device" ? agent.location.deviceId : null,
-        state: policy.decision === "requires_local_approval" ? "not_required" : directRun ? "not_required" : "queued",
+        state: quotaGate?.allowed === false ? "not_required" : policy.decision === "requires_local_approval" ? "not_required" : directRun ? "not_required" : "queued",
         idempotencyKey: `idem_${id}`,
         leaseExpiresAt: null,
-        dispatchAttempts: policy.decision === "requires_local_approval" ? 0 : directRun ? 1 : 0,
-        lastDispatchAt: policy.decision === "requires_local_approval" ? null : directRun ? createdAt : null,
-        acknowledgedAt: policy.decision === "requires_local_approval" ? null : directRun ? createdAt : null,
+        dispatchAttempts: quotaGate?.allowed === false || policy.decision === "requires_local_approval" ? 0 : directRun ? 1 : 0,
+        lastDispatchAt: quotaGate?.allowed === false || policy.decision === "requires_local_approval" ? null : directRun ? createdAt : null,
+        acknowledgedAt: quotaGate?.allowed === false || policy.decision === "requires_local_approval" ? null : directRun ? createdAt : null,
         bridgeCursor: null,
         expiresAt: null
       },
@@ -66,6 +76,8 @@ export function createInvocationCreationRuntime({
         metadata: {
           demo: true,
           ...(options.metadata && typeof options.metadata === "object" && !Array.isArray(options.metadata) ? options.metadata : {}),
+          quotaDecisionId: quotaGate?.quotaDecision?.id ?? null,
+          quotaDecision: quotaGate?.quotaDecision?.decision ?? null,
           projectId: project?.id ?? null,
           projectName: project?.name ?? null,
           projectPath: project?.path ?? null,
@@ -120,6 +132,26 @@ export function createInvocationCreationRuntime({
       message: "Invocation trace created.",
       data: { traceId: trace.id, rootSpanId: trace.rootSpanId }
     });
+    if (quotaGate?.allowed === false) {
+      const policyRecord = state.policyDecisionRecords.find((item) => item.id === invocation.policyDecisionId);
+      if (policyRecord) {
+        policyRecord.decision = "denied";
+        policyRecord.reason = quotaGate.quotaDecision.reason;
+      }
+      invocation.completedAt = createdAt;
+      completeRootSpan(invocation, "failed");
+      appendEvent({
+        invocationId: invocation.id,
+        type: "invocation_rejected",
+        level: "warn",
+        message: quotaGate.quotaDecision.reason,
+        data: { quotaDecisionId: quotaGate.quotaDecision.id, decision: quotaGate.quotaDecision.decision }
+      });
+      state.auditSummaries.push(createAuditSummary(invocation, quotaGate.quotaDecision.reason));
+      recordAgentUsage(invocation, "rejected");
+      persistStateSoon();
+      return invocation;
+    }
     appendEvent({
       invocationId: invocation.id,
       type: policy.decision === "requires_local_approval" ? "local_approval_requested" : directRun ? "invocation_started" : "delivery_queued",
@@ -180,4 +212,24 @@ export function createInvocationCreationRuntime({
 
 function runsWithoutBridge(agent) {
   return agent.adapter.type === "platform" || (agent.adapter.type === "http" && agent.location.type === "remote_http");
+}
+
+function maybeEnforcePlatformAiQuota({ invocationId, agent, options, enforcePlatformAiQuota }) {
+  const metadata = options.metadata && typeof options.metadata === "object" && !Array.isArray(options.metadata) ? options.metadata : {};
+  if (!metadata.platformManagedAi || typeof enforcePlatformAiQuota !== "function") {
+    return null;
+  }
+  return enforcePlatformAiQuota({
+    invocationId,
+    userId: "usr_local",
+    teamId: metadata.teamId,
+    agentId: agent.id,
+    provider: metadata.provider ?? "openai",
+    model: metadata.model ?? "default",
+    requestCount: metadata.requestCount ?? 1,
+    estimatedCost: metadata.estimatedCost ?? "0",
+    costOwner: metadata.costOwner ?? agent.economics?.costOwner ?? "usr_local",
+    allowedModels: metadata.allowedModels,
+    credentialState: metadata.credentialState,
+  });
 }

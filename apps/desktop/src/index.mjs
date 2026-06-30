@@ -20,11 +20,22 @@ if (process.argv.includes("--check")) {
   const lifecycleWorkContract = {
     lifecycleActionId: "lco_self_check",
     recipeId: "lcr_self_check",
-    executionEnabled: false,
-    command: null
+    executionEnabled: true,
+    command: {
+      commandId: "demo_agent_version",
+      executable: "demo-agent",
+      args: ["--version"],
+      shell: false,
+      packageManager: null
+    }
   };
-  if (lifecycleWorkContract.executionEnabled !== false || lifecycleWorkContract.command !== null) {
-    throw new Error("Lifecycle bridge work contract must not expose executable commands in the first M3 PR batch.");
+  const lifecyclePlan = lifecycleCommandPlan(lifecycleWorkContract.command);
+  if (!lifecycleWorkContract.executionEnabled || lifecyclePlan?.command !== process.execPath || !lifecyclePlan.args.includes("--version")) {
+    throw new Error("Lifecycle bridge work contract is not mapped to a local allowlisted command.");
+  }
+  const blockedLifecyclePlan = lifecycleCommandPlan({ commandId: "not_allowlisted", executable: "demo-agent", args: [], shell: false });
+  if (blockedLifecyclePlan) {
+    throw new Error("Lifecycle bridge execution must reject non-allowlisted command identifiers.");
   }
   const resumeArgs = codexArgsTemplate({ command: "codex", args: codexCliArgs() }, { options: { codexSessionMode: "continue_last" } });
   if (!resumeArgs.includes("resume") || resumeArgs.includes("--ephemeral")) {
@@ -153,7 +164,7 @@ async function poll() {
   if (lifecycleWork) {
     busy = true;
     try {
-      await acknowledgeLifecycleWork(lifecycleWork);
+      await runLifecycleAction(lifecycleWork);
     } finally {
       busy = false;
     }
@@ -161,11 +172,93 @@ async function poll() {
 
 }
 
-async function acknowledgeLifecycleWork(work) {
-  if (work.executionEnabled !== false || work.command !== null) {
-    throw new Error("Lifecycle execution is not enabled for this Desktop Bridge build.");
+async function runLifecycleAction(work) {
+  if (!work?.lifecycleActionId) {
+    throw new Error("Lifecycle work item is missing lifecycleActionId.");
   }
-  console.log(`[desktop] lifecycle action ${work.lifecycleActionId} is review-gated and not executable in this build`);
+  const plan = work.executionEnabled === true ? lifecycleCommandPlan(work.command) : null;
+  if (!plan) {
+    await postLifecycleResult({
+      lifecycleActionId: work.lifecycleActionId,
+      status: "failed",
+      summary: "Lifecycle command is not allowlisted for this Desktop Bridge build.",
+      exitCode: null,
+      stdout: "",
+      stderr: "",
+      durationMs: null,
+      healthStatus: "unknown"
+    });
+    return;
+  }
+
+  console.log(`[desktop] lifecycle action ${work.lifecycleActionId}: ${work.command.commandId}`);
+  const startedAt = Date.now();
+  const result = spawnSync(plan.command, plan.args, {
+    cwd: process.cwd(),
+    env: buildEnv({ command: "demo-agent", environmentPolicy: "inherit_safe" }),
+    timeout: 10_000,
+    windowsHide: true,
+    encoding: "utf8",
+    shell: false,
+    stdio: ["ignore", "pipe", "pipe"]
+  });
+  const durationMs = Date.now() - startedAt;
+  const succeeded = result.status === 0 && !result.error;
+  const summary = lifecycleResultSummary({
+    commandId: work.command.commandId,
+    error: result.error,
+    signal: result.signal,
+    status: result.status,
+    succeeded,
+  });
+  await postLifecycleResult({
+    lifecycleActionId: work.lifecycleActionId,
+    status: succeeded ? "succeeded" : "failed",
+    summary,
+    exitCode: result.status,
+    stdout: result.stdout ?? "",
+    stderr: result.stderr ?? "",
+    durationMs,
+    healthStatus: succeeded ? "healthy" : "unhealthy"
+  });
+}
+
+function lifecycleResultSummary({ commandId, error, signal, status, succeeded }) {
+  if (succeeded) {
+    return `Lifecycle command ${commandId} completed.`;
+  }
+  if (error?.code === "ETIMEDOUT" || signal) {
+    return `Lifecycle command ${commandId} timed out.`;
+  }
+  if (error) {
+    return `Lifecycle command ${commandId} failed to start: ${error.message}.`;
+  }
+  return `Lifecycle command ${commandId} failed with exit code ${status ?? "unknown"}.`;
+}
+
+function lifecycleCommandPlan(command) {
+  if (!command || command.shell !== false || command.packageManager) {
+    return null;
+  }
+  const commandId = String(command.commandId ?? "");
+  const commands = {
+    demo_agent_version: [demoAgentPath, "--version"],
+    demo_agent_update: [demoAgentPath, "--self-check-update"],
+    demo_agent_health: [demoAgentPath, "--self-check-health"],
+    demo_agent_rollback: [demoAgentPath, "--self-check-rollback"],
+  };
+  const args = commands[commandId];
+  if (!args) {
+    return null;
+  }
+  return {
+    command: process.execPath,
+    args,
+  };
+}
+
+async function postLifecycleResult(payload) {
+  await request("POST", "/api/bridge/lifecycle-complete", payload);
 }
 
 async function pollTerminal() {

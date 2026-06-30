@@ -39,7 +39,7 @@ export type DesktopBridgeLifecycleWorkItem = {
   agentId: LifecycleQueuedAction["agentId"];
   deviceId: LifecycleQueuedAction["deviceId"];
   action: LifecycleQueuedAction["action"];
-  executionEnabled: false;
-  command: null;
+  executionEnabled: LifecycleQueuedAction["executionEnabled"];
+  command: LifecycleQueuedAction["command"];
   summary: string;
 };
