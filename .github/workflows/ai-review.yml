@@ -1,12 +1,6 @@
 name: AI Review
 
 on:
-  pull_request:
-    types:
-      - opened
-      - synchronize
-      - reopened
-      - ready_for_review
   workflow_dispatch:
     inputs:
       pr:
@@ -28,6 +22,7 @@ permissions:
 
 jobs:
   ai-review:
+    if: vars.ENABLE_GITHUB_HOSTED_RUNNERS == 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -55,11 +50,6 @@ jobs:
           OPENAI_MODEL: ${{ vars.OPENAI_MODEL }}
           AI_REVIEW_PROVIDER: ${{ vars.AI_REVIEW_PROVIDER }}
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            PR_NUMBER="${{ inputs.pr }}"
-            PROVIDER="${{ inputs.provider }}"
-          else
-            PR_NUMBER="${{ github.event.pull_request.number }}"
-            PROVIDER="${AI_REVIEW_PROVIDER:-mock}"
-          fi
+          PR_NUMBER="${{ inputs.pr }}"
+          PROVIDER="${{ inputs.provider }}"
           pnpm ai:review -- --pr "$PR_NUMBER" --provider "$PROVIDER" --comment

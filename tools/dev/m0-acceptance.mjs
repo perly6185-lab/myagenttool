@@ -25,10 +25,20 @@ try {
     return health.status === "ok";
   }, "server health");
 
-  const page = await fetchText(webUrl);
-  assert(page.includes("What should your computer do?"), "web console should start from a plain-language task field");
-  assert(page.includes("Safety") && page.includes("Data") && page.includes("Cost") && page.includes("Cancellation"), "web console should show pre-run review categories");
-  assert(page.includes("Technical details"), "web console should hide advanced details behind disclosure");
+  // The console is a built single-page app: product affordances live in the JS
+  // bundle the shell loads, not the initial HTML. Fetch shell + linked assets
+  // (the web server may build dist on first start), then assert the M0
+  // affordances survived the React migration.
+  const consoleSource = await waitFor(async () => {
+    const source = await fetchConsoleSource(webUrl);
+    return source.includes("What should your computer do?") ? source : false;
+  }, "web console bundle");
+  assert(consoleSource.includes("Run on this computer"), "web console should offer a plain-language run action");
+  assert(
+    ["Safety", "Data", "Cost", "Cancellation"].every((label) => consoleSource.includes(label)),
+    "web console should show pre-run review categories",
+  );
+  assert(consoleSource.includes("Technical details"), "web console should hide advanced details behind disclosure");
 
   const offlineCreated = await request("POST", "/api/invocations", {
     task: "Run the M0 acceptance offline queue test.",
@@ -220,6 +230,17 @@ async function fetchText(url) {
     throw new Error(`GET ${url} failed: ${response.status}`);
   }
   return response.text();
+}
+
+// Fetch the SPA shell plus the JS/CSS assets it references, so assertions can
+// inspect the bundled product strings instead of the near-empty index.html.
+async function fetchConsoleSource(baseUrl) {
+  const html = await fetchText(baseUrl);
+  const assetPaths = [...html.matchAll(/(?:src|href)="([^"]+\.(?:js|css))"/g)].map((match) => match[1]);
+  const assets = await Promise.all(
+    assetPaths.map((path) => fetchText(new URL(path, baseUrl).toString()).catch(() => "")),
+  );
+  return html + assets.join("");
 }
 
 function startHttpAgent() {
