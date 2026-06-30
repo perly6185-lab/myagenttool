@@ -142,7 +142,16 @@ function checkLocal() {
 
   const template = readFileSync(resolve(repoRoot, ".github/PULL_REQUEST_TEMPLATE.md"), "utf8");
   const packageJson = readFileSync(resolve(repoRoot, "package.json"), "utf8");
-  const aiTool = readFileSync(resolve(repoRoot, "tools/ai/src/index.mjs"), "utf8");
+  const aiTool = [
+    "tools/ai/src/index.mjs",
+    "tools/ai/src/legacy/config.mjs",
+    "tools/ai/src/legacy/formatters.mjs",
+    "tools/ai/src/legacy/issue-tree.mjs",
+    "tools/ai/src/legacy/pm-commands.mjs",
+    "tools/ai/src/legacy/scope-testing.mjs",
+  ]
+    .map((path) => readFileSync(resolve(repoRoot, path), "utf8"))
+    .join("\n");
   const githubTool = readFileSync(resolve(repoRoot, "tools/github/src/index.mjs"), "utf8");
   const projectFieldsDoc = readFileSync(resolve(repoRoot, "docs/engineering/PROJECT_FIELDS.md"), "utf8");
   const missingSections = REQUIRED_PR_SECTIONS.filter((section) => !template.includes(section));

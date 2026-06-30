@@ -931,10 +931,20 @@ The routine implementation is now split by domain:
   `tools/ai/src/loop/routine-yaml.mjs`: display, check execution, and YAML
   parsing.
 
-The promotion implementation has started its second split wave:
+The promotion implementation is now split by promotion responsibility:
 
-- `tools/ai/src/loop/promotion.mjs`: promotion orchestration, result builders,
-  evidence writers, input readers, and finish helpers.
+- `tools/ai/src/loop/promotion.mjs`: thin promotion facade plus runtime
+  worktree/git glue for verification commands and integration worktree
+  creation.
+- `tools/ai/src/loop/promotion-results.mjs`: promotion plan/result builders,
+  default commit message, and default PR title helpers.
+- `tools/ai/src/loop/promotion-evidence.mjs`: JSON, Markdown, stdout/stderr,
+  patch, checklist, and PR evidence writers.
+- `tools/ai/src/loop/promotion-inputs.mjs`: promotion artifact readers and
+  state/path precondition checks for apply, verify, PR prep, commit, push, PR
+  create, and PR merge stages.
+- `tools/ai/src/loop/promotion-finish.mjs`: refusal/failure finish
+  orchestration, worker-result updates, event appends, and JSON/console output.
 - `tools/ai/src/loop/promotion-github.mjs`: GitHub command resolution, PR
   create/merge command execution, GitHub JSON parsing, PR merge readiness
   assessment, and GitHub command result normalization.
@@ -944,8 +954,41 @@ The promotion implementation has started its second split wave:
 CLI command handlers are split by surface into
 `tools/ai/src/commands/registry.mjs`, `tools/ai/src/commands/worktree.mjs`,
 `tools/ai/src/commands/worker.mjs`, `tools/ai/src/commands/promotion.mjs`, and
-`tools/ai/src/commands/routine.mjs`; `tools/ai/src/index.mjs` now acts as the
-CLI router plus the legacy work-runner and review/generation commands.
+`tools/ai/src/commands/routine.mjs`.
+
+Legacy AI delivery commands are now split into:
+
+- `tools/ai/src/legacy/help.mjs`: CLI help text.
+- `tools/ai/src/legacy/config.mjs`: structured-output schemas, coding adapter
+  registry, adapter contract version, and standard verification command list.
+- `tools/ai/src/legacy/scope-testing.mjs`: scope drift checks, Product Flow
+  plan-gap checks, testing-plan generation, and the `scope-check` /
+  `testing-plan` CLI handlers.
+- `tools/ai/src/legacy/pm-commands.mjs`: intake brief, PM brief, issue-tree,
+  branch-plan, and code-plan command handlers.
+- `tools/ai/src/legacy/feedback-commands.mjs`: feedback conversion command
+  handler plus issue-tree handoff draft generation.
+- `tools/ai/src/legacy/formatters.mjs`: PM brief, issue tree, code plan,
+  review, coding-adapter contract, Product Flow, and list/checklist
+  formatting helpers.
+- `tools/ai/src/legacy/issue-tree.mjs`: PM brief normalization, Markdown brief
+  parsing, issue-tree generation, Product Flow gate checks, and human approval
+  validation.
+- `tools/ai/src/legacy/mock-provider.mjs`: deterministic local structured
+  provider fixtures for PM brief, code plan, and PR review flows.
+- `tools/ai/src/legacy/pm-helpers.mjs`: branch naming, governance labels,
+  target classification, and area/platform/risk inference helpers.
+- `tools/ai/src/legacy/review-commands.mjs`: PR review, work-manifest, and
+  coding-adapter-contract command handlers.
+- `tools/ai/src/legacy/work-runner.mjs`: work-runner orchestration, coding
+  adapter execution, adapter contract JSON, verification capture, and PR body
+  generation.
+
+`tools/ai/src/index.mjs` now acts as the CLI router plus runtime dependency
+composition. It wires command modules to shared repo, GitHub, provider, and
+filesystem helpers, while legacy PM/issue-tree/code-plan/scope/review/work-runner
+logic lives behind focused modules. As of this split, `index.mjs` is about 874
+lines and `tools/ai/src/loop/promotion.mjs` is about 256 lines.
 
 Remaining split plan:
 
@@ -957,15 +1000,10 @@ Remaining split plan:
   and shared API/render utilities.
 - `apps/web/public/styles.css`: split by shell, composer, task/routine list,
   evidence, terminal, project browser, and responsive rules.
-- `tools/ai/src/index.mjs`: continue moving legacy work-runner, review,
-  manifest, scope, and planning commands into `tools/ai/src/commands/*`.
 - `tools/ai/src/loop/routine.mjs`: split the remaining schedule state and
   summary/output writer helpers only after scheduler behavior needs another
   functional slice; the large input/finding/skill/fanout domains are already
   separated.
-- `tools/ai/src/loop/promotion.mjs`: next slices are result builders, evidence
-  writers, input readers, and finish/apply orchestration. Keep each slice tied
-  to existing promotion smoke tests.
 
 Implemented command surfaces:
 
