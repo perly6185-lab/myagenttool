@@ -1096,6 +1096,11 @@ Remaining split plan:
   adapter config builders, integration notes, summaries, suggested agent ids,
   and conservative discovery risk hints now live in
   `apps/server/src/services/integrations/helpers.mjs`.
+  Integration service Phase 2 is complete for discovery runtime extraction:
+  discovery run creation, bridge queue lookup, start/complete transitions,
+  candidate normalization, lifecycle audit updates, discovered-agent
+  registration, and discovery lookup now live in
+  `apps/server/src/services/integrations/discovery.mjs`.
 - `apps/web/public/app.js`: split by surface into task/routine browser,
   workspace/session, evidence center, terminal, project browser, integration,
   and shared API/render utilities.
