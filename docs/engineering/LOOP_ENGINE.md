@@ -1027,8 +1027,13 @@ Remaining split plan:
   explicit registration, retention updates, quota records, and Integration
   Builder draft orchestration now live in
   `apps/server/src/services/integrations.mjs`; integration HTTP routing still
-  lives in `apps/server/src/routes/integrations.mjs`. Remaining server phases
-  should move Codex, invocation, and persistence business helpers into service modules.
+  lives in `apps/server/src/routes/integrations.mjs`. Server service Phase 5 is
+  complete for Codex helpers: managed Codex sessions/workspaces, hook events,
+  JSONL evidence records, change reviews, approval broker lifecycle, imported
+  evidence records, approval queue summaries, and evidence repo-path lookup now
+  live in `apps/server/src/services/codex.mjs`; Codex HTTP routing still lives
+  in `apps/server/src/routes/codex.mjs`. Remaining server phases should move
+  invocation and persistence business helpers into service modules.
   Phase 7 split is complete for Desktop Bridge dispatch,
   health, discovery, probe, cancellation status, ack, event, and completion
   routing through `apps/server/src/routes/bridge.mjs`. Remaining server phases
