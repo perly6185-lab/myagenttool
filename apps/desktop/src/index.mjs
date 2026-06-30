@@ -17,6 +17,15 @@ if (process.argv.includes("--check")) {
   if (!existsSync(demoAgentPath) || !existsSync(codexFixtureAgentPath) || !existsSync(remoteRelayPath)) {
     throw new Error("Desktop agent fixtures are not configured.");
   }
+  const lifecycleWorkContract = {
+    lifecycleActionId: "lco_self_check",
+    recipeId: "lcr_self_check",
+    executionEnabled: false,
+    command: null
+  };
+  if (lifecycleWorkContract.executionEnabled !== false || lifecycleWorkContract.command !== null) {
+    throw new Error("Lifecycle bridge work contract must not expose executable commands in the first M3 PR batch.");
+  }
   const resumeArgs = codexArgsTemplate({ command: "codex", args: codexCliArgs() }, { options: { codexSessionMode: "continue_last" } });
   if (!resumeArgs.includes("resume") || resumeArgs.includes("--ephemeral")) {
     throw new Error("Codex continuation args are not configured.");
@@ -137,8 +146,26 @@ async function poll() {
     } finally {
       busy = false;
     }
+    return;
   }
 
+  const lifecycleWork = await request("GET", "/api/bridge/lifecycle-next");
+  if (lifecycleWork) {
+    busy = true;
+    try {
+      await acknowledgeLifecycleWork(lifecycleWork);
+    } finally {
+      busy = false;
+    }
+  }
+
+}
+
+async function acknowledgeLifecycleWork(work) {
+  if (work.executionEnabled !== false || work.command !== null) {
+    throw new Error("Lifecycle execution is not enabled for this Desktop Bridge build.");
+  }
+  console.log(`[desktop] lifecycle action ${work.lifecycleActionId} is review-gated and not executable in this build`);
 }
 
 async function pollTerminal() {

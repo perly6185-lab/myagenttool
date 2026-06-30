@@ -9,6 +9,7 @@ import {
 import { createCodexService } from "../services/codex.mjs";
 import { createIntegrationService } from "../services/integrations.mjs";
 import { createInvocationService } from "../services/invocations.mjs";
+import { createM3Service } from "../services/m3.mjs";
 import { createProjectService, sameProjectPath } from "../services/projects.mjs";
 import { createTerminalService } from "../services/terminal.mjs";
 
@@ -130,6 +131,30 @@ export function createServerRuntimeServices({
     summarizeText,
     uniqueStrings,
     codexSessionForInvocation,
+  });
+
+  const {
+    chargebackExport,
+    createAuditExportRequest,
+    createLifecycleRecipe,
+    createQuotaPolicy,
+    decideLifecycleLocalApproval,
+    evaluateLifecyclePolicy,
+    findLifecycleLocalApproval,
+    findLifecycleRecipe,
+    markLifecycleActionObserved,
+    nextBridgeLifecycleAction,
+    queueLifecycleAction,
+    recordAiUsage,
+    requestLifecycleLocalApproval,
+    transitionLifecycleRecipe,
+    updatePrivateDeploymentConfig,
+  } = createM3Service({
+    state,
+    now,
+    nextId,
+    appendEvent,
+    findAgent,
   });
 
   invocationService = createInvocationService({
@@ -306,6 +331,8 @@ export function createServerRuntimeServices({
     findInvocation,
     generateIntegrationArtifacts,
     getAgentUsageSummary,
+    chargebackExport,
+    createAuditExportRequest,
     markDispatched,
     markDiscoveryStarted,
     markHealthCheckStarted,
@@ -321,6 +348,17 @@ export function createServerRuntimeServices({
     registerAgent,
     registerDiscoveredCandidate,
     registerIntegrationArtifact,
+    createLifecycleRecipe,
+    createQuotaPolicy,
+    decideLifecycleLocalApproval,
+    evaluateLifecyclePolicy,
+    findLifecycleLocalApproval,
+    findLifecycleRecipe,
+    markLifecycleActionObserved,
+    nextBridgeLifecycleAction,
+    queueLifecycleAction,
+    recordAiUsage,
+    requestLifecycleLocalApproval,
     resetIdCounter: () => {
       idCounter = 1;
     },
@@ -328,6 +366,8 @@ export function createServerRuntimeServices({
     startInvocationIfAllowed,
     state,
     transitionIntegrationArtifact,
+    transitionLifecycleRecipe,
+    updatePrivateDeploymentConfig,
     unlinkDevice,
     now,
   };
@@ -371,8 +411,21 @@ export function createServerRuntimeServices({
     createCodexChangeReview,
     createDiscoveryRun,
     createIntegrationArtifact,
+    createLifecycleRecipe,
+    createQuotaPolicy,
     findIntegrationArtifact,
+    findLifecycleLocalApproval,
+    findLifecycleRecipe,
     generateIntegrationArtifacts,
+    chargebackExport,
+    createAuditExportRequest,
+    decideLifecycleLocalApproval,
+    evaluateLifecyclePolicy,
+    queueLifecycleAction,
+    recordAiUsage,
+    requestLifecycleLocalApproval,
+    transitionLifecycleRecipe,
+    updatePrivateDeploymentConfig,
     createIntegrationProbeRun,
     registerIntegrationArtifact,
     transitionIntegrationArtifact,
@@ -391,6 +444,8 @@ export function createServerRuntimeServices({
     normalizeStringArray,
     completeDiscoveryRun,
     nextBridgeProbeRun,
+    markLifecycleActionObserved,
+    nextBridgeLifecycleAction,
     markIntegrationProbeStarted,
     findIntegrationProbeRun,
     completeIntegrationProbeRun,

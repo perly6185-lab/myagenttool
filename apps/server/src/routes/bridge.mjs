@@ -22,6 +22,8 @@ export async function handleBridgeRoutes({
   findDiscoveryRun,
   completeDiscoveryRun,
   nextBridgeProbeRun,
+  markLifecycleActionObserved,
+  nextBridgeLifecycleAction,
   markIntegrationProbeStarted,
   findIntegrationProbeRun,
   completeIntegrationProbeRun,
@@ -170,6 +172,35 @@ export async function handleBridgeRoutes({
       artifactId: probeRun.artifactId,
       deviceId: probeRun.deviceId,
       adapter: probeRun.adapter,
+    });
+    return true;
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/bridge/lifecycle-next") {
+    state.device.lastSeenAt = now();
+    if (state.device.unlinkState !== "linked") {
+      sendJson(res, 204, null);
+      return true;
+    }
+
+    const lifecycleAction = nextBridgeLifecycleAction();
+    if (!lifecycleAction) {
+      sendJson(res, 204, null);
+      return true;
+    }
+    markLifecycleActionObserved(lifecycleAction);
+
+    sendJson(res, 200, {
+      namespace,
+      protocolVersion,
+      lifecycleActionId: lifecycleAction.id,
+      recipeId: lifecycleAction.recipeId,
+      agentId: lifecycleAction.agentId,
+      deviceId: lifecycleAction.deviceId,
+      action: lifecycleAction.action,
+      executionEnabled: false,
+      command: null,
+      summary: lifecycleAction.summary,
     });
     return true;
   }

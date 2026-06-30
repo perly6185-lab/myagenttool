@@ -10,6 +10,7 @@ export type AgentId = `agt_${string}`;
 export type InvocationId = `inv_${string}`;
 export type IdeaSessionId = `ids_${string}`;
 export type LifecycleOperationId = `lco_${string}`;
+export type LifecycleRecipeId = `lcr_${string}`;
 export type ApprovalRequestId = `apr_${string}`;
 export type PolicyDecisionId = `pdr_${string}`;
 export type TroubleshootingReportId = `trb_${string}`;
@@ -23,6 +24,9 @@ export type AgentEconomicRecordId = `eco_${string}`;
 export type AIProviderId = `aip_${string}`;
 export type AIUsageRecordId = `aiu_${string}`;
 export type QuotaDecisionId = `qtd_${string}`;
+export type QuotaPolicyId = `qtp_${string}`;
+export type AuditExportId = `aex_${string}`;
+export type DeploymentConfigId = `dep_${string}`;
 
 export type RiskLevel = "low" | "medium" | "high" | "critical";
 

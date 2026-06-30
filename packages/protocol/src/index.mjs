@@ -175,6 +175,43 @@ export const loopRoutineWritePolicies = [
   "allowed",
 ];
 
+export const lifecycleRecipeActions = [
+  "install",
+  "update",
+  "uninstall",
+];
+
+export const lifecycleRecipeReviewStates = [
+  "draft",
+  "needs_review",
+  "approved",
+  "rejected",
+  "archived",
+];
+
+export const lifecycleRecipeQueueStates = [
+  "not_queued",
+  "local_approval_required",
+  "queued",
+  "observed",
+  "blocked",
+  "expired",
+];
+
+export const aiProviderModes = [
+  "byok",
+  "platform_managed",
+  "local_model",
+  "disabled",
+];
+
+export const deploymentModes = [
+  "local_developer",
+  "self_hosted",
+  "saas",
+  "private_deployment",
+];
+
 export const m0RequiredEventTypes = [
   "invocation_created",
   "invocation_authorized",
@@ -361,6 +398,43 @@ const loopRequiredRoutineWritePolicies = [
   "allowed",
 ];
 
+const m3RequiredLifecycleRecipeActions = [
+  "install",
+  "update",
+  "uninstall",
+];
+
+const m3RequiredLifecycleRecipeReviewStates = [
+  "draft",
+  "needs_review",
+  "approved",
+  "rejected",
+  "archived",
+];
+
+const m3RequiredLifecycleRecipeQueueStates = [
+  "not_queued",
+  "local_approval_required",
+  "queued",
+  "observed",
+  "blocked",
+  "expired",
+];
+
+const m3RequiredAiProviderModes = [
+  "byok",
+  "platform_managed",
+  "local_model",
+  "disabled",
+];
+
+const m3RequiredDeploymentModes = [
+  "local_developer",
+  "self_hosted",
+  "saas",
+  "private_deployment",
+];
+
 const mode = process.argv.includes("--check") ? "check" : "dev";
 
 if (mode === "check") {
@@ -381,6 +455,11 @@ function runM0ProtocolCheck() {
   assertIncludes(loopRoutineInputTypes, loopRequiredRoutineInputTypes, "loop routine input type");
   assertIncludes(loopRoutineCheckTypes, loopRequiredRoutineCheckTypes, "loop routine check type");
   assertIncludes(loopRoutineWritePolicies, loopRequiredRoutineWritePolicies, "loop routine write policy");
+  assertIncludes(lifecycleRecipeActions, m3RequiredLifecycleRecipeActions, "M3 lifecycle recipe action");
+  assertIncludes(lifecycleRecipeReviewStates, m3RequiredLifecycleRecipeReviewStates, "M3 lifecycle recipe review state");
+  assertIncludes(lifecycleRecipeQueueStates, m3RequiredLifecycleRecipeQueueStates, "M3 lifecycle recipe queue state");
+  assertIncludes(aiProviderModes, m3RequiredAiProviderModes, "M3 AI provider mode");
+  assertIncludes(deploymentModes, m3RequiredDeploymentModes, "M3 deployment mode");
   assertIncludes(m0RequiredEventTypes, [
     "invocation_created",
     "delivery_dispatched",

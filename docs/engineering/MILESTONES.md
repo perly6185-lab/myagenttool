@@ -90,6 +90,7 @@ Primary source docs:
 - `docs/vision/AI_BILLING_AUDIT.md`
 - `docs/vision/DEPLOYMENT.md`
 - `docs/vision/EXTENSION_DISTRIBUTION.md`
+- `docs/engineering/M3_ISSUE_PLAN.md`
 
 ## M4: Marketplace and Ecosystem
 

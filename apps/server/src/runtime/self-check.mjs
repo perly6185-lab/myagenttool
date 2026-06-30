@@ -20,11 +20,14 @@ export async function runProtocolSelfCheck(deps) {
   createIntegrationArtifact,
   createIntegrationProbeRun,
   createInvocation,
+  createLifecycleRecipe,
   createManagedCodexSession,
   createManagedCodexWorkspace,
   createManagedTerminalSession,
+  createQuotaPolicy,
   createSshConnectionTest,
   createSshTarget,
+  createAuditExportRequest,
   defaultAgent,
   disableAgent,
   denyInvocation,
@@ -34,14 +37,21 @@ export async function runProtocolSelfCheck(deps) {
   findAgent,
   findApprovalRequest,
   findInvocation,
+  findLifecycleLocalApproval,
+  findLifecycleRecipe,
   generateIntegrationArtifacts,
   getAgentUsageSummary,
+  chargebackExport,
+  decideLifecycleLocalApproval,
+  evaluateLifecyclePolicy,
   markDispatched,
   markDiscoveryStarted,
   markHealthCheckStarted,
   markIntegrationProbeStarted,
+  markLifecycleActionObserved,
   nextBridgeDiscoveryRun,
   nextBridgeHealthCheck,
+  nextBridgeLifecycleAction,
   nextDispatchableInvocation,
   nextTerminalBridgeAction,
   queueTerminalBridgeAction,
@@ -51,10 +61,15 @@ export async function runProtocolSelfCheck(deps) {
   registerAgent,
   registerDiscoveredCandidate,
   registerIntegrationArtifact,
+  queueLifecycleAction,
+  recordAiUsage,
+  requestLifecycleLocalApproval,
   resolveCodexApprovalBrokerRequest,
   state,
   startInvocationIfAllowed,
   transitionIntegrationArtifact,
+  transitionLifecycleRecipe,
+  updatePrivateDeploymentConfig,
   unlinkDevice,
   acknowledgeInvocation,
   createTroubleshootingReport,
@@ -351,6 +366,185 @@ export async function runProtocolSelfCheck(deps) {
   assert(generatedAgent.status === "disabled", "registered integration artifact should create disabled agent");
   assert(adapterArtifact.reviewState === "enabled", "explicit registration should record enabled artifact state");
   assert(state.quotaDecisionRecords.some((item) => item.artifactId === draftArtifact.id), "integration artifact should record quota decision");
+
+  const updateRecipe = createLifecycleRecipe({
+    agentId: cliAgent.id,
+    action: "update",
+    name: "Self-check lifecycle update",
+    source: {
+      type: "private_catalog",
+      uri: "catalog://self-check/demo-agent",
+      author: "myagenttool",
+      version: "0.0.1",
+      checksum: "sha256:selfcheck",
+      signatureStatus: "signed_verified",
+      compatibilityRange: ">=0.0.0"
+    },
+    supportedPlatforms: [state.device.platform],
+    expectedBinary: "demo-agent",
+    requiredPermissions: ["run reviewed update command"],
+    riskLevel: "high",
+    riskTags: ["shell_exec", "write_local"],
+    rollback: {
+      available: true,
+      strategy: "previous_version",
+      previousVersion: "0.0.0",
+      summary: "Rollback can restore the previous demo-agent version."
+    },
+    recipeCommand: {
+      executable: "demo-agent",
+      args: ["--self-check-update"],
+      commandId: "demo_agent_update"
+    },
+    healthCheck: {
+      type: "cli",
+      summary: "demo-agent --version should succeed.",
+      command: { executable: "demo-agent", args: ["--version"], commandId: "demo_agent_version" }
+    }
+  });
+  assert(updateRecipe.reviewState === "draft", "lifecycle recipe should be created as draft");
+  assert(updateRecipe.recipeCommand?.shell === false, "lifecycle recipe command should be structured and shell-free");
+  assert(updateRecipe.summary.localApproval.includes("Local approval"), "lifecycle recipe should include plain-language local approval summary");
+  assert(findLifecycleRecipe(updateRecipe.id)?.id === updateRecipe.id, "lifecycle recipe should be discoverable");
+  transitionLifecycleRecipe(updateRecipe, "review");
+  transitionLifecycleRecipe(updateRecipe, "approve");
+  const lifecyclePolicy = evaluateLifecyclePolicy(updateRecipe);
+  assert(lifecyclePolicy.decision === "requires_local_approval", "high-risk lifecycle recipe should require local approval");
+  const lifecycleApproval = requestLifecycleLocalApproval(updateRecipe);
+  assert(lifecycleApproval.status === "pending", "lifecycle local approval should be pending");
+  assert(findLifecycleLocalApproval(lifecycleApproval.id)?.recipeId === updateRecipe.id, "lifecycle approval should be discoverable");
+  decideLifecycleLocalApproval(lifecycleApproval, "approve");
+  assert(lifecycleApproval.status === "approved", "lifecycle local approval should be approvable");
+  const queuedLifecycleAction = queueLifecycleAction(updateRecipe);
+  assert(queuedLifecycleAction.executionEnabled === false, "first-batch lifecycle queue must not enable execution");
+  assert(queuedLifecycleAction.command === null, "first-batch lifecycle queue must not expose commands to bridge");
+  const bridgeLifecycleAction = nextBridgeLifecycleAction();
+  assert(bridgeLifecycleAction?.id === queuedLifecycleAction.id, "queued lifecycle action should be bridge-visible as evidence only");
+  markLifecycleActionObserved(bridgeLifecycleAction);
+  assert(queuedLifecycleAction.status === "observed", "observed lifecycle action should stop repeated bridge dispatch");
+  assert(updateRecipe.queueState === "observed", "observed lifecycle action should update recipe queue state");
+
+  const blockedUninstallAgent = registerAgent({
+    id: "agt_self_external_uninstall",
+    type: "http",
+    name: "Self-check external uninstall target",
+    baseUrl: "http://127.0.0.1:65535"
+  });
+  let blockedUninstallError = null;
+  try {
+    createLifecycleRecipe({
+      agentId: blockedUninstallAgent.id,
+      action: "uninstall",
+      name: "Unsafe external uninstall",
+      source: {
+        type: "manual_entry",
+        author: "self-check",
+        version: "0.0.1",
+        signatureStatus: "unsigned"
+      },
+      supportedPlatforms: [state.device.platform],
+      uninstall: {
+        bridgeManagedOnly: false,
+        deletesUnderlyingSoftware: true,
+        requiresExtraConfirmation: false,
+        manualAgentRegistryOnly: false
+      }
+    });
+  } catch (error) {
+    blockedUninstallError = error;
+  }
+  assert(blockedUninstallError, "unsafe uninstall recipe should be rejected before execution");
+
+  const quotaPolicy = createQuotaPolicy({
+    name: "Self-check platform AI quota",
+    provider: "openai",
+    model: "gpt-self-check",
+    limit: 1,
+    subjectId: "usr_local",
+    costOwner: "team_self_check",
+    teamId: "team_self_check"
+  });
+  assert(quotaPolicy.providerMode === "platform_managed", "quota policy should default to platform-managed mode");
+  const usageResult = recordAiUsage({
+    userId: "usr_local",
+    teamId: "team_self_check",
+    agentId: "agt_platform_integration_builder",
+    provider: "openai",
+    model: "gpt-self-check",
+    providerMode: "platform_managed",
+    inputTokens: 12,
+    outputTokens: 8,
+    requestCount: 1,
+    estimatedCost: "0.0004",
+    costOwner: "team_self_check"
+  });
+  assert(usageResult.quotaDecision.decision === "allowed", "platform-managed AI call should pass quota when under limit");
+  assert(usageResult.usageRecord?.ledgerEntryIds.length === 1, "allowed AI usage should create a ledger entry");
+  const blockedUsageResult = recordAiUsage({
+    userId: "usr_local",
+    provider: "openai",
+    model: "gpt-self-check",
+    providerMode: "platform_managed",
+    requestCount: 1,
+    estimatedCost: "0.0004"
+  });
+  assert(blockedUsageResult.blocked === true, "platform-managed AI call should be blocked when quota is exceeded");
+  assert(blockedUsageResult.usageRecord === null, "blocked AI usage should not create a usage record");
+  const byokUsageResult = recordAiUsage({
+    userId: "usr_local",
+    provider: "openai",
+    model: "gpt-self-check",
+    providerMode: "byok",
+    requestCount: 1,
+    estimatedCost: "unknown"
+  });
+  assert(byokUsageResult.blocked === false, "BYOK usage should remain attributable without SaaS billing enforcement");
+  assert(chargebackExport().rows.some((row) => row.costOwner === "team_self_check"), "chargeback export should include cost owner rows");
+
+  const privateDeploymentConfig = updatePrivateDeploymentConfig({
+    mode: "private_deployment",
+    auditExportEnabled: true,
+    immutableAuditOption: "configured",
+    capabilities: {
+      privateCatalog: true,
+      signedBundles: true,
+      auditExport: true,
+      siemExport: true,
+      immutableAudit: true,
+      platformManagedAi: true
+    },
+    auditSinks: [
+      {
+        id: "sink_self_check_immutable",
+        type: "immutable_store",
+        enabled: true,
+        displayName: "Self-check immutable audit sink",
+        destinationRef: "external:immutable/self-check",
+        immutable: true,
+        externalDeliveryEnabled: false,
+        retentionDays: 3650
+      }
+    ],
+    alertSinks: [
+      {
+        id: "alert_self_check_siem",
+        type: "siem",
+        enabled: true,
+        destinationRef: "external:siem/self-check",
+        severityThreshold: "warn",
+        externalDeliveryEnabled: false
+      }
+    ]
+  });
+  assert(privateDeploymentConfig.entitlementPolicy.canDeleteUserData === false, "private deployment entitlements must not delete user data");
+  assert(privateDeploymentConfig.entitlementPolicy.canRemoveLocalSoftware === false, "private deployment entitlements must not remove local software");
+  const auditExportRequest = createAuditExportRequest({
+    subjects: ["invocation", "lifecycle", "quota", "usage", "ledger", "policy", "audit"],
+    sinkId: "sink_self_check_immutable",
+    dryRun: true
+  });
+  assert(auditExportRequest.status === "validated", "audit export dry run should validate with configured sink");
+  assert(auditExportRequest.recordCounts.lifecycle >= 1, "audit export should count lifecycle evidence");
   state.device.status = "offline";
 
   const httpAgent = registerAgent({

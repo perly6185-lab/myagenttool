@@ -9,6 +9,14 @@ const persistedArrayKeys = [
   "traces",
   "spans",
   "auditSummaries",
+  "lifecycleRecipes",
+  "lifecyclePolicyDecisions",
+  "lifecycleLocalApprovals",
+  "lifecycleQueuedActions",
+  "quotaPolicies",
+  "aiUsageRecords",
+  "ledgerEntries",
+  "auditExportRequests",
   "approvalRequests",
   "policyDecisionRecords",
   "troubleshootingReports",
@@ -54,6 +62,7 @@ export function createPersistenceRuntime({
     for (const key of persistedArrayKeys) {
       snapshot[key] = state[key];
     }
+    snapshot.privateDeploymentConfig = state.privateDeploymentConfig;
     mkdirSync(dirname(stateStorePath), { recursive: true });
     writeFileSync(stateStorePath, `${JSON.stringify(snapshot, null, 2)}\n`);
   }
@@ -86,6 +95,9 @@ export function createPersistenceRuntime({
       if (Array.isArray(snapshot[key])) {
         state[key] = snapshot[key];
       }
+    }
+    if (snapshot.privateDeploymentConfig) {
+      state.privateDeploymentConfig = snapshot.privateDeploymentConfig;
     }
   }
 

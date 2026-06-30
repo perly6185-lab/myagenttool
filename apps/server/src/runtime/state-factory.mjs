@@ -35,10 +35,19 @@ export function createServerState({ defaultProjectPath, now }) {
     auditSummaries: [],
     healthChecks: [],
     lifecycleAuditRecords: [],
+    lifecycleRecipes: [],
+    lifecyclePolicyDecisions: [],
+    lifecycleLocalApprovals: [],
+    lifecycleQueuedActions: [],
     discoveryRuns: [],
     integrationArtifacts: [],
     integrationProbeRuns: [],
     quotaDecisionRecords: [],
+    quotaPolicies: [],
+    aiUsageRecords: [],
+    ledgerEntries: [],
+    privateDeploymentConfig: createDefaultPrivateDeploymentConfig(now),
+    auditExportRequests: [],
     retentionSettings: createDefaultRetentionSettings(now),
     approvalRequests: [],
     policyDecisionRecords: [],
@@ -90,10 +99,19 @@ export function resetStateForSelfCheck({ state, now }) {
   state.auditSummaries = [];
   state.healthChecks = [];
   state.lifecycleAuditRecords = [];
+  state.lifecycleRecipes = [];
+  state.lifecyclePolicyDecisions = [];
+  state.lifecycleLocalApprovals = [];
+  state.lifecycleQueuedActions = [];
   state.discoveryRuns = [];
   state.integrationArtifacts = [];
   state.integrationProbeRuns = [];
   state.quotaDecisionRecords = [];
+  state.quotaPolicies = [];
+  state.aiUsageRecords = [];
+  state.ledgerEntries = [];
+  state.privateDeploymentConfig = createDefaultPrivateDeploymentConfig(now);
+  state.auditExportRequests = [];
   state.retentionSettings = {
     ...state.retentionSettings,
     logsDays: 14,
@@ -349,5 +367,57 @@ function createDefaultRetentionSettings(now) {
     responsesDays: 30,
     artifactsDays: 90,
     updatedAt: now()
+  };
+}
+
+function createDefaultPrivateDeploymentConfig(now) {
+  const createdAt = now();
+  return {
+    id: "dep_demo_private",
+    mode: "local_developer",
+    ownerTeamId: null,
+    auditExportEnabled: false,
+    immutableAuditOption: "disabled",
+    capabilities: {
+      privateCatalog: false,
+      signedBundles: false,
+      auditExport: true,
+      siemExport: false,
+      immutableAudit: false,
+      platformManagedAi: false,
+    },
+    auditSinks: [
+      {
+        id: "sink_local_file",
+        type: "local_file",
+        enabled: true,
+        displayName: "Local audit export file",
+        destinationRef: ".myagenttool/audit/export.jsonl",
+        immutable: false,
+        externalDeliveryEnabled: false,
+        retentionDays: 365,
+        metadata: {},
+      },
+    ],
+    alertSinks: [
+      {
+        id: "alert_local_log",
+        type: "local_log",
+        enabled: true,
+        destinationRef: ".myagenttool/audit/alerts.log",
+        severityThreshold: "warn",
+        externalDeliveryEnabled: false,
+      },
+    ],
+    entitlementPolicy: {
+      canBlockPaidFeatures: true,
+      canBlockNewPlatformManagedAi: true,
+      canBlockDataExport: false,
+      canDeleteUserData: false,
+      canRemoveLocalSoftware: false,
+      canPreventDeviceUnlink: false,
+    },
+    createdAt,
+    updatedAt: createdAt,
   };
 }

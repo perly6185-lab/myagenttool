@@ -218,6 +218,31 @@ export function readableLifecycleAudit(audit) {
   return `${audit.operation.replaceAll("_", " ")} ${audit.status}`;
 }
 
+export function readableLifecycleRecipe(recipe) {
+  if (!recipe) return "No lifecycle recipe selected";
+  const action = String(recipe.action ?? "lifecycle").replaceAll("_", " ");
+  const review = String(recipe.reviewState ?? "draft").replaceAll("_", " ");
+  const queue = String(recipe.queueState ?? "not queued").replaceAll("_", " ");
+  return `${action}: ${review}, ${queue}. ${recipe.summary?.risk ?? "Risk summary pending."}`;
+}
+
+export function readableQuotaDecision(decision) {
+  if (!decision) return "No quota decision recorded";
+  if (decision.decision === "allowed") return `Allowed: ${decision.reason}`;
+  return `Blocked: ${decision.reason}`;
+}
+
+export function readableLedgerEntry(entry) {
+  if (!entry) return "No ledger entry recorded";
+  return `${entry.entryType} ${entry.amount} ${entry.currency} for ${entry.costOwner ?? "unknown owner"}`;
+}
+
+export function readableAuditExportRequest(request) {
+  if (!request) return "No audit export dry run";
+  const findings = request.validation?.findings?.length ?? 0;
+  return `${request.status}: ${request.subjects?.join(", ") ?? "audit"} (${findings} finding${findings === 1 ? "" : "s"})`;
+}
+
 export function shortTime(value) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;

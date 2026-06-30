@@ -1,4 +1,4 @@
-import type { Agent, AgentDiscoveryRun, IntegrationProbeRun, Invocation, InvocationEvent } from "@myagenttool/protocol";
+import type { Agent, AgentDiscoveryRun, IntegrationProbeRun, Invocation, InvocationEvent, LifecycleQueuedAction } from "@myagenttool/protocol";
 
 export type DesktopBridgeWorkItem = {
   invocationId: Invocation["id"];
@@ -32,4 +32,14 @@ export type DesktopBridgeProbeWorkItem = {
   artifactId: IntegrationProbeRun["artifactId"];
   deviceId: IntegrationProbeRun["deviceId"];
   adapter: IntegrationProbeRun["adapter"];
+};
+export type DesktopBridgeLifecycleWorkItem = {
+  lifecycleActionId: LifecycleQueuedAction["id"];
+  recipeId: LifecycleQueuedAction["recipeId"];
+  agentId: LifecycleQueuedAction["agentId"];
+  deviceId: LifecycleQueuedAction["deviceId"];
+  action: LifecycleQueuedAction["action"];
+  executionEnabled: false;
+  command: null;
+  summary: string;
 };

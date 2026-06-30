@@ -5,6 +5,7 @@ import { handleCodexRoutes } from "../routes/codex.mjs";
 import { handleIntegrationRoutes } from "../routes/integrations.mjs";
 import { handleInvocationRoutes } from "../routes/invocations.mjs";
 import { handleLoopRoutineRoutes } from "../routes/loop-routines.mjs";
+import { handleM3Routes } from "../routes/m3.mjs";
 import { handleProjectRoutes } from "../routes/projects.mjs";
 import { handleTerminalRoutes } from "../routes/terminal.mjs";
 
@@ -51,8 +52,21 @@ export function createHttpServer({
   createCodexChangeReview,
   createDiscoveryRun,
   createIntegrationArtifact,
+  createLifecycleRecipe,
+  createQuotaPolicy,
   findIntegrationArtifact,
+  findLifecycleLocalApproval,
+  findLifecycleRecipe,
   generateIntegrationArtifacts,
+  chargebackExport,
+  createAuditExportRequest,
+  decideLifecycleLocalApproval,
+  evaluateLifecyclePolicy,
+  queueLifecycleAction,
+  recordAiUsage,
+  requestLifecycleLocalApproval,
+  transitionLifecycleRecipe,
+  updatePrivateDeploymentConfig,
   createIntegrationProbeRun,
   registerIntegrationArtifact,
   transitionIntegrationArtifact,
@@ -71,6 +85,8 @@ export function createHttpServer({
   normalizeStringArray,
   completeDiscoveryRun,
   nextBridgeProbeRun,
+  markLifecycleActionObserved,
+  nextBridgeLifecycleAction,
   markIntegrationProbeStarted,
   findIntegrationProbeRun,
   completeIntegrationProbeRun,
@@ -218,6 +234,30 @@ export function createHttpServer({
         return;
       }
 
+      if (await handleM3Routes({
+        req,
+        res,
+        url,
+        sendJson,
+        readJson,
+        state,
+        chargebackExport,
+        createAuditExportRequest,
+        createLifecycleRecipe,
+        createQuotaPolicy,
+        decideLifecycleLocalApproval,
+        evaluateLifecyclePolicy,
+        findLifecycleLocalApproval,
+        findLifecycleRecipe,
+        queueLifecycleAction,
+        recordAiUsage,
+        requestLifecycleLocalApproval,
+        transitionLifecycleRecipe,
+        updatePrivateDeploymentConfig,
+      })) {
+        return;
+      }
+
       if (await handleBridgeRoutes({
         req,
         res,
@@ -242,6 +282,8 @@ export function createHttpServer({
         findDiscoveryRun,
         completeDiscoveryRun,
         nextBridgeProbeRun,
+        markLifecycleActionObserved,
+        nextBridgeLifecycleAction,
         markIntegrationProbeStarted,
         findIntegrationProbeRun,
         completeIntegrationProbeRun,
