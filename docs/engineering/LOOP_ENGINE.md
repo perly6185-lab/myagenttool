@@ -1143,6 +1143,22 @@ Remaining split plan:
   invocation records, trace/root-span initialization, Codex workspace/session
   binding, policy decision event emission, and approval-request initialization
   now live in `apps/server/src/services/invocations/creation.mjs`.
+  Invocation service Phase 5 is complete for direct HTTP runtime extraction:
+  remote HTTP invocation start checks, request execution, timeout handling,
+  payload parsing, and cancellation abort controllers now live in
+  `apps/server/src/services/invocations/direct-http.mjs`.
+  Invocation service Phase 6 is complete for compare-run extraction:
+  compare record creation, child invocation wiring, compare metadata injection,
+  and compare status refresh now live in
+  `apps/server/src/services/invocations/compare.mjs`.
+  Invocation service Phase 7 is complete for troubleshooting extraction:
+  platform troubleshooter invocations, advisory report building, bridge/error
+  summaries, suggested fixes, and report retention now live in
+  `apps/server/src/services/invocations/troubleshooting.mjs`.
+  Invocation service Phase 8 is complete for cancellation extraction:
+  queued cancellation, pending approval denial, device-unlink cancellation,
+  running cancellation requests, HTTP abort handoff, and cancellation auditing
+  now live in `apps/server/src/services/invocations/cancellation.mjs`.
 - `apps/web/public/app.js`: split by surface into task/routine browser,
   workspace/session, evidence center, terminal, project browser, integration,
   and shared API/render utilities.
