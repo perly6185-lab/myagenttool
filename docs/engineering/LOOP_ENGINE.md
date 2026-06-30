@@ -1072,11 +1072,17 @@ Remaining split plan:
   live in `apps/server/src/runtime/read-models.mjs`; `apps/server/src/index.mjs`
   only passes project, Codex, invocation, and state dependencies into the
   composer.
+  Server runtime Phase 6 is complete for the protocol self-check harness:
+  terminal, SSH, discovery, Codex registry/evidence, integration, agent
+  lifecycle, invocation, approval, cancellation, troubleshooting, and unlink
+  assertions now live in `apps/server/src/runtime/self-check.mjs`;
+  `apps/server/src/index.mjs` only injects service dependencies and exits on
+  `--check`.
   Phase 7 split is complete for Desktop Bridge dispatch,
   health, discovery, probe, cancellation status, ack, event, and completion
   routing through `apps/server/src/routes/bridge.mjs`. Remaining server phases
-  should split service composition and self-check harness orchestration while
-  keeping mutation boundaries explicit. Phase 8 split
+  should split service composition while keeping mutation boundaries explicit.
+  Phase 8 split
   is complete for approval, invocation creation, compare runs, cancellation,
   and troubleshooting routing through `apps/server/src/routes/invocations.mjs`.
 - `apps/web/public/app.js`: split by surface into task/routine browser,
