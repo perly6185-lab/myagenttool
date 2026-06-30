@@ -1113,6 +1113,11 @@ Remaining split plan:
   artifact creation, payload building, generated artifact fan-out,
   review-state transitions, and artifact lookup now live in
   `apps/server/src/services/integrations/artifacts.mjs`.
+  Integration service Phase 6 is complete for registration runtime extraction:
+  tested adapter artifact validation, generated-agent registration,
+  registration notes, disabled-by-default behavior, artifact enablement, and
+  integration-enabled audit events now live in
+  `apps/server/src/services/integrations/registration.mjs`.
 - `apps/web/public/app.js`: split by surface into task/routine browser,
   workspace/session, evidence center, terminal, project browser, integration,
   and shared API/render utilities.
