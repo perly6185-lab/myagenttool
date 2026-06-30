@@ -1139,6 +1139,10 @@ Remaining split plan:
   terminal status transitions, root span completion, audit summaries, agent
   usage counters, Codex session closeout, and compare-run completion updates
   now live in `apps/server/src/services/invocations/completion.mjs`.
+  Invocation service Phase 4 is complete for creation runtime extraction:
+  invocation records, trace/root-span initialization, Codex workspace/session
+  binding, policy decision event emission, and approval-request initialization
+  now live in `apps/server/src/services/invocations/creation.mjs`.
 - `apps/web/public/app.js`: split by surface into task/routine browser,
   workspace/session, evidence center, terminal, project browser, integration,
   and shared API/render utilities.
