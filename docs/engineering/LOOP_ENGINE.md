@@ -1055,11 +1055,17 @@ Remaining split plan:
   response handling, and Node HTTP server creation now live in
   `apps/server/src/runtime/http-server.mjs`; `apps/server/src/index.mjs`
   passes explicit dependencies into the runtime and starts the listener.
+  Server runtime Phase 3 is complete for state factory and self-check reset:
+  default device state, default project creation, built-in demo/Codex/platform
+  agents, retention defaults, terminal runtime capability initialization, and
+  deterministic self-check reset now live in
+  `apps/server/src/runtime/state-factory.mjs`; `apps/server/src/index.mjs`
+  only selects environment paths and wires the resulting state into services.
   Phase 7 split is complete for Desktop Bridge dispatch,
   health, discovery, probe, cancellation status, ack, event, and completion
   routing through `apps/server/src/routes/bridge.mjs`. Remaining server phases
-  should split state factory, event bus, and public-state orchestration while
-  keeping mutation boundaries explicit. Phase 8 split
+  should split event bus and public-state orchestration while keeping mutation
+  boundaries explicit. Phase 8 split
   is complete for approval, invocation creation, compare runs, cancellation,
   and troubleshooting routing through `apps/server/src/routes/invocations.mjs`.
 - `apps/web/public/app.js`: split by surface into task/routine browser,

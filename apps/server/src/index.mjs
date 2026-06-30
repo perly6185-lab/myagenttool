@@ -1,25 +1,21 @@
-import { basename, resolve } from "node:path";
+import { resolve } from "node:path";
 import { buildEvidenceCenterRecords } from "./read-models/evidence-center.mjs";
 import { buildLoopRoutineStateSummary } from "./read-models/loop-routines.mjs";
 import { buildPublicState } from "./read-models/state.mjs";
 import { createHttpServer } from "./runtime/http-server.mjs";
 import { createPersistenceRuntime } from "./runtime/persistence.mjs";
+import { createServerState, resetStateForSelfCheck } from "./runtime/state-factory.mjs";
 import {
-  codexCliArgs,
   codexCliResumeArgs,
-  codexRegistrationNotes,
-  codexRiskTags,
   createAgentService,
   isAgentDisabled,
-  normalizeAgentEconomics,
-  normalizeCliOutputFormat,
   normalizeStringArray,
 } from "./services/agents.mjs";
 import { createCodexService } from "./services/codex.mjs";
 import { createIntegrationService } from "./services/integrations.mjs";
 import { createInvocationService } from "./services/invocations.mjs";
-import { createProjectRecord, createProjectService, sameProjectPath } from "./services/projects.mjs";
-import { createTerminalRuntimeCapability, createTerminalService } from "./services/terminal.mjs";
+import { createProjectService, sameProjectPath } from "./services/projects.mjs";
+import { createTerminalService } from "./services/terminal.mjs";
 
 const namespace = "com.myagenttool";
 const protocolVersion = "0.0.0";
@@ -31,269 +27,7 @@ const persistenceEnabled = !isSelfCheck && process.env.MYAGENTTOOL_STATE_DISABLE
 const stateStorePath = resolve(process.env.MYAGENTTOOL_STATE_PATH ?? ".myagenttool/state/local-demo-state.json");
 const stateSchemaVersion = 1;
 const defaultProjectPath = resolve(process.env.MYAGENTTOOL_PROJECT_PATH ?? process.cwd());
-const defaultProject = createProjectRecord({
-  id: "prj_myagenttool",
-  name: basename(defaultProjectPath) || "myagenttool",
-  path: defaultProjectPath,
-  source: "default"
-});
-
-const state = {
-  device: {
-    id: "dev_local_001",
-    ownerUserId: "usr_local",
-    name: "Local Demo Device",
-    platform: process.platform === "win32" ? "windows" : process.platform === "darwin" ? "macos" : "linux",
-    architecture: process.arch === "arm64" ? "arm64" : "x64",
-    defaultShell: process.platform === "win32" ? "powershell" : "bash",
-    pathFormat: process.platform === "win32" ? "windows" : "posix",
-    bridgeVersion: "0.0.0",
-    status: "offline",
-    unlinkState: "linked",
-    lastSeenAt: null,
-    registeredCapabilities: [],
-    credentialRevokedAt: null,
-    createdAt: now()
-  },
-  projects: [defaultProject],
-  currentProjectId: defaultProject.id,
-  worktrees: [],
-  agents: [
-    {
-      id: "agt_demo_cli",
-      name: "Demo CLI Agent",
-      description: "Safe local demo agent for M0 smoke tests.",
-      ownerUserId: "usr_local",
-      location: { type: "local_device", deviceId: "dev_local_001" },
-      adapter: {
-        type: "cli",
-        command: "demo-agent",
-        args: ["{{payloadJson}}"],
-        workingDirectoryPolicy: "bridge_default",
-        environmentPolicy: "inherit_safe",
-        timeoutSeconds: 30,
-        cancellation: "supported"
-      },
-      lifecycle: {
-        state: "enabled",
-        installState: "installed",
-        version: "0.0.0",
-        managedBy: "bridge"
-      },
-      economics: {
-        model: "unknown",
-        pricingDimensions: [],
-        currency: "USD",
-        costOwner: "usr_local",
-        budgetPoolId: null,
-        unknownCostPolicy: "warn"
-      },
-      capabilities: [
-        {
-          name: "demo_task",
-          description: "Runs a harmless local demonstration task.",
-          riskLevel: "low",
-          riskTags: ["read_only"]
-        }
-      ],
-      status: "unavailable",
-      health: {
-        status: "unknown",
-        checkedAt: null,
-        message: "Health has not been checked yet.",
-        nextAction: "Run a health check before relying on this agent."
-      },
-      registrationNotes: {
-        risk: "Low risk demo command. It does not read or write user files.",
-        data: "Task text, logs, trace, and final result are stored in the local demo server.",
-        cost: "Cost is unknown and no billing is performed.",
-        cancellation: "The bridge forwards cancellation to the local demo process."
-      },
-      createdAt: now()
-    },
-    {
-      id: "agt_codex_cli",
-      name: "Codex CLI",
-      description: "Runs Codex CLI non-interactively through a reviewed local adapter config.",
-      ownerUserId: "usr_local",
-      location: { type: "local_device", deviceId: "dev_local_001" },
-      adapter: {
-        type: "cli",
-        command: "codex",
-        args: codexCliArgs(),
-        workingDirectoryPolicy: "bridge_default",
-        environmentPolicy: "inherit_safe",
-        timeoutSeconds: 120,
-        cancellation: "supported",
-        outputFormat: "codex_jsonl",
-        sandbox: null
-      },
-      lifecycle: {
-        state: "enabled",
-        installState: "installed",
-        version: "0.0.0",
-        managedBy: "bridge"
-      },
-      economics: {
-        model: "unknown",
-        pricingDimensions: [],
-        currency: "USD",
-        costOwner: "usr_local",
-        budgetPoolId: null,
-        unknownCostPolicy: "warn"
-      },
-      capabilities: [
-        {
-          name: "codex_repo_task",
-          description: "Runs Codex CLI repository tasks using Codex CLI native permissions.",
-          riskLevel: "high",
-          riskTags: codexRiskTags()
-        }
-      ],
-      status: "unavailable",
-      health: {
-        status: "unknown",
-        checkedAt: null,
-        message: "Codex CLI setup has not been checked yet.",
-        nextAction: "Run a health check before the first Codex task."
-      },
-      registrationNotes: codexRegistrationNotes(),
-      discovery: {
-        source: "default_registered",
-        confidence: "high"
-      },
-      createdAt: now()
-    },
-    {
-      id: "agt_platform_troubleshooter",
-      name: "Invocation Troubleshooter",
-      description: "Platform-owned agent that explains failed invocations and suggested fixes.",
-      ownerUserId: "system",
-      location: { type: "platform_agent" },
-      adapter: { type: "platform", name: "invocation_troubleshooter_agent" },
-      lifecycle: {
-        state: "enabled",
-        installState: "installed",
-        version: "0.0.0",
-        managedBy: "platform"
-      },
-      economics: {
-        model: "free",
-        pricingDimensions: ["per_invocation"],
-        currency: "USD",
-        costOwner: "usr_local",
-        budgetPoolId: null,
-        unknownCostPolicy: "warn"
-      },
-      capabilities: [
-        {
-          name: "troubleshoot_invocation",
-          description: "Summarizes failed invocation state, logs, bridge status, adapter errors, and suggested fixes.",
-          riskLevel: "low",
-          riskTags: ["read_only"]
-        }
-      ],
-      status: "available",
-      health: {
-        status: "healthy",
-        checkedAt: now(),
-        message: "Platform troubleshooting agent is available.",
-        nextAction: null
-      },
-      registrationNotes: {
-        risk: "Read-only platform agent. It explains recorded state and cannot remediate without approval.",
-        data: "Reads invocation status, related events, bridge state, adapter metadata, trace, and audit records from the local demo server.",
-        cost: "Free platform demo helper. No billing automation is performed.",
-        cancellation: "Runs synchronously in the local demo server."
-      },
-      createdAt: now(),
-      updatedAt: now()
-    },
-    {
-      id: "agt_platform_integration_builder",
-      name: "Integration Builder",
-      description: "Platform-owned agent that drafts unsupported-agent integration plans for review.",
-      ownerUserId: "system",
-      location: { type: "platform_agent" },
-      adapter: { type: "platform", name: "integration_builder_agent" },
-      lifecycle: {
-        state: "enabled",
-        installState: "installed",
-        version: "0.0.0",
-        managedBy: "platform"
-      },
-      economics: {
-        model: "free",
-        pricingDimensions: ["per_artifact"],
-        currency: "USD",
-        costOwner: "usr_local",
-        budgetPoolId: null,
-        unknownCostPolicy: "warn"
-      },
-      capabilities: [
-        {
-          name: "draft_integration_plan",
-          description: "Drafts reviewable integration plans without enabling adapters.",
-          riskLevel: "low",
-          riskTags: ["read_only", "generated_code"]
-        }
-      ],
-      status: "available",
-      health: {
-        status: "healthy",
-        checkedAt: now(),
-        message: "Platform integration builder is available for advisory drafts.",
-        nextAction: null
-      },
-      registrationNotes: {
-        risk: "Advisory platform agent. It can draft plans and artifact suggestions but cannot approve, test, register, or enable integrations.",
-        data: "Reads user-provided integration intent and writes reviewable draft artifacts.",
-        cost: "Free platform demo helper. No billing automation is performed.",
-        cancellation: "Runs synchronously in the local demo server."
-      },
-      createdAt: now(),
-      updatedAt: now()
-    }
-  ],
-  invocations: [],
-  compareRuns: [],
-  events: [],
-  traces: [],
-  spans: [],
-  auditSummaries: [],
-  healthChecks: [],
-  lifecycleAuditRecords: [],
-  discoveryRuns: [],
-  integrationArtifacts: [],
-  integrationProbeRuns: [],
-  quotaDecisionRecords: [],
-  retentionSettings: {
-    id: "ret_demo_integration_data",
-    subjectType: "integration_data",
-    logsDays: 14,
-    promptsDays: 30,
-    responsesDays: 30,
-    artifactsDays: 90,
-    updatedAt: now()
-  },
-  approvalRequests: [],
-  policyDecisionRecords: [],
-  troubleshootingReports: [],
-  agentUsageSummaries: [],
-  codexSessions: [],
-  codexWorkspaces: [],
-  codexEvidenceRecords: [],
-  codexChangeReviews: [],
-  codexHookEvents: [],
-  codexApprovalBrokerRequests: [],
-  codexImportedEvidenceRecords: [],
-  terminalRuntimeCapability: createTerminalRuntimeCapability(),
-  terminalSessions: [],
-  terminalEvidenceRecords: [],
-  terminalBridgeActions: [],
-  sshTargets: [],
-  sshConnectionTests: []
-};
+const { defaultProject, state } = createServerState({ defaultProjectPath, now });
 
 let idCounter = 1;
 let invocationService = null;
@@ -1109,63 +843,7 @@ function runProtocolSelfCheck() {
 }
 
 function resetDemoStateForCheck() {
-  state.device.status = "offline";
-  state.device.unlinkState = "linked";
-  state.device.credentialRevokedAt = null;
-  state.agents = state.agents.filter((agent) => ["agt_demo_cli", "agt_codex_cli", "agt_platform_troubleshooter", "agt_platform_integration_builder"].includes(agent.id));
-  const demoAgent = defaultAgent();
-  if (demoAgent) {
-    demoAgent.status = "unavailable";
-    demoAgent.updatedAt = now();
-  }
-  const codexAgent = findAgent("agt_codex_cli");
-  if (codexAgent) {
-    codexAgent.lifecycle = { ...codexAgent.lifecycle, state: "enabled" };
-    codexAgent.status = "unavailable";
-    codexAgent.health = {
-      status: "unknown",
-      checkedAt: null,
-      message: "Codex CLI setup has not been checked yet.",
-      nextAction: "Run a health check before the first Codex task."
-    };
-    codexAgent.updatedAt = now();
-  }
-  state.invocations = [];
-  state.events = [];
-  state.traces = [];
-  state.spans = [];
-  state.auditSummaries = [];
-  state.healthChecks = [];
-  state.lifecycleAuditRecords = [];
-  state.discoveryRuns = [];
-  state.integrationArtifacts = [];
-  state.integrationProbeRuns = [];
-  state.quotaDecisionRecords = [];
-  state.retentionSettings = {
-    ...state.retentionSettings,
-    logsDays: 14,
-    promptsDays: 30,
-    responsesDays: 30,
-    artifactsDays: 90,
-    updatedAt: now()
-  };
-  state.approvalRequests = [];
-  state.policyDecisionRecords = [];
-  state.troubleshootingReports = [];
-  state.agentUsageSummaries = [];
-  state.codexSessions = [];
-  state.codexWorkspaces = [];
-  state.codexEvidenceRecords = [];
-  state.codexChangeReviews = [];
-  state.codexHookEvents = [];
-  state.codexApprovalBrokerRequests = [];
-  state.codexImportedEvidenceRecords = [];
-  state.terminalSessions = [];
-  state.terminalEvidenceRecords = [];
-  state.terminalBridgeActions = [];
-  state.sshTargets = [];
-  state.sshConnectionTests = [];
-  state.terminalRuntimeCapability = createTerminalRuntimeCapability();
+  resetStateForSelfCheck({ state, now });
   idCounter = 1;
 }
 
