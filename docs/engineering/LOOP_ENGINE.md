@@ -1007,9 +1007,13 @@ Remaining split plan:
   through `apps/server/src/routes/codex.mjs`. Phase 6 split is complete for
   integration artifacts, integration builder, retention, discovery, and
   discovered-candidate registration routing through
-  `apps/server/src/routes/integrations.mjs`. Remaining server phases should
-  move project/git, terminal, agent, Codex, and integration business helpers
-  into service modules. Phase 7 split is complete for Desktop Bridge dispatch,
+  `apps/server/src/routes/integrations.mjs`. Server service Phase 1 is complete
+  for project/git helpers: project record creation, project registration,
+  selection, removal, clone/create, worktree creation, project tree/content
+  search, and git summaries now live in `apps/server/src/services/projects.mjs`;
+  project HTTP routing still lives in `apps/server/src/routes/projects.mjs`.
+  Remaining server phases should move terminal, agent, Codex, and integration
+  business helpers into service modules. Phase 7 split is complete for Desktop Bridge dispatch,
   health, discovery, probe, cancellation status, ack, event, and completion
   routing through `apps/server/src/routes/bridge.mjs`. Remaining server phases
   should move route-injected business helpers into service modules and split
