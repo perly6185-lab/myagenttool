@@ -998,10 +998,12 @@ Remaining split plan:
   `apps/server/src/routes/loop-routines.mjs` and
   `apps/server/src/read-models/loop-routines.mjs`. Phase 2 split is complete
   for project/worktree HTTP routing through
-  `apps/server/src/routes/projects.mjs`. Remaining server phases should move
-  project/git business helpers into a service module and split `agents`,
-  `codex`, `terminal`, and persistence helpers while keeping mutation
-  boundaries explicit.
+  `apps/server/src/routes/projects.mjs`. Phase 3 split is complete for
+  terminal, SSH target, and terminal bridge HTTP routing through
+  `apps/server/src/routes/terminal.mjs`. Remaining server phases should move
+  project/git and terminal business helpers into service modules and split
+  `agents`, `codex`, and persistence helpers while keeping mutation boundaries
+  explicit.
 - `apps/web/public/app.js`: split by surface into task/routine browser,
   workspace/session, evidence center, terminal, project browser, integration,
   and shared API/render utilities.
