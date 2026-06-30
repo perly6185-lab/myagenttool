@@ -996,9 +996,12 @@ Remaining split plan:
   and routine APIs. `/api/state` now uses `apps/server/src/read-models/state.mjs`;
   `/api/loop-routines*` now uses
   `apps/server/src/routes/loop-routines.mjs` and
-  `apps/server/src/read-models/loop-routines.mjs`. Remaining server phases
-  should split `projects/git`, `agents`, `codex`, `terminal`, and persistence
-  helpers while keeping mutation boundaries explicit.
+  `apps/server/src/read-models/loop-routines.mjs`. Phase 2 split is complete
+  for project/worktree HTTP routing through
+  `apps/server/src/routes/projects.mjs`. Remaining server phases should move
+  project/git business helpers into a service module and split `agents`,
+  `codex`, `terminal`, and persistence helpers while keeping mutation
+  boundaries explicit.
 - `apps/web/public/app.js`: split by surface into task/routine browser,
   workspace/session, evidence center, terminal, project browser, integration,
   and shared API/render utilities.
