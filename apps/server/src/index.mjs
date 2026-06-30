@@ -1,16 +1,8 @@
-import http from "node:http";
 import { basename, resolve } from "node:path";
 import { buildEvidenceCenterRecords } from "./read-models/evidence-center.mjs";
 import { buildLoopRoutineStateSummary } from "./read-models/loop-routines.mjs";
 import { buildPublicState } from "./read-models/state.mjs";
-import { handleAgentRoutes } from "./routes/agents.mjs";
-import { handleBridgeRoutes } from "./routes/bridge.mjs";
-import { handleCodexRoutes } from "./routes/codex.mjs";
-import { handleIntegrationRoutes } from "./routes/integrations.mjs";
-import { handleInvocationRoutes } from "./routes/invocations.mjs";
-import { handleLoopRoutineRoutes } from "./routes/loop-routines.mjs";
-import { handleProjectRoutes } from "./routes/projects.mjs";
-import { handleTerminalRoutes } from "./routes/terminal.mjs";
+import { createHttpServer } from "./runtime/http-server.mjs";
 import { createPersistenceRuntime } from "./runtime/persistence.mjs";
 import {
   codexCliArgs,
@@ -471,203 +463,84 @@ if (isSelfCheck) {
   process.exit(0);
 }
 
-const server = http.createServer(async (req, res) => {
-  try {
-    setCors(res);
-
-    if (req.method === "OPTIONS") {
-      res.writeHead(204);
-      res.end();
-      return;
-    }
-
-    const url = new URL(req.url ?? "/", `http://${host}:${port}`);
-
-    if (req.method === "GET" && url.pathname === "/health") {
-      sendJson(res, 200, {
-        namespace,
-        protocolVersion,
-        status: "ok",
-        service: "myagenttool-local-demo-server",
-        time: now()
-      });
-      return;
-    }
-
-    if (req.method === "GET" && url.pathname === "/api/state") {
-      expireCodexApprovalBrokerRequests();
-      sendJson(res, 200, publicState());
-      return;
-    }
-
-    if (handleLoopRoutineRoutes({ req, res, url, sendJson, currentLoopRoutineProjectContext })) {
-      return;
-    }
-
-    if (await handleProjectRoutes({
-      req,
-      res,
-      url,
-      sendJson,
-      readJson,
-      state,
-      currentProject,
-      addProject,
-      cloneProject,
-      createBlankProject,
-      createWorktree,
-      selectProject,
-      removeProject,
-      readProjectTree,
-      searchProjectContent,
-      gitProjectSummary,
-    })) {
-      return;
-    }
-
-    if (await handleTerminalRoutes({
-      req,
-      res,
-      url,
-      sendJson,
-      readJson,
-      state,
-      createSshTarget,
-      createSshConnectionTest,
-      createManagedTerminalSession,
-      queueTerminalBridgeAction,
-      nextTerminalBridgeAction,
-      recordTerminalBridgeEvent,
-      recordTerminalEvidence,
-      summarizeText,
-    })) {
-      return;
-    }
-
-    if (await handleAgentRoutes({
-      req,
-      res,
-      url,
-      sendJson,
-      readJson,
-      state,
-      now,
-      appendEvent,
-      isAgentDisabled,
-      redeliverExpiredDispatches,
-      registerAgent,
-      findAgent,
-      disableAgent,
-      enableAgent,
-      createAgentHealthCheck,
-      unlinkDevice,
-    })) {
-      return;
-    }
-
-    if (await handleCodexRoutes({
-      req,
-      res,
-      url,
-      sendJson,
-      readJson,
-      state,
-      recordCodexHookEvent,
-      expireCodexApprovalBrokerRequests,
-      resolveCodexApprovalBrokerRequest,
-      createCodexImportedEvidenceRecord,
-      createCodexChangeReview,
-    })) {
-      return;
-    }
-
-    if (await handleIntegrationRoutes({
-      req,
-      res,
-      url,
-      sendJson,
-      readJson,
-      createDiscoveryRun,
-      createIntegrationArtifact,
-      findIntegrationArtifact,
-      generateIntegrationArtifacts,
-      createIntegrationProbeRun,
-      registerIntegrationArtifact,
-      transitionIntegrationArtifact,
-      updateIntegrationRetentionSettings,
-      draftIntegrationWithPlatformAgent,
-      findDiscoveryRun,
-      registerDiscoveredCandidate,
-    })) {
-      return;
-    }
-
-    if (await handleBridgeRoutes({
-      req,
-      res,
-      url,
-      sendJson,
-      readJson,
-      state,
-      namespace,
-      protocolVersion,
-      now,
-      redeliverExpiredDispatches,
-      nextDispatchableInvocation,
-      markDispatched,
-      findAgent,
-      projectForInvocation,
-      nextBridgeHealthCheck,
-      markHealthCheckStarted,
-      completeHealthCheck,
-      nextBridgeDiscoveryRun,
-      markDiscoveryStarted,
-      normalizeStringArray,
-      findDiscoveryRun,
-      completeDiscoveryRun,
-      nextBridgeProbeRun,
-      markIntegrationProbeStarted,
-      findIntegrationProbeRun,
-      completeIntegrationProbeRun,
-      findIntegrationArtifact,
-      findInvocation,
-      acknowledgeInvocation,
-      appendEvent,
-      completeInvocation,
-    })) {
-      return;
-    }
-
-    if (await handleInvocationRoutes({
-      req,
-      res,
-      url,
-      sendJson,
-      readJson,
-      state,
-      findApprovalRequest,
-      findInvocation,
-      approveInvocation,
-      denyInvocation,
-      findAgent,
-      defaultAgent,
-      createInvocation,
-      startInvocationIfAllowed,
-      normalizeStringArray,
-      createCompareRun,
-      cancelInvocation,
-      createTroubleshootingReport,
-    })) {
-      return;
-    }
-
-    sendJson(res, 404, { error: "not_found" });
-  } catch (error) {
-    sendJson(res, 500, {
-      error: "internal_error",
-      message: error instanceof Error ? error.message : String(error)
-    });
-  }
+const server = createHttpServer({
+  host,
+  port,
+  namespace,
+  protocolVersion,
+  state,
+  now,
+  publicState,
+  currentLoopRoutineProjectContext,
+  currentProject,
+  addProject,
+  cloneProject,
+  createBlankProject,
+  createWorktree,
+  selectProject,
+  removeProject,
+  readProjectTree,
+  searchProjectContent,
+  gitProjectSummary,
+  createSshTarget,
+  createSshConnectionTest,
+  createManagedTerminalSession,
+  queueTerminalBridgeAction,
+  nextTerminalBridgeAction,
+  recordTerminalBridgeEvent,
+  recordTerminalEvidence,
+  summarizeText,
+  appendEvent,
+  isAgentDisabled,
+  redeliverExpiredDispatches,
+  registerAgent,
+  findAgent,
+  disableAgent,
+  enableAgent,
+  createAgentHealthCheck,
+  unlinkDevice,
+  recordCodexHookEvent,
+  expireCodexApprovalBrokerRequests,
+  resolveCodexApprovalBrokerRequest,
+  createCodexImportedEvidenceRecord,
+  createCodexChangeReview,
+  createDiscoveryRun,
+  createIntegrationArtifact,
+  findIntegrationArtifact,
+  generateIntegrationArtifacts,
+  createIntegrationProbeRun,
+  registerIntegrationArtifact,
+  transitionIntegrationArtifact,
+  updateIntegrationRetentionSettings,
+  draftIntegrationWithPlatformAgent,
+  findDiscoveryRun,
+  registerDiscoveredCandidate,
+  nextDispatchableInvocation,
+  markDispatched,
+  projectForInvocation,
+  nextBridgeHealthCheck,
+  markHealthCheckStarted,
+  completeHealthCheck,
+  nextBridgeDiscoveryRun,
+  markDiscoveryStarted,
+  normalizeStringArray,
+  completeDiscoveryRun,
+  nextBridgeProbeRun,
+  markIntegrationProbeStarted,
+  findIntegrationProbeRun,
+  completeIntegrationProbeRun,
+  findInvocation,
+  acknowledgeInvocation,
+  completeInvocation,
+  findApprovalRequest,
+  approveInvocation,
+  denyInvocation,
+  defaultAgent,
+  createInvocation,
+  startInvocationIfAllowed,
+  createCompareRun,
+  cancelInvocation,
+  createTroubleshootingReport,
 });
 
 server.listen(port, host, () => {
@@ -1300,29 +1173,4 @@ function assert(condition, message) {
   if (!condition) {
     throw new Error(message);
   }
-}
-
-function setCors(res) {
-  res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "GET,POST,PATCH,OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
-}
-
-async function readJson(req) {
-  const chunks = [];
-  for await (const chunk of req) {
-    chunks.push(chunk);
-  }
-  const text = Buffer.concat(chunks).toString("utf8");
-  return text ? JSON.parse(text) : {};
-}
-
-function sendJson(res, status, body) {
-  if (status === 204) {
-    res.writeHead(204);
-    res.end();
-    return;
-  }
-  res.writeHead(status, { "Content-Type": "application/json; charset=utf-8" });
-  res.end(JSON.stringify(body, null, 2));
 }

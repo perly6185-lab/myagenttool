@@ -1050,11 +1050,16 @@ Remaining split plan:
   live in `apps/server/src/runtime/persistence.mjs`; `apps/server/src/index.mjs`
   only wires the persistence runtime into service dependencies and shutdown
   handlers.
+  Server runtime Phase 2 is complete for HTTP bootstrap: CORS, request JSON
+  parsing, health responses, `/api/state`, route handler ordering, 404/500
+  response handling, and Node HTTP server creation now live in
+  `apps/server/src/runtime/http-server.mjs`; `apps/server/src/index.mjs`
+  passes explicit dependencies into the runtime and starts the listener.
   Phase 7 split is complete for Desktop Bridge dispatch,
   health, discovery, probe, cancellation status, ack, event, and completion
   routing through `apps/server/src/routes/bridge.mjs`. Remaining server phases
-  should split bootstrap/public-state orchestration while keeping mutation
-  boundaries explicit. Phase 8 split
+  should split state factory, event bus, and public-state orchestration while
+  keeping mutation boundaries explicit. Phase 8 split
   is complete for approval, invocation creation, compare runs, cancellation,
   and troubleshooting routing through `apps/server/src/routes/invocations.mjs`.
 - `apps/web/public/app.js`: split by surface into task/routine browser,
