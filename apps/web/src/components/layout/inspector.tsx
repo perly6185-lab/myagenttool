@@ -50,6 +50,15 @@ export function Inspector() {
         </div>
       ) : null}
       {section === "integrations" ? <GovernanceInspector /> : null}
+      {section === "economics" ? (
+        <div className="space-y-4">
+          <HintCard
+            title="One economic ledger"
+            body="Agent cost, AI usage, chargeback, and settlement roll up through a single ledger. Claude reports real spend; unmetered runs stay visible, never hidden."
+          />
+          <GovernanceInspector />
+        </div>
+      ) : null}
       {section === "audit" ? (
         <div className="space-y-4">
           <GovernanceInspector />
