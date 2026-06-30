@@ -1021,8 +1021,14 @@ Remaining split plan:
   registration, enable/disable, lifecycle audit records, bridge-visible health
   checks, Codex CLI defaults, risk/economics normalization, and agent lookup now
   live in `apps/server/src/services/agents.mjs`; agent HTTP routing still lives
-  in `apps/server/src/routes/agents.mjs`. Remaining server phases should move
-  Codex, invocation, and integration business helpers into service modules.
+  in `apps/server/src/routes/agents.mjs`. Server service Phase 4 is complete
+  for integration helpers: conservative discovery, discovered candidate
+  registration, integration artifact generation/review, adapter probes,
+  explicit registration, retention updates, quota records, and Integration
+  Builder draft orchestration now live in
+  `apps/server/src/services/integrations.mjs`; integration HTTP routing still
+  lives in `apps/server/src/routes/integrations.mjs`. Remaining server phases
+  should move Codex, invocation, and persistence business helpers into service modules.
   Phase 7 split is complete for Desktop Bridge dispatch,
   health, discovery, probe, cancellation status, ack, event, and completion
   routing through `apps/server/src/routes/bridge.mjs`. Remaining server phases
