@@ -1122,6 +1122,11 @@ Remaining split plan:
   governance payload construction, quota decision records, and retention
   settings updates now live in
   `apps/server/src/services/integrations/governance.mjs`.
+  Integration service Phase 8 is complete for platform draft extraction:
+  Integration Builder advisory invocations, draft artifact creation, platform
+  recommendation events, explicit-action audit events, and completion summaries
+  now live in `apps/server/src/services/integrations/platform-draft.mjs`;
+  `apps/server/src/services/integrations.mjs` is now a composition layer.
 - `apps/web/public/app.js`: split by surface into task/routine browser,
   workspace/session, evidence center, terminal, project browser, integration,
   and shared API/render utilities.
