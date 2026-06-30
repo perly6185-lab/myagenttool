@@ -1091,6 +1091,11 @@ Remaining split plan:
   Phase 8 split
   is complete for approval, invocation creation, compare runs, cancellation,
   and troubleshooting routing through `apps/server/src/routes/invocations.mjs`.
+  Integration service Phase 1 is complete for pure helper extraction:
+  adapter type guessing, artifact/review/cancellation/retention normalization,
+  adapter config builders, integration notes, summaries, suggested agent ids,
+  and conservative discovery risk hints now live in
+  `apps/server/src/services/integrations/helpers.mjs`.
 - `apps/web/public/app.js`: split by surface into task/routine browser,
   workspace/session, evidence center, terminal, project browser, integration,
   and shared API/render utilities.
