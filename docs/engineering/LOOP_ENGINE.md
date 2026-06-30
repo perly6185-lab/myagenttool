@@ -1109,6 +1109,10 @@ Remaining split plan:
   `adapterFromArtifact` now lives beside the adapter config helpers in
   `apps/server/src/services/integrations/helpers.mjs`, so registration and
   probe execution use the same artifact-to-adapter projection.
+  Integration service Phase 5 is complete for artifact runtime extraction:
+  artifact creation, payload building, generated artifact fan-out,
+  review-state transitions, and artifact lookup now live in
+  `apps/server/src/services/integrations/artifacts.mjs`.
 - `apps/web/public/app.js`: split by surface into task/routine browser,
   workspace/session, evidence center, terminal, project browser, integration,
   and shared API/render utilities.
