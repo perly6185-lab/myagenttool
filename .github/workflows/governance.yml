@@ -1,22 +1,20 @@
 name: Governance
 
 on:
-  pull_request:
-    types:
-      - opened
-      - edited
-      - synchronize
-      - reopened
-      - ready_for_review
-  issues:
-    types:
-      - opened
-      - edited
-      - labeled
-      - unlabeled
-      - milestoned
-      - demilestoned
   workflow_dispatch:
+    inputs:
+      check:
+        description: Governance check to run
+        required: true
+        default: issues
+        type: choice
+        options:
+          - issues
+          - pull-request
+      pr:
+        description: Pull request number when check=pull-request
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -25,7 +23,7 @@ permissions:
 
 jobs:
   pull-request-governance:
-    if: github.event_name == 'pull_request'
+    if: vars.ENABLE_GITHUB_HOSTED_RUNNERS == 'true' && inputs.check == 'pull-request'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -51,12 +49,12 @@ jobs:
       - name: Check PR governance
         env:
           GH_TOKEN: ${{ github.token }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_NUMBER: ${{ inputs.pr }}
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: pnpm github:check:pr
 
   issue-hygiene:
-    if: github.event_name == 'issues' || github.event_name == 'workflow_dispatch'
+    if: vars.ENABLE_GITHUB_HOSTED_RUNNERS == 'true' && inputs.check == 'issues'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout

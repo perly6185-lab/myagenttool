@@ -13,6 +13,8 @@ export function createReadModelRuntime({
   codexSessionForInvocation,
   findInvocation,
   repoPathForEvidence,
+  ledgerSummary,
+  budgetStatuses,
   expireCodexApprovalBrokerRequests,
 }) {
   function loopRoutineReadModelForCurrentProject() {
@@ -35,11 +37,14 @@ export function createReadModelRuntime({
       namespace,
       protocolVersion,
       state,
+      defaultProjectPath,
       currentProject,
       defaultAgent,
       loopRoutineReadModel: loopRoutineReadModelForCurrentProject,
       codexApprovalQueue,
       evidenceCenterRecords,
+      ledgerSummary,
+      budgetStatuses,
     });
   }
 

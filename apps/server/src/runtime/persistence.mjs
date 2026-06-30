@@ -2,6 +2,10 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 
 const persistedArrayKeys = [
+  "users",
+  "teams",
+  "tokens",
+  "projectTargets",
   "invocations",
   "worktrees",
   "compareRuns",
@@ -16,9 +20,12 @@ const persistedArrayKeys = [
   "lifecycleRollbackRequests",
   "privateCatalogEntries",
   "signedBundleManifests",
+  "quotaDecisionRecords",
   "quotaPolicies",
   "aiUsageRecords",
   "ledgerEntries",
+  "budgets",
+  "automations",
   "auditExportRequests",
   "approvalRequests",
   "policyDecisionRecords",

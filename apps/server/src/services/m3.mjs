@@ -821,11 +821,14 @@ export function createM3Service({
     decideLifecycleLocalApproval,
     evaluateLifecyclePolicy,
     enforcePlatformAiQuota,
+    budgetStatusFor,
+    budgetStatuses,
     findLifecycleLocalApproval,
     completeLifecycleAction,
     findLifecycleRollbackRequest,
     findLifecycleRecipe,
     findPrivateCatalogEntry,
+    ledgerSummary,
     markLifecycleActionStarted,
     nextBridgeLifecycleAction,
     queueLifecycleAction,
@@ -834,6 +837,7 @@ export function createM3Service({
     requestLifecycleLocalApproval,
     transitionLifecycleRecipe,
     updatePrivateDeploymentConfig,
+    upsertBudget,
   };
 
   function latestLifecyclePolicy(recipeId) {
@@ -940,6 +944,7 @@ export function createM3Service({
       costOwner: String(body.costOwner ?? policy?.costOwner ?? "unknown"),
       revenueOwner: body.revenueOwner ? String(body.revenueOwner) : null,
       budgetPoolId: body.budgetPoolId ? String(body.budgetPoolId) : null,
+      projectId: body.projectId ? String(body.projectId) : state.currentProjectId ?? state.projects[0]?.id ?? null,
       counterparty: usageRecord.provider,
       provider: usageRecord.provider,
       billable: usageRecord.providerMode === "platform_managed",
@@ -957,6 +962,144 @@ export function createM3Service({
       data: { ledgerEntryId: entry.id, usageRecordId: usageRecord.id },
     });
     return entry;
+  }
+
+  function upsertBudget(body = {}) {
+    const projectId = String(body.projectId ?? "").trim();
+    const project = state.projects.find((item) => item.id === projectId);
+    if (!project) {
+      throw new Error("A known projectId is required.");
+    }
+    const limitUsd = Number(body.limitUsd);
+    if (!Number.isFinite(limitUsd) || limitUsd < 0) {
+      throw new Error("Budget limitUsd must be a non-negative number.");
+    }
+    const nowValue = now();
+    const existing = state.budgets.find((item) => item.projectId === projectId);
+    const budget = existing ?? {
+      id: nextId("bud_demo"),
+      projectId,
+      createdAt: nowValue,
+    };
+    budget.projectName = project.name;
+    budget.limitUsd = Number(limitUsd.toFixed(2));
+    budget.policy = normalizeBudgetPolicy(body.policy);
+    budget.currency = "USD";
+    budget.updatedAt = nowValue;
+    if (!existing) {
+      state.budgets.unshift(budget);
+    }
+    state.budgets = state.budgets.slice(0, 200);
+    appendEvent({
+      invocationId: null,
+      type: "billing_recorded",
+      level: "info",
+      message: `Budget updated for ${project.name}.`,
+      data: { budgetId: budget.id, projectId, policy: budget.policy },
+    });
+    return budget;
+  }
+
+  function budgetStatusFor(projectId) {
+    const project = state.projects.find((item) => item.id === projectId);
+    const budget = state.budgets.find((item) => item.projectId === projectId);
+    const spend = ledgerSpendForProject(projectId);
+    const limitUsd = budget ? Number(budget.limitUsd) : null;
+    const remainingUsd = budget && limitUsd !== null ? roundUsd(limitUsd - spend.spentUsd) : null;
+    return {
+      projectId,
+      projectName: project?.name,
+      exists: Boolean(budget),
+      budgetId: budget?.id,
+      limitUsd,
+      policy: budget?.policy ?? "warn",
+      currency: budget?.currency ?? "USD",
+      spentUsd: spend.spentUsd,
+      finalizedUsd: spend.finalizedUsd,
+      estimatedUsd: spend.estimatedUsd,
+      remainingUsd,
+      over: budget ? spend.spentUsd > limitUsd : false,
+    };
+  }
+
+  function budgetStatuses() {
+    return state.projects.map((project) => budgetStatusFor(project.id));
+  }
+
+  function ledgerSpendForProject(projectId) {
+    const spend = {
+      finalizedUsd: 0,
+      estimatedUsd: 0,
+      spentUsd: 0,
+    };
+    for (const entry of state.ledgerEntries ?? []) {
+      const entryProjectId = entry.projectId ?? state.currentProjectId ?? state.projects[0]?.id ?? null;
+      if (entryProjectId !== projectId || ["voided", "cancelled"].includes(entry.status)) {
+        continue;
+      }
+      const amount = ledgerEntryAmount(entry);
+      const source = ledgerAmountSource(entry, amount);
+      if (source === "unknown") continue;
+      if (source === "estimated") {
+        spend.estimatedUsd = roundUsd(spend.estimatedUsd + amount);
+      } else {
+        spend.finalizedUsd = roundUsd(spend.finalizedUsd + amount);
+      }
+    }
+    spend.spentUsd = roundUsd(spend.finalizedUsd + spend.estimatedUsd);
+    return spend;
+  }
+
+  function ledgerSummary() {
+    const entries = state.ledgerEntries ?? [];
+    const summary = {
+      currency: "USD",
+      totalCostUsd: 0,
+      finalizedUsd: 0,
+      estimatedUsd: 0,
+      entryCount: entries.length,
+      knownEntries: 0,
+      estimatedEntries: 0,
+      unknownEntries: 0,
+      voidedEntries: 0,
+      billableEntries: 0,
+      byCostOwner: [],
+      byProject: [],
+      byAgent: [],
+    };
+    const owners = new Map();
+    const projects = new Map();
+    const agents = new Map();
+    for (const entry of entries) {
+      if (["voided", "cancelled"].includes(entry.status)) {
+        summary.voidedEntries += 1;
+      }
+      if (entry.billable) summary.billableEntries += 1;
+      const amount = ledgerEntryAmount(entry);
+      const source = ledgerAmountSource(entry, amount);
+      if (source === "unknown") {
+        summary.unknownEntries += 1;
+      } else if (source === "estimated") {
+        summary.estimatedEntries += 1;
+        summary.estimatedUsd = roundUsd(summary.estimatedUsd + amount);
+        summary.totalCostUsd = roundUsd(summary.totalCostUsd + amount);
+      } else {
+        summary.knownEntries += 1;
+        summary.finalizedUsd = roundUsd(summary.finalizedUsd + amount);
+        summary.totalCostUsd = roundUsd(summary.totalCostUsd + amount);
+      }
+      addRollup(owners, entry.costOwner ?? "unknown", amount, source, { costOwner: entry.costOwner ?? "unknown" });
+      const projectId = entry.projectId ?? state.currentProjectId ?? state.projects[0]?.id ?? "unknown";
+      const project = state.projects.find((item) => item.id === projectId);
+      addRollup(projects, projectId, amount, source, { projectId, projectName: project?.name });
+      const agentId = entry.agentId ?? "unknown";
+      const agent = findAgent(agentId);
+      addRollup(agents, agentId, amount, source, { agentId, agentName: agent?.name, provider: entry.provider });
+    }
+    summary.byCostOwner = [...owners.values()].sort((a, b) => b.entries - a.entries);
+    summary.byProject = [...projects.values()].sort((a, b) => b.entries - a.entries);
+    summary.byAgent = [...agents.values()].sort((a, b) => b.entries - a.entries);
+    return summary;
   }
 
   function validateAuditExport({ subjects, sinkId }) {
@@ -1135,6 +1278,46 @@ function normalizePackageName(value) {
 function normalizeSupportedPlatforms(value) {
   const supported = normalizeStringArray(value).filter((item) => ["macos", "windows", "linux"].includes(item));
   return supported.length ? supported : ["macos", "windows", "linux"];
+}
+
+function normalizeBudgetPolicy(value) {
+  const policy = String(value ?? "warn").trim();
+  return ["warn", "block", "allow_overage"].includes(policy) ? policy : "warn";
+}
+
+function ledgerEntryAmount(entry) {
+  const amount = Number(entry.amountUsd ?? entry.amount);
+  return Number.isFinite(amount) && amount > 0 ? roundUsd(amount) : 0;
+}
+
+function ledgerAmountSource(entry, amount = ledgerEntryAmount(entry)) {
+  if (amount <= 0) return "unknown";
+  if (entry.amountSource === "reported" || entry.status === "finalized") return "reported";
+  if (entry.amountSource === "estimated" || entry.status === "estimated") return "estimated";
+  return "reported";
+}
+
+function addRollup(map, key, amount, source, seed) {
+  const item = map.get(key) ?? {
+    ...seed,
+    entries: 0,
+    knownCostUsd: 0,
+    estimatedCostUsd: 0,
+    unknownEntries: 0,
+  };
+  item.entries += 1;
+  if (source === "unknown") {
+    item.unknownEntries += 1;
+  } else if (source === "estimated") {
+    item.estimatedCostUsd = roundUsd(item.estimatedCostUsd + amount);
+  } else {
+    item.knownCostUsd = roundUsd(item.knownCostUsd + amount);
+  }
+  map.set(key, item);
+}
+
+function roundUsd(value) {
+  return Number(Number(value).toFixed(6));
 }
 
 function normalizeRollback(value = {}, action) {

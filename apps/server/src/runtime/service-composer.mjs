@@ -65,8 +65,10 @@ export function createServerRuntimeServices({
     projectForInvocation,
     readProjectTree,
     removeProject,
+    removeWorktree,
     searchProjectContent,
     selectProject,
+    updateProject,
     worktreeForProject,
   } = createProjectService({ state, now, nextId, appendEvent, persistStateSoon });
 
@@ -144,10 +146,13 @@ export function createServerRuntimeServices({
     decideLifecycleLocalApproval,
     evaluateLifecyclePolicy,
     enforcePlatformAiQuota,
+    budgetStatusFor,
+    budgetStatuses,
     findLifecycleLocalApproval,
     findLifecycleRollbackRequest,
     findLifecycleRecipe,
     findPrivateCatalogEntry,
+    ledgerSummary,
     markLifecycleActionStarted,
     nextBridgeLifecycleAction,
     queueLifecycleAction,
@@ -156,6 +161,7 @@ export function createServerRuntimeServices({
     requestLifecycleLocalApproval,
     transitionLifecycleRecipe,
     updatePrivateDeploymentConfig,
+    upsertBudget,
   } = createM3Service({
     state,
     now,
@@ -249,6 +255,8 @@ export function createServerRuntimeServices({
     codexSessionForInvocation,
     findInvocation,
     repoPathForEvidence,
+    ledgerSummary,
+    budgetStatuses,
     expireCodexApprovalBrokerRequests,
   });
 
@@ -399,6 +407,8 @@ export function createServerRuntimeServices({
     createWorktree,
     selectProject,
     removeProject,
+    removeWorktree,
+    updateProject,
     readProjectTree,
     searchProjectContent,
     gitProjectSummary,
@@ -483,6 +493,10 @@ export function createServerRuntimeServices({
     createCompareRun,
     cancelInvocation,
     createTroubleshootingReport,
+    nextId,
+    persistStateSoon,
+    budgetStatusFor,
+    upsertBudget,
   };
 
   return {

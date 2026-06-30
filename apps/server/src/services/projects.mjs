@@ -7,7 +7,20 @@ function defaultNow() {
 }
 
 export function createProjectRecord(
-  { id, name, path, host = "local", source = "user", worktree = null } = {},
+  {
+    id,
+    name,
+    path,
+    host = "local",
+    source = "user",
+    worktree = null,
+    color,
+    ownerTeamId,
+    budgetPoolId,
+    defaultAgentId,
+    status,
+    isolation,
+  } = {},
   { nextId, now = defaultNow } = {}
 ) {
   const projectPath = normalizeProjectPath(path);
@@ -15,6 +28,12 @@ export function createProjectRecord(
   return {
     id: id ?? (typeof nextId === "function" ? nextId("prj_demo") : `prj_demo_${Date.now().toString(36)}`),
     name: String(name || basename(projectPath) || "Project").trim(),
+    color: normalizeProjectColor(color),
+    ownerTeamId: ownerTeamId ? String(ownerTeamId) : "team_local",
+    budgetPoolId: budgetPoolId ? String(budgetPoolId) : null,
+    defaultAgentId: defaultAgentId ? String(defaultAgentId) : null,
+    status: status === "archived" ? "archived" : "active",
+    isolation: isolation === "worktree" ? "worktree" : "shared",
     path: projectPath,
     host,
     git: {
@@ -35,19 +54,33 @@ export function createProjectService({ state, now, nextId, appendEvent, persistS
   function addProject(body = {}) {
     const project = createProjectRecord({
       name: body.name,
-      path: body.path,
+      path: body.path ?? body.repoPath ?? process.cwd(),
       host: body.host ?? "local",
       source: "registered",
+      color: body.color,
+      ownerTeamId: body.ownerTeamId,
+      budgetPoolId: body.budgetPoolId,
+      defaultAgentId: body.defaultAgentId,
+      status: body.status,
+      isolation: body.isolation,
     }, { nextId, now });
     const existing = state.projects.find((item) => sameProjectPath(item.path, project.path));
     if (existing) {
       existing.name = project.name || existing.name;
       existing.host = project.host;
+      existing.color = project.color ?? existing.color;
+      existing.ownerTeamId = project.ownerTeamId ?? existing.ownerTeamId;
+      existing.budgetPoolId = project.budgetPoolId ?? existing.budgetPoolId ?? null;
+      existing.defaultAgentId = project.defaultAgentId ?? existing.defaultAgentId ?? null;
+      existing.status = project.status ?? existing.status ?? "active";
+      existing.isolation = project.isolation ?? existing.isolation ?? "shared";
       existing.updatedAt = now();
+      ensureProjectTarget(existing);
       selectProject(existing.id);
       return existing;
     }
     state.projects.unshift(project);
+    ensureProjectTarget(project);
     selectProject(project.id);
     appendEvent({
       invocationId: null,
@@ -83,7 +116,7 @@ export function createProjectService({ state, now, nextId, appendEvent, persistS
       stdio: ["ignore", "pipe", "pipe"],
       timeout: 120_000,
     });
-    return addProject({ name: body.name || name, path: targetPath, host: body.host ?? "local" });
+    return addProject({ name: body.name || name, path: targetPath, host: body.host ?? "local", color: body.color });
   }
 
   function createBlankProject(body = {}) {
@@ -107,7 +140,7 @@ export function createProjectService({ state, now, nextId, appendEvent, persistS
       stdio: ["ignore", "pipe", "pipe"],
       timeout: 20_000,
     });
-    return addProject({ name: body.name, path: targetPath, host: body.host ?? "local" });
+    return addProject({ name: body.name, path: targetPath, host: body.host ?? "local", color: body.color });
   }
 
   function selectProject(projectId) {
@@ -147,7 +180,13 @@ export function createProjectService({ state, now, nextId, appendEvent, persistS
   }
 
   function projectForInvocation(invocation) {
-    const projectId = invocation?.options?.metadata?.projectId ?? state.currentProjectId;
+    const worktreeId = invocation?.worktreeId ?? invocation?.options?.metadata?.worktreeId ?? null;
+    const worktree = worktreeId ? state.worktrees.find((item) => item.id === worktreeId) : null;
+    const projectId = worktree?.workspaceProjectId
+      ?? invocation?.projectId
+      ?? invocation?.options?.metadata?.workspaceProjectId
+      ?? invocation?.options?.metadata?.projectId
+      ?? state.currentProjectId;
     return state.projects.find((item) => item.id === projectId) ?? currentProject();
   }
 
@@ -186,11 +225,19 @@ export function createProjectService({ state, now, nextId, appendEvent, persistS
     const worktree = {
       id: nextId("wtr_demo"),
       sourceProjectId: sourceProject.id,
-      projectId: null,
+      projectId: sourceProject.id,
+      workspaceProjectId: null,
+      targetId: `tgt_${sourceProject.id}`,
       repoPath: repoRoot,
       worktreePath: targetPath,
+      path: targetPath,
       branchName,
+      branch: branchName,
       baseBranch: baseBranch ?? "HEAD",
+      isMain: false,
+      ephemeral: Boolean(body.ephemeral),
+      agentId: body.agentId ? String(body.agentId) : null,
+      link: normalizeWorktreeLink(body.link),
       status: "ready",
       createdAt,
       lastSeenAt: createdAt,
@@ -200,6 +247,12 @@ export function createProjectService({ state, now, nextId, appendEvent, persistS
       path: targetPath,
       host: sourceProject.host ?? "local",
       source: "worktree",
+      color: sourceProject.color,
+      ownerTeamId: sourceProject.ownerTeamId,
+      budgetPoolId: sourceProject.budgetPoolId,
+      defaultAgentId: body.agentId ?? sourceProject.defaultAgentId,
+      status: sourceProject.status,
+      isolation: sourceProject.isolation,
       worktree: {
         id: worktree.id,
         sourceProjectId: sourceProject.id,
@@ -207,7 +260,7 @@ export function createProjectService({ state, now, nextId, appendEvent, persistS
         baseBranch: worktree.baseBranch,
       },
     }, { nextId, now });
-    worktree.projectId = project.id;
+    worktree.workspaceProjectId = project.id;
     state.worktrees.unshift(worktree);
     state.projects.unshift(project);
     selectProject(project.id);
@@ -228,6 +281,46 @@ export function createProjectService({ state, now, nextId, appendEvent, persistS
     return { worktree, project, projects: state.projects, currentProjectId: state.currentProjectId };
   }
 
+  function updateProject(projectId, body = {}) {
+    const project = state.projects.find((item) => item.id === projectId);
+    if (!project) return null;
+    if (body.name !== undefined) project.name = String(body.name).trim() || project.name;
+    if (body.color !== undefined) project.color = normalizeProjectColor(body.color, project.color);
+    if (body.status !== undefined) project.status = body.status === "archived" ? "archived" : "active";
+    if (body.isolation !== undefined) project.isolation = body.isolation === "worktree" ? "worktree" : "shared";
+    if (body.defaultAgentId !== undefined) project.defaultAgentId = body.defaultAgentId ? String(body.defaultAgentId) : null;
+    if (body.budgetPoolId !== undefined) project.budgetPoolId = body.budgetPoolId ? String(body.budgetPoolId) : null;
+    project.updatedAt = now();
+    ensureProjectTarget(project);
+    persistStateSoon();
+    return project;
+  }
+
+  function removeWorktree(worktreeId) {
+    const index = state.worktrees.findIndex((item) => item.id === worktreeId);
+    if (index === -1) return null;
+    const [removed] = state.worktrees.splice(index, 1);
+    const projectIndex = removed.projectId
+      ? state.projects.findIndex((item) => item.id === removed.projectId && item.source === "worktree")
+      : -1;
+    if (projectIndex !== -1 && state.projects.length > 1) {
+      const [project] = state.projects.splice(projectIndex, 1);
+      if (state.currentProjectId === project.id) {
+        state.currentProjectId = removed.sourceProjectId ?? state.projects[0]?.id ?? null;
+      }
+      state.projectTargets = state.projectTargets.filter((item) => item.projectId !== project.id);
+    }
+    appendEvent({
+      invocationId: null,
+      type: "worktree_removed",
+      level: "info",
+      message: `Removed worktree ${removed.branchName ?? removed.branch ?? removed.id} from registry.`,
+      data: { worktreeId: removed.id, sourceProjectId: removed.sourceProjectId, projectId: removed.projectId },
+    });
+    persistStateSoon();
+    return removed;
+  }
+
   return {
     addProject,
     cloneProject,
@@ -238,10 +331,43 @@ export function createProjectService({ state, now, nextId, appendEvent, persistS
     projectForInvocation,
     readProjectTree,
     removeProject,
+    removeWorktree,
     searchProjectContent,
     selectProject,
+    updateProject,
     worktreeForProject,
   };
+
+  function ensureProjectTarget(project) {
+    const existing = state.projectTargets.find((item) => item.projectId === project.id);
+    if (existing) {
+      existing.rootPath = project.path;
+      existing.remoteUrl = project.git?.remoteUrl ?? existing.remoteUrl ?? null;
+      existing.defaultBranch = project.git?.defaultBranch ?? project.git?.currentBranch ?? existing.defaultBranch ?? null;
+      existing.state = existing.state ?? "ready";
+      existing.progress = existing.progress ?? 100;
+      existing.message = existing.message ?? "Local checkout is ready.";
+      existing.updatedAt = now();
+      return existing;
+    }
+    const createdAt = now();
+    const target = {
+      id: `tgt_${project.id}`,
+      projectId: project.id,
+      deviceId: "dev_local_001",
+      kind: project.source === "clone" ? "clone" : "local",
+      remoteUrl: project.git?.remoteUrl ?? null,
+      rootPath: project.path,
+      defaultBranch: project.git?.defaultBranch ?? project.git?.currentBranch ?? null,
+      state: "ready",
+      progress: 100,
+      message: "Local checkout is ready.",
+      createdAt,
+      updatedAt: createdAt,
+    };
+    state.projectTargets.unshift(target);
+    return target;
+  }
 }
 
 export function normalizeProjectPath(value) {
@@ -305,6 +431,25 @@ function normalizeWorktreeBase(value) {
     throw new Error("Worktree base ref is invalid.");
   }
   return base;
+}
+
+function normalizeProjectColor(value, fallback = "#3b82f6") {
+  const color = String(value ?? fallback).trim();
+  return /^#[0-9a-f]{6}$/i.test(color) ? color : fallback;
+}
+
+function normalizeWorktreeLink(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const type = value.type === "pr" ? "pr" : value.type === "issue" ? "issue" : null;
+  const number = Math.floor(Number(value.number));
+  if (!type || !Number.isFinite(number) || number <= 0) return null;
+  return {
+    type,
+    number,
+    title: String(value.title ?? `${type.toUpperCase()} #${number}`),
+    url: value.url ? String(value.url) : null,
+    state: String(value.state ?? "open"),
+  };
 }
 
 function nextAvailableWorktreePath(repoRoot, worktreeName) {

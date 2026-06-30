@@ -470,6 +470,7 @@ async function runInvocation(work) {
   let stderrBuffer = "";
   let cancelResult = null;
   let timedOut = false;
+  let spawnError = null;
 
   if (!adapter || adapter.type !== "cli") {
     await request("POST", "/api/bridge/complete", {
@@ -573,6 +574,7 @@ async function runInvocation(work) {
       message: `${runtimeName} exceeded its configured timeout.`
     });
     cancelResult = await terminateProcessTree(child);
+    await reportForcedKill(invocationId, runtimeName, cancelResult);
   }, timeoutMs);
 
   const cancelTimer = setInterval(async () => {
@@ -586,6 +588,7 @@ async function runInvocation(work) {
         message: `Desktop Bridge sent cancellation to ${runtimeName}.`
       });
       cancelResult = await terminateProcessTree(child);
+      await reportForcedKill(invocationId, runtimeName, cancelResult);
       if (!cancelResult.ok) {
         await request("POST", "/api/bridge/events", {
           invocationId,
@@ -621,6 +624,10 @@ async function runInvocation(work) {
     }
   });
 
+  child.on("error", (error) => {
+    spawnError = error;
+  });
+
   const exitCode = await new Promise((resolveExit) => {
     child.on("close", resolveExit);
   });
@@ -638,6 +645,7 @@ async function runInvocation(work) {
   }
 
   if (timedOut) {
+    const forcedNote = cancelResult?.message ? ` ${cancelResult.message}` : "";
     await sendCodexHookEvent(invocationId, adapter, {
       eventName: "Stop",
       summary: "Codex run timed out."
@@ -645,21 +653,24 @@ async function runInvocation(work) {
     await request("POST", "/api/bridge/complete", {
       invocationId,
       status: "timed_out",
-      summary: `${runtimeName} exceeded its configured timeout.`,
+      summary: `${runtimeName} exceeded its configured timeout.${forcedNote}`,
       result: finalResult
     });
     return;
   }
 
   if (cancelled) {
+    const forcedNote = cancelResult?.message ? ` ${cancelResult.message}` : "";
     await sendCodexHookEvent(invocationId, adapter, {
       eventName: "Stop",
       summary: "Codex run was cancelled."
     });
     await request("POST", "/api/bridge/complete", {
       invocationId,
-      status: "cancelled",
-      summary: `${runtimeName} was cancelled locally.`,
+      status: cancelResult?.ok === false ? "failed" : "cancelled",
+      summary: cancelResult?.ok === false
+        ? `${runtimeName} cancellation failed.${forcedNote}`
+        : `${runtimeName} was cancelled locally.${forcedNote}`,
       result: finalResult
     });
     return;
@@ -696,7 +707,9 @@ async function runInvocation(work) {
   await request("POST", "/api/bridge/complete", {
     invocationId,
     status: "failed",
-    summary: `${runtimeName} exited with code ${exitCode}.`,
+    summary: spawnError
+      ? `${runtimeName} could not start: ${spawnError.message}`
+      : `${runtimeName} exited with code ${exitCode}.`,
     result: finalResult
   });
 }
@@ -731,6 +744,14 @@ function checkCliAgentHealth(adapter) {
       ok: probe.ok,
       message: probe.ok ? "Codex CLI non-interactive surface is reachable." : probe.summary,
       nextAction: probe.ok ? null : "Verify Codex CLI installation and authentication."
+    };
+  }
+  if (isClaudeCliCommand(adapter.command)) {
+    const probe = probeClaudeCli(adapter);
+    return {
+      ok: probe.ok,
+      message: probe.ok ? "Claude CLI surface is reachable." : probe.summary,
+      nextAction: probe.ok ? null : "Verify Claude CLI installation and authentication."
     };
   }
   if (adapter.command === "demo-agent") {
@@ -1465,13 +1486,45 @@ function probeCodexCli(adapter) {
   };
 }
 
+function probeClaudeCli(adapter) {
+  const command = String(adapter.command ?? "claude");
+  const result = spawnSync(command, ["--help"], {
+    cwd: process.cwd(),
+    env: buildEnv({ ...adapter, environmentPolicy: "inherit_safe" }),
+    windowsHide: true,
+    encoding: "utf8",
+    shell: false,
+    stdio: ["ignore", "pipe", "pipe"]
+  });
+  const combined = `${result.stdout ?? ""}\n${result.stderr ?? ""}`;
+  const hasHelp = result.status === 0 && /claude|anthropic|usage/i.test(combined);
+  return {
+    ok: hasHelp,
+    summary: hasHelp ? "Restricted Claude CLI probe passed." : "Restricted Claude CLI probe failed.",
+    details: [
+      "Probe used claude --help only.",
+      "No prompt was executed.",
+      "No install scripts were run.",
+      `Configured output format: ${adapter.outputFormat ?? "unknown"}.`,
+      hasHelp ? "Claude CLI help is available." : `Claude help was not detected. Exit: ${result.status ?? "unknown"}.`
+    ]
+  };
+}
+
 function isCodexCliCommand(command) {
   const normalized = String(command ?? "").trim().toLowerCase();
   return ["codex", "codex.cmd", "codex.ps1", "codex.exe"].some((name) => normalized === name || normalized.endsWith(`/${name}`) || normalized.endsWith(`\\${name}`));
 }
 
+function isClaudeCliCommand(command) {
+  const normalized = String(command ?? "").trim().toLowerCase();
+  return ["claude", "claude.cmd", "claude.ps1", "claude.exe"].some((name) => normalized === name || normalized.endsWith(`/${name}`) || normalized.endsWith(`\\${name}`));
+}
+
 function agentRuntimeName(adapter) {
-  return isCodexCliCommand(adapter?.command) ? "Codex CLI" : "Demo CLI Agent";
+  if (isCodexCliCommand(adapter?.command)) return "Codex CLI";
+  if (isClaudeCliCommand(adapter?.command)) return "Claude CLI";
+  return "Demo CLI Agent";
 }
 
 function codexCliArgs() {
@@ -1482,7 +1535,7 @@ function codexRiskTags() {
   return ["read_local", "write_local", "shell_exec", "network_access", "repo_context", "code_change"];
 }
 
-async function terminateProcessTree(child) {
+async function terminateProcessTree(child, { graceMs = 2000 } = {}) {
   if (!child.pid) {
     return { ok: false, message: "Cannot cancel CLI process because no process id was assigned." };
   }
@@ -1491,38 +1544,113 @@ async function terminateProcessTree(child) {
   }
 
   if (process.platform === "win32") {
-    return new Promise((resolveResult) => {
-      const killer = spawn("taskkill", ["/pid", String(child.pid), "/t", "/f"], {
-        windowsHide: true,
-        stdio: ["ignore", "pipe", "pipe"]
-      });
-      let stderr = "";
-      killer.stderr.on("data", (chunk) => {
-        stderr += chunk.toString("utf8");
-      });
-      killer.on("close", (code) => {
-        const alreadyExited = child.exitCode !== null || child.killed;
-        resolveResult({
-          ok: code === 0 || alreadyExited,
-          message: code === 0
-            ? "Windows process tree terminated."
-            : alreadyExited
-              ? "Process already exited before Windows process-tree cancellation completed."
-              : `Windows process-tree cancellation failed: ${stderr.trim() || `taskkill exited ${code}`}`
-        });
-      });
-    });
-  }
-
-  try {
-    process.kill(-child.pid, "SIGTERM");
-  } catch (error) {
+    const graceful = await taskkillTree(child.pid, false);
+    if (graceful.ok) {
+      const exited = await awaitChildExit(child, graceMs);
+      if (exited) return { ok: true, message: "Windows process tree terminated." };
+    }
+    const forced = await taskkillTree(child.pid, true);
+    const alreadyExited = child.exitCode !== null || child.killed;
     return {
-      ok: false,
-      message: `SIGTERM process-group cancellation failed: ${error instanceof Error ? error.message : String(error)}`
+      ok: forced.ok || alreadyExited,
+      forced: true,
+      message: forced.ok
+        ? "Windows process tree force-terminated."
+        : alreadyExited
+          ? "Process already exited before Windows force cancellation completed."
+          : forced.message
     };
   }
-  return { ok: true, message: "SIGTERM cancellation sent to CLI process." };
+
+  const graceful = safeGroupKill(child.pid, "SIGTERM");
+  if (!graceful.ok) return graceful;
+  const exited = await awaitChildExit(child, graceMs);
+  if (exited) {
+    return { ok: true, message: "SIGTERM cancellation terminated the CLI process." };
+  }
+  const forced = safeGroupKill(child.pid, "SIGKILL");
+  return {
+    ok: forced.ok || child.exitCode !== null || child.killed,
+    forced: true,
+    message: forced.ok ? "SIGKILL force-terminated the CLI process group." : forced.message
+  };
+}
+
+function awaitChildExit(child, timeoutMs) {
+  if (child.exitCode !== null || child.killed) return Promise.resolve(true);
+  return new Promise((resolveExit) => {
+    const timer = setTimeout(() => {
+      cleanup();
+      resolveExit(child.exitCode !== null || child.killed);
+    }, timeoutMs);
+    const onClose = () => {
+      cleanup();
+      resolveExit(true);
+    };
+    const cleanup = () => {
+      clearTimeout(timer);
+      child.off("close", onClose);
+      child.off("exit", onClose);
+    };
+    child.once("close", onClose);
+    child.once("exit", onClose);
+  });
+}
+
+function safeGroupKill(pid, signal) {
+  try {
+    process.kill(-pid, signal);
+    return { ok: true, message: `${signal} sent to CLI process group.` };
+  } catch (error) {
+    try {
+      process.kill(pid, signal);
+      return { ok: true, message: `${signal} sent to CLI process.` };
+    } catch (fallbackError) {
+      return {
+        ok: false,
+        message: `${signal} cancellation failed: ${fallbackError instanceof Error ? fallbackError.message : String(fallbackError)}`
+      };
+    }
+  }
+}
+
+function taskkillTree(pid, force) {
+  return new Promise((resolveResult) => {
+    const args = ["/pid", String(pid), "/t"];
+    if (force) args.push("/f");
+    const killer = spawn("taskkill", args, {
+      windowsHide: true,
+      stdio: ["ignore", "pipe", "pipe"]
+    });
+    let stderr = "";
+    killer.stderr.on("data", (chunk) => {
+      stderr += chunk.toString("utf8");
+    });
+    killer.on("close", (code) => {
+      resolveResult({
+        ok: code === 0,
+        message: code === 0
+          ? `taskkill ${force ? "force " : ""}terminated the process tree.`
+          : `taskkill ${force ? "/f " : ""}failed: ${stderr.trim() || `exit ${code}`}`
+      });
+    });
+    killer.on("error", (error) => {
+      resolveResult({
+        ok: false,
+        message: `taskkill failed to start: ${error instanceof Error ? error.message : String(error)}`
+      });
+    });
+  });
+}
+
+async function reportForcedKill(invocationId, runtimeName, result) {
+  if (!result?.forced) return;
+  await request("POST", "/api/bridge/events", {
+    invocationId,
+    type: result.ok ? "process_force_killed" : "process_force_kill_failed",
+    level: result.ok ? "warn" : "error",
+    message: `${runtimeName}: ${result.message}`
+  });
 }
 
 async function handleAgentLine(invocationId, line, adapter = {}) {
@@ -1531,6 +1659,9 @@ async function handleAgentLine(invocationId, line, adapter = {}) {
   }
   if (adapter.outputFormat === "codex_jsonl") {
     return handleCodexJsonLine(invocationId, line);
+  }
+  if (adapter.outputFormat === "claude_jsonl") {
+    return handleClaudeJsonLine(invocationId, line);
   }
   if (line.startsWith("RESULT ")) {
     return JSON.parse(line.slice("RESULT ".length));
@@ -1665,6 +1796,83 @@ function summarizeTaskForHook(task) {
     return "Empty prompt";
   }
   return normalized.length <= 180 ? normalized : `${normalized.slice(0, 177)}...`;
+}
+
+async function handleClaudeJsonLine(invocationId, line) {
+  let event;
+  try {
+    event = JSON.parse(line);
+  } catch {
+    await request("POST", "/api/bridge/events", {
+      invocationId,
+      type: "agent_output",
+      level: "info",
+      message: line
+    });
+    return null;
+  }
+
+  const message = claudeEventMessage(event);
+  if (message) {
+    await request("POST", "/api/bridge/events", {
+      invocationId,
+      type: "agent_output",
+      level: event.type === "error" ? "warn" : "info",
+      message,
+      data: {
+        source: "claude_jsonl",
+        eventType: event.type ?? null,
+        subtype: event.subtype ?? null,
+        sessionId: event.session_id ?? event.sessionId ?? null,
+        model: event.message?.model ?? event.model ?? null,
+        usage: event.usage ?? event.message?.usage ?? null,
+      }
+    });
+  }
+
+  if (event.type === "result" || event.subtype === "success" || event.result || event.summary) {
+    const summary = String(event.result ?? event.summary ?? message ?? "Claude CLI completed.").trim();
+    return {
+      summary: summary.length > 240 ? `${summary.slice(0, 237)}...` : summary,
+      touchedUserFiles: false,
+      output: {
+        latestMessage: summary,
+        usage: event.usage ?? event.message?.usage ?? null,
+      },
+      cost: { model: event.message?.model ?? event.model ?? "claude", billable: true, unknown: true }
+    };
+  }
+
+  return null;
+}
+
+function claudeEventMessage(event) {
+  if (event.type === "system" && event.subtype === "init") return `Claude session started: ${event.session_id ?? "unknown"}.`;
+  if (event.type === "assistant") {
+    const text = claudeMessageText(event.message?.content ?? event.content);
+    return text || "Claude assistant message received.";
+  }
+  if (event.type === "user") return "Claude user message acknowledged.";
+  if (event.type === "result") return String(event.result ?? event.summary ?? "Claude result received.");
+  if (event.type === "error") return `Claude error: ${event.message ?? event.error?.message ?? "unknown error"}.`;
+  if (event.message?.content) return claudeMessageText(event.message.content);
+  return event.type ? `Claude event: ${event.type}.` : null;
+}
+
+function claudeMessageText(content) {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  const text = content
+    .map((part) => {
+      if (typeof part === "string") return part;
+      if (part?.type === "text") return part.text;
+      if (part?.type === "tool_use") return `[tool: ${part.name ?? "unknown"}]`;
+      if (part?.type === "tool_result") return "[tool result]";
+      return "";
+    })
+    .filter(Boolean)
+    .join(" ");
+  return text.length > 240 ? `${text.slice(0, 237)}...` : text;
 }
 
 async function handleCodexJsonLine(invocationId, line) {

@@ -39,13 +39,26 @@ export function createInvocationCreationRuntime({
     const codexWorkspacePolicy = normalizeCodexWorkspacePolicy(options.codexWorkspacePolicy, agent);
     const managedCodexWorkspace = createManagedCodexWorkspace({ invocationId: id, agent, workspacePolicy: codexWorkspacePolicy });
     const managedCodexSession = createManagedCodexSession({ invocationId: id, agent, codexSessionMode, workspace: managedCodexWorkspace });
-    const project = currentProject();
-    const projectWorktree = worktreeForProject(project?.id);
+    const requestedMetadata = options.metadata && typeof options.metadata === "object" && !Array.isArray(options.metadata) ? options.metadata : {};
+    const requestedWorktree = requestedMetadata.worktreeId
+      ? state.worktrees.find((item) => item.id === requestedMetadata.worktreeId)
+      : null;
+    const visibleProject = requestedMetadata.projectId
+      ? state.projects.find((item) => item.id === requestedMetadata.projectId) ?? currentProject()
+      : requestedWorktree?.projectId
+        ? state.projects.find((item) => item.id === requestedWorktree.projectId) ?? currentProject()
+        : currentProject();
+    const project = requestedWorktree?.workspaceProjectId
+      ? state.projects.find((item) => item.id === requestedWorktree.workspaceProjectId) ?? visibleProject
+      : visibleProject;
+    const projectWorktree = requestedWorktree ?? worktreeForProject(project?.id);
     const invocation = {
       id,
       ideaSessionId: null,
       compareRunId: null,
       agentId: agent.id,
+      projectId: visibleProject?.id ?? project?.id ?? null,
+      worktreeId: projectWorktree?.id ?? null,
       requestedBy: "usr_local",
       status: quotaGate?.allowed === false ? "rejected" : policy.decision === "requires_local_approval" ? "waiting_for_local_approval" : directRun ? "running" : "queued",
       delivery: {
@@ -78,9 +91,10 @@ export function createInvocationCreationRuntime({
           ...(options.metadata && typeof options.metadata === "object" && !Array.isArray(options.metadata) ? options.metadata : {}),
           quotaDecisionId: quotaGate?.quotaDecision?.id ?? null,
           quotaDecision: quotaGate?.quotaDecision?.decision ?? null,
-          projectId: project?.id ?? null,
-          projectName: project?.name ?? null,
+          projectId: visibleProject?.id ?? project?.id ?? null,
+          projectName: visibleProject?.name ?? project?.name ?? null,
           projectPath: project?.path ?? null,
+          workspaceProjectId: project?.id ?? null,
           worktreeId: projectWorktree?.id ?? null,
           worktreeBranchName: projectWorktree?.branchName ?? null,
           worktreePath: projectWorktree?.worktreePath ?? null,

@@ -13,6 +13,10 @@ const defaultAgentIds = [
   "agt_platform_troubleshooter",
   "agt_platform_integration_builder",
 ];
+const envMaxConcurrency = Math.floor(Number(process.env.BRIDGE_MAX_CONCURRENT));
+const defaultMaxConcurrency = Number.isFinite(envMaxConcurrency) && envMaxConcurrency > 0
+  ? Math.min(16, envMaxConcurrency)
+  : 3;
 
 export function createServerState({ defaultProjectPath, now }) {
   const defaultProject = createProjectRecord({
@@ -23,8 +27,12 @@ export function createServerState({ defaultProjectPath, now }) {
   });
   const state = {
     device: createDefaultDevice(now),
+    users: createDefaultUsers(now),
+    teams: createDefaultTeams(now),
+    tokens: [],
     projects: [defaultProject],
     currentProjectId: defaultProject.id,
+    projectTargets: [createProjectTargetRecord(defaultProject, now)],
     worktrees: [],
     agents: createDefaultAgents(now),
     invocations: [],
@@ -49,6 +57,8 @@ export function createServerState({ defaultProjectPath, now }) {
     quotaPolicies: [],
     aiUsageRecords: [],
     ledgerEntries: [],
+    budgets: [],
+    automations: createDefaultAutomations(defaultProject.id, now),
     privateDeploymentConfig: createDefaultPrivateDeploymentConfig(now),
     auditExportRequests: [],
     retentionSettings: createDefaultRetentionSettings(now),
@@ -77,6 +87,8 @@ export function resetStateForSelfCheck({ state, now }) {
   state.device.status = "offline";
   state.device.unlinkState = "linked";
   state.device.credentialRevokedAt = null;
+  state.device.maxConcurrency = defaultMaxConcurrency;
+  state.tokens = [];
   state.agents = state.agents.filter((agent) => defaultAgentIds.includes(agent.id));
   const demoAgent = state.agents.find((agent) => agent.id === "agt_demo_cli") ?? null;
   if (demoAgent) {
@@ -116,6 +128,8 @@ export function resetStateForSelfCheck({ state, now }) {
   state.quotaPolicies = [];
   state.aiUsageRecords = [];
   state.ledgerEntries = [];
+  state.budgets = [];
+  state.automations = createDefaultAutomations(state.currentProjectId ?? state.projects[0]?.id ?? "prj_myagenttool", now);
   state.privateDeploymentConfig = createDefaultPrivateDeploymentConfig(now);
   state.auditExportRequests = [];
   state.retentionSettings = {
@@ -160,8 +174,79 @@ function createDefaultDevice(now) {
     lastSeenAt: null,
     registeredCapabilities: [],
     credentialRevokedAt: null,
+    maxConcurrency: defaultMaxConcurrency,
     createdAt: now()
   };
+}
+
+function createDefaultUsers(now) {
+  const createdAt = now();
+  return [
+    {
+      id: "usr_local",
+      name: "Local User",
+      email: null,
+      teamId: "team_local",
+      role: "owner",
+      createdAt,
+    },
+  ];
+}
+
+function createDefaultTeams(now) {
+  const createdAt = now();
+  return [
+    {
+      id: "team_local",
+      name: "Local Team",
+      slug: "local",
+      createdAt,
+    },
+  ];
+}
+
+function createProjectTargetRecord(project, now) {
+  const createdAt = now();
+  return {
+    id: `tgt_${project.id}`,
+    projectId: project.id,
+    deviceId: "dev_local_001",
+    kind: project.source === "clone" ? "clone" : "local",
+    remoteUrl: project.git?.remoteUrl ?? null,
+    rootPath: project.path,
+    defaultBranch: project.git?.defaultBranch ?? project.git?.currentBranch ?? null,
+    state: "ready",
+    progress: 100,
+    message: "Local checkout is ready.",
+    createdAt,
+    updatedAt: createdAt,
+  };
+}
+
+function createDefaultAutomations(projectId, now) {
+  const createdAt = now();
+  return [
+    {
+      id: "atm_demo_audit",
+      name: "Weekday repo audit",
+      enabled: false,
+      projectId,
+      branch: "main",
+      schedule: { kind: "weekdays", time: "09:00", label: "Weekdays at 09:00" },
+      nextRunAt: null,
+      sessionMode: "fresh",
+      graceHours: 12,
+      precheck: "None",
+      agentId: "agt_codex_cli",
+      prompt: "Summarize repository health and identify risky open work.",
+      lastRunAt: null,
+      lastInvocationId: null,
+      runCount: 0,
+      tokens: 0,
+      createdBy: "usr_local",
+      createdAt,
+    },
+  ];
 }
 
 function createDefaultAgents(now) {

@@ -1,0 +1,185 @@
+@import "tailwindcss";
+
+/*
+ * Design tokens — the single source of truth for color, radius, and surface
+ * roles in the web console. Components must reach for these tokens (via the
+ * Tailwind theme bindings below) instead of hardcoding hex values. See
+ * STYLEGUIDE.md for the role of each token.
+ *
+ * Tokens come in surface/foreground pairs that meet contrast together. The
+ * identity is quiet and neutral; color is reserved for state (selection,
+ * risk, success, destructive).
+ */
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+:root {
+  --radius: 0.625rem;
+
+  --background: oklch(0.98 0.002 250);
+  --foreground: oklch(0.21 0.01 255);
+
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.21 0.01 255);
+
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.21 0.01 255);
+
+  --primary: oklch(0.54 0.16 262);
+  --primary-foreground: oklch(0.98 0.003 250);
+
+  --secondary: oklch(0.96 0.004 250);
+  --secondary-foreground: oklch(0.28 0.01 255);
+
+  --muted: oklch(0.96 0.004 250);
+  --muted-foreground: oklch(0.53 0.012 257);
+
+  --accent: oklch(0.95 0.006 250);
+  --accent-foreground: oklch(0.28 0.01 255);
+
+  --destructive: oklch(0.58 0.22 27);
+  --destructive-foreground: oklch(0.98 0.003 250);
+
+  --success: oklch(0.62 0.15 152);
+  --success-foreground: oklch(0.98 0.003 250);
+
+  --warning: oklch(0.74 0.16 75);
+  --warning-foreground: oklch(0.27 0.05 75);
+
+  --border: oklch(0.91 0.005 255);
+  --input: oklch(0.93 0.005 255);
+  --ring: oklch(0.54 0.16 262);
+
+  --sidebar: oklch(0.97 0.003 250);
+  --sidebar-foreground: oklch(0.21 0.01 255);
+  --sidebar-accent: oklch(0.94 0.006 250);
+  --sidebar-accent-foreground: oklch(0.28 0.01 255);
+  --sidebar-border: oklch(0.91 0.005 255);
+  --sidebar-ring: oklch(0.54 0.16 262);
+}
+
+.dark {
+  --background: oklch(0.17 0.008 264);
+  --foreground: oklch(0.93 0.005 250);
+
+  --card: oklch(0.21 0.01 264);
+  --card-foreground: oklch(0.93 0.005 250);
+
+  --popover: oklch(0.22 0.01 264);
+  --popover-foreground: oklch(0.93 0.005 250);
+
+  --primary: oklch(0.7 0.14 256);
+  --primary-foreground: oklch(0.19 0.02 264);
+
+  --secondary: oklch(0.27 0.01 264);
+  --secondary-foreground: oklch(0.92 0.005 250);
+
+  --muted: oklch(0.27 0.01 264);
+  --muted-foreground: oklch(0.69 0.01 257);
+
+  --accent: oklch(0.29 0.012 264);
+  --accent-foreground: oklch(0.93 0.005 250);
+
+  --destructive: oklch(0.66 0.2 25);
+  --destructive-foreground: oklch(0.98 0.003 250);
+
+  --success: oklch(0.7 0.14 153);
+  --success-foreground: oklch(0.18 0.02 264);
+
+  --warning: oklch(0.79 0.15 80);
+  --warning-foreground: oklch(0.24 0.04 80);
+
+  --border: oklch(0.3 0.01 264);
+  --input: oklch(0.32 0.01 264);
+  --ring: oklch(0.7 0.14 256);
+
+  --sidebar: oklch(0.19 0.009 264);
+  --sidebar-foreground: oklch(0.93 0.005 250);
+  --sidebar-accent: oklch(0.27 0.012 264);
+  --sidebar-accent-foreground: oklch(0.93 0.005 250);
+  --sidebar-border: oklch(0.3 0.01 264);
+  --sidebar-ring: oklch(0.7 0.14 256);
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-success: var(--success);
+  --color-success-foreground: var(--success-foreground);
+  --color-warning: var(--warning);
+  --color-warning-foreground: var(--warning-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", "JetBrains Mono", "Fira Code", Menlo,
+    Consolas, monospace;
+}
+
+@layer base {
+  * {
+    border-color: var(--color-border);
+  }
+
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    margin: 0;
+    background-color: var(--color-background);
+    color: var(--color-foreground);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  .app-boot {
+    display: grid;
+    place-items: center;
+    height: 100%;
+    color: var(--color-muted-foreground);
+    font-family: var(--font-sans);
+    font-size: 0.875rem;
+  }
+
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: color-mix(in oklch, var(--color-muted-foreground) 35%, transparent);
+    border-radius: 999px;
+    border: 2px solid transparent;
+    background-clip: content-box;
+  }
+}

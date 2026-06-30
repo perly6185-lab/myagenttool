@@ -67,7 +67,7 @@ export async function handleInvocationRoutes({
       sendJson(res, 409, { error: "device_unlinked" });
       return true;
     }
-    const invocation = createInvocation(task, agent, body.options ?? {});
+    const invocation = createInvocation(task, agent, invocationOptionsFromBody(body));
     startInvocationIfAllowed(invocation, agent);
     sendJson(res, 201, { invocation });
     return true;
@@ -133,4 +133,15 @@ export async function handleInvocationRoutes({
   }
 
   return false;
+}
+
+function invocationOptionsFromBody(body = {}) {
+  const options = body.options && typeof body.options === "object" && !Array.isArray(body.options) ? body.options : {};
+  const metadata = options.metadata && typeof options.metadata === "object" && !Array.isArray(options.metadata)
+    ? { ...options.metadata }
+    : {};
+  if (body.projectId !== undefined) metadata.projectId = body.projectId;
+  if (body.worktreeId !== undefined) metadata.worktreeId = body.worktreeId;
+  if (body.permissionLevel !== undefined) metadata.permissionMode = body.permissionLevel;
+  return { ...options, metadata };
 }

@@ -2,6 +2,7 @@ import http from "node:http";
 import { handleAgentRoutes } from "../routes/agents.mjs";
 import { handleBridgeRoutes } from "../routes/bridge.mjs";
 import { handleCodexRoutes } from "../routes/codex.mjs";
+import { handleControlPlaneRoutes } from "../routes/control-plane.mjs";
 import { handleIntegrationRoutes } from "../routes/integrations.mjs";
 import { handleInvocationRoutes } from "../routes/invocations.mjs";
 import { handleLoopRoutineRoutes } from "../routes/loop-routines.mjs";
@@ -25,6 +26,8 @@ export function createHttpServer({
   createWorktree,
   selectProject,
   removeProject,
+  removeWorktree,
+  updateProject,
   readProjectTree,
   searchProjectContent,
   gitProjectSummary,
@@ -64,6 +67,8 @@ export function createHttpServer({
   generateIntegrationArtifacts,
   chargebackExport,
   createAuditExportRequest,
+  budgetStatusFor,
+  upsertBudget,
   decideLifecycleLocalApproval,
   evaluateLifecyclePolicy,
   queueLifecycleAction,
@@ -108,6 +113,8 @@ export function createHttpServer({
   createCompareRun,
   cancelInvocation,
   createTroubleshootingReport,
+  nextId,
+  persistStateSoon,
 }) {
   return http.createServer(async (req, res) => {
     try {
@@ -138,6 +145,27 @@ export function createHttpServer({
         return;
       }
 
+      if (await handleControlPlaneRoutes({
+        req,
+        res,
+        url,
+        sendJson,
+        readJson,
+        state,
+        now,
+        nextId,
+        appendEvent,
+        findAgent,
+        defaultAgent,
+        createInvocation,
+        startInvocationIfAllowed,
+        persistStateSoon,
+        budgetStatusFor,
+        upsertBudget,
+      })) {
+        return;
+      }
+
       if (handleLoopRoutineRoutes({ req, res, url, sendJson, currentLoopRoutineProjectContext })) {
         return;
       }
@@ -156,6 +184,8 @@ export function createHttpServer({
         createWorktree,
         selectProject,
         removeProject,
+        removeWorktree,
+        updateProject,
         readProjectTree,
         searchProjectContent,
         gitProjectSummary,
@@ -343,8 +373,8 @@ export function createHttpServer({
 
 function setCors(res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "GET,POST,PATCH,OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+  res.setHeader("Access-Control-Allow-Methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Authorization,Content-Type");
 }
 
 async function readJson(req) {
