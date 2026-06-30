@@ -1078,10 +1078,16 @@ Remaining split plan:
   assertions now live in `apps/server/src/runtime/self-check.mjs`;
   `apps/server/src/index.mjs` only injects service dependencies and exits on
   `--check`.
-  Phase 7 split is complete for Desktop Bridge dispatch,
+  Server runtime Phase 7 is complete for service composition:
+  persistence, event log, project, agent, Codex, terminal, invocation,
+  integration, read-model wiring, `unlinkDevice`, and the HTTP/self-check
+  dependency bags now live in `apps/server/src/runtime/service-composer.mjs`;
+  `apps/server/src/index.mjs` is now limited to environment config, state
+  creation, runtime composition, self-check/http startup, and shutdown saves.
+  Bridge route split is complete for Desktop Bridge dispatch,
   health, discovery, probe, cancellation status, ack, event, and completion
   routing through `apps/server/src/routes/bridge.mjs`. Remaining server phases
-  should split service composition while keeping mutation boundaries explicit.
+  should continue with dependency-bag refinement or move to the web surface.
   Phase 8 split
   is complete for approval, invocation creation, compare runs, cancellation,
   and troubleshooting routing through `apps/server/src/routes/invocations.mjs`.
