@@ -1127,6 +1127,10 @@ Remaining split plan:
   recommendation events, explicit-action audit events, and completion summaries
   now live in `apps/server/src/services/integrations/platform-draft.mjs`;
   `apps/server/src/services/integrations.mjs` is now a composition layer.
+  Invocation service Phase 1 is complete for dispatch runtime extraction:
+  dispatch queue selection, dispatch lease creation, bridge acknowledgement,
+  and expired lease redelivery now live in
+  `apps/server/src/services/invocations/dispatch.mjs`.
 - `apps/web/public/app.js`: split by surface into task/routine browser,
   workspace/session, evidence center, terminal, project browser, integration,
   and shared API/render utilities.
