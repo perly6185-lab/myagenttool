@@ -1131,6 +1131,10 @@ Remaining split plan:
   dispatch queue selection, dispatch lease creation, bridge acknowledgement,
   and expired lease redelivery now live in
   `apps/server/src/services/invocations/dispatch.mjs`.
+  Invocation service Phase 2 is complete for approval runtime extraction:
+  risk policy evaluation, policy decision records, approval request creation,
+  approval grant handling, and approval denial auditing now live in
+  `apps/server/src/services/invocations/approval.mjs`.
 - `apps/web/public/app.js`: split by surface into task/routine browser,
   workspace/session, evidence center, terminal, project browser, integration,
   and shared API/render utilities.
