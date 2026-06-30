@@ -1174,6 +1174,10 @@ Remaining split plan:
   integration, Codex approval, SSH, routine, and state endpoints now live in
   `apps/web/public/app/api-client.js`; `apps/web/src/index.mjs` checks the
   combined public app module sources.
+  Web app Phase 3 is complete for routine surface extraction: routine run list
+  rows, status labels, detail cards, metrics, finding summaries, and read-only
+  CLI command rendering now live in
+  `apps/web/public/app/routine-surface.js`.
 - `apps/web/public/styles.css`: split by shell, composer, task/routine list,
   evidence, terminal, project browser, and responsive rules.
 - `tools/ai/src/loop/routine.mjs`: split the remaining schedule state and
