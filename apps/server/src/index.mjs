@@ -1,6 +1,5 @@
 import http from "node:http";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { basename, dirname, resolve } from "node:path";
+import { basename, resolve } from "node:path";
 import { buildEvidenceCenterRecords } from "./read-models/evidence-center.mjs";
 import { buildLoopRoutineStateSummary } from "./read-models/loop-routines.mjs";
 import { buildPublicState } from "./read-models/state.mjs";
@@ -12,6 +11,7 @@ import { handleInvocationRoutes } from "./routes/invocations.mjs";
 import { handleLoopRoutineRoutes } from "./routes/loop-routines.mjs";
 import { handleProjectRoutes } from "./routes/projects.mjs";
 import { handleTerminalRoutes } from "./routes/terminal.mjs";
+import { createPersistenceRuntime } from "./runtime/persistence.mjs";
 import {
   codexCliArgs,
   codexCliResumeArgs,
@@ -304,8 +304,20 @@ const state = {
 };
 
 let idCounter = 1;
-let saveStateTimer = null;
 let invocationService = null;
+const {
+  persistStateSoon,
+  restorePersistentState,
+  savePersistentState,
+} = createPersistenceRuntime({
+  state,
+  enabled: persistenceEnabled,
+  stateStorePath,
+  schemaVersion: stateSchemaVersion,
+  now,
+  defaultProject,
+  sameProjectPath,
+});
 restorePersistentState();
 
 const {
@@ -679,95 +691,6 @@ function nextId(prefix) {
   const id = `${prefix}_${String(idCounter).padStart(4, "0")}`;
   idCounter += 1;
   return id;
-}
-
-function persistStateSoon() {
-  if (!persistenceEnabled) return;
-  if (saveStateTimer) return;
-  saveStateTimer = setTimeout(() => {
-    saveStateTimer = null;
-    savePersistentState();
-  }, 20);
-}
-
-function savePersistentState() {
-  if (!persistenceEnabled) return;
-  const snapshot = {
-    schemaVersion: stateSchemaVersion,
-    savedAt: now(),
-    projects: state.projects,
-    currentProjectId: state.currentProjectId,
-    worktrees: state.worktrees,
-    invocations: state.invocations,
-    compareRuns: state.compareRuns,
-    events: state.events,
-    traces: state.traces,
-    spans: state.spans,
-    auditSummaries: state.auditSummaries,
-    approvalRequests: state.approvalRequests,
-    policyDecisionRecords: state.policyDecisionRecords,
-    troubleshootingReports: state.troubleshootingReports,
-    agentUsageSummaries: state.agentUsageSummaries,
-    codexSessions: state.codexSessions,
-    codexWorkspaces: state.codexWorkspaces,
-    codexEvidenceRecords: state.codexEvidenceRecords,
-    codexChangeReviews: state.codexChangeReviews,
-    codexHookEvents: state.codexHookEvents,
-    codexApprovalBrokerRequests: state.codexApprovalBrokerRequests,
-    codexImportedEvidenceRecords: state.codexImportedEvidenceRecords
-  };
-  mkdirSync(dirname(stateStorePath), { recursive: true });
-  writeFileSync(stateStorePath, `${JSON.stringify(snapshot, null, 2)}\n`);
-}
-
-function restorePersistentState() {
-  if (!persistenceEnabled || !existsSync(stateStorePath)) return;
-  let snapshot;
-  try {
-    snapshot = JSON.parse(readFileSync(stateStorePath, "utf8"));
-  } catch {
-    return;
-  }
-  if (snapshot?.schemaVersion !== stateSchemaVersion) {
-    return;
-  }
-  let restoredProjects = Array.isArray(snapshot.projects)
-    ? snapshot.projects.filter((project) => project?.id && project?.path && existsSync(project.path))
-    : [];
-  restoredProjects = restoredProjects.filter((project) => project.id !== defaultProject.id || sameProjectPath(project.path, defaultProject.path));
-  let defaultPathProject = restoredProjects.find((project) => sameProjectPath(project.path, defaultProject.path));
-  if (!defaultPathProject) {
-    restoredProjects.unshift(defaultProject);
-    defaultPathProject = defaultProject;
-  }
-  if (restoredProjects.length) {
-    state.projects = restoredProjects;
-    state.currentProjectId = defaultPathProject.id;
-  }
-  for (const key of [
-    "invocations",
-    "worktrees",
-    "compareRuns",
-    "events",
-    "traces",
-    "spans",
-    "auditSummaries",
-    "approvalRequests",
-    "policyDecisionRecords",
-    "troubleshootingReports",
-    "agentUsageSummaries",
-    "codexSessions",
-    "codexWorkspaces",
-    "codexEvidenceRecords",
-    "codexChangeReviews",
-    "codexHookEvents",
-    "codexApprovalBrokerRequests",
-    "codexImportedEvidenceRecords"
-  ]) {
-    if (Array.isArray(snapshot[key])) {
-      state[key] = snapshot[key];
-    }
-  }
 }
 
 function appendEvent(event) {

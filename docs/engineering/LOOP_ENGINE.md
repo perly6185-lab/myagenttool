@@ -1045,11 +1045,16 @@ Remaining split plan:
   runtime warnings, terminal evidence, and imported Codex evidence are projected
   by `apps/server/src/read-models/evidence-center.mjs`; `/api/state` still
   composes the final public payload through `apps/server/src/read-models/state.mjs`.
+  Server runtime Phase 1 is complete for local persistence: delayed saves,
+  snapshot writing, schema-gated restore, and project restore reconciliation now
+  live in `apps/server/src/runtime/persistence.mjs`; `apps/server/src/index.mjs`
+  only wires the persistence runtime into service dependencies and shutdown
+  handlers.
   Phase 7 split is complete for Desktop Bridge dispatch,
   health, discovery, probe, cancellation status, ack, event, and completion
   routing through `apps/server/src/routes/bridge.mjs`. Remaining server phases
-  should split persistence/bootstrap/public-state orchestration while keeping
-  mutation boundaries explicit. Phase 8 split
+  should split bootstrap/public-state orchestration while keeping mutation
+  boundaries explicit. Phase 8 split
   is complete for approval, invocation creation, compare runs, cancellation,
   and troubleshooting routing through `apps/server/src/routes/invocations.mjs`.
 - `apps/web/public/app.js`: split by surface into task/routine browser,
