@@ -1105,6 +1105,10 @@ Remaining split plan:
   adapter probe creation, bridge probe queue lookup, start/complete transitions,
   HTTP health probing, tested-artifact promotion, and probe lookup now live in
   `apps/server/src/services/integrations/probes.mjs`.
+  Integration service Phase 4 is complete for shared adapter builder reuse:
+  `adapterFromArtifact` now lives beside the adapter config helpers in
+  `apps/server/src/services/integrations/helpers.mjs`, so registration and
+  probe execution use the same artifact-to-adapter projection.
 - `apps/web/public/app.js`: split by surface into task/routine browser,
   workspace/session, evidence center, terminal, project browser, integration,
   and shared API/render utilities.

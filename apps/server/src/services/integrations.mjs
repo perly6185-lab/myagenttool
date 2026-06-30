@@ -13,6 +13,7 @@ import {
 } from "./agents.mjs";
 import { createDiscoveryRuntime } from "./integrations/discovery.mjs";
 import {
+  adapterFromArtifact,
   adapterGuidance,
   buildAdapterConfig,
   cancellationNotesForIntegration,
@@ -68,7 +69,6 @@ export function createIntegrationService({
     now,
     nextId,
     appendEvent,
-    adapterFromArtifact,
     findIntegrationArtifact,
   });
 
@@ -312,36 +312,6 @@ export function createIntegrationService({
       data: { artifactId: artifact.id, agentId: agent.id, disabled: isAgentDisabled(agent) },
     });
     return agent;
-  }
-
-  function adapterFromArtifact(artifact) {
-    const adapter = artifact.payload?.adapterConfig;
-    if (adapter?.type === "http") {
-      return {
-        type: "http",
-        baseUrl: String(adapter.baseUrl ?? "http://127.0.0.1:3212"),
-        authMode: "none",
-        requestPath: String(adapter.requestPath ?? "/invoke"),
-        healthPath: String(adapter.healthPath ?? "/health"),
-        method: "POST",
-        payloadShape: { task: "string" },
-        timeoutSeconds: Number(adapter.timeoutSeconds ?? 30),
-        streaming: Boolean(adapter.streaming ?? false),
-        cancellation: normalizeCancellation(adapter.cancellation),
-      };
-    }
-    return {
-      type: "cli",
-      command: String(adapter?.command ?? artifact.payload?.structuredHints?.command ?? "demo-agent"),
-      args: normalizeStringArray(adapter?.args).length > 0 ? normalizeStringArray(adapter.args) : isCodexCliCommand(adapter?.command ?? artifact.payload?.structuredHints?.command) ? codexCliArgs() : ["{{payloadJson}}"],
-      workingDirectory: adapter?.workingDirectory ?? null,
-      workingDirectoryPolicy: adapter?.workingDirectory ? "explicit" : "bridge_default",
-      environmentPolicy: "inherit_safe",
-      timeoutSeconds: Number(adapter?.timeoutSeconds ?? 30),
-      cancellation: normalizeCancellation(adapter?.cancellation),
-      outputFormat: normalizeCliOutputFormat(adapter?.outputFormat, adapter?.command ?? artifact.payload?.structuredHints?.command),
-      sandbox: adapter?.sandbox ?? null,
-    };
   }
 
   function updateIntegrationRetentionSettings(body = {}) {

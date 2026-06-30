@@ -1,11 +1,11 @@
 import { normalizeStringArray } from "../agents.mjs";
+import { adapterFromArtifact } from "./helpers.mjs";
 
 export function createIntegrationProbeRuntime({
   state,
   now,
   nextId,
   appendEvent,
-  adapterFromArtifact,
   findIntegrationArtifact,
 }) {
   function createIntegrationProbeRun(artifact) {
