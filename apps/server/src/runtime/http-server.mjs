@@ -1,6 +1,7 @@
 import http from "node:http";
 import { REQUIRE_AUTH, resolveActor } from "./auth.mjs";
 import { handleAgentRoutes } from "../routes/agents.mjs";
+import { handleAgentSkillRoutes } from "../routes/agent-skills.mjs";
 import { handleBridgeRoutes } from "../routes/bridge.mjs";
 import { handleCodexRoutes } from "../routes/codex.mjs";
 import { handleControlPlaneRoutes } from "../routes/control-plane.mjs";
@@ -34,6 +35,9 @@ export function createHttpServer({
   gitProjectSummary,
   worktreeDiff,
   projectGithubItems,
+  createAgentSkill,
+  updateAgentSkill,
+  deleteAgentSkill,
   createSshTarget,
   createSshConnectionTest,
   createManagedTerminalSession,
@@ -206,6 +210,20 @@ export function createHttpServer({
         gitProjectSummary,
         worktreeDiff,
         projectGithubItems,
+      })) {
+        return;
+      }
+
+      if (await handleAgentSkillRoutes({
+        req,
+        res,
+        url,
+        sendJson,
+        readJson,
+        state,
+        createAgentSkill,
+        updateAgentSkill,
+        deleteAgentSkill,
       })) {
         return;
       }

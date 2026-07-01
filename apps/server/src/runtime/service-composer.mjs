@@ -6,6 +6,7 @@ import {
   isAgentDisabled,
   normalizeStringArray,
 } from "../services/agents.mjs";
+import { createAgentSkillService } from "../services/agent-skills.mjs";
 import { createCodexService } from "../services/codex.mjs";
 import { createIntegrationService } from "../services/integrations.mjs";
 import { createInvocationService } from "../services/invocations.mjs";
@@ -73,6 +74,12 @@ export function createServerRuntimeServices({
     updateProject,
     worktreeForProject,
   } = createProjectService({ state, now, nextId, appendEvent, persistStateSoon });
+
+  const {
+    createAgentSkill,
+    updateAgentSkill,
+    deleteAgentSkill,
+  } = createAgentSkillService({ state, now, nextId, persistStateSoon });
 
   const {
     completeHealthCheck,
@@ -416,6 +423,9 @@ export function createServerRuntimeServices({
     gitProjectSummary,
     worktreeDiff,
     projectGithubItems,
+    createAgentSkill,
+    updateAgentSkill,
+    deleteAgentSkill,
     createSshTarget,
     createSshConnectionTest,
     createManagedTerminalSession,

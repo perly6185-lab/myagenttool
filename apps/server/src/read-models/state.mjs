@@ -73,6 +73,7 @@ export function buildPublicState({
     budgets: byProject(state.budgets),
     budgetStatuses: byProject(typeof budgetStatuses === "function" ? budgetStatuses() : []),
     automations: byProject(state.automations),
+    agentSkills: state.agentSkills ?? [],
     privateDeploymentConfig: state.privateDeploymentConfig,
     auditExportRequests: state.auditExportRequests,
     retentionSettings: state.retentionSettings,

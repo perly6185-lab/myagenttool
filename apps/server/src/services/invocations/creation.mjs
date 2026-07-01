@@ -1,3 +1,5 @@
+import { renderAgentSkillsIntoWorktree } from "../agent-skills.mjs";
+
 export function createInvocationCreationRuntime({
   state,
   now,
@@ -183,6 +185,11 @@ export function createInvocationCreationRuntime({
         level: "info",
         message: `Demo invocation authorized for ${agent.name}.`
       });
+    }
+    // Render applicable agent-skills into the resolved worktree (best-effort,
+    // idempotent, git-excluded) so the agent sees them when the bridge runs it.
+    if (projectWorktree?.worktreePath) {
+      renderAgentSkillsIntoWorktree(agent, projectWorktree.worktreePath, state.agentSkills ?? []);
     }
     return invocation;
   }
