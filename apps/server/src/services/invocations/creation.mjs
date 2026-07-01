@@ -40,7 +40,7 @@ export function createInvocationCreationRuntime({
     const codexSessionMode = normalizeCodexSessionMode(options.codexSessionMode, agent);
     const codexWorkspacePolicy = normalizeCodexWorkspacePolicy(options.codexWorkspacePolicy, agent);
     const managedCodexWorkspace = createManagedCodexWorkspace({ invocationId: id, agent, workspacePolicy: codexWorkspacePolicy });
-    const managedCodexSession = createManagedCodexSession({ invocationId: id, agent, codexSessionMode, workspace: managedCodexWorkspace });
+    const managedCodexSession = createManagedCodexSession({ invocationId: id, agent, codexSessionMode, workspace: managedCodexWorkspace, actor: options.actor });
     const requestedMetadata = options.metadata && typeof options.metadata === "object" && !Array.isArray(options.metadata) ? options.metadata : {};
     const requestedWorktree = requestedMetadata.worktreeId
       ? state.worktrees.find((item) => item.id === requestedMetadata.worktreeId)

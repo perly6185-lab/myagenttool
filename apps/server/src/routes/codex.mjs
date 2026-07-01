@@ -86,20 +86,12 @@ export async function handleCodexRoutes({
 
   if (req.method === "POST" && url.pathname === "/api/codex/change-reviews") {
     const body = await readJson(req);
-    // The review inherits its evidence record's invocation; scope it there.
-    // Unknown evidence falls through so the service returns its own 400.
-    const evidence = (state.codexEvidenceRecords ?? []).find(
-      (item) => item.id === String(body.evidenceId ?? "").trim(),
-    );
-    if (
-      evidence &&
-      denyForeignProject({ res, sendJson, state, actor, projectId: codexInvocationProjectId(state, evidence.invocationId) })
-    ) {
-      return true;
-    }
     let review;
     try {
-      review = createCodexChangeReview(body);
+      // Tenancy is enforced inside the service: a foreign-team evidence record
+      // is rejected with the same "unknown evidenceId" 400 as a missing one, so
+      // a cross-team caller can't tell them apart (no existence leak, no write).
+      review = createCodexChangeReview(body, actor);
     } catch (error) {
       sendJson(res, 400, {
         error: "invalid_codex_change_review",
