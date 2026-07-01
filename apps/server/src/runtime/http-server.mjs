@@ -313,6 +313,7 @@ export function createHttpServer({
         sendJson,
         readJson,
         state,
+        actor,
         chargebackExport,
         createAuditExportRequest,
         createLifecycleRecipe,

@@ -1,3 +1,5 @@
+import { denyForeignProject } from "../runtime/auth.mjs";
+
 export async function handleM3Routes({
   req,
   res,
@@ -5,6 +7,7 @@ export async function handleM3Routes({
   sendJson,
   readJson,
   state,
+  actor,
   chargebackExport,
   createAuditExportRequest,
   createPrivateCatalogEntry,
@@ -159,6 +162,13 @@ export async function handleM3Routes({
 
   if (req.method === "POST" && url.pathname === "/api/m3/ai-usage") {
     const body = await readJson(req);
+    // ai-usage attributes cost to a project's ledger/budget, so you must own the
+    // project you bill. Other M3 lifecycle objects (catalog/bundles/recipes/
+    // quota/deployment/audit-export) are operator/org-level with no per-team
+    // owner today — see TENANCY_ROUTE_MATRIX.md.
+    if (denyForeignProject({ res, sendJson, state, actor, projectId: body.projectId })) {
+      return true;
+    }
     const result = recordAiUsage(body);
     sendJson(res, result.blocked ? 409 : 201, result);
     return true;
