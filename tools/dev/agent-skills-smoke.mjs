@@ -2,7 +2,8 @@
 // CRUD, target normalization, and worktree rendering (claude/codex, idempotent
 // re-render, disabled-skip, non-CLI no-op, and the $-sequence corruption fix).
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
@@ -107,6 +108,23 @@ const skills = [
   renderAgentSkillsIntoWorktree({ id: "a", adapter: { type: "http" } }, dir, skills);
   assert.ok(!existsSync(join(dir, "AGENTS.md")) && !existsSync(join(dir, ".claude")), "no render for non-CLI");
   ok("render: non-CLI agent writes nothing");
+}
+
+// --- render codex: a git-TRACKED AGENTS.md must be left untouched (#191 review) ---
+{
+  const repo = join(wt, "tracked-repo"); mkdirSync(repo, { recursive: true });
+  const git = (...a) => execFileSync("git", ["-C", repo, ...a], { stdio: "ignore" });
+  git("init", "-q");
+  git("config", "user.email", "t@t.co");
+  git("config", "user.name", "t");
+  const userContent = "# My Agents\n\nHand-written project instructions.\n";
+  writeFileSync(join(repo, "AGENTS.md"), userContent);
+  git("add", "-A");
+  git("commit", "-qm", "init");
+  renderAgentSkillsIntoWorktree({ id: "a", adapter: { type: "cli", command: "codex" } }, repo, skills);
+  assert.equal(readFileSync(join(repo, "AGENTS.md"), "utf8"), userContent,
+    "tracked AGENTS.md left byte-for-byte unchanged (no skill injection)");
+  ok("render codex: git-tracked AGENTS.md is not mutated");
 }
 
 rmSync(wt, { recursive: true, force: true });

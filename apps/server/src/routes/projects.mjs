@@ -240,7 +240,7 @@ export async function handleProjectRoutes({
     }
     if (denyForeignProject({ res, sendJson, state, actor, projectId: project.id })) return true;
     try {
-      sendJson(res, 200, projectGithubItems(project));
+      sendJson(res, 200, await projectGithubItems(project));
     } catch (error) {
       sendJson(res, 200, { available: false, message: errorMessage(error), items: [] });
     }

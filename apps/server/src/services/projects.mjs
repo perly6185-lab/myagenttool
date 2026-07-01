@@ -1,6 +1,10 @@
-import { execFileSync } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync } from "node:fs";
+import { devNull } from "node:os";
 import { basename, dirname, isAbsolute, relative, resolve } from "node:path";
+import { promisify } from "node:util";
+
+const execFileAsync = promisify(execFile);
 
 function defaultNow() {
   return new Date().toISOString();
@@ -761,7 +765,7 @@ function worktreeDiff(worktree, { projectTargets = [] } = {}) {
       break;
     }
     untrackedSeen += 1;
-    const patch = gitDiffSafe(["diff", "--no-color", "--no-index", "--", "/dev/null", f.path]);
+    const patch = gitDiffSafe(["diff", "--no-color", "--no-index", "--", devNull, f.path]);
     if (patch) diff += (diff && !diff.endsWith("\n") ? "\n" : "") + patch;
   }
   if (diff.length > MAX_DIFF_BYTES) {
@@ -776,30 +780,35 @@ function worktreeDiff(worktree, { projectTargets = [] } = {}) {
 // `{ available, message, items }` — the shape the Task view consumes. Degrades
 // gracefully (available:false + reason) when there is no ready repo, no GitHub
 // remote, or `gh` is unauthenticated.
-function projectGithubItems(project, { projectTargets = [] } = {}) {
+// Async so the two `gh` calls (up to 15s each) don't block the server's single
+// event-loop thread — this runs inside an HTTP handler.
+async function projectGithubItems(project, { projectTargets = [] } = {}) {
   const target = projectTargets.find((t) => t.projectId === project.id && t.state === "ready");
   if (!target) return { available: false, message: "Project has no ready repository.", items: [] };
   let remote = "";
   try {
-    remote = execFileSync("git", ["-C", target.rootPath, "remote", "get-url", "origin"], {
+    remote = (await execFileAsync("git", ["-C", target.rootPath, "remote", "get-url", "origin"], {
       encoding: "utf8",
       timeout: 5_000,
-    }).trim();
+    })).stdout.trim();
   } catch {
     remote = "";
   }
   if (!/github\.com/i.test(remote)) {
     return { available: false, message: "No GitHub remote (origin) on this repository.", items: [] };
   }
-  const ghJson = (args) => {
+  const ghJson = async (args) => {
     try {
-      return JSON.parse(execFileSync("gh", args, { cwd: target.rootPath, encoding: "utf8", timeout: 15_000 }) || "[]") || [];
+      const { stdout } = await execFileAsync("gh", args, { cwd: target.rootPath, encoding: "utf8", timeout: 15_000 });
+      return JSON.parse(stdout || "[]") || [];
     } catch {
       return null;
     }
   };
-  const prsRaw = ghJson(["pr", "list", "--json", "number,title,headRefName,author,url,state", "--limit", "30"]);
-  const issuesRaw = ghJson(["issue", "list", "--json", "number,title,author,url,state", "--limit", "30"]);
+  const [prsRaw, issuesRaw] = await Promise.all([
+    ghJson(["pr", "list", "--json", "number,title,headRefName,author,url,state", "--limit", "30"]),
+    ghJson(["issue", "list", "--json", "number,title,author,url,state", "--limit", "30"]),
+  ]);
   if (prsRaw === null && issuesRaw === null) {
     return { available: false, message: "gh list failed (auth or remote?).", items: [] };
   }
