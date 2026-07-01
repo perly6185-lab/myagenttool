@@ -218,6 +218,11 @@ export const api = {
     request("PATCH", `/api/automations/${encodeURIComponent(id)}`, patch),
   deleteAutomation: (id: string) => request("DELETE", `/api/automations/${encodeURIComponent(id)}`),
 
+  createAgentSkill: (payload: Record<string, unknown>) => request("POST", "/api/agent-skills", payload),
+  updateAgentSkill: (id: string, patch: Record<string, unknown>) =>
+    request("PATCH", `/api/agent-skills/${encodeURIComponent(id)}`, patch),
+  deleteAgentSkill: (id: string) => request("DELETE", `/api/agent-skills/${encodeURIComponent(id)}`),
+
   approveApproval: (id: string) =>
     request("POST", `/api/approvals/${encodeURIComponent(id)}/approve`),
   denyApproval: (id: string) => request("POST", `/api/approvals/${encodeURIComponent(id)}/deny`),

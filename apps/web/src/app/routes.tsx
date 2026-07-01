@@ -4,6 +4,7 @@ import { DashboardView } from "@/features/dashboard/dashboard-view";
 import { ProjectsView } from "@/features/projects/projects-view";
 import { TaskView } from "@/features/tasks/task-view";
 import { AutomationView } from "@/features/automation/automation-view";
+import { AgentSkillsView } from "@/features/agent-skills/agent-skills-view";
 import { InvocationsView } from "@/features/invocations/invocations-view";
 import { AgentsView } from "@/features/agents/agents-view";
 import { DevicesView } from "@/features/devices/devices-view";
@@ -21,6 +22,7 @@ export const SECTION_VIEWS: Record<SectionKey, ComponentType> = {
   projects: ProjectsView,
   task: TaskView,
   automation: AutomationView,
+  agentSkills: AgentSkillsView,
   invocations: InvocationsView,
   agents: AgentsView,
   devices: DevicesView,
