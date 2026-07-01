@@ -74,6 +74,13 @@ export function resolveActor(state, req) {
  * route's "missing" 404. The default generic body is only for guards keyed on a
  * body-supplied projectId, where there is no sibling resource-not-found to
  * mirror. (Tests pin foreign-body === missing-body per route to catch drift.)
+ *
+ * A provided-but-unknown projectId is denied too, not waved through: a dangling
+ * id is either bogus or another team's deleted row, and treating "unknown" the
+ * same as "foreign" means a route can rely on this guard alone to scope a write
+ * without also needing a paired existence check. Only an absent projectId
+ * (`!projectId`) is a no-op — those callers legitimately fall back elsewhere
+ * (e.g. invocation creation uses the current project).
  */
 export function denyForeignProject({
   res,
@@ -84,8 +91,9 @@ export function denyForeignProject({
   notFound = { error: "not_found" },
 }) {
   if (!projectId) return false;
+  if (actor == null) return false; // unscoped (single-team local dev) — allow.
   const project = (state.projects ?? []).find((p) => p.id === projectId);
-  if (project && actor && teamOf(project) !== actor.teamId) {
+  if (!project || teamOf(project) !== actor.teamId) {
     sendJson(res, 404, notFound);
     return true;
   }
