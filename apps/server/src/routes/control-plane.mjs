@@ -146,6 +146,7 @@ export async function handleControlPlaneRoutes({
       return true;
     }
     const invocation = createInvocation(automation.prompt, agent, {
+      actor,
       projectId: automation.projectId,
       metadata: { automationId: automation.id, automationName: automation.name },
     });

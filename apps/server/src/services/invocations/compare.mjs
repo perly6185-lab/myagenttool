@@ -11,7 +11,7 @@ export function createInvocationCompareRuntime({
     const compareRun = {
       id: nextId("cmp_demo"),
       task,
-      requestedBy: "usr_local",
+      requestedBy: options.actor?.userId ?? "usr_local",
       status: "running",
       childInvocationIds: [],
       preferredInvocationId: null,

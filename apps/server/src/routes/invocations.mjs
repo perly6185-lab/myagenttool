@@ -38,9 +38,9 @@ export async function handleInvocationRoutes({
     }
 
     if (approvalMatch[2] === "approve") {
-      approveInvocation(approval, invocation);
+      approveInvocation(approval, invocation, actor);
     } else {
-      denyInvocation(approval, invocation);
+      denyInvocation(approval, invocation, actor);
     }
     sendJson(res, 200, { approval, invocation });
     return true;
@@ -76,7 +76,7 @@ export async function handleInvocationRoutes({
       sendJson(res, 409, { error: "device_unlinked" });
       return true;
     }
-    const invocation = createInvocation(task, agent, invocationOptionsFromBody(body));
+    const invocation = createInvocation(task, agent, { ...invocationOptionsFromBody(body), actor });
     startInvocationIfAllowed(invocation, agent);
     sendJson(res, 201, { invocation });
     return true;
@@ -104,7 +104,7 @@ export async function handleInvocationRoutes({
       sendJson(res, 409, { error: "agent_not_ready", agentId: blocked.id });
       return true;
     }
-    const compareRun = createCompareRun(task, agents, body.options ?? {});
+    const compareRun = createCompareRun(task, agents, { ...(body.options ?? {}), actor });
     sendJson(res, 201, {
       compareRun,
       invocations: compareRun.childInvocationIds.map((id) => findInvocation(id)).filter(Boolean),
@@ -122,7 +122,7 @@ export async function handleInvocationRoutes({
     if (denyForeignProject({ res, sendJson, state, actor, projectId: invocationProjectId(invocation), notFound: { error: "invocation_not_found" } })) {
       return true;
     }
-    cancelInvocation(invocation);
+    cancelInvocation(invocation, actor);
     sendJson(res, 200, { invocation });
     return true;
   }
@@ -142,7 +142,7 @@ export async function handleInvocationRoutes({
       return true;
     }
 
-    const report = createTroubleshootingReport(invocation);
+    const report = createTroubleshootingReport(invocation, actor);
     sendJson(res, 201, { report });
     return true;
   }

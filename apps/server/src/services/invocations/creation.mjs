@@ -61,7 +61,9 @@ export function createInvocationCreationRuntime({
       agentId: agent.id,
       projectId: visibleProject?.id ?? project?.id ?? null,
       worktreeId: projectWorktree?.id ?? null,
-      requestedBy: "usr_local",
+      // Prefer an explicit requestedBy (the scheduler passes the automation's
+      // creator), then the acting user, then the local fallback.
+      requestedBy: options.requestedBy ?? options.actor?.userId ?? "usr_local",
       status: quotaGate?.allowed === false ? "rejected" : policy.decision === "requires_local_approval" ? "waiting_for_local_approval" : directRun ? "running" : "queued",
       delivery: {
         deliveryId: nextId("del_demo"),
@@ -242,14 +244,14 @@ function maybeEnforcePlatformAiQuota({ invocationId, agent, options, enforcePlat
   }
   return enforcePlatformAiQuota({
     invocationId,
-    userId: "usr_local",
-    teamId: metadata.teamId,
+    userId: options.actor?.userId ?? "usr_local",
+    teamId: metadata.teamId ?? options.actor?.teamId,
     agentId: agent.id,
     provider: metadata.provider ?? "openai",
     model: metadata.model ?? "default",
     requestCount: metadata.requestCount ?? 1,
     estimatedCost: metadata.estimatedCost ?? "0",
-    costOwner: metadata.costOwner ?? agent.economics?.costOwner ?? "usr_local",
+    costOwner: metadata.costOwner ?? agent.economics?.costOwner ?? options.actor?.userId ?? "usr_local",
     allowedModels: metadata.allowedModels,
     credentialState: metadata.credentialState,
   });
