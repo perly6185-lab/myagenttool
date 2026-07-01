@@ -107,6 +107,7 @@ export function createInvocationService({
     appendEvent,
     dispatchLeaseMs,
     findAgent,
+    completeInvocation,
   });
   const { createCompareRun } = createInvocationCompareRuntime({
     state,

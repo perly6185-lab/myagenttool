@@ -6,10 +6,65 @@ export function createInvocationDispatchRuntime({
   appendEvent,
   dispatchLeaseMs,
   findAgent,
+  completeInvocation,
 }) {
+  // The directory a run occupies. Two runs in the same worktree (or the same
+  // base project) must not execute concurrently — they'd write the same tree.
+  function invocationDirKey(invocation) {
+    const meta = invocation.input?.metadata ?? {};
+    return meta.worktreePath || meta.projectPath || "__default__";
+  }
+
+  // Bridge-executed = a local-device CLI run driven by this machine's bridge.
+  // A remote_http/platform agent runs off-device and must not consume a bridge
+  // concurrency slot. Unknown agent → count it (conservative for the cap).
+  function isBridgeExecuted(invocation) {
+    const agent = findAgent(invocation.agentId);
+    if (!agent) return true;
+    return agent.adapter?.type === "cli" && agent.location?.type === "local_device";
+  }
+
+  // Force a terminal status on runs stuck in "cancelling" past a grace (e.g. the
+  // bridge died mid-cancel). Otherwise they'd hold a concurrency slot and lock
+  // their worktree forever. Grace ≥ twice the dispatch lease so a legitimately-
+  // still-killing process isn't reclaimed early.
+  const cancelGraceMs = Math.max(60_000, (dispatchLeaseMs ?? 30_000) * 2);
+  function reclaimStuckCancellations() {
+    if (typeof completeInvocation !== "function") return;
+    const cutoff = Date.now() - cancelGraceMs;
+    for (const invocation of state.invocations) {
+      if (invocation.status !== "cancelling") continue;
+      const since = Date.parse(invocation.cancellation?.requestedAt ?? invocation.updatedAt ?? "");
+      if (Number.isFinite(since) && since > cutoff) continue;
+      completeInvocation(invocation, {
+        status: "cancelled",
+        summary: "Cancellation reclaimed after grace — the bridge did not confirm completion.",
+        result: null,
+      });
+    }
+  }
+
   function nextDispatchableInvocation() {
+    reclaimStuckCancellations();
+    // Only bridge-executed runs count toward the device cap: a long-running
+    // platform/HTTP agent (off-device) must not consume a bridge slot and
+    // starve CLI dispatch.
+    const inFlight = state.invocations.filter(
+      (i) => ["dispatching", "running", "cancelling"].includes(i.status) && isBridgeExecuted(i),
+    );
+    // Authoritative cross-worktree concurrency cap.
+    if (inFlight.length >= (state.device.maxConcurrency || 1)) {
+      return undefined;
+    }
+    // Directories occupied by an in-flight run: skip a queued task whose cwd is
+    // busy so the bridge can run other worktrees concurrently without two agents
+    // writing the same directory.
+    const busyDirs = new Set(inFlight.map(invocationDirKey));
     return state.invocations.find((item) => {
       if (item.status !== "queued" || !["queued", "redelivering"].includes(item.delivery.state)) {
+        return false;
+      }
+      if (busyDirs.has(invocationDirKey(item))) {
         return false;
       }
       const agent = findAgent(item.agentId);
