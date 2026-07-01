@@ -1,11 +1,12 @@
 export function createAgentService({ state, now, nextId, appendEvent }) {
-  function registerAgent(body) {
+  function registerAgent(body, actor = null) {
     const type = body.type ?? body.adapter?.type;
     if (!["cli", "http"].includes(type)) {
       throw new Error("M0 supports manual cli and http agent registration only.");
     }
 
     const agent = type === "cli" ? createCliAgent(body) : createHttpAgent(body);
+    if (actor?.userId) agent.ownerUserId = actor.userId; // register under the acting user
     const existingIndex = state.agents.findIndex((item) => item.id === agent.id);
     if (existingIndex >= 0) {
       const existing = state.agents[existingIndex];

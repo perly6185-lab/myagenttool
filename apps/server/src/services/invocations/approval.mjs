@@ -74,14 +74,15 @@ export function createInvocationApprovalRuntime({
     return approval;
   }
 
-  function approveInvocation(approval, invocation) {
+  function approveInvocation(approval, invocation, actor = null) {
     if (approval.status !== "pending" || invocation.status !== "waiting_for_local_approval") {
       return;
     }
+    const decidedBy = actor?.userId ?? "usr_local";
     const agent = findAgent(invocation.agentId);
     approval.status = "approved";
     approval.decidedAt = now();
-    approval.decidedBy = "usr_local";
+    approval.decidedBy = decidedBy;
     invocation.status = agent?.adapter.type === "http" ? "running" : "queued";
     invocation.delivery.state = agent?.adapter.type === "http" ? "not_required" : "queued";
     invocation.delivery.dispatchAttempts = agent?.adapter.type === "http" ? 1 : 0;
@@ -91,7 +92,7 @@ export function createInvocationApprovalRuntime({
     const policyRecord = state.policyDecisionRecords.find((item) => item.id === invocation.policyDecisionId);
     if (policyRecord) {
       policyRecord.decision = "allowed";
-      policyRecord.approver = "usr_local";
+      policyRecord.approver = decidedBy;
       policyRecord.reason = "Local approval granted for high-risk invocation.";
     }
     appendEvent({
@@ -116,13 +117,14 @@ export function createInvocationApprovalRuntime({
     startInvocationIfAllowed(invocation, agent);
   }
 
-  function denyInvocation(approval, invocation) {
+  function denyInvocation(approval, invocation, actor = null) {
     if (approval.status !== "pending" || invocation.status !== "waiting_for_local_approval") {
       return;
     }
+    const decidedBy = actor?.userId ?? "usr_local";
     approval.status = "denied";
     approval.decidedAt = now();
-    approval.decidedBy = "usr_local";
+    approval.decidedBy = decidedBy;
     invocation.status = "rejected";
     invocation.completedAt = now();
     invocation.updatedAt = now();
@@ -130,7 +132,7 @@ export function createInvocationApprovalRuntime({
     const policyRecord = state.policyDecisionRecords.find((item) => item.id === invocation.policyDecisionId);
     if (policyRecord) {
       policyRecord.decision = "denied";
-      policyRecord.approver = "usr_local";
+      policyRecord.approver = decidedBy;
       policyRecord.reason = "Local approval denied by user.";
     }
     appendEvent({

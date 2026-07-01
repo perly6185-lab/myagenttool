@@ -9,12 +9,13 @@ export function createInvocationCancellationRuntime({
   recordAgentUsage,
   isTerminal,
 }) {
-  function cancelInvocation(invocation) {
+  function cancelInvocation(invocation, actor = null) {
     if (isTerminal(invocation.status)) {
       return;
     }
+    const requestedBy = actor?.userId ?? "usr_local";
     const agent = findAgent(invocation.agentId);
-    invocation.cancellation.requestedBy = "usr_local";
+    invocation.cancellation.requestedBy = requestedBy;
     invocation.cancellation.requestedAt = now();
     invocation.cancellation.reason = "Requested from Web Console.";
 
@@ -23,7 +24,8 @@ export function createInvocationCancellationRuntime({
         cancellationReason: "Requested from Web Console.",
         eventType: "cancel_requested",
         eventMessage: "Queued invocation cancellation requested.",
-        auditSummary: "Cancelled before local execution."
+        auditSummary: "Cancelled before local execution.",
+        requestedBy,
       });
       return;
     }
@@ -69,10 +71,10 @@ export function createInvocationCancellationRuntime({
     }
   }
 
-  function cancelQueuedInvocation(invocation, { cancellationReason, eventType, eventMessage, auditSummary }) {
+  function cancelQueuedInvocation(invocation, { cancellationReason, eventType, eventMessage, auditSummary, requestedBy = "usr_local" }) {
     invocation.status = "cancelled";
     invocation.cancellation.state = "queued_cancelled";
-    invocation.cancellation.requestedBy = "usr_local";
+    invocation.cancellation.requestedBy = requestedBy;
     invocation.cancellation.requestedAt = now();
     invocation.cancellation.reason = cancellationReason;
     invocation.completedAt = now();
@@ -81,7 +83,7 @@ export function createInvocationCancellationRuntime({
     if (pendingApproval?.status === "pending") {
       pendingApproval.status = "denied";
       pendingApproval.decidedAt = now();
-      pendingApproval.decidedBy = "usr_local";
+      pendingApproval.decidedBy = requestedBy;
     }
     appendEvent({
       invocationId: invocation.id,

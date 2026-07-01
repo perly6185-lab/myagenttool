@@ -1,4 +1,4 @@
-import { LOCAL_TEAM_ID } from "../runtime/auth.mjs";
+import { LOCAL_TEAM_ID, teamOf } from "../runtime/auth.mjs";
 import { isCodexCliCommand } from "./agents.mjs";
 
 export function createCodexService({
@@ -55,7 +55,7 @@ export function createCodexService({
     return workspace;
   }
 
-  function createManagedCodexSession({ invocationId, agent, codexSessionMode, workspace }) {
+  function createManagedCodexSession({ invocationId, agent, codexSessionMode, workspace, actor = null }) {
     if (!isCodexCliCommand(agent?.adapter?.command)) {
       return null;
     }
@@ -66,7 +66,7 @@ export function createCodexService({
       codexSessionId: null,
       codexThreadId: null,
       invocationId,
-      userId: "usr_local",
+      userId: actor?.userId ?? "usr_local",
       deviceId: agent.location?.deviceId ?? null,
       repoPath: project?.path ?? (agent.adapter?.workingDirectoryPolicy === "bridge_default" ? "bridge_default" : null),
       workspaceId: workspace?.id ?? null,
@@ -170,10 +170,23 @@ export function createCodexService({
     return evidence;
   }
 
-  function createCodexChangeReview(body) {
+  // True when the evidence's invocation belongs to a project the actor's team
+  // does not own. A null actor (unscoped/local dev) never treats rows as foreign.
+  function isForeignEvidence(evidence, actor) {
+    if (!actor) return false;
+    const invocation = (state.invocations ?? []).find((item) => item.id === evidence?.invocationId);
+    const projectId = invocation?.projectId ?? invocation?.input?.metadata?.projectId ?? null;
+    const project = projectId ? (state.projects ?? []).find((p) => p.id === projectId) : null;
+    return Boolean(project) && teamOf(project) !== actor.teamId;
+  }
+
+  function createCodexChangeReview(body, actor = null) {
     const evidenceId = String(body.evidenceId ?? "").trim();
     const evidence = state.codexEvidenceRecords.find((item) => item.id === evidenceId);
-    if (!evidence) {
+    // A foreign-team evidence record is treated as if it doesn't exist, so the
+    // response is byte-identical to an unknown evidenceId (no existence leak,
+    // and no cross-team write). Same message → same 400 the route already emits.
+    if (!evidence || isForeignEvidence(evidence, actor)) {
       throw new Error("evidenceId must reference a Codex evidence record.");
     }
     if (!evidence.fileChangeSummary) {
@@ -201,7 +214,7 @@ export function createCodexService({
       decision,
       comment: comment.length <= 1000 ? comment : `${comment.slice(0, 997)}...`,
       followUpPrompt: decision === "feedback" ? codexChangeFollowUpPrompt(evidence, comment) : null,
-      reviewedBy: "usr_local",
+      reviewedBy: actor?.userId ?? "usr_local",
       auditState: "recorded",
       createdAt,
     };

@@ -6,6 +6,7 @@ export async function handleAgentRoutes({
   url,
   sendJson,
   readJson,
+  actor,
   state,
   now,
   appendEvent,
@@ -60,7 +61,7 @@ export async function handleAgentRoutes({
     const body = await readJson(req);
     let agent;
     try {
-      agent = registerAgent(body);
+      agent = registerAgent(body, actor);
     } catch (error) {
       sendJson(res, 400, {
         error: "invalid_agent_registration",

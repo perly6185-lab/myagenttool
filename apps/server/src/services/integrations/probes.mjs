@@ -24,7 +24,7 @@ export function createIntegrationProbeRuntime({
       id: nextId("lco_demo"),
       artifactId: artifact.id,
       deviceId: adapter.type === "cli" ? state.device.id : null,
-      requestedBy: "usr_local",
+      requestedBy: artifact.requestedBy ?? "usr_local",
       status: adapter.type === "cli" ? "queued" : "running",
       adapter,
       summary: "Probe requested after explicit review action.",

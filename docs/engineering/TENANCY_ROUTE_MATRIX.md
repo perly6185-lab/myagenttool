@@ -45,9 +45,9 @@ Legend: ✅ guarded · ➖ N/A on this axis · 📌 decided (documented, no guar
 | projects | POST/PATCH/DELETE `/api/projects/:id[/…]` | project | ✅ (9 guarded sites) |
 | projects | POST `/api/worktree-name-suggestion` | none | ➖ reviewed — only slugifies `body.description`, reads no project state |
 | codex | POST `/api/codex/approval-broker/:id/(approve\|deny)` | invocation | ✅ scoped by `request.invocationId`'s project |
-| codex | POST `/api/codex/change-reviews` | invocation | ✅ scoped by evidence → `invocationId`'s project |
+| codex | POST `/api/codex/change-reviews` | invocation | ✅ foreign evidence rejected with the same 400 as unknown (existence-hidden, no leak) |
 | codex | POST `/api/codex/hooks` | bridge | ➖ codex CLI / bridge ingestion, not a user surface |
-| codex | POST `/api/codex/imported-evidence` | user | 🔭 free-standing record, hardcodes `usr_local`, no invocation/project link — needs the real per-actor identity pass |
+| codex | POST `/api/codex/imported-evidence` | team | ✅ stamps `actor.userId`/`teamId` at creation; team-scoped in `buildPublicState` |
 | agent-skills | POST/PATCH/DELETE `/api/agent-skills[/:id]` | global | 📌 **decided: global library** — records carry no `ownerTeamId`; revisit if team-scoped skills are needed (add owner + read scope + write guard) |
 | m3 | POST `/api/m3/ai-usage` | project | ✅ `denyForeignProject(body.projectId)` — cost attribution to ledger/budget |
 | m3 | POST `/api/m3/{private-catalog,signed-bundles,lifecycle-recipes,quota-policies}` | org/operator | 📌 **decided: operator-level** — no per-team owner today; revisit at M3 team-level cost allocation |
@@ -99,25 +99,37 @@ Legend: ✅ guarded · ➖ N/A on this axis · 📌 decided (documented, no guar
   are scoped `byCompareRun`; agents are device-level, not team-partitioned.
   worktree-name-suggestion only slugifies `body.description` and reads no state.
 
-## Open decisions / follow-ups
+## Resolved: identity pass (attribution)
 
-- **codex change-reviews still leaks by status.** A missing evidence id returns
-  the service's `400 invalid_codex_change_review`, while a foreign one returns
-  the guard's `404` — distinguishable by status. Low severity (evidence ids);
-  fold into the codex identity pass.
-- **Systemic `usr_local` attribution (deliberate M0 simplification).** ~60 sites
-  across invocations/agents/m3/integrations/terminal/codex stamp `usr_local` as
-  requestedBy/costOwner/reviewedBy — attribution, not access. Access is already
-  guarded (`denyForeignProject`) and imported-evidence is now team-scoped, so
-  this is a correctness/attribution follow-up, not a hole. It should be done as
-  one coherent identity pass (thread `actor` into the service layer), not
-  piecemeal per subsystem. `imported-evidence` now stamps `actor.userId`/`teamId`
-  as the first step; closing the change-reviews 400-vs-404 status leak belongs to
-  the same pass.
+`actor` is now threaded into the service layer so who-did-it fields record the
+acting user (`actor?.userId`), falling back to `usr_local` only for non-route
+callers (scheduler, self-check, seed, device-unlink bulk cleanup):
+
+- **invocations** — `requestedBy` on create/compare/troubleshoot, `decidedBy`/
+  `approver` on approve/deny, cancel `requestedBy`. `createInvocation` also honors
+  `options.requestedBy`, so the scheduler's `automation.createdBy` (previously
+  dropped) now sticks.
+- **m3** — `recordAiUsage` userId/teamId, `createQuotaPolicy` subjectId, lifecycle
+  recipe/audit `requestedBy`, `decideLifecycleLocalApproval` decidedBy; internal
+  lifecycle/rollback actions inherit `recipe`/`rollback.requestedBy`; the
+  invocation ledger entry uses `invocation.requestedBy`.
+- **codex** — managed session userId, change-review reviewedBy; a foreign-team
+  evidence record is now rejected with the same `400` as a missing one, closing
+  the change-reviews **400-vs-404 status leak**.
+- **integrations** — discovery/artifact `requestedBy`; probe runs inherit the
+  artifact's.
+- **agents** — registration stamps `ownerUserId` from the actor.
+
+Verified via self-check + `smoke:local` + the tenancy unit suite (all green).
+
+**Left by decision (not actor bugs):** `costOwner` across agents/integrations is
+an economics "who pays" default, distinct from "who acted", and stays economics-
+configured. **Remaining tail (2 sites, deeper plumbing):** terminal session
+`userId` (device-scoped; needs `actor` threaded through http-server) and the
+agent lifecycle-operation `requestedBy` (multi-layer through enable/disable/
+update). Both fall back to `usr_local` today.
 
 ## Remaining order
 
-1. Identity pass — thread `actor` into the service layer, replacing the ~60
-   `usr_local` attribution stamps and closing the change-reviews 400-vs-404
-   status leak.
+1. Tail identity sites: terminal session userId + agent lifecycle-op requestedBy.
 2. Team-level cost allocation → revisit m3 operator-level objects and agent-skills.

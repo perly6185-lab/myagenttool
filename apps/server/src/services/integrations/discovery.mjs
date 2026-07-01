@@ -32,7 +32,7 @@ export function createDiscoveryRuntime({
     const discoveryRun = {
       id: nextId("lco_demo"),
       deviceId: state.device.id,
-      requestedBy: "usr_local",
+      requestedBy: body.requestedBy ?? "usr_local",
       status: state.device.status === "online" && state.device.unlinkState === "linked" ? "queued" : "failed",
       scope,
       options: {
@@ -53,7 +53,7 @@ export function createDiscoveryRuntime({
       id: discoveryRun.id,
       agentId: "agt_demo_cli",
       deviceId: state.device.id,
-      requestedBy: "usr_local",
+      requestedBy: body.requestedBy ?? "usr_local",
       operation: "discover",
       status: discoveryRun.status,
       reason: "Conservative local agent discovery requested.",

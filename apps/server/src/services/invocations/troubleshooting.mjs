@@ -7,12 +7,13 @@ export function createInvocationTroubleshootingRuntime({
   createInvocation,
   completeInvocation,
 }) {
-  function createTroubleshootingReport(targetInvocation) {
+  function createTroubleshootingReport(targetInvocation, actor = null) {
     const platformAgent = findAgent("agt_platform_troubleshooter");
     if (!platformAgent) {
       throw new Error("Platform troubleshooting agent is not registered.");
     }
     const platformInvocation = createInvocation(`Troubleshoot invocation ${targetInvocation.id}`, platformAgent, {
+      actor,
       metadata: { targetInvocationId: targetInvocation.id }
     });
     appendEvent({
@@ -23,7 +24,7 @@ export function createInvocationTroubleshootingRuntime({
       data: { targetInvocationId: targetInvocation.id }
     });
 
-    const report = buildTroubleshootingReport(targetInvocation, platformAgent);
+    const report = buildTroubleshootingReport(targetInvocation, platformAgent, actor);
     state.troubleshootingReports.unshift(report);
     state.troubleshootingReports = state.troubleshootingReports.slice(0, 100);
 
@@ -59,7 +60,7 @@ export function createInvocationTroubleshootingRuntime({
     return report;
   }
 
-  function buildTroubleshootingReport(invocation, platformAgent) {
+  function buildTroubleshootingReport(invocation, platformAgent, actor = null) {
     const agent = findAgent(invocation.agentId);
     const events = state.events.filter((item) => item.invocationId === invocation.id).reverse();
     const logEvents = events.filter((item) => item.type === "log" || item.type === "agent_output");
@@ -71,7 +72,7 @@ export function createInvocationTroubleshootingRuntime({
       id: nextId("trb_demo"),
       invocationId: invocation.id,
       platformAgentId: platformAgent.id,
-      requestedBy: "usr_local",
+      requestedBy: actor?.userId ?? "usr_local",
       status: "generated",
       failedStatus: invocation.status,
       bridgeState,
