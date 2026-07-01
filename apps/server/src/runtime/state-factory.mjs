@@ -1,5 +1,8 @@
 import { basename } from "node:path";
 import {
+  claudeCliArgs,
+  claudeRegistrationNotes,
+  claudeRiskTags,
   codexCliArgs,
   codexRegistrationNotes,
   codexRiskTags,
@@ -10,6 +13,7 @@ import { createTerminalRuntimeCapability } from "../services/terminal.mjs";
 const defaultAgentIds = [
   "agt_demo_cli",
   "agt_codex_cli",
+  "agt_claude_cli",
   "agt_platform_troubleshooter",
   "agt_platform_integration_builder",
 ];
@@ -107,6 +111,18 @@ export function resetStateForSelfCheck({ state, now }) {
       nextAction: "Run a health check before the first Codex task."
     };
     codexAgent.updatedAt = now();
+  }
+  const claudeAgent = state.agents.find((agent) => agent.id === "agt_claude_cli") ?? null;
+  if (claudeAgent) {
+    claudeAgent.lifecycle = { ...claudeAgent.lifecycle, state: "enabled" };
+    claudeAgent.status = "unavailable";
+    claudeAgent.health = {
+      status: "unknown",
+      checkedAt: null,
+      message: "Claude Code setup has not been checked yet.",
+      nextAction: "Run a health check before the first Claude task."
+    };
+    claudeAgent.updatedAt = now();
   }
   state.invocations = [];
   state.events = [];
@@ -385,6 +401,60 @@ function createDefaultAgents(now) {
         nextAction: "Run a health check before the first Codex task."
       },
       registrationNotes: codexRegistrationNotes(),
+      discovery: {
+        source: "default_registered",
+        confidence: "high"
+      },
+      createdAt: now()
+    },
+    {
+      id: "agt_claude_cli",
+      name: "Claude Code CLI",
+      description: "Runs Claude Code non-interactively (claude -p) through a reviewed local adapter config.",
+      ownerUserId: "usr_local",
+      location: { type: "local_device", deviceId: "dev_local_001" },
+      adapter: {
+        type: "cli",
+        command: "claude",
+        args: claudeCliArgs("acceptEdits"),
+        workingDirectoryPolicy: "bridge_default",
+        environmentPolicy: "inherit_safe",
+        timeoutSeconds: 180,
+        cancellation: "supported",
+        outputFormat: "claude_jsonl",
+        sandbox: null,
+        permissionMode: "acceptEdits"
+      },
+      lifecycle: {
+        state: "enabled",
+        installState: "installed",
+        version: "0.0.0",
+        managedBy: "bridge"
+      },
+      economics: {
+        model: "unknown",
+        pricingDimensions: [],
+        currency: "USD",
+        costOwner: "usr_local",
+        budgetPoolId: null,
+        unknownCostPolicy: "warn"
+      },
+      capabilities: [
+        {
+          name: "claude_repo_task",
+          description: "Runs Claude Code repository tasks using Claude Code native permission modes.",
+          riskLevel: "high",
+          riskTags: claudeRiskTags()
+        }
+      ],
+      status: "unavailable",
+      health: {
+        status: "unknown",
+        checkedAt: null,
+        message: "Claude Code setup has not been checked yet.",
+        nextAction: "Run a health check before the first Claude task."
+      },
+      registrationNotes: claudeRegistrationNotes(),
       discovery: {
         source: "default_registered",
         confidence: "high"
