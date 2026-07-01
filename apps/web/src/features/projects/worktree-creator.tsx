@@ -6,6 +6,7 @@ import { Field } from "@/components/common/field";
 import { useConsoleState } from "@/data/use-console-state";
 import { useAsyncAction, api } from "@/data/use-console-actions";
 import { cn } from "@/lib/cn";
+import { branchFromIssue, worktreeLinkFor } from "@/features/projects/worktree-payload";
 
 type GithubItem = {
   type: "pr" | "issue";
@@ -19,12 +20,6 @@ type GithubItem = {
 type GithubState = { available: boolean; message: string; items: GithubItem[] };
 type BranchRef = { name: string; remote: boolean };
 type Tab = "smart" | "github" | "branch" | "name";
-
-// Branch name for a worktree created from an issue: "<number>-<title slug>".
-function issueBranchName(item: GithubItem): string {
-  const slug = item.title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40) || "issue";
-  return `${item.number}-${slug}`;
-}
 
 // Meaningful words for matching a free-text description against issue titles.
 const RANK_STOP = new Set([
@@ -151,10 +146,10 @@ export function WorktreeCreator({
   }
 
   // Selecting a GitHub item backfills the shared name field: an issue seeds a
-  // new "<num>-<slug>" branch you can edit; a PR fills (read-only) its head ref.
+  // new "issue-<num>-<slug>" branch you can edit; a PR fills (read-only) its head ref.
   function selectGithub(item: GithubItem) {
     setGhSel(item);
-    setWtName(item.type === "issue" ? issueBranchName(item) : (item.headRefName ?? ""));
+    setWtName(item.type === "issue" ? branchFromIssue(item) : (item.headRefName ?? ""));
   }
   // Selecting a branch checks out that ref; reflect it in the name field too.
   function selectBranch(name: string) {
@@ -162,11 +157,11 @@ export function WorktreeCreator({
     setWtName(name);
   }
 
-  // Selecting a recommended issue links the worktree to it and seeds a
-  // "<num>-<slug>" branch name, mirroring an issue pick on the GitHub tab.
+  // Selecting a recommended issue links the worktree to it and seeds an
+  // "issue-<num>-<slug>" branch name, mirroring an issue pick on the GitHub tab.
   function selectSmartIssue(item: GithubItem) {
     setGhSel(item);
-    setWtName(issueBranchName(item));
+    setWtName(branchFromIssue(item));
   }
 
   async function suggest() {
@@ -204,10 +199,7 @@ export function WorktreeCreator({
     const startPoint = baseBranch || undefined;
     // Carry the GitHub link so the worktree can show its issue/PR card later.
     // Smart mode can also link a recommended issue while creating a new branch.
-    const link =
-      (tab === "github" || tab === "smart") && ghSel
-        ? { type: ghSel.type, number: ghSel.number, title: ghSel.title, url: ghSel.url, state: ghSel.state }
-        : undefined;
+    const link = (tab === "github" || tab === "smart") && ghSel ? worktreeLinkFor(ghSel) : undefined;
     const payload =
       tab === "github" && ghSel?.type === "pr"
         ? { prNumber: ghSel.number, agentId, link }
@@ -304,7 +296,7 @@ export function WorktreeCreator({
                               <span className="font-medium">#{it.number}</span> {it.title}
                             </span>
                             <span className="block text-[10px] text-muted-foreground">
-                              links issue → {issueBranchName(it)}
+                              links issue → {branchFromIssue(it)}
                               {it.author ? ` · @${it.author}` : ""}
                             </span>
                           </span>
@@ -388,7 +380,7 @@ export function WorktreeCreator({
                                 <span className="font-medium">#{it.number}</span> {it.title}
                               </span>
                               <span className="block text-[10px] text-muted-foreground">
-                                {it.type === "pr" ? it.headRefName : `issue → ${issueBranchName(it)}`}
+                                {it.type === "pr" ? it.headRefName : `issue → ${branchFromIssue(it)}`}
                                 {it.author ? ` · @${it.author}` : ""}
                               </span>
                             </span>
