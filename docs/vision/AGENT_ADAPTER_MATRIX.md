@@ -17,6 +17,19 @@ Platform
 Container
 ```
 
+### Adapter status
+
+- **CLI / HTTP / Platform** — shipped (M0+).
+- **MCP** — *first slice landed* (`packages/adapters/src/mcp.mjs`): a declarative
+  capability contract, config normalization/validation (stdio + http transports,
+  tool allowlist), and the JSON-RPC `tools/call` request descriptor, unit-tested.
+  Next step: the live MCP client in the Desktop Bridge (open the transport, list
+  tools, stream notifications, map cancellation to `$/cancelRequest`).
+- **A2A / Container** — not started. Follow the same shape: define the capability
+  contract + config normalization in `packages/adapters` first (testable without
+  a live peer/runtime), then the bridge-side client. A2A maps agent-to-agent task
+  delegation; Container wraps a governed containerized runtime.
+
 ## Example Agent Families
 
 | Agent family | Likely adapter | Early support | Notes |

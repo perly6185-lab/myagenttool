@@ -14,7 +14,8 @@
   },
   "scripts": {
     "dev": "node ./src/index.mjs",
-    "test": "node ./src/index.mjs --check",
+    "test": "node ./src/index.mjs --check && node --test test/*.test.mjs",
+    "test:unit": "node --test test/*.test.mjs",
     "lint": "node ./src/index.mjs --check",
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
