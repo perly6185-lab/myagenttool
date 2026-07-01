@@ -38,6 +38,8 @@ export async function handleProjectRoutes({
 
   if (req.method === "POST" && url.pathname === "/api/projects") {
     const body = await readJson(req);
+    // A new project belongs to the creator's team unless one is named explicitly.
+    if (!body.ownerTeamId && actor?.teamId) body.ownerTeamId = actor.teamId;
     let project;
     try {
       if (body.repoUrl) {
@@ -64,6 +66,7 @@ export async function handleProjectRoutes({
 
   if (req.method === "POST" && url.pathname === "/api/projects/clone") {
     const body = await readJson(req);
+    if (!body.ownerTeamId && actor?.teamId) body.ownerTeamId = actor.teamId;
     let project;
     try {
       project = cloneProject(body);
@@ -80,6 +83,7 @@ export async function handleProjectRoutes({
 
   if (req.method === "POST" && url.pathname === "/api/projects/create") {
     const body = await readJson(req);
+    if (!body.ownerTeamId && actor?.teamId) body.ownerTeamId = actor.teamId;
     let project;
     try {
       project = createBlankProject(body);
