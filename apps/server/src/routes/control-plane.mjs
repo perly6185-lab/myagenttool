@@ -137,7 +137,7 @@ export async function handleControlPlaneRoutes({
       sendJson(res, 404, { error: "automation_not_found" });
       return true;
     }
-    if (denyForeignProject({ res, sendJson, state, actor, projectId: automation.projectId })) {
+    if (denyForeignProject({ res, sendJson, state, actor, projectId: automation.projectId, notFound: { error: "automation_not_found" } })) {
       return true;
     }
     const agent = findAgent(automation.agentId) ?? defaultAgent();
@@ -168,7 +168,7 @@ export async function handleControlPlaneRoutes({
     // Same ownership guard as POST /api/automations/:id/run — without it a
     // foreign team could enumerate the id and delete or repoint (prompt/agent/
     // schedule/enabled) another team's scheduled automation. (GAP-1)
-    if (denyForeignProject({ res, sendJson, state, actor, projectId: automation.projectId })) {
+    if (denyForeignProject({ res, sendJson, state, actor, projectId: automation.projectId, notFound: { error: "automation_not_found" } })) {
       return true;
     }
     if (req.method === "DELETE") {

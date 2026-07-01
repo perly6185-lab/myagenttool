@@ -69,16 +69,24 @@ export function resolveActor(state, req) {
  *
  * We answer 404, not 403: project ids are enumerable, so a 403 "it's not yours"
  * would confirm the id exists to a cross-team caller and let them map another
- * team's projects. 404 makes a foreign project indistinguishable from a missing
- * one. (Residual: a route's own not-found body may differ in shape from this
- * generic one — see docs/engineering/TENANCY_ROUTE_MATRIX.md for the plan to
- * standardize not-found responses.)
+ * team's projects. For true existence-hiding, a resource route passes its own
+ * `notFound` body so the "exists but foreign" 404 is byte-identical to that
+ * route's "missing" 404. The default generic body is only for guards keyed on a
+ * body-supplied projectId, where there is no sibling resource-not-found to
+ * mirror. (Tests pin foreign-body === missing-body per route to catch drift.)
  */
-export function denyForeignProject({ res, sendJson, state, actor, projectId }) {
+export function denyForeignProject({
+  res,
+  sendJson,
+  state,
+  actor,
+  projectId,
+  notFound = { error: "not_found" },
+}) {
   if (!projectId) return false;
   const project = (state.projects ?? []).find((p) => p.id === projectId);
   if (project && actor && teamOf(project) !== actor.teamId) {
-    sendJson(res, 404, { error: "not_found" });
+    sendJson(res, 404, notFound);
     return true;
   }
   return false;

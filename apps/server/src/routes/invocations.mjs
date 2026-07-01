@@ -33,7 +33,7 @@ export async function handleInvocationRoutes({
       sendJson(res, 404, { error: "invocation_not_found" });
       return true;
     }
-    if (denyForeignProject({ res, sendJson, state, actor, projectId: invocationProjectId(invocation) })) {
+    if (denyForeignProject({ res, sendJson, state, actor, projectId: invocationProjectId(invocation), notFound: { error: "invocation_not_found" } })) {
       return true;
     }
 
@@ -119,7 +119,7 @@ export async function handleInvocationRoutes({
       sendJson(res, 404, { error: "invocation_not_found" });
       return true;
     }
-    if (denyForeignProject({ res, sendJson, state, actor, projectId: invocationProjectId(invocation) })) {
+    if (denyForeignProject({ res, sendJson, state, actor, projectId: invocationProjectId(invocation), notFound: { error: "invocation_not_found" } })) {
       return true;
     }
     cancelInvocation(invocation);
@@ -134,7 +134,7 @@ export async function handleInvocationRoutes({
       sendJson(res, 404, { error: "invocation_not_found" });
       return true;
     }
-    if (denyForeignProject({ res, sendJson, state, actor, projectId: invocationProjectId(invocation) })) {
+    if (denyForeignProject({ res, sendJson, state, actor, projectId: invocationProjectId(invocation), notFound: { error: "invocation_not_found" } })) {
       return true;
     }
     if (!["failed", "cancelled", "timed_out", "expired", "rejected"].includes(invocation.status)) {

@@ -102,7 +102,7 @@ export async function handleProjectRoutes({
 
   const projectMatch = url.pathname.match(/^\/api\/projects\/([^/]+)$/);
   if (projectMatch && (req.method === "POST" || req.method === "PATCH" || req.method === "DELETE")) {
-    if (denyForeignProject({ res, sendJson, state, actor, projectId: decodeURIComponent(projectMatch[1]) })) {
+    if (denyForeignProject({ res, sendJson, state, actor, projectId: decodeURIComponent(projectMatch[1]), notFound: { error: "project_not_found" } })) {
       return true;
     }
   }
@@ -147,7 +147,7 @@ export async function handleProjectRoutes({
 
   const projectWorktreeMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/worktrees$/);
   if (projectWorktreeMatch && req.method === "POST") {
-    if (denyForeignProject({ res, sendJson, state, actor, projectId: decodeURIComponent(projectWorktreeMatch[1]) })) {
+    if (denyForeignProject({ res, sendJson, state, actor, projectId: decodeURIComponent(projectWorktreeMatch[1]), notFound: { error: "project_not_found" } })) {
       return true;
     }
     const body = await readJson(req);
@@ -172,7 +172,7 @@ export async function handleProjectRoutes({
       sendJson(res, 404, { error: "project_not_found" });
       return true;
     }
-    if (denyForeignProject({ res, sendJson, state, actor, projectId: project.id })) return true;
+    if (denyForeignProject({ res, sendJson, state, actor, projectId: project.id, notFound: { error: "project_not_found" } })) return true;
     try {
       const tree = readProjectTree(project, {
         relativePath: url.searchParams.get("path") ?? "",
@@ -195,7 +195,7 @@ export async function handleProjectRoutes({
       sendJson(res, 404, { error: "project_not_found" });
       return true;
     }
-    if (denyForeignProject({ res, sendJson, state, actor, projectId: project.id })) return true;
+    if (denyForeignProject({ res, sendJson, state, actor, projectId: project.id, notFound: { error: "project_not_found" } })) return true;
     try {
       const results = searchProjectContent(project, {
         query: url.searchParams.get("q") ?? "",
@@ -219,7 +219,7 @@ export async function handleProjectRoutes({
       sendJson(res, 404, { error: "project_not_found" });
       return true;
     }
-    if (denyForeignProject({ res, sendJson, state, actor, projectId: project.id })) return true;
+    if (denyForeignProject({ res, sendJson, state, actor, projectId: project.id, notFound: { error: "project_not_found" } })) return true;
     try {
       sendJson(res, 200, gitProjectSummary(project));
     } catch (error) {
@@ -238,7 +238,7 @@ export async function handleProjectRoutes({
       sendJson(res, 404, { error: "project_not_found" });
       return true;
     }
-    if (denyForeignProject({ res, sendJson, state, actor, projectId: project.id })) return true;
+    if (denyForeignProject({ res, sendJson, state, actor, projectId: project.id, notFound: { error: "project_not_found" } })) return true;
     try {
       sendJson(res, 200, projectGithubItems(project));
     } catch (error) {
@@ -254,7 +254,7 @@ export async function handleProjectRoutes({
       sendJson(res, 404, { error: "project_not_found" });
       return true;
     }
-    if (denyForeignProject({ res, sendJson, state, actor, projectId: project.id })) return true;
+    if (denyForeignProject({ res, sendJson, state, actor, projectId: project.id, notFound: { error: "project_not_found" } })) return true;
     try {
       const summary = gitProjectSummary(project);
       sendJson(res, 200, { branches: [summary.branch].filter(Boolean), current: summary.branch });
@@ -283,7 +283,7 @@ export async function handleProjectRoutes({
       sendJson(res, 404, { error: "project_not_found" });
       return true;
     }
-    if (denyForeignProject({ res, sendJson, state, actor, projectId: project.id })) {
+    if (denyForeignProject({ res, sendJson, state, actor, projectId: project.id, notFound: { error: "project_not_found" } })) {
       return true;
     }
     const action = worktreeMatch[2] ?? "";
