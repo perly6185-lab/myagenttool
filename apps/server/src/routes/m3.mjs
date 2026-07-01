@@ -74,7 +74,7 @@ export async function handleM3Routes({
     const body = await readJson(req);
     let recipe;
     try {
-      recipe = createLifecycleRecipe(body);
+      recipe = createLifecycleRecipe({ ...body, requestedBy: body.requestedBy ?? actor?.userId });
     } catch (error) {
       sendJson(res, 400, {
         error: "invalid_lifecycle_recipe",
@@ -148,14 +148,18 @@ export async function handleM3Routes({
       sendJson(res, 404, { error: "lifecycle_approval_not_found" });
       return true;
     }
-    const updated = decideLifecycleLocalApproval(approval, lifecycleApprovalMatch[2]);
+    const updated = decideLifecycleLocalApproval(approval, lifecycleApprovalMatch[2], actor);
     sendJson(res, 200, { approval: updated, recipe: findLifecycleRecipe(updated.recipeId) });
     return true;
   }
 
   if (req.method === "POST" && url.pathname === "/api/m3/quota-policies") {
     const body = await readJson(req);
-    const quotaPolicy = createQuotaPolicy(body);
+    const quotaPolicy = createQuotaPolicy({
+      ...body,
+      subjectId: body.subjectId ?? actor?.userId,
+      costOwner: body.costOwner ?? actor?.userId,
+    });
     sendJson(res, 201, { quotaPolicy });
     return true;
   }
@@ -169,7 +173,11 @@ export async function handleM3Routes({
     if (denyForeignProject({ res, sendJson, state, actor, projectId: body.projectId })) {
       return true;
     }
-    const result = recordAiUsage(body);
+    const result = recordAiUsage({
+      ...body,
+      userId: body.userId ?? actor?.userId,
+      teamId: body.teamId ?? actor?.teamId,
+    });
     sendJson(res, result.blocked ? 409 : 201, result);
     return true;
   }
@@ -188,7 +196,10 @@ export async function handleM3Routes({
 
   if (req.method === "POST" && url.pathname === "/api/m3/audit-export") {
     const body = await readJson(req);
-    const auditExportRequest = createAuditExportRequest(body);
+    const auditExportRequest = createAuditExportRequest({
+      ...body,
+      requestedBy: body.requestedBy ?? actor?.userId,
+    });
     sendJson(res, auditExportRequest.status === "blocked" ? 409 : 201, { auditExportRequest });
     return true;
   }

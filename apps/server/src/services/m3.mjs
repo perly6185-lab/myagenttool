@@ -124,7 +124,7 @@ export function createM3Service({
       agentId: agent?.id ?? (body.agentId ? String(body.agentId) : null),
       catalogEntryId: stringOrNull(body.catalogEntryId),
       bundleId: stringOrNull(body.bundleId),
-      requestedBy: "usr_local",
+      requestedBy: body.requestedBy ?? "usr_local",
       action,
       reviewState: normalizeReviewState(body.reviewState, "draft"),
       queueState: "not_queued",
@@ -260,7 +260,7 @@ export function createM3Service({
       recipeId: recipe.id,
       agentId: recipe.agentId,
       deviceId: recipe.agentId ? agentDeviceId(findAgent(recipe.agentId)) : state.device.id,
-      requestedBy: "usr_local",
+      requestedBy: recipe.requestedBy ?? "usr_local",
       status: "pending",
       riskLevel: recipe.riskLevel,
       riskTags: recipe.riskTags,
@@ -284,7 +284,7 @@ export function createM3Service({
     return approval;
   }
 
-  function decideLifecycleLocalApproval(approval, decision) {
+  function decideLifecycleLocalApproval(approval, decision, actor = null) {
     if (!approval) {
       throw new Error("Lifecycle approval request not found.");
     }
@@ -293,7 +293,7 @@ export function createM3Service({
     }
     approval.status = decision === "approve" ? "approved" : "denied";
     approval.decidedAt = now();
-    approval.decidedBy = "usr_local";
+    approval.decidedBy = actor?.userId ?? "usr_local";
     const recipe = findLifecycleRecipe(approval.recipeId);
     if (recipe && approval.status === "denied") {
       recipe.queueState = "blocked";
@@ -338,7 +338,7 @@ export function createM3Service({
       recipeId: recipe.id,
       agentId: recipe.agentId,
       deviceId: recipe.agentId ? agentDeviceId(findAgent(recipe.agentId)) : state.device.id,
-      requestedBy: "usr_local",
+      requestedBy: recipe.requestedBy ?? "usr_local",
       action: recipe.action,
       status: "queued",
       executionEnabled,
@@ -518,7 +518,7 @@ export function createM3Service({
       recipeId: recipe.id,
       failedActionId: failedAction.id,
       agentId: recipe.agentId,
-      requestedBy: "usr_local",
+      requestedBy: recipe?.requestedBy ?? "usr_local",
       status: "available",
       strategy: recipe.rollback.strategy,
       command: buildRollbackLifecycleCommand(recipe),
@@ -554,7 +554,7 @@ export function createM3Service({
       rollbackForActionId: rollback.failedActionId,
       agentId: rollback.agentId,
       deviceId: rollback.agentId ? agentDeviceId(findAgent(rollback.agentId)) : state.device.id,
-      requestedBy: "usr_local",
+      requestedBy: rollback.requestedBy ?? "usr_local",
       action: "rollback",
       status: "queued",
       executionEnabled,
@@ -781,7 +781,7 @@ export function createM3Service({
     const createdAt = now();
     const request = {
       id: nextId("aex_demo"),
-      requestedBy: "usr_local",
+      requestedBy: body.requestedBy ?? "usr_local",
       mode: state.privateDeploymentConfig.mode,
       subjects,
       status: validation.ok ? dryRun ? "validated" : "exported" : "blocked",
@@ -856,7 +856,7 @@ export function createM3Service({
     const entry = {
       id: nextId("led_demo"),
       workspaceId: agent?.economics?.budgetPoolId ?? "team_local",
-      userId: agent?.economics?.costOwner ?? "usr_local",
+      userId: invocation?.requestedBy ?? agent?.economics?.costOwner ?? "usr_local",
       teamId: null,
       agentId: invocation.agentId ?? null,
       agentName: agent?.name ?? null,
@@ -876,7 +876,7 @@ export function createM3Service({
       inputTokens: Math.max(0, Number(cost.inputTokens ?? 0)),
       outputTokens: Math.max(0, Number(cost.outputTokens ?? 0)),
       amountDirection: cost.billable ? "payable" : "informational",
-      costOwner: agent?.economics?.costOwner ?? "usr_local",
+      costOwner: agent?.economics?.costOwner ?? invocation?.requestedBy ?? "usr_local",
       revenueOwner: null,
       budgetPoolId: agent?.economics?.budgetPoolId ?? null,
       projectId,
