@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { denyForeignProject } from "../runtime/auth.mjs";
 
 const TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
@@ -9,6 +10,7 @@ export async function handleControlPlaneRoutes({
   sendJson,
   readJson,
   state,
+  actor,
   now,
   nextId,
   appendEvent,
@@ -72,6 +74,9 @@ export async function handleControlPlaneRoutes({
 
   if ((req.method === "PUT" || req.method === "POST") && url.pathname === "/api/budgets") {
     const body = await readJson(req);
+    if (denyForeignProject({ res, sendJson, state, actor, projectId: body.projectId })) {
+      return true;
+    }
     try {
       const budget = upsertBudget(body);
       sendJson(res, 200, { budget, status: budgetStatusFor(budget.projectId) });
@@ -86,6 +91,9 @@ export async function handleControlPlaneRoutes({
     const projectId = String(body.projectId ?? "").trim();
     if (!state.projects.some((item) => item.id === projectId)) {
       sendJson(res, 400, { error: "invalid_automation", message: "A known projectId is required." });
+      return true;
+    }
+    if (denyForeignProject({ res, sendJson, state, actor, projectId })) {
       return true;
     }
     const name = String(body.name ?? "").trim();

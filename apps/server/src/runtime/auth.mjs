@@ -1,0 +1,78 @@
+/*
+ * Identity: actor resolution and tenancy helpers.
+ *
+ * `main` already seeds `state.users` / `state.teams` / `state.tokens`, stamps
+ * `project.ownerTeamId`, and mints/revokes session tokens in
+ * `routes/control-plane.mjs` (POST/DELETE `/api/session`). What it lacks is the
+ * *enforcement* on top of that: resolve the calling actor from a Bearer token,
+ * gate the API, and answer "does this actor's team own this project?" for read
+ * scoping and write guards. In local dev (the default) there is one seeded user
+ * on one team, so every check collapses to "allow" — tenancy only bites once a
+ * second team and `MYAGENT_REQUIRE_AUTH=1` are in play.
+ */
+
+/** Turn the 401 gate on. Off by default so local dev needs no login. */
+export const REQUIRE_AUTH = process.env.MYAGENT_REQUIRE_AUTH === "1";
+
+/** The seeded local identity, used as the fallback actor. */
+export const LOCAL_USER_ID = "usr_local";
+export const LOCAL_TEAM_ID = "team_local";
+
+/** A project's owning team; unowned projects belong to the local team. */
+export function teamOf(project) {
+  return project?.ownerTeamId ?? LOCAL_TEAM_ID;
+}
+
+export function findUser(state, userId) {
+  return (state.users ?? []).find((u) => u.id === userId) ?? null;
+}
+
+function bearer(req) {
+  const header = req?.headers?.authorization ?? "";
+  const match = /^Bearer\s+(.+)$/i.exec(String(header));
+  return match ? match[1].trim() : null;
+}
+
+/** A token record is live if it isn't revoked and hasn't expired. Accepts both
+ *  control-plane's ISO-string `expiresAt` and a raw epoch-ms number. */
+function tokenLive(record) {
+  if (!record || record.revokedAt) return false;
+  const expiry =
+    typeof record.expiresAt === "number" ? record.expiresAt : Date.parse(record.expiresAt);
+  return Number.isFinite(expiry) && expiry > Date.now();
+}
+
+/**
+ * Resolve the actor for a request. A valid unexpired token names the user;
+ * otherwise we fall back to the seeded local user (so unauthenticated local
+ * dev still has an identity). `authenticated` distinguishes the two — the auth
+ * gate rejects requests where it is false.
+ */
+export function resolveActor(state, req) {
+  const token = bearer(req);
+  const record = token && (state.tokens ?? []).find((t) => t.token === token && tokenLive(t));
+  const user =
+    (record && findUser(state, record.userId)) ||
+    findUser(state, LOCAL_USER_ID) ||
+    (state.users ?? [])[0] ||
+    null;
+  return {
+    userId: user?.id ?? LOCAL_USER_ID,
+    teamId: user?.teamId ?? LOCAL_TEAM_ID,
+    authenticated: Boolean(record),
+  };
+}
+
+/**
+ * Guard a mutating route by project ownership. If the actor's team does not own
+ * the project, writes a 403 and returns true (caller should `return`).
+ */
+export function denyForeignProject({ res, sendJson, state, actor, projectId }) {
+  if (!projectId) return false;
+  const project = (state.projects ?? []).find((p) => p.id === projectId);
+  if (project && actor && teamOf(project) !== actor.teamId) {
+    sendJson(res, 403, { error: "forbidden", message: "Project belongs to another team." });
+    return true;
+  }
+  return false;
+}

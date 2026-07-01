@@ -1,4 +1,5 @@
 import http from "node:http";
+import { REQUIRE_AUTH, resolveActor } from "./auth.mjs";
 import { handleAgentRoutes } from "../routes/agents.mjs";
 import { handleBridgeRoutes } from "../routes/bridge.mjs";
 import { handleCodexRoutes } from "../routes/codex.mjs";
@@ -31,6 +32,8 @@ export function createHttpServer({
   readProjectTree,
   searchProjectContent,
   gitProjectSummary,
+  worktreeDiff,
+  projectGithubItems,
   createSshTarget,
   createSshConnectionTest,
   createManagedTerminalSession,
@@ -139,9 +142,19 @@ export function createHttpServer({
         return;
       }
 
+      // --- Identity: resolve the actor, then gate. `/api/session` (login) is
+      // public and handled downstream in control-plane; everything else needs a
+      // live token when MYAGENT_REQUIRE_AUTH is on. ---
+      const actor = resolveActor(state, req);
+      const publicPath = url.pathname === "/api/session";
+      if (REQUIRE_AUTH && !publicPath && !actor.authenticated) {
+        sendJson(res, 401, { error: "unauthenticated", message: "Valid session token required." });
+        return;
+      }
+
       if (req.method === "GET" && url.pathname === "/api/state") {
         expireCodexApprovalBrokerRequests();
-        sendJson(res, 200, publicState());
+        sendJson(res, 200, publicState(actor));
         return;
       }
 
@@ -152,6 +165,7 @@ export function createHttpServer({
         sendJson,
         readJson,
         state,
+        actor,
         now,
         nextId,
         appendEvent,
@@ -177,6 +191,7 @@ export function createHttpServer({
         sendJson,
         readJson,
         state,
+        actor,
         currentProject,
         addProject,
         cloneProject,
@@ -189,6 +204,8 @@ export function createHttpServer({
         readProjectTree,
         searchProjectContent,
         gitProjectSummary,
+        worktreeDiff,
+        projectGithubItems,
       })) {
         return;
       }
@@ -345,6 +362,7 @@ export function createHttpServer({
         sendJson,
         readJson,
         state,
+        actor,
         findApprovalRequest,
         findInvocation,
         approveInvocation,
