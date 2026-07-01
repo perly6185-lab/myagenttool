@@ -1,5 +1,6 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { basename, dirname, relative, resolve } from "node:path";
+import { randomBytes } from "node:crypto";
+import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { denyForeignProject } from "../runtime/auth.mjs";
 
 export async function handleProjectRoutes({
@@ -345,8 +346,7 @@ export async function handleProjectRoutes({
     if (action === "attachments" && req.method === "POST") {
       try {
         const body = await readJson(req);
-        const saved = saveAttachments(project, body.files);
-        sendJson(res, 201, { attachments: saved });
+        sendJson(res, 201, saveAttachments(worktree, body.files));
       } catch (error) {
         sendJson(res, 400, { error: "worktree_attachment_failed", message: errorMessage(error) });
       }
@@ -421,23 +421,43 @@ function gitSummaryForWorktree(summary) {
   };
 }
 
-function saveAttachments(project, files) {
-  if (!Array.isArray(files)) return [];
-  const attachmentDir = resolve(project.path, ".myagenttool", "attachments");
-  mkdirSync(attachmentDir, { recursive: true });
-  return files.slice(0, 6).map((file, index) => {
-    const safeName = slugify(String(file?.name ?? `attachment-${index + 1}`)) || `attachment-${index + 1}`;
-    const target = resolve(attachmentDir, safeName);
-    const rel = relative(project.path, target);
-    if (rel === ".." || rel.startsWith("..\\") || rel.startsWith("../")) {
-      throw new Error("Attachment path escapes the worktree root.");
+// Persist pasted/uploaded files into the worktree so the agent working there
+// can read them. Hardened against a symlinked worktree/attachments dir (writes
+// must not escape the tree), caps each file at 5 MiB, and drops a self-
+// contained .gitignore so attachments never show up as untracked clutter in the
+// worktree diff or get swept into a commit by ephemeral cleanup.
+const MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024;
+
+function saveAttachments(worktree, files) {
+  const list = Array.isArray(files) ? files.slice(0, 6) : [];
+  const root = resolve(worktree.path);
+  const dir = join(root, ".myagenttool", "attachments");
+  // Reject a symlinked attachments dir, then realpath-verify it stays under root.
+  if (existsSync(dir) && lstatSync(dir).isSymbolicLink()) {
+    throw new Error("Attachment path escapes the worktree root.");
+  }
+  mkdirSync(dir, { recursive: true });
+  const realRoot = realpathSync(root);
+  const realDir = realpathSync(dir);
+  if (realDir !== realRoot && !realDir.startsWith(realRoot + sep)) {
+    throw new Error("Attachment path escapes the worktree root.");
+  }
+  writeFileSync(join(dir, ".gitignore"), "*\n");
+  const attachments = [];
+  const skipped = [];
+  for (const file of list) {
+    const declaredName =
+      basename(String(file?.name ?? "file")).replace(/[^A-Za-z0-9._-]/g, "_").slice(0, 80) || "file";
+    const buf = file?.dataBase64 ? Buffer.from(String(file.dataBase64), "base64") : Buffer.alloc(0);
+    if (buf.length === 0 || buf.length > MAX_ATTACHMENT_BYTES) {
+      skipped.push({ name: declaredName, reason: buf.length === 0 ? "empty" : "too_large" });
+      continue;
     }
-    writeFileSync(target, Buffer.from(String(file?.dataBase64 ?? ""), "base64"));
-    return {
-      name: safeName,
-      path: rel.replaceAll("\\", "/"),
-    };
-  });
+    const name = `${randomBytes(3).toString("hex")}-${declaredName}`;
+    writeFileSync(join(dir, name), buf);
+    attachments.push({ name: declaredName, path: `.myagenttool/attachments/${name}`, bytes: buf.length });
+  }
+  return { attachments, skipped };
 }
 
 function slugify(value) {
