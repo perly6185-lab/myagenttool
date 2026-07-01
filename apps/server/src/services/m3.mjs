@@ -834,11 +834,70 @@ export function createM3Service({
     queueLifecycleAction,
     queueRollbackAction,
     recordAiUsage,
+    recordInvocationLedgerEntry,
     requestLifecycleLocalApproval,
     transitionLifecycleRecipe,
     updatePrivateDeploymentConfig,
     upsertBudget,
   };
+
+  // Turn an agent-reported run cost (e.g. Claude's total_cost_usd, surfaced by
+  // the bridge on the completion payload) into a finalized ledger entry, so it
+  // shows in the economics view and counts toward the project's budget. Only
+  // fires when the agent actually reported a USD amount — CLI agents that report
+  // no cost stay "unknown" and create nothing.
+  function recordInvocationLedgerEntry({ invocation, cost, agent }) {
+    const amountUsd = Number(cost?.amountUsd);
+    if (!cost || !Number.isFinite(amountUsd) || amountUsd <= 0) return null;
+    const meta = invocation.input?.metadata ?? {};
+    const projectId = meta.projectId ?? invocation.projectId ?? state.currentProjectId ?? state.projects[0]?.id ?? null;
+    const createdAt = now();
+    const model = String(cost.model ?? "unknown");
+    const entry = {
+      id: nextId("led_demo"),
+      workspaceId: agent?.economics?.budgetPoolId ?? "team_local",
+      userId: agent?.economics?.costOwner ?? "usr_local",
+      teamId: null,
+      agentId: invocation.agentId ?? null,
+      agentName: agent?.name ?? null,
+      invocationId: invocation.id,
+      deviceId: agent?.location?.deviceId ?? null,
+      sourceType: "agent_invocation",
+      sourceRecordId: invocation.id,
+      entryType: "cost",
+      economicModel: agent?.economics?.model ?? "external_metered",
+      meterName: "reported_usd",
+      quantity: 1,
+      unitPrice: String(roundUsd(amountUsd)),
+      currency: String(cost.currency ?? "USD"),
+      amount: String(roundUsd(amountUsd)),
+      amountUsd: roundUsd(amountUsd),
+      amountSource: "reported",
+      inputTokens: Math.max(0, Number(cost.inputTokens ?? 0)),
+      outputTokens: Math.max(0, Number(cost.outputTokens ?? 0)),
+      amountDirection: cost.billable ? "payable" : "informational",
+      costOwner: agent?.economics?.costOwner ?? "usr_local",
+      revenueOwner: null,
+      budgetPoolId: agent?.economics?.budgetPoolId ?? null,
+      projectId,
+      counterparty: model,
+      provider: model,
+      billable: Boolean(cost.billable),
+      status: "finalized",
+      createdAt,
+      finalizedAt: createdAt,
+    };
+    state.ledgerEntries.unshift(entry);
+    state.ledgerEntries = state.ledgerEntries.slice(0, 200);
+    appendEvent({
+      invocationId: invocation.id,
+      type: "ledger_entry_recorded",
+      level: "info",
+      message: `Recorded ${entry.currency} ${entry.amountUsd} reported cost for ${model}.`,
+      data: { ledgerEntryId: entry.id, amountUsd: entry.amountUsd, projectId },
+    });
+    return entry;
+  }
 
   function latestLifecyclePolicy(recipeId) {
     return state.lifecyclePolicyDecisions.find((item) => item.recipeId === recipeId);

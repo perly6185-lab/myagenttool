@@ -1832,14 +1832,28 @@ async function handleClaudeJsonLine(invocationId, line) {
 
   if (event.type === "result" || event.subtype === "success" || event.result || event.summary) {
     const summary = String(event.result ?? event.summary ?? message ?? "Claude CLI completed.").trim();
+    // Claude's result event reports a real total_cost_usd + token usage; surface
+    // them so the server can attribute the run to the ledger/budget instead of
+    // marking it unknown.
+    const usage = event.usage ?? event.message?.usage ?? null;
+    const amountUsd = Number(event.total_cost_usd ?? event.cost_usd);
+    const reported = Number.isFinite(amountUsd) && amountUsd > 0;
     return {
       summary: summary.length > 240 ? `${summary.slice(0, 237)}...` : summary,
       touchedUserFiles: false,
       output: {
         latestMessage: summary,
-        usage: event.usage ?? event.message?.usage ?? null,
+        usage,
       },
-      cost: { model: event.message?.model ?? event.model ?? "claude", billable: true, unknown: true }
+      cost: {
+        model: event.message?.model ?? event.model ?? "claude",
+        billable: true,
+        unknown: !reported,
+        currency: "USD",
+        inputTokens: Number(usage?.input_tokens ?? 0) || 0,
+        outputTokens: Number(usage?.output_tokens ?? 0) || 0,
+        ...(reported ? { amountUsd, amountSource: "reported" } : {})
+      }
     };
   }
 
