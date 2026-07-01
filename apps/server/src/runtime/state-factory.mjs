@@ -13,7 +13,7 @@ import { createTerminalRuntimeCapability } from "../services/terminal.mjs";
 const defaultAgentIds = [
   "agt_demo_cli",
   "agt_codex_cli",
-  "agt_claude_cli",
+  "agt_claude_acceptEdits",
   "agt_platform_troubleshooter",
   "agt_platform_integration_builder",
 ];
@@ -112,7 +112,7 @@ export function resetStateForSelfCheck({ state, now }) {
     };
     codexAgent.updatedAt = now();
   }
-  const claudeAgent = state.agents.find((agent) => agent.id === "agt_claude_cli") ?? null;
+  const claudeAgent = state.agents.find((agent) => agent.id === "agt_claude_acceptEdits") ?? null;
   if (claudeAgent) {
     claudeAgent.lifecycle = { ...claudeAgent.lifecycle, state: "enabled" };
     claudeAgent.status = "unavailable";
@@ -408,7 +408,7 @@ function createDefaultAgents(now) {
       createdAt: now()
     },
     {
-      id: "agt_claude_cli",
+      id: "agt_claude_acceptEdits",
       name: "Claude Code CLI",
       description: "Runs Claude Code non-interactively (claude -p) through a reviewed local adapter config.",
       ownerUserId: "usr_local",

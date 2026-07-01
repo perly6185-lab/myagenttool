@@ -7,7 +7,7 @@
  */
 
 import { isTerminal } from "../services/invocations.mjs";
-import { computeNextRun } from "../services/automation-schedule.mjs";
+import { computeNextRun, normalizeSchedule } from "../services/automation-schedule.mjs";
 
 const TICK_MS = 30_000;
 
@@ -32,13 +32,18 @@ export function runDueAutomations({
     if (!automation.enabled || !automation.nextRunAt || Date.parse(automation.nextRunAt) > nowMs) {
       continue;
     }
+    // Re-normalize the (possibly legacy/hand-edited) schedule so computeNextRun
+    // always yields a real time — a malformed schedule would otherwise return
+    // null and wedge the automation forever behind the `!nextRunAt` guard.
+    const schedule = normalizeSchedule(automation.schedule);
+    automation.schedule = schedule;
     // Don't stack a new run while the previous one is still in flight — otherwise
     // an approval-gated agent (which parks at waiting_for_local_approval) would
     // pile up a fresh unresolved invocation every tick. Roll forward, retry next
     // period.
     const prev = automation.lastInvocationId ? findInvocation(automation.lastInvocationId) : null;
     if (prev && !isTerminal(prev.status)) {
-      automation.nextRunAt = computeNextRun(automation.schedule, nowMs);
+      automation.nextRunAt = computeNextRun(schedule, nowMs);
       changed = true;
       continue;
     }
@@ -58,7 +63,7 @@ export function runDueAutomations({
         // A bad agent/project shouldn't wedge the scheduler; skip and roll forward.
       }
     }
-    automation.nextRunAt = computeNextRun(automation.schedule, nowMs);
+    automation.nextRunAt = computeNextRun(schedule, nowMs);
     changed = true;
   }
   if (changed) persistStateSoon();

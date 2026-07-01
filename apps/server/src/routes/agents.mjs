@@ -37,9 +37,11 @@ export async function handleAgentRoutes({
       agent.status = "available";
       agent.updatedAt = now();
       // Local CLI agents have no health endpoint; probe once the bridge is
-      // online so a fresh/restarted agent doesn't sit at "unknown". Only when
-      // unknown, so reconnects don't re-probe endlessly.
-      if (agent.adapter?.type === "cli" && (!agent.health || agent.health.status === "unknown")) {
+      // online so a fresh/restarted agent doesn't sit unchecked. Re-probe when
+      // health is unknown OR stuck at "checking" — the latter is a stale probe
+      // from a prior bridge session that dropped before reporting; a live check
+      // reaches a terminal healthy/unhealthy, so reconnects don't loop.
+      if (agent.adapter?.type === "cli" && (!agent.health || ["unknown", "checking"].includes(agent.health.status))) {
         createAgentHealthCheck(agent);
       }
     }

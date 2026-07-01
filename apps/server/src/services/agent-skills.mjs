@@ -18,21 +18,12 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, join, resolve, sep } from "node:path";
-import { isCodexCliCommand } from "./agents.mjs";
+import { isClaudeCliCommand, isCodexCliCommand } from "./agents.mjs";
 
 export const AGENT_SKILL_TARGETS = ["claude", "codex"];
 
 const SKILL_BLOCK_START = "<!-- myagent:skills:start -->";
 const SKILL_BLOCK_END = "<!-- myagent:skills:end -->";
-
-// main only ships Codex CLI detection; mirror it for Claude so skills can target
-// both agent kinds.
-function isClaudeCliCommand(command) {
-  const normalized = String(command ?? "").trim().toLowerCase();
-  return ["claude", "claude.cmd", "claude.ps1", "claude.exe"].some(
-    (name) => normalized === name || normalized.endsWith(`/${name}`) || normalized.endsWith(`\\${name}`),
-  );
-}
 
 function slugify(value) {
   return String(value ?? "")
@@ -159,7 +150,9 @@ export function renderAgentSkillsIntoWorktree(agent, wtPath, skills = []) {
       const existing = preexisting ? readFileSync(agentsPath, "utf8") : "";
       let next;
       if (existing.includes(SKILL_BLOCK_START) && existing.includes(SKILL_BLOCK_END)) {
-        next = existing.replace(new RegExp(`${SKILL_BLOCK_START}[\\s\\S]*?${SKILL_BLOCK_END}`), block);
+        // Replacer FUNCTION, not a string: a skill body containing $&, $1, $` etc.
+        // would otherwise be interpreted as replacement patterns and corrupt the block.
+        next = existing.replace(new RegExp(`${SKILL_BLOCK_START}[\\s\\S]*?${SKILL_BLOCK_END}`), () => block);
       } else {
         next = existing ? `${existing.replace(/\s*$/, "")}\n\n${block}\n` : `${block}\n`;
       }
