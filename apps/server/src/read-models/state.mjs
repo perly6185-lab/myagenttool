@@ -1,4 +1,4 @@
-import { teamOf } from "../runtime/auth.mjs";
+import { LOCAL_TEAM_ID, teamOf } from "../runtime/auth.mjs";
 
 export function buildPublicState({
   namespace,
@@ -34,6 +34,12 @@ export function buildPublicState({
     teamId == null || !invocationId || visibleInvIds.has(invocationId);
   const byInvocation = (rows) => (rows ?? []).filter((r) => invVisible(r?.invocationId));
   const byProject = (rows) => (rows ?? []).filter((r) => projectVisible(r?.projectId));
+  // Imported evidence has no invocation, so it can't ride byInvocation (a null
+  // invocationId reads as globally visible). Scope it by its stamped owning team
+  // instead; rows written before that stamp existed belong to the local team.
+  const importedVisible = (r) => teamId == null || (r?.teamId ?? LOCAL_TEAM_ID) === teamId;
+  const visibleImported = (state.codexImportedEvidenceRecords ?? []).filter(importedVisible);
+  const visibleImportedIds = new Set(visibleImported.map((r) => r.id));
   // A compare run is visible when it spans at least one invocation the team can
   // see; unscoped mode passes everything through.
   const byCompareRun = (rows) =>
@@ -97,10 +103,16 @@ export function buildPublicState({
     codexEvidenceRecords: byInvocation(state.codexEvidenceRecords),
     codexChangeReviews: byInvocation(state.codexChangeReviews),
     codexHookEvents: byInvocation(state.codexHookEvents),
-    codexApprovalQueue: codexApprovalQueue(),
-    evidenceCenterRecords: evidenceCenterRecords(),
+    codexApprovalQueue: codexApprovalQueue().filter((q) => invVisible(q?.invocationId)),
+    // The evidence center aggregates raw codex state, so re-apply scoping here:
+    // invocation-linked rows by invVisible, imported rows by their owning team.
+    // (Rows with a null invocationId that aren't imported — e.g. manual terminal
+    // surface evidence — stay visible; those are device-scoped by design.)
+    evidenceCenterRecords: evidenceCenterRecords().filter((r) =>
+      r?.type === "imported_evidence" ? visibleImportedIds.has(r.id) : invVisible(r?.invocationId),
+    ),
     codexApprovalBrokerRequests: byInvocation(state.codexApprovalBrokerRequests),
-    codexImportedEvidenceRecords: byInvocation(state.codexImportedEvidenceRecords),
+    codexImportedEvidenceRecords: visibleImported,
     terminalRuntimeCapability: state.terminalRuntimeCapability,
     terminalSessions: state.terminalSessions,
     terminalEvidenceRecords: state.terminalEvidenceRecords,
