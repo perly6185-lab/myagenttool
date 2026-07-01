@@ -59,6 +59,7 @@ export function createServerState({ defaultProjectPath, now }) {
     ledgerEntries: [],
     budgets: [],
     automations: createDefaultAutomations(defaultProject.id, now),
+    agentSkills: createDefaultAgentSkills(now),
     privateDeploymentConfig: createDefaultPrivateDeploymentConfig(now),
     auditExportRequests: [],
     retentionSettings: createDefaultRetentionSettings(now),
@@ -245,6 +246,40 @@ function createDefaultAutomations(projectId, now) {
       tokens: 0,
       createdBy: "usr_local",
       createdAt,
+    },
+  ];
+}
+
+// Seed agent-skill: the image-edit capability, rendered into each matching
+// agent's worktree (claude via MCP, codex via CLI). See services/agent-skills.mjs.
+function createDefaultAgentSkills(now) {
+  const createdAt = now();
+  return [
+    {
+      id: "skl_image_edit",
+      name: "Image Edit",
+      slug: "image-edit",
+      description: "Edit or generate images from a reference image and a text prompt.",
+      body: [
+        "Use this when the task asks to edit, retouch, restyle, or generate an image",
+        "(改图 / 编辑图片 / 抠图 / 换背景 / 生成图片).",
+        "",
+        "- codex: prefer your built-in image_generation tool — it needs no extra setup.",
+        "  Only fall back to the CLI below if the built-in tool is unavailable.",
+        "- claude: call the `edit_image` tool exposed by the `image-tool` MCP server.",
+        "  If MCP is unavailable, run the CLI:",
+        "  `node packages/image-tool/cli.mjs --input <path> --prompt <text> --output <path>`.",
+        "",
+        "Always write to an explicit output path and report it back when done.",
+      ].join("\n"),
+      targets: ["claude", "codex"],
+      tool: {
+        cli: "node packages/image-tool/cli.mjs",
+        mcp: { name: "image-tool", command: "node", args: ["packages/image-tool/mcp-server.mjs"] },
+      },
+      enabled: true,
+      createdAt,
+      updatedAt: createdAt,
     },
   ];
 }

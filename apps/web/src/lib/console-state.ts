@@ -364,10 +364,31 @@ export interface AutomationSnapshot {
   tokens?: number;
 }
 
+export type AgentSkillTarget = "claude" | "codex";
+
+export interface AgentSkillToolBinding {
+  cli?: string;
+  mcp?: { name: string; command: string; args?: string[]; env?: Record<string, string> };
+}
+
+export interface AgentSkillSnapshot {
+  id: string;
+  name: string;
+  slug: string;
+  description: string;
+  body: string;
+  targets: AgentSkillTarget[];
+  tool?: AgentSkillToolBinding;
+  enabled: boolean;
+  createdAt: string;
+  updatedAt?: string;
+}
+
 export interface ConsoleSnapshot {
   /** Server-resolved defaults the browser can't compute (e.g. home-relative paths). */
   defaults?: { cloneParentDir?: string };
   automations?: AutomationSnapshot[];
+  agentSkills?: AgentSkillSnapshot[];
   device: DeviceSnapshot;
   projects?: ProjectSnapshot[];
   projectTargets?: ProjectTargetSnapshot[];
