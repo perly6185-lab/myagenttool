@@ -9,6 +9,7 @@ export function createInvocationCompletionRuntime({
   findInvocation,
   closeCodexSession,
   isTerminal,
+  recordInvocationLedgerEntry,
 }) {
   function completeInvocation(invocation, body) {
     if (isTerminal(invocation.status)) {
@@ -47,6 +48,13 @@ export function createInvocationCompletionRuntime({
     });
     state.auditSummaries.push(createAuditSummary(invocation, body.summary ?? null));
     recordAgentUsage(invocation, terminalStatus);
+    // Attribute an agent-reported run cost (e.g. Claude's total_cost_usd, which
+    // the bridge surfaces under result.cost) to the ledger + budget. No-ops when
+    // the agent reported no USD amount.
+    const reportedCost = body.result?.cost ?? body.cost;
+    if (reportedCost && typeof recordInvocationLedgerEntry === "function") {
+      recordInvocationLedgerEntry({ invocation, cost: reportedCost, agent: findAgent(invocation.agentId) });
+    }
     closeCodexSession(invocation, terminalStatus);
     updateCompareRunForInvocation(invocation);
     persistStateSoon();
