@@ -39,7 +39,7 @@ export function createIntegrationArtifactRuntime({
     });
     const artifact = {
       id: nextId("itg_demo"),
-      requestedBy: "usr_local",
+      requestedBy: body.requestedBy ?? "usr_local",
       targetType,
       artifactType,
       reviewState,

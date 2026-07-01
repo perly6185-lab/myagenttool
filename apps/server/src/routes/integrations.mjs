@@ -4,6 +4,7 @@ export async function handleIntegrationRoutes({
   url,
   sendJson,
   readJson,
+  actor,
   createDiscoveryRun,
   createIntegrationArtifact,
   findIntegrationArtifact,
@@ -18,7 +19,7 @@ export async function handleIntegrationRoutes({
 }) {
   if (req.method === "POST" && url.pathname === "/api/discovery") {
     const body = await readJson(req);
-    const discoveryRun = createDiscoveryRun(body);
+    const discoveryRun = createDiscoveryRun({ ...body, requestedBy: body.requestedBy ?? actor?.userId });
     sendJson(res, 202, { discoveryRun });
     return true;
   }
@@ -27,7 +28,7 @@ export async function handleIntegrationRoutes({
     const body = await readJson(req);
     let artifact;
     try {
-      artifact = createIntegrationArtifact(body);
+      artifact = createIntegrationArtifact({ ...body, requestedBy: body.requestedBy ?? actor?.userId });
     } catch (error) {
       sendJson(res, 400, {
         error: "invalid_integration_artifact",
