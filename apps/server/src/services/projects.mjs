@@ -696,7 +696,14 @@ function worktreeDiff(worktree, { projectTargets = [] } = {}) {
   // and throws ENOBUFS on a large diff *before* the cap logic runs, so the catch
   // would silently return an empty diff for a worktree with real changes.
   const git = (args) =>
-    execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8", timeout: 5_000, maxBuffer: 64 * 1024 * 1024 });
+    execFileSync("git", ["-C", cwd, ...args], {
+      encoding: "utf8",
+      timeout: 5_000,
+      maxBuffer: 64 * 1024 * 1024,
+      // stdout piped (gitDiffSafe reads error.stdout on the expected --no-index
+      // non-zero exit); stderr ignored so benign "no upstream" probes stay quiet.
+      stdio: ["ignore", "pipe", "ignore"],
+    });
   // `git diff --no-index` exits non-zero when files differ; the patch we want is
   // still on the thrown error's stdout.
   const gitDiffSafe = (args) => {

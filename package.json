@@ -7,7 +7,7 @@
   "scripts": {
     "dev": "node tools/dev/run-local-demo.mjs",
     "dev:restart-changed": "node tools/dev/restart-changed-services.mjs",
-    "test": "pnpm -r --filter \"./apps/*\" --filter \"./packages/*\" --filter \"./tools/*\" --if-present test && pnpm smoke:local",
+    "test": "pnpm -r --filter \"./apps/*\" --filter \"./packages/*\" --filter \"./tools/*\" --if-present test && pnpm smoke:local && pnpm smoke:port",
     "lint": "pnpm -r --filter \"./apps/*\" --filter \"./packages/*\" --filter \"./tools/*\" --if-present lint",
     "typecheck": "pnpm -r --filter \"./apps/*\" --filter \"./packages/*\" --filter \"./tools/*\" --if-present typecheck",
     "docs:check": "pwsh -NoProfile -ExecutionPolicy Bypass -File tools/docs/check-markdown-links.ps1",
@@ -123,6 +123,14 @@
     "smoke:loop-routine-fanout-enqueue": "node tools/dev/loop-routine-fanout-enqueue-smoke.mjs",
     "smoke:loop-routine-fanout-worker": "node tools/dev/loop-routine-fanout-worker-smoke.mjs",
     "smoke:local": "node tools/dev/local-smoke.mjs",
+    "smoke:agent-skills": "node tools/dev/agent-skills-smoke.mjs",
+    "smoke:dispatch-concurrency": "node tools/dev/dispatch-concurrency-smoke.mjs",
+    "smoke:automation-scheduler": "node tools/dev/automation-scheduler-smoke.mjs",
+    "smoke:claude-agent": "node tools/dev/claude-agent-smoke.mjs",
+    "smoke:cost-attribution": "node tools/dev/cost-attribution-smoke.mjs",
+    "smoke:tenancy": "node tools/dev/tenancy-smoke.mjs",
+    "smoke:worktree-diff": "node tools/dev/worktree-diff-smoke.mjs",
+    "smoke:port": "node tools/dev/agent-skills-smoke.mjs && node tools/dev/dispatch-concurrency-smoke.mjs && node tools/dev/automation-scheduler-smoke.mjs && node tools/dev/claude-agent-smoke.mjs && node tools/dev/cost-attribution-smoke.mjs && node tools/dev/tenancy-smoke.mjs && node tools/dev/worktree-diff-smoke.mjs",
     "acceptance:m0": "node tools/dev/m0-acceptance.mjs"
   },
   "devDependencies": {
