@@ -137,6 +137,9 @@ export async function handleControlPlaneRoutes({
       sendJson(res, 404, { error: "automation_not_found" });
       return true;
     }
+    if (denyForeignProject({ res, sendJson, state, actor, projectId: automation.projectId })) {
+      return true;
+    }
     const agent = findAgent(automation.agentId) ?? defaultAgent();
     if (!agent) {
       sendJson(res, 404, { error: "agent_not_found" });

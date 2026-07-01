@@ -888,7 +888,7 @@ export function createM3Service({
       finalizedAt: createdAt,
     };
     state.ledgerEntries.unshift(entry);
-    state.ledgerEntries = state.ledgerEntries.slice(0, 200);
+    capLedgerEntries(state);
     appendEvent({
       invocationId: invocation.id,
       type: "ledger_entry_recorded",
@@ -1012,7 +1012,7 @@ export function createM3Service({
       finalizedAt: null,
     };
     state.ledgerEntries.unshift(entry);
-    state.ledgerEntries = state.ledgerEntries.slice(0, 200);
+    capLedgerEntries(state);
     appendEvent({
       invocationId: usageRecord.invocationId,
       type: "ledger_entry_recorded",
@@ -1342,6 +1342,22 @@ function normalizeSupportedPlatforms(value) {
 function normalizeBudgetPolicy(value) {
   const policy = String(value ?? "warn").trim();
   return ["warn", "block", "allow_overage"].includes(policy) ? policy : "warn";
+}
+
+// Bound the ledger for display, but NEVER drop a spend-bearing entry: budget
+// spend (budgetStatusFor/ledgerSpendForProject) re-sums this live array, so
+// trimming a finalized cost would silently under-count spend and wrongly clear
+// an over-budget project. Keep all real-cost entries + the newest `cap`
+// informational/unknown ones (the array is newest-first).
+function capLedgerEntries(state, cap = 200) {
+  const isSpend = (e) =>
+    Number(e.amountUsd ?? e.amount) > 0 && !["voided", "cancelled"].includes(e.status);
+  let others = 0;
+  state.ledgerEntries = state.ledgerEntries.filter((e) => {
+    if (isSpend(e)) return true;
+    others += 1;
+    return others <= cap;
+  });
 }
 
 function ledgerEntryAmount(entry) {
