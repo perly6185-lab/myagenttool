@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import { denyForeignProject } from "../runtime/auth.mjs";
+import { computeNextRun, normalizeSchedule } from "../services/automation-schedule.mjs";
 
 const TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
@@ -187,20 +188,4 @@ export async function handleControlPlaneRoutes({
   }
 
   return false;
-}
-
-function normalizeSchedule(value = {}) {
-  const raw = value && typeof value === "object" && !Array.isArray(value) ? value : {};
-  const kind = ["interval", "daily", "weekdays"].includes(raw.kind) ? raw.kind : "weekdays";
-  if (kind === "interval") {
-    const everyMinutes = Math.max(1, Math.floor(Number(raw.everyMinutes ?? 60)));
-    return { kind, everyMinutes, label: `Every ${everyMinutes} minutes` };
-  }
-  const time = /^\d{2}:\d{2}$/.test(String(raw.time ?? "")) ? String(raw.time) : "09:00";
-  return { kind, time, label: kind === "daily" ? `Daily at ${time}` : `Weekdays at ${time}` };
-}
-
-function computeNextRun(schedule) {
-  const next = new Date(Date.now() + (schedule.kind === "interval" ? schedule.everyMinutes * 60_000 : 24 * 60 * 60_000));
-  return next.toISOString();
 }

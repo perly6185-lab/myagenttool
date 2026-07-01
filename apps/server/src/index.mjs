@@ -1,4 +1,5 @@
 import { resolve } from "node:path";
+import { startAutomationScheduler } from "./runtime/automation-scheduler.mjs";
 import { createHttpServer } from "./runtime/http-server.mjs";
 import { runProtocolSelfCheck } from "./runtime/self-check.mjs";
 import { createServerRuntimeServices } from "./runtime/service-composer.mjs";
@@ -49,6 +50,10 @@ const server = createHttpServer({
 server.listen(port, host, () => {
   console.log(`[server] http://${host}:${port}`);
 });
+
+// Fire due automations on a 30s tick (self-check exits above, so this only runs
+// for a real server). Pulls the same composed helpers the routes use.
+startAutomationScheduler({ now, ...httpDependencies });
 
 process.on("SIGINT", () => {
   savePersistentState();
