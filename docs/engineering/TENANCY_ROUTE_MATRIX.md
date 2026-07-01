@@ -1,8 +1,12 @@
 # Tenancy Route Matrix
 
 Audit of every mutating server route against the project/team tenancy model, so
-cross-team write guards stop being applied ad hoc. Snapshot base: `origin/main`
-@ `21a0d71`. Companion regression tests: `apps/server/test/tenancy.test.mjs`.
+cross-team write guards stop being applied ad hoc. Companion regression tests:
+`apps/server/test/{tenancy,control-plane-tenancy,codex-tenancy,m3-tenancy}.test.mjs`.
+
+Status: the P1.2 pass (this stack) closed GAP-1, set the 403→404 policy, and
+guarded the codex + m3 invocation/project-scoped writes. Remaining ❓ rows are
+recorded decisions or scoped follow-ups, not open holes.
 
 ## Model recap
 
@@ -21,7 +25,7 @@ is only a gap if it is unguarded on the axis its resource actually belongs to:
 
 ## Matrix (mutating endpoints)
 
-Legend: ✅ guarded · ❌ **GAP** · ➖ N/A on this axis · ❓ needs model decision.
+Legend: ✅ guarded · ➖ N/A on this axis · 📌 decided (documented, no guard) · 🔭 scoped follow-up.
 
 | Route file | Endpoint | Axis | Status |
 |---|---|---|---|
@@ -29,69 +33,65 @@ Legend: ✅ guarded · ❌ **GAP** · ➖ N/A on this axis · ❓ needs model de
 | invocations | POST `/api/approvals/:id/(approve\|deny)` | project | ✅ via `invocationProjectId` |
 | invocations | POST `/api/invocations/:id/cancel` | project | ✅ |
 | invocations | POST `/api/invocations/:id/troubleshoot` | project | ✅ |
-| invocations | POST `/api/compare-runs` | agent | ❓ no project scope; reads are scoped by visible child invocations, agents are team/device-level — confirm agent visibility |
+| invocations | POST `/api/compare-runs` | agent | 🔭 no project scope; reads scoped by visible child invocations — confirm agent visibility |
 | control-plane | POST/DELETE `/api/session` | ➖ auth | ➖ |
 | control-plane | PATCH `/api/device` | device | ➖ |
 | control-plane | PUT/POST `/api/budgets` | project | ✅ `denyForeignProject(body.projectId)` |
 | control-plane | POST `/api/automations` | project | ✅ |
 | control-plane | POST `/api/automations/:id/run` | project | ✅ `denyForeignProject(automation.projectId)` |
-| control-plane | **PATCH/DELETE `/api/automations/:id`** | project | ❌ **GAP-1 (high)** |
+| control-plane | PATCH/DELETE `/api/automations/:id` | project | ✅ **GAP-1 fixed** — guard + regression test |
 | projects | POST `/api/projects`, `/clone`, `/create` | project (create) | ➖ creation assigns owner |
 | projects | POST `/api/worktrees` | project | ✅ (worktree create paths guarded) |
 | projects | POST/PATCH/DELETE `/api/projects/:id[/…]` | project | ✅ (9 guarded sites) |
-| projects | POST `/api/worktree-name-suggestion` | project | ❓ confirm it never leaks foreign project data |
-| codex | POST `/api/codex/hooks` | project/worktree | ❓ **review** — codex sessions bind to worktrees; unguarded write |
-| codex | POST `/api/codex/approvals/:id` | project/worktree | ❓ **review** |
-| codex | POST `/api/codex/imported-evidence` | project/worktree | ❓ **review** |
-| codex | POST `/api/codex/change-reviews` | project/worktree | ❓ **review** |
-| agent-skills | POST/PATCH/DELETE `/api/agent-skills[/:id]` | ❓ team? global? | ❓ **review** — decide if skills are a team-scoped library |
-| m3 | POST `/api/m3/ai-usage` | invocation | ❓ **review** — usage rolls into ledger/budget; reads scoped, writes unguarded |
-| m3 | POST `/api/m3/{private-catalog,signed-bundles,lifecycle-recipes,quota-policies}` | ❓ org/platform? | ❓ **review** — decide the tenancy owner of M3 lifecycle objects |
-| m3 | PATCH `/api/m3/private-deployment`, POST `/api/m3/audit-export` | ❓ org | ❓ **review** |
+| projects | POST `/api/worktree-name-suggestion` | project | 🔭 confirm it never leaks foreign project data |
+| codex | POST `/api/codex/approval-broker/:id/(approve\|deny)` | invocation | ✅ scoped by `request.invocationId`'s project |
+| codex | POST `/api/codex/change-reviews` | invocation | ✅ scoped by evidence → `invocationId`'s project |
+| codex | POST `/api/codex/hooks` | bridge | ➖ codex CLI / bridge ingestion, not a user surface |
+| codex | POST `/api/codex/imported-evidence` | user | 🔭 free-standing record, hardcodes `usr_local`, no invocation/project link — needs the real per-actor identity pass |
+| agent-skills | POST/PATCH/DELETE `/api/agent-skills[/:id]` | global | 📌 **decided: global library** — records carry no `ownerTeamId`; revisit if team-scoped skills are needed (add owner + read scope + write guard) |
+| m3 | POST `/api/m3/ai-usage` | project | ✅ `denyForeignProject(body.projectId)` — cost attribution to ledger/budget |
+| m3 | POST `/api/m3/{private-catalog,signed-bundles,lifecycle-recipes,quota-policies}` | org/operator | 📌 **decided: operator-level** — no per-team owner today; revisit at M3 team-level cost allocation |
+| m3 | PATCH `/api/m3/private-deployment`, POST `/api/m3/audit-export` | org/operator | 📌 **decided: operator-level** |
 | terminal | POST `/api/ssh-targets`, `/api/terminal/sessions`, input/resize/close | device | ➖ device-scoped by design (#192) |
 | terminal | POST `/api/bridge/terminal-events` | bridge | ➖ |
 | agents | POST `/api/agents`, `/api/bridge/register`, `/api/device/unlink` | device/agent | ➖ device/agent-scoped |
 | bridge | POST `/api/bridge/*` (next/complete/ack/events/…) | bridge | ➖ bridge credential |
 
-## Confirmed gaps and fixes
+## Resolved in the P1.2 pass
 
-### GAP-1 (high) — `PATCH`/`DELETE /api/automations/:id` is unguarded
+- **GAP-1 (high) — `PATCH`/`DELETE /api/automations/:id`.** Was unguarded while
+  the sibling `/run` was guarded, so a foreign team could delete or repoint
+  (`prompt`/`agentId`/`projectId`/`enabled`) another team's scheduled automation.
+  Fixed by mirroring the `/run` guard; covered by `control-plane-tenancy.test.mjs`.
+- **403 → 404 existence-hiding.** `denyForeignProject` now answers a generic
+  `404 { error: "not_found" }` instead of `403 { error: "forbidden" }`, so an
+  enumerating cross-team caller can't confirm which ids exist. Applied uniformly
+  (single choke point); pinned by `tenancy.test.mjs`.
+- **codex invocation-scoped writes.** approval-broker approve/deny and
+  change-reviews are now guarded by their invocation's project; `codex-tenancy.test.mjs`.
+- **m3 ai-usage.** Guarded by `body.projectId` (cost attribution); `m3-tenancy.test.mjs`.
 
-[routes/control-plane.mjs](../../apps/server/src/routes/control-plane.mjs) resolves the automation by enumerable id
-and then deletes or mutates it with no ownership check, while the sibling
-`POST /api/automations/:id/run` *is* guarded. A second team can delete another
-team's scheduled automation, or PATCH its `prompt` / `agentId` / `projectId` /
-`enabled` — i.e. repoint and re-enable someone else's scheduler to run an
-arbitrary prompt. Reachable cross-tenant with `MYAGENT_REQUIRE_AUTH=1`.
+## Open decisions / follow-ups
 
-Fix — mirror the `/run` guard right after the not-found check:
-
-```js
-if (!automation) { sendJson(res, 404, { error: "automation_not_found" }); return true; }
-if (denyForeignProject({ res, sendJson, state, actor, projectId: automation.projectId })) return true;
-```
-
-Add a route-level regression test alongside it (two teams, PATCH/DELETE a
-foreign automation → 403; note the info-leak decision below).
-
-## Open decisions (not yet gaps, need a call)
-
-- **`denyForeignProject` returns 403, not 404.** 403 "forbidden" confirms the
-  resource exists to a cross-team caller; with enumerable ids that leaks
-  existence. Decide project-wide: existence-hiding 404 vs explicit 403.
-  (Pinned by `denyForeignProject: a foreign team is blocked with 403`.)
-- **Unknown/dangling projectId is allowed through.** Fine only because every
-  current caller pairs the guard with a not-found check. Any future route that
-  scopes a write solely on this guard would have a hole.
+- **Unknown/dangling projectId is allowed through** `denyForeignProject`. Safe
+  today only because every caller pairs the guard with a not-found check; a
+  future route that scopes a write solely on this guard would have a hole.
   (Pinned by `denyForeignProject: an unknown projectId is currently allowed through`.)
-- **codex / agent-skills / m3 tenancy owner is undefined.** These write paths
-  have no project guard because their tenancy axis was never decided. Pick the
-  owning axis per object (project, team, or global/platform) before adding or
-  omitting guards, and record it here.
+- **Not-found body standardization.** The 404 the guard emits (`{error:"not_found"}`)
+  still differs in shape from each route's own not-found body (e.g.
+  `automation_not_found`), a residual existence signal. Standardize not-found
+  responses so a foreign resource is byte-for-byte indistinguishable from a
+  missing one.
+- **codex identity pass.** The codex subsystem hardcodes `usr_local`
+  (`reviewedBy`, `userId`); `imported-evidence` has no project link. The two
+  guards added here are consistent with the invocations routes, but full codex
+  tenancy needs real per-actor identity, not just project scoping.
+- **compare-runs / worktree-name-suggestion.** Confirm agent visibility and that
+  no foreign project data leaks; guard if needed.
 
-## Suggested order (P1.2)
+## Remaining order
 
-1. Fix **GAP-1** (+ route test). Smallest, clearest, highest severity.
-2. Decide the **403-vs-404** policy and apply uniformly in `denyForeignProject`.
-3. Resolve the **codex** review items — most likely worktree/project-scoped.
-4. Decide **agent-skills** and **m3** tenancy ownership; guard or document as global.
+1. Not-found body standardization (turns the 404 policy into true existence-hiding).
+2. codex identity pass (`imported-evidence`, hardcoded `usr_local`).
+3. compare-runs / worktree-name-suggestion confirmation.
+4. Team-level cost allocation → revisit m3 operator-level objects and agent-skills.

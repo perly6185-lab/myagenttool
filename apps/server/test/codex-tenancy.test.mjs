@@ -1,0 +1,65 @@
+/*
+ * Route-level regression test for the codex approval-broker tenancy guard.
+ *
+ * Codex approval requests carry an invocationId; resolving one is a decision on
+ * another team's codex session, so it must be scoped by that invocation's
+ * project. Drives handleCodexRoutes with stubs — no server boot.
+ */
+
+import assert from "node:assert/strict";
+import { test } from "node:test";
+
+import { handleCodexRoutes } from "../src/routes/codex.mjs";
+
+const TEAM_A = "team_a";
+const TEAM_B = "team_b";
+
+function stateWithPendingApproval() {
+  return {
+    projects: [{ id: "proj_a", ownerTeamId: TEAM_A }],
+    invocations: [{ id: "inv_1", projectId: "proj_a" }],
+    codexApprovalBrokerRequests: [{ id: "cdx_appr_1", invocationId: "inv_1", status: "pending" }],
+  };
+}
+
+async function approve({ actor, state }) {
+  const calls = [];
+  let resolved = false;
+  const handled = await handleCodexRoutes({
+    req: { method: "POST" },
+    res: {},
+    url: new URL("http://local/api/codex/approval-broker/cdx_appr_1/approve"),
+    sendJson: (_res, status, payload) => calls.push({ status, payload }),
+    readJson: async () => ({}),
+    state,
+    actor,
+    recordCodexHookEvent: () => ({}),
+    expireCodexApprovalBrokerRequests: () => {},
+    resolveCodexApprovalBrokerRequest: (request) => {
+      resolved = true;
+      return { ...request, status: "approved" };
+    },
+    createCodexImportedEvidenceRecord: () => ({}),
+    createCodexChangeReview: () => ({}),
+  });
+  return { handled, calls, resolved };
+}
+
+test("codex approval-broker: a foreign team cannot resolve another team's request (404, no side effect)", async () => {
+  const { handled, calls, resolved } = await approve({
+    actor: { teamId: TEAM_B },
+    state: stateWithPendingApproval(),
+  });
+  assert.equal(handled, true);
+  assert.equal(calls.at(-1).status, 404);
+  assert.equal(resolved, false, "the approval must not be resolved for a foreign team");
+});
+
+test("codex approval-broker: the owning team can resolve its request", async () => {
+  const { calls, resolved } = await approve({
+    actor: { teamId: TEAM_A },
+    state: stateWithPendingApproval(),
+  });
+  assert.equal(calls.at(-1).status, 200);
+  assert.equal(resolved, true);
+});

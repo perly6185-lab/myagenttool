@@ -65,13 +65,20 @@ export function resolveActor(state, req) {
 
 /**
  * Guard a mutating route by project ownership. If the actor's team does not own
- * the project, writes a 403 and returns true (caller should `return`).
+ * the project, writes a 404 and returns true (caller should `return`).
+ *
+ * We answer 404, not 403: project ids are enumerable, so a 403 "it's not yours"
+ * would confirm the id exists to a cross-team caller and let them map another
+ * team's projects. 404 makes a foreign project indistinguishable from a missing
+ * one. (Residual: a route's own not-found body may differ in shape from this
+ * generic one — see docs/engineering/TENANCY_ROUTE_MATRIX.md for the plan to
+ * standardize not-found responses.)
  */
 export function denyForeignProject({ res, sendJson, state, actor, projectId }) {
   if (!projectId) return false;
   const project = (state.projects ?? []).find((p) => p.id === projectId);
   if (project && actor && teamOf(project) !== actor.teamId) {
-    sendJson(res, 403, { error: "forbidden", message: "Project belongs to another team." });
+    sendJson(res, 404, { error: "not_found" });
     return true;
   }
   return false;

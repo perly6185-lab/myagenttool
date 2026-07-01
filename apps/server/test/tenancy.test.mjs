@@ -106,15 +106,17 @@ test("denyForeignProject: owning team is allowed through (no response written)",
   assert.equal(calls.length, 0);
 });
 
-test("denyForeignProject: a foreign team is blocked with 403", () => {
+// Existence-hiding: a foreign project answers 404 (not 403), so an enumerating
+// cross-team caller can't distinguish "exists but not yours" from "missing".
+test("denyForeignProject: a foreign team is blocked with a 404 (hides existence)", () => {
   const state = twoTeamState();
   const { sendJson, calls } = captureSend();
   const actor = { teamId: TEAM_B };
   const denied = denyForeignProject({ res: {}, sendJson, state, actor, projectId: "proj_a" });
   assert.equal(denied, true);
   assert.equal(calls.length, 1);
-  assert.equal(calls[0].status, 403);
-  assert.equal(calls[0].body.error, "forbidden");
+  assert.equal(calls[0].status, 404);
+  assert.equal(calls[0].body.error, "not_found");
 });
 
 test("denyForeignProject: a missing projectId is a no-op (route-level not-found handles it)", () => {
