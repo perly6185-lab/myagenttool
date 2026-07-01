@@ -1,5 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, dirname, relative, resolve } from "node:path";
+import { denyForeignProject } from "../runtime/auth.mjs";
 
 export async function handleProjectRoutes({
   req,
@@ -8,6 +9,7 @@ export async function handleProjectRoutes({
   sendJson,
   readJson,
   state,
+  actor,
   currentProject,
   addProject,
   cloneProject,
@@ -96,6 +98,11 @@ export async function handleProjectRoutes({
   }
 
   const projectMatch = url.pathname.match(/^\/api\/projects\/([^/]+)$/);
+  if (projectMatch && (req.method === "POST" || req.method === "PATCH" || req.method === "DELETE")) {
+    if (denyForeignProject({ res, sendJson, state, actor, projectId: decodeURIComponent(projectMatch[1]) })) {
+      return true;
+    }
+  }
   if (projectMatch && req.method === "POST") {
     const project = selectProject(decodeURIComponent(projectMatch[1]));
     if (!project) {
@@ -137,6 +144,9 @@ export async function handleProjectRoutes({
 
   const projectWorktreeMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/worktrees$/);
   if (projectWorktreeMatch && req.method === "POST") {
+    if (denyForeignProject({ res, sendJson, state, actor, projectId: decodeURIComponent(projectWorktreeMatch[1]) })) {
+      return true;
+    }
     const body = await readJson(req);
     await createWorktreeResponse({
       body: {
@@ -259,6 +269,9 @@ export async function handleProjectRoutes({
     const project = projectForWorktree(state, worktree);
     if (!project) {
       sendJson(res, 404, { error: "project_not_found" });
+      return true;
+    }
+    if (denyForeignProject({ res, sendJson, state, actor, projectId: project.id })) {
       return true;
     }
     const action = worktreeMatch[2] ?? "";

@@ -1,12 +1,5 @@
 import http from "node:http";
-import {
-  LOCAL_USER_ID,
-  REQUIRE_AUTH,
-  findUser,
-  issueToken,
-  resolveActor,
-  revokeToken,
-} from "./auth.mjs";
+import { REQUIRE_AUTH, resolveActor } from "./auth.mjs";
 import { handleAgentRoutes } from "../routes/agents.mjs";
 import { handleBridgeRoutes } from "../routes/bridge.mjs";
 import { handleCodexRoutes } from "../routes/codex.mjs";
@@ -147,36 +140,12 @@ export function createHttpServer({
         return;
       }
 
-      // --- Identity: session login/logout, then the auth gate. ---
-      if (url.pathname === "/api/session") {
-        if (req.method === "POST") {
-          const body = await readJson(req).catch(() => ({}));
-          const requestedId = typeof body?.userId === "string" ? body.userId : LOCAL_USER_ID;
-          const user = findUser(state, requestedId) || findUser(state, LOCAL_USER_ID);
-          if (!user) {
-            sendJson(res, 401, { error: "unknown_user" });
-            return;
-          }
-          const record = issueToken(state, user.id);
-          persistStateSoon();
-          sendJson(res, 200, {
-            token: record.token,
-            expiresAt: record.expiresAt,
-            user: { id: user.id, name: user.name, teamId: user.teamId },
-          });
-          return;
-        }
-        if (req.method === "DELETE") {
-          const token = /^Bearer\s+(.+)$/i.exec(String(req.headers.authorization ?? ""))?.[1]?.trim();
-          if (token && revokeToken(state, token)) persistStateSoon();
-          res.writeHead(204);
-          res.end();
-          return;
-        }
-      }
-
+      // --- Identity: resolve the actor, then gate. `/api/session` (login) is
+      // public and handled downstream in control-plane; everything else needs a
+      // live token when MYAGENT_REQUIRE_AUTH is on. ---
       const actor = resolveActor(state, req);
-      if (REQUIRE_AUTH && !actor.authenticated) {
+      const publicPath = url.pathname === "/api/session";
+      if (REQUIRE_AUTH && !publicPath && !actor.authenticated) {
         sendJson(res, 401, { error: "unauthenticated", message: "Valid session token required." });
         return;
       }
@@ -194,6 +163,7 @@ export function createHttpServer({
         sendJson,
         readJson,
         state,
+        actor,
         now,
         nextId,
         appendEvent,
@@ -219,6 +189,7 @@ export function createHttpServer({
         sendJson,
         readJson,
         state,
+        actor,
         currentProject,
         addProject,
         cloneProject,
@@ -387,6 +358,7 @@ export function createHttpServer({
         sendJson,
         readJson,
         state,
+        actor,
         findApprovalRequest,
         findInvocation,
         approveInvocation,

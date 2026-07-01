@@ -1,24 +1,18 @@
 /*
- * Identity: actor resolution, session tokens, and tenancy helpers.
+ * Identity: actor resolution and tenancy helpers.
  *
- * `main` already seeds `state.users` / `state.teams` / `state.tokens` and stamps
- * `project.ownerTeamId`; this module adds the *behavior* on top of that model:
- * resolve the calling actor from a Bearer token, issue/expire session tokens,
- * and answer "does this actor's team own this project?" for read scoping and
- * write guards. In local dev (the default) there is one seeded user on one team,
- * so every check collapses to "allow" — tenancy only bites once a second team
- * and `MYAGENT_REQUIRE_AUTH=1` are in play.
+ * `main` already seeds `state.users` / `state.teams` / `state.tokens`, stamps
+ * `project.ownerTeamId`, and mints/revokes session tokens in
+ * `routes/control-plane.mjs` (POST/DELETE `/api/session`). What it lacks is the
+ * *enforcement* on top of that: resolve the calling actor from a Bearer token,
+ * gate the API, and answer "does this actor's team own this project?" for read
+ * scoping and write guards. In local dev (the default) there is one seeded user
+ * on one team, so every check collapses to "allow" — tenancy only bites once a
+ * second team and `MYAGENT_REQUIRE_AUTH=1` are in play.
  */
-
-import crypto from "node:crypto";
 
 /** Turn the 401 gate on. Off by default so local dev needs no login. */
 export const REQUIRE_AUTH = process.env.MYAGENT_REQUIRE_AUTH === "1";
-
-const TTL_ENV = Math.floor(Number(process.env.MYAGENT_TOKEN_TTL_MS));
-/** Session lifetime; 30 days unless overridden with a positive ms value. */
-export const TOKEN_TTL_MS =
-  Number.isFinite(TTL_ENV) && TTL_ENV > 0 ? TTL_ENV : 30 * 24 * 60 * 60 * 1000;
 
 /** The seeded local identity, used as the fallback actor. */
 export const LOCAL_USER_ID = "usr_local";
@@ -39,6 +33,15 @@ function bearer(req) {
   return match ? match[1].trim() : null;
 }
 
+/** A token record is live if it isn't revoked and hasn't expired. Accepts both
+ *  control-plane's ISO-string `expiresAt` and a raw epoch-ms number. */
+function tokenLive(record) {
+  if (!record || record.revokedAt) return false;
+  const expiry =
+    typeof record.expiresAt === "number" ? record.expiresAt : Date.parse(record.expiresAt);
+  return Number.isFinite(expiry) && expiry > Date.now();
+}
+
 /**
  * Resolve the actor for a request. A valid unexpired token names the user;
  * otherwise we fall back to the seeded local user (so unauthenticated local
@@ -47,8 +50,7 @@ function bearer(req) {
  */
 export function resolveActor(state, req) {
   const token = bearer(req);
-  const record =
-    token && (state.tokens ?? []).find((t) => t.token === token && t.expiresAt > Date.now());
+  const record = token && (state.tokens ?? []).find((t) => t.token === token && tokenLive(t));
   const user =
     (record && findUser(state, record.userId)) ||
     findUser(state, LOCAL_USER_ID) ||
@@ -59,35 +61,6 @@ export function resolveActor(state, req) {
     teamId: user?.teamId ?? LOCAL_TEAM_ID,
     authenticated: Boolean(record),
   };
-}
-
-/** Drop expired tokens in place. */
-export function pruneTokens(state) {
-  const cutoff = Date.now();
-  if (state.tokens?.length) {
-    state.tokens = state.tokens.filter((t) => t.expiresAt > cutoff);
-  }
-}
-
-/** Mint a session token for a user and record it on `state.tokens`. */
-export function issueToken(state, userId, ttlMs = TOKEN_TTL_MS) {
-  state.tokens = state.tokens ?? [];
-  pruneTokens(state);
-  const record = {
-    token: crypto.randomBytes(32).toString("hex"),
-    userId,
-    createdAt: new Date().toISOString(),
-    expiresAt: Date.now() + ttlMs,
-  };
-  state.tokens.push(record);
-  return record;
-}
-
-/** Revoke a specific token. Returns true if one was removed. */
-export function revokeToken(state, token) {
-  const before = state.tokens?.length ?? 0;
-  if (before) state.tokens = state.tokens.filter((t) => t.token !== token);
-  return (state.tokens?.length ?? 0) < before;
 }
 
 /**

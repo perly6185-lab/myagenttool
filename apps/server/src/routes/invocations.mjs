@@ -1,3 +1,5 @@
+import { denyForeignProject } from "../runtime/auth.mjs";
+
 export async function handleInvocationRoutes({
   req,
   res,
@@ -5,6 +7,7 @@ export async function handleInvocationRoutes({
   sendJson,
   readJson,
   state,
+  actor,
   findApprovalRequest,
   findInvocation,
   approveInvocation,
@@ -45,6 +48,9 @@ export async function handleInvocationRoutes({
     const task = String(body.task ?? "").trim();
     if (!task) {
       sendJson(res, 400, { error: "task_required" });
+      return true;
+    }
+    if (denyForeignProject({ res, sendJson, state, actor, projectId: body.projectId })) {
       return true;
     }
     const agent = body.agentId ? findAgent(body.agentId) : defaultAgent();
