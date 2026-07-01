@@ -167,7 +167,7 @@ export function createTerminalService({
       ownerInvocationId: String(body.ownerInvocationId ?? "manual_terminal_surface"),
       ownerCodexSessionId: normalizeTerminalCodexSessionId(body.ownerCodexSessionId, body.ownerInvocationId),
       deviceId: state.device.id,
-      userId: "usr_local",
+      userId: body.userId ?? "usr_local",
       repoPath: cwd,
       cwd,
       shell,

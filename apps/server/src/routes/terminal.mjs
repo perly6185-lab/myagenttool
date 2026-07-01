@@ -4,6 +4,7 @@ export async function handleTerminalRoutes({
   url,
   sendJson,
   readJson,
+  actor,
   state,
   createSshTarget,
   createSshConnectionTest,
@@ -53,7 +54,7 @@ export async function handleTerminalRoutes({
     const body = await readJson(req);
     let session;
     try {
-      session = createManagedTerminalSession(body);
+      session = createManagedTerminalSession({ ...body, userId: body.userId ?? actor?.userId });
     } catch (error) {
       sendJson(res, 400, {
         error: "invalid_terminal_session",

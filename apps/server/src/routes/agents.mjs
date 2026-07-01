@@ -43,7 +43,7 @@ export async function handleAgentRoutes({
       // from a prior bridge session that dropped before reporting; a live check
       // reaches a terminal healthy/unhealthy, so reconnects don't loop.
       if (agent.adapter?.type === "cli" && (!agent.health || ["unknown", "checking"].includes(agent.health.status))) {
-        createAgentHealthCheck(agent);
+        createAgentHealthCheck(agent, actor);
       }
     }
     redeliverExpiredDispatches();
@@ -73,7 +73,7 @@ export async function handleAgentRoutes({
     // probe (codex exec --help / claude --version) on manual registration — a
     // fresh agent reports Healthy/Needs-attention instead of "unknown".
     if (agent.adapter?.type === "cli" && (isCodexCliCommand(agent.adapter.command) || isClaudeCliCommand(agent.adapter.command))) {
-      createAgentHealthCheck(agent);
+      createAgentHealthCheck(agent, actor);
     }
     sendJson(res, 201, { agent });
     return true;
@@ -88,18 +88,18 @@ export async function handleAgentRoutes({
     }
 
     if (actionMatch[2] === "disable") {
-      const operation = disableAgent(agent);
+      const operation = disableAgent(agent, actor);
       sendJson(res, 200, { agent, operation });
       return true;
     }
 
     if (actionMatch[2] === "enable") {
-      const operation = enableAgent(agent);
+      const operation = enableAgent(agent, actor);
       sendJson(res, 200, { agent, operation });
       return true;
     }
 
-    const operation = createAgentHealthCheck(agent);
+    const operation = createAgentHealthCheck(agent, actor);
     sendJson(res, 202, { agent, operation });
     return true;
   }

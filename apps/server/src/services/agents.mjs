@@ -177,8 +177,8 @@ export function createAgentService({ state, now, nextId, appendEvent }) {
     };
   }
 
-  function disableAgent(agent) {
-    const operation = createLifecycleOperation(agent, "disable", "Disabled from Web Console.");
+  function disableAgent(agent, actor = null) {
+    const operation = createLifecycleOperation(agent, "disable", "Disabled from Web Console.", actor);
     startLifecycleOperation(operation, `Disabling ${agent.name}.`);
     agent.lifecycle = { ...agent.lifecycle, state: "disabled" };
     agent.status = "disabled";
@@ -187,8 +187,8 @@ export function createAgentService({ state, now, nextId, appendEvent }) {
     return operation;
   }
 
-  function enableAgent(agent) {
-    const operation = createLifecycleOperation(agent, "enable", "Enabled from Web Console.");
+  function enableAgent(agent, actor = null) {
+    const operation = createLifecycleOperation(agent, "enable", "Enabled from Web Console.", actor);
     startLifecycleOperation(operation, `Enabling ${agent.name}.`);
     agent.lifecycle = { ...agent.lifecycle, state: "enabled" };
     agent.status = enabledAgentStatus(agent);
@@ -197,8 +197,8 @@ export function createAgentService({ state, now, nextId, appendEvent }) {
     return operation;
   }
 
-  function createAgentHealthCheck(agent) {
-    const operation = createLifecycleOperation(agent, "health_check", "Health check requested from Web Console.");
+  function createAgentHealthCheck(agent, actor = null) {
+    const operation = createLifecycleOperation(agent, "health_check", "Health check requested from Web Console.", actor);
     state.healthChecks.unshift(operation);
     state.healthChecks = state.healthChecks.slice(0, 50);
     agent.health = {
@@ -239,13 +239,13 @@ export function createAgentService({ state, now, nextId, appendEvent }) {
     return operation;
   }
 
-  function createLifecycleOperation(agent, operation, reason) {
+  function createLifecycleOperation(agent, operation, reason, actor = null) {
     const createdAt = now();
     const record = {
       id: nextId("lco_demo"),
       agentId: agent.id,
       deviceId: agent.location.type === "local_device" ? agent.location.deviceId : undefined,
-      requestedBy: "usr_local",
+      requestedBy: actor?.userId ?? "usr_local",
       operation,
       status: "queued",
       reason,
