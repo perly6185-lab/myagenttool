@@ -692,7 +692,11 @@ function gitOutput(root, args) {
 // file count so a worktree missing a .gitignore can't blow up the response.
 function worktreeDiff(worktree, { projectTargets = [] } = {}) {
   const cwd = worktree.path;
-  const git = (args) => execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8", timeout: 5_000 });
+  // maxBuffer well above MAX_DIFF_BYTES: without it execFileSync defaults to 1 MiB
+  // and throws ENOBUFS on a large diff *before* the cap logic runs, so the catch
+  // would silently return an empty diff for a worktree with real changes.
+  const git = (args) =>
+    execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8", timeout: 5_000, maxBuffer: 64 * 1024 * 1024 });
   // `git diff --no-index` exits non-zero when files differ; the patch we want is
   // still on the thrown error's stdout.
   const gitDiffSafe = (args) => {
@@ -705,7 +709,10 @@ function worktreeDiff(worktree, { projectTargets = [] } = {}) {
   const MAX_DIFF_BYTES = 1024 * 1024;
   const result = { files: [], base: "HEAD", diff: "", truncated: false };
   try {
-    const porcelain = git(["-c", "core.quotepath=false", "status", "--porcelain"]).split("\n").filter(Boolean);
+    // --untracked-files=all lists each untracked file individually; the default
+    // collapses an untracked dir to "dir/", which then can't be diffed against
+    // /dev/null and silently omits its files from the patch.
+    const porcelain = git(["-c", "core.quotepath=false", "status", "--porcelain", "--untracked-files=all"]).split("\n").filter(Boolean);
     result.files = porcelain.map((line) => {
       const index = line[0];
       const work = line[1];

@@ -445,7 +445,7 @@ export function codexRegistrationNotes() {
 
 export function isClaudeCliCommand(command) {
   const normalized = String(command ?? "").trim().toLowerCase();
-  return ["claude", "claude.cmd", "claude.exe"].some((name) => normalized === name || normalized.endsWith(`/${name}`) || normalized.endsWith(`\\${name}`));
+  return ["claude", "claude.cmd", "claude.ps1", "claude.exe"].some((name) => normalized === name || normalized.endsWith(`/${name}`) || normalized.endsWith(`\\${name}`));
 }
 
 // Claude Code runs non-interactively via `claude -p` with stream-json events.
