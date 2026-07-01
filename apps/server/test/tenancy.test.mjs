@@ -133,12 +133,9 @@ test("denyForeignProject: a missing projectId is a no-op (route-level not-found 
   assert.equal(calls.length, 0);
 });
 
-// Behavior guard, not an endorsement: an UNKNOWN projectId is currently allowed
-// through (the guard can't resolve a team, so it declines to block and leaves
-// the 404 to the route). If a route ever trusts this guard alone to scope a
-// write on a dangling id, that is a cross-tenant hole — this test will flag the
-// day the behavior changes so the decision is made deliberately.
-test("denyForeignProject: an unknown projectId is currently allowed through (documents the gap)", () => {
+// A provided-but-unknown projectId is denied (treated the same as foreign), so a
+// route can scope a write on this guard alone without a paired existence check.
+test("denyForeignProject: an unknown projectId is denied for a scoped actor (404)", () => {
   const state = twoTeamState();
   const { sendJson, calls } = captureSend();
   const denied = denyForeignProject({
@@ -148,6 +145,23 @@ test("denyForeignProject: an unknown projectId is currently allowed through (doc
     actor: { teamId: TEAM_B },
     projectId: "proj_does_not_exist",
   });
-  assert.equal(denied, false, "unknown projectId is not blocked by the ownership guard today");
+  assert.equal(denied, true);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].status, 404);
+});
+
+// ...but a null actor is a pass-through (and never dereferenced). Routes always
+// resolve a non-null actor; this is the defensive/unscoped-caller contract.
+test("denyForeignProject: an unknown projectId is allowed when there is no actor", () => {
+  const state = twoTeamState();
+  const { sendJson, calls } = captureSend();
+  const denied = denyForeignProject({
+    res: {},
+    sendJson,
+    state,
+    actor: null,
+    projectId: "proj_does_not_exist",
+  });
+  assert.equal(denied, false);
   assert.equal(calls.length, 0);
 });

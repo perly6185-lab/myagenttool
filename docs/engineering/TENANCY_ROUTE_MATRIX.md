@@ -33,7 +33,7 @@ Legend: ✅ guarded · ➖ N/A on this axis · 📌 decided (documented, no guar
 | invocations | POST `/api/approvals/:id/(approve\|deny)` | project | ✅ via `invocationProjectId` |
 | invocations | POST `/api/invocations/:id/cancel` | project | ✅ |
 | invocations | POST `/api/invocations/:id/troubleshoot` | project | ✅ |
-| invocations | POST `/api/compare-runs` | agent | 🔭 no project scope; reads scoped by visible child invocations — confirm agent visibility |
+| invocations | POST `/api/compare-runs` | invocation | ➖ reviewed — no hole: child invocations inherit the creator's current project (own team), reads scoped `byCompareRun` (#192), agents are device-level (not team-partitioned) |
 | control-plane | POST/DELETE `/api/session` | ➖ auth | ➖ |
 | control-plane | PATCH `/api/device` | device | ➖ |
 | control-plane | PUT/POST `/api/budgets` | project | ✅ `denyForeignProject(body.projectId)` |
@@ -43,7 +43,7 @@ Legend: ✅ guarded · ➖ N/A on this axis · 📌 decided (documented, no guar
 | projects | POST `/api/projects`, `/clone`, `/create` | project (create) | ➖ creation assigns owner |
 | projects | POST `/api/worktrees` | project | ✅ (worktree create paths guarded) |
 | projects | POST/PATCH/DELETE `/api/projects/:id[/…]` | project | ✅ (9 guarded sites) |
-| projects | POST `/api/worktree-name-suggestion` | project | 🔭 confirm it never leaks foreign project data |
+| projects | POST `/api/worktree-name-suggestion` | none | ➖ reviewed — only slugifies `body.description`, reads no project state |
 | codex | POST `/api/codex/approval-broker/:id/(approve\|deny)` | invocation | ✅ scoped by `request.invocationId`'s project |
 | codex | POST `/api/codex/change-reviews` | invocation | ✅ scoped by evidence → `invocationId`'s project |
 | codex | POST `/api/codex/hooks` | bridge | ➖ codex CLI / bridge ingestion, not a user surface |
@@ -89,13 +89,18 @@ Legend: ✅ guarded · ➖ N/A on this axis · 📌 decided (documented, no guar
   imported rows are stamped with an owning `teamId` at creation and scoped by it;
   the evidence center and approval queue re-apply scoping (invocation rows by
   `invVisible`, imported by team). Covered by `public-state-codex-scope.test.mjs`.
+- **Unknown/dangling projectId now denied.** `denyForeignProject` treats a
+  provided-but-unknown projectId the same as a foreign one (404), so a route can
+  scope a write on the guard alone without a paired existence check. A null
+  projectId stays a no-op (legit fallbacks) and a null actor is a pass-through
+  (never dereferenced). Pinned by `tenancy.test.mjs`.
+- **compare-runs / worktree-name-suggestion reviewed — no hole.** compare-run
+  child invocations inherit the creator's current project (own team) and reads
+  are scoped `byCompareRun`; agents are device-level, not team-partitioned.
+  worktree-name-suggestion only slugifies `body.description` and reads no state.
 
 ## Open decisions / follow-ups
 
-- **Unknown/dangling projectId is allowed through** `denyForeignProject`. Safe
-  today only because every caller pairs the guard with a not-found check; a
-  future route that scopes a write solely on this guard would have a hole.
-  (Pinned by `denyForeignProject: an unknown projectId is currently allowed through`.)
 - **codex change-reviews still leaks by status.** A missing evidence id returns
   the service's `400 invalid_codex_change_review`, while a foreign one returns
   the guard's `404` — distinguishable by status. Low severity (evidence ids);
@@ -109,14 +114,10 @@ Legend: ✅ guarded · ➖ N/A on this axis · 📌 decided (documented, no guar
   piecemeal per subsystem. `imported-evidence` now stamps `actor.userId`/`teamId`
   as the first step; closing the change-reviews 400-vs-404 status leak belongs to
   the same pass.
-- **compare-runs / worktree-name-suggestion.** Confirm agent visibility and that
-  no foreign project data leaks; guard if needed.
 
 ## Remaining order
 
-1. codex identity pass (`imported-evidence` + hardcoded `usr_local`; also closes
-   the change-reviews 400-vs-404 status leak).
-2. compare-runs / worktree-name-suggestion confirmation.
-3. Close the unknown/dangling projectId allow-through (make it deny or require a
-   paired not-found at every call site).
-4. Team-level cost allocation → revisit m3 operator-level objects and agent-skills.
+1. Identity pass — thread `actor` into the service layer, replacing the ~60
+   `usr_local` attribution stamps and closing the change-reviews 400-vs-404
+   status leak.
+2. Team-level cost allocation → revisit m3 operator-level objects and agent-skills.
