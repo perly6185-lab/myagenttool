@@ -32,6 +32,8 @@ export function createHttpServer({
   readProjectTree,
   searchProjectContent,
   gitProjectSummary,
+  worktreeDiff,
+  projectGithubItems,
   createSshTarget,
   createSshConnectionTest,
   createManagedTerminalSession,
@@ -202,6 +204,8 @@ export function createHttpServer({
         readProjectTree,
         searchProjectContent,
         gitProjectSummary,
+        worktreeDiff,
+        projectGithubItems,
       })) {
         return;
       }

@@ -328,6 +328,8 @@ export function createProjectService({ state, now, nextId, appendEvent, persistS
     createWorktree,
     currentProject,
     gitProjectSummary,
+    worktreeDiff: (worktree) => worktreeDiff(worktree, { projectTargets: state.projectTargets }),
+    projectGithubItems: (project) => projectGithubItems(project, { projectTargets: state.projectTargets }),
     projectForInvocation,
     readProjectTree,
     removeProject,
@@ -682,6 +684,118 @@ function gitOutput(root, args) {
   } catch {
     return "";
   }
+}
+
+// Full unified diff for a worktree: porcelain status letters + the tracked diff
+// against the merge-base with upstream (or the target's default branch), plus
+// untracked files rendered as additions. Bounded on output size and untracked
+// file count so a worktree missing a .gitignore can't blow up the response.
+function worktreeDiff(worktree, { projectTargets = [] } = {}) {
+  const cwd = worktree.path;
+  const git = (args) => execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8", timeout: 5_000 });
+  // `git diff --no-index` exits non-zero when files differ; the patch we want is
+  // still on the thrown error's stdout.
+  const gitDiffSafe = (args) => {
+    try {
+      return git(args);
+    } catch (error) {
+      return typeof error?.stdout === "string" ? error.stdout : "";
+    }
+  };
+  const MAX_DIFF_BYTES = 1024 * 1024;
+  const result = { files: [], base: "HEAD", diff: "", truncated: false };
+  try {
+    const porcelain = git(["-c", "core.quotepath=false", "status", "--porcelain"]).split("\n").filter(Boolean);
+    result.files = porcelain.map((line) => {
+      const index = line[0];
+      const work = line[1];
+      let p = line.slice(3);
+      if (p.includes(" -> ")) p = p.split(" -> ")[1];
+      return { path: p, index, work, untracked: index === "?" };
+    });
+  } catch {
+    /* leave empty */
+  }
+  let base = "HEAD";
+  try {
+    const upstream = git(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"]).trim();
+    base = git(["merge-base", upstream, "HEAD"]).trim() || "HEAD";
+  } catch {
+    const target = projectTargets.find((t) => t.id === worktree.targetId);
+    const def = target?.defaultBranch;
+    if (def) {
+      try {
+        base = git(["merge-base", def, "HEAD"]).trim() || "HEAD";
+      } catch {
+        base = "HEAD";
+      }
+    }
+  }
+  result.base = base;
+  let diff = "";
+  try {
+    diff = git(["diff", "--no-color", base, "--"]);
+  } catch {
+    /* no commits yet, or bad base */
+  }
+  const MAX_UNTRACKED = 200;
+  let untrackedSeen = 0;
+  for (const f of result.files) {
+    if (!f.untracked) continue;
+    if (diff.length > MAX_DIFF_BYTES || untrackedSeen >= MAX_UNTRACKED) {
+      result.truncated = true;
+      break;
+    }
+    untrackedSeen += 1;
+    const patch = gitDiffSafe(["diff", "--no-color", "--no-index", "--", "/dev/null", f.path]);
+    if (patch) diff += (diff && !diff.endsWith("\n") ? "\n" : "") + patch;
+  }
+  if (diff.length > MAX_DIFF_BYTES) {
+    diff = diff.slice(0, MAX_DIFF_BYTES);
+    result.truncated = true;
+  }
+  result.diff = diff;
+  return result;
+}
+
+// GitHub issues + PRs for a repo-backed project, via the `gh` CLI. Returns
+// `{ available, message, items }` — the shape the Task view consumes. Degrades
+// gracefully (available:false + reason) when there is no ready repo, no GitHub
+// remote, or `gh` is unauthenticated.
+function projectGithubItems(project, { projectTargets = [] } = {}) {
+  const target = projectTargets.find((t) => t.projectId === project.id && t.state === "ready");
+  if (!target) return { available: false, message: "Project has no ready repository.", items: [] };
+  let remote = "";
+  try {
+    remote = execFileSync("git", ["-C", target.rootPath, "remote", "get-url", "origin"], {
+      encoding: "utf8",
+      timeout: 5_000,
+    }).trim();
+  } catch {
+    remote = "";
+  }
+  if (!/github\.com/i.test(remote)) {
+    return { available: false, message: "No GitHub remote (origin) on this repository.", items: [] };
+  }
+  const ghJson = (args) => {
+    try {
+      return JSON.parse(execFileSync("gh", args, { cwd: target.rootPath, encoding: "utf8", timeout: 15_000 }) || "[]") || [];
+    } catch {
+      return null;
+    }
+  };
+  const prsRaw = ghJson(["pr", "list", "--json", "number,title,headRefName,author,url,state", "--limit", "30"]);
+  const issuesRaw = ghJson(["issue", "list", "--json", "number,title,author,url,state", "--limit", "30"]);
+  if (prsRaw === null && issuesRaw === null) {
+    return { available: false, message: "gh list failed (auth or remote?).", items: [] };
+  }
+  const items = [
+    ...(prsRaw ?? []).map((p) => ({ type: "pr", number: p.number, title: p.title, headRefName: p.headRefName, author: p.author?.login ?? "", url: p.url, state: (p.state ?? "open").toLowerCase() })),
+    ...(issuesRaw ?? []).map((i) => ({ type: "issue", number: i.number, title: i.title, headRefName: null, author: i.author?.login ?? "", url: i.url, state: (i.state ?? "open").toLowerCase() })),
+  ].sort((a, b) => b.number - a.number);
+  const prCount = (prsRaw ?? []).length;
+  const issueCount = (issuesRaw ?? []).length;
+  return { available: true, message: `${prCount} open PR(s), ${issueCount} open issue(s).`, items };
 }
 
 function normalizeRelativePath(value) {

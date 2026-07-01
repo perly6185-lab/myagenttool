@@ -22,6 +22,8 @@ export async function handleProjectRoutes({
   readProjectTree,
   searchProjectContent,
   gitProjectSummary,
+  worktreeDiff,
+  projectGithubItems,
 }) {
   if (req.method === "GET" && url.pathname === "/api/projects") {
     sendJson(res, 200, { projects: state.projects, currentProjectId: state.currentProjectId, currentProject: currentProject() });
@@ -232,7 +234,11 @@ export async function handleProjectRoutes({
       sendJson(res, 404, { error: "project_not_found" });
       return true;
     }
-    sendJson(res, 200, { issues: [], pullRequests: [], repository: project.git?.remoteUrl ?? null });
+    try {
+      sendJson(res, 200, projectGithubItems(project));
+    } catch (error) {
+      sendJson(res, 200, { available: false, message: errorMessage(error), items: [] });
+    }
     return true;
   }
 
@@ -330,18 +336,7 @@ export async function handleProjectRoutes({
     }
     if (action === "diff" && req.method === "GET") {
       try {
-        const summary = gitProjectSummary(project);
-        sendJson(res, 200, {
-          files: (summary.changes ?? []).map((change) => ({
-            path: change.path,
-            index: change.status,
-            work: change.status,
-            untracked: String(change.status).includes("?"),
-          })),
-          base: summary.upstream ?? "HEAD",
-          diff: "",
-          truncated: false,
-        });
+        sendJson(res, 200, worktreeDiff(worktree));
       } catch (error) {
         sendJson(res, 400, { error: "worktree_diff_unavailable", message: errorMessage(error) });
       }
