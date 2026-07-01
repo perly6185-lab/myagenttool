@@ -1349,7 +1349,7 @@ function normalizeBudgetPolicy(value) {
 // trimming a finalized cost would silently under-count spend and wrongly clear
 // an over-budget project. Keep all real-cost entries + the newest `cap`
 // informational/unknown ones (the array is newest-first).
-function capLedgerEntries(state, cap = 200) {
+export function capLedgerEntries(state, cap = 200) {
   const isSpend = (e) =>
     Number(e.amountUsd ?? e.amount) > 0 && !["voided", "cancelled"].includes(e.status);
   let others = 0;
