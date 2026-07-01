@@ -95,3 +95,28 @@ test("PATCH /api/automations/:id — a foreign team cannot repoint it (404, fiel
   assert.equal(auto.enabled, true);
   assert.equal(auto.agentId, "agent_x");
 });
+
+// Existence-hiding drift guard: the "exists but foreign" 404 must be
+// byte-identical to the "genuinely missing" 404, or an enumerating cross-team
+// caller could tell the two apart. If someone changes one branch's body and not
+// the other, this fails.
+test("DELETE /api/automations/:id — foreign and missing return an identical 404 body", async () => {
+  const foreign = await call({
+    method: "DELETE",
+    path: "/api/automations/auto_1", // exists, owned by TEAM_A
+    actor: { teamId: TEAM_B },
+  });
+  const missing = await call({
+    method: "DELETE",
+    path: "/api/automations/auto_does_not_exist",
+    actor: { teamId: TEAM_B },
+  });
+  assert.equal(foreign.calls.at(-1).status, 404);
+  assert.equal(missing.calls.at(-1).status, 404);
+  assert.deepEqual(
+    foreign.calls.at(-1).payload,
+    missing.calls.at(-1).payload,
+    "foreign automation must be indistinguishable from a missing one",
+  );
+  assert.deepEqual(foreign.calls.at(-1).payload, { error: "automation_not_found" });
+});

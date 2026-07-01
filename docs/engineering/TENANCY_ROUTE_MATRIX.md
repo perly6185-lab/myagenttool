@@ -70,6 +70,16 @@ Legend: ✅ guarded · ➖ N/A on this axis · 📌 decided (documented, no guar
 - **codex invocation-scoped writes.** approval-broker approve/deny and
   change-reviews are now guarded by their invocation's project; `codex-tenancy.test.mjs`.
 - **m3 ai-usage.** Guarded by `body.projectId` (cost attribution); `m3-tenancy.test.mjs`.
+- **Not-found body standardization (existence-hiding).** `denyForeignProject`
+  now takes a `notFound` body and each resource route passes its own not-found
+  string, so the "exists but foreign" 404 is byte-identical to that route's
+  "missing" 404 — the two are indistinguishable. Applied to the resource-scoped
+  guards: invocations (`invocation_not_found`), automations run + PATCH/DELETE
+  (`automation_not_found`), all project sub-routes (`project_not_found`), codex
+  approval-broker (`codex_approval_request_not_found`). Body-supplied-projectId
+  guards (invocations/budgets create, m3 ai-usage) keep the generic body — no
+  sibling resource-not-found to mirror. A drift-guard test asserts
+  foreign-body === missing-body (`control-plane-tenancy.test.mjs`).
 
 ## Open decisions / follow-ups
 
@@ -77,11 +87,10 @@ Legend: ✅ guarded · ➖ N/A on this axis · 📌 decided (documented, no guar
   today only because every caller pairs the guard with a not-found check; a
   future route that scopes a write solely on this guard would have a hole.
   (Pinned by `denyForeignProject: an unknown projectId is currently allowed through`.)
-- **Not-found body standardization.** The 404 the guard emits (`{error:"not_found"}`)
-  still differs in shape from each route's own not-found body (e.g.
-  `automation_not_found`), a residual existence signal. Standardize not-found
-  responses so a foreign resource is byte-for-byte indistinguishable from a
-  missing one.
+- **codex change-reviews still leaks by status.** A missing evidence id returns
+  the service's `400 invalid_codex_change_review`, while a foreign one returns
+  the guard's `404` — distinguishable by status. Low severity (evidence ids);
+  fold into the codex identity pass.
 - **codex identity pass.** The codex subsystem hardcodes `usr_local`
   (`reviewedBy`, `userId`); `imported-evidence` has no project link. The two
   guards added here are consistent with the invocations routes, but full codex
@@ -91,7 +100,9 @@ Legend: ✅ guarded · ➖ N/A on this axis · 📌 decided (documented, no guar
 
 ## Remaining order
 
-1. Not-found body standardization (turns the 404 policy into true existence-hiding).
-2. codex identity pass (`imported-evidence`, hardcoded `usr_local`).
-3. compare-runs / worktree-name-suggestion confirmation.
+1. codex identity pass (`imported-evidence` + hardcoded `usr_local`; also closes
+   the change-reviews 400-vs-404 status leak).
+2. compare-runs / worktree-name-suggestion confirmation.
+3. Close the unknown/dangling projectId allow-through (make it deny or require a
+   paired not-found at every call site).
 4. Team-level cost allocation → revisit m3 operator-level objects and agent-skills.
