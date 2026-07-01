@@ -9,6 +9,7 @@
  * overwrites) and git-excluded so they never pollute the branch or a commit.
  */
 
+import { execFileSync } from "node:child_process";
 import {
   appendFileSync,
   existsSync,
@@ -19,6 +20,20 @@ import {
 } from "node:fs";
 import { dirname, join, resolve, sep } from "node:path";
 import { isClaudeCliCommand, isCodexCliCommand } from "./agents.mjs";
+
+// True if `relPath` is git-tracked in the worktree at `root`. Used to avoid
+// mutating a version-controlled AGENTS.md (see the codex render path).
+function isGitTracked(root, relPath) {
+  try {
+    execFileSync("git", ["-C", root, "ls-files", "--error-unmatch", relPath], {
+      stdio: "ignore",
+      timeout: 3_000,
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 export const AGENT_SKILL_TARGETS = ["claude", "codex"];
 
@@ -147,6 +162,15 @@ export function renderAgentSkillsIntoWorktree(agent, wtPath, skills = []) {
       const block = `${SKILL_BLOCK_START}\n# Skills\n\n${sections.join("\n\n---\n\n")}\n${SKILL_BLOCK_END}`;
       const agentsPath = join(root, "AGENTS.md");
       const preexisting = existsSync(agentsPath);
+      // Never touch a version-controlled AGENTS.md: our block would show in the
+      // worktree's diff and could be committed onto the user's branch. We can't
+      // git-exclude a tracked file's changes, so skip injection there and leave
+      // it to the user. Only an absent/untracked AGENTS.md is safe to write +
+      // exclude.
+      if (preexisting && isGitTracked(root, "AGENTS.md")) {
+        console.warn(`[server] agent-skills: AGENTS.md is git-tracked in ${root}; skipping skill injection to avoid polluting the repo.`);
+        return;
+      }
       const existing = preexisting ? readFileSync(agentsPath, "utf8") : "";
       let next;
       if (existing.includes(SKILL_BLOCK_START) && existing.includes(SKILL_BLOCK_END)) {
@@ -157,8 +181,8 @@ export function renderAgentSkillsIntoWorktree(agent, wtPath, skills = []) {
         next = existing ? `${existing.replace(/\s*$/, "")}\n\n${block}\n` : `${block}\n`;
       }
       writeFileSync(agentsPath, next);
-      // Only exclude AGENTS.md when we created it (don't hide a tracked file's diff).
-      if (!preexisting) gitExclude(root, ["AGENTS.md"]);
+      // Untracked (or freshly created) → keep it out of the branch.
+      gitExclude(root, ["AGENTS.md"]);
     }
   } catch (error) {
     console.warn(
