@@ -33,6 +33,9 @@ export async function handleInvocationRoutes({
       sendJson(res, 404, { error: "invocation_not_found" });
       return true;
     }
+    if (denyForeignProject({ res, sendJson, state, actor, projectId: invocationProjectId(invocation) })) {
+      return true;
+    }
 
     if (approvalMatch[2] === "approve") {
       approveInvocation(approval, invocation);
@@ -116,6 +119,9 @@ export async function handleInvocationRoutes({
       sendJson(res, 404, { error: "invocation_not_found" });
       return true;
     }
+    if (denyForeignProject({ res, sendJson, state, actor, projectId: invocationProjectId(invocation) })) {
+      return true;
+    }
     cancelInvocation(invocation);
     sendJson(res, 200, { invocation });
     return true;
@@ -126,6 +132,9 @@ export async function handleInvocationRoutes({
     const invocation = findInvocation(troubleshootMatch[1]);
     if (!invocation) {
       sendJson(res, 404, { error: "invocation_not_found" });
+      return true;
+    }
+    if (denyForeignProject({ res, sendJson, state, actor, projectId: invocationProjectId(invocation) })) {
       return true;
     }
     if (!["failed", "cancelled", "timed_out", "expired", "rejected"].includes(invocation.status)) {
@@ -139,6 +148,12 @@ export async function handleInvocationRoutes({
   }
 
   return false;
+}
+
+// The project an invocation belongs to, for tenancy checks. Creation stores it
+// top-level (invocation.projectId) and in metadata; fall back through both.
+function invocationProjectId(invocation) {
+  return invocation?.projectId ?? invocation?.input?.metadata?.projectId ?? null;
 }
 
 function invocationOptionsFromBody(body = {}) {

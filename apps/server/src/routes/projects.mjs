@@ -172,6 +172,7 @@ export async function handleProjectRoutes({
       sendJson(res, 404, { error: "project_not_found" });
       return true;
     }
+    if (denyForeignProject({ res, sendJson, state, actor, projectId: project.id })) return true;
     try {
       const tree = readProjectTree(project, {
         relativePath: url.searchParams.get("path") ?? "",
@@ -194,6 +195,7 @@ export async function handleProjectRoutes({
       sendJson(res, 404, { error: "project_not_found" });
       return true;
     }
+    if (denyForeignProject({ res, sendJson, state, actor, projectId: project.id })) return true;
     try {
       const results = searchProjectContent(project, {
         query: url.searchParams.get("q") ?? "",
@@ -217,6 +219,7 @@ export async function handleProjectRoutes({
       sendJson(res, 404, { error: "project_not_found" });
       return true;
     }
+    if (denyForeignProject({ res, sendJson, state, actor, projectId: project.id })) return true;
     try {
       sendJson(res, 200, gitProjectSummary(project));
     } catch (error) {
@@ -235,6 +238,7 @@ export async function handleProjectRoutes({
       sendJson(res, 404, { error: "project_not_found" });
       return true;
     }
+    if (denyForeignProject({ res, sendJson, state, actor, projectId: project.id })) return true;
     try {
       sendJson(res, 200, projectGithubItems(project));
     } catch (error) {
@@ -250,6 +254,7 @@ export async function handleProjectRoutes({
       sendJson(res, 404, { error: "project_not_found" });
       return true;
     }
+    if (denyForeignProject({ res, sendJson, state, actor, projectId: project.id })) return true;
     try {
       const summary = gitProjectSummary(project);
       sendJson(res, 200, { branches: [summary.branch].filter(Boolean), current: summary.branch });

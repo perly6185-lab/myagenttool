@@ -20,8 +20,13 @@ export function buildPublicState({
   // or its project/invocation belongs to the actor's team.
   const teamId = actor?.teamId ?? null;
   const projectTeam = new Map((state.projects ?? []).map((p) => [p.id, teamOf(p)]));
-  const projectVisible = (projectId) =>
-    teamId == null || !projectId || (projectTeam.get(projectId) ?? teamId) === teamId;
+  const projectVisible = (projectId) => {
+    if (teamId == null || !projectId) return true; // unscoped, or a global/unowned row
+    const owner = projectTeam.get(projectId);
+    // An unknown/dangling projectId is NOT visible when scoped — defaulting to
+    // the viewer's own team would leak every orphaned row to every team.
+    return owner !== undefined && owner === teamId;
+  };
   const projects = (state.projects ?? []).filter((p) => projectVisible(p.id));
   const invocations = (state.invocations ?? []).filter((inv) => projectVisible(inv.projectId));
   const visibleInvIds = new Set(invocations.map((inv) => inv.id));
@@ -29,6 +34,12 @@ export function buildPublicState({
     teamId == null || !invocationId || visibleInvIds.has(invocationId);
   const byInvocation = (rows) => (rows ?? []).filter((r) => invVisible(r?.invocationId));
   const byProject = (rows) => (rows ?? []).filter((r) => projectVisible(r?.projectId));
+  // A compare run is visible when it spans at least one invocation the team can
+  // see; unscoped mode passes everything through.
+  const byCompareRun = (rows) =>
+    (rows ?? []).filter(
+      (r) => teamId == null || (r?.childInvocationIds ?? []).some((id) => visibleInvIds.has(id)),
+    );
 
   return {
     namespace,
@@ -48,7 +59,7 @@ export function buildPublicState({
     agent: defaultAgent(),
     agents: state.agents,
     invocations,
-    compareRuns: state.compareRuns,
+    compareRuns: byCompareRun(state.compareRuns),
     events: byInvocation(state.events),
     traces: byInvocation(state.traces),
     spans: byInvocation(state.spans),
@@ -65,9 +76,9 @@ export function buildPublicState({
     discoveryRuns: state.discoveryRuns,
     integrationArtifacts: state.integrationArtifacts,
     integrationProbeRuns: state.integrationProbeRuns,
-    quotaDecisionRecords: state.quotaDecisionRecords,
+    quotaDecisionRecords: byInvocation(state.quotaDecisionRecords),
     quotaPolicies: state.quotaPolicies,
-    aiUsageRecords: state.aiUsageRecords,
+    aiUsageRecords: byInvocation(state.aiUsageRecords),
     ledgerEntries: byProject(state.ledgerEntries),
     ledgerSummary: typeof ledgerSummary === "function" ? ledgerSummary() : null,
     budgets: byProject(state.budgets),
@@ -81,15 +92,15 @@ export function buildPublicState({
     policyDecisionRecords: byInvocation(state.policyDecisionRecords),
     troubleshootingReports: byInvocation(state.troubleshootingReports),
     agentUsageSummaries: state.agentUsageSummaries,
-    codexSessions: state.codexSessions,
-    codexWorkspaces: state.codexWorkspaces,
-    codexEvidenceRecords: state.codexEvidenceRecords,
-    codexChangeReviews: state.codexChangeReviews,
-    codexHookEvents: state.codexHookEvents,
+    codexSessions: byInvocation(state.codexSessions),
+    codexWorkspaces: byInvocation(state.codexWorkspaces),
+    codexEvidenceRecords: byInvocation(state.codexEvidenceRecords),
+    codexChangeReviews: byInvocation(state.codexChangeReviews),
+    codexHookEvents: byInvocation(state.codexHookEvents),
     codexApprovalQueue: codexApprovalQueue(),
     evidenceCenterRecords: evidenceCenterRecords(),
-    codexApprovalBrokerRequests: state.codexApprovalBrokerRequests,
-    codexImportedEvidenceRecords: state.codexImportedEvidenceRecords,
+    codexApprovalBrokerRequests: byInvocation(state.codexApprovalBrokerRequests),
+    codexImportedEvidenceRecords: byInvocation(state.codexImportedEvidenceRecords),
     terminalRuntimeCapability: state.terminalRuntimeCapability,
     terminalSessions: state.terminalSessions,
     terminalEvidenceRecords: state.terminalEvidenceRecords,
