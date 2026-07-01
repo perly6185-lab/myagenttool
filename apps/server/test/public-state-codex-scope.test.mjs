@@ -1,0 +1,100 @@
+/*
+ * Regression tests for cross-team scoping of codex evidence in buildPublicState.
+ *
+ * Imported-evidence records carry no invocationId, so the invocation-based
+ * scoping (invVisible) treated them as globally visible — team A's imported
+ * evidence leaked into team B's public state, both directly and via the
+ * aggregated evidence center. They now carry an owning teamId and are scoped by
+ * it; the evidence center re-applies scoping over its raw aggregate.
+ */
+
+import assert from "node:assert/strict";
+import { test } from "node:test";
+
+import { buildPublicState } from "../src/read-models/state.mjs";
+
+const TEAM_A = "team_a";
+const TEAM_B = "team_b";
+
+function scenarioState() {
+  return {
+    projects: [
+      { id: "proj_a", ownerTeamId: TEAM_A },
+      { id: "proj_b", ownerTeamId: TEAM_B },
+    ],
+    invocations: [
+      { id: "inv_a", projectId: "proj_a" },
+      { id: "inv_b", projectId: "proj_b" },
+    ],
+    codexImportedEvidenceRecords: [
+      { id: "imp_a", teamId: TEAM_A, summary: "team a secret" },
+      { id: "imp_b", teamId: TEAM_B, summary: "team b secret" },
+      { id: "imp_legacy", summary: "pre-tenancy row" }, // no teamId → local team
+    ],
+  };
+}
+
+// The evidence center aggregates raw state; model the pieces we scope.
+const EVIDENCE_CENTER = [
+  { id: "imp_a", type: "imported_evidence", invocationId: null },
+  { id: "imp_b", type: "imported_evidence", invocationId: null },
+  { id: "ev_a", type: "file_change", invocationId: "inv_a" },
+  { id: "ev_b", type: "file_change", invocationId: "inv_b" },
+  { id: "term", type: "file_change", invocationId: null }, // device-level manual terminal
+];
+
+function build(actor) {
+  return buildPublicState({
+    namespace: "test",
+    protocolVersion: "1",
+    state: scenarioState(),
+    defaultProjectPath: "/tmp",
+    currentProject: () => null,
+    defaultAgent: () => null,
+    loopRoutineReadModel: () => null,
+    codexApprovalQueue: () => [
+      { id: "appr_a", invocationId: "inv_a" },
+      { id: "appr_b", invocationId: "inv_b" },
+    ],
+    evidenceCenterRecords: () => EVIDENCE_CENTER.map((r) => ({ ...r })),
+    ledgerSummary: () => null,
+    budgetStatuses: () => [],
+    actor,
+  });
+}
+
+const ids = (rows) => (rows ?? []).map((r) => r.id).sort();
+
+test("imported evidence is scoped to the owning team (direct path)", () => {
+  const teamA = build({ teamId: TEAM_A });
+  assert.deepEqual(ids(teamA.codexImportedEvidenceRecords), ["imp_a"]);
+  assert.ok(
+    !teamA.codexImportedEvidenceRecords.some((r) => r.id === "imp_b"),
+    "team B's imported evidence must not appear for team A",
+  );
+});
+
+test("the evidence center no longer leaks foreign imported or invocation evidence", () => {
+  const teamA = build({ teamId: TEAM_A });
+  // imp_a (own), ev_a (own invocation), term (device-level null) stay; imp_b + ev_b gone.
+  assert.deepEqual(ids(teamA.evidenceCenterRecords), ["ev_a", "imp_a", "term"]);
+});
+
+test("the codex approval queue is scoped by the request's invocation", () => {
+  const teamA = build({ teamId: TEAM_A });
+  assert.deepEqual(ids(teamA.codexApprovalQueue), ["appr_a"]);
+});
+
+test("unscoped (no actor / single-team) is a pass-through", () => {
+  const all = build(null);
+  assert.deepEqual(ids(all.codexImportedEvidenceRecords), ["imp_a", "imp_b", "imp_legacy"]);
+  assert.equal(all.evidenceCenterRecords.length, EVIDENCE_CENTER.length);
+});
+
+test("a legacy imported row (no teamId) belongs to the local team, not a foreign one", () => {
+  const teamA = build({ teamId: TEAM_A });
+  assert.ok(
+    !teamA.codexImportedEvidenceRecords.some((r) => r.id === "imp_legacy"),
+    "legacy local-team rows must not leak to a non-local team",
+  );
+});

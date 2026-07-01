@@ -80,6 +80,15 @@ Legend: ✅ guarded · ➖ N/A on this axis · 📌 decided (documented, no guar
   guards (invocations/budgets create, m3 ai-usage) keep the generic body — no
   sibling resource-not-found to mirror. A drift-guard test asserts
   foreign-body === missing-body (`control-plane-tenancy.test.mjs`).
+- **codex imported-evidence read leak (found + fixed).** Imported-evidence rows
+  carry no `invocationId`, so `invVisible` treated them as globally visible and
+  team A's rows (summary, repoPath) leaked into team B's public state — both
+  directly (`codexImportedEvidenceRecords`) and via two aggregated read models
+  (`evidenceCenterRecords`, `codexApprovalQueue`) that were built from raw state
+  and re-exposed invocation-linked evidence too, bypassing `byInvocation`. Now
+  imported rows are stamped with an owning `teamId` at creation and scoped by it;
+  the evidence center and approval queue re-apply scoping (invocation rows by
+  `invVisible`, imported by team). Covered by `public-state-codex-scope.test.mjs`.
 
 ## Open decisions / follow-ups
 
@@ -91,10 +100,15 @@ Legend: ✅ guarded · ➖ N/A on this axis · 📌 decided (documented, no guar
   the service's `400 invalid_codex_change_review`, while a foreign one returns
   the guard's `404` — distinguishable by status. Low severity (evidence ids);
   fold into the codex identity pass.
-- **codex identity pass.** The codex subsystem hardcodes `usr_local`
-  (`reviewedBy`, `userId`); `imported-evidence` has no project link. The two
-  guards added here are consistent with the invocations routes, but full codex
-  tenancy needs real per-actor identity, not just project scoping.
+- **Systemic `usr_local` attribution (deliberate M0 simplification).** ~60 sites
+  across invocations/agents/m3/integrations/terminal/codex stamp `usr_local` as
+  requestedBy/costOwner/reviewedBy — attribution, not access. Access is already
+  guarded (`denyForeignProject`) and imported-evidence is now team-scoped, so
+  this is a correctness/attribution follow-up, not a hole. It should be done as
+  one coherent identity pass (thread `actor` into the service layer), not
+  piecemeal per subsystem. `imported-evidence` now stamps `actor.userId`/`teamId`
+  as the first step; closing the change-reviews 400-vs-404 status leak belongs to
+  the same pass.
 - **compare-runs / worktree-name-suggestion.** Confirm agent visibility and that
   no foreign project data leaks; guard if needed.
 

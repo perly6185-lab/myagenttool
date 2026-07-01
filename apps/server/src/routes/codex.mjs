@@ -72,7 +72,7 @@ export async function handleCodexRoutes({
     const body = await readJson(req);
     let record;
     try {
-      record = createCodexImportedEvidenceRecord(body);
+      record = createCodexImportedEvidenceRecord(body, actor);
     } catch (error) {
       sendJson(res, 400, {
         error: "invalid_codex_imported_evidence",

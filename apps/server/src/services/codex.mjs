@@ -1,3 +1,4 @@
+import { LOCAL_TEAM_ID } from "../runtime/auth.mjs";
 import { isCodexCliCommand } from "./agents.mjs";
 
 export function createCodexService({
@@ -429,17 +430,22 @@ export function createCodexService({
     return request;
   }
 
-  function createCodexImportedEvidenceRecord(body) {
+  function createCodexImportedEvidenceRecord(body, actor = null) {
     const source = String(body.source ?? "user_selected_local_evidence").trim();
     const summary = String(body.summary ?? "").trim();
     if (!summary) {
       throw new Error("summary is required.");
     }
     const createdAt = now();
+    // Imported evidence has no invocation to hang tenancy on, so stamp the
+    // owning team (and user) from the actor. buildPublicState scopes these
+    // records by teamId; without it they leaked to every team (invVisible treats
+    // a null invocationId as globally visible). Legacy rows → the local team.
     const record = {
       id: nextId("cdx_import"),
       source,
-      userId: "usr_local",
+      userId: actor?.userId ?? "usr_local",
+      teamId: actor?.teamId ?? LOCAL_TEAM_ID,
       repoPath: body.repoPath ? String(body.repoPath) : null,
       marker: "imported_after_the_fact",
       status: "imported",
