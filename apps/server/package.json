@@ -6,8 +6,9 @@
   "type": "module",
   "scripts": {
     "dev": "node ./src/index.mjs",
-    "test": "node ./src/index.mjs --check && node --test",
-    "test:unit": "node --test",
+    "test": "node ./src/index.mjs --check && node --test test/*.test.mjs && node --test test/integration/*.test.mjs",
+    "test:unit": "node --test test/*.test.mjs",
+    "test:integration": "node --test test/integration/*.test.mjs",
     "lint": "node ./src/index.mjs --check",
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },

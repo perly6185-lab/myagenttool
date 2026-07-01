@@ -8,6 +8,25 @@ Status: the P1.2 pass (this stack) closed GAP-1, set the 403→404 policy, and
 guarded the codex + m3 invocation/project-scoped writes. Remaining ❓ rows are
 recorded decisions or scoped follow-ups, not open holes.
 
+## End-to-end validation
+
+`apps/server/test/integration/tenancy-http.test.mjs` boots the real http server
+(the `src/index.mjs` composition) with `MYAGENT_REQUIRE_AUTH=1` and a hand-seeded
+second team, then drives it over actual HTTP as team B against team A's
+resources. It proves the guards and read-scoping hold through the whole dispatch
+stack — not just the pure-function unit tests: the auth gate (401), read scoping
+(projects + imported evidence hidden), and every guarded write path (automations,
+m3 ai-usage, budgets, invocation cancel/troubleshoot, codex approval-broker) all
+refuse the foreign team, while the owner succeeds. Run:
+`pnpm --filter @myagenttool/server test:integration`.
+
+> **Reachability caveat.** Multi-tenancy is not a product flow yet: teams/users
+> are seed-only (no create-team/create-user API), `/api/session` only logs in the
+> seeded local user, and the web console sends no token. So the guards below are
+> enforced and validated, but only *bite* once that multi-user plumbing lands
+> (create-team/user + multi-user login + web bearer token — ROADMAP SaaS/RBAC).
+> The integration test injects the second team directly to validate today.
+
 ## Model recap
 
 Tenancy only bites when `MYAGENT_REQUIRE_AUTH=1` **and** a second team exists;
@@ -131,5 +150,8 @@ update). Both fall back to `usr_local` today.
 
 ## Remaining order
 
-1. Tail identity sites: terminal session userId + agent lifecycle-op requestedBy.
-2. Team-level cost allocation → revisit m3 operator-level objects and agent-skills.
+1. **Multi-user plumbing** (makes tenancy reachable as a product): create-team /
+   create-user APIs, multi-user login on `/api/session`, and a web bearer token.
+   Until this lands the guards are validated but dormant in normal use.
+2. Tail identity sites: terminal session userId + agent lifecycle-op requestedBy.
+3. Team-level cost allocation → revisit m3 operator-level objects and agent-skills.
