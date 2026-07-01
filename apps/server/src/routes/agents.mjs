@@ -1,3 +1,5 @@
+import { isClaudeCliCommand, isCodexCliCommand } from "../services/agents.mjs";
+
 export async function handleAgentRoutes({
   req,
   res,
@@ -34,6 +36,12 @@ export async function handleAgentRoutes({
       }
       agent.status = "available";
       agent.updatedAt = now();
+      // Local CLI agents have no health endpoint; probe once the bridge is
+      // online so a fresh/restarted agent doesn't sit at "unknown". Only when
+      // unknown, so reconnects don't re-probe endlessly.
+      if (agent.adapter?.type === "cli" && (!agent.health || agent.health.status === "unknown")) {
+        createAgentHealthCheck(agent);
+      }
     }
     redeliverExpiredDispatches();
     appendEvent({
@@ -57,6 +65,12 @@ export async function handleAgentRoutes({
         message: error instanceof Error ? error.message : String(error),
       });
       return true;
+    }
+    // Coding agents have no health endpoint, so auto-run the restricted CLI
+    // probe (codex exec --help / claude --version) on manual registration — a
+    // fresh agent reports Healthy/Needs-attention instead of "unknown".
+    if (agent.adapter?.type === "cli" && (isCodexCliCommand(agent.adapter.command) || isClaudeCliCommand(agent.adapter.command))) {
+      createAgentHealthCheck(agent);
     }
     sendJson(res, 201, { agent });
     return true;
