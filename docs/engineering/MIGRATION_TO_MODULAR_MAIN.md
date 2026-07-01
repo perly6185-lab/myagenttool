@@ -25,20 +25,24 @@ approval, cancellation, completion, direct-http, troubleshooting); **codex**;
 `device.maxConcurrency` (in `routes/control-plane.mjs`); **loop-routines** (its
 own scheduled-agent system).
 
-## The genuine delta (⇒ port, by module)
+## The genuine delta — outcomes (all resolved)
 
-Confirmed absent from `main` by unique symbol (`git grep` on `apps/server/src`):
+> **Note (2026-07-01):** `origin/main` (5d79acf) reimplemented most of these
+> surfaces *after* the delta table was first drafted — several as compatibility
+> **stubs** (empty/placeholder responses) rather than absent code. A per-feature
+> re-scan against current `main` replaced "absent symbol" with "actual gap".
+> Status below reflects what was actually done.
 
-| # | Feature | Absent symbol(s) | Target in `main` | Notes |
+| # | Feature | Gap in current `main` | Resolution | Commit |
 |---|---|---|---|---|
-| 1 | **Identity: auth + tenancy** | `resolveActor`, `denyForeignProject`, no token/session, no auth gate | NEW `runtime/auth.mjs`; wire into `runtime/http-server.mjs` (session route + gate); scope `read-models/state.mjs buildPublicState` by team; guard mutating route modules | **Highest value, zero conflict** — `main` has users/teams but no enforcement. Do first. |
-| 2 | **Worktree diff view** | `worktreeDiff` | `services/projects.mjs` + a `/api/worktrees/:id/diff` case in `routes/projects.mjs` | `main` has `worktree-view.tsx` already; likely references the missing endpoint. Small. |
-| 3 | **Task GitHub board (server)** | `projectGithubItems` | `services/projects.mjs` + `/api/projects/:id/github` in `routes/projects.mjs` | Web view already in `main`; only the server route is missing. |
-| 4 | **Worktree attachments** | `.agent-attachments` | `routes/projects.mjs` (`/api/worktrees/:id/attachments`) + fs write w/ symlink guard | Independent; carry the hardening (symlink/realpath, body cap, self-gitignore). |
-| 5 | **Permission level → Codex sandbox** | `sandboxForPermission` | `services/invocations/dispatch.mjs` (map `permissionLevel` → policy) + `services/codex.mjs` / bridge-next (`--sandbox`) | Slots into existing codex + dispatch modules. |
-| 6 | **Concurrency safety** | `reclaimStuckCancellations`, `invocationDirKey`, `isBridgeExecuted` | `services/invocations/dispatch.mjs` (`nextDispatchableInvocation` already lives there) | `main` has `device.maxConcurrency` but not the per-cwd guard / stuck-cancel reclaim / bridge-only counting. Additive hardening. |
-| — | **Skills** | `createSkill`, `renderSkill` | ⚠️ COORDINATE | `main` is building its **own** skills (`tools/ai/src/loop/routine-skills.mjs`, `docs/…SKILLS…`). Do NOT port ours blindly. |
-| — | **Automation scheduler** | `runDueAutomations` | ⚠️ COORDINATE | `main` has **loop-routines**; our `automations` overlaps. Decide which wins before touching. Note: `main`'s `automation-view.tsx` may still call `/api/automations` — a loose end in `main` itself. |
+| 1 | **Identity: auth + tenancy** | users/teams/tokens seeded and control-plane already mints `/api/session` tokens, but nothing resolves an actor, gates the API, scopes reads, or guards writes | NEW `runtime/auth.mjs` (`resolveActor` compatible with control-plane's token shape, `teamOf`, `denyForeignProject`); flag-gated 401 gate + actor threaded into `/api/state` and route bags; `buildPublicState(actor)` team-scopes every project/invocation-derived collection; write-guards on project/worktree/invocation/budget/automation mutations | 929afed, 612eb6a |
+| 2 | **Worktree diff view** | route existed but returned the file list with `diff: ""` (stub) | ported real `worktreeDiff` (unified patch vs merge-base, untracked-as-additions, 1 MiB / 200-file bounds) into `services/projects.mjs` | 98db90a |
+| 3 | **Task GitHub board** | route returned `{issues, pullRequests, repository}` — **wrong shape** for the Task view `main` shipped (needs `{available, message, items}`), and never called `gh` | ported real `projectGithubItems` (`gh` issue/pr list, graceful `available:false`) | 98db90a |
+| 4 | **Worktree attachments** | `saveAttachments` existed but wrote to the base project dir, no size cap, files left untracked | hardened: worktree path, symlink/realpath guard, 5 MiB cap + `skipped`, randomized names, self-`.gitignore` | 1d381f0 |
+| 5 | **Permission level → Codex sandbox** | ~~`sandboxForPermission`~~ | **SKIPPED — covered by `main` differently.** `main` routes `permissionLevel → metadata.permissionMode → approvalMode` into its Codex **approval broker** (auto/full auto-approve, "ask" queues, sensitive-pattern manual-review escape). Our `--sandbox` mapping is an *overlapping* enforcement model; bolting it on would double-gate and conflict (read-only hard-blocks writes the broker's auto/full intend to allow). Defense-in-depth via `--sandbox` would be a design change to coordinate, not a port. | — |
+| 6 | **Concurrency safety** | `device.maxConcurrency` was advertised but **`nextDispatchableInvocation` ignored it** (cosmetic cap); no per-cwd guard, no bridge-only counting, no stuck-cancel reclaim | ported all four into `services/invocations/dispatch.mjs` (`completeInvocation` threaded via `createInvocationService`) | 552e401 |
+| — | **Skills** | `main` is building its **own** skills (`tools/ai/src/loop/routine-skills.mjs`) | ⚠️ COORDINATE — do not port ours blindly | — |
+| — | **Automation scheduler** | `main` has **loop-routines** + an `automations` collection; our `runDueAutomations` overlaps | ⚠️ COORDINATE — decide which wins before wiring a scheduler | — |
 
 ## `main`'s server pattern (the port target)
 
@@ -51,15 +55,20 @@ the snapshot is `read-models/state.mjs buildPublicState({ state, … })`. **No a
 context exists yet** — feature #1 introduces `resolveActor(req)` and threads the
 actor into the dispatch + `buildPublicState`.
 
-## Recommended order
+## Status
 
-1. **#1 Identity auth/tenancy** — foundational, non-conflicting; establishes the port pattern + the actor other features attribute to.
-2. **#2 Worktree diff**, **#3 Task github route**, **#4 attachments** — small, independent, web already present in `main`.
-3. **#5 permission→sandbox**, **#6 concurrency safety** — additive to existing invocation/codex modules.
-4. **Coordinate** on **Skills** and **Automation vs loop-routines** before porting either.
+**Server delta done** on `integrate/budgets-onto-main` (off `origin/main`
+5d79acf): #1–#4 and #6 ported, #5 deliberately skipped (covered by `main`'s
+Codex approval broker). Every step carries a unit and/or live verification and
+the startup self-check passes. Still open, both requiring coordination with
+`main`'s direction, not a mechanical port:
 
-Each is one small PR off current `main`. Keep `feat/budgets-and-chargeback` as the
-reference spec; nothing is rebased/merged.
+- **Skills** — `main` is building its own; don't port ours blindly.
+- **Automation vs loop-routines** — overlapping schedulers; decide which wins.
+- **Web delta** (below) — reconcile only once the backing feature is settled.
+
+Keep `feat/budgets-and-chargeback` as the reference spec; nothing is
+rebased/merged.
 
 ## Web delta
 
