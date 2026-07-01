@@ -275,6 +275,7 @@ export function createHttpServer({
         sendJson,
         readJson,
         state,
+        actor,
         recordCodexHookEvent,
         expireCodexApprovalBrokerRequests,
         resolveCodexApprovalBrokerRequest,

@@ -1,3 +1,13 @@
+import { denyForeignProject } from "../runtime/auth.mjs";
+
+// Codex records are keyed on an invocation; scope them by that invocation's
+// project, matching invocations.mjs (and how buildPublicState already scopes
+// codex* reads by visible invocation). Same projectId fallback as that route.
+function codexInvocationProjectId(state, invocationId) {
+  const invocation = (state.invocations ?? []).find((item) => item.id === invocationId);
+  return invocation?.projectId ?? invocation?.input?.metadata?.projectId ?? null;
+}
+
 export async function handleCodexRoutes({
   req,
   res,
@@ -5,6 +15,7 @@ export async function handleCodexRoutes({
   sendJson,
   readJson,
   state,
+  actor,
   recordCodexHookEvent,
   expireCodexApprovalBrokerRequests,
   resolveCodexApprovalBrokerRequest,
@@ -49,6 +60,9 @@ export async function handleCodexRoutes({
       sendJson(res, 404, { error: "codex_approval_request_not_found" });
       return true;
     }
+    if (denyForeignProject({ res, sendJson, state, actor, projectId: codexInvocationProjectId(state, request.invocationId) })) {
+      return true;
+    }
     const updated = resolveCodexApprovalBrokerRequest(request, approvalMatch[2]);
     sendJson(res, 200, { approvalRequest: updated });
     return true;
@@ -72,6 +86,17 @@ export async function handleCodexRoutes({
 
   if (req.method === "POST" && url.pathname === "/api/codex/change-reviews") {
     const body = await readJson(req);
+    // The review inherits its evidence record's invocation; scope it there.
+    // Unknown evidence falls through so the service returns its own 400.
+    const evidence = (state.codexEvidenceRecords ?? []).find(
+      (item) => item.id === String(body.evidenceId ?? "").trim(),
+    );
+    if (
+      evidence &&
+      denyForeignProject({ res, sendJson, state, actor, projectId: codexInvocationProjectId(state, evidence.invocationId) })
+    ) {
+      return true;
+    }
     let review;
     try {
       review = createCodexChangeReview(body);
