@@ -12,6 +12,7 @@ import { useAsyncAction, api } from "@/data/use-console-actions";
 import { useUiStore } from "@/store/ui-store";
 import { cn } from "@/lib/cn";
 import { readableStatus, statusTone } from "@/lib/readable-labels";
+import { branchFromIssue, worktreeLinkFor } from "@/features/projects/worktree-payload";
 
 type GithubItem = {
   type: "issue" | "pr";
@@ -318,7 +319,7 @@ function WorktreeOptionsForm({ row, onDone }: { row: Row; onDone: (wt: { id: str
   }
 
   function create() {
-    const link = { type: row.type, number: row.number, title: row.title, url: row.url, state: row.state };
+    const link = worktreeLinkFor(row);
     const payload = isPr
       ? { prNumber: row.number, agentId: agentId || undefined, link }
       : { name: branch.trim() || branchFromIssue(row), startPoint: base.trim() || undefined, agentId: agentId || undefined, link };
@@ -375,13 +376,3 @@ function WorktreeOptionsForm({ row, onDone }: { row: Row; onDone: (wt: { id: str
   );
 }
 
-// Branch name for a new worktree off an issue: issue-<n>-<slugified title>.
-function branchFromIssue(row: Row): string {
-  const slug =
-    row.title
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, "-")
-      .replace(/^-+|-+$/g, "")
-      .slice(0, 40) || "work";
-  return `issue-${row.number}-${slug}`;
-}
