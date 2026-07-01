@@ -20,12 +20,14 @@ m3 ai-usage, budgets, invocation cancel/troubleshoot, codex approval-broker) all
 refuse the foreign team, while the owner succeeds. Run:
 `pnpm --filter @myagenttool/server test:integration`.
 
-> **Reachability caveat.** Multi-tenancy is not a product flow yet: teams/users
-> are seed-only (no create-team/create-user API), `/api/session` only logs in the
-> seeded local user, and the web console sends no token. So the guards below are
-> enforced and validated, but only *bite* once that multi-user plumbing lands
-> (create-team/user + multi-user login + web bearer token — ROADMAP SaaS/RBAC).
-> The integration test injects the second team directly to validate today.
+> **Reachability.** The server-side multi-user plumbing now exists and is
+> validated end-to-end: `POST /api/teams`, `POST /api/users`, multi-user login
+> (`POST /api/session {userId}`), and project creation defaulting `ownerTeamId`
+> to the creator's team. `multi-user-plumbing.test.mjs` provisions two tenants
+> through these real APIs and confirms isolation holds. **Still missing for a
+> real product:** (1) the web console sends no bearer token / has no login UI,
+> and (2) login is credential-less (login-as-anyone) — real auth needs a
+> password/OAuth check and team/user-provisioning RBAC (ROADMAP SaaS/RBAC).
 
 ## Model recap
 
@@ -150,8 +152,13 @@ update). Both fall back to `usr_local` today.
 
 ## Remaining order
 
-1. **Multi-user plumbing** (makes tenancy reachable as a product): create-team /
-   create-user APIs, multi-user login on `/api/session`, and a web bearer token.
-   Until this lands the guards are validated but dormant in normal use.
-2. Tail identity sites: terminal session userId + agent lifecycle-op requestedBy.
-3. Team-level cost allocation → revisit m3 operator-level objects and agent-skills.
+1. **Real auth + web login** (the last mile for product multi-tenancy): a web
+   login UI that stores + sends a bearer token, credential verification on
+   `/api/session` (replace login-as-anyone), and RBAC on team/user provisioning.
+   The server APIs and guards are done and validated; this is the client + auth.
+2. Team-level cost allocation → revisit m3 operator-level objects and agent-skills.
+
+Done since the audit: GAP-1 + the 403→404/existence-hiding policy, codex/m3/
+automation write guards, the codex read-leak fix, the unknown-projectId guard,
+the full identity pass (incl. the terminal/lifecycle-op tail), server-side
+multi-user plumbing, and unit + end-to-end integration coverage.

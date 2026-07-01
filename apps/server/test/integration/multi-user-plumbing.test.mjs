@@ -1,0 +1,130 @@
+/*
+ * End-to-end multi-user plumbing test.
+ *
+ * Where tenancy-http.test.mjs hand-seeds a second team, this one provisions the
+ * whole tenant through the REAL APIs — create-team, create-user, multi-user
+ * login (POST /api/session {userId}), and project creation — then confirms a
+ * project made by team A is owned by team A and isolated from team B. It proves
+ * the plumbing that makes tenancy reachable actually works, not just the guards.
+ */
+
+process.env.MYAGENT_REQUIRE_AUTH = "1";
+process.env.MYAGENTTOOL_STATE_DISABLED = "1";
+
+import assert from "node:assert/strict";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { after, before, test } from "node:test";
+
+const now = () => new Date().toISOString();
+
+let server;
+let base;
+
+async function call(path, { token, method = "GET", body } = {}) {
+  const res = await fetch(`${base}${path}`, {
+    method,
+    headers: {
+      ...(token ? { authorization: `Bearer ${token}` } : {}),
+      ...(body ? { "content-type": "application/json" } : {}),
+    },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  let parsed = null;
+  try {
+    parsed = await res.json();
+  } catch {
+    parsed = null;
+  }
+  return { status: res.status, body: parsed };
+}
+
+before(async () => {
+  const { createServerState } = await import("../../src/runtime/state-factory.mjs");
+  const { createServerRuntimeServices } = await import("../../src/runtime/service-composer.mjs");
+  const { createHttpServer } = await import("../../src/runtime/http-server.mjs");
+
+  const { defaultProject, state } = createServerState({ defaultProjectPath: "/tmp", now });
+  const { httpDependencies } = createServerRuntimeServices({
+    namespace: "test",
+    protocolVersion: "0.0.0",
+    state,
+    defaultProject,
+    defaultProjectPath: "/tmp",
+    persistenceEnabled: false,
+    stateStorePath: "/tmp/unused.json",
+    stateSchemaVersion: 1,
+    dispatchLeaseMs: 30_000,
+    now,
+  });
+  server = createHttpServer({ host: "127.0.0.1", port: 0, namespace: "test", protocolVersion: "0.0.0", ...httpDependencies });
+  await new Promise((r) => server.listen(0, "127.0.0.1", r));
+  base = `http://127.0.0.1:${server.address().port}`;
+});
+
+after(() => server?.close());
+
+// Shared across tests, populated by the provisioning test below.
+const ctx = {};
+
+test("provision two tenants through the real APIs (team, user, multi-user login)", async () => {
+  // Bootstrap: the seeded local user logs in (no credential in demo mode).
+  const local = await call("/api/session", { method: "POST", body: {} });
+  assert.equal(local.status, 200);
+
+  const teamA = await call("/api/teams", { token: local.body.token, method: "POST", body: { name: "Team A" } });
+  const teamB = await call("/api/teams", { token: local.body.token, method: "POST", body: { name: "Team B" } });
+  assert.equal(teamA.status, 201);
+  assert.equal(teamB.status, 201);
+  ctx.teamAId = teamA.body.team.id;
+  ctx.teamBId = teamB.body.team.id;
+
+  const userA = await call("/api/users", { token: local.body.token, method: "POST", body: { name: "Alice", teamId: ctx.teamAId } });
+  const userB = await call("/api/users", { token: local.body.token, method: "POST", body: { name: "Bob", teamId: ctx.teamBId } });
+  assert.equal(userA.status, 201);
+  assert.equal(userB.body.user.teamId, ctx.teamBId);
+
+  const loginA = await call("/api/session", { method: "POST", body: { userId: userA.body.user.id } });
+  const loginB = await call("/api/session", { method: "POST", body: { userId: userB.body.user.id } });
+  assert.equal(loginA.status, 200);
+  assert.equal(loginA.body.user.teamId, ctx.teamAId, "login mints a token scoped to the user's team");
+  ctx.tokA = loginA.body.token;
+  ctx.tokB = loginB.body.token;
+});
+
+test("login with an unknown user is rejected (404)", async () => {
+  const r = await call("/api/session", { method: "POST", body: { userId: "usr_nope" } });
+  assert.equal(r.status, 404);
+});
+
+test("a project created by team A is owned by team A", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "mu-proja-"));
+  const created = await call("/api/projects/create", { token: ctx.tokA, method: "POST", body: { name: "A repo", path: dir } });
+  assert.equal(created.status, 201);
+  assert.equal(created.body.project.ownerTeamId, ctx.teamAId, "ownerTeamId defaults to the creator's team");
+  ctx.projAId = created.body.project.id;
+});
+
+test("team B cannot see team A's project, and team A can", async () => {
+  const b = await call("/api/state", { token: ctx.tokB });
+  assert.ok(!(b.body.projects ?? []).some((p) => p.id === ctx.projAId), "team B must not see team A's project");
+  const a = await call("/api/state", { token: ctx.tokA });
+  assert.ok((a.body.projects ?? []).some((p) => p.id === ctx.projAId), "team A sees its own project");
+});
+
+test("team B cannot act on team A's automation (created via API)", async () => {
+  const auto = await call("/api/automations", {
+    token: ctx.tokA,
+    method: "POST",
+    body: { projectId: ctx.projAId, name: "A nightly", prompt: "p" },
+  });
+  assert.equal(auto.status, 201);
+  const autoId = auto.body.automation.id;
+
+  const foreign = await call(`/api/automations/${autoId}`, { token: ctx.tokB, method: "DELETE" });
+  assert.equal(foreign.status, 404, "team B cannot delete team A's automation");
+
+  const owner = await call(`/api/automations/${autoId}`, { token: ctx.tokA, method: "PATCH", body: { prompt: "p2" } });
+  assert.equal(owner.status, 200, "team A can update its own automation");
+});

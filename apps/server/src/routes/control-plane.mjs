@@ -24,7 +24,20 @@ export async function handleControlPlaneRoutes({
   upsertBudget,
 }) {
   if (req.method === "POST" && url.pathname === "/api/session") {
-    const user = state.users.find((item) => item.id === "usr_local") ?? state.users[0];
+    // Multi-user login: a body.userId logs in as that seeded user; with none we
+    // fall back to the local user so existing single-user dev is unchanged.
+    // NOTE: demo-level — there is no credential check yet (login-as-anyone).
+    // Real deployments must verify a password/OAuth before minting a token.
+    const body = await readJson(req).catch(() => ({}));
+    const requestedUserId = body?.userId ? String(body.userId) : null;
+    if (requestedUserId && !state.users.some((item) => item.id === requestedUserId)) {
+      sendJson(res, 404, { error: "user_not_found" });
+      return true;
+    }
+    const user =
+      (requestedUserId && state.users.find((item) => item.id === requestedUserId)) ||
+      state.users.find((item) => item.id === "usr_local") ||
+      state.users[0];
     const createdAt = now();
     const token = `tok_${crypto.randomBytes(24).toString("base64url")}`;
     const record = {
@@ -54,6 +67,54 @@ export async function handleControlPlaneRoutes({
       persistStateSoon();
     }
     sendJson(res, 204, null);
+    return true;
+  }
+
+  // Team + user provisioning. The seed ships one local team/user; these let a
+  // second tenant exist so the ownership guards actually engage. Demo-level:
+  // any authenticated caller may provision (no org-admin RBAC yet).
+  if (req.method === "POST" && url.pathname === "/api/teams") {
+    const body = await readJson(req).catch(() => ({}));
+    const name = String(body?.name ?? "").trim();
+    if (!name) {
+      sendJson(res, 400, { error: "invalid_team", message: "A team name is required." });
+      return true;
+    }
+    const team = {
+      id: nextId("team"),
+      name,
+      slug: String(body?.slug ?? name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "")),
+      createdAt: now(),
+    };
+    state.teams.unshift(team);
+    persistStateSoon();
+    sendJson(res, 201, { team });
+    return true;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/users") {
+    const body = await readJson(req).catch(() => ({}));
+    const name = String(body?.name ?? "").trim();
+    const teamId = String(body?.teamId ?? "").trim();
+    if (!name) {
+      sendJson(res, 400, { error: "invalid_user", message: "A user name is required." });
+      return true;
+    }
+    if (!state.teams.some((item) => item.id === teamId)) {
+      sendJson(res, 400, { error: "invalid_user", message: "A known teamId is required." });
+      return true;
+    }
+    const user = {
+      id: nextId("usr"),
+      name,
+      email: body?.email ? String(body.email) : null,
+      teamId,
+      role: ["owner", "admin", "operator", "viewer"].includes(body?.role) ? body.role : "operator",
+      createdAt: now(),
+    };
+    state.users.unshift(user);
+    persistStateSoon();
+    sendJson(res, 201, { user });
     return true;
   }
 

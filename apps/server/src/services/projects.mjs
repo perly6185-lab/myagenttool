@@ -144,7 +144,15 @@ export function createProjectService({ state, now, nextId, appendEvent, persistS
       stdio: ["ignore", "pipe", "pipe"],
       timeout: 20_000,
     });
-    return addProject({ name: body.name, path: targetPath, host: body.host ?? "local", color: body.color });
+    return addProject({
+      name: body.name,
+      path: targetPath,
+      host: body.host ?? "local",
+      color: body.color,
+      ownerTeamId: body.ownerTeamId,
+      budgetPoolId: body.budgetPoolId,
+      defaultAgentId: body.defaultAgentId,
+    });
   }
 
   function selectProject(projectId) {
