@@ -31,7 +31,7 @@ export function createReadModelRuntime({
     };
   }
 
-  function publicState() {
+  function publicState(actor = null) {
     expireCodexApprovalBrokerRequests();
     return buildPublicState({
       namespace,
@@ -45,6 +45,7 @@ export function createReadModelRuntime({
       evidenceCenterRecords,
       ledgerSummary,
       budgetStatuses,
+      actor,
     });
   }
 

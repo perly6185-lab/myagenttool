@@ -1,3 +1,5 @@
+import { teamOf } from "../runtime/auth.mjs";
+
 export function buildPublicState({
   namespace,
   protocolVersion,
@@ -10,7 +12,24 @@ export function buildPublicState({
   evidenceCenterRecords,
   ledgerSummary,
   budgetStatuses,
+  actor = null,
 }) {
+  // Tenancy scoping. With no actor (or one whose team owns everything, i.e.
+  // single-team local dev) this is a pass-through; it only filters once a
+  // second team exists. A row is visible when it carries no owning key (global)
+  // or its project/invocation belongs to the actor's team.
+  const teamId = actor?.teamId ?? null;
+  const projectTeam = new Map((state.projects ?? []).map((p) => [p.id, teamOf(p)]));
+  const projectVisible = (projectId) =>
+    teamId == null || !projectId || (projectTeam.get(projectId) ?? teamId) === teamId;
+  const projects = (state.projects ?? []).filter((p) => projectVisible(p.id));
+  const invocations = (state.invocations ?? []).filter((inv) => projectVisible(inv.projectId));
+  const visibleInvIds = new Set(invocations.map((inv) => inv.id));
+  const invVisible = (invocationId) =>
+    teamId == null || !invocationId || visibleInvIds.has(invocationId);
+  const byInvocation = (rows) => (rows ?? []).filter((r) => invVisible(r?.invocationId));
+  const byProject = (rows) => (rows ?? []).filter((r) => projectVisible(r?.projectId));
+
   return {
     namespace,
     protocolVersion,
@@ -20,20 +39,20 @@ export function buildPublicState({
     device: state.device,
     users: state.users ?? [],
     teams: state.teams ?? [],
-    projects: state.projects,
-    projectTargets: state.projectTargets ?? [],
+    projects,
+    projectTargets: byProject(state.projectTargets),
     currentProjectId: state.currentProjectId,
     currentProject: currentProject(),
     loopRoutines: loopRoutineReadModel(),
-    worktrees: state.worktrees,
+    worktrees: byProject(state.worktrees),
     agent: defaultAgent(),
     agents: state.agents,
-    invocations: state.invocations,
+    invocations,
     compareRuns: state.compareRuns,
-    events: state.events,
-    traces: state.traces,
-    spans: state.spans,
-    auditSummaries: state.auditSummaries,
+    events: byInvocation(state.events),
+    traces: byInvocation(state.traces),
+    spans: byInvocation(state.spans),
+    auditSummaries: byInvocation(state.auditSummaries),
     healthChecks: state.healthChecks,
     lifecycleAuditRecords: state.lifecycleAuditRecords,
     lifecycleRecipes: state.lifecycleRecipes,
@@ -49,17 +68,17 @@ export function buildPublicState({
     quotaDecisionRecords: state.quotaDecisionRecords,
     quotaPolicies: state.quotaPolicies,
     aiUsageRecords: state.aiUsageRecords,
-    ledgerEntries: state.ledgerEntries,
+    ledgerEntries: byProject(state.ledgerEntries),
     ledgerSummary: typeof ledgerSummary === "function" ? ledgerSummary() : null,
-    budgets: state.budgets ?? [],
-    budgetStatuses: typeof budgetStatuses === "function" ? budgetStatuses() : [],
-    automations: state.automations ?? [],
+    budgets: byProject(state.budgets),
+    budgetStatuses: byProject(typeof budgetStatuses === "function" ? budgetStatuses() : []),
+    automations: byProject(state.automations),
     privateDeploymentConfig: state.privateDeploymentConfig,
     auditExportRequests: state.auditExportRequests,
     retentionSettings: state.retentionSettings,
-    approvalRequests: state.approvalRequests,
-    policyDecisionRecords: state.policyDecisionRecords,
-    troubleshootingReports: state.troubleshootingReports,
+    approvalRequests: byInvocation(state.approvalRequests),
+    policyDecisionRecords: byInvocation(state.policyDecisionRecords),
+    troubleshootingReports: byInvocation(state.troubleshootingReports),
     agentUsageSummaries: state.agentUsageSummaries,
     codexSessions: state.codexSessions,
     codexWorkspaces: state.codexWorkspaces,
