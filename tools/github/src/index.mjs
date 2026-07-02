@@ -5,6 +5,8 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { computeDoraStats, doraSelfCheck, formatDoraReport } from "./dora.mjs";
 import { backlogSelfCheck, computeBacklogStats, formatBacklogReport } from "./backlog.mjs";
+import { computeGovernanceStats, formatGovernanceReport, governanceSelfCheck } from "./governance.mjs";
+import { hasAcceptanceMention, hasProductFlowEvidence, hasVerificationEvidence, prFilePath, reviewRiskGates } from "./pr-evidence.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(__dirname, "../../..");
@@ -53,6 +55,7 @@ Usage:
   node tools/github/src/index.mjs sync-project-fields --owner OWNER --project 1 [--apply]
   node tools/github/src/index.mjs sync-project --repo OWNER/REPO --owner OWNER --project 1 [--milestone M2|--issues 1,2] [--done] [--apply]
   node tools/github/src/index.mjs dora-report [--repo OWNER/REPO] [--days 30] [--json] [--out path]
+  node tools/github/src/index.mjs governance-report [--repo OWNER/REPO] [--days 30] [--json] [--out path]
   node tools/github/src/index.mjs backlog-report [--repo OWNER/REPO] [--stale-days 14] [--json] [--out path]
 
 Environment:
@@ -113,6 +116,11 @@ function main() {
 
   if (command === "backlog-report") {
     backlogReport(args);
+    return;
+  }
+
+  if (command === "governance-report") {
+    governanceReport(args);
     return;
   }
 
@@ -186,6 +194,40 @@ function backlogReport(args) {
   const stats = computeBacklogStats(issues, { staleDays, now: new Date().toISOString() });
   const report = formatBacklogReport(stats, { repo });
   emitMetricsReport({ kind: "backlog", stats, report, args });
+}
+
+// L3 gate reading: re-judge every merged PR in the window with the SAME
+// predicates check-pr enforces, and count silent-bypass merges (first-parent
+// non-merge commits on the default branch = changes that skipped a PR).
+function governanceReport(args) {
+  const repo = option(args, "--repo") ?? process.env.GITHUB_REPOSITORY ?? defaultRepo();
+  if (!repo) fail("Missing --repo or GITHUB_REPOSITORY.");
+  const days = Number(option(args, "--days") ?? 30);
+  if (!Number.isFinite(days) || days <= 0) fail(`--days must be a positive number. Got: ${option(args, "--days")}`);
+
+  const since = new Date(Date.now() - days * 86_400_000).toISOString();
+  const defaultBranch = ghJson(["repo", "view", repo, "--json", "defaultBranchRef"]).defaultBranchRef?.name ?? "main";
+  const limit = 500;
+  const prs = ghJson([
+    "pr", "list", "--repo", repo, "--state", "merged", "--base", defaultBranch,
+    "--search", `merged:>=${since.slice(0, 10)}`, "--limit", String(limit),
+    "--json", "number,body,files,closingIssuesReferences,mergedAt",
+  ]).filter((pr) => pr.mergedAt && pr.mergedAt >= since);
+  if (prs.length >= limit) {
+    console.error(`Warning: hit the ${limit}-PR fetch limit; coverage is truncated.`);
+  }
+
+  let directPushCount = null;
+  try {
+    const out = execFileSync("git", ["rev-list", "--first-parent", "--no-merges", "--count", `--since=${since}`, `origin/${defaultBranch}`], { encoding: "utf8" });
+    directPushCount = Number(out.trim());
+  } catch {
+    console.error("Warning: could not count direct pushes from local git history (is origin fetched?).");
+  }
+
+  const stats = computeGovernanceStats(prs, { days, directPushCount });
+  const report = formatGovernanceReport(stats, { repo });
+  emitMetricsReport({ kind: "governance", stats, report, args });
 }
 
 function checkLocal() {
@@ -493,6 +535,8 @@ function checkLocal() {
   if (backlogFailures.length > 0) {
     failReport("Backlog counter self-check failed", backlogFailures);
   }
+
+  governanceSelfCheck();
 
   console.log("[tools-github:check] GitHub governance local check OK");
 }
@@ -1233,74 +1277,6 @@ function normalizeValue(value) {
     .replace(/\s+/g, " ");
 }
 
-function hasVerificationEvidence(body) {
-  return /Verification/i.test(body) && /(pnpm|npm|test|check|smoke|manual|pass|passed)/i.test(body);
-}
-
-function hasAcceptanceMention(body) {
-  return /Acceptance/i.test(body) || /Closes\s+#\d+/i.test(body);
-}
-
-function reviewRiskWarnings(files, body, prNumber) {
-  return reviewRiskGates(files, body, prNumber).warnings;
-}
-
-function reviewRiskGates(files, body, prNumber, options = {}) {
-  const normalizedFiles = files.map(normalizePath);
-  const warnings = [];
-  const failures = [];
-  const prefix = prNumber ? `PR #${prNumber}` : "PR";
-  const missing = (message) => {
-    if (options.failOnRiskWarnings) failures.push(message);
-    else warnings.push(message);
-  };
-
-  if (normalizedFiles.some(isWebFile) && !hasVisualEvidence(body)) {
-    missing(`${prefix} changes web UI files but does not mention visual QA screenshot evidence`);
-  }
-
-  if (normalizedFiles.some(isProductFacingFile) && !hasProductFlowEvidence(body)) {
-    missing(`${prefix} changes product-facing UI/workflow files but does not mention Product Flow coverage`);
-  }
-
-  if (normalizedFiles.some(isDesktopOrLocalExecutionFile) && !hasDesktopEvidence(body)) {
-    missing(`${prefix} changes desktop or local execution files but does not mention cross-platform execution/cancellation evidence`);
-  }
-
-  if (normalizedFiles.some(isProtocolFile) && !hasProtocolEvidence(body)) {
-    missing(`${prefix} changes protocol/state-machine files but does not mention state-machine or schema compatibility evidence`);
-  }
-
-  if (normalizedFiles.some(isAdapterFile) && !hasAdapterEvidence(body)) {
-    missing(`${prefix} changes adapter files but does not mention success, failure, cancellation, or redaction evidence`);
-  }
-
-  if (normalizedFiles.some(isSecurityDataBillingFile) && !hasSecurityDataBillingEvidence(body)) {
-    missing(`${prefix} changes security/data/billing files but does not mention security/data/privacy, billing/cost, credential, audit, or retention evidence`);
-  }
-
-  if (normalizedFiles.some(isReleaseFile) && !hasReleaseEvidence(body)) {
-    missing(`${prefix} changes release/deploy files but does not mention release, rollback, deploy preflight, or human approval evidence`);
-  }
-
-  return { warnings, failures };
-}
-
-function prFilePath(file) {
-  return typeof file === "string" ? file : file.path ?? file.filename ?? file.name ?? "";
-}
-
-function isWebFile(file) {
-  return file.startsWith("apps/web/") || file === "docs/engineering/VISUAL_QA.md";
-}
-
-function isProductFacingFile(file) {
-  return file.startsWith("apps/web/")
-    || file === "DESIGN.md"
-    || file.startsWith("docs/design/")
-    || file === "docs/engineering/VISUAL_QA.md";
-}
-
 function isProductFlowIssue(issue) {
   const labels = (issue.labels ?? []).map(labelName);
   const text = [
@@ -1319,81 +1295,6 @@ function isProductFlowIssue(issue) {
 
 function labelName(label) {
   return typeof label === "string" ? label : label.name;
-}
-
-function isDesktopOrLocalExecutionFile(file) {
-  return file.startsWith("apps/desktop/") || /desktop|bridge|local-execution|process|cancel/i.test(file);
-}
-
-function isProtocolFile(file) {
-  return file.startsWith("packages/protocol/") || /state-machine|schema|protocol/i.test(file);
-}
-
-function isAdapterFile(file) {
-  return file.startsWith("packages/adapters/") || /adapter|coding-wrapper/i.test(file);
-}
-
-function isSecurityDataBillingFile(file) {
-  return /security|auth|credential|secret|billing|cost|quota|settlement|chargeback|audit|data[-_]governance|data[-_]retention|privacy/i.test(file);
-}
-
-function isReleaseFile(file) {
-  return file.startsWith("tools/release/") || file.startsWith("tools/deploy/") || /\.github\/workflows\/(release|deploy)\.yml$/i.test(file) || /release|deploy|rollback|version/i.test(file);
-}
-
-function hasVisualEvidence(body) {
-  return /visual qa.*(screenshot|desktop|mobile|viewport)|screenshot.*(desktop|mobile|viewport)|desktop viewport.*mobile viewport/i.test(body);
-}
-
-function hasProductFlowEvidence(body) {
-  const flow = parseProductFlowEvidence(body);
-  return Boolean(flow)
-    && /^(ordinary developer|advanced developer|team administrator|auditor|multi-role)/i.test(flow.roleFlow)
-    && [flow.scenario, flow.frequency, flow.ownerSurface, flow.usabilityTask, flow.whatNotToShow, flow.partialAcceptanceOrFollowUp]
-      .every((value) => value && !isPlaceholderProductFlowValue(value));
-}
-
-function parseProductFlowEvidence(body) {
-  if (!/##\s+Product Flow/i.test(body)) return null;
-  const section = body.match(/##\s+Product Flow\s*([\s\S]*?)(?:\n##\s+|$)/i)?.[1] ?? "";
-  const field = (label) => section.match(new RegExp(`${label}:\\s*(.+)`, "i"))?.[1]?.trim() ?? "";
-  return {
-    roleFlow: field("Role flow"),
-    scenario: field("Scenario"),
-    frequency: field("Frequency"),
-    ownerSurface: field("Owner surface"),
-    usabilityTask: field("Usability task"),
-    whatNotToShow: field("What not to show"),
-    partialAcceptanceOrFollowUp: field("Partial acceptance or follow-up"),
-  };
-}
-
-function isPlaceholderProductFlowValue(value) {
-  return /not applicable|requires product-flow triage|update if|must cite docs\/design\/product_flows|todo|n\/a/i.test(String(value ?? ""));
-}
-
-function hasDesktopEvidence(body) {
-  return /(windows|macos|linux|cross-platform).*(execution|process|cancel)|cancel.*(windows|macos|linux|cross-platform)|desktop bridge/i.test(body);
-}
-
-function hasProtocolEvidence(body) {
-  return /state-machine|schema|compatibility|protocol/i.test(body);
-}
-
-function hasAdapterEvidence(body) {
-  return /adapter.*(success|failure|cancel|redaction)|success.*failure.*cancel|adapter-result/i.test(body);
-}
-
-function hasSecurityDataBillingEvidence(body) {
-  return /security\/data review|security review|privacy.*(retention|impact|review)|data.*(retention|privacy|audit|impact)|credential.*(redaction|rotation|review)|billing.*(cost|quota|review)|cost.*(quota|billing|impact)|audit evidence/i.test(body);
-}
-
-function hasReleaseEvidence(body) {
-  return /release.*(rollback|notes|evidence)|rollback.*(plan|notes|evidence)|deploy preflight|deployment preflight|human approval.*(release|deploy|production)|environment approval|production gate/i.test(body);
-}
-
-function normalizePath(path) {
-  return path.replace(/\\/g, "/");
 }
 
 function option(args, name) {

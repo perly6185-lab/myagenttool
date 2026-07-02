@@ -210,7 +210,17 @@ This proposal is inert until measurement exists. Minimum instrumentation:
    timeout, counted against per SWE-bench convention.** Suggested starting gate:
    `--min-pass-rate 0.6` (below baseline: 8-case variance is high and the set
    has since grown to 13 cases with behavior probes, which only get stricter).
-3. **Backlog + evidence-coverage reports** — feeds L1/L3 gates.
+3. **Backlog + evidence-coverage reports** — feeds L1/L3 gates. The L3 slice
+   now exists (`pnpm github:governance`): every merged PR in the window is
+   re-judged with the same predicates the per-PR gate enforces
+   (`pr-evidence.mjs`, shared with `check-pr` so measurement cannot drift), and
+   silent-bypass merges are counted from first-parent non-merge commits on the
+   default branch. **First reading (2026-07-02, 30-day window): coverage 29.1%
+   (23/79) vs 100% target; 56 bypass commits vs 0 target** — the gate exists
+   but was not enforced at merge time (CI activation + branch protection is the
+   enforcement lever; see tools/dev/ci-activate.mjs). Scope-drift
+   false-positive rate is reported as not instrumented (needs a labeled
+   corpus of scope-check verdicts).
 
 Then update [FULL_FLOW_AI_DELIVERY.md](FULL_FLOW_AI_DELIVERY.md)'s status column
 to cite measured numbers, and replace qualitative ticks in

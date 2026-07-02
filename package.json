@@ -140,7 +140,8 @@
     "acceptance:m0": "node tools/dev/m0-acceptance.mjs",
     "test:ci": "pnpm -r --filter \"!@myagenttool/desktop\" test && pnpm --filter @myagenttool/desktop test:unit",
     "ci:simulate": "node tools/dev/ci-simulate.mjs",
-    "ci:activate": "node tools/dev/ci-activate.mjs"
+    "ci:activate": "node tools/dev/ci-activate.mjs",
+    "github:governance": "node tools/github/src/index.mjs governance-report"
   },
   "devDependencies": {
     "typescript": "^5.7.2"
