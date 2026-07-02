@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { delimiter } from "node:path";
 import * as pty from "node-pty";
+import { callMcpTool, probeMcpServer } from "./mcp-client.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const serverUrl = process.env.BRIDGE_SERVER_URL ?? "http://127.0.0.1:5001";
@@ -472,6 +473,11 @@ async function runInvocation(work) {
   let timedOut = false;
   let spawnError = null;
 
+  if (adapter?.type === "mcp") {
+    await runMcpInvocation(work);
+    return;
+  }
+
   if (!adapter || adapter.type !== "cli") {
     await request("POST", "/api/bridge/complete", {
       invocationId,
@@ -714,8 +720,71 @@ async function runInvocation(work) {
   });
 }
 
+// Execute an MCP invocation: the transport lives in mcp-client.mjs; this glue
+// polls cancel-status, forwards client events to the server, and completes the
+// invocation with the client's terminal outcome. The ack already happened in
+// runInvocation before dispatching here.
+async function runMcpInvocation(work) {
+  const invocationId = work.invocationId;
+  const task = String(work.input?.task ?? "");
+  const adapter = work.adapter;
+
+  let cancelRequested = false;
+  const cancelTimer = setInterval(async () => {
+    if (cancelRequested) return;
+    const status = await request("GET", `/api/bridge/cancel-status?invocationId=${encodeURIComponent(invocationId)}`);
+    if (status?.cancelRequested) {
+      cancelRequested = true;
+      await request("POST", "/api/bridge/events", {
+        invocationId,
+        type: "cancel_dispatched",
+        level: "info",
+        message: "Desktop Bridge sent cancellation to the MCP server."
+      });
+    }
+  }, 250);
+
+  let outcome;
+  try {
+    outcome = await callMcpTool({
+      adapter,
+      task,
+      options: work.options ?? {},
+      shouldCancel: () => cancelRequested,
+      onEvent: (event) => {
+        request("POST", "/api/bridge/events", {
+          invocationId,
+          type: "log",
+          level: event.level ?? "info",
+          message: event.message
+        }).catch(() => undefined);
+      }
+    });
+  } finally {
+    clearInterval(cancelTimer);
+  }
+
+  await request("POST", "/api/bridge/complete", {
+    invocationId,
+    status: outcome.status,
+    summary: outcome.summary,
+    result: outcome.result
+  });
+}
+
 async function runHealthCheck(work) {
   const adapter = work.adapter;
+  if (adapter?.type === "mcp") {
+    const probe = await probeMcpServer(adapter);
+    await request("POST", "/api/bridge/health-complete", {
+      checkId: work.checkId,
+      agentId: work.agentId,
+      status: probe.ok ? "healthy" : "unhealthy",
+      message: probe.message,
+      nextAction: probe.ok ? null : probe.nextAction
+    });
+    return;
+  }
   if (!adapter || adapter.type !== "cli") {
     await request("POST", "/api/bridge/health-complete", {
       checkId: work.checkId,

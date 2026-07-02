@@ -1,11 +1,14 @@
+import { normalizeMcpAdapterConfig } from "@myagenttool/adapters/mcp";
+
 export function createAgentService({ state, now, nextId, appendEvent }) {
   function registerAgent(body, actor = null) {
     const type = body.type ?? body.adapter?.type;
-    if (!["cli", "http"].includes(type)) {
-      throw new Error("M0 supports manual cli and http agent registration only.");
+    if (!["cli", "http", "mcp"].includes(type)) {
+      throw new Error("Manual registration supports cli, http, and mcp agents.");
     }
 
-    const agent = type === "cli" ? createCliAgent(body) : createHttpAgent(body);
+    const agent =
+      type === "cli" ? createCliAgent(body) : type === "mcp" ? createMcpAgent(body) : createHttpAgent(body);
     if (actor?.userId) agent.ownerUserId = actor.userId; // register under the acting user
     const existingIndex = state.agents.findIndex((item) => item.id === agent.id);
     if (existingIndex >= 0) {
@@ -90,6 +93,45 @@ export function createAgentService({ state, now, nextId, appendEvent }) {
               cost: "Cost is external or unknown unless the registered command reports it.",
               cancellation: "The Desktop Bridge attempts to terminate the process tree when cancellation is requested.",
             },
+      economics: normalizeAgentEconomics(body),
+    });
+  }
+
+  function createMcpAgent(body) {
+    // Validation lives in the shared adapter slice, so the server registers
+    // exactly what the bridge will execute. Invalid config throws with a
+    // plain-language message the route surfaces as a 400.
+    const config = normalizeMcpAdapterConfig(body.adapter ?? body);
+    // The first live slice runs stdio servers on the local device via the
+    // bridge; http-transport MCP servers need the (future) server-side client.
+    if (config.transport !== "stdio") {
+      throw new Error("MCP registration currently supports the stdio transport only.");
+    }
+    const id = sanitizeAgentId(body.id ?? nextId("agt_mcp"));
+    return baseAgent({
+      id,
+      type: "mcp",
+      name: body.name ?? "MCP Server Agent",
+      description: body.description ?? "Manually registered MCP server (stdio).",
+      location: { type: "local_device", deviceId: state.device.id },
+      // The slice config uses `kind`; the control plane dispatches on
+      // `adapter.type`, so carry both.
+      adapter: { type: "mcp", ...config, cancellation: "supported", streaming: true },
+      capabilities: [
+        {
+          name: body.capabilityName ?? "mcp_tool_call",
+          description: body.capabilityDescription ?? "Calls a tool exposed by the MCP server.",
+          riskLevel: normalizeRiskLevel(body.riskLevel, "medium"),
+          riskTags: normalizeRiskTags(body.riskTags ?? body.capabilityRiskTags, ["local_execution"]),
+        },
+      ],
+      status: "available",
+      registrationNotes: {
+        risk: "Runs the configured MCP server command on this device and calls its tools.",
+        data: "Task input is sent to the MCP server as tool arguments; tool output is stored as the result.",
+        cost: "Cost is external or unknown unless the server reports it.",
+        cancellation: "The bridge sends notifications/cancelled and stops the server process.",
+      },
       economics: normalizeAgentEconomics(body),
     });
   }

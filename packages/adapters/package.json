@@ -10,7 +10,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
-    }
+    },
+    "./mcp": "./src/mcp.mjs",
+    "./a2a": "./src/a2a.mjs",
+    "./container": "./src/container.mjs"
   },
   "scripts": {
     "dev": "node ./src/index.mjs",

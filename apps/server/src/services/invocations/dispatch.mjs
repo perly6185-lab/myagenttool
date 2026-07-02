@@ -15,13 +15,13 @@ export function createInvocationDispatchRuntime({
     return meta.worktreePath || meta.projectPath || "__default__";
   }
 
-  // Bridge-executed = a local-device CLI run driven by this machine's bridge.
-  // A remote_http/platform agent runs off-device and must not consume a bridge
-  // concurrency slot. Unknown agent → count it (conservative for the cap).
+  // Bridge-executed = a local-device CLI or MCP run driven by this machine's
+  // bridge. A remote_http/platform agent runs off-device and must not consume a
+  // bridge concurrency slot. Unknown agent → count it (conservative for the cap).
   function isBridgeExecuted(invocation) {
     const agent = findAgent(invocation.agentId);
     if (!agent) return true;
-    return agent.adapter?.type === "cli" && agent.location?.type === "local_device";
+    return ["cli", "mcp"].includes(agent.adapter?.type) && agent.location?.type === "local_device";
   }
 
   // Force a terminal status on runs stuck in "cancelling" past a grace (e.g. the
