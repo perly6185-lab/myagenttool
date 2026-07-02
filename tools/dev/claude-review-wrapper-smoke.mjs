@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -68,7 +68,9 @@ try {
   ok("wrapper normalized stream-json review output and reported cost");
 
   const capture = JSON.parse(readFileSync(capturePath, "utf8"));
-  assert.equal(resolve(capture.cwd), resolve(tempRoot));
+  // realpathSync resolves symlinked temp roots (e.g. macOS /var -> /private/var)
+  // so the child process cwd and our temp path compare equal.
+  assert.equal(realpathSync(capture.cwd), realpathSync(tempRoot));
   assert(capture.args.includes("--permission-mode"), "Claude args should include permission mode");
   assert.equal(capture.args[capture.args.indexOf("--permission-mode") + 1], "plan");
   assert(capture.prompt.includes("Review the current worktree diff"));
