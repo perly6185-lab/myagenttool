@@ -8,12 +8,14 @@ import {
 } from "../services/agents.mjs";
 import { createAgentSkillService } from "../services/agent-skills.mjs";
 import { createCcusageImportService } from "../services/ccusage-imports.mjs";
+import { createCodexReviewImportService } from "../services/codex-review-imports.mjs";
 import { createCodexService } from "../services/codex.mjs";
 import { createIntegrationService } from "../services/integrations.mjs";
 import { createInvocationService } from "../services/invocations.mjs";
 import { createM3Service } from "../services/m3.mjs";
 import { createProjectService, sameProjectPath } from "../services/projects.mjs";
 import { createTerminalService } from "../services/terminal.mjs";
+import { createToolService } from "../services/tools.mjs";
 
 export function createServerRuntimeServices({
   namespace,
@@ -187,6 +189,12 @@ export function createServerRuntimeServices({
     nextId,
     appendEvent,
   });
+  const { recordCodexReviewFindings } = createCodexReviewImportService({
+    state,
+    now,
+    nextId,
+    appendEvent,
+  });
 
   invocationService = createInvocationService({
     state,
@@ -201,6 +209,7 @@ export function createServerRuntimeServices({
     enforcePlatformAiQuota,
     recordInvocationLedgerEntry,
     recordCcusageImportedEstimates,
+    recordCodexReviewFindings,
     currentProject,
     worktreeForProject,
     uniqueStrings,
@@ -281,6 +290,18 @@ export function createServerRuntimeServices({
     expireCodexApprovalBrokerRequests,
   });
 
+  const {
+    createToolInvocation,
+    getTool,
+    listTools,
+  } = createToolService({
+    state,
+    now,
+    appendEvent,
+    createInvocation,
+    startInvocationIfAllowed,
+  });
+
   function nextId(prefix) {
     const id = `${prefix}_${String(idCounter).padStart(4, "0")}`;
     idCounter += 1;
@@ -357,6 +378,7 @@ export function createServerRuntimeServices({
     createSshConnectionTest,
     createSshTarget,
     createTroubleshootingReport,
+    createToolInvocation,
     defaultAgent,
     disableAgent,
     denyInvocation,
@@ -368,6 +390,7 @@ export function createServerRuntimeServices({
     findInvocation,
     generateIntegrationArtifacts,
     getAgentUsageSummary,
+    getTool,
     chargebackExport,
     completeLifecycleAction,
     createAuditExportRequest,
@@ -414,6 +437,7 @@ export function createServerRuntimeServices({
     transitionLifecycleRecipe,
     updatePrivateDeploymentConfig,
     unlinkDevice,
+    listTools,
     now,
   };
 
@@ -520,6 +544,9 @@ export function createServerRuntimeServices({
     createCompareRun,
     cancelInvocation,
     createTroubleshootingReport,
+    createToolInvocation,
+    getTool,
+    listTools,
     nextId,
     persistStateSoon,
     budgetStatusFor,

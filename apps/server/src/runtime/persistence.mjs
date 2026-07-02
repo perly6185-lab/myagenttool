@@ -25,6 +25,7 @@ const persistedArrayKeys = [
   "aiUsageRecords",
   "ledgerEntries",
   "importedUsageEstimates",
+  "codexReviewFindings",
   "budgets",
   "automations",
   "agentSkills",

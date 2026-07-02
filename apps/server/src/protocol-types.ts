@@ -4,6 +4,7 @@ import type {
   AgentLifecycleOperation,
   AgentUsageSummary,
   AIUsageRecord,
+  CodexReviewFinding,
   ImportedUsageEstimate,
   ApprovalRequest,
   AuditExportRequest,
@@ -51,6 +52,7 @@ export type LocalDemoServerState = {
   aiUsageRecords: AIUsageRecord[];
   ledgerEntries: LedgerEntry[];
   importedUsageEstimates: ImportedUsageEstimate[];
+  codexReviewFindings: CodexReviewFinding[];
   privateDeploymentConfig: PrivateDeploymentConfig;
   auditExportRequests: AuditExportRequest[];
   approvalRequests: ApprovalRequest[];

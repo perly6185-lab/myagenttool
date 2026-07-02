@@ -73,6 +73,36 @@ if (process.argv.includes("--check")) {
   if (fullAccessArgs[1] !== "--dangerously-bypass-approvals-and-sandbox") {
     throw new Error("Codex full-access permission mode is not configured.");
   }
+  const codexReviewPlan = createCliSpawnPlan({
+    type: "cli",
+    command: "node",
+    args: ["tools/agents/codex-review-wrapper.mjs", "--mode", "diff-review"],
+    outputFormat: "plain_result",
+  }, {
+    invocationId: "inv_codex_review_check",
+    task: "review",
+    options: {
+      metadata: {
+        tool: "codex.review.diff",
+        worktreePath: process.cwd(),
+        instruction: "Focus on correctness.",
+        severityFloor: "medium",
+        shell: "must-not-render",
+      },
+    },
+  });
+  if (!codexReviewPlan.args.includes("--cwd") || !codexReviewPlan.args.includes(process.cwd())) {
+    throw new Error("Codex review wrapper cwd injection is not configured.");
+  }
+  if (!codexReviewPlan.args.includes("--instruction") || !codexReviewPlan.args.includes("Focus on correctness.")) {
+    throw new Error("Codex review wrapper instruction injection is not configured.");
+  }
+  if (!codexReviewPlan.args.includes("--severity-floor") || !codexReviewPlan.args.includes("medium")) {
+    throw new Error("Codex review wrapper severity injection is not configured.");
+  }
+  if (codexReviewPlan.args.includes("must-not-render") || codexReviewPlan.args.includes("--shell")) {
+    throw new Error("Codex review wrapper rendered unallowlisted metadata.");
+  }
   if (typeof pty.spawn !== "function") {
     throw new Error("node-pty is not available.");
   }
@@ -1143,7 +1173,7 @@ function createCliSpawnPlan(adapter, payload) {
     : codexArgsTemplate(adapter, payload);
   const renderedArgs = isCodexCliCommand(adapter.command)
     ? applyCodexPermissionMode(renderArgs(argsTemplate, payloadJson, payload), payload)
-    : renderArgs(argsTemplate, payloadJson, payload);
+    : codexReviewWrapperArgs(renderArgs(argsTemplate, payloadJson, payload), payload);
   const baseCommand = codexCommandOverride || String(adapter.command);
   const command = adapter.command === "demo-agent" || codexCommandOverride === "fixture"
     ? process.execPath
@@ -1178,6 +1208,50 @@ function projectCwd(payload) {
     return projectPath;
   }
   return process.cwd();
+}
+
+function codexReviewWrapperArgs(renderedArgs, payload) {
+  const metadata = payload.options?.metadata && typeof payload.options.metadata === "object" && !Array.isArray(payload.options.metadata)
+    ? payload.options.metadata
+    : {};
+  if (metadata.tool !== "codex.review.diff" || !usesCodexReviewWrapper(renderedArgs)) {
+    return renderedArgs;
+  }
+  const injected = [...renderedArgs];
+  const cwd = normalizedExistingPath(metadata.worktreePath) ?? normalizedExistingPath(metadata.projectPath);
+  if (cwd && !hasFlag(injected, "--cwd")) {
+    injected.push("--cwd", cwd);
+  }
+  const instruction = boundedString(metadata.instruction, 1200);
+  if (instruction && !hasFlag(injected, "--instruction")) {
+    injected.push("--instruction", instruction);
+  }
+  const severityFloor = ["low", "medium", "high"].includes(String(metadata.severityFloor ?? ""))
+    ? String(metadata.severityFloor)
+    : null;
+  if (severityFloor && !hasFlag(injected, "--severity-floor")) {
+    injected.push("--severity-floor", severityFloor);
+  }
+  return injected;
+}
+
+function usesCodexReviewWrapper(args) {
+  return args.some((arg) => String(arg).replaceAll("\\", "/").endsWith("tools/agents/codex-review-wrapper.mjs")
+    || String(arg).replaceAll("\\", "/").endsWith("codex-review-wrapper.mjs"));
+}
+
+function hasFlag(args, flag) {
+  return args.includes(flag);
+}
+
+function normalizedExistingPath(value) {
+  const text = String(value ?? "").trim();
+  return text && isAbsolute(text) && existsSync(text) ? text : null;
+}
+
+function boundedString(value, maxLength) {
+  const text = String(value ?? "").trim();
+  return text && text.length <= maxLength ? text : null;
 }
 
 function codexArgsTemplate(adapter, payload) {

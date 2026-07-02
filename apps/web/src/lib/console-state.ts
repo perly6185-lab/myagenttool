@@ -66,6 +66,7 @@ export interface AgentSnapshot {
   lifecycle?: { state?: string; installState?: string };
   location?: { type?: string; deviceId?: string };
   registrationNotes?: AgentRegistrationNotes;
+  toolContract?: Record<string, unknown> | null;
   discovery?: { runId?: string };
 }
 
@@ -221,8 +222,78 @@ export interface ImportedUsageEstimate {
   authoritative: false;
   offline?: boolean | null;
   filters?: Record<string, unknown> | null;
-  raw?: Record<string, unknown>;
+  droppedRowCount?: number;
   createdAt: string;
+}
+
+export interface CodexReviewFinding {
+  id: string;
+  source: "codex" | string;
+  reviewInvocationId: string;
+  invocationId: string;
+  projectId?: string | null;
+  worktreeId?: string | null;
+  requestedBy?: string | null;
+  agentId?: string | null;
+  reviewAgentName?: string | null;
+  tool: "codex.review.diff" | string;
+  mode: string;
+  severityFloor?: string | null;
+  summary?: string | null;
+  findingIndex: number;
+  severity: "low" | "medium" | "high";
+  file: string;
+  line?: number | null;
+  message: string;
+  suggestion?: string | null;
+  confidence: "low" | "medium" | "high";
+  authoritative: false;
+  createdAt: string;
+}
+
+export interface ToolAgentRef {
+  id: string;
+  name: string;
+  status?: string;
+  report?: string | null;
+}
+
+export interface ToolDescriptor {
+  name: string;
+  version: string;
+  displayName: string;
+  description?: string;
+  riskLevel?: string;
+  riskTags?: string[];
+  requiresLocalDevice?: boolean;
+  inputSchema?: Record<string, unknown>;
+  outputSchema?: Record<string, unknown>;
+  agents?: ToolAgentRef[];
+  approvalPolicy?: Record<string, unknown>;
+  authoritativeBilling?: boolean;
+  outputCollection?: string;
+}
+
+export interface ToolInvocationRequest {
+  report?: string;
+  source?: "all" | "codex" | "claude";
+  since?: string | null;
+  until?: string | null;
+  timezone?: string | null;
+  offline?: boolean;
+  projectId?: string | null;
+  worktreeId?: string | null;
+  instruction?: string | null;
+  severityFloor?: "low" | "medium" | "high";
+}
+
+export interface ToolInvocationResponse {
+  tool: string;
+  invocationId: string;
+  agentId: string;
+  status: string;
+  outputCollection?: string;
+  invocation?: InvocationSnapshot;
 }
 
 export interface LedgerOwnerRollup {
@@ -462,6 +533,7 @@ export interface ConsoleSnapshot {
   retentionSettings?: RetentionSettings;
   ledgerEntries?: LedgerEntry[];
   importedUsageEstimates?: ImportedUsageEstimate[];
+  codexReviewFindings?: CodexReviewFinding[];
   ledgerSummary?: LedgerSummary;
   budgetStatuses?: BudgetStatus[];
   teamBudgetStatuses?: TeamBudgetStatus[];

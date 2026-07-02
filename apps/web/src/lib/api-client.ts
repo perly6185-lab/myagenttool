@@ -4,7 +4,12 @@
  * error wording and the localhost-only API override stay consistent.
  */
 
-import type { ConsoleSnapshot } from "@/lib/console-state";
+import type {
+  ConsoleSnapshot,
+  ToolDescriptor,
+  ToolInvocationRequest,
+  ToolInvocationResponse,
+} from "@/lib/console-state";
 
 const DEFAULT_API_BASE = "http://127.0.0.1:3001";
 
@@ -204,6 +209,15 @@ export interface IntegrationPayload {
 
 export const api = {
   updateDevice: (payload: { maxConcurrency?: number }) => request("PATCH", "/api/device", payload),
+  listTools: () => request<{ tools: ToolDescriptor[] }>("GET", "/api/tools"),
+  getTool: (name: string) =>
+    request<{ tool: ToolDescriptor }>("GET", `/api/tools/${encodeURIComponent(name)}`),
+  createToolInvocation: (name: string, input: ToolInvocationRequest) =>
+    request<ToolInvocationResponse>(
+      "POST",
+      `/api/tools/${encodeURIComponent(name)}/invocations`,
+      input,
+    ),
   createInvocation: (
     task: string,
     agentId: string | null,

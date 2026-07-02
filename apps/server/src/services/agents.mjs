@@ -104,6 +104,7 @@ export function createAgentService({ state, now, nextId, appendEvent }) {
               cancellation: "The Desktop Bridge attempts to terminate the process tree when cancellation is requested.",
             }),
       economics: normalizeAgentEconomics(body),
+      toolContract: normalizeToolContract(body.toolContract ?? body.adapter?.toolContract),
     });
   }
 
@@ -141,6 +142,7 @@ export function createAgentService({ state, now, nextId, appendEvent }) {
         cancellation: "The bridge sends notifications/cancelled and stops the server process.",
       },
       economics: normalizeAgentEconomics(body),
+      toolContract: normalizeToolContract(body.toolContract ?? body.adapter?.toolContract),
     });
   }
 
@@ -172,6 +174,7 @@ export function createAgentService({ state, now, nextId, appendEvent }) {
         cancellation: "The bridge sends tasks/cancel to the remote agent.",
       },
       economics: normalizeAgentEconomics(body),
+      toolContract: normalizeToolContract(body.toolContract ?? body.adapter?.toolContract),
     });
   }
 
@@ -201,6 +204,7 @@ export function createAgentService({ state, now, nextId, appendEvent }) {
         cancellation: "The bridge stops the container and removes it (one-shot --rm run).",
       },
       economics: normalizeAgentEconomics(body),
+      toolContract: normalizeToolContract(body.toolContract ?? body.adapter?.toolContract),
     });
   }
 
@@ -246,12 +250,13 @@ export function createAgentService({ state, now, nextId, appendEvent }) {
         cancellation: "The server aborts the HTTP request when supported; otherwise cancellation is recorded as not supported or unknown.",
       }),
       economics: normalizeAgentEconomics(body),
+      toolContract: normalizeToolContract(body.toolContract ?? body.adapter?.toolContract),
     });
   }
 
-  function baseAgent({ id, name, description, location, adapter, capabilities, status, registrationNotes, economics = {} }) {
+  function baseAgent({ id, name, description, location, adapter, capabilities, status, registrationNotes, economics = {}, toolContract = null }) {
     const createdAt = now();
-    return {
+    const agent = {
       id,
       name: String(name),
       description: String(description),
@@ -285,6 +290,10 @@ export function createAgentService({ state, now, nextId, appendEvent }) {
       createdAt,
       updatedAt: createdAt,
     };
+    if (toolContract) {
+      agent.toolContract = toolContract;
+    }
+    return agent;
   }
 
   function disableAgent(agent, actor = null) {
@@ -640,6 +649,17 @@ export function normalizeRegistrationNotes(value, fallback) {
     cost: String(value.cost ?? fallback.cost),
     cancellation: String(value.cancellation ?? fallback.cancellation),
   };
+}
+
+export function normalizeToolContract(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  try {
+    return JSON.parse(JSON.stringify(value));
+  } catch {
+    return null;
+  }
 }
 
 export function normalizeEconomicModel(value, fallback = "unknown") {

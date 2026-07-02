@@ -197,6 +197,8 @@ export type InvocationEventType =
   | "agent_economics_recorded"
   | "ledger_entry_recorded"
   | "ccusage_imported_estimates_recorded"
+  | "codex_review_findings_recorded"
+  | "tool_invocation_created"
   | "budget_checked"
   | "settlement_recorded"
   | "quota_checked"

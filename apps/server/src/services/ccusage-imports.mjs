@@ -1,4 +1,7 @@
+import { isGovernedCcusageAgent } from "./ccusage-agent.mjs";
+
 const MAX_IMPORTED_USAGE_ESTIMATES = 1000;
+const MAX_IMPORTED_ROWS_PER_REPORT = 1000;
 
 export function createCcusageImportService({
   state,
@@ -7,10 +10,12 @@ export function createCcusageImportService({
   appendEvent,
 }) {
   function recordCcusageImportedEstimates({ invocation, result, agent }) {
-    if (!isCcusageResult(result)) {
+    if (!isGovernedCcusageAgent(agent) || !isCcusageResult(result)) {
       return [];
     }
-    const report = normalizeReportRows(result.output.report);
+    const allRows = normalizeReportRows(result.output.report);
+    const droppedRowCount = Math.max(0, allRows.length - MAX_IMPORTED_ROWS_PER_REPORT);
+    const report = allRows.slice(0, MAX_IMPORTED_ROWS_PER_REPORT);
     if (!report.length) {
       return [];
     }
@@ -75,6 +80,7 @@ export function createCcusageImportService({
         reportId,
         authoritative: false,
         amountSource: "imported_ccusage_report",
+        droppedRowCount,
       },
     });
     return records;

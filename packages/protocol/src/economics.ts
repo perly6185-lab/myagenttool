@@ -3,6 +3,7 @@ import type {
   AgentId,
   AIProviderId,
   AIUsageRecordId,
+  CodexReviewFindingId,
   DecimalString,
   DeviceId,
   ImportedUsageEstimateId,
@@ -136,6 +137,33 @@ export interface ImportedUsageEstimate {
   authoritative: false;
   offline?: boolean | null;
   filters?: Record<string, unknown> | null;
+  raw?: Record<string, unknown>;
+  droppedRowCount?: number;
+  createdAt: IsoDateTime;
+}
+
+export interface CodexReviewFinding {
+  id: CodexReviewFindingId;
+  source: "codex" | string;
+  reviewInvocationId: InvocationId;
+  invocationId: InvocationId;
+  projectId?: string | null;
+  worktreeId?: string | null;
+  requestedBy?: UserId | string | null;
+  agentId?: AgentId | null;
+  reviewAgentName?: string | null;
+  tool: "codex.review.diff" | string;
+  mode: string;
+  severityFloor?: string | null;
+  summary?: string | null;
+  findingIndex: number;
+  severity: "low" | "medium" | "high";
+  file: string;
+  line?: number | null;
+  message: string;
+  suggestion?: string | null;
+  confidence: "low" | "medium" | "high";
+  authoritative: false;
   raw?: Record<string, unknown>;
   createdAt: IsoDateTime;
 }

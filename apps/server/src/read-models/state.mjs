@@ -35,6 +35,8 @@ export function buildPublicState({
     teamId == null || !invocationId || visibleInvIds.has(invocationId);
   const byInvocation = (rows) => (rows ?? []).filter((r) => invVisible(r?.invocationId));
   const byProject = (rows) => (rows ?? []).filter((r) => projectVisible(r?.projectId));
+  const importedUsagePublic = (rows) => byInvocation(rows).map(({ raw, ...row }) => row);
+  const codexReviewFindingsPublic = (rows) => byInvocation(rows).map(({ raw, ...row }) => row);
   // Imported evidence has no invocation, so it can't ride byInvocation (a null
   // invocationId reads as globally visible). Scope it by its stamped owning team
   // instead; rows written before that stamp existed belong to the local team.
@@ -88,7 +90,8 @@ export function buildPublicState({
     quotaPolicies: state.quotaPolicies,
     aiUsageRecords: byInvocation(state.aiUsageRecords),
     ledgerEntries: byProject(state.ledgerEntries),
-    importedUsageEstimates: byInvocation(state.importedUsageEstimates),
+    importedUsageEstimates: importedUsagePublic(state.importedUsageEstimates),
+    codexReviewFindings: codexReviewFindingsPublic(state.codexReviewFindings),
     ledgerSummary: typeof ledgerSummary === "function" ? ledgerSummary() : null,
     // Project budgets scope by project; team pools (rows with teamId, no
     // projectId) scope by the viewer's team — byProject alone would treat them
