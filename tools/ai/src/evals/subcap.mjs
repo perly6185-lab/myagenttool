@@ -19,8 +19,7 @@
 // Pure module: no process.exit, no argv parsing. The eval-subcap command in
 // ../index.mjs owns provider calls and evidence output.
 
-import { existsSync, readFileSync, readdirSync } from "node:fs";
-import { resolve } from "node:path";
+import { escapeCell, isNonEmptyString, loadCaseSet, stringArray } from "./util.mjs";
 
 export function validateSubcapCase(raw, source) {
   const where = source ? ` (${source})` : "";
@@ -90,24 +89,7 @@ export function validateSubcapCase(raw, source) {
 }
 
 export function loadSubcapSet(dir) {
-  if (!existsSync(dir)) throw new Error(`Sub-capability set directory not found: ${dir}`);
-  const files = readdirSync(dir).filter((name) => name.endsWith(".json")).sort();
-  if (files.length === 0) throw new Error(`Sub-capability set has no *.json cases: ${dir}`);
-  const cases = [];
-  const seen = new Set();
-  for (const name of files) {
-    let parsed;
-    try {
-      parsed = JSON.parse(readFileSync(resolve(dir, name), "utf8"));
-    } catch (error) {
-      throw new Error(`Sub-capability case ${name} is not valid JSON: ${error.message}`);
-    }
-    const validated = validateSubcapCase(parsed, name);
-    if (seen.has(validated.id)) throw new Error(`Duplicate sub-capability case id: ${validated.id} (${name})`);
-    seen.add(validated.id);
-    cases.push(validated);
-  }
-  return cases;
+  return loadCaseSet(dir, { validate: validateSubcapCase, label: "Sub-capability" });
 }
 
 // PM-brief oracle: structural completeness + risk classification. The primary
@@ -265,14 +247,3 @@ export function formatSubcapReport(summary, { setDir, provider } = {}) {
   return `${lines.join("\n")}\n`;
 }
 
-function isNonEmptyString(value) {
-  return typeof value === "string" && value.trim().length > 0;
-}
-
-function stringArray(value) {
-  return Array.isArray(value) ? value.map(String).filter((item) => item.length > 0) : [];
-}
-
-function escapeCell(text) {
-  return String(text).replace(/\|/g, "\\|").replace(/\n/g, " ");
-}

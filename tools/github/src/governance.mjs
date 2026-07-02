@@ -9,7 +9,9 @@
 //   verification evidence, and the file-triggered risk-evidence routes — so the
 //   measurement cannot drift from the gate.
 // - Silent-bypass merges: first-parent non-merge commits on the default branch
-//   (changes that landed without a PR). Counted from local git history.
+//   that no merged PR claims as its merge commit (squash/rebase merges land as
+//   non-merge commits and must not read as bypasses). Counted from local git
+//   history cross-checked against PR mergeCommit oids.
 // - Scope-drift false-positive rate: NOT INSTRUMENTED — needs scope-check
 //   verdicts recorded per run plus a human label on each; reported as such.
 
@@ -36,11 +38,17 @@ export function judgePrEvidence(pr) {
   };
 }
 
-export function computeGovernanceStats(mergedPrs, { days, directPushCount = null }) {
+export function computeGovernanceStats(mergedPrs, { days, directPushCount = null, since = null, directPushCountSince = null }) {
   const judged = mergedPrs.map(judgePrEvidence);
   const covered = judged.filter((pr) => pr.covered);
   const total = judged.length;
+  // Optional post-cutoff slice (e.g. since enforcement went live): the rolling
+  // window carries pre-enforcement merges for up to `days`, so the slice shows
+  // current discipline while the window catches up. Same rationale as the
+  // dora --ci-since slice.
+  const sinceSlice = since ? computeSinceSlice(mergedPrs, since, directPushCountSince) : null;
   return {
+    coverageSince: sinceSlice,
     windowDays: days,
     mergedPrCount: total,
     coveredPrCount: covered.length,
@@ -74,6 +82,30 @@ export function computeGovernanceStats(mergedPrs, { days, directPushCount = null
   };
 }
 
+// A squash- (or rebase-) merged PR lands as a first-parent NON-merge commit on
+// the default branch, so `rev-list --no-merges` alone misreads it as a silent
+// bypass. A commit only counts as a bypass when no merged PR claims it as its
+// merge commit.
+export function countBypassCommits(shas, mergedPrs) {
+  const mergeShas = new Set((mergedPrs ?? []).map((pr) => pr.mergeCommit?.oid).filter(Boolean));
+  return (shas ?? []).filter((sha) => sha && !mergeShas.has(sha)).length;
+}
+
+function computeSinceSlice(mergedPrs, since, directPushCountSince) {
+  const judged = mergedPrs.filter((pr) => pr.mergedAt && pr.mergedAt >= since).map(judgePrEvidence);
+  const covered = judged.filter((pr) => pr.covered).length;
+  const total = judged.length;
+  return {
+    since,
+    mergedPrCount: total,
+    coveredPrCount: covered,
+    coverageRate: total === 0 ? null : round3(covered / total),
+    coverageMet: total > 0 && covered === total,
+    directPushCount: directPushCountSince,
+    bypassMet: directPushCountSince === 0,
+  };
+}
+
 export function formatGovernanceReport(stats, { repo }) {
   const pct = (value) => (value === null ? "n/a" : `${(value * 100).toFixed(1)}%`);
   const lines = [
@@ -85,6 +117,7 @@ export function formatGovernanceReport(stats, { repo }) {
     "| --- | --- | --- | --- |",
     `| Risk-evidence coverage (issue link + verification + risk routes) | ${pct(stats.coverageRate)} (${stats.coveredPrCount}/${stats.mergedPrCount}) | 100% | ${stats.gate.coverageMet ? "meets" : "below"} |`,
     `| Silent-bypass merges (commits on main without a PR) | ${stats.directPushCount ?? "n/a"} | 0 | ${stats.gate.bypassMet ? "meets" : "above"} |`,
+    ...(stats.coverageSince ? formatSinceRows(stats.coverageSince) : []),
     `| Scope-drift false-positive rate | not instrumented | tracked | — |`,
     "",
     `Per-check coverage: issue link ${pct(stats.byCheck.linksIssue)} · verification ${pct(stats.byCheck.verification)} · risk routes clean ${pct(stats.byCheck.riskRoutesClean)}`,
@@ -105,6 +138,21 @@ export function formatGovernanceReport(stats, { repo }) {
     "",
   );
   return lines.join("\n");
+}
+
+function formatSinceRows(slice) {
+  const day = slice.since.slice(0, 10);
+  const coverageCell =
+    slice.mergedPrCount === 0
+      ? "no merged PRs since cutoff"
+      : `${(slice.coverageRate * 100).toFixed(1)}% (${slice.coveredPrCount}/${slice.mergedPrCount})`;
+  const rows = [
+    `| Risk-evidence coverage since ${day} (current discipline) | ${coverageCell} | 100% | ${slice.mergedPrCount === 0 ? "n/a" : slice.coverageMet ? "meets" : "below"} |`,
+  ];
+  if (slice.directPushCount !== null && slice.directPushCount !== undefined) {
+    rows.push(`| Silent-bypass merges since ${day} | ${slice.directPushCount} | 0 | ${slice.bypassMet ? "meets" : "above"} |`);
+  }
+  return rows;
 }
 
 export function governanceSelfCheck() {

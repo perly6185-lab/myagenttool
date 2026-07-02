@@ -58,3 +58,16 @@ test("rollupFromActionsRuns: synthesizes the rollup shape; in-progress is not gr
   const ci = computeCiChecks([{ number: 1, statusCheckRollup: rollup }]);
   assert.equal(ci.greenPrs, 0, "an incomplete run must not read as green");
 });
+
+test("ciChecksSince: the post-cutoff slice judges only merges at/after the cutoff", async () => {
+  const { computeDoraStats: compute } = await import("../src/dora.mjs");
+  const prs = [
+    { number: 1, createdAt: "2026-06-01T00:00:00Z", mergedAt: "2026-06-15T00:00:00Z" }, // pre-cutoff, no checks
+    { number: 2, createdAt: "2026-07-01T00:00:00Z", mergedAt: "2026-07-03T00:00:00Z", statusCheckRollup: [{ conclusion: "SUCCESS" }] },
+  ];
+  const stats = compute(prs, { days: 60, ciSince: "2026-07-02T00:00:00.000Z" });
+  assert.equal(stats.ciChecks.greenRate, 0.5, "rolling window still counts the unchecked merge");
+  assert.equal(stats.ciChecksSince.mergedPrCount, 1);
+  assert.equal(stats.ciChecksSince.greenRate, 1, "post-cutoff slice is fully green");
+  assert.equal(compute(prs, { days: 60 }).ciChecksSince, null, "no cutoff → no slice");
+});

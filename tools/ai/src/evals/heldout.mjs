@@ -7,8 +7,7 @@
 // This module is pure/testable: no process.exit, no argv parsing. The command
 // wrapper in ../index.mjs handles CLI concerns and evidence output.
 
-import { existsSync, readFileSync, readdirSync } from "node:fs";
-import { resolve } from "node:path";
+import { escapeCell, isNonEmptyString, loadCaseSet, stringArray } from "./util.mjs";
 
 // A resolver turns one held-out case into a resolution attempt. The mock
 // resolver stands in for current coding capability so the harness stays
@@ -97,27 +96,7 @@ function exitCodeOrNull(value) {
 }
 
 export function loadHeldoutSet(dir) {
-  if (!existsSync(dir)) throw new Error(`Held-out set directory not found: ${dir}`);
-  const files = readdirSync(dir)
-    .filter((name) => name.endsWith(".json"))
-    .sort();
-  if (files.length === 0) throw new Error(`Held-out set has no *.json cases: ${dir}`);
-  const cases = [];
-  const seen = new Set();
-  for (const name of files) {
-    const full = resolve(dir, name);
-    let parsed;
-    try {
-      parsed = JSON.parse(readFileSync(full, "utf8"));
-    } catch (error) {
-      throw new Error(`Held-out case ${name} is not valid JSON: ${error.message}`);
-    }
-    const validated = validateHeldoutCase(parsed, name);
-    if (seen.has(validated.id)) throw new Error(`Duplicate held-out case id: ${validated.id} (${name})`);
-    seen.add(validated.id);
-    cases.push(validated);
-  }
-  return cases;
+  return loadCaseSet(dir, { validate: validateHeldoutCase, label: "Held-out" });
 }
 
 // Oracle: a case is resolved when the resolver touched every expected file,
@@ -242,16 +221,4 @@ function underPrefix(file, prefix) {
   if (file === prefix) return true;
   const normalized = prefix.endsWith("/") ? prefix : `${prefix}/`;
   return file.startsWith(normalized);
-}
-
-function isNonEmptyString(value) {
-  return typeof value === "string" && value.trim().length > 0;
-}
-
-function stringArray(value) {
-  return Array.isArray(value) ? value.map(String).filter((item) => item.length > 0) : [];
-}
-
-function escapeCell(text) {
-  return String(text).replace(/\|/g, "\\|").replace(/\n/g, " ");
 }

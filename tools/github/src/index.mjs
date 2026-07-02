@@ -5,7 +5,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { computeDoraStats, doraSelfCheck, formatDoraReport, rollupFromActionsRuns } from "./dora.mjs";
 import { backlogSelfCheck, computeBacklogStats, formatBacklogReport } from "./backlog.mjs";
-import { computeGovernanceStats, formatGovernanceReport, governanceSelfCheck } from "./governance.mjs";
+import { computeGovernanceStats, countBypassCommits, formatGovernanceReport, governanceSelfCheck } from "./governance.mjs";
 import { hasAcceptanceMention, hasProductFlowEvidence, hasVerificationEvidence, prFilePath, reviewRiskGates } from "./pr-evidence.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -54,8 +54,8 @@ Usage:
   node tools/github/src/index.mjs check-branch-protection --repo OWNER/REPO --branch main
   node tools/github/src/index.mjs sync-project-fields --owner OWNER --project 1 [--apply]
   node tools/github/src/index.mjs sync-project --repo OWNER/REPO --owner OWNER --project 1 [--milestone M2|--issues 1,2] [--done] [--apply]
-  node tools/github/src/index.mjs dora-report [--repo OWNER/REPO] [--days 30] [--json] [--out path]
-  node tools/github/src/index.mjs governance-report [--repo OWNER/REPO] [--days 30] [--json] [--out path]
+  node tools/github/src/index.mjs dora-report [--repo OWNER/REPO] [--days 30] [--ci-since DATE] [--json] [--out path]
+  node tools/github/src/index.mjs governance-report [--repo OWNER/REPO] [--days 30] [--since DATE] [--json] [--out path]
   node tools/github/src/index.mjs backlog-report [--repo OWNER/REPO] [--stale-days 14] [--json] [--out path]
 
 Environment:
@@ -139,6 +139,12 @@ function doraReport(args) {
   const days = Number(option(args, "--days") ?? 30);
   if (!Number.isFinite(days) || days <= 0) fail(`--days must be a positive number. Got: ${option(args, "--days")}`);
 
+  // Optional post-cutoff CI-green slice (e.g. --ci-since 2026-07-02 = CI
+  // activation): shows current merge discipline alongside the rolling window.
+  const ciSinceRaw = option(args, "--ci-since");
+  const ciSince = ciSinceRaw ? new Date(ciSinceRaw).toISOString() : null;
+  if (ciSinceRaw && !ciSince) fail(`--ci-since must be a date. Got: ${ciSinceRaw}`);
+
   const since = new Date(Date.now() - days * 86_400_000).toISOString();
   // Server-side filter by merge date and base branch: gh lists PRs by creation
   // date, so a client-side window over a fixed limit would silently drop
@@ -192,7 +198,7 @@ function doraReport(args) {
     }
   }
 
-  const stats = computeDoraStats(prs, { days, checksReadable, ciSource });
+  const stats = computeDoraStats(prs, { days, checksReadable, ciSource, ciSince });
   const report = formatDoraReport(stats, { repo });
   emitMetricsReport({ kind: "dora", stats, report, args });
 }
@@ -249,21 +255,31 @@ function governanceReport(args) {
   const prs = ghJson([
     "pr", "list", "--repo", repo, "--state", "merged", "--base", defaultBranch,
     "--search", `merged:>=${since.slice(0, 10)}`, "--limit", String(limit),
-    "--json", "number,body,files,closingIssuesReferences,mergedAt",
+    "--json", "number,body,files,closingIssuesReferences,mergedAt,mergeCommit",
   ]).filter((pr) => pr.mergedAt && pr.mergedAt >= since);
   if (prs.length >= limit) {
     console.error(`Warning: hit the ${limit}-PR fetch limit; coverage is truncated.`);
   }
 
+  const sinceRaw = option(args, "--since");
+  const sinceCutoff = sinceRaw ? new Date(sinceRaw).toISOString() : null;
+  if (sinceRaw && !sinceCutoff) fail(`--since must be a date. Got: ${sinceRaw}`);
+
   let directPushCount = null;
+  let directPushCountSince = null;
   try {
-    const out = execFileSync("git", ["rev-list", "--first-parent", "--no-merges", "--count", `--since=${since}`, `origin/${defaultBranch}`], { encoding: "utf8" });
-    directPushCount = Number(out.trim());
+    const countDirectPushes = (from) => {
+      const shas = execFileSync("git", ["rev-list", "--first-parent", "--no-merges", `--since=${from}`, `origin/${defaultBranch}`], { encoding: "utf8" })
+        .trim().split("\n").filter(Boolean);
+      return countBypassCommits(shas, prs);
+    };
+    directPushCount = countDirectPushes(since);
+    if (sinceCutoff) directPushCountSince = countDirectPushes(sinceCutoff);
   } catch {
     console.error("Warning: could not count direct pushes from local git history (is origin fetched?).");
   }
 
-  const stats = computeGovernanceStats(prs, { days, directPushCount });
+  const stats = computeGovernanceStats(prs, { days, directPushCount, since: sinceCutoff, directPushCountSince });
   const report = formatGovernanceReport(stats, { repo });
   emitMetricsReport({ kind: "governance", stats, report, args });
 }

@@ -1,0 +1,20 @@
+{
+  "id": "hr-021-web-signin",
+  "issue": "real-79bf4f2",
+  "title": "Web console credentialed sign-in control",
+  "spec": "The web console has no visible sign-in: the session is implicit, so multi-user setups cannot switch identity from the UI. Add a credentialed sign-in control to the console top bar: a login affordance that collects credentials, calls the session API through the shared API client, reflects the signed-in identity, and supports sign-out. Wire it into the top bar without disturbing the existing layout.",
+  "risk": "medium",
+  "base": "8c1816be",
+  "difficulty": "medium",
+  "oracle": {
+    "expectedFiles": [
+      "apps/web/src/lib/api-client.ts",
+      "apps/web/src/components/layout/topbar.tsx"
+    ],
+    "forbiddenFiles": [
+      "apps/server/",
+      "apps/desktop/",
+      "tools/"
+    ]
+  }
+}
