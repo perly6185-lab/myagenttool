@@ -28,9 +28,12 @@ refuse the foreign team, while the owner succeeds. Run:
 > landed:** users can carry a scrypt `passwordHash`; `/api/session` verifies the
 > password before minting a token (wrong/missing → 401), closing login-as-anyone
 > for credentialed users; the passwordless seeded dev user stays frictionless;
-> hashes are never exposed (session response + public state stripped). **Still
-> missing for a real product:** (1) the web console sends no bearer token / has no
-> login UI (9B), and (2) RBAC on team/user provisioning (9C) — ROADMAP SaaS/RBAC.
+> hashes are never exposed (session response + public state stripped). **Web
+> login (9B) landed:** the client already carried a bearer token with transparent
+> dev auto-login; the Topbar now has a credentialed sign-in/sign-out control
+> (`loginWithCredentials`/`logout` in `api-client.ts`) so you can authenticate as
+> a specific user with a password. **Still missing for a real product:** RBAC on
+> team/user provisioning (9C) — currently any authenticated caller may provision.
 
 ## Model recap
 

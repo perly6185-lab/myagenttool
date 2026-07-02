@@ -32,8 +32,16 @@ const apiBase = resolveApiBase();
 // (POST /api/session) and stores the token. This is a no-op when the server has
 // MYAGENT_REQUIRE_AUTH off, and satisfies the 401 gate when it is on.
 const TOKEN_KEY = "myagenttool.token";
+const USER_KEY = "myagenttool.user";
+
+export interface SessionUser {
+  id: string;
+  name?: string;
+  teamId?: string;
+}
 
 let memoryToken: string | null = null;
+let memoryUser: SessionUser | null = null;
 let sessionPromise: Promise<string | null> | null = null;
 
 function getToken(): string | null {
@@ -54,17 +62,78 @@ function setToken(token: string | null): void {
   }
 }
 
-async function login(): Promise<string | null> {
+function setUser(user: SessionUser | null): void {
+  memoryUser = user;
+  try {
+    if (user) window.localStorage.setItem(USER_KEY, JSON.stringify(user));
+    else window.localStorage.removeItem(USER_KEY);
+  } catch {
+    /* storage disabled — memoryUser still holds it */
+  }
+}
+
+/** The signed-in user (for display), or null if not logged in yet. */
+export function getSessionUser(): SessionUser | null {
+  if (memoryUser) return memoryUser;
+  try {
+    const raw = window.localStorage.getItem(USER_KEY);
+    return raw ? (JSON.parse(raw) as SessionUser) : null;
+  } catch {
+    return null;
+  }
+}
+
+interface SessionResponse {
+  token?: string;
+  user?: SessionUser;
+}
+
+async function postSession(credentials: Record<string, unknown>): Promise<SessionResponse | null> {
   const response = await fetch(`${apiBase}/api/session`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({}),
+    body: JSON.stringify(credentials),
   });
   if (!response.ok) return null;
-  const data = (await response.json().catch(() => ({}))) as { token?: string };
-  const token = data.token ?? null;
-  if (token) setToken(token);
+  return (await response.json().catch(() => ({}))) as SessionResponse;
+}
+
+async function login(): Promise<string | null> {
+  const data = await postSession({});
+  const token = data?.token ?? null;
+  if (token) {
+    setToken(token);
+    setUser(data?.user ?? null);
+  }
   return token;
+}
+
+/**
+ * Sign in as a specific user with a password (9B). Throws on bad credentials so
+ * the login form can surface it. On success the token + user are stored and the
+ * next state poll reflects the new identity.
+ */
+export async function loginWithCredentials(userId: string, password: string): Promise<SessionUser | null> {
+  const data = await postSession({ userId, password });
+  if (!data?.token) {
+    throw new Error("Sign in failed — check the user id and password.");
+  }
+  setToken(data.token);
+  setUser(data.user ?? { id: userId });
+  return data.user ?? { id: userId };
+}
+
+/** Sign out: revoke the token server-side (best effort) and clear local state. */
+export async function logout(): Promise<void> {
+  const token = getToken();
+  if (token) {
+    await fetch(`${apiBase}/api/session`, {
+      method: "DELETE",
+      headers: { Authorization: `Bearer ${token}` },
+    }).catch(() => undefined);
+  }
+  setToken(null);
+  setUser(null);
 }
 
 /** Guarantee a token exists, de-duping concurrent first-call logins. */
