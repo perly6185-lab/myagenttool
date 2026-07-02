@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { computeDoraStats, doraSelfCheck, formatDoraReport } from "./dora.mjs";
+import { computeDoraStats, doraSelfCheck, formatDoraReport, rollupFromActionsRuns } from "./dora.mjs";
 import { backlogSelfCheck, computeBacklogStats, formatBacklogReport } from "./backlog.mjs";
 import { computeGovernanceStats, formatGovernanceReport, governanceSelfCheck } from "./governance.mjs";
 import { hasAcceptanceMention, hasProductFlowEvidence, hasVerificationEvidence, prFilePath, reviewRiskGates } from "./pr-evidence.mjs";
@@ -151,23 +151,48 @@ function doraReport(args) {
     "--json", fields,
   ];
   // statusCheckRollup needs checks/statuses read permission; a fine-grained
-  // token without it fails the WHOLE query. Fall back to the base fields and
-  // report the CI-green gate as not measurable with this token — never fake it.
+  // token without it fails the WHOLE query. Fall back to judging the same gate
+  // from Actions workflow runs per head sha (readable with plain repo access);
+  // only if that also fails is the gate reported as not measurable.
   let prs;
   let checksReadable = true;
+  let ciSource = "check-rollup";
   try {
     prs = ghJson(listArgs("number,createdAt,mergedAt,statusCheckRollup"));
   } catch {
     checksReadable = false;
-    console.error("Warning: this token cannot read check runs (checks:read); the CI-green gate is reported as not measurable.");
-    prs = ghJson(listArgs("number,createdAt,mergedAt"));
+    prs = ghJson(listArgs("number,createdAt,mergedAt,headRefOid"));
   }
   prs = prs.filter((pr) => pr.mergedAt && pr.mergedAt >= since);
   if (prs.length >= limit) {
     console.error(`Warning: hit the ${limit}-PR fetch limit; lead time and merge counts are truncated.`);
   }
 
-  const stats = computeDoraStats(prs, { days, checksReadable });
+  if (!checksReadable) {
+    try {
+      // One paginated pass over the window's workflow runs → head_sha map.
+      const runs = ghJson([
+        "api", `repos/${repo}/actions/runs?created=>=${since.slice(0, 10)}&per_page=100`,
+        "--paginate", "--jq", "[.workflow_runs[] | {head_sha, conclusion}]",
+      ]).flat();
+      const bySha = new Map();
+      for (const run of runs) {
+        const list = bySha.get(run.head_sha) ?? [];
+        list.push(run);
+        bySha.set(run.head_sha, list);
+      }
+      for (const pr of prs) {
+        pr.statusCheckRollup = rollupFromActionsRuns(bySha.get(pr.headRefOid) ?? []);
+      }
+      checksReadable = true;
+      ciSource = "actions-runs (fallback: token lacks checks:read)";
+      console.error("Note: judging the CI-green gate from Actions workflow runs (token lacks checks:read).");
+    } catch {
+      console.error("Warning: this token can read neither check runs nor Actions runs; the CI-green gate is reported as not measurable.");
+    }
+  }
+
+  const stats = computeDoraStats(prs, { days, checksReadable, ciSource });
   const report = formatDoraReport(stats, { repo });
   emitMetricsReport({ kind: "dora", stats, report, args });
 }

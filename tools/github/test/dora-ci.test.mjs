@@ -37,7 +37,7 @@ test("computeDoraStats: checksReadable=false reports the gate as unavailable, no
     days: 7,
     checksReadable: false,
   });
-  assert.match(stats.ciChecks.unavailable, /checks\/statuses read/);
+  assert.match(stats.ciChecks.unavailable, /neither check runs nor Actions runs/);
   const report = formatDoraReport(stats, { repo: "acme/x" });
   assert.match(report, /CI green on merged PRs \(L2 gate\) \| not measurable/);
 });
@@ -49,4 +49,12 @@ test("formatDoraReport: CI-not-active reads as an explicit gap, not n/a", () => 
   );
   const report = formatDoraReport(stats, { repo: "acme/x" });
   assert.match(report, /0% \(0\/1 — CI not active; no PR carried check runs\)/);
+});
+
+test("rollupFromActionsRuns: synthesizes the rollup shape; in-progress is not green", async () => {
+  const { rollupFromActionsRuns, computeCiChecks } = await import("../src/dora.mjs");
+  const rollup = rollupFromActionsRuns([{ conclusion: "success" }, { conclusion: null }]);
+  assert.deepEqual(rollup, [{ conclusion: "SUCCESS" }, { conclusion: "IN_PROGRESS" }]);
+  const ci = computeCiChecks([{ number: 1, statusCheckRollup: rollup }]);
+  assert.equal(ci.greenPrs, 0, "an incomplete run must not read as green");
 });

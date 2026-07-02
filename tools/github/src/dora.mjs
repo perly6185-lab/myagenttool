@@ -11,7 +11,7 @@
 // Elite reference thresholds (2024 DORA snapshot, directional — see
 // MATURITY_CALIBRATION.md): lead time < 1 day; deploy on-demand.
 
-export function computeDoraStats(mergedPrs, { days, checksReadable = true }) {
+export function computeDoraStats(mergedPrs, { days, checksReadable = true, ciSource = "check-rollup" }) {
   const leadTimesHours = mergedPrs
     .map((pr) => (Date.parse(pr.mergedAt) - Date.parse(pr.createdAt)) / 3_600_000)
     .filter((hours) => Number.isFinite(hours) && hours >= 0)
@@ -28,8 +28,8 @@ export function computeDoraStats(mergedPrs, { days, checksReadable = true }) {
     },
     mergesPerWeek: round2(mergedPrs.length / weeks),
     ciChecks: checksReadable
-      ? computeCiChecks(mergedPrs)
-      : { unavailable: "This token cannot read check runs (needs checks/statuses read permission)." },
+      ? { ...computeCiChecks(mergedPrs), source: ciSource }
+      : { unavailable: "This token can read neither check runs nor Actions runs." },
     eliteReference: { leadTimeHoursMedian: 24, deployFrequency: "on-demand" },
     notInstrumented: {
       changeFailureRate: "Needs a deploy + incident/rollback signal; no production deploys exist yet.",
@@ -64,6 +64,16 @@ export function computeCiChecks(mergedPrs) {
     ciActive: withChecks > 0,
     redPrs: judged.filter((pr) => pr.hasChecks && !pr.green).map((pr) => pr.number),
   };
+}
+
+// Fallback source for tokens that cannot read the checks API: judge the same
+// gate from Actions workflow runs on the PR's head sha (the Actions runs API
+// is readable with plain repo access). Synthesizes the rollup shape so
+// computeCiChecks is byte-for-byte the same judge for both sources. A run
+// with no conclusion yet (in_progress) maps to a non-green verdict — an
+// incomplete run is not a pass.
+export function rollupFromActionsRuns(runs) {
+  return (runs ?? []).map((run) => ({ conclusion: String(run.conclusion ?? "IN_PROGRESS").toUpperCase() }));
 }
 
 export function formatDoraReport(stats, { repo }) {
@@ -102,7 +112,8 @@ function formatCiChecksRow(ci) {
   }
   const noChecks = ci.mergedPrCount - ci.prsWithChecks;
   const noChecksNote = noChecks > 0 ? `; ${noChecks} merged with no checks` : "";
-  return `| CI green on merged PRs (L2 gate) | ${(ci.greenRate * 100).toFixed(1)}% (${ci.greenPrs}/${ci.mergedPrCount}${noChecksNote}) | ≥95% | ${ci.gateMet ? "meets" : "below"} |`;
+  const sourceNote = ci.source && ci.source !== "check-rollup" ? ` [source: ${ci.source}]` : "";
+  return `| CI green on merged PRs (L2 gate) | ${(ci.greenRate * 100).toFixed(1)}% (${ci.greenPrs}/${ci.mergedPrCount}${noChecksNote})${sourceNote} | ≥95% | ${ci.gateMet ? "meets" : "below"} |`;
 }
 
 export function doraSelfCheck() {
