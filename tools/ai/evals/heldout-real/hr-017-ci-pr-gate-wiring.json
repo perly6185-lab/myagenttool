@@ -1,0 +1,27 @@
+{
+  "id": "hr-017-ci-pr-gate-wiring",
+  "issue": "real-56ad51c",
+  "title": "Wire CI as a PR gate behind the cost switch, with a local simulator",
+  "spec": "The CI workflow only runs on workflow_dispatch, so PRs merge without any automated check. Wire pull_request and push-to-main triggers into the CI workflow while keeping every job guarded by the ENABLE_GITHUB_HOSTED_RUNNERS repo variable so nothing spends money until an admin flips it. Add an activation helper that flips the variable and sets branch protection, and a local simulator that parses the workflow file and executes the same steps locally so the gate can be exercised before runners are enabled.",
+  "risk": "high",
+  "base": "93b7f007",
+  "difficulty": "large",
+  "oracle": {
+    "expectedFiles": [
+      ".github/workflows/ci.yml"
+    ],
+    "forbiddenFiles": [
+      "apps/",
+      "tools/ai/",
+      "tools/github/"
+    ],
+    "verify": {
+      "mode": "fail-to-pass",
+      "command": [
+        "node",
+        "-e",
+        "const{readFileSync}=require(\"node:fs\");process.exit(/^\\s*pull_request:/m.test(readFileSync(\".github/workflows/ci.yml\",\"utf8\"))?0:1)"
+      ]
+    }
+  }
+}

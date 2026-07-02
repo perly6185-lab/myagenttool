@@ -1,0 +1,20 @@
+{
+  "id": "hr-020-provisioning-rbac",
+  "issue": "real-41d9d8d",
+  "title": "Provisioning RBAC: only privileged actors may create teams and users",
+  "spec": "The provisioning endpoints (create team, create user) currently accept any authenticated actor, so any team member can mint new teams and identities. Add role-based enforcement in the auth runtime: define which roles may provision, guard the provisioning routes with it (403 with a clear reason for non-privileged actors), and extend the multi-user integration test to cover both the denied and allowed paths.",
+  "risk": "high",
+  "base": "1bda9b7f",
+  "difficulty": "medium",
+  "oracle": {
+    "expectedFiles": [
+      "apps/server/src/runtime/auth.mjs",
+      "apps/server/src/routes/control-plane.mjs"
+    ],
+    "forbiddenFiles": [
+      "apps/web/",
+      "apps/desktop/",
+      "tools/"
+    ]
+  }
+}

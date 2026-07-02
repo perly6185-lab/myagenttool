@@ -1,0 +1,19 @@
+{
+  "id": "hr-018-team-budget-block",
+  "issue": "real-d57d2ec",
+  "title": "Team budget pools with real block enforcement at invocation creation",
+  "spec": "Budgets exist per user but teams need shared pools: a team budget with a cap that actually BLOCKS new invocation creation when the pool is exhausted (not just a warning), while still allowing explicitly exempted runs. Add team budget pool records, aggregate team spend against the pool, enforce the block in the invocation creation path with a clear operator-facing error, expose pool status in the public state read model, and unit-test the enforcement (cap hit blocks; under cap allows).",
+  "risk": "high",
+  "base": "52cfe840",
+  "difficulty": "large",
+  "oracle": {
+    "expectedFiles": [
+      "apps/server/src/services/invocations/creation.mjs",
+      "apps/server/src/services/m3.mjs"
+    ],
+    "forbiddenFiles": [
+      "apps/web/",
+      "tools/"
+    ]
+  }
+}
