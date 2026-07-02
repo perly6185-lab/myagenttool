@@ -1,14 +1,24 @@
+import { normalizeA2aAdapterConfig } from "@myagenttool/adapters/a2a";
+import { normalizeContainerAdapterConfig } from "@myagenttool/adapters/container";
 import { normalizeMcpAdapterConfig } from "@myagenttool/adapters/mcp";
 
 export function createAgentService({ state, now, nextId, appendEvent }) {
+  const AGENT_FACTORIES = {
+    cli: (body) => createCliAgent(body),
+    http: (body) => createHttpAgent(body),
+    mcp: (body) => createMcpAgent(body),
+    a2a: (body) => createA2aAgent(body),
+    container: (body) => createContainerAgent(body),
+  };
+
   function registerAgent(body, actor = null) {
     const type = body.type ?? body.adapter?.type;
-    if (!["cli", "http", "mcp"].includes(type)) {
-      throw new Error("Manual registration supports cli, http, and mcp agents.");
+    const factory = AGENT_FACTORIES[type];
+    if (!factory) {
+      throw new Error("Manual registration supports cli, http, mcp, a2a, and container agents.");
     }
 
-    const agent =
-      type === "cli" ? createCliAgent(body) : type === "mcp" ? createMcpAgent(body) : createHttpAgent(body);
+    const agent = factory(body);
     if (actor?.userId) agent.ownerUserId = actor.userId; // register under the acting user
     const existingIndex = state.agents.findIndex((item) => item.id === agent.id);
     if (existingIndex >= 0) {
@@ -131,6 +141,66 @@ export function createAgentService({ state, now, nextId, appendEvent }) {
         data: "Task input is sent to the MCP server as tool arguments; tool output is stored as the result.",
         cost: "Cost is external or unknown unless the server reports it.",
         cancellation: "The bridge sends notifications/cancelled and stops the server process.",
+      },
+      economics: normalizeAgentEconomics(body),
+    });
+  }
+
+  function createA2aAgent(body) {
+    const config = normalizeA2aAdapterConfig(body.adapter ?? body);
+    const id = sanitizeAgentId(body.id ?? nextId("agt_a2a"));
+    return baseAgent({
+      id,
+      type: "a2a",
+      name: body.name ?? "A2A Remote Agent",
+      description: body.description ?? "Manually registered A2A agent.",
+      // The remote agent runs elsewhere, but the *client* runs on this device's
+      // bridge (so agents reachable only from the user's network stay usable).
+      location: { type: "local_device", deviceId: state.device.id },
+      adapter: { type: "a2a", ...config, cancellation: "supported", streaming: true },
+      capabilities: [
+        {
+          name: body.capabilityName ?? "a2a_task",
+          description: body.capabilityDescription ?? "Delegates a task to a remote A2A agent.",
+          riskLevel: normalizeRiskLevel(body.riskLevel, "medium"),
+          riskTags: normalizeRiskTags(body.riskTags ?? body.capabilityRiskTags, ["network_access", "external_data_transfer"]),
+        },
+      ],
+      status: "available",
+      registrationNotes: {
+        risk: "Sends task input to the configured remote A2A agent.",
+        data: "Task input leaves this device; the remote agent's reply is stored as the result.",
+        cost: "Cost is external or unknown unless the remote agent reports it.",
+        cancellation: "The bridge sends tasks/cancel to the remote agent.",
+      },
+      economics: normalizeAgentEconomics(body),
+    });
+  }
+
+  function createContainerAgent(body) {
+    const config = normalizeContainerAdapterConfig(body.adapter ?? body);
+    const id = sanitizeAgentId(body.id ?? nextId("agt_ctr"));
+    return baseAgent({
+      id,
+      type: "container",
+      name: body.name ?? "Container Agent",
+      description: body.description ?? "Manually registered containerized agent.",
+      location: { type: "local_device", deviceId: state.device.id },
+      adapter: { type: "container", ...config, cancellation: "supported", streaming: true },
+      capabilities: [
+        {
+          name: body.capabilityName ?? "container_run",
+          description: body.capabilityDescription ?? "Runs a governed one-shot container for each task.",
+          riskLevel: normalizeRiskLevel(body.riskLevel, "medium"),
+          riskTags: normalizeRiskTags(body.riskTags ?? body.capabilityRiskTags, ["local_execution"]),
+        },
+      ],
+      status: "available",
+      registrationNotes: {
+        risk: "Runs the configured container image on this device for each invocation.",
+        data: "Task input enters the container as the TASK environment variable; container output is stored as the result.",
+        cost: "Local compute; image cost is external or unknown.",
+        cancellation: "The bridge stops the container and removes it (one-shot --rm run).",
       },
       economics: normalizeAgentEconomics(body),
     });

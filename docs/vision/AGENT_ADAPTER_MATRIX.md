@@ -29,20 +29,30 @@ Container
   (handshake + tool listing). `POST /api/agents {type:"mcp"}` registers a stdio
   server as a managed agent; validated end-to-end through the control plane.
   Remaining: the http transport (needs a server-side client, not the bridge).
-- **A2A** — *first slice landed* (`packages/adapters/src/a2a.mjs`): contract +
-  config normalization (agent URL, Agent Card path, skill allowlist) and the
-  JSON-RPC `message/send` / `tasks/cancel` descriptors, unit-tested. Next step:
-  the bridge-side client (fetch the Agent Card, POST the task, consume the
-  `message/stream` SSE, map cancellation to `tasks/cancel`).
-- **Container** — *first slice landed* (`packages/adapters/src/container.mjs`):
-  contract + config normalization with the governance guards (privileged
-  rejected, cpu/memory/timeout clamped, network isolated by default, digest
-  pinning surfaced) and a one-shot run descriptor (task via `TASK` env, never
-  argv). Next step: the bridge-side runtime (docker/podman create, log stream,
-  stop-on-cancel, remove after run).
-- **Bridge-side live clients** — MCP's is done (stdio); A2A and Container still
-  need theirs. The declarative layer above is what the server registers,
-  validates, and audits.
+- **A2A** — *live.* The declarative slice (`packages/adapters/src/a2a.mjs`) is
+  executed by the bridge's client (`apps/desktop/src/a2a-client.mjs`): fetch the
+  Agent Card, JSON-RPC `message/send` via the shared descriptor (skill allowlist
+  enforced), poll `tasks/get` to a terminal state, cancellation mapped to
+  `tasks/cancel`, plus a card-fetch health probe. The client runs on the bridge
+  so agents reachable only from the user's network stay usable; it does not
+  consume a bridge concurrency slot (the work happens on the remote agent).
+  `POST /api/agents {type:"a2a"}` registers one; validated end-to-end through
+  the control plane. Remaining: consume the `message/stream` SSE instead of
+  polling.
+- **Container** — *live.* The declarative slice
+  (`packages/adapters/src/container.mjs`) is executed by the bridge's client
+  (`apps/desktop/src/container-client.mjs`): a one-shot governed
+  `docker|podman run` built from the shared descriptor (`--rm`, `--network`
+  isolation, cpu/memory ceilings, task via the `TASK` env var), stdout/stderr
+  streamed as invocation events, cancellation via `<runtime> kill` + child
+  termination, and a `--version` health probe that also surfaces the
+  digest-pinning stance. Counts toward the bridge concurrency cap (local
+  compute). Validated against a fake runtime binary; a real docker/podman
+  end-to-end needs a machine with the runtime installed.
+- **Bridge-side live clients** — all three protocol adapters (MCP stdio, A2A,
+  Container) now execute; the declarative layer above is what the server
+  registers, validates, and audits. The three share one dispatch glue
+  (`runClientInvocation`) for cancel-polling, event forwarding, and completion.
 
 ## Example Agent Families
 
