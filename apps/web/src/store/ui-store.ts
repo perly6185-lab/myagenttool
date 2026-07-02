@@ -11,6 +11,7 @@ export type SectionKey =
   | "devices"
   | "discovery"
   | "integrations"
+  | "tools"
   | "economics"
   | "audit";
 
@@ -22,6 +23,7 @@ interface UiState {
   selectedProjectId: string | null;
   selectedWorktreeId: string | null;
   selectedAgentSkillId: string | null;
+  selectedToolName: string | null;
   setSection: (section: SectionKey) => void;
   setSelectedAgentId: (id: string | null) => void;
   setSelectedInvocationId: (id: string | null) => void;
@@ -29,6 +31,7 @@ interface UiState {
   setSelectedProjectId: (id: string | null) => void;
   setSelectedWorktreeId: (id: string | null) => void;
   setSelectedAgentSkillId: (id: string | null) => void;
+  setSelectedToolName: (name: string | null) => void;
 }
 
 const SECTION_KEYS: SectionKey[] = [
@@ -42,6 +45,7 @@ const SECTION_KEYS: SectionKey[] = [
   "devices",
   "discovery",
   "integrations",
+  "tools",
   "economics",
   "audit",
 ];
@@ -62,6 +66,7 @@ export const useUiStore = create<UiState>((set) => ({
   selectedProjectId: null,
   selectedWorktreeId: null,
   selectedAgentSkillId: null,
+  selectedToolName: null,
   setSection: (section) => set({ section }),
   setSelectedAgentId: (selectedAgentId) => set({ selectedAgentId }),
   setSelectedInvocationId: (selectedInvocationId) => set({ selectedInvocationId }),
@@ -69,4 +74,5 @@ export const useUiStore = create<UiState>((set) => ({
   setSelectedProjectId: (selectedProjectId) => set({ selectedProjectId }),
   setSelectedWorktreeId: (selectedWorktreeId) => set({ selectedWorktreeId }),
   setSelectedAgentSkillId: (selectedAgentSkillId) => set({ selectedAgentSkillId }),
+  setSelectedToolName: (selectedToolName) => set({ selectedToolName }),
 }));
