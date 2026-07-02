@@ -164,7 +164,10 @@ update). Both fall back to `usr_local` today.
    login UI that stores + sends a bearer token, credential verification on
    `/api/session` (replace login-as-anyone), and RBAC on team/user provisioning.
    The server APIs and guards are done and validated; this is the client + auth.
-2. Team-level cost allocation → revisit m3 operator-level objects and agent-skills.
+2. Team-level cost allocation → **spend rollup landed** (`teamBudgetStatuses`
+   aggregates per-project ledger spend by owning team, team-scoped in public
+   state). Follow-ups: team budget *limits* (pool cap + over) and revisiting the
+   m3 operator-level objects + agent-skills tenancy.
 
 Done since the audit: GAP-1 + the 403→404/existence-hiding policy, codex/m3/
 automation write guards, the codex read-leak fix, the unknown-projectId guard,

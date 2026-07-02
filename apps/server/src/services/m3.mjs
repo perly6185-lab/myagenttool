@@ -1,3 +1,4 @@
+import { teamOf } from "../runtime/auth.mjs";
 import {
   defaultRiskTags,
   normalizeEconomicModel,
@@ -823,6 +824,7 @@ export function createM3Service({
     enforcePlatformAiQuota,
     budgetStatusFor,
     budgetStatuses,
+    teamBudgetStatuses,
     findLifecycleLocalApproval,
     completeLifecycleAction,
     findLifecycleRollbackRequest,
@@ -1083,6 +1085,31 @@ export function createM3Service({
 
   function budgetStatuses() {
     return state.projects.map((project) => budgetStatusFor(project.id));
+  }
+
+  // Team-level cost allocation: roll per-project ledger spend up to the owning
+  // team, so a team sees its total across all its projects. Team budget *limits*
+  // (a pool cap + over) are a follow-up; this is the attribution.
+  function teamBudgetStatuses() {
+    const rollup = new Map();
+    for (const project of state.projects ?? []) {
+      const teamId = teamOf(project);
+      const spend = ledgerSpendForProject(project.id);
+      const acc = rollup.get(teamId) ?? {
+        teamId,
+        teamName: (state.teams ?? []).find((t) => t.id === teamId)?.name ?? teamId,
+        projectCount: 0,
+        finalizedUsd: 0,
+        estimatedUsd: 0,
+        spentUsd: 0,
+      };
+      acc.projectCount += 1;
+      acc.finalizedUsd = roundUsd(acc.finalizedUsd + spend.finalizedUsd);
+      acc.estimatedUsd = roundUsd(acc.estimatedUsd + spend.estimatedUsd);
+      acc.spentUsd = roundUsd(acc.spentUsd + spend.spentUsd);
+      rollup.set(teamId, acc);
+    }
+    return [...rollup.values()];
   }
 
   function ledgerSpendForProject(projectId) {
