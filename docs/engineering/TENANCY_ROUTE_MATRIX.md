@@ -32,8 +32,10 @@ refuse the foreign team, while the owner succeeds. Run:
 > login (9B) landed:** the client already carried a bearer token with transparent
 > dev auto-login; the Topbar now has a credentialed sign-in/sign-out control
 > (`loginWithCredentials`/`logout` in `api-client.ts`) so you can authenticate as
-> a specific user with a password. **Still missing for a real product:** RBAC on
-> team/user provisioning (9C) — currently any authenticated caller may provision.
+> a specific user with a password. **Provisioning RBAC (9C) landed:** only an
+> owner/admin may `POST /api/teams|users` (operator/viewer → 403); the seeded
+> local owner keeps single-user dev working. **M2 (real auth) is complete** —
+> tenancy now engages end-to-end for real, credentialed users.
 
 ## Model recap
 

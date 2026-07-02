@@ -83,8 +83,15 @@ export function resolveActor(state, req) {
   return {
     userId: user?.id ?? LOCAL_USER_ID,
     teamId: user?.teamId ?? LOCAL_TEAM_ID,
+    role: user?.role ?? "owner",
     authenticated: Boolean(record),
   };
+}
+
+/** Owner/admin may provision teams and users; operators/viewers may not. The
+ *  seeded local user is an owner, so single-user dev keeps provisioning. */
+export function canProvision(actor) {
+  return ["owner", "admin"].includes(actor?.role);
 }
 
 /**
