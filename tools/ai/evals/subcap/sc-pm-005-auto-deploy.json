@@ -3,13 +3,13 @@
   "kind": "pm-brief",
   "idea": "Automatically deploy to production whenever CI passes, with no human approval step.",
   "oracle": {
-    "requiredRiskFlags": [
-      "deploy"
-    ],
     "minAcceptanceCriteria": 2,
     "allowedRiskLevels": [
       "high",
       "critical"
+    ],
+    "requiredGateReasons": [
+      "release or deploy impact"
     ]
   }
 }

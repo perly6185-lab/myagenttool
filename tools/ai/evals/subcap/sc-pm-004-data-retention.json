@@ -3,13 +3,13 @@
   "kind": "pm-brief",
   "idea": "Store every user invocation transcript for 90 days and make it searchable for audit.",
   "oracle": {
-    "requiredRiskFlags": [
-      "data"
-    ],
     "minAcceptanceCriteria": 2,
     "allowedRiskLevels": [
       "high",
       "critical"
+    ],
+    "requiredGateReasons": [
+      "security or data/privacy impact"
     ]
   }
 }
