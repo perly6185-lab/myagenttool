@@ -65,12 +65,14 @@ function main() {
 
   const adapter = process.env.MYAGENTTOOL_CODING_ADAPTER ?? "mock";
   const provider = process.env.MYAGENTTOOL_HELDOUT_PROVIDER ?? "mock";
-  const base = process.env.MYAGENTTOOL_HELDOUT_BASE ?? "HEAD";
+  // Case-pinned base wins: real cases mined from history set base to the parent
+  // of the original fix commit so the fix is absent from the evaluated tree.
+  const base = caseObj.base || process.env.MYAGENTTOOL_HELDOUT_BASE || "HEAD";
   const baseSha = git(["rev-parse", base]);
 
   const workParent = mkdtempSync(join(tmpdir(), "heldout-wt-"));
   const worktree = join(workParent, "repo");
-  let notes = `work-runner resolver (adapter=${adapter}, provider=${provider})`;
+  let notes = `work-runner resolver (adapter=${adapter}, provider=${provider}, base=${baseSha.slice(0, 8)})`;
   let cleaned = false;
 
   try {
@@ -97,7 +99,9 @@ function main() {
       stdio: ["ignore", "pipe", "pipe"],
     });
     if (run.status !== 0) {
-      notes += `; work-runner exited ${run.status}: ${(run.stderr ?? "").trim().split("\n").pop()}`;
+      const stderrLines = (run.stderr ?? "").trim().split(/\r?\n/);
+      const errLine = stderrLines.find((line) => line.includes("Error")) ?? stderrLines.pop() ?? "";
+      notes += `; work-runner exited ${run.status}: ${errLine.trim()}`;
     }
 
     const changedFiles = collectChangedFiles(worktree);
@@ -119,7 +123,12 @@ function main() {
 function collectChangedFiles(worktree) {
   const tracked = splitLines(git(["diff", "--name-only"], worktree));
   const untracked = splitLines(git(["ls-files", "--others", "--exclude-standard"], worktree));
-  return [...new Set([...tracked, ...untracked])].map((path) => path.replace(/\\/g, "/")).sort();
+  return [...new Set([...tracked, ...untracked])]
+    .map((path) => path.replace(/\\/g, "/"))
+    // Run evidence is gitignored today, but old base refs may predate that
+    // .gitignore line — never count harness evidence as an agent change.
+    .filter((path) => !path.startsWith(".myagenttool/"))
+    .sort();
 }
 
 function splitLines(text) {

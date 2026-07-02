@@ -1,0 +1,12 @@
+{
+  "id": "hr-005-dispatch-cap",
+  "issue": "real-8ad99aa",
+  "title": "Dispatch: honor device concurrency cap, serialize per-directory runs, reclaim stuck cancels",
+  "spec": "Invocation dispatch has three related bugs: (1) the per-device concurrency cap counts every running invocation, including remote/off-device agents that should not consume a bridge slot; (2) two runs that occupy the same working directory (same worktree or project path) can execute concurrently and corrupt each other's tree — they must be serialized; (3) invocations stuck in a cancelling state are never reclaimed. Fix the dispatch logic in the server's invocation services so off-device runs don't count toward the bridge cap, runs keyed to the same directory are serialized, and stuck cancels get reclaimed.",
+  "risk": "high",
+  "base": "5d79acff2aa43646f5a01436d9e1466e0f14dbee",
+  "oracle": {
+    "expectedFiles": ["apps/server/src/services/invocations/dispatch.mjs"],
+    "forbiddenFiles": ["apps/web/", "apps/desktop/", "tools/"]
+  }
+}

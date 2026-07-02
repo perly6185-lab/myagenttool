@@ -1,0 +1,12 @@
+{
+  "id": "hr-001-milestone-alias",
+  "issue": "real-195fc21",
+  "title": "Project sync: resolve short milestone aliases to full GitHub milestone titles",
+  "spec": "The GitHub project sync command accepts a --milestone filter, but users pass short aliases like \"M2\" while the GitHub milestones have full titles like \"M2 - Local Agent Discovery\", so the filter matches nothing. Make the sync command resolve a short milestone alias to the full milestone title before filtering issues, falling back to the raw value when there is no match. Add a self-check assertion that a short alias resolves to the full title.",
+  "risk": "low",
+  "base": "20ca4b7de57ee4e59fdb5b8e8080779301899a2e",
+  "oracle": {
+    "expectedFiles": ["tools/github/src/index.mjs"],
+    "forbiddenFiles": ["apps/", "packages/", "tools/ai/"]
+  }
+}

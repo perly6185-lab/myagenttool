@@ -1,0 +1,12 @@
+{
+  "id": "hr-008-testing-routing",
+  "issue": "real-d31e3bb",
+  "title": "Expand AI testing-plan routing to cover protocol, adapter, release, and security changes",
+  "spec": "The AI helper CLI's testing-plan command maps a change type to required test evidence, but it only understands a narrow set of change types. Expand the routing so changes touching protocol schemas, adapters, release tooling, and security-sensitive files each map to their own required evidence and commands (for example protocol changes require contract-test evidence; security changes require a security review note), and make the change-type inference recognize those file patterns. Update the CLI self-check to cover the new routes.",
+  "risk": "medium",
+  "base": "eb431cd9750f77dc7efdc4d7e042bd53195231fb",
+  "oracle": {
+    "expectedFiles": ["tools/ai/src/index.mjs"],
+    "forbiddenFiles": ["apps/", "packages/"]
+  }
+}

@@ -33,6 +33,10 @@ export function validateHeldoutCase(raw, source) {
     title: raw.title,
     spec: raw.spec,
     risk: isNonEmptyString(raw.risk) ? raw.risk : "unknown",
+    // Optional git ref the resolver should base its worktree on. Real cases
+    // mined from history pin this to the parent of the original fix commit so
+    // the change does not already exist in the tree being evaluated.
+    base: isNonEmptyString(raw.base) ? raw.base : "",
     oracle: { expectedFiles, forbiddenFiles },
     mock: { changedFiles: stringArray(raw.mock?.changedFiles), note: isNonEmptyString(raw.mock?.note) ? raw.mock.note : "" },
   };

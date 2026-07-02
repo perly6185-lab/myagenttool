@@ -1,0 +1,12 @@
+{
+  "id": "hr-003-project-issue-gate",
+  "issue": "real-91846f5",
+  "title": "PR governance: require a dedicated project issue link",
+  "spec": "PR governance checks currently accept any issue reference in a pull request body. Tighten the GitHub governance CLI so a PR must link at least one dedicated project issue (an issue that carries the project's governance labels/milestone), and fail the PR check with a clear message listing what is missing when none is found. Include a self-check covering the new rule.",
+  "risk": "medium",
+  "base": "417fd2b7ff69f48662f6bbb23ddd830262e0b4ea",
+  "oracle": {
+    "expectedFiles": ["tools/github/src/index.mjs"],
+    "forbiddenFiles": ["apps/", "packages/", "tools/ai/"]
+  }
+}

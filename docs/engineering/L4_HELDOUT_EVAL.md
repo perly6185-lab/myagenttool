@@ -53,13 +53,23 @@ files the coding adapter changed (`git diff` + untracked, minus gitignored run
 evidence). It never touches the caller's checkout, branch, or other worktrees.
 
 ```text
-# real coding agent as the adapter (edits code, we measure what it touched):
+# real Claude Code CLI as the adapter (edits code, we measure what it touched).
+# IMPORTANT: the adapter command must use an ABSOLUTE path — the eval worktree
+# is checked out at an old ref that may predate the adapter script.
 MYAGENTTOOL_CODING_ADAPTER=claude \
-MYAGENTTOOL_CLAUDE_COMMAND_JSON='["claude","..."]' \
-pnpm ai:eval-heldout -- --resolver command \
+MYAGENTTOOL_CLAUDE_COMMAND_JSON="[\"node\",\"$PWD/tools/ai/src/evals/claude-adapter.mjs\"]" \
+MYAGENTTOOL_CLAUDE_TIMEOUT_MS=300000 \
+pnpm ai:eval-heldout -- --set tools/ai/evals/heldout-real --resolver command \
   --resolver-command-json '["node","tools/ai/src/evals/work-runner-resolver.mjs"]' \
   --min-pass-rate 0.5
 ```
+
+`tools/ai/src/evals/claude-adapter.mjs` is the shipped Claude Code adapter: it
+reads the case spec from `MYAGENTTOOL_HELDOUT_CASE` (the case IS the issue; the
+oracle is never shown to the agent), runs `claude -p` with edit-only tools
+(`Read,Glob,Grep,Edit,Write`, `acceptEdits`, no Bash), and writes the
+adapter-result contract. Env knobs: `MYAGENTTOOL_CLAUDE_CLI`,
+`MYAGENTTOOL_CLAUDE_MODEL`, `MYAGENTTOOL_CLAUDE_TIMEOUT_MS` (default 600000).
 
 Env: `MYAGENTTOOL_CODING_ADAPTER` (default `mock` — changes nothing, so pass
 rate is 0%; use a real adapter to measure capability), `MYAGENTTOOL_HELDOUT_PROVIDER`
@@ -68,24 +78,37 @@ ref, default `HEAD`), plus the adapter's own `*_COMMAND_JSON`. Scope drift is
 allowed inside the run because the held-out **oracle** — not work-runner's
 scope-check — is what judges the case.
 
-## The set
+## The sets
 
-Cases live in `tools/ai/evals/heldout/*.json`, one file per case:
+Two sets exist:
+
+- `tools/ai/evals/heldout/` — the **seed synthetic set** (4 cases, one
+  intentionally unsolved). Drives the hermetic `ai:check` sanity; mock rate 75%.
+- `tools/ai/evals/heldout-real/` — the **real set**: 8 cases mined from this
+  repo's git history. Each case's `base` pins the resolver's worktree to the
+  **parent of the original fix commit**, so the fix is absent from the tree the
+  agent sees (the SWE-bench base-commit structure). Specs are written
+  issue-style from the original intent; `expectedFiles` is the minimal core
+  file the real fix touched. The mock baseline here is **0%** — only a real
+  coding agent can score.
+
+Cases are one JSON file each:
 
 ```json
 {
   "id": "hb-001-example",
   "issue": "sim-1",
   "title": "Short human title",
-  "spec": "What the change must accomplish.",
+  "spec": "What the change must accomplish (issue-style; never reveal the oracle files).",
   "risk": "low",
+  "base": "<optional git ref — real cases pin the parent of the original fix commit>",
   "oracle": {
     "expectedFiles": ["path/that/must/change"],
     "forbiddenFiles": ["apps/server/"]
   },
   "mock": {
     "changedFiles": ["path/that/must/change"],
-    "note": "What the mock stands in for."
+    "note": "Synthetic cases only; real cases omit mock (baseline 0%)."
   }
 }
 ```

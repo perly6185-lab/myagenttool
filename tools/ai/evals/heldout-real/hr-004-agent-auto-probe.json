@@ -1,0 +1,12 @@
+{
+  "id": "hr-004-agent-auto-probe",
+  "issue": "real-603bd57",
+  "title": "Auto-probe local CLI agents on registration and when the bridge comes online",
+  "spec": "Local CLI coding agents (Codex/Claude style) have no health endpoint, so a freshly registered or restarted agent sits at health status \"unknown\" until someone manually triggers a probe. Change the server's agent routes so that (1) when a CLI agent whose command looks like a known coding CLI is manually registered, a restricted health probe is scheduled automatically, and (2) when the desktop bridge comes online, CLI agents still at unknown health get probed once — without re-probing endlessly on every reconnect.",
+  "risk": "medium",
+  "base": "b43df801ddf54a1f00685189331fcc7ee99cf610",
+  "oracle": {
+    "expectedFiles": ["apps/server/src/routes/agents.mjs"],
+    "forbiddenFiles": ["apps/web/", "apps/desktop/", "tools/"]
+  }
+}
