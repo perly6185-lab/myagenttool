@@ -406,7 +406,7 @@ function isLikelyGitUrl(value) {
   return /^(https?:\/\/|ssh:\/\/|git@)[^\s]+$/i.test(value);
 }
 
-function repoNameFromGitUrl(value) {
+export function repoNameFromGitUrl(value) {
   return String(value)
     .trim()
     .split(/[/:\\]/)
@@ -427,7 +427,7 @@ function gitRepoRoot(projectPath) {
   return resolve(output);
 }
 
-function normalizeWorktreeBranch(value) {
+export function normalizeWorktreeBranch(value) {
   const branch = String(value ?? "").trim().replaceAll("\\", "/");
   if (!branch || branch.length > 96 || branch.includes("..") || branch.startsWith("/") || branch.endsWith("/")) {
     throw new Error("Worktree branch name is invalid.");
@@ -438,7 +438,7 @@ function normalizeWorktreeBranch(value) {
   return branch;
 }
 
-function normalizeWorktreeBase(value) {
+export function normalizeWorktreeBase(value) {
   const base = String(value ?? "").trim();
   if (!base) return null;
   if (base.length > 96 || base.includes("..") || !/^[A-Za-z0-9._/-]+$/.test(base)) {
@@ -452,7 +452,7 @@ function normalizeProjectColor(value, fallback = "#3b82f6") {
   return /^#[0-9a-f]{6}$/i.test(color) ? color : fallback;
 }
 
-function normalizeWorktreeLink(value) {
+export function normalizeWorktreeLink(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const type = value.type === "pr" ? "pr" : value.type === "issue" ? "issue" : null;
   const number = Math.floor(Number(value.number));
@@ -478,7 +478,7 @@ function nextAvailableWorktreePath(repoRoot, worktreeName) {
   return candidate;
 }
 
-function slugify(value) {
+export function slugify(value) {
   return String(value ?? "worktree")
     .trim()
     .toLowerCase()
