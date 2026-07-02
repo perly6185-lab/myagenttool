@@ -37,11 +37,26 @@ if (pr.state !== "OPEN") {
 console.log(`[pr:merge] #${prNumber} ${pr.title}`);
 
 console.log("[pr:merge] waiting for checks…");
-try {
-  execFileSync("gh", ["pr", "checks", prNumber, "--watch", "--fail-fast"], { stdio: "inherit" });
-} catch {
-  console.error(`[pr:merge] checks are RED — not merging #${prNumber}. Fix and re-run.`);
-  process.exit(1);
+// Right after a PR opens (or a push), the check contexts may not be registered
+// yet and `gh pr checks` reports "no checks" — that is not a red build. Give
+// registration a grace window before treating anything as a failure.
+const REGISTRATION_GRACE_MS = 3 * 60_000;
+const startedAt = Date.now();
+for (;;) {
+  try {
+    execFileSync("gh", ["pr", "checks", prNumber, "--watch", "--fail-fast"], { stdio: ["ignore", "inherit", "pipe"] });
+    break; // all checks green
+  } catch (error) {
+    const stderr = String(error.stderr ?? "");
+    if (/no checks reported/i.test(stderr) && Date.now() - startedAt < REGISTRATION_GRACE_MS) {
+      console.log("[pr:merge] checks not registered yet — retrying in 15s…");
+      execFileSync("sleep", ["15"]);
+      continue;
+    }
+    process.stderr.write(stderr);
+    console.error(`[pr:merge] checks are RED (or never registered) — not merging #${prNumber}. Fix and re-run.`);
+    process.exit(1);
+  }
 }
 
 console.log("[pr:merge] checks green — merging…");
