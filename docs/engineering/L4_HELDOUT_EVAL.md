@@ -201,6 +201,28 @@ covers the two L4 sub-capabilities it does not exercise:
 With this, all three L4 sub-capability surfaces (PM brief, issue-creation
 apply, review evidence) have measured gates.
 
+## Scheduled real runs (local cron, #248)
+
+Per-PR CI runs only the hermetic mock (eval-gates) by design — paid runs don't
+belong in the PR loop. The **real** trend line comes from the maintainer's
+machine, where the local `claude` CLI uses the logged-in session (no API key
+stored anywhere):
+
+```text
+pnpm eval:real -- --dry-run      # validate prerequisites, no spend
+pnpm eval:real -- --subcap-only  # cheap run (~10 min) — nightly cron
+pnpm eval:real                   # full run incl. held-out real (~1-2h) — weekly cron
+pnpm eval:trend                  # accumulated trend table
+```
+
+Cron wrapper: `tools/dev/eval-real-cron.sh` (nightly 02:30 subcap-only, weekly
+Sun 03:30 full; macOS caveat — cron fires only while awake). One JSONL record
+per run lands in `.myagenttool/evals/trend.jsonl` (gitignored, local-only) with
+set sizes attached, since rates are only comparable within a set version. The
+held-out leg auto-skips on a dirty repo (work-runner refuses dirty trees, and a
+half-edited tree would produce eval noise). Gate-rule violations still exit
+non-zero and are recorded — the trend must show bad runs too.
+
 ## Not in this slice
 
 - A packaged smoke test / adapter command for a specific real agent (Claude,
