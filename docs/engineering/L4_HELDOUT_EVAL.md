@@ -42,9 +42,31 @@ measured rate is below the bar, so it can gate CI once real resolvers are wired.
 
 The `command` resolver receives the case as JSON on **stdin** and in
 `MYAGENTTOOL_HELDOUT_CASE`, and must print `{"changedFiles": ["..."], "notes":
-"..."}` to **stdout**. This is the extension point where a real coding adapter /
-`ai:work-runner --apply` wrapper plugs in: run the adapter against the case,
-then report the resulting `git diff --name-only`.
+"..."}` to **stdout**.
+
+### Production resolver: `tools/ai/src/evals/work-runner-resolver.mjs`
+
+The real capability path is shipped. It runs `ai:work-runner --apply` for each
+case **inside an isolated git worktree** (created off the base ref, force-removed
+after, with the run-work branch deleted so nothing leaks), then reports the
+files the coding adapter changed (`git diff` + untracked, minus gitignored run
+evidence). It never touches the caller's checkout, branch, or other worktrees.
+
+```text
+# real coding agent as the adapter (edits code, we measure what it touched):
+MYAGENTTOOL_CODING_ADAPTER=claude \
+MYAGENTTOOL_CLAUDE_COMMAND_JSON='["claude","..."]' \
+pnpm ai:eval-heldout -- --resolver command \
+  --resolver-command-json '["node","tools/ai/src/evals/work-runner-resolver.mjs"]' \
+  --min-pass-rate 0.5
+```
+
+Env: `MYAGENTTOOL_CODING_ADAPTER` (default `mock` — changes nothing, so pass
+rate is 0%; use a real adapter to measure capability), `MYAGENTTOOL_HELDOUT_PROVIDER`
+(code-plan provider, default `mock`), `MYAGENTTOOL_HELDOUT_BASE` (worktree base
+ref, default `HEAD`), plus the adapter's own `*_COMMAND_JSON`. Scope drift is
+allowed inside the run because the held-out **oracle** — not work-runner's
+scope-check — is what judges the case.
 
 ## The set
 
@@ -83,6 +105,7 @@ wrapper contract merely exists. Grow the set with real issues over time;
 
 ## Not in this slice
 
-- A production coding-adapter resolver (wraps `ai:work-runner --apply`).
+- A packaged smoke test / adapter command for a specific real agent (Claude,
+  Codex). The resolver is agent-agnostic; wiring a named agent is follow-up.
 - Larger, versioned held-out sets and per-case difficulty tiers.
 - Wiring `--min-pass-rate` into a CI gate (blocked on CI runner activation).
