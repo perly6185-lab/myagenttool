@@ -156,3 +156,24 @@ test("team B cannot act on team A's automation (created via API)", async () => {
   const owner = await call(`/api/automations/${autoId}`, { token: ctx.tokA, method: "PATCH", body: { prompt: "p2" } });
   assert.equal(owner.status, 200, "team A can update its own automation");
 });
+
+test("provisioning RBAC: a non-admin (operator) cannot create teams or users", async () => {
+  const local = await call("/api/session", { method: "POST", body: {} });
+  const op = await call("/api/users", {
+    token: local.body.token,
+    method: "POST",
+    body: { name: "Op", teamId: ctx.teamAId, role: "operator", password: "p" },
+  });
+  assert.equal(op.status, 201);
+  const opLogin = await call("/api/session", { method: "POST", body: { userId: op.body.user.id, password: "p" } });
+  const opTok = opLogin.body.token;
+
+  const team = await call("/api/teams", { token: opTok, method: "POST", body: { name: "Sneaky" } });
+  assert.equal(team.status, 403, "operator cannot create a team");
+  const user = await call("/api/users", { token: opTok, method: "POST", body: { name: "X", teamId: ctx.teamAId } });
+  assert.equal(user.status, 403, "operator cannot create a user");
+
+  // The seeded local owner still can (bootstrap path).
+  const ok = await call("/api/teams", { token: local.body.token, method: "POST", body: { name: "Owned" } });
+  assert.equal(ok.status, 201);
+});

@@ -1,5 +1,5 @@
 import crypto from "node:crypto";
-import { denyForeignProject, hashPassword, verifyPassword } from "../runtime/auth.mjs";
+import { canProvision, denyForeignProject, hashPassword, verifyPassword } from "../runtime/auth.mjs";
 import { computeNextRun, normalizeSchedule } from "../services/automation-schedule.mjs";
 
 const TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000;
@@ -77,9 +77,14 @@ export async function handleControlPlaneRoutes({
   }
 
   // Team + user provisioning. The seed ships one local team/user; these let a
-  // second tenant exist so the ownership guards actually engage. Demo-level:
-  // any authenticated caller may provision (no org-admin RBAC yet).
+  // second tenant exist so the ownership guards actually engage. Only an
+  // owner/admin may provision (9C); the seeded local user is an owner, so
+  // single-user dev is unaffected.
   if (req.method === "POST" && url.pathname === "/api/teams") {
+    if (!canProvision(actor)) {
+      sendJson(res, 403, { error: "forbidden", message: "Only an owner or admin can create teams." });
+      return true;
+    }
     const body = await readJson(req).catch(() => ({}));
     const name = String(body?.name ?? "").trim();
     if (!name) {
@@ -99,6 +104,10 @@ export async function handleControlPlaneRoutes({
   }
 
   if (req.method === "POST" && url.pathname === "/api/users") {
+    if (!canProvision(actor)) {
+      sendJson(res, 403, { error: "forbidden", message: "Only an owner or admin can create users." });
+      return true;
+    }
     const body = await readJson(req).catch(() => ({}));
     const name = String(body?.name ?? "").trim();
     const teamId = String(body?.teamId ?? "").trim();
