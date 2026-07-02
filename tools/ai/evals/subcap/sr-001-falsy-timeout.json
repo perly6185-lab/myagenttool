@@ -1,0 +1,25 @@
+{
+  "id": "sr-001-falsy-timeout",
+  "kind": "review",
+  "pr": {
+    "title": "feat(worker): configurable job timeout",
+    "body": "Adds WORKER_TIMEOUT_MS so operators can tune the per-job budget.",
+    "diff": "diff --git a/apps/server/src/runtime/job-worker.mjs b/apps/server/src/runtime/job-worker.mjs\n--- a/apps/server/src/runtime/job-worker.mjs\n+++ b/apps/server/src/runtime/job-worker.mjs\n@@ -10,7 +10,8 @@ export function runJob(job) {\n-  const result = spawnSync(job.command, job.args, { encoding: \"utf8\" });\n+  const timeoutMs = Number(process.env.WORKER_TIMEOUT_MS ?? 30000);\n+  const result = spawnSync(job.command, job.args, { encoding: \"utf8\", timeout: timeoutMs });\n   if (result.status !== 0) throw new Error(`job failed: ${result.status}`);\n   return result.stdout;\n }"
+  },
+  "oracle": {
+    "mustFlagFiles": [
+      "job-worker.mjs"
+    ],
+    "mustMention": [
+      [
+        "empty",
+        "nan",
+        "coerc",
+        "falsy",
+        "number(\"\")",
+        "non-numeric"
+      ]
+    ],
+    "requireApproveFalse": true
+  }
+}

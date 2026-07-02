@@ -25,6 +25,7 @@ import {
 import { runStructuredAgent as runStructuredAgentWithProvider } from "./providers/structured.mjs";
 import {
   PM_BRIEF_SCHEMA,
+  REVIEW_SCHEMA,
 } from "./legacy/config.mjs";
 import { HELP } from "./legacy/help.mjs";
 import {
@@ -98,6 +99,7 @@ import {
 import {
   evaluateSubcapSet,
   formatSubcapReport,
+  judgeReview,
   loadSubcapSet,
 } from "./evals/subcap.mjs";
 import { configureLoopWorktreeContext } from "./loop/worktree.mjs";
@@ -807,6 +809,19 @@ function check() {
     }
   }
 
+  // Anti-degeneracy guard for the review kind: the mock reviewer finds nothing,
+  // so a review case the mock PASSES demands nothing of a real reviewer.
+  const subcapReviewCases = subcapCases.filter((caseObj) => caseObj.kind === "review");
+  if (subcapReviewCases.length < 2) {
+    fail("Sub-capability set sanity check failed: expected at least 2 review cases.");
+  }
+  for (const caseObj of subcapReviewCases) {
+    const mockReview = mockStructuredOutput({ agentName: "review-pr", schema: null, prompt: caseObj.pr.title });
+    if (judgeReview(caseObj, mockReview).resolved) {
+      fail(`Sub-capability review sanity check failed: ${caseObj.id} passes under the mock reviewer, so its oracle demands nothing.`);
+    }
+  }
+
   console.log("[tools-ai:check] AI delivery helpers check OK");
 }
 
@@ -876,6 +891,26 @@ async function evalSubcap(args) {
     }),
     gateRunner: subcapGateVerdict,
     briefGateReasons: (brief) => humanApprovalRequiredReasons(issueTreeFromBrief(brief)),
+    reviewRunner: (caseObj) => runStructuredAgent({
+      args: providerArgs,
+      agentName: "review-pr",
+      schema: REVIEW_SCHEMA,
+      // Same reviewer framing as ai:review (findings-first, correctness and
+      // security priority, no approval without evidence) with the case's PR as
+      // the only context — a lean eval prompt, documented as such.
+      systemPrompt: [
+        "You are the MyAgentTool automated PR reviewer.",
+        "Use a findings-first code review style.",
+        "Prioritize correctness, security, local execution safety, billing/cost impact, data governance, and missing tests.",
+        "Do not approve if verification evidence is missing for behavior-changing work.",
+        "Return only JSON that matches the schema.",
+      ].join("\n"),
+      userPrompt: [
+        `PR title:\n${caseObj.pr.title}`,
+        `PR body:\n${caseObj.pr.body}`,
+        `Diff:\n${caseObj.pr.diff}`,
+      ].join("\n\n"),
+    }),
   });
 
   const report = formatSubcapReport(summary, { setDir: setArg, provider });

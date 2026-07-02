@@ -1,0 +1,25 @@
+{
+  "id": "sr-002-team-read-leak",
+  "kind": "review",
+  "pr": {
+    "title": "feat(reports): usage summary endpoint",
+    "body": "Adds GET /api/reports/usage for the console dashboard.",
+    "diff": "diff --git a/apps/server/src/routes/reports.mjs b/apps/server/src/routes/reports.mjs\n--- a/apps/server/src/routes/reports.mjs\n+++ b/apps/server/src/routes/reports.mjs\n@@ -42,6 +42,14 @@ export function registerReportRoutes({ app, state, requireActor }) {\n+  app.get(\"/api/reports/usage\", (req, res) => {\n+    const actor = requireActor(req, res);\n+    if (!actor) return;\n+    const rows = state.invocations.map((inv) => ({\n+      id: inv.id, teamId: inv.teamId, agentId: inv.agentId,\n+      costUsd: inv.costUsd, createdAt: inv.createdAt,\n+    }));\n+    res.json({ usage: rows });\n+  });"
+  },
+  "oracle": {
+    "mustFlagFiles": [
+      "reports.mjs"
+    ],
+    "mustMention": [
+      [
+        "team",
+        "tenant",
+        "cross",
+        "leak",
+        "scope",
+        "filter"
+      ]
+    ],
+    "requireApproveFalse": true
+  }
+}

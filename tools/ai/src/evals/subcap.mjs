@@ -26,8 +26,30 @@ export function validateSubcapCase(raw, source) {
   const where = source ? ` (${source})` : "";
   if (!raw || typeof raw !== "object") throw new Error(`Sub-capability case must be a JSON object${where}.`);
   if (!isNonEmptyString(raw.id)) throw new Error(`Sub-capability case needs a string id${where}.`);
-  if (raw.kind !== "pm-brief" && raw.kind !== "issue-gate") {
-    throw new Error(`Sub-capability case ${raw.id} kind must be "pm-brief" or "issue-gate"${where}.`);
+  if (raw.kind !== "pm-brief" && raw.kind !== "issue-gate" && raw.kind !== "review") {
+    throw new Error(`Sub-capability case ${raw.id} kind must be "pm-brief", "issue-gate", or "review"${where}.`);
+  }
+  if (raw.kind === "review") {
+    if (!isNonEmptyString(raw.pr?.title) || !isNonEmptyString(raw.pr?.diff)) {
+      throw new Error(`review case ${raw.id} needs pr.title and pr.diff${where}.`);
+    }
+    const oracle = raw.oracle ?? {};
+    const mustFlagFiles = stringArray(oracle.mustFlagFiles);
+    if (mustFlagFiles.length === 0) {
+      throw new Error(`review case ${raw.id} oracle needs at least one mustFlagFiles entry (the planted-defect file)${where}.`);
+    }
+    // mustMention: array of any-of groups — each group is satisfied when the
+    // findings text contains at least one of its synonyms, so the oracle
+    // demands the MECHANISM be named without dictating exact wording.
+    const mustMention = Array.isArray(oracle.mustMention)
+      ? oracle.mustMention.map((group) => stringArray(group).map((word) => word.toLowerCase())).filter((group) => group.length > 0)
+      : [];
+    return {
+      id: raw.id,
+      kind: raw.kind,
+      pr: { title: raw.pr.title, body: isNonEmptyString(raw.pr.body) ? raw.pr.body : "", diff: raw.pr.diff },
+      oracle: { mustFlagFiles, mustMention, requireApproveFalse: raw.oracle?.requireApproveFalse !== false },
+    };
   }
   if (raw.kind === "pm-brief") {
     if (!isNonEmptyString(raw.idea)) throw new Error(`pm-brief case ${raw.id} needs an idea${where}.`);
@@ -130,6 +152,44 @@ export function judgePmBrief(caseObj, brief, { gateReasons = [] } = {}) {
   };
 }
 
+// Review oracle (planted-defect detection): the case's pr.diff contains known
+// defects; the review must flag every planted file, name each defect mechanism
+// (any-of synonym groups), and — by default — not approve the PR. The mock
+// provider finds nothing, so the review kind's mock baseline is 0%: only a
+// real reviewer can score, mirroring the held-out real set's structure.
+export function judgeReview(caseObj, review) {
+  if (!review || typeof review !== "object" || !Array.isArray(review.findings)) {
+    return { id: caseObj.id, kind: caseObj.kind, resolved: false, reason: "Provider returned no review with a findings array." };
+  }
+  const problems = [];
+  for (const file of caseObj.oracle.mustFlagFiles) {
+    if (!review.findings.some((finding) => String(finding?.file ?? "").includes(file))) {
+      problems.push(`no finding flags planted file "${file}"`);
+    }
+  }
+  const findingsText = review.findings
+    .map((finding) => [finding?.title, finding?.rationale, finding?.recommendation].filter(Boolean).join("\n"))
+    .join("\n")
+    .toLowerCase();
+  for (const group of caseObj.oracle.mustMention) {
+    if (!group.some((word) => findingsText.includes(word))) {
+      problems.push(`findings do not name the defect mechanism (none of: ${group.join(", ")})`);
+    }
+  }
+  if (caseObj.oracle.requireApproveFalse && review.approve !== false) {
+    problems.push("review approved a PR with planted defects");
+  }
+  const resolved = problems.length === 0;
+  return {
+    id: caseObj.id,
+    kind: caseObj.kind,
+    resolved,
+    reason: resolved
+      ? `Review flagged the planted defect(s) and withheld approval (${review.findings.length} finding(s)).`
+      : problems.join("; "),
+  };
+}
+
 // Issue-gate oracle: blocked-ness must match expectation exactly.
 export function judgeIssueGate(caseObj, gateResult) {
   if (!gateResult || typeof gateResult.blocked !== "boolean") {
@@ -148,12 +208,15 @@ export function judgeIssueGate(caseObj, gateResult) {
   };
 }
 
-export async function evaluateSubcapSet({ cases, pmRunner, gateRunner, briefGateReasons }) {
+export async function evaluateSubcapSet({ cases, pmRunner, gateRunner, briefGateReasons, reviewRunner }) {
   if (typeof pmRunner !== "function" || typeof gateRunner !== "function") {
     throw new Error("evaluateSubcapSet requires pmRunner and gateRunner functions.");
   }
   if (typeof briefGateReasons !== "function") {
     throw new Error("evaluateSubcapSet requires a briefGateReasons function (brief -> product gate categories).");
+  }
+  if (cases.some((caseObj) => caseObj.kind === "review") && typeof reviewRunner !== "function") {
+    throw new Error("evaluateSubcapSet requires a reviewRunner function when the set contains review cases.");
   }
   const results = [];
   for (const caseObj of cases) {
@@ -161,6 +224,8 @@ export async function evaluateSubcapSet({ cases, pmRunner, gateRunner, briefGate
       if (caseObj.kind === "pm-brief") {
         const brief = await pmRunner(caseObj);
         results.push(judgePmBrief(caseObj, brief, { gateReasons: brief && typeof brief === "object" ? briefGateReasons(brief) : [] }));
+      } else if (caseObj.kind === "review") {
+        results.push(judgeReview(caseObj, await reviewRunner(caseObj)));
       } else {
         results.push(judgeIssueGate(caseObj, await gateRunner(caseObj)));
       }
