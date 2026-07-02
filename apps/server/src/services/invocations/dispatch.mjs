@@ -15,15 +15,18 @@ export function createInvocationDispatchRuntime({
     return meta.worktreePath || meta.projectPath || "__default__";
   }
 
-  // Bridge-executed = a run that consumes this device's compute (CLI, MCP
-  // server, container). Off-device work (remote_http/platform, and a2a — the
-  // bridge only drives the client; the work happens on the remote agent) must
-  // not consume a bridge concurrency slot. Unknown agent → count it
-  // (conservative for the cap).
+  // Bridge-executed = a run that consumes this device's compute (CLI, a locally
+  // spawned stdio MCP server, container). Off-device work (remote_http/platform,
+  // a2a, and http-transport MCP — the bridge only drives the client; the work
+  // happens on the remote server) must not consume a bridge concurrency slot.
+  // Unknown agent → count it (conservative for the cap).
   function isBridgeExecuted(invocation) {
     const agent = findAgent(invocation.agentId);
     if (!agent) return true;
-    return ["cli", "mcp", "container"].includes(agent.adapter?.type) && agent.location?.type === "local_device";
+    if (agent.location?.type !== "local_device") return false;
+    const adapter = agent.adapter ?? {};
+    if (adapter.type === "mcp") return adapter.transport !== "http";
+    return ["cli", "container"].includes(adapter.type);
   }
 
   // Force a terminal status on runs stuck in "cancelling" past a grace (e.g. the

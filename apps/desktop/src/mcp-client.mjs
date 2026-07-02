@@ -136,6 +136,112 @@ function createStdioSession(adapter, onEvent) {
   };
 }
 
+/**
+ * Streamable-HTTP MCP session with the same interface as the stdio one. Each
+ * request POSTs a JSON-RPC message; the response is either application/json
+ * (single response) or text/event-stream (scan frames for our id, forwarding
+ * notifications). The Mcp-Session-Id header from initialize is echoed on every
+ * later call. kill() aborts all in-flight requests.
+ */
+function createHttpMcpSession(adapter, onEvent) {
+  let nextId = 1;
+  let sessionId = null;
+  const controllers = new Set();
+
+  function handleNotification(message) {
+    if (message.method === "notifications/message") {
+      const params = message.params ?? {};
+      const text = typeof params.data === "string" ? params.data : JSON.stringify(params.data ?? {});
+      onEvent({ type: "log", level: params.level === "error" ? "warn" : "info", message: `MCP: ${text}` });
+    }
+  }
+
+  async function post(message, timeoutMs) {
+    const controller = new AbortController();
+    controllers.add(controller);
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const response = await fetch(adapter.url, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          accept: "application/json, text/event-stream",
+          ...(adapter.headers ?? {}),
+          ...(sessionId ? { "mcp-session-id": sessionId } : {}),
+        },
+        body: JSON.stringify(message),
+        signal: controller.signal,
+      });
+      sessionId = response.headers.get("mcp-session-id") ?? sessionId;
+      if (!response.ok) {
+        throw new Error(`MCP http endpoint answered ${response.status}.`);
+      }
+      if (message.id === undefined) return null; // notification — no body expected
+      const contentType = response.headers.get("content-type") ?? "";
+      if (/application\/json/i.test(contentType)) {
+        const body = await response.json();
+        if (body.error) throw new Error(body.error.message ?? "MCP request failed.");
+        return body.result;
+      }
+      if (/text\/event-stream/i.test(contentType)) {
+        let buffer = "";
+        for await (const chunk of response.body) {
+          buffer += Buffer.from(chunk).toString("utf8");
+          const frames = buffer.split("\n\n");
+          buffer = frames.pop() ?? "";
+          for (const frame of frames) {
+            const data = frame
+              .split("\n")
+              .filter((line) => line.startsWith("data:"))
+              .map((line) => line.slice(5).trim())
+              .join("");
+            if (!data) continue;
+            let parsed;
+            try {
+              parsed = JSON.parse(data);
+            } catch {
+              continue;
+            }
+            if (parsed.id === message.id) {
+              if (parsed.error) throw new Error(parsed.error.message ?? "MCP request failed.");
+              return parsed.result;
+            }
+            handleNotification(parsed);
+          }
+        }
+        throw new Error("MCP http stream ended without a response.");
+      }
+      throw new Error(`MCP http endpoint answered an unexpected content-type: ${contentType || "none"}.`);
+    } catch (error) {
+      if (error?.name === "AbortError") throw new Error(`MCP request ${message.method} timed out.`);
+      throw error;
+    } finally {
+      clearTimeout(timer);
+      controllers.delete(controller);
+    }
+  }
+
+  return {
+    send(message) {
+      post(message, HANDSHAKE_TIMEOUT_MS).catch(() => undefined); // fire-and-forget notification
+    },
+    request(method, params, { timeoutMs }) {
+      const id = nextId++;
+      return { id, promise: post({ jsonrpc: "2.0", id, method, params }, timeoutMs) };
+    },
+    kill() {
+      for (const controller of controllers) controller.abort();
+    },
+    get spawnError() {
+      return null;
+    },
+  };
+}
+
+function createMcpSession(adapter, onEvent) {
+  return adapter.transport === "http" ? createHttpMcpSession(adapter, onEvent) : createStdioSession(adapter, onEvent);
+}
+
 async function handshake(session) {
   await session.request("initialize", {
     protocolVersion: PROTOCOL_VERSION,
@@ -172,7 +278,7 @@ function resolveToolName(adapter, options, tools) {
  * notifications/cancelled for the in-flight call, then stops the process.
  */
 export async function callMcpTool({ adapter, task, options = {}, onEvent = () => {}, shouldCancel = () => false }) {
-  const session = createStdioSession(adapter, onEvent);
+  const session = createMcpSession(adapter, onEvent);
   const timeoutMs = Number(adapter.timeoutMs ?? 60_000);
   let cancelled = false;
   let cancelTimer = null;
@@ -239,7 +345,7 @@ export async function callMcpTool({ adapter, task, options = {}, onEvent = () =>
 /** Health probe: spawn, handshake, list tools, stop. Proves the configured
  *  command really is a speaking MCP server, not just an existing binary. */
 export async function probeMcpServer(adapter) {
-  const session = createStdioSession(adapter, () => {});
+  const session = createMcpSession(adapter, () => {});
   try {
     await handshake(session);
     const listed = await session.request("tools/list", {}, { timeoutMs: HANDSHAKE_TIMEOUT_MS }).promise;

@@ -10,6 +10,7 @@ import { createServer } from "node:http";
 
 const slow = process.argv.includes("--slow");
 const direct = process.argv.includes("--direct");
+const stream = process.argv.includes("--stream");
 
 const tasks = new Map(); // id → { polls }
 let taskCounter = 0;
@@ -35,6 +36,7 @@ const server = createServer((req, res) => {
       name: "fixture-a2a-echo",
       url: `http://127.0.0.1:${server.address().port}/rpc`,
       version: "0.0.0",
+      capabilities: { streaming: stream },
       skills: [{ id: "echo", name: "Echo" }],
     }));
     return;
@@ -44,6 +46,21 @@ const server = createServer((req, res) => {
     req.on("data", (chunk) => (body += chunk));
     req.on("end", () => {
       const message = JSON.parse(body);
+      if (message.method === "message/stream") {
+        // SSE: working status → artifact → final completed status. `--slow`
+        // leaves the stream open after "working" (for cancel tests).
+        const text = message.params?.message?.parts?.find((p) => p.kind === "text")?.text ?? "";
+        const taskId = `task_${++taskCounter}`;
+        tasks.set(taskId, { polls: 0, text });
+        res.writeHead(200, { "content-type": "text/event-stream" });
+        const sse = (result) => res.write(`data: ${JSON.stringify({ jsonrpc: "2.0", id: message.id, result })}\n\n`);
+        sse({ id: taskId, kind: "task", status: { state: "working" }, artifacts: [] });
+        if (slow) return; // keep the stream open
+        sse({ taskId, kind: "artifact-update", artifact: { parts: [{ kind: "text", text: `echo: ${text}` }] } });
+        sse({ taskId, kind: "status-update", status: { state: "completed" }, final: true });
+        res.end();
+        return;
+      }
       res.writeHead(200, { "content-type": "application/json" });
       if (message.method === "message/send") {
         const text = message.params?.message?.parts?.find((p) => p.kind === "text")?.text ?? "";

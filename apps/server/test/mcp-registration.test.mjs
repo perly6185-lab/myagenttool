@@ -38,12 +38,14 @@ test("registers a stdio MCP agent with a normalized adapter on the local device"
   assert.equal(agent.health.status, "unknown", "starts unknown so dispatch is not blocked");
 });
 
-test("rejects http-transport MCP registration (bridge-side stdio only for now)", () => {
+test("registers an http-transport MCP agent (Streamable HTTP via the bridge client)", () => {
   const { svc } = service();
-  assert.throws(
-    () => svc.registerAgent({ type: "mcp", transport: "http", url: "https://mcp.example" }),
-    /stdio transport only/,
-  );
+  const agent = svc.registerAgent({ type: "mcp", transport: "http", url: "https://mcp.example/rpc" });
+  assert.equal(agent.adapter.type, "mcp");
+  assert.equal(agent.adapter.transport, "http");
+  assert.equal(agent.adapter.url, "https://mcp.example/rpc");
+  assert.equal(agent.location.type, "local_device", "the client still runs on this device's bridge");
+  assert.throws(() => svc.registerAgent({ type: "mcp", transport: "http", url: "not-a-url" }), /valid http/);
 });
 
 test("rejects invalid MCP config with the slice's plain-language error", () => {
