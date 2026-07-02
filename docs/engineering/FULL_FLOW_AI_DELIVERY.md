@@ -183,21 +183,21 @@ Needed:
 
 ### 5. Human Review And Merge
 
-Partially implemented:
+Implemented:
 
 - PR template and review policy.
-- Branch protection risk tracked.
+- **Enforced required checks on `main`** (2026-07-02): the repository is now
+  public and branch protection requires the `verify` and `eval-gates` status
+  checks (strict, up-to-date branches) before merge. `eval-gates` runs the
+  hermetic sub-capability eval, so the issue-gate 100% rule is a
+  product-regression gate in CI. `pnpm ci:activate` / `pnpm ci:simulate`
+  manage and mirror the gate (#213; the old private-plan blocker from #32 is
+  resolved by the visibility change).
 
 Missing:
 
-- Enforced required checks on `main`.
 - CODEOWNERS or required reviewer rules.
-- Clear merge queue or squash/rebase policy.
-
-Blocked:
-
-- Current private repository entitlement may not allow branch protection. Track
-  through issue #32 until resolved.
+- Clear merge queue or squash/rebase policy (squash is the de-facto practice).
 
 ### 6. Release
 
@@ -250,9 +250,9 @@ Needed:
 | --- | --- | --- |
 | L0 | Docs only | Completed earlier |
 | L1 | Issues and Project exist | **Gate met** — measured 2026-07-02: label coverage 100%, milestone 100%, 0 stale (`pnpm github:backlog`, 30 open issues) |
-| L2 | Branch, PR, CI, and smoke tests work | Measured 2026-07-02: median PR lead time 0.02h, ~19 merges/week (`pnpm github:dora`). **CI activated 2026-07-02** (runner variable on, CI workflow re-enabled; first live run green: verify 1m12s + eval-gates 19s + smoke 44s ≈ 2.2 min/PR, well inside the 2,000 free private-repo minutes). CI-green gate first reading: **40.2% (33/82; 47 merged with no checks)** vs ≥95% — the honest pre-activation gap; every merge from #237 on carries live CI, so the rate climbs as the window rolls (pre-activation merges age out by ~2026-08-01). Post-activation slice (`--ci-since`): **100% — current discipline meets the gate**. Red-merge *enforcement* (branch protection) is plan-gated on private Free — codified instead as `pnpm pr:merge` (watch checks → merge → confirm → only then delete the branch) |
+| L2 | Branch, PR, CI, and smoke tests work | Measured 2026-07-02: median PR lead time 0.02h, ~19 merges/week (`pnpm github:dora`). **CI activated 2026-07-02** (runner variable on, CI workflow re-enabled; first live run green: verify 1m12s + eval-gates 19s + smoke 44s ≈ 2.2 min/PR). CI-green gate rolling reading: **41.7% (35/84; 47 merged with no checks)** vs ≥95% — the pre-activation gap ages out by ~2026-08-01. Post-activation slice (`--ci-since`): **100% — current discipline meets the gate**. Red-merge **enforcement is LIVE**: the repo is now public and branch protection on `main` requires the `verify` + `eval-gates` checks (strict; `pnpm ci:activate --apply`, #213); `pnpm pr:merge` remains the merge workflow helper (watch checks → merge → confirm MERGED → only then delete the branch) |
 | L3 | Governance checks and Project drift checks work | **Measured 2026-07-02 (`pnpm github:governance`, 30-day window): risk-evidence coverage 29.1% (23/79 merged PRs) vs 100% target; 56 silent-bypass commits vs 0 target** — the gate exists (check-pr) but was not enforced on merges; scope-drift FP rate not instrumented. The previous "mostly complete" tick was qualitative and is retracted |
-| L4 | AI can create PM brief, issue, branch, code, PR, and review evidence | **Measured 2026-07-02: 87.5% (7/8) held-out pass rate** with the Claude Code CLI (8-case snapshot, file-level oracle; measures the branch/code/PR slice — PM-brief and issue-creation apply mode are NOT exercised by this gate) |
+| L4 | AI can create PM brief, issue, branch, code, PR, and review evidence | **All surfaces measured 2026-07-02** with the Claude Code CLI: branch/code/PR 87.5% (7/8 held-out snapshot, `pnpm ai:eval-heldout`); PM brief 6/6 (product-gate oracle), issue-creation apply gate 6/6 (product behavior, 100% required), review evidence 3/3 (planted-defect detection, mock floor 0/3) — all via `pnpm ai:eval-subcap`, whose hermetic run is the `eval-gates` required CI check |
 | L5 | Human-approved merge and release can be generated with rollback notes | Partially complete |
 | L6 | Feedback automatically becomes tracked bugs/risks/roadmap updates | Not complete |
 
@@ -263,11 +263,14 @@ the L4 harness is documented in [L4_HELDOUT_EVAL.md](L4_HELDOUT_EVAL.md).
 Current target:
 
 ```text
-Hold the L4 held-out pass rate at or above the gate (--min-pass-rate 0.6;
-baseline 87.5% on the 8-case snapshot) while the set grows and behavior probes
-tighten; keep the L1 coverage gate at 100% (met 2026-07-02); and extend
-measurement to the L4 sub-capabilities the held-out gate does not exercise
-(PM brief quality, issue-creation apply mode, review-evidence generation).
+Hold every measured L4 gate at or above its bar (held-out --min-pass-rate 0.6,
+baseline 87.5%; subcap issue-gate at a required 100%; PM-brief and review kinds
+at their measured 6/6 and 3/3) while the sets grow and probes tighten; keep the
+L1 coverage gate at 100% (met 2026-07-02). The CI gate is ACTIVATED and
+ENFORCED as of 2026-07-02 (#213) — next: raise the CI-green window rate toward
+the ≥95% L2 bar, close the L3 evidence-coverage gap now that checks are
+enforced, add CODEOWNERS/required reviewers, and keep real-agent evals on a
+scheduled cadence (paid runs, deliberately not per-PR).
 ```
 
 M0 closeout is recorded in [AI_DELIVERY_CLOSEOUT.md](AI_DELIVERY_CLOSEOUT.md).
