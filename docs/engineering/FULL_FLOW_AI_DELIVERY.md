@@ -250,7 +250,7 @@ Needed:
 | --- | --- | --- |
 | L0 | Docs only | Completed earlier |
 | L1 | Issues and Project exist | **Gate met** — measured 2026-07-02: label coverage 100%, milestone 100%, 0 stale (`pnpm github:backlog`, 30 open issues) |
-| L2 | Branch, PR, CI, and smoke tests work | Measured 2026-07-02: median PR lead time 0.02h, 17 merges/week (`pnpm github:dora`); CI gate on main still off |
+| L2 | Branch, PR, CI, and smoke tests work | Measured 2026-07-02: median PR lead time 0.02h, 18.7 merges/week (`pnpm github:dora`). The gate's second half — CI+smoke green on ≥95% of merged PRs — is now instrumented in the same report but reads **not measurable**: CI is wired (ci.yml + `ci:simulate`) but runners are cost-gated off, and the current token lacks checks:read. Path to the gate: run `ci:activate --apply` (likely inside the 2,000 free private-repo minutes at current volume), accumulate a PR window, read ≥95% |
 | L3 | Governance checks and Project drift checks work | **Measured 2026-07-02 (`pnpm github:governance`, 30-day window): risk-evidence coverage 29.1% (23/79 merged PRs) vs 100% target; 56 silent-bypass commits vs 0 target** — the gate exists (check-pr) but was not enforced on merges; scope-drift FP rate not instrumented. The previous "mostly complete" tick was qualitative and is retracted |
 | L4 | AI can create PM brief, issue, branch, code, PR, and review evidence | **Measured 2026-07-02: 87.5% (7/8) held-out pass rate** with the Claude Code CLI (8-case snapshot, file-level oracle; measures the branch/code/PR slice — PM-brief and issue-creation apply mode are NOT exercised by this gate) |
 | L5 | Human-approved merge and release can be generated with rollback notes | Partially complete |

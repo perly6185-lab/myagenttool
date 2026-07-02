@@ -198,7 +198,12 @@ This proposal is inert until measurement exists. Minimum instrumentation:
    merge-frequency proxy are measured; change failure rate and recovery time
    are reported as **not instrumented** (they need a real deploy target +
    incident signal) rather than proxied. First reading (2026-07-02, 30-day
-   window): 73 merged PRs, median lead time 0.02h, 17 merges/week.
+   window): 73 merged PRs, median lead time 0.02h, 17 merges/week. The L2
+   gate's CI-green-rate half is also instrumented in the same report
+   (per-merged-PR check-run rollup, ≥95% target, all-merged-PRs denominator)
+   with three honest states: measured, "CI not active", or "not measurable
+   with this token" (needs checks:read). It starts producing a real rate the
+   moment `ci:activate --apply` runs.
 2. **A local held-out issue set + measured pass %** — the honest replacement
    for L4's structural check. Implemented ([L4_HELDOUT_EVAL.md](L4_HELDOUT_EVAL.md),
    `pnpm ai:eval-heldout`): a real set mined from git history (base-commit

@@ -145,16 +145,29 @@ function doraReport(args) {
   // long-lived PRs merged recently — exactly the worst lead-time data points.
   const defaultBranch = ghJson(["repo", "view", repo, "--json", "defaultBranchRef"]).defaultBranchRef?.name ?? "main";
   const limit = 500;
-  const prs = ghJson([
+  const listArgs = (fields) => [
     "pr", "list", "--repo", repo, "--state", "merged", "--base", defaultBranch,
     "--search", `merged:>=${since.slice(0, 10)}`, "--limit", String(limit),
-    "--json", "number,createdAt,mergedAt",
-  ]).filter((pr) => pr.mergedAt && pr.mergedAt >= since);
+    "--json", fields,
+  ];
+  // statusCheckRollup needs checks/statuses read permission; a fine-grained
+  // token without it fails the WHOLE query. Fall back to the base fields and
+  // report the CI-green gate as not measurable with this token — never fake it.
+  let prs;
+  let checksReadable = true;
+  try {
+    prs = ghJson(listArgs("number,createdAt,mergedAt,statusCheckRollup"));
+  } catch {
+    checksReadable = false;
+    console.error("Warning: this token cannot read check runs (checks:read); the CI-green gate is reported as not measurable.");
+    prs = ghJson(listArgs("number,createdAt,mergedAt"));
+  }
+  prs = prs.filter((pr) => pr.mergedAt && pr.mergedAt >= since);
   if (prs.length >= limit) {
     console.error(`Warning: hit the ${limit}-PR fetch limit; lead time and merge counts are truncated.`);
   }
 
-  const stats = computeDoraStats(prs, { days });
+  const stats = computeDoraStats(prs, { days, checksReadable });
   const report = formatDoraReport(stats, { repo });
   emitMetricsReport({ kind: "dora", stats, report, args });
 }
