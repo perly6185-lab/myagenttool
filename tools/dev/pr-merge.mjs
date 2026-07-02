@@ -60,12 +60,36 @@ for (;;) {
 }
 
 console.log("[pr:merge] checks green — merging…");
-execFileSync("gh", ["pr", "merge", prNumber, "--merge"], { stdio: "inherit" });
+try {
+  execFileSync("gh", ["pr", "merge", prNumber, "--merge"], { stdio: ["ignore", "inherit", "pipe"] });
+} catch (error) {
+  const stderr = String(error.stderr ?? "");
+  process.stderr.write(stderr);
+  if (/not up to date with the base branch/i.test(stderr)) {
+    // Strict branch protection: main moved since this branch was cut. Update
+    // the branch and arm auto-merge so it lands once the fresh CI is green —
+    // merging manually here would just race main again.
+    console.log("[pr:merge] head behind base (strict protection) — updating branch + arming auto-merge…");
+    execFileSync("gh", ["pr", "update-branch", prNumber], { stdio: "inherit" });
+    execFileSync("gh", ["pr", "merge", prNumber, "--merge", "--auto"], { stdio: "inherit" });
+    console.log("[pr:merge] auto-merge armed; watching the fresh checks…");
+    execFileSync("gh", ["pr", "checks", prNumber, "--watch", "--fail-fast"], { stdio: "inherit" });
+  } else {
+    console.error("[pr:merge] merge failed — leaving the branch alone. Re-run to retry.");
+    process.exit(1);
+  }
+}
 
-// Confirm the merge really landed before any destructive cleanup.
-const after = JSON.parse(gh("pr", "view", prNumber, "--json", "state"));
-if (after.state !== "MERGED") {
-  console.error(`[pr:merge] merge did not land (state: ${after.state}) — leaving the branch alone. Re-run to retry.`);
+// Confirm the merge really landed before any destructive cleanup. Auto-merge
+// lands moments after the last check goes green, so poll briefly.
+let finalState = "";
+for (let attempt = 0; attempt < 6; attempt += 1) {
+  finalState = JSON.parse(gh("pr", "view", prNumber, "--json", "state")).state;
+  if (finalState === "MERGED") break;
+  execFileSync("sleep", ["10"]);
+}
+if (finalState !== "MERGED") {
+  console.error(`[pr:merge] merge did not land (state: ${finalState}) — leaving the branch alone. Re-run to retry.`);
   process.exit(1);
 }
 
