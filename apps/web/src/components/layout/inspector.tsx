@@ -2,6 +2,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { DeviceInspector } from "@/features/devices/device-inspector";
 import { GovernanceInspector } from "@/features/integrations/governance-inspector";
 import { RunContextInspector } from "@/features/invocations/run-context-inspector";
+import { ToolsInspector } from "@/features/tools/tools-inspector";
 import { useUiStore } from "@/store/ui-store";
 
 function HintCard({ title, body }: { title: string; body: string }) {
@@ -50,6 +51,7 @@ export function Inspector() {
         </div>
       ) : null}
       {section === "integrations" ? <GovernanceInspector /> : null}
+      {section === "tools" ? <ToolsInspector /> : null}
       {section === "economics" ? (
         <div className="space-y-4">
           <HintCard
