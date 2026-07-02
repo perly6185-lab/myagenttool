@@ -1,0 +1,20 @@
+{
+  "id": "hb-005-verify-fail-to-pass",
+  "issue": "sim-5",
+  "title": "Behavior oracle: fail-to-pass verify plumbing",
+  "spec": "Synthetic case pinning the behavior-level oracle: the verify command must fail at base and pass after the change (SWE-bench fail-to-pass discipline).",
+  "risk": "low",
+  "oracle": {
+    "expectedFiles": ["tools/ai/src/evals/heldout.mjs"],
+    "forbiddenFiles": ["apps/"],
+    "verify": {
+      "mode": "fail-to-pass",
+      "command": ["node", "-e", "process.exit(0)"]
+    }
+  },
+  "mock": {
+    "changedFiles": ["tools/ai/src/evals/heldout.mjs"],
+    "note": "Mock simulates a probe that fails at base (exit 1) and passes after the change (exit 0).",
+    "verify": { "baseStatus": 1, "status": 0 }
+  }
+}

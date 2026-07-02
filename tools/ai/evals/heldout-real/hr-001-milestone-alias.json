@@ -7,6 +7,10 @@
   "base": "20ca4b7de57ee4e59fdb5b8e8080779301899a2e",
   "oracle": {
     "expectedFiles": ["tools/github/src/index.mjs"],
-    "forbiddenFiles": ["apps/", "packages/", "tools/ai/"]
+    "forbiddenFiles": ["apps/", "packages/", "tools/ai/"],
+    "verify": {
+      "mode": "regression",
+      "command": ["node", "tools/github/src/index.mjs", "--check"]
+    }
   }
 }

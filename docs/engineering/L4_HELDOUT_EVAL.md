@@ -16,9 +16,31 @@ files it touched. A deterministic **oracle** then decides `resolved` / not:
 
 - every `expectedFiles` entry was touched, and
 - no `forbiddenFiles` prefix was touched (scope discipline), and
-- at least one file changed.
+- at least one file changed, and
+- when the case has a **behavior oracle** (`oracle.verify`), the probe holds.
 
 `passRate = resolved / total`. That single number is the L4 gate input.
+
+### Behavior oracle (`oracle.verify`)
+
+The file-level checks only prove the agent touched the right places. The
+optional verify probe judges behavior, in two modes:
+
+- `"fail-to-pass"` — SWE-bench discipline: the command must **fail at the
+  case's base** (proving it probes the missing behavior) and **pass after the
+  agent's change**. A probe that already passes at base is **vacuous** and the
+  case is judged unresolved so the set author fixes it.
+- `"regression"` — the command must pass after the change; passing at base is
+  fine. Weaker (guards "the agent broke the tool", not correctness) and results
+  say so explicitly.
+
+```json
+"verify": { "mode": "fail-to-pass", "command": ["node", "probe.mjs"], "timeoutMs": 120000 }
+```
+
+The resolver runs the command inside the worktree at base (before the agent)
+and again after, and reports `{baseStatus, status}`; the judge applies the mode
+rules. The mock resolver simulates via `mock.verify`.
 
 ## Running it
 

@@ -27,6 +27,7 @@ export function validateHeldoutCase(raw, source) {
   if (expectedFiles.length === 0) {
     throw new Error(`Held-out case ${raw.id} oracle needs at least one expectedFiles entry${where}.`);
   }
+  const verify = validateVerifyOracle(raw.id, oracle.verify, where);
   return {
     id: raw.id,
     issue: isNonEmptyString(raw.issue) ? raw.issue : String(raw.id),
@@ -37,9 +38,46 @@ export function validateHeldoutCase(raw, source) {
     // mined from history pin this to the parent of the original fix commit so
     // the change does not already exist in the tree being evaluated.
     base: isNonEmptyString(raw.base) ? raw.base : "",
-    oracle: { expectedFiles, forbiddenFiles },
-    mock: { changedFiles: stringArray(raw.mock?.changedFiles), note: isNonEmptyString(raw.mock?.note) ? raw.mock.note : "" },
+    oracle: { expectedFiles, forbiddenFiles, verify },
+    mock: {
+      changedFiles: stringArray(raw.mock?.changedFiles),
+      note: isNonEmptyString(raw.mock?.note) ? raw.mock.note : "",
+      verify: normalizeVerifyResult(raw.mock?.verify),
+    },
   };
+}
+
+// Behavior oracle: a command run inside the resolved worktree.
+//   mode "fail-to-pass": SWE-bench discipline — the command must FAIL at the
+//     case's base (proving it probes the missing behavior) and PASS after the
+//     agent's change. A command that already passes at base is vacuous and the
+//     case is marked unresolved so the set author fixes the probe.
+//   mode "regression": the command must pass after the change (passing at base
+//     is fine). Weaker — guards "the agent broke the tool", not "the behavior
+//     is correct". Labeled as such in results.
+function validateVerifyOracle(id, raw, where) {
+  if (raw === undefined || raw === null) return null;
+  if (typeof raw !== "object") throw new Error(`Held-out case ${id} oracle.verify must be an object${where}.`);
+  const mode = raw.mode;
+  if (mode !== "fail-to-pass" && mode !== "regression") {
+    throw new Error(`Held-out case ${id} oracle.verify.mode must be "fail-to-pass" or "regression"${where}.`);
+  }
+  const command = stringArray(raw.command);
+  if (command.length === 0) {
+    throw new Error(`Held-out case ${id} oracle.verify.command must be a non-empty string array${where}.`);
+  }
+  const timeoutMs = raw.timeoutMs === undefined ? 120000 : Number(raw.timeoutMs);
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+    throw new Error(`Held-out case ${id} oracle.verify.timeoutMs must be a positive number${where}.`);
+  }
+  return { mode, command, timeoutMs };
+}
+
+function normalizeVerifyResult(raw) {
+  if (raw === undefined || raw === null || typeof raw !== "object") return null;
+  const baseStatus = Number.isFinite(Number(raw.baseStatus)) ? Number(raw.baseStatus) : null;
+  const status = Number.isFinite(Number(raw.status)) ? Number(raw.status) : null;
+  return { baseStatus, status };
 }
 
 export function loadHeldoutSet(dir) {
@@ -66,21 +104,56 @@ export function loadHeldoutSet(dir) {
   return cases;
 }
 
-// Oracle: a case is resolved when the resolver touched every expected file and
-// touched nothing under a forbidden prefix (scope discipline), and touched at
-// least one file at all. Deterministic, no glob dependency.
+// Oracle: a case is resolved when the resolver touched every expected file,
+// touched nothing under a forbidden prefix (scope discipline), touched at
+// least one file — and, when a verify oracle is present, the behavior probe
+// holds (see validateVerifyOracle for the fail-to-pass / regression modes).
+// Deterministic, no glob dependency.
 export function judgeCase(caseObj, resolution) {
   const changed = stringArray(resolution?.changedFiles);
-  const { expectedFiles, forbiddenFiles } = caseObj.oracle;
+  const { expectedFiles, forbiddenFiles, verify } = caseObj.oracle;
   const missing = expectedFiles.filter((file) => !changed.includes(file));
   const violated = changed.filter((file) => forbiddenFiles.some((prefix) => underPrefix(file, prefix)));
-  const resolved = changed.length > 0 && missing.length === 0 && violated.length === 0;
+  const filesOk = changed.length > 0 && missing.length === 0 && violated.length === 0;
+  const verifyOutcome = judgeVerify(verify, resolution?.verify);
+  const resolved = filesOk && verifyOutcome.ok;
   let reason;
-  if (resolved) reason = "All expected files changed with no scope violations.";
-  else if (changed.length === 0) reason = "Resolver produced no file changes.";
-  else if (missing.length > 0) reason = `Missing expected files: ${missing.join(", ")}.`;
-  else reason = `Touched forbidden files: ${violated.join(", ")}.`;
-  return { id: caseObj.id, resolved, reason, changedFiles: changed, missing, violated };
+  if (!filesOk) {
+    if (changed.length === 0) reason = "Resolver produced no file changes.";
+    else if (missing.length > 0) reason = `Missing expected files: ${missing.join(", ")}.`;
+    else reason = `Touched forbidden files: ${violated.join(", ")}.`;
+  } else if (!verifyOutcome.ok) {
+    reason = verifyOutcome.reason;
+  } else {
+    reason = verify
+      ? `All expected files changed, no scope violations, ${verifyOutcome.reason}`
+      : "All expected files changed with no scope violations.";
+  }
+  return { id: caseObj.id, resolved, reason, changedFiles: changed, missing, violated, verify: verifyOutcome.detail };
+}
+
+function judgeVerify(verifyOracle, verifyResult) {
+  if (!verifyOracle) return { ok: true, reason: "", detail: null };
+  const detail = normalizeVerifyResult(verifyResult);
+  if (!detail || detail.status === null) {
+    return { ok: false, reason: "Verify oracle present but the resolver returned no verify result.", detail };
+  }
+  if (verifyOracle.mode === "fail-to-pass") {
+    if (detail.baseStatus === null) {
+      return { ok: false, reason: "fail-to-pass verify needs a base run; resolver returned none.", detail };
+    }
+    if (detail.baseStatus === 0) {
+      return { ok: false, reason: "Verify command already passes at base (vacuous probe — fix the case).", detail };
+    }
+    if (detail.status !== 0) {
+      return { ok: false, reason: `Verify command still fails after the change (exit ${detail.status}).`, detail };
+    }
+    return { ok: true, reason: "verify went fail(base)->pass.", detail };
+  }
+  if (detail.status !== 0) {
+    return { ok: false, reason: `Regression verify failed after the change (exit ${detail.status}).`, detail };
+  }
+  return { ok: true, reason: "regression verify passed (behavior-correctness not proven).", detail };
 }
 
 export async function evaluateHeldoutSet({ cases, resolver }) {
@@ -103,7 +176,11 @@ export async function evaluateHeldoutSet({ cases, resolver }) {
 }
 
 export function mockResolver(caseObj) {
-  return { changedFiles: caseObj.mock.changedFiles, notes: caseObj.mock.note || "mock resolver" };
+  return {
+    changedFiles: caseObj.mock.changedFiles,
+    notes: caseObj.mock.note || "mock resolver",
+    verify: caseObj.mock.verify,
+  };
 }
 
 export function formatHeldoutReport(summary, { setDir, resolverName } = {}) {

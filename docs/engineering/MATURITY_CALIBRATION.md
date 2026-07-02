@@ -199,11 +199,16 @@ This proposal is inert until measurement exists. Minimum instrumentation:
    incident signal) rather than proxied. First reading (2026-07-02, 30-day
    window): 73 merged PRs, median lead time 0.02h, 17 merges/week.
 2. **A local held-out issue set + measured pass %** — the honest replacement
-   for L4's structural check. A minimal implementation now exists
-   ([L4_HELDOUT_EVAL.md](L4_HELDOUT_EVAL.md), `pnpm ai:eval-heldout`): a seed
-   held-out set, a deterministic oracle, a measured pass rate, and a
-   `--min-pass-rate` gate. Still needed: a production `command` resolver that
-   wraps `ai:work-runner --apply`, and larger versioned sets.
+   for L4's structural check. Implemented ([L4_HELDOUT_EVAL.md](L4_HELDOUT_EVAL.md),
+   `pnpm ai:eval-heldout`): a real set mined from git history (base-commit
+   pinned, SWE-bench structure), a production resolver running
+   `ai:work-runner --apply` in isolated worktrees, a real Claude Code adapter,
+   and file-level + behavior-level (fail-to-pass / regression) oracles.
+   **First real baseline (2026-07-02): 87.5% (7/8) with the Claude Code CLI on
+   the history-mined set, file-level oracle; the one failure was an adapter
+   timeout, counted against per SWE-bench convention.** Suggested starting gate:
+   `--min-pass-rate 0.6` (below baseline: 8-case variance is high and the set
+   has since grown to 13 cases with behavior probes, which only get stricter).
 3. **Backlog + evidence-coverage reports** — feeds L1/L3 gates.
 
 Then update [FULL_FLOW_AI_DELIVERY.md](FULL_FLOW_AI_DELIVERY.md)'s status column

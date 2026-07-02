@@ -884,6 +884,7 @@ function runCommandResolver(cmd, cmdArgs, caseObj) {
   return {
     changedFiles: Array.isArray(parsed.changedFiles) ? parsed.changedFiles.map(String) : [],
     notes: typeof parsed.notes === "string" ? parsed.notes : "command resolver",
+    verify: parsed.verify && typeof parsed.verify === "object" ? parsed.verify : null,
   };
 }
 

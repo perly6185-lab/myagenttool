@@ -9,13 +9,20 @@
 //   pnpm ai:eval-heldout -- --resolver command \
 //     --resolver-command-json '["node","tools/ai/src/evals/work-runner-resolver.mjs"]'
 //
-// Contract: reads the case as JSON on stdin, prints {changedFiles, notes} JSON
-// on stdout. Any diagnostics go to stderr so stdout stays machine-parseable.
+// Contract: reads the case as JSON on stdin, prints {changedFiles, notes,
+// verify} JSON on stdout. Any diagnostics go to stderr so stdout stays
+// machine-parseable.
+//
+// Behavior oracle: when the case carries oracle.verify, the probe command runs
+// inside the worktree BEFORE the agent (base run — fail-to-pass cases must fail
+// here) and again AFTER the agent; both exit codes are reported as
+// {baseStatus, status} and the judge applies the mode rules.
 //
 // Env:
 //   MYAGENTTOOL_CODING_ADAPTER    adapter name (default: mock — changes nothing)
 //   MYAGENTTOOL_HELDOUT_PROVIDER  code-plan provider (default: mock)
-//   MYAGENTTOOL_HELDOUT_BASE      base ref for the worktree (default: HEAD)
+//   MYAGENTTOOL_HELDOUT_BASE      base ref for the worktree (default: HEAD;
+//                                 a case-level `base` field wins)
 //   <adapter>_COMMAND_JSON        real adapter command, passed through untouched
 
 import { execFileSync, spawnSync } from "node:child_process";
@@ -69,6 +76,7 @@ function main() {
   // of the original fix commit so the fix is absent from the evaluated tree.
   const base = caseObj.base || process.env.MYAGENTTOOL_HELDOUT_BASE || "HEAD";
   const baseSha = git(["rev-parse", base]);
+  const verifyOracle = normalizeVerifyOracle(caseObj.oracle?.verify);
 
   const workParent = mkdtempSync(join(tmpdir(), "heldout-wt-"));
   const worktree = join(workParent, "repo");
@@ -77,6 +85,15 @@ function main() {
 
   try {
     git(["worktree", "add", "--detach", worktree, baseSha]);
+
+    // Base probe first: fail-to-pass cases must fail here, before the agent
+    // has touched anything. Recorded even for regression mode (informational).
+    let verify = null;
+    if (verifyOracle) {
+      const baseStatus = runVerifyProbe(verifyOracle, worktree);
+      verify = { baseStatus, status: null };
+      notes += `; verify base exit ${baseStatus}`;
+    }
 
     const runArgs = [
       resolve(repoRoot, "tools/ai/src/index.mjs"),
@@ -105,17 +122,45 @@ function main() {
     }
 
     const changedFiles = collectChangedFiles(worktree);
+    if (verifyOracle) {
+      verify.status = runVerifyProbe(verifyOracle, worktree);
+      notes += `; verify post exit ${verify.status}`;
+    }
     // Capture the branch work-runner created inside the worktree so we can delete
     // it after removal — git refuses to delete a branch checked out in a worktree,
     // and leaving it leaks a ref that collides with the next run's `git switch -c`.
     const runBranch = tryGit(["branch", "--show-current"], worktree);
-    process.stdout.write(JSON.stringify({ changedFiles, notes }));
+    process.stdout.write(JSON.stringify({ changedFiles, notes, verify }));
 
     cleanup(worktree, workParent, runBranch);
     cleaned = true;
   } finally {
     if (!cleaned) cleanup(worktree, workParent, tryGit(["branch", "--show-current"], worktree));
   }
+}
+
+function normalizeVerifyOracle(raw) {
+  if (!raw || typeof raw !== "object") return null;
+  const command = Array.isArray(raw.command) ? raw.command.map(String).filter(Boolean) : [];
+  if (command.length === 0) return null;
+  const timeoutMs = Number.isFinite(Number(raw.timeoutMs)) && Number(raw.timeoutMs) > 0 ? Number(raw.timeoutMs) : 120000;
+  return { command, timeoutMs };
+}
+
+// Run the behavior probe inside the worktree; the exit code is the signal.
+// A timeout or spawn failure counts as a non-zero exit, never a pass.
+function runVerifyProbe(verifyOracle, worktree) {
+  const [command, ...args] = verifyOracle.command;
+  const result = spawnSync(command, args, {
+    cwd: worktree,
+    env: { ...process.env, MYAGENTTOOL_REPO_ROOT: worktree },
+    encoding: "utf8",
+    timeout: verifyOracle.timeoutMs,
+    shell: false,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  if (result.error?.code === "ETIMEDOUT") return 124;
+  return result.status ?? 1;
 }
 
 // Union of modified/added tracked files and new untracked files (the adapter may
