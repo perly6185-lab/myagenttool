@@ -14,18 +14,12 @@
 //      briefs can run long; the baseline's only miss was a 180s timeout that
 //      passed cleanly on retry).
 
-import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { runClaudeCli } from "./claude-cli.mjs";
 
 function main() {
   const request = JSON.parse(readFileSync(0, "utf8"));
-  const cli = process.env.MYAGENTTOOL_CLAUDE_CLI ?? "claude";
-  const model = process.env.MYAGENTTOOL_CLAUDE_MODEL ?? "";
-  // Guard the coercion: Number("") is 0 (spawnSync reads 0 as "no timeout")
-  // and garbage is NaN (spawnSync throws) — both fall back to the default.
-  const timeoutRaw = Number(process.env.MYAGENTTOOL_CLAUDE_PROVIDER_TIMEOUT_MS);
-  const timeoutMs = Number.isFinite(timeoutRaw) && timeoutRaw > 0 ? timeoutRaw : 300000;
 
   const prompt = [
     request.systemPrompt ?? "",
@@ -38,27 +32,23 @@ function main() {
     JSON.stringify(request.schema?.schema ?? {}, null, 2),
   ].join("\n");
 
-  const args = ["-p", prompt, "--allowedTools", "Read"];
-  if (model) args.push("--model", model);
-
-  const run = spawnSync(cli, args, {
+  const run = runClaudeCli({
+    promptArgs: ["-p", prompt, "--allowedTools", "Read"],
     // Neutral cwd: structured generation needs no repo context, and running in
     // the repo makes the CLI load project config (sessions, MCP servers) —
     // an unauthenticated MCP connector there hangs startup past any timeout.
     cwd: tmpdir(),
-    encoding: "utf8",
-    timeout: timeoutMs,
-    stdio: ["ignore", "pipe", "pipe"],
-    env: process.env,
+    timeoutEnv: "MYAGENTTOOL_CLAUDE_PROVIDER_TIMEOUT_MS",
+    timeoutDefaultMs: 300000,
   });
-  if (run.error?.code === "ETIMEDOUT") {
-    throw new Error(`Claude provider timed out after ${timeoutMs}ms.`);
+  if (run.timedOut) {
+    throw new Error(`Claude provider timed out after ${run.timeoutMs}ms.`);
   }
   if (run.status !== 0) {
-    throw new Error(`Claude CLI exited ${run.status ?? "unknown"}: ${(run.stderr ?? "").slice(-400)}`);
+    throw new Error(`Claude CLI exited ${run.status ?? "unknown"}: ${run.stderr.slice(-400)}`);
   }
 
-  const parsed = extractJson(run.stdout ?? "");
+  const parsed = extractJson(run.stdout);
   process.stdout.write(JSON.stringify(parsed));
 }
 
