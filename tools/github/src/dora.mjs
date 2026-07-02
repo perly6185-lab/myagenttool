@@ -11,7 +11,7 @@
 // Elite reference thresholds (2024 DORA snapshot, directional — see
 // MATURITY_CALIBRATION.md): lead time < 1 day; deploy on-demand.
 
-export function computeDoraStats(mergedPrs, { days }) {
+export function computeDoraStats(mergedPrs, { days, checksReadable = true }) {
   const leadTimesHours = mergedPrs
     .map((pr) => (Date.parse(pr.mergedAt) - Date.parse(pr.createdAt)) / 3_600_000)
     .filter((hours) => Number.isFinite(hours) && hours >= 0)
@@ -27,11 +27,42 @@ export function computeDoraStats(mergedPrs, { days }) {
       max: leadTimesHours.at(-1) ?? null,
     },
     mergesPerWeek: round2(mergedPrs.length / weeks),
+    ciChecks: checksReadable
+      ? computeCiChecks(mergedPrs)
+      : { unavailable: "This token cannot read check runs (needs checks/statuses read permission)." },
     eliteReference: { leadTimeHoursMedian: 24, deployFrequency: "on-demand" },
     notInstrumented: {
       changeFailureRate: "Needs a deploy + incident/rollback signal; no production deploys exist yet.",
       failedDeploymentRecoveryTime: "Needs deploy failure timestamps; not measurable before a real deploy target.",
     },
+  };
+}
+
+// L2 gate: "CI+smoke green on ≥95% of merged PRs". A PR is green when it has
+// at least one check and every check ended successful (neutral/skipped count
+// as non-blocking). The denominator is ALL merged PRs — a PR that merged with
+// no checks at all is not green (CI simply never ran on it), which is exactly
+// the pre-activation gap this metric is meant to expose.
+export function computeCiChecks(mergedPrs) {
+  const judged = mergedPrs.map((pr) => {
+    const contexts = Array.isArray(pr.statusCheckRollup) ? pr.statusCheckRollup : [];
+    const verdicts = contexts.map((ctx) => String(ctx.conclusion ?? ctx.state ?? "").toUpperCase());
+    const hasChecks = verdicts.length > 0;
+    const green = hasChecks && verdicts.every((v) => ["SUCCESS", "NEUTRAL", "SKIPPED"].includes(v));
+    return { number: pr.number, hasChecks, green };
+  });
+  const total = judged.length;
+  const withChecks = judged.filter((pr) => pr.hasChecks).length;
+  const green = judged.filter((pr) => pr.green).length;
+  return {
+    mergedPrCount: total,
+    prsWithChecks: withChecks,
+    greenPrs: green,
+    greenRate: total === 0 ? null : Math.round((green / total) * 1000) / 1000,
+    gateTarget: 0.95,
+    gateMet: total > 0 && green / total >= 0.95,
+    ciActive: withChecks > 0,
+    redPrs: judged.filter((pr) => pr.hasChecks && !pr.green).map((pr) => pr.number),
   };
 }
 
@@ -48,6 +79,7 @@ export function formatDoraReport(stats, { repo }) {
     "| --- | --- | --- | --- |",
     `| Lead time for changes (PR created→merged) | ${leadCell} | < 24h median | ${lt.median === null ? "n/a" : meetsElite ? "meets" : "below"} |`,
     `| Deploy frequency (PROXY: merges to main) | ${stats.mergesPerWeek}/week | on-demand | proxy only |`,
+    formatCiChecksRow(stats.ciChecks),
     `| Change failure rate | not instrumented | ~5% | — |`,
     `| Failed deployment recovery time | not instrumented | < 1h | — |`,
     "",
@@ -56,6 +88,21 @@ export function formatDoraReport(stats, { repo }) {
     "docs/engineering/MATURITY_CALIBRATION.md for how these feed the L2/L3/L5 gates.",
     "",
   ].join("\n");
+}
+
+function formatCiChecksRow(ci) {
+  if (ci?.unavailable) {
+    return `| CI green on merged PRs (L2 gate) | not measurable (${ci.unavailable}) | ≥95% | — |`;
+  }
+  if (!ci || ci.mergedPrCount === 0) {
+    return "| CI green on merged PRs (L2 gate) | no merged PRs in window | ≥95% | n/a |";
+  }
+  if (!ci.ciActive) {
+    return `| CI green on merged PRs (L2 gate) | 0% (0/${ci.mergedPrCount} — CI not active; no PR carried check runs) | ≥95% | CI not active |`;
+  }
+  const noChecks = ci.mergedPrCount - ci.prsWithChecks;
+  const noChecksNote = noChecks > 0 ? `; ${noChecks} merged with no checks` : "";
+  return `| CI green on merged PRs (L2 gate) | ${(ci.greenRate * 100).toFixed(1)}% (${ci.greenPrs}/${ci.mergedPrCount}${noChecksNote}) | ≥95% | ${ci.gateMet ? "meets" : "below"} |`;
 }
 
 export function doraSelfCheck() {
@@ -72,6 +119,20 @@ export function doraSelfCheck() {
   if (!stats.notInstrumented.changeFailureRate) failures.push("change failure rate must be reported as not instrumented");
   const empty = computeDoraStats([], { days: 30 });
   if (empty.leadTimeHours.median !== null) failures.push("empty window must report null lead time, not a fake number");
+
+  // L2 ci-green gate: green + red + no-checks PRs → 1/3 green, CI active.
+  const ci = computeCiChecks([
+    { number: 1, statusCheckRollup: [{ conclusion: "SUCCESS" }, { state: "SUCCESS" }] },
+    { number: 2, statusCheckRollup: [{ conclusion: "SUCCESS" }, { conclusion: "FAILURE" }] },
+    { number: 3 }, // merged with no checks — counts against the rate
+  ]);
+  if (ci.greenRate !== 0.333) failures.push(`ci green rate expected 0.333, got ${ci.greenRate}`);
+  if (ci.gateMet) failures.push("1/3 green must not meet the ≥95% gate");
+  if (!ci.ciActive || ci.prsWithChecks !== 2) failures.push("ci activity detection is wrong");
+  const inactive = computeCiChecks([{ number: 1 }, { number: 2 }]);
+  if (inactive.ciActive || inactive.greenRate !== 0) {
+    failures.push("all-unchecked PRs must read as CI-not-active with a 0 rate, not a fake pass");
+  }
   return failures;
 }
 
