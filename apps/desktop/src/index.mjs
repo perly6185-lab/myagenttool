@@ -1271,9 +1271,12 @@ function usesGovernedReviewWrapper(tool, args) {
     : tool === "claude.review.diff"
       ? "claude-review-wrapper.mjs"
       : null;
+  // Require the full canonical directory segment, not just the basename — a
+  // bare-basename match would let a script at an arbitrary path
+  // (…/evil/codex-review-wrapper.mjs) receive the injected governed flags.
+  // This mirrors the server-side governed-agent gate.
   return Boolean(wrapper) && args.some((arg) => {
-    const normalized = String(arg).replaceAll("\\", "/");
-    return normalized.endsWith(`tools/agents/${wrapper}`) || normalized.endsWith(wrapper);
+    return String(arg).replaceAll("\\", "/").endsWith(`tools/agents/${wrapper}`);
   });
 }
 

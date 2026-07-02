@@ -35,7 +35,7 @@ export const CLAUDE_REVIEW_TOOL_CONTRACT = {
     "worktree_not_found",
     "invalid_severity_floor",
     "instruction_too_long",
-    "agent_not_governed",
+    "agent_not_available",
   ],
 };
 
@@ -95,7 +95,14 @@ function isExactGovernedReviewWrapperArgs(args, wrapperName) {
   if (args.length !== 3) {
     return false;
   }
-  return args[0].replaceAll("\\", "/").endsWith(wrapperName)
+  // Require the full canonical directory segment, not just the basename. A
+  // bare-basename match (`endsWith(wrapperName)`) would also accept an
+  // attacker-controlled script at an arbitrary location whose filename ends
+  // with the wrapper name (e.g. /tmp/evil/claude-review-wrapper.mjs), which a
+  // forged/overriding agent registration could point the governed tool at —
+  // turning the "governed" facade into arbitrary local execution. The wrapper
+  // is registered as an absolute path, so match the trailing repo path.
+  return args[0].replaceAll("\\", "/").endsWith(`tools/agents/${wrapperName}`)
     && args[1] === "--mode"
     && args[2] === "diff-review";
 }

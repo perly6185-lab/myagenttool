@@ -5,6 +5,7 @@ import { createCcusageAgentRegistration } from "../../apps/server/src/services/c
 import { createClaudeReviewAgentRegistration } from "../../apps/server/src/services/claude-agent.mjs";
 import { createCodexReviewAgentRegistration } from "../../apps/server/src/services/codex-agent.mjs";
 import { createToolService } from "../../apps/server/src/services/tools.mjs";
+import { handleToolRoutes } from "../../apps/server/src/routes/tools.mjs";
 
 const fixturePath = resolve("docs/engineering/fixtures/tool-registry-contract.v1.json");
 const fixture = JSON.parse(readFileSync(fixturePath, "utf8"));
@@ -170,7 +171,48 @@ assert(fixture.tools["codex.review.diff"].stableErrorCodes.includes("project_not
 assert(fixture.tools["claude.review.diff"].stableErrorCodes.includes("project_not_found"), "claude.review.diff fixture should include route-level project guard errors");
 ok("facade validation errors are listed in the fixture");
 
+// The `project_not_found` guard is emitted only by the HTTP route
+// (denyForeignProject), never by the service layer. Assert it against the real
+// route so a rename/removal fails this smoke instead of silently drifting from
+// the fixture the external consumer relies on.
+for (const toolName of Object.keys(fixture.tools)) {
+  const response = await runToolRoute({
+    method: "POST",
+    pathname: `/api/tools/${toolName}/invocations`,
+    body: { ...(fixture.tools[toolName].exampleInput ?? {}), projectId: "prj_foreign" },
+    actor: { userId: "usr_local", teamId: "team_local" },
+  });
+  assert.equal(response.status, 404, `${toolName} route should reject a foreign projectId`);
+  assert.equal(response.body.error, "project_not_found", `${toolName} route should emit project_not_found`);
+  assert(
+    fixture.tools[toolName].stableErrorCodes.includes(response.body.error),
+    `${toolName} route emitted ${response.body.error}, absent from the fixture contract`,
+  );
+}
+ok("route-level project guard emits project_not_found (contract enforced against runtime)");
+
 console.log(`\ntool-registry-contract-smoke: ${passed} checks passed`);
+
+async function runToolRoute({ method, pathname, body, actor }) {
+  const captured = { status: null, body: null };
+  const handled = await handleToolRoutes({
+    req: { method },
+    res: {},
+    url: { pathname },
+    sendJson: (_res, status, payload) => {
+      captured.status = status;
+      captured.body = payload;
+    },
+    readJson: async () => body,
+    state,
+    actor,
+    listTools: service.listTools,
+    getTool: service.getTool,
+    createToolInvocation: service.createToolInvocation,
+  });
+  assert(handled, `route did not handle ${method} ${pathname}`);
+  return captured;
+}
 
 function assertDescriptorMatchesFixture(descriptor, spec) {
   for (const field of fixture.descriptorRequiredFields) {

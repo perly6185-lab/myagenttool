@@ -81,7 +81,11 @@ function parseArgs(args) {
 
 function requireValue(args, index, name) {
   const value = args[index];
-  if (!value || value.startsWith("--")) fail(`Missing value for ${name}.`);
+  // Only a genuinely absent value (end of argv) is an error. Do not reject a
+  // value that starts with "--": a review --instruction can legitimately begin
+  // with dashes (e.g. "--focus on the auth path"), and the flags are paired by
+  // the trusted Desktop Bridge, so the following token is always the value.
+  if (value === undefined) fail(`Missing value for ${name}.`);
   return value;
 }
 

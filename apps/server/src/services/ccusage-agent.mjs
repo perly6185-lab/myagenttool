@@ -73,10 +73,16 @@ export const CCUSAGE_TOOL_CONTRACT = {
     },
   },
   errorCodes: [
+    "invalid_input",
+    "unknown_field",
+    "project_required",
     "unsupported_report",
+    "unsupported_source",
+    "source_report_mismatch",
     "invalid_date_filter",
-    "online_requires_approval",
-    "agent_not_governed",
+    "invalid_timezone",
+    "approval_required",
+    "agent_not_available",
   ],
 };
 
