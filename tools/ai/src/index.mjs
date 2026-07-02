@@ -801,10 +801,9 @@ function check() {
     fail("Sub-capability set sanity check failed: expected at least 3 issue-gate cases.");
   }
   for (const caseObj of subcapGateCases) {
-    const tree = issueTreeFromBrief(caseObj.brief);
-    const blocked = issueTreeApplyFailures(tree, caseObj.approval).some((failure) => failure.toLowerCase().includes("human approval"));
-    if (blocked !== caseObj.oracle.expectBlocked) {
-      fail(`Sub-capability gate sanity check failed: ${caseObj.id} expected ${caseObj.oracle.expectBlocked ? "blocked" : "allowed"} but gate ${blocked ? "blocked" : "allowed"}.`);
+    const verdict = subcapGateVerdict(caseObj);
+    if (verdict.blocked !== caseObj.oracle.expectBlocked) {
+      fail(`Sub-capability gate sanity check failed: ${caseObj.id} expected ${caseObj.oracle.expectBlocked ? "blocked" : "allowed"} but gate ${verdict.blocked ? "blocked" : "allowed"}.`);
     }
   }
 
@@ -832,41 +831,35 @@ async function evalHeldout(args) {
   const setArg = option(args, "--set") ?? "tools/ai/evals/heldout";
   const setDir = resolve(repoRoot, setArg);
   const resolverName = (option(args, "--resolver") ?? "mock").toLowerCase();
+  // Validate the threshold BEFORE the run — a real-agent eval is minutes of
+  // paid model calls, and a malformed flag must not waste it.
+  const minPassRate = parseMinPassRate(args);
   const cases = loadHeldoutSet(setDir);
   const resolver = buildHeldoutResolver(resolverName, args);
 
   const summary = await evaluateHeldoutSet({ cases, resolver });
   const report = formatHeldoutReport(summary, { setDir: setArg, resolverName });
-
-  const runId = `${new Date().toISOString().replace(/[:.]/g, "-")}-heldout`;
-  const evalDir = resolve(repoRoot, ".myagenttool/evals", runId);
-  mkdirSync(evalDir, { recursive: true });
-  writeFileSync(resolve(evalDir, "heldout-eval.json"), `${JSON.stringify(summary, null, 2)}\n`, "utf8");
-  writeFileSync(resolve(evalDir, "heldout-eval.md"), report, "utf8");
+  const runId = writeEvalEvidence("heldout", summary, report);
 
   writeOrPrint(args.includes("--json") ? `${JSON.stringify(summary, null, 2)}\n` : report, option(args, "--out"));
   // Status to stderr so --json/--out stdout stays clean for machine parsing.
   console.error(`Held-out pass rate ${(summary.passRate * 100).toFixed(1)}% (${summary.resolved}/${summary.total}). Evidence: .myagenttool/evals/${runId}/`);
 
-  const minRaw = option(args, "--min-pass-rate");
-  if (minRaw !== undefined) {
-    const min = Number(minRaw);
-    if (!Number.isFinite(min) || min < 0 || min > 1) {
-      fail(`--min-pass-rate must be a number between 0 and 1. Got: ${minRaw}`);
-    }
-    if (summary.passRate < min) {
-      fail(`Held-out pass rate ${(summary.passRate * 100).toFixed(1)}% is below the required ${(min * 100).toFixed(1)}%.`);
-    }
-  }
+  enforceMinPassRate(minPassRate, summary.passRate, "Held-out");
 }
 
 async function evalSubcap(args) {
   const setArg = option(args, "--set") ?? "tools/ai/evals/subcap";
   const setDir = resolve(repoRoot, setArg);
-  const provider = (option(args, "--provider") ?? "mock").toLowerCase();
+  // Same precedence as resolveProvider (flag, then env) so the env-var style
+  // that drives every other command is not silently shadowed by a mock default.
+  const provider = (option(args, "--provider") ?? process.env.MYAGENTTOOL_AI_PROVIDER ?? "mock").toLowerCase();
+  // Validate the threshold BEFORE the run — a real-provider eval is minutes of
+  // paid model calls, and a malformed flag must not waste it.
+  const minPassRate = parseMinPassRate(args);
   const cases = loadSubcapSet(setDir);
 
-  const providerArgs = args.includes("--provider") ? args : [...args, "--provider", provider];
+  const providerArgs = option(args, "--provider") ? args : [...args, "--provider", provider];
   const summary = await evaluateSubcapSet({
     cases,
     pmRunner: (caseObj) => runStructuredAgent({
@@ -881,23 +874,12 @@ async function evalSubcap(args) {
       ].join("\n"),
       userPrompt: caseObj.idea,
     }),
-    gateRunner: (caseObj) => {
-      const tree = issueTreeFromBrief(caseObj.brief);
-      const failures = issueTreeApplyFailures(tree, caseObj.approval);
-      return {
-        blocked: failures.some((failure) => failure.toLowerCase().includes("human approval")),
-        reasons: humanApprovalRequiredReasons(tree),
-      };
-    },
+    gateRunner: subcapGateVerdict,
+    briefGateReasons: (brief) => humanApprovalRequiredReasons(issueTreeFromBrief(brief)),
   });
 
   const report = formatSubcapReport(summary, { setDir: setArg, provider });
-  const runId = `${new Date().toISOString().replace(/[:.]/g, "-")}-subcap`;
-  const evalDir = resolve(repoRoot, ".myagenttool/evals", runId);
-  mkdirSync(evalDir, { recursive: true });
-  writeFileSync(resolve(evalDir, "subcap-eval.json"), `${JSON.stringify(summary, null, 2)}\n`, "utf8");
-  writeFileSync(resolve(evalDir, "subcap-eval.md"), report, "utf8");
-
+  const runId = writeEvalEvidence("subcap", summary, report);
   writeOrPrint(args.includes("--json") ? `${JSON.stringify(summary, null, 2)}\n` : report, option(args, "--out"));
   console.error(`Sub-capability pass rate ${(summary.passRate * 100).toFixed(1)}% (${summary.resolved}/${summary.total}). Evidence: .myagenttool/evals/${runId}/`);
 
@@ -905,16 +887,46 @@ async function evalSubcap(args) {
   if (gate && gate.resolved < gate.total) {
     fail(`issue-gate cases must pass 100% (product gate regression): ${gate.resolved}/${gate.total}.`);
   }
+  enforceMinPassRate(minPassRate, summary.passRate, "Sub-capability");
+}
+
+// One shared verdict for the issue-gate cases, used by both eval-subcap and
+// the check() sanity so the two can never drift. Blocked detection matches
+// the tree-level failure by its literal prefix — per-issue failures are
+// title-interpolated, so a title containing "human approval" cannot forge it.
+function subcapGateVerdict(caseObj) {
+  const tree = issueTreeFromBrief(caseObj.brief);
+  const failures = issueTreeApplyFailures(tree, caseObj.approval);
+  return {
+    blocked: failures.some((failure) => failure.startsWith("human approval is required")),
+    reasons: humanApprovalRequiredReasons(tree),
+  };
+}
+
+function parseMinPassRate(args) {
   const minRaw = option(args, "--min-pass-rate");
-  if (minRaw !== undefined) {
-    const min = Number(minRaw);
-    if (!Number.isFinite(min) || min < 0 || min > 1) {
-      fail(`--min-pass-rate must be a number between 0 and 1. Got: ${minRaw}`);
-    }
-    if (summary.passRate < min) {
-      fail(`Sub-capability pass rate ${(summary.passRate * 100).toFixed(1)}% is below the required ${(min * 100).toFixed(1)}%.`);
-    }
+  if (minRaw === undefined) return null;
+  const min = Number(minRaw);
+  if (!Number.isFinite(min) || min < 0 || min > 1) {
+    fail(`--min-pass-rate must be a number between 0 and 1. Got: ${minRaw}`);
   }
+  return min;
+}
+
+function enforceMinPassRate(min, passRate, label) {
+  if (min === null) return;
+  if (passRate < min) {
+    fail(`${label} pass rate ${(passRate * 100).toFixed(1)}% is below the required ${(min * 100).toFixed(1)}%.`);
+  }
+}
+
+function writeEvalEvidence(tag, summary, report) {
+  const runId = `${new Date().toISOString().replace(/[:.]/g, "-")}-${tag}`;
+  const evalDir = resolve(repoRoot, ".myagenttool/evals", runId);
+  mkdirSync(evalDir, { recursive: true });
+  writeFileSync(resolve(evalDir, `${tag}-eval.json`), `${JSON.stringify(summary, null, 2)}\n`, "utf8");
+  writeFileSync(resolve(evalDir, `${tag}-eval.md`), report, "utf8");
+  return runId;
 }
 
 function buildHeldoutResolver(name, args) {

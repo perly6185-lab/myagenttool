@@ -38,7 +38,10 @@ function main() {
 
   const cli = process.env.MYAGENTTOOL_CLAUDE_CLI ?? "claude";
   const model = process.env.MYAGENTTOOL_CLAUDE_MODEL ?? "";
-  const timeoutMs = Number(process.env.MYAGENTTOOL_CLAUDE_TIMEOUT_MS ?? 600000);
+  // Guard the coercion: Number("") is 0 (spawnSync reads 0 as "no timeout")
+  // and garbage is NaN (spawnSync throws) — both fall back to the default.
+  const timeoutRaw = Number(process.env.MYAGENTTOOL_CLAUDE_TIMEOUT_MS);
+  const timeoutMs = Number.isFinite(timeoutRaw) && timeoutRaw > 0 ? timeoutRaw : 600000;
 
   const prompt = [
     `You are working in a git worktree of this repository (possibly at a past commit). Implement the following change.`,

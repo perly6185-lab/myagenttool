@@ -6,7 +6,7 @@
 // single schema-conformant JSON object on stdout. No tools are needed — this
 // is a pure structured-generation call. Wire it up with an ABSOLUTE path:
 //
-//   MYAGENTTOOL_AI_COMMAND="node $PWD/tools/ai/src/evals/claude-provider.mjs" \
+//   MYAGENTTOOL_AI_COMMAND="node \"$PWD/tools/ai/src/evals/claude-provider.mjs\"" \
 //   pnpm ai:eval-subcap -- --provider command
 //
 // Env: MYAGENTTOOL_CLAUDE_CLI (default "claude"), MYAGENTTOOL_CLAUDE_MODEL,
@@ -22,7 +22,10 @@ function main() {
   const request = JSON.parse(readFileSync(0, "utf8"));
   const cli = process.env.MYAGENTTOOL_CLAUDE_CLI ?? "claude";
   const model = process.env.MYAGENTTOOL_CLAUDE_MODEL ?? "";
-  const timeoutMs = Number(process.env.MYAGENTTOOL_CLAUDE_PROVIDER_TIMEOUT_MS ?? 300000);
+  // Guard the coercion: Number("") is 0 (spawnSync reads 0 as "no timeout")
+  // and garbage is NaN (spawnSync throws) — both fall back to the default.
+  const timeoutRaw = Number(process.env.MYAGENTTOOL_CLAUDE_PROVIDER_TIMEOUT_MS);
+  const timeoutMs = Number.isFinite(timeoutRaw) && timeoutRaw > 0 ? timeoutRaw : 300000;
 
   const prompt = [
     request.systemPrompt ?? "",
@@ -59,15 +62,30 @@ function main() {
   process.stdout.write(JSON.stringify(parsed));
 }
 
-// Models occasionally wrap JSON in fences or prose despite instructions; take
-// the outermost object literal rather than failing on cosmetic wrapping.
+// Models occasionally wrap JSON in fences or prose despite instructions. Try
+// the clean forms first; the greedy outermost-brace slice is the last resort
+// (it breaks when prose outside the object also contains braces).
 function extractJson(text) {
-  const start = text.indexOf("{");
-  const end = text.lastIndexOf("}");
-  if (start === -1 || end === -1 || end <= start) {
-    throw new Error(`Claude output contained no JSON object: ${text.slice(0, 200)}`);
+  const trimmed = String(text ?? "").trim();
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    /* fall through */
   }
-  return JSON.parse(text.slice(start, end + 1));
+  const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/);
+  if (fenced) {
+    try {
+      return JSON.parse(fenced[1].trim());
+    } catch {
+      /* fall through */
+    }
+  }
+  const start = trimmed.indexOf("{");
+  const end = trimmed.lastIndexOf("}");
+  if (start === -1 || end === -1 || end <= start) {
+    throw new Error(`Claude output contained no JSON object: ${trimmed.slice(0, 200)}`);
+  }
+  return JSON.parse(trimmed.slice(start, end + 1));
 }
 
 try {

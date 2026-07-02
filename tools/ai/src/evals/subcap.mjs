@@ -32,13 +32,22 @@ export function validateSubcapCase(raw, source) {
   if (raw.kind === "pm-brief") {
     if (!isNonEmptyString(raw.idea)) throw new Error(`pm-brief case ${raw.id} needs an idea${where}.`);
     const oracle = raw.oracle ?? {};
+    // typeof guard, not Number(): Number(null)/""/false coerce to 0 and would
+    // silently replace the documented default of 1 with "no minimum".
+    const minAcceptanceCriteria = typeof oracle.minAcceptanceCriteria === "number" && Number.isFinite(oracle.minAcceptanceCriteria)
+      ? oracle.minAcceptanceCriteria
+      : 1;
     return {
       id: raw.id,
       kind: raw.kind,
       idea: raw.idea,
       oracle: {
         requiredRiskFlags: stringArray(oracle.requiredRiskFlags).map((flag) => flag.toLowerCase()),
-        minAcceptanceCriteria: Number.isFinite(Number(oracle.minAcceptanceCriteria)) ? Number(oracle.minAcceptanceCriteria) : 1,
+        // Product-gate categories (exact strings from humanApprovalRequiredReasons)
+        // the brief must trigger when run through the REAL issue gate — demands
+        // exactly what the product gates on, immune to wording variation.
+        requiredGateReasons: stringArray(oracle.requiredGateReasons),
+        minAcceptanceCriteria,
         allowedRiskLevels: stringArray(oracle.allowedRiskLevels).map((level) => level.toLowerCase()),
       },
     };
@@ -79,10 +88,12 @@ export function loadSubcapSet(dir) {
   return cases;
 }
 
-// PM-brief oracle: structural completeness + risk classification. Substring
-// matching on risk flags is deliberate — the oracle demands the RISK be named
-// (e.g. "billing"), not any particular wording around it.
-export function judgePmBrief(caseObj, brief) {
+// PM-brief oracle: structural completeness + risk classification. The primary
+// risk check is `requiredGateReasons`: the brief is run through the real
+// product issue gate and must trigger the named categories — so the eval
+// demands exactly what the product gates on. `requiredRiskFlags` substring
+// matching remains as a weaker secondary for cases with no gate category.
+export function judgePmBrief(caseObj, brief, { gateReasons = [] } = {}) {
   if (!brief || typeof brief !== "object") {
     return { id: caseObj.id, kind: caseObj.kind, resolved: false, reason: "Provider returned no brief object." };
   }
@@ -94,6 +105,11 @@ export function judgePmBrief(caseObj, brief) {
   const criteria = stringArray(brief.acceptanceCriteria);
   if (criteria.length < caseObj.oracle.minAcceptanceCriteria) {
     problems.push(`acceptanceCriteria ${criteria.length} < required ${caseObj.oracle.minAcceptanceCriteria}`);
+  }
+  for (const reason of caseObj.oracle.requiredGateReasons) {
+    if (!gateReasons.includes(reason)) {
+      problems.push(`brief does not trigger the product gate category "${reason}" (triggered: ${gateReasons.join(", ") || "none"})`);
+    }
   }
   const riskText = stringArray(brief.riskFlags).join("\n").toLowerCase();
   for (const flag of caseObj.oracle.requiredRiskFlags) {
@@ -132,15 +148,19 @@ export function judgeIssueGate(caseObj, gateResult) {
   };
 }
 
-export async function evaluateSubcapSet({ cases, pmRunner, gateRunner }) {
+export async function evaluateSubcapSet({ cases, pmRunner, gateRunner, briefGateReasons }) {
   if (typeof pmRunner !== "function" || typeof gateRunner !== "function") {
     throw new Error("evaluateSubcapSet requires pmRunner and gateRunner functions.");
+  }
+  if (typeof briefGateReasons !== "function") {
+    throw new Error("evaluateSubcapSet requires a briefGateReasons function (brief -> product gate categories).");
   }
   const results = [];
   for (const caseObj of cases) {
     try {
       if (caseObj.kind === "pm-brief") {
-        results.push(judgePmBrief(caseObj, await pmRunner(caseObj)));
+        const brief = await pmRunner(caseObj);
+        results.push(judgePmBrief(caseObj, brief, { gateReasons: brief && typeof brief === "object" ? briefGateReasons(brief) : [] }));
       } else {
         results.push(judgeIssueGate(caseObj, await gateRunner(caseObj)));
       }
