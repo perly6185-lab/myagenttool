@@ -1,0 +1,15 @@
+{
+  "id": "hb-003-tenancy-matrix",
+  "issue": "sim-3",
+  "title": "Record a new route in the tenancy route matrix",
+  "spec": "Add a row to docs/engineering/TENANCY_ROUTE_MATRIX.md for a newly guarded route.",
+  "risk": "low",
+  "oracle": {
+    "expectedFiles": ["docs/engineering/TENANCY_ROUTE_MATRIX.md"],
+    "forbiddenFiles": ["apps/", "packages/", "tools/"]
+  },
+  "mock": {
+    "changedFiles": ["docs/engineering/TENANCY_ROUTE_MATRIX.md"],
+    "note": "Mock stands in for a resolver that correctly edits only the matrix doc."
+  }
+}
