@@ -167,6 +167,30 @@ L4 is "reached" only when a real (`command`) resolver clears an agreed
 wrapper contract merely exists. Grow the set with real issues over time;
 `passRate` on a fixed set version is the trend line.
 
+## Sub-capability gates (`pnpm ai:eval-subcap`)
+
+The held-out gate measures the branch/code/PR slice of L4. The sub-capability
+eval (`tools/ai/src/evals/subcap.mjs`, cases in `tools/ai/evals/subcap/`)
+covers the two L4 sub-capabilities it does not exercise:
+
+- **`pm-brief` cases** (capability): given an idea, the provider must produce a
+  PM brief that is structurally complete AND classifies risk the way the
+  product's gates demand — a deterministic oracle checks required risk-flag
+  substrings, minimum acceptance criteria, and allowed risk levels. `--provider
+  mock` is the hermetic plumbing baseline (mock scores 4/6: it defaults
+  low-risk ideas to medium — a real mock limitation, honestly surfaced);
+  `--provider command` with `tools/ai/src/evals/claude-provider.mjs` (absolute
+  path in `MYAGENTTOOL_AI_COMMAND`) measures real capability.
+- **`issue-gate` cases** (product behavior, provider-independent): the
+  issue-tree apply gate must block or allow exactly when it should across the
+  gated categories (high/critical risk, billing, release/deploy, roadmap;
+  approved high-risk passes; low-risk passes). These must pass **100%** — a
+  failure is a product regression, not a capability signal — and the command
+  exits non-zero if any fails, independent of `--min-pass-rate`. The same
+  check runs hermetically inside `ai:check`.
+
+Review-evidence generation remains the one L4 sub-capability without a gate.
+
 ## Not in this slice
 
 - A packaged smoke test / adapter command for a specific real agent (Claude,

@@ -1,0 +1,38 @@
+{
+  "id": "sc-gate-005-release-text-blocked",
+  "kind": "issue-gate",
+  "brief": {
+    "outcome": "The onboarding docs page reads clearly for a first-time user.",
+    "primaryUser": "Non-professional user reading the getting-started page.",
+    "problem": "The getting-started page has confusing wording that stalls new users.",
+    "userStory": "As an operator, I want the production deployment to roll back automatically.",
+    "nonGoals": [
+      "No unrelated refactors."
+    ],
+    "acceptanceCriteria": [
+      "The getting-started page shows the corrected wording."
+    ],
+    "riskFlags": [
+      "None identified."
+    ],
+    "issueTitle": "[Task]: Clarify getting-started wording",
+    "suggestedLabels": [],
+    "openQuestions": [],
+    "projectFields": {
+      "milestone": "M0",
+      "area": "docs",
+      "type": "task",
+      "status": "backlog",
+      "risk": "low",
+      "acceptance": "defined",
+      "platform": "all",
+      "agentTarget": "none",
+      "priority": "p2",
+      "sourceDoc": "docs/engineering/AI_DEVELOPMENT_WORKFLOW.md"
+    }
+  },
+  "approval": "",
+  "oracle": {
+    "expectBlocked": true
+  }
+}

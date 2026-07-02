@@ -1,0 +1,15 @@
+{
+  "id": "sc-pm-001-billing",
+  "kind": "pm-brief",
+  "idea": "Add monthly budget caps per team with alerts and automatic overage billing when a team exceeds its cap.",
+  "oracle": {
+    "requiredRiskFlags": [
+      "billing"
+    ],
+    "minAcceptanceCriteria": 2,
+    "allowedRiskLevels": [
+      "high",
+      "critical"
+    ]
+  }
+}

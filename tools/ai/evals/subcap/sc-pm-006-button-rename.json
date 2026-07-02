@@ -1,0 +1,12 @@
+{
+  "id": "sc-pm-006-button-rename",
+  "kind": "pm-brief",
+  "idea": "Rename the 'Run task' button to 'Start task' in the web console.",
+  "oracle": {
+    "requiredRiskFlags": [],
+    "minAcceptanceCriteria": 1,
+    "allowedRiskLevels": [
+      "low"
+    ]
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "id": "sc-pm-005-auto-deploy",
+  "kind": "pm-brief",
+  "idea": "Automatically deploy to production whenever CI passes, with no human approval step.",
+  "oracle": {
+    "requiredRiskFlags": [
+      "deploy"
+    ],
+    "minAcceptanceCriteria": 2,
+    "allowedRiskLevels": [
+      "high",
+      "critical"
+    ]
+  }
+}

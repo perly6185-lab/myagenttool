@@ -1,0 +1,38 @@
+{
+  "id": "sc-gate-004-billing-flag-blocked",
+  "kind": "issue-gate",
+  "brief": {
+    "outcome": "The onboarding docs page reads clearly for a first-time user.",
+    "primaryUser": "Non-professional user reading the getting-started page.",
+    "problem": "The getting-started page has confusing wording that stalls new users.",
+    "userStory": "As a new user, I want clear getting-started wording so that I finish setup unaided.",
+    "nonGoals": [
+      "No unrelated refactors."
+    ],
+    "acceptanceCriteria": [
+      "The getting-started page shows the corrected wording."
+    ],
+    "riskFlags": [
+      "Touches billing data for overage charges."
+    ],
+    "issueTitle": "[Task]: Clarify getting-started wording",
+    "suggestedLabels": [],
+    "openQuestions": [],
+    "projectFields": {
+      "milestone": "M0",
+      "area": "docs",
+      "type": "task",
+      "status": "backlog",
+      "risk": "low",
+      "acceptance": "defined",
+      "platform": "all",
+      "agentTarget": "none",
+      "priority": "p2",
+      "sourceDoc": "docs/engineering/AI_DEVELOPMENT_WORKFLOW.md"
+    }
+  },
+  "approval": "",
+  "oracle": {
+    "expectBlocked": true
+  }
+}
