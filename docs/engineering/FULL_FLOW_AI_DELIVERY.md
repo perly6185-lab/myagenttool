@@ -252,7 +252,7 @@ Needed:
 | L1 | Issues and Project exist | Measured 2026-07-02: label coverage 87.5%, milestone 75% (`pnpm github:backlog`) — gate is 100% |
 | L2 | Branch, PR, CI, and smoke tests work | Measured 2026-07-02: median PR lead time 0.02h, 17 merges/week (`pnpm github:dora`); CI gate on main still off |
 | L3 | Governance checks and Project drift checks work | Mostly complete (qualitative — no numeric gate measured yet) |
-| L4 | AI can create PM brief, issue, branch, code, PR, and review evidence | **Measured 2026-07-02: 87.5% (7/8) held-out pass rate** with the Claude Code CLI (`pnpm ai:eval-heldout`, file-level oracle) |
+| L4 | AI can create PM brief, issue, branch, code, PR, and review evidence | **Measured 2026-07-02: 87.5% (7/8) held-out pass rate** with the Claude Code CLI (8-case snapshot, file-level oracle; measures the branch/code/PR slice — PM-brief and issue-creation apply mode are NOT exercised by this gate) |
 | L5 | Human-approved merge and release can be generated with rollback notes | Partially complete |
 | L6 | Feedback automatically becomes tracked bugs/risks/roadmap updates | Not complete |
 
@@ -263,9 +263,11 @@ the L4 harness is documented in [L4_HELDOUT_EVAL.md](L4_HELDOUT_EVAL.md).
 Current target:
 
 ```text
-Hold the L4 held-out pass rate at or above the gate (--min-pass-rate 0.6,
-baseline 87.5%) while the set grows and behavior probes tighten, and close the
-L1 coverage gaps to 100%.
+Hold the L4 held-out pass rate at or above the gate (--min-pass-rate 0.6;
+baseline 87.5% on the 8-case snapshot) while the set grows and behavior probes
+tighten; close the L1 coverage gaps to 100%; and extend measurement to the L4
+sub-capabilities the held-out gate does not exercise (PM brief quality,
+issue-creation apply mode, review-evidence generation).
 ```
 
 M0 closeout is recorded in [AI_DELIVERY_CLOSEOUT.md](AI_DELIVERY_CLOSEOUT.md).

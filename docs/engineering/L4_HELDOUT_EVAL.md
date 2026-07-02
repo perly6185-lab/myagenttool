@@ -80,7 +80,7 @@ evidence). It never touches the caller's checkout, branch, or other worktrees.
 # is checked out at an old ref that may predate the adapter script.
 MYAGENTTOOL_CODING_ADAPTER=claude \
 MYAGENTTOOL_CLAUDE_COMMAND_JSON="[\"node\",\"$PWD/tools/ai/src/evals/claude-adapter.mjs\"]" \
-MYAGENTTOOL_CLAUDE_TIMEOUT_MS=300000 \
+MYAGENTTOOL_CLAUDE_TIMEOUT_MS=600000 \
 pnpm ai:eval-heldout -- --set tools/ai/evals/heldout-real --resolver command \
   --resolver-command-json '["node","tools/ai/src/evals/work-runner-resolver.mjs"]' \
   --min-pass-rate 0.5
@@ -122,8 +122,9 @@ scope-check — is what judges the case.
 
 Two sets exist:
 
-- `tools/ai/evals/heldout/` — the **seed synthetic set** (4 cases, one
-  intentionally unsolved). Drives the hermetic `ai:check` sanity; mock rate 75%.
+- `tools/ai/evals/heldout/` — the **seed synthetic set** (6 cases: one
+  intentionally unsolved, one intentionally-vacuous verify probe). Drives the
+  hermetic `ai:check` sanity; mock rate 4/6 ≈ 66.7%.
 - `tools/ai/evals/heldout-real/` — the **real set**: 8 cases mined from this
   repo's git history. Each case's `base` pins the resolver's worktree to the
   **parent of the original fix commit**, so the fix is absent from the tree the
@@ -155,9 +156,9 @@ Cases are one JSON file each:
 
 **Keep at least one intentionally-unsolved case** (empty or wrong
 `mock.changedFiles`). `ai:check` fails if the mock pass rate is 0% (harness
-broken) or 100% (set no longer tests a real gap). The seed set is 4 cases with
-one unsolved, so the mock rate is 75% — a deliberately honest, non-degenerate
-baseline.
+broken) or 100% (set no longer tests a real gap). The seed set keeps two cases
+deliberately unresolved (an unsolved case and a vacuous-probe case), so the
+mock rate stays a non-degenerate baseline (currently 4/6 ≈ 66.7%).
 
 ## How this feeds the maturity gate
 

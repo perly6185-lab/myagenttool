@@ -87,9 +87,13 @@ function validateDifficulty(id, raw, where) {
 
 function normalizeVerifyResult(raw) {
   if (raw === undefined || raw === null || typeof raw !== "object") return null;
-  const baseStatus = Number.isFinite(Number(raw.baseStatus)) ? Number(raw.baseStatus) : null;
-  const status = Number.isFinite(Number(raw.status)) ? Number(raw.status) : null;
-  return { baseStatus, status };
+  return { baseStatus: exitCodeOrNull(raw.baseStatus), status: exitCodeOrNull(raw.status) };
+}
+
+// Strict: only an actual number counts as an exit code. Number(null) is 0, so
+// a loose coercion would turn "probe never ran" into "probe passed".
+function exitCodeOrNull(value) {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
 export function loadHeldoutSet(dir) {
@@ -176,7 +180,17 @@ export async function evaluateHeldoutSet({ cases, resolver }) {
     try {
       resolution = await resolver(caseObj);
     } catch (error) {
-      results.push({ id: caseObj.id, resolved: false, reason: `Resolver threw: ${error.message}`, changedFiles: [], missing: caseObj.oracle.expectedFiles, violated: [] });
+      results.push({
+        id: caseObj.id,
+        resolved: false,
+        reason: `Resolver threw: ${error.message}`,
+        changedFiles: [],
+        missing: caseObj.oracle.expectedFiles,
+        violated: [],
+        verify: null,
+        difficulty: caseObj.difficulty,
+        notes: "",
+      });
       continue;
     }
     results.push({ ...judgeCase(caseObj, resolution), difficulty: caseObj.difficulty, notes: resolution?.notes ?? "" });
@@ -203,10 +217,11 @@ export function mockResolver(caseObj) {
 
 export function formatHeldoutReport(summary, { setDir, resolverName } = {}) {
   const pct = (summary.passRate * 100).toFixed(1);
-  const tiers = Object.entries(summary.byDifficulty ?? {})
-    .filter(([tier]) => tier !== "unrated" || Object.keys(summary.byDifficulty).length > 1)
-    .map(([tier, t]) => `${tier} ${t.resolved}/${t.total}`)
-    .join(" · ");
+  // Hide the tier line entirely when nothing is rated (it would just repeat
+  // the headline number as "unrated N/M").
+  const tierEntries = Object.entries(summary.byDifficulty ?? {});
+  const allUnrated = tierEntries.length === 1 && tierEntries[0][0] === "unrated";
+  const tiers = allUnrated ? "" : tierEntries.map(([tier, t]) => `${tier} ${t.resolved}/${t.total}`).join(" · ");
   const lines = [
     "# L4 Held-out Evaluation",
     "",

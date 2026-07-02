@@ -860,6 +860,9 @@ function buildHeldoutResolver(name, args) {
 }
 
 function runCommandResolver(cmd, cmdArgs, caseObj) {
+  // Bound each case so one hung resolver (interactive prompt, stalled provider)
+  // fails that case instead of hanging the whole eval.
+  const timeoutMs = Number(process.env.MYAGENTTOOL_HELDOUT_CASE_TIMEOUT_MS ?? 900000);
   const result = spawnSync(cmd, cmdArgs, {
     cwd: repoRoot,
     input: `${JSON.stringify(caseObj)}\n`,
@@ -869,9 +872,13 @@ function runCommandResolver(cmd, cmdArgs, caseObj) {
       MYAGENTTOOL_HELDOUT_CASE_ID: caseObj.id,
     },
     encoding: "utf8",
+    timeout: Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : 900000,
     shell: false,
     stdio: ["pipe", "pipe", "pipe"],
   });
+  if (result.error?.code === "ETIMEDOUT") {
+    throw new Error(`Resolver command timed out after ${timeoutMs}ms (case ${caseObj.id}).`);
+  }
   if (result.status !== 0) {
     throw new Error(`Resolver command exited ${result.status ?? "unknown"}: ${(result.stderr ?? "").trim().slice(0, 200)}`);
   }

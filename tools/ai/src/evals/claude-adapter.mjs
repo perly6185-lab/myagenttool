@@ -4,12 +4,14 @@
 // Implements the trusted coding-adapter contract for `ai:work-runner`: runs in
 // the work-runner's cwd (the isolated eval worktree), asks the Claude Code CLI
 // to implement the held-out case spec with edit-only tools, and writes
-// adapter-result.json evidence. Wire it up as:
+// adapter-result.json evidence. Wire it up with ABSOLUTE script paths — the
+// eval worktree is at an old ref that may predate these scripts, and a
+// relative path would resolve (or silently run a stale copy) inside it:
 //
 //   MYAGENTTOOL_CODING_ADAPTER=claude \
-//   MYAGENTTOOL_CLAUDE_COMMAND_JSON='["node","tools/ai/src/evals/claude-adapter.mjs"]' \
+//   MYAGENTTOOL_CLAUDE_COMMAND_JSON="[\"node\",\"$PWD/tools/ai/src/evals/claude-adapter.mjs\"]" \
 //   pnpm ai:eval-heldout -- --set tools/ai/evals/heldout-real --resolver command \
-//     --resolver-command-json '["node","tools/ai/src/evals/work-runner-resolver.mjs"]'
+//     --resolver-command-json "[\"node\",\"$PWD/tools/ai/src/evals/work-runner-resolver.mjs\"]"
 //
 // The task spec comes from MYAGENTTOOL_HELDOUT_CASE (forwarded by the
 // resolver), not from the generic code plan — the case IS the issue. Oracle
@@ -21,11 +23,11 @@
 //   MYAGENTTOOL_CLAUDE_MODEL     optional --model override
 //   MYAGENTTOOL_CLAUDE_TIMEOUT_MS  per-case budget (default 600000)
 
-import { execFileSync, spawnSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import { writeFileSync } from "node:fs";
 import { resolve } from "node:path";
-
-const CONTRACT_VERSION = "2026-06-19";
+import { CODING_ADAPTER_CONTRACT_VERSION } from "../legacy/config.mjs";
+import { collectChangedFiles } from "./git-files.mjs";
 
 function main() {
   const evidenceDir = process.env.MYAGENTTOOL_WORK_EVIDENCE_DIR;
@@ -79,7 +81,7 @@ function main() {
 
   writeFileSync(resolve(evidenceDir, "adapter-result.json"), `${JSON.stringify({
     adapter: "claude",
-    contractVersion: CONTRACT_VERSION,
+    contractVersion: CODING_ADAPTER_CONTRACT_VERSION,
     status: ok ? "completed" : "failed",
     summary,
     changedFiles,
@@ -96,23 +98,6 @@ function main() {
   }
 }
 
-function collectChangedFiles(cwd) {
-  const tracked = gitLines(["diff", "--name-only"], cwd);
-  const untracked = gitLines(["ls-files", "--others", "--exclude-standard"], cwd);
-  return [...new Set([...tracked, ...untracked])]
-    .map((path) => path.replace(/\\/g, "/"))
-    .filter((path) => !path.startsWith(".myagenttool/"))
-    .sort();
-}
-
-function gitLines(args, cwd) {
-  try {
-    return execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] })
-      .split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
-  } catch {
-    return [];
-  }
-}
 
 function lastLine(text) {
   const lines = String(text ?? "").split(/\r?\n/).map((line) => line.trim()).filter(Boolean);

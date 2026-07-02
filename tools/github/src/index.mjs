@@ -132,19 +132,33 @@ function doraReport(args) {
   if (!Number.isFinite(days) || days <= 0) fail(`--days must be a positive number. Got: ${option(args, "--days")}`);
 
   const since = new Date(Date.now() - days * 86_400_000).toISOString();
+  // Server-side filter by merge date and base branch: gh lists PRs by creation
+  // date, so a client-side window over a fixed limit would silently drop
+  // long-lived PRs merged recently — exactly the worst lead-time data points.
+  const defaultBranch = ghJson(["repo", "view", repo, "--json", "defaultBranchRef"]).defaultBranchRef?.name ?? "main";
+  const limit = 500;
   const prs = ghJson([
-    "pr", "list", "--repo", repo, "--state", "merged", "--limit", "200",
+    "pr", "list", "--repo", repo, "--state", "merged", "--base", defaultBranch,
+    "--search", `merged:>=${since.slice(0, 10)}`, "--limit", String(limit),
     "--json", "number,createdAt,mergedAt",
   ]).filter((pr) => pr.mergedAt && pr.mergedAt >= since);
+  if (prs.length >= limit) {
+    console.error(`Warning: hit the ${limit}-PR fetch limit; lead time and merge counts are truncated.`);
+  }
 
   const stats = computeDoraStats(prs, { days });
   const report = formatDoraReport(stats, { repo });
+  emitMetricsReport({ kind: "dora", stats, report, args });
+}
 
-  const runId = `${new Date().toISOString().replace(/[:.]/g, "-")}-dora`;
+// Shared evidence + output tail for metrics commands: write JSON+MD evidence
+// under .myagenttool/metrics/<runId>/, then honor --json/--out.
+function emitMetricsReport({ kind, stats, report, args }) {
+  const runId = `${new Date().toISOString().replace(/[:.]/g, "-")}-${kind}`;
   const evidenceDir = resolve(repoRoot, ".myagenttool/metrics", runId);
   mkdirSync(evidenceDir, { recursive: true });
-  writeFileSync(resolve(evidenceDir, "dora.json"), `${JSON.stringify(stats, null, 2)}\n`, "utf8");
-  writeFileSync(resolve(evidenceDir, "dora.md"), report, "utf8");
+  writeFileSync(resolve(evidenceDir, `${kind}.json`), `${JSON.stringify(stats, null, 2)}\n`, "utf8");
+  writeFileSync(resolve(evidenceDir, `${kind}.md`), report, "utf8");
 
   const out = option(args, "--out");
   const content = args.includes("--json") ? `${JSON.stringify(stats, null, 2)}\n` : report;
@@ -156,7 +170,7 @@ function doraReport(args) {
   } else {
     console.log(content.trimEnd());
   }
-  console.error(`DORA evidence: .myagenttool/metrics/${runId}/`);
+  console.error(`Evidence: .myagenttool/metrics/${runId}/`);
 }
 
 function backlogReport(args) {
@@ -171,24 +185,7 @@ function backlogReport(args) {
   ]);
   const stats = computeBacklogStats(issues, { staleDays, now: new Date().toISOString() });
   const report = formatBacklogReport(stats, { repo });
-
-  const runId = `${new Date().toISOString().replace(/[:.]/g, "-")}-backlog`;
-  const evidenceDir = resolve(repoRoot, ".myagenttool/metrics", runId);
-  mkdirSync(evidenceDir, { recursive: true });
-  writeFileSync(resolve(evidenceDir, "backlog.json"), `${JSON.stringify(stats, null, 2)}\n`, "utf8");
-  writeFileSync(resolve(evidenceDir, "backlog.md"), report, "utf8");
-
-  const out = option(args, "--out");
-  const content = args.includes("--json") ? `${JSON.stringify(stats, null, 2)}\n` : report;
-  if (out) {
-    const target = resolve(repoRoot, out);
-    mkdirSync(dirname(target), { recursive: true });
-    writeFileSync(target, content, "utf8");
-    console.log(`Wrote ${out}`);
-  } else {
-    console.log(content.trimEnd());
-  }
-  console.error(`Backlog evidence: .myagenttool/metrics/${runId}/`);
+  emitMetricsReport({ kind: "backlog", stats, report, args });
 }
 
 function checkLocal() {

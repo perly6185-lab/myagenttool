@@ -13,10 +13,11 @@ honesty gaps:
    (no DORA, CMMI, SWE-bench, SSDF). The only "reference" is Orca, an internal
    architecture borrow. So the ladder should be treated as a shared roadmap,
    not as an externally calibrated maturity claim.
-2. **Its status column is self-graded.** "Mostly complete / Partially complete"
-   are qualitative ticks. [DEFINITION_OF_DONE.md](DEFINITION_OF_DONE.md) is the
-   same — zero numeric thresholds anywhere. A level is currently "reached" when
-   a structure exists, not when a measured bar is cleared.
+2. **Its status column was self-graded.** "Mostly complete / Partially
+   complete" were qualitative ticks, and at audit time
+   [DEFINITION_OF_DONE.md](DEFINITION_OF_DONE.md) had zero numeric thresholds —
+   a level counted as "reached" when a structure existed, not when a measured
+   bar was cleared. (Both have since been updated to cite the measured gates.)
 
 This proposal fixes both by adding, per level: a **quantitative gate**, an
 **external anchor**, and an explicit **frontier flag** where no industry
