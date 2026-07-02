@@ -25,10 +25,20 @@ Container
   tool allowlist), and the JSON-RPC `tools/call` request descriptor, unit-tested.
   Next step: the live MCP client in the Desktop Bridge (open the transport, list
   tools, stream notifications, map cancellation to `$/cancelRequest`).
-- **A2A / Container** — not started. Follow the same shape: define the capability
-  contract + config normalization in `packages/adapters` first (testable without
-  a live peer/runtime), then the bridge-side client. A2A maps agent-to-agent task
-  delegation; Container wraps a governed containerized runtime.
+- **A2A** — *first slice landed* (`packages/adapters/src/a2a.mjs`): contract +
+  config normalization (agent URL, Agent Card path, skill allowlist) and the
+  JSON-RPC `message/send` / `tasks/cancel` descriptors, unit-tested. Next step:
+  the bridge-side client (fetch the Agent Card, POST the task, consume the
+  `message/stream` SSE, map cancellation to `tasks/cancel`).
+- **Container** — *first slice landed* (`packages/adapters/src/container.mjs`):
+  contract + config normalization with the governance guards (privileged
+  rejected, cpu/memory/timeout clamped, network isolated by default, digest
+  pinning surfaced) and a one-shot run descriptor (task via `TASK` env, never
+  argv). Next step: the bridge-side runtime (docker/podman create, log stream,
+  stop-on-cancel, remove after run).
+- **Bridge-side live clients** — the remaining work for all three protocol
+  adapters (MCP, A2A, Container) is in the Desktop Bridge; the declarative layer
+  above is what the server registers, validates, and audits.
 
 ## Example Agent Families
 
