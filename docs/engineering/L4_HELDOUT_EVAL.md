@@ -189,7 +189,17 @@ covers the two L4 sub-capabilities it does not exercise:
   exits non-zero if any fails, independent of `--min-pass-rate`. The same
   check runs hermetically inside `ai:check`.
 
-Review-evidence generation remains the one L4 sub-capability without a gate.
+- **`review` cases** (capability, planted-defect detection): each case carries
+  a small fixture PR (`pr.title/body/diff`) with **known planted defects**; the
+  review must flag every planted file (`mustFlagFiles`), name each defect
+  mechanism (`mustMention` — any-of synonym groups, so wording is free but the
+  mechanism must be named), and withhold approval. The mock reviewer finds
+  nothing, so the review kind's mock baseline is **0%** — only a real reviewer
+  scores (`ai:check` enforces this as an anti-degeneracy rule: a review case
+  the mock passes demands nothing and fails the check).
+
+With this, all three L4 sub-capability surfaces (PM brief, issue-creation
+apply, review evidence) have measured gates.
 
 ## Not in this slice
 
