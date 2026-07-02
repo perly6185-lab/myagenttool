@@ -1,7 +1,7 @@
 import { execFile, execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, readdirSync, statSync } from "node:fs";
-import { devNull } from "node:os";
-import { basename, dirname, isAbsolute, relative, resolve } from "node:path";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
@@ -735,7 +735,7 @@ function worktreeDiff(worktree, { projectTargets = [] } = {}) {
   try {
     // --untracked-files=all lists each untracked file individually; the default
     // collapses an untracked dir to "dir/", which then can't be diffed against
-    // /dev/null and silently omits its files from the patch.
+    // an empty file and silently omits its files from the patch.
     const porcelain = git(["-c", "core.quotepath=false", "status", "--porcelain", "--untracked-files=all"]).split("\n").filter(Boolean);
     result.files = porcelain.map((line) => {
       const index = line[0];
@@ -771,15 +771,22 @@ function worktreeDiff(worktree, { projectTargets = [] } = {}) {
   }
   const MAX_UNTRACKED = 200;
   let untrackedSeen = 0;
-  for (const f of result.files) {
-    if (!f.untracked) continue;
-    if (diff.length > MAX_DIFF_BYTES || untrackedSeen >= MAX_UNTRACKED) {
-      result.truncated = true;
-      break;
+  const emptyDir = mkdtempSync(join(tmpdir(), "myagenttool-empty-diff-"));
+  const emptyFile = join(emptyDir, "empty");
+  writeFileSync(emptyFile, "");
+  try {
+    for (const f of result.files) {
+      if (!f.untracked) continue;
+      if (diff.length > MAX_DIFF_BYTES || untrackedSeen >= MAX_UNTRACKED) {
+        result.truncated = true;
+        break;
+      }
+      untrackedSeen += 1;
+      const patch = gitDiffSafe(["diff", "--no-color", "--no-index", "--", emptyFile, f.path]);
+      if (patch) diff += (diff && !diff.endsWith("\n") ? "\n" : "") + patch;
     }
-    untrackedSeen += 1;
-    const patch = gitDiffSafe(["diff", "--no-color", "--no-index", "--", devNull, f.path]);
-    if (patch) diff += (diff && !diff.endsWith("\n") ? "\n" : "") + patch;
+  } finally {
+    rmSync(emptyDir, { recursive: true, force: true });
   }
   if (diff.length > MAX_DIFF_BYTES) {
     diff = diff.slice(0, MAX_DIFF_BYTES);

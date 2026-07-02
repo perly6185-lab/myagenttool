@@ -88,6 +88,7 @@ export function buildPublicState({
     quotaPolicies: state.quotaPolicies,
     aiUsageRecords: byInvocation(state.aiUsageRecords),
     ledgerEntries: byProject(state.ledgerEntries),
+    importedUsageEstimates: byInvocation(state.importedUsageEstimates),
     ledgerSummary: typeof ledgerSummary === "function" ? ledgerSummary() : null,
     // Project budgets scope by project; team pools (rows with teamId, no
     // projectId) scope by the viewer's team — byProject alone would treat them

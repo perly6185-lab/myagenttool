@@ -61,6 +61,7 @@ export function createServerState({ defaultProjectPath, now }) {
     quotaPolicies: [],
     aiUsageRecords: [],
     ledgerEntries: [],
+    importedUsageEstimates: [],
     budgets: [],
     automations: createDefaultAutomations(defaultProject.id, now),
     agentSkills: createDefaultAgentSkills(now),
@@ -145,6 +146,7 @@ export function resetStateForSelfCheck({ state, now }) {
   state.quotaPolicies = [];
   state.aiUsageRecords = [];
   state.ledgerEntries = [];
+  state.importedUsageEstimates = [];
   state.budgets = [];
   state.automations = createDefaultAutomations(state.currentProjectId ?? state.projects[0]?.id ?? "prj_myagenttool", now);
   state.privateDeploymentConfig = createDefaultPrivateDeploymentConfig(now);

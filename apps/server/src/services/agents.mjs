@@ -93,7 +93,7 @@ export function createAgentService({ state, now, nextId, appendEvent }) {
         },
       ],
       status: state.device.status === "online" ? "available" : "unavailable",
-      registrationNotes: codexCommand
+      registrationNotes: normalizeRegistrationNotes(body.registrationNotes, codexCommand
         ? codexRegistrationNotes()
         : claudeCommand
           ? claudeRegistrationNotes()
@@ -102,7 +102,7 @@ export function createAgentService({ state, now, nextId, appendEvent }) {
               data: "Task input and command output are streamed to the local demo server as invocation events.",
               cost: "Cost is external or unknown unless the registered command reports it.",
               cancellation: "The Desktop Bridge attempts to terminate the process tree when cancellation is requested.",
-            },
+            }),
       economics: normalizeAgentEconomics(body),
     });
   }
@@ -241,12 +241,12 @@ export function createAgentService({ state, now, nextId, appendEvent }) {
         },
       ],
       status: "available",
-      registrationNotes: {
+      registrationNotes: normalizeRegistrationNotes(body.registrationNotes, {
         risk: "Sends invocation input to the configured HTTP endpoint.",
         data: "Task input leaves the local demo server and endpoint response is stored as the result.",
         cost: "Cost is external or unknown unless the endpoint reports it.",
         cancellation: "The server aborts the HTTP request when supported; otherwise cancellation is recorded as not supported or unknown.",
-      },
+      }),
       economics: normalizeAgentEconomics(body),
     });
   }
@@ -629,6 +629,18 @@ export function normalizeAgentEconomics(body = {}) {
     budgetPoolId: body.budgetPoolId ?? economics.budgetPoolId ?? null,
     revenueOwner: body.revenueOwner ?? economics.revenueOwner ?? null,
     unknownCostPolicy: normalizeUnknownCostPolicy(body.unknownCostPolicy ?? economics.unknownCostPolicy, "warn"),
+  };
+}
+
+export function normalizeRegistrationNotes(value, fallback) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return fallback;
+  }
+  return {
+    risk: String(value.risk ?? fallback.risk),
+    data: String(value.data ?? fallback.data),
+    cost: String(value.cost ?? fallback.cost),
+    cancellation: String(value.cancellation ?? fallback.cancellation),
   };
 }
 

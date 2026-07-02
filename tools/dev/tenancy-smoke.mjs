@@ -37,7 +37,7 @@ const users = [
   const sendJson = (_res, status) => { code = status; };
   const actor = { userId: "usr_b", teamId: "team_b" };
   assert.equal(denyForeignProject({ res: {}, sendJson, state, actor, projectId: "prj_a" }), true, "foreign project denied");
-  assert.equal(code, 403);
+  assert.equal(code, 404);
   code = null;
   assert.equal(denyForeignProject({ res: {}, sendJson, state, actor, projectId: "prj_b" }), false, "own project allowed");
   assert.equal(code, null);

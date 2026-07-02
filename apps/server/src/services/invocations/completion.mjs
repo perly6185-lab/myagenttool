@@ -10,6 +10,7 @@ export function createInvocationCompletionRuntime({
   closeCodexSession,
   isTerminal,
   recordInvocationLedgerEntry,
+  recordCcusageImportedEstimates,
 }) {
   function completeInvocation(invocation, body) {
     if (isTerminal(invocation.status)) {
@@ -54,6 +55,13 @@ export function createInvocationCompletionRuntime({
     const reportedCost = body.result?.cost ?? body.cost;
     if (reportedCost && typeof recordInvocationLedgerEntry === "function") {
       recordInvocationLedgerEntry({ invocation, cost: reportedCost, agent: findAgent(invocation.agentId) });
+    }
+    if (terminalStatus === "succeeded" && typeof recordCcusageImportedEstimates === "function") {
+      recordCcusageImportedEstimates({
+        invocation,
+        result: body.result ?? null,
+        agent: findAgent(invocation.agentId),
+      });
     }
     closeCodexSession(invocation, terminalStatus);
     updateCompareRunForInvocation(invocation);

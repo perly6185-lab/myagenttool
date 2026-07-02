@@ -6,6 +6,7 @@ import {
   normalizeRiskTags,
   normalizeStringArray,
 } from "./agents.mjs";
+import { CCUSAGE_VERSION } from "./ccusage-agent.mjs";
 
 const allowedLifecycleActions = ["install", "update", "uninstall"];
 const allowedRecipeSources = ["local_file", "workspace_catalog", "private_catalog", "generated_artifact", "manual_entry"];
@@ -19,11 +20,15 @@ const lifecycleCommandAllowlist = new Set([
   "demo_agent_update",
   "demo_agent_health",
   "demo_agent_rollback",
+  "npm_global_install_pinned",
+  "npm_global_uninstall_package",
+  "ccusage_version",
+  "ccusage_report_probe",
 ]);
 const lifecycleRecipeCommandAllowlistByAction = {
-  install: new Set(),
-  update: new Set(["demo_agent_update"]),
-  uninstall: new Set(),
+  install: new Set(["npm_global_install_pinned"]),
+  update: new Set(["demo_agent_update", "npm_global_install_pinned"]),
+  uninstall: new Set(["npm_global_uninstall_package"]),
 };
 
 export function createM3Service({
@@ -1346,7 +1351,7 @@ export function createM3Service({
     pushRefs("invocation", state.invocations);
     pushRefs("lifecycle", [...state.lifecycleAuditRecords, ...state.lifecycleRecipes, ...state.lifecycleRollbackRequests]);
     pushRefs("quota", state.quotaDecisionRecords);
-    pushRefs("usage", state.aiUsageRecords);
+    pushRefs("usage", [...state.aiUsageRecords, ...(state.importedUsageEstimates ?? [])]);
     pushRefs("ledger", state.ledgerEntries);
     pushRefs("policy", [...state.policyDecisionRecords, ...state.lifecyclePolicyDecisions]);
     pushRefs("audit", state.auditSummaries);
@@ -1552,7 +1557,7 @@ function normalizeRecipeCommand(value, action) {
 
 function buildExecutableLifecycleCommand(recipe) {
   const command = recipe.recipeCommand ?? null;
-  if (!isAllowlistedLifecycleCommandForAction(command, recipe.action)) {
+  if (!isAllowlistedLifecycleCommandForAction(command, recipe.action, recipe)) {
     return null;
   }
   return canonicalLifecycleCommand(command.commandId);
@@ -1565,17 +1570,19 @@ function buildRollbackLifecycleCommand(recipe) {
   return canonicalLifecycleCommand("demo_agent_rollback");
 }
 
-function isAllowlistedLifecycleCommandForAction(command, action) {
+function isAllowlistedLifecycleCommandForAction(command, action, recipe = null) {
   const commandId = String(command?.commandId ?? "");
   return isAllowlistedLifecycleCommand(command)
-    && (lifecycleRecipeCommandAllowlistByAction[action]?.has(commandId) ?? false);
+    && (lifecycleRecipeCommandAllowlistByAction[action]?.has(commandId) ?? false)
+    && lifecycleCommandMatchesRecipe(command, action, recipe);
 }
 
 function isExecutableLifecycleActionCommand(command, action) {
   if (action === "rollback") {
     return isAllowlistedLifecycleCommand(command) && String(command.commandId ?? "") === "demo_agent_rollback";
   }
-  return isAllowlistedLifecycleCommandForAction(command, action);
+  return isAllowlistedLifecycleCommand(command)
+    && (lifecycleRecipeCommandAllowlistByAction[action]?.has(String(command.commandId ?? "")) ?? false);
 }
 
 function isAllowlistedLifecycleCommand(command) {
@@ -1619,8 +1626,71 @@ function canonicalLifecycleCommand(commandId) {
       shell: false,
       packageManager: null,
     },
+    npm_global_install_pinned: {
+      summary: `Install pinned ccusage@${CCUSAGE_VERSION} through npm global install.`,
+      commandId: "npm_global_install_pinned",
+      executable: "npm",
+      args: ["install", "-g", `ccusage@${CCUSAGE_VERSION}`],
+      shell: false,
+      packageManager: null,
+    },
+    npm_global_uninstall_package: {
+      summary: "Uninstall the bridge-managed ccusage global npm package.",
+      commandId: "npm_global_uninstall_package",
+      executable: "npm",
+      args: ["uninstall", "-g", "ccusage"],
+      shell: false,
+      packageManager: null,
+    },
+    ccusage_version: {
+      summary: "Run ccusage version check.",
+      commandId: "ccusage_version",
+      executable: "ccusage",
+      args: ["--version"],
+      shell: false,
+      packageManager: null,
+    },
+    ccusage_report_probe: {
+      summary: "Run a minimal offline ccusage JSON report probe.",
+      commandId: "ccusage_report_probe",
+      executable: "ccusage",
+      args: ["daily", "--json", "--offline"],
+      shell: false,
+      packageManager: null,
+    },
   };
   return commands[String(commandId ?? "")] ?? null;
+}
+
+function lifecycleCommandMatchesRecipe(command, action, recipe) {
+  const commandId = String(command?.commandId ?? "");
+  if (commandId === "demo_agent_update") {
+    return true;
+  }
+  if (commandId === "npm_global_install_pinned") {
+    return ["install", "update"].includes(action)
+      && isCcusageRecipe(recipe)
+      && String(command?.executable ?? "") === "npm"
+      && stringArrayEquals(command.args, ["install", "-g", `ccusage@${CCUSAGE_VERSION}`]);
+  }
+  if (commandId === "npm_global_uninstall_package") {
+    return action === "uninstall"
+      && isCcusageRecipe(recipe)
+      && String(command?.executable ?? "") === "npm"
+      && stringArrayEquals(command.args, ["uninstall", "-g", "ccusage"]);
+  }
+  return false;
+}
+
+function isCcusageRecipe(recipe) {
+  return recipe?.expectedTarget?.binary === "ccusage"
+    && recipe?.source?.version === CCUSAGE_VERSION
+    && String(recipe?.source?.uri ?? "").includes(`ccusage@${CCUSAGE_VERSION}`);
+}
+
+function stringArrayEquals(left, right) {
+  const a = normalizeStringArray(left);
+  return a.length === right.length && a.every((item, index) => item === right[index]);
 }
 
 function normalizeLifecycleResultStatus(value) {

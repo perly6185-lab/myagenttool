@@ -257,6 +257,8 @@ git diff --check
   availability.
 - Keep uninstall constrained to bridge-managed agents unless extra approval is
   present.
+- Use `docs/engineering/CCUSAGE_AGENT_GOVERNANCE_PLAN.md` as the first concrete
+  pinned local CLI lifecycle recipe pattern.
 
 ### Batch 3: Private Catalog and Signed Bundle Verification
 

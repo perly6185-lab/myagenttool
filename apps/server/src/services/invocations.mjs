@@ -19,6 +19,7 @@ export function createInvocationService({
   findAgent,
   enforcePlatformAiQuota,
   recordInvocationLedgerEntry,
+  recordCcusageImportedEstimates,
   currentProject,
   worktreeForProject,
   uniqueStrings,
@@ -49,6 +50,7 @@ export function createInvocationService({
     closeCodexSession,
     isTerminal,
     recordInvocationLedgerEntry,
+    recordCcusageImportedEstimates,
   });
   const {
     abortDirectHttpRun,

@@ -190,6 +190,41 @@ export interface LedgerEntry {
   createdAt: string;
 }
 
+export interface ImportedUsageEstimate {
+  id: string;
+  source: string;
+  reportInvocationId: string;
+  invocationId: string;
+  projectId?: string | null;
+  worktreeId?: string | null;
+  requestedBy?: string | null;
+  agentId?: string | null;
+  reportAgentName?: string | null;
+  reportId: string;
+  rowIndex: number;
+  periodStart?: string | null;
+  periodEnd?: string | null;
+  date?: string | null;
+  month?: string | null;
+  week?: string | null;
+  sessionId?: string | null;
+  provider?: string | null;
+  sourceAgent?: string | null;
+  model?: string | null;
+  inputTokens?: number | null;
+  outputTokens?: number | null;
+  totalTokens?: number | null;
+  estimatedCostUsd?: number | null;
+  currency?: string;
+  amountSource: "imported_ccusage_report" | string;
+  economicModel: "external_billed";
+  authoritative: false;
+  offline?: boolean | null;
+  filters?: Record<string, unknown> | null;
+  raw?: Record<string, unknown>;
+  createdAt: string;
+}
+
 export interface LedgerOwnerRollup {
   costOwner: string;
   entries: number;
@@ -410,6 +445,7 @@ export interface ConsoleSnapshot {
   quotaDecisionRecords?: QuotaDecisionRecord[];
   retentionSettings?: RetentionSettings;
   ledgerEntries?: LedgerEntry[];
+  importedUsageEstimates?: ImportedUsageEstimate[];
   ledgerSummary?: LedgerSummary;
   budgetStatuses?: BudgetStatus[];
 }

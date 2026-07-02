@@ -36,9 +36,29 @@ if (process.argv.includes("--check")) {
   if (!lifecycleWorkContract.executionEnabled || lifecyclePlan?.command !== process.execPath || !lifecyclePlan.args.includes("--version")) {
     throw new Error("Lifecycle bridge work contract is not mapped to a local allowlisted command.");
   }
+  const ccusageInstallPlan = lifecycleCommandPlan({
+    commandId: "npm_global_install_pinned",
+    executable: "npm",
+    args: ["install", "-g", "ccusage@20.0.14"],
+    shell: false,
+    packageManager: null
+  });
+  if (!ccusageInstallPlan || !ccusageInstallPlan.args.includes("ccusage@20.0.14")) {
+    throw new Error("ccusage pinned lifecycle install is not mapped to an allowlisted command.");
+  }
   const blockedLifecyclePlan = lifecycleCommandPlan({ commandId: "not_allowlisted", executable: "demo-agent", args: [], shell: false });
   if (blockedLifecyclePlan) {
     throw new Error("Lifecycle bridge execution must reject non-allowlisted command identifiers.");
+  }
+  const blockedPackagePlan = lifecycleCommandPlan({
+    commandId: "npm_global_install_pinned",
+    executable: "npm",
+    args: ["install", "-g", "ccusage@latest"],
+    shell: false,
+    packageManager: null
+  });
+  if (blockedPackagePlan) {
+    throw new Error("ccusage lifecycle install must reject unpinned package specs.");
   }
   const resumeArgs = codexArgsTemplate({ command: "codex", args: codexCliArgs() }, { options: { codexSessionMode: "continue_last" } });
   if (!resumeArgs.includes("resume") || resumeArgs.includes("--ephemeral")) {
@@ -244,6 +264,38 @@ function lifecycleCommandPlan(command) {
     return null;
   }
   const commandId = String(command.commandId ?? "");
+  if (commandId === "npm_global_install_pinned") {
+    return lifecycleExactPlan(command, {
+      executable: "npm",
+      args: ["install", "-g", "ccusage@20.0.14"],
+      command: process.platform === "win32" ? "npm.cmd" : "npm",
+      planArgs: ["install", "-g", "ccusage@20.0.14"],
+    });
+  }
+  if (commandId === "npm_global_uninstall_package") {
+    return lifecycleExactPlan(command, {
+      executable: "npm",
+      args: ["uninstall", "-g", "ccusage"],
+      command: process.platform === "win32" ? "npm.cmd" : "npm",
+      planArgs: ["uninstall", "-g", "ccusage"],
+    });
+  }
+  if (commandId === "ccusage_version") {
+    return lifecycleExactPlan(command, {
+      executable: "ccusage",
+      args: ["--version"],
+      command: process.platform === "win32" ? "ccusage.cmd" : "ccusage",
+      planArgs: ["--version"],
+    });
+  }
+  if (commandId === "ccusage_report_probe") {
+    return lifecycleExactPlan(command, {
+      executable: "ccusage",
+      args: ["daily", "--json", "--offline"],
+      command: process.platform === "win32" ? "ccusage.cmd" : "ccusage",
+      planArgs: ["daily", "--json", "--offline"],
+    });
+  }
   const commands = {
     demo_agent_version: [demoAgentPath, "--version"],
     demo_agent_update: [demoAgentPath, "--self-check-update"],
@@ -257,6 +309,20 @@ function lifecycleCommandPlan(command) {
   return {
     command: process.execPath,
     args,
+  };
+}
+
+function lifecycleExactPlan(command, expected) {
+  if (String(command.executable ?? "") !== expected.executable) {
+    return null;
+  }
+  const args = Array.isArray(command.args) ? command.args.map(String) : [];
+  if (args.length !== expected.args.length || args.some((arg, index) => arg !== expected.args[index])) {
+    return null;
+  }
+  return {
+    command: expected.command,
+    args: expected.planArgs,
   };
 }
 

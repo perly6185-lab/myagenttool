@@ -7,6 +7,7 @@ import {
   normalizeStringArray,
 } from "../services/agents.mjs";
 import { createAgentSkillService } from "../services/agent-skills.mjs";
+import { createCcusageImportService } from "../services/ccusage-imports.mjs";
 import { createCodexService } from "../services/codex.mjs";
 import { createIntegrationService } from "../services/integrations.mjs";
 import { createInvocationService } from "../services/invocations.mjs";
@@ -180,6 +181,12 @@ export function createServerRuntimeServices({
     appendEvent,
     findAgent,
   });
+  const { recordCcusageImportedEstimates } = createCcusageImportService({
+    state,
+    now,
+    nextId,
+    appendEvent,
+  });
 
   invocationService = createInvocationService({
     state,
@@ -193,6 +200,7 @@ export function createServerRuntimeServices({
     findAgent,
     enforcePlatformAiQuota,
     recordInvocationLedgerEntry,
+    recordCcusageImportedEstimates,
     currentProject,
     worktreeForProject,
     uniqueStrings,
@@ -372,6 +380,7 @@ export function createServerRuntimeServices({
     nextDispatchableInvocation,
     nextTerminalBridgeAction,
     queueTerminalBridgeAction,
+    recordCcusageImportedEstimates,
     recordCodexHookEvent,
     recordTerminalBridgeEvent,
     redeliverExpiredDispatches,

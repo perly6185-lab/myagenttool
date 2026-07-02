@@ -5,6 +5,7 @@ import type {
   AIUsageRecordId,
   DecimalString,
   DeviceId,
+  ImportedUsageEstimateId,
   InvocationId,
   IsoDateTime,
   LedgerEntryId,
@@ -101,6 +102,41 @@ export interface AIUsageRecord {
   ledgerEntryIds: LedgerEntryId[];
   status: "succeeded" | "failed" | "cancelled" | "blocked";
   errorCode?: string | null;
+  createdAt: IsoDateTime;
+}
+
+export interface ImportedUsageEstimate {
+  id: ImportedUsageEstimateId;
+  source: "ccusage" | string;
+  reportInvocationId: InvocationId;
+  invocationId: InvocationId;
+  projectId?: string | null;
+  worktreeId?: string | null;
+  requestedBy?: UserId | string | null;
+  agentId?: AgentId | null;
+  reportAgentName?: string | null;
+  reportId: string;
+  rowIndex: number;
+  periodStart?: string | null;
+  periodEnd?: string | null;
+  date?: string | null;
+  month?: string | null;
+  week?: string | null;
+  sessionId?: string | null;
+  provider?: string | null;
+  sourceAgent?: string | null;
+  model?: string | null;
+  inputTokens?: number | null;
+  outputTokens?: number | null;
+  totalTokens?: number | null;
+  estimatedCostUsd?: number | null;
+  currency: CurrencyCode;
+  amountSource: "imported_ccusage_report" | string;
+  economicModel: "external_billed";
+  authoritative: false;
+  offline?: boolean | null;
+  filters?: Record<string, unknown> | null;
+  raw?: Record<string, unknown>;
   createdAt: IsoDateTime;
 }
 
