@@ -24,6 +24,7 @@ export type ArtifactId = `art_${string}`;
 export type LedgerEntryId = `led_${string}`;
 export type ImportedUsageEstimateId = `ccu_${string}`;
 export type CodexReviewFindingId = `crf_${string}`;
+export type ClaudeReviewFindingId = `clf_${string}`;
 export type AgentEconomicRecordId = `eco_${string}`;
 export type AIProviderId = `aip_${string}`;
 export type AIUsageRecordId = `aiu_${string}`;

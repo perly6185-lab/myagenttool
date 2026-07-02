@@ -251,6 +251,56 @@ export interface CodexReviewFinding {
   createdAt: string;
 }
 
+export interface ClaudeReviewFinding {
+  id: string;
+  source: "claude" | string;
+  reviewInvocationId: string;
+  invocationId: string;
+  projectId?: string | null;
+  worktreeId?: string | null;
+  requestedBy?: string | null;
+  agentId?: string | null;
+  reviewAgentName?: string | null;
+  tool: "claude.review.diff" | string;
+  mode: string;
+  severityFloor?: string | null;
+  summary?: string | null;
+  findingIndex: number;
+  severity: "low" | "medium" | "high";
+  file: string;
+  line?: number | null;
+  message: string;
+  suggestion?: string | null;
+  confidence: "low" | "medium" | "high";
+  authoritative: false;
+  createdAt: string;
+}
+
+export interface ReviewFinding {
+  id: string;
+  source: "codex" | "claude" | string;
+  reviewInvocationId: string;
+  invocationId: string;
+  projectId?: string | null;
+  worktreeId?: string | null;
+  requestedBy?: string | null;
+  agentId?: string | null;
+  reviewAgentName?: string | null;
+  tool: "codex.review.diff" | "claude.review.diff" | string;
+  mode: string;
+  severityFloor?: string | null;
+  summary?: string | null;
+  findingIndex: number;
+  severity: "low" | "medium" | "high";
+  file: string;
+  line?: number | null;
+  message: string;
+  suggestion?: string | null;
+  confidence: "low" | "medium" | "high";
+  authoritative: false;
+  createdAt: string;
+}
+
 export interface ToolAgentRef {
   id: string;
   name: string;
@@ -294,6 +344,18 @@ export interface ToolInvocationResponse {
   status: string;
   outputCollection?: string;
   invocation?: InvocationSnapshot;
+}
+
+export interface ReviewFindingQueryResponse {
+  reviewFindings: ReviewFinding[];
+  count: number;
+  filters: {
+    projectId?: string | null;
+    worktreeId?: string | null;
+    invocationId?: string | null;
+    source?: "codex" | "claude" | string | null;
+    severity?: "low" | "medium" | "high" | string | null;
+  };
 }
 
 export interface LedgerOwnerRollup {
@@ -534,6 +596,8 @@ export interface ConsoleSnapshot {
   ledgerEntries?: LedgerEntry[];
   importedUsageEstimates?: ImportedUsageEstimate[];
   codexReviewFindings?: CodexReviewFinding[];
+  claudeReviewFindings?: ClaudeReviewFinding[];
+  reviewFindings?: ReviewFinding[];
   ledgerSummary?: LedgerSummary;
   budgetStatuses?: BudgetStatus[];
   teamBudgetStatuses?: TeamBudgetStatus[];

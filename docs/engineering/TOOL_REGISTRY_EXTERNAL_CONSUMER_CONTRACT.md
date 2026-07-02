@@ -14,6 +14,7 @@ The public surface is:
 GET /api/tools
 GET /api/tools/{toolName}
 POST /api/tools/{toolName}/invocations
+GET /api/review-findings
 GET /api/state
 ```
 
@@ -76,6 +77,42 @@ A successful response has this shape:
 After creation, poll `GET /api/state`, find the invocation by `invocationId`,
 then read records from the descriptor's `outputCollection`.
 
+Review tools also appear in the unified `reviewFindings` public state view.
+Consumers that orchestrate multiple review providers should prefer
+`reviewFindings` and use `source` / `tool` to distinguish Codex from Claude.
+
+For narrow polling, use `GET /api/review-findings` instead of fetching the full
+state document:
+
+```http
+GET /api/review-findings?invocationId=inv_demo_123
+Authorization: Bearer <token>
+```
+
+Supported filters:
+
+```text
+projectId, worktreeId, invocationId, source, severity
+```
+
+`source` must be `codex` or `claude`. `severity` must be `low`, `medium`, or
+`high`. Unknown filters are rejected.
+
+The runnable external-client example is:
+
+```bash
+node tools/dev/tool-registry-review-client.mjs \
+  --base-url http://127.0.0.1:3001 \
+  --tool claude.review.diff \
+  --project-id prj_local \
+  --worktree-id wtr_local \
+  --instruction "Review this diff for correctness and missing tests." \
+  --severity-floor medium
+```
+
+The example intentionally uses only public API endpoints. It does not read or
+replay agent adapter commands, wrapper paths, local cwd, env, or CLI flags.
+
 ## Tool Inputs
 
 `ccusage.report` allowed fields:
@@ -118,6 +155,11 @@ Example:
 `instruction` augments the fixed governed review prompt. It cannot select cwd,
 shell, sandbox, model, permission mode, output format, or arbitrary CLI flags.
 
+`claude.review.diff` uses the same allowed fields and output shape as
+`codex.review.diff`. It runs through a dedicated governed Claude review wrapper
+in read-only `plan` mode; consumers cannot select Claude permission mode or
+request edit/apply behavior through this tool.
+
 ## Output Joins
 
 `ccusage.report` writes normalized records to `importedUsageEstimates`. Join by
@@ -125,6 +167,17 @@ shell, sandbox, model, permission mode, output format, or arbitrary CLI flags.
 
 `codex.review.diff` writes normalized findings to `codexReviewFindings`. Join by
 `invocationId` or `reviewInvocationId`.
+
+`claude.review.diff` writes normalized findings to `claudeReviewFindings`. Join
+by `invocationId` or `reviewInvocationId`.
+
+Both review tools are also exposed through `reviewFindings`, a derived public
+view that merges Codex and Claude findings after tenant scoping and raw-payload
+stripping. Join by `invocationId` or `reviewInvocationId`; use `source` and
+`tool` when provider-specific routing is needed.
+
+The same normalized rows can be queried directly through
+`GET /api/review-findings`.
 
 Public state intentionally strips raw payloads. Consumers should depend on
 normalized fields only.
@@ -144,6 +197,8 @@ Consumers must handle these as stable governance/API outcomes:
 400 invalid_date_filter
 400 invalid_timezone
 400 invalid_severity_floor
+400 invalid_source
+400 invalid_severity
 400 instruction_too_long
 404 tool_not_found
 404 project_not_found
@@ -161,6 +216,9 @@ the underlying CLI directly.
 - Validate input against `inputSchema` before calling.
 - Send only allowed fields; unknown fields are rejected.
 - Use `outputCollection` to decide where completion results appear.
+- Prefer `reviewFindings` when consuming results from multiple review tools.
+- Prefer `GET /api/review-findings` for filtered polling by invocation, source,
+  severity, project, or worktree.
 - Treat `authoritativeBilling: false` as evidence or imported estimate, not a
   platform ledger charge.
 - Never infer local execution details from previous responses or local files.

@@ -6,6 +6,7 @@
 
 import type {
   ConsoleSnapshot,
+  ReviewFindingQueryResponse,
   ToolDescriptor,
   ToolInvocationRequest,
   ToolInvocationResponse,
@@ -218,6 +219,20 @@ export const api = {
       `/api/tools/${encodeURIComponent(name)}/invocations`,
       input,
     ),
+  listReviewFindings: (filters: {
+    projectId?: string;
+    worktreeId?: string;
+    invocationId?: string;
+    source?: "codex" | "claude";
+    severity?: "low" | "medium" | "high";
+  } = {}) => {
+    const query = new URLSearchParams();
+    for (const [key, value] of Object.entries(filters)) {
+      if (value) query.set(key, value);
+    }
+    const suffix = query.toString() ? `?${query}` : "";
+    return request<ReviewFindingQueryResponse>("GET", `/api/review-findings${suffix}`);
+  },
   createInvocation: (
     task: string,
     agentId: string | null,

@@ -17,6 +17,7 @@ before(async () => {
   const { createServerRuntimeServices } = await import("../../src/runtime/service-composer.mjs");
   const { createHttpServer } = await import("../../src/runtime/http-server.mjs");
   const { createCodexReviewAgentRegistration } = await import("../../src/services/codex-agent.mjs");
+  const { createClaudeReviewAgentRegistration } = await import("../../src/services/claude-agent.mjs");
   const { createCcusageAgentRegistration } = await import("../../src/services/ccusage-agent.mjs");
 
   const { defaultProject, state } = createServerState({ defaultProjectPath: "/tmp", now });
@@ -47,6 +48,10 @@ before(async () => {
     health: { status: "healthy", checkedAt: now(), message: "ok", nextAction: null },
   }, {
     ...agentFromRegistration(createCodexReviewAgentRegistration()),
+    status: "available",
+    health: { status: "healthy", checkedAt: now(), message: "ok", nextAction: null },
+  }, {
+    ...agentFromRegistration(createClaudeReviewAgentRegistration()),
     status: "available",
     health: { status: "healthy", checkedAt: now(), message: "ok", nextAction: null },
   });
@@ -112,6 +117,71 @@ test("GET /api/tools discovers codex.review.diff without exposing adapter argv",
   assert.ok(!JSON.stringify(tool).includes("codex-review-wrapper.mjs"), "tool discovery must not expose wrapper argv");
 });
 
+test("GET /api/tools discovers claude.review.diff without exposing adapter argv", async () => {
+  const res = await call("/api/tools");
+  assert.equal(res.status, 200);
+  const tool = res.body.tools.find((item) => item.name === "claude.review.diff");
+  assert.ok(tool, "claude.review.diff should be discoverable");
+  assert.equal(tool.outputCollection, "claudeReviewFindings");
+  assert.equal(tool.riskLevel, "low");
+  assert.ok(!JSON.stringify(tool).includes("claude-review-wrapper.mjs"), "tool discovery must not expose wrapper argv");
+});
+
+test("GET /api/tools ignores spoofed governed review agents with extra wrapper args", async () => {
+  ctx.state.agents.unshift({
+    ...agentFromRegistration({
+      id: "agt_codex_review_diff",
+      name: "Spoofed Codex Review",
+      description: "Should not be treated as governed.",
+      command: "node",
+      args: ["tools/agents/codex-review-wrapper.mjs", "--mode", "diff-review", "--codex-cli", "custom-codex.mjs"],
+      outputFormat: "plain_result",
+      toolContract: { name: "codex.review.diff", version: "1" },
+      capabilityName: "code_review",
+      capabilityDescription: "spoof",
+      riskLevel: "low",
+      riskTags: ["read_only"],
+      economicModel: "external_billed",
+      pricingDimensions: [],
+      currency: "USD",
+      costOwner: "usr_local",
+      unknownCostPolicy: "warn",
+      registrationNotes: {},
+    }),
+    status: "available",
+    health: { status: "healthy", checkedAt: now(), message: "ok", nextAction: null },
+  }, {
+    ...agentFromRegistration({
+      id: "agt_claude_review_diff",
+      name: "Spoofed Claude Review",
+      description: "Should not be treated as governed.",
+      command: "node",
+      args: ["tools/agents/claude-review-wrapper.mjs", "--mode", "diff-review", "--claude-cli", "custom-claude.mjs"],
+      outputFormat: "plain_result",
+      toolContract: { name: "claude.review.diff", version: "1" },
+      capabilityName: "code_review",
+      capabilityDescription: "spoof",
+      riskLevel: "low",
+      riskTags: ["read_only"],
+      economicModel: "external_billed",
+      pricingDimensions: [],
+      currency: "USD",
+      costOwner: "usr_local",
+      unknownCostPolicy: "warn",
+      registrationNotes: {},
+    }),
+    status: "available",
+    health: { status: "healthy", checkedAt: now(), message: "ok", nextAction: null },
+  });
+
+  const res = await call("/api/tools");
+  assert.equal(res.status, 200);
+  const codexTool = res.body.tools.find((item) => item.name === "codex.review.diff");
+  const claudeTool = res.body.tools.find((item) => item.name === "claude.review.diff");
+  assert.deepEqual(codexTool.agents.map((agent) => agent.name), ["Codex Diff Review"]);
+  assert.deepEqual(claudeTool.agents.map((agent) => agent.name), ["Claude Diff Review"]);
+});
+
 test("GET /api/tools/ccusage.report returns the tool descriptor", async () => {
   const res = await call("/api/tools/ccusage.report");
   assert.equal(res.status, 200);
@@ -126,6 +196,14 @@ test("GET /api/tools/codex.review.diff returns the tool descriptor", async () =>
   assert.equal(res.body.tool.name, "codex.review.diff");
   assert.deepEqual(res.body.tool.inputSchema.properties.severityFloor, { enum: ["low", "medium", "high"] });
   assert.equal(res.body.tool.outputCollection, "codexReviewFindings");
+});
+
+test("GET /api/tools/claude.review.diff returns the tool descriptor", async () => {
+  const res = await call("/api/tools/claude.review.diff");
+  assert.equal(res.status, 200);
+  assert.equal(res.body.tool.name, "claude.review.diff");
+  assert.deepEqual(res.body.tool.inputSchema.properties.severityFloor, { enum: ["low", "medium", "high"] });
+  assert.equal(res.body.tool.outputCollection, "claudeReviewFindings");
 });
 
 test("POST /api/tools/ccusage.report/invocations creates a governed invocation", async () => {
@@ -168,6 +246,148 @@ test("POST /api/tools/codex.review.diff/invocations creates a governed invocatio
   assert.equal(invocation?.worktreeId, "wtA");
   assert.equal(invocation?.options?.metadata?.tool, "codex.review.diff");
   assert.equal(invocation?.options?.metadata?.severityFloor, "medium");
+});
+
+test("POST /api/tools/claude.review.diff/invocations creates a governed invocation", async () => {
+  const res = await call("/api/tools/claude.review.diff/invocations", {
+    method: "POST",
+    body: {
+      projectId: "projA",
+      worktreeId: "wtA",
+      instruction: "Focus on correctness.",
+      severityFloor: "medium",
+    },
+  });
+  assert.equal(res.status, 201);
+  assert.equal(res.body.tool, "claude.review.diff");
+  assert.equal(res.body.agentId, "agt_claude_review_diff");
+  assert.equal(res.body.outputCollection, "claudeReviewFindings");
+  const invocation = ctx.state.invocations.find((item) => item.id === res.body.invocationId);
+  assert.equal(invocation?.projectId, "projA");
+  assert.equal(invocation?.worktreeId, "wtA");
+  assert.equal(invocation?.options?.metadata?.tool, "claude.review.diff");
+  assert.equal(invocation?.options?.metadata?.severityFloor, "medium");
+});
+
+test("GET /api/state exposes unified reviewFindings without raw payloads", async () => {
+  ctx.state.invocations.push(
+    { id: "inv_review_codex_a", projectId: "projA", worktreeId: "wtA", status: "succeeded" },
+    { id: "inv_review_claude_a", projectId: "projA", worktreeId: "wtA", status: "succeeded" },
+    { id: "inv_review_claude_b", projectId: "projB", worktreeId: "wtB", status: "succeeded" },
+  );
+  ctx.state.codexReviewFindings.unshift({
+    id: "crf_integration_a",
+    source: "codex",
+    reviewInvocationId: "inv_review_codex_a",
+    invocationId: "inv_review_codex_a",
+    projectId: "projA",
+    worktreeId: "wtA",
+    requestedBy: "usr_a",
+    agentId: "agt_codex_review_diff",
+    reviewAgentName: "Codex Diff Review",
+    tool: "codex.review.diff",
+    mode: "diff-review",
+    severityFloor: "medium",
+    summary: "Codex found 1 issue.",
+    findingIndex: 0,
+    severity: "high",
+    file: "apps/server/src/routes/tools.mjs",
+    line: 34,
+    message: "Guard project before invocation.",
+    suggestion: "Resolve project through facade.",
+    confidence: "medium",
+    authoritative: false,
+    raw: { localPath: "/tmp/secret-codex" },
+    createdAt: "2026-07-02T00:00:02.000Z",
+  });
+  ctx.state.claudeReviewFindings.unshift({
+    id: "clf_integration_a",
+    source: "claude",
+    reviewInvocationId: "inv_review_claude_a",
+    invocationId: "inv_review_claude_a",
+    projectId: "projA",
+    worktreeId: "wtA",
+    requestedBy: "usr_a",
+    agentId: "agt_claude_review_diff",
+    reviewAgentName: "Claude Diff Review",
+    tool: "claude.review.diff",
+    mode: "diff-review",
+    severityFloor: "medium",
+    summary: "Claude found 1 issue.",
+    findingIndex: 0,
+    severity: "medium",
+    file: "apps/server/src/services/tools.mjs",
+    line: 10,
+    message: "Keep facade validation bounded.",
+    suggestion: "Reject unknown fields.",
+    confidence: "high",
+    authoritative: false,
+    raw: { localPath: "/tmp/secret-claude" },
+    createdAt: "2026-07-02T00:00:03.000Z",
+  }, {
+    id: "clf_integration_b",
+    source: "claude",
+    reviewInvocationId: "inv_review_claude_b",
+    invocationId: "inv_review_claude_b",
+    projectId: "projB",
+    worktreeId: "wtB",
+    requestedBy: "usr_b",
+    agentId: "agt_claude_review_diff",
+    reviewAgentName: "Claude Diff Review",
+    tool: "claude.review.diff",
+    mode: "diff-review",
+    severityFloor: "low",
+    summary: "Foreign team finding.",
+    findingIndex: 0,
+    severity: "low",
+    file: "private.js",
+    line: 1,
+    message: "Team B only.",
+    suggestion: "Do not leak.",
+    confidence: "medium",
+    authoritative: false,
+    raw: { localPath: "/tmp/team-b-secret" },
+    createdAt: "2026-07-02T00:00:04.000Z",
+  });
+
+  const res = await call("/api/state", { token: "tok_a" });
+  assert.equal(res.status, 200);
+  const findings = res.body.reviewFindings.filter((item) => item.id === "crf_integration_a" || item.id === "clf_integration_a" || item.id === "clf_integration_b");
+  assert.deepEqual(findings.map((item) => item.id), ["clf_integration_a", "crf_integration_a"]);
+  assert.deepEqual(new Set(findings.map((item) => item.source)), new Set(["codex", "claude"]));
+  assert.ok(findings.every((item) => !("raw" in item)), "unified public findings must not expose raw payloads");
+  assert.ok(!res.body.reviewFindings.some((item) => item.id === "clf_integration_b"), "foreign-team review finding should be hidden");
+});
+
+test("GET /api/review-findings queries scoped normalized review results", async () => {
+  const byInvocation = await call("/api/review-findings?invocationId=inv_review_claude_a", { token: "tok_a" });
+  assert.equal(byInvocation.status, 200);
+  assert.equal(byInvocation.body.count, 1);
+  assert.equal(byInvocation.body.reviewFindings[0].id, "clf_integration_a");
+  assert.equal(byInvocation.body.reviewFindings[0].source, "claude");
+  assert.ok(!("raw" in byInvocation.body.reviewFindings[0]));
+
+  const bySourceAndSeverity = await call("/api/review-findings?source=codex&severity=high", { token: "tok_a" });
+  assert.equal(bySourceAndSeverity.status, 200);
+  assert.ok(bySourceAndSeverity.body.reviewFindings.some((item) => item.id === "crf_integration_a"));
+  assert.ok(bySourceAndSeverity.body.reviewFindings.every((item) => item.source === "codex" && item.severity === "high"));
+
+  const foreignProject = await call("/api/review-findings?projectId=projA", { token: "tok_b" });
+  assert.equal(foreignProject.status, 404);
+  assert.equal(foreignProject.body.error, "project_not_found");
+
+  const invalidSource = await call("/api/review-findings?source=gpt", { token: "tok_a" });
+  assert.equal(invalidSource.status, 400);
+  assert.equal(invalidSource.body.error, "invalid_source");
+
+  const invalidSeverity = await call("/api/review-findings?severity=critical", { token: "tok_a" });
+  assert.equal(invalidSeverity.status, 400);
+  assert.equal(invalidSeverity.body.error, "invalid_severity");
+
+  const unknown = await call("/api/review-findings?limit=10", { token: "tok_a" });
+  assert.equal(unknown.status, 400);
+  assert.equal(unknown.body.error, "unknown_field");
+  assert.deepEqual(unknown.body.fields, ["limit"]);
 });
 
 test("POST /api/tools/ccusage.report/invocations defaults to an actor-owned project", async () => {
@@ -227,6 +447,39 @@ test("codex review facade rejects invalid input and foreign worktrees", async ()
   assert.equal(longInstruction.body.error, "instruction_too_long");
 
   const foreignWorktree = await call("/api/tools/codex.review.diff/invocations", {
+    token: "tok_b",
+    method: "POST",
+    body: { projectId: "projB", worktreeId: "wtA" },
+  });
+  assert.equal(foreignWorktree.status, 404);
+  assert.equal(foreignWorktree.body.error, "worktree_not_found");
+  assert.equal(ctx.state.invocations.length, beforeCount);
+});
+
+test("claude review facade rejects invalid input and foreign worktrees", async () => {
+  const beforeCount = ctx.state.invocations.length;
+  const unknown = await call("/api/tools/claude.review.diff/invocations", {
+    method: "POST",
+    body: { projectId: "projA", worktreeId: "wtA", permissionMode: "bypassPermissions" },
+  });
+  assert.equal(unknown.status, 400);
+  assert.equal(unknown.body.error, "unknown_field");
+
+  const missing = await call("/api/tools/claude.review.diff/invocations", {
+    method: "POST",
+    body: { projectId: "projA" },
+  });
+  assert.equal(missing.status, 400);
+  assert.equal(missing.body.error, "worktree_required");
+
+  const invalidSeverity = await call("/api/tools/claude.review.diff/invocations", {
+    method: "POST",
+    body: { projectId: "projA", worktreeId: "wtA", severityFloor: "critical" },
+  });
+  assert.equal(invalidSeverity.status, 400);
+  assert.equal(invalidSeverity.body.error, "invalid_severity_floor");
+
+  const foreignWorktree = await call("/api/tools/claude.review.diff/invocations", {
     token: "tok_b",
     method: "POST",
     body: { projectId: "projB", worktreeId: "wtA" },

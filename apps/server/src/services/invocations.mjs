@@ -21,6 +21,7 @@ export function createInvocationService({
   recordInvocationLedgerEntry,
   recordCcusageImportedEstimates,
   recordCodexReviewFindings,
+  recordClaudeReviewFindings,
   currentProject,
   worktreeForProject,
   uniqueStrings,
@@ -53,6 +54,7 @@ export function createInvocationService({
     recordInvocationLedgerEntry,
     recordCcusageImportedEstimates,
     recordCodexReviewFindings,
+    recordClaudeReviewFindings,
   });
   const {
     abortDirectHttpRun,

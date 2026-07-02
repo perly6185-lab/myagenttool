@@ -10,6 +10,7 @@ import { handleInvocationRoutes } from "../routes/invocations.mjs";
 import { handleLoopRoutineRoutes } from "../routes/loop-routines.mjs";
 import { handleM3Routes } from "../routes/m3.mjs";
 import { handleProjectRoutes } from "../routes/projects.mjs";
+import { handleReviewFindingRoutes } from "../routes/review-findings.mjs";
 import { handleTerminalRoutes } from "../routes/terminal.mjs";
 import { handleToolRoutes } from "../routes/tools.mjs";
 
@@ -352,6 +353,18 @@ export function createHttpServer({
         listTools,
         getTool,
         createToolInvocation,
+      })) {
+        return;
+      }
+
+      if (handleReviewFindingRoutes({
+        req,
+        res,
+        url,
+        sendJson,
+        state,
+        actor,
+        publicState,
       })) {
         return;
       }

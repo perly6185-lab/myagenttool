@@ -1,5 +1,5 @@
-export const CODEX_REVIEW_TOOL_CONTRACT = {
-  name: "codex.review.diff",
+export const CLAUDE_REVIEW_TOOL_CONTRACT = {
+  name: "claude.review.diff",
   version: "1",
   inputSchema: {
     type: "object",
@@ -15,7 +15,7 @@ export const CODEX_REVIEW_TOOL_CONTRACT = {
   outputSchema: {
     structuredResult: true,
     imports: {
-      collection: "codexReviewFindings",
+      collection: "claudeReviewFindings",
       authoritative: false,
     },
     finding: {
@@ -33,31 +33,33 @@ export const CODEX_REVIEW_TOOL_CONTRACT = {
     "project_required",
     "worktree_required",
     "worktree_not_found",
+    "invalid_severity_floor",
+    "instruction_too_long",
     "agent_not_governed",
   ],
 };
 
-export function createCodexReviewAgentRegistration({
-  wrapperScriptPath = "tools/agents/codex-review-wrapper.mjs",
+export function createClaudeReviewAgentRegistration({
+  wrapperScriptPath = "tools/agents/claude-review-wrapper.mjs",
   costOwner = "usr_local",
   currency = "USD",
 } = {}) {
   const wrapperPath = String(wrapperScriptPath ?? "").trim();
   if (!wrapperPath) {
-    throw new Error("codex review wrapperScriptPath is required.");
+    throw new Error("claude review wrapperScriptPath is required.");
   }
   return {
-    id: "agt_codex_review_diff",
+    id: "agt_claude_review_diff",
     type: "cli",
-    name: "Codex Diff Review",
-    description: "Runs a governed read-only Codex review over a project worktree diff.",
+    name: "Claude Diff Review",
+    description: "Runs a governed read-only Claude review over a project worktree diff.",
     command: "node",
     args: [wrapperPath, "--mode", "diff-review"],
-    timeoutSeconds: 120,
+    timeoutSeconds: 180,
     outputFormat: "plain_result",
-    toolContract: CODEX_REVIEW_TOOL_CONTRACT,
+    toolContract: CLAUDE_REVIEW_TOOL_CONTRACT,
     capabilityName: "code_review",
-    capabilityDescription: "Review a worktree diff and return structured findings.",
+    capabilityDescription: "Review a worktree diff with Claude and return structured findings.",
     riskLevel: "low",
     riskTags: ["read_only", "read_project", "code_review", "local_agent"],
     economicModel: "external_billed",
@@ -66,26 +68,26 @@ export function createCodexReviewAgentRegistration({
     costOwner,
     unknownCostPolicy: "warn",
     registrationNotes: {
-      risk: "Runs a fixed Codex diff-review wrapper. External callers cannot choose cwd, shell args, sandbox, or permission flags.",
+      risk: "Runs a fixed Claude diff-review wrapper in plan mode. External callers cannot choose cwd, shell args, permission mode, or edit/apply behavior.",
       data: "Reads the selected project worktree diff and stores structured review findings.",
-      cost: "Codex usage is externally billed by the configured Codex/OpenAI account and should be reported separately from platform charges.",
-      cancellation: "The Desktop Bridge attempts to terminate the Codex review process tree when cancellation is requested.",
+      cost: "Claude usage is externally billed by the configured Anthropic/Claude account and may be reported by Claude stream-json result events.",
+      cancellation: "The Desktop Bridge attempts to terminate the Claude review process tree when cancellation is requested.",
     },
   };
 }
 
-export function isGovernedCodexReviewAgent(agent) {
+export function isGovernedClaudeReviewAgent(agent) {
   if (!agent) {
     return false;
   }
-  const hasId = agent.id === "agt_codex_review_diff";
+  const hasId = agent.id === "agt_claude_review_diff";
   const hasCliAdapter = agent.adapter?.type === "cli";
   const hasNodeCommand = String(agent.adapter?.command ?? "") === "node";
   const hasPlainResultOutput = agent.adapter?.outputFormat === "plain_result";
-  const hasToolContract = agent.toolContract?.name === CODEX_REVIEW_TOOL_CONTRACT.name;
+  const hasToolContract = agent.toolContract?.name === CLAUDE_REVIEW_TOOL_CONTRACT.name;
   const hasReviewCapability = (agent.capabilities ?? []).some((capability) => capability?.name === "code_review");
   const adapterArgs = Array.isArray(agent.adapter?.args) ? agent.adapter.args.map(String) : [];
-  const fixedWrapperArgs = isExactGovernedReviewWrapperArgs(adapterArgs, "codex-review-wrapper.mjs");
+  const fixedWrapperArgs = isExactGovernedReviewWrapperArgs(adapterArgs, "claude-review-wrapper.mjs");
   return hasId && hasCliAdapter && hasNodeCommand && hasPlainResultOutput && hasToolContract && hasReviewCapability && fixedWrapperArgs;
 }
 

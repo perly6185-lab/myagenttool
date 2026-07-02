@@ -12,6 +12,7 @@ export function createInvocationCompletionRuntime({
   recordInvocationLedgerEntry,
   recordCcusageImportedEstimates,
   recordCodexReviewFindings,
+  recordClaudeReviewFindings,
 }) {
   function completeInvocation(invocation, body) {
     if (isTerminal(invocation.status)) {
@@ -66,6 +67,13 @@ export function createInvocationCompletionRuntime({
     }
     if (terminalStatus === "succeeded" && typeof recordCodexReviewFindings === "function") {
       recordCodexReviewFindings({
+        invocation,
+        result: body.result ?? null,
+        agent: findAgent(invocation.agentId),
+      });
+    }
+    if (terminalStatus === "succeeded" && typeof recordClaudeReviewFindings === "function") {
+      recordClaudeReviewFindings({
         invocation,
         result: body.result ?? null,
         agent: findAgent(invocation.agentId),

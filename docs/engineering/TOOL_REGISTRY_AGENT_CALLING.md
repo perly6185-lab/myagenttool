@@ -2,7 +2,7 @@
 
 This document describes the governed CLI/JSON channel external tools and other
 agents should use to discover and invoke platform-managed tools such as
-`ccusage.report` and future Codex tools such as `codex.review.diff`.
+`ccusage.report`, `codex.review.diff`, and `claude.review.diff`.
 
 ## Contract
 
@@ -17,8 +17,11 @@ Use this flow:
 GET /api/tools
 GET /api/tools/ccusage.report
 GET /api/tools/codex.review.diff
+GET /api/tools/claude.review.diff
 POST /api/tools/ccusage.report/invocations
 POST /api/tools/codex.review.diff/invocations
+POST /api/tools/claude.review.diff/invocations
+GET /api/review-findings
 GET /api/state
 ```
 
@@ -46,9 +49,9 @@ output schemas, approval policy, and governed agent references. The descriptor
 may include agent ids and health-facing status, but intentionally does not
 expose the executable command or argv.
 
-Codex tools use the same discovery and invocation shape. A caller should treat
-`codex.review.diff` as a governed review capability, not as permission to launch
-the local Codex CLI with arbitrary arguments.
+Codex and Claude tools use the same discovery and invocation shape. A caller
+should treat `codex.review.diff` and `claude.review.diff` as governed review
+capabilities, not as permission to launch local CLIs with arbitrary arguments.
 
 ## Invocation
 
@@ -85,6 +88,29 @@ Successful creation returns a normal invocation id:
 After creation, poll `GET /api/state` and follow the invocation by
 `invocationId`. Completed ccusage rows are surfaced in
 `importedUsageEstimates` with `reportInvocationId` equal to that invocation id.
+Completed code review rows are surfaced in their provider-specific collection
+and in the derived `reviewFindings` collection with the same `invocationId`.
+For filtered polling, prefer:
+
+```http
+GET /api/review-findings?invocationId=inv_456
+Authorization: Bearer <token>
+```
+
+A minimal external agent client is available at
+`tools/dev/tool-registry-review-client.mjs`:
+
+```bash
+node tools/dev/tool-registry-review-client.mjs \
+  --base-url http://127.0.0.1:3001 \
+  --tool claude.review.diff \
+  --project-id prj_local \
+  --worktree-id wtr_local \
+  --severity-floor medium
+```
+
+The client demonstrates discover -> invoke -> poll without depending on
+internal adapter fields.
 
 ## Codex Review Example
 
@@ -119,6 +145,45 @@ collection:
 After creation, poll `GET /api/state` and follow the invocation by
 `invocationId`. Completed review findings should be exposed as normalized
 records in `codexReviewFindings`, not as raw Codex transcripts.
+Multi-review orchestrators can also read the derived `reviewFindings` public
+state view and filter by `source: "codex"` or `tool: "codex.review.diff"`.
+
+## Claude Review Example
+
+Claude review uses the same facade pattern, backed by a dedicated read-only
+agent registration:
+
+```http
+POST /api/tools/claude.review.diff/invocations
+Content-Type: application/json
+Authorization: Bearer <token>
+
+{
+  "projectId": "prj_local",
+  "worktreeId": "wt_123",
+  "instruction": "Review this diff for correctness and missing tests.",
+  "severityFloor": "medium"
+}
+```
+
+Successful creation returns a normal invocation id and a Claude-specific output
+collection:
+
+```json
+{
+  "tool": "claude.review.diff",
+  "invocationId": "inv_789",
+  "agentId": "agt_claude_review_diff",
+  "status": "queued",
+  "outputCollection": "claudeReviewFindings"
+}
+```
+
+The Claude wrapper forces `--permission-mode plan`. External callers cannot use
+this tool to request `acceptEdits`, `bypassPermissions`, edit/apply behavior,
+arbitrary cwd, shell, env, model, or raw argv. Completed findings are exposed as
+normalized records in `claudeReviewFindings`, not as raw Claude transcripts.
+They are also available in the unified `reviewFindings` view.
 
 ## ccusage Input Rules
 
@@ -152,9 +217,12 @@ Common errors:
 400 source_report_mismatch
 400 invalid_date_filter
 400 invalid_timezone
+400 invalid_source
+400 invalid_severity
 409 approval_required
 409 agent_not_available
 409 codex_unavailable
+409 claude_unavailable
 ```
 
 Callers should treat `approval_required` as a governance result, not a transport

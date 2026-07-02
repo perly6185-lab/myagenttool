@@ -36,7 +36,9 @@ export function buildPublicState({
   const byInvocation = (rows) => (rows ?? []).filter((r) => invVisible(r?.invocationId));
   const byProject = (rows) => (rows ?? []).filter((r) => projectVisible(r?.projectId));
   const importedUsagePublic = (rows) => byInvocation(rows).map(({ raw, ...row }) => row);
-  const codexReviewFindingsPublic = (rows) => byInvocation(rows).map(({ raw, ...row }) => row);
+  const codexReviewFindings = byInvocation(state.codexReviewFindings).map(({ raw, ...row }) => row);
+  const claudeReviewFindings = byInvocation(state.claudeReviewFindings).map(({ raw, ...row }) => row);
+  const reviewFindings = [...codexReviewFindings, ...claudeReviewFindings].sort(compareReviewFindings);
   // Imported evidence has no invocation, so it can't ride byInvocation (a null
   // invocationId reads as globally visible). Scope it by its stamped owning team
   // instead; rows written before that stamp existed belong to the local team.
@@ -91,7 +93,9 @@ export function buildPublicState({
     aiUsageRecords: byInvocation(state.aiUsageRecords),
     ledgerEntries: byProject(state.ledgerEntries),
     importedUsageEstimates: importedUsagePublic(state.importedUsageEstimates),
-    codexReviewFindings: codexReviewFindingsPublic(state.codexReviewFindings),
+    codexReviewFindings,
+    claudeReviewFindings,
+    reviewFindings,
     ledgerSummary: typeof ledgerSummary === "function" ? ledgerSummary() : null,
     // Project budgets scope by project; team pools (rows with teamId, no
     // projectId) scope by the viewer's team — byProject alone would treat them
@@ -135,4 +139,13 @@ export function buildPublicState({
     sshTargets: state.sshTargets,
     sshConnectionTests: state.sshConnectionTests,
   };
+}
+
+function compareReviewFindings(left, right) {
+  const rightTime = Date.parse(right?.createdAt ?? "");
+  const leftTime = Date.parse(left?.createdAt ?? "");
+  if (Number.isFinite(rightTime) && Number.isFinite(leftTime) && rightTime !== leftTime) {
+    return rightTime - leftTime;
+  }
+  return String(right?.id ?? "").localeCompare(String(left?.id ?? ""));
 }

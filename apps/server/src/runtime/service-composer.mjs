@@ -8,6 +8,7 @@ import {
 } from "../services/agents.mjs";
 import { createAgentSkillService } from "../services/agent-skills.mjs";
 import { createCcusageImportService } from "../services/ccusage-imports.mjs";
+import { createClaudeReviewImportService } from "../services/claude-review-imports.mjs";
 import { createCodexReviewImportService } from "../services/codex-review-imports.mjs";
 import { createCodexService } from "../services/codex.mjs";
 import { createIntegrationService } from "../services/integrations.mjs";
@@ -195,6 +196,12 @@ export function createServerRuntimeServices({
     nextId,
     appendEvent,
   });
+  const { recordClaudeReviewFindings } = createClaudeReviewImportService({
+    state,
+    now,
+    nextId,
+    appendEvent,
+  });
 
   invocationService = createInvocationService({
     state,
@@ -210,6 +217,7 @@ export function createServerRuntimeServices({
     recordInvocationLedgerEntry,
     recordCcusageImportedEstimates,
     recordCodexReviewFindings,
+    recordClaudeReviewFindings,
     currentProject,
     worktreeForProject,
     uniqueStrings,

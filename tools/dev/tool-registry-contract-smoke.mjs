@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { createCcusageAgentRegistration } from "../../apps/server/src/services/ccusage-agent.mjs";
+import { createClaudeReviewAgentRegistration } from "../../apps/server/src/services/claude-agent.mjs";
 import { createCodexReviewAgentRegistration } from "../../apps/server/src/services/codex-agent.mjs";
 import { createToolService } from "../../apps/server/src/services/tools.mjs";
 
@@ -19,9 +20,21 @@ assert.deepEqual(fixture.stableEndpoints, [
   "GET /api/tools",
   "GET /api/tools/{toolName}",
   "POST /api/tools/{toolName}/invocations",
+  "GET /api/review-findings",
   "GET /api/state",
 ]);
 ok("fixture declares v1 stable endpoints");
+assert(fixture.stableStateCollections.includes("reviewFindings"), "fixture should declare the unified review findings collection");
+assert.equal(fixture.recommendedReviewOutputCollection, "reviewFindings");
+assert.deepEqual([...fixture.reviewFindingQuery.allowedFilters].sort(), [
+  "invocationId",
+  "projectId",
+  "severity",
+  "source",
+  "worktreeId",
+]);
+assert(fixture.exampleClients.some((client) => client.path === "tools/dev/tool-registry-review-client.mjs"), "fixture should declare the review client example");
+ok("fixture declares the recommended unified review output collection");
 
 const state = {
   device: { id: "dev_local_001", status: "online", unlinkState: "linked" },
@@ -33,6 +46,7 @@ const state = {
       cliScriptPath: "/usr/local/lib/node_modules/ccusage/src/cli.js",
     })),
     agentFromRegistration(createCodexReviewAgentRegistration()),
+    agentFromRegistration(createClaudeReviewAgentRegistration()),
   ],
   invocations: [],
   events: [],
@@ -92,6 +106,13 @@ const codexCreated = service.createToolInvocation("codex.review.diff", fixture.t
 });
 assert.equal(codexCreated.status, 201);
 assert.equal(codexCreated.body.outputCollection, fixture.tools["codex.review.diff"].outputCollection);
+
+const claudeCreated = service.createToolInvocation("claude.review.diff", fixture.tools["claude.review.diff"].exampleInput, {
+  userId: "usr_local",
+  teamId: "team_local",
+});
+assert.equal(claudeCreated.status, 201);
+assert.equal(claudeCreated.body.outputCollection, fixture.tools["claude.review.diff"].outputCollection);
 ok("fixture example inputs create governed invocations");
 
 const unknown = service.createToolInvocation("codex.review.diff", {
@@ -117,6 +138,25 @@ assertStableError("codex.review.diff", service.createToolInvocation("codex.revie
   ...fixture.tools["codex.review.diff"].exampleInput,
   projectId: "prj_missing",
 }, { userId: "usr_local", teamId: "team_local" }));
+assertStableError("claude.review.diff", service.createToolInvocation("claude.review.diff", {
+  ...fixture.tools["claude.review.diff"].exampleInput,
+  permissionMode: "bypassPermissions",
+}, { userId: "usr_local", teamId: "team_local" }));
+assertStableError("claude.review.diff", service.createToolInvocation("claude.review.diff", {
+  projectId: "prj_local",
+}, { userId: "usr_local", teamId: "team_local" }));
+assertStableError("claude.review.diff", service.createToolInvocation("claude.review.diff", {
+  ...fixture.tools["claude.review.diff"].exampleInput,
+  severityFloor: "critical",
+}, { userId: "usr_local", teamId: "team_local" }));
+assertStableError("claude.review.diff", service.createToolInvocation("claude.review.diff", {
+  ...fixture.tools["claude.review.diff"].exampleInput,
+  instruction: "x".repeat(1201),
+}, { userId: "usr_local", teamId: "team_local" }));
+assertStableError("claude.review.diff", service.createToolInvocation("claude.review.diff", {
+  ...fixture.tools["claude.review.diff"].exampleInput,
+  projectId: "prj_missing",
+}, { userId: "usr_local", teamId: "team_local" }));
 assertStableError("ccusage.report", service.createToolInvocation("ccusage.report", {
   report: "daily",
   shell: true,
@@ -127,6 +167,7 @@ assertStableError("ccusage.report", service.createToolInvocation("ccusage.report
 }, { userId: "usr_local", teamId: "team_local" }));
 assert(fixture.tools["ccusage.report"].stableErrorCodes.includes("project_not_found"), "ccusage.report fixture should include route-level project guard errors");
 assert(fixture.tools["codex.review.diff"].stableErrorCodes.includes("project_not_found"), "codex.review.diff fixture should include route-level project guard errors");
+assert(fixture.tools["claude.review.diff"].stableErrorCodes.includes("project_not_found"), "claude.review.diff fixture should include route-level project guard errors");
 ok("facade validation errors are listed in the fixture");
 
 console.log(`\ntool-registry-contract-smoke: ${passed} checks passed`);

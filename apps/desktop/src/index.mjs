@@ -103,6 +103,36 @@ if (process.argv.includes("--check")) {
   if (codexReviewPlan.args.includes("must-not-render") || codexReviewPlan.args.includes("--shell")) {
     throw new Error("Codex review wrapper rendered unallowlisted metadata.");
   }
+  const claudeReviewPlan = createCliSpawnPlan({
+    type: "cli",
+    command: "node",
+    args: ["tools/agents/claude-review-wrapper.mjs", "--mode", "diff-review"],
+    outputFormat: "plain_result",
+  }, {
+    invocationId: "inv_claude_review_check",
+    task: "review",
+    options: {
+      metadata: {
+        tool: "claude.review.diff",
+        worktreePath: process.cwd(),
+        instruction: "Focus on correctness.",
+        severityFloor: "medium",
+        permissionMode: "bypassPermissions",
+      },
+    },
+  });
+  if (!claudeReviewPlan.args.includes("--cwd") || !claudeReviewPlan.args.includes(process.cwd())) {
+    throw new Error("Claude review wrapper cwd injection is not configured.");
+  }
+  if (!claudeReviewPlan.args.includes("--instruction") || !claudeReviewPlan.args.includes("Focus on correctness.")) {
+    throw new Error("Claude review wrapper instruction injection is not configured.");
+  }
+  if (!claudeReviewPlan.args.includes("--severity-floor") || !claudeReviewPlan.args.includes("medium")) {
+    throw new Error("Claude review wrapper severity injection is not configured.");
+  }
+  if (claudeReviewPlan.args.includes("bypassPermissions") || claudeReviewPlan.args.includes("--permission-mode")) {
+    throw new Error("Claude review wrapper rendered unallowlisted permission metadata.");
+  }
   if (typeof pty.spawn !== "function") {
     throw new Error("node-pty is not available.");
   }
@@ -1173,7 +1203,7 @@ function createCliSpawnPlan(adapter, payload) {
     : codexArgsTemplate(adapter, payload);
   const renderedArgs = isCodexCliCommand(adapter.command)
     ? applyCodexPermissionMode(renderArgs(argsTemplate, payloadJson, payload), payload)
-    : codexReviewWrapperArgs(renderArgs(argsTemplate, payloadJson, payload), payload);
+    : governedReviewWrapperArgs(renderArgs(argsTemplate, payloadJson, payload), payload);
   const baseCommand = codexCommandOverride || String(adapter.command);
   const command = adapter.command === "demo-agent" || codexCommandOverride === "fixture"
     ? process.execPath
@@ -1210,11 +1240,11 @@ function projectCwd(payload) {
   return process.cwd();
 }
 
-function codexReviewWrapperArgs(renderedArgs, payload) {
+function governedReviewWrapperArgs(renderedArgs, payload) {
   const metadata = payload.options?.metadata && typeof payload.options.metadata === "object" && !Array.isArray(payload.options.metadata)
     ? payload.options.metadata
     : {};
-  if (metadata.tool !== "codex.review.diff" || !usesCodexReviewWrapper(renderedArgs)) {
+  if (!usesGovernedReviewWrapper(String(metadata.tool ?? ""), renderedArgs)) {
     return renderedArgs;
   }
   const injected = [...renderedArgs];
@@ -1235,9 +1265,16 @@ function codexReviewWrapperArgs(renderedArgs, payload) {
   return injected;
 }
 
-function usesCodexReviewWrapper(args) {
-  return args.some((arg) => String(arg).replaceAll("\\", "/").endsWith("tools/agents/codex-review-wrapper.mjs")
-    || String(arg).replaceAll("\\", "/").endsWith("codex-review-wrapper.mjs"));
+function usesGovernedReviewWrapper(tool, args) {
+  const wrapper = tool === "codex.review.diff"
+    ? "codex-review-wrapper.mjs"
+    : tool === "claude.review.diff"
+      ? "claude-review-wrapper.mjs"
+      : null;
+  return Boolean(wrapper) && args.some((arg) => {
+    const normalized = String(arg).replaceAll("\\", "/");
+    return normalized.endsWith(`tools/agents/${wrapper}`) || normalized.endsWith(wrapper);
+  });
 }
 
 function hasFlag(args, flag) {

@@ -7,6 +7,10 @@ import {
   CODEX_REVIEW_TOOL_CONTRACT,
   isGovernedCodexReviewAgent,
 } from "./codex-agent.mjs";
+import {
+  CLAUDE_REVIEW_TOOL_CONTRACT,
+  isGovernedClaudeReviewAgent,
+} from "./claude-agent.mjs";
 import { teamOf } from "../runtime/auth.mjs";
 
 const CCUSAGE_APPROVAL_REQUIRED_REPORTS = new Set(["session"]);
@@ -31,7 +35,26 @@ export function createToolService({
       return createCcusageToolInvocation(input, actor);
     }
     if (name === CODEX_REVIEW_TOOL_CONTRACT.name) {
-      return createCodexReviewInvocation(input, actor);
+      return createReviewInvocation({
+        input,
+        actor,
+        contract: CODEX_REVIEW_TOOL_CONTRACT,
+        selectAgent: selectCodexReviewAgent,
+        buildTask: buildCodexReviewTask,
+        outputCollection: "codexReviewFindings",
+        agentLabel: "Codex",
+      });
+    }
+    if (name === CLAUDE_REVIEW_TOOL_CONTRACT.name) {
+      return createReviewInvocation({
+        input,
+        actor,
+        contract: CLAUDE_REVIEW_TOOL_CONTRACT,
+        selectAgent: selectClaudeReviewAgent,
+        buildTask: buildClaudeReviewTask,
+        outputCollection: "claudeReviewFindings",
+        agentLabel: "Claude",
+      });
     }
     return { status: 404, body: { error: "tool_not_found" } };
   }
@@ -102,8 +125,8 @@ export function createToolService({
     };
   }
 
-  function createCodexReviewInvocation(input, actor) {
-    const validation = validateCodexReviewInput(input);
+  function createReviewInvocation({ input, actor, contract, selectAgent, buildTask, outputCollection, agentLabel }) {
+    const validation = validateReviewInput(input);
     if (!validation.ok) {
       return { status: validation.status, body: validation.body };
     }
@@ -116,25 +139,25 @@ export function createToolService({
     if (!worktree) {
       return { status: 404, body: { error: "worktree_not_found" } };
     }
-    const agent = selectCodexReviewAgent();
+    const agent = selectAgent();
     if (!agent) {
-      return { status: 409, body: { error: "agent_not_available", message: "No governed Codex diff review agent is available." } };
+      return { status: 409, body: { error: "agent_not_available", message: `No governed ${agentLabel} diff review agent is available.` } };
     }
     if (agent.status === "disabled") {
-      return { status: 409, body: { error: "agent_not_available", message: "The governed Codex diff review agent is disabled.", agentId: agent.id } };
+      return { status: 409, body: { error: "agent_not_available", message: `The governed ${agentLabel} diff review agent is disabled.`, agentId: agent.id } };
     }
     if (agent.health?.status === "unhealthy") {
-      return { status: 409, body: { error: "agent_not_available", message: agent.health.message ?? "The governed Codex diff review agent is unhealthy.", agentId: agent.id } };
+      return { status: 409, body: { error: "agent_not_available", message: agent.health.message ?? `The governed ${agentLabel} diff review agent is unhealthy.`, agentId: agent.id } };
     }
     if (agent.location?.type === "local_device" && state.device?.unlinkState === "unlinked") {
       return { status: 409, body: { error: "agent_not_available", message: "The local device is unlinked.", agentId: agent.id } };
     }
-    const invocation = createInvocation(buildCodexReviewTask(value), agent, {
+    const invocation = createInvocation(buildTask(value), agent, {
       actor,
       requestedBy: actor?.userId,
       metadata: {
-        tool: CODEX_REVIEW_TOOL_CONTRACT.name,
-        toolVersion: CODEX_REVIEW_TOOL_CONTRACT.version,
+        tool: contract.name,
+        toolVersion: contract.version,
         projectId,
         worktreeId: worktree.id,
         severityFloor: value.severityFloor,
@@ -147,10 +170,10 @@ export function createToolService({
       invocationId: invocation.id,
       type: "tool_invocation_created",
       level: "info",
-      message: `Tool ${CODEX_REVIEW_TOOL_CONTRACT.name} created diff review invocation.`,
+      message: `Tool ${contract.name} created diff review invocation.`,
       data: {
-        tool: CODEX_REVIEW_TOOL_CONTRACT.name,
-        version: CODEX_REVIEW_TOOL_CONTRACT.version,
+        tool: contract.name,
+        version: contract.version,
         agentId: agent.id,
         worktreeId: worktree.id,
       },
@@ -158,11 +181,11 @@ export function createToolService({
     return {
       status: 201,
       body: {
-        tool: CODEX_REVIEW_TOOL_CONTRACT.name,
+        tool: contract.name,
         invocationId: invocation.id,
         agentId: agent.id,
         status: invocation.status,
-        outputCollection: "codexReviewFindings",
+        outputCollection,
         invocation,
       },
     };
@@ -171,9 +194,11 @@ export function createToolService({
   function discoverTools() {
     const ccusageAgents = (state.agents ?? []).filter(isGovernedCcusageAgent);
     const codexReviewAgents = (state.agents ?? []).filter(isGovernedCodexReviewAgent);
+    const claudeReviewAgents = (state.agents ?? []).filter(isGovernedClaudeReviewAgent);
     return [
       ...(ccusageAgents.length ? [buildCcusageToolDescriptor(ccusageAgents)] : []),
       ...(codexReviewAgents.length ? [buildCodexReviewToolDescriptor(codexReviewAgents)] : []),
+      ...(claudeReviewAgents.length ? [buildClaudeReviewToolDescriptor(claudeReviewAgents)] : []),
     ];
   }
 
@@ -184,6 +209,10 @@ export function createToolService({
 
   function selectCodexReviewAgent() {
     return (state.agents ?? []).find(isGovernedCodexReviewAgent) ?? null;
+  }
+
+  function selectClaudeReviewAgent() {
+    return (state.agents ?? []).find(isGovernedClaudeReviewAgent) ?? null;
   }
 
   function resolveToolProjectId(projectId, actor) {
@@ -211,6 +240,7 @@ export function createToolService({
     getTool,
     listTools,
     validateCodexReviewInput,
+    validateClaudeReviewInput,
     validateCcusageReportInput,
   };
 }
@@ -267,6 +297,33 @@ function buildCodexReviewToolDescriptor(agents) {
     },
     authoritativeBilling: false,
     outputCollection: "codexReviewFindings",
+  };
+}
+
+function buildClaudeReviewToolDescriptor(agents) {
+  return {
+    name: CLAUDE_REVIEW_TOOL_CONTRACT.name,
+    version: CLAUDE_REVIEW_TOOL_CONTRACT.version,
+    displayName: "Claude Diff Review",
+    description: "Run a governed read-only Claude review over a project worktree diff.",
+    riskLevel: "low",
+    riskTags: ["read_only", "read_project", "code_review", "local_agent"],
+    requiresLocalDevice: true,
+    inputSchema: CLAUDE_REVIEW_TOOL_CONTRACT.inputSchema,
+    outputSchema: CLAUDE_REVIEW_TOOL_CONTRACT.outputSchema,
+    agents: agents.map((agent) => ({
+      id: agent.id,
+      name: agent.name,
+      status: agent.status,
+      mode: "diff-review",
+    })),
+    approvalPolicy: {
+      defaultReadOnlyReview: "allowed",
+      patchProposal: "approval_required",
+      applyPatch: "approval_required",
+    },
+    authoritativeBilling: false,
+    outputCollection: "claudeReviewFindings",
   };
 }
 
@@ -337,7 +394,7 @@ function optionalTimezone(value) {
     : { ok: false, status: 400, body: { error: "invalid_timezone" } };
 }
 
-function validateCodexReviewInput(input = {}) {
+function validateReviewInput(input = {}) {
   if (!input || typeof input !== "object" || Array.isArray(input)) {
     return { ok: false, status: 400, body: { error: "invalid_input", message: "Tool input must be an object." } };
   }
@@ -371,6 +428,14 @@ function validateCodexReviewInput(input = {}) {
   };
 }
 
+function validateCodexReviewInput(input = {}) {
+  return validateReviewInput(input);
+}
+
+function validateClaudeReviewInput(input = {}) {
+  return validateReviewInput(input);
+}
+
 function buildCcusageTask(value) {
   const filters = [
     value.since ? `since ${value.since}` : null,
@@ -385,6 +450,11 @@ function buildCcusageTask(value) {
 function buildCodexReviewTask(value) {
   const suffix = value.instruction ? ` Instruction: ${value.instruction}` : "";
   return `Review the selected worktree diff with Codex. Severity floor: ${value.severityFloor}.${suffix}`;
+}
+
+function buildClaudeReviewTask(value) {
+  const suffix = value.instruction ? ` Instruction: ${value.instruction}` : "";
+  return `Review the selected worktree diff with Claude. Severity floor: ${value.severityFloor}.${suffix}`;
 }
 
 function reportIdForAgent(agentId) {
