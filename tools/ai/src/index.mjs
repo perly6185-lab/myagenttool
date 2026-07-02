@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import {
   LOOP_ENQUEUEABLE_STATES,
@@ -88,6 +88,13 @@ import {
   resolveCodingAdapter,
   runWork,
 } from "./legacy/work-runner.mjs";
+import {
+  evaluateHeldoutSet,
+  formatHeldoutReport,
+  judgeCase,
+  loadHeldoutSet,
+  mockResolver,
+} from "./evals/heldout.mjs";
 import { configureLoopWorktreeContext } from "./loop/worktree.mjs";
 import { configureLoopPromotionContext } from "./loop/promotion.mjs";
 import {
@@ -599,6 +606,11 @@ function main() {
     return;
   }
 
+  if (command === "eval-heldout") {
+    evalHeldout(args).catch(failFromError);
+    return;
+  }
+
   fail(`Unknown command: ${command}\n\n${HELP}`);
 }
 
@@ -613,6 +625,7 @@ function check() {
     "docs/design/MYAGENTTOOL_DESIGN.md",
     "docs/design/PRODUCT_FLOWS.md",
     "docs/engineering/VISUAL_QA.md",
+    "docs/engineering/L4_HELDOUT_EVAL.md",
     "DESIGN.md",
   ];
 
@@ -759,6 +772,19 @@ function check() {
     fail("Loop registry entry sanity check failed.");
   }
 
+  const heldoutCases = loadHeldoutSet(resolve(repoRoot, "tools/ai/evals/heldout"));
+  if (heldoutCases.length < 3) {
+    fail("Held-out set sanity check failed: expected at least 3 cases.");
+  }
+  const heldoutResults = heldoutCases.map((caseObj) => judgeCase(caseObj, mockResolver(caseObj)));
+  const heldoutResolved = heldoutResults.filter((result) => result.resolved).length;
+  if (heldoutResolved === 0) {
+    fail("Held-out set sanity check failed: mock pass rate is 0% (harness or set is broken).");
+  }
+  if (heldoutResolved === heldoutCases.length) {
+    fail("Held-out set sanity check failed: mock pass rate is 100%, so the set no longer tests a real capability gap. Keep at least one intentionally-unsolved case.");
+  }
+
   console.log("[tools-ai:check] AI delivery helpers check OK");
 }
 
@@ -777,6 +803,96 @@ async function loopRetry(args) {
   appendLoopEvent(entry, "loop_retry_requested", entry.state, "Loop retry requested.", { provider, apply, openPr, skipVerify });
   console.log(`Retrying loop run ${entry.runId} with provider ${provider}${apply ? " in apply mode" : " as dry-run"}.`);
   await runWork(retryArgs);
+}
+
+async function evalHeldout(args) {
+  const setArg = option(args, "--set") ?? "tools/ai/evals/heldout";
+  const setDir = resolve(repoRoot, setArg);
+  const resolverName = (option(args, "--resolver") ?? "mock").toLowerCase();
+  const cases = loadHeldoutSet(setDir);
+  const resolver = buildHeldoutResolver(resolverName, args);
+
+  const summary = await evaluateHeldoutSet({ cases, resolver });
+  const report = formatHeldoutReport(summary, { setDir: setArg, resolverName });
+
+  const runId = `${new Date().toISOString().replace(/[:.]/g, "-")}-heldout`;
+  const evalDir = resolve(repoRoot, ".myagenttool/evals", runId);
+  mkdirSync(evalDir, { recursive: true });
+  writeFileSync(resolve(evalDir, "heldout-eval.json"), `${JSON.stringify(summary, null, 2)}\n`, "utf8");
+  writeFileSync(resolve(evalDir, "heldout-eval.md"), report, "utf8");
+
+  writeOrPrint(args.includes("--json") ? `${JSON.stringify(summary, null, 2)}\n` : report, option(args, "--out"));
+  // Status to stderr so --json/--out stdout stays clean for machine parsing.
+  console.error(`Held-out pass rate ${(summary.passRate * 100).toFixed(1)}% (${summary.resolved}/${summary.total}). Evidence: .myagenttool/evals/${runId}/`);
+
+  const minRaw = option(args, "--min-pass-rate");
+  if (minRaw !== undefined) {
+    const min = Number(minRaw);
+    if (!Number.isFinite(min) || min < 0 || min > 1) {
+      fail(`--min-pass-rate must be a number between 0 and 1. Got: ${minRaw}`);
+    }
+    if (summary.passRate < min) {
+      fail(`Held-out pass rate ${(summary.passRate * 100).toFixed(1)}% is below the required ${(min * 100).toFixed(1)}%.`);
+    }
+  }
+}
+
+function buildHeldoutResolver(name, args) {
+  if (name === "mock") return mockResolver;
+  if (name === "command") {
+    const raw = option(args, "--resolver-command-json") ?? process.env.MYAGENTTOOL_HELDOUT_RESOLVER_COMMAND_JSON;
+    if (!raw) {
+      fail("--resolver command requires --resolver-command-json or MYAGENTTOOL_HELDOUT_RESOLVER_COMMAND_JSON.");
+    }
+    let parsed;
+    try {
+      parsed = JSON.parse(raw);
+    } catch (error) {
+      fail(`Resolver command must be JSON, for example ["node","tools/ai/src/coding-wrapper.mjs"]. Parse error: ${error.message}`);
+    }
+    if (!Array.isArray(parsed) || parsed.length === 0 || parsed.some((item) => typeof item !== "string" || item.length === 0)) {
+      fail('Resolver command JSON must be a non-empty string array, for example ["node","resolver.mjs"].');
+    }
+    const [cmd, ...cmdArgs] = parsed;
+    return (caseObj) => runCommandResolver(cmd, cmdArgs, caseObj);
+  }
+  fail(`Unsupported resolver: ${name}. Supported resolvers: mock, command.`);
+}
+
+function runCommandResolver(cmd, cmdArgs, caseObj) {
+  // Bound each case so one hung resolver (interactive prompt, stalled provider)
+  // fails that case instead of hanging the whole eval.
+  const timeoutMs = Number(process.env.MYAGENTTOOL_HELDOUT_CASE_TIMEOUT_MS ?? 900000);
+  const result = spawnSync(cmd, cmdArgs, {
+    cwd: repoRoot,
+    input: `${JSON.stringify(caseObj)}\n`,
+    env: {
+      ...process.env,
+      MYAGENTTOOL_HELDOUT_CASE: JSON.stringify(caseObj),
+      MYAGENTTOOL_HELDOUT_CASE_ID: caseObj.id,
+    },
+    encoding: "utf8",
+    timeout: Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : 900000,
+    shell: false,
+    stdio: ["pipe", "pipe", "pipe"],
+  });
+  if (result.error?.code === "ETIMEDOUT") {
+    throw new Error(`Resolver command timed out after ${timeoutMs}ms (case ${caseObj.id}).`);
+  }
+  if (result.status !== 0) {
+    throw new Error(`Resolver command exited ${result.status ?? "unknown"}: ${(result.stderr ?? "").trim().slice(0, 200)}`);
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(result.stdout);
+  } catch (error) {
+    throw new Error(`Resolver command stdout was not JSON with a changedFiles array: ${error.message}`);
+  }
+  return {
+    changedFiles: Array.isArray(parsed.changedFiles) ? parsed.changedFiles.map(String) : [],
+    notes: typeof parsed.notes === "string" ? parsed.notes : "command resolver",
+    verify: parsed.verify && typeof parsed.verify === "object" ? parsed.verify : null,
+  };
 }
 
 async function runStructuredAgent({ args, agentName, schema, systemPrompt, userPrompt }) {

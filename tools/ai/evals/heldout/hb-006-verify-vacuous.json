@@ -1,0 +1,34 @@
+{
+  "id": "hb-006-verify-vacuous",
+  "issue": "sim-6",
+  "title": "Behavior oracle: vacuous probe is rejected",
+  "spec": "Synthetic case pinning the vacuous-probe rule: a fail-to-pass verify command that already passes at base proves nothing, so the case must be judged unresolved even when the right files changed and the probe passes afterwards.",
+  "risk": "low",
+  "oracle": {
+    "expectedFiles": [
+      "tools/ai/src/evals/heldout.mjs"
+    ],
+    "forbiddenFiles": [
+      "apps/"
+    ],
+    "verify": {
+      "mode": "fail-to-pass",
+      "command": [
+        "node",
+        "-e",
+        "process.exit(0)"
+      ]
+    }
+  },
+  "mock": {
+    "changedFiles": [
+      "tools/ai/src/evals/heldout.mjs"
+    ],
+    "note": "Mock simulates a vacuous probe: passes at base AND after — intentionally unresolved so the harness keeps set authors honest.",
+    "verify": {
+      "baseStatus": 0,
+      "status": 0
+    }
+  },
+  "difficulty": "small"
+}

@@ -1,0 +1,19 @@
+{
+  "id": "hr-002-sync-existing-fields",
+  "issue": "real-ddeb6db",
+  "title": "Project sync: update fields on issues already present in the GitHub Project",
+  "spec": "The GitHub project sync command currently only adds missing issues to the Project board; issues that are already Project items are skipped entirely, so their Project fields (status, milestone, area) drift from the issue labels. Change the sync command so existing Project items also get their fields compared and updated to the desired values, and report updated items in the sync summary alongside added ones.",
+  "risk": "medium",
+  "base": "195fc21e13ad3ffd3a008affe81ef89a6222c399",
+  "oracle": {
+    "expectedFiles": [
+      "tools/github/src/index.mjs"
+    ],
+    "forbiddenFiles": [
+      "apps/",
+      "packages/",
+      "tools/ai/"
+    ]
+  },
+  "difficulty": "medium"
+}

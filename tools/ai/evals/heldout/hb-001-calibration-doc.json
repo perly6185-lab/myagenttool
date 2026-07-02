@@ -1,0 +1,23 @@
+{
+  "id": "hb-001-calibration-doc",
+  "issue": "sim-1",
+  "title": "Document the L4 held-out pass-rate gate in the calibration doc",
+  "spec": "Add a subsection to docs/engineering/MATURITY_CALIBRATION.md describing how the L4 gate is measured as a held-out pass rate.",
+  "risk": "low",
+  "oracle": {
+    "expectedFiles": [
+      "docs/engineering/MATURITY_CALIBRATION.md"
+    ],
+    "forbiddenFiles": [
+      "apps/",
+      "packages/"
+    ]
+  },
+  "mock": {
+    "changedFiles": [
+      "docs/engineering/MATURITY_CALIBRATION.md"
+    ],
+    "note": "Mock stands in for a resolver that correctly scopes a docs-only change."
+  },
+  "difficulty": "small"
+}

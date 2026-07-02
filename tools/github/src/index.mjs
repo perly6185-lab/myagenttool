@@ -1,8 +1,10 @@
 #!/usr/bin/env node
 import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { computeDoraStats, doraSelfCheck, formatDoraReport } from "./dora.mjs";
+import { backlogSelfCheck, computeBacklogStats, formatBacklogReport } from "./backlog.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(__dirname, "../../..");
@@ -50,6 +52,8 @@ Usage:
   node tools/github/src/index.mjs check-branch-protection --repo OWNER/REPO --branch main
   node tools/github/src/index.mjs sync-project-fields --owner OWNER --project 1 [--apply]
   node tools/github/src/index.mjs sync-project --repo OWNER/REPO --owner OWNER --project 1 [--milestone M2|--issues 1,2] [--done] [--apply]
+  node tools/github/src/index.mjs dora-report [--repo OWNER/REPO] [--days 30] [--json] [--out path]
+  node tools/github/src/index.mjs backlog-report [--repo OWNER/REPO] [--stale-days 14] [--json] [--out path]
 
 Environment:
   GITHUB_REPOSITORY   default OWNER/REPO for GitHub Actions
@@ -102,6 +106,16 @@ function main() {
     return;
   }
 
+  if (command === "dora-report") {
+    doraReport(args);
+    return;
+  }
+
+  if (command === "backlog-report") {
+    backlogReport(args);
+    return;
+  }
+
   fail(`Unknown command: ${command}\n\n${HELP}`);
 }
 
@@ -109,6 +123,69 @@ function normalizeCommand(args) {
   if (args.includes("--help") || args.includes("-h")) return "help";
   if (args.includes("--check")) return "check";
   return args.find((arg) => !arg.startsWith("--")) ?? "help";
+}
+
+function doraReport(args) {
+  const repo = option(args, "--repo") ?? process.env.GITHUB_REPOSITORY ?? defaultRepo();
+  if (!repo) fail("Missing --repo or GITHUB_REPOSITORY.");
+  const days = Number(option(args, "--days") ?? 30);
+  if (!Number.isFinite(days) || days <= 0) fail(`--days must be a positive number. Got: ${option(args, "--days")}`);
+
+  const since = new Date(Date.now() - days * 86_400_000).toISOString();
+  // Server-side filter by merge date and base branch: gh lists PRs by creation
+  // date, so a client-side window over a fixed limit would silently drop
+  // long-lived PRs merged recently — exactly the worst lead-time data points.
+  const defaultBranch = ghJson(["repo", "view", repo, "--json", "defaultBranchRef"]).defaultBranchRef?.name ?? "main";
+  const limit = 500;
+  const prs = ghJson([
+    "pr", "list", "--repo", repo, "--state", "merged", "--base", defaultBranch,
+    "--search", `merged:>=${since.slice(0, 10)}`, "--limit", String(limit),
+    "--json", "number,createdAt,mergedAt",
+  ]).filter((pr) => pr.mergedAt && pr.mergedAt >= since);
+  if (prs.length >= limit) {
+    console.error(`Warning: hit the ${limit}-PR fetch limit; lead time and merge counts are truncated.`);
+  }
+
+  const stats = computeDoraStats(prs, { days });
+  const report = formatDoraReport(stats, { repo });
+  emitMetricsReport({ kind: "dora", stats, report, args });
+}
+
+// Shared evidence + output tail for metrics commands: write JSON+MD evidence
+// under .myagenttool/metrics/<runId>/, then honor --json/--out.
+function emitMetricsReport({ kind, stats, report, args }) {
+  const runId = `${new Date().toISOString().replace(/[:.]/g, "-")}-${kind}`;
+  const evidenceDir = resolve(repoRoot, ".myagenttool/metrics", runId);
+  mkdirSync(evidenceDir, { recursive: true });
+  writeFileSync(resolve(evidenceDir, `${kind}.json`), `${JSON.stringify(stats, null, 2)}\n`, "utf8");
+  writeFileSync(resolve(evidenceDir, `${kind}.md`), report, "utf8");
+
+  const out = option(args, "--out");
+  const content = args.includes("--json") ? `${JSON.stringify(stats, null, 2)}\n` : report;
+  if (out) {
+    const target = resolve(repoRoot, out);
+    mkdirSync(dirname(target), { recursive: true });
+    writeFileSync(target, content, "utf8");
+    console.log(`Wrote ${out}`);
+  } else {
+    console.log(content.trimEnd());
+  }
+  console.error(`Evidence: .myagenttool/metrics/${runId}/`);
+}
+
+function backlogReport(args) {
+  const repo = option(args, "--repo") ?? process.env.GITHUB_REPOSITORY ?? defaultRepo();
+  if (!repo) fail("Missing --repo or GITHUB_REPOSITORY.");
+  const staleDays = Number(option(args, "--stale-days") ?? 14);
+  if (!Number.isFinite(staleDays) || staleDays <= 0) fail(`--stale-days must be a positive number. Got: ${option(args, "--stale-days")}`);
+
+  const issues = ghJson([
+    "issue", "list", "--repo", repo, "--state", "open", "--limit", "500",
+    "--json", "number,title,labels,milestone,updatedAt",
+  ]);
+  const stats = computeBacklogStats(issues, { staleDays, now: new Date().toISOString() });
+  const report = formatBacklogReport(stats, { repo });
+  emitMetricsReport({ kind: "backlog", stats, report, args });
 }
 
 function checkLocal() {
@@ -405,6 +482,16 @@ function checkLocal() {
   }]);
   if (!doneWithoutVerifiedResult.failures.some((failure) => failure.includes("done issue is not acceptance/verified"))) {
     failReport("Issue status gate check failed", ["done issue without acceptance/verified should fail"]);
+  }
+
+  const doraFailures = doraSelfCheck();
+  if (doraFailures.length > 0) {
+    failReport("DORA counter self-check failed", doraFailures);
+  }
+
+  const backlogFailures = backlogSelfCheck();
+  if (backlogFailures.length > 0) {
+    failReport("Backlog counter self-check failed", backlogFailures);
   }
 
   console.log("[tools-github:check] GitHub governance local check OK");

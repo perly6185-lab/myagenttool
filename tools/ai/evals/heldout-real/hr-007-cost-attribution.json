@@ -1,0 +1,18 @@
+{
+  "id": "hr-007-cost-attribution",
+  "issue": "real-6b6a48a",
+  "title": "Attribute the coding agent's reported run cost to the ledger and budget on completion",
+  "spec": "When a managed coding-agent invocation completes, the agent's own reported usage/cost (for example Claude Code's reported total cost for the run) is discarded — the economic ledger and budget tracking never see it, so per-run cost attribution under-counts. Change the server's invocation completion path so a run cost reported in the completion payload is recorded against the invocation's cost attribution (ledger entry + budget spend), with a sensible fallback when no cost is reported.",
+  "risk": "high",
+  "base": "603bd570de03711b34d228296e07dad327297f0c",
+  "oracle": {
+    "expectedFiles": [
+      "apps/server/src/services/invocations/completion.mjs"
+    ],
+    "forbiddenFiles": [
+      "apps/web/",
+      "tools/"
+    ]
+  },
+  "difficulty": "large"
+}

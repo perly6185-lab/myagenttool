@@ -1,0 +1,21 @@
+{
+  "id": "hb-004-work-runner-guard",
+  "issue": "sim-4",
+  "title": "Add a guard to the work runner apply path",
+  "spec": "Add a pre-apply guard in tools/ai/src/legacy/work-runner.mjs and a testing-plan note. This case is intentionally left unsolved by the mock resolver to keep the held-out pass rate honest (a real coding capability must earn it).",
+  "risk": "high",
+  "oracle": {
+    "expectedFiles": [
+      "tools/ai/src/legacy/work-runner.mjs"
+    ],
+    "forbiddenFiles": [
+      "apps/",
+      "packages/"
+    ]
+  },
+  "mock": {
+    "changedFiles": [],
+    "note": "Simulated unsolved case: the mock resolver did not touch the required file, so this case fails the oracle and pulls the pass rate below 100%."
+  },
+  "difficulty": "small"
+}

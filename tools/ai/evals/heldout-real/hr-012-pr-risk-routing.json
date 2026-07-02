@@ -1,0 +1,18 @@
+{
+  "id": "hr-012-pr-risk-routing",
+  "issue": "real-6068e21",
+  "title": "PR governance: route changed files to required risk-evidence checks",
+  "spec": "PR governance currently checks issue links and hygiene but does not look at WHICH files a PR changes. Add risk routing to the GitHub governance CLI's PR check: map changed file paths to risk areas (desktop/local execution, protocol, security/data/billing, release/deploy, UI needing visual QA) and warn with the specific missing evidence route for each matched area, so a PR touching a risky area cannot silently pass with a generic checklist.",
+  "risk": "medium",
+  "base": "4892d968021dd13ce22c351d73e7c0a4dfb959ca",
+  "oracle": {
+    "expectedFiles": [
+      "tools/github/src/index.mjs"
+    ],
+    "forbiddenFiles": [
+      "apps/",
+      "packages/"
+    ]
+  },
+  "difficulty": "medium"
+}

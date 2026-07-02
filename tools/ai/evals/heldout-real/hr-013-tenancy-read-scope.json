@@ -1,0 +1,19 @@
+{
+  "id": "hr-013-tenancy-read-scope",
+  "issue": "real-8d49e30",
+  "title": "Close cross-team read leaks in the public state read model",
+  "spec": "The server's public state read model returns records across ALL teams: a signed-in member of team B can read team A's projects, invocations, budgets, and related records because the read model never filters by the acting user's team. Scope the public state read model by the actor's team (legacy records without a team fall back to the local team), so cross-team records disappear from every read surface that composes it. Keep operator-level views working.",
+  "risk": "high",
+  "base": "6ab46922a68ddac5270c595de3a12736c5a8b759",
+  "oracle": {
+    "expectedFiles": [
+      "apps/server/src/read-models/state.mjs"
+    ],
+    "forbiddenFiles": [
+      "apps/web/",
+      "apps/desktop/",
+      "tools/"
+    ]
+  },
+  "difficulty": "medium"
+}

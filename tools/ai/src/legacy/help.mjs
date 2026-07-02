@@ -59,6 +59,7 @@ Usage:
   node tools/ai/src/index.mjs work-manifest [--issue NUMBER] [--pr NUMBER] [--out path]
   node tools/ai/src/index.mjs coding-adapter-contract [--adapter NAME] [--out path]
   node tools/ai/src/index.mjs feedback-convert --feedback "..." --target bug|risk|roadmap|documentation [--issue-tree] [--json] [--out path]
+  node tools/ai/src/index.mjs eval-heldout [--set DIR] [--resolver mock|command] [--resolver-command-json JSON] [--min-pass-rate 0..1] [--json] [--out path]
 
 Providers:
   openai   Uses OPENAI_API_KEY and the Responses API.

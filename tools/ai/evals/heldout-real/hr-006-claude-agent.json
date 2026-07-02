@@ -1,0 +1,19 @@
+{
+  "id": "hr-006-claude-agent",
+  "issue": "real-b43df80",
+  "title": "First-class Claude Code CLI agent alongside Codex",
+  "spec": "The server treats Codex as the only known coding CLI: command detection, restricted health-probe allowances, and default agent seeding are Codex-specific. Add first-class support for the Claude Code CLI in the server's agent services: detect a Claude CLI command (analogous to the existing Codex detection), allow its restricted probe invocation (claude --version style), and export the detection helper for reuse. Keep Codex behavior unchanged.",
+  "risk": "medium",
+  "base": "a07ac7606609017ad9de55c8d0e9d3cabce8bbbb",
+  "oracle": {
+    "expectedFiles": [
+      "apps/server/src/services/agents.mjs"
+    ],
+    "forbiddenFiles": [
+      "apps/web/",
+      "apps/desktop/",
+      "tools/"
+    ]
+  },
+  "difficulty": "large"
+}

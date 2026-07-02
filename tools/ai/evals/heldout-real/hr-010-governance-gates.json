@@ -1,0 +1,19 @@
+{
+  "id": "hr-010-governance-gates",
+  "issue": "real-cf0fd93",
+  "title": "Harden PR and deploy governance gates",
+  "spec": "Two governance surfaces are too permissive: (1) the GitHub governance CLI's PR checks accept PRs that lack required risk evidence for the areas they touch, and (2) the deploy CLI's checks let a deploy plan proceed without environment/approval evidence. Tighten both: the PR governance check must flag missing risk-evidence routes for changed areas, and the deploy checks must fail when required deployment gates or approvals are absent. Both tools' self-checks should cover the new failure modes.",
+  "risk": "high",
+  "base": "d31e3bb6361d1539ac9a7936a6542a6a776c29e5",
+  "oracle": {
+    "expectedFiles": [
+      "tools/deploy/src/index.mjs",
+      "tools/github/src/index.mjs"
+    ],
+    "forbiddenFiles": [
+      "apps/",
+      "packages/"
+    ]
+  },
+  "difficulty": "large"
+}

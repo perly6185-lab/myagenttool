@@ -1,0 +1,26 @@
+{
+  "id": "hr-008-testing-routing",
+  "issue": "real-d31e3bb",
+  "title": "Expand AI testing-plan routing to cover protocol, adapter, release, and security changes",
+  "spec": "The AI helper CLI's testing-plan command maps a single change type to required test evidence, but real work mixes types. Expand it so (1) changes touching protocol schemas, adapters, release tooling, and security-sensitive files each map to their own required evidence and commands (for example protocol changes require contract-test evidence; security changes require a security review note), (2) the command accepts multiple change types at once via a --changes flag with a comma-separated list (for example --changes web,security) and produces one combined plan covering every listed type's evidence, and (3) change-type inference from file paths recognizes those new patterns. Update the CLI self-check to cover the new routes.",
+  "risk": "medium",
+  "base": "eb431cd9750f77dc7efdc4d7e042bd53195231fb",
+  "oracle": {
+    "expectedFiles": [
+      "tools/ai/src/index.mjs"
+    ],
+    "forbiddenFiles": [
+      "apps/",
+      "packages/"
+    ],
+    "verify": {
+      "mode": "fail-to-pass",
+      "command": [
+        "node",
+        "-e",
+        "const {execFileSync}=require('node:child_process');try{const out=execFileSync('node',['tools/ai/src/index.mjs','testing-plan','--changes','web,security','--risk','high'],{encoding:'utf8',stdio:['ignore','pipe','pipe']});process.exit(/security review/i.test(out)&&/visual qa/i.test(out)?0:1);}catch{process.exit(1);}"
+      ]
+    }
+  },
+  "difficulty": "large"
+}

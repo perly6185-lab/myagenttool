@@ -1,0 +1,22 @@
+{
+  "id": "hb-002-adapter-slice",
+  "issue": "sim-2",
+  "title": "Extend the MCP adapter descriptor without touching the server",
+  "spec": "Add a normalized descriptor field in packages/adapters/src/mcp.mjs. Must not modify server code.",
+  "risk": "medium",
+  "oracle": {
+    "expectedFiles": [
+      "packages/adapters/src/mcp.mjs"
+    ],
+    "forbiddenFiles": [
+      "apps/server/"
+    ]
+  },
+  "mock": {
+    "changedFiles": [
+      "packages/adapters/src/mcp.mjs"
+    ],
+    "note": "Mock stands in for a resolver that keeps the change inside the adapters package."
+  },
+  "difficulty": "small"
+}
