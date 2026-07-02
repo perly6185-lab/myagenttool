@@ -12,6 +12,7 @@ export function buildPublicState({
   evidenceCenterRecords,
   ledgerSummary,
   budgetStatuses,
+  teamBudgetStatuses,
   actor = null,
 }) {
   // Tenancy scoping. With no actor (or one whose team owns everything, i.e.
@@ -90,6 +91,10 @@ export function buildPublicState({
     ledgerSummary: typeof ledgerSummary === "function" ? ledgerSummary() : null,
     budgets: byProject(state.budgets),
     budgetStatuses: byProject(typeof budgetStatuses === "function" ? budgetStatuses() : []),
+    // Team cost rollup — a team sees only its own row (unscoped mode sees all).
+    teamBudgetStatuses: (typeof teamBudgetStatuses === "function" ? teamBudgetStatuses() : []).filter(
+      (row) => teamId == null || row.teamId === teamId,
+    ),
     automations: byProject(state.automations),
     agentSkills: state.agentSkills ?? [],
     privateDeploymentConfig: state.privateDeploymentConfig,

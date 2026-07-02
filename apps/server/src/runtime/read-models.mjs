@@ -15,6 +15,7 @@ export function createReadModelRuntime({
   repoPathForEvidence,
   ledgerSummary,
   budgetStatuses,
+  teamBudgetStatuses,
   expireCodexApprovalBrokerRequests,
 }) {
   function loopRoutineReadModelForCurrentProject() {
@@ -45,6 +46,7 @@ export function createReadModelRuntime({
       evidenceCenterRecords,
       ledgerSummary,
       budgetStatuses,
+      teamBudgetStatuses,
       actor,
     });
   }

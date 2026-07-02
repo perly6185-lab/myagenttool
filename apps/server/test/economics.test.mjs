@@ -84,3 +84,32 @@ test("capLedgerEntries: spend re-sum is unchanged after trimming (no silent unde
   assert.equal(before, 40);
   assert.equal(after, 40, "trimming must not change spend");
 });
+
+test("teamBudgetStatuses: rolls per-project spend up to the owning team (M4)", () => {
+  const state = {
+    teams: [{ id: "team_a", name: "Alpha" }, { id: "team_b", name: "Beta" }],
+    projects: [
+      { id: "a1", ownerTeamId: "team_a" },
+      { id: "a2", ownerTeamId: "team_a" },
+      { id: "b1", ownerTeamId: "team_b" },
+    ],
+    budgets: [],
+    ledgerEntries: [
+      { projectId: "a1", amountUsd: 10, status: "finalized" },
+      { projectId: "a2", amountUsd: 5, status: "finalized" },
+      { projectId: "a2", amountUsd: 3, status: "estimated" },
+      { projectId: "b1", amountUsd: 100, status: "finalized" },
+    ],
+  };
+  const m3 = createM3Service({ state, ...stub });
+  const rows = m3.teamBudgetStatuses();
+  const alpha = rows.find((r) => r.teamId === "team_a");
+  const beta = rows.find((r) => r.teamId === "team_b");
+  assert.equal(alpha.teamName, "Alpha");
+  assert.equal(alpha.projectCount, 2);
+  assert.equal(alpha.finalizedUsd, 15);
+  assert.equal(alpha.estimatedUsd, 3);
+  assert.equal(alpha.spentUsd, 18, "team A = 10 + 5 + 3 across its two projects");
+  assert.equal(beta.spentUsd, 100);
+  assert.equal(beta.projectCount, 1);
+});
