@@ -242,6 +242,8 @@ export const api = {
     request("PATCH", "/api/integration-retention", payload),
   setBudget: (payload: { projectId: string; limitUsd: number; policy: string }) =>
     request("PUT", "/api/budgets", payload),
+  setTeamBudget: (payload: { teamId: string; limitUsd: number; policy: string }) =>
+    request("PUT", "/api/budgets", payload),
 
   createProject: (payload: { name: string; color?: string }) =>
     request("POST", "/api/projects", payload),
