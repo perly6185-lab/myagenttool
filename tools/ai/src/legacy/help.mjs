@@ -60,6 +60,7 @@ Usage:
   node tools/ai/src/index.mjs coding-adapter-contract [--adapter NAME] [--out path]
   node tools/ai/src/index.mjs feedback-convert --feedback "..." --target bug|risk|roadmap|documentation [--issue-tree] [--json] [--out path]
   node tools/ai/src/index.mjs eval-heldout [--set DIR] [--resolver mock|command] [--resolver-command-json JSON] [--min-pass-rate 0..1] [--json] [--out path]
+  node tools/ai/src/index.mjs feedback-triage [--apply] [--human-approved "reason"] [--report]
   node tools/ai/src/index.mjs eval-subcap [--set DIR] [--provider mock|openai|command] [--min-pass-rate 0..1] [--json] [--out path]
 
 Providers:

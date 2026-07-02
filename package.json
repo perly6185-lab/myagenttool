@@ -144,7 +144,8 @@
     "github:governance": "node tools/github/src/index.mjs governance-report",
     "pr:merge": "node tools/dev/pr-merge.mjs",
     "eval:real": "node tools/dev/eval-real-run.mjs",
-    "eval:trend": "node tools/dev/eval-real-run.mjs --trend"
+    "eval:trend": "node tools/dev/eval-real-run.mjs --trend",
+    "ai:feedback-triage": "node tools/ai/src/index.mjs feedback-triage"
   },
   "devDependencies": {
     "typescript": "^5.7.2"

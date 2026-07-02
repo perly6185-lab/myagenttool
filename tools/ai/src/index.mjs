@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import {
   LOOP_ENQUEUEABLE_STATES,
   LOOP_EVENT_TYPES,
@@ -102,6 +102,12 @@ import {
   judgeReview,
   loadSubcapSet,
 } from "./evals/subcap.mjs";
+import {
+  draftIssue,
+  parseIntakeEvents,
+  planTriage,
+  triageReport,
+} from "./feedback/triage.mjs";
 import { configureLoopWorktreeContext } from "./loop/worktree.mjs";
 import { configureLoopPromotionContext } from "./loop/promotion.mjs";
 import {
@@ -623,6 +629,11 @@ function main() {
     return;
   }
 
+  if (command === "feedback-triage") {
+    feedbackTriage(args).catch(failFromError);
+    return;
+  }
+
   fail(`Unknown command: ${command}\n\n${HELP}`);
 }
 
@@ -822,6 +833,43 @@ function check() {
     }
   }
 
+  // Feedback-triage sanity (hermetic): dedupe skips, high-risk queues, clean
+  // low-risk creates — over fixture events with a stubbed product gate.
+  const triageFixture = parseIntakeEvents([
+    JSON.stringify({ source: "check", severity: "medium", title: "eval regression", detail: "x", dedupeKey: "chk-1", createdAt: "2026-01-01T00:00:00Z" }),
+    JSON.stringify({ source: "check", severity: "medium", title: "eval regression", detail: "x", dedupeKey: "chk-1", createdAt: "2026-01-01T00:00:00Z" }),
+    JSON.stringify({ source: "check", severity: "high", title: "billing spend anomaly", detail: "cost spike", dedupeKey: "chk-2", createdAt: "2026-01-01T00:00:00Z" }),
+    JSON.stringify({ source: "check", severity: "low", title: "docs wording", detail: "typo", dedupeKey: "chk-3", createdAt: "2026-01-01T00:00:00Z" }),
+  ].join("\n"));
+  if (triageFixture.events.length !== 4 || triageFixture.problems.length !== 0) {
+    fail("Feedback triage intake parsing sanity check failed.");
+  }
+  const triagePlan = planTriage({
+    events: triageFixture.events,
+    ledgerKeys: new Set(),
+    openKeys: new Set(),
+    gateReasons: (draft, event) => (/billing|cost/i.test(`${event.title} ${event.detail}`) ? ["billing or cost impact"] : []),
+  });
+  const actions = triagePlan.map((item) => item.action);
+  if (JSON.stringify(actions) !== JSON.stringify(["create", "skipped-duplicate", "pending-approval", "create"])) {
+    fail(`Feedback triage plan sanity check failed: ${actions.join(",")}`);
+  }
+  const triageDraft = draftIssue(triageFixture.events[0]);
+  if (!triageDraft.labels.includes("feedback/auto") || !triageDraft.body.includes("## Project Fields") || !triageDraft.body.includes("dedupeKey: `chk-1`")) {
+    fail("Feedback triage draft sanity check failed (labels/Project Fields/dedupeKey marker).");
+  }
+  const triageMetrics = triageReport({
+    ledgerEntries: [
+      { dedupeKey: "a", action: "created", eventCreatedAt: "2026-01-01T00:00:00Z", processedAt: "2026-01-01T00:10:00Z" },
+      { dedupeKey: "b", action: "pending-approval", eventCreatedAt: "2026-01-01T00:00:00Z", processedAt: "2026-01-01T00:10:00Z" },
+      { dedupeKey: "c", action: "skipped-duplicate", eventCreatedAt: "2026-01-01T00:00:00Z", processedAt: "2026-01-01T00:10:00Z" },
+    ],
+    closedAutoIssues: [{ number: 1, stateReason: "not_planned" }, { number: 2, stateReason: "completed" }],
+  });
+  if (triageMetrics.conversionRate !== 0.667 || triageMetrics.medianLatencyMinutes !== 10 || triageMetrics.falseTriage.rate !== 0.5) {
+    fail("Feedback triage report sanity check failed.");
+  }
+
   console.log("[tools-ai:check] AI delivery helpers check OK");
 }
 
@@ -861,6 +909,109 @@ async function evalHeldout(args) {
   console.error(`Held-out pass rate ${(summary.passRate * 100).toFixed(1)}% (${summary.resolved}/${summary.total}). Evidence: .myagenttool/evals/${runId}/`);
 
   enforceMinPassRate(minPassRate, summary.passRate, "Held-out");
+}
+
+async function feedbackTriage(args) {
+  const inboxPath = resolve(repoRoot, ".myagenttool/feedback/inbox.jsonl");
+  const ledgerPath = resolve(repoRoot, ".myagenttool/feedback/processed.jsonl");
+  const ledgerEntries = existsSync(ledgerPath)
+    ? readFileSync(ledgerPath, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line))
+    : [];
+
+  if (args.includes("--report")) {
+    let closedAutoIssues = [];
+    try {
+      closedAutoIssues = JSON.parse(commandOutput("gh", ["issue", "list", "--label", "feedback/auto", "--state", "closed", "--json", "number,stateReason", "--limit", "100"]) || "[]");
+    } catch {
+      console.error("Warning: could not query closed feedback/auto issues; false-triage reported from ledger only.");
+    }
+    const report = triageReport({ ledgerEntries, closedAutoIssues });
+    console.log(JSON.stringify(report, null, 2));
+    return;
+  }
+
+  const apply = args.includes("--apply");
+  const humanApproved = Boolean(option(args, "--human-approved") ?? process.env.MYAGENTTOOL_HUMAN_APPROVED);
+  const { events, problems } = parseIntakeEvents(existsSync(inboxPath) ? readFileSync(inboxPath, "utf8") : "");
+  for (const problem of problems) console.error(`Warning: ${problem}`);
+  if (events.length === 0) {
+    console.log("Feedback inbox is empty — nothing to triage.");
+    return;
+  }
+
+  const ledgerKeys = new Set(ledgerEntries.filter((entry) => entry.action !== "skipped-duplicate").map((entry) => entry.dedupeKey));
+  let openKeys = new Set();
+  try {
+    const openIssues = JSON.parse(commandOutput("gh", ["issue", "list", "--label", "feedback/auto", "--state", "open", "--json", "body", "--limit", "100"]) || "[]");
+    openKeys = new Set(openIssues.map((issue) => (issue.body.match(/dedupeKey: `([^`]+)`/) ?? [])[1]).filter(Boolean));
+  } catch {
+    console.error("Warning: could not query open feedback/auto issues; dedupe uses the local ledger only.");
+  }
+
+  // The risk gate is the PRODUCT's own approval gate, run over the drafted
+  // issue in issue-tree spec shape — never a triage-local vocabulary. Feed it
+  // the event CONTENT (title + detail), not the body boilerplate: the product
+  // gate deliberately excludes metadata like the milestone from its text
+  // (found the hard way — "Milestone: M3" in the scaffolding tripped the
+  // roadmap category and would have gated every auto-draft forever).
+  const gateReasons = (draft, event) => humanApprovalRequiredReasons({
+    issues: [{
+      title: draft.title,
+      outcome: "",
+      problem: event.detail || event.title,
+      userStory: "",
+      riskFlags: [],
+      nonGoals: [],
+      labels: draft.labels,
+      projectFields: {},
+    }],
+  });
+
+  const plan = planTriage({ events, ledgerKeys, openKeys, gateReasons, humanApproved });
+  for (const item of plan) {
+    const reasonNote = item.reasons?.length ? ` (gate: ${item.reasons.join(", ")})` : "";
+    console.log(`- [${item.action}] ${item.event.dedupeKey}: ${item.event.title}${reasonNote}`);
+  }
+  if (!apply) {
+    console.log(`\nDry run: ${plan.filter((item) => item.action === "create").length} issue(s) would be created. Re-run with --apply.`);
+    return;
+  }
+
+  const processedAt = new Date().toISOString();
+  const newLedger = [];
+  for (const item of plan) {
+    if (item.action === "create") {
+      const stdout = commandOutput("gh", [
+        "issue", "create",
+        "--title", item.draft.title,
+        "--body", item.draft.body,
+        "--label", item.draft.labels.join(","),
+        "--milestone", item.draft.milestone,
+      ]);
+      const issueNumber = Number((stdout.match(/\/issues\/(\d+)/) ?? [])[1]) || null;
+      if (!issueNumber) {
+        // gh failed (network, auth): keep the event in the inbox for the next
+        // run instead of recording a conversion that did not happen.
+        console.error(`Failed to create issue for ${item.event.dedupeKey}; leaving event in inbox.`);
+        continue;
+      }
+      newLedger.push({ dedupeKey: item.event.dedupeKey, action: "created", issueNumber, eventCreatedAt: item.event.createdAt, processedAt });
+      console.log(`Created #${issueNumber} for ${item.event.dedupeKey}`);
+    } else {
+      newLedger.push({ dedupeKey: item.event.dedupeKey, action: item.action === "pending-approval" ? "pending-approval" : "skipped-duplicate", eventCreatedAt: item.event.createdAt, processedAt, reasons: item.reasons ?? [] });
+    }
+  }
+  mkdirSync(dirname(ledgerPath), { recursive: true });
+  appendFileSync(ledgerPath, newLedger.map((entry) => `${JSON.stringify(entry)}\n`).join(""), "utf8");
+  // Events whose creation failed stay in the inbox for the next run.
+  const failedKeys = new Set(
+    plan
+      .filter((item) => item.action === "create" && !newLedger.some((entry) => entry.dedupeKey === item.event.dedupeKey))
+      .map((item) => item.event.dedupeKey),
+  );
+  const remaining = events.filter((event) => failedKeys.has(event.dedupeKey));
+  writeFileSync(inboxPath, remaining.map((event) => `${JSON.stringify(event)}\n`).join(""), "utf8");
+  console.log(`Triage applied: ${newLedger.filter((entry) => entry.action === "created").length} created, ${newLedger.filter((entry) => entry.action === "pending-approval").length} pending approval, ${newLedger.filter((entry) => entry.action === "skipped-duplicate").length} duplicates. Pending-approval items need a human (or --human-approved "reason").`);
 }
 
 async function evalSubcap(args) {
