@@ -54,7 +54,7 @@ Usage:
   node tools/github/src/index.mjs check-branch-protection --repo OWNER/REPO --branch main
   node tools/github/src/index.mjs sync-project-fields --owner OWNER --project 1 [--apply]
   node tools/github/src/index.mjs sync-project --repo OWNER/REPO --owner OWNER --project 1 [--milestone M2|--issues 1,2] [--done] [--apply]
-  node tools/github/src/index.mjs dora-report [--repo OWNER/REPO] [--days 30] [--json] [--out path]
+  node tools/github/src/index.mjs dora-report [--repo OWNER/REPO] [--days 30] [--ci-since DATE] [--json] [--out path]
   node tools/github/src/index.mjs governance-report [--repo OWNER/REPO] [--days 30] [--json] [--out path]
   node tools/github/src/index.mjs backlog-report [--repo OWNER/REPO] [--stale-days 14] [--json] [--out path]
 
@@ -139,6 +139,12 @@ function doraReport(args) {
   const days = Number(option(args, "--days") ?? 30);
   if (!Number.isFinite(days) || days <= 0) fail(`--days must be a positive number. Got: ${option(args, "--days")}`);
 
+  // Optional post-cutoff CI-green slice (e.g. --ci-since 2026-07-02 = CI
+  // activation): shows current merge discipline alongside the rolling window.
+  const ciSinceRaw = option(args, "--ci-since");
+  const ciSince = ciSinceRaw ? new Date(ciSinceRaw).toISOString() : null;
+  if (ciSinceRaw && !ciSince) fail(`--ci-since must be a date. Got: ${ciSinceRaw}`);
+
   const since = new Date(Date.now() - days * 86_400_000).toISOString();
   // Server-side filter by merge date and base branch: gh lists PRs by creation
   // date, so a client-side window over a fixed limit would silently drop
@@ -192,7 +198,7 @@ function doraReport(args) {
     }
   }
 
-  const stats = computeDoraStats(prs, { days, checksReadable, ciSource });
+  const stats = computeDoraStats(prs, { days, checksReadable, ciSource, ciSince });
   const report = formatDoraReport(stats, { repo });
   emitMetricsReport({ kind: "dora", stats, report, args });
 }
