@@ -142,7 +142,9 @@
     "ci:simulate": "node tools/dev/ci-simulate.mjs",
     "ci:activate": "node tools/dev/ci-activate.mjs",
     "github:governance": "node tools/github/src/index.mjs governance-report",
-    "pr:merge": "node tools/dev/pr-merge.mjs"
+    "pr:merge": "node tools/dev/pr-merge.mjs",
+    "eval:real": "node tools/dev/eval-real-run.mjs",
+    "eval:trend": "node tools/dev/eval-real-run.mjs --trend"
   },
   "devDependencies": {
     "typescript": "^5.7.2"
