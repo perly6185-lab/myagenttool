@@ -196,4 +196,9 @@ Review-evidence generation remains the one L4 sub-capability without a gate.
 - A packaged smoke test / adapter command for a specific real agent (Claude,
   Codex). The resolver is agent-agnostic; wiring a named agent is follow-up.
 - Larger, versioned held-out sets and per-case difficulty tiers.
-- Wiring `--min-pass-rate` into a CI gate (blocked on CI runner activation).
+- CI wiring: the deterministic slice is DONE — the `eval-gates` CI job runs
+  `ai:eval-subcap` (mock provider; issue-gate cases fail the job on any product
+  regression) on every PR once runners are activated, and `pnpm ci:simulate`
+  executes the same steps locally until then. Real-provider `--min-pass-rate`
+  gating stays manual: it spends model calls per run and belongs in a scheduled
+  or release-time check, not per-PR CI.

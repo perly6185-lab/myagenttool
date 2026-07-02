@@ -1,5 +1,11 @@
 name: CI
 
+# Cost gate: every job is guarded by the ENABLE_GITHUB_HOSTED_RUNNERS repo
+# variable, so wiring pull_request/push triggers here costs nothing until an
+# admin flips the variable (tools/dev/ci-activate.mjs automates the flip +
+# branch protection). Until then, `pnpm ci:simulate` executes these same run
+# steps locally — the simulator parses this file, so the two cannot drift.
+
 on:
   workflow_dispatch:
     inputs:
@@ -11,6 +17,10 @@ on:
         options:
           - ubuntu
           - all
+  pull_request:
+  push:
+    branches:
+      - main
 
 jobs:
   verify:
@@ -49,8 +59,40 @@ jobs:
       - name: Typecheck
         run: pnpm typecheck
 
+      # test:ci = every package's full test, except the desktop --check which
+      # requires a locally configured Codex CLI (environment-dependent by
+      # design); the desktop unit suite still runs.
       - name: Test
-        run: pnpm test
+        run: pnpm test:ci
+
+  # L4 evaluation gates that are deterministic and free of AI spend: the mock
+  # provider exercises the eval plumbing, and the issue-gate cases assert
+  # product behavior (the runner exits non-zero if any issue-gate case fails —
+  # a product gate regression). Real-provider capability evals (ai:eval-heldout,
+  # pm-brief with a live model) stay manual: they cost model spend.
+  eval-gates:
+    if: vars.ENABLE_GITHUB_HOSTED_RUNNERS == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Sub-capability gates (mock provider, issue-gate must pass 100%)
+        run: pnpm ai:eval-subcap
 
   desktop-smoke:
     if: vars.ENABLE_GITHUB_HOSTED_RUNNERS == 'true'
