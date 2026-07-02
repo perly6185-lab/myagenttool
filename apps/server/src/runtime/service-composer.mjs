@@ -157,6 +157,7 @@ export function createServerRuntimeServices({
     enforcePlatformAiQuota,
     budgetStatusFor,
     budgetStatuses,
+    budgetGateForProject,
     findLifecycleLocalApproval,
     findLifecycleRollbackRequest,
     findLifecycleRecipe,
@@ -201,6 +202,7 @@ export function createServerRuntimeServices({
     createManagedCodexWorkspace,
     createManagedCodexSession,
     closeCodexSession,
+    budgetGateForProject,
   });
 
   const {

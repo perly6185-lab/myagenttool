@@ -113,3 +113,68 @@ test("teamBudgetStatuses: rolls per-project spend up to the owning team (M4)", (
   assert.equal(beta.spentUsd, 100);
   assert.equal(beta.projectCount, 1);
 });
+
+function twoTeamMoneyState() {
+  return {
+    teams: [{ id: "team_a", name: "Alpha" }],
+    projects: [
+      { id: "a1", ownerTeamId: "team_a" },
+      { id: "a2", ownerTeamId: "team_a" },
+    ],
+    budgets: [],
+    ledgerEntries: [
+      { projectId: "a1", amountUsd: 30, status: "finalized" },
+      { projectId: "a2", amountUsd: 30, status: "finalized" },
+    ],
+  };
+}
+
+test("upsertBudget: creates a team pool (teamId XOR projectId enforced)", () => {
+  const state = twoTeamMoneyState();
+  const m3 = createM3Service({ state, ...stub });
+  const pool = m3.upsertBudget({ teamId: "team_a", limitUsd: 50, policy: "block" });
+  assert.equal(pool.teamId, "team_a");
+  assert.equal(pool.limitUsd, 50);
+  assert.throws(() => m3.upsertBudget({ limitUsd: 5 }), /exactly one of projectId or teamId/);
+  assert.throws(() => m3.upsertBudget({ teamId: "team_a", projectId: "a1", limitUsd: 5 }), /exactly one/);
+  assert.throws(() => m3.upsertBudget({ teamId: "team_nope", limitUsd: 5 }), /known teamId/);
+});
+
+test("teamBudgetStatuses: the pool contributes limit/remaining/over", () => {
+  const state = twoTeamMoneyState();
+  const m3 = createM3Service({ state, ...stub });
+  m3.upsertBudget({ teamId: "team_a", limitUsd: 50, policy: "block" });
+  const row = m3.teamBudgetStatusFor("team_a");
+  assert.equal(row.exists, true);
+  assert.equal(row.limitUsd, 50);
+  assert.equal(row.spentUsd, 60, "30 + 30 across the team's projects");
+  assert.equal(row.remainingUsd, -10);
+  assert.equal(row.over, true);
+});
+
+test("budgetGateForProject: blocks when the team pool is over with a block policy", () => {
+  const state = twoTeamMoneyState();
+  const m3 = createM3Service({ state, ...stub });
+  m3.upsertBudget({ teamId: "team_a", limitUsd: 50, policy: "block" });
+  const gate = m3.budgetGateForProject("a1");
+  assert.equal(gate.blocked, true);
+  assert.match(gate.reason, /Team budget exceeded/);
+});
+
+test("budgetGateForProject: a warn-policy pool never blocks; under-limit never blocks", () => {
+  const state = twoTeamMoneyState();
+  const m3 = createM3Service({ state, ...stub });
+  m3.upsertBudget({ teamId: "team_a", limitUsd: 50, policy: "warn" });
+  assert.equal(m3.budgetGateForProject("a1").blocked, false, "warn policy is informational");
+  m3.upsertBudget({ teamId: "team_a", limitUsd: 500, policy: "block" });
+  assert.equal(m3.budgetGateForProject("a1").blocked, false, "under the limit");
+});
+
+test("budgetGateForProject: a project-level block budget also gates", () => {
+  const state = twoTeamMoneyState();
+  const m3 = createM3Service({ state, ...stub });
+  m3.upsertBudget({ projectId: "a1", limitUsd: 10, policy: "block" });
+  assert.equal(m3.budgetGateForProject("a1").blocked, true);
+  assert.match(m3.budgetGateForProject("a1").reason, /Project budget exceeded/);
+  assert.equal(m3.budgetGateForProject("a2").blocked, false, "sibling project unaffected");
+});
