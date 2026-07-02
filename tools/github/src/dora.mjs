@@ -11,13 +11,20 @@
 // Elite reference thresholds (2024 DORA snapshot, directional — see
 // MATURITY_CALIBRATION.md): lead time < 1 day; deploy on-demand.
 
-export function computeDoraStats(mergedPrs, { days, checksReadable = true, ciSource = "check-rollup" }) {
+export function computeDoraStats(mergedPrs, { days, checksReadable = true, ciSource = "check-rollup", ciSince = null }) {
   const leadTimesHours = mergedPrs
     .map((pr) => (Date.parse(pr.mergedAt) - Date.parse(pr.createdAt)) / 3_600_000)
     .filter((hours) => Number.isFinite(hours) && hours >= 0)
     .sort((a, b) => a - b);
 
   const weeks = Math.max(days / 7, 1e-9);
+  // Optional post-cutoff slice of the CI-green gate (e.g. since CI activation):
+  // the rolling window carries pre-activation merges for up to `days`, so the
+  // slice shows current discipline while the window catches up.
+  const sinceSlice =
+    checksReadable && ciSince
+      ? { ...computeCiChecks(mergedPrs.filter((pr) => pr.mergedAt >= ciSince)), since: ciSince }
+      : null;
   return {
     windowDays: days,
     mergedPrCount: mergedPrs.length,
@@ -30,6 +37,7 @@ export function computeDoraStats(mergedPrs, { days, checksReadable = true, ciSou
     ciChecks: checksReadable
       ? { ...computeCiChecks(mergedPrs), source: ciSource }
       : { unavailable: "This token can read neither check runs nor Actions runs." },
+    ciChecksSince: sinceSlice,
     eliteReference: { leadTimeHoursMedian: 24, deployFrequency: "on-demand" },
     notInstrumented: {
       changeFailureRate: "Needs a deploy + incident/rollback signal; no production deploys exist yet.",
@@ -90,6 +98,12 @@ export function formatDoraReport(stats, { repo }) {
     `| Lead time for changes (PR created→merged) | ${leadCell} | < 24h median | ${lt.median === null ? "n/a" : meetsElite ? "meets" : "below"} |`,
     `| Deploy frequency (PROXY: merges to main) | ${stats.mergesPerWeek}/week | on-demand | proxy only |`,
     formatCiChecksRow(stats.ciChecks),
+    ...(stats.ciChecksSince
+      ? [formatCiChecksRow(stats.ciChecksSince).replace(
+          "CI green on merged PRs (L2 gate)",
+          `CI green on merges since ${stats.ciChecksSince.since.slice(0, 10)} (current discipline)`,
+        )]
+      : []),
     `| Change failure rate | not instrumented | ~5% | — |`,
     `| Failed deployment recovery time | not instrumented | < 1h | — |`,
     "",
