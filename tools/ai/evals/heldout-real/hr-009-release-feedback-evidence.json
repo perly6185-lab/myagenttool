@@ -1,0 +1,12 @@
+{
+  "id": "hr-009-release-feedback-evidence",
+  "issue": "real-5e70658",
+  "title": "Release notes: bind feedback and retrospective evidence",
+  "spec": "The release CLI drafts release notes but ignores post-release learning: retrospective, PR, deploy, and feedback evidence files are never referenced, so release notes cannot prove what feedback the release incorporated. Extend the release tool so evidence can be supplied (individual files and/or a directory), gets summarized into the release note draft, and missing evidence categories are explicitly called out instead of silently omitted.",
+  "risk": "low",
+  "base": "cf0fd93e9a75d9376b2daa832b9be15d3575054d",
+  "oracle": {
+    "expectedFiles": ["tools/release/src/index.mjs"],
+    "forbiddenFiles": ["apps/", "packages/", "tools/ai/"]
+  }
+}

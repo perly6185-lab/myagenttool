@@ -192,8 +192,12 @@ evidenced, not asserted):
 
 This proposal is inert until measurement exists. Minimum instrumentation:
 
-1. **DORA counters** from git/PR/deploy events (lead time, change failure rate,
-   recovery time) — feeds L2/L3/L5 gates.
+1. **DORA counters** from git/PR/deploy events — feeds L2/L3/L5 gates. A
+   minimal slice now exists (`pnpm github:dora`): PR-based lead time and a
+   merge-frequency proxy are measured; change failure rate and recovery time
+   are reported as **not instrumented** (they need a real deploy target +
+   incident signal) rather than proxied. First reading (2026-07-02, 30-day
+   window): 73 merged PRs, median lead time 0.02h, 17 merges/week.
 2. **A local held-out issue set + measured pass %** — the honest replacement
    for L4's structural check. A minimal implementation now exists
    ([L4_HELDOUT_EVAL.md](L4_HELDOUT_EVAL.md), `pnpm ai:eval-heldout`): a seed

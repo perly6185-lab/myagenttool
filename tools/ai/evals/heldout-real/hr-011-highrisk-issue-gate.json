@@ -1,0 +1,12 @@
+{
+  "id": "hr-011-highrisk-issue-gate",
+  "issue": "real-eb431cd",
+  "title": "Gate high-risk AI issue creation behind human approval evidence",
+  "spec": "The AI helper CLI can turn a PM brief into GitHub issues and apply them directly. Today the apply path treats all issues alike, so an AI-classified high-risk issue (security/data/privacy, billing/cost, local execution, roadmap-changing, or release/deploy impact) can be created with no human sign-off. Change the issue-tree apply path so high-risk issue creation is blocked unless explicit human approval evidence is supplied (a flag with a reason, or an environment variable), the approval reason is recorded in the created issue body, and the CLI self-check covers both the blocked and approved paths.",
+  "risk": "high",
+  "base": "30fa9831599c9fcd5a12954f2401b5e6324b9e39",
+  "oracle": {
+    "expectedFiles": ["tools/ai/src/index.mjs"],
+    "forbiddenFiles": ["apps/", "packages/", "tools/github/"]
+  }
+}
