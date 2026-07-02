@@ -825,6 +825,8 @@ export function createM3Service({
     budgetStatusFor,
     budgetStatuses,
     teamBudgetStatuses,
+    teamBudgetStatusFor,
+    budgetGateForProject,
     findLifecycleLocalApproval,
     completeLifecycleAction,
     findLifecycleRollbackRequest,
@@ -1027,15 +1029,47 @@ export function createM3Service({
 
   function upsertBudget(body = {}) {
     const projectId = String(body.projectId ?? "").trim();
-    const project = state.projects.find((item) => item.id === projectId);
-    if (!project) {
-      throw new Error("A known projectId is required.");
+    const teamId = String(body.teamId ?? "").trim();
+    if (Boolean(projectId) === Boolean(teamId)) {
+      throw new Error("A budget needs exactly one of projectId or teamId.");
     }
     const limitUsd = Number(body.limitUsd);
     if (!Number.isFinite(limitUsd) || limitUsd < 0) {
       throw new Error("Budget limitUsd must be a non-negative number.");
     }
     const nowValue = now();
+
+    // Team pool: caps the summed spend of every project the team owns.
+    if (teamId) {
+      const team = (state.teams ?? []).find((item) => item.id === teamId);
+      if (!team) {
+        throw new Error("A known teamId is required.");
+      }
+      const existing = state.budgets.find((item) => item.teamId === teamId);
+      const budget = existing ?? { id: nextId("bud_demo"), teamId, createdAt: nowValue };
+      budget.teamName = team.name;
+      budget.limitUsd = Number(limitUsd.toFixed(2));
+      budget.policy = normalizeBudgetPolicy(body.policy);
+      budget.currency = "USD";
+      budget.updatedAt = nowValue;
+      if (!existing) {
+        state.budgets.unshift(budget);
+      }
+      state.budgets = state.budgets.slice(0, 200);
+      appendEvent({
+        invocationId: null,
+        type: "billing_recorded",
+        level: "info",
+        message: `Team budget updated for ${team.name}.`,
+        data: { budgetId: budget.id, teamId, policy: budget.policy },
+      });
+      return budget;
+    }
+
+    const project = state.projects.find((item) => item.id === projectId);
+    if (!project) {
+      throw new Error("A known projectId is required.");
+    }
     const existing = state.budgets.find((item) => item.projectId === projectId);
     const budget = existing ?? {
       id: nextId("bud_demo"),
@@ -1109,7 +1143,50 @@ export function createM3Service({
       acc.spentUsd = roundUsd(acc.spentUsd + spend.spentUsd);
       rollup.set(teamId, acc);
     }
-    return [...rollup.values()];
+    // Join the team budget pool (a budgets row with teamId instead of
+    // projectId) so each team row carries its limit/remaining/over.
+    return [...rollup.values()].map((row) => {
+      const pool = (state.budgets ?? []).find((item) => item.teamId === row.teamId);
+      const limitUsd = pool ? Number(pool.limitUsd) : null;
+      return {
+        ...row,
+        exists: Boolean(pool),
+        budgetId: pool?.id,
+        limitUsd,
+        policy: pool?.policy ?? "warn",
+        currency: pool?.currency ?? "USD",
+        remainingUsd: pool && limitUsd !== null ? roundUsd(limitUsd - row.spentUsd) : null,
+        over: pool ? row.spentUsd > limitUsd : false,
+      };
+    });
+  }
+
+  function teamBudgetStatusFor(teamId) {
+    return teamBudgetStatuses().find((row) => row.teamId === teamId) ?? null;
+  }
+
+  // The enforcement gate the UI copy promises ("Over budget — new runs are
+  // blocked"): a new run for a project is blocked when the project budget OR
+  // its owning team's pool is over the limit with policy "block". Warn /
+  // allow_overage budgets never block.
+  function budgetGateForProject(projectId) {
+    const project = state.projects.find((item) => item.id === projectId);
+    if (!project) return { blocked: false };
+    const projectStatus = budgetStatusFor(project.id);
+    if (projectStatus.exists && projectStatus.over && projectStatus.policy === "block") {
+      return {
+        blocked: true,
+        reason: `Project budget exceeded (${projectStatus.spentUsd} of ${projectStatus.limitUsd} USD) with a block policy.`,
+      };
+    }
+    const teamStatus = teamBudgetStatusFor(teamOf(project));
+    if (teamStatus?.exists && teamStatus.over && teamStatus.policy === "block") {
+      return {
+        blocked: true,
+        reason: `Team budget exceeded (${teamStatus.spentUsd} of ${teamStatus.limitUsd} USD) with a block policy.`,
+      };
+    }
+    return { blocked: false };
   }
 
   function ledgerSpendForProject(projectId) {

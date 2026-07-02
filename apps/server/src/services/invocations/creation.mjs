@@ -21,6 +21,7 @@ export function createInvocationCreationRuntime({
   completeRootSpan,
   createAuditSummary,
   recordAgentUsage,
+  budgetGateForProject,
 }) {
   function createInvocation(task, agent = defaultAgent(), options = {}) {
     if (!agent) {
@@ -54,6 +55,14 @@ export function createInvocationCreationRuntime({
       ? state.projects.find((item) => item.id === requestedWorktree.workspaceProjectId) ?? visibleProject
       : visibleProject;
     const projectWorktree = requestedWorktree ?? worktreeForProject(project?.id);
+    // Budget gate: a project (or team pool) over its limit with a block policy
+    // rejects the run up front, same shape as the platform AI quota gate.
+    const targetProjectId = visibleProject?.id ?? project?.id ?? null;
+    const budgetGate =
+      typeof budgetGateForProject === "function" && targetProjectId
+        ? budgetGateForProject(targetProjectId)
+        : { blocked: false };
+    const gateRejected = quotaGate?.allowed === false || budgetGate.blocked;
     const invocation = {
       id,
       ideaSessionId: null,
@@ -64,16 +73,16 @@ export function createInvocationCreationRuntime({
       // Prefer an explicit requestedBy (the scheduler passes the automation's
       // creator), then the acting user, then the local fallback.
       requestedBy: options.requestedBy ?? options.actor?.userId ?? "usr_local",
-      status: quotaGate?.allowed === false ? "rejected" : policy.decision === "requires_local_approval" ? "waiting_for_local_approval" : directRun ? "running" : "queued",
+      status: gateRejected ? "rejected" : policy.decision === "requires_local_approval" ? "waiting_for_local_approval" : directRun ? "running" : "queued",
       delivery: {
         deliveryId: nextId("del_demo"),
         deviceId: agent.location.type === "local_device" ? agent.location.deviceId : null,
-        state: quotaGate?.allowed === false ? "not_required" : policy.decision === "requires_local_approval" ? "not_required" : directRun ? "not_required" : "queued",
+        state: gateRejected ? "not_required" : policy.decision === "requires_local_approval" ? "not_required" : directRun ? "not_required" : "queued",
         idempotencyKey: `idem_${id}`,
         leaseExpiresAt: null,
-        dispatchAttempts: quotaGate?.allowed === false || policy.decision === "requires_local_approval" ? 0 : directRun ? 1 : 0,
-        lastDispatchAt: quotaGate?.allowed === false || policy.decision === "requires_local_approval" ? null : directRun ? createdAt : null,
-        acknowledgedAt: quotaGate?.allowed === false || policy.decision === "requires_local_approval" ? null : directRun ? createdAt : null,
+        dispatchAttempts: gateRejected || policy.decision === "requires_local_approval" ? 0 : directRun ? 1 : 0,
+        lastDispatchAt: gateRejected || policy.decision === "requires_local_approval" ? null : directRun ? createdAt : null,
+        acknowledgedAt: gateRejected || policy.decision === "requires_local_approval" ? null : directRun ? createdAt : null,
         bridgeCursor: null,
         expiresAt: null
       },
@@ -166,6 +175,26 @@ export function createInvocationCreationRuntime({
         data: { quotaDecisionId: quotaGate.quotaDecision.id, decision: quotaGate.quotaDecision.decision }
       });
       state.auditSummaries.push(createAuditSummary(invocation, quotaGate.quotaDecision.reason));
+      recordAgentUsage(invocation, "rejected");
+      persistStateSoon();
+      return invocation;
+    }
+    if (budgetGate.blocked) {
+      const record = state.policyDecisionRecords.find((item) => item.id === invocation.policyDecisionId);
+      if (record) {
+        record.decision = "denied";
+        record.reason = budgetGate.reason;
+      }
+      invocation.completedAt = createdAt;
+      completeRootSpan(invocation, "failed");
+      appendEvent({
+        invocationId: invocation.id,
+        type: "invocation_rejected",
+        level: "warn",
+        message: budgetGate.reason,
+        data: { gate: "budget" }
+      });
+      state.auditSummaries.push(createAuditSummary(invocation, budgetGate.reason));
       recordAgentUsage(invocation, "rejected");
       persistStateSoon();
       return invocation;

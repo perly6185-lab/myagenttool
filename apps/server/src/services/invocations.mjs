@@ -27,6 +27,7 @@ export function createInvocationService({
   normalizeCodexWorkspacePolicy,
   createManagedCodexWorkspace,
   createManagedCodexSession,
+  budgetGateForProject,
   closeCodexSession,
 }) {
   const {
@@ -97,6 +98,7 @@ export function createInvocationService({
     completeRootSpan,
     createAuditSummary,
     recordAgentUsage,
+    budgetGateForProject,
   });
   const {
     acknowledgeInvocation,

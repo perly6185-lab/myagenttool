@@ -89,7 +89,12 @@ export function buildPublicState({
     aiUsageRecords: byInvocation(state.aiUsageRecords),
     ledgerEntries: byProject(state.ledgerEntries),
     ledgerSummary: typeof ledgerSummary === "function" ? ledgerSummary() : null,
-    budgets: byProject(state.budgets),
+    // Project budgets scope by project; team pools (rows with teamId, no
+    // projectId) scope by the viewer's team — byProject alone would treat them
+    // as global and leak every team's pool to every viewer.
+    budgets: (state.budgets ?? []).filter((b) =>
+      b?.teamId ? teamId == null || b.teamId === teamId : projectVisible(b?.projectId),
+    ),
     budgetStatuses: byProject(typeof budgetStatuses === "function" ? budgetStatuses() : []),
     // Team cost rollup — a team sees only its own row (unscoped mode sees all).
     teamBudgetStatuses: (typeof teamBudgetStatuses === "function" ? teamBudgetStatuses() : []).filter(
