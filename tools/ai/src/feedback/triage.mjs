@@ -115,7 +115,9 @@ export function triageReport({ ledgerEntries, closedAutoIssues = [] }) {
     .map((entry) => Date.parse(entry.processedAt) - Date.parse(entry.eventCreatedAt))
     .filter((ms) => Number.isFinite(ms) && ms >= 0)
     .sort((a, b) => a - b);
-  const invalid = closedAutoIssues.filter((issue) => issue.stateReason === "not_planned").length;
+  // gh emits the GraphQL enum ("NOT_PLANNED"); compare case-insensitively so a
+  // REST-shaped "not_planned" also counts.
+  const invalid = closedAutoIssues.filter((issue) => String(issue.stateReason ?? "").toLowerCase() === "not_planned").length;
   return {
     events: ledgerEntries.length,
     conversionRate: ledgerEntries.length === 0 ? null : round3(handled.length / ledgerEntries.length),
