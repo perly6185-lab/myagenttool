@@ -1,6 +1,6 @@
 {
   "name": "myagenttool",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "private": true,
   "description": "Personal and small-team Agent Control Plane.",
   "packageManager": "pnpm@9.15.0",
@@ -146,7 +146,11 @@
     "test:ci": "pnpm -r --filter \"!@myagenttool/desktop\" test && pnpm --filter @myagenttool/desktop test:unit",
     "ci:simulate": "node tools/dev/ci-simulate.mjs",
     "ci:activate": "node tools/dev/ci-activate.mjs",
-    "github:governance": "node tools/github/src/index.mjs governance-report"
+    "github:governance": "node tools/github/src/index.mjs governance-report",
+    "pr:merge": "node tools/dev/pr-merge.mjs",
+    "eval:real": "node tools/dev/eval-real-run.mjs",
+    "eval:trend": "node tools/dev/eval-real-run.mjs --trend",
+    "ai:feedback-triage": "node tools/ai/src/index.mjs feedback-triage"
   },
   "devDependencies": {
     "typescript": "^5.7.2"

@@ -1,0 +1,14 @@
+# Review routing for myagenttool. Solo-maintainer repo: this file documents
+# ownership and powers automatic review requests, but required reviews are
+# deliberately NOT enabled — GitHub's author-cannot-approve-own-PR rule would
+# deadlock every merge for a single maintainer (#245). Revisit when a second
+# maintainer joins: enable required_pull_request_reviews alongside this file.
+
+* @perly6185-lab
+
+# Governance-sensitive surfaces (call these out explicitly so future
+# multi-maintainer rules can tighten them first):
+/.github/                    @perly6185-lab
+/tools/dev/ci-activate.mjs   @perly6185-lab
+/tools/github/               @perly6185-lab
+/docs/engineering/MATURITY_CALIBRATION.md @perly6185-lab

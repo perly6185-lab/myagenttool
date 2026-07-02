@@ -23,10 +23,10 @@
 //   MYAGENTTOOL_CLAUDE_MODEL     optional --model override
 //   MYAGENTTOOL_CLAUDE_TIMEOUT_MS  per-case budget (default 600000)
 
-import { spawnSync } from "node:child_process";
 import { writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { CODING_ADAPTER_CONTRACT_VERSION } from "../legacy/config.mjs";
+import { runClaudeCli } from "./claude-cli.mjs";
 import { collectChangedFiles } from "./git-files.mjs";
 
 function main() {
@@ -35,13 +35,6 @@ function main() {
   const caseRaw = process.env.MYAGENTTOOL_HELDOUT_CASE;
   if (!caseRaw) throw new Error("MYAGENTTOOL_HELDOUT_CASE is required (run via the held-out resolver).");
   const caseObj = JSON.parse(caseRaw);
-
-  const cli = process.env.MYAGENTTOOL_CLAUDE_CLI ?? "claude";
-  const model = process.env.MYAGENTTOOL_CLAUDE_MODEL ?? "";
-  // Guard the coercion: Number("") is 0 (spawnSync reads 0 as "no timeout")
-  // and garbage is NaN (spawnSync throws) — both fall back to the default.
-  const timeoutRaw = Number(process.env.MYAGENTTOOL_CLAUDE_TIMEOUT_MS);
-  const timeoutMs = Number.isFinite(timeoutRaw) && timeoutRaw > 0 ? timeoutRaw : 600000;
 
   const prompt = [
     `You are working in a git worktree of this repository (possibly at a past commit). Implement the following change.`,
@@ -57,29 +50,24 @@ function main() {
     `- When you are done editing, reply with a one-line summary.`,
   ].join("\n");
 
-  const args = [
-    "-p", prompt,
-    "--allowedTools", "Read,Glob,Grep,Edit,Write",
-    "--permission-mode", "acceptEdits",
-  ];
-  if (model) args.push("--model", model);
-
   const startedAt = new Date().toISOString();
-  const run = spawnSync(cli, args, {
+  const run = runClaudeCli({
+    promptArgs: [
+      "-p", prompt,
+      "--allowedTools", "Read,Glob,Grep,Edit,Write",
+      "--permission-mode", "acceptEdits",
+    ],
     cwd: process.cwd(),
-    encoding: "utf8",
-    timeout: timeoutMs,
-    stdio: ["ignore", "pipe", "pipe"],
-    env: process.env,
+    timeoutEnv: "MYAGENTTOOL_CLAUDE_TIMEOUT_MS",
+    timeoutDefaultMs: 600000,
   });
 
   const changedFiles = collectChangedFiles(process.cwd());
-  const timedOut = run.error?.code === "ETIMEDOUT";
-  const ok = !timedOut && run.status === 0;
+  const ok = !run.timedOut && run.status === 0;
   const summary = ok
     ? `Claude CLI completed: ${lastLine(run.stdout) || "(no summary line)"}`
-    : timedOut
-      ? `Claude CLI timed out after ${timeoutMs}ms.`
+    : run.timedOut
+      ? `Claude CLI timed out after ${run.timeoutMs}ms.`
       : `Claude CLI exited ${run.status ?? "unknown"}.`;
 
   writeFileSync(resolve(evidenceDir, "adapter-result.json"), `${JSON.stringify({
@@ -88,7 +76,7 @@ function main() {
     status: ok ? "completed" : "failed",
     summary,
     changedFiles,
-    commandsRun: [`${cli} -p <prompt> --allowedTools Read,Glob,Grep,Edit,Write --permission-mode acceptEdits${model ? ` --model ${model}` : ""}`],
+    commandsRun: [`${run.cli} -p <prompt> --allowedTools Read,Glob,Grep,Edit,Write --permission-mode acceptEdits${run.model ? ` --model ${run.model}` : ""}`],
     risks: ["Model-authored edits; the held-out oracle and human review judge the result."],
     completedAt: new Date().toISOString(),
     startedAt,

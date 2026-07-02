@@ -80,6 +80,19 @@ PR number, branch name, or date-based identifier. Production, staging, server,
 web, desktop, and protocol releases must use an explicit `--version` so rollback
 evidence can point to the previous artifact.
 
+### Applied policy (since v0.1.0, #256)
+
+- The **root `package.json` version is the product version**; workspace
+  packages stay `0.0.0`/private (internal, released only as part of the
+  product).
+- Pre-1.0 interpretation: **MINOR** marks a completed capability line (e.g.
+  0.1.0 = the measured-and-enforced delivery-OS line), **PATCH** marks fixes.
+  MAJOR stays 0 until the control plane serves users beyond its own
+  development.
+- Every release gets a git tag `vX.Y.Z`, a notes file under `docs/releases/`
+  (release notes AND rollback notes in one place, merged through the PR gate
+  before tagging), and a GitHub Release pointing at the tag.
+
 ## Release Checklist
 
 Before release:

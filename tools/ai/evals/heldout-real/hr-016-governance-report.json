@@ -1,0 +1,26 @@
+{
+  "id": "hr-016-governance-report",
+  "issue": "real-f9ca45b",
+  "title": "Quantify the L3 gate: governance-report command (risk-evidence coverage + bypass merges)",
+  "spec": "The L3 maturity gate ('100% of PRs carry required risk-evidence routes; 0 silent-bypass merges') has no measurement. Add a governance-report command to the GitHub governance CLI that, over a merged-PR window, computes risk-evidence coverage (share of merged PRs whose bodies satisfy the evidence routes for the areas they touch), counts silent-bypass commits (commits on the default branch that belong to no PR), renders both against their targets, and writes the usual JSON+MD evidence bundle. Wire a pnpm alias and self-check coverage.",
+  "risk": "medium",
+  "base": "23bf13d7",
+  "difficulty": "large",
+  "oracle": {
+    "expectedFiles": [
+      "tools/github/src/index.mjs"
+    ],
+    "forbiddenFiles": [
+      "apps/",
+      "tools/ai/"
+    ],
+    "verify": {
+      "mode": "fail-to-pass",
+      "command": [
+        "node",
+        "-e",
+        "const{execFileSync}=require(\"node:child_process\");const out=execFileSync(\"node\",[\"tools/github/src/index.mjs\",\"--help\"],{encoding:\"utf8\"});process.exit(/governance-report/.test(out)?0:1)"
+      ]
+    }
+  }
+}

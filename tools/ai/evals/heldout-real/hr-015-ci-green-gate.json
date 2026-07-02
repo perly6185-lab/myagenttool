@@ -1,0 +1,26 @@
+{
+  "id": "hr-015-ci-green-gate",
+  "issue": "real-126585f",
+  "title": "Instrument the L2 CI-green gate: green rate on merged PRs in dora-report",
+  "spec": "The L2 maturity gate demands 'CI+smoke green on >=95% of merged PRs' but nothing measures it. Extend the DORA counters so each merged PR in the window carries its CI outcome, expose an aggregate ciChecks stat (green count, total with checks, rate, and how many merged with no checks at all) from computeDoraStats, render it in the report with the >=95% target, and report 'not measurable' honestly when the token cannot read checks. Unit-test the aggregation.",
+  "risk": "medium",
+  "base": "8bc2e363",
+  "difficulty": "large",
+  "oracle": {
+    "expectedFiles": [
+      "tools/github/src/dora.mjs"
+    ],
+    "forbiddenFiles": [
+      "apps/",
+      "tools/ai/"
+    ],
+    "verify": {
+      "mode": "fail-to-pass",
+      "command": [
+        "node",
+        "-e",
+        "import(\"./tools/github/src/dora.mjs\").then(m=>{const s=m.computeDoraStats([{createdAt:\"2026-01-01T00:00:00Z\",mergedAt:\"2026-01-01T12:00:00Z\"}],{days:7,checksReadable:true});process.exit(s.ciChecks!==undefined?0:1)}).catch(()=>process.exit(1))"
+      ]
+    }
+  }
+}
