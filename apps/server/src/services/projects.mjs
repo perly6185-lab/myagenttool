@@ -312,8 +312,13 @@ export function createProjectService({ state, now, nextId, appendEvent, persistS
     const index = state.worktrees.findIndex((item) => item.id === worktreeId);
     if (index === -1) return null;
     const [removed] = state.worktrees.splice(index, 1);
-    const projectIndex = removed.projectId
-      ? state.projects.findIndex((item) => item.id === removed.projectId && item.source === "worktree")
+    // The derived workspace project is keyed by workspaceProjectId; projectId
+    // points at the SOURCE project (source "user"), which the source==="worktree"
+    // filter can never match — using it alone leaked one orphaned workspace
+    // project row on every removal.
+    const derivedProjectId = removed.workspaceProjectId ?? removed.projectId;
+    const projectIndex = derivedProjectId
+      ? state.projects.findIndex((item) => item.id === derivedProjectId && item.source === "worktree")
       : -1;
     if (projectIndex !== -1 && state.projects.length > 1) {
       const [project] = state.projects.splice(projectIndex, 1);
