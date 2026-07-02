@@ -11,8 +11,32 @@
  * second team and `MYAGENT_REQUIRE_AUTH=1` are in play.
  */
 
+import crypto from "node:crypto";
+
 /** Turn the 401 gate on. Off by default so local dev needs no login. */
 export const REQUIRE_AUTH = process.env.MYAGENT_REQUIRE_AUTH === "1";
+
+/**
+ * Password hashing with node's built-in scrypt (no external dep). Returns a
+ * self-describing `scrypt$salt$hash` string stored on the user. verifyPassword
+ * is constant-time. This is the credential check that replaces login-as-anyone
+ * for users that have a password; the seeded passwordless local user stays
+ * frictionless for single-user dev.
+ */
+export function hashPassword(password) {
+  const salt = crypto.randomBytes(16).toString("hex");
+  const hash = crypto.scryptSync(String(password ?? ""), salt, 64).toString("hex");
+  return `scrypt$${salt}$${hash}`;
+}
+
+export function verifyPassword(password, stored) {
+  if (typeof stored !== "string") return false;
+  const [scheme, salt, hash] = stored.split("$");
+  if (scheme !== "scrypt" || !salt || !hash) return false;
+  const expected = Buffer.from(hash, "hex");
+  const actual = crypto.scryptSync(String(password ?? ""), salt, 64);
+  return expected.length === actual.length && crypto.timingSafeEqual(expected, actual);
+}
 
 /** The seeded local identity, used as the fallback actor. */
 export const LOCAL_USER_ID = "usr_local";
