@@ -1,5 +1,5 @@
 import crypto from "node:crypto";
-import { denyForeignProject } from "../runtime/auth.mjs";
+import { denyForeignProject, hashPassword, verifyPassword } from "../runtime/auth.mjs";
 import { computeNextRun, normalizeSchedule } from "../services/automation-schedule.mjs";
 
 const TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000;
@@ -26,8 +26,6 @@ export async function handleControlPlaneRoutes({
   if (req.method === "POST" && url.pathname === "/api/session") {
     // Multi-user login: a body.userId logs in as that seeded user; with none we
     // fall back to the local user so existing single-user dev is unchanged.
-    // NOTE: demo-level — there is no credential check yet (login-as-anyone).
-    // Real deployments must verify a password/OAuth before minting a token.
     const body = await readJson(req).catch(() => ({}));
     const requestedUserId = body?.userId ? String(body.userId) : null;
     if (requestedUserId && !state.users.some((item) => item.id === requestedUserId)) {
@@ -38,6 +36,13 @@ export async function handleControlPlaneRoutes({
       (requestedUserId && state.users.find((item) => item.id === requestedUserId)) ||
       state.users.find((item) => item.id === "usr_local") ||
       state.users[0];
+    // Credential check: a user with a password must supply the correct one
+    // (closes login-as-anyone for credentialed users). A passwordless user —
+    // e.g. the seeded local dev user — still logs in without one.
+    if (user?.passwordHash && !verifyPassword(body?.password, user.passwordHash)) {
+      sendJson(res, 401, { error: "invalid_credentials" });
+      return true;
+    }
     const createdAt = now();
     const token = `tok_${crypto.randomBytes(24).toString("base64url")}`;
     const record = {
@@ -52,10 +57,11 @@ export async function handleControlPlaneRoutes({
     state.tokens.unshift(record);
     state.tokens = state.tokens.slice(0, 20);
     persistStateSoon();
+    const { passwordHash: _pw, ...safeUser } = user ?? { id: "usr_local", name: "Local User", teamId: "team_local" };
     sendJson(res, 200, {
       token,
       expiresAt: record.expiresAt,
-      user: user ?? { id: "usr_local", name: "Local User", teamId: "team_local" },
+      user: safeUser,
     });
     return true;
   }
@@ -110,11 +116,15 @@ export async function handleControlPlaneRoutes({
       email: body?.email ? String(body.email) : null,
       teamId,
       role: ["owner", "admin", "operator", "viewer"].includes(body?.role) ? body.role : "operator",
+      // A password makes the user login-protected; omit for a passwordless
+      // (dev/service) account. Never echo the hash back.
+      passwordHash: body?.password ? hashPassword(String(body.password)) : null,
       createdAt: now(),
     };
     state.users.unshift(user);
     persistStateSoon();
-    sendJson(res, 201, { user });
+    const { passwordHash: _omit, ...safeUser } = user;
+    sendJson(res, 201, { user: safeUser });
     return true;
   }
 

@@ -24,10 +24,13 @@ refuse the foreign team, while the owner succeeds. Run:
 > validated end-to-end: `POST /api/teams`, `POST /api/users`, multi-user login
 > (`POST /api/session {userId}`), and project creation defaulting `ownerTeamId`
 > to the creator's team. `multi-user-plumbing.test.mjs` provisions two tenants
-> through these real APIs and confirms isolation holds. **Still missing for a
-> real product:** (1) the web console sends no bearer token / has no login UI,
-> and (2) login is credential-less (login-as-anyone) — real auth needs a
-> password/OAuth check and team/user-provisioning RBAC (ROADMAP SaaS/RBAC).
+> through these real APIs and confirms isolation holds. **Credential check (9A)
+> landed:** users can carry a scrypt `passwordHash`; `/api/session` verifies the
+> password before minting a token (wrong/missing → 401), closing login-as-anyone
+> for credentialed users; the passwordless seeded dev user stays frictionless;
+> hashes are never exposed (session response + public state stripped). **Still
+> missing for a real product:** (1) the web console sends no bearer token / has no
+> login UI (9B), and (2) RBAC on team/user provisioning (9C) — ROADMAP SaaS/RBAC.
 
 ## Model recap
 

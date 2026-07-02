@@ -54,7 +54,8 @@ export function buildPublicState({
       cloneParentDir: defaultProjectPath,
     },
     device: state.device,
-    users: state.users ?? [],
+    // Never expose password hashes to any client.
+    users: (state.users ?? []).map(({ passwordHash, ...user }) => user),
     teams: state.teams ?? [],
     projects,
     projectTargets: byProject(state.projectTargets),

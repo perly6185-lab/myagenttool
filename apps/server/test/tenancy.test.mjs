@@ -19,9 +19,21 @@ import {
   LOCAL_TEAM_ID,
   LOCAL_USER_ID,
   denyForeignProject,
+  hashPassword,
   resolveActor,
   teamOf,
+  verifyPassword,
 } from "../src/runtime/auth.mjs";
+
+test("hashPassword/verifyPassword: round-trips, rejects wrong + malformed", () => {
+  const stored = hashPassword("s3cret");
+  assert.match(stored, /^scrypt\$[0-9a-f]+\$[0-9a-f]+$/);
+  assert.equal(verifyPassword("s3cret", stored), true);
+  assert.equal(verifyPassword("wrong", stored), false);
+  assert.equal(verifyPassword("s3cret", "not-a-hash"), false);
+  assert.equal(verifyPassword("s3cret", null), false);
+  assert.notEqual(hashPassword("s3cret"), hashPassword("s3cret"), "salted → different each time");
+});
 
 /** A sendJson spy matching the (res, status, body) signature the routes use. */
 function captureSend() {

@@ -98,6 +98,34 @@ test("login with an unknown user is rejected (404)", async () => {
   assert.equal(r.status, 404);
 });
 
+test("credentialed login: a password-protected user needs the right password", async () => {
+  // Bootstrap login (seeded local user is passwordless).
+  const local = await call("/api/session", { method: "POST", body: {} });
+  const carol = await call("/api/users", {
+    token: local.body.token,
+    method: "POST",
+    body: { name: "Carol", teamId: ctx.teamAId, password: "s3cret" },
+  });
+  assert.equal(carol.status, 201);
+  assert.equal(carol.body.user.passwordHash, undefined, "the response must not echo the hash");
+  const uid = carol.body.user.id;
+
+  const wrong = await call("/api/session", { method: "POST", body: { userId: uid, password: "nope" } });
+  assert.equal(wrong.status, 401, "wrong password is rejected");
+  const none = await call("/api/session", { method: "POST", body: { userId: uid } });
+  assert.equal(none.status, 401, "no password is rejected for a credentialed user");
+  const ok = await call("/api/session", { method: "POST", body: { userId: uid, password: "s3cret" } });
+  assert.equal(ok.status, 200, "the right password logs in");
+});
+
+test("password hashes are never exposed in public state", async () => {
+  const state = await call("/api/state", { token: ctx.tokA });
+  assert.equal(state.status, 200);
+  for (const u of state.body.users ?? []) {
+    assert.equal(u.passwordHash, undefined, `user ${u.id} must not expose passwordHash`);
+  }
+});
+
 test("a project created by team A is owned by team A", async () => {
   const dir = mkdtempSync(join(tmpdir(), "mu-proja-"));
   const created = await call("/api/projects/create", { token: ctx.tokA, method: "POST", body: { name: "A repo", path: dir } });
