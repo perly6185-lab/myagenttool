@@ -89,3 +89,27 @@ test("probeA2aAgent: healthy card lists skills; bad URL is unhealthy", async () 
   const bad = await probeA2aAgent(normalizeA2aAdapterConfig({ agentUrl: "http://127.0.0.1:1" }));
   assert.equal(bad.ok, false);
 });
+
+test("SSE: a streaming card consumes message/stream to completion (artifact text returned)", async () => {
+  const adapter = await startFixture("--stream");
+  const events = [];
+  const outcome = await callA2aAgent({ adapter, task: "hello sse", onEvent: (e) => events.push(e) });
+  assert.equal(outcome.status, "succeeded");
+  assert.equal(outcome.result.output, "echo: hello sse");
+  assert.ok(events.some((e) => e.message.includes("A2A task working")), "stream status updates surface as events");
+  assert.ok(events.some((e) => e.message.includes("A2A task completed")));
+});
+
+test("SSE: cancellation mid-stream sends tasks/cancel and returns cancelled", async () => {
+  const adapter = await startFixture("--stream", "--slow");
+  let cancel = false;
+  setTimeout(() => (cancel = true), 400);
+  const outcome = await callA2aAgent({ adapter, task: "x", shouldCancel: () => cancel });
+  assert.equal(outcome.status, "cancelled");
+});
+
+test("SSE: a hung stream times out at the adapter timeout", async () => {
+  const adapter = { ...(await startFixture("--stream", "--slow")), timeoutMs: 1_200 };
+  const outcome = await callA2aAgent({ adapter, task: "x" });
+  assert.equal(outcome.status, "timed_out");
+});

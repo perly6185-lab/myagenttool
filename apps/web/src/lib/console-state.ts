@@ -333,6 +333,22 @@ export interface BudgetStatus {
   over: boolean;
 }
 
+export interface TeamBudgetStatus {
+  teamId: string;
+  teamName?: string;
+  projectCount: number;
+  exists: boolean;
+  budgetId?: string;
+  limitUsd: number | null;
+  policy: string;
+  currency?: string;
+  spentUsd: number;
+  finalizedUsd?: number;
+  estimatedUsd?: number;
+  remainingUsd: number | null;
+  over: boolean;
+}
+
 export interface IntegrationArtifact {
   id: string;
   summary: string;
@@ -448,4 +464,6 @@ export interface ConsoleSnapshot {
   importedUsageEstimates?: ImportedUsageEstimate[];
   ledgerSummary?: LedgerSummary;
   budgetStatuses?: BudgetStatus[];
+  teamBudgetStatuses?: TeamBudgetStatus[];
+  teams?: { id: string; name?: string }[];
 }

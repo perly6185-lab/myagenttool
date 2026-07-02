@@ -112,11 +112,9 @@ export function createAgentService({ state, now, nextId, appendEvent }) {
     // exactly what the bridge will execute. Invalid config throws with a
     // plain-language message the route surfaces as a 400.
     const config = normalizeMcpAdapterConfig(body.adapter ?? body);
-    // The first live slice runs stdio servers on the local device via the
-    // bridge; http-transport MCP servers need the (future) server-side client.
-    if (config.transport !== "stdio") {
-      throw new Error("MCP registration currently supports the stdio transport only.");
-    }
+    // Both transports run their *client* on this device's bridge (stdio spawns
+    // the server locally; http reaches a remote endpoint — kept on the bridge
+    // so servers on networks only the user's device can reach stay usable).
     const id = sanitizeAgentId(body.id ?? nextId("agt_mcp"));
     return baseAgent({
       id,

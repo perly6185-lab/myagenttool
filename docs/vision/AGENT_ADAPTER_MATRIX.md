@@ -20,25 +20,28 @@ Container
 ### Adapter status
 
 - **CLI / HTTP / Platform** — shipped (M0+).
-- **MCP** — *live over stdio.* The declarative slice
+- **MCP** — *live over stdio AND Streamable HTTP.* The declarative slice
   (`packages/adapters/src/mcp.mjs`) is executed by the Desktop Bridge's client
-  (`apps/desktop/src/mcp-client.mjs`): newline-delimited JSON-RPC handshake →
-  `tools/list` → `tools/call` via the shared descriptor (allowlist enforced),
-  server notifications forwarded as invocation events, cancellation mapped to
-  `notifications/cancelled` + process stop, plus a real health probe
-  (handshake + tool listing). `POST /api/agents {type:"mcp"}` registers a stdio
-  server as a managed agent; validated end-to-end through the control plane.
-  Remaining: the http transport (needs a server-side client, not the bridge).
-- **A2A** — *live.* The declarative slice (`packages/adapters/src/a2a.mjs`) is
-  executed by the bridge's client (`apps/desktop/src/a2a-client.mjs`): fetch the
-  Agent Card, JSON-RPC `message/send` via the shared descriptor (skill allowlist
-  enforced), poll `tasks/get` to a terminal state, cancellation mapped to
-  `tasks/cancel`, plus a card-fetch health probe. The client runs on the bridge
-  so agents reachable only from the user's network stay usable; it does not
-  consume a bridge concurrency slot (the work happens on the remote agent).
-  `POST /api/agents {type:"a2a"}` registers one; validated end-to-end through
-  the control plane. Remaining: consume the `message/stream` SSE instead of
-  polling.
+  (`apps/desktop/src/mcp-client.mjs`): initialize handshake → `tools/list` →
+  `tools/call` via the shared descriptor (allowlist enforced), server
+  notifications forwarded as invocation events, cancellation mapped to
+  `notifications/cancelled` + process stop (stdio) or request abort (http),
+  plus a real health probe (handshake + tool listing). The http session echoes
+  the `Mcp-Session-Id` header and consumes both `application/json` and
+  `text/event-stream` replies. `POST /api/agents {type:"mcp"}` registers either
+  transport; the client always runs on the bridge (servers on networks only the
+  device can reach stay usable). Only locally-spawned stdio servers consume a
+  bridge concurrency slot; http-transport work is remote and does not.
+- **A2A** — *live, streaming.* The declarative slice
+  (`packages/adapters/src/a2a.mjs`) is executed by the bridge's client
+  (`apps/desktop/src/a2a-client.mjs`): fetch the Agent Card; when the card
+  declares streaming capability the task is consumed over the `message/stream`
+  SSE (status/artifact events forwarded live), otherwise JSON-RPC
+  `message/send` + `tasks/get` polling; skill allowlist enforced; cancellation
+  maps to `tasks/cancel` (also mid-stream); card-fetch health probe. The client
+  runs on the bridge and does not consume a concurrency slot (the work happens
+  on the remote agent). `POST /api/agents {type:"a2a"}` registers one;
+  validated end-to-end through the control plane.
 - **Container** — *live.* The declarative slice
   (`packages/adapters/src/container.mjs`) is executed by the bridge's client
   (`apps/desktop/src/container-client.mjs`): a one-shot governed
