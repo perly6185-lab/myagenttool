@@ -1,8 +1,11 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
+import { existsSync } from "node:fs";
+import { isAbsolute } from "node:path";
 
 const options = parseArgs(process.argv.slice(2));
 if (options.mode !== "diff-review") fail(`Unsupported Claude review mode: ${options.mode}`);
+requireReviewCwd(options);
 
 console.log(`Claude review started: ${options.mode}`);
 
@@ -17,7 +20,7 @@ const commandPlan = claudeCommandPlan(options.claudeCli, [
   "plan",
 ]);
 const { code, stdout, stderr } = await run(commandPlan.command, commandPlan.args, {
-  cwd: options.cwd ?? process.cwd(),
+  cwd: options.cwd,
 });
 for (const line of stderr.split(/\r?\n/).map((item) => item.trim()).filter(Boolean)) {
   console.error(line);
@@ -77,6 +80,16 @@ function parseArgs(args) {
     }
   }
   return parsed;
+}
+
+function requireReviewCwd(opts) {
+  // The governed facade derives --cwd from the ownership-checked worktree path.
+  // If it can't (worktree not materialized), the Bridge previously injected no
+  // --cwd and this wrapper silently reviewed process.cwd() — the Bridge's own
+  // working tree. Refuse rather than review an unspecified directory.
+  if (!opts.cwd || !isAbsolute(opts.cwd) || !existsSync(opts.cwd)) {
+    fail("--cwd must be an absolute path to an existing worktree; refusing to review an unspecified directory.");
+  }
 }
 
 function requireValue(args, index, name) {
