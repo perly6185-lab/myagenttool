@@ -108,8 +108,10 @@ one blended number. Unannotated cases report as `unrated`.
 First real baseline (2026-07-02, 8-case snapshot, file-level oracle, Claude
 Code CLI): **87.5% (7/8)** — sole failure was the hr-006 adapter timeout.
 Suggested starting gate: `--min-pass-rate 0.6`. Later runs use the grown set
-(13 cases) with behavior probes, so rates are comparable only within the same
-set version — record the set size and probe count alongside any number.
+(21 cases as of #249, four fail-to-pass probes, tiers small 2 / medium 10 /
+large 9) with behavior probes, so rates are comparable only within the same
+set version — record the set size and probe count alongside any number. The
+hardened gate line comes from the scheduled-run trend (#250).
 
 Env: `MYAGENTTOOL_CODING_ADAPTER` (default `mock` — changes nothing, so pass
 rate is 0%; use a real adapter to measure capability), `MYAGENTTOOL_HELDOUT_PROVIDER`
@@ -125,13 +127,16 @@ Two sets exist:
 - `tools/ai/evals/heldout/` — the **seed synthetic set** (6 cases: one
   intentionally unsolved, one intentionally-vacuous verify probe). Drives the
   hermetic `ai:check` sanity; mock rate 4/6 ≈ 66.7%.
-- `tools/ai/evals/heldout-real/` — the **real set**: 8 cases mined from this
-  repo's git history. Each case's `base` pins the resolver's worktree to the
-  **parent of the original fix commit**, so the fix is absent from the tree the
-  agent sees (the SWE-bench base-commit structure). Specs are written
-  issue-style from the original intent; `expectedFiles` is the minimal core
-  file the real fix touched. The mock baseline here is **0%** — only a real
-  coding agent can score.
+- `tools/ai/evals/heldout-real/` — the **real set**: 21 cases mined from this
+  repo's git history (hr-001…hr-021; spans governance tooling, server
+  economics/tenancy/auth, web console, CI wiring). Each case's `base` pins the
+  resolver's worktree to the **parent of the original fix commit**, so the fix
+  is absent from the tree the agent sees (the SWE-bench base-commit structure).
+  Specs are written issue-style from the original intent; `expectedFiles` is
+  the minimal core file(s) the real fix touched, verified to exist at the
+  pinned base. Four cases carry **fail-to-pass probes** (hr-008/015/016/017),
+  each empirically validated to fail at base and pass at the original fix.
+  The mock baseline here is **0%** — only a real coding agent can score.
 
 Cases are one JSON file each:
 

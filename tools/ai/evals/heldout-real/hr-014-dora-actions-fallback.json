@@ -1,0 +1,18 @@
+{
+  "id": "hr-014-dora-actions-fallback",
+  "issue": "real-3cdf291",
+  "title": "DORA report: fall back to Actions runs when the token cannot read check runs",
+  "spec": "The dora-report command reads per-PR CI status via statusCheckRollup, but a token without checks:read makes that field unavailable and the CI-green gate reads 'not measurable' even though the same information exists in the repository's Actions run history. Add a fallback: when check runs are unreadable, derive per-PR CI green/red from the workflow runs API instead, mark the source in the stats so readers know which path produced the number, and keep the honest 'not measurable' output only when both paths are unavailable. Cover the fallback in the dora test file.",
+  "risk": "medium",
+  "base": "80a1ff04",
+  "difficulty": "medium",
+  "oracle": {
+    "expectedFiles": [
+      "tools/github/src/dora.mjs"
+    ],
+    "forbiddenFiles": [
+      "apps/",
+      "tools/ai/"
+    ]
+  }
+}
