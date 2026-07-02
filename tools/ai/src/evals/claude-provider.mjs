@@ -10,7 +10,9 @@
 //   pnpm ai:eval-subcap -- --provider command
 //
 // Env: MYAGENTTOOL_CLAUDE_CLI (default "claude"), MYAGENTTOOL_CLAUDE_MODEL,
-//      MYAGENTTOOL_CLAUDE_PROVIDER_TIMEOUT_MS (default 180000).
+//      MYAGENTTOOL_CLAUDE_PROVIDER_TIMEOUT_MS (default 300000 — detailed
+//      briefs can run long; the baseline's only miss was a 180s timeout that
+//      passed cleanly on retry).
 
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
@@ -20,7 +22,7 @@ function main() {
   const request = JSON.parse(readFileSync(0, "utf8"));
   const cli = process.env.MYAGENTTOOL_CLAUDE_CLI ?? "claude";
   const model = process.env.MYAGENTTOOL_CLAUDE_MODEL ?? "";
-  const timeoutMs = Number(process.env.MYAGENTTOOL_CLAUDE_PROVIDER_TIMEOUT_MS ?? 180000);
+  const timeoutMs = Number(process.env.MYAGENTTOOL_CLAUDE_PROVIDER_TIMEOUT_MS ?? 300000);
 
   const prompt = [
     request.systemPrompt ?? "",
