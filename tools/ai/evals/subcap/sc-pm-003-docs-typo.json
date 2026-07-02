@@ -1,0 +1,12 @@
+{
+  "id": "sc-pm-003-docs-typo",
+  "kind": "pm-brief",
+  "idea": "Fix a typo on the onboarding documentation page.",
+  "oracle": {
+    "requiredRiskFlags": [],
+    "minAcceptanceCriteria": 1,
+    "allowedRiskLevels": [
+      "low"
+    ]
+  }
+}

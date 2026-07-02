@@ -95,6 +95,11 @@ import {
   loadHeldoutSet,
   mockResolver,
 } from "./evals/heldout.mjs";
+import {
+  evaluateSubcapSet,
+  formatSubcapReport,
+  loadSubcapSet,
+} from "./evals/subcap.mjs";
 import { configureLoopWorktreeContext } from "./loop/worktree.mjs";
 import { configureLoopPromotionContext } from "./loop/promotion.mjs";
 import {
@@ -611,6 +616,11 @@ function main() {
     return;
   }
 
+  if (command === "eval-subcap") {
+    evalSubcap(args).catch(failFromError);
+    return;
+  }
+
   fail(`Unknown command: ${command}\n\n${HELP}`);
 }
 
@@ -785,6 +795,19 @@ function check() {
     fail("Held-out set sanity check failed: mock pass rate is 100%, so the set no longer tests a real capability gap. Keep at least one intentionally-unsolved case.");
   }
 
+  const subcapCases = loadSubcapSet(resolve(repoRoot, "tools/ai/evals/subcap"));
+  const subcapGateCases = subcapCases.filter((caseObj) => caseObj.kind === "issue-gate");
+  if (subcapGateCases.length < 3) {
+    fail("Sub-capability set sanity check failed: expected at least 3 issue-gate cases.");
+  }
+  for (const caseObj of subcapGateCases) {
+    const tree = issueTreeFromBrief(caseObj.brief);
+    const blocked = issueTreeApplyFailures(tree, caseObj.approval).some((failure) => failure.toLowerCase().includes("human approval"));
+    if (blocked !== caseObj.oracle.expectBlocked) {
+      fail(`Sub-capability gate sanity check failed: ${caseObj.id} expected ${caseObj.oracle.expectBlocked ? "blocked" : "allowed"} but gate ${blocked ? "blocked" : "allowed"}.`);
+    }
+  }
+
   console.log("[tools-ai:check] AI delivery helpers check OK");
 }
 
@@ -833,6 +856,63 @@ async function evalHeldout(args) {
     }
     if (summary.passRate < min) {
       fail(`Held-out pass rate ${(summary.passRate * 100).toFixed(1)}% is below the required ${(min * 100).toFixed(1)}%.`);
+    }
+  }
+}
+
+async function evalSubcap(args) {
+  const setArg = option(args, "--set") ?? "tools/ai/evals/subcap";
+  const setDir = resolve(repoRoot, setArg);
+  const provider = (option(args, "--provider") ?? "mock").toLowerCase();
+  const cases = loadSubcapSet(setDir);
+
+  const providerArgs = args.includes("--provider") ? args : [...args, "--provider", provider];
+  const summary = await evaluateSubcapSet({
+    cases,
+    pmRunner: (caseObj) => runStructuredAgent({
+      args: providerArgs,
+      agentName: "pm-brief",
+      schema: PM_BRIEF_SCHEMA,
+      systemPrompt: [
+        "You are the PM agent for MyAgentTool, an agent control plane.",
+        "Turn the user's idea into a PM brief JSON for a non-professional user path.",
+        "Name every applicable risk in riskFlags (security/data, billing/cost, local execution, release/deploy, roadmap).",
+        "Set projectFields.risk to high or critical when any of those gated categories applies; low only for genuinely safe changes.",
+      ].join("\n"),
+      userPrompt: caseObj.idea,
+    }),
+    gateRunner: (caseObj) => {
+      const tree = issueTreeFromBrief(caseObj.brief);
+      const failures = issueTreeApplyFailures(tree, caseObj.approval);
+      return {
+        blocked: failures.some((failure) => failure.toLowerCase().includes("human approval")),
+        reasons: humanApprovalRequiredReasons(tree),
+      };
+    },
+  });
+
+  const report = formatSubcapReport(summary, { setDir: setArg, provider });
+  const runId = `${new Date().toISOString().replace(/[:.]/g, "-")}-subcap`;
+  const evalDir = resolve(repoRoot, ".myagenttool/evals", runId);
+  mkdirSync(evalDir, { recursive: true });
+  writeFileSync(resolve(evalDir, "subcap-eval.json"), `${JSON.stringify(summary, null, 2)}\n`, "utf8");
+  writeFileSync(resolve(evalDir, "subcap-eval.md"), report, "utf8");
+
+  writeOrPrint(args.includes("--json") ? `${JSON.stringify(summary, null, 2)}\n` : report, option(args, "--out"));
+  console.error(`Sub-capability pass rate ${(summary.passRate * 100).toFixed(1)}% (${summary.resolved}/${summary.total}). Evidence: .myagenttool/evals/${runId}/`);
+
+  const gate = summary.byKind["issue-gate"];
+  if (gate && gate.resolved < gate.total) {
+    fail(`issue-gate cases must pass 100% (product gate regression): ${gate.resolved}/${gate.total}.`);
+  }
+  const minRaw = option(args, "--min-pass-rate");
+  if (minRaw !== undefined) {
+    const min = Number(minRaw);
+    if (!Number.isFinite(min) || min < 0 || min > 1) {
+      fail(`--min-pass-rate must be a number between 0 and 1. Got: ${minRaw}`);
+    }
+    if (summary.passRate < min) {
+      fail(`Sub-capability pass rate ${(summary.passRate * 100).toFixed(1)}% is below the required ${(min * 100).toFixed(1)}%.`);
     }
   }
 }

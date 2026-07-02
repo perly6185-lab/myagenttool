@@ -72,6 +72,7 @@
     "ai:loop-routine-fanout-execute": "node tools/ai/src/index.mjs loop-routine-fanout-execute",
     "ai:coding-adapter-contract": "node tools/ai/src/index.mjs coding-adapter-contract",
     "ai:eval-heldout": "node tools/ai/src/index.mjs eval-heldout",
+    "ai:eval-subcap": "node tools/ai/src/index.mjs eval-subcap",
     "github:check": "node tools/github/src/index.mjs --check",
     "github:check:issues": "node tools/github/src/index.mjs check-issues",
     "github:check:pr": "node tools/github/src/index.mjs check-pr",

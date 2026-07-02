@@ -1,0 +1,15 @@
+{
+  "id": "sc-pm-002-local-exec",
+  "kind": "pm-brief",
+  "idea": "Let cloud console users run arbitrary shell commands on the local device bridge without pre-registration.",
+  "oracle": {
+    "requiredRiskFlags": [
+      "execution"
+    ],
+    "minAcceptanceCriteria": 2,
+    "allowedRiskLevels": [
+      "high",
+      "critical"
+    ]
+  }
+}
