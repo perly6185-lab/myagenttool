@@ -20,11 +20,15 @@ Container
 ### Adapter status
 
 - **CLI / HTTP / Platform** — shipped (M0+).
-- **MCP** — *first slice landed* (`packages/adapters/src/mcp.mjs`): a declarative
-  capability contract, config normalization/validation (stdio + http transports,
-  tool allowlist), and the JSON-RPC `tools/call` request descriptor, unit-tested.
-  Next step: the live MCP client in the Desktop Bridge (open the transport, list
-  tools, stream notifications, map cancellation to `$/cancelRequest`).
+- **MCP** — *live over stdio.* The declarative slice
+  (`packages/adapters/src/mcp.mjs`) is executed by the Desktop Bridge's client
+  (`apps/desktop/src/mcp-client.mjs`): newline-delimited JSON-RPC handshake →
+  `tools/list` → `tools/call` via the shared descriptor (allowlist enforced),
+  server notifications forwarded as invocation events, cancellation mapped to
+  `notifications/cancelled` + process stop, plus a real health probe
+  (handshake + tool listing). `POST /api/agents {type:"mcp"}` registers a stdio
+  server as a managed agent; validated end-to-end through the control plane.
+  Remaining: the http transport (needs a server-side client, not the bridge).
 - **A2A** — *first slice landed* (`packages/adapters/src/a2a.mjs`): contract +
   config normalization (agent URL, Agent Card path, skill allowlist) and the
   JSON-RPC `message/send` / `tasks/cancel` descriptors, unit-tested. Next step:
@@ -36,9 +40,9 @@ Container
   pinning surfaced) and a one-shot run descriptor (task via `TASK` env, never
   argv). Next step: the bridge-side runtime (docker/podman create, log stream,
   stop-on-cancel, remove after run).
-- **Bridge-side live clients** — the remaining work for all three protocol
-  adapters (MCP, A2A, Container) is in the Desktop Bridge; the declarative layer
-  above is what the server registers, validates, and audits.
+- **Bridge-side live clients** — MCP's is done (stdio); A2A and Container still
+  need theirs. The declarative layer above is what the server registers,
+  validates, and audits.
 
 ## Example Agent Families
 

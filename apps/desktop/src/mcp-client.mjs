@@ -1,0 +1,259 @@
+/*
+ * Live MCP client for the Desktop Bridge — stdio transport.
+ *
+ * Executes the declarative adapter config from @myagenttool/adapters/mcp: spawn
+ * the server command, speak newline-delimited JSON-RPC over stdin/stdout
+ * (initialize → notifications/initialized → tools/list → tools/call), forward
+ * server notifications as bridge events, and map cancellation to the MCP
+ * `notifications/cancelled` notification followed by process termination.
+ *
+ * Kept transport-pure (no /api/bridge calls) so it is testable against a
+ * fixture MCP server; index.mjs owns the ack/events/complete glue.
+ */
+
+import { spawn } from "node:child_process";
+import { describeMcpToolCall } from "@myagenttool/adapters/mcp";
+
+const PROTOCOL_VERSION = "2025-03-26";
+const CLIENT_INFO = { name: "myagenttool-desktop-bridge", version: "0.0.0" };
+const HANDSHAKE_TIMEOUT_MS = 10_000;
+const CANCEL_GRACE_MS = 500;
+
+/** One newline-delimited JSON-RPC session over a child process's stdio. */
+function createStdioSession(adapter, onEvent) {
+  const child = spawn(adapter.command, adapter.args ?? [], {
+    stdio: ["pipe", "pipe", "pipe"],
+    env: process.env,
+  });
+
+  let nextId = 1;
+  const pending = new Map(); // id → {resolve, reject}
+  let stdoutBuffer = "";
+  let spawnError = null;
+
+  child.on("error", (error) => {
+    spawnError = error;
+    for (const { reject } of pending.values()) reject(error);
+    pending.clear();
+  });
+
+  // A dead server can never answer: fail in-flight requests immediately instead
+  // of letting them sit until their timeout (also makes cancellation prompt —
+  // kill() resolves the pending call within the grace period, not the timeout).
+  child.on("close", () => {
+    const error = new Error("MCP server exited before responding.");
+    for (const { reject } of pending.values()) reject(error);
+    pending.clear();
+  });
+
+  child.stdout.on("data", (chunk) => {
+    stdoutBuffer += chunk.toString("utf8");
+    const lines = stdoutBuffer.split("\n");
+    stdoutBuffer = lines.pop() ?? "";
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      let message;
+      try {
+        message = JSON.parse(line);
+      } catch {
+        onEvent({ type: "log", level: "warn", message: `MCP server emitted non-JSON output: ${line.slice(0, 160)}` });
+        continue;
+      }
+      if (message.id !== undefined && pending.has(message.id)) {
+        const { resolve, reject } = pending.get(message.id);
+        pending.delete(message.id);
+        if (message.error) reject(new Error(message.error.message ?? "MCP request failed."));
+        else resolve(message.result);
+      } else if (message.method === "notifications/message") {
+        const params = message.params ?? {};
+        const text = typeof params.data === "string" ? params.data : JSON.stringify(params.data ?? {});
+        onEvent({ type: "log", level: params.level === "error" ? "warn" : "info", message: `MCP: ${text}` });
+      } else if (message.method === "notifications/progress") {
+        const params = message.params ?? {};
+        onEvent({ type: "log", level: "info", message: `MCP progress: ${params.progress ?? "?"}${params.total ? `/${params.total}` : ""}` });
+      }
+      // Other server→client requests (sampling, roots) are out of scope for the
+      // first slice and intentionally ignored.
+    }
+  });
+
+  child.stderr.on("data", (chunk) => {
+    const text = chunk.toString("utf8").trim();
+    if (text) onEvent({ type: "log", level: "warn", message: `MCP stderr: ${text.slice(0, 300)}` });
+  });
+
+  function send(message) {
+    child.stdin.write(`${JSON.stringify(message)}\n`);
+  }
+
+  function request(method, params, { timeoutMs }) {
+    const id = nextId++;
+    return {
+      id,
+      promise: new Promise((resolve, reject) => {
+        const timer = setTimeout(() => {
+          pending.delete(id);
+          reject(new Error(`MCP request ${method} timed out.`));
+        }, timeoutMs);
+        pending.set(id, {
+          resolve: (value) => {
+            clearTimeout(timer);
+            resolve(value);
+          },
+          reject: (error) => {
+            clearTimeout(timer);
+            reject(error);
+          },
+        });
+        send({ jsonrpc: "2.0", id, method, params });
+      }),
+    };
+  }
+
+  function kill() {
+    try {
+      child.kill("SIGTERM");
+    } catch {
+      /* already gone */
+    }
+    setTimeout(() => {
+      try {
+        if (child.exitCode === null) child.kill("SIGKILL");
+      } catch {
+        /* already gone */
+      }
+    }, CANCEL_GRACE_MS).unref?.();
+  }
+
+  return {
+    child,
+    send,
+    request,
+    kill,
+    get spawnError() {
+      return spawnError;
+    },
+  };
+}
+
+async function handshake(session) {
+  await session.request("initialize", {
+    protocolVersion: PROTOCOL_VERSION,
+    capabilities: {},
+    clientInfo: CLIENT_INFO,
+  }, { timeoutMs: HANDSHAKE_TIMEOUT_MS }).promise;
+  session.send({ jsonrpc: "2.0", method: "notifications/initialized" });
+}
+
+/** Extract readable text from an MCP tools/call result's content array. */
+function contentText(result) {
+  const parts = Array.isArray(result?.content) ? result.content : [];
+  return parts
+    .map((part) => (part?.type === "text" ? part.text : `[${part?.type ?? "unknown"}]`))
+    .join("\n")
+    .trim();
+}
+
+/** Resolve which tool to call: explicit option, adapter default, single listed
+ *  tool, or a single-entry allowlist. Anything else is an explicit error. */
+function resolveToolName(adapter, options, tools) {
+  const explicit = options?.toolName ?? adapter?.toolName;
+  if (explicit) return String(explicit);
+  if (tools.length === 1) return tools[0].name;
+  if ((adapter.allowedTools ?? []).length === 1) return adapter.allowedTools[0];
+  throw new Error(
+    `MCP server exposes ${tools.length} tools (${tools.map((t) => t.name).join(", ") || "none"}); set toolName to pick one.`,
+  );
+}
+
+/**
+ * Spawn the MCP server, call one tool with the task, and return a terminal
+ * outcome. `shouldCancel` is polled; on cancellation the client sends
+ * notifications/cancelled for the in-flight call, then stops the process.
+ */
+export async function callMcpTool({ adapter, task, options = {}, onEvent = () => {}, shouldCancel = () => false }) {
+  const session = createStdioSession(adapter, onEvent);
+  const timeoutMs = Number(adapter.timeoutMs ?? 60_000);
+  let cancelled = false;
+  let cancelTimer = null;
+
+  try {
+    await handshake(session);
+    if (session.spawnError) throw session.spawnError;
+
+    const listed = await session.request("tools/list", {}, { timeoutMs: HANDSHAKE_TIMEOUT_MS }).promise;
+    const tools = Array.isArray(listed?.tools) ? listed.tools : [];
+    const toolName = resolveToolName(adapter, options, tools);
+    const args =
+      options.toolArguments && typeof options.toolArguments === "object" && !Array.isArray(options.toolArguments)
+        ? options.toolArguments
+        : { task: String(task ?? "") };
+
+    // Allowlist enforcement + descriptor shape come from the shared slice.
+    const descriptor = describeMcpToolCall(adapter, toolName, args);
+    onEvent({ type: "log", level: "info", message: `MCP calling tool ${toolName}.` });
+
+    const call = session.request(descriptor.method, descriptor.params, { timeoutMs });
+    cancelTimer = setInterval(() => {
+      if (cancelled || !shouldCancel()) return;
+      cancelled = true;
+      session.send({
+        jsonrpc: "2.0",
+        method: "notifications/cancelled",
+        params: { requestId: call.id, reason: "Cancelled from the control plane." },
+      });
+      session.kill();
+    }, 250);
+
+    const result = await call.promise;
+    if (cancelled) {
+      return { status: "cancelled", summary: `MCP tool ${toolName} was cancelled.`, result: null };
+    }
+    const text = contentText(result);
+    if (result?.isError) {
+      return { status: "failed", summary: `MCP tool ${toolName} reported an error.`, result: { output: text } };
+    }
+    return {
+      status: "succeeded",
+      summary: text ? text.slice(0, 200) : `MCP tool ${toolName} completed.`,
+      result: { toolName, output: text },
+    };
+  } catch (error) {
+    if (cancelled) {
+      return { status: "cancelled", summary: "MCP tool call was cancelled.", result: null };
+    }
+    const timedOut = /timed out/i.test(error?.message ?? "");
+    return {
+      status: timedOut ? "timed_out" : "failed",
+      summary: session.spawnError
+        ? `MCP server could not start: ${session.spawnError.message}`
+        : `MCP tool call failed: ${error?.message ?? error}`,
+      result: null,
+    };
+  } finally {
+    if (cancelTimer) clearInterval(cancelTimer);
+    session.kill();
+  }
+}
+
+/** Health probe: spawn, handshake, list tools, stop. Proves the configured
+ *  command really is a speaking MCP server, not just an existing binary. */
+export async function probeMcpServer(adapter) {
+  const session = createStdioSession(adapter, () => {});
+  try {
+    await handshake(session);
+    const listed = await session.request("tools/list", {}, { timeoutMs: HANDSHAKE_TIMEOUT_MS }).promise;
+    const tools = Array.isArray(listed?.tools) ? listed.tools.map((t) => t.name) : [];
+    return { ok: true, message: `MCP server is reachable and exposes ${tools.length} tool(s): ${tools.join(", ") || "none"}.` };
+  } catch (error) {
+    return {
+      ok: false,
+      message: session.spawnError
+        ? `MCP server could not start: ${session.spawnError.message}`
+        : `MCP handshake failed: ${error?.message ?? error}`,
+      nextAction: "Check the MCP server command and arguments.",
+    };
+  } finally {
+    session.kill();
+  }
+}

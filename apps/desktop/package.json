@@ -6,14 +6,16 @@
   "type": "module",
   "scripts": {
     "dev": "node ./src/index.mjs",
-    "test": "node ./src/index.mjs --check",
+    "test": "node ./src/index.mjs --check && node --test test/*.test.mjs",
     "lint": "node ./src/index.mjs --check",
-    "typecheck": "tsc --noEmit -p tsconfig.json"
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test:unit": "node --test test/*.test.mjs"
   },
   "dependencies": {
     "@myagenttool/protocol": "workspace:*",
     "@myagenttool/shared": "workspace:*",
-    "node-pty": "^1.1.0"
+    "node-pty": "^1.1.0",
+    "@myagenttool/adapters": "workspace:*"
   },
   "devDependencies": {
     "typescript": "^5.7.2"
