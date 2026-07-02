@@ -12,6 +12,7 @@ export type SectionKey =
   | "discovery"
   | "integrations"
   | "tools"
+  | "review"
   | "economics"
   | "audit";
 
@@ -46,6 +47,7 @@ const SECTION_KEYS: SectionKey[] = [
   "discovery",
   "integrations",
   "tools",
+  "review",
   "economics",
   "audit",
 ];
