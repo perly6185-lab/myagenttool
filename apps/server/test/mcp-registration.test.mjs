@@ -49,5 +49,23 @@ test("rejects http-transport MCP registration (bridge-side stdio only for now)",
 test("rejects invalid MCP config with the slice's plain-language error", () => {
   const { svc } = service();
   assert.throws(() => svc.registerAgent({ type: "mcp", transport: "stdio" }), /requires a command/);
-  assert.throws(() => svc.registerAgent({ type: "grpc" }), /cli, http, and mcp/);
+  assert.throws(() => svc.registerAgent({ type: "grpc" }), /cli, http, mcp, a2a, and container/);
+});
+
+test("registers an A2A agent: client runs on the bridge, adapter validated by the slice", () => {
+  const { svc } = service();
+  const agent = svc.registerAgent({ type: "a2a", name: "Remote", agentUrl: "https://agent.example/", allowedSkills: ["echo"] });
+  assert.equal(agent.adapter.type, "a2a");
+  assert.equal(agent.adapter.agentUrl, "https://agent.example", "trailing slash trimmed by the slice");
+  assert.equal(agent.location.type, "local_device", "the client runs on this device's bridge");
+  assert.throws(() => svc.registerAgent({ type: "a2a", agentUrl: "not-a-url" }), /valid http/);
+});
+
+test("registers a container agent with the governance guards applied", () => {
+  const { svc } = service();
+  const agent = svc.registerAgent({ type: "container", image: "acme/agent:1", cpuLimit: 999 });
+  assert.equal(agent.adapter.type, "container");
+  assert.equal(agent.adapter.network, "none", "network isolated by default");
+  assert.equal(agent.adapter.cpuLimit, 8, "cpu clamped to the ceiling");
+  assert.throws(() => svc.registerAgent({ type: "container", image: "acme/agent:1", privileged: true }), /not allowed/);
 });

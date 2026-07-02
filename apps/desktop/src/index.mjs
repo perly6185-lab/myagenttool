@@ -5,6 +5,8 @@ import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { delimiter } from "node:path";
 import * as pty from "node-pty";
 import { callMcpTool, probeMcpServer } from "./mcp-client.mjs";
+import { callA2aAgent, probeA2aAgent } from "./a2a-client.mjs";
+import { probeContainerRuntime, runContainerAgent } from "./container-client.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const serverUrl = process.env.BRIDGE_SERVER_URL ?? "http://127.0.0.1:5001";
@@ -477,6 +479,14 @@ async function runInvocation(work) {
     await runMcpInvocation(work);
     return;
   }
+  if (adapter?.type === "a2a") {
+    await runA2aInvocation(work);
+    return;
+  }
+  if (adapter?.type === "container") {
+    await runContainerInvocation(work);
+    return;
+  }
 
   if (!adapter || adapter.type !== "cli") {
     await request("POST", "/api/bridge/complete", {
@@ -720,11 +730,23 @@ async function runInvocation(work) {
   });
 }
 
-// Execute an MCP invocation: the transport lives in mcp-client.mjs; this glue
-// polls cancel-status, forwards client events to the server, and completes the
-// invocation with the client's terminal outcome. The ack already happened in
-// runInvocation before dispatching here.
+// Protocol-client dispatch: the transports live in {mcp,a2a,container}-client
+// modules; this shared glue polls cancel-status, forwards client events to the
+// server, and completes the invocation with the client's terminal outcome. The
+// ack already happened in runInvocation before dispatching here.
 async function runMcpInvocation(work) {
+  await runClientInvocation(work, callMcpTool, "MCP server");
+}
+
+async function runA2aInvocation(work) {
+  await runClientInvocation(work, callA2aAgent, "A2A agent");
+}
+
+async function runContainerInvocation(work) {
+  await runClientInvocation(work, runContainerAgent, "container");
+}
+
+async function runClientInvocation(work, clientFn, runtimeLabel) {
   const invocationId = work.invocationId;
   const task = String(work.input?.task ?? "");
   const adapter = work.adapter;
@@ -739,14 +761,14 @@ async function runMcpInvocation(work) {
         invocationId,
         type: "cancel_dispatched",
         level: "info",
-        message: "Desktop Bridge sent cancellation to the MCP server."
+        message: `Desktop Bridge sent cancellation to the ${runtimeLabel}.`
       });
     }
   }, 250);
 
   let outcome;
   try {
-    outcome = await callMcpTool({
+    outcome = await clientFn({
       adapter,
       task,
       options: work.options ?? {},
@@ -774,8 +796,9 @@ async function runMcpInvocation(work) {
 
 async function runHealthCheck(work) {
   const adapter = work.adapter;
-  if (adapter?.type === "mcp") {
-    const probe = await probeMcpServer(adapter);
+  const protocolProbes = { mcp: probeMcpServer, a2a: probeA2aAgent, container: probeContainerRuntime };
+  if (protocolProbes[adapter?.type]) {
+    const probe = await protocolProbes[adapter.type](adapter);
     await request("POST", "/api/bridge/health-complete", {
       checkId: work.checkId,
       agentId: work.agentId,
