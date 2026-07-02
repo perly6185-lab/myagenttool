@@ -102,6 +102,48 @@ mkdirSync(dirname(trendFile), { recursive: true });
 appendFileSync(trendFile, `${JSON.stringify(record)}\n`, "utf8");
 console.log(`[eval:real] trend record appended: ${trendLine(record)}`);
 
+// --- L6 feedback events (docs/engineering/FEEDBACK_LOOP.md) -----------------
+// Unattended runs must not let regressions rot silently: emit intake events
+// for the triage pipeline. dedupeKey keeps nightly repeats from re-filing.
+emitFeedbackEvents(record);
+
+function emitFeedbackEvents(entry) {
+  const events = [];
+  if (entry.subcap?.error) {
+    events.push({
+      source: "eval-real", severity: "high",
+      title: "Real subcap eval failed to produce a summary",
+      detail: `Run ${entry.startedAt}: subcap eval error (${entry.subcap.error}). See .myagenttool/evals/cron.log.`,
+      dedupeKey: "eval-real:subcap-run-error",
+    });
+  }
+  const gate = entry.subcap?.byKind?.["issue-gate"];
+  if (gate && gate.resolved < gate.total) {
+    events.push({
+      source: "eval-real", severity: "high",
+      title: `Issue-gate cases failing in the real eval (${gate.resolved}/${gate.total})`,
+      detail: `Run ${entry.startedAt}: the product apply-gate cases must pass 100%; a miss here is a product bug, not a capability signal. Evidence under .myagenttool/evals/.`,
+      dedupeKey: "eval-real:issue-gate-regression",
+    });
+  }
+  if (entry.heldout?.error) {
+    events.push({
+      source: "eval-real", severity: "medium",
+      title: "Real held-out eval failed to produce a summary",
+      detail: `Run ${entry.startedAt}: held-out eval error (${entry.heldout.error}). See .myagenttool/evals/cron.log.`,
+      dedupeKey: "eval-real:heldout-run-error",
+    });
+  }
+  if (events.length === 0) return;
+  const inbox = resolve(repoRoot, ".myagenttool/feedback/inbox.jsonl");
+  mkdirSync(dirname(inbox), { recursive: true });
+  const createdAt = new Date().toISOString();
+  for (const event of events) {
+    appendFileSync(inbox, `${JSON.stringify({ ...event, createdAt })}\n`, "utf8");
+  }
+  console.error(`[eval:real] ${events.length} feedback event(s) emitted; run \`pnpm ai:feedback-triage\` (cron applies automatically).`);
+}
+
 // --- helpers ----------------------------------------------------------------
 function runEval(label, cliArgs, extraEnv) {
   console.log(`[eval:real] running ${label} (real provider)…`);

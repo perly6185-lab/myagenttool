@@ -21,4 +21,6 @@ mkdir -p "$(dirname "$LOG")"
   echo "=== eval-real-cron $(date -u +%Y-%m-%dT%H:%M:%SZ) args: $* ==="
   cd "$REPO"
   node tools/dev/eval-real-run.mjs "$@"
+  # L6: close the loop unattended — file tracked issues for any emitted events
+  node tools/ai/src/index.mjs feedback-triage --apply
 } >> "$LOG" 2>&1
