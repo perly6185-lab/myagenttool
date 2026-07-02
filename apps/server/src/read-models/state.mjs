@@ -35,6 +35,10 @@ export function buildPublicState({
     teamId == null || !invocationId || visibleInvIds.has(invocationId);
   const byInvocation = (rows) => (rows ?? []).filter((r) => invVisible(r?.invocationId));
   const byProject = (rows) => (rows ?? []).filter((r) => projectVisible(r?.projectId));
+  const applications = (state.applications ?? []).filter((application) => {
+    if (application?.projectId) return projectVisible(application.projectId);
+    return teamId == null || (application?.ownerTeamId ?? LOCAL_TEAM_ID) === teamId;
+  });
   const importedUsagePublic = (rows) => byInvocation(rows).map(({ raw, ...row }) => row);
   const codexReviewFindings = byInvocation(state.codexReviewFindings).map(({ raw, ...row }) => row);
   const claudeReviewFindings = byInvocation(state.claudeReviewFindings).map(({ raw, ...row }) => row);
@@ -63,6 +67,7 @@ export function buildPublicState({
     users: (state.users ?? []).map(({ passwordHash, ...user }) => user),
     teams: state.teams ?? [],
     projects,
+    applications,
     projectTargets: byProject(state.projectTargets),
     currentProjectId: state.currentProjectId,
     currentProject: currentProject(),

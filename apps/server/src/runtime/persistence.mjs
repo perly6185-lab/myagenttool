@@ -5,6 +5,7 @@ const persistedArrayKeys = [
   "users",
   "teams",
   "tokens",
+  "applications",
   "projectTargets",
   "invocations",
   "worktrees",
