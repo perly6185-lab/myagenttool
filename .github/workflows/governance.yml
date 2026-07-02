@@ -1,6 +1,13 @@
 name: Governance
 
+# pr-governance runs on every pull request (cost-gated like CI) in ADVISORY
+# mode: it fails on hard rules (linked issue, verification evidence) and warns
+# on risk-evidence routes, but is not yet a required status check. Promotion
+# path: `pnpm ci:activate --require-governance` once the green rate holds
+# (#243). The workflow_dispatch jobs below remain for manual runs.
+
 on:
+  pull_request:
   workflow_dispatch:
     inputs:
       check:
@@ -22,8 +29,36 @@ permissions:
   pull-requests: read
 
 jobs:
+  pr-governance:
+    if: vars.ENABLE_GITHUB_HOSTED_RUNNERS == 'true' && github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Check PR governance
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: pnpm github:check:pr
+
   pull-request-governance:
-    if: vars.ENABLE_GITHUB_HOSTED_RUNNERS == 'true' && inputs.check == 'pull-request'
+    if: vars.ENABLE_GITHUB_HOSTED_RUNNERS == 'true' && github.event_name == 'workflow_dispatch' && inputs.check == 'pull-request'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
