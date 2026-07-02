@@ -64,6 +64,23 @@ if (!apply) {
 
 for (const step of steps) {
   console.log(`[ci:activate] ${step.label}`);
-  execSync(step.command, { stdio: "inherit", shell: "/bin/bash" });
+  try {
+    execSync(step.command, { stdio: ["ignore", "inherit", "pipe"], shell: "/bin/bash", encoding: "utf8" });
+  } catch (error) {
+    const stderr = String(error.stderr ?? "");
+    // Branch protection on a PRIVATE repo is plan-gated (GitHub Free doesn't
+    // include it; needs Pro/Team or a public repo). The runners themselves are
+    // NOT plan-gated, so measurement still works — only red-merge *enforcement*
+    // is unavailable. Don't fail the whole activation over it.
+    if (/Upgrade to GitHub Pro|make this repository public/i.test(stderr)) {
+      console.log("[ci:activate] branch protection is not available on this plan for a private repo.");
+      console.log("  CI runs + the L2 green-rate measurement are active anyway. To also ENFORCE");
+      console.log("  green-before-merge: upgrade to GitHub Pro, make the repo public, or use");
+      console.log(`  merge discipline — \`gh pr checks <n> --watch\` before \`gh pr merge\`.`);
+      continue;
+    }
+    process.stderr.write(stderr);
+    throw error;
+  }
 }
 console.log("[ci:activate] done.");
