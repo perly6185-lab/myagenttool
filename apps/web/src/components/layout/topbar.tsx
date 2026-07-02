@@ -1,4 +1,5 @@
 import { SECTIONS } from "@/app/sections";
+import { LoginControl } from "@/components/layout/login-control";
 import { StatusBadge } from "@/components/ui/badge";
 import { useConsoleState } from "@/data/use-console-state";
 import { readableDeviceStatus } from "@/lib/readable-labels";
@@ -28,6 +29,7 @@ export function Topbar() {
           </span>
         ) : null}
         <StatusBadge tone={connection.tone}>{connection.label}</StatusBadge>
+        <LoginControl />
       </div>
     </header>
   );
