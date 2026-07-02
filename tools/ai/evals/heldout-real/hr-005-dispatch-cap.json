@@ -6,7 +6,14 @@
   "risk": "high",
   "base": "5d79acff2aa43646f5a01436d9e1466e0f14dbee",
   "oracle": {
-    "expectedFiles": ["apps/server/src/services/invocations/dispatch.mjs"],
-    "forbiddenFiles": ["apps/web/", "apps/desktop/", "tools/"]
-  }
+    "expectedFiles": [
+      "apps/server/src/services/invocations/dispatch.mjs"
+    ],
+    "forbiddenFiles": [
+      "apps/web/",
+      "apps/desktop/",
+      "tools/"
+    ]
+  },
+  "difficulty": "medium"
 }

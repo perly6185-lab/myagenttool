@@ -76,6 +76,7 @@
     "github:check:pr": "node tools/github/src/index.mjs check-pr",
     "github:check:branch": "node tools/github/src/index.mjs check-branch-protection",
     "github:dora": "node tools/github/src/index.mjs dora-report",
+    "github:backlog": "node tools/github/src/index.mjs backlog-report",
     "github:sync-project": "node tools/github/src/index.mjs sync-project",
     "release:check": "node tools/release/src/index.mjs --check",
     "release:draft": "node tools/release/src/index.mjs draft-notes",

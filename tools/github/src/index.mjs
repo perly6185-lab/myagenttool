@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { computeDoraStats, doraSelfCheck, formatDoraReport } from "./dora.mjs";
+import { backlogSelfCheck, computeBacklogStats, formatBacklogReport } from "./backlog.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(__dirname, "../../..");
@@ -52,6 +53,7 @@ Usage:
   node tools/github/src/index.mjs sync-project-fields --owner OWNER --project 1 [--apply]
   node tools/github/src/index.mjs sync-project --repo OWNER/REPO --owner OWNER --project 1 [--milestone M2|--issues 1,2] [--done] [--apply]
   node tools/github/src/index.mjs dora-report [--repo OWNER/REPO] [--days 30] [--json] [--out path]
+  node tools/github/src/index.mjs backlog-report [--repo OWNER/REPO] [--stale-days 14] [--json] [--out path]
 
 Environment:
   GITHUB_REPOSITORY   default OWNER/REPO for GitHub Actions
@@ -109,6 +111,11 @@ function main() {
     return;
   }
 
+  if (command === "backlog-report") {
+    backlogReport(args);
+    return;
+  }
+
   fail(`Unknown command: ${command}\n\n${HELP}`);
 }
 
@@ -150,6 +157,38 @@ function doraReport(args) {
     console.log(content.trimEnd());
   }
   console.error(`DORA evidence: .myagenttool/metrics/${runId}/`);
+}
+
+function backlogReport(args) {
+  const repo = option(args, "--repo") ?? process.env.GITHUB_REPOSITORY ?? defaultRepo();
+  if (!repo) fail("Missing --repo or GITHUB_REPOSITORY.");
+  const staleDays = Number(option(args, "--stale-days") ?? 14);
+  if (!Number.isFinite(staleDays) || staleDays <= 0) fail(`--stale-days must be a positive number. Got: ${option(args, "--stale-days")}`);
+
+  const issues = ghJson([
+    "issue", "list", "--repo", repo, "--state", "open", "--limit", "500",
+    "--json", "number,title,labels,milestone,updatedAt",
+  ]);
+  const stats = computeBacklogStats(issues, { staleDays, now: new Date().toISOString() });
+  const report = formatBacklogReport(stats, { repo });
+
+  const runId = `${new Date().toISOString().replace(/[:.]/g, "-")}-backlog`;
+  const evidenceDir = resolve(repoRoot, ".myagenttool/metrics", runId);
+  mkdirSync(evidenceDir, { recursive: true });
+  writeFileSync(resolve(evidenceDir, "backlog.json"), `${JSON.stringify(stats, null, 2)}\n`, "utf8");
+  writeFileSync(resolve(evidenceDir, "backlog.md"), report, "utf8");
+
+  const out = option(args, "--out");
+  const content = args.includes("--json") ? `${JSON.stringify(stats, null, 2)}\n` : report;
+  if (out) {
+    const target = resolve(repoRoot, out);
+    mkdirSync(dirname(target), { recursive: true });
+    writeFileSync(target, content, "utf8");
+    console.log(`Wrote ${out}`);
+  } else {
+    console.log(content.trimEnd());
+  }
+  console.error(`Backlog evidence: .myagenttool/metrics/${runId}/`);
 }
 
 function checkLocal() {
@@ -451,6 +490,11 @@ function checkLocal() {
   const doraFailures = doraSelfCheck();
   if (doraFailures.length > 0) {
     failReport("DORA counter self-check failed", doraFailures);
+  }
+
+  const backlogFailures = backlogSelfCheck();
+  if (backlogFailures.length > 0) {
+    failReport("Backlog counter self-check failed", backlogFailures);
   }
 
   console.log("[tools-github:check] GitHub governance local check OK");

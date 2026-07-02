@@ -6,7 +6,14 @@
   "risk": "high",
   "base": "d31e3bb6361d1539ac9a7936a6542a6a776c29e5",
   "oracle": {
-    "expectedFiles": ["tools/deploy/src/index.mjs", "tools/github/src/index.mjs"],
-    "forbiddenFiles": ["apps/", "packages/"]
-  }
+    "expectedFiles": [
+      "tools/deploy/src/index.mjs",
+      "tools/github/src/index.mjs"
+    ],
+    "forbiddenFiles": [
+      "apps/",
+      "packages/"
+    ]
+  },
+  "difficulty": "large"
 }

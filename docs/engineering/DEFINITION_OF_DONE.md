@@ -2,6 +2,12 @@
 
 This document defines when work can be considered complete.
 
+Where a quantitative gate exists, "done" means the gate is **measured, not
+asserted**: maturity-level gates and their thresholds live in
+[MATURITY_CALIBRATION.md](MATURITY_CALIBRATION.md), and the current counters are
+`pnpm github:dora` (delivery health), `pnpm github:backlog` (backlog/evidence
+coverage), and `pnpm ai:eval-heldout` (AI coding capability).
+
 ## Issue Done
 
 An issue can move to `done` when:

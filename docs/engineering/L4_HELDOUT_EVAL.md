@@ -92,6 +92,24 @@ oracle is never shown to the agent), runs `claude -p` with edit-only tools
 (`Read,Glob,Grep,Edit,Write`, `acceptEdits`, no Bash), and writes the
 adapter-result contract. Env knobs: `MYAGENTTOOL_CLAUDE_CLI`,
 `MYAGENTTOOL_CLAUDE_MODEL`, `MYAGENTTOOL_CLAUDE_TIMEOUT_MS` (default 600000).
+Keep the default 600s for sets containing `large`-tier cases: the baseline
+run's only failure (hr-006) was an adapter timeout at 300s, and per SWE-bench
+convention a timeout counts as unresolved.
+
+## Difficulty tiers
+
+Cases carry `difficulty: small|medium|large` (by the original change's size:
+roughly ≤20 changed lines / ≤120 / beyond). The report breaks the pass rate
+down per tier so "solves small, fails large" is visible instead of hidden in
+one blended number. Unannotated cases report as `unrated`.
+
+## Baseline
+
+First real baseline (2026-07-02, 8-case snapshot, file-level oracle, Claude
+Code CLI): **87.5% (7/8)** — sole failure was the hr-006 adapter timeout.
+Suggested starting gate: `--min-pass-rate 0.6`. Later runs use the grown set
+(13 cases) with behavior probes, so rates are comparable only within the same
+set version — record the set size and probe count alongside any number.
 
 Env: `MYAGENTTOOL_CODING_ADAPTER` (default `mock` — changes nothing, so pass
 rate is 0%; use a real adapter to measure capability), `MYAGENTTOOL_HELDOUT_PROVIDER`

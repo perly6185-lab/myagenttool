@@ -6,7 +6,14 @@
   "risk": "high",
   "base": "6ab46922a68ddac5270c595de3a12736c5a8b759",
   "oracle": {
-    "expectedFiles": ["apps/server/src/read-models/state.mjs"],
-    "forbiddenFiles": ["apps/web/", "apps/desktop/", "tools/"]
-  }
+    "expectedFiles": [
+      "apps/server/src/read-models/state.mjs"
+    ],
+    "forbiddenFiles": [
+      "apps/web/",
+      "apps/desktop/",
+      "tools/"
+    ]
+  },
+  "difficulty": "medium"
 }

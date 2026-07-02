@@ -6,7 +6,13 @@
   "risk": "high",
   "base": "603bd570de03711b34d228296e07dad327297f0c",
   "oracle": {
-    "expectedFiles": ["apps/server/src/services/invocations/completion.mjs"],
-    "forbiddenFiles": ["apps/web/", "tools/"]
-  }
+    "expectedFiles": [
+      "apps/server/src/services/invocations/completion.mjs"
+    ],
+    "forbiddenFiles": [
+      "apps/web/",
+      "tools/"
+    ]
+  },
+  "difficulty": "large"
 }

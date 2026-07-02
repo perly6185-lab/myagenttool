@@ -6,11 +6,22 @@
   "risk": "high",
   "base": "30fa9831599c9fcd5a12954f2401b5e6324b9e39",
   "oracle": {
-    "expectedFiles": ["tools/ai/src/index.mjs"],
-    "forbiddenFiles": ["apps/", "packages/", "tools/github/"],
+    "expectedFiles": [
+      "tools/ai/src/index.mjs"
+    ],
+    "forbiddenFiles": [
+      "apps/",
+      "packages/",
+      "tools/github/"
+    ],
     "verify": {
       "mode": "regression",
-      "command": ["node", "tools/ai/src/index.mjs", "--check"]
+      "command": [
+        "node",
+        "tools/ai/src/index.mjs",
+        "--check"
+      ]
     }
-  }
+  },
+  "difficulty": "medium"
 }

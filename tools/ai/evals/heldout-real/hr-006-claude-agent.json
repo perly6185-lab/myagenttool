@@ -6,7 +6,14 @@
   "risk": "medium",
   "base": "a07ac7606609017ad9de55c8d0e9d3cabce8bbbb",
   "oracle": {
-    "expectedFiles": ["apps/server/src/services/agents.mjs"],
-    "forbiddenFiles": ["apps/web/", "apps/desktop/", "tools/"]
-  }
+    "expectedFiles": [
+      "apps/server/src/services/agents.mjs"
+    ],
+    "forbiddenFiles": [
+      "apps/web/",
+      "apps/desktop/",
+      "tools/"
+    ]
+  },
+  "difficulty": "large"
 }

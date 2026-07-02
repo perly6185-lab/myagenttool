@@ -6,7 +6,13 @@
   "risk": "medium",
   "base": "4892d968021dd13ce22c351d73e7c0a4dfb959ca",
   "oracle": {
-    "expectedFiles": ["tools/github/src/index.mjs"],
-    "forbiddenFiles": ["apps/", "packages/"]
-  }
+    "expectedFiles": [
+      "tools/github/src/index.mjs"
+    ],
+    "forbiddenFiles": [
+      "apps/",
+      "packages/"
+    ]
+  },
+  "difficulty": "medium"
 }

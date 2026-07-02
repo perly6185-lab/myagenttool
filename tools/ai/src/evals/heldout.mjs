@@ -38,6 +38,7 @@ export function validateHeldoutCase(raw, source) {
     // mined from history pin this to the parent of the original fix commit so
     // the change does not already exist in the tree being evaluated.
     base: isNonEmptyString(raw.base) ? raw.base : "",
+    difficulty: validateDifficulty(raw.id, raw.difficulty, where),
     oracle: { expectedFiles, forbiddenFiles, verify },
     mock: {
       changedFiles: stringArray(raw.mock?.changedFiles),
@@ -71,6 +72,17 @@ function validateVerifyOracle(id, raw, where) {
     throw new Error(`Held-out case ${id} oracle.verify.timeoutMs must be a positive number${where}.`);
   }
   return { mode, command, timeoutMs };
+}
+
+// Difficulty tiers by original change size (small ≲20 changed lines, medium
+// ≲120, large beyond) — lets pass rates be read per tier instead of one blended
+// number hiding "solves small, fails large".
+function validateDifficulty(id, raw, where) {
+  if (raw === undefined || raw === null) return "unrated";
+  if (raw !== "small" && raw !== "medium" && raw !== "large") {
+    throw new Error(`Held-out case ${id} difficulty must be small, medium, or large${where}.`);
+  }
+  return raw;
 }
 
 function normalizeVerifyResult(raw) {
@@ -167,12 +179,18 @@ export async function evaluateHeldoutSet({ cases, resolver }) {
       results.push({ id: caseObj.id, resolved: false, reason: `Resolver threw: ${error.message}`, changedFiles: [], missing: caseObj.oracle.expectedFiles, violated: [] });
       continue;
     }
-    results.push({ ...judgeCase(caseObj, resolution), notes: resolution?.notes ?? "" });
+    results.push({ ...judgeCase(caseObj, resolution), difficulty: caseObj.difficulty, notes: resolution?.notes ?? "" });
   }
   const total = results.length;
   const resolved = results.filter((r) => r.resolved).length;
   const passRate = total === 0 ? 0 : resolved / total;
-  return { total, resolved, passRate, results };
+  const byDifficulty = {};
+  for (const result of results) {
+    const tier = (byDifficulty[result.difficulty] ??= { total: 0, resolved: 0 });
+    tier.total += 1;
+    if (result.resolved) tier.resolved += 1;
+  }
+  return { total, resolved, passRate, byDifficulty, results };
 }
 
 export function mockResolver(caseObj) {
@@ -185,16 +203,21 @@ export function mockResolver(caseObj) {
 
 export function formatHeldoutReport(summary, { setDir, resolverName } = {}) {
   const pct = (summary.passRate * 100).toFixed(1);
+  const tiers = Object.entries(summary.byDifficulty ?? {})
+    .filter(([tier]) => tier !== "unrated" || Object.keys(summary.byDifficulty).length > 1)
+    .map(([tier, t]) => `${tier} ${t.resolved}/${t.total}`)
+    .join(" · ");
   const lines = [
     "# L4 Held-out Evaluation",
     "",
     `Pass rate: ${pct}% (${summary.resolved}/${summary.total})`,
+    tiers ? `By difficulty: ${tiers}` : null,
     resolverName ? `Resolver: ${resolverName}` : null,
     setDir ? `Set: ${setDir}` : null,
     "",
-    "| Case | Resolved | Reason |",
-    "| --- | --- | --- |",
-    ...summary.results.map((r) => `| ${r.id} | ${r.resolved ? "yes" : "no"} | ${escapeCell(r.reason)} |`),
+    "| Case | Difficulty | Resolved | Reason |",
+    "| --- | --- | --- | --- |",
+    ...summary.results.map((r) => `| ${r.id} | ${r.difficulty ?? "unrated"} | ${r.resolved ? "yes" : "no"} | ${escapeCell(r.reason)} |`),
     "",
   ].filter((line) => line !== null);
   return `${lines.join("\n")}\n`;
