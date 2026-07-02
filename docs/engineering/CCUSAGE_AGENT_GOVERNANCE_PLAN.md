@@ -90,6 +90,19 @@ arguments. When filters are needed, expose reviewed options such as `since`,
 `until`, `timezone`, `source`, and `reportKind` as structured invocation options
 and render only allowlisted flags.
 
+The governed tool contract is:
+
+```text
+tool: ccusage.report
+input: report, source, since, until, timezone, offline
+output: structured ccusage RESULT, importedUsageEstimates
+```
+
+Only registered ccusage report agents carrying this contract, the fixed wrapper
+argv, and `usage_cost_report` capability may import ccusage estimates. A
+successful result that merely claims `output.source: ccusage` is ignored when it
+comes from any other agent.
+
 ## Permission Model
 
 Default risk classification:
@@ -127,6 +140,11 @@ summaries when possible.
 
 The wrapper converts `ccusage --json` into the Desktop Bridge `RESULT ...`
 format so the server can store structured output in `invocation.result.output`.
+
+Public read models expose normalized imported estimate fields only. The raw
+ccusage row is retained server-side for audit/reconciliation, but it is omitted
+from `GET /api/state` so local paths, session names, or provider-specific
+metadata do not become normal dashboard data by accident.
 
 ## Execution Protocol
 
@@ -420,6 +438,11 @@ Acceptance:
 - Keep imported report rows out of `state.ledgerEntries`, budget spend, and
   platform-managed quota enforcement.
 - Include imported usage estimate ids in audit export usage references.
+- Gate imports on the governed `ccusage.report` agent contract, not just on the
+  result payload's claimed source.
+- Cap each imported report to 1000 normalized rows and record dropped row count
+  in the import event.
+- Omit raw ccusage rows from public state while retaining them server-side.
 
 Acceptance:
 
@@ -432,6 +455,38 @@ Phase 4 smoke coverage:
 ```text
 pnpm smoke:ccusage-agent
 ```
+
+### Phase 5: Tool Registry And Facade
+
+- Expose governed tool discovery through:
+  - `GET /api/tools`
+  - `GET /api/tools/ccusage.report`
+- Expose invocation creation through:
+  - `POST /api/tools/ccusage.report/invocations`
+- Return the tool contract, risk metadata, approval policy, output collection,
+  and available governed agents without exposing adapter command or argv.
+- Validate tool input before invocation creation:
+  - known report id only
+  - no unknown fields
+  - `offline` must remain `true` until online approval exists
+  - `session` returns `approval_required` until explicit approval exists
+  - date filters must use `YYYY-MM-DD`
+  - timezone must use the wrapper-safe character set
+- Select the fixed report agent by report id and create a normal invocation with
+  `metadata.tool: ccusage.report`.
+- Document the external agent calling contract in
+  [Tool Registry Agent Calling](TOOL_REGISTRY_AGENT_CALLING.md), including the
+  discovery flow, invocation payload, expected outputs, and governance errors.
+- Reuse this same governed tool registry pattern for local Codex capabilities;
+  see [Codex Tool Governance Plan](CODEX_TOOL_GOVERNANCE_PLAN.md).
+
+Acceptance:
+
+- Other agents can discover `ccusage.report` without reading raw CLI adapter
+  details.
+- Valid offline daily/codex/claude reports create governed invocations.
+- Invalid fields, online mode, and session reports are blocked or marked
+  approval-required before any bridge command is queued.
 
 ## Test Strategy
 

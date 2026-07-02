@@ -104,6 +104,7 @@ export interface Agent {
   lifecycle: AgentLifecycleMetadata;
   economics: AgentEconomicsMetadata;
   capabilities: AgentCapability[];
+  toolContract?: JsonObject | null;
   status: AgentStatus;
   health?: AgentHealth;
   registrationNotes?: {

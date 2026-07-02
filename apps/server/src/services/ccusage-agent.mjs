@@ -45,6 +45,47 @@ export const CCUSAGE_REPORT_SPECS = [
   },
 ];
 
+export const CCUSAGE_TOOL_CONTRACT = {
+  name: "ccusage.report",
+  version: "1",
+  inputSchema: {
+    type: "object",
+    additionalProperties: false,
+    required: ["report"],
+    properties: {
+      report: { enum: CCUSAGE_REPORT_SPECS.map((spec) => spec.id) },
+      source: { enum: ["all", "codex", "claude"] },
+      since: { type: "string", pattern: "^\\d{4}-\\d{2}-\\d{2}$" },
+      until: { type: "string", pattern: "^\\d{4}-\\d{2}-\\d{2}$" },
+      timezone: { type: "string", maxLength: 64 },
+      offline: { const: true },
+      projectId: { type: "string" },
+    },
+  },
+  outputSchema: {
+    source: "ccusage",
+    structuredResult: true,
+    imports: {
+      collection: "importedUsageEstimates",
+      amountSource: "imported_ccusage_report",
+      economicModel: "external_billed",
+      authoritative: false,
+    },
+  },
+  errorCodes: [
+    "invalid_input",
+    "unknown_field",
+    "project_required",
+    "unsupported_report",
+    "unsupported_source",
+    "source_report_mismatch",
+    "invalid_date_filter",
+    "invalid_timezone",
+    "approval_required",
+    "agent_not_available",
+  ],
+};
+
 export function createCcusageAgentRegistration({
   reportId = "daily",
   cliScriptPath,
@@ -73,6 +114,7 @@ export function createCcusageAgentRegistration({
     args: [wrapperPath, "--ccusage-cli", scriptPath, "--report", spec.id],
     timeoutSeconds: 60,
     outputFormat: "plain_result",
+    toolContract: CCUSAGE_TOOL_CONTRACT,
     capabilityName: "usage_cost_report",
     capabilityDescription: "Generate a read-only local usage and cost report from ccusage.",
     riskLevel: "low",
@@ -93,6 +135,18 @@ export function createCcusageAgentRegistration({
 
 export function createCcusageAgentRegistrations(options = {}) {
   return CCUSAGE_REPORT_SPECS.map((spec) => createCcusageAgentRegistration({ ...options, reportId: spec.id }));
+}
+
+export function isGovernedCcusageAgent(agent) {
+  if (!agent) {
+    return false;
+  }
+  const hasCcusageId = CCUSAGE_REPORT_SPECS.some((spec) => spec.agentId === agent.id);
+  const hasToolContract = agent.toolContract?.name === CCUSAGE_TOOL_CONTRACT.name;
+  const hasReportCapability = (agent.capabilities ?? []).some((capability) => capability?.name === "usage_cost_report");
+  const adapterArgs = Array.isArray(agent.adapter?.args) ? agent.adapter.args.map(String) : [];
+  const usesWrapper = adapterArgs.some((arg) => arg.endsWith("ccusage-wrapper.mjs"));
+  return hasCcusageId && hasToolContract && hasReportCapability && usesWrapper;
 }
 
 export function createCcusageLifecycleRecipeInput({

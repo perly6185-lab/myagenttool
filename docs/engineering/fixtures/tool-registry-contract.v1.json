@@ -1,0 +1,196 @@
+{
+  "contractVersion": "1",
+  "name": "tool-registry-external-consumer-contract",
+  "stableEndpoints": [
+    "GET /api/tools",
+    "GET /api/tools/{toolName}",
+    "POST /api/tools/{toolName}/invocations",
+    "GET /api/review-findings",
+    "GET /api/state"
+  ],
+  "descriptorRequiredFields": [
+    "name",
+    "version",
+    "displayName",
+    "description",
+    "riskLevel",
+    "riskTags",
+    "requiresLocalDevice",
+    "inputSchema",
+    "outputSchema",
+    "agents",
+    "approvalPolicy",
+    "authoritativeBilling",
+    "outputCollection"
+  ],
+  "forbiddenDescriptorFields": [
+    "adapter",
+    "command",
+    "args",
+    "argv",
+    "cwd",
+    "shell",
+    "sandbox",
+    "env",
+    "workingDirectory",
+    "wrapperScriptPath",
+    "cliScriptPath"
+  ],
+  "stableStateCollections": [
+    "importedUsageEstimates",
+    "codexReviewFindings",
+    "claudeReviewFindings",
+    "reviewFindings"
+  ],
+  "recommendedReviewOutputCollection": "reviewFindings",
+  "reviewFindingQuery": {
+    "endpoint": "GET /api/review-findings",
+    "allowedFilters": [
+      "projectId",
+      "worktreeId",
+      "invocationId",
+      "source",
+      "severity"
+    ],
+    "stableErrorCodes": [
+      "unknown_field",
+      "project_not_found",
+      "invalid_source",
+      "invalid_severity"
+    ]
+  },
+  "exampleClients": [
+    {
+      "name": "tool-registry-review-client",
+      "path": "tools/dev/tool-registry-review-client.mjs",
+      "flow": [
+        "GET /api/tools",
+        "POST /api/tools/{toolName}/invocations",
+        "GET /api/review-findings",
+        "GET /api/state"
+      ]
+    }
+  ],
+  "tools": {
+    "ccusage.report": {
+      "version": "1",
+      "allowedInputFields": [
+        "report",
+        "source",
+        "since",
+        "until",
+        "timezone",
+        "offline",
+        "projectId"
+      ],
+      "requiredInputFields": [
+        "report"
+      ],
+      "outputCollection": "importedUsageEstimates",
+      "authoritativeBilling": false,
+      "joinKey": "reportInvocationId",
+      "exampleInput": {
+        "report": "daily",
+        "source": "all",
+        "since": "2026-07-01",
+        "until": "2026-07-02",
+        "timezone": "Asia/Shanghai",
+        "offline": true,
+        "projectId": "prj_local"
+      },
+      "stableErrorCodes": [
+        "tool_not_found",
+        "invalid_input",
+        "unknown_field",
+        "project_required",
+        "project_not_found",
+        "unsupported_report",
+        "unsupported_source",
+        "source_report_mismatch",
+        "invalid_date_filter",
+        "invalid_timezone",
+        "approval_required",
+        "agent_not_available"
+      ]
+    },
+    "codex.review.diff": {
+      "version": "1",
+      "allowedInputFields": [
+        "projectId",
+        "worktreeId",
+        "instruction",
+        "severityFloor"
+      ],
+      "requiredInputFields": [
+        "worktreeId"
+      ],
+      "outputCollection": "codexReviewFindings",
+      "authoritativeBilling": false,
+      "joinKey": "invocationId",
+      "exampleInput": {
+        "projectId": "prj_local",
+        "worktreeId": "wtr_local",
+        "instruction": "Review this diff for correctness and missing tests.",
+        "severityFloor": "medium"
+      },
+      "stableErrorCodes": [
+        "tool_not_found",
+        "invalid_input",
+        "unknown_field",
+        "project_required",
+        "project_not_found",
+        "worktree_required",
+        "worktree_not_found",
+        "invalid_severity_floor",
+        "instruction_too_long",
+        "agent_not_available",
+        "approval_required"
+      ]
+    },
+    "claude.review.diff": {
+      "version": "1",
+      "allowedInputFields": [
+        "projectId",
+        "worktreeId",
+        "instruction",
+        "severityFloor"
+      ],
+      "requiredInputFields": [
+        "worktreeId"
+      ],
+      "outputCollection": "claudeReviewFindings",
+      "authoritativeBilling": false,
+      "joinKey": "invocationId",
+      "exampleInput": {
+        "projectId": "prj_local",
+        "worktreeId": "wtr_local",
+        "instruction": "Review this diff for correctness and missing tests.",
+        "severityFloor": "medium"
+      },
+      "stableErrorCodes": [
+        "tool_not_found",
+        "invalid_input",
+        "unknown_field",
+        "project_required",
+        "project_not_found",
+        "worktree_required",
+        "worktree_not_found",
+        "invalid_severity_floor",
+        "instruction_too_long",
+        "agent_not_available",
+        "approval_required"
+      ]
+    }
+  },
+  "consumerRules": [
+    "Discover tools through GET /api/tools or GET /api/tools/{toolName}.",
+    "Invoke tools only through POST /api/tools/{toolName}/invocations.",
+    "Do not read, cache, replay, or synthesize local adapter command, argv, cwd, shell, sandbox, or env details.",
+    "Treat 409 approval_required as a governance decision, not a transport failure.",
+    "Poll GET /api/state by invocationId and read only the descriptor outputCollection.",
+    "Use reviewFindings when consuming results across multiple review providers.",
+    "Use GET /api/review-findings for filtered review result polling.",
+    "External clients must use public API endpoints only and must not depend on adapter internals.",
+    "Treat authoritativeBilling=false as an external estimate or evidence signal, not a platform ledger charge."
+  ]
+}

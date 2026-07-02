@@ -4,7 +4,13 @@
  * error wording and the localhost-only API override stay consistent.
  */
 
-import type { ConsoleSnapshot } from "@/lib/console-state";
+import type {
+  ConsoleSnapshot,
+  ReviewFindingQueryResponse,
+  ToolDescriptor,
+  ToolInvocationRequest,
+  ToolInvocationResponse,
+} from "@/lib/console-state";
 
 const DEFAULT_API_BASE = "http://127.0.0.1:3001";
 
@@ -204,6 +210,29 @@ export interface IntegrationPayload {
 
 export const api = {
   updateDevice: (payload: { maxConcurrency?: number }) => request("PATCH", "/api/device", payload),
+  listTools: () => request<{ tools: ToolDescriptor[] }>("GET", "/api/tools"),
+  getTool: (name: string) =>
+    request<{ tool: ToolDescriptor }>("GET", `/api/tools/${encodeURIComponent(name)}`),
+  createToolInvocation: (name: string, input: ToolInvocationRequest) =>
+    request<ToolInvocationResponse>(
+      "POST",
+      `/api/tools/${encodeURIComponent(name)}/invocations`,
+      input,
+    ),
+  listReviewFindings: (filters: {
+    projectId?: string;
+    worktreeId?: string;
+    invocationId?: string;
+    source?: "codex" | "claude";
+    severity?: "low" | "medium" | "high";
+  } = {}) => {
+    const query = new URLSearchParams();
+    for (const [key, value] of Object.entries(filters)) {
+      if (value) query.set(key, value);
+    }
+    const suffix = query.toString() ? `?${query}` : "";
+    return request<ReviewFindingQueryResponse>("GET", `/api/review-findings${suffix}`);
+  },
   createInvocation: (
     task: string,
     agentId: string | null,

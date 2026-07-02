@@ -10,7 +10,9 @@ import { handleInvocationRoutes } from "../routes/invocations.mjs";
 import { handleLoopRoutineRoutes } from "../routes/loop-routines.mjs";
 import { handleM3Routes } from "../routes/m3.mjs";
 import { handleProjectRoutes } from "../routes/projects.mjs";
+import { handleReviewFindingRoutes } from "../routes/review-findings.mjs";
 import { handleTerminalRoutes } from "../routes/terminal.mjs";
+import { handleToolRoutes } from "../routes/tools.mjs";
 
 export function createHttpServer({
   host,
@@ -120,6 +122,9 @@ export function createHttpServer({
   createCompareRun,
   cancelInvocation,
   createTroubleshootingReport,
+  createToolInvocation,
+  getTool,
+  listTools,
   nextId,
   persistStateSoon,
 }) {
@@ -333,6 +338,33 @@ export function createHttpServer({
         requestLifecycleLocalApproval,
         transitionLifecycleRecipe,
         updatePrivateDeploymentConfig,
+      })) {
+        return;
+      }
+
+      if (await handleToolRoutes({
+        req,
+        res,
+        url,
+        sendJson,
+        readJson,
+        state,
+        actor,
+        listTools,
+        getTool,
+        createToolInvocation,
+      })) {
+        return;
+      }
+
+      if (handleReviewFindingRoutes({
+        req,
+        res,
+        url,
+        sendJson,
+        state,
+        actor,
+        publicState,
       })) {
         return;
       }

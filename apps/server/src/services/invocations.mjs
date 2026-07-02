@@ -20,6 +20,8 @@ export function createInvocationService({
   enforcePlatformAiQuota,
   recordInvocationLedgerEntry,
   recordCcusageImportedEstimates,
+  recordCodexReviewFindings,
+  recordClaudeReviewFindings,
   currentProject,
   worktreeForProject,
   uniqueStrings,
@@ -51,6 +53,8 @@ export function createInvocationService({
     isTerminal,
     recordInvocationLedgerEntry,
     recordCcusageImportedEstimates,
+    recordCodexReviewFindings,
+    recordClaudeReviewFindings,
   });
   const {
     abortDirectHttpRun,
