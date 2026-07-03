@@ -1,5 +1,5 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { basename, isAbsolute, join, relative, resolve } from "node:path";
+import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { normalizeLoopRoutine, validateLoopRoutine } from "../../../../tools/ai/src/loop/routine.mjs";
 import { teamOf } from "../runtime/auth.mjs";
 
@@ -40,7 +40,9 @@ export function createApplicationService({
         throw new Error(`Application source is already registered as ${existing.id}.`);
       }
       existing.name = name || existing.name;
-      existing.ownerTeamId = actor?.teamId ?? body.ownerTeamId ?? existing.ownerTeamId ?? "team_local";
+      // Never let re-registration reassign ownership to a caller-supplied team;
+      // access was already checked above. Keep the established owner.
+      existing.ownerTeamId = existing.ownerTeamId ?? actor?.teamId ?? "team_local";
       existing.updatedAt = now();
       if (body.autoOnline !== false && existing.status === "registered") {
         existing.status = "active";
@@ -54,6 +56,9 @@ export function createApplicationService({
     }
 
     const createdAt = now();
+    // Ownership is derived from the authenticated actor (or the local default),
+    // never from a caller-supplied ownerTeamId (spoofing vector).
+    const ownerTeamId = actor?.teamId ?? "team_local";
     let project = null;
     if (source.type === "git") {
       project = cloneProject({
@@ -62,7 +67,7 @@ export function createApplicationService({
         name: body.folderName ?? name,
         host: body.host ?? "local",
         color: body.color,
-        ownerTeamId: actor?.teamId ?? body.ownerTeamId,
+        ownerTeamId: actor?.teamId,
       });
     } else if (source.type === "local") {
       project = addProject({
@@ -70,7 +75,7 @@ export function createApplicationService({
         path: source.path,
         host: body.host ?? "local",
         color: body.color,
-        ownerTeamId: actor?.teamId ?? body.ownerTeamId,
+        ownerTeamId: actor?.teamId,
       });
     }
 
@@ -87,7 +92,7 @@ export function createApplicationService({
       },
       projectId: project?.id ?? body.projectId ?? null,
       path: project?.path ?? source.path ?? null,
-      ownerTeamId: actor?.teamId ?? body.ownerTeamId ?? project?.ownerTeamId ?? "team_local",
+      ownerTeamId: ownerTeamId ?? project?.ownerTeamId ?? "team_local",
       capabilitiesVersion: 1,
       orchestrationIds: [],
       createdAt,
@@ -197,20 +202,25 @@ export function createApplicationService({
     if (application.status === "offline" && !["inspect"].includes(action)) {
       return { ok: false, status: 409, body: { error: "application_offline", applicationId: application.id } };
     }
-    if ((["archive", "offline", "refresh"].includes(action) || action.startsWith("wrapper:")) && !hasApprovalToken(input)) {
+    // Every side-effecting action — status changes, the orchestration-draft
+    // write, and wrapper commands — requires an explicit approvalToken.
+    // NOTE: in this slice the token is an explicit-intent confirmation on an
+    // owner-scoped resource (tenancy is the real authorization boundary), not a
+    // cryptographic approval; a real approval-issuance flow is follow-up.
+    if ((["archive", "offline", "refresh", "generate_orchestration"].includes(action) || action.startsWith("wrapper:")) && !hasApprovalToken(input)) {
       return {
         ok: false,
         status: 409,
         body: {
           error: "approval_required",
-          reason: `${action} requires an approvalToken in this application-control slice.`,
+          reason: `${action} requires an explicit approvalToken.`,
           applicationId: application.id,
           action,
         },
       };
     }
 
-    const result = executeApplicationAction({ application, action, input, actor, defaultProjectPath });
+    const result = executeApplicationAction({ application, action, input, actor, defaultProjectPath, now });
     if (result?.ok === false) {
       return result;
     }
@@ -346,8 +356,8 @@ function hasApprovalToken(input) {
   return Boolean(input && typeof input === "object" && !Array.isArray(input) && String(input.approvalToken ?? "").trim());
 }
 
-function executeApplicationAction({ application, action, input, actor, defaultProjectPath }) {
-  const executedAt = new Date().toISOString();
+function executeApplicationAction({ application, action, input, actor, defaultProjectPath, now = () => new Date().toISOString() }) {
+  const executedAt = now();
   if (action === "inspect") {
     return {
       summary: `${application.name} application inspected.`,
@@ -422,7 +432,7 @@ function executeApplicationAction({ application, action, input, actor, defaultPr
     };
   }
   if (action === "generate_orchestration") {
-    const draft = writeApplicationRoutineDraft(application, defaultProjectPath);
+    const draft = writeApplicationRoutineDraft(application, defaultProjectPath, { now });
     if (!draft.ok) {
       return {
         ok: false,
@@ -515,25 +525,36 @@ function executeApplicationAction({ application, action, input, actor, defaultPr
 }
 
 export function writeApplicationRoutineDraft(application, defaultProjectPath, options = {}) {
-  const root = resolve(application.path || defaultProjectPath || process.cwd());
-  const routineId = options.routineId ?? `app-${slugify(application.name || application.id)}-maintenance`;
-  const relativePath = join(".myagenttool", "routines", `${routineId}.json`).replaceAll("\\", "/");
-  const path = resolve(root, relativePath);
+  const now = typeof options.now === "function" ? options.now : () => new Date().toISOString();
+  // Write into a platform-managed, per-application directory keyed by the unique
+  // application id — never the application's own (attacker-registrable) path and
+  // never the server repo root. This confines the write and avoids same-name
+  // collisions across applications.
+  const applicationSegment = slugify(application.id);
+  const managedRoot = resolve(defaultProjectPath || process.cwd(), ".myagenttool", "applications", applicationSegment);
+  const routinesDir = resolve(managedRoot, "routines");
+  const routineId = options.routineId ?? `app-${applicationSegment}-maintenance`;
+  const path = resolve(routinesDir, `${routineId}.json`);
+  // Defense-in-depth: the resolved target must stay inside the managed root.
+  if (path !== managedRoot && !path.startsWith(managedRoot + sep)) {
+    throw new Error("Refusing to write an application routine draft outside its managed directory.");
+  }
+  const relativePath = join(".myagenttool", "applications", applicationSegment, "routines", `${routineId}.json`).replaceAll("\\", "/");
   const routine = options.routine ?? buildApplicationRoutineSpec(application, routineId);
-  const validation = validateApplicationRoutineDraft(routine, { root, application });
+  const validation = validateApplicationRoutineDraft(routine, { root: managedRoot, application });
   const draft = {
     routineId,
     path,
     relativePath,
     status: validation.ok ? "draft" : "invalid",
-    generatedAt: new Date().toISOString(),
+    generatedAt: now(),
     validation,
     ok: validation.ok,
   };
   if (!validation.ok) {
     return draft;
   }
-  mkdirSync(join(root, ".myagenttool", "routines"), { recursive: true });
+  mkdirSync(routinesDir, { recursive: true });
   writeFileSync(path, `${JSON.stringify(routine, null, 2)}\n`, "utf8");
   return draft;
 }
