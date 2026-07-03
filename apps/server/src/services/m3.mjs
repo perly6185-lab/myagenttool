@@ -858,14 +858,18 @@ export function createM3Service({
   function recordInvocationLedgerEntry({ invocation, cost, agent }) {
     if (!cost) return null;
     const amountUsd = Number(cost.amountUsd);
-    const hasUsd = Number.isFinite(amountUsd) && amountUsd > 0;
+    const reported = Number.isFinite(amountUsd) && amountUsd > 0;
     const inputTokens = Math.max(0, Number(cost.inputTokens ?? 0));
     const outputTokens = Math.max(0, Number(cost.outputTokens ?? 0));
-    // Record a real USD cost, OR — so unmetered runs stay visible, never hidden —
-    // a billable run that reported token usage but no priceable amount (e.g. codex,
-    // which is subscription/externally billed and has no per-token price).
-    const unmetered = !hasUsd && Boolean(cost.billable) && (inputTokens > 0 || outputTokens > 0);
-    if (!hasUsd && !unmetered) return null;
+    const hasTokens = inputTokens > 0 || outputTokens > 0;
+    // When the agent reported no billed USD, estimate from token usage × configured
+    // rates (e.g. codex, API-billed). Falls back to an unmetered entry when there is
+    // no rate, so a token-bearing run stays visible in economics either way.
+    const estimatedUsd = reported ? 0 : estimateCostUsdFromTokens(cost);
+    const hasEstimate = estimatedUsd > 0;
+    if (!reported && !hasEstimate && !(Boolean(cost.billable) && hasTokens)) return null;
+    const finalUsd = reported ? roundUsd(amountUsd) : hasEstimate ? roundUsd(estimatedUsd) : null;
+    const source = reported ? "reported" : hasEstimate ? "estimated" : "unknown";
     const meta = invocation.input?.metadata ?? {};
     const projectId = meta.projectId ?? invocation.projectId ?? state.currentProjectId ?? state.projects[0]?.id ?? null;
     const createdAt = now();
@@ -883,16 +887,18 @@ export function createM3Service({
       sourceRecordId: invocation.id,
       entryType: "cost",
       economicModel: agent?.economics?.model ?? "external_metered",
-      meterName: "reported_usd",
+      meterName: reported ? "reported_usd" : hasEstimate ? "estimated_usd" : "token_usage",
       quantity: 1,
-      unitPrice: hasUsd ? String(roundUsd(amountUsd)) : "0",
+      unitPrice: finalUsd != null ? String(finalUsd) : "0",
       currency: String(cost.currency ?? "USD"),
-      amount: hasUsd ? String(roundUsd(amountUsd)) : "0",
-      amountUsd: hasUsd ? roundUsd(amountUsd) : null,
-      amountText: hasUsd ? undefined : "unmetered",
-      amountSource: hasUsd ? "reported" : "unknown",
+      amount: finalUsd != null ? String(finalUsd) : "0",
+      amountUsd: finalUsd,
+      amountText: finalUsd == null ? "unmetered" : undefined,
+      amountSource: source,
       inputTokens,
+      cachedInputTokens: Math.max(0, Number(cost.cachedInputTokens ?? 0)),
       outputTokens,
+      reasoningOutputTokens: Math.max(0, Number(cost.reasoningOutputTokens ?? 0)),
       amountDirection: cost.billable ? "payable" : "informational",
       costOwner: agent?.economics?.costOwner ?? invocation?.requestedBy ?? "usr_local",
       revenueOwner: null,
@@ -901,9 +907,9 @@ export function createM3Service({
       counterparty: model,
       provider: model,
       billable: Boolean(cost.billable),
-      status: "finalized",
+      status: hasEstimate ? "estimated" : "finalized",
       createdAt,
-      finalizedAt: createdAt,
+      finalizedAt: hasEstimate ? null : createdAt,
     };
     state.ledgerEntries.unshift(entry);
     capLedgerEntries(state);
@@ -911,10 +917,12 @@ export function createM3Service({
       invocationId: invocation.id,
       type: "ledger_entry_recorded",
       level: "info",
-      message: hasUsd
+      message: reported
         ? `Recorded ${entry.currency} ${entry.amountUsd} reported cost for ${model}.`
-        : `Recorded unmetered token usage (${inputTokens}+${outputTokens} tokens) for ${model}.`,
-      data: { ledgerEntryId: entry.id, amountUsd: entry.amountUsd, inputTokens, outputTokens, projectId },
+        : hasEstimate
+          ? `Recorded estimated ${entry.currency} ${entry.amountUsd} for ${model} (${inputTokens}+${outputTokens} tokens).`
+          : `Recorded unmetered token usage (${inputTokens}+${outputTokens} tokens) for ${model}.`,
+      data: { ledgerEntryId: entry.id, amountUsd: entry.amountUsd, amountSource: source, inputTokens, outputTokens, projectId },
     });
     return entry;
   }
@@ -1483,6 +1491,33 @@ export function capLedgerEntries(state, cap = 200) {
 function ledgerEntryAmount(entry) {
   const amount = Number(entry.amountUsd ?? entry.amount);
   return Number.isFinite(amount) && amount > 0 ? roundUsd(amount) : 0;
+}
+
+// Per-million-token USD rates used to ESTIMATE cost for agents that report token
+// usage but no billed amount (e.g. codex, which is API-billed). Defaults are the
+// gpt-5.3-codex official API list price (input $1.75 / cached $0.175 / output $14
+// per 1M tokens, as of 2026-07); override via CODEX_*_USD_PER_MTOK env if your
+// codex CLI uses a different model or the rate changes. The resulting ledger entry
+// is marked amountSource "estimated" (never "reported").
+const TOKEN_RATES_USD_PER_MTOK = {
+  codex: {
+    input: Number(process.env.CODEX_INPUT_USD_PER_MTOK ?? 1.75),
+    cachedInput: Number(process.env.CODEX_CACHED_INPUT_USD_PER_MTOK ?? 0.175),
+    output: Number(process.env.CODEX_OUTPUT_USD_PER_MTOK ?? 14),
+  },
+};
+
+// Estimate USD from reported token counts when the agent reported no billed amount.
+// Cached input is priced at its own (cheaper) rate; output already includes any
+// reasoning tokens, so reasoning is not billed again. Returns 0 when unpriceable.
+export function estimateCostUsdFromTokens(cost) {
+  const rates = TOKEN_RATES_USD_PER_MTOK[String(cost?.model ?? "").toLowerCase()];
+  if (!rates) return 0;
+  const input = Math.max(0, Number(cost.inputTokens ?? 0));
+  const cached = Math.min(input, Math.max(0, Number(cost.cachedInputTokens ?? 0)));
+  const output = Math.max(0, Number(cost.outputTokens ?? 0));
+  const usd = ((input - cached) * rates.input + cached * rates.cachedInput + output * rates.output) / 1_000_000;
+  return Number.isFinite(usd) && usd > 0 ? usd : 0;
 }
 
 function ledgerAmountSource(entry, amount = ledgerEntryAmount(entry)) {
