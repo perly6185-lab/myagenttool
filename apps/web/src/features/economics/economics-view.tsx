@@ -29,10 +29,14 @@ function Metric({ label, value, hint }: { label: string; value: string; hint?: s
 }
 
 function amountCell(entry: LedgerEntry) {
-  if (entry.amountSource === "reported") return <span className="tabular-nums">{entry.amountText}</span>;
-  if (entry.amountSource === "estimated")
-    return <span className="tabular-nums text-muted-foreground">{entry.amountText}</span>;
-  return <span className="text-muted-foreground">unknown</span>;
+  // Format from the numeric amountUsd (amountText is only set for unmetered rows).
+  // Estimated amounts are prefixed "~" per the table's legend.
+  const amount = Number(entry.amountUsd);
+  const hasAmount = Number.isFinite(amount) && amount > 0;
+  if (entry.amountSource === "reported" && hasAmount) return <span className="tabular-nums">{usd(amount)}</span>;
+  if (entry.amountSource === "estimated" && hasAmount)
+    return <span className="tabular-nums text-muted-foreground">~{usd(amount)}</span>;
+  return <span className="text-muted-foreground">{entry.amountText ?? "unknown"}</span>;
 }
 
 export function EconomicsView() {
