@@ -1,9 +1,11 @@
 import { useState } from "react";
+import { useQueries } from "@tanstack/react-query";
 import { ChevronRight, GitBranch, Hexagon, Plus, Settings } from "lucide-react";
 import { SECTIONS } from "@/app/sections";
 import { cn } from "@/lib/cn";
 import { useUiStore } from "@/store/ui-store";
 import { useConsoleState } from "@/data/use-console-state";
+import { api } from "@/data/use-console-actions";
 import { Modal } from "@/components/ui/modal";
 import { ProjectRegisterForm } from "@/features/projects/project-register-form";
 import { ProjectSettingsForm } from "@/features/projects/project-settings-form";
@@ -102,6 +104,20 @@ function ProjectTree() {
   const projects = (state?.projects ?? []).filter((p) => p.status !== "archived");
   const worktrees = state?.worktrees ?? [];
   const readyProjectIds = new Set((state?.projectTargets ?? []).filter((t) => t.state === "ready").map((t) => t.projectId));
+
+  // A repo-backed project is always sitting on a branch (its own checkout), even
+  // before any explicit worktree exists. Fetch that branch so the tree can show
+  // it as the project's baseline node — otherwise the row has nothing to expand.
+  const repoProjects = projects.filter((p) => readyProjectIds.has(p.id));
+  const summaries = useQueries({
+    queries: repoProjects.map((p) => ({
+      queryKey: ["git-summary", p.id],
+      queryFn: () => api.gitSummary(p.id) as Promise<{ branch?: string }>,
+      staleTime: 30_000,
+    })),
+  });
+  const branchByProject = new Map(repoProjects.map((p, i) => [p.id, summaries[i]?.data?.branch ?? null]));
+
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [settingsFor, setSettingsFor] = useState<ProjectSnapshot | null>(null);
   const [createWtFor, setCreateWtFor] = useState<ProjectSnapshot | null>(null);
@@ -124,6 +140,11 @@ function ProjectTree() {
     <ul className="mb-1 ml-3 mt-0.5 space-y-0.5 border-l border-sidebar-border/70 pl-2">
       {projects.map((project) => {
         const projWorktrees = worktrees.filter((w) => w.projectId === project.id && !w.ephemeral);
+        const isRepo = readyProjectIds.has(project.id);
+        const mainBranch = branchByProject.get(project.id) ?? null;
+        // Repo-backed projects always have a branch node to reveal; others need
+        // an explicit worktree before the row is expandable.
+        const hasChildren = isRepo || projWorktrees.length > 0;
         const isOpen = expanded[project.id] ?? true;
         const projActive = project.id === selectedProjectId && !selectedWorktreeId;
         return (
@@ -139,12 +160,12 @@ function ProjectTree() {
                 aria-label={isOpen ? "Collapse" : "Expand"}
                 onClick={() => setExpanded((e) => ({ ...e, [project.id]: !isOpen }))}
                 className="grid size-5 shrink-0 place-items-center rounded hover:bg-sidebar-accent/60"
-                disabled={projWorktrees.length === 0}
+                disabled={!hasChildren}
               >
                 <ChevronRight
                   className={cn(
                     "size-3.5 transition-transform",
-                    projWorktrees.length === 0 ? "opacity-30" : isOpen ? "rotate-90" : "",
+                    !hasChildren ? "opacity-30" : isOpen ? "rotate-90" : "",
                   )}
                 />
               </button>
@@ -178,8 +199,27 @@ function ProjectTree() {
               ) : null}
             </div>
 
-            {isOpen && projWorktrees.length > 0 ? (
+            {isOpen && hasChildren ? (
               <ul className="ml-3 space-y-0.5 border-l border-sidebar-border/60 pl-2">
+                {isRepo ? (
+                  <li>
+                    <button
+                      type="button"
+                      title="Project checkout — open the project"
+                      onClick={() => openProject(project.id)}
+                      className={cn(
+                        "flex w-full min-w-0 items-center gap-1.5 rounded-md px-2 py-1 text-left text-xs transition-colors",
+                        projActive
+                          ? "bg-sidebar-accent font-medium text-sidebar-accent-foreground"
+                          : "text-muted-foreground hover:bg-sidebar-accent/60 hover:text-sidebar-foreground",
+                      )}
+                    >
+                      <GitBranch className="size-3 shrink-0 opacity-70" />
+                      <span className="truncate">{mainBranch ?? "…"}</span>
+                      <span className="ml-auto shrink-0 text-[10px] opacity-60">checkout</span>
+                    </button>
+                  </li>
+                ) : null}
                 {projWorktrees.map((w) => {
                   const wtActive = w.id === selectedWorktreeId;
                   return (
