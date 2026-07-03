@@ -6,6 +6,7 @@
 
 import type {
   ApplicationCapability,
+  ApplicationOrchestrationRecovery,
   ApplicationOrchestrationRun,
   ApplicationOrchestrationRunDetail,
   ApplicationRegisterRequest,
@@ -289,6 +290,11 @@ export const api = {
     request<{ applicationId: string; routineId: string; invocationId: string; events: InvocationEventSnapshot[] }>(
       "GET",
       `/api/applications/${encodeURIComponent(id)}/orchestrations/${encodeURIComponent(routineId)}/runs/${encodeURIComponent(invocationId)}/events`,
+    ),
+  getApplicationOrchestrationRunRecovery: (id: string, routineId: string, invocationId: string) =>
+    request<{ applicationId: string; routineId: string; invocationId: string; recovery: ApplicationOrchestrationRecovery }>(
+      "GET",
+      `/api/applications/${encodeURIComponent(id)}/orchestrations/${encodeURIComponent(routineId)}/runs/${encodeURIComponent(invocationId)}/recovery`,
     ),
   createInvocation: (
     task: string,
