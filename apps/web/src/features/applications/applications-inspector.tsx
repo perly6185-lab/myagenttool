@@ -10,7 +10,13 @@ import { useConsoleState } from "@/data/use-console-state";
 import { useAsyncAction, api } from "@/data/use-console-actions";
 import { useUiStore } from "@/store/ui-store";
 import { sourceSummary } from "@/features/applications/applications-view";
-import type { ApplicationOrchestration, ApplicationSnapshot, InvocationSnapshot } from "@/lib/console-state";
+import { readableStatus, statusTone } from "@/lib/readable-labels";
+import type {
+  ApplicationOrchestration,
+  ApplicationOrchestrationRun,
+  ApplicationSnapshot,
+  InvocationSnapshot,
+} from "@/lib/console-state";
 
 // Explicit-intent confirmation token for governed side-effecting actions. It is
 // an intent marker (tenancy is the real authz), not a cryptographic approval.
@@ -244,12 +250,8 @@ function OrchestrationDrafts({
                 {copiedRoutineId === orchestration.routineId ? (
                   <span className="text-xs text-success">Copied.</span>
                 ) : null}
-                {lastInvocation ? (
-                  <span className="text-xs text-muted-foreground">
-                    Last run: {lastInvocation.status ?? "unknown"}
-                  </span>
-                ) : null}
               </div>
+              <OrchestrationRunHistory application={application} orchestration={orchestration} onView={viewInvocation} />
             </div>
           );
         })}
@@ -260,6 +262,85 @@ function OrchestrationDrafts({
       </CardContent>
     </Card>
   );
+}
+
+function OrchestrationRunHistory({
+  application,
+  orchestration,
+  onView,
+}: {
+  application: ApplicationSnapshot;
+  orchestration: ApplicationOrchestration;
+  onView: (invocationId: string) => void;
+}) {
+  const { data, isLoading, error } = useQuery({
+    queryKey: ["application-orchestration-runs", application.id, orchestration.routineId],
+    queryFn: () => api.listApplicationOrchestrationRuns(application.id, orchestration.routineId, 3),
+    enabled: Boolean(application.id && orchestration.routineId),
+    refetchInterval: 2000,
+  });
+  const runs = data?.runs ?? [];
+
+  if (error) {
+    return <p className="text-xs text-destructive">Could not load run history.</p>;
+  }
+  if (!runs.length) {
+    return (
+      <p className="text-xs text-muted-foreground">
+        {isLoading ? "Loading runs..." : "No runs recorded yet."}
+      </p>
+    );
+  }
+
+  return (
+    <div className="space-y-1.5 border-t border-border pt-2">
+      {runs.map((run) => (
+        <OrchestrationRunRow key={run.invocationId} run={run} onView={onView} />
+      ))}
+    </div>
+  );
+}
+
+function OrchestrationRunRow({
+  run,
+  onView,
+}: {
+  run: ApplicationOrchestrationRun;
+  onView: (invocationId: string) => void;
+}) {
+  return (
+    <div className="grid gap-2 text-xs sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center">
+      <div className="min-w-0 space-y-1">
+        <div className="flex flex-wrap items-center gap-2">
+          <Badge tone={statusTone(run.status)}>{readableStatus(run.status)}</Badge>
+          <span className="font-mono text-muted-foreground">{run.invocationId}</span>
+          <span className="text-muted-foreground">{shortTime(run.createdAt)}</span>
+          {run.agentId ? <span className="text-muted-foreground">{run.agentId}</span> : null}
+        </div>
+        {run.resultSummary || run.errorSummary ? (
+          <p className="[overflow-wrap:anywhere] text-muted-foreground">
+            {run.resultSummary ?? run.errorSummary}
+          </p>
+        ) : null}
+      </div>
+      <Button size="sm" variant="secondary" onClick={() => onView(run.invocationId)}>
+        <ExternalLink />
+        View
+      </Button>
+    </div>
+  );
+}
+
+function shortTime(value?: string | null): string {
+  if (!value) return "—";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleString(undefined, {
+    month: "short",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
 }
 
 /** Right-pane detail for the application selected in the Applications view. */
