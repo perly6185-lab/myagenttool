@@ -7,6 +7,8 @@ import {
   normalizeStringArray,
 } from "../services/agents.mjs";
 import { createAgentSkillService } from "../services/agent-skills.mjs";
+import { createApplicationService } from "../services/applications.mjs";
+import { createCapabilityService } from "../services/capabilities.mjs";
 import { createCcusageImportService } from "../services/ccusage-imports.mjs";
 import { createClaudeReviewImportService } from "../services/claude-review-imports.mjs";
 import { createCodexReviewImportService } from "../services/codex-review-imports.mjs";
@@ -84,6 +86,25 @@ export function createServerRuntimeServices({
     updateAgentSkill,
     deleteAgentSkill,
   } = createAgentSkillService({ state, now, nextId, persistStateSoon });
+
+  const {
+    findApplication,
+    invokeApplicationCapability,
+    listApplicationCapabilities,
+    listApplications,
+    probeApplication,
+    registerApplication,
+    transitionApplication,
+  } = createApplicationService({
+    state,
+    now,
+    nextId,
+    appendEvent,
+    persistStateSoon,
+    addProject,
+    cloneProject,
+    defaultProjectPath,
+  });
 
   const {
     completeHealthCheck,
@@ -310,6 +331,23 @@ export function createServerRuntimeServices({
     startInvocationIfAllowed,
   });
 
+  const {
+    createCapabilityInvocation,
+    getCapability,
+    listCapabilities,
+  } = createCapabilityService({
+    state,
+    listTools,
+    getTool,
+    createToolInvocation,
+    createInvocation,
+    completeInvocation,
+    findAgent,
+    listApplications,
+    listApplicationCapabilities,
+    invokeApplicationCapability,
+  });
+
   function nextId(prefix) {
     const id = `${prefix}_${String(idCounter).padStart(4, "0")}`;
     idCounter += 1;
@@ -373,6 +411,16 @@ export function createServerRuntimeServices({
     completeIntegrationProbeRun,
     completeInvocation,
     createAgentHealthCheck,
+    createCapabilityInvocation,
+    findApplication,
+    invokeApplicationCapability,
+    getCapability,
+    listApplicationCapabilities,
+    listCapabilities,
+    listApplications,
+    probeApplication,
+    registerApplication,
+    transitionApplication,
     createCodexChangeReview,
     createCodexImportedEvidenceRecord,
     createCompareRun,
@@ -471,6 +519,16 @@ export function createServerRuntimeServices({
     createAgentSkill,
     updateAgentSkill,
     deleteAgentSkill,
+    createCapabilityInvocation,
+    findApplication,
+    invokeApplicationCapability,
+    getCapability,
+    listApplicationCapabilities,
+    listCapabilities,
+    listApplications,
+    probeApplication,
+    registerApplication,
+    transitionApplication,
     createSshTarget,
     createSshConnectionTest,
     createManagedTerminalSession,

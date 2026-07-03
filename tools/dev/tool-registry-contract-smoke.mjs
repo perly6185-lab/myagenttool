@@ -4,6 +4,7 @@ import { resolve } from "node:path";
 import { createCcusageAgentRegistration } from "../../apps/server/src/services/ccusage-agent.mjs";
 import { createClaudeReviewAgentRegistration } from "../../apps/server/src/services/claude-agent.mjs";
 import { createCodexReviewAgentRegistration } from "../../apps/server/src/services/codex-agent.mjs";
+import { createCapabilityService } from "../../apps/server/src/services/capabilities.mjs";
 import { createToolService } from "../../apps/server/src/services/tools.mjs";
 import { handleToolRoutes } from "../../apps/server/src/routes/tools.mjs";
 
@@ -93,6 +94,20 @@ for (const descriptor of descriptors) {
   assert(!serialized.includes("ccusage-wrapper.mjs"), `descriptor ${descriptor.name} exposes ccusage wrapper internals`);
 }
 ok("descriptors do not expose raw execution fields");
+
+const capabilities = createCapabilityService({
+  state,
+  listTools: service.listTools,
+  getTool: service.getTool,
+  createToolInvocation: service.createToolInvocation,
+  listApplications: () => [],
+  listApplicationCapabilities: () => [],
+}).listCapabilities({ userId: "usr_local", teamId: "team_local" });
+const ccusageCapability = capabilities.find((capability) => capability.name === "ccusage.report");
+assert.equal(ccusageCapability?.provider?.type, "tool");
+assert.equal(ccusageCapability?.invocationMode, "tool-facade");
+assert(!JSON.stringify(capabilities).includes("wrapper.mjs"), "capability registry must not expose wrapper internals");
+ok("capability registry maps governed tools without exposing raw execution fields");
 
 const ccusageCreated = service.createToolInvocation("ccusage.report", fixture.tools["ccusage.report"].exampleInput, {
   userId: "usr_local",

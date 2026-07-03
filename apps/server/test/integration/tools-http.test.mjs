@@ -2,6 +2,7 @@ process.env.MYAGENT_REQUIRE_AUTH = "1";
 process.env.MYAGENTTOOL_STATE_DISABLED = "1";
 
 import assert from "node:assert/strict";
+import { existsSync, mkdirSync } from "node:fs";
 import { after, before, test } from "node:test";
 
 const TEAM_A = "team_a";
@@ -21,6 +22,8 @@ before(async () => {
   const { createCcusageAgentRegistration } = await import("../../src/services/ccusage-agent.mjs");
 
   const { defaultProject, state } = createServerState({ defaultProjectPath: "/tmp", now });
+  mkdirSync("/tmp/a", { recursive: true });
+  mkdirSync("/tmp/b", { recursive: true });
   state.teams.push({ id: TEAM_A, name: "Team A" }, { id: TEAM_B, name: "Team B" });
   state.users.push(
     { id: "usr_a", name: "A", teamId: TEAM_A },
@@ -39,6 +42,21 @@ before(async () => {
     { id: "wtA", projectId: "projA", workspaceProjectId: "projA", path: "/tmp/a-wt", worktreePath: "/tmp/a-wt", branchName: "feature/a", createdAt: now() },
     { id: "wtB", projectId: "projB", workspaceProjectId: "projB", path: "/tmp/b-wt", worktreePath: "/tmp/b-wt", branchName: "feature/b", createdAt: now() },
   );
+  state.applications.push({
+    id: "app_team_a",
+    name: "Team A App",
+    kind: "repository",
+    source: { type: "local", path: "/tmp/a" },
+    status: "active",
+    lifecycle: { state: "registered" },
+    projectId: "projA",
+    path: "/tmp/a",
+    ownerTeamId: TEAM_A,
+    capabilitiesVersion: 1,
+    orchestrationIds: [],
+    createdAt: now(),
+    updatedAt: now(),
+  });
   state.agents.push({
     ...agentFromRegistration(createCcusageAgentRegistration({
       reportId: "daily",
@@ -180,6 +198,159 @@ test("GET /api/tools ignores spoofed governed review agents with extra wrapper a
   const claudeTool = res.body.tools.find((item) => item.name === "claude.review.diff");
   assert.deepEqual(codexTool.agents.map((agent) => agent.name), ["Codex Diff Review"]);
   assert.deepEqual(claudeTool.agents.map((agent) => agent.name), ["Claude Diff Review"]);
+});
+
+test("GET /api/capabilities includes governed tools and scoped application capabilities", async () => {
+  const teamA = await call("/api/capabilities", { token: "tok_a" });
+  assert.equal(teamA.status, 200);
+  assert.ok(teamA.body.capabilities.some((item) => item.name === "ccusage.report" && item.provider?.type === "tool"));
+  assert.ok(teamA.body.capabilities.some((item) => item.name === "app.app_team_a.inspect" && item.provider?.type === "application"));
+  assert.ok(!JSON.stringify(teamA.body.capabilities).includes("wrapper.mjs"), "capability discovery must not expose wrapper internals");
+
+  const teamB = await call("/api/capabilities?providerType=application", { token: "tok_b" });
+  assert.equal(teamB.status, 200);
+  assert.ok(!teamB.body.capabilities.some((item) => item.name === "app.app_team_a.inspect"), "foreign application capability should be hidden");
+});
+
+test("POST /api/capabilities proxies governed tools and executes application capabilities", async () => {
+  const ccusage = await call("/api/capabilities/ccusage.report/invocations", {
+    method: "POST",
+    body: { report: "daily", projectId: "projA" },
+    token: "tok_a",
+  });
+  assert.equal(ccusage.status, 201);
+  assert.equal(ccusage.body.tool, "ccusage.report");
+
+  const app = await call("/api/capabilities/app.app_team_a.inspect/invocations", {
+    method: "POST",
+    body: {},
+    token: "tok_a",
+  });
+  assert.equal(app.status, 201);
+  assert.equal(app.body.agentId, "agt_platform_application_control");
+  assert.equal(app.body.invocation.status, "succeeded");
+
+  const offlineWithoutApproval = await call("/api/capabilities/app.app_team_a.offline/invocations", {
+    method: "POST",
+    body: {},
+    token: "tok_a",
+  });
+  assert.equal(offlineWithoutApproval.status, 409);
+  assert.equal(offlineWithoutApproval.body.error, "approval_required");
+
+  const offline = await call("/api/capabilities/app.app_team_a.offline/invocations", {
+    method: "POST",
+    body: { approvalToken: "operator-approved-offline" },
+    token: "tok_a",
+  });
+  assert.equal(offline.status, 201);
+  assert.equal(offline.body.invocation.result.output.status, "offline");
+});
+
+test("POST /api/applications/register rejects duplicate explicit ids", async () => {
+  const duplicate = await call("/api/applications/register", {
+    method: "POST",
+    body: {
+      id: "app_team_a",
+      name: "Duplicate App",
+      source: { type: "npm", package: "@scope/duplicate-app" },
+    },
+    token: "tok_a",
+  });
+  assert.equal(duplicate.status, 400);
+  assert.equal(duplicate.body.error, "invalid_application");
+  assert.match(duplicate.body.message, /Application id already exists/);
+});
+
+test("POST /api/applications/register scopes ownership to the authenticated actor", async () => {
+  const created = await call("/api/applications/register", {
+    method: "POST",
+    body: {
+      id: "foreign_owner_attempt",
+      name: "Owned By Actor",
+      source: { type: "npm", package: "@scope/owned-by-actor" },
+      ownerTeamId: TEAM_B,
+    },
+    token: "tok_a",
+  });
+  assert.equal(created.status, 201);
+  assert.equal(created.body.application.id, "app_foreign_owner_attempt");
+  assert.equal(created.body.application.ownerTeamId, TEAM_A);
+
+  const visibleToA = await call("/api/applications/app_foreign_owner_attempt", { token: "tok_a" });
+  assert.equal(visibleToA.status, 200);
+
+  const hiddenFromB = await call("/api/applications/app_foreign_owner_attempt", { token: "tok_b" });
+  assert.equal(hiddenFromB.status, 404);
+  assert.equal(hiddenFromB.body.error, "application_not_found");
+});
+
+test("POST /api/applications/register rejects cross-team duplicate sources", async () => {
+  const duplicate = await call("/api/applications/register", {
+    method: "POST",
+    body: {
+      name: "Hijack Team A App",
+      source: { type: "local", path: "/tmp/a" },
+    },
+    token: "tok_b",
+  });
+  assert.equal(duplicate.status, 400);
+  assert.equal(duplicate.body.error, "invalid_application");
+  assert.match(duplicate.body.message, /already registered/);
+});
+
+test("POST /api/capabilities generate_orchestration writes a routine draft", async () => {
+  const application = findApplicationForTest("app_team_a");
+  application.status = "active";
+  const res = await call("/api/capabilities/app.app_team_a.generate_orchestration/invocations", {
+    method: "POST",
+    body: {},
+    token: "tok_a",
+  });
+  assert.equal(res.status, 201);
+  const orchestration = res.body.invocation.result.output.orchestration;
+  assert.equal(orchestration.kind, "LoopRoutineDraft");
+  assert.equal(orchestration.relativePath, ".myagenttool/routines/app-team-a-app-maintenance.json");
+  assert.ok(existsSync(orchestration.path), "routine draft should be written to disk");
+  assert.ok(application.orchestrations.some((item) => item.routineId === orchestration.id));
+});
+
+test("application orchestration endpoints generate and list routine drafts", async () => {
+  findApplicationForTest("app_team_a").status = "active";
+  const generated = await call("/api/applications/app_team_a/orchestrations/generate", {
+    method: "POST",
+    body: {},
+    token: "tok_a",
+  });
+  assert.equal(generated.status, 201);
+  assert.equal(generated.body.invocation.result.output.orchestration.id, "app-team-a-app-maintenance");
+
+  const listed = await call("/api/applications/app_team_a/orchestrations", { token: "tok_a" });
+  assert.equal(listed.status, 200);
+  assert.ok(listed.body.orchestrations.some((item) => item.routineId === "app-team-a-app-maintenance"));
+
+  const foreign = await call("/api/applications/app_team_a/orchestrations", { token: "tok_b" });
+  assert.equal(foreign.status, 404);
+  assert.equal(foreign.body.error, "application_not_found");
+});
+
+test("application lifecycle endpoints require governed approval", async () => {
+  findApplicationForTest("app_team_a").status = "active";
+  const blocked = await call("/api/applications/app_team_a/offline", {
+    method: "POST",
+    body: {},
+    token: "tok_a",
+  });
+  assert.equal(blocked.status, 409);
+  assert.equal(blocked.body.error, "approval_required");
+
+  const approved = await call("/api/applications/app_team_a/offline", {
+    method: "POST",
+    body: { approvalToken: "operator-approved-offline" },
+    token: "tok_a",
+  });
+  assert.equal(approved.status, 201);
+  assert.equal(approved.body.invocation.result.output.status, "offline");
 });
 
 test("GET /api/tools/ccusage.report returns the tool descriptor", async () => {
@@ -545,4 +716,10 @@ function agentFromRegistration(registration) {
     registrationNotes: registration.registrationNotes,
     createdAt: now(),
   };
+}
+
+function findApplicationForTest(applicationId) {
+  const application = ctx.state.applications.find((item) => item.id === applicationId);
+  assert.ok(application, `expected test application ${applicationId}`);
+  return application;
 }

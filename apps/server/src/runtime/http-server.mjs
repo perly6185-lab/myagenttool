@@ -2,7 +2,9 @@ import http from "node:http";
 import { REQUIRE_AUTH, resolveActor } from "./auth.mjs";
 import { handleAgentRoutes } from "../routes/agents.mjs";
 import { handleAgentSkillRoutes } from "../routes/agent-skills.mjs";
+import { handleApplicationRoutes } from "../routes/applications.mjs";
 import { handleBridgeRoutes } from "../routes/bridge.mjs";
+import { handleCapabilityRoutes } from "../routes/capabilities.mjs";
 import { handleCodexRoutes } from "../routes/codex.mjs";
 import { handleControlPlaneRoutes } from "../routes/control-plane.mjs";
 import { handleIntegrationRoutes } from "../routes/integrations.mjs";
@@ -40,6 +42,12 @@ export function createHttpServer({
   createAgentSkill,
   updateAgentSkill,
   deleteAgentSkill,
+  findApplication,
+  listApplicationCapabilities,
+  listApplications,
+  probeApplication,
+  registerApplication,
+  transitionApplication,
   createSshTarget,
   createSshConnectionTest,
   createManagedTerminalSession,
@@ -125,6 +133,9 @@ export function createHttpServer({
   createToolInvocation,
   getTool,
   listTools,
+  createCapabilityInvocation,
+  getCapability,
+  listCapabilities,
   nextId,
   persistStateSoon,
 }) {
@@ -229,6 +240,25 @@ export function createHttpServer({
         createAgentSkill,
         updateAgentSkill,
         deleteAgentSkill,
+      })) {
+        return;
+      }
+
+      if (await handleApplicationRoutes({
+        req,
+        res,
+        url,
+        sendJson,
+        readJson,
+        state,
+        actor,
+        findApplication,
+        listApplicationCapabilities,
+        listApplications,
+        probeApplication,
+        registerApplication,
+        transitionApplication,
+        createCapabilityInvocation,
       })) {
         return;
       }
@@ -338,6 +368,21 @@ export function createHttpServer({
         requestLifecycleLocalApproval,
         transitionLifecycleRecipe,
         updatePrivateDeploymentConfig,
+      })) {
+        return;
+      }
+
+      if (await handleCapabilityRoutes({
+        req,
+        res,
+        url,
+        sendJson,
+        readJson,
+        state,
+        actor,
+        listCapabilities,
+        getCapability,
+        createCapabilityInvocation,
       })) {
         return;
       }

@@ -21,6 +21,9 @@ GET /api/tools/claude.review.diff
 POST /api/tools/ccusage.report/invocations
 POST /api/tools/codex.review.diff/invocations
 POST /api/tools/claude.review.diff/invocations
+GET /api/capabilities
+GET /api/capabilities/{capabilityName}
+POST /api/capabilities/{capabilityName}/invocations
 GET /api/review-findings
 GET /api/state
 ```
@@ -52,6 +55,14 @@ expose the executable command or argv.
 Codex and Claude tools use the same discovery and invocation shape. A caller
 should treat `codex.review.diff` and `claude.review.diff` as governed review
 capabilities, not as permission to launch local CLIs with arbitrary arguments.
+
+`/api/capabilities` is the generalized discovery facade. It includes the
+governed tools above with `provider.type = "tool"` and application-projected
+capabilities with `provider.type = "application"`. `/api/tools` remains the
+stable tool-only compatibility surface.
+Invoking application capabilities through `/api/capabilities/{name}/invocations`
+creates normal invocation/audit records backed by the platform Application
+Control agent.
 
 ## Invocation
 

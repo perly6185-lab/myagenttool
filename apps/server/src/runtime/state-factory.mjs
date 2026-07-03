@@ -16,6 +16,7 @@ const defaultAgentIds = [
   "agt_claude_acceptEdits",
   "agt_platform_troubleshooter",
   "agt_platform_integration_builder",
+  "agt_platform_application_control",
 ];
 const envMaxConcurrency = Math.floor(Number(process.env.BRIDGE_MAX_CONCURRENT));
 const defaultMaxConcurrency = Number.isFinite(envMaxConcurrency) && envMaxConcurrency > 0
@@ -35,6 +36,7 @@ export function createServerState({ defaultProjectPath, now }) {
     teams: createDefaultTeams(now),
     tokens: [],
     projects: [defaultProject],
+    applications: [],
     currentProjectId: defaultProject.id,
     projectTargets: [createProjectTargetRecord(defaultProject, now)],
     worktrees: [],
@@ -128,6 +130,7 @@ export function resetStateForSelfCheck({ state, now }) {
     claudeAgent.updatedAt = now();
   }
   state.invocations = [];
+  state.applications = [];
   state.events = [];
   state.traces = [];
   state.spans = [];
@@ -551,6 +554,51 @@ function createDefaultAgents(now) {
       registrationNotes: {
         risk: "Advisory platform agent. It can draft plans and artifact suggestions but cannot approve, test, register, or enable integrations.",
         data: "Reads user-provided integration intent and writes reviewable draft artifacts.",
+        cost: "Free platform demo helper. No billing automation is performed.",
+        cancellation: "Runs synchronously in the local demo server."
+      },
+      createdAt: now(),
+      updatedAt: now()
+    },
+    {
+      id: "agt_platform_application_control",
+      name: "Application Control",
+      description: "Platform-owned agent that executes governed application asset capabilities.",
+      ownerUserId: "system",
+      location: { type: "platform_agent" },
+      adapter: { type: "platform", name: "application_control_agent" },
+      lifecycle: {
+        state: "enabled",
+        installState: "installed",
+        version: "0.0.0",
+        managedBy: "platform"
+      },
+      economics: {
+        model: "free",
+        pricingDimensions: ["per_invocation"],
+        currency: "USD",
+        costOwner: "usr_local",
+        budgetPoolId: null,
+        unknownCostPolicy: "warn"
+      },
+      capabilities: [
+        {
+          name: "application_control",
+          description: "Runs allowlisted application inspect, search, lifecycle, and orchestration-control actions.",
+          riskLevel: "medium",
+          riskTags: ["application_asset", "lifecycle", "generated_artifact"]
+        }
+      ],
+      status: "available",
+      health: {
+        status: "healthy",
+        checkedAt: now(),
+        message: "Platform application control agent is available.",
+        nextAction: null
+      },
+      registrationNotes: {
+        risk: "Platform agent with an allowlisted application-control action set. High-risk lifecycle actions require explicit approval tokens.",
+        data: "Reads application registry records and may update application lifecycle state or probe metadata.",
         cost: "Free platform demo helper. No billing automation is performed.",
         cancellation: "Runs synchronously in the local demo server."
       },
