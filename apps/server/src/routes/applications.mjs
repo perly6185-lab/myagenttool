@@ -95,7 +95,7 @@ export async function handleApplicationRoutes({
   if (actionMatch && req.method === "POST") {
     const applicationId = decodeURIComponent(actionMatch[1]);
     if (denyForeignApplication({ res, sendJson, state, actor, applicationId, findApplication })) return true;
-    if (["archive", "offline", "refresh"].includes(actionMatch[2])) {
+    if (["archive", "offline", "online", "refresh"].includes(actionMatch[2])) {
       const capability = (listApplicationCapabilities(applicationId) ?? [])
         .find((item) => item.name.endsWith(`.${actionMatch[2]}`));
       if (!capability) {

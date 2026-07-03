@@ -345,6 +345,7 @@ test("POST /api/applications/:id/probe infers local package metadata without exe
   assert.equal(probe.package.version, "1.2.3");
   assert.equal(probe.readme.heading, "Team A App");
   assert.ok(probe.capabilities.some((item) => item.name === "app.app_team_a.offline" && item.source === "managed"));
+  assert.ok(probe.capabilities.some((item) => item.name === "app.app_team_a.online" && item.source === "managed"));
   assert.ok(probe.capabilities.some((item) => item.name === "app.app_team_a.inferred.bin.team-a" && item.source === "inferred" && item.invocationMode === "not_invokable"));
   assert.ok(probe.capabilities.some((item) => item.name === "app.app_team_a.inferred.script.test" && item.source === "inferred"));
   assert.ok(probe.capabilities.some((item) => item.name === "app.app_team_a.inferred.module.exports" && item.source === "inferred"));
@@ -600,6 +601,22 @@ test("application lifecycle endpoints require governed approval", async () => {
   });
   assert.equal(approved.status, 201);
   assert.equal(approved.body.invocation.result.output.status, "offline");
+
+  const onlineBlocked = await call("/api/applications/app_team_a/online", {
+    method: "POST",
+    body: {},
+    token: "tok_a",
+  });
+  assert.equal(onlineBlocked.status, 409);
+  assert.equal(onlineBlocked.body.error, "approval_required");
+
+  const online = await call("/api/applications/app_team_a/online", {
+    method: "POST",
+    body: { approvalToken: "operator-approved-online" },
+    token: "tok_a",
+  });
+  assert.equal(online.status, 201);
+  assert.equal(online.body.invocation.result.output.status, "active");
 });
 
 test("GET /api/tools/ccusage.report returns the tool descriptor", async () => {
