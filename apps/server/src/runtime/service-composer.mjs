@@ -136,6 +136,7 @@ export function createServerRuntimeServices({
     recordCodexHookEvent,
     repoPathForEvidence,
     resolveCodexApprovalBrokerRequest: resolveCodexApprovalBrokerRequestBase,
+    resolveResumeCodexSessionId,
     updateCodexSessionFromEvent,
   } = createCodexService({
     state,
@@ -250,6 +251,7 @@ export function createServerRuntimeServices({
     normalizeCodexWorkspacePolicy,
     createManagedCodexWorkspace,
     createManagedCodexSession,
+    resolveResumeCodexSessionId,
     closeCodexSession,
     budgetGateForProject,
   });
@@ -557,6 +559,25 @@ export function createServerRuntimeServices({
         routineId,
         invocationId,
         recovery: applicationOrchestrationRecovery(run.invocation, events),
+      },
+    };
+  }
+
+  function listApplicationOrchestrationRecoveryAgentCandidates(applicationId, routineId, invocationId) {
+    const run = getScopedApplicationOrchestrationInvocation(applicationId, routineId, invocationId);
+    if (run.status !== 200) return run;
+    const recoveryModel = applicationOrchestrationRecovery(run.invocation, applicationOrchestrationRunEvents(invocationId));
+    const candidateViews = recoveryAgentCandidateViews(run.invocation);
+    return {
+      status: 200,
+      body: {
+        applicationId,
+        routineId,
+        invocationId,
+        recoveryCategory: recoveryModel.category,
+        sourceAgentId: run.invocation.agentId ?? null,
+        preferredAgentId: candidateViews.find((candidate) => candidate.preferred)?.id ?? null,
+        candidates: candidateViews,
       },
     };
   }
@@ -1002,11 +1023,45 @@ export function createServerRuntimeServices({
   }
 
   function isAgentSelectableForRecovery(agent) {
-    if (!agent) return false;
-    if (agent.status === "disabled" || agent.status === "unavailable") return false;
-    if (agent.health?.status === "unhealthy") return false;
-    if (agent.location?.type === "local_device" && state.device.unlinkState !== "linked") return false;
-    return true;
+    return recoveryAgentSelectability(agent).selectable;
+  }
+
+  function recoveryAgentCandidateViews(sourceInvocation) {
+    const candidates = orderedRecoveryAgentCandidates();
+    const preferred = candidates.find((agent) => agent.id !== sourceInvocation.agentId && isAgentSelectableForRecovery(agent))
+      ?? candidates.find((agent) => isAgentSelectableForRecovery(agent))
+      ?? null;
+    return candidates.map((agent) => {
+      const selectability = recoveryAgentSelectability(agent);
+      return {
+        id: agent.id,
+        name: agent.name ?? agent.id,
+        status: agent.status ?? "unknown",
+        healthStatus: agent.health?.status ?? null,
+        locationType: agent.location?.type ?? null,
+        adapterType: agent.adapter?.type ?? null,
+        selectable: selectability.selectable,
+        reasons: selectability.reasons,
+        preferred: preferred?.id === agent.id,
+        sourceAgent: agent.id === sourceInvocation.agentId,
+      };
+    });
+  }
+
+  function recoveryAgentSelectability(agent) {
+    const reasons = [];
+    if (!agent) {
+      return { selectable: false, reasons: ["agent_not_found"] };
+    }
+    if (!hasApplicationControlCapability(agent)) reasons.push("application_control_missing");
+    if (agent.status === "disabled") reasons.push("agent_disabled");
+    if (agent.status === "unavailable") reasons.push("agent_unavailable");
+    if (agent.health?.status === "unhealthy") reasons.push("agent_unhealthy");
+    if (agent.location?.type === "local_device" && state.device.unlinkState !== "linked") reasons.push("device_unlinked");
+    return {
+      selectable: reasons.length === 0,
+      reasons,
+    };
   }
 
   function orderedRecoveryAgentCandidates() {
@@ -1320,6 +1375,7 @@ export function createServerRuntimeServices({
     createCapabilityInvocation,
     findApplication,
     getApplicationOrchestrationRunRecovery,
+    listApplicationOrchestrationRecoveryAgentCandidates,
     getApplicationOrchestrationRun,
     invokeApplicationCapability,
     getCapability,
@@ -1435,6 +1491,7 @@ export function createServerRuntimeServices({
     createCapabilityInvocation,
     findApplication,
     getApplicationOrchestrationRunRecovery,
+    listApplicationOrchestrationRecoveryAgentCandidates,
     getApplicationOrchestrationRun,
     invokeApplicationCapability,
     getCapability,

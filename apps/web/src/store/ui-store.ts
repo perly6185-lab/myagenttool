@@ -28,6 +28,8 @@ interface UiState {
   selectedAgentSkillId: string | null;
   selectedToolName: string | null;
   selectedApplicationId: string | null;
+  /** Transient: the invocation whose Codex session the composer will continue on next send (#163). */
+  resumeFromInvocationId: string | null;
   setSection: (section: SectionKey) => void;
   setSelectedAgentId: (id: string | null) => void;
   setSelectedInvocationId: (id: string | null) => void;
@@ -37,6 +39,7 @@ interface UiState {
   setSelectedAgentSkillId: (id: string | null) => void;
   setSelectedToolName: (name: string | null) => void;
   setSelectedApplicationId: (id: string | null) => void;
+  setResumeFromInvocationId: (id: string | null) => void;
 }
 
 const SECTION_KEYS: SectionKey[] = [
@@ -82,6 +85,7 @@ export const useUiStore = create<UiState>()(
       selectedAgentSkillId: null,
       selectedToolName: null,
       selectedApplicationId: null,
+      resumeFromInvocationId: null,
       setSection: (section) => set({ section }),
       setSelectedAgentId: (selectedAgentId) => set({ selectedAgentId }),
       setSelectedInvocationId: (selectedInvocationId) => set({ selectedInvocationId }),
@@ -91,6 +95,7 @@ export const useUiStore = create<UiState>()(
       setSelectedAgentSkillId: (selectedAgentSkillId) => set({ selectedAgentSkillId }),
       setSelectedToolName: (selectedToolName) => set({ selectedToolName }),
       setSelectedApplicationId: (selectedApplicationId) => set({ selectedApplicationId }),
+      setResumeFromInvocationId: (resumeFromInvocationId) => set({ resumeFromInvocationId }),
     }),
     {
       name: "myagenttool-ui",

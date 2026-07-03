@@ -730,6 +730,19 @@ export interface ApplicationOrchestrationRecovery {
   actions: ApplicationOrchestrationRecoveryAction[];
 }
 
+export interface ApplicationOrchestrationRecoveryAgentCandidate {
+  id: string;
+  name: string;
+  status: string;
+  healthStatus?: string | null;
+  locationType?: string | null;
+  adapterType?: string | null;
+  selectable: boolean;
+  reasons: string[];
+  preferred: boolean;
+  sourceAgent: boolean;
+}
+
 export interface ApplicationRecoveryActionRequest {
   id: string;
   applicationId: string;
@@ -749,8 +762,23 @@ export interface ApplicationRecoveryActionRequest {
   requestedBy?: string | null;
   decidedAt?: string | null;
   executedAt?: string | null;
+  outcome?: {
+    state: "recovered" | "still_failed" | "pending" | "needs_attention" | string;
+    summary: string;
+  } | null;
+  sourceInvocation?: ApplicationRecoveryInvocationBrief | null;
+  resultInvocation?: ApplicationRecoveryInvocationBrief | null;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface ApplicationRecoveryInvocationBrief {
+  id: string;
+  status?: string | null;
+  agentId?: string | null;
+  createdAt?: string | null;
+  updatedAt?: string | null;
+  completedAt?: string | null;
 }
 
 export interface ApplicationSnapshot {

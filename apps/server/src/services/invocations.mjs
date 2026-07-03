@@ -30,6 +30,7 @@ export function createInvocationService({
   normalizeCodexWorkspacePolicy,
   createManagedCodexWorkspace,
   createManagedCodexSession,
+  resolveResumeCodexSessionId,
   budgetGateForProject,
   closeCodexSession,
 }) {
@@ -97,6 +98,7 @@ export function createInvocationService({
     normalizeCodexWorkspacePolicy,
     createManagedCodexWorkspace,
     createManagedCodexSession,
+    resolveResumeCodexSessionId,
     evaluateInvocationPolicy,
     enforcePlatformAiQuota,
     createPolicyDecisionRecord,
