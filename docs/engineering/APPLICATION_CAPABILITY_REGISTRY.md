@@ -88,6 +88,29 @@ Descriptors include provider metadata, risk level, approval requirement, input
 schema, output schema, and status. They intentionally do not expose local
 commands, wrapper paths, or argv.
 
+## Probe Metadata
+
+`POST /api/applications/:id/probe` performs a read-only metadata probe and
+stores structured results on `application.probe`.
+
+Probe capability entries use:
+
+```text
+source = managed | declared | inferred
+status = available | disabled | candidate
+invocationMode = gateway | not_invokable
+```
+
+Managed capabilities are the platform lifecycle/read capabilities above.
+Declared capabilities come from a manual source manifest. Inferred capabilities
+come from metadata such as `package.json`, NPM package metadata, README files,
+package `bin`, selected safe script names, and package `exports`.
+
+Inferred capabilities are discovery candidates only. They are intentionally
+`not_invokable` until a wrapper descriptor and approval path are added in a
+later slice. NPM probes inspect registration metadata only; they do not install
+packages, run scripts, or execute package code.
+
 ## Relationship To Existing Agents
 
 Codex, Claude, and ccusage remain normal governed agents/tools. Application

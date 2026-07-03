@@ -2,7 +2,7 @@ process.env.MYAGENT_REQUIRE_AUTH = "1";
 process.env.MYAGENTTOOL_STATE_DISABLED = "1";
 
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { after, before, test } from "node:test";
 
 const TEAM_A = "team_a";
@@ -24,6 +24,19 @@ before(async () => {
   const { defaultProject, state } = createServerState({ defaultProjectPath: "/tmp", now });
   mkdirSync("/tmp/a", { recursive: true });
   mkdirSync("/tmp/b", { recursive: true });
+  writeFileSync("/tmp/a/package.json", JSON.stringify({
+    name: "team-a-app",
+    version: "1.2.3",
+    description: "Team A fixture package.",
+    bin: { "team-a": "bin/team-a.js" },
+    scripts: {
+      test: "node --test",
+      start: "node server.js",
+      postinstall: "node install.js",
+    },
+    exports: { ".": "./index.js" },
+  }, null, 2), "utf8");
+  writeFileSync("/tmp/a/README.md", "# Team A App\n\nTeam A probe fixture.\n", "utf8");
   state.teams.push({ id: TEAM_A, name: "Team A" }, { id: TEAM_B, name: "Team B" });
   state.users.push(
     { id: "usr_a", name: "A", teamId: TEAM_A },
@@ -297,6 +310,72 @@ test("POST /api/applications/register rejects cross-team duplicate sources", asy
   assert.equal(duplicate.status, 400);
   assert.equal(duplicate.body.error, "invalid_application");
   assert.match(duplicate.body.message, /already registered/);
+});
+
+test("POST /api/applications/:id/probe infers local package metadata without executable scripts", async () => {
+  const res = await call("/api/applications/app_team_a/probe", {
+    method: "POST",
+    body: {},
+    token: "tok_a",
+  });
+  assert.equal(res.status, 200);
+  const probe = res.body.application.probe;
+  assert.equal(probe.status, "completed");
+  assert.equal(probe.package.name, "team-a-app");
+  assert.equal(probe.package.version, "1.2.3");
+  assert.equal(probe.readme.heading, "Team A App");
+  assert.ok(probe.capabilities.some((item) => item.name === "app.app_team_a.offline" && item.source === "managed"));
+  assert.ok(probe.capabilities.some((item) => item.name === "app.app_team_a.inferred.bin.team-a" && item.source === "inferred" && item.invocationMode === "not_invokable"));
+  assert.ok(probe.capabilities.some((item) => item.name === "app.app_team_a.inferred.script.test" && item.source === "inferred"));
+  assert.ok(probe.capabilities.some((item) => item.name === "app.app_team_a.inferred.module.exports" && item.source === "inferred"));
+  assert.ok(!probe.capabilities.some((item) => item.name.includes("postinstall")), "unsafe lifecycle scripts should not be inferred");
+  assert.ok(probe.capabilityNames.includes("app.app_team_a.offline"), "probe should keep a name index for compatibility");
+});
+
+test("POST /api/applications/:id/probe infers npm metadata from registration manifest only", async () => {
+  const registered = await call("/api/applications/register", {
+    method: "POST",
+    body: {
+      id: "npm_probe_fixture",
+      name: "NPM Probe Fixture",
+      source: {
+        type: "npm",
+        package: "@scope/probe-fixture",
+        version: "2.0.0",
+        packageJson: {
+          name: "@scope/probe-fixture",
+          version: "2.0.0",
+          bin: "./cli.js",
+          scripts: {
+            lint: "eslint .",
+            dev: "vite --host 0.0.0.0",
+            preinstall: "node preinstall.js",
+          },
+          exports: {
+            ".": "./index.js",
+          },
+        },
+        readme: "# Probe Fixture\n\nNPM metadata fixture.\n",
+      },
+    },
+    token: "tok_a",
+  });
+  assert.equal(registered.status, 201);
+
+  const res = await call(`/api/applications/${registered.body.application.id}/probe`, {
+    method: "POST",
+    body: {},
+    token: "tok_a",
+  });
+  assert.equal(res.status, 200);
+  const probe = res.body.application.probe;
+  assert.equal(probe.source.type, "npm");
+  assert.equal(probe.package.name, "@scope/probe-fixture");
+  assert.equal(probe.readme.heading, "Probe Fixture");
+  assert.ok(probe.capabilities.some((item) => item.name === "app.app_npm_probe_fixture.inferred.bin.probe-fixture"));
+  assert.ok(probe.capabilities.some((item) => item.name === "app.app_npm_probe_fixture.inferred.script.lint" && item.riskLevel === "low"));
+  assert.ok(probe.capabilities.some((item) => item.name === "app.app_npm_probe_fixture.inferred.script.dev" && item.riskLevel === "medium"));
+  assert.ok(!probe.capabilities.some((item) => item.name.includes("preinstall")), "npm probe should not infer install lifecycle scripts");
 });
 
 test("POST /api/capabilities generate_orchestration writes a routine draft", async () => {
