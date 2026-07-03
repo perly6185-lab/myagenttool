@@ -4,6 +4,7 @@ import { teamOf } from "../runtime/auth.mjs";
 
 const APPLICATION_SOURCE_TYPES = new Set(["git", "local", "npm", "manual"]);
 const APPLICATION_STATUSES = new Set(["draft", "probing", "registered", "active", "offline", "archived", "failed"]);
+const NPM_WRAPPER_MODES = new Set(["metadata-only", "installed-wrapper"]);
 
 export function createApplicationService({
   state,
@@ -193,7 +194,7 @@ export function createApplicationService({
     if (application.status === "offline" && !["inspect"].includes(action)) {
       return { ok: false, status: 409, body: { error: "application_offline", applicationId: application.id } };
     }
-    if (["archive", "offline", "refresh"].includes(action) && !hasApprovalToken(input)) {
+    if ((["archive", "offline", "refresh"].includes(action) || action.startsWith("wrapper:")) && !hasApprovalToken(input)) {
       return {
         ok: false,
         status: 409,
@@ -243,10 +244,11 @@ export function projectApplicationCapabilities(app) {
     managedCapability(app, `${prefix}.offline`, "Take application offline", "lifecycle", "high", ["lifecycle", "write_control"], true, app.status === "archived", approvalInputSchema()),
     managedCapability(app, `${prefix}.archive`, "Archive application", "lifecycle", "high", ["lifecycle", "write_control"], true, app.status === "archived", approvalInputSchema()),
     managedCapability(app, `${prefix}.generate_orchestration`, "Generate application orchestration", "orchestration", "medium", ["generated_artifact", "orchestration"], true, disabled, emptyInputSchema()),
+    ...projectNpmWrapperCapabilities(app, prefix, disabled),
   ];
 }
 
-function managedCapability(app, name, displayName, kind, riskLevel, riskTags, requiresApproval, disabled, inputSchema) {
+function managedCapability(app, name, displayName, kind, riskLevel, riskTags, requiresApproval, disabled, inputSchema, metadata = {}) {
   return {
     name,
     version: "1",
@@ -265,7 +267,37 @@ function managedCapability(app, name, displayName, kind, riskLevel, riskTags, re
     status: disabled ? "disabled" : "available",
     inputSchema,
     outputSchema: { structuredResult: true, provider: "application" },
+    metadata,
   };
+}
+
+function projectNpmWrapperCapabilities(app, prefix, disabled) {
+  if (app.source?.type !== "npm" || app.source.wrapper?.mode !== "installed-wrapper") return [];
+  return (app.source.wrapper.commands ?? [])
+    .filter((command) => command.status === "approved")
+    .map((command) => managedCapability(
+      app,
+      `${prefix}.wrapper.${command.id}`,
+      command.displayName,
+      "npm_wrapper",
+      command.riskLevel,
+      [...new Set(["local_execution", "npm_wrapper", ...command.riskTags])],
+      command.requiresApproval,
+      disabled,
+      command.inputSchema,
+      {
+        wrapper: {
+          mode: app.source.wrapper.mode,
+          commandId: command.id,
+          commandType: command.commandType,
+          timeoutSeconds: command.timeoutSeconds,
+          cancellation: command.cancellation,
+          envPolicy: command.envPolicy,
+          filePolicy: command.filePolicy,
+          networkPolicy: command.networkPolicy,
+        },
+      },
+    ));
 }
 
 function emptyInputSchema() {
@@ -293,8 +325,15 @@ function applicationForCapability(capabilityName, applications, applicationId = 
 }
 
 function actionFromCapabilityName(capabilityName) {
+  const wrapperAction = wrapperActionFromCapabilityName(capabilityName);
+  if (wrapperAction) return wrapperAction;
   const suffix = String(capabilityName ?? "").split(".").at(-1);
   return ["inspect", "search", "refresh", "offline", "archive", "generate_orchestration"].includes(suffix) ? suffix : null;
+}
+
+function wrapperActionFromCapabilityName(capabilityName) {
+  const match = String(capabilityName ?? "").match(/\.wrapper\.([a-z0-9._-]+)$/);
+  return match ? `wrapper:${match[1]}` : null;
 }
 
 function hasApprovalToken(input) {
@@ -399,6 +438,46 @@ function executeApplicationAction({ application, action, input, actor, defaultPr
           status: "draft",
           path: draft.path,
           relativePath: draft.relativePath,
+        },
+      },
+    };
+  }
+  if (action.startsWith("wrapper:")) {
+    const commandId = action.slice("wrapper:".length);
+    const wrapperCommand = findNpmWrapperCommand(application, commandId);
+    if (!wrapperCommand) {
+      return {
+        summary: `${application.name} wrapper command ${commandId} is not registered.`,
+        output: {
+          source: "application",
+          action,
+          applicationId: application.id,
+          error: "wrapper_command_not_found",
+        },
+      };
+    }
+    return {
+      summary: `${application.name} wrapper command ${commandId} planned through governance.`,
+      output: {
+        source: "application",
+        action,
+        applicationId: application.id,
+        wrapper: publicNpmWrapperSnapshot(application.source.wrapper),
+        command: {
+          id: wrapperCommand.id,
+          commandType: wrapperCommand.commandType,
+          command: wrapperCommand.command,
+          args: wrapperCommand.args,
+          cwd: wrapperCommand.cwd,
+          timeoutSeconds: wrapperCommand.timeoutSeconds,
+          cancellation: wrapperCommand.cancellation,
+          envPolicy: wrapperCommand.envPolicy,
+          filePolicy: wrapperCommand.filePolicy,
+          networkPolicy: wrapperCommand.networkPolicy,
+        },
+        invocationPlan: {
+          executable: false,
+          reason: "Wrapper descriptor is registered and governed; execution adapter wiring is reserved for the next runtime slice.",
         },
       },
     };
@@ -517,6 +596,7 @@ function publicApplicationSnapshot(application) {
     status: application.status,
     projectId: application.projectId,
     path: application.path,
+    wrapper: application.source?.wrapper ? publicNpmWrapperSnapshot(application.source.wrapper) : null,
     orchestrationIds: application.orchestrationIds ?? [],
   };
 }
@@ -536,6 +616,7 @@ function buildApplicationProbe(application) {
       package: application.source?.package ?? metadata.package?.name ?? null,
       version: application.source?.version ?? metadata.package?.version ?? null,
       repository: metadata.package?.repository ?? application.source?.repository ?? null,
+      wrapper: application.source?.wrapper ? publicNpmWrapperSnapshot(application.source.wrapper) : null,
     },
     package: metadata.package,
     readme: metadata.readme,
@@ -561,6 +642,34 @@ function probeCapabilityFromManaged(capability) {
       provider: capability.provider,
       version: capability.version,
     },
+  };
+}
+
+function findNpmWrapperCommand(application, commandId) {
+  if (application.source?.type !== "npm") return null;
+  return (application.source.wrapper?.commands ?? []).find((command) => command.id === commandId && command.status === "approved") ?? null;
+}
+
+function publicNpmWrapperSnapshot(wrapper) {
+  if (!wrapper) return null;
+  return {
+    mode: wrapper.mode,
+    installState: wrapper.installState,
+    packageManager: wrapper.packageManager,
+    commands: (wrapper.commands ?? []).map((command) => ({
+      id: command.id,
+      displayName: command.displayName,
+      commandType: command.commandType,
+      status: command.status,
+      riskLevel: command.riskLevel,
+      riskTags: command.riskTags,
+      requiresApproval: command.requiresApproval,
+      timeoutSeconds: command.timeoutSeconds,
+      cancellation: command.cancellation,
+      envPolicy: command.envPolicy,
+      filePolicy: command.filePolicy,
+      networkPolicy: command.networkPolicy,
+    })),
   };
 }
 
@@ -899,6 +1008,7 @@ function normalizeApplicationSource(source = {}) {
       manifest: publicJsonObject(source.manifest),
       packageJson: publicJsonObject(source.packageJson),
       readme: stringOrNull(source.readme),
+      wrapper: normalizeNpmWrapper(source.wrapper),
     };
   }
   return {
@@ -947,6 +1057,96 @@ function normalizeApplicationKind(value, source) {
 function normalizeApplicationStatus(value) {
   const text = String(value ?? "").trim();
   return APPLICATION_STATUSES.has(text) ? text : "registered";
+}
+
+function normalizeNpmWrapper(wrapper = {}) {
+  const value = wrapper && typeof wrapper === "object" && !Array.isArray(wrapper) ? wrapper : {};
+  const mode = NPM_WRAPPER_MODES.has(String(value.mode ?? "")) ? String(value.mode) : "metadata-only";
+  const packageManager = ["npm", "pnpm", "yarn"].includes(String(value.packageManager ?? "")) ? String(value.packageManager) : "npm";
+  return {
+    mode,
+    installState: mode === "installed-wrapper" ? normalizeWrapperInstallState(value.installState) : "not_installed",
+    packageManager,
+    installPath: stringOrNull(value.installPath),
+    commands: normalizeWrapperCommands(value.commands),
+  };
+}
+
+function normalizeWrapperInstallState(value) {
+  const text = String(value ?? "").trim();
+  return ["not_installed", "installed", "failed", "unknown"].includes(text) ? text : "unknown";
+}
+
+function normalizeWrapperCommands(commands) {
+  if (!Array.isArray(commands)) return [];
+  return commands.slice(0, 30).map((command, index) => normalizeWrapperCommand(command, index));
+}
+
+function normalizeWrapperCommand(command, index) {
+  if (!command || typeof command !== "object" || Array.isArray(command)) {
+    throw new Error(`NPM wrapper command at index ${index} must be an object.`);
+  }
+  const id = slugify(command.id ?? command.name ?? command.script ?? command.bin);
+  if (!id) throw new Error(`NPM wrapper command at index ${index} requires id, name, script, or bin.`);
+  const commandType = normalizeWrapperCommandType(command.commandType ?? (command.script ? "npm_script" : command.bin ? "bin" : "custom"));
+  const commandText = stringOrNull(command.command ?? command.script ?? command.bin);
+  if (!commandText) throw new Error(`NPM wrapper command ${id} requires command, script, or bin.`);
+  return {
+    id,
+    displayName: stringOrNull(command.displayName ?? command.name) ?? `NPM wrapper ${id}`,
+    description: stringOrNull(command.description) ?? `Governed NPM wrapper command ${id}.`,
+    commandType,
+    command: commandText,
+    args: normalizeStringList(command.args),
+    cwd: stringOrNull(command.cwd) ?? ".",
+    status: normalizeWrapperCommandStatus(command.status),
+    riskLevel: normalizeRiskLevel(command.riskLevel, commandType === "npm_script" ? "medium" : "high"),
+    riskTags: normalizeStringList(command.riskTags ?? command.tags),
+    requiresApproval: command.requiresApproval !== false,
+    inputSchema: command.inputSchema && typeof command.inputSchema === "object" && !Array.isArray(command.inputSchema)
+      ? command.inputSchema
+      : emptyInputSchema(),
+    timeoutSeconds: normalizeTimeoutSeconds(command.timeoutSeconds),
+    cancellation: normalizeCancellation(command.cancellation),
+    envPolicy: normalizeEnvPolicy(command.envPolicy),
+    filePolicy: normalizeAccessPolicy(command.filePolicy, "read_only"),
+    networkPolicy: normalizeAccessPolicy(command.networkPolicy, "forbidden"),
+  };
+}
+
+function normalizeWrapperCommandType(value) {
+  const text = String(value ?? "").trim();
+  return ["npm_script", "bin", "custom"].includes(text) ? text : "custom";
+}
+
+function normalizeWrapperCommandStatus(value) {
+  const text = String(value ?? "").trim();
+  return ["draft", "approved", "disabled"].includes(text) ? text : "draft";
+}
+
+function normalizeTimeoutSeconds(value) {
+  const number = Number(value ?? 30);
+  if (!Number.isFinite(number)) return 30;
+  return Math.max(1, Math.min(600, Math.floor(number)));
+}
+
+function normalizeCancellation(value) {
+  const text = String(value ?? "").trim();
+  return ["supported", "best_effort", "unsupported"].includes(text) ? text : "best_effort";
+}
+
+function normalizeEnvPolicy(value) {
+  const policy = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  return {
+    allow: normalizeStringList(policy.allow),
+    redact: normalizeStringList(policy.redact),
+    inherit: policy.inherit === true,
+  };
+}
+
+function normalizeAccessPolicy(value, fallback) {
+  const text = String(value ?? "").trim();
+  return ["forbidden", "read_only", "workspace_write", "network"].includes(text) ? text : fallback;
 }
 
 function statusForLifecycleAction(action) {
