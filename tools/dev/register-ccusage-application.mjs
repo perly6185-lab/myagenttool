@@ -1,8 +1,10 @@
-// Register the canonical ccusage Application (ADR 0007 / #355 Phase 1).
+// Register the canonical ccusage Application (ADR 0007 / #355).
 //
-// Opt-in, mirroring register-ccusage-agents.mjs — the registry stays
-// conservative (nothing auto-registers at boot). This POSTs the canonical spec
-// to /api/applications/register; the ccusage.report tool + agents are unaffected.
+// Opt-in — the registry stays conservative (nothing auto-registers at boot).
+// This POSTs the canonical spec to /api/applications/register. As of the full
+// unification, /api/tools/ccusage.report is backed by this application, so
+// registering it is what makes the ccusage tool available (the retired
+// `ccusage:register` per-agent helper is gone).
 //
 //   node tools/dev/register-ccusage-application.mjs [--version 20.0.14] [--online]
 

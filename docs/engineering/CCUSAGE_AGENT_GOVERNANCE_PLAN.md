@@ -1,5 +1,15 @@
 # ccusage Agent Governance Plan
 
+> **Superseded (2026-07-03) by [ADR 0007](ADR_0007_CCUSAGE_AS_APPLICATION.md).**
+> ccusage is no longer modeled as bespoke governed *agents*. It is registered as
+> an **npm Application** whose reports are projected as capabilities, and
+> `/api/tools/ccusage.report` executes through the Application capability path
+> (the platform Application Wrapper Runner). The bespoke `agt_ccusage_*` agents
+> and the `pnpm ccusage:register` helper are retired — use
+> `pnpm ccusage:register-app` to register the application. Kept for historical
+> context; the object-model rationale and the read-only/offline governance still
+> apply.
+
 This document plans how `ccusage` should be onboarded as a governed agent in
 myagenttool.
 
@@ -219,16 +229,17 @@ npm install -g ccusage@20.0.14
 
 Then register fixed report agents through `POST /api/agents`.
 
-The development helper can register the recommended fixed report agents against
-a running local server:
+The development helper registers the ccusage application (superseding the retired
+per-agent `pnpm ccusage:register`) against a running local server:
 
 ```text
-pnpm ccusage:register -- --all
+pnpm ccusage:register-app
 ```
 
-It resolves the global npm installation with `npm root -g` and registers each
-agent through `tools/agents/ccusage-wrapper.mjs`, which enforces fixed report
-ids and `--json --offline` execution.
+It registers ccusage as an npm-source application whose six reports project as
+governed wrapper capabilities; `/api/tools/ccusage.report` runs them through the
+platform Application Wrapper Runner with fixed report ids and `--json --offline`
+execution.
 
 ### Governed M3 Path
 
