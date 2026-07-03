@@ -1058,6 +1058,24 @@ test("application orchestration recovery actions are guarded and audited", async
   assert.ok(ctx.state.events.some((event) => event.invocationId === validation.id
     && event.type === "application_orchestration_recovery_approval_requested"
     && event.data?.recoveryActionRequestId === approvalRequired.body.recoveryActionRequest.id));
+  const pendingRegenerateRecovery = await call(`/api/applications/app_team_a/orchestrations/app-app_team_a-maintenance/runs/${encodeURIComponent(validation.id)}/recovery`, {
+    token: "tok_a",
+  });
+  const pendingRegenerateAction = pendingRegenerateRecovery.body.recovery.actions.find((action) => action.type === "regenerate_orchestration");
+  assert.equal(pendingRegenerateAction?.availability?.state, "blocked");
+  assert.equal(pendingRegenerateAction?.blockedReason, "same_action_approval_pending");
+  assert.equal(pendingRegenerateAction?.latestRequestId, approvalRequired.body.recoveryActionRequest.id);
+  const duplicateRegenerate = await call(`/api/applications/app_team_a/orchestrations/app-app_team_a-maintenance/runs/${encodeURIComponent(validation.id)}/recovery/actions`, {
+    method: "POST",
+    body: { actionType: "regenerate_orchestration" },
+    token: "tok_a",
+  });
+  assert.equal(duplicateRegenerate.status, 409);
+  assert.equal(duplicateRegenerate.body.error, "recovery_action_blocked");
+  assert.equal(duplicateRegenerate.body.blockedReason, "same_action_approval_pending");
+  assert.equal(duplicateRegenerate.body.latestRequestId, approvalRequired.body.recoveryActionRequest.id);
+  assert.equal(ctx.state.applicationRecoveryActions.filter((item) => item.invocationId === validation.id
+    && item.actionType === "regenerate_orchestration").length, 1);
 
   const foreignApprovalRead = await call(`/api/codex/approval-broker/${encodeURIComponent(approvalRequired.body.approvalRequest.id)}`, {
     token: "tok_b",
@@ -1184,6 +1202,13 @@ test("application orchestration recovery actions are guarded and audited", async
   assert.ok(selectUnhealthyAgent.body.recoveryActionRequest.agentCandidateSnapshot.some((candidate) => candidate.id === "agt_demo_cli"
     && candidate.selectable === false
     && candidate.reasons.includes("application_control_missing")));
+  const failedSelectAgentRecovery = await call(`/api/applications/app_team_a/orchestrations/app-app_team_a-maintenance/runs/${encodeURIComponent(unhealthy.id)}/recovery`, {
+    token: "tok_a",
+  });
+  const failedSelectAgentAction = failedSelectAgentRecovery.body.recovery.actions.find((action) => action.type === "select_agent");
+  assert.equal(failedSelectAgentAction?.availability?.state, "warning");
+  assert.equal(failedSelectAgentAction?.warningReason, "same_action_recently_failed");
+  assert.equal(failedSelectAgentAction?.latestRequestId, selectUnhealthyAgent.body.recoveryActionRequest.id);
   const stateAfterRejectedSelectAgent = await call("/api/state", { token: "tok_a" });
   const rejectedSelectAgentReadModel = stateAfterRejectedSelectAgent.body.applicationRecoveryActions.find((item) => item.id === selectUnhealthyAgent.body.recoveryActionRequest.id);
   assert.equal(rejectedSelectAgentReadModel?.outcome?.state, "needs_attention");

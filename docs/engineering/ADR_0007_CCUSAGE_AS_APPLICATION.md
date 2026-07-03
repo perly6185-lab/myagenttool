@@ -1,10 +1,50 @@
 # ADR 0007: Re-home ccusage as an Application
 
-Status: accepted
+Status: accepted (revised 2026-07-03 — see Revision)
 
 Date: 2026-07-03
 
 Related issue: [#355](https://github.com/perly6185-lab/myagenttool/issues/355)
+
+## Revision (2026-07-03)
+
+The original decision was to make the Application capability path the **execution
+backing** for `/api/tools/ccusage.report` and retire the bespoke `agt_ccusage_*`
+agents. Implementing the cutover surfaced three parity blockers that make a
+lossless swap impossible without new design:
+
+1. **Dynamic filters vs a fixed command.** The tool accepts `since / until /
+   timezone / offline`; an npm-wrapper capability runs a *fixed* registered
+   command (the allowlist model has no per-invocation args by design). Routing
+   the tool through it would drop filter support — a functional regression.
+2. **`agentId` is in the locked consumer contract**
+   ([TOOL_REGISTRY_EXTERNAL_CONSUMER_CONTRACT.md](TOOL_REGISTRY_EXTERNAL_CONSUMER_CONTRACT.md));
+   the cutover would change it for every ccusage caller.
+3. **The `/api/tools` descriptor is built from the agents**, so retiring them
+   would remove the tool from discovery unless the descriptor were first reworked.
+
+**Revised decision:** ccusage **keeps the governed tool for execution**
+(parameterized reports, filters, `agentId`, and descriptor unchanged; the
+`agt_ccusage_*` agents are retained as execution identities). The Application
+registration and the projected wrapper capabilities remain as the **asset /
+lifecycle / discovery** projection, unified at `/api/capabilities` — **not** the
+tool's execution backing. This honors this ADR's own principle that
+"`/api/tools` remains the stable tool-only compatibility surface," and avoids a
+regression to a live, billing-adjacent feature.
+
+What still shipped and stands:
+
+- ccusage registered as an npm-source Application (#358) — asset + lifecycle +
+  the six reports projected as discoverable capabilities.
+- The application-capability **execution runtime** (#359: #364/#367/#368) — now
+  **general infrastructure** any npm-wrapper application can use, not ccusage's
+  execution path.
+- ccusage **import parity** (#373) — if a ccusage report is ever produced via
+  the application path, estimates import identically; a foreign app cannot spoof
+  it. Non-destructive and retained.
+
+`#355` Phases 3b (routing switch) and 4 (agent retirement) are **withdrawn** per
+the above. The original decision below is kept for history.
 
 ## Context
 
@@ -38,7 +78,7 @@ contract** ([TOOL_REGISTRY_EXTERNAL_CONSUMER_CONTRACT.md](TOOL_REGISTRY_EXTERNAL
 and the import path carries deliberate `non-authoritative` / `external_billed`
 ledger semantics. Any change must not break either.
 
-## Decision
+## Decision (original — superseded by the Revision above)
 
 Re-home ccusage onto the Application Capability Registry, **evolutionarily and
 behind the existing tool facade**:
