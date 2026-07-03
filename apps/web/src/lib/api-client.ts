@@ -7,6 +7,7 @@
 import type {
   ApplicationCapability,
   ApplicationOrchestrationRecovery,
+  ApplicationOrchestrationRecoveryAgentCandidate,
   ApplicationOrchestrationRun,
   ApplicationOrchestrationRunDetail,
   ApplicationRegisterRequest,
@@ -296,11 +297,24 @@ export const api = {
       "GET",
       `/api/applications/${encodeURIComponent(id)}/orchestrations/${encodeURIComponent(routineId)}/runs/${encodeURIComponent(invocationId)}/recovery`,
     ),
+  listApplicationOrchestrationRecoveryAgentCandidates: (id: string, routineId: string, invocationId: string) =>
+    request<{
+      applicationId: string;
+      routineId: string;
+      invocationId: string;
+      recoveryCategory: string;
+      sourceAgentId: string | null;
+      preferredAgentId: string | null;
+      candidates: ApplicationOrchestrationRecoveryAgentCandidate[];
+    }>(
+      "GET",
+      `/api/applications/${encodeURIComponent(id)}/orchestrations/${encodeURIComponent(routineId)}/runs/${encodeURIComponent(invocationId)}/recovery/agent-candidates`,
+    ),
   requestApplicationOrchestrationRecoveryAction: (
     id: string,
     routineId: string,
     invocationId: string,
-    body: { actionType: string; approvalToken?: string; reason?: string | null } = { actionType: "" },
+    body: { actionType: string; approvalToken?: string; reason?: string | null; agentId?: string | null } = { actionType: "" },
   ) =>
     request(
       "POST",

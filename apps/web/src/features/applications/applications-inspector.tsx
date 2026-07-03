@@ -4,6 +4,7 @@ import { Clipboard, ExternalLink, Play, Search } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Select } from "@/components/ui/input";
 import { FactList } from "@/components/common/fact-list";
 import { ConfirmModal } from "@/components/common/confirm-modal";
 import { useConsoleState } from "@/data/use-console-state";
@@ -14,6 +15,8 @@ import { Transcript } from "@/features/invocations/transcript";
 import { readableStatus, statusTone } from "@/lib/readable-labels";
 import type {
   ApplicationOrchestration,
+  ApplicationOrchestrationRecoveryAction,
+  ApplicationOrchestrationRecoveryAgentCandidate,
   ApplicationRecoveryActionRequest,
   ApplicationOrchestrationRun,
   ApplicationSnapshot,
@@ -405,6 +408,13 @@ function OrchestrationRunDiagnostics({
   const run = data?.run;
   const events = eventData?.events ?? [];
   const recovery = recoveryData?.recovery;
+  const hasSelectAgentAction = recovery?.actions.some((action) => action.type === "select_agent") ?? false;
+  const { data: recoveryAgentData, isLoading: recoveryAgentsLoading, error: recoveryAgentsError } = useQuery({
+    queryKey: ["application-orchestration-recovery-agent-candidates", applicationId, routineId, invocationId],
+    queryFn: () => api.listApplicationOrchestrationRecoveryAgentCandidates(applicationId, routineId, invocationId),
+    enabled: Boolean(applicationId && routineId && invocationId && hasSelectAgentAction),
+    refetchInterval: 2000,
+  });
   const recoveryActionRequests = (state?.applicationRecoveryActions ?? [])
     .filter((request) => request.applicationId === applicationId
       && request.routineId === routineId
@@ -417,10 +427,11 @@ function OrchestrationRunDiagnostics({
     }));
   }
 
-  function requestRecoveryAction(actionType: string, reason?: string | null) {
+  function requestRecoveryAction(actionType: string, reason?: string | null, agentId?: string | null) {
     void execute(() => api.requestApplicationOrchestrationRecoveryAction(applicationId, routineId, invocationId, {
       actionType,
       reason,
+      agentId,
     }));
   }
 
@@ -498,43 +509,17 @@ function OrchestrationRunDiagnostics({
                 {recovery.actions.map((action) => {
                   const latestRequest = latestRecoveryActionRequest(recoveryActionRequests, action.type);
                   return (
-                  <li key={`${action.type}:${action.label}`} className="rounded border border-border bg-muted p-2">
-                    <div className="flex flex-wrap items-center justify-between gap-2">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <span className="font-medium">{action.label}</span>
-                        {action.requiresApproval ? <Badge tone="warning">Approval</Badge> : null}
-                        {!isExecutableRecoveryAction(action.type) ? <Badge tone="neutral">Manual</Badge> : null}
-                        {latestRequest ? <Badge tone={recoveryActionRequestTone(latestRequest.status)}>{readableRecoveryActionRequestStatus(latestRequest.status)}</Badge> : null}
-                      </div>
-                      {isExecutableRecoveryAction(action.type) ? (
-                        <Button
-                          size="sm"
-                          variant="secondary"
-                          disabled={!canRetry || pending}
-                          onClick={() => requestRecoveryAction(action.type, action.description)}
-                        >
-                          <Play />
-                          Run
-                        </Button>
-                      ) : action.requiresApproval ? (
-                        <Button
-                          size="sm"
-                          variant="secondary"
-                          disabled={pending || latestRequest?.status === "approval_pending"}
-                          onClick={() => requestRecoveryAction(action.type, action.description)}
-                        >
-                          {latestRequest?.status === "approval_pending" ? "Pending approval" : "Request approval"}
-                        </Button>
-                      ) : (
-                        <Button size="sm" variant="secondary" disabled>
-                          {action.type === "view_invocation" ? "Open from View" : "Not supported"}
-                        </Button>
-                      )}
-                    </div>
-                    {action.description ? (
-                      <p className="[overflow-wrap:anywhere] text-muted-foreground">{action.description}</p>
-                    ) : null}
-                  </li>
+                    <RecoveryActionItem
+                      key={`${action.type}:${action.label}`}
+                      action={action}
+                      canRetry={canRetry}
+                      pending={pending}
+                      latestRequest={latestRequest}
+                      agentCandidates={recoveryAgentData?.candidates ?? []}
+                      agentsLoading={recoveryAgentsLoading}
+                      agentsError={Boolean(recoveryAgentsError)}
+                      onRequest={requestRecoveryAction}
+                    />
                   );
                 })}
               </ul>
@@ -547,6 +532,153 @@ function OrchestrationRunDiagnostics({
       <DiagnosticsBlock title="Delivery" value={run.delivery} />
     </div>
   );
+}
+
+function RecoveryActionItem({
+  action,
+  canRetry,
+  pending,
+  latestRequest,
+  agentCandidates,
+  agentsLoading,
+  agentsError,
+  onRequest,
+}: {
+  action: ApplicationOrchestrationRecoveryAction;
+  canRetry: boolean;
+  pending: boolean;
+  latestRequest: ApplicationRecoveryActionRequest | null;
+  agentCandidates: ApplicationOrchestrationRecoveryAgentCandidate[];
+  agentsLoading: boolean;
+  agentsError: boolean;
+  onRequest: (actionType: string, reason?: string | null, agentId?: string | null) => void;
+}) {
+  const [selectedAgentId, setSelectedAgentId] = useState<string>("");
+  const selectableAgents = agentCandidates.filter((candidate) => candidate.selectable);
+  const preferredAgentId = agentCandidates.find((candidate) => candidate.preferred)?.id ?? selectableAgents[0]?.id ?? "";
+  const effectiveAgentId = selectedAgentId || preferredAgentId;
+  const selectedAgent = agentCandidates.find((candidate) => candidate.id === effectiveAgentId) ?? null;
+  const isSelectAgent = action.type === "select_agent";
+  const canRunSelectAgent = !isSelectAgent || Boolean(effectiveAgentId && selectedAgent?.selectable);
+
+  return (
+    <li className="rounded border border-border bg-muted p-2">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="font-medium">{action.label}</span>
+          {action.requiresApproval ? <Badge tone="warning">Approval</Badge> : null}
+          {!isExecutableRecoveryAction(action.type) ? <Badge tone="neutral">Manual</Badge> : null}
+          {latestRequest ? <Badge tone={recoveryActionRequestTone(latestRequest.status)}>{readableRecoveryActionRequestStatus(latestRequest.status)}</Badge> : null}
+        </div>
+        {isExecutableRecoveryAction(action.type) ? (
+          <Button
+            size="sm"
+            variant="secondary"
+            disabled={!canRetry || pending || !canRunSelectAgent}
+            onClick={() => onRequest(action.type, action.description, isSelectAgent ? effectiveAgentId : null)}
+          >
+            <Play />
+            Run
+          </Button>
+        ) : action.requiresApproval ? (
+          <Button
+            size="sm"
+            variant="secondary"
+            disabled={pending || latestRequest?.status === "approval_pending"}
+            onClick={() => onRequest(action.type, action.description)}
+          >
+            {latestRequest?.status === "approval_pending" ? "Pending approval" : "Request approval"}
+          </Button>
+        ) : (
+          <Button size="sm" variant="secondary" disabled>
+            {action.type === "view_invocation" ? "Open from View" : "Not supported"}
+          </Button>
+        )}
+      </div>
+      {action.description ? (
+        <p className="[overflow-wrap:anywhere] text-muted-foreground">{action.description}</p>
+      ) : null}
+      {isSelectAgent ? (
+        <SelectAgentRecoveryPicker
+          candidates={agentCandidates}
+          loading={agentsLoading}
+          error={agentsError}
+          value={effectiveAgentId}
+          onChange={setSelectedAgentId}
+        />
+      ) : null}
+    </li>
+  );
+}
+
+function SelectAgentRecoveryPicker({
+  candidates,
+  loading,
+  error,
+  value,
+  onChange,
+}: {
+  candidates: ApplicationOrchestrationRecoveryAgentCandidate[];
+  loading: boolean;
+  error: boolean;
+  value: string;
+  onChange: (agentId: string) => void;
+}) {
+  if (error) {
+    return <p className="mt-2 text-xs text-destructive">Could not load recovery agents.</p>;
+  }
+  if (loading && candidates.length === 0) {
+    return <p className="mt-2 text-xs text-muted-foreground">Loading recovery agents...</p>;
+  }
+  if (candidates.length === 0) {
+    return <p className="mt-2 text-xs text-destructive">No governed application-control agents are registered.</p>;
+  }
+  const selected = candidates.find((candidate) => candidate.id === value) ?? null;
+  return (
+    <div className="mt-2 space-y-2">
+      <Select
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        aria-label="Recovery agent"
+      >
+        {!value ? <option value="">No selectable recovery agent</option> : null}
+        {candidates.map((candidate) => (
+          <option key={candidate.id} value={candidate.id} disabled={!candidate.selectable}>
+            {recoveryAgentOptionLabel(candidate)}
+          </option>
+        ))}
+      </Select>
+      <div className="flex flex-wrap items-center gap-2 text-xs">
+        {selected?.preferred ? <Badge tone="success">Recommended</Badge> : null}
+        {selected?.sourceAgent ? <Badge tone="neutral">Original agent</Badge> : null}
+        {selected ? (
+          <span className="text-muted-foreground">
+            {selected.status}
+            {selected.healthStatus ? ` / ${selected.healthStatus}` : ""}
+            {selected.locationType ? ` / ${selected.locationType}` : ""}
+          </span>
+        ) : null}
+      </div>
+      {candidates.some((candidate) => !candidate.selectable) ? (
+        <ul className="space-y-1 text-xs text-muted-foreground">
+          {candidates.filter((candidate) => !candidate.selectable).map((candidate) => (
+            <li key={candidate.id} className="[overflow-wrap:anywhere]">
+              {candidate.name}: {candidate.reasons.map(readableRecoveryAgentReason).join(", ")}
+            </li>
+          ))}
+        </ul>
+      ) : null}
+    </div>
+  );
+}
+
+function recoveryAgentOptionLabel(candidate: ApplicationOrchestrationRecoveryAgentCandidate): string {
+  const suffixes = [
+    candidate.preferred ? "recommended" : "",
+    candidate.sourceAgent ? "original" : "",
+    candidate.selectable ? "" : candidate.reasons.map(readableRecoveryAgentReason).join(", "),
+  ].filter(Boolean);
+  return suffixes.length ? `${candidate.name} (${suffixes.join("; ")})` : candidate.name;
 }
 
 function DiagnosticsBlock({ title, value }: { title: string; value?: unknown }) {
@@ -617,6 +749,18 @@ function readableRecoveryActionRequestStatus(status: string): string {
     unsupported: "Unsupported",
   };
   return labels[status] ?? status;
+}
+
+export function readableRecoveryAgentReason(reason: string): string {
+  const labels: Record<string, string> = {
+    agent_disabled: "disabled",
+    agent_not_found: "not found",
+    agent_unavailable: "unavailable",
+    agent_unhealthy: "unhealthy",
+    application_control_missing: "missing application control",
+    device_unlinked: "device unlinked",
+  };
+  return labels[reason] ?? reason;
 }
 
 function stringValue(value: unknown): string | null {
