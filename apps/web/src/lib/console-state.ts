@@ -758,6 +758,15 @@ export interface ApplicationOrchestrationRecoveryAgentCandidate {
   sourceAgent: boolean;
 }
 
+export interface ApplicationRecoveryTimelineEntry {
+  id: string;
+  type: string;
+  status: string;
+  level?: string | null;
+  message?: string | null;
+  createdAt?: string | null;
+}
+
 export interface ApplicationRecoveryActionRequest {
   id: string;
   applicationId: string;
@@ -771,6 +780,8 @@ export interface ApplicationRecoveryActionRequest {
   approvalRequestId?: string | null;
   resultInvocationId?: string | null;
   selectedAgentId?: string | null;
+  requestedAgentId?: string | null;
+  agentCandidateSnapshot?: ApplicationOrchestrationRecoveryAgentCandidate[] | null;
   resultOrchestrationId?: string | null;
   resultOrchestrationRelativePath?: string | null;
   error?: string | null;
@@ -783,6 +794,7 @@ export interface ApplicationRecoveryActionRequest {
   } | null;
   sourceInvocation?: ApplicationRecoveryInvocationBrief | null;
   resultInvocation?: ApplicationRecoveryInvocationBrief | null;
+  timeline?: ApplicationRecoveryTimelineEntry[];
   createdAt: string;
   updatedAt: string;
 }

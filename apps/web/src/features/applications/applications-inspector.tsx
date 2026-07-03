@@ -18,6 +18,7 @@ import type {
   ApplicationOrchestrationRecoveryAction,
   ApplicationOrchestrationRecoveryAgentCandidate,
   ApplicationRecoveryActionRequest,
+  ApplicationRecoveryTimelineEntry,
   ApplicationOrchestrationRun,
   ApplicationSnapshot,
   InvocationSnapshot,
@@ -450,8 +451,6 @@ function OrchestrationRunDiagnostics({
   }
 
   const retryOfInvocationId = stringValue(run.metadata?.retryOfInvocationId);
-  const latestRecoveryRequest = latestRecoveryActionRequest(recoveryActionRequests);
-
   return (
     <div className="space-y-2 rounded-md bg-muted p-2">
       <div className="flex flex-wrap items-center justify-between gap-2">
@@ -512,12 +511,7 @@ function OrchestrationRunDiagnostics({
               {recovery.humanApprovalRequired ? <Badge tone="warning">Approval required</Badge> : null}
             </div>
             <p className="[overflow-wrap:anywhere] text-xs text-muted-foreground">{recovery.summary}</p>
-            {latestRecoveryRequest ? (
-              <RecoveryLineage
-                request={latestRecoveryRequest}
-                onViewInvocation={viewInvocation}
-              />
-            ) : null}
+            <RecoveryTimeline requests={recoveryActionRequests} onViewInvocation={viewInvocation} />
             {recovery.actions.length ? (
               <ul className="space-y-1">
                 {recovery.actions.map((action) => {
@@ -548,49 +542,138 @@ function OrchestrationRunDiagnostics({
   );
 }
 
+function RecoveryTimeline({
+  requests,
+  onViewInvocation,
+}: {
+  requests: ApplicationRecoveryActionRequest[];
+  onViewInvocation: (invocationId: string) => void;
+}) {
+  const sortedRequests = sortedRecoveryActionRequests(requests);
+  if (sortedRequests.length === 0) return null;
+  return (
+    <div className="space-y-2 rounded border border-border bg-muted p-2">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <p className="text-xs font-medium">Recovery history</p>
+        <span className="text-xs text-muted-foreground">{sortedRequests.length} action{sortedRequests.length === 1 ? "" : "s"}</span>
+      </div>
+      <div className="space-y-2">
+        {sortedRequests.map((request, index) => (
+          <RecoveryLineage
+            key={request.id}
+            request={request}
+            open={index === 0}
+            label={index === 0 ? "Latest recovery" : "Recovery action"}
+            onViewInvocation={onViewInvocation}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function RecoveryLineage({
   request,
+  open,
+  label,
   onViewInvocation,
 }: {
   request: ApplicationRecoveryActionRequest;
+  open: boolean;
+  label: string;
   onViewInvocation: (invocationId: string) => void;
 }) {
   const outcome = request.outcome;
   const resultInvocationId = request.resultInvocation?.id ?? request.resultInvocationId ?? null;
   return (
-    <div className="rounded border border-border bg-muted p-2">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <div className="flex flex-wrap items-center gap-2">
-          <span className="text-xs font-medium">Latest recovery</span>
-          <Badge tone={recoveryActionRequestTone(request.status)}>{readableRecoveryActionRequestStatus(request.status)}</Badge>
-          {outcome ? <Badge tone={recoveryOutcomeTone(outcome.state)}>{readableRecoveryOutcome(outcome.state)}</Badge> : null}
+    <details className="rounded border border-border bg-background p-2" open={open}>
+      <summary className="cursor-pointer list-none">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-xs font-medium">{label}</span>
+            <Badge tone="neutral">{readableRecoveryActionType(request.actionType)}</Badge>
+            <Badge tone={recoveryActionRequestTone(request.status)}>{readableRecoveryActionRequestStatus(request.status)}</Badge>
+            {outcome ? <Badge tone={recoveryOutcomeTone(outcome.state)}>{readableRecoveryOutcome(outcome.state)}</Badge> : null}
+          </div>
+          <span className="text-xs text-muted-foreground">{shortTime(request.updatedAt ?? request.createdAt)}</span>
         </div>
-        {resultInvocationId ? (
-          <Button
-            size="sm"
-            variant="secondary"
-            onClick={() => onViewInvocation(resultInvocationId)}
-          >
-            <ExternalLink />
-            View recovered invocation
-          </Button>
-        ) : null}
+      </summary>
+      <div className="mt-2 space-y-2">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          {outcome?.summary ? (
+            <p className="[overflow-wrap:anywhere] text-xs text-muted-foreground">{outcome.summary}</p>
+          ) : <span />}
+          {resultInvocationId ? (
+            <Button
+              size="sm"
+              variant="secondary"
+              onClick={() => onViewInvocation(resultInvocationId)}
+            >
+              <ExternalLink />
+              View recovered invocation
+            </Button>
+          ) : null}
+        </div>
+        <FactList
+          facts={[
+            { term: "Source", value: request.sourceInvocation?.id ?? request.invocationId },
+            { term: "Result", value: resultInvocationId ?? "Not linked" },
+            { term: "Result status", value: request.resultInvocation?.status ?? "Not recorded" },
+            { term: "Requested agent", value: request.requestedAgentId ?? "Automatic" },
+            { term: "Selected agent", value: request.selectedAgentId ?? "Not changed" },
+            { term: "Updated", value: shortTime(request.updatedAt) },
+          ]}
+        />
+        <RecoveryCandidateSnapshot request={request} />
+        <RecoveryActionTimeline entries={request.timeline ?? []} />
       </div>
-      {outcome?.summary ? (
-        <p className="mt-1 [overflow-wrap:anywhere] text-xs text-muted-foreground">{outcome.summary}</p>
+    </details>
+  );
+}
+
+function RecoveryCandidateSnapshot({ request }: { request: ApplicationRecoveryActionRequest }) {
+  const candidates = request.agentCandidateSnapshot ?? [];
+  if (request.actionType !== "select_agent" || candidates.length === 0) return null;
+  const selectableCount = candidates.filter((candidate) => candidate.selectable).length;
+  const selected = candidates.find((candidate) => candidate.id === request.selectedAgentId)
+    ?? candidates.find((candidate) => candidate.id === request.requestedAgentId)
+    ?? null;
+  const blocked = candidates.filter((candidate) => !candidate.selectable);
+  return (
+    <div className="space-y-1 rounded border border-border bg-muted p-2">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-xs font-medium">Agent candidate snapshot</span>
+        <Badge tone="success">{selectableCount} selectable</Badge>
+        {blocked.length ? <Badge tone="warning">{blocked.length} blocked</Badge> : null}
+        {selected ? <Badge tone={selected.selectable ? "success" : "warning"}>{selected.name}</Badge> : null}
+      </div>
+      {blocked.length ? (
+        <ul className="space-y-1 text-xs text-muted-foreground">
+          {blocked.map((candidate) => (
+            <li key={candidate.id} className="[overflow-wrap:anywhere]">
+              {candidate.name}: {candidate.reasons.map(readableRecoveryAgentReason).join(", ")}
+            </li>
+          ))}
+        </ul>
       ) : null}
-      <FactList
-        className="mt-2"
-        facts={[
-          { term: "Action", value: readableRecoveryActionType(request.actionType) },
-          { term: "Source", value: request.sourceInvocation?.id ?? request.invocationId },
-          { term: "Result", value: resultInvocationId ?? "Not linked" },
-          { term: "Result status", value: request.resultInvocation?.status ?? "Not recorded" },
-          { term: "Selected agent", value: request.selectedAgentId ?? "Not changed" },
-          { term: "Updated", value: shortTime(request.updatedAt) },
-        ]}
-      />
     </div>
+  );
+}
+
+function RecoveryActionTimeline({ entries }: { entries: ApplicationRecoveryTimelineEntry[] }) {
+  if (entries.length === 0) return null;
+  return (
+    <ol className="space-y-1 border-l border-border pl-3 text-xs">
+      {entries.map((entry) => (
+        <li key={entry.id} className="space-y-0.5">
+          <div className="flex flex-wrap items-center gap-2">
+            <Badge tone={recoveryTimelineTone(entry.status)}>{readableRecoveryTimelineStatus(entry.status)}</Badge>
+            <span className="text-muted-foreground">{shortTime(entry.createdAt)}</span>
+          </div>
+          {entry.message ? <p className="[overflow-wrap:anywhere] text-muted-foreground">{entry.message}</p> : null}
+        </li>
+      ))}
+    </ol>
   );
 }
 
@@ -782,9 +865,14 @@ function latestRecoveryActionRequest(
   requests: ApplicationRecoveryActionRequest[],
   actionType?: string,
 ): ApplicationRecoveryActionRequest | null {
-  return requests
-    .filter((request) => !actionType || request.actionType === actionType)
-    .sort((left, right) => Date.parse(right.updatedAt ?? right.createdAt) - Date.parse(left.updatedAt ?? left.createdAt))[0] ?? null;
+  return sortedRecoveryActionRequests(requests)
+    .filter((request) => !actionType || request.actionType === actionType)[0] ?? null;
+}
+
+function sortedRecoveryActionRequests(requests: ApplicationRecoveryActionRequest[]): ApplicationRecoveryActionRequest[] {
+  return [...requests].sort(
+    (left, right) => Date.parse(right.updatedAt ?? right.createdAt) - Date.parse(left.updatedAt ?? left.createdAt),
+  );
 }
 
 function recoveryActionRequestTone(status: string): "neutral" | "success" | "warning" | "danger" | "running" {
@@ -819,6 +907,14 @@ function recoveryOutcomeTone(state: string): "neutral" | "success" | "warning" |
   return "neutral";
 }
 
+function recoveryTimelineTone(status: string): "neutral" | "success" | "warning" | "danger" | "running" {
+  if (status === "executed" || status === "approval_approved") return "success";
+  if (status === "executing") return "running";
+  if (status === "requested" || status === "approval_pending") return "warning";
+  if (status === "failed" || status === "rejected" || status === "approval_denied" || status === "approval_timed_out") return "danger";
+  return "neutral";
+}
+
 export function readableRecoveryOutcome(state: string): string {
   const labels: Record<string, string> = {
     needs_attention: "Needs attention",
@@ -837,6 +933,23 @@ export function readableRecoveryActionType(actionType: string): string {
     view_invocation: "View invocation",
   };
   return labels[actionType] ?? actionType;
+}
+
+export function readableRecoveryTimelineStatus(status: string): string {
+  const labels: Record<string, string> = {
+    approval_approved: "Approved",
+    approval_denied: "Denied",
+    approval_pending: "Approval pending",
+    approval_resolved: "Approval resolved",
+    approval_timed_out: "Timed out",
+    executed: "Executed",
+    executing: "Executing",
+    failed: "Failed",
+    recorded: "Recorded",
+    rejected: "Rejected",
+    requested: "Requested",
+  };
+  return labels[status] ?? status;
 }
 
 export function readableRecoveryAgentReason(reason: string): string {

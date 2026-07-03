@@ -1109,6 +1109,10 @@ test("application orchestration recovery actions are guarded and audited", async
   assert.equal(selectAgent.body.recoveryAction.selectedAgentId, "agt_platform_application_control");
   assert.equal(selectAgent.body.recoveryActionRequest.status, "executed");
   assert.equal(selectAgent.body.recoveryActionRequest.selectedAgentId, "agt_platform_application_control");
+  assert.equal(selectAgent.body.recoveryActionRequest.requestedAgentId, "agt_platform_application_control");
+  assert.ok(selectAgent.body.recoveryActionRequest.agentCandidateSnapshot.some((candidate) => candidate.id === "agt_platform_application_control"
+    && candidate.selectable === true
+    && candidate.preferred === true));
   const selectInvocation = ctx.state.invocations.find((item) => item.id === selectAgent.body.recoveryActionRequest.resultInvocationId);
   assert.equal(selectInvocation?.agentId, "agt_platform_application_control");
   assert.equal(selectInvocation?.options?.metadata?.recoveryActionType, "select_agent");
@@ -1123,6 +1127,13 @@ test("application orchestration recovery actions are guarded and audited", async
   assert.equal(selectAgentReadModel?.sourceInvocation?.id, unhealthy.id);
   assert.equal(selectAgentReadModel?.resultInvocation?.id, selectInvocation?.id);
   assert.equal(selectAgentReadModel?.resultInvocation?.agentId, "agt_platform_application_control");
+  assert.ok(selectAgentReadModel?.agentCandidateSnapshot?.some((candidate) => candidate.id === "agt_platform_application_control"
+    && candidate.selectable === true
+    && candidate.preferred === true));
+  assert.ok(selectAgentReadModel?.timeline?.some((entry) => entry.type === "application_orchestration_recovery_action_requested"
+    && entry.status === "requested"));
+  assert.ok(selectAgentReadModel?.timeline?.some((entry) => entry.type === "application_orchestration_recovery_action_executed"
+    && entry.status === "executed"));
 
   const selectUnhealthyAgent = await call(`/api/applications/app_team_a/orchestrations/app-app_team_a-maintenance/runs/${encodeURIComponent(unhealthy.id)}/recovery/actions`, {
     method: "POST",
@@ -1133,6 +1144,11 @@ test("application orchestration recovery actions are guarded and audited", async
   assert.equal(selectUnhealthyAgent.body.error, "healthy_agent_not_found");
   assert.equal(selectUnhealthyAgent.body.recoveryActionRequest.status, "failed");
   assert.equal(selectUnhealthyAgent.body.recoveryActionRequest.selectedAgentId, null);
+  assert.equal(selectUnhealthyAgent.body.recoveryActionRequest.requestedAgentId, "agt_demo_cli");
+  assert.ok(Array.isArray(selectUnhealthyAgent.body.recoveryActionRequest.agentCandidateSnapshot));
+  assert.ok(selectUnhealthyAgent.body.recoveryActionRequest.agentCandidateSnapshot.some((candidate) => candidate.id === "agt_demo_cli"
+    && candidate.selectable === false
+    && candidate.reasons.includes("application_control_missing")));
 
   const foreign = await call(`/api/applications/app_team_a/orchestrations/app-app_team_a-maintenance/runs/${encodeURIComponent(runtime.id)}/recovery/actions`, {
     method: "POST",
