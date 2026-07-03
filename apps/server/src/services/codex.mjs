@@ -97,7 +97,18 @@ export function createCodexService({
   // session id — scoped to the same repo + user so "continue" never crosses
   // projects or tenants. Returns null when nothing resumable exists, letting
   // the bridge fall back to `--last`.
-  function resolveResumeCodexSessionId({ repoPath = null, userId = null, excludeSessionId = null } = {}) {
+  function resolveResumeCodexSessionId({ repoPath = null, userId = null, excludeSessionId = null, invocationId = null } = {}) {
+    // Specific target: the user clicked a particular session to continue. Resume
+    // THAT session's captured provider id — but only if it belongs to the same
+    // user (tenancy), so a resume can never continue another user's session.
+    if (invocationId) {
+      const target = state.codexSessions.find((session) => session.invocationId === invocationId);
+      if (!target?.codexSessionId) return null;
+      if (userId && target.userId !== userId) return null;
+      return target.codexSessionId;
+    }
+    // Default: continue the newest prior session that captured a provider id,
+    // scoped to the same repo + user.
     const match = state.codexSessions.find((session) =>
       session.id !== excludeSessionId
       && session.codexSessionId

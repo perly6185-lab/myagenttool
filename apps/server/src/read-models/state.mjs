@@ -31,6 +31,7 @@ export function buildPublicState({
   const projects = (state.projects ?? []).filter((p) => projectVisible(p.id));
   const invocations = (state.invocations ?? []).filter((inv) => projectVisible(inv.projectId));
   const visibleInvIds = new Set(invocations.map((inv) => inv.id));
+  const visibleInvocationsById = new Map(invocations.map((invocation) => [invocation.id, invocation]));
   const invVisible = (invocationId) =>
     teamId == null || !invocationId || visibleInvIds.has(invocationId);
   const byInvocation = (rows) => (rows ?? []).filter((r) => invVisible(r?.invocationId));
@@ -68,7 +69,8 @@ export function buildPublicState({
     teams: state.teams ?? [],
     projects,
     applications,
-    applicationRecoveryActions: byInvocation(state.applicationRecoveryActions),
+    applicationRecoveryActions: byInvocation(state.applicationRecoveryActions)
+      .map((request) => applicationRecoveryActionReadModel(request, visibleInvocationsById)),
     projectTargets: byProject(state.projectTargets),
     currentProjectId: state.currentProjectId,
     currentProject: currentProject(),
@@ -144,6 +146,79 @@ export function buildPublicState({
     terminalBridgeActions: state.terminalBridgeActions,
     sshTargets: state.sshTargets,
     sshConnectionTests: state.sshConnectionTests,
+  };
+}
+
+function applicationRecoveryActionReadModel(request, invocationsById) {
+  const sourceInvocation = invocationsById.get(request.invocationId) ?? null;
+  const resultInvocation = request.resultInvocationId
+    ? invocationsById.get(request.resultInvocationId) ?? null
+    : null;
+  return {
+    ...request,
+    outcome: applicationRecoveryOutcome(request, resultInvocation),
+    sourceInvocation: sourceInvocation ? invocationBrief(sourceInvocation) : null,
+    resultInvocation: resultInvocation ? invocationBrief(resultInvocation) : null,
+  };
+}
+
+function applicationRecoveryOutcome(request, resultInvocation) {
+  if (request.status === "failed" || request.status === "unsupported") {
+    return {
+      state: "needs_attention",
+      summary: request.error ? `Recovery failed: ${request.error}.` : "Recovery failed before a result invocation was created.",
+    };
+  }
+  if (["approval_pending", "approval_approved", "requested", "executing"].includes(request.status)) {
+    return {
+      state: "pending",
+      summary: "Recovery is still pending or executing.",
+    };
+  }
+  if (["approval_denied", "approval_timed_out"].includes(request.status)) {
+    return {
+      state: "needs_attention",
+      summary: "Recovery approval did not complete.",
+    };
+  }
+  if (!request.resultInvocationId) {
+    return {
+      state: request.status === "noop" ? "pending" : "needs_attention",
+      summary: request.status === "noop" ? "Recovery action did not create a new invocation." : "Recovery executed without a linked result invocation.",
+    };
+  }
+  if (!resultInvocation) {
+    return {
+      state: "needs_attention",
+      summary: "Recovery result invocation is no longer visible.",
+    };
+  }
+  if (["succeeded", "completed"].includes(resultInvocation.status)) {
+    return {
+      state: "recovered",
+      summary: "Recovered invocation completed successfully.",
+    };
+  }
+  if (["failed", "cancelled", "denied"].includes(resultInvocation.status)) {
+    return {
+      state: "still_failed",
+      summary: `Recovered invocation ended as ${resultInvocation.status}.`,
+    };
+  }
+  return {
+    state: "pending",
+    summary: `Recovered invocation is ${resultInvocation.status ?? "in progress"}.`,
+  };
+}
+
+function invocationBrief(invocation) {
+  return {
+    id: invocation.id,
+    status: invocation.status ?? null,
+    agentId: invocation.agentId ?? null,
+    createdAt: invocation.createdAt ?? null,
+    updatedAt: invocation.updatedAt ?? null,
+    completedAt: invocation.completedAt ?? null,
   };
 }
 

@@ -58,3 +58,26 @@ test("excludes the just-created session and returns null when nothing is resumab
     null,
   );
 });
+
+test("with an explicit target invocation, resumes THAT session even if it is not the newest", () => {
+  const { resolveResumeCodexSessionId } = serviceWithSessions([
+    { id: "s2", invocationId: "inv_new", codexSessionId: "newest", userId: "u1", repoPath: "/repo" },
+    { id: "s1", invocationId: "inv_old", codexSessionId: "clicked", userId: "u1", repoPath: "/repo" },
+  ]);
+  assert.equal(resolveResumeCodexSessionId({ userId: "u1", invocationId: "inv_old" }), "clicked");
+});
+
+test("an explicit target belonging to another user is refused (tenancy)", () => {
+  const { resolveResumeCodexSessionId } = serviceWithSessions([
+    { id: "s1", invocationId: "inv_foreign", codexSessionId: "secret", userId: "u2", repoPath: "/repo" },
+  ]);
+  assert.equal(resolveResumeCodexSessionId({ userId: "u1", invocationId: "inv_foreign" }), null);
+});
+
+test("an explicit target that never captured a provider id returns null (no fallthrough to newest)", () => {
+  const { resolveResumeCodexSessionId } = serviceWithSessions([
+    { id: "s2", invocationId: "inv_other", codexSessionId: "newest", userId: "u1", repoPath: "/repo" },
+    { id: "s1", invocationId: "inv_target", codexSessionId: null, userId: "u1", repoPath: "/repo" },
+  ]);
+  assert.equal(resolveResumeCodexSessionId({ userId: "u1", invocationId: "inv_target" }), null);
+});

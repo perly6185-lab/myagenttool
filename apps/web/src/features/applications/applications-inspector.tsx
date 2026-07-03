@@ -387,6 +387,8 @@ function OrchestrationRunDiagnostics({
 }) {
   const { execute, pending, error: retryError } = useAsyncAction();
   const { data: state } = useConsoleState();
+  const setSelectedInvocationId = useUiStore((s) => s.setSelectedInvocationId);
+  const setSection = useUiStore((s) => s.setSection);
   const { data, isLoading, error } = useQuery({
     queryKey: ["application-orchestration-run", applicationId, routineId, invocationId],
     queryFn: () => api.getApplicationOrchestrationRun(applicationId, routineId, invocationId),
@@ -435,6 +437,11 @@ function OrchestrationRunDiagnostics({
     }));
   }
 
+  function viewInvocation(targetInvocationId: string) {
+    setSelectedInvocationId(targetInvocationId);
+    setSection("invocations");
+  }
+
   if (error) {
     return <p className="rounded-md bg-destructive/10 p-2 text-destructive">Could not load run diagnostics.</p>;
   }
@@ -443,6 +450,7 @@ function OrchestrationRunDiagnostics({
   }
 
   const retryOfInvocationId = stringValue(run.metadata?.retryOfInvocationId);
+  const latestRecoveryRequest = latestRecoveryActionRequest(recoveryActionRequests);
 
   return (
     <div className="space-y-2 rounded-md bg-muted p-2">
@@ -504,6 +512,12 @@ function OrchestrationRunDiagnostics({
               {recovery.humanApprovalRequired ? <Badge tone="warning">Approval required</Badge> : null}
             </div>
             <p className="[overflow-wrap:anywhere] text-xs text-muted-foreground">{recovery.summary}</p>
+            {latestRecoveryRequest ? (
+              <RecoveryLineage
+                request={latestRecoveryRequest}
+                onViewInvocation={viewInvocation}
+              />
+            ) : null}
             {recovery.actions.length ? (
               <ul className="space-y-1">
                 {recovery.actions.map((action) => {
@@ -530,6 +544,52 @@ function OrchestrationRunDiagnostics({
       <DiagnosticsBlock title="Metadata" value={run.metadata} />
       <DiagnosticsBlock title="Result" value={run.result} />
       <DiagnosticsBlock title="Delivery" value={run.delivery} />
+    </div>
+  );
+}
+
+function RecoveryLineage({
+  request,
+  onViewInvocation,
+}: {
+  request: ApplicationRecoveryActionRequest;
+  onViewInvocation: (invocationId: string) => void;
+}) {
+  const outcome = request.outcome;
+  const resultInvocationId = request.resultInvocation?.id ?? request.resultInvocationId ?? null;
+  return (
+    <div className="rounded border border-border bg-muted p-2">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-xs font-medium">Latest recovery</span>
+          <Badge tone={recoveryActionRequestTone(request.status)}>{readableRecoveryActionRequestStatus(request.status)}</Badge>
+          {outcome ? <Badge tone={recoveryOutcomeTone(outcome.state)}>{readableRecoveryOutcome(outcome.state)}</Badge> : null}
+        </div>
+        {resultInvocationId ? (
+          <Button
+            size="sm"
+            variant="secondary"
+            onClick={() => onViewInvocation(resultInvocationId)}
+          >
+            <ExternalLink />
+            View recovered invocation
+          </Button>
+        ) : null}
+      </div>
+      {outcome?.summary ? (
+        <p className="mt-1 [overflow-wrap:anywhere] text-xs text-muted-foreground">{outcome.summary}</p>
+      ) : null}
+      <FactList
+        className="mt-2"
+        facts={[
+          { term: "Action", value: readableRecoveryActionType(request.actionType) },
+          { term: "Source", value: request.sourceInvocation?.id ?? request.invocationId },
+          { term: "Result", value: resultInvocationId ?? "Not linked" },
+          { term: "Result status", value: request.resultInvocation?.status ?? "Not recorded" },
+          { term: "Selected agent", value: request.selectedAgentId ?? "Not changed" },
+          { term: "Updated", value: shortTime(request.updatedAt) },
+        ]}
+      />
     </div>
   );
 }
@@ -720,10 +780,10 @@ function isExecutableRecoveryAction(actionType: string): boolean {
 
 function latestRecoveryActionRequest(
   requests: ApplicationRecoveryActionRequest[],
-  actionType: string,
+  actionType?: string,
 ): ApplicationRecoveryActionRequest | null {
   return requests
-    .filter((request) => request.actionType === actionType)
+    .filter((request) => !actionType || request.actionType === actionType)
     .sort((left, right) => Date.parse(right.updatedAt ?? right.createdAt) - Date.parse(left.updatedAt ?? left.createdAt))[0] ?? null;
 }
 
@@ -749,6 +809,34 @@ function readableRecoveryActionRequestStatus(status: string): string {
     unsupported: "Unsupported",
   };
   return labels[status] ?? status;
+}
+
+function recoveryOutcomeTone(state: string): "neutral" | "success" | "warning" | "danger" | "running" {
+  if (state === "recovered") return "success";
+  if (state === "pending") return "running";
+  if (state === "still_failed") return "danger";
+  if (state === "needs_attention") return "warning";
+  return "neutral";
+}
+
+export function readableRecoveryOutcome(state: string): string {
+  const labels: Record<string, string> = {
+    needs_attention: "Needs attention",
+    pending: "Pending",
+    recovered: "Recovered",
+    still_failed: "Still failed",
+  };
+  return labels[state] ?? state;
+}
+
+export function readableRecoveryActionType(actionType: string): string {
+  const labels: Record<string, string> = {
+    regenerate_orchestration: "Regenerate orchestration",
+    rerun: "Re-run",
+    select_agent: "Select agent",
+    view_invocation: "View invocation",
+  };
+  return labels[actionType] ?? actionType;
 }
 
 export function readableRecoveryAgentReason(reason: string): string {
