@@ -1494,14 +1494,16 @@ function ledgerEntryAmount(entry) {
 }
 
 // Per-million-token USD rates used to ESTIMATE cost for agents that report token
-// usage but no billed amount (e.g. codex, which is API-billed). These are editable
-// placeholders — override via env to match your provider's actual pricing. The
-// resulting ledger entry is marked amountSource "estimated" (never "reported").
+// usage but no billed amount (e.g. codex, which is API-billed). Defaults are the
+// gpt-5.3-codex official API list price (input $1.75 / cached $0.175 / output $14
+// per 1M tokens, as of 2026-07); override via CODEX_*_USD_PER_MTOK env if your
+// codex CLI uses a different model or the rate changes. The resulting ledger entry
+// is marked amountSource "estimated" (never "reported").
 const TOKEN_RATES_USD_PER_MTOK = {
   codex: {
-    input: Number(process.env.CODEX_INPUT_USD_PER_MTOK ?? 1.25),
-    cachedInput: Number(process.env.CODEX_CACHED_INPUT_USD_PER_MTOK ?? 0.125),
-    output: Number(process.env.CODEX_OUTPUT_USD_PER_MTOK ?? 10),
+    input: Number(process.env.CODEX_INPUT_USD_PER_MTOK ?? 1.75),
+    cachedInput: Number(process.env.CODEX_CACHED_INPUT_USD_PER_MTOK ?? 0.175),
+    output: Number(process.env.CODEX_OUTPUT_USD_PER_MTOK ?? 14),
   },
 };
 

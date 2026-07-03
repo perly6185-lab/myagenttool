@@ -182,10 +182,10 @@ test("budgetGateForProject: a project-level block budget also gates", () => {
 // --- Codex token-based cost estimation (API-billed, reported no USD) ---
 test("estimateCostUsdFromTokens: prices codex tokens, cheaper cached input, ignores unknown models", async () => {
   const { estimateCostUsdFromTokens } = await import("../src/services/m3.mjs");
-  // Default rates: input 1.25, cachedInput 0.125, output 10 (USD per 1M tokens).
-  // (11285-8576)*1.25 + 8576*0.125 + 49*10, all / 1e6.
+  // Default gpt-5.3-codex rates: input 1.75, cachedInput 0.175, output 14 (USD/1M).
+  // (11285-8576)*1.75 + 8576*0.175 + 49*14, all / 1e6.
   const usd = estimateCostUsdFromTokens({ model: "codex", inputTokens: 11285, cachedInputTokens: 8576, outputTokens: 49 });
-  const expected = ((11285 - 8576) * 1.25 + 8576 * 0.125 + 49 * 10) / 1_000_000;
+  const expected = ((11285 - 8576) * 1.75 + 8576 * 0.175 + 49 * 14) / 1_000_000;
   assert.ok(Math.abs(usd - expected) < 1e-9, `estimate ${usd} !== ${expected}`);
   assert.ok(usd > 0);
   // Cached input is discounted: all-cached input costs less than if it were fresh.
