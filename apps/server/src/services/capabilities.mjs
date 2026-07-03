@@ -11,6 +11,7 @@ export function createCapabilityService({
   listApplications,
   listApplicationCapabilities,
   invokeApplicationCapability,
+  planApplicationWrapperInvocation,
 }) {
   function listCapabilities(actor = null) {
     return [
@@ -43,6 +44,14 @@ export function createCapabilityService({
       return { status: 404, body: { error: "capability_not_found" } };
     }
     if (capability.provider?.type === "application") {
+      // Wrapper capabilities execute a real command on the local machine, so they
+      // run through the bridge (async), not the synchronous Application Control
+      // agent. Everything else (inspect/search/lifecycle/orchestration) stays
+      // synchronous below.
+      const wrapperCommandId = wrapperCommandIdFromCapabilityName(name);
+      if (wrapperCommandId) {
+        return dispatchApplicationWrapper(capability, name, wrapperCommandId, input, actor);
+      }
       const agent = findAgent("agt_platform_application_control");
       if (!agent || agent.status === "disabled") {
         return {
@@ -114,6 +123,54 @@ export function createCapabilityService({
     return { status: 409, body: { error: "capability_not_invokable", capability: name } };
   }
 
+  function dispatchApplicationWrapper(capability, name, commandId, input, actor) {
+    const applicationId = capability.provider.id;
+    // Guards first (tenancy, status, approvalToken, approved-command resolution)
+    // so approval/authorization errors take precedence over agent availability —
+    // the same order the synchronous path enforced.
+    const planned = planApplicationWrapperInvocation({ applicationId, commandId, input, actor });
+    if (!planned.ok) {
+      return { status: planned.status, body: planned.body };
+    }
+    const agent = findAgent("agt_platform_application_wrapper");
+    if (!agent || agent.status === "disabled") {
+      return {
+        status: 409,
+        body: { error: "agent_not_available", message: "The platform Application Wrapper Runner agent is not available." },
+      };
+    }
+    // Create a queued invocation for the bridge. The server-resolved, approved
+    // command travels as allowlisted metadata; the bridge injects it as discrete
+    // argv into the fixed application-wrapper agent command.
+    const invocation = createInvocation(`Run application capability ${name}.`, agent, {
+      actor,
+      requestedBy: actor?.userId,
+      timeoutSeconds: planned.timeoutSeconds ?? 120,
+      metadata: {
+        capability: name,
+        providerType: "application",
+        applicationId,
+        applicationWrapper: planned.wrapper,
+        projectId: capability.application?.projectId ?? input?.projectId ?? null,
+      },
+    });
+    if (invocation.status === "rejected") {
+      return { status: 409, body: { capability: name, invocationId: invocation.id, status: invocation.status, invocation } };
+    }
+    return {
+      status: 202,
+      body: {
+        capability: name,
+        invocationId: invocation.id,
+        agentId: agent.id,
+        status: invocation.status,
+        outputCollection: "invocations",
+        provider: capability.provider,
+        invocation,
+      },
+    };
+  }
+
   return {
     createCapabilityInvocation,
     getCapability,
@@ -123,6 +180,12 @@ export function createCapabilityService({
 
 function actionFromCapabilityName(capabilityName) {
   return String(capabilityName ?? "").split(".").at(-1) ?? "unknown";
+}
+
+// A wrapper capability is named `app.<slug>.wrapper.<commandId>`; return the
+// command id (or null for non-wrapper application capabilities).
+function wrapperCommandIdFromCapabilityName(capabilityName) {
+  return String(capabilityName ?? "").match(/\.wrapper\.([a-z0-9._-]+)$/)?.[1] ?? null;
 }
 
 function toolToCapability(tool) {

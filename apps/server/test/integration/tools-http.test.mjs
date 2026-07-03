@@ -20,6 +20,7 @@ before(async () => {
   const { createCodexReviewAgentRegistration } = await import("../../src/services/codex-agent.mjs");
   const { createClaudeReviewAgentRegistration } = await import("../../src/services/claude-agent.mjs");
   const { createCcusageAgentRegistration } = await import("../../src/services/ccusage-agent.mjs");
+  const { createApplicationWrapperAgentRegistration } = await import("../../src/services/applications.mjs");
 
   const { defaultProject, state } = createServerState({ defaultProjectPath: "/tmp", now });
   mkdirSync("/tmp/a", { recursive: true });
@@ -83,6 +84,10 @@ before(async () => {
     health: { status: "healthy", checkedAt: now(), message: "ok", nextAction: null },
   }, {
     ...agentFromRegistration(createClaudeReviewAgentRegistration()),
+    status: "available",
+    health: { status: "healthy", checkedAt: now(), message: "ok", nextAction: null },
+  }, {
+    ...agentFromRegistration(createApplicationWrapperAgentRegistration()),
     status: "available",
     health: { status: "healthy", checkedAt: now(), message: "ok", nextAction: null },
   });
@@ -462,17 +467,21 @@ test("npm wrapper descriptors project only approved governed capabilities", asyn
   assert.equal(blocked.status, 409);
   assert.equal(blocked.body.error, "approval_required");
 
+  // With approval, the wrapper capability now dispatches a QUEUED invocation to
+  // the platform Application Wrapper Runner (bridge execution, #359), carrying
+  // the server-resolved approved command in allowlisted metadata — rather than
+  // returning a synchronous, non-executable descriptor.
   const invoked = await call(`/api/capabilities/app.${appId}.wrapper.lint/invocations`, {
     method: "POST",
     body: { approvalToken: "operator-approved-wrapper" },
     token: "tok_a",
   });
-  assert.equal(invoked.status, 201);
-  const output = invoked.body.invocation.result.output;
-  assert.equal(output.command.id, "lint");
-  assert.equal(output.command.command, "lint");
-  assert.equal(output.command.envPolicy.redact[0], "NPM_TOKEN");
-  assert.equal(output.invocationPlan.executable, false);
+  assert.equal(invoked.status, 202);
+  assert.equal(invoked.body.agentId, "agt_platform_application_wrapper");
+  assert.equal(invoked.body.status, "queued");
+  const wrapper = invoked.body.invocation.options.metadata.applicationWrapper;
+  assert.equal(wrapper.execCommand, "lint");
+  assert.equal(wrapper.capability, `app.${appId}.wrapper.lint`);
 });
 
 test("metadata-only npm wrapper registrations do not project invokable commands", async () => {

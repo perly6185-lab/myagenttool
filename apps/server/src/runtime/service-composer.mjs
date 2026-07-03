@@ -95,6 +95,7 @@ export function createServerRuntimeServices({
     invokeApplicationCapability,
     listApplicationCapabilities,
     listApplications,
+    planApplicationWrapperInvocation,
     probeApplication,
     registerApplication,
     transitionApplication,
@@ -351,6 +352,7 @@ export function createServerRuntimeServices({
     listApplications,
     listApplicationCapabilities,
     invokeApplicationCapability,
+    planApplicationWrapperInvocation,
   });
 
   function runApplicationOrchestration(applicationId, routineId, body = {}, actor = null) {
