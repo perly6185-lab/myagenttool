@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { createJSONStorage, persist } from "zustand/middleware";
 
 export type SectionKey =
   | "dashboard"
@@ -56,31 +57,69 @@ const SECTION_KEYS: SectionKey[] = [
   "audit",
 ];
 
-/** Allow deep-linking a section via `?section=` (a step toward URL routing). */
-function initialSection(): SectionKey {
-  if (typeof window === "undefined") return "dashboard";
+/** A `?section=` deep-link, when valid, wins over any persisted section. */
+function sectionFromUrl(): SectionKey | null {
+  if (typeof window === "undefined") return null;
   const param = new URLSearchParams(window.location.search).get("section");
-  return SECTION_KEYS.includes(param as SectionKey) ? (param as SectionKey) : "dashboard";
+  return param && SECTION_KEYS.includes(param as SectionKey) ? (param as SectionKey) : null;
 }
 
-/** UI-only state (navigation + selection). Server data lives in React Query. */
-export const useUiStore = create<UiState>((set) => ({
-  section: initialSection(),
-  selectedAgentId: null,
-  selectedInvocationId: null,
-  selectedArtifactId: null,
-  selectedProjectId: null,
-  selectedWorktreeId: null,
-  selectedAgentSkillId: null,
-  selectedToolName: null,
-  selectedApplicationId: null,
-  setSection: (section) => set({ section }),
-  setSelectedAgentId: (selectedAgentId) => set({ selectedAgentId }),
-  setSelectedInvocationId: (selectedInvocationId) => set({ selectedInvocationId }),
-  setSelectedArtifactId: (selectedArtifactId) => set({ selectedArtifactId }),
-  setSelectedProjectId: (selectedProjectId) => set({ selectedProjectId }),
-  setSelectedWorktreeId: (selectedWorktreeId) => set({ selectedWorktreeId }),
-  setSelectedAgentSkillId: (selectedAgentSkillId) => set({ selectedAgentSkillId }),
-  setSelectedToolName: (selectedToolName) => set({ selectedToolName }),
-  setSelectedApplicationId: (selectedApplicationId) => set({ selectedApplicationId }),
-}));
+/**
+ * UI-only state (navigation + selection). Server data lives in React Query.
+ * Persisted to localStorage so a refresh/restart restores the workspace view;
+ * stale selection ids degrade gracefully (each screen already handles a missing
+ * id), and an explicit `?section=` deep-link still wins on load.
+ */
+export const useUiStore = create<UiState>()(
+  persist(
+    (set) => ({
+      section: sectionFromUrl() ?? "dashboard",
+      selectedAgentId: null,
+      selectedInvocationId: null,
+      selectedArtifactId: null,
+      selectedProjectId: null,
+      selectedWorktreeId: null,
+      selectedAgentSkillId: null,
+      selectedToolName: null,
+      selectedApplicationId: null,
+      setSection: (section) => set({ section }),
+      setSelectedAgentId: (selectedAgentId) => set({ selectedAgentId }),
+      setSelectedInvocationId: (selectedInvocationId) => set({ selectedInvocationId }),
+      setSelectedArtifactId: (selectedArtifactId) => set({ selectedArtifactId }),
+      setSelectedProjectId: (selectedProjectId) => set({ selectedProjectId }),
+      setSelectedWorktreeId: (selectedWorktreeId) => set({ selectedWorktreeId }),
+      setSelectedAgentSkillId: (selectedAgentSkillId) => set({ selectedAgentSkillId }),
+      setSelectedToolName: (selectedToolName) => set({ selectedToolName }),
+      setSelectedApplicationId: (selectedApplicationId) => set({ selectedApplicationId }),
+    }),
+    {
+      name: "myagenttool-ui",
+      version: 1,
+      storage: createJSONStorage(() => localStorage),
+      // Persist navigation + selection only, never the setter functions.
+      partialize: (state) => ({
+        section: state.section,
+        selectedAgentId: state.selectedAgentId,
+        selectedInvocationId: state.selectedInvocationId,
+        selectedArtifactId: state.selectedArtifactId,
+        selectedProjectId: state.selectedProjectId,
+        selectedWorktreeId: state.selectedWorktreeId,
+        selectedAgentSkillId: state.selectedAgentSkillId,
+        selectedToolName: state.selectedToolName,
+        selectedApplicationId: state.selectedApplicationId,
+      }),
+      merge: (persisted, current) => {
+        const saved = (persisted ?? {}) as Partial<UiState>;
+        const merged = { ...current, ...saved };
+        // Guard against a persisted section that no longer exists after a code change.
+        if (!merged.section || !SECTION_KEYS.includes(merged.section)) {
+          merged.section = "dashboard";
+        }
+        // An explicit deep-link overrides the restored section.
+        const urlSection = sectionFromUrl();
+        if (urlSection) merged.section = urlSection;
+        return merged;
+      },
+    },
+  ),
+);
