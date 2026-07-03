@@ -120,6 +120,20 @@ export interface InvocationEventSnapshot {
   } | null;
 }
 
+// A Codex tool-permission request held by the approval broker. When `status` is
+// "pending" the run is blocked until someone approves/denies it (or it times out).
+export interface CodexApprovalBrokerRequest {
+  id: string;
+  invocationId?: string;
+  toolName?: string;
+  summary?: string;
+  riskLevel?: string;
+  status: "pending" | "approved" | "denied" | "timed_out" | string;
+  approvalMode?: string;
+  timeoutAt?: string;
+  decision?: string | null;
+}
+
 export interface AuditSnapshot {
   invocationId?: string;
   agentId?: string;
@@ -610,6 +624,7 @@ export interface ConsoleSnapshot {
   lifecycleAuditRecords?: LifecycleAuditSnapshot[];
   discoveryRuns?: DiscoveryRunSnapshot[];
   approvalRequests?: ApprovalSnapshot[];
+  codexApprovalBrokerRequests?: CodexApprovalBrokerRequest[];
   policyDecisionRecords?: PolicyDecisionSnapshot[];
   troubleshootingReports?: TroubleshootingReport[];
   agentUsageSummaries?: AgentUsageSummary[];

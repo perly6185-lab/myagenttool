@@ -23,6 +23,43 @@ export function DecisionAction({ event }: { event: InvocationEventSnapshot }) {
   const setSelectedArtifactId = useUiStore((s) => s.setSelectedArtifactId);
   const setSelectedInvocationId = useUiStore((s) => s.setSelectedInvocationId);
 
+  if (event.type === "codex_approval_requested") {
+    // Codex tool-permission requests go through the approval broker (a separate
+    // system from local_approval_requested). Surface the pending one here as an
+    // inline Approve/Deny so an "ask"-mode run isn't left to silently time out.
+    const requestId = typeof event.data?.approvalBrokerRequestId === "string" ? event.data.approvalBrokerRequestId : null;
+    const request = (state?.codexApprovalBrokerRequests ?? []).find((r) => r.id === requestId) ?? null;
+    if (!request) return null;
+    if (request.status !== "pending") {
+      const ok = request.status === "approved";
+      const timedOut = request.status === "timed_out";
+      return (
+        <p className={cn("mt-1.5 text-xs font-medium", ok ? "text-success" : "text-destructive")}>
+          {ok ? "✓ Approved — Codex may proceed." : timedOut ? "✕ Approval timed out — run blocked." : "✕ Denied — Codex blocked."}
+        </p>
+      );
+    }
+    return (
+      <div className="mt-2 space-y-2 rounded-md border border-warning/50 bg-warning/5 p-3">
+        <FactList
+          facts={[
+            { term: "Tool", value: request.toolName ?? "unknown" },
+            { term: "Request", value: request.summary ?? "Codex requested permission to run a command." },
+            { term: "Risk", value: `${request.riskLevel ?? "unknown"} risk` },
+          ]}
+        />
+        <div className="flex gap-2">
+          <Button size="sm" disabled={pending} onClick={() => execute(() => api.approveCodexApproval(request.id))}>
+            Approve
+          </Button>
+          <Button size="sm" variant="secondary" disabled={pending} onClick={() => execute(() => api.denyCodexApproval(request.id))}>
+            Deny
+          </Button>
+        </div>
+      </div>
+    );
+  }
+
   if (event.type === "local_approval_requested") {
     // Resolve by THIS event's invocation (not just the latest) so a multi-run
     // stream keeps each approval anchored to its own moment.

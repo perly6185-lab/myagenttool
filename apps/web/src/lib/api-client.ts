@@ -425,4 +425,8 @@ export const api = {
   approveApproval: (id: string) =>
     request("POST", `/api/approvals/${encodeURIComponent(id)}/approve`),
   denyApproval: (id: string) => request("POST", `/api/approvals/${encodeURIComponent(id)}/deny`),
+  approveCodexApproval: (id: string) =>
+    request("POST", `/api/codex/approval-broker/${encodeURIComponent(id)}/approve`),
+  denyCodexApproval: (id: string) =>
+    request("POST", `/api/codex/approval-broker/${encodeURIComponent(id)}/deny`),
 };
