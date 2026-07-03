@@ -86,56 +86,11 @@ export const CCUSAGE_TOOL_CONTRACT = {
   ],
 };
 
-export function createCcusageAgentRegistration({
-  reportId = "daily",
-  cliScriptPath,
-  wrapperScriptPath = "tools/agents/ccusage-wrapper.mjs",
-  costOwner = "usr_local",
-  currency = "USD",
-} = {}) {
-  const spec = CCUSAGE_REPORT_SPECS.find((item) => item.id === reportId);
-  if (!spec) {
-    throw new Error(`Unsupported ccusage report id: ${reportId}`);
-  }
-  const scriptPath = String(cliScriptPath ?? "").trim();
-  if (!scriptPath) {
-    throw new Error("ccusage cliScriptPath is required.");
-  }
-  const wrapperPath = String(wrapperScriptPath ?? "").trim();
-  if (!wrapperPath) {
-    throw new Error("ccusage wrapperScriptPath is required.");
-  }
-  return {
-    id: spec.agentId,
-    type: "cli",
-    name: spec.name,
-    description: spec.description,
-    command: "node",
-    args: [wrapperPath, "--ccusage-cli", scriptPath, "--report", spec.id],
-    timeoutSeconds: 60,
-    outputFormat: "plain_result",
-    toolContract: CCUSAGE_TOOL_CONTRACT,
-    capabilityName: "usage_cost_report",
-    capabilityDescription: "Generate a read-only local usage and cost report from ccusage.",
-    riskLevel: "low",
-    riskTags: ["read_only", "read_local", "shell_exec"],
-    economicModel: "free",
-    pricingDimensions: [],
-    currency,
-    costOwner,
-    unknownCostPolicy: "warn",
-    registrationNotes: {
-      risk: "Runs a fixed ccusage report command. User prompt text is not rendered into CLI arguments.",
-      data: "Reads local coding-agent usage records and stores command output in invocation events/results.",
-      cost: "ccusage is treated as a free local reporting tool; reported provider costs are external estimates.",
-      cancellation: "The Desktop Bridge attempts to terminate the ccusage process tree when cancellation is requested.",
-    },
-  };
-}
-
-export function createCcusageAgentRegistrations(options = {}) {
-  return CCUSAGE_REPORT_SPECS.map((spec) => createCcusageAgentRegistration({ ...options, reportId: spec.id }));
-}
+// The bespoke ccusage agent-registration factories were retired with the full
+// unification (ADR 0007 rev 2): ccusage.report now executes via the ccusage
+// Application capability path, not per-report agents. CCUSAGE_TOOL_CONTRACT +
+// CCUSAGE_REPORT_SPECS remain the shared report contract; isGovernedCcusageAgent
+// stays as a harmless predicate for any legacy record.
 
 export function isGovernedCcusageAgent(agent) {
   if (!agent) {

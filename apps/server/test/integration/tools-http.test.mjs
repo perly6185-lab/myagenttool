@@ -19,7 +19,6 @@ before(async () => {
   const { createHttpServer } = await import("../../src/runtime/http-server.mjs");
   const { createCodexReviewAgentRegistration } = await import("../../src/services/codex-agent.mjs");
   const { createClaudeReviewAgentRegistration } = await import("../../src/services/claude-agent.mjs");
-  const { createCcusageAgentRegistration } = await import("../../src/services/ccusage-agent.mjs");
   const { createApplicationWrapperAgentRegistration } = await import("../../src/services/applications.mjs");
   const { createCcusageApplicationRegistration } = await import("../../src/services/ccusage-application.mjs");
 
@@ -73,13 +72,6 @@ before(async () => {
     updatedAt: now(),
   });
   state.agents.push({
-    ...agentFromRegistration(createCcusageAgentRegistration({
-      reportId: "daily",
-      cliScriptPath: "/usr/local/lib/node_modules/ccusage/src/cli.js",
-    })),
-    status: "available",
-    health: { status: "healthy", checkedAt: now(), message: "ok", nextAction: null },
-  }, {
     ...agentFromRegistration(createCodexReviewAgentRegistration()),
     status: "available",
     health: { status: "healthy", checkedAt: now(), message: "ok", nextAction: null },
