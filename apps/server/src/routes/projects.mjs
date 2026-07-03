@@ -23,6 +23,7 @@ export async function handleProjectRoutes({
   readProjectTree,
   searchProjectContent,
   gitProjectSummary,
+  projectBranches,
   worktreeDiff,
   projectGithubItems,
 }) {
@@ -260,8 +261,9 @@ export async function handleProjectRoutes({
     }
     if (denyForeignProject({ res, sendJson, state, actor, projectId: project.id, notFound: { error: "project_not_found" } })) return true;
     try {
-      const summary = gitProjectSummary(project);
-      sendJson(res, 200, { branches: [summary.branch].filter(Boolean), current: summary.branch });
+      // Returns { name, remote } objects (BranchRef) — the console's branch picker
+      // reads b.name, so bare strings would make b.name undefined and crash its filter.
+      sendJson(res, 200, projectBranches(project));
     } catch {
       sendJson(res, 200, { branches: [], current: null });
     }

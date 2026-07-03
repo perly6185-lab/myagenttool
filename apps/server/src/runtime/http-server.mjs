@@ -37,6 +37,7 @@ export function createHttpServer({
   readProjectTree,
   searchProjectContent,
   gitProjectSummary,
+  projectBranches,
   worktreeDiff,
   projectGithubItems,
   createAgentSkill,
@@ -228,6 +229,7 @@ export function createHttpServer({
         readProjectTree,
         searchProjectContent,
         gitProjectSummary,
+        projectBranches,
         worktreeDiff,
         projectGithubItems,
       })) {

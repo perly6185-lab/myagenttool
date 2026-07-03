@@ -345,6 +345,7 @@ export function createProjectService({ state, now, nextId, appendEvent, persistS
     createWorktree,
     currentProject,
     gitProjectSummary,
+    projectBranches,
     worktreeDiff: (worktree) => worktreeDiff(worktree, { projectTargets: state.projectTargets }),
     projectGithubItems: (project) => projectGithubItems(project, { projectTargets: state.projectTargets }),
     projectForInvocation,
@@ -689,6 +690,35 @@ function gitProjectSummary(project) {
     changes,
     summary: gitSummary(gitStatusMap(root)),
   };
+}
+
+// Enumerate local + remote branches for the console's worktree-creation picker,
+// as { name, remote } objects (the shape BranchRef expects). Current branch first
+// so it reads as the default pick; everything else keeps git's ref ordering.
+function projectBranches(project) {
+  const root = resolve(project.path);
+  const current = gitOutput(root, ["branch", "--show-current"]);
+  const collect = (ref) =>
+    gitOutput(root, ["for-each-ref", "--format=%(refname:short)", ref])
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean);
+  const seen = new Set();
+  const branches = [];
+  for (const name of collect("refs/heads")) {
+    if (seen.has(name)) continue;
+    seen.add(name);
+    branches.push({ name, remote: false });
+  }
+  for (const name of collect("refs/remotes")) {
+    // Skip the symbolic "origin/HEAD -> origin/main" pointer, and any remote
+    // ref whose short name collides with a local branch already listed.
+    if (name.endsWith("/HEAD") || seen.has(name)) continue;
+    seen.add(name);
+    branches.push({ name, remote: true });
+  }
+  branches.sort((a, b) => Number(b.name === current) - Number(a.name === current));
+  return { branches, current: current || null };
 }
 
 function gitOutput(root, args) {
