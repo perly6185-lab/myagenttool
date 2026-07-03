@@ -6,6 +6,8 @@
 
 import type {
   ApplicationCapability,
+  ApplicationRegisterRequest,
+  ApplicationSnapshot,
   ConsoleSnapshot,
   ReviewFindingQueryResponse,
   ToolDescriptor,
@@ -238,6 +240,12 @@ export const api = {
     request<{ applicationId: string; capabilities: ApplicationCapability[] }>(
       "GET",
       `/api/applications/${encodeURIComponent(id)}/capabilities`,
+    ),
+  registerApplication: (body: ApplicationRegisterRequest) =>
+    request<{ application: ApplicationSnapshot; capabilities: ApplicationCapability[] }>(
+      "POST",
+      "/api/applications/register",
+      body,
     ),
   createInvocation: (
     task: string,
