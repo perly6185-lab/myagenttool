@@ -597,6 +597,7 @@ function latestRecoveryActionRequest(
 
 function recoveryActionRequestTone(status: string): "neutral" | "success" | "warning" | "danger" | "running" {
   if (status === "executed" || status === "approval_approved" || status === "noop") return "success";
+  if (status === "executing") return "running";
   if (status === "approval_pending" || status === "requested") return "warning";
   if (status === "failed" || status === "unsupported" || status === "approval_denied" || status === "approval_timed_out") return "danger";
   return "neutral";
@@ -608,6 +609,7 @@ function readableRecoveryActionRequestStatus(status: string): string {
     approval_denied: "Denied",
     approval_pending: "Pending",
     approval_timed_out: "Timed out",
+    executing: "Executing",
     executed: "Executed",
     failed: "Failed",
     noop: "Viewed",
