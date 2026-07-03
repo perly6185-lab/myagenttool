@@ -36,7 +36,16 @@ export function ReviewView() {
     [all, source, severity],
   );
 
+  // A finding's invocation may fall outside the bounded invocations snapshot;
+  // only offer the jump when it's actually loaded, else it would land on an
+  // unrelated invocation (resolveInvocation falls back to invocations[0]).
+  const loadedInvocationIds = useMemo(
+    () => new Set((state?.invocations ?? []).map((invocation) => invocation.id)),
+    [state?.invocations],
+  );
+
   function openInvocation(finding: ReviewFinding) {
+    if (!loadedInvocationIds.has(finding.invocationId)) return;
     setSelectedInvocationId(finding.invocationId);
     setSection("invocations");
   }
@@ -90,7 +99,7 @@ export function ReviewView() {
                   <Badge>confidence: {finding.confidence}</Badge>
                   <span className="[overflow-wrap:anywhere] font-mono text-xs text-muted-foreground">
                     {finding.file}
-                    {finding.line ? `:${finding.line}` : ""}
+                    {finding.line != null ? `:${finding.line}` : ""}
                   </span>
                 </div>
                 <p className="text-sm text-foreground">{finding.message}</p>
@@ -100,13 +109,19 @@ export function ReviewView() {
                     {finding.suggestion}
                   </p>
                 ) : null}
-                <button
-                  type="button"
-                  className="text-xs font-medium text-primary hover:underline"
-                  onClick={() => openInvocation(finding)}
-                >
-                  View invocation →
-                </button>
+                {loadedInvocationIds.has(finding.invocationId) ? (
+                  <button
+                    type="button"
+                    className="text-xs font-medium text-primary hover:underline"
+                    onClick={() => openInvocation(finding)}
+                  >
+                    View invocation →
+                  </button>
+                ) : (
+                  <span className="text-xs text-muted-foreground">
+                    Invocation not in the current window
+                  </span>
+                )}
               </CardContent>
             </Card>
           ))}
