@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -106,6 +106,7 @@ function ToolCard({
   return (
     <Card
       onClick={onSelect}
+      onFocusCapture={onSelect}
       className={cn("cursor-pointer transition-colors", selected && "border-primary/50")}
     >
       <CardHeader>
@@ -201,17 +202,43 @@ function ResultNote({
   );
 }
 
+/**
+ * Sources the backend accepts for a report: a provider-specific source is only
+ * valid for a matching provider report (source_report_mismatch otherwise).
+ */
+function ccusageSourcesFor(report: string): Array<"all" | "codex" | "claude"> {
+  const sources: Array<"all" | "codex" | "claude"> = ["all"];
+  if (report.startsWith("codex_")) sources.push("codex");
+  if (report.startsWith("claude_")) sources.push("claude");
+  return sources;
+}
+
 function CcusageForm({ tool, disabled }: { tool: ToolDescriptor; disabled: boolean }) {
   const reportOptions = useMemo(() => {
-    const fromAgents = (tool.agents ?? []).map((agent) => agent.report).filter((r): r is string => Boolean(r));
+    // Drop approval-required reports (e.g. session) — they always 409 here.
+    const policy = tool.approvalPolicy ?? {};
+    const fromAgents = (tool.agents ?? [])
+      .map((agent) => agent.report)
+      .filter((r): r is string => Boolean(r))
+      .filter((r) => policy[r] !== "approval_required");
     return fromAgents.length ? Array.from(new Set(fromAgents)) : ["daily"];
-  }, [tool.agents]);
+  }, [tool.agents, tool.approvalPolicy]);
 
   const [report, setReport] = useState(reportOptions[0]);
   const [source, setSource] = useState<"all" | "codex" | "claude">("all");
   const [since, setSince] = useState("");
   const [until, setUntil] = useState("");
   const { invoke, viewInvocation, invocationId, pending, error } = useToolInvoke();
+
+  // Keep the selection valid as discovered options load/change after mount.
+  useEffect(() => {
+    if (!reportOptions.includes(report)) setReport(reportOptions[0]);
+  }, [reportOptions, report]);
+
+  const sourceOptions = useMemo(() => ccusageSourcesFor(report), [report]);
+  useEffect(() => {
+    if (!sourceOptions.includes(source)) setSource("all");
+  }, [sourceOptions, source]);
 
   function submit(event: React.FormEvent) {
     event.preventDefault();
@@ -225,7 +252,7 @@ function CcusageForm({ tool, disabled }: { tool: ToolDescriptor; disabled: boole
   }
 
   return (
-    <form className="space-y-3" onClick={(e) => e.stopPropagation()} onSubmit={submit}>
+    <form className="space-y-3" onSubmit={submit}>
       <div className="grid gap-3 sm:grid-cols-2">
         <Field label="Report">
           <Select value={report} onChange={(e) => setReport(e.target.value)}>
@@ -238,9 +265,11 @@ function CcusageForm({ tool, disabled }: { tool: ToolDescriptor; disabled: boole
         </Field>
         <Field label="Source">
           <Select value={source} onChange={(e) => setSource(e.target.value as typeof source)}>
-            <option value="all">all</option>
-            <option value="codex">codex</option>
-            <option value="claude">claude</option>
+            {sourceOptions.map((option) => (
+              <option key={option} value={option}>
+                {option}
+              </option>
+            ))}
           </Select>
         </Field>
         <Field label="Since (YYYY-MM-DD)">
@@ -289,10 +318,22 @@ function ReviewForm({
   const [instruction, setInstruction] = useState("");
   const { invoke, viewInvocation, invocationId, pending, error } = useToolInvoke();
 
+  // Worktrees arrive from a different query than the one that mounts this form;
+  // re-sync the selection once they load (or if the chosen one disappears).
+  useEffect(() => {
+    if (!worktrees.some((worktree) => worktree.id === worktreeId)) {
+      setWorktreeId(worktrees[0]?.id ?? "");
+    }
+  }, [worktrees, worktreeId]);
+
   function submit(event: React.FormEvent) {
     event.preventDefault();
-    if (!worktreeId) return;
+    const worktree = worktrees.find((item) => item.id === worktreeId);
+    if (!worktree) return;
+    // Send the worktree's own project so the backend doesn't reject it against
+    // the actor's default project (worktree_not_found).
     void invoke(tool.name, {
+      projectId: worktree.projectId,
       worktreeId,
       severityFloor,
       instruction: instruction.trim() || null,
@@ -300,7 +341,7 @@ function ReviewForm({
   }
 
   return (
-    <form className="space-y-3" onClick={(e) => e.stopPropagation()} onSubmit={submit}>
+    <form className="space-y-3" onSubmit={submit}>
       <div className="grid gap-3 sm:grid-cols-2">
         <Field label="Worktree">
           <Select value={worktreeId} onChange={(e) => setWorktreeId(e.target.value)}>

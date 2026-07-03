@@ -11,6 +11,7 @@ import { DevicesView } from "@/features/devices/devices-view";
 import { DiscoveryView } from "@/features/discovery/discovery-view";
 import { IntegrationsView } from "@/features/integrations/integrations-view";
 import { ToolsView } from "@/features/tools/tools-view";
+import { ReviewView } from "@/features/review/review-view";
 import { EconomicsView } from "@/features/economics/economics-view";
 import { AuditView } from "@/features/audit/audit-view";
 
@@ -30,6 +31,7 @@ export const SECTION_VIEWS: Record<SectionKey, ComponentType> = {
   discovery: DiscoveryView,
   integrations: IntegrationsView,
   tools: ToolsView,
+  review: ReviewView,
   economics: EconomicsView,
   audit: AuditView,
 };

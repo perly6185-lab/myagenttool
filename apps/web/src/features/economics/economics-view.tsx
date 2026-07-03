@@ -4,6 +4,7 @@ import { EmptyState } from "@/components/common/empty-state";
 import { BudgetsCard } from "@/features/economics/budgets-card";
 import { TeamBudgetsCard } from "@/features/economics/team-budgets-card";
 import { ChargebackCard } from "@/features/economics/chargeback-card";
+import { ImportedUsageCard } from "@/features/economics/imported-usage-card";
 import { useConsoleState } from "@/data/use-console-state";
 import { shortTime } from "@/lib/readable-labels";
 import { formatUsd as usd } from "@/lib/money";
@@ -62,6 +63,7 @@ export function EconomicsView() {
 
       <BudgetsCard />
       <TeamBudgetsCard />
+      <ImportedUsageCard />
 
       <div className="grid gap-5 lg:grid-cols-2">
         <Card>

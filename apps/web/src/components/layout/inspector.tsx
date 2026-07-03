@@ -52,6 +52,15 @@ export function Inspector() {
       ) : null}
       {section === "integrations" ? <GovernanceInspector /> : null}
       {section === "tools" ? <ToolsInspector /> : null}
+      {section === "review" ? (
+        <div className="space-y-4">
+          <HintCard
+            title="Findings, not raw output"
+            body="Review findings are the structured, non-authoritative output of governed Codex and Claude diff reviews. Raw model transcripts and CLI output are kept server-side and never shown here."
+          />
+          <RunContextInspector />
+        </div>
+      ) : null}
       {section === "economics" ? (
         <div className="space-y-4">
           <HintCard
