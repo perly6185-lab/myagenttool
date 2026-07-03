@@ -129,13 +129,13 @@ export function createServerRuntimeServices({
     createCodexImportedEvidenceRecord,
     createManagedCodexSession,
     createManagedCodexWorkspace,
-    expireCodexApprovalBrokerRequests,
+    expireCodexApprovalBrokerRequests: expireCodexApprovalBrokerRequestsBase,
     normalizeCodexApprovalMode,
     normalizeCodexSessionMode,
     normalizeCodexWorkspacePolicy,
     recordCodexHookEvent,
     repoPathForEvidence,
-    resolveCodexApprovalBrokerRequest,
+    resolveCodexApprovalBrokerRequest: resolveCodexApprovalBrokerRequestBase,
     updateCodexSessionFromEvent,
   } = createCodexService({
     state,
@@ -575,24 +575,54 @@ export function createServerRuntimeServices({
       appendRecoveryActionEvent("rejected", invocationId, applicationId, routineId, actionType, recoveryModel.category, "action_not_suggested");
       return { status: 400, body: { error: "recovery_action_not_suggested", applicationId, routineId, invocationId, actionType } };
     }
+    const reason = summarizeText(body?.reason ?? selectedAction.description ?? recoveryModel.summary, 160);
+    const actionRequest = createApplicationRecoveryActionRequest({
+      applicationId,
+      routineId,
+      invocationId,
+      action: selectedAction,
+      recoveryCategory: recoveryModel.category,
+      reason,
+      actor,
+    });
     if (selectedAction.requiresApproval && !isApplicationActionApproved(body?.approvalToken)) {
-      appendRecoveryActionEvent("rejected", invocationId, applicationId, routineId, actionType, recoveryModel.category, "approval_required");
-      return { status: 409, body: { error: "approval_required", applicationId, routineId, invocationId, actionType } };
+      const approvalRequest = createApplicationRecoveryApprovalRequest(run.invocation, actionRequest, selectedAction, recoveryModel, actor);
+      actionRequest.status = approvalRequest.status === "approved" ? "approval_approved" : approvalRequest.status === "denied" ? "approval_denied" : "approval_pending";
+      actionRequest.approvalRequestId = approvalRequest.id;
+      actionRequest.updatedAt = now();
+      persistStateSoon();
+      appendRecoveryActionEvent("approval_pending", invocationId, applicationId, routineId, actionType, recoveryModel.category, reason, actionRequest);
+      return {
+        status: 202,
+        body: {
+          applicationId,
+          routineId,
+          invocationId,
+          action: selectedAction,
+          recoveryActionRequest: actionRequest,
+          approvalRequest,
+          status: "approval_pending",
+        },
+      };
     }
     if (actionType === "view_invocation") {
-      const reason = summarizeText(body?.reason ?? selectedAction.description ?? recoveryModel.summary, 160);
-      appendRecoveryActionEvent("requested", invocationId, applicationId, routineId, actionType, recoveryModel.category, reason);
+      actionRequest.status = "noop";
+      actionRequest.updatedAt = now();
+      persistStateSoon();
+      appendRecoveryActionEvent("requested", invocationId, applicationId, routineId, actionType, recoveryModel.category, reason, actionRequest);
       return {
         status: 200,
-        body: { applicationId, routineId, invocationId, action: selectedAction, status: "noop" },
+        body: { applicationId, routineId, invocationId, action: selectedAction, recoveryActionRequest: actionRequest, status: "noop" },
       };
     }
     if (actionType !== "rerun") {
-      appendRecoveryActionEvent("rejected", invocationId, applicationId, routineId, actionType, recoveryModel.category, "action_not_supported");
-      return { status: 501, body: { error: "recovery_action_not_supported", applicationId, routineId, invocationId, actionType } };
+      actionRequest.status = "unsupported";
+      actionRequest.updatedAt = now();
+      persistStateSoon();
+      appendRecoveryActionEvent("rejected", invocationId, applicationId, routineId, actionType, recoveryModel.category, "action_not_supported", actionRequest);
+      return { status: 501, body: { error: "recovery_action_not_supported", applicationId, routineId, invocationId, actionType, recoveryActionRequest: actionRequest } };
     }
-    const reason = summarizeText(body?.reason ?? selectedAction.description ?? recoveryModel.summary, 160);
-    appendRecoveryActionEvent("requested", invocationId, applicationId, routineId, actionType, recoveryModel.category, reason);
+    appendRecoveryActionEvent("requested", invocationId, applicationId, routineId, actionType, recoveryModel.category, reason, actionRequest);
     const result = runApplicationOrchestration(applicationId, routineId, {
       agentId: typeof body?.agentId === "string" ? body.agentId : null,
       timeoutSeconds: body?.timeoutSeconds,
@@ -604,13 +634,22 @@ export function createServerRuntimeServices({
       recoveryCategory: recoveryModel.category,
     }, actor);
     if (result.status >= 400) {
-      appendRecoveryActionEvent("rejected", invocationId, applicationId, routineId, actionType, recoveryModel.category, result.body?.error ?? "run_failed");
+      actionRequest.status = "failed";
+      actionRequest.updatedAt = now();
+      persistStateSoon();
+      appendRecoveryActionEvent("rejected", invocationId, applicationId, routineId, actionType, recoveryModel.category, result.body?.error ?? "run_failed", actionRequest);
       return result;
     }
+    actionRequest.status = "executed";
+    actionRequest.resultInvocationId = result.body?.invocationId ?? null;
+    actionRequest.executedAt = now();
+    actionRequest.updatedAt = actionRequest.executedAt;
+    persistStateSoon();
     return {
       status: result.status,
       body: {
         ...result.body,
+        recoveryActionRequest: actionRequest,
         recoveryAction: {
           actionType,
           recoveryCategory: recoveryModel.category,
@@ -619,6 +658,124 @@ export function createServerRuntimeServices({
         },
       },
     };
+  }
+
+  function createApplicationRecoveryActionRequest({ applicationId, routineId, invocationId, action, recoveryCategory, reason, actor }) {
+    const createdAt = now();
+    const request = {
+      id: nextId("app_rec"),
+      applicationId,
+      routineId,
+      invocationId,
+      actionType: action.type,
+      status: "requested",
+      recoveryCategory,
+      reason,
+      requiresApproval: Boolean(action.requiresApproval),
+      approvalRequestId: null,
+      resultInvocationId: null,
+      requestedBy: actor?.userId ?? "usr_local",
+      decidedAt: null,
+      executedAt: null,
+      createdAt,
+      updatedAt: createdAt,
+    };
+    state.applicationRecoveryActions.unshift(request);
+    state.applicationRecoveryActions = state.applicationRecoveryActions.slice(0, 200);
+    persistStateSoon();
+    return request;
+  }
+
+  function createApplicationRecoveryApprovalRequest(invocation, actionRequest, action, recoveryModel) {
+    const createdAt = now();
+    const request = {
+      id: nextId("cdx_appr"),
+      invocationId: invocation.id,
+      codexSessionRegistryId: null,
+      hookEventId: null,
+      toolName: `application.recovery.${action.type}`,
+      summary: summarizeText(actionRequest.reason || action.description || recoveryModel.summary, 240),
+      riskLevel: "high",
+      status: "pending",
+      timeoutAt: new Date(Date.now() + 5 * 60 * 1000).toISOString(),
+      decision: null,
+      decidedAt: null,
+      notificationState: "queued",
+      approvalMode: "ask",
+      createdAt,
+      updatedAt: createdAt,
+      source: "application_recovery_action",
+      applicationRecoveryActionRequestId: actionRequest.id,
+    };
+    state.codexApprovalBrokerRequests.unshift(request);
+    state.codexApprovalBrokerRequests = state.codexApprovalBrokerRequests.slice(0, 200);
+    persistStateSoon();
+    appendEvent({
+      invocationId: invocation.id,
+      type: "application_orchestration_recovery_approval_requested",
+      level: "warn",
+      message: `Application orchestration recovery action ${action.type} is waiting for approval.`,
+      data: {
+        applicationId: actionRequest.applicationId,
+        routineId: actionRequest.routineId,
+        actionType: action.type,
+        recoveryCategory: recoveryModel.category,
+        recoveryActionRequestId: actionRequest.id,
+        approvalBrokerRequestId: request.id,
+      },
+    });
+    return request;
+  }
+
+  function resolveCodexApprovalBrokerRequest(request, action) {
+    const updated = resolveCodexApprovalBrokerRequestBase(request, action);
+    syncApplicationRecoveryActionApproval(updated);
+    return updated;
+  }
+
+  function expireCodexApprovalBrokerRequests() {
+    expireCodexApprovalBrokerRequestsBase();
+    for (const request of state.codexApprovalBrokerRequests) {
+      if (request?.applicationRecoveryActionRequestId) {
+        syncApplicationRecoveryActionApproval(request);
+      }
+    }
+  }
+
+  function syncApplicationRecoveryActionApproval(approvalRequest) {
+    const requestId = approvalRequest?.applicationRecoveryActionRequestId;
+    if (!requestId) return;
+    const actionRequest = state.applicationRecoveryActions.find((item) => item.id === requestId);
+    if (!actionRequest) return;
+    const previousStatus = actionRequest.status;
+    let nextStatus = "approval_pending";
+    if (approvalRequest.status === "approved") {
+      nextStatus = "approval_approved";
+    } else if (approvalRequest.status === "denied") {
+      nextStatus = "approval_denied";
+    } else if (approvalRequest.status === "timed_out") {
+      nextStatus = "approval_timed_out";
+    }
+    if (previousStatus === nextStatus) return;
+    actionRequest.status = nextStatus;
+    actionRequest.decidedAt = approvalRequest.decidedAt ?? actionRequest.decidedAt ?? null;
+    actionRequest.updatedAt = now();
+    persistStateSoon();
+    if (approvalRequest.status === "pending") return;
+    appendEvent({
+      invocationId: actionRequest.invocationId,
+      type: "application_orchestration_recovery_approval_resolved",
+      level: approvalRequest.status === "approved" ? "info" : "warn",
+      message: `Application orchestration recovery action ${actionRequest.actionType} approval ${approvalRequest.status}.`,
+      data: {
+        applicationId: actionRequest.applicationId,
+        routineId: actionRequest.routineId,
+        actionType: actionRequest.actionType,
+        recoveryActionRequestId: actionRequest.id,
+        approvalBrokerRequestId: approvalRequest.id,
+        status: approvalRequest.status,
+      },
+    });
   }
 
   function nextId(prefix) {
@@ -810,17 +967,30 @@ export function createServerRuntimeServices({
     return { type, label, description, requiresApproval, target };
   }
 
-  function appendRecoveryActionEvent(kind, invocationId, applicationId, routineId, actionType, recoveryCategory, reason) {
+  function appendRecoveryActionEvent(kind, invocationId, applicationId, routineId, actionType, recoveryCategory, reason, actionRequest = null) {
+    const requested = kind === "requested";
+    const pending = kind === "approval_pending";
     appendEvent({
       invocationId,
-      type: kind === "requested"
+      type: requested || pending
         ? "application_orchestration_recovery_action_requested"
         : "application_orchestration_recovery_action_rejected",
-      level: kind === "requested" ? "info" : "warn",
-      message: kind === "requested"
-        ? `Application orchestration recovery action ${actionType} requested.`
+      level: requested ? "info" : "warn",
+      message: pending
+        ? `Application orchestration recovery action ${actionType} is pending approval.`
+        : requested
+          ? `Application orchestration recovery action ${actionType} requested.`
         : `Application orchestration recovery action ${actionType} rejected.`,
-      data: { applicationId, routineId, actionType, recoveryCategory, reason },
+      data: {
+        applicationId,
+        routineId,
+        actionType,
+        recoveryCategory,
+        reason,
+        recoveryActionRequestId: actionRequest?.id ?? null,
+        status: actionRequest?.status ?? null,
+        approvalRequestId: actionRequest?.approvalRequestId ?? null,
+      },
     });
   }
 

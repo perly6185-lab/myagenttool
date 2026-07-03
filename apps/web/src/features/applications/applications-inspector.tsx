@@ -14,6 +14,7 @@ import { Transcript } from "@/features/invocations/transcript";
 import { readableStatus, statusTone } from "@/lib/readable-labels";
 import type {
   ApplicationOrchestration,
+  ApplicationRecoveryActionRequest,
   ApplicationOrchestrationRun,
   ApplicationSnapshot,
   InvocationSnapshot,
@@ -382,6 +383,7 @@ function OrchestrationRunDiagnostics({
   canRetry: boolean;
 }) {
   const { execute, pending, error: retryError } = useAsyncAction();
+  const { data: state } = useConsoleState();
   const { data, isLoading, error } = useQuery({
     queryKey: ["application-orchestration-run", applicationId, routineId, invocationId],
     queryFn: () => api.getApplicationOrchestrationRun(applicationId, routineId, invocationId),
@@ -403,6 +405,10 @@ function OrchestrationRunDiagnostics({
   const run = data?.run;
   const events = eventData?.events ?? [];
   const recovery = recoveryData?.recovery;
+  const recoveryActionRequests = (state?.applicationRecoveryActions ?? [])
+    .filter((request) => request.applicationId === applicationId
+      && request.routineId === routineId
+      && request.invocationId === invocationId);
 
   function retryRun() {
     void execute(() => api.requestApplicationOrchestrationRecoveryAction(applicationId, routineId, invocationId, {
@@ -489,13 +495,16 @@ function OrchestrationRunDiagnostics({
             <p className="[overflow-wrap:anywhere] text-xs text-muted-foreground">{recovery.summary}</p>
             {recovery.actions.length ? (
               <ul className="space-y-1">
-                {recovery.actions.map((action) => (
+                {recovery.actions.map((action) => {
+                  const latestRequest = latestRecoveryActionRequest(recoveryActionRequests, action.type);
+                  return (
                   <li key={`${action.type}:${action.label}`} className="rounded border border-border bg-muted p-2">
                     <div className="flex flex-wrap items-center justify-between gap-2">
                       <div className="flex flex-wrap items-center gap-2">
                         <span className="font-medium">{action.label}</span>
                         {action.requiresApproval ? <Badge tone="warning">Approval</Badge> : null}
                         {!isExecutableRecoveryAction(action.type) ? <Badge tone="neutral">Manual</Badge> : null}
+                        {latestRequest ? <Badge tone={recoveryActionRequestTone(latestRequest.status)}>{readableRecoveryActionRequestStatus(latestRequest.status)}</Badge> : null}
                       </div>
                       {action.type === "rerun" ? (
                         <Button
@@ -507,6 +516,15 @@ function OrchestrationRunDiagnostics({
                           <Play />
                           Run
                         </Button>
+                      ) : action.requiresApproval ? (
+                        <Button
+                          size="sm"
+                          variant="secondary"
+                          disabled={pending || latestRequest?.status === "approval_pending"}
+                          onClick={() => requestRecoveryAction(action.type, action.description)}
+                        >
+                          {latestRequest?.status === "approval_pending" ? "Pending approval" : "Request approval"}
+                        </Button>
                       ) : (
                         <Button size="sm" variant="secondary" disabled>
                           {action.type === "view_invocation" ? "Open from View" : "Not supported"}
@@ -517,7 +535,8 @@ function OrchestrationRunDiagnostics({
                       <p className="[overflow-wrap:anywhere] text-muted-foreground">{action.description}</p>
                     ) : null}
                   </li>
-                ))}
+                  );
+                })}
               </ul>
             ) : null}
           </div>
@@ -565,6 +584,37 @@ function recoveryTone(category: string): "neutral" | "success" | "warning" | "da
 
 function isExecutableRecoveryAction(actionType: string): boolean {
   return actionType === "rerun";
+}
+
+function latestRecoveryActionRequest(
+  requests: ApplicationRecoveryActionRequest[],
+  actionType: string,
+): ApplicationRecoveryActionRequest | null {
+  return requests
+    .filter((request) => request.actionType === actionType)
+    .sort((left, right) => Date.parse(right.updatedAt ?? right.createdAt) - Date.parse(left.updatedAt ?? left.createdAt))[0] ?? null;
+}
+
+function recoveryActionRequestTone(status: string): "neutral" | "success" | "warning" | "danger" | "running" {
+  if (status === "executed" || status === "approval_approved" || status === "noop") return "success";
+  if (status === "approval_pending" || status === "requested") return "warning";
+  if (status === "failed" || status === "unsupported" || status === "approval_denied" || status === "approval_timed_out") return "danger";
+  return "neutral";
+}
+
+function readableRecoveryActionRequestStatus(status: string): string {
+  const labels: Record<string, string> = {
+    approval_approved: "Approved",
+    approval_denied: "Denied",
+    approval_pending: "Pending",
+    approval_timed_out: "Timed out",
+    executed: "Executed",
+    failed: "Failed",
+    noop: "Viewed",
+    requested: "Requested",
+    unsupported: "Unsupported",
+  };
+  return labels[status] ?? status;
 }
 
 function stringValue(value: unknown): string | null {
