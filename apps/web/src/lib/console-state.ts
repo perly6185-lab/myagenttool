@@ -575,6 +575,7 @@ export interface ConsoleSnapshot {
   agentSkills?: AgentSkillSnapshot[];
   device: DeviceSnapshot;
   projects?: ProjectSnapshot[];
+  currentProjectId?: string | null;
   projectTargets?: ProjectTargetSnapshot[];
   worktrees?: WorktreeSnapshot[];
   agent: AgentSnapshot | null;
