@@ -111,6 +111,32 @@ Inferred capabilities are discovery candidates only. They are intentionally
 later slice. NPM probes inspect registration metadata only; they do not install
 packages, run scripts, or execute package code.
 
+## NPM Wrapper Descriptors
+
+NPM application sources may include a governed wrapper descriptor:
+
+```text
+source.wrapper.mode = metadata-only | installed-wrapper
+```
+
+`metadata-only` records reviewable wrapper metadata but projects no invokable
+commands. `installed-wrapper` can project approved commands as capabilities:
+
+```text
+app.<application-id>.wrapper.<command-id>
+```
+
+Wrapper commands carry command allowlist metadata, input schema, env redaction,
+cwd, timeout, cancellation, file policy, and network policy. Only commands with
+`status = approved` are projected. Draft and disabled commands remain visible in
+the application source/probe metadata but are not invokable through
+`/api/capabilities`.
+
+The first wrapper slice still does not install packages or execute npm. A
+wrapper invocation creates the normal governed invocation, requires approval,
+and returns the audited wrapper execution plan with `executable = false`.
+Runtime adapter wiring is a follow-up slice.
+
 ## Relationship To Existing Agents
 
 Codex, Claude, and ccusage remain normal governed agents/tools. Application

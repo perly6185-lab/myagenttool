@@ -378,6 +378,108 @@ test("POST /api/applications/:id/probe infers npm metadata from registration man
   assert.ok(!probe.capabilities.some((item) => item.name.includes("preinstall")), "npm probe should not infer install lifecycle scripts");
 });
 
+test("npm wrapper descriptors project only approved governed capabilities", async () => {
+  const registered = await call("/api/applications/register", {
+    method: "POST",
+    body: {
+      id: "npm_wrapper_fixture",
+      name: "NPM Wrapper Fixture",
+      source: {
+        type: "npm",
+        package: "@scope/wrapper-fixture",
+        version: "3.0.0",
+        packageJson: {
+          name: "@scope/wrapper-fixture",
+          version: "3.0.0",
+          scripts: { lint: "eslint .", dev: "vite" },
+        },
+        wrapper: {
+          mode: "installed-wrapper",
+          installState: "installed",
+          packageManager: "npm",
+          commands: [{
+            id: "lint",
+            displayName: "Lint wrapper",
+            commandType: "npm_script",
+            command: "lint",
+            status: "approved",
+            riskLevel: "low",
+            requiresApproval: true,
+            timeoutSeconds: 45,
+            cancellation: "supported",
+            envPolicy: { allow: ["CI"], redact: ["NPM_TOKEN"], inherit: false },
+            filePolicy: "read_only",
+            networkPolicy: "forbidden",
+          }, {
+            id: "dev",
+            commandType: "npm_script",
+            command: "dev",
+            status: "draft",
+          }],
+        },
+      },
+    },
+    token: "tok_a",
+  });
+  assert.equal(registered.status, 201);
+  const appId = registered.body.application.id;
+  assert.equal(registered.body.application.source.wrapper.mode, "installed-wrapper");
+
+  const capabilities = await call("/api/capabilities?providerType=application", { token: "tok_a" });
+  assert.equal(capabilities.status, 200);
+  const lintCapability = capabilities.body.capabilities.find((item) => item.name === `app.${appId}.wrapper.lint`);
+  assert.ok(lintCapability, "approved wrapper command should project a capability");
+  assert.equal(lintCapability.kind, "npm_wrapper");
+  assert.equal(lintCapability.metadata.wrapper.commandId, "lint");
+  assert.ok(!capabilities.body.capabilities.some((item) => item.name === `app.${appId}.wrapper.dev`), "draft wrapper command should not project");
+
+  const blocked = await call(`/api/capabilities/app.${appId}.wrapper.lint/invocations`, {
+    method: "POST",
+    body: {},
+    token: "tok_a",
+  });
+  assert.equal(blocked.status, 409);
+  assert.equal(blocked.body.error, "approval_required");
+
+  const invoked = await call(`/api/capabilities/app.${appId}.wrapper.lint/invocations`, {
+    method: "POST",
+    body: { approvalToken: "operator-approved-wrapper" },
+    token: "tok_a",
+  });
+  assert.equal(invoked.status, 201);
+  const output = invoked.body.invocation.result.output;
+  assert.equal(output.command.id, "lint");
+  assert.equal(output.command.command, "lint");
+  assert.equal(output.command.envPolicy.redact[0], "NPM_TOKEN");
+  assert.equal(output.invocationPlan.executable, false);
+});
+
+test("metadata-only npm wrapper registrations do not project invokable commands", async () => {
+  const registered = await call("/api/applications/register", {
+    method: "POST",
+    body: {
+      id: "npm_metadata_wrapper",
+      name: "NPM Metadata Wrapper",
+      source: {
+        type: "npm",
+        package: "@scope/metadata-wrapper",
+        wrapper: {
+          mode: "metadata-only",
+          commands: [{
+            id: "lint",
+            command: "lint",
+            status: "approved",
+          }],
+        },
+      },
+    },
+    token: "tok_a",
+  });
+  assert.equal(registered.status, 201);
+  const capabilities = await call("/api/capabilities?providerType=application", { token: "tok_a" });
+  assert.ok(!capabilities.body.capabilities.some((item) => item.name === `app.${registered.body.application.id}.wrapper.lint`));
+});
+
 test("POST /api/capabilities generate_orchestration writes a routine draft", async () => {
   const application = findApplicationForTest("app_team_a");
   application.status = "active";

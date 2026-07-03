@@ -59,6 +59,45 @@ try {
     appInvocation.agentId === "agt_platform_application_control",
     "application capability invocation should use the platform Application Control agent",
   );
+  const npmWrapper = await request("POST", "/api/applications/register", {
+    name: "Smoke NPM Wrapper",
+    source: {
+      type: "npm",
+      package: "@scope/smoke-wrapper",
+      version: "1.0.0",
+      packageJson: {
+        name: "@scope/smoke-wrapper",
+        version: "1.0.0",
+        scripts: { lint: "eslint ." },
+      },
+      wrapper: {
+        mode: "installed-wrapper",
+        installState: "installed",
+        commands: [{
+          id: "lint",
+          commandType: "npm_script",
+          command: "lint",
+          status: "approved",
+          riskLevel: "low",
+          envPolicy: { redact: ["NPM_TOKEN"] },
+          filePolicy: "read_only",
+          networkPolicy: "forbidden",
+        }],
+      },
+    },
+  });
+  const npmPrefix = `app.${npmWrapper.application.id}`;
+  const npmCapabilities = await request("GET", "/api/capabilities?providerType=application");
+  assert(
+    npmCapabilities.capabilities.some((capability) => capability.name === `${npmPrefix}.wrapper.lint` && capability.kind === "npm_wrapper"),
+    "approved npm wrapper command should project a governed capability",
+  );
+  const wrapperBlocked = await request("POST", `/api/capabilities/${npmPrefix}.wrapper.lint/invocations`, {}, { expectOk: false });
+  assert(wrapperBlocked.status === 409 && wrapperBlocked.data.error === "approval_required", "wrapper command should require approval");
+  const wrapperInvocation = await request("POST", `/api/capabilities/${npmPrefix}.wrapper.lint/invocations`, { approvalToken: "operator-approved-wrapper" });
+  assert(wrapperInvocation.invocation.result.output.command.id === "lint", "wrapper invocation should return the governed command plan");
+  assert(wrapperInvocation.invocation.result.output.invocationPlan.executable === false, "wrapper invocation should not execute npm yet");
+
   const orchestration = await request("POST", `/api/capabilities/${capabilityPrefix}.generate_orchestration/invocations`, {});
   const routinePath = orchestration.invocation.result.output.orchestration.path;
   assert(existsSync(routinePath), "generate_orchestration should write a routine spec file");
