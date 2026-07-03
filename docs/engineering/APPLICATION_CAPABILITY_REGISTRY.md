@@ -155,14 +155,19 @@ The first generalized discovery slice adds `/api/capabilities` while keeping
 application-projected capabilities use `provider.type = "application"`.
 Application capability invocation runs through the platform
 `agt_platform_application_control` agent for the first synchronous execution
-slice. High-risk lifecycle actions such as `offline` and `refresh` require an
-explicit `approvalToken`.
+slice. Every side-effecting action — `offline`, `archive`, `refresh`,
+`generate_orchestration`, and `wrapper:*` commands — requires an explicit
+`approvalToken` and returns `409 approval_required` without one. In this slice
+the token is an explicit-intent confirmation on an owner-scoped resource
+(tenancy is the real authorization boundary), **not** a cryptographic approval;
+a real approval-issuance/verification flow is tracked as follow-up.
 
-`app.<application-id>.generate_orchestration` writes a Loop Routine draft under
-the application root:
+`app.<application-id>.generate_orchestration` writes a Loop Routine draft into a
+platform-managed, per-application directory (keyed by the unique application id,
+never the application's own path or the server repo root):
 
 ```text
-.myagenttool/routines/app-<slug>-maintenance.json
+.myagenttool/applications/<application-id>/routines/app-<application-id>-maintenance.json
 ```
 
 The generated routine uses the normal `LoopRoutine` schema, includes read-only

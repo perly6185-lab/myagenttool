@@ -98,17 +98,29 @@ try {
   assert(wrapperInvocation.invocation.result.output.command.id === "lint", "wrapper invocation should return the governed command plan");
   assert(wrapperInvocation.invocation.result.output.invocationPlan.executable === false, "wrapper invocation should not execute npm yet");
 
-  const orchestration = await request("POST", `/api/capabilities/${capabilityPrefix}.generate_orchestration/invocations`, {});
+  const expectedRoutineId = `app-${registered.application.id}-maintenance`;
+
+  // Side-effecting actions require an explicit approvalToken; without one the
+  // gateway must reject before doing anything.
+  const generateNoToken = await request("POST", `/api/capabilities/${capabilityPrefix}.generate_orchestration/invocations`, {}, { expectOk: false });
+  assert(generateNoToken.status === 409 && generateNoToken.data?.error === "approval_required", "generate_orchestration without an approvalToken should be rejected");
+  const offlineNoToken = await request("POST", `/api/applications/${registered.application.id}/offline`, {}, { expectOk: false });
+  assert(offlineNoToken.status === 409 && offlineNoToken.data?.error === "approval_required", "offline without an approvalToken should be rejected");
+
+  const orchestration = await request("POST", `/api/capabilities/${capabilityPrefix}.generate_orchestration/invocations`, { approvalToken: "operator-approved-generate" });
   const orchestrationDraft = orchestration.invocation.result.output.orchestration;
   const routinePath = orchestrationDraft.path;
   assert(orchestrationDraft.validation?.ok, "generate_orchestration should return server-side routine validation");
   assert(existsSync(routinePath), "generate_orchestration should write a routine spec file");
+  // Draft must live under the platform-managed applications directory, never the
+  // application's own path or the server repo root.
+  assert(routinePath.includes(join(".myagenttool", "applications")), "routine draft must live under the managed applications directory");
   const routineCheck = aiJson(["loop-routine-check", "--file", routinePath, "--json"], applicationPath);
   assert(routineCheck.validation?.ok, "generated routine spec should validate");
-  const generated = await request("POST", `/api/applications/${registered.application.id}/orchestrations/generate`, {});
-  assert(generated.invocation.result.output.orchestration.id === "app-smoke-app-maintenance", "application orchestration endpoint should use the same routine id");
+  const generated = await request("POST", `/api/applications/${registered.application.id}/orchestrations/generate`, { approvalToken: "operator-approved-generate" });
+  assert(generated.invocation.result.output.orchestration.id === expectedRoutineId, "application orchestration endpoint should use the id-derived routine id");
   const orchestrations = await request("GET", `/api/applications/${registered.application.id}/orchestrations`);
-  assert(orchestrations.orchestrations.some((item) => item.routineId === "app-smoke-app-maintenance"), "orchestration list should expose generated routine draft");
+  assert(orchestrations.orchestrations.some((item) => item.routineId === expectedRoutineId), "orchestration list should expose generated routine draft");
 
   const probed = await request("POST", `/api/applications/${registered.application.id}/probe`);
   assert(probed.application.probe?.status === "completed", "probe should complete");

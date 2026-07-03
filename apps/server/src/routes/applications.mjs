@@ -23,7 +23,15 @@ export async function handleApplicationRoutes({
 
   if (req.method === "POST" && url.pathname === "/api/applications/register") {
     const body = await readJson(req);
-    if (!body.ownerTeamId && actor?.teamId) body.ownerTeamId = actor.teamId;
+    if (!body || typeof body !== "object" || Array.isArray(body)) {
+      sendJson(res, 400, { error: "invalid_application", message: "Request body must be an object." });
+      return true;
+    }
+    // A caller-supplied projectId must belong to the actor's team — otherwise an
+    // application could be attached to (and surfaced in) another team's project.
+    if (body.projectId && denyForeignProject({ res, sendJson, state, actor, projectId: body.projectId, notFound: { error: "project_not_found" } })) {
+      return true;
+    }
     try {
       const application = registerApplication(body, actor);
       sendJson(res, 201, {

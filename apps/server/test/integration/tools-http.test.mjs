@@ -312,6 +312,26 @@ test("POST /api/applications/register rejects cross-team duplicate sources", asy
   assert.match(duplicate.body.message, /already registered/);
 });
 
+test("POST /api/applications/register rejects a foreign projectId", async () => {
+  const res = await call("/api/applications/register", {
+    method: "POST",
+    body: {
+      name: "Foreign Project App",
+      source: { type: "npm", package: "@scope/foreign-project" },
+      projectId: "projB",
+    },
+    token: "tok_a",
+  });
+  assert.equal(res.status, 404);
+  assert.equal(res.body.error, "project_not_found");
+});
+
+test("POST /api/applications/register rejects a non-object body without crashing", async () => {
+  const res = await call("/api/applications/register", { method: "POST", body: null, token: "tok_a" });
+  assert.equal(res.status, 400);
+  assert.equal(res.body.error, "invalid_application");
+});
+
 test("POST /api/applications/:id/probe infers local package metadata without executable scripts", async () => {
   const res = await call("/api/applications/app_team_a/probe", {
     method: "POST",
@@ -483,15 +503,23 @@ test("metadata-only npm wrapper registrations do not project invokable commands"
 test("POST /api/capabilities generate_orchestration writes a routine draft", async () => {
   const application = findApplicationForTest("app_team_a");
   application.status = "active";
-  const res = await call("/api/capabilities/app.app_team_a.generate_orchestration/invocations", {
+  const noToken = await call("/api/capabilities/app.app_team_a.generate_orchestration/invocations", {
     method: "POST",
     body: {},
+    token: "tok_a",
+  });
+  assert.equal(noToken.status, 409);
+  assert.equal(noToken.body.error, "approval_required");
+
+  const res = await call("/api/capabilities/app.app_team_a.generate_orchestration/invocations", {
+    method: "POST",
+    body: { approvalToken: "operator-approved-generate" },
     token: "tok_a",
   });
   assert.equal(res.status, 201);
   const orchestration = res.body.invocation.result.output.orchestration;
   assert.equal(orchestration.kind, "LoopRoutineDraft");
-  assert.equal(orchestration.relativePath, ".myagenttool/routines/app-team-a-app-maintenance.json");
+  assert.equal(orchestration.relativePath, ".myagenttool/applications/app_team_a/routines/app-app_team_a-maintenance.json");
   assert.equal(orchestration.validation.ok, true);
   assert.deepEqual(orchestration.validation.policy.requiresApprovalFor, ["apply", "push", "pr-create", "pr-merge"]);
   assert.ok(existsSync(orchestration.path), "routine draft should be written to disk");
@@ -540,15 +568,15 @@ test("application orchestration endpoints generate and list routine drafts", asy
   findApplicationForTest("app_team_a").status = "active";
   const generated = await call("/api/applications/app_team_a/orchestrations/generate", {
     method: "POST",
-    body: {},
+    body: { approvalToken: "operator-approved-generate" },
     token: "tok_a",
   });
   assert.equal(generated.status, 201);
-  assert.equal(generated.body.invocation.result.output.orchestration.id, "app-team-a-app-maintenance");
+  assert.equal(generated.body.invocation.result.output.orchestration.id, "app-app_team_a-maintenance");
 
   const listed = await call("/api/applications/app_team_a/orchestrations", { token: "tok_a" });
   assert.equal(listed.status, 200);
-  assert.ok(listed.body.orchestrations.some((item) => item.routineId === "app-team-a-app-maintenance"));
+  assert.ok(listed.body.orchestrations.some((item) => item.routineId === "app-app_team_a-maintenance"));
 
   const foreign = await call("/api/applications/app_team_a/orchestrations", { token: "tok_b" });
   assert.equal(foreign.status, 404);
