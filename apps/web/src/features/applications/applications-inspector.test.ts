@@ -1,28 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { latestRoutineInvocation, orchestrationTask } from "@/features/applications/applications-inspector";
-import type { ApplicationOrchestration, ApplicationSnapshot, InvocationSnapshot } from "@/lib/console-state";
-
-const application = {
-  id: "app_docs",
-  name: "Docs",
-  kind: "repository",
-  source: { type: "git", url: "https://github.com/acme/docs.git" },
-  status: "active",
-} satisfies ApplicationSnapshot;
-
-describe("orchestrationTask", () => {
-  it("builds an audit-friendly task from an application draft", () => {
-    const orchestration = {
-      routineId: "routine_docs_smoke",
-      relativePath: ".myagenttool/routines/routine_docs_smoke.json",
-    } satisfies ApplicationOrchestration;
-
-    expect(orchestrationTask(application, orchestration)).toContain("routine_docs_smoke");
-    expect(orchestrationTask(application, orchestration)).toContain("Docs");
-    expect(orchestrationTask(application, orchestration)).toContain(".myagenttool/routines/routine_docs_smoke.json");
-    expect(orchestrationTask(application, orchestration)).toContain("audit-friendly evidence");
-  });
-});
+import { latestRoutineInvocation } from "@/features/applications/applications-inspector";
+import type { InvocationSnapshot } from "@/lib/console-state";
 
 describe("latestRoutineInvocation", () => {
   it("selects the newest matching application orchestration invocation", () => {

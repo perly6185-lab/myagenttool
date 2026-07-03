@@ -6,8 +6,10 @@ import {
   isAgentDisabled,
   normalizeStringArray,
 } from "../services/agents.mjs";
+import { existsSync, readFileSync } from "node:fs";
+import { dirname, resolve, sep } from "node:path";
 import { createAgentSkillService } from "../services/agent-skills.mjs";
-import { createApplicationService } from "../services/applications.mjs";
+import { createApplicationService, validateApplicationRoutineDraft } from "../services/applications.mjs";
 import { createCapabilityService } from "../services/capabilities.mjs";
 import { createCcusageImportService } from "../services/ccusage-imports.mjs";
 import { createClaudeReviewImportService } from "../services/claude-review-imports.mjs";
@@ -348,6 +350,125 @@ export function createServerRuntimeServices({
     invokeApplicationCapability,
   });
 
+  function runApplicationOrchestration(applicationId, routineId, body = {}, actor = null) {
+    const application = findApplication(applicationId);
+    if (!application) {
+      return { status: 404, body: { error: "application_not_found" } };
+    }
+    const orchestration = (application.orchestrations ?? []).find((item) => item?.routineId === routineId);
+    if (!orchestration) {
+      return { status: 404, body: { error: "orchestration_not_found", applicationId, routineId } };
+    }
+    if (application.status === "archived") {
+      return { status: 409, body: { error: "application_archived", applicationId } };
+    }
+    if (application.status !== "active") {
+      return { status: 409, body: { error: "application_not_active", applicationId, status: application.status } };
+    }
+    if (orchestration.status === "invalid" || orchestration.validation?.ok === false) {
+      return {
+        status: 422,
+        body: {
+          error: "invalid_application_routine",
+          applicationId,
+          routineId,
+          validation: orchestration.validation ?? null,
+        },
+      };
+    }
+    if (!orchestration.path || !isManagedApplicationRoutinePath(application, orchestration.path)) {
+      return { status: 422, body: { error: "invalid_orchestration_path", applicationId, routineId } };
+    }
+    if (!existsSync(orchestration.path)) {
+      return { status: 404, body: { error: "orchestration_file_not_found", applicationId, routineId } };
+    }
+
+    let routine = null;
+    try {
+      routine = JSON.parse(readFileSync(orchestration.path, "utf8"));
+    } catch (error) {
+      return {
+        status: 422,
+        body: {
+          error: "invalid_application_routine",
+          message: error instanceof Error ? error.message : String(error),
+          applicationId,
+          routineId,
+        },
+      };
+    }
+    const validation = validateApplicationRoutineDraft(routine, {
+      root: dirname(orchestration.path),
+      application,
+    });
+    if (!validation.ok) {
+      return {
+        status: 422,
+        body: {
+          error: "invalid_application_routine",
+          applicationId,
+          routineId,
+          validation,
+        },
+      };
+    }
+
+    const agentId = typeof body?.agentId === "string" && body.agentId.trim()
+      ? body.agentId.trim()
+      : null;
+    const agent = agentId ? findAgent(agentId) : defaultAgent();
+    if (!agent) {
+      return { status: 404, body: { error: "agent_not_found" } };
+    }
+    if (agent.status === "disabled") {
+      return { status: 409, body: { error: "agent_disabled", agentId: agent.id } };
+    }
+    if (agent.health?.status === "unhealthy") {
+      return {
+        status: 409,
+        body: { error: "agent_unhealthy", agentId: agent.id, message: agent.health.message },
+      };
+    }
+    if (agent.location?.type === "local_device" && state.device.unlinkState !== "linked") {
+      return { status: 409, body: { error: "device_unlinked", agentId: agent.id } };
+    }
+    const invocation = createInvocation(applicationRoutineTask({ application, orchestration, routine, validation }), agent, {
+      actor,
+      requestedBy: actor?.userId,
+      metadata: {
+        source: "application_orchestration",
+        applicationId: application.id,
+        applicationName: application.name,
+        routineId,
+        routineName: routine.metadata?.name ?? null,
+        orchestrationPath: orchestration.path ?? null,
+        orchestrationRelativePath: orchestration.relativePath ?? null,
+        projectId: application.projectId ?? null,
+        routineValidationOk: validation.ok,
+      },
+      timeoutSeconds: Number(body?.timeoutSeconds ?? 30),
+    });
+    startInvocationIfAllowed(invocation, agent);
+    appendEvent({
+      invocationId: invocation.id,
+      type: "application_orchestration_run_requested",
+      level: "info",
+      message: `${application.name} application orchestration ${routineId} run requested.`,
+      data: { applicationId: application.id, routineId },
+    });
+    return {
+      status: 201,
+      body: {
+        applicationId: application.id,
+        routineId,
+        invocationId: invocation.id,
+        agentId: agent.id,
+        status: invocation.status,
+        invocation,
+      },
+    };
+  }
+
   function nextId(prefix) {
     const id = `${prefix}_${String(idCounter).padStart(4, "0")}`;
     idCounter += 1;
@@ -376,6 +497,31 @@ export function createServerRuntimeServices({
       return "";
     }
     return normalized.length <= maxLength ? normalized : `${normalized.slice(0, Math.max(0, maxLength - 3))}...`;
+  }
+
+  function applicationRoutineTask({ application, orchestration, routine, validation }) {
+    const location = orchestration.relativePath ?? orchestration.path ?? `routine ${orchestration.routineId}`;
+    return [
+      `Run application orchestration ${orchestration.routineId} for ${application.name}.`,
+      `Use ${location} as the validated LoopRoutine draft.`,
+      `Routine name: ${routine.metadata?.name ?? orchestration.routineId}.`,
+      `Goal: ${routine.goal?.summary ?? "Inspect the registered application and report findings."}`,
+      `Safety policy: remoteWrites=${validation.policy.remoteWrites}, githubWrites=${validation.policy.githubWrites}, fanout.apply=${validation.policy.fanoutApply}.`,
+      "Execute only allowed steps, keep all side effects under the platform approval policy, and report audit-friendly evidence.",
+    ].join("\n");
+  }
+
+  function isManagedApplicationRoutinePath(application, path) {
+    const applicationSegment = String(application.id ?? "")
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9._-]+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      .slice(0, 72);
+    if (!applicationSegment) return false;
+    const routinesRoot = resolve(defaultProjectPath || process.cwd(), ".myagenttool", "applications", applicationSegment, "routines");
+    const target = resolve(path);
+    return target === routinesRoot || target.startsWith(routinesRoot + sep);
   }
 
   function unlinkDevice() {
@@ -420,6 +566,7 @@ export function createServerRuntimeServices({
     listApplications,
     probeApplication,
     registerApplication,
+    runApplicationOrchestration,
     transitionApplication,
     createCodexChangeReview,
     createCodexImportedEvidenceRecord,
@@ -528,6 +675,7 @@ export function createServerRuntimeServices({
     listApplications,
     probeApplication,
     registerApplication,
+    runApplicationOrchestration,
     transitionApplication,
     createSshTarget,
     createSshConnectionTest,

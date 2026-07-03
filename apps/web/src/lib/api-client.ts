@@ -255,6 +255,16 @@ export const api = {
   ) => request("POST", `/api/applications/${encodeURIComponent(id)}/${action}`, body),
   generateApplicationOrchestration: (id: string, body: { approvalToken?: string } = {}) =>
     request("POST", `/api/applications/${encodeURIComponent(id)}/orchestrations/generate`, body),
+  runApplicationOrchestration: (
+    id: string,
+    routineId: string,
+    body: { agentId?: string | null; timeoutSeconds?: number } = {},
+  ) =>
+    request(
+      "POST",
+      `/api/applications/${encodeURIComponent(id)}/orchestrations/${encodeURIComponent(routineId)}/run`,
+      body,
+    ),
   createInvocation: (
     task: string,
     agentId: string | null,

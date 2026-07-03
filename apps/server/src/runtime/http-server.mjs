@@ -47,6 +47,7 @@ export function createHttpServer({
   listApplications,
   probeApplication,
   registerApplication,
+  runApplicationOrchestration,
   transitionApplication,
   createSshTarget,
   createSshConnectionTest,
@@ -259,6 +260,7 @@ export function createHttpServer({
         registerApplication,
         transitionApplication,
         createCapabilityInvocation,
+        runApplicationOrchestration,
       })) {
         return;
       }

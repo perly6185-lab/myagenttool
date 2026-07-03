@@ -584,6 +584,89 @@ test("application orchestration endpoints generate and list routine drafts", asy
   assert.equal(foreign.body.error, "application_not_found");
 });
 
+test("application orchestration run endpoint creates governed invocations with routine metadata", async () => {
+  const application = findApplicationForTest("app_team_a");
+  application.status = "active";
+  const generated = await call("/api/applications/app_team_a/orchestrations/generate", {
+    method: "POST",
+    body: { approvalToken: "operator-approved-generate" },
+    token: "tok_a",
+  });
+  assert.equal(generated.status, 201);
+
+  const missing = await call("/api/applications/app_team_a/orchestrations/missing/run", {
+    method: "POST",
+    body: { agentId: "agt_platform_application_control" },
+    token: "tok_a",
+  });
+  assert.equal(missing.status, 404);
+  assert.equal(missing.body.error, "orchestration_not_found");
+
+  const foreign = await call("/api/applications/app_team_a/orchestrations/app-app_team_a-maintenance/run", {
+    method: "POST",
+    body: { agentId: "agt_platform_application_control" },
+    token: "tok_b",
+  });
+  assert.equal(foreign.status, 404);
+  assert.equal(foreign.body.error, "application_not_found");
+
+  application.status = "offline";
+  const offline = await call("/api/applications/app_team_a/orchestrations/app-app_team_a-maintenance/run", {
+    method: "POST",
+    body: { agentId: "agt_platform_application_control" },
+    token: "tok_a",
+  });
+  assert.equal(offline.status, 409);
+  assert.equal(offline.body.error, "application_not_active");
+
+  application.status = "active";
+  const run = await call("/api/applications/app_team_a/orchestrations/app-app_team_a-maintenance/run", {
+    method: "POST",
+    body: { agentId: "agt_platform_application_control" },
+    token: "tok_a",
+  });
+  assert.equal(run.status, 201);
+  assert.equal(run.body.applicationId, "app_team_a");
+  assert.equal(run.body.routineId, "app-app_team_a-maintenance");
+  assert.equal(run.body.agentId, "agt_platform_application_control");
+  assert.ok(run.body.invocationId);
+  assert.equal(run.body.invocation.options.metadata.source, "application_orchestration");
+  assert.equal(run.body.invocation.options.metadata.applicationId, "app_team_a");
+  assert.equal(run.body.invocation.options.metadata.routineId, "app-app_team_a-maintenance");
+  assert.equal(run.body.invocation.options.metadata.routineValidationOk, true);
+  assert.equal(run.body.invocation.projectId, "projA");
+  assert.match(run.body.invocation.input.task, /validated LoopRoutine draft/);
+
+  const validDraft = application.orchestrations.find((item) => item.routineId === "app-app_team_a-maintenance");
+  const originalPath = validDraft.path;
+  validDraft.path = "/tmp/a/package.json";
+  const outsidePath = await call("/api/applications/app_team_a/orchestrations/app-app_team_a-maintenance/run", {
+    method: "POST",
+    body: { agentId: "agt_platform_application_control" },
+    token: "tok_a",
+  });
+  assert.equal(outsidePath.status, 422);
+  assert.equal(outsidePath.body.error, "invalid_orchestration_path");
+  validDraft.path = originalPath;
+
+  const invalidDraft = {
+    routineId: "app-app_team_a-invalid",
+    status: "invalid",
+    path: "/tmp/not-written-invalid.json",
+    relativePath: ".myagenttool/applications/app_team_a/routines/app-app_team_a-invalid.json",
+    validation: { ok: false, errors: ["fixture invalid"] },
+  };
+  application.orchestrations = [invalidDraft, ...(application.orchestrations ?? [])];
+  const invalid = await call("/api/applications/app_team_a/orchestrations/app-app_team_a-invalid/run", {
+    method: "POST",
+    body: { agentId: "agt_platform_application_control" },
+    token: "tok_a",
+  });
+  assert.equal(invalid.status, 422);
+  assert.equal(invalid.body.error, "invalid_application_routine");
+  assert.equal(invalid.body.validation.errors[0], "fixture invalid");
+});
+
 test("application lifecycle endpoints require governed approval", async () => {
   findApplicationForTest("app_team_a").status = "active";
   const blocked = await call("/api/applications/app_team_a/offline", {
