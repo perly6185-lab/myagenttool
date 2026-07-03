@@ -643,6 +643,80 @@ export function createServerRuntimeServices({
         },
       };
     }
+    if (actionType === "select_agent") {
+      const selectedAgent = selectRecoveryAgent(run.invocation, body);
+      if (!selectedAgent.ok) {
+        actionRequest.status = "failed";
+        actionRequest.error = selectedAgent.error;
+        actionRequest.updatedAt = now();
+        persistStateSoon();
+        appendRecoveryActionEvent("rejected", invocationId, applicationId, routineId, actionType, recoveryModel.category, selectedAgent.error, actionRequest);
+        return {
+          status: selectedAgent.status,
+          body: {
+            error: selectedAgent.error,
+            applicationId,
+            routineId,
+            invocationId,
+            actionType,
+            recoveryActionRequest: actionRequest,
+          },
+        };
+      }
+      appendRecoveryActionEvent("requested", invocationId, applicationId, routineId, actionType, recoveryModel.category, reason, actionRequest);
+      const result = runApplicationOrchestration(applicationId, routineId, {
+        agentId: selectedAgent.agent.id,
+        timeoutSeconds: body?.timeoutSeconds,
+        retryOfInvocationId: invocationId,
+        retryReason: reason,
+        recoveryActionType: actionType,
+        recoveryOfInvocationId: invocationId,
+        recoveryReason: reason,
+        recoveryCategory: recoveryModel.category,
+      }, actor);
+      if (result.status >= 400) {
+        actionRequest.status = "failed";
+        actionRequest.error = result.body?.error ?? "run_failed";
+        actionRequest.updatedAt = now();
+        persistStateSoon();
+        appendRecoveryActionEvent("rejected", invocationId, applicationId, routineId, actionType, recoveryModel.category, actionRequest.error, actionRequest);
+        return result;
+      }
+      actionRequest.status = "executed";
+      actionRequest.selectedAgentId = selectedAgent.agent.id;
+      actionRequest.resultInvocationId = result.body?.invocationId ?? null;
+      actionRequest.executedAt = now();
+      actionRequest.updatedAt = actionRequest.executedAt;
+      persistStateSoon();
+      appendEvent({
+        invocationId,
+        type: "application_orchestration_recovery_action_executed",
+        level: "info",
+        message: `Application orchestration recovery action ${actionType} executed.`,
+        data: {
+          applicationId,
+          routineId,
+          actionType,
+          recoveryActionRequestId: actionRequest.id,
+          selectedAgentId: actionRequest.selectedAgentId,
+          resultInvocationId: actionRequest.resultInvocationId,
+        },
+      });
+      return {
+        status: result.status,
+        body: {
+          ...result.body,
+          recoveryActionRequest: actionRequest,
+          recoveryAction: {
+            actionType,
+            selectedAgentId: selectedAgent.agent.id,
+            recoveryCategory: recoveryModel.category,
+            recoveryOfInvocationId: invocationId,
+            recoveryReason: reason,
+          },
+        },
+      };
+    }
     if (actionType !== "rerun") {
       actionRequest.status = "unsupported";
       actionRequest.updatedAt = now();
@@ -702,6 +776,7 @@ export function createServerRuntimeServices({
       requiresApproval: Boolean(action.requiresApproval),
       approvalRequestId: null,
       resultInvocationId: null,
+      selectedAgentId: null,
       resultOrchestrationId: null,
       resultOrchestrationRelativePath: null,
       error: null,
@@ -896,6 +971,55 @@ export function createServerRuntimeServices({
         details,
       },
     });
+  }
+
+  function selectRecoveryAgent(sourceInvocation, body = {}) {
+    const requestedAgentId = typeof body?.agentId === "string" && body.agentId.trim()
+      ? body.agentId.trim()
+      : null;
+    const candidates = requestedAgentId
+      ? [findAgent(requestedAgentId)].filter(Boolean)
+      : orderedRecoveryAgentCandidates();
+    if (!candidates.length) {
+      return { ok: false, status: 404, error: requestedAgentId ? "agent_not_found" : "healthy_agent_not_found" };
+    }
+    const preferred = candidates.find((agent) => agent.id !== sourceInvocation.agentId && isAgentSelectableForRecovery(agent))
+      ?? candidates.find((agent) => isAgentSelectableForRecovery(agent));
+    if (!preferred) {
+      const first = candidates[0];
+      if (first?.status === "disabled") {
+        return { ok: false, status: 409, error: "agent_disabled" };
+      }
+      if (first?.health?.status === "unhealthy") {
+        return { ok: false, status: 409, error: "agent_unhealthy" };
+      }
+      if (first?.location?.type === "local_device" && state.device.unlinkState !== "linked") {
+        return { ok: false, status: 409, error: "device_unlinked" };
+      }
+      return { ok: false, status: 409, error: "healthy_agent_not_found" };
+    }
+    return { ok: true, agent: preferred };
+  }
+
+  function isAgentSelectableForRecovery(agent) {
+    if (!agent) return false;
+    if (agent.status === "disabled" || agent.status === "unavailable") return false;
+    if (agent.health?.status === "unhealthy") return false;
+    if (agent.location?.type === "local_device" && state.device.unlinkState !== "linked") return false;
+    return true;
+  }
+
+  function orderedRecoveryAgentCandidates() {
+    const applicationControl = state.agents.find((agent) => agent?.id === "agt_platform_application_control");
+    return [
+      applicationControl,
+      ...state.agents.filter((agent) => agent && agent.id !== applicationControl?.id && hasApplicationControlCapability(agent)),
+    ].filter(Boolean);
+  }
+
+  function hasApplicationControlCapability(agent) {
+    return Array.isArray(agent?.capabilities)
+      && agent.capabilities.some((capability) => capability?.name === "application_control");
   }
 
   function nextId(prefix) {
