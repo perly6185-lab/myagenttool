@@ -1,4 +1,5 @@
 import {
+  AppWindow,
   Boxes,
   FolderKanban,
   LayoutDashboard,
@@ -38,6 +39,7 @@ export const SECTIONS: SectionDef[] = [
   { key: "integrations", label: "Integrations", icon: Puzzle, blurb: "Connect unsupported agents" },
   { key: "tools", label: "Tools", icon: Wrench, blurb: "Governed tools you can discover and run" },
   { key: "review", label: "Review", icon: ShieldCheck, blurb: "Codex and Claude diff-review findings" },
+  { key: "applications", label: "Applications", icon: AppWindow, blurb: "Registered apps and their governed capabilities" },
   { key: "economics", label: "Economics", icon: Receipt, blurb: "Metered AI usage and cost ledger" },
   { key: "audit", label: "Audit", icon: ScrollText, blurb: "What was recorded and why" },
 ];

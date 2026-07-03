@@ -5,6 +5,7 @@
  */
 
 import type {
+  ApplicationCapability,
   ConsoleSnapshot,
   ReviewFindingQueryResponse,
   ToolDescriptor,
@@ -233,6 +234,11 @@ export const api = {
     const suffix = query.toString() ? `?${query}` : "";
     return request<ReviewFindingQueryResponse>("GET", `/api/review-findings${suffix}`);
   },
+  listApplicationCapabilities: (id: string) =>
+    request<{ applicationId: string; capabilities: ApplicationCapability[] }>(
+      "GET",
+      `/api/applications/${encodeURIComponent(id)}/capabilities`,
+    ),
   createInvocation: (
     task: string,
     agentId: string | null,
