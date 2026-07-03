@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { Clipboard, ExternalLink, Play } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -9,7 +10,7 @@ import { useConsoleState } from "@/data/use-console-state";
 import { useAsyncAction, api } from "@/data/use-console-actions";
 import { useUiStore } from "@/store/ui-store";
 import { sourceSummary } from "@/features/applications/applications-view";
-import type { ApplicationSnapshot } from "@/lib/console-state";
+import type { ApplicationOrchestration, ApplicationSnapshot, InvocationSnapshot } from "@/lib/console-state";
 
 // Explicit-intent confirmation token for governed side-effecting actions. It is
 // an intent marker (tenancy is the real authz), not a cryptographic approval.
@@ -126,6 +127,162 @@ function ApplicationActions({ application }: { application: ApplicationSnapshot 
   );
 }
 
+export function latestRoutineInvocation(invocations: InvocationSnapshot[], applicationId: string, routineId: string) {
+  return invocations.find((invocation) => {
+    const metadata = invocation.options?.metadata;
+    return metadata?.source === "application_orchestration"
+      && metadata.applicationId === applicationId
+      && metadata.routineId === routineId;
+  }) ?? null;
+}
+
+export function orchestrationTask(application: ApplicationSnapshot, orchestration: ApplicationOrchestration): string {
+  const location = orchestration.relativePath ?? orchestration.path ?? "the generated LoopRoutine draft";
+  return [
+    `Run application orchestration ${orchestration.routineId} for ${application.name}.`,
+    `Use ${location} as the governed LoopRoutine draft.`,
+    "Inspect the registered application capability surface, execute only allowed steps, and report the result with audit-friendly evidence.",
+  ].join("\n");
+}
+
+function OrchestrationDrafts({
+  application,
+  invocations,
+  orchestrations,
+}: {
+  application: ApplicationSnapshot;
+  invocations: InvocationSnapshot[];
+  orchestrations: ApplicationOrchestration[];
+}) {
+  const { execute, pending, error } = useAsyncAction();
+  const setSelectedInvocationId = useUiStore((s) => s.setSelectedInvocationId);
+  const setSection = useUiStore((s) => s.setSection);
+  const [createdInvocationByRoutineKey, setCreatedInvocationByRoutineKey] = useState<Record<string, string>>({});
+  const [copiedRoutineId, setCopiedRoutineId] = useState<string | null>(null);
+  const [pendingRoutineId, setPendingRoutineId] = useState<string | null>(null);
+
+  function viewInvocation(invocationId: string) {
+    setSelectedInvocationId(invocationId);
+    setSection("invocations");
+  }
+
+  function copyRoutine(orchestration: ApplicationOrchestration) {
+    const text = orchestration.relativePath
+      ? `${orchestration.routineId} (${orchestration.relativePath})`
+      : orchestration.routineId;
+    void navigator.clipboard?.writeText(text);
+    setCopiedRoutineId(orchestration.routineId);
+  }
+
+  async function runOrchestration(orchestration: ApplicationOrchestration) {
+    setPendingRoutineId(orchestration.routineId);
+    const routineKey = `${application.id}:${orchestration.routineId}`;
+    const ok = await execute(async () => {
+      const created = await api.createInvocation(
+        orchestrationTask(application, orchestration),
+        null,
+        application.projectId ?? null,
+        null,
+        {
+          metadata: {
+            source: "application_orchestration",
+            applicationId: application.id,
+            applicationName: application.name,
+            routineId: orchestration.routineId,
+            orchestrationPath: orchestration.path ?? null,
+            orchestrationRelativePath: orchestration.relativePath ?? null,
+          },
+        },
+      ) as { invocation?: { id?: string } };
+      const invocationId = created.invocation?.id ?? null;
+      if (invocationId) {
+        setCreatedInvocationByRoutineKey((current) => ({
+          ...current,
+          [routineKey]: invocationId,
+        }));
+      }
+      return created;
+    });
+    if (!ok) {
+      setCreatedInvocationByRoutineKey((current) => {
+        const next = { ...current };
+        delete next[routineKey];
+        return next;
+      });
+    }
+    setPendingRoutineId(null);
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Orchestration drafts</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        {orchestrations.map((orchestration) => {
+          const lastInvocation = latestRoutineInvocation(invocations, application.id, orchestration.routineId);
+          const invocationId = createdInvocationByRoutineKey[`${application.id}:${orchestration.routineId}`]
+            ?? lastInvocation?.id
+            ?? null;
+          const isPendingRoutine = pending && pendingRoutineId === orchestration.routineId;
+          return (
+            <div key={orchestration.routineId} className="space-y-2 rounded-md border border-border p-3">
+              <div className="flex items-start justify-between gap-2">
+                <div className="min-w-0 space-y-1">
+                  <p className="[overflow-wrap:anywhere] font-mono text-xs">{orchestration.routineId}</p>
+                  <p className="[overflow-wrap:anywhere] text-xs text-muted-foreground">
+                    {orchestration.relativePath ?? orchestration.path ?? "Draft path not recorded"}
+                  </p>
+                </div>
+                <Badge tone={orchestration.validation?.ok === false ? "danger" : "success"}>
+                  {orchestration.validation?.ok === false ? "invalid" : orchestration.status ?? "draft"}
+                </Badge>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <Button
+                  size="icon"
+                  variant="secondary"
+                  title="Copy orchestration reference"
+                  aria-label="Copy orchestration reference"
+                  onClick={() => copyRoutine(orchestration)}
+                >
+                  <Clipboard />
+                </Button>
+                <Button
+                  size="sm"
+                  disabled={pending || orchestration.validation?.ok === false || application.status !== "active"}
+                  onClick={() => void runOrchestration(orchestration)}
+                >
+                  <Play />
+                  {isPendingRoutine ? "Starting..." : "Run"}
+                </Button>
+                {invocationId ? (
+                  <Button size="sm" variant="secondary" onClick={() => viewInvocation(invocationId)}>
+                    <ExternalLink />
+                    View invocation
+                  </Button>
+                ) : null}
+                {copiedRoutineId === orchestration.routineId ? (
+                  <span className="text-xs text-success">Copied.</span>
+                ) : null}
+                {lastInvocation ? (
+                  <span className="text-xs text-muted-foreground">
+                    Last run: {lastInvocation.status ?? "unknown"}
+                  </span>
+                ) : null}
+              </div>
+            </div>
+          );
+        })}
+        {error ? <p className="text-xs text-destructive">{error}</p> : null}
+        {application.status !== "active" ? (
+          <p className="text-xs text-muted-foreground">Bring the application online before running a draft.</p>
+        ) : null}
+      </CardContent>
+    </Card>
+  );
+}
+
 /** Right-pane detail for the application selected in the Applications view. */
 export function ApplicationsInspector() {
   const { data: state } = useConsoleState();
@@ -157,6 +314,7 @@ export function ApplicationsInspector() {
   const capabilities = capabilityData?.capabilities ?? [];
   const probe = application.probe;
   const orchestrations = application.orchestrations ?? [];
+  const invocations = state?.invocations ?? [];
 
   return (
     <div className="space-y-4">
@@ -236,21 +394,11 @@ export function ApplicationsInspector() {
       ) : null}
 
       {orchestrations.length ? (
-        <Card>
-          <CardHeader>
-            <CardTitle>Orchestration drafts</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-2">
-            {orchestrations.map((orchestration) => (
-              <div key={orchestration.routineId} className="flex items-center justify-between gap-2 text-sm">
-                <span className="[overflow-wrap:anywhere] font-mono text-xs">{orchestration.routineId}</span>
-                <Badge tone={orchestration.validation?.ok === false ? "danger" : "success"}>
-                  {orchestration.validation?.ok === false ? "invalid" : orchestration.status ?? "draft"}
-                </Badge>
-              </div>
-            ))}
-          </CardContent>
-        </Card>
+        <OrchestrationDrafts
+          application={application}
+          invocations={invocations}
+          orchestrations={orchestrations}
+        />
       ) : null}
     </div>
   );
