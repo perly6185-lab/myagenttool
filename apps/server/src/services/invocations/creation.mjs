@@ -14,6 +14,7 @@ export function createInvocationCreationRuntime({
   normalizeCodexWorkspacePolicy,
   createManagedCodexWorkspace,
   createManagedCodexSession,
+  resolveResumeCodexSessionId,
   evaluateInvocationPolicy,
   enforcePlatformAiQuota,
   createPolicyDecisionRecord,
@@ -42,6 +43,17 @@ export function createInvocationCreationRuntime({
     const codexWorkspacePolicy = normalizeCodexWorkspacePolicy(options.codexWorkspacePolicy, agent);
     const managedCodexWorkspace = createManagedCodexWorkspace({ invocationId: id, agent, workspacePolicy: codexWorkspacePolicy });
     const managedCodexSession = createManagedCodexSession({ invocationId: id, agent, codexSessionMode, workspace: managedCodexWorkspace, actor: options.actor });
+    // True resume (#163): resolve the specific provider session to continue so
+    // the bridge resumes it by id instead of the fragile global `--last`. Scoped
+    // to this run's repo + user; null (no prior session) falls back to `--last`.
+    const codexResumeSessionId =
+      codexSessionMode === "continue_last" && managedCodexSession && typeof resolveResumeCodexSessionId === "function"
+        ? resolveResumeCodexSessionId({
+            repoPath: managedCodexSession.repoPath,
+            userId: managedCodexSession.userId,
+            excludeSessionId: managedCodexSession.id,
+          })
+        : null;
     const requestedMetadata = options.metadata && typeof options.metadata === "object" && !Array.isArray(options.metadata) ? options.metadata : {};
     const requestedWorktree = requestedMetadata.worktreeId
       ? state.worktrees.find((item) => item.id === requestedMetadata.worktreeId)
@@ -97,6 +109,7 @@ export function createInvocationCreationRuntime({
         timeoutSeconds: Number(options.timeoutSeconds ?? 30),
         requireLocalApproval: Boolean(options.requireLocalApproval ?? policy.decision === "requires_local_approval"),
         codexSessionMode,
+        codexResumeSessionId,
         codexWorkspacePolicy,
         approvalMode: normalizeCodexApprovalMode(options.approvalMode ?? options.metadata?.permissionMode),
         metadata: {

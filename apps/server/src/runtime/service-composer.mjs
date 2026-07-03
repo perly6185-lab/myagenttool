@@ -136,6 +136,7 @@ export function createServerRuntimeServices({
     recordCodexHookEvent,
     repoPathForEvidence,
     resolveCodexApprovalBrokerRequest: resolveCodexApprovalBrokerRequestBase,
+    resolveResumeCodexSessionId,
     updateCodexSessionFromEvent,
   } = createCodexService({
     state,
@@ -250,6 +251,7 @@ export function createServerRuntimeServices({
     normalizeCodexWorkspacePolicy,
     createManagedCodexWorkspace,
     createManagedCodexSession,
+    resolveResumeCodexSessionId,
     closeCodexSession,
     budgetGateForProject,
   });

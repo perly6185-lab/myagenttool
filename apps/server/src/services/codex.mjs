@@ -91,6 +91,21 @@ export function createCodexService({
     return state.codexSessions.find((session) => session.invocationId === invocationId) ?? null;
   }
 
+  // True resume (#163): find the provider session id to continue for a new
+  // "continue_last" run. codexSessions is newest-first (unshift), so the first
+  // match is the most recent PRIOR session that actually captured a provider
+  // session id — scoped to the same repo + user so "continue" never crosses
+  // projects or tenants. Returns null when nothing resumable exists, letting
+  // the bridge fall back to `--last`.
+  function resolveResumeCodexSessionId({ repoPath = null, userId = null, excludeSessionId = null } = {}) {
+    const match = state.codexSessions.find((session) =>
+      session.id !== excludeSessionId
+      && session.codexSessionId
+      && (userId ? session.userId === userId : true)
+      && (repoPath ? session.repoPath === repoPath : true));
+    return match?.codexSessionId ?? null;
+  }
+
   function updateCodexSessionFromEvent(record) {
     const session = codexSessionForInvocation(record.invocationId);
     if (!session) {
@@ -577,6 +592,7 @@ export function createCodexService({
     recordCodexHookEvent,
     repoPathForEvidence,
     resolveCodexApprovalBrokerRequest,
+    resolveResumeCodexSessionId,
     updateCodexSessionFromEvent,
   };
 }
