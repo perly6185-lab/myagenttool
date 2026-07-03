@@ -56,6 +56,7 @@ export function DashboardView() {
   const setSelectedProjectId = useUiStore((s) => s.setSelectedProjectId);
   const selectedWorktreeId = useUiStore((s) => s.selectedWorktreeId);
   const setSelectedWorktreeId = useUiStore((s) => s.setSelectedWorktreeId);
+  const setSection = useUiStore((s) => s.setSection);
   const { execute, pending, error } = useAsyncAction();
 
   const projects = state?.projects ?? [];
@@ -120,6 +121,12 @@ export function DashboardView() {
   }
 
   const userTask = invocation?.input?.task;
+  // Show a final summary block once the run reaches a terminal state.
+  const terminalStatus =
+    invocation && invocation.status && !RUNNING_STATES.includes(invocation.status) ? invocation.status : null;
+  const transcriptSummary = terminalStatus
+    ? { text: invocation?.result?.summary, status: terminalStatus }
+    : undefined;
 
   return (
     <div className="flex h-full flex-col gap-4">
@@ -140,7 +147,12 @@ export function DashboardView() {
               </div>
             </div>
           ) : null}
-          <Transcript events={events} renderAction={(event) => <DecisionAction event={event} />} />
+          <Transcript
+            events={events}
+            renderAction={(event) => <DecisionAction event={event} />}
+            summary={transcriptSummary}
+            onOpenReview={() => setSection("review")}
+          />
         </div>
       </Card>
 
