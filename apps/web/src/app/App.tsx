@@ -1,6 +1,7 @@
 import { NavRail } from "@/components/layout/nav-rail";
 import { Topbar } from "@/components/layout/topbar";
 import { Inspector } from "@/components/layout/inspector";
+import { ErrorBoundary } from "@/components/common/error-boundary";
 import { SECTION_VIEWS } from "@/app/routes";
 import { useUiStore } from "@/store/ui-store";
 
@@ -20,9 +21,13 @@ export function App() {
         <Topbar />
         <div className="flex min-h-0 flex-1">
           <main className="min-w-0 flex-1 overflow-y-auto px-6 py-6">
-            <View />
+            <ErrorBoundary resetKey={section}>
+              <View />
+            </ErrorBoundary>
           </main>
-          <Inspector />
+          <ErrorBoundary resetKey={section}>
+            <Inspector />
+          </ErrorBoundary>
         </div>
       </div>
     </div>
