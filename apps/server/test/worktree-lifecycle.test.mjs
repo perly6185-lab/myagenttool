@@ -60,6 +60,23 @@ test("createWorktree: real git worktree + registry + derived project inheriting 
   assert.equal(derivedProject.ownerTeamId, "team_a", "tenancy is inherited from the source project");
 });
 
+test("projectBranches: returns { name, remote } objects (BranchRef) with the current branch first", () => {
+  const source = state.projects.find((p) => p.source !== "worktree");
+  const { branches, current } = svc.projectBranches(source);
+
+  assert.equal(current, "main");
+  assert.ok(branches.length >= 2, "lists main plus the worktree branch created above");
+  // Contract the console's branch picker relies on: bare strings would make
+  // b.name undefined and crash its `b.name.toLowerCase()` filter.
+  for (const b of branches) {
+    assert.equal(typeof b.name, "string");
+    assert.equal(typeof b.remote, "boolean");
+  }
+  assert.equal(branches[0].name, "main", "current branch is surfaced first");
+  const names = branches.map((b) => b.name);
+  assert.ok(names.includes("myagent/feature-one"), "includes the branch created by createWorktree");
+});
+
 test("createWorktree: an existing target path and an invalid branch are rejected", () => {
   const source = state.projects.find((p) => p.source !== "worktree");
   assert.throws(
