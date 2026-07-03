@@ -481,6 +481,36 @@ function checkLocal() {
     failReport("Pull request risk routing check failed", ["specific security/data evidence should satisfy the route"]);
   }
 
+  const privilegedExecutionMissing = reviewRiskGates(
+    ["apps/server/src/services/applications.mjs"],
+    "## Verification\n- pnpm test\n",
+    0,
+    { failOnRiskWarnings: true },
+  );
+  if (!privilegedExecutionMissing.failures.some((failure) => failure.includes("governed registry / execution surface"))) {
+    failReport("Pull request risk routing check failed", ["registry/execution changes should require a security review note"]);
+  }
+
+  const privilegedExecutionCovered = reviewRiskGates(
+    ["apps/server/src/services/applications.mjs"],
+    "## Verification\n- pnpm test\n## Security Review\n- Tenancy: registration and lifecycle scope by owning team via denyForeignProject; ownerTeamId is actor-derived.\n- Filesystem: routine drafts confined to a per-application managed directory with a containment assertion.\n- Approval: every side-effecting action requires an explicit approvalToken.\n- Injection: no new spawn; wrapper argv stays server-side and is not exposed.\n",
+    0,
+    { failOnRiskWarnings: true },
+  );
+  if (privilegedExecutionCovered.failures.some((failure) => failure.includes("governed registry / execution surface"))) {
+    failReport("Pull request risk routing check failed", ["a structured Security Review section should satisfy the registry/execution route"]);
+  }
+
+  const placeholderSecurityReview = reviewRiskGates(
+    ["apps/server/src/services/applications.mjs"],
+    "## Verification\n- pnpm test\n## Security Review\n- Tenancy: N/A\n- Filesystem: N/A\n- Approval: N/A\n- Injection: N/A\n",
+    0,
+    { failOnRiskWarnings: true },
+  );
+  if (!placeholderSecurityReview.failures.some((failure) => failure.includes("governed registry / execution surface"))) {
+    failReport("Pull request risk routing check failed", ["placeholder Security Review fields should not satisfy the registry/execution route"]);
+  }
+
   const weakIssueLink = validateDedicatedLinkedIssue({
     repo: "example/repo",
     body: "Refs #1",

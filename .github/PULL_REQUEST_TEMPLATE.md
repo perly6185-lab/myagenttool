@@ -46,3 +46,14 @@
 - [ ] Cross-platform execution/cancellation evidence for desktop or local execution changes, or not applicable.
 - [ ] Security, data, billing, credential, and audit impact reviewed, or not applicable.
 - [ ] Release, deploy preflight, rollback, and human approval evidence, or not applicable.
+
+## Security Review
+
+<!-- REQUIRED when this PR touches a governed registry / execution surface:
+applications/capabilities/tools services or routes, agent wrappers, or the
+Desktop Bridge. Each field must be a specific statement — not "N/A". -->
+
+- Tenancy: <!-- how team/project ownership is enforced; who can/can't act -->
+- Filesystem: <!-- any path/write; how it's confined; traversal considered -->
+- Approval: <!-- which side-effecting actions are gated and how -->
+- Injection: <!-- process spawn / argv / command injection; argv leakage -->
