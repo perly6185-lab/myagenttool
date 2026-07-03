@@ -57,6 +57,8 @@ export function DashboardView() {
   const selectedWorktreeId = useUiStore((s) => s.selectedWorktreeId);
   const setSelectedWorktreeId = useUiStore((s) => s.setSelectedWorktreeId);
   const setSection = useUiStore((s) => s.setSection);
+  const resumeFromInvocationId = useUiStore((s) => s.resumeFromInvocationId);
+  const setResumeFromInvocationId = useUiStore((s) => s.setResumeFromInvocationId);
   const { execute, pending, error } = useAsyncAction();
 
   const projects = state?.projects ?? [];
@@ -108,14 +110,24 @@ export function DashboardView() {
     if (el && pinnedRef.current) el.scrollTop = el.scrollHeight;
   }, [events.length, invocation?.id, invocation?.input?.task]);
 
+  // Resume mode (#163): when a session was picked to continue, the next send
+  // creates a `continue_last` run targeting that specific Codex session.
+  const resumeSource = useMemo(
+    () => (resumeFromInvocationId ? (state?.invocations ?? []).find((inv) => inv.id === resumeFromInvocationId) ?? null : null),
+    [state?.invocations, resumeFromInvocationId],
+  );
+
   async function runTask() {
     const submitted = task.trim();
+    const resumeId = resumeFromInvocationId;
+    const options = resumeId ? { codexSessionMode: "continue_last", resumeFromInvocationId: resumeId } : undefined;
     await execute(async () => {
-      const created = (await api.createInvocation(submitted, agent?.id ?? null, projectId, targetWorktree?.id ?? null)) as {
+      const created = (await api.createInvocation(submitted, agent?.id ?? null, projectId, targetWorktree?.id ?? null, options)) as {
         invocation: { id: string };
       };
       setSelectedInvocationId(created.invocation.id);
       setTask(""); // clear the composer on send; the task shows as the user bubble
+      setResumeFromInvocationId(null); // one-shot: consume the resume intent
       return created;
     });
   }
@@ -162,6 +174,23 @@ export function DashboardView() {
           <CardTitle>What should your computer do?</CardTitle>
         </CardHeader>
         <CardContent className="space-y-3">
+          {resumeFromInvocationId ? (
+            <div className="flex items-center justify-between gap-2 rounded-md border border-primary/40 bg-primary/5 px-3 py-2 text-xs">
+              <span className="min-w-0">
+                Continuing session
+                <span className="block truncate font-medium [overflow-wrap:anywhere]">
+                  {resumeSource?.input?.task ?? resumeFromInvocationId}
+                </span>
+              </span>
+              <button
+                type="button"
+                onClick={() => setResumeFromInvocationId(null)}
+                className="shrink-0 text-muted-foreground hover:text-foreground"
+              >
+                Start fresh
+              </button>
+            </div>
+          ) : null}
           <Textarea rows={3} value={task} onChange={(e) => setTask(e.target.value)} aria-label="Task" />
 
           <div className="grid gap-3 sm:grid-cols-2">

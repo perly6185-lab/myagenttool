@@ -52,6 +52,9 @@ export function createInvocationCreationRuntime({
             repoPath: managedCodexSession.repoPath,
             userId: managedCodexSession.userId,
             excludeSessionId: managedCodexSession.id,
+            // When the UI resumes a specific session, continue THAT one; else
+            // fall back to the newest prior session for this repo + user.
+            invocationId: typeof options.resumeFromInvocationId === "string" ? options.resumeFromInvocationId : null,
           })
         : null;
     const requestedMetadata = options.metadata && typeof options.metadata === "object" && !Array.isArray(options.metadata) ? options.metadata : {};
