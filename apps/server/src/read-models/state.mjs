@@ -174,9 +174,11 @@ function applicationRecoveryActionReadModel(request, invocationsById, events = [
   const resultInvocation = request.resultInvocationId
     ? invocationsById.get(request.resultInvocationId) ?? null
     : null;
+  const outcome = applicationRecoveryOutcome(request, resultInvocation);
   return {
     ...request,
-    outcome: applicationRecoveryOutcome(request, resultInvocation),
+    outcome,
+    outcomeReason: outcome.reason,
     sourceInvocation: sourceInvocation ? invocationBrief(sourceInvocation) : null,
     resultInvocation: resultInvocation ? invocationBrief(resultInvocation) : null,
     timeline: applicationRecoveryTimeline(request, events),
@@ -235,49 +237,83 @@ function applicationRecoveryOutcome(request, resultInvocation) {
   if (request.status === "failed" || request.status === "unsupported") {
     return {
       state: "needs_attention",
+      reason: request.error ?? "execution_failed_before_result",
+      severity: "danger",
       summary: request.error ? `Recovery failed: ${request.error}.` : "Recovery failed before a result invocation was created.",
+      nextStep: "Review the failure details and choose another recovery action.",
     };
   }
   if (["approval_pending", "approval_approved", "requested", "executing"].includes(request.status)) {
     return {
       state: "pending",
+      reason: pendingRecoveryReason(request.status),
+      severity: "info",
       summary: "Recovery is still pending or executing.",
+      nextStep: request.status === "approval_pending"
+        ? "Resolve the linked approval request before this recovery can execute."
+        : "Wait for the recovery action to finish, then inspect the result invocation.",
     };
   }
   if (["approval_denied", "approval_timed_out"].includes(request.status)) {
     return {
       state: "needs_attention",
+      reason: request.status,
+      severity: "warning",
       summary: "Recovery approval did not complete.",
+      nextStep: "Request approval again or choose a different recovery action.",
     };
   }
   if (!request.resultInvocationId) {
+    const noop = request.status === "noop";
     return {
-      state: request.status === "noop" ? "pending" : "needs_attention",
-      summary: request.status === "noop" ? "Recovery action did not create a new invocation." : "Recovery executed without a linked result invocation.",
+      state: noop ? "pending" : "needs_attention",
+      reason: noop ? "no_result_expected" : "missing_result_invocation",
+      severity: noop ? "info" : "warning",
+      summary: noop ? "Recovery action did not create a new invocation." : "Recovery executed without a linked result invocation.",
+      nextStep: noop ? "Inspect the source invocation evidence." : "Review the recovery action audit trail and retry if needed.",
     };
   }
   if (!resultInvocation) {
     return {
       state: "needs_attention",
+      reason: "result_invocation_not_visible",
+      severity: "warning",
       summary: "Recovery result invocation is no longer visible.",
+      nextStep: "Check tenancy scope or retention before deciding whether to retry.",
     };
   }
   if (["succeeded", "completed"].includes(resultInvocation.status)) {
     return {
       state: "recovered",
+      reason: "result_succeeded",
+      severity: "success",
       summary: "Recovered invocation completed successfully.",
+      nextStep: "No immediate action is required.",
     };
   }
   if (["failed", "cancelled", "denied"].includes(resultInvocation.status)) {
     return {
       state: "still_failed",
+      reason: `result_${resultInvocation.status}`,
+      severity: "danger",
       summary: `Recovered invocation ended as ${resultInvocation.status}.`,
+      nextStep: "Open the recovered invocation, review the failure, and choose another recovery path.",
     };
   }
   return {
     state: "pending",
+    reason: "result_in_progress",
+    severity: "info",
     summary: `Recovered invocation is ${resultInvocation.status ?? "in progress"}.`,
+    nextStep: "Wait for the recovered invocation to complete.",
   };
+}
+
+function pendingRecoveryReason(status) {
+  if (status === "approval_pending") return "approval_pending";
+  if (status === "approval_approved") return "approval_approved";
+  if (status === "executing") return "recovery_executing";
+  return "recovery_requested";
 }
 
 function invocationBrief(invocation) {

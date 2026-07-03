@@ -1123,6 +1123,10 @@ test("application orchestration recovery actions are guarded and audited", async
   const stateAfterSelectAgent = await call("/api/state", { token: "tok_a" });
   const selectAgentReadModel = stateAfterSelectAgent.body.applicationRecoveryActions.find((item) => item.id === selectAgent.body.recoveryActionRequest.id);
   assert.equal(selectAgentReadModel?.outcome?.state, "pending");
+  assert.equal(selectAgentReadModel?.outcomeReason, "result_in_progress");
+  assert.equal(selectAgentReadModel?.outcome?.reason, "result_in_progress");
+  assert.equal(selectAgentReadModel?.outcome?.severity, "info");
+  assert.match(selectAgentReadModel?.outcome?.nextStep ?? "", /Wait for the recovered invocation/);
   assert.match(selectAgentReadModel?.outcome?.summary ?? "", /^Recovered invocation is /);
   assert.equal(selectAgentReadModel?.sourceInvocation?.id, unhealthy.id);
   assert.equal(selectAgentReadModel?.resultInvocation?.id, selectInvocation?.id);
@@ -1149,6 +1153,12 @@ test("application orchestration recovery actions are guarded and audited", async
   assert.ok(selectUnhealthyAgent.body.recoveryActionRequest.agentCandidateSnapshot.some((candidate) => candidate.id === "agt_demo_cli"
     && candidate.selectable === false
     && candidate.reasons.includes("application_control_missing")));
+  const stateAfterRejectedSelectAgent = await call("/api/state", { token: "tok_a" });
+  const rejectedSelectAgentReadModel = stateAfterRejectedSelectAgent.body.applicationRecoveryActions.find((item) => item.id === selectUnhealthyAgent.body.recoveryActionRequest.id);
+  assert.equal(rejectedSelectAgentReadModel?.outcome?.state, "needs_attention");
+  assert.equal(rejectedSelectAgentReadModel?.outcomeReason, "healthy_agent_not_found");
+  assert.equal(rejectedSelectAgentReadModel?.outcome?.severity, "danger");
+  assert.match(rejectedSelectAgentReadModel?.outcome?.nextStep ?? "", /choose another recovery action/);
 
   const foreign = await call(`/api/applications/app_team_a/orchestrations/app-app_team_a-maintenance/runs/${encodeURIComponent(runtime.id)}/recovery/actions`, {
     method: "POST",
