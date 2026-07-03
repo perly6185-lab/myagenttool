@@ -6,6 +6,7 @@
 
 import type {
   ApplicationCapability,
+  ApplicationOrchestrationRun,
   ApplicationRegisterRequest,
   ApplicationSnapshot,
   ConsoleSnapshot,
@@ -271,6 +272,11 @@ export const api = {
       "POST",
       `/api/applications/${encodeURIComponent(id)}/orchestrations/${encodeURIComponent(routineId)}/run`,
       body,
+    ),
+  listApplicationOrchestrationRuns: (id: string, routineId: string, limit = 3) =>
+    request<{ applicationId: string; routineId: string; runs: ApplicationOrchestrationRun[] }>(
+      "GET",
+      `/api/applications/${encodeURIComponent(id)}/orchestrations/${encodeURIComponent(routineId)}/runs?limit=${encodeURIComponent(String(limit))}`,
     ),
   createInvocation: (
     task: string,
