@@ -2262,16 +2262,19 @@ async function handleCodexJsonLine(invocationId, line) {
       summary: "Codex CLI completed.",
       touchedUserFiles: false,
       output: { usage },
-      // Codex is subscription/externally billed — no priceable USD — but it does
-      // report token usage. Carry it so the ledger can record an (unmetered)
-      // entry and the run stays visible in economics instead of being dropped.
+      // Codex reports token usage but no billed USD. Carry the full token
+      // breakdown so the server can estimate cost from configured per-token rates
+      // (cached input is cheaper); when no rate is set it falls back to an
+      // unmetered entry so the run still stays visible in economics.
       cost: {
         model: "codex",
         billable: true,
         unknown: true,
         currency: "USD",
         inputTokens: Number(usage?.input_tokens ?? 0) || 0,
-        outputTokens: Number(usage?.output_tokens ?? 0) || 0
+        cachedInputTokens: Number(usage?.cached_input_tokens ?? 0) || 0,
+        outputTokens: Number(usage?.output_tokens ?? 0) || 0,
+        reasoningOutputTokens: Number(usage?.reasoning_output_tokens ?? 0) || 0
       }
     };
   }
