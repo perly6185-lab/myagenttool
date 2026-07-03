@@ -15,6 +15,7 @@ export async function handleApplicationRoutes({
   registerApplication,
   transitionApplication,
   createCapabilityInvocation,
+  runApplicationOrchestration,
 }) {
   if (req.method === "GET" && url.pathname === "/api/applications") {
     sendJson(res, 200, { applications: visibleApplications(state, actor, listApplications()) });
@@ -75,6 +76,16 @@ export async function handleApplicationRoutes({
       applicationId,
       orchestrations: application.orchestrations ?? [],
     });
+    return true;
+  }
+
+  const orchestrationRunMatch = url.pathname.match(/^\/api\/applications\/([^/]+)\/orchestrations\/([^/]+)\/run$/);
+  if (orchestrationRunMatch && req.method === "POST") {
+    const applicationId = decodeURIComponent(orchestrationRunMatch[1]);
+    const routineId = decodeURIComponent(orchestrationRunMatch[2]);
+    if (denyForeignApplication({ res, sendJson, state, actor, applicationId, findApplication })) return true;
+    const result = runApplicationOrchestration(applicationId, routineId, await readJson(req), actor);
+    sendJson(res, result.status, result.body);
     return true;
   }
 

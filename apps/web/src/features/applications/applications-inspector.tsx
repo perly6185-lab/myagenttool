@@ -136,15 +136,6 @@ export function latestRoutineInvocation(invocations: InvocationSnapshot[], appli
   }) ?? null;
 }
 
-export function orchestrationTask(application: ApplicationSnapshot, orchestration: ApplicationOrchestration): string {
-  const location = orchestration.relativePath ?? orchestration.path ?? "the generated LoopRoutine draft";
-  return [
-    `Run application orchestration ${orchestration.routineId} for ${application.name}.`,
-    `Use ${location} as the governed LoopRoutine draft.`,
-    "Inspect the registered application capability surface, execute only allowed steps, and report the result with audit-friendly evidence.",
-  ].join("\n");
-}
-
 function OrchestrationDrafts({
   application,
   invocations,
@@ -178,23 +169,11 @@ function OrchestrationDrafts({
     setPendingRoutineId(orchestration.routineId);
     const routineKey = `${application.id}:${orchestration.routineId}`;
     const ok = await execute(async () => {
-      const created = await api.createInvocation(
-        orchestrationTask(application, orchestration),
-        null,
-        application.projectId ?? null,
-        null,
-        {
-          metadata: {
-            source: "application_orchestration",
-            applicationId: application.id,
-            applicationName: application.name,
-            routineId: orchestration.routineId,
-            orchestrationPath: orchestration.path ?? null,
-            orchestrationRelativePath: orchestration.relativePath ?? null,
-          },
-        },
-      ) as { invocation?: { id?: string } };
-      const invocationId = created.invocation?.id ?? null;
+      const created = await api.runApplicationOrchestration(application.id, orchestration.routineId) as {
+        invocationId?: string;
+        invocation?: { id?: string };
+      };
+      const invocationId = created.invocationId ?? created.invocation?.id ?? null;
       if (invocationId) {
         setCreatedInvocationByRoutineKey((current) => ({
           ...current,
