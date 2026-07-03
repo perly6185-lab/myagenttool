@@ -99,7 +99,9 @@ try {
   assert(wrapperInvocation.invocation.result.output.invocationPlan.executable === false, "wrapper invocation should not execute npm yet");
 
   const orchestration = await request("POST", `/api/capabilities/${capabilityPrefix}.generate_orchestration/invocations`, {});
-  const routinePath = orchestration.invocation.result.output.orchestration.path;
+  const orchestrationDraft = orchestration.invocation.result.output.orchestration;
+  const routinePath = orchestrationDraft.path;
+  assert(orchestrationDraft.validation?.ok, "generate_orchestration should return server-side routine validation");
   assert(existsSync(routinePath), "generate_orchestration should write a routine spec file");
   const routineCheck = aiJson(["loop-routine-check", "--file", routinePath, "--json"], applicationPath);
   assert(routineCheck.validation?.ok, "generated routine spec should validate");

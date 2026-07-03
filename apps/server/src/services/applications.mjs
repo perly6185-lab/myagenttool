@@ -1,10 +1,13 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, isAbsolute, join, relative, resolve } from "node:path";
+import { normalizeLoopRoutine, validateLoopRoutine } from "../../../../tools/ai/src/loop/routine.mjs";
 import { teamOf } from "../runtime/auth.mjs";
 
 const APPLICATION_SOURCE_TYPES = new Set(["git", "local", "npm", "manual"]);
 const APPLICATION_STATUSES = new Set(["draft", "probing", "registered", "active", "offline", "archived", "failed"]);
 const NPM_WRAPPER_MODES = new Set(["metadata-only", "installed-wrapper"]);
+const APPLICATION_ROUTINE_REQUIRED_APPROVALS = ["apply", "push", "pr-create", "pr-merge"];
+const APPLICATION_ROUTINE_RISK_LEVELS = ["low", "medium", "high", "critical"];
 
 export function createApplicationService({
   state,
@@ -208,6 +211,9 @@ export function createApplicationService({
     }
 
     const result = executeApplicationAction({ application, action, input, actor, defaultProjectPath });
+    if (result?.ok === false) {
+      return result;
+    }
     appendEvent({
       invocationId: null,
       type: "application_capability_executed",
@@ -417,6 +423,25 @@ function executeApplicationAction({ application, action, input, actor, defaultPr
   }
   if (action === "generate_orchestration") {
     const draft = writeApplicationRoutineDraft(application, defaultProjectPath);
+    if (!draft.ok) {
+      return {
+        ok: false,
+        status: 422,
+        body: {
+          error: "invalid_application_routine",
+          message: "Generated application routine draft failed validation and was not written.",
+          applicationId: application.id,
+          validation: draft.validation,
+          orchestration: {
+            id: draft.routineId,
+            kind: "LoopRoutineDraft",
+            status: "invalid",
+            path: draft.path,
+            relativePath: draft.relativePath,
+          },
+        },
+      };
+    }
     application.orchestrationIds = [...new Set([...(application.orchestrationIds ?? []), draft.routineId])];
     application.orchestrations = upsertOrchestration(application.orchestrations, draft);
     application.lifecycle = {
@@ -438,6 +463,7 @@ function executeApplicationAction({ application, action, input, actor, defaultPr
           status: "draft",
           path: draft.path,
           relativePath: draft.relativePath,
+          validation: draft.validation,
         },
       },
     };
@@ -488,25 +514,33 @@ function executeApplicationAction({ application, action, input, actor, defaultPr
   };
 }
 
-function writeApplicationRoutineDraft(application, defaultProjectPath) {
+export function writeApplicationRoutineDraft(application, defaultProjectPath, options = {}) {
   const root = resolve(application.path || defaultProjectPath || process.cwd());
-  const routineId = `app-${slugify(application.name || application.id)}-maintenance`;
+  const routineId = options.routineId ?? `app-${slugify(application.name || application.id)}-maintenance`;
   const relativePath = join(".myagenttool", "routines", `${routineId}.json`).replaceAll("\\", "/");
   const path = resolve(root, relativePath);
-  const routine = buildApplicationRoutineSpec(application, routineId);
-  mkdirSync(join(root, ".myagenttool", "routines"), { recursive: true });
-  writeFileSync(path, `${JSON.stringify(routine, null, 2)}\n`, "utf8");
-  return {
+  const routine = options.routine ?? buildApplicationRoutineSpec(application, routineId);
+  const validation = validateApplicationRoutineDraft(routine, { root, application });
+  const draft = {
     routineId,
     path,
     relativePath,
-    status: "draft",
+    status: validation.ok ? "draft" : "invalid",
     generatedAt: new Date().toISOString(),
+    validation,
+    ok: validation.ok,
   };
+  if (!validation.ok) {
+    return draft;
+  }
+  mkdirSync(join(root, ".myagenttool", "routines"), { recursive: true });
+  writeFileSync(path, `${JSON.stringify(routine, null, 2)}\n`, "utf8");
+  return draft;
 }
 
-function buildApplicationRoutineSpec(application, routineId) {
+export function buildApplicationRoutineSpec(application, routineId) {
   const sourceLabel = application.source?.type ?? "application";
+  const sourceCapabilities = projectApplicationCapabilities(application);
   const inputs = [
     {
       id: "application-files",
@@ -533,6 +567,13 @@ function buildApplicationRoutineSpec(application, routineId) {
       description: `Generated maintenance routine for ${application.name} (${sourceLabel}).`,
       owner: application.ownerTeamId ?? "engineering",
       enabled: true,
+      sourceApplicationId: application.id,
+      sourceApplicationName: application.name,
+      sourceApplicationKind: application.kind ?? null,
+      sourceApplicationSourceType: sourceLabel,
+      sourceCapabilityNames: sourceCapabilities.map((capability) => capability.name),
+      riskLevel: highestCapabilityRiskLevel(sourceCapabilities),
+      approvalRequirements: APPLICATION_ROUTINE_REQUIRED_APPROVALS,
     },
     schedule: {
       mode: "manual",
@@ -582,6 +623,63 @@ function buildApplicationRoutineSpec(application, routineId) {
   };
 }
 
+export function validateApplicationRoutineDraft(routine, { root = process.cwd(), application = null } = {}) {
+  const normalizedRoutine = normalizeLoopRoutine(routine, { sourceRoot: root });
+  const baseValidation = validateLoopRoutine(normalizedRoutine, root);
+  const errors = [...baseValidation.errors];
+  const warnings = [...baseValidation.warnings];
+  const metadata = routine && typeof routine === "object" && !Array.isArray(routine) ? routine.metadata ?? {} : {};
+  const sourceCapabilityNames = Array.isArray(metadata.sourceCapabilityNames)
+    ? metadata.sourceCapabilityNames.map(String).map((item) => item.trim()).filter(Boolean)
+    : [];
+  const approvalRequirements = Array.isArray(metadata.approvalRequirements)
+    ? metadata.approvalRequirements.map(String).map((item) => item.trim()).filter(Boolean)
+    : [];
+
+  if (normalizedRoutine.safety.remoteWrites !== "forbidden") {
+    errors.push("Application routine safety.remoteWrites must remain forbidden.");
+  }
+  if (normalizedRoutine.safety.githubWrites !== "forbidden") {
+    errors.push("Application routine safety.githubWrites must remain forbidden.");
+  }
+  if (normalizedRoutine.goal.fanout.apply !== false) {
+    errors.push("Application routine goal.fanout.apply must remain false.");
+  }
+  for (const required of APPLICATION_ROUTINE_REQUIRED_APPROVALS) {
+    if (!normalizedRoutine.safety.requiresApprovalFor.includes(required)) {
+      errors.push(`Application routine safety.requiresApprovalFor must include ${required}.`);
+    }
+    if (!approvalRequirements.includes(required)) {
+      errors.push(`Application routine metadata.approvalRequirements must include ${required}.`);
+    }
+  }
+  if (!metadata.sourceApplicationId) {
+    errors.push("Application routine metadata.sourceApplicationId is required.");
+  }
+  if (application?.id && metadata.sourceApplicationId !== application.id) {
+    errors.push(`Application routine metadata.sourceApplicationId must match ${application.id}.`);
+  }
+  if (sourceCapabilityNames.length === 0) {
+    errors.push("Application routine metadata.sourceCapabilityNames must include at least one capability.");
+  }
+  if (!APPLICATION_ROUTINE_RISK_LEVELS.includes(metadata.riskLevel)) {
+    errors.push(`Application routine metadata.riskLevel must be one of: ${APPLICATION_ROUTINE_RISK_LEVELS.join(", ")}.`);
+  }
+
+  return {
+    ok: errors.length === 0,
+    errors,
+    warnings,
+    routineId: normalizedRoutine.metadata.id,
+    policy: {
+      remoteWrites: "forbidden",
+      githubWrites: "forbidden",
+      fanoutApply: false,
+      requiresApprovalFor: APPLICATION_ROUTINE_REQUIRED_APPROVALS,
+    },
+  };
+}
+
 function upsertOrchestration(orchestrations = [], draft) {
   const existing = Array.isArray(orchestrations) ? orchestrations.filter((item) => item?.routineId !== draft.routineId) : [];
   return [draft, ...existing];
@@ -599,6 +697,16 @@ function publicApplicationSnapshot(application) {
     wrapper: application.source?.wrapper ? publicNpmWrapperSnapshot(application.source.wrapper) : null,
     orchestrationIds: application.orchestrationIds ?? [],
   };
+}
+
+function highestCapabilityRiskLevel(capabilities) {
+  const levels = new Map(APPLICATION_ROUTINE_RISK_LEVELS.map((level, index) => [level, index]));
+  let highest = "low";
+  for (const capability of capabilities ?? []) {
+    const level = normalizeRiskLevel(capability?.riskLevel, "medium");
+    if (levels.get(level) > levels.get(highest)) highest = level;
+  }
+  return highest;
 }
 
 function buildApplicationProbe(application) {
