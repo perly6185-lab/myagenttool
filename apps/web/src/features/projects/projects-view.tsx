@@ -72,6 +72,7 @@ export function ProjectsView() {
                 worktrees={worktrees.filter((w) => w.projectId === project.id)}
                 budget={budgetByProject.get(project.id)}
                 active={project.id === activeId}
+                current={project.id === state?.currentProjectId}
                 onSelect={() => setSelectedProjectId(project.id)}
                 onArchive={() => archive(project)}
                 onToggleIsolation={() => toggleIsolation(project)}
@@ -103,6 +104,7 @@ function ProjectRow({
   worktrees,
   budget,
   active,
+  current,
   onSelect,
   onArchive,
   onToggleIsolation,
@@ -115,6 +117,7 @@ function ProjectRow({
   worktrees: WorktreeSnapshot[];
   budget?: BudgetStatus;
   active: boolean;
+  current: boolean;
   onSelect: () => void;
   onArchive: () => void;
   onToggleIsolation: () => void;
@@ -131,6 +134,7 @@ function ProjectRow({
           <span className="min-w-0">
             <span className="flex items-center gap-2">
               <span className="truncate font-medium">{project.name}</span>
+              {current ? <Badge tone="success">Current</Badge> : null}
               {active ? <Badge tone="neutral">Active</Badge> : null}
               {project.status === "archived" ? <Badge tone="warning">Archived</Badge> : null}
             </span>

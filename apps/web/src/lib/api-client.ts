@@ -303,6 +303,8 @@ export const api = {
     request("POST", "/api/projects", payload),
   updateProject: (id: string, payload: Record<string, unknown>) =>
     request("PATCH", `/api/projects/${encodeURIComponent(id)}`, payload),
+  selectProject: (id: string) =>
+    request("POST", `/api/projects/${encodeURIComponent(id)}`),
   createWorktree: (
     projectId: string,
     payload: {
