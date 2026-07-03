@@ -2,7 +2,7 @@ process.env.MYAGENT_REQUIRE_AUTH = "1";
 process.env.MYAGENTTOOL_STATE_DISABLED = "1";
 
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { after, before, test } from "node:test";
 
 const TEAM_A = "team_a";
@@ -492,8 +492,48 @@ test("POST /api/capabilities generate_orchestration writes a routine draft", asy
   const orchestration = res.body.invocation.result.output.orchestration;
   assert.equal(orchestration.kind, "LoopRoutineDraft");
   assert.equal(orchestration.relativePath, ".myagenttool/routines/app-team-a-app-maintenance.json");
+  assert.equal(orchestration.validation.ok, true);
+  assert.deepEqual(orchestration.validation.policy.requiresApprovalFor, ["apply", "push", "pr-create", "pr-merge"]);
   assert.ok(existsSync(orchestration.path), "routine draft should be written to disk");
+  const routine = JSON.parse(readFileSync(orchestration.path, "utf8"));
+  assert.equal(routine.metadata.sourceApplicationId, "app_team_a");
+  assert.ok(routine.metadata.sourceCapabilityNames.includes("app.app_team_a.generate_orchestration"));
+  assert.equal(routine.metadata.riskLevel, "high");
+  assert.deepEqual(routine.metadata.approvalRequirements, ["apply", "push", "pr-create", "pr-merge"]);
+  assert.equal(routine.goal.fanout.apply, false);
+  assert.equal(routine.safety.remoteWrites, "forbidden");
+  assert.equal(routine.safety.githubWrites, "forbidden");
   assert.ok(application.orchestrations.some((item) => item.routineId === orchestration.id));
+});
+
+test("application routine validation blocks unsafe drafts before writing", async () => {
+  const application = findApplicationForTest("app_team_a");
+  const {
+    buildApplicationRoutineSpec,
+    validateApplicationRoutineDraft,
+    writeApplicationRoutineDraft,
+  } = await import("../../src/services/applications.mjs");
+  const routineId = `app-team-a-invalid-${Date.now()}`;
+  const unsafeRoutine = buildApplicationRoutineSpec(application, routineId);
+  unsafeRoutine.goal.fanout.apply = true;
+  unsafeRoutine.safety.remoteWrites = "allowed";
+  unsafeRoutine.safety.githubWrites = "approval-required";
+  unsafeRoutine.safety.requiresApprovalFor = ["apply"];
+  unsafeRoutine.metadata.approvalRequirements = ["apply"];
+
+  const validation = validateApplicationRoutineDraft(unsafeRoutine, { root: application.path, application });
+  assert.equal(validation.ok, false);
+  assert.ok(validation.errors.some((error) => error.includes("remoteWrites")));
+  assert.ok(validation.errors.some((error) => error.includes("githubWrites")));
+  assert.ok(validation.errors.some((error) => error.includes("goal.fanout.apply")));
+  assert.ok(validation.errors.some((error) => error.includes("requiresApprovalFor must include push")));
+  assert.ok(validation.errors.some((error) => error.includes("approvalRequirements must include push")));
+
+  const draft = writeApplicationRoutineDraft(application, "/tmp", { routineId, routine: unsafeRoutine });
+  assert.equal(draft.ok, false);
+  assert.equal(draft.status, "invalid");
+  assert.equal(draft.validation.ok, false);
+  assert.ok(!existsSync(draft.path), "invalid routine draft must not be written to disk");
 });
 
 test("application orchestration endpoints generate and list routine drafts", async () => {
