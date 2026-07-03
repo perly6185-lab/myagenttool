@@ -470,22 +470,11 @@ export function createServerRuntimeServices({
   }
 
   function listApplicationOrchestrationRuns(applicationId, routineId, searchParams = new URLSearchParams()) {
-    const application = findApplication(applicationId);
-    if (!application) {
-      return { status: 404, body: { error: "application_not_found" } };
-    }
-    const orchestration = (application.orchestrations ?? []).find((item) => item?.routineId === routineId);
-    if (!orchestration) {
-      return { status: 404, body: { error: "orchestration_not_found", applicationId, routineId } };
-    }
+    const scope = applicationOrchestrationScope(applicationId, routineId);
+    if (scope.status !== 200) return scope;
     const limit = clampNumber(searchParams?.get?.("limit") ?? 10, 1, 50);
     const runs = state.invocations
-      .filter((invocation) => {
-        const metadata = invocation.options?.metadata;
-        return metadata?.source === "application_orchestration"
-          && metadata.applicationId === applicationId
-          && metadata.routineId === routineId;
-      })
+      .filter((invocation) => isApplicationOrchestrationRun(invocation, applicationId, routineId))
       .sort((left, right) => Date.parse(right.createdAt ?? "") - Date.parse(left.createdAt ?? ""))
       .slice(0, limit)
       .map(applicationOrchestrationRunSummary);
@@ -495,6 +484,23 @@ export function createServerRuntimeServices({
         applicationId,
         routineId,
         runs,
+      },
+    };
+  }
+
+  function getApplicationOrchestrationRun(applicationId, routineId, invocationId) {
+    const scope = applicationOrchestrationScope(applicationId, routineId);
+    if (scope.status !== 200) return scope;
+    const invocation = findInvocation(invocationId);
+    if (!invocation || !isApplicationOrchestrationRun(invocation, applicationId, routineId)) {
+      return { status: 404, body: { error: "orchestration_run_not_found", applicationId, routineId, invocationId } };
+    }
+    return {
+      status: 200,
+      body: {
+        applicationId,
+        routineId,
+        run: applicationOrchestrationRunDetail(invocation),
       },
     };
   }
@@ -549,6 +555,7 @@ export function createServerRuntimeServices({
 
   function applicationOrchestrationRunSummary(invocation) {
     const metadata = invocation.options?.metadata ?? {};
+    const auditSummary = state.auditSummaries.find((item) => item.invocationId === invocation.id);
     return {
       invocationId: invocation.id,
       status: invocation.status,
@@ -558,7 +565,7 @@ export function createServerRuntimeServices({
       deliveryState: invocation.delivery?.state ?? null,
       cancellationState: invocation.cancellation?.state ?? null,
       resultSummary: invocation.result?.summary ?? null,
-      errorSummary: state.auditSummaries.find((item) => item.invocationId === invocation.id)?.errorSummary ?? null,
+      errorSummary: auditSummary?.errorSummary ?? null,
       createdAt: invocation.createdAt ?? null,
       updatedAt: invocation.updatedAt ?? null,
       completedAt: invocation.completedAt ?? null,
@@ -571,6 +578,47 @@ export function createServerRuntimeServices({
         orchestrationRelativePath: metadata.orchestrationRelativePath ?? null,
       },
     };
+  }
+
+  function applicationOrchestrationRunDetail(invocation) {
+    const summary = applicationOrchestrationRunSummary(invocation);
+    const auditSummary = state.auditSummaries.find((item) => item.invocationId === invocation.id);
+    return {
+      ...summary,
+      traceId: invocation.traceId ?? auditSummary?.traceId ?? null,
+      rootSpanId: invocation.rootSpanId ?? null,
+      approvalRequestId: invocation.approvalRequestId ?? null,
+      policyDecisionId: invocation.policyDecisionId ?? null,
+      delivery: invocation.delivery ?? null,
+      cancellation: invocation.cancellation ?? null,
+      result: invocation.result ?? null,
+      audit: auditSummary ? {
+        permissionDecision: auditSummary.permissionDecision ?? null,
+        errorSummary: auditSummary.errorSummary ?? null,
+        traceId: auditSummary.traceId ?? null,
+        costSummary: auditSummary.costSummary ?? null,
+      } : null,
+      metadata: invocation.options?.metadata ?? summary.metadata,
+    };
+  }
+
+  function applicationOrchestrationScope(applicationId, routineId) {
+    const application = findApplication(applicationId);
+    if (!application) {
+      return { status: 404, body: { error: "application_not_found" } };
+    }
+    const orchestration = (application.orchestrations ?? []).find((item) => item?.routineId === routineId);
+    if (!orchestration) {
+      return { status: 404, body: { error: "orchestration_not_found", applicationId, routineId } };
+    }
+    return { status: 200, application, orchestration };
+  }
+
+  function isApplicationOrchestrationRun(invocation, applicationId, routineId) {
+    const metadata = invocation?.options?.metadata;
+    return metadata?.source === "application_orchestration"
+      && metadata.applicationId === applicationId
+      && metadata.routineId === routineId;
   }
 
   function isManagedApplicationRoutinePath(application, path) {
@@ -621,6 +669,7 @@ export function createServerRuntimeServices({
     createAgentHealthCheck,
     createCapabilityInvocation,
     findApplication,
+    getApplicationOrchestrationRun,
     invokeApplicationCapability,
     getCapability,
     listApplicationCapabilities,
@@ -731,6 +780,7 @@ export function createServerRuntimeServices({
     deleteAgentSkill,
     createCapabilityInvocation,
     findApplication,
+    getApplicationOrchestrationRun,
     invokeApplicationCapability,
     getCapability,
     listApplicationCapabilities,

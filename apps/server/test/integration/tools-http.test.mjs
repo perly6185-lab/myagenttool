@@ -715,6 +715,73 @@ test("application orchestration runs endpoint lists scoped run history", async (
   assert.equal(missing.body.error, "orchestration_not_found");
 });
 
+test("application orchestration run detail endpoint returns scoped diagnostics", async () => {
+  const application = findApplicationForTest("app_team_a");
+  application.status = "active";
+  const generated = await call("/api/applications/app_team_a/orchestrations/generate", {
+    method: "POST",
+    body: { approvalToken: "operator-approved-generate" },
+    token: "tok_a",
+  });
+  assert.equal(generated.status, 201);
+
+  const created = await call("/api/applications/app_team_a/orchestrations/app-app_team_a-maintenance/run", {
+    method: "POST",
+    body: { agentId: "agt_platform_application_control" },
+    token: "tok_a",
+  });
+  assert.equal(created.status, 201);
+  const invocation = ctx.state.invocations.find((item) => item.id === created.body.invocationId);
+  assert.ok(invocation, "expected orchestration invocation");
+  invocation.status = "failed";
+  invocation.delivery = { state: "acknowledged", dispatchAttempts: 2 };
+  invocation.cancellation = { state: "none" };
+  invocation.result = { summary: "Routine inspected package metadata.", touchedUserFiles: false };
+  invocation.traceId = "trace_application_detail";
+  invocation.rootSpanId = "span_application_detail";
+  ctx.state.auditSummaries.unshift({
+    invocationId: invocation.id,
+    agentId: invocation.agentId,
+    permissionDecision: "allow",
+    errorSummary: "LoopRoutine step npm.audit failed.",
+    traceId: "trace_application_detail",
+    costSummary: "$0.00",
+  });
+
+  const detail = await call(`/api/applications/app_team_a/orchestrations/app-app_team_a-maintenance/runs/${encodeURIComponent(invocation.id)}`, {
+    token: "tok_a",
+  });
+  assert.equal(detail.status, 200);
+  assert.equal(detail.body.applicationId, "app_team_a");
+  assert.equal(detail.body.routineId, "app-app_team_a-maintenance");
+  assert.equal(detail.body.run.invocationId, invocation.id);
+  assert.equal(detail.body.run.status, "failed");
+  assert.equal(detail.body.run.delivery.dispatchAttempts, 2);
+  assert.equal(detail.body.run.result.summary, "Routine inspected package metadata.");
+  assert.equal(detail.body.run.errorSummary, "LoopRoutine step npm.audit failed.");
+  assert.equal(detail.body.run.audit.permissionDecision, "allow");
+  assert.equal(detail.body.run.metadata.applicationId, "app_team_a");
+  assert.equal(detail.body.run.metadata.routineId, "app-app_team_a-maintenance");
+
+  const foreign = await call(`/api/applications/app_team_a/orchestrations/app-app_team_a-maintenance/runs/${encodeURIComponent(invocation.id)}`, {
+    token: "tok_b",
+  });
+  assert.equal(foreign.status, 404);
+  assert.equal(foreign.body.error, "application_not_found");
+
+  const wrongRoutine = await call(`/api/applications/app_team_a/orchestrations/missing/runs/${encodeURIComponent(invocation.id)}`, {
+    token: "tok_a",
+  });
+  assert.equal(wrongRoutine.status, 404);
+  assert.equal(wrongRoutine.body.error, "orchestration_not_found");
+
+  const missingRun = await call("/api/applications/app_team_a/orchestrations/app-app_team_a-maintenance/runs/inv_not_an_app_run", {
+    token: "tok_a",
+  });
+  assert.equal(missingRun.status, 404);
+  assert.equal(missingRun.body.error, "orchestration_run_not_found");
+});
+
 test("application lifecycle endpoints require governed approval", async () => {
   findApplicationForTest("app_team_a").status = "active";
   const blocked = await call("/api/applications/app_team_a/offline", {
