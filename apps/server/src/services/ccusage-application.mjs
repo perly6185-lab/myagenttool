@@ -49,12 +49,20 @@ export function createCcusageApplicationRegistration({
           description: `Governed ccusage ${report.id} usage report (read-only, JSON).`,
           commandType: "bin",
           command: "ccusage",
-          args: report.args,
+          // Base args run the report offline (the ccusage tool only supports
+          // offline mode). Optional date/timezone filters are declared, validated
+          // argInputs — matching the tool's since/until/timezone parameters.
+          args: [...report.args, "--offline"],
           status: "approved",
           riskLevel: "low",
           riskTags: ["usage-report", "read-only"],
           filePolicy: "read_only",
           networkPolicy: "forbidden",
+          argInputs: [
+            { key: "since", flag: "--since", type: "date" },
+            { key: "until", flag: "--until", type: "date" },
+            { key: "timezone", flag: "--timezone", type: "token" },
+          ],
         })),
       },
     },

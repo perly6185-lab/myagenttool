@@ -52,7 +52,7 @@ test("execution plan resolves an approved, registered command", () => {
   const plan = applicationWrapperExecutionPlan(app, "daily");
   assert.ok(plan);
   assert.equal(plan.command, "ccusage");
-  assert.deepEqual(plan.args, ["daily", "--json"]);
+  assert.deepEqual(plan.args, ["daily", "--json", "--offline"]);
   assert.equal(plan.capability, "app.app_ccusage.wrapper.daily");
 });
 
@@ -69,7 +69,7 @@ test("execution plan returns a copy of args (no aliasing into the registry)", ()
   const app = ccusageApp();
   const plan = applicationWrapperExecutionPlan(app, "daily");
   plan.args.push("--mutated");
-  assert.deepEqual(applicationWrapperExecutionPlan(app, "daily").args, ["daily", "--json"]);
+  assert.deepEqual(applicationWrapperExecutionPlan(app, "daily").args, ["daily", "--json", "--offline"]);
 });
 
 test("runner spawns exactly the command it is handed and emits a structured RESULT", async () => {

@@ -55,6 +55,17 @@ test("projects all six reports as read-only, low-risk npm-wrapper capabilities",
   }
 });
 
+test("ccusage capabilities accept the tool's date/timezone filters (offline baked in)", async () => {
+  const { registerApplication } = service();
+  const app = registerApplication(createCcusageApplicationRegistration());
+  const { applicationWrapperExecutionPlan } = await import("../src/services/applications.mjs");
+  const plan = applicationWrapperExecutionPlan(app, "daily", { since: "2026-07-01", until: "2026-07-02", timezone: "UTC" });
+  assert.deepEqual(plan.args, ["daily", "--json", "--offline", "--since", "2026-07-01", "--until", "2026-07-02", "--timezone", "UTC"]);
+  // An invalid date is refused, not passed through.
+  const bad = applicationWrapperExecutionPlan(app, "daily", { since: "nope" });
+  assert.deepEqual(bad.args, ["daily", "--json", "--offline"]);
+});
+
 test("re-registration is idempotent (same source, same id)", () => {
   const svc = service();
   const first = svc.registerApplication(createCcusageApplicationRegistration());
