@@ -660,6 +660,12 @@ export interface ApplicationSnapshot {
   updatedAt?: string;
 }
 
+export interface ApplicationRegisterRequest {
+  name?: string;
+  projectId?: string | null;
+  source: ApplicationSource;
+}
+
 export interface ApplicationCapability {
   name: string;
   version?: string;

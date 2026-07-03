@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Select } from "@/components/ui/input";
 import { Field } from "@/components/common/field";
 import { EmptyState } from "@/components/common/empty-state";
@@ -8,6 +9,7 @@ import { SectionHeading } from "@/components/common/section-heading";
 import { useConsoleState } from "@/data/use-console-state";
 import { useUiStore } from "@/store/ui-store";
 import { cn } from "@/lib/cn";
+import { RegisterApplicationModal } from "@/features/applications/register-application-modal";
 import type { ApplicationSnapshot, ApplicationSource } from "@/lib/console-state";
 import type { Tone } from "@/lib/readable-labels";
 
@@ -39,6 +41,7 @@ export function ApplicationsView() {
 
   const [status, setStatus] = useState<"all" | ApplicationSnapshot["status"]>("all");
   const [kind, setKind] = useState<"all" | string>("all");
+  const [registerOpen, setRegisterOpen] = useState(false);
 
   const all = state?.applications ?? [];
   const projectName = useMemo(() => {
@@ -61,7 +64,14 @@ export function ApplicationsView() {
         eyebrow="Governed assets"
         title="Applications"
         description="Applications registered as governed assets from git, local, npm, or manual sources. Select one to inspect its capabilities, probe, and orchestrations."
+        actions={
+          <Button size="sm" onClick={() => setRegisterOpen(true)}>
+            Register application
+          </Button>
+        }
       />
+
+      <RegisterApplicationModal open={registerOpen} onClose={() => setRegisterOpen(false)} />
 
       <div className="flex flex-wrap items-end gap-3">
         <Field label="Status" className="w-40">
