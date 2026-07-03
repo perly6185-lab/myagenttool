@@ -1,12 +1,44 @@
 # ADR 0007: Re-home ccusage as an Application
 
-Status: accepted (revised 2026-07-03 — see Revision)
+Status: accepted (revised twice on 2026-07-03 — Revision 2 is current)
 
 Date: 2026-07-03
 
 Related issue: [#355](https://github.com/perly6185-lab/myagenttool/issues/355)
 
-## Revision (2026-07-03)
+## Revision 2 (2026-07-03) — current
+
+Reverses Revision 1. We will proceed with the **full unification**: back
+`/api/tools/ccusage.report` with the ccusage Application capability path and
+retire the bespoke `agt_ccusage_*` agents. Revision 1 (keep the tool for
+execution) is superseded; the three parity blockers it named are accepted as
+**work to do**, not reasons to stop:
+
+1. **Dynamic filters** — add a *validated* filter input (`since/until/timezone/
+   offline`) to the wrapper-capability execution that maps to appended args
+   (a small, constrained extension of the allowlist model; still no free-form
+   args).
+2. **`agentId` in the consumer contract** — the response `agentId` changes to the
+   platform runner; documented as an intentional contract update.
+3. **Descriptor from agents** — rebuild the `/api/tools` ccusage descriptor from
+   the Application so it survives agent retirement.
+
+Sequenced so ccusage keeps working between every slice; agents are retired only
+in the final slice, once nothing depends on them:
+
+1. Validated filter-input on wrapper-capability execution (additive).
+2. The ccusage app wrapper command emits the ccusage RESULT shape and honors
+   filters, so estimate import works natively.
+3. `/api/tools` ccusage descriptor derived from the Application (prefer app,
+   fall back to agents) — no behavior change.
+4. Cut `ccusage.report` execution over to the capability path (agentId change).
+5. Retire the `agt_ccusage_*` agents.
+6. Regression: `ccusage-agent-smoke` parity on the new path; docs finalized.
+
+Already-landed work that this builds on: the Application registration (#358),
+the general execution runtime (#359), and ccusage import parity (#373).
+
+## Revision 1 (2026-07-03) — superseded by Revision 2
 
 The original decision was to make the Application capability path the **execution
 backing** for `/api/tools/ccusage.report` and retire the bespoke `agt_ccusage_*`
@@ -78,7 +110,7 @@ contract** ([TOOL_REGISTRY_EXTERNAL_CONSUMER_CONTRACT.md](TOOL_REGISTRY_EXTERNAL
 and the import path carries deliberate `non-authoritative` / `external_billed`
 ledger semantics. Any change must not break either.
 
-## Decision (original — superseded by the Revision above)
+## Decision (original — reinstated by Revision 2, with the added parity work it lists)
 
 Re-home ccusage onto the Application Capability Registry, **evolutionarily and
 behind the existing tool facade**:
