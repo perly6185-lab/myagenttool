@@ -1271,18 +1271,84 @@ export function createServerRuntimeServices({
   }
 
   function recovery(category, confidence, retryRecommended, summary, actions) {
+    const rankedActions = rankRecoveryActions(category, actions);
     return {
       category,
       confidence,
       retryRecommended,
-      humanApprovalRequired: actions.some((item) => item.requiresApproval),
+      humanApprovalRequired: rankedActions.some((item) => item.requiresApproval),
       summary,
-      actions,
+      actions: rankedActions,
     };
   }
 
   function action(type, label, description, requiresApproval, target = {}) {
     return { type, label, description, requiresApproval, target };
+  }
+
+  function rankRecoveryActions(category, actions) {
+    const preferredActionType = preferredRecoveryActionType(category);
+    return actions
+      .map((item) => {
+        const priority = recoveryActionPriority(category, item, preferredActionType);
+        return {
+          ...item,
+          priority,
+          recommended: item.type === preferredActionType,
+          recommendationReason: recoveryActionRecommendationReason(category, item.type, item.type === preferredActionType),
+          riskLevel: recoveryActionRiskLevel(item),
+        };
+      })
+      .sort((left, right) => left.priority - right.priority || left.label.localeCompare(right.label));
+  }
+
+  function preferredRecoveryActionType(category) {
+    const preferred = {
+      agent_unavailable: "select_agent",
+      cancelled: "rerun",
+      device_unlinked: "relink_device",
+      dispatch_timeout: "rerun",
+      none: "view_invocation",
+      policy_blocked: "view_invocation",
+      runtime_error: "rerun",
+      unknown_failure: "view_invocation",
+      validation_failed: "regenerate_orchestration",
+    };
+    return preferred[category] ?? "view_invocation";
+  }
+
+  function recoveryActionPriority(category, item, preferredActionType) {
+    if (item.type === preferredActionType) return 10;
+    if (item.type === "view_invocation") return 80;
+    if (item.requiresApproval) return 60;
+    if (category === "device_unlinked" && item.type === "rerun") return 40;
+    return 50;
+  }
+
+  function recoveryActionRecommendationReason(category, actionType, recommended) {
+    if (!recommended) {
+      if (actionType === "view_invocation") return "Use this to inspect evidence before taking a side-effecting recovery action.";
+      if (actionType === "rerun") return "Use after the blocking condition has been resolved.";
+      return "Available as an alternate governed recovery path.";
+    }
+    const reasons = {
+      agent_unavailable: "The source agent appears unavailable or unhealthy, so retrying on a healthy governed agent is the best next step.",
+      cancelled: "The run was cancelled, so a fresh governed run is the safest recovery.",
+      device_unlinked: "The local device bridge appears unlinked, so relinking must happen before local-device work can recover.",
+      dispatch_timeout: "The run did not dispatch cleanly, so a fresh governed run is the most direct recovery.",
+      none: "The run completed successfully; inspecting the audit trail is the only recovery action needed.",
+      policy_blocked: "Policy or approval evidence should be reviewed before attempting another side-effecting action.",
+      runtime_error: "The run failed during execution; a governed rerun is the lowest-risk automated recovery.",
+      unknown_failure: "The failure evidence is not specific enough to choose an automated recovery safely.",
+      validation_failed: "The routine failed validation, so regenerating the orchestration addresses the likely source of failure.",
+    };
+    return reasons[category] ?? "Recommended based on the recorded recovery category.";
+  }
+
+  function recoveryActionRiskLevel(item) {
+    if (item.requiresApproval) return "high";
+    if (["rerun", "select_agent"].includes(item.type)) return "medium";
+    return "low";
   }
 
   function appendRecoveryActionEvent(kind, invocationId, applicationId, routineId, actionType, recoveryCategory, reason, actionRequest = null) {

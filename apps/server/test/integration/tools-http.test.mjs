@@ -919,6 +919,11 @@ test("application orchestration recovery endpoint classifies common outcomes", a
   assert.equal(runtimeRecovery.body.recovery.category, "runtime_error");
   assert.equal(runtimeRecovery.body.recovery.retryRecommended, true);
   assert.ok(runtimeRecovery.body.recovery.actions.some((action) => action.type === "rerun"));
+  assert.equal(runtimeRecovery.body.recovery.actions[0]?.type, "rerun");
+  assert.equal(runtimeRecovery.body.recovery.actions[0]?.recommended, true);
+  assert.equal(runtimeRecovery.body.recovery.actions[0]?.priority, 10);
+  assert.equal(runtimeRecovery.body.recovery.actions[0]?.riskLevel, "medium");
+  assert.match(runtimeRecovery.body.recovery.actions[0]?.recommendationReason ?? "", /governed rerun/);
 
   const dispatch = await createApplicationOrchestrationRunForTest({
     status: "dispatching",
@@ -949,6 +954,23 @@ test("application orchestration recovery endpoint classifies common outcomes", a
   });
   assert.equal(cancelledRecovery.status, 200);
   assert.equal(cancelledRecovery.body.recovery.category, "cancelled");
+  assert.equal(cancelledRecovery.body.recovery.actions[0]?.type, "rerun");
+
+  const unavailable = await createApplicationOrchestrationRunForTest({ status: "failed" });
+  ctx.state.auditSummaries.unshift({
+    invocationId: unavailable.id,
+    agentId: unavailable.agentId,
+    errorSummary: "agent_unhealthy: selected agent cannot run.",
+    permissionDecision: "allow",
+    traceId: "trace_agent_recovery",
+  });
+  const unavailableRecovery = await call(`/api/applications/app_team_a/orchestrations/app-app_team_a-maintenance/runs/${encodeURIComponent(unavailable.id)}/recovery`, {
+    token: "tok_a",
+  });
+  assert.equal(unavailableRecovery.status, 200);
+  assert.equal(unavailableRecovery.body.recovery.category, "agent_unavailable");
+  assert.equal(unavailableRecovery.body.recovery.actions[0]?.type, "select_agent");
+  assert.equal(unavailableRecovery.body.recovery.actions[0]?.recommended, true);
 
   const foreign = await call(`/api/applications/app_team_a/orchestrations/app-app_team_a-maintenance/runs/${encodeURIComponent(runtime.id)}/recovery`, {
     token: "tok_b",
