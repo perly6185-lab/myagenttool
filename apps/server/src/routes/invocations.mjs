@@ -156,13 +156,17 @@ function invocationProjectId(invocation) {
   return invocation?.projectId ?? invocation?.input?.metadata?.projectId ?? null;
 }
 
-function invocationOptionsFromBody(body = {}) {
+export function invocationOptionsFromBody(body = {}) {
   const options = body.options && typeof body.options === "object" && !Array.isArray(body.options) ? body.options : {};
   const metadata = options.metadata && typeof options.metadata === "object" && !Array.isArray(options.metadata)
     ? { ...options.metadata }
     : {};
   if (body.projectId !== undefined) metadata.projectId = body.projectId;
   if (body.worktreeId !== undefined) metadata.worktreeId = body.worktreeId;
-  if (body.permissionLevel !== undefined) metadata.permissionMode = body.permissionLevel;
+  // The web composer nests permissionLevel inside options; older callers pass it
+  // at the top level. Accept both, else metadata.permissionMode never gets set and
+  // codex falls back to "ask" — a "Full access" run then stalls on every approval.
+  const permissionLevel = body.permissionLevel ?? options.permissionLevel;
+  if (permissionLevel !== undefined) metadata.permissionMode = permissionLevel;
   return { ...options, metadata };
 }
