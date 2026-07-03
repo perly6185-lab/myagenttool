@@ -6,7 +6,7 @@ import { Select, Textarea } from "@/components/ui/input";
 import { Field } from "@/components/common/field";
 import { FactList } from "@/components/common/fact-list";
 import { SectionHeading } from "@/components/common/section-heading";
-import { EventTimeline } from "@/features/invocations/event-timeline";
+import { Transcript } from "@/features/invocations/transcript";
 import { DecisionAction } from "@/features/invocations/decision-action";
 import { useConsoleState } from "@/data/use-console-state";
 import { useAsyncAction, api } from "@/data/use-console-actions";
@@ -231,7 +231,7 @@ export function DashboardView() {
           />
         </CardHeader>
         <CardContent>
-          <EventTimeline events={events} renderAction={(event) => <DecisionAction event={event} />} />
+          <Transcript events={events} renderAction={(event) => <DecisionAction event={event} />} />
         </CardContent>
       </Card>
     </div>
