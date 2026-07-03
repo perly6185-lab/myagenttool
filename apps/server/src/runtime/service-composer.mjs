@@ -665,6 +665,10 @@ export function createServerRuntimeServices({
       };
     }
     if (actionType === "select_agent") {
+      actionRequest.requestedAgentId = typeof body?.agentId === "string" && body.agentId.trim()
+        ? body.agentId.trim()
+        : null;
+      actionRequest.agentCandidateSnapshot = recoveryAgentCandidateSnapshot(run.invocation, actionRequest.requestedAgentId);
       const selectedAgent = selectRecoveryAgent(run.invocation, body);
       if (!selectedAgent.ok) {
         actionRequest.status = "failed";
@@ -798,6 +802,8 @@ export function createServerRuntimeServices({
       approvalRequestId: null,
       resultInvocationId: null,
       selectedAgentId: null,
+      requestedAgentId: null,
+      agentCandidateSnapshot: null,
       resultOrchestrationId: null,
       resultOrchestrationRelativePath: null,
       error: null,
@@ -1031,21 +1037,32 @@ export function createServerRuntimeServices({
     const preferred = candidates.find((agent) => agent.id !== sourceInvocation.agentId && isAgentSelectableForRecovery(agent))
       ?? candidates.find((agent) => isAgentSelectableForRecovery(agent))
       ?? null;
-    return candidates.map((agent) => {
-      const selectability = recoveryAgentSelectability(agent);
-      return {
-        id: agent.id,
-        name: agent.name ?? agent.id,
-        status: agent.status ?? "unknown",
-        healthStatus: agent.health?.status ?? null,
-        locationType: agent.location?.type ?? null,
-        adapterType: agent.adapter?.type ?? null,
-        selectable: selectability.selectable,
-        reasons: selectability.reasons,
-        preferred: preferred?.id === agent.id,
-        sourceAgent: agent.id === sourceInvocation.agentId,
-      };
-    });
+    return candidates.map((agent) => recoveryAgentCandidateView(agent, sourceInvocation, preferred));
+  }
+
+  function recoveryAgentCandidateSnapshot(sourceInvocation, requestedAgentId = null) {
+    const snapshot = recoveryAgentCandidateViews(sourceInvocation);
+    const requestedAgent = requestedAgentId ? findAgent(requestedAgentId) : null;
+    if (requestedAgent && !snapshot.some((candidate) => candidate.id === requestedAgent.id)) {
+      snapshot.push(recoveryAgentCandidateView(requestedAgent, sourceInvocation, null));
+    }
+    return snapshot;
+  }
+
+  function recoveryAgentCandidateView(agent, sourceInvocation, preferred = null) {
+    const selectability = recoveryAgentSelectability(agent);
+    return {
+      id: agent.id,
+      name: agent.name ?? agent.id,
+      status: agent.status ?? "unknown",
+      healthStatus: agent.health?.status ?? null,
+      locationType: agent.location?.type ?? null,
+      adapterType: agent.adapter?.type ?? null,
+      selectable: selectability.selectable,
+      reasons: selectability.reasons,
+      preferred: preferred?.id === agent.id,
+      sourceAgent: agent.id === sourceInvocation.agentId,
+    };
   }
 
   function recoveryAgentSelectability(agent) {

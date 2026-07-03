@@ -36,6 +36,8 @@ export function buildPublicState({
     teamId == null || !invocationId || visibleInvIds.has(invocationId);
   const byInvocation = (rows) => (rows ?? []).filter((r) => invVisible(r?.invocationId));
   const byProject = (rows) => (rows ?? []).filter((r) => projectVisible(r?.projectId));
+  const visibleEvents = byInvocation(state.events);
+  const recoveryEventsByRequestId = groupRecoveryEventsByRequestId(visibleEvents);
   const applications = (state.applications ?? []).filter((application) => {
     if (application?.projectId) return projectVisible(application.projectId);
     return teamId == null || (application?.ownerTeamId ?? LOCAL_TEAM_ID) === teamId;
@@ -70,7 +72,11 @@ export function buildPublicState({
     projects,
     applications,
     applicationRecoveryActions: byInvocation(state.applicationRecoveryActions)
-      .map((request) => applicationRecoveryActionReadModel(request, visibleInvocationsById)),
+      .map((request) => applicationRecoveryActionReadModel(
+        request,
+        visibleInvocationsById,
+        recoveryEventsByRequestId.get(request.id) ?? [],
+      )),
     projectTargets: byProject(state.projectTargets),
     currentProjectId: state.currentProjectId,
     currentProject: currentProject(),
@@ -80,7 +86,7 @@ export function buildPublicState({
     agents: state.agents,
     invocations,
     compareRuns: byCompareRun(state.compareRuns),
-    events: byInvocation(state.events),
+    events: visibleEvents,
     traces: byInvocation(state.traces),
     spans: byInvocation(state.spans),
     auditSummaries: byInvocation(state.auditSummaries),
@@ -149,7 +155,21 @@ export function buildPublicState({
   };
 }
 
-function applicationRecoveryActionReadModel(request, invocationsById) {
+function groupRecoveryEventsByRequestId(events) {
+  const grouped = new Map();
+  for (const event of events ?? []) {
+    const requestId = typeof event?.data?.recoveryActionRequestId === "string"
+      ? event.data.recoveryActionRequestId
+      : null;
+    if (!requestId) continue;
+    const items = grouped.get(requestId) ?? [];
+    items.push(event);
+    grouped.set(requestId, items);
+  }
+  return grouped;
+}
+
+function applicationRecoveryActionReadModel(request, invocationsById, events = []) {
   const sourceInvocation = invocationsById.get(request.invocationId) ?? null;
   const resultInvocation = request.resultInvocationId
     ? invocationsById.get(request.resultInvocationId) ?? null
@@ -159,7 +179,56 @@ function applicationRecoveryActionReadModel(request, invocationsById) {
     outcome: applicationRecoveryOutcome(request, resultInvocation),
     sourceInvocation: sourceInvocation ? invocationBrief(sourceInvocation) : null,
     resultInvocation: resultInvocation ? invocationBrief(resultInvocation) : null,
+    timeline: applicationRecoveryTimeline(request, events),
   };
+}
+
+function applicationRecoveryTimeline(request, events) {
+  const entries = (events ?? [])
+    .map((event) => ({
+      id: event.id,
+      type: event.type,
+      status: recoveryTimelineStatus(event, request),
+      level: event.level ?? "info",
+      message: event.message ?? "",
+      createdAt: event.createdAt,
+    }))
+    .sort(compareTimelineEntries);
+  if (entries.length > 0) return entries;
+  return [{
+    id: `${request.id}:created`,
+    type: "application_orchestration_recovery_action_created",
+    status: request.status ?? "requested",
+    level: request.status === "failed" ? "warn" : "info",
+    message: `Application orchestration recovery action ${request.actionType} recorded.`,
+    createdAt: request.createdAt,
+  }];
+}
+
+function recoveryTimelineStatus(event, request) {
+  const type = event?.type ?? "";
+  const eventStatus = typeof event?.data?.status === "string" ? event.data.status : null;
+  if (type === "application_orchestration_recovery_action_requested") {
+    return eventStatus === "approval_pending" ? "approval_pending" : "requested";
+  }
+  if (type === "application_orchestration_recovery_approval_requested") return "approval_pending";
+  if (type === "application_orchestration_recovery_approval_resolved") {
+    return eventStatus ? `approval_${eventStatus}` : "approval_resolved";
+  }
+  if (type === "application_orchestration_recovery_action_executing") return "executing";
+  if (type === "application_orchestration_recovery_action_executed") return "executed";
+  if (type === "application_orchestration_recovery_action_failed") return "failed";
+  if (type === "application_orchestration_recovery_action_rejected") return "rejected";
+  return eventStatus ?? request.status ?? "recorded";
+}
+
+function compareTimelineEntries(left, right) {
+  const leftTime = Date.parse(left?.createdAt ?? "");
+  const rightTime = Date.parse(right?.createdAt ?? "");
+  if (Number.isFinite(leftTime) && Number.isFinite(rightTime) && leftTime !== rightTime) {
+    return leftTime - rightTime;
+  }
+  return String(left?.id ?? "").localeCompare(String(right?.id ?? ""));
 }
 
 function applicationRecoveryOutcome(request, resultInvocation) {
