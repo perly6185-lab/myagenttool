@@ -235,14 +235,83 @@ export function createApplicationService({
     return { ok: true, application, action, result };
   }
 
+  // Plan a wrapper-capability invocation for bridge execution (#359). Applies the
+  // same guards as the synchronous path — tenancy, archived/offline status, and
+  // the mandatory approvalToken — then resolves the approved execution plan. On
+  // success returns the exact command the bridge runner must execute; the caller
+  // (capability service) dispatches it as a queued invocation. Never returns an
+  // unapproved command (applicationWrapperExecutionPlan is the allowlist).
+  function planApplicationWrapperInvocation({ applicationId, commandId, input = {}, actor = null } = {}) {
+    const application = findApplication(applicationId);
+    if (!application || !actorCanAccessApplication(state, actor, application)) {
+      return { ok: false, status: 404, body: { error: "capability_not_found" } };
+    }
+    if (application.status === "archived") {
+      return { ok: false, status: 409, body: { error: "application_archived", applicationId } };
+    }
+    if (application.status === "offline") {
+      return { ok: false, status: 409, body: { error: "application_offline", applicationId } };
+    }
+    if (!hasApprovalToken(input)) {
+      return { ok: false, status: 409, body: { error: "approval_required", reason: "Wrapper execution requires an explicit approvalToken.", applicationId } };
+    }
+    const plan = applicationWrapperExecutionPlan(application, commandId);
+    if (!plan) {
+      return { ok: false, status: 404, body: { error: "wrapper_command_not_found", applicationId, commandId } };
+    }
+    return {
+      ok: true,
+      wrapper: { execCommand: plan.command, execArgs: plan.args, cwd: plan.cwd, capability: plan.capability },
+      timeoutSeconds: plan.timeoutSeconds,
+    };
+  }
+
   return {
     findApplication,
     invokeApplicationCapability,
     listApplicationCapabilities,
     listApplications,
+    planApplicationWrapperInvocation,
     probeApplication,
     registerApplication,
     transitionApplication,
+  };
+}
+
+// The platform-owned bridge agent that executes governed application npm-wrapper
+// commands. A fixed cli agent (node application-wrapper.mjs) — the server injects
+// the resolved, approved command via allowlisted metadata; the agent command
+// itself is constant, so nothing arbitrary reaches the bridge's allowlist.
+// Opt-in (registered like the ccusage agents), keeping the registry conservative.
+export function createApplicationWrapperAgentRegistration({
+  wrapperScriptPath = "tools/agents/application-wrapper.mjs",
+  costOwner = "usr_local",
+} = {}) {
+  const scriptPath = String(wrapperScriptPath ?? "").trim();
+  if (!scriptPath) throw new Error("application wrapper scriptPath is required.");
+  return {
+    id: "agt_platform_application_wrapper",
+    type: "cli",
+    name: "Application Wrapper Runner",
+    description: "Platform bridge agent that runs governed, approved application npm-wrapper commands.",
+    command: "node",
+    args: [scriptPath],
+    timeoutSeconds: 120,
+    outputFormat: "plain_result",
+    capabilityName: "application_wrapper_execution",
+    capabilityDescription: "Executes an approved application npm-wrapper command resolved by the server.",
+    riskLevel: "medium",
+    riskTags: ["local_execution", "npm_wrapper", "application_asset"],
+    economicModel: "free",
+    pricingDimensions: [],
+    costOwner,
+    unknownCostPolicy: "warn",
+    registrationNotes: {
+      risk: "Runs only server-resolved, application-approved wrapper commands injected as discrete argv; no user text becomes a command.",
+      data: "Reads the wrapper command's declared inputs and stores structured output in invocation events/results.",
+      cost: "Free platform execution helper; wrapper cost semantics come from the application.",
+      cancellation: "The Desktop Bridge attempts to terminate the wrapper process tree on cancellation.",
+    },
   };
 }
 
