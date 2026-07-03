@@ -4,6 +4,7 @@ import {
   readableRecoveryActionType,
   readableRecoveryAgentReason,
   readableRecoveryOutcome,
+  readableRecoveryOutcomeReason,
   readableRecoveryTimelineStatus,
 } from "@/features/applications/applications-inspector";
 import type { InvocationSnapshot } from "@/lib/console-state";
@@ -46,6 +47,8 @@ describe("recovery lineage labels", () => {
     expect(readableRecoveryActionType("custom_action")).toBe("custom_action");
     expect(readableRecoveryOutcome("still_failed")).toBe("Still failed");
     expect(readableRecoveryOutcome("custom_state")).toBe("custom_state");
+    expect(readableRecoveryOutcomeReason("result_failed")).toBe("Result failed");
+    expect(readableRecoveryOutcomeReason("custom_reason")).toBe("custom_reason");
     expect(readableRecoveryTimelineStatus("approval_pending")).toBe("Approval pending");
     expect(readableRecoveryTimelineStatus("custom_status")).toBe("custom_status");
   });

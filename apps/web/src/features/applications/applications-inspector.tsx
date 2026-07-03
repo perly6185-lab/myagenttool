@@ -594,6 +594,7 @@ function RecoveryLineage({
             <Badge tone="neutral">{readableRecoveryActionType(request.actionType)}</Badge>
             <Badge tone={recoveryActionRequestTone(request.status)}>{readableRecoveryActionRequestStatus(request.status)}</Badge>
             {outcome ? <Badge tone={recoveryOutcomeTone(outcome.state)}>{readableRecoveryOutcome(outcome.state)}</Badge> : null}
+            {outcome?.reason ? <Badge tone={recoveryOutcomeSeverityTone(outcome.severity)}>{readableRecoveryOutcomeReason(outcome.reason)}</Badge> : null}
           </div>
           <span className="text-xs text-muted-foreground">{shortTime(request.updatedAt ?? request.createdAt)}</span>
         </div>
@@ -621,6 +622,8 @@ function RecoveryLineage({
             { term: "Result status", value: request.resultInvocation?.status ?? "Not recorded" },
             { term: "Requested agent", value: request.requestedAgentId ?? "Automatic" },
             { term: "Selected agent", value: request.selectedAgentId ?? "Not changed" },
+            { term: "Outcome reason", value: outcome?.reason ? readableRecoveryOutcomeReason(outcome.reason) : "Not recorded" },
+            { term: "Next step", value: outcome?.nextStep ?? "Not recorded" },
             { term: "Updated", value: shortTime(request.updatedAt) },
           ]}
         />
@@ -907,6 +910,14 @@ function recoveryOutcomeTone(state: string): "neutral" | "success" | "warning" |
   return "neutral";
 }
 
+function recoveryOutcomeSeverityTone(severity?: string | null): "neutral" | "success" | "warning" | "danger" | "running" {
+  if (severity === "success") return "success";
+  if (severity === "info") return "running";
+  if (severity === "warning") return "warning";
+  if (severity === "danger") return "danger";
+  return "neutral";
+}
+
 function recoveryTimelineTone(status: string): "neutral" | "success" | "warning" | "danger" | "running" {
   if (status === "executed" || status === "approval_approved") return "success";
   if (status === "executing") return "running";
@@ -923,6 +934,27 @@ export function readableRecoveryOutcome(state: string): string {
     still_failed: "Still failed",
   };
   return labels[state] ?? state;
+}
+
+export function readableRecoveryOutcomeReason(reason: string): string {
+  const labels: Record<string, string> = {
+    approval_approved: "Approval approved",
+    approval_denied: "Approval denied",
+    approval_pending: "Approval pending",
+    approval_timed_out: "Approval timed out",
+    execution_failed_before_result: "Failed before result",
+    missing_result_invocation: "Missing result",
+    no_result_expected: "No result expected",
+    recovery_executing: "Executing",
+    recovery_requested: "Requested",
+    result_cancelled: "Result cancelled",
+    result_denied: "Result denied",
+    result_failed: "Result failed",
+    result_in_progress: "Result in progress",
+    result_invocation_not_visible: "Result not visible",
+    result_succeeded: "Result succeeded",
+  };
+  return labels[reason] ?? reason;
 }
 
 export function readableRecoveryActionType(actionType: string): string {
