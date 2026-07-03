@@ -201,6 +201,14 @@ const terminalSessions = new Map();
 process.on("SIGINT", stop);
 process.on("SIGTERM", stop);
 
+// Backstop for stray async work (cancel/health pollers, timers) whose rejections
+// aren't caught locally: a transient network error should log and let the bridge
+// keep running, not crash the process and cascade the whole dev stack down.
+process.on("unhandledRejection", (reason) => {
+  if (stopped) return;
+  console.error(`[desktop] unhandled rejection (continuing): ${reason instanceof Error ? reason.message : String(reason)}`);
+});
+
 await waitForServer();
 await request("POST", "/api/bridge/register", {
   bridgeVersion: "0.0.0",
@@ -208,10 +216,24 @@ await request("POST", "/api/bridge/register", {
 });
 console.log(`[desktop] registered with ${serverUrl}`);
 
-poll();
-const timer = setInterval(poll, pollIntervalMs);
-pollTerminal();
-const terminalTimer = setInterval(pollTerminal, terminalPollIntervalMs);
+// A transient server blip — e.g. ECONNRESET while the API restarts — must never
+// escape a poll tick as an unhandled rejection: the dev supervisor tears down the
+// whole stack when any child exits non-zero, so one dropped fetch would take the
+// entire demo down. Swallow-and-log per tick (throttled); the next interval retries.
+let lastPollErrorAt = 0;
+function logPollError(label, error) {
+  const now = Date.now();
+  if (now - lastPollErrorAt > 5000) {
+    lastPollErrorAt = now;
+    console.error(`[desktop] ${label} poll error (retrying): ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+const guarded = (fn, label) => () => Promise.resolve().then(fn).catch((error) => logPollError(label, error));
+
+guarded(poll, "bridge")();
+const timer = setInterval(guarded(poll, "bridge"), pollIntervalMs);
+guarded(pollTerminal, "terminal")();
+const terminalTimer = setInterval(guarded(pollTerminal, "terminal"), terminalPollIntervalMs);
 
 async function poll() {
   if (busy || stopped) {
