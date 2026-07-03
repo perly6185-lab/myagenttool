@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { StatusBadge } from "@/components/ui/badge";
@@ -60,11 +60,9 @@ export function DashboardView() {
 
   const projects = state?.projects ?? [];
   const projectId = selectedProjectId ?? projects[0]?.id ?? null;
-  // Run target: a specific worktree (its checkout becomes the agent's cwd).
   const targetWorktree =
     (state?.worktrees ?? []).find((w) => w.id === selectedWorktreeId && w.projectId === projectId) ?? null;
 
-  // Default to the worktree's own agent when one is selected.
   useEffect(() => {
     if (targetWorktree?.agentId) setSelectedAgentId(targetWorktree.agentId);
   }, [targetWorktree?.id]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -86,72 +84,87 @@ export function DashboardView() {
   const cancelDisabled = !invocation || !CANCELLABLE_STATES.includes(invocation.status ?? "");
   const blockReason = runBlockReason(state, agent, hasTask, invocation);
 
+  // Ascending (oldest → newest) so the transcript reads as a conversation and
+  // new blocks append at the bottom.
   const events = useMemo(() => {
     if (!state) return [];
-    if (invocation) {
-      return state.events
-        .filter((e) => e.invocationId === invocation.id || e.data?.agentId === agent?.id)
-        .slice(0, 30);
-    }
-    return state.events.slice(0, 30);
+    const filtered = invocation
+      ? state.events.filter((e) => e.invocationId === invocation.id || e.data?.agentId === agent?.id)
+      : state.events;
+    return [...filtered].sort((a, b) => a.createdAt.localeCompare(b.createdAt)).slice(-50);
   }, [state, invocation, agent?.id]);
 
+  // Auto-scroll to the newest block only when the user is already at the bottom,
+  // so reading back through history isn't yanked away by streaming updates.
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const pinnedRef = useRef(true);
+  const onTranscriptScroll = () => {
+    const el = scrollRef.current;
+    if (el) pinnedRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 48;
+  };
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (el && pinnedRef.current) el.scrollTop = el.scrollHeight;
+  }, [events.length, invocation?.id, invocation?.input?.task]);
+
   async function runTask() {
+    const submitted = task.trim();
     await execute(async () => {
-      const created = (await api.createInvocation(task.trim(), agent?.id ?? null, projectId, targetWorktree?.id ?? null)) as {
+      const created = (await api.createInvocation(submitted, agent?.id ?? null, projectId, targetWorktree?.id ?? null)) as {
         invocation: { id: string };
       };
       setSelectedInvocationId(created.invocation.id);
+      setTask(""); // clear the composer on send; the task shows as the user bubble
       return created;
     });
   }
 
+  const userTask = invocation?.input?.task;
+
   return (
-    <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_minmax(0,0.9fr)]">
-      <Card>
+    <div className="flex h-full flex-col gap-4">
+      {/* Transcript — the scrolling conversation area. */}
+      <Card className="flex min-h-0 flex-1 flex-col">
         <CardHeader>
-          <CardTitle>What should your computer do?</CardTitle>
+          <SectionHeading
+            eyebrow="Activity"
+            title={activityTitle(invocation?.status)}
+            actions={<StatusBadge tone={statusTone(invocation?.status)}>{readableStatus(invocation?.status)}</StatusBadge>}
+          />
         </CardHeader>
-        <CardContent className="space-y-4">
-          <Textarea rows={6} value={task} onChange={(e) => setTask(e.target.value)} aria-label="Task" />
-
-          <Field label="Project">
-            <Select
-              value={projectId ?? ""}
-              onChange={(e) => setSelectedProjectId(e.target.value || null)}
-              aria-label="Project"
-            >
-              {projects.length === 0 ? <option value="">No project</option> : null}
-              {projects.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.name}
-                </option>
-              ))}
-            </Select>
-          </Field>
-
-          {targetWorktree ? (
-            <div className="flex items-center justify-between gap-2 rounded-md border border-primary/40 bg-primary/5 px-3 py-2 text-xs">
-              <span className="min-w-0">
-                Running in worktree <span className="font-medium">{targetWorktree.branch}</span>
-                <span className="block truncate font-mono text-[11px] text-muted-foreground">{targetWorktree.path}</span>
-              </span>
-              <button
-                type="button"
-                onClick={() => setSelectedWorktreeId(null)}
-                className="shrink-0 text-muted-foreground hover:text-foreground"
-              >
-                Use project default
-              </button>
+        <div ref={scrollRef} onScroll={onTranscriptScroll} className="min-h-0 flex-1 space-y-3 overflow-y-auto px-5 pb-5">
+          {userTask ? (
+            <div className="flex justify-end">
+              <div className="max-w-[85%] rounded-lg rounded-br-sm bg-primary/10 px-3 py-2 text-sm [overflow-wrap:anywhere]">
+                {userTask}
+              </div>
             </div>
           ) : null}
+          <Transcript events={events} renderAction={(event) => <DecisionAction event={event} />} />
+        </div>
+      </Card>
+
+      {/* Composer — pinned below the transcript. */}
+      <Card className="shrink-0">
+        <CardHeader className="pb-2">
+          <CardTitle>What should your computer do?</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <Textarea rows={3} value={task} onChange={(e) => setTask(e.target.value)} aria-label="Task" />
 
           <div className="grid gap-3 sm:grid-cols-2">
-            <Field label="Computer">
-              <Select disabled value={state?.device?.id ?? ""}>
-                <option value={state?.device?.id ?? ""}>
-                  {state?.device ? `${state.device.name} — ${readableAgentStatus(state.device.status)}` : "—"}
-                </option>
+            <Field label="Project">
+              <Select
+                value={projectId ?? ""}
+                onChange={(e) => setSelectedProjectId(e.target.value || null)}
+                aria-label="Project"
+              >
+                {projects.length === 0 ? <option value="">No project</option> : null}
+                {projects.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name}
+                  </option>
+                ))}
               </Select>
             </Field>
             <Field label="Agent">
@@ -170,7 +183,23 @@ export function DashboardView() {
             </Field>
           </div>
 
-          <div className="flex flex-wrap gap-2">
+          {targetWorktree ? (
+            <div className="flex items-center justify-between gap-2 rounded-md border border-primary/40 bg-primary/5 px-3 py-2 text-xs">
+              <span className="min-w-0">
+                Running in worktree <span className="font-medium">{targetWorktree.branch}</span>
+                <span className="block truncate font-mono text-[11px] text-muted-foreground">{targetWorktree.path}</span>
+              </span>
+              <button
+                type="button"
+                onClick={() => setSelectedWorktreeId(null)}
+                className="shrink-0 text-muted-foreground hover:text-foreground"
+              >
+                Use project default
+              </button>
+            </div>
+          ) : null}
+
+          <div className="flex flex-wrap items-center gap-2">
             <Button onClick={runTask} disabled={runDisabled}>
               {localOffline ? "Queue for this computer" : "Run on this computer"}
             </Button>
@@ -181,30 +210,30 @@ export function DashboardView() {
             >
               Cancel task
             </Button>
-          </div>
-          {blockReason || error ? (
-            <p className="text-xs text-muted-foreground" aria-live="polite">
-              {error ?? blockReason}
-            </p>
-          ) : null}
-
-          <div className="grid grid-cols-2 gap-3 rounded-lg border border-border bg-muted/30 p-3 text-sm sm:grid-cols-4">
-            <ReviewItem label="Safety" value={agent?.registrationNotes?.risk ?? "Review the selected agent before running."} />
-            <ReviewItem label="Data" value={agent?.registrationNotes?.data ?? "Task input and result are recorded."} />
-            <ReviewItem label="Cost" value={agent?.registrationNotes?.cost ?? costText(agent?.economics)} />
-            <ReviewItem
-              label="Cancellation"
-              value={agent?.registrationNotes?.cancellation ?? cancellationText(agent?.adapter)}
-            />
+            {blockReason || error ? (
+              <span className="text-xs text-muted-foreground" aria-live="polite">
+                {error ?? blockReason}
+              </span>
+            ) : null}
           </div>
 
           <details className="group rounded-lg border border-border px-3 py-2">
             <summary className="cursor-pointer list-none text-sm font-medium text-muted-foreground">
               Technical details
             </summary>
-            <div className="pt-3">
+            <div className="space-y-3 pt-3">
+              <div className="grid grid-cols-2 gap-3 rounded-lg border border-border bg-muted/30 p-3 text-sm sm:grid-cols-4">
+                <ReviewItem label="Safety" value={agent?.registrationNotes?.risk ?? "Review the selected agent before running."} />
+                <ReviewItem label="Data" value={agent?.registrationNotes?.data ?? "Task input and result are recorded."} />
+                <ReviewItem label="Cost" value={agent?.registrationNotes?.cost ?? costText(agent?.economics)} />
+                <ReviewItem
+                  label="Cancellation"
+                  value={agent?.registrationNotes?.cancellation ?? cancellationText(agent?.adapter)}
+                />
+              </div>
               <FactList
                 facts={[
+                  { term: "Computer", value: state?.device ? `${state.device.name} — ${readableAgentStatus(state.device.status)}` : "—" },
                   { term: "Adapter", value: adapterText(agent?.adapter) },
                   { term: "Lifecycle", value: lifecycleText(agent) },
                   { term: "Task ID", value: invocation?.id ?? "No task yet" },
@@ -219,19 +248,6 @@ export function DashboardView() {
               />
             </div>
           </details>
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader>
-          <SectionHeading
-            eyebrow="Activity"
-            title={activityTitle(invocation?.status)}
-            actions={<StatusBadge tone={statusTone(invocation?.status)}>{readableStatus(invocation?.status)}</StatusBadge>}
-          />
-        </CardHeader>
-        <CardContent>
-          <Transcript events={events} renderAction={(event) => <DecisionAction event={event} />} />
         </CardContent>
       </Card>
     </div>
