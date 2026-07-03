@@ -296,6 +296,17 @@ export const api = {
       "GET",
       `/api/applications/${encodeURIComponent(id)}/orchestrations/${encodeURIComponent(routineId)}/runs/${encodeURIComponent(invocationId)}/recovery`,
     ),
+  requestApplicationOrchestrationRecoveryAction: (
+    id: string,
+    routineId: string,
+    invocationId: string,
+    body: { actionType: string; approvalToken?: string; reason?: string | null } = { actionType: "" },
+  ) =>
+    request(
+      "POST",
+      `/api/applications/${encodeURIComponent(id)}/orchestrations/${encodeURIComponent(routineId)}/runs/${encodeURIComponent(invocationId)}/recovery/actions`,
+      body,
+    ),
   createInvocation: (
     task: string,
     agentId: string | null,

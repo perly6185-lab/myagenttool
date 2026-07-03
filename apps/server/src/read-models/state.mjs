@@ -68,6 +68,7 @@ export function buildPublicState({
     teams: state.teams ?? [],
     projects,
     applications,
+    applicationRecoveryActions: byInvocation(state.applicationRecoveryActions),
     projectTargets: byProject(state.projectTargets),
     currentProjectId: state.currentProjectId,
     currentProject: currentProject(),

@@ -16,6 +16,7 @@ export async function handleApplicationRoutes({
   listApplicationOrchestrationRunEvents,
   probeApplication,
   registerApplication,
+  requestApplicationOrchestrationRecoveryAction,
   transitionApplication,
   createCapabilityInvocation,
   listApplicationOrchestrationRuns,
@@ -132,6 +133,17 @@ export async function handleApplicationRoutes({
     const invocationId = decodeURIComponent(orchestrationRunRecoveryMatch[3]);
     if (denyForeignApplication({ res, sendJson, state, actor, applicationId, findApplication })) return true;
     const result = getApplicationOrchestrationRunRecovery(applicationId, routineId, invocationId);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  const orchestrationRunRecoveryActionMatch = url.pathname.match(/^\/api\/applications\/([^/]+)\/orchestrations\/([^/]+)\/runs\/([^/]+)\/recovery\/actions$/);
+  if (orchestrationRunRecoveryActionMatch && req.method === "POST") {
+    const applicationId = decodeURIComponent(orchestrationRunRecoveryActionMatch[1]);
+    const routineId = decodeURIComponent(orchestrationRunRecoveryActionMatch[2]);
+    const invocationId = decodeURIComponent(orchestrationRunRecoveryActionMatch[3]);
+    if (denyForeignApplication({ res, sendJson, state, actor, applicationId, findApplication })) return true;
+    const result = requestApplicationOrchestrationRecoveryAction(applicationId, routineId, invocationId, await readJson(req), actor);
     sendJson(res, result.status, result.body);
     return true;
   }
