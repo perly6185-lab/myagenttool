@@ -52,6 +52,10 @@ export function reviewRiskGates(files, body, prNumber, options = {}) {
     missing(`${prefix} changes security/data/billing files but does not mention security/data/privacy, billing/cost, credential, audit, or retention evidence`);
   }
 
+  if (normalizedFiles.some(isPrivilegedExecutionFile) && !hasSecurityReviewEvidence(body)) {
+    missing(`${prefix} changes a governed registry / execution surface (applications, capabilities, tools, agent wrappers, or the Desktop Bridge) but does not mention a security review (tenancy scoping, path confinement, approval enforcement, or injection)`);
+  }
+
   if (normalizedFiles.some(isReleaseFile) && !hasReleaseEvidence(body)) {
     missing(`${prefix} changes release/deploy files but does not mention release, rollback, deploy preflight, or human approval evidence`);
   }
@@ -88,6 +92,17 @@ export function isAdapterFile(file) {
 
 export function isSecurityDataBillingFile(file) {
   return /security|auth|credential|secret|billing|cost|quota|settlement|chargeback|audit|data[-_]governance|data[-_]retention|privacy/i.test(file);
+}
+
+// Governed registry / facade services + routes, agent wrappers that spawn
+// processes, and the Desktop Bridge (spawns + injects governed args). These
+// carry tenancy, path-confinement, approval, and injection risk that the
+// prose-only gates above do not force an author to address — the class of bug
+// that shipped green in the application capability registry (#270).
+export function isPrivilegedExecutionFile(file) {
+  return /\/(applications|capabilities|tools)\.mjs$/i.test(file)
+    || /tools\/agents\/[^/]*-wrapper\.mjs$/i.test(file)
+    || /apps\/desktop\/src\/index\.mjs$/i.test(file);
 }
 
 export function isReleaseFile(file) {
@@ -139,6 +154,34 @@ export function hasAdapterEvidence(body) {
 
 export function hasSecurityDataBillingEvidence(body) {
   return /security\/data review|security review|privacy.*(retention|impact|review)|data.*(retention|privacy|audit|impact)|credential.*(redaction|rotation|review)|billing.*(cost|quota|review)|cost.*(quota|billing|impact)|audit evidence/i.test(body);
+}
+
+// A registry/execution PR must carry a structured `## Security Review` section
+// that explicitly addresses each class of bug that shipped green in #270:
+// tenancy scoping, filesystem/path confinement, approval enforcement, and
+// process/command injection. A prose blurb is not enough (#270 had one, and it
+// was wrong) — each field must be a specific, non-placeholder statement.
+export function parseSecurityReviewEvidence(body) {
+  if (!/##\s+Security Review/i.test(body ?? "")) return null;
+  const section = (body ?? "").match(/##\s+Security Review\s*([\s\S]*?)(?:\n##\s+|$)/i)?.[1] ?? "";
+  const field = (label) => section.match(new RegExp(`${label}:\\s*(.+)`, "i"))?.[1]?.trim() ?? "";
+  return {
+    tenancy: field("Tenancy"),
+    filesystem: field("Filesystem"),
+    approval: field("Approval"),
+    injection: field("Injection"),
+  };
+}
+
+export function isPlaceholderSecurityReviewValue(value) {
+  return /^(?:not applicable|n\/a|na|none|todo|tbd|update if|\.|-)?$/i.test(String(value ?? "").trim());
+}
+
+export function hasSecurityReviewEvidence(body) {
+  const review = parseSecurityReviewEvidence(body);
+  return Boolean(review)
+    && [review.tenancy, review.filesystem, review.approval, review.injection]
+      .every((value) => value && !isPlaceholderSecurityReviewValue(value));
 }
 
 export function hasReleaseEvidence(body) {
