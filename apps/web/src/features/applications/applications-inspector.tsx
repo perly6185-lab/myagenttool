@@ -48,7 +48,13 @@ function ApplicationActions({ application }: { application: ApplicationSnapshot 
             Probe
           </Button>
           {status !== "active" && status !== "archived" ? (
-            <Button size="sm" variant="secondary" disabled={pending} onClick={() => void execute(() => api.applicationLifecycle(application.id, "online"))}>
+            <Button size="sm" variant="secondary" disabled={pending} onClick={() => setConfirm({
+              title: `Bring "${application.name}" online?`,
+              description: "Re-enables the application's execution-like capabilities.",
+              confirmLabel: "Bring online",
+              destructive: false,
+              run: () => lifecycle("online"),
+            })}>
               Bring online
             </Button>
           ) : null}
