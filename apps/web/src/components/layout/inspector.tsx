@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { DeviceInspector } from "@/features/devices/device-inspector";
 import { GovernanceInspector } from "@/features/integrations/governance-inspector";
@@ -5,8 +6,7 @@ import { RunContextInspector } from "@/features/invocations/run-context-inspecto
 import { SessionHistory } from "@/features/invocations/session-history";
 import { ToolsInspector } from "@/features/tools/tools-inspector";
 import { ApplicationsInspector } from "@/features/applications/applications-inspector";
-import { ProjectTree } from "@/features/projects/project-tree";
-import { useUiStore } from "@/store/ui-store";
+import { useUiStore, type SectionKey } from "@/store/ui-store";
 
 function HintCard({ title, body }: { title: string; body: string }) {
   return (
@@ -21,37 +21,37 @@ function HintCard({ title, body }: { title: string; body: string }) {
   );
 }
 
-/** Right-hand context panel — content follows the active section + selection. */
-export function Inspector() {
-  const section = useUiStore((s) => s.section);
-
-  return (
-    <aside
-      aria-label="Context inspector"
-      className="hidden h-full w-80 shrink-0 overflow-y-auto border-l border-border bg-background px-4 py-5 xl:block"
-    >
-      {section === "dashboard" ? (
+// The context each section shows in the right rail, or null when it has none.
+// Sections that return null get no rail at all, so the main column fills the
+// freed width instead of leaving an empty bordered gap.
+function inspectorContent(section: SectionKey): ReactNode {
+  switch (section) {
+    case "dashboard":
+      return (
         <div className="space-y-4">
           <SessionHistory />
           <DeviceInspector />
           <RunContextInspector />
         </div>
-      ) : null}
-      {section === "invocations" ? (
+      );
+    case "invocations":
+      return (
         <div className="space-y-4">
           <SessionHistory />
           <RunContextInspector />
         </div>
-      ) : null}
-      {section === "projects" ? <ProjectTree /> : null}
-      {section === "agents" ? <DeviceInspector /> : null}
-      {section === "devices" ? (
+      );
+    case "agents":
+      return <DeviceInspector />;
+    case "devices":
+      return (
         <HintCard
           title="Local Agent Bridge"
           body="The cloud can request local work, but the bridge owns final execution. Start Desktop Bridge to bring this device online."
         />
-      ) : null}
-      {section === "discovery" ? (
+      );
+    case "discovery":
+      return (
         <div className="space-y-4">
           <DeviceInspector />
           <HintCard
@@ -59,11 +59,15 @@ export function Inspector() {
             body="Discovery only checks known or user-provided sources, never auto-enables, and keeps every candidate disabled until you register it."
           />
         </div>
-      ) : null}
-      {section === "integrations" ? <GovernanceInspector /> : null}
-      {section === "tools" ? <ToolsInspector /> : null}
-      {section === "applications" ? <ApplicationsInspector /> : null}
-      {section === "review" ? (
+      );
+    case "integrations":
+      return <GovernanceInspector />;
+    case "tools":
+      return <ToolsInspector />;
+    case "applications":
+      return <ApplicationsInspector />;
+    case "review":
+      return (
         <div className="space-y-4">
           <HintCard
             title="Findings, not raw output"
@@ -71,8 +75,9 @@ export function Inspector() {
           />
           <RunContextInspector />
         </div>
-      ) : null}
-      {section === "economics" ? (
+      );
+    case "economics":
+      return (
         <div className="space-y-4">
           <HintCard
             title="One economic ledger"
@@ -80,13 +85,33 @@ export function Inspector() {
           />
           <GovernanceInspector />
         </div>
-      ) : null}
-      {section === "audit" ? (
+      );
+    case "audit":
+      return (
         <div className="space-y-4">
           <GovernanceInspector />
           <DeviceInspector />
         </div>
-      ) : null}
+      );
+    default:
+      return null;
+  }
+}
+
+/** Right-hand context panel — content follows the active section + selection. */
+export function Inspector() {
+  const section = useUiStore((s) => s.section);
+  const content = inspectorContent(section);
+  // No context for this section (e.g. Projects, Tasks) → render no rail so the
+  // main column expands to fill the width instead of leaving an empty gap.
+  if (!content) return null;
+
+  return (
+    <aside
+      aria-label="Context inspector"
+      className="hidden h-full w-80 shrink-0 overflow-y-auto border-l border-border bg-background px-4 py-5 xl:block"
+    >
+      {content}
     </aside>
   );
 }
