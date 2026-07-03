@@ -81,6 +81,17 @@ test("when the wrapper agent is not registered, returns agent_not_available", ()
   assert.equal(created.length, 0);
 });
 
+test("the session report still requires an approvalToken (approval gate preserved on the capability path)", () => {
+  const { capSvc, created } = harness();
+  const denied = capSvc.createCapabilityInvocation("app.app_ccusage.wrapper.session", {});
+  assert.equal(denied.status, 409);
+  assert.equal(denied.body.error, "approval_required");
+  assert.equal(created.length, 0);
+  // With a token it proceeds.
+  const ok = capSvc.createCapabilityInvocation("app.app_ccusage.wrapper.session", { approvalToken: "operator" });
+  assert.equal(ok.status, 202);
+});
+
 test("an unknown wrapper command resolves no plan and is refused", () => {
   const { capSvc, created } = harness();
   const res = capSvc.createCapabilityInvocation("app.app_ccusage.wrapper.nonexistent", { approvalToken: "ok" });

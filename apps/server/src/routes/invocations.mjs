@@ -104,7 +104,12 @@ export async function handleInvocationRoutes({
       sendJson(res, 409, { error: "agent_not_ready", agentId: blocked.id });
       return true;
     }
-    const compareRun = createCompareRun(task, agents, { ...(body.options ?? {}), actor });
+    const compareOptions = body.options && typeof body.options === "object" && !Array.isArray(body.options) ? body.options : {};
+    const compareRun = createCompareRun(task, agents, {
+      ...compareOptions,
+      metadata: stripReservedInvocationMetadata(compareOptions.metadata),
+      actor,
+    });
     sendJson(res, 201, {
       compareRun,
       invocations: compareRun.childInvocationIds.map((id) => findInvocation(id)).filter(Boolean),
@@ -156,11 +161,24 @@ function invocationProjectId(invocation) {
   return invocation?.projectId ?? invocation?.input?.metadata?.projectId ?? null;
 }
 
+// Metadata keys that only the governed application-capability dispatch may set
+// (tools.mjs / capabilities.mjs build them server-side from an approved plan).
+// A client MUST NOT be able to supply these on /api/invocations: in particular
+// `applicationWrapper` carries the exact command the bridge runs, so honoring a
+// client-supplied value on an invocation targeting the Application Wrapper Runner
+// would be arbitrary command execution on the bridge host.
+const RESERVED_INVOCATION_METADATA_KEYS = ["applicationWrapper", "providerType", "applicationId", "capability"];
+
+export function stripReservedInvocationMetadata(metadata) {
+  if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) return {};
+  const clean = { ...metadata };
+  for (const key of RESERVED_INVOCATION_METADATA_KEYS) delete clean[key];
+  return clean;
+}
+
 export function invocationOptionsFromBody(body = {}) {
   const options = body.options && typeof body.options === "object" && !Array.isArray(body.options) ? body.options : {};
-  const metadata = options.metadata && typeof options.metadata === "object" && !Array.isArray(options.metadata)
-    ? { ...options.metadata }
-    : {};
+  const metadata = stripReservedInvocationMetadata(options.metadata);
   if (body.projectId !== undefined) metadata.projectId = body.projectId;
   if (body.worktreeId !== undefined) metadata.worktreeId = body.worktreeId;
   // The web composer nests permissionLevel inside options; older callers pass it

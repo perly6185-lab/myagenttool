@@ -411,7 +411,10 @@ function optionalTimezone(value) {
     return { ok: true, value: null };
   }
   const text = String(value).trim();
-  return /^[A-Za-z0-9_+\-/:.]{1,64}$/.test(text)
+  // No leading "-": aligns with the wrapper capability's `token` validator so a
+  // timezone that would be dropped downstream is rejected here with a clear error
+  // instead of silently ignored.
+  return /^[A-Za-z0-9_+/:.][A-Za-z0-9_+\-/:.]{0,63}$/.test(text)
     ? { ok: true, value: text }
     : { ok: false, status: 400, body: { error: "invalid_timezone" } };
 }

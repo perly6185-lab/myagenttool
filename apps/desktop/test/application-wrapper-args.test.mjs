@@ -19,9 +19,9 @@ test("injects the server-resolved command as discrete argv", () => {
   assert.deepEqual(args, [
     "tools/agents/application-wrapper.mjs",
     "--exec-command", "ccusage",
+    "--capability", "app.app_ccusage.wrapper.daily",
     "--exec-arg", "daily",
     "--exec-arg", "--json",
-    "--capability", "app.app_ccusage.wrapper.daily",
   ]);
 });
 
