@@ -199,7 +199,7 @@ export function createApplicationService({
     if (application.status === "archived") {
       return { ok: false, status: 409, body: { error: "application_archived", applicationId: application.id } };
     }
-    if (application.status === "offline" && !["inspect"].includes(action)) {
+    if (application.status === "offline" && !["inspect", "online"].includes(action)) {
       return { ok: false, status: 409, body: { error: "application_offline", applicationId: application.id } };
     }
     // Every side-effecting action — status changes, the orchestration-draft
@@ -207,7 +207,7 @@ export function createApplicationService({
     // NOTE: in this slice the token is an explicit-intent confirmation on an
     // owner-scoped resource (tenancy is the real authorization boundary), not a
     // cryptographic approval; a real approval-issuance flow is follow-up.
-    if ((["archive", "offline", "refresh", "generate_orchestration"].includes(action) || action.startsWith("wrapper:")) && !hasApprovalToken(input)) {
+    if ((["archive", "offline", "online", "refresh", "generate_orchestration"].includes(action) || action.startsWith("wrapper:")) && !hasApprovalToken(input)) {
       return {
         ok: false,
         status: 409,
@@ -257,6 +257,7 @@ export function projectApplicationCapabilities(app) {
       properties: { query: { type: "string", maxLength: 200 } },
     }),
     managedCapability(app, `${prefix}.refresh`, "Refresh application source", "lifecycle", "medium", ["network_access", "lifecycle"], true, disabled, approvalInputSchema()),
+    managedCapability(app, `${prefix}.online`, "Bring application online", "lifecycle", "medium", ["lifecycle", "write_control"], true, app.status === "archived" || app.status === "active", approvalInputSchema()),
     managedCapability(app, `${prefix}.offline`, "Take application offline", "lifecycle", "high", ["lifecycle", "write_control"], true, app.status === "archived", approvalInputSchema()),
     managedCapability(app, `${prefix}.archive`, "Archive application", "lifecycle", "high", ["lifecycle", "write_control"], true, app.status === "archived", approvalInputSchema()),
     managedCapability(app, `${prefix}.generate_orchestration`, "Generate application orchestration", "orchestration", "medium", ["generated_artifact", "orchestration"], true, disabled, emptyInputSchema()),
@@ -344,7 +345,7 @@ function actionFromCapabilityName(capabilityName) {
   const wrapperAction = wrapperActionFromCapabilityName(capabilityName);
   if (wrapperAction) return wrapperAction;
   const suffix = String(capabilityName ?? "").split(".").at(-1);
-  return ["inspect", "search", "refresh", "offline", "archive", "generate_orchestration"].includes(suffix) ? suffix : null;
+  return ["inspect", "search", "refresh", "online", "offline", "archive", "generate_orchestration"].includes(suffix) ? suffix : null;
 }
 
 function wrapperActionFromCapabilityName(capabilityName) {
@@ -400,6 +401,21 @@ function executeApplicationAction({ application, action, input, actor, defaultPr
     application.updatedAt = executedAt;
     return {
       summary: `${application.name} application is offline.`,
+      output: { source: "application", action, applicationId: application.id, status: application.status },
+    };
+  }
+  if (action === "online") {
+    application.status = "active";
+    application.lifecycle = {
+      ...application.lifecycle,
+      state: "active",
+      lastOperation: "online",
+      lastOperationAt: executedAt,
+      lastActorId: actor?.userId ?? null,
+    };
+    application.updatedAt = executedAt;
+    return {
+      summary: `${application.name} application is online.`,
       output: { source: "application", action, applicationId: application.id, status: application.status },
     };
   }
