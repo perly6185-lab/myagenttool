@@ -712,6 +712,8 @@ function RecoveryActionItem({
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex flex-wrap items-center gap-2">
           <span className="font-medium">{action.label}</span>
+          {action.recommended ? <Badge tone="success">Recommended</Badge> : null}
+          {action.riskLevel ? <Badge tone={riskTone(action.riskLevel)}>Risk {action.riskLevel}</Badge> : null}
           {action.requiresApproval ? <Badge tone="warning">Approval</Badge> : null}
           {!isExecutableRecoveryAction(action.type) ? <Badge tone="neutral">Manual</Badge> : null}
           {latestRequest ? <Badge tone={recoveryActionRequestTone(latestRequest.status)}>{readableRecoveryActionRequestStatus(latestRequest.status)}</Badge> : null}
@@ -743,6 +745,9 @@ function RecoveryActionItem({
       </div>
       {action.description ? (
         <p className="[overflow-wrap:anywhere] text-muted-foreground">{action.description}</p>
+      ) : null}
+      {action.recommendationReason ? (
+        <p className="[overflow-wrap:anywhere] text-xs text-muted-foreground">{action.recommendationReason}</p>
       ) : null}
       {isSelectAgent ? (
         <SelectAgentRecoveryPicker
