@@ -103,7 +103,7 @@ function ApplicationActions({ application }: { application: ApplicationSnapshot 
             </Button>
           ) : null}
         </div>
-        {error ? <p className="text-xs text-destructive">{error}</p> : null}
+        {error && !confirm ? <p className="text-xs text-destructive">{error}</p> : null}
         <ConfirmModal
           open={Boolean(confirm)}
           title={confirm?.title ?? ""}
@@ -111,11 +111,13 @@ function ApplicationActions({ application }: { application: ApplicationSnapshot 
           confirmLabel={confirm?.confirmLabel}
           destructive={confirm?.destructive}
           pending={pending}
+          error={error}
           onConfirm={() => {
             if (!confirm) return;
             const run = confirm.run;
-            setConfirm(null);
-            void execute(run);
+            void execute(run).then((ok) => {
+              if (ok) setConfirm(null);
+            });
           }}
           onClose={() => setConfirm(null)}
         />
