@@ -742,6 +742,7 @@ export interface ApplicationRecoveryActionRequest {
   requiresApproval?: boolean;
   approvalRequestId?: string | null;
   resultInvocationId?: string | null;
+  selectedAgentId?: string | null;
   resultOrchestrationId?: string | null;
   resultOrchestrationRelativePath?: string | null;
   error?: string | null;

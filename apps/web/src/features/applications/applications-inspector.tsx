@@ -506,7 +506,7 @@ function OrchestrationRunDiagnostics({
                         {!isExecutableRecoveryAction(action.type) ? <Badge tone="neutral">Manual</Badge> : null}
                         {latestRequest ? <Badge tone={recoveryActionRequestTone(latestRequest.status)}>{readableRecoveryActionRequestStatus(latestRequest.status)}</Badge> : null}
                       </div>
-                      {action.type === "rerun" ? (
+                      {isExecutableRecoveryAction(action.type) ? (
                         <Button
                           size="sm"
                           variant="secondary"
@@ -583,7 +583,7 @@ function recoveryTone(category: string): "neutral" | "success" | "warning" | "da
 }
 
 function isExecutableRecoveryAction(actionType: string): boolean {
-  return actionType === "rerun";
+  return actionType === "rerun" || actionType === "select_agent";
 }
 
 function latestRecoveryActionRequest(
