@@ -255,7 +255,7 @@ export function createApplicationService({
     if (!hasApprovalToken(input)) {
       return { ok: false, status: 409, body: { error: "approval_required", reason: "Wrapper execution requires an explicit approvalToken.", applicationId } };
     }
-    const plan = applicationWrapperExecutionPlan(application, commandId);
+    const plan = applicationWrapperExecutionPlan(application, commandId, input);
     if (!plan) {
       return { ok: false, status: 404, body: { error: "wrapper_command_not_found", applicationId, commandId } };
     }
@@ -320,7 +320,63 @@ export function createApplicationWrapperAgentRegistration({
 // anything else returns null. This is the single source of truth for WHAT may
 // execute — the bridge only ever runs a command that came through here, so an
 // unapproved or unregistered command can never reach execution.
-export function applicationWrapperExecutionPlan(application, commandId) {
+const WRAPPER_ARG_INPUT_TYPES = new Set(["date", "token", "enum", "string", "boolean-flag"]);
+
+// Normalize a wrapper command's declared per-invocation flag inputs. Each entry
+// maps an input key to a `--flag` with a typed validator. Only these declared
+// inputs can ever become args (see resolveWrapperInputArgs), keeping execution an
+// allowlist even with per-invocation parameters.
+function normalizeWrapperArgInputs(argInputs) {
+  if (!Array.isArray(argInputs)) return [];
+  return argInputs.slice(0, 20).map((entry, index) => {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+      throw new Error(`NPM wrapper argInput at index ${index} must be an object.`);
+    }
+    const key = String(entry.key ?? "").trim();
+    if (!/^[a-zA-Z][a-zA-Z0-9_]{0,39}$/.test(key)) {
+      throw new Error(`NPM wrapper argInput at index ${index} requires an alphanumeric key.`);
+    }
+    const flag = String(entry.flag ?? "").trim();
+    if (!/^--[a-z0-9][a-z0-9-]*$/.test(flag)) {
+      throw new Error(`NPM wrapper argInput ${key} requires a valid --flag.`);
+    }
+    const type = WRAPPER_ARG_INPUT_TYPES.has(String(entry.type)) ? String(entry.type) : "token";
+    return { key, flag, type, values: type === "enum" ? normalizeStringList(entry.values) : [] };
+  });
+}
+
+// Turn a caller's input into args, appending ONLY declared flags whose value
+// passes its type validator. Undeclared keys are ignored; a value that looks like
+// a flag (leading "-") is refused so it can never inject a new option.
+function resolveWrapperInputArgs(argInputs, input) {
+  if (!Array.isArray(argInputs) || !input || typeof input !== "object" || Array.isArray(input)) return [];
+  const args = [];
+  for (const spec of argInputs) {
+    const raw = input[spec.key];
+    if (raw === undefined || raw === null) continue;
+    if (spec.type === "boolean-flag") {
+      if (raw === true || raw === "true") args.push(spec.flag);
+      continue;
+    }
+    const value = String(raw).trim();
+    if (!value || value.startsWith("-")) continue;
+    if (!isValidWrapperArgValue(spec, value)) continue;
+    args.push(spec.flag, value);
+  }
+  return args;
+}
+
+function isValidWrapperArgValue(spec, value) {
+  switch (spec.type) {
+    case "date": return /^\d{4}-\d{2}-\d{2}$/.test(value);
+    case "token": return /^[A-Za-z0-9_+/:.][A-Za-z0-9_+/:.-]{0,63}$/.test(value);
+    case "enum": return spec.values.includes(value);
+    case "string": return value.length <= 200 && !/[\r\n]/.test(value);
+    default: return false;
+  }
+}
+
+export function applicationWrapperExecutionPlan(application, commandId, input = {}) {
   const command = findNpmWrapperCommand(application, commandId);
   if (!command) return null;
   return {
@@ -328,7 +384,8 @@ export function applicationWrapperExecutionPlan(application, commandId) {
     commandId: command.id,
     commandType: command.commandType,
     command: command.command,
-    args: [...command.args],
+    // Base args + only the declared, validated per-invocation flag inputs.
+    args: [...command.args, ...resolveWrapperInputArgs(command.argInputs, input)],
     cwd: command.cwd ?? ".",
     timeoutSeconds: command.timeoutSeconds,
     cancellation: command.cancellation,
@@ -1343,6 +1400,10 @@ function normalizeWrapperCommand(command, index) {
     inputSchema: command.inputSchema && typeof command.inputSchema === "object" && !Array.isArray(command.inputSchema)
       ? command.inputSchema
       : emptyInputSchema(),
+    // Declared, typed per-invocation flag mappings (#355 full unification): the
+    // ONLY inputs that may become args. Anything not declared here is ignored, so
+    // execution stays an allowlist even with per-invocation parameters.
+    argInputs: normalizeWrapperArgInputs(command.argInputs),
     timeoutSeconds: normalizeTimeoutSeconds(command.timeoutSeconds),
     cancellation: normalizeCancellation(command.cancellation),
     envPolicy: normalizeEnvPolicy(command.envPolicy),
