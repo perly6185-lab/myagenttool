@@ -4,6 +4,7 @@ import { GovernanceInspector } from "@/features/integrations/governance-inspecto
 import { RunContextInspector } from "@/features/invocations/run-context-inspector";
 import { ToolsInspector } from "@/features/tools/tools-inspector";
 import { ApplicationsInspector } from "@/features/applications/applications-inspector";
+import { ProjectTree } from "@/features/projects/project-tree";
 import { useUiStore } from "@/store/ui-store";
 
 function HintCard({ title, body }: { title: string; body: string }) {
@@ -35,6 +36,7 @@ export function Inspector() {
         </div>
       ) : null}
       {section === "invocations" ? <RunContextInspector /> : null}
+      {section === "projects" ? <ProjectTree /> : null}
       {section === "agents" ? <DeviceInspector /> : null}
       {section === "devices" ? (
         <HintCard
