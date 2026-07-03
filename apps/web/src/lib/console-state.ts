@@ -788,9 +788,13 @@ export interface ApplicationRecoveryActionRequest {
   requestedBy?: string | null;
   decidedAt?: string | null;
   executedAt?: string | null;
+  outcomeReason?: string | null;
   outcome?: {
     state: "recovered" | "still_failed" | "pending" | "needs_attention" | string;
+    reason?: string | null;
+    severity?: "success" | "info" | "warning" | "danger" | string;
     summary: string;
+    nextStep?: string | null;
   } | null;
   sourceInvocation?: ApplicationRecoveryInvocationBrief | null;
   resultInvocation?: ApplicationRecoveryInvocationBrief | null;
