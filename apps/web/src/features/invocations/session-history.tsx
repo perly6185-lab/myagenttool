@@ -34,6 +34,10 @@ export function SessionHistory() {
   const selectedInvocationId = useUiStore((s) => s.selectedInvocationId);
   const setSelectedInvocationId = useUiStore((s) => s.setSelectedInvocationId);
   const setSection = useUiStore((s) => s.setSection);
+  const setResumeFromInvocationId = useUiStore((s) => s.setResumeFromInvocationId);
+  const setSelectedProjectId = useUiStore((s) => s.setSelectedProjectId);
+  const setSelectedAgentId = useUiStore((s) => s.setSelectedAgentId);
+  const setSelectedWorktreeIdStore = useUiStore((s) => s.setSelectedWorktreeId);
   const selectedWorktreeId = useUiStore((s) => s.selectedWorktreeId);
   const [scope, setScope] = useState<"project" | "all">("project");
   const [worktreeOnly, setWorktreeOnly] = useState(false);
@@ -53,6 +57,18 @@ export function SessionHistory() {
   function open(inv: InvocationSnapshot) {
     setSelectedInvocationId(inv.id);
     setSection("dashboard"); // the Dashboard transcript reconstructs the selected run
+  }
+
+  // Resume (#163): continue this session's Codex conversation. Restore the run's
+  // project/worktree/agent context, arm the composer's resume mode, and jump to
+  // the Dashboard so the next send is a `continue_last` run targeting this session.
+  function resume(inv: InvocationSnapshot) {
+    if (inv.projectId) setSelectedProjectId(inv.projectId);
+    setSelectedWorktreeIdStore(inv.worktreeId ?? null);
+    if (inv.agentId) setSelectedAgentId(inv.agentId);
+    setResumeFromInvocationId(inv.id);
+    setSelectedInvocationId(inv.id);
+    setSection("dashboard");
   }
 
   return (
@@ -81,24 +97,37 @@ export function SessionHistory() {
           <EmptyState title="No sessions" hint="Runs for this project appear here." />
         ) : (
           sessions.map((inv) => (
-            <button
+            <div
               key={inv.id}
-              type="button"
-              onClick={() => open(inv)}
               className={cn(
-                "flex w-full flex-col gap-1 rounded-md border px-2.5 py-1.5 text-left transition-colors",
+                "rounded-md border transition-colors",
                 inv.id === selectedInvocationId ? "border-primary bg-primary/5" : "border-border hover:bg-accent",
               )}
             >
-              <span className="truncate text-sm [overflow-wrap:anywhere]">
-                {inv.input?.task || "Untitled run"}
-              </span>
-              <span className="flex items-center gap-2 text-xs text-muted-foreground">
-                <StatusBadge tone={statusTone(inv.status)}>{readableStatus(inv.status)}</StatusBadge>
-                {inv.createdAt ? <span className="font-mono tabular-nums">{shortTime(inv.createdAt)}</span> : null}
-                {inv.worktreeId ? <Badge tone="neutral">worktree</Badge> : null}
-              </span>
-            </button>
+              <button
+                type="button"
+                onClick={() => open(inv)}
+                className="flex w-full flex-col gap-1 px-2.5 py-1.5 text-left"
+              >
+                <span className="truncate text-sm [overflow-wrap:anywhere]">
+                  {inv.input?.task || "Untitled run"}
+                </span>
+                <span className="flex items-center gap-2 text-xs text-muted-foreground">
+                  <StatusBadge tone={statusTone(inv.status)}>{readableStatus(inv.status)}</StatusBadge>
+                  {inv.createdAt ? <span className="font-mono tabular-nums">{shortTime(inv.createdAt)}</span> : null}
+                  {inv.worktreeId ? <Badge tone="neutral">worktree</Badge> : null}
+                </span>
+              </button>
+              <div className="border-t border-border/60 px-2.5 py-1">
+                <button
+                  type="button"
+                  onClick={() => resume(inv)}
+                  className="text-xs font-medium text-primary hover:underline"
+                >
+                  Resume
+                </button>
+              </div>
+            </div>
           ))
         )}
       </CardContent>
