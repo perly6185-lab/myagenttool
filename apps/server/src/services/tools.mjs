@@ -1,8 +1,8 @@
 import {
   CCUSAGE_REPORT_SPECS,
   CCUSAGE_TOOL_CONTRACT,
-  isGovernedCcusageAgent,
 } from "./ccusage-agent.mjs";
+import { CCUSAGE_APPLICATION_ID } from "./ccusage-application.mjs";
 import {
   CODEX_REVIEW_TOOL_CONTRACT,
   isGovernedCodexReviewAgent,
@@ -21,6 +21,9 @@ export function createToolService({
   appendEvent,
   createInvocation,
   startInvocationIfAllowed,
+  findApplication,
+  findAgent,
+  planApplicationWrapperInvocation,
 }) {
   function listTools() {
     return discoverTools();
@@ -64,30 +67,43 @@ export function createToolService({
     if (!validation.ok) {
       return { status: validation.status, body: validation.body };
     }
-    const agent = selectCcusageAgent(validation.value.report);
-    if (!agent) {
-      return { status: 409, body: { error: "agent_not_available", message: "No governed ccusage report agent is available for this report." } };
-    }
-    if (agent.status === "disabled") {
-      return { status: 409, body: { error: "agent_not_available", message: "The governed ccusage report agent is disabled.", agentId: agent.id } };
-    }
-    if (agent.health?.status === "unhealthy") {
-      return { status: 409, body: { error: "agent_not_available", message: agent.health.message ?? "The governed ccusage report agent is unhealthy.", agentId: agent.id } };
-    }
-    if (agent.location?.type === "local_device" && state.device?.unlinkState === "unlinked") {
-      return { status: 409, body: { error: "agent_not_available", message: "The local device is unlinked.", agentId: agent.id } };
-    }
     const value = validation.value;
+    // Backed by the ccusage Application capability path (#355 full unification),
+    // not bespoke agents. The ccusage app is a platform-shared asset and this tool
+    // is the platform-wide authorization boundary, so we plan in platform context
+    // (actor: null for the app tenancy gate) — ccusage reports are non-team-scoped
+    // local usage data. The real caller is still recorded via requestedBy.
+    const application = resolveCcusageApp();
+    if (!application || !["registered", "active"].includes(application.status)) {
+      return { status: 409, body: { error: "application_not_available", message: "The ccusage application is not registered. Run `pnpm ccusage:register-app`." } };
+    }
+    const runner = findAgent("agt_platform_application_wrapper");
+    if (!runner || runner.status === "disabled") {
+      return { status: 409, body: { error: "agent_not_available", message: "The platform Application Wrapper Runner agent is not available." } };
+    }
     const projectId = resolveToolProjectId(value.projectId, actor);
     if (!projectId) {
       return { status: 400, body: { error: "project_required", message: "A projectId is required when no actor-owned default project is available." } };
     }
-    const invocation = createInvocation(buildCcusageTask(value), agent, {
+    const planned = planApplicationWrapperInvocation({
+      applicationId: application.id,
+      commandId: value.report,
+      input: { since: value.since, until: value.until, timezone: value.timezone },
+      actor: null,
+    });
+    if (!planned.ok) {
+      return { status: planned.status, body: planned.body };
+    }
+    const invocation = createInvocation(buildCcusageTask(value), runner, {
       actor,
       requestedBy: actor?.userId,
       metadata: {
         tool: CCUSAGE_TOOL_CONTRACT.name,
         toolVersion: CCUSAGE_TOOL_CONTRACT.version,
+        capability: planned.wrapper.capability,
+        providerType: "application",
+        applicationId: application.id,
+        applicationWrapper: planned.wrapper,
         report: value.report,
         filters: {
           since: value.since ?? null,
@@ -97,9 +113,9 @@ export function createToolService({
         },
         projectId,
       },
-      timeoutSeconds: 60,
+      timeoutSeconds: planned.timeoutSeconds ?? 60,
     });
-    startInvocationIfAllowed(invocation, agent);
+    startInvocationIfAllowed(invocation, runner);
     appendEvent({
       invocationId: invocation.id,
       type: "tool_invocation_created",
@@ -109,7 +125,7 @@ export function createToolService({
         tool: CCUSAGE_TOOL_CONTRACT.name,
         version: CCUSAGE_TOOL_CONTRACT.version,
         report: value.report,
-        agentId: agent.id,
+        agentId: runner.id,
       },
     });
     return {
@@ -117,7 +133,7 @@ export function createToolService({
       body: {
         tool: CCUSAGE_TOOL_CONTRACT.name,
         invocationId: invocation.id,
-        agentId: agent.id,
+        agentId: runner.id,
         status: invocation.status,
         outputCollection: "importedUsageEstimates",
         invocation,
@@ -191,20 +207,22 @@ export function createToolService({
     };
   }
 
+  // The ccusage app backs the tool; when the app service isn't wired (review-only
+  // harnesses) the tool is simply absent.
+  function resolveCcusageApp() {
+    return typeof findApplication === "function" ? findApplication(CCUSAGE_APPLICATION_ID) : null;
+  }
+
   function discoverTools() {
-    const ccusageAgents = (state.agents ?? []).filter(isGovernedCcusageAgent);
+    const ccusageApp = resolveCcusageApp();
+    const ccusageAvailable = ccusageApp && ["registered", "active"].includes(ccusageApp.status);
     const codexReviewAgents = (state.agents ?? []).filter(isGovernedCodexReviewAgent);
     const claudeReviewAgents = (state.agents ?? []).filter(isGovernedClaudeReviewAgent);
     return [
-      ...(ccusageAgents.length ? [buildCcusageToolDescriptor(ccusageAgents)] : []),
+      ...(ccusageAvailable ? [buildCcusageToolDescriptor(ccusageApp)] : []),
       ...(codexReviewAgents.length ? [buildCodexReviewToolDescriptor(codexReviewAgents)] : []),
       ...(claudeReviewAgents.length ? [buildClaudeReviewToolDescriptor(claudeReviewAgents)] : []),
     ];
-  }
-
-  function selectCcusageAgent(report) {
-    const spec = CCUSAGE_REPORT_SPECS.find((item) => item.id === report);
-    return (state.agents ?? []).find((agent) => agent.id === spec?.agentId && isGovernedCcusageAgent(agent)) ?? null;
   }
 
   function selectCodexReviewAgent() {
@@ -245,7 +263,11 @@ export function createToolService({
   };
 }
 
-function buildCcusageToolDescriptor(agents) {
+function buildCcusageToolDescriptor(app) {
+  // Derived from the ccusage Application (#355 full unification): one descriptor
+  // entry per report capability, so /api/tools survives the bespoke agents'
+  // retirement. Execution runs via the platform Application Wrapper Runner.
+  const status = app.status === "active" ? "available" : "registered";
   return {
     name: CCUSAGE_TOOL_CONTRACT.name,
     version: CCUSAGE_TOOL_CONTRACT.version,
@@ -256,11 +278,11 @@ function buildCcusageToolDescriptor(agents) {
     requiresLocalDevice: true,
     inputSchema: CCUSAGE_TOOL_CONTRACT.inputSchema,
     outputSchema: CCUSAGE_TOOL_CONTRACT.outputSchema,
-    agents: agents.map((agent) => ({
-      id: agent.id,
-      name: agent.name,
-      status: agent.status,
-      report: reportIdForAgent(agent.id),
+    agents: CCUSAGE_REPORT_SPECS.map((spec) => ({
+      id: `app.${app.id}.wrapper.${spec.id}`,
+      name: spec.name,
+      status,
+      report: spec.id,
     })),
     approvalPolicy: {
       defaultOfflineReports: "allowed",
@@ -457,9 +479,6 @@ function buildClaudeReviewTask(value) {
   return `Review the selected worktree diff with Claude. Severity floor: ${value.severityFloor}.${suffix}`;
 }
 
-function reportIdForAgent(agentId) {
-  return CCUSAGE_REPORT_SPECS.find((spec) => spec.agentId === agentId)?.id ?? null;
-}
 
 function stringOrNull(value) {
   const text = String(value ?? "").trim();

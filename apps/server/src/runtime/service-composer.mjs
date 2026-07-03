@@ -335,6 +335,9 @@ export function createServerRuntimeServices({
     appendEvent,
     createInvocation,
     startInvocationIfAllowed,
+    findApplication,
+    findAgent,
+    planApplicationWrapperInvocation,
   });
 
   const {

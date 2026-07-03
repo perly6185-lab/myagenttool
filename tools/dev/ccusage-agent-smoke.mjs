@@ -26,6 +26,8 @@ import { createInvocationCompletionRuntime } from "../../apps/server/src/service
 import { createM3Service } from "../../apps/server/src/services/m3.mjs";
 import { buildPublicState } from "../../apps/server/src/read-models/state.mjs";
 import { createToolService } from "../../apps/server/src/services/tools.mjs";
+import { createApplicationService } from "../../apps/server/src/services/applications.mjs";
+import { createCcusageApplicationRegistration } from "../../apps/server/src/services/ccusage-application.mjs";
 
 let passed = 0;
 const ok = (msg) => { passed += 1; console.log(`  ok - ${msg}`); };
@@ -452,21 +454,33 @@ const wrapperScriptPath = "tools/agents/ccusage-wrapper.mjs";
     device: { id: "dev_local_001", unlinkState: "linked" },
     projects: [{ id: "prj_ccusage", ownerTeamId: "team_local" }],
     currentProjectId: "prj_ccusage",
+    applications: [],
     agents: [
       {
-        id: "agt_ccusage_daily",
-        name: "ccusage Daily Report",
+        id: "agt_platform_application_wrapper",
+        name: "Application Wrapper Runner",
         status: "available",
-        toolContract: CCUSAGE_TOOL_CONTRACT,
-        adapter: { type: "cli", args: [wrapperScriptPath, "--ccusage-cli", cliScriptPath, "--report", "daily"] },
-        capabilities: [{ name: "usage_cost_report" }],
+        adapter: { type: "cli", command: "node", args: ["tools/agents/application-wrapper.mjs"] },
         location: { type: "local_device", deviceId: "dev_local_001" },
-        economics: { model: "free", costOwner: "team_finops", currency: "USD", budgetPoolId: null },
+        economics: { model: "free", costOwner: "usr_local", currency: "USD", budgetPoolId: null },
       },
     ],
     invocations: [],
     events: [],
   };
+  // ccusage.report is backed by the ccusage Application capability path now.
+  const appSvc = createApplicationService({
+    state,
+    now,
+    nextId: (p) => `${p}_${++n}`,
+    appendEvent: (event) => state.events.push(event),
+    persistStateSoon: () => {},
+    addProject: () => null,
+    cloneProject: () => null,
+    defaultProjectPath: "/tmp/ccusage-smoke",
+  });
+  appSvc.registerApplication(createCcusageApplicationRegistration());
+  const findAgent = (id) => state.agents.find((agent) => agent.id === id) ?? null;
   const createInvocation = (task, agent, options = {}) => {
     const invocation = {
       id: `inv_tool_${++n}`,
@@ -487,6 +501,9 @@ const wrapperScriptPath = "tools/agents/ccusage-wrapper.mjs";
     appendEvent: (event) => state.events.push(event),
     createInvocation,
     startInvocationIfAllowed: () => {},
+    findApplication: appSvc.findApplication,
+    findAgent,
+    planApplicationWrapperInvocation: appSvc.planApplicationWrapperInvocation,
   });
   const list = tools.listTools();
   assert.equal(list.length, 1);
@@ -510,7 +527,7 @@ const wrapperScriptPath = "tools/agents/ccusage-wrapper.mjs";
     projectId: "prj_ccusage",
   }, { userId: "usr_local", teamId: "team_local" });
   assert.equal(created.status, 201);
-  assert.equal(created.body.agentId, "agt_ccusage_daily");
+  assert.equal(created.body.agentId, "agt_platform_application_wrapper"); // executes via the app capability path now
   assert.equal(created.body.outputCollection, "importedUsageEstimates");
   assert.equal(state.invocations[0].options.metadata.tool, "ccusage.report");
   assert.equal(state.invocations[0].options.metadata.report, "daily");
@@ -758,17 +775,16 @@ const wrapperScriptPath = "tools/agents/ccusage-wrapper.mjs";
     device: { id: "dev_local_001", unlinkState: "linked" },
     projects: [{ id: "prj_ccusage", ownerTeamId: "team_local" }],
     currentProjectId: "prj_ccusage",
+    applications: [],
     agents: [
       {
-        id: "agt_ccusage_daily",
-        name: "ccusage Daily Report",
+        id: "agt_platform_application_wrapper",
+        name: "Application Wrapper Runner",
         status: "available",
         health: { status: "healthy" },
-        toolContract: CCUSAGE_TOOL_CONTRACT,
-        adapter: { type: "cli", args: [wrapperScriptPath, "--ccusage-cli", cliScriptPath, "--report", "daily"] },
-        capabilities: [{ name: "usage_cost_report" }],
+        adapter: { type: "cli", command: "node", args: ["tools/agents/application-wrapper.mjs"] },
         location: { type: "local_device", deviceId: "dev_local_001" },
-        economics: { model: "free", costOwner: "team_finops", currency: "USD", budgetPoolId: null },
+        economics: { model: "free", costOwner: "usr_local", currency: "USD", budgetPoolId: null },
       },
     ],
     invocations: [],
@@ -809,6 +825,17 @@ const wrapperScriptPath = "tools/agents/ccusage-wrapper.mjs";
     nextId: (p) => `${p}_${++n}`,
     appendEvent: (event) => state.events.push(event),
   });
+  const loopAppSvc = createApplicationService({
+    state,
+    now,
+    nextId: (p) => `${p}_${++n}`,
+    appendEvent: (event) => state.events.push(event),
+    persistStateSoon: () => {},
+    addProject: () => null,
+    cloneProject: () => null,
+    defaultProjectPath: "/tmp/ccusage-smoke-loop",
+  });
+  loopAppSvc.registerApplication(createCcusageApplicationRegistration());
   const tools = createToolService({
     state,
     now,
@@ -817,6 +844,9 @@ const wrapperScriptPath = "tools/agents/ccusage-wrapper.mjs";
     startInvocationIfAllowed: (invocation) => {
       invocation.status = "running";
     },
+    findApplication: loopAppSvc.findApplication,
+    findAgent: (id) => state.agents.find((item) => item.id === id) ?? null,
+    planApplicationWrapperInvocation: loopAppSvc.planApplicationWrapperInvocation,
   });
   const completion = createInvocationCompletionRuntime({
     state,

@@ -7,7 +7,6 @@
   "scripts": {
     "dev": "node tools/dev/run-local-demo.mjs",
     "dev:restart-changed": "node tools/dev/restart-changed-services.mjs",
-    "ccusage:register": "node tools/dev/register-ccusage-agents.mjs",
     "ccusage:register-app": "node tools/dev/register-ccusage-application.mjs",
     "test": "pnpm -r --filter \"./apps/*\" --filter \"./packages/*\" --filter \"./tools/*\" --if-present test && pnpm smoke:local && pnpm smoke:port",
     "lint": "pnpm -r --filter \"./apps/*\" --filter \"./packages/*\" --filter \"./tools/*\" --if-present lint",
