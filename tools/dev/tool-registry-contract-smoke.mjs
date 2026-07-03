@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { createCcusageAgentRegistration } from "../../apps/server/src/services/ccusage-agent.mjs";
 import { createClaudeReviewAgentRegistration } from "../../apps/server/src/services/claude-agent.mjs";
 import { createCodexReviewAgentRegistration } from "../../apps/server/src/services/codex-agent.mjs";
 import { createCapabilityService } from "../../apps/server/src/services/capabilities.mjs";
 import { createToolService } from "../../apps/server/src/services/tools.mjs";
+import { createApplicationService } from "../../apps/server/src/services/applications.mjs";
+import { createCcusageApplicationRegistration } from "../../apps/server/src/services/ccusage-application.mjs";
 import { handleToolRoutes } from "../../apps/server/src/routes/tools.mjs";
 
 const fixturePath = resolve("docs/engineering/fixtures/tool-registry-contract.v1.json");
@@ -42,17 +43,35 @@ const state = {
   device: { id: "dev_local_001", status: "online", unlinkState: "linked" },
   projects: [{ id: "prj_local", ownerTeamId: "team_local" }],
   worktrees: [{ id: "wtr_local", projectId: "prj_local", workspaceProjectId: "prj_local", worktreePath: process.cwd() }],
+  applications: [],
   agents: [
-    agentFromRegistration(createCcusageAgentRegistration({
-      reportId: "daily",
-      cliScriptPath: "/usr/local/lib/node_modules/ccusage/src/cli.js",
-    })),
+    {
+      id: "agt_platform_application_wrapper",
+      name: "Application Wrapper Runner",
+      status: "available",
+      adapter: { type: "cli", command: "node", args: ["tools/agents/application-wrapper.mjs"] },
+      location: { type: "local_device", deviceId: "dev_local_001" },
+      economics: { model: "free", costOwner: "usr_local", currency: "USD", budgetPoolId: null },
+    },
     agentFromRegistration(createCodexReviewAgentRegistration()),
     agentFromRegistration(createClaudeReviewAgentRegistration()),
   ],
   invocations: [],
   events: [],
 };
+
+// ccusage.report is backed by the ccusage Application capability path now.
+const appSvc = createApplicationService({
+  state,
+  now: () => "2026-07-02T00:00:00Z",
+  nextId: (p) => `${p}_${state.invocations.length}`,
+  appendEvent: (event) => state.events.push(event),
+  persistStateSoon: () => {},
+  addProject: () => null,
+  cloneProject: () => null,
+  defaultProjectPath: "/tmp/tool-contract-smoke",
+});
+appSvc.registerApplication(createCcusageApplicationRegistration());
 
 const service = createToolService({
   state,
@@ -73,6 +92,9 @@ const service = createToolService({
     return invocation;
   },
   startInvocationIfAllowed: () => {},
+  findApplication: appSvc.findApplication,
+  findAgent: (id) => state.agents.find((agent) => agent.id === id) ?? null,
+  planApplicationWrapperInvocation: appSvc.planApplicationWrapperInvocation,
 });
 
 const descriptors = service.listTools();

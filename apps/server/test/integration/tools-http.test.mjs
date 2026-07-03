@@ -21,6 +21,7 @@ before(async () => {
   const { createClaudeReviewAgentRegistration } = await import("../../src/services/claude-agent.mjs");
   const { createCcusageAgentRegistration } = await import("../../src/services/ccusage-agent.mjs");
   const { createApplicationWrapperAgentRegistration } = await import("../../src/services/applications.mjs");
+  const { createCcusageApplicationRegistration } = await import("../../src/services/ccusage-application.mjs");
 
   const { defaultProject, state } = createServerState({ defaultProjectPath: "/tmp", now });
   mkdirSync("/tmp/a", { recursive: true });
@@ -109,6 +110,10 @@ before(async () => {
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   base = `http://127.0.0.1:${server.address().port}`;
   ctx = { state };
+  // ccusage.report is now backed by the ccusage Application capability path
+  // (#355 full unification), so the app must be registered for the tool to
+  // discover/execute. The runner agent is seeded above.
+  await call("/api/applications/register", { method: "POST", body: createCcusageApplicationRegistration(), token: "tok_a" });
 });
 
 after(() => server?.close());
@@ -1297,7 +1302,7 @@ test("POST /api/tools/ccusage.report/invocations creates a governed invocation",
   });
   assert.equal(res.status, 201);
   assert.equal(res.body.tool, "ccusage.report");
-  assert.equal(res.body.agentId, "agt_ccusage_daily");
+  assert.equal(res.body.agentId, "agt_platform_application_wrapper"); // executes via the app capability path now
   assert.equal(res.body.outputCollection, "importedUsageEstimates");
   const invocation = ctx.state.invocations.find((item) => item.id === res.body.invocationId);
   assert.equal(invocation?.projectId, "projA");
