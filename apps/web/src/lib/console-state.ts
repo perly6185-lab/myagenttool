@@ -83,7 +83,20 @@ export interface InvocationSnapshot {
   delivery?: { state?: string; dispatchAttempts?: number };
   cancellation?: { state?: string };
   result?: { summary?: string; touchedUserFiles?: boolean };
-  options?: { metadata?: { automationId?: string; automationName?: string; scheduled?: boolean } };
+  options?: {
+    metadata?: {
+      automationId?: string;
+      automationName?: string;
+      scheduled?: boolean;
+      source?: string;
+      applicationId?: string;
+      applicationName?: string;
+      routineId?: string;
+      orchestrationPath?: string | null;
+      orchestrationRelativePath?: string | null;
+      [key: string]: unknown;
+    };
+  };
 }
 
 export interface InvocationEventSnapshot {
