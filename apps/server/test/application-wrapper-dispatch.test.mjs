@@ -62,12 +62,15 @@ test("wrapper capability dispatches a queued bridge invocation with the resolved
   assert.deepEqual(meta.applicationWrapper.execArgs, ["daily", "--json", "--offline"]);
 });
 
-test("without an approvalToken the invocation is refused before dispatch", () => {
+test("a read-only report command (requiresApproval:false) dispatches without an approvalToken", () => {
+  // ccusage report commands are requiresApproval:false — parity with the tool's
+  // offline reports, which never needed a token. (The approval_required path for
+  // requiresApproval:true commands is covered by the tools-http integration test.)
   const { capSvc, created } = harness();
   const res = capSvc.createCapabilityInvocation(CAP, {});
-  assert.equal(res.status, 409);
-  assert.equal(res.body.error, "approval_required");
-  assert.equal(created.length, 0);
+  assert.equal(res.status, 202);
+  assert.equal(res.body.status, "queued");
+  assert.equal(created.length, 1);
 });
 
 test("when the wrapper agent is not registered, returns agent_not_available", () => {

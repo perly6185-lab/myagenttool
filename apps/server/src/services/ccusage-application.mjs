@@ -56,6 +56,9 @@ export function createCcusageApplicationRegistration({
           status: "approved",
           riskLevel: "low",
           riskTags: ["usage-report", "read-only"],
+          // Read-only offline reports need no approval token — parity with the
+          // ccusage tool, whose offline reports were always allowed.
+          requiresApproval: false,
           filePolicy: "read_only",
           networkPolicy: "forbidden",
           argInputs: [

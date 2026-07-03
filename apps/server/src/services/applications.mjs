@@ -252,8 +252,15 @@ export function createApplicationService({
     if (application.status === "offline") {
       return { ok: false, status: 409, body: { error: "application_offline", applicationId } };
     }
-    if (!hasApprovalToken(input)) {
-      return { ok: false, status: 409, body: { error: "approval_required", reason: "Wrapper execution requires an explicit approvalToken.", applicationId } };
+    const command = findNpmWrapperCommand(application, commandId);
+    if (!command) {
+      return { ok: false, status: 404, body: { error: "wrapper_command_not_found", applicationId, commandId } };
+    }
+    // Approval is required only for commands that declare it. A read-only report
+    // command can set requiresApproval:false — preserving, e.g., the ccusage
+    // tool's offline reports that never needed an approval token.
+    if (command.requiresApproval && !hasApprovalToken(input)) {
+      return { ok: false, status: 409, body: { error: "approval_required", reason: "This wrapper command requires an explicit approvalToken.", applicationId } };
     }
     const plan = applicationWrapperExecutionPlan(application, commandId, input);
     if (!plan) {
