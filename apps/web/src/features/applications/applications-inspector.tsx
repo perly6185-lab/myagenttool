@@ -706,6 +706,10 @@ function RecoveryActionItem({
   const selectedAgent = agentCandidates.find((candidate) => candidate.id === effectiveAgentId) ?? null;
   const isSelectAgent = action.type === "select_agent";
   const canRunSelectAgent = !isSelectAgent || Boolean(effectiveAgentId && selectedAgent?.selectable);
+  const blockedReason = action.availability?.blockedReason ?? action.blockedReason ?? null;
+  const warningReason = action.availability?.warningReason ?? action.warningReason ?? null;
+  const actionBlocked = action.availability?.state === "blocked" || Boolean(blockedReason);
+  const disabled = pending || actionBlocked;
 
   return (
     <li className="rounded border border-border bg-muted p-2">
@@ -714,6 +718,8 @@ function RecoveryActionItem({
           <span className="font-medium">{action.label}</span>
           {action.recommended ? <Badge tone="success">Recommended</Badge> : null}
           {action.riskLevel ? <Badge tone={riskTone(action.riskLevel)}>Risk {action.riskLevel}</Badge> : null}
+          {blockedReason ? <Badge tone="warning">{readableRecoveryActionAvailabilityReason(blockedReason)}</Badge> : null}
+          {warningReason ? <Badge tone="warning">{readableRecoveryActionAvailabilityReason(warningReason)}</Badge> : null}
           {action.requiresApproval ? <Badge tone="warning">Approval</Badge> : null}
           {!isExecutableRecoveryAction(action.type) ? <Badge tone="neutral">Manual</Badge> : null}
           {latestRequest ? <Badge tone={recoveryActionRequestTone(latestRequest.status)}>{readableRecoveryActionRequestStatus(latestRequest.status)}</Badge> : null}
@@ -722,20 +728,20 @@ function RecoveryActionItem({
           <Button
             size="sm"
             variant="secondary"
-            disabled={!canRetry || pending || !canRunSelectAgent}
+            disabled={!canRetry || disabled || !canRunSelectAgent}
             onClick={() => onRequest(action.type, action.description, isSelectAgent ? effectiveAgentId : null)}
           >
             <Play />
-            Run
+            {actionBlocked ? "Blocked" : "Run"}
           </Button>
         ) : action.requiresApproval ? (
           <Button
             size="sm"
             variant="secondary"
-            disabled={pending || latestRequest?.status === "approval_pending"}
+            disabled={disabled || latestRequest?.status === "approval_pending"}
             onClick={() => onRequest(action.type, action.description)}
           >
-            {latestRequest?.status === "approval_pending" ? "Pending approval" : "Request approval"}
+            {actionBlocked ? "Blocked" : latestRequest?.status === "approval_pending" ? "Pending approval" : "Request approval"}
           </Button>
         ) : (
           <Button size="sm" variant="secondary" disabled>
@@ -748,6 +754,12 @@ function RecoveryActionItem({
       ) : null}
       {action.recommendationReason ? (
         <p className="[overflow-wrap:anywhere] text-xs text-muted-foreground">{action.recommendationReason}</p>
+      ) : null}
+      {blockedReason || warningReason ? (
+        <p className="[overflow-wrap:anywhere] text-xs text-muted-foreground">
+          {readableRecoveryActionAvailabilityReason(blockedReason ?? warningReason ?? "")}
+          {action.latestRequestId ? ` (${action.latestRequestId})` : ""}
+        </p>
       ) : null}
       {isSelectAgent ? (
         <SelectAgentRecoveryPicker
@@ -970,6 +982,15 @@ export function readableRecoveryActionType(actionType: string): string {
     view_invocation: "View invocation",
   };
   return labels[actionType] ?? actionType;
+}
+
+export function readableRecoveryActionAvailabilityReason(reason: string): string {
+  const labels: Record<string, string> = {
+    same_action_approval_pending: "Already pending approval",
+    same_action_in_progress: "Already in progress",
+    same_action_recently_failed: "Recently failed",
+  };
+  return labels[reason] ?? reason;
 }
 
 export function readableRecoveryTimelineStatus(status: string): string {

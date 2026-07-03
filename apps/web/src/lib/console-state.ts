@@ -737,6 +737,15 @@ export interface ApplicationOrchestrationRecoveryAction {
   recommended?: boolean;
   recommendationReason?: string | null;
   riskLevel?: "low" | "medium" | "high" | string;
+  availability?: {
+    state: "available" | "blocked" | "warning" | string;
+    blockedReason?: string | null;
+    warningReason?: string | null;
+    latestRequestId?: string | null;
+  };
+  blockedReason?: string | null;
+  warningReason?: string | null;
+  latestRequestId?: string | null;
   target?: Record<string, unknown>;
 }
 

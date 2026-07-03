@@ -554,13 +554,14 @@ export function createServerRuntimeServices({
     const run = getScopedApplicationOrchestrationInvocation(applicationId, routineId, invocationId);
     if (run.status !== 200) return run;
     const events = applicationOrchestrationRunEvents(invocationId);
+    const recoveryActions = applicationRecoveryActionsForRun(applicationId, routineId, invocationId);
     return {
       status: 200,
       body: {
         applicationId,
         routineId,
         invocationId,
-        recovery: applicationOrchestrationRecovery(run.invocation, events),
+        recovery: applicationOrchestrationRecovery(run.invocation, events, recoveryActions),
       },
     };
   }
@@ -568,7 +569,11 @@ export function createServerRuntimeServices({
   function listApplicationOrchestrationRecoveryAgentCandidates(applicationId, routineId, invocationId) {
     const run = getScopedApplicationOrchestrationInvocation(applicationId, routineId, invocationId);
     if (run.status !== 200) return run;
-    const recoveryModel = applicationOrchestrationRecovery(run.invocation, applicationOrchestrationRunEvents(invocationId));
+    const recoveryModel = applicationOrchestrationRecovery(
+      run.invocation,
+      applicationOrchestrationRunEvents(invocationId),
+      applicationRecoveryActionsForRun(applicationId, routineId, invocationId),
+    );
     const candidateViews = recoveryAgentCandidateViews(run.invocation);
     return {
       status: 200,
@@ -592,11 +597,32 @@ export function createServerRuntimeServices({
       return { status: 400, body: { error: "invalid_recovery_action", message: "actionType is required." } };
     }
     const events = applicationOrchestrationRunEvents(invocationId);
-    const recoveryModel = applicationOrchestrationRecovery(run.invocation, events);
+    const recoveryModel = applicationOrchestrationRecovery(
+      run.invocation,
+      events,
+      applicationRecoveryActionsForRun(applicationId, routineId, invocationId),
+    );
     const selectedAction = recoveryModel.actions.find((item) => item.type === actionType);
     if (!selectedAction) {
       appendRecoveryActionEvent("rejected", invocationId, applicationId, routineId, actionType, recoveryModel.category, "action_not_suggested");
       return { status: 400, body: { error: "recovery_action_not_suggested", applicationId, routineId, invocationId, actionType } };
+    }
+    if (selectedAction.availability?.state === "blocked") {
+      const blockedReason = selectedAction.blockedReason ?? selectedAction.availability.blockedReason ?? "recovery_action_blocked";
+      appendRecoveryActionEvent("rejected", invocationId, applicationId, routineId, actionType, recoveryModel.category, blockedReason);
+      return {
+        status: 409,
+        body: {
+          error: "recovery_action_blocked",
+          applicationId,
+          routineId,
+          invocationId,
+          actionType,
+          blockedReason,
+          latestRequestId: selectedAction.latestRequestId ?? selectedAction.availability.latestRequestId ?? null,
+          action: selectedAction,
+        },
+      };
     }
     const reason = summarizeText(body?.reason ?? selectedAction.description ?? recoveryModel.summary, 160);
     const actionRequest = createApplicationRecoveryActionRequest({
@@ -1205,7 +1231,7 @@ export function createServerRuntimeServices({
       .sort((left, right) => Date.parse(left.createdAt ?? "") - Date.parse(right.createdAt ?? ""));
   }
 
-  function applicationOrchestrationRecovery(invocation, events) {
+  function applicationOrchestrationRecovery(invocation, events, recoveryActions = []) {
     const auditSummary = state.auditSummaries.find((item) => item.invocationId === invocation.id);
     const haystack = [
       invocation.status,
@@ -1222,56 +1248,56 @@ export function createServerRuntimeServices({
     if (["succeeded", "completed"].includes(invocation.status)) {
       return recovery("none", 0.99, false, "No recovery needed.", [
         action("view_invocation", "Review audit trail", "Open the invocation if you need evidence for the successful run.", false, { invocationId: invocation.id }),
-      ]);
+      ], recoveryActions);
     }
     if (invocation.status === "cancelled" || cancellationState === "cancelled" || eventTypes.some((type) => type.includes("cancel"))) {
       return recovery("cancelled", 0.9, true, "The run was cancelled before completion.", [
         action("rerun", "Re-run orchestration", "Start a new governed run if the cancellation was intentional or transient.", false, { invocationId: invocation.id }),
         action("view_invocation", "Review cancellation context", "Inspect the invocation timeline before retrying a user-cancelled run.", false, { invocationId: invocation.id }),
-      ]);
+      ], recoveryActions);
     }
     if (haystack.includes("invalid_application_routine") || haystack.includes("validation") || haystack.includes("invalid routine")) {
       return recovery("validation_failed", 0.86, false, "The LoopRoutine draft or policy validation needs correction before retrying.", [
         action("regenerate_orchestration", "Regenerate orchestration", "Generate a fresh governed routine draft for the application.", true, { applicationId: invocation.options?.metadata?.applicationId ?? null }),
         action("view_invocation", "Inspect validation evidence", "Review the failing validation message and routine metadata.", false, { invocationId: invocation.id }),
-      ]);
+      ], recoveryActions);
     }
     if (haystack.includes("agent_disabled") || haystack.includes("agent_unhealthy") || haystack.includes("agent_not_found") || haystack.includes("unhealthy") || haystack.includes("disabled")) {
       return recovery("agent_unavailable", 0.84, true, "The selected agent was unavailable or unhealthy.", [
         action("select_agent", "Select a healthy agent", "Retry with an available governed agent.", false, { agentId: invocation.agentId ?? null }),
         action("view_invocation", "Inspect agent state", "Review the failed invocation and agent health context.", false, { invocationId: invocation.id }),
-      ]);
+      ], recoveryActions);
     }
     if (haystack.includes("device_unlinked") || haystack.includes("device credentials") || haystack.includes("unlinked")) {
       return recovery("device_unlinked", 0.88, true, "The local device bridge is unlinked or unavailable.", [
         action("relink_device", "Relink device", "Restore Desktop Bridge credentials before retrying local-device work.", true, { agentId: invocation.agentId ?? null }),
         action("rerun", "Re-run after relink", "Start a new governed run once the bridge is linked.", false, { invocationId: invocation.id }),
-      ]);
+      ], recoveryActions);
     }
     if (deliveryState === "dispatching" || deliveryState === "redelivering" || haystack.includes("dispatch lease expired") || eventTypes.includes("delivery_redelivered")) {
       return recovery("dispatch_timeout", 0.78, true, "The run did not reach the bridge cleanly or needed redelivery.", [
         action("rerun", "Re-run orchestration", "Retry the governed run after confirming the bridge is online.", false, { invocationId: invocation.id }),
         action("view_invocation", "Inspect delivery attempts", "Check dispatch attempts and bridge cursor details.", false, { invocationId: invocation.id }),
-      ]);
+      ], recoveryActions);
     }
     if (haystack.includes("policy_blocked") || haystack.includes("policy denied") || haystack.includes("approval denied") || haystack.includes("requires_local_approval") || eventTypes.includes("invocation_rejected")) {
       return recovery("policy_blocked", 0.72, false, "The run appears blocked by policy or approval handling.", [
         action("view_invocation", "Review policy decision", "Inspect approval and policy events before retrying.", true, { invocationId: invocation.id }),
-      ]);
+      ], recoveryActions);
     }
     if (auditSummary?.errorSummary || invocation.status === "failed" || eventTypes.some((type) => type.endsWith("_failed") || type.includes("failure"))) {
       return recovery("runtime_error", 0.74, true, auditSummary?.errorSummary ?? "The run failed during execution.", [
         action("rerun", "Re-run orchestration", "Retry if the failure is transient or after applying the indicated fix.", false, { invocationId: invocation.id }),
         action("view_invocation", "Inspect runtime error", "Review result, audit summary, and timeline details.", false, { invocationId: invocation.id }),
-      ]);
+      ], recoveryActions);
     }
     return recovery("unknown_failure", 0.35, false, "No specific recovery path could be inferred from the recorded evidence.", [
       action("view_invocation", "Inspect invocation", "Review the full invocation before choosing a recovery action.", false, { invocationId: invocation.id }),
-    ]);
+    ], recoveryActions);
   }
 
-  function recovery(category, confidence, retryRecommended, summary, actions) {
-    const rankedActions = rankRecoveryActions(category, actions);
+  function recovery(category, confidence, retryRecommended, summary, actions, recoveryActions = []) {
+    const rankedActions = rankRecoveryActions(category, actions, recoveryActions);
     return {
       category,
       confidence,
@@ -1286,20 +1312,67 @@ export function createServerRuntimeServices({
     return { type, label, description, requiresApproval, target };
   }
 
-  function rankRecoveryActions(category, actions) {
+  function rankRecoveryActions(category, actions, recoveryActions = []) {
     const preferredActionType = preferredRecoveryActionType(category);
     return actions
       .map((item) => {
         const priority = recoveryActionPriority(category, item, preferredActionType);
+        const availability = recoveryActionAvailability(item, recoveryActions);
         return {
           ...item,
           priority,
           recommended: item.type === preferredActionType,
           recommendationReason: recoveryActionRecommendationReason(category, item.type, item.type === preferredActionType),
           riskLevel: recoveryActionRiskLevel(item),
+          availability,
+          blockedReason: availability.blockedReason,
+          warningReason: availability.warningReason,
+          latestRequestId: availability.latestRequestId,
         };
       })
       .sort((left, right) => left.priority - right.priority || left.label.localeCompare(right.label));
+  }
+
+  function applicationRecoveryActionsForRun(applicationId, routineId, invocationId) {
+    return (state.applicationRecoveryActions ?? [])
+      .filter((request) => request.applicationId === applicationId
+        && request.routineId === routineId
+        && request.invocationId === invocationId)
+      .sort((left, right) => Date.parse(right.updatedAt ?? right.createdAt ?? "") - Date.parse(left.updatedAt ?? left.createdAt ?? ""));
+  }
+
+  function recoveryActionAvailability(item, recoveryActions) {
+    const latestSameType = recoveryActions.find((request) => request.actionType === item.type) ?? null;
+    if (!latestSameType) {
+      return {
+        state: "available",
+        blockedReason: null,
+        warningReason: null,
+        latestRequestId: null,
+      };
+    }
+    if (["requested", "approval_pending", "approval_approved", "executing"].includes(latestSameType.status)) {
+      return {
+        state: "blocked",
+        blockedReason: latestSameType.status === "approval_pending" ? "same_action_approval_pending" : "same_action_in_progress",
+        warningReason: null,
+        latestRequestId: latestSameType.id,
+      };
+    }
+    if (latestSameType.status === "failed") {
+      return {
+        state: "warning",
+        blockedReason: null,
+        warningReason: "same_action_recently_failed",
+        latestRequestId: latestSameType.id,
+      };
+    }
+    return {
+      state: "available",
+      blockedReason: null,
+      warningReason: null,
+      latestRequestId: latestSameType.id,
+    };
   }
 
   function preferredRecoveryActionType(category) {
