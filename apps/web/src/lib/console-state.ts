@@ -598,8 +598,79 @@ export interface ConsoleSnapshot {
   codexReviewFindings?: CodexReviewFinding[];
   claudeReviewFindings?: ClaudeReviewFinding[];
   reviewFindings?: ReviewFinding[];
+  applications?: ApplicationSnapshot[];
   ledgerSummary?: LedgerSummary;
   budgetStatuses?: BudgetStatus[];
   teamBudgetStatuses?: TeamBudgetStatus[];
   teams?: { id: string; name?: string }[];
+}
+
+export type ApplicationSource =
+  | { type: "git"; url: string; ref?: string | null }
+  | { type: "local"; path: string }
+  | { type: "npm"; package: string; version?: string | null; wrapper?: NpmWrapperSnapshot | null }
+  | { type: "manual"; uri?: string | null; manifest?: Record<string, unknown> };
+
+export interface NpmWrapperSnapshot {
+  mode?: string;
+  installState?: string;
+  commands?: { id: string; commandType?: string; command?: string; status?: string; riskLevel?: string }[];
+}
+
+export interface ApplicationProbeCapability {
+  name: string;
+  source?: "declared" | "inferred" | string;
+  riskLevel?: string;
+}
+
+export interface ApplicationProbe {
+  status?: string;
+  checkedAt?: string | null;
+  summary?: string | null;
+  package?: Record<string, unknown> | null;
+  readme?: string | null;
+  capabilities?: ApplicationProbeCapability[];
+  warnings?: string[];
+}
+
+export interface ApplicationOrchestration {
+  routineId: string;
+  status?: string;
+  path?: string;
+  relativePath?: string;
+  validation?: { ok?: boolean } | null;
+  generatedAt?: string;
+}
+
+export interface ApplicationSnapshot {
+  id: string;
+  name: string;
+  kind: string;
+  source: ApplicationSource;
+  status: "draft" | "probing" | "registered" | "active" | "offline" | "archived" | "failed" | string;
+  lifecycle?: { state?: string; lastOperation?: string; lastOperationAt?: string | null };
+  projectId?: string | null;
+  path?: string | null;
+  ownerTeamId?: string | null;
+  capabilitiesVersion?: number;
+  probe?: ApplicationProbe | null;
+  orchestrations?: ApplicationOrchestration[];
+  orchestrationIds?: string[];
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface ApplicationCapability {
+  name: string;
+  version?: string;
+  displayName?: string;
+  description?: string;
+  provider?: { type: string; id: string };
+  kind?: string;
+  source?: string;
+  riskLevel?: string;
+  riskTags?: string[];
+  requiresApproval?: boolean;
+  invocationMode?: string;
+  status?: string;
 }
