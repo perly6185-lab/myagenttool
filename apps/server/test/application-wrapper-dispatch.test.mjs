@@ -59,7 +59,7 @@ test("wrapper capability dispatches a queued bridge invocation with the resolved
   const meta = created[0].options.metadata;
   assert.equal(meta.capability, CAP);
   assert.equal(meta.applicationWrapper.execCommand, "ccusage");
-  assert.deepEqual(meta.applicationWrapper.execArgs, ["daily", "--json"]);
+  assert.deepEqual(meta.applicationWrapper.execArgs, ["daily", "--json", "--offline"]);
 });
 
 test("without an approvalToken the invocation is refused before dispatch", () => {
