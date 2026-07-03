@@ -77,6 +77,13 @@ A successful response has this shape:
 After creation, poll `GET /api/state`, find the invocation by `invocationId`,
 then read records from the descriptor's `outputCollection`.
 
+> **`agentId` is informational, not a stable key.** It names the execution
+> identity, which can change as a tool's backing evolves. As of ADR 0007,
+> `ccusage.report` executes via the ccusage Application capability path, so its
+> `agentId` is now `agt_platform_application_wrapper` (was `agt_ccusage_*`). The
+> stable contract is `tool` + `invocationId` + `outputCollection` — resolve
+> results by `invocationId` and `outputCollection`, not by `agentId`.
+
 Review tools also appear in the unified `reviewFindings` public state view.
 Consumers that orchestrate multiple review providers should prefer
 `reviewFindings` and use `source` / `tool` to distinguish Codex from Claude.
