@@ -228,6 +228,21 @@ held-out leg auto-skips on a dirty repo (work-runner refuses dirty trees, and a
 half-edited tree would produce eval noise). Gate-rule violations still exit
 non-zero and are recorded — the trend must show bad runs too.
 
+**Auth preflight (#285).** `claude --version` proves the binary exists but not
+that it is logged in — under a detached cron session the CLI runs logged-out
+and prints the `/login` notice while still exiting 0. The runner probes with a
+cheap prompt and parses the OUTPUT; on failure it **fail-fasts before any paid
+eval**, emits an auth feedback event, and appends an `infraFailure` trend row
+(excluded from the capability line). To get a real run the job must inherit the
+user session — install as a per-user LaunchAgent rather than a raw crontab (see
+the `eval-real-cron.sh` header). The first unattended run (2026-07-02) hit
+exactly this and produced a misleading 40% before the preflight existed.
+
+**Infra vs capability.** `issue-gate` cases are provider-independent, so a full
+issue-gate alongside a total wipe of the provider-backed kinds is an
+infrastructure fault, not a regression — such runs are flagged `infraFailure`
+and excluded from `--min-pass-rate` line derivation (#250).
+
 ## Not in this slice
 
 - A packaged smoke test / adapter command for a specific real agent (Claude,
