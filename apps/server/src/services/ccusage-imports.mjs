@@ -1,4 +1,5 @@
 import { isGovernedCcusageAgent } from "./ccusage-agent.mjs";
+import { CCUSAGE_APPLICATION_ID } from "./ccusage-application.mjs";
 
 const MAX_IMPORTED_USAGE_ESTIMATES = 1000;
 const MAX_IMPORTED_ROWS_PER_REPORT = 1000;
@@ -10,7 +11,13 @@ export function createCcusageImportService({
   appendEvent,
 }) {
   function recordCcusageImportedEstimates({ invocation, result, agent }) {
-    if (!isGovernedCcusageAgent(agent) || !isCcusageResult(result)) {
+    // Import estimates whether the report arrived via the bespoke governed
+    // ccusage agent (source "ccusage") OR the ccusage Application's wrapper
+    // capability (#355 Phase 3 — same ccusage `--json` rows, different transport).
+    // Additive: the governed-agent path is unchanged, so nothing regresses.
+    const viaGovernedAgent = isGovernedCcusageAgent(agent) && isCcusageResult(result);
+    const viaApplication = isCcusageApplicationResult(invocation, result);
+    if (!viaGovernedAgent && !viaApplication) {
       return [];
     }
     const allRows = normalizeReportRows(result.output.report);
@@ -20,7 +27,7 @@ export function createCcusageImportService({
       return [];
     }
     const createdAt = now();
-    const reportId = String(result.output.reportId ?? "unknown");
+    const reportId = String(result.output.reportId ?? reportIdFromCapability(invocation) ?? "unknown");
     const filters = plainObjectOrNull(result.output.filters);
     const records = report.map((row, rowIndex) => {
       const provider = stringOrNull(row.provider ?? row.source ?? row.service ?? row.platform);
@@ -91,6 +98,23 @@ export function createCcusageImportService({
 
 function isCcusageResult(result) {
   return result?.output?.source === "ccusage" && !result.output.error;
+}
+
+// A ccusage report delivered through the ccusage Application's wrapper capability
+// (source "application"). Recognized by the invocation's own application metadata
+// — not the result body — so a foreign application cannot spoof a ccusage import.
+function isCcusageApplicationResult(invocation, result) {
+  const metadata = invocation?.options?.metadata;
+  return metadata?.providerType === "application"
+    && metadata?.applicationId === CCUSAGE_APPLICATION_ID
+    && result?.output?.report != null
+    && !result.output?.error;
+}
+
+// Derive the report id (daily/weekly/...) from the wrapper capability name
+// `app.<slug>.wrapper.<reportId>` when the report came via the application path.
+function reportIdFromCapability(invocation) {
+  return String(invocation?.options?.metadata?.capability ?? "").match(/\.wrapper\.([a-z0-9._-]+)$/)?.[1] ?? null;
 }
 
 function normalizeReportRows(report) {

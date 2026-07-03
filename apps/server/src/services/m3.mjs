@@ -856,8 +856,16 @@ export function createM3Service({
   // fires when the agent actually reported a USD amount — CLI agents that report
   // no cost stay "unknown" and create nothing.
   function recordInvocationLedgerEntry({ invocation, cost, agent }) {
-    const amountUsd = Number(cost?.amountUsd);
-    if (!cost || !Number.isFinite(amountUsd) || amountUsd <= 0) return null;
+    if (!cost) return null;
+    const amountUsd = Number(cost.amountUsd);
+    const hasUsd = Number.isFinite(amountUsd) && amountUsd > 0;
+    const inputTokens = Math.max(0, Number(cost.inputTokens ?? 0));
+    const outputTokens = Math.max(0, Number(cost.outputTokens ?? 0));
+    // Record a real USD cost, OR — so unmetered runs stay visible, never hidden —
+    // a billable run that reported token usage but no priceable amount (e.g. codex,
+    // which is subscription/externally billed and has no per-token price).
+    const unmetered = !hasUsd && Boolean(cost.billable) && (inputTokens > 0 || outputTokens > 0);
+    if (!hasUsd && !unmetered) return null;
     const meta = invocation.input?.metadata ?? {};
     const projectId = meta.projectId ?? invocation.projectId ?? state.currentProjectId ?? state.projects[0]?.id ?? null;
     const createdAt = now();
@@ -877,13 +885,14 @@ export function createM3Service({
       economicModel: agent?.economics?.model ?? "external_metered",
       meterName: "reported_usd",
       quantity: 1,
-      unitPrice: String(roundUsd(amountUsd)),
+      unitPrice: hasUsd ? String(roundUsd(amountUsd)) : "0",
       currency: String(cost.currency ?? "USD"),
-      amount: String(roundUsd(amountUsd)),
-      amountUsd: roundUsd(amountUsd),
-      amountSource: "reported",
-      inputTokens: Math.max(0, Number(cost.inputTokens ?? 0)),
-      outputTokens: Math.max(0, Number(cost.outputTokens ?? 0)),
+      amount: hasUsd ? String(roundUsd(amountUsd)) : "0",
+      amountUsd: hasUsd ? roundUsd(amountUsd) : null,
+      amountText: hasUsd ? undefined : "unmetered",
+      amountSource: hasUsd ? "reported" : "unknown",
+      inputTokens,
+      outputTokens,
       amountDirection: cost.billable ? "payable" : "informational",
       costOwner: agent?.economics?.costOwner ?? invocation?.requestedBy ?? "usr_local",
       revenueOwner: null,
@@ -902,8 +911,10 @@ export function createM3Service({
       invocationId: invocation.id,
       type: "ledger_entry_recorded",
       level: "info",
-      message: `Recorded ${entry.currency} ${entry.amountUsd} reported cost for ${model}.`,
-      data: { ledgerEntryId: entry.id, amountUsd: entry.amountUsd, projectId },
+      message: hasUsd
+        ? `Recorded ${entry.currency} ${entry.amountUsd} reported cost for ${model}.`
+        : `Recorded unmetered token usage (${inputTokens}+${outputTokens} tokens) for ${model}.`,
+      data: { ledgerEntryId: entry.id, amountUsd: entry.amountUsd, inputTokens, outputTokens, projectId },
     });
     return entry;
   }
