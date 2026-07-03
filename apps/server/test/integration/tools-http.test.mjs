@@ -667,6 +667,54 @@ test("application orchestration run endpoint creates governed invocations with r
   assert.equal(invalid.body.validation.errors[0], "fixture invalid");
 });
 
+test("application orchestration runs endpoint lists scoped run history", async () => {
+  const application = findApplicationForTest("app_team_a");
+  application.status = "active";
+  const generated = await call("/api/applications/app_team_a/orchestrations/generate", {
+    method: "POST",
+    body: { approvalToken: "operator-approved-generate" },
+    token: "tok_a",
+  });
+  assert.equal(generated.status, 201);
+
+  const first = await call("/api/applications/app_team_a/orchestrations/app-app_team_a-maintenance/run", {
+    method: "POST",
+    body: { agentId: "agt_platform_application_control" },
+    token: "tok_a",
+  });
+  const second = await call("/api/applications/app_team_a/orchestrations/app-app_team_a-maintenance/run", {
+    method: "POST",
+    body: { agentId: "agt_platform_application_control" },
+    token: "tok_a",
+  });
+  assert.equal(first.status, 201);
+  assert.equal(second.status, 201);
+
+  const listed = await call("/api/applications/app_team_a/orchestrations/app-app_team_a-maintenance/runs?limit=1", {
+    token: "tok_a",
+  });
+  assert.equal(listed.status, 200);
+  assert.equal(listed.body.applicationId, "app_team_a");
+  assert.equal(listed.body.routineId, "app-app_team_a-maintenance");
+  assert.equal(listed.body.runs.length, 1);
+  assert.equal(listed.body.runs[0].invocationId, second.body.invocationId);
+  assert.equal(listed.body.runs[0].metadata.source, "application_orchestration");
+  assert.equal(listed.body.runs[0].metadata.applicationId, "app_team_a");
+  assert.equal(listed.body.runs[0].metadata.routineId, "app-app_team_a-maintenance");
+
+  const foreign = await call("/api/applications/app_team_a/orchestrations/app-app_team_a-maintenance/runs", {
+    token: "tok_b",
+  });
+  assert.equal(foreign.status, 404);
+  assert.equal(foreign.body.error, "application_not_found");
+
+  const missing = await call("/api/applications/app_team_a/orchestrations/missing/runs", {
+    token: "tok_a",
+  });
+  assert.equal(missing.status, 404);
+  assert.equal(missing.body.error, "orchestration_not_found");
+});
+
 test("application lifecycle endpoints require governed approval", async () => {
   findApplicationForTest("app_team_a").status = "active";
   const blocked = await call("/api/applications/app_team_a/offline", {

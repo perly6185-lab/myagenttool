@@ -469,6 +469,36 @@ export function createServerRuntimeServices({
     };
   }
 
+  function listApplicationOrchestrationRuns(applicationId, routineId, searchParams = new URLSearchParams()) {
+    const application = findApplication(applicationId);
+    if (!application) {
+      return { status: 404, body: { error: "application_not_found" } };
+    }
+    const orchestration = (application.orchestrations ?? []).find((item) => item?.routineId === routineId);
+    if (!orchestration) {
+      return { status: 404, body: { error: "orchestration_not_found", applicationId, routineId } };
+    }
+    const limit = clampNumber(searchParams?.get?.("limit") ?? 10, 1, 50);
+    const runs = state.invocations
+      .filter((invocation) => {
+        const metadata = invocation.options?.metadata;
+        return metadata?.source === "application_orchestration"
+          && metadata.applicationId === applicationId
+          && metadata.routineId === routineId;
+      })
+      .sort((left, right) => Date.parse(right.createdAt ?? "") - Date.parse(left.createdAt ?? ""))
+      .slice(0, limit)
+      .map(applicationOrchestrationRunSummary);
+    return {
+      status: 200,
+      body: {
+        applicationId,
+        routineId,
+        runs,
+      },
+    };
+  }
+
   function nextId(prefix) {
     const id = `${prefix}_${String(idCounter).padStart(4, "0")}`;
     idCounter += 1;
@@ -491,6 +521,12 @@ export function createServerRuntimeServices({
     return [...new Set(values.map(String).map((item) => item.trim()).filter(Boolean))];
   }
 
+  function clampNumber(value, min, max) {
+    const number = Number(value);
+    if (!Number.isFinite(number)) return min;
+    return Math.max(min, Math.min(max, Math.floor(number)));
+  }
+
   function summarizeText(value, maxLength = 160) {
     const normalized = String(value ?? "").replace(/\s+/g, " ").trim();
     if (!normalized) {
@@ -509,6 +545,32 @@ export function createServerRuntimeServices({
       `Safety policy: remoteWrites=${validation.policy.remoteWrites}, githubWrites=${validation.policy.githubWrites}, fanout.apply=${validation.policy.fanoutApply}.`,
       "Execute only allowed steps, keep all side effects under the platform approval policy, and report audit-friendly evidence.",
     ].join("\n");
+  }
+
+  function applicationOrchestrationRunSummary(invocation) {
+    const metadata = invocation.options?.metadata ?? {};
+    return {
+      invocationId: invocation.id,
+      status: invocation.status,
+      agentId: invocation.agentId,
+      projectId: invocation.projectId ?? metadata.projectId ?? null,
+      worktreeId: invocation.worktreeId ?? metadata.worktreeId ?? null,
+      deliveryState: invocation.delivery?.state ?? null,
+      cancellationState: invocation.cancellation?.state ?? null,
+      resultSummary: invocation.result?.summary ?? null,
+      errorSummary: state.auditSummaries.find((item) => item.invocationId === invocation.id)?.errorSummary ?? null,
+      createdAt: invocation.createdAt ?? null,
+      updatedAt: invocation.updatedAt ?? null,
+      completedAt: invocation.completedAt ?? null,
+      metadata: {
+        source: metadata.source ?? null,
+        applicationId: metadata.applicationId ?? null,
+        applicationName: metadata.applicationName ?? null,
+        routineId: metadata.routineId ?? null,
+        routineName: metadata.routineName ?? null,
+        orchestrationRelativePath: metadata.orchestrationRelativePath ?? null,
+      },
+    };
   }
 
   function isManagedApplicationRoutinePath(application, path) {
@@ -564,6 +626,7 @@ export function createServerRuntimeServices({
     listApplicationCapabilities,
     listCapabilities,
     listApplications,
+    listApplicationOrchestrationRuns,
     probeApplication,
     registerApplication,
     runApplicationOrchestration,
@@ -673,6 +736,7 @@ export function createServerRuntimeServices({
     listApplicationCapabilities,
     listCapabilities,
     listApplications,
+    listApplicationOrchestrationRuns,
     probeApplication,
     registerApplication,
     runApplicationOrchestration,

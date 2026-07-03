@@ -657,6 +657,29 @@ export interface ApplicationOrchestration {
   generatedAt?: string;
 }
 
+export interface ApplicationOrchestrationRun {
+  invocationId: string;
+  status?: string;
+  agentId?: string | null;
+  projectId?: string | null;
+  worktreeId?: string | null;
+  deliveryState?: string | null;
+  cancellationState?: string | null;
+  resultSummary?: string | null;
+  errorSummary?: string | null;
+  createdAt?: string | null;
+  updatedAt?: string | null;
+  completedAt?: string | null;
+  metadata?: {
+    source?: string | null;
+    applicationId?: string | null;
+    applicationName?: string | null;
+    routineId?: string | null;
+    routineName?: string | null;
+    orchestrationRelativePath?: string | null;
+  };
+}
+
 export interface ApplicationSnapshot {
   id: string;
   name: string;
