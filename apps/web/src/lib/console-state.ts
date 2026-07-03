@@ -104,6 +104,7 @@ export interface InvocationEventSnapshot {
   invocationId?: string;
   type: string;
   message?: string;
+  level?: "info" | "warn" | "error" | string;
   createdAt: string;
   // `artifactId` / `targetInvocationId` let a platform-agent "action requested"
   // event deep-link to the surface where its decision is actually made.
