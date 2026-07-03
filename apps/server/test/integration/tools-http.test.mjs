@@ -1078,6 +1078,62 @@ test("application orchestration recovery actions are guarded and audited", async
   assert.equal(directRegenerate.body.recoveryActionRequest.status, "executed");
   assert.equal(directRegenerate.body.recoveryActionRequest.resultOrchestrationId, "app-app_team_a-maintenance");
 
+  const unhealthy = await createApplicationOrchestrationRunForTest({
+    status: "failed",
+    agentId: "agt_demo_cli",
+  });
+  ctx.state.auditSummaries.unshift({
+    invocationId: unhealthy.id,
+    agentId: unhealthy.agentId,
+    errorSummary: "agent_unhealthy: selected agent cannot run.",
+    permissionDecision: "allow",
+    traceId: "trace_select_agent",
+  });
+  const agentCandidates = await call(`/api/applications/app_team_a/orchestrations/app-app_team_a-maintenance/runs/${encodeURIComponent(unhealthy.id)}/recovery/agent-candidates`, {
+    token: "tok_a",
+  });
+  assert.equal(agentCandidates.status, 200);
+  assert.equal(agentCandidates.body.preferredAgentId, "agt_platform_application_control");
+  assert.ok(agentCandidates.body.candidates.some((candidate) => candidate.id === "agt_platform_application_control"
+    && candidate.selectable === true
+    && candidate.preferred === true));
+  assert.ok(!agentCandidates.body.candidates.some((candidate) => candidate.id === "agt_demo_cli"));
+
+  const selectAgent = await call(`/api/applications/app_team_a/orchestrations/app-app_team_a-maintenance/runs/${encodeURIComponent(unhealthy.id)}/recovery/actions`, {
+    method: "POST",
+    body: { actionType: "select_agent", agentId: "agt_platform_application_control", reason: "Retry with a healthy platform agent." },
+    token: "tok_a",
+  });
+  assert.equal(selectAgent.status, 201);
+  assert.equal(selectAgent.body.recoveryAction.actionType, "select_agent");
+  assert.equal(selectAgent.body.recoveryAction.selectedAgentId, "agt_platform_application_control");
+  assert.equal(selectAgent.body.recoveryActionRequest.status, "executed");
+  assert.equal(selectAgent.body.recoveryActionRequest.selectedAgentId, "agt_platform_application_control");
+  const selectInvocation = ctx.state.invocations.find((item) => item.id === selectAgent.body.recoveryActionRequest.resultInvocationId);
+  assert.equal(selectInvocation?.agentId, "agt_platform_application_control");
+  assert.equal(selectInvocation?.options?.metadata?.recoveryActionType, "select_agent");
+  assert.equal(selectInvocation?.options?.metadata?.recoveryOfInvocationId, unhealthy.id);
+  assert.ok(ctx.state.events.some((event) => event.invocationId === unhealthy.id
+    && event.type === "application_orchestration_recovery_action_executed"
+    && event.data?.selectedAgentId === "agt_platform_application_control"));
+  const stateAfterSelectAgent = await call("/api/state", { token: "tok_a" });
+  const selectAgentReadModel = stateAfterSelectAgent.body.applicationRecoveryActions.find((item) => item.id === selectAgent.body.recoveryActionRequest.id);
+  assert.equal(selectAgentReadModel?.outcome?.state, "pending");
+  assert.match(selectAgentReadModel?.outcome?.summary ?? "", /^Recovered invocation is /);
+  assert.equal(selectAgentReadModel?.sourceInvocation?.id, unhealthy.id);
+  assert.equal(selectAgentReadModel?.resultInvocation?.id, selectInvocation?.id);
+  assert.equal(selectAgentReadModel?.resultInvocation?.agentId, "agt_platform_application_control");
+
+  const selectUnhealthyAgent = await call(`/api/applications/app_team_a/orchestrations/app-app_team_a-maintenance/runs/${encodeURIComponent(unhealthy.id)}/recovery/actions`, {
+    method: "POST",
+    body: { actionType: "select_agent", agentId: "agt_demo_cli" },
+    token: "tok_a",
+  });
+  assert.equal(selectUnhealthyAgent.status, 409);
+  assert.equal(selectUnhealthyAgent.body.error, "healthy_agent_not_found");
+  assert.equal(selectUnhealthyAgent.body.recoveryActionRequest.status, "failed");
+  assert.equal(selectUnhealthyAgent.body.recoveryActionRequest.selectedAgentId, null);
+
   const foreign = await call(`/api/applications/app_team_a/orchestrations/app-app_team_a-maintenance/runs/${encodeURIComponent(runtime.id)}/recovery/actions`, {
     method: "POST",
     body: { actionType: "rerun" },
