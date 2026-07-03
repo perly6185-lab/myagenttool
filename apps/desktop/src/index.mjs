@@ -2257,11 +2257,22 @@ async function handleCodexJsonLine(invocationId, line) {
   }
 
   if (event.type === "turn.completed") {
+    const usage = event.usage ?? null;
     return {
       summary: "Codex CLI completed.",
       touchedUserFiles: false,
-      output: { usage: event.usage ?? null },
-      cost: { model: "codex", billable: true, unknown: true }
+      output: { usage },
+      // Codex is subscription/externally billed — no priceable USD — but it does
+      // report token usage. Carry it so the ledger can record an (unmetered)
+      // entry and the run stays visible in economics instead of being dropped.
+      cost: {
+        model: "codex",
+        billable: true,
+        unknown: true,
+        currency: "USD",
+        inputTokens: Number(usage?.input_tokens ?? 0) || 0,
+        outputTokens: Number(usage?.output_tokens ?? 0) || 0
+      }
     };
   }
 
