@@ -521,9 +521,7 @@ export function createServerRuntimeServices({
   function listApplicationOrchestrationRunEvents(applicationId, routineId, invocationId) {
     const run = getScopedApplicationOrchestrationInvocation(applicationId, routineId, invocationId);
     if (run.status !== 200) return run;
-    const events = state.events
-      .filter((event) => event.invocationId === invocationId)
-      .sort((left, right) => Date.parse(left.createdAt ?? "") - Date.parse(right.createdAt ?? ""))
+    const events = applicationOrchestrationRunEvents(invocationId)
       .map((event) => ({
         id: event.id,
         invocationId: event.invocationId,
@@ -540,6 +538,21 @@ export function createServerRuntimeServices({
         routineId,
         invocationId,
         events,
+      },
+    };
+  }
+
+  function getApplicationOrchestrationRunRecovery(applicationId, routineId, invocationId) {
+    const run = getScopedApplicationOrchestrationInvocation(applicationId, routineId, invocationId);
+    if (run.status !== 200) return run;
+    const events = applicationOrchestrationRunEvents(invocationId);
+    return {
+      status: 200,
+      body: {
+        applicationId,
+        routineId,
+        invocationId,
+        recovery: applicationOrchestrationRecovery(run.invocation, events),
       },
     };
   }
@@ -643,6 +656,92 @@ export function createServerRuntimeServices({
     };
   }
 
+  function applicationOrchestrationRunEvents(invocationId) {
+    return state.events
+      .filter((event) => event.invocationId === invocationId)
+      .sort((left, right) => Date.parse(left.createdAt ?? "") - Date.parse(right.createdAt ?? ""));
+  }
+
+  function applicationOrchestrationRecovery(invocation, events) {
+    const auditSummary = state.auditSummaries.find((item) => item.invocationId === invocation.id);
+    const haystack = [
+      invocation.status,
+      invocation.delivery?.state,
+      invocation.cancellation?.state,
+      invocation.result?.summary,
+      auditSummary?.errorSummary,
+      ...events.flatMap((event) => [event.type, event.level, event.message]),
+    ].filter(Boolean).join(" ").toLowerCase();
+    const eventTypes = events.map((event) => String(event.type ?? "").toLowerCase());
+    const deliveryState = String(invocation.delivery?.state ?? "").toLowerCase();
+    const cancellationState = String(invocation.cancellation?.state ?? "").toLowerCase();
+
+    if (["succeeded", "completed"].includes(invocation.status)) {
+      return recovery("none", 0.99, false, "No recovery needed.", [
+        action("view_invocation", "Review audit trail", "Open the invocation if you need evidence for the successful run.", false, { invocationId: invocation.id }),
+      ]);
+    }
+    if (invocation.status === "cancelled" || cancellationState === "cancelled" || eventTypes.some((type) => type.includes("cancel"))) {
+      return recovery("cancelled", 0.9, true, "The run was cancelled before completion.", [
+        action("rerun", "Re-run orchestration", "Start a new governed run if the cancellation was intentional or transient.", false, { invocationId: invocation.id }),
+        action("view_invocation", "Review cancellation context", "Inspect the invocation timeline before retrying a user-cancelled run.", false, { invocationId: invocation.id }),
+      ]);
+    }
+    if (haystack.includes("invalid_application_routine") || haystack.includes("validation") || haystack.includes("invalid routine")) {
+      return recovery("validation_failed", 0.86, false, "The LoopRoutine draft or policy validation needs correction before retrying.", [
+        action("regenerate_orchestration", "Regenerate orchestration", "Generate a fresh governed routine draft for the application.", true, { applicationId: invocation.options?.metadata?.applicationId ?? null }),
+        action("view_invocation", "Inspect validation evidence", "Review the failing validation message and routine metadata.", false, { invocationId: invocation.id }),
+      ]);
+    }
+    if (haystack.includes("agent_disabled") || haystack.includes("agent_unhealthy") || haystack.includes("agent_not_found") || haystack.includes("unhealthy") || haystack.includes("disabled")) {
+      return recovery("agent_unavailable", 0.84, true, "The selected agent was unavailable or unhealthy.", [
+        action("select_agent", "Select a healthy agent", "Retry with an available governed agent.", false, { agentId: invocation.agentId ?? null }),
+        action("view_invocation", "Inspect agent state", "Review the failed invocation and agent health context.", false, { invocationId: invocation.id }),
+      ]);
+    }
+    if (haystack.includes("device_unlinked") || haystack.includes("device credentials") || haystack.includes("unlinked")) {
+      return recovery("device_unlinked", 0.88, true, "The local device bridge is unlinked or unavailable.", [
+        action("relink_device", "Relink device", "Restore Desktop Bridge credentials before retrying local-device work.", true, { agentId: invocation.agentId ?? null }),
+        action("rerun", "Re-run after relink", "Start a new governed run once the bridge is linked.", false, { invocationId: invocation.id }),
+      ]);
+    }
+    if (deliveryState === "dispatching" || deliveryState === "redelivering" || haystack.includes("dispatch lease expired") || eventTypes.includes("delivery_redelivered")) {
+      return recovery("dispatch_timeout", 0.78, true, "The run did not reach the bridge cleanly or needed redelivery.", [
+        action("rerun", "Re-run orchestration", "Retry the governed run after confirming the bridge is online.", false, { invocationId: invocation.id }),
+        action("view_invocation", "Inspect delivery attempts", "Check dispatch attempts and bridge cursor details.", false, { invocationId: invocation.id }),
+      ]);
+    }
+    if (haystack.includes("policy_blocked") || haystack.includes("policy denied") || haystack.includes("approval denied") || haystack.includes("requires_local_approval") || eventTypes.includes("invocation_rejected")) {
+      return recovery("policy_blocked", 0.72, false, "The run appears blocked by policy or approval handling.", [
+        action("view_invocation", "Review policy decision", "Inspect approval and policy events before retrying.", true, { invocationId: invocation.id }),
+      ]);
+    }
+    if (auditSummary?.errorSummary || invocation.status === "failed" || eventTypes.some((type) => type.endsWith("_failed") || type.includes("failure"))) {
+      return recovery("runtime_error", 0.74, true, auditSummary?.errorSummary ?? "The run failed during execution.", [
+        action("rerun", "Re-run orchestration", "Retry if the failure is transient or after applying the indicated fix.", false, { invocationId: invocation.id }),
+        action("view_invocation", "Inspect runtime error", "Review result, audit summary, and timeline details.", false, { invocationId: invocation.id }),
+      ]);
+    }
+    return recovery("unknown_failure", 0.35, false, "No specific recovery path could be inferred from the recorded evidence.", [
+      action("view_invocation", "Inspect invocation", "Review the full invocation before choosing a recovery action.", false, { invocationId: invocation.id }),
+    ]);
+  }
+
+  function recovery(category, confidence, retryRecommended, summary, actions) {
+    return {
+      category,
+      confidence,
+      retryRecommended,
+      humanApprovalRequired: actions.some((item) => item.requiresApproval),
+      summary,
+      actions,
+    };
+  }
+
+  function action(type, label, description, requiresApproval, target = {}) {
+    return { type, label, description, requiresApproval, target };
+  }
+
   function applicationOrchestrationScope(applicationId, routineId) {
     const application = findApplication(applicationId);
     if (!application) {
@@ -720,6 +819,7 @@ export function createServerRuntimeServices({
     createAgentHealthCheck,
     createCapabilityInvocation,
     findApplication,
+    getApplicationOrchestrationRunRecovery,
     getApplicationOrchestrationRun,
     invokeApplicationCapability,
     getCapability,
@@ -833,6 +933,7 @@ export function createServerRuntimeServices({
     deleteAgentSkill,
     createCapabilityInvocation,
     findApplication,
+    getApplicationOrchestrationRunRecovery,
     getApplicationOrchestrationRun,
     invokeApplicationCapability,
     getCapability,

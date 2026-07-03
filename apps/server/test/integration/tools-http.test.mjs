@@ -877,6 +877,77 @@ test("application orchestration run events and retry stay scoped to the routine"
   assert.equal(foreign.body.error, "application_not_found");
 });
 
+test("application orchestration recovery endpoint classifies common outcomes", async () => {
+  const application = findApplicationForTest("app_team_a");
+  application.status = "active";
+  const generated = await call("/api/applications/app_team_a/orchestrations/generate", {
+    method: "POST",
+    body: { approvalToken: "operator-approved-generate" },
+    token: "tok_a",
+  });
+  assert.equal(generated.status, 201);
+
+  const success = await createApplicationOrchestrationRunForTest({ status: "succeeded" });
+  const successRecovery = await call(`/api/applications/app_team_a/orchestrations/app-app_team_a-maintenance/runs/${encodeURIComponent(success.id)}/recovery`, {
+    token: "tok_a",
+  });
+  assert.equal(successRecovery.status, 200);
+  assert.equal(successRecovery.body.recovery.category, "none");
+  assert.equal(successRecovery.body.recovery.retryRecommended, false);
+
+  const runtime = await createApplicationOrchestrationRunForTest({ status: "failed" });
+  ctx.state.auditSummaries.unshift({
+    invocationId: runtime.id,
+    agentId: runtime.agentId,
+    errorSummary: "npm test failed with exit code 1.",
+    permissionDecision: "allow",
+    traceId: "trace_runtime_recovery",
+  });
+  const runtimeRecovery = await call(`/api/applications/app_team_a/orchestrations/app-app_team_a-maintenance/runs/${encodeURIComponent(runtime.id)}/recovery`, {
+    token: "tok_a",
+  });
+  assert.equal(runtimeRecovery.status, 200);
+  assert.equal(runtimeRecovery.body.recovery.category, "runtime_error");
+  assert.equal(runtimeRecovery.body.recovery.retryRecommended, true);
+  assert.ok(runtimeRecovery.body.recovery.actions.some((action) => action.type === "rerun"));
+
+  const dispatch = await createApplicationOrchestrationRunForTest({
+    status: "dispatching",
+    delivery: { state: "redelivering", dispatchAttempts: 2 },
+  });
+  ctx.state.events.unshift({
+    id: "evt_recovery_dispatch_timeout",
+    invocationId: dispatch.id,
+    type: "delivery_redelivered",
+    level: "warn",
+    message: "Dispatch lease expired; invocation returned to queue for redelivery.",
+    data: { dispatchAttempts: 2 },
+    createdAt: now(),
+  });
+  const dispatchRecovery = await call(`/api/applications/app_team_a/orchestrations/app-app_team_a-maintenance/runs/${encodeURIComponent(dispatch.id)}/recovery`, {
+    token: "tok_a",
+  });
+  assert.equal(dispatchRecovery.status, 200);
+  assert.equal(dispatchRecovery.body.recovery.category, "dispatch_timeout");
+  assert.equal(dispatchRecovery.body.recovery.retryRecommended, true);
+
+  const cancelled = await createApplicationOrchestrationRunForTest({
+    status: "cancelled",
+    cancellation: { state: "cancelled" },
+  });
+  const cancelledRecovery = await call(`/api/applications/app_team_a/orchestrations/app-app_team_a-maintenance/runs/${encodeURIComponent(cancelled.id)}/recovery`, {
+    token: "tok_a",
+  });
+  assert.equal(cancelledRecovery.status, 200);
+  assert.equal(cancelledRecovery.body.recovery.category, "cancelled");
+
+  const foreign = await call(`/api/applications/app_team_a/orchestrations/app-app_team_a-maintenance/runs/${encodeURIComponent(runtime.id)}/recovery`, {
+    token: "tok_b",
+  });
+  assert.equal(foreign.status, 404);
+  assert.equal(foreign.body.error, "application_not_found");
+});
+
 test("application lifecycle endpoints require governed approval", async () => {
   findApplicationForTest("app_team_a").status = "active";
   const blocked = await call("/api/applications/app_team_a/offline", {
@@ -1275,6 +1346,26 @@ function agentFromRegistration(registration) {
     registrationNotes: registration.registrationNotes,
     createdAt: now(),
   };
+}
+
+async function createApplicationOrchestrationRunForTest({
+  status = "queued",
+  delivery = { state: "queued", dispatchAttempts: 0 },
+  cancellation = { state: "none" },
+} = {}) {
+  const created = await call("/api/applications/app_team_a/orchestrations/app-app_team_a-maintenance/run", {
+    method: "POST",
+    body: { agentId: "agt_platform_application_control" },
+    token: "tok_a",
+  });
+  assert.equal(created.status, 201);
+  const invocation = ctx.state.invocations.find((item) => item.id === created.body.invocationId);
+  assert.ok(invocation, "expected application orchestration invocation");
+  invocation.status = status;
+  invocation.delivery = delivery;
+  invocation.cancellation = cancellation;
+  invocation.updatedAt = now();
+  return invocation;
 }
 
 function findApplicationForTest(applicationId) {

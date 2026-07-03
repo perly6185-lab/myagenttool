@@ -394,8 +394,15 @@ function OrchestrationRunDiagnostics({
     enabled: Boolean(applicationId && routineId && invocationId),
     refetchInterval: 2000,
   });
+  const { data: recoveryData, isLoading: recoveryLoading, error: recoveryError } = useQuery({
+    queryKey: ["application-orchestration-run-recovery", applicationId, routineId, invocationId],
+    queryFn: () => api.getApplicationOrchestrationRunRecovery(applicationId, routineId, invocationId),
+    enabled: Boolean(applicationId && routineId && invocationId),
+    refetchInterval: 2000,
+  });
   const run = data?.run;
   const events = eventData?.events ?? [];
+  const recovery = recoveryData?.recovery;
 
   function retryRun() {
     void execute(() => api.runApplicationOrchestration(applicationId, routineId, {
@@ -458,6 +465,39 @@ function OrchestrationRunDiagnostics({
           <Transcript events={events} />
         )}
       </div>
+      <div className="rounded-md border border-border bg-background p-2">
+        <p className="mb-2 text-xs font-medium">Recovery</p>
+        {recoveryError ? (
+          <p className="text-xs text-destructive">Could not load recovery suggestions.</p>
+        ) : recoveryLoading || !recovery ? (
+          <p className="text-xs text-muted-foreground">Loading recovery...</p>
+        ) : (
+          <div className="space-y-2">
+            <div className="flex flex-wrap items-center gap-2">
+              <Badge tone={recoveryTone(recovery.category)}>{readableRecoveryCategory(recovery.category)}</Badge>
+              <span className="text-muted-foreground">{Math.round(recovery.confidence * 100)}% confidence</span>
+              {recovery.retryRecommended ? <Badge tone="running">Retry recommended</Badge> : null}
+              {recovery.humanApprovalRequired ? <Badge tone="warning">Approval required</Badge> : null}
+            </div>
+            <p className="[overflow-wrap:anywhere] text-xs text-muted-foreground">{recovery.summary}</p>
+            {recovery.actions.length ? (
+              <ul className="space-y-1">
+                {recovery.actions.map((action) => (
+                  <li key={`${action.type}:${action.label}`} className="rounded border border-border bg-muted p-2">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="font-medium">{action.label}</span>
+                      {action.requiresApproval ? <Badge tone="warning">Approval</Badge> : null}
+                    </div>
+                    {action.description ? (
+                      <p className="[overflow-wrap:anywhere] text-muted-foreground">{action.description}</p>
+                    ) : null}
+                  </li>
+                ))}
+              </ul>
+            ) : null}
+          </div>
+        )}
+      </div>
       <DiagnosticsBlock title="Metadata" value={run.metadata} />
       <DiagnosticsBlock title="Result" value={run.result} />
       <DiagnosticsBlock title="Delivery" value={run.delivery} />
@@ -480,6 +520,22 @@ function DiagnosticsBlock({ title, value }: { title: string; value?: unknown }) 
 function formatValue(value: unknown): string {
   if (value === null || value === undefined || value === "") return "Not recorded";
   return String(value);
+}
+
+function readableRecoveryCategory(category: string): string {
+  return category
+    .split("_")
+    .filter(Boolean)
+    .map((part) => part[0]?.toUpperCase() + part.slice(1))
+    .join(" ") || "Unknown";
+}
+
+function recoveryTone(category: string): "neutral" | "success" | "warning" | "danger" | "running" {
+  if (category === "none") return "success";
+  if (["validation_failed", "policy_blocked", "device_unlinked"].includes(category)) return "warning";
+  if (["runtime_error", "unknown_failure"].includes(category)) return "danger";
+  if (["dispatch_timeout", "agent_unavailable", "cancelled"].includes(category)) return "running";
+  return "neutral";
 }
 
 function stringValue(value: unknown): string | null {

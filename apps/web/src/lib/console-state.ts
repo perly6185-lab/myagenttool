@@ -683,11 +683,11 @@ export interface ApplicationOrchestrationRun {
     source?: string | null;
     applicationId?: string | null;
     applicationName?: string | null;
-      routineId?: string | null;
-      routineName?: string | null;
-      orchestrationRelativePath?: string | null;
-      retryOfInvocationId?: string | null;
-      retryReason?: string | null;
+    routineId?: string | null;
+    routineName?: string | null;
+    orchestrationRelativePath?: string | null;
+    retryOfInvocationId?: string | null;
+    retryReason?: string | null;
   };
 }
 
@@ -706,6 +706,23 @@ export interface ApplicationOrchestrationRunDetail extends ApplicationOrchestrat
     costSummary?: string | null;
   } | null;
   metadata?: Record<string, unknown>;
+}
+
+export interface ApplicationOrchestrationRecoveryAction {
+  type: string;
+  label: string;
+  description?: string | null;
+  requiresApproval?: boolean;
+  target?: Record<string, unknown>;
+}
+
+export interface ApplicationOrchestrationRecovery {
+  category: string;
+  confidence: number;
+  retryRecommended: boolean;
+  humanApprovalRequired: boolean;
+  summary: string;
+  actions: ApplicationOrchestrationRecoveryAction[];
 }
 
 export interface ApplicationSnapshot {
