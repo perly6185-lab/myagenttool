@@ -2,6 +2,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { DeviceInspector } from "@/features/devices/device-inspector";
 import { GovernanceInspector } from "@/features/integrations/governance-inspector";
 import { RunContextInspector } from "@/features/invocations/run-context-inspector";
+import { SessionHistory } from "@/features/invocations/session-history";
 import { ToolsInspector } from "@/features/tools/tools-inspector";
 import { ApplicationsInspector } from "@/features/applications/applications-inspector";
 import { ProjectTree } from "@/features/projects/project-tree";
@@ -31,11 +32,17 @@ export function Inspector() {
     >
       {section === "dashboard" ? (
         <div className="space-y-4">
+          <SessionHistory />
           <DeviceInspector />
           <RunContextInspector />
         </div>
       ) : null}
-      {section === "invocations" ? <RunContextInspector /> : null}
+      {section === "invocations" ? (
+        <div className="space-y-4">
+          <SessionHistory />
+          <RunContextInspector />
+        </div>
+      ) : null}
       {section === "projects" ? <ProjectTree /> : null}
       {section === "agents" ? <DeviceInspector /> : null}
       {section === "devices" ? (

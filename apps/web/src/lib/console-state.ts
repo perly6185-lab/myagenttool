@@ -84,6 +84,7 @@ export interface InvocationSnapshot {
   delivery?: { state?: string; dispatchAttempts?: number };
   cancellation?: { state?: string };
   result?: { summary?: string; touchedUserFiles?: boolean };
+  createdAt?: string;
   options?: {
     metadata?: {
       automationId?: string;
