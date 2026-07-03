@@ -75,6 +75,9 @@ export function ImportedUsageCard() {
                 </tbody>
               </table>
             </div>
+            {estimates.length > 50 ? (
+              <p className="text-xs text-muted-foreground">Showing the first 50 of {estimates.length} rows.</p>
+            ) : null}
           </div>
         )}
       </CardContent>
