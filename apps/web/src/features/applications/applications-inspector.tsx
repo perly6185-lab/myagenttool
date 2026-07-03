@@ -10,6 +10,7 @@ import { useConsoleState } from "@/data/use-console-state";
 import { useAsyncAction, api } from "@/data/use-console-actions";
 import { useUiStore } from "@/store/ui-store";
 import { sourceSummary } from "@/features/applications/applications-view";
+import { Transcript } from "@/features/invocations/transcript";
 import { readableStatus, statusTone } from "@/lib/readable-labels";
 import type {
   ApplicationOrchestration,
@@ -334,6 +335,11 @@ function OrchestrationRunRow({
             <span className="font-mono text-muted-foreground">{run.invocationId}</span>
             <span className="text-muted-foreground">{shortTime(run.createdAt)}</span>
             {run.agentId ? <span className="text-muted-foreground">{run.agentId}</span> : null}
+            {run.metadata?.retryOfInvocationId ? (
+              <span className="text-muted-foreground">
+                Retry of <span className="font-mono">{run.metadata.retryOfInvocationId}</span>
+              </span>
+            ) : null}
           </div>
           {run.resultSummary || run.errorSummary ? (
             <p className="[overflow-wrap:anywhere] text-muted-foreground">
@@ -357,6 +363,7 @@ function OrchestrationRunRow({
           applicationId={application.id}
           routineId={orchestration.routineId}
           invocationId={run.invocationId}
+          canRetry={application.status === "active"}
         />
       ) : null}
     </div>
@@ -367,18 +374,35 @@ function OrchestrationRunDiagnostics({
   applicationId,
   routineId,
   invocationId,
+  canRetry,
 }: {
   applicationId: string;
   routineId: string;
   invocationId: string;
+  canRetry: boolean;
 }) {
+  const { execute, pending, error: retryError } = useAsyncAction();
   const { data, isLoading, error } = useQuery({
     queryKey: ["application-orchestration-run", applicationId, routineId, invocationId],
     queryFn: () => api.getApplicationOrchestrationRun(applicationId, routineId, invocationId),
     enabled: Boolean(applicationId && routineId && invocationId),
     refetchInterval: 2000,
   });
+  const { data: eventData, isLoading: eventsLoading, error: eventsError } = useQuery({
+    queryKey: ["application-orchestration-run-events", applicationId, routineId, invocationId],
+    queryFn: () => api.listApplicationOrchestrationRunEvents(applicationId, routineId, invocationId),
+    enabled: Boolean(applicationId && routineId && invocationId),
+    refetchInterval: 2000,
+  });
   const run = data?.run;
+  const events = eventData?.events ?? [];
+
+  function retryRun() {
+    void execute(() => api.runApplicationOrchestration(applicationId, routineId, {
+      retryOfInvocationId: invocationId,
+      retryReason: run?.errorSummary ?? "Manual retry from application orchestration diagnostics.",
+    }));
+  }
 
   if (error) {
     return <p className="rounded-md bg-destructive/10 p-2 text-destructive">Could not load run diagnostics.</p>;
@@ -387,8 +411,25 @@ function OrchestrationRunDiagnostics({
     return <p className="rounded-md bg-muted p-2 text-muted-foreground">Loading diagnostics...</p>;
   }
 
+  const retryOfInvocationId = stringValue(run.metadata?.retryOfInvocationId);
+
   return (
     <div className="space-y-2 rounded-md bg-muted p-2">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="min-w-0">
+          <p className="text-xs font-medium">Run diagnostics</p>
+          {retryOfInvocationId ? (
+            <p className="[overflow-wrap:anywhere] text-xs text-muted-foreground">
+              Retry of <span className="font-mono">{retryOfInvocationId}</span>
+            </p>
+          ) : null}
+        </div>
+        <Button size="sm" variant="secondary" disabled={!canRetry || pending} onClick={retryRun}>
+          <Play />
+          {pending ? "Retrying..." : "Re-run"}
+        </Button>
+      </div>
+      {retryError ? <p className="text-xs text-destructive">{retryError}</p> : null}
       <FactList
         facts={[
           { term: "Status", value: readableStatus(run.status) },
@@ -407,6 +448,16 @@ function OrchestrationRunDiagnostics({
           {run.errorSummary ? <p className="[overflow-wrap:anywhere] text-destructive">{run.errorSummary}</p> : null}
         </div>
       ) : null}
+      <div className="rounded-md border border-border bg-background p-2">
+        <p className="mb-2 text-xs font-medium">Timeline</p>
+        {eventsError ? (
+          <p className="text-xs text-destructive">Could not load run timeline.</p>
+        ) : eventsLoading ? (
+          <p className="text-xs text-muted-foreground">Loading timeline...</p>
+        ) : (
+          <Transcript events={events} />
+        )}
+      </div>
       <DiagnosticsBlock title="Metadata" value={run.metadata} />
       <DiagnosticsBlock title="Result" value={run.result} />
       <DiagnosticsBlock title="Delivery" value={run.delivery} />
@@ -429,6 +480,10 @@ function DiagnosticsBlock({ title, value }: { title: string; value?: unknown }) 
 function formatValue(value: unknown): string {
   if (value === null || value === undefined || value === "") return "Not recorded";
   return String(value);
+}
+
+function stringValue(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value : null;
 }
 
 function shortTime(value?: string | null): string {

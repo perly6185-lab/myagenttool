@@ -11,6 +11,7 @@ import type {
   ApplicationRegisterRequest,
   ApplicationSnapshot,
   ConsoleSnapshot,
+  InvocationEventSnapshot,
   ProjectTreeResponse,
   ReviewFindingQueryResponse,
   ToolDescriptor,
@@ -267,7 +268,7 @@ export const api = {
   runApplicationOrchestration: (
     id: string,
     routineId: string,
-    body: { agentId?: string | null; timeoutSeconds?: number } = {},
+    body: { agentId?: string | null; timeoutSeconds?: number; retryOfInvocationId?: string | null; retryReason?: string | null } = {},
   ) =>
     request(
       "POST",
@@ -283,6 +284,11 @@ export const api = {
     request<{ applicationId: string; routineId: string; run: ApplicationOrchestrationRunDetail }>(
       "GET",
       `/api/applications/${encodeURIComponent(id)}/orchestrations/${encodeURIComponent(routineId)}/runs/${encodeURIComponent(invocationId)}`,
+    ),
+  listApplicationOrchestrationRunEvents: (id: string, routineId: string, invocationId: string) =>
+    request<{ applicationId: string; routineId: string; invocationId: string; events: InvocationEventSnapshot[] }>(
+      "GET",
+      `/api/applications/${encodeURIComponent(id)}/orchestrations/${encodeURIComponent(routineId)}/runs/${encodeURIComponent(invocationId)}/events`,
     ),
   createInvocation: (
     task: string,
