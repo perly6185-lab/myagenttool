@@ -698,24 +698,28 @@ function gitProjectSummary(project) {
 function projectBranches(project) {
   const root = resolve(project.path);
   const current = gitOutput(root, ["branch", "--show-current"]);
-  const collect = (ref) =>
-    gitOutput(root, ["for-each-ref", "--format=%(refname:short)", ref])
+  // Full refnames (not %(refname:short)) so the symbolic origin/HEAD pointer is
+  // detectable: its short form collapses to "origin", but the full ref still ends
+  // in "/HEAD". We derive the short display name by stripping the ref prefix.
+  const refNames = (ref) =>
+    gitOutput(root, ["for-each-ref", "--format=%(refname)", ref])
       .split(/\r?\n/)
       .map((line) => line.trim())
       .filter(Boolean);
   const seen = new Set();
   const branches = [];
-  for (const name of collect("refs/heads")) {
-    if (seen.has(name)) continue;
+  const add = (name, remote) => {
+    // Skip empties and any remote short name colliding with a local branch.
+    if (!name || seen.has(name)) return;
     seen.add(name);
-    branches.push({ name, remote: false });
+    branches.push({ name, remote });
+  };
+  for (const full of refNames("refs/heads")) {
+    add(full.replace(/^refs\/heads\//, ""), false);
   }
-  for (const name of collect("refs/remotes")) {
-    // Skip the symbolic "origin/HEAD -> origin/main" pointer, and any remote
-    // ref whose short name collides with a local branch already listed.
-    if (name.endsWith("/HEAD") || seen.has(name)) continue;
-    seen.add(name);
-    branches.push({ name, remote: true });
+  for (const full of refNames("refs/remotes")) {
+    if (full.endsWith("/HEAD")) continue; // symbolic origin/HEAD -> origin/main pointer
+    add(full.replace(/^refs\/remotes\//, ""), true);
   }
   branches.sort((a, b) => Number(b.name === current) - Number(a.name === current));
   return { branches, current: current || null };
