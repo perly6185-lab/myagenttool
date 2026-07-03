@@ -733,6 +733,10 @@ export interface ApplicationOrchestrationRecoveryAction {
   label: string;
   description?: string | null;
   requiresApproval?: boolean;
+  priority?: number;
+  recommended?: boolean;
+  recommendationReason?: string | null;
+  riskLevel?: "low" | "medium" | "high" | string;
   target?: Record<string, unknown>;
 }
 
