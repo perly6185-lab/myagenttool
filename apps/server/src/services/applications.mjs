@@ -1,5 +1,5 @@
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
-import { basename, join, resolve } from "node:path";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { basename, isAbsolute, join, relative, resolve } from "node:path";
 import { teamOf } from "../runtime/auth.mjs";
 
 const APPLICATION_SOURCE_TYPES = new Set(["git", "local", "npm", "manual"]);
@@ -138,11 +138,17 @@ export function createApplicationService({
     const app = findApplication(applicationId);
     if (!app) return null;
     const probedAt = now();
+    const probe = buildApplicationProbe(app);
     app.probe = {
       status: "completed",
       checkedAt: probedAt,
-      summary: probeSummary(app),
-      capabilities: projectApplicationCapabilities(app).map((capability) => capability.name),
+      summary: probe.summary,
+      source: probe.source,
+      package: probe.package,
+      readme: probe.readme,
+      capabilities: probe.capabilities,
+      capabilityNames: probe.capabilities.map((capability) => capability.name),
+      warnings: probe.warnings,
     };
     app.lifecycle = {
       ...app.lifecycle,
@@ -156,7 +162,12 @@ export function createApplicationService({
       type: "application_probed",
       level: "info",
       message: `${app.name} application probe completed.`,
-      data: { applicationId: app.id, capabilityCount: app.probe.capabilities.length },
+      data: {
+        applicationId: app.id,
+        capabilityCount: app.probe.capabilities.length,
+        inferredCapabilityCount: app.probe.capabilities.filter((capability) => capability.source === "inferred").length,
+        declaredCapabilityCount: app.probe.capabilities.filter((capability) => capability.source === "declared").length,
+      },
     });
     persistStateSoon();
     return app;
@@ -510,6 +521,341 @@ function publicApplicationSnapshot(application) {
   };
 }
 
+function buildApplicationProbe(application) {
+  const warnings = [];
+  const managed = projectApplicationCapabilities(application).map(probeCapabilityFromManaged);
+  const declared = declaredProbeCapabilities(application, warnings);
+  const metadata = readApplicationMetadata(application, warnings);
+  const inferred = inferProbeCapabilities(application, metadata, warnings);
+  const capabilities = dedupeProbeCapabilities([...managed, ...declared, ...inferred]);
+  return {
+    summary: probeSummary(application, { declaredCount: declared.length, inferredCount: inferred.length }),
+    source: {
+      type: application.source?.type ?? "unknown",
+      path: application.path ?? null,
+      package: application.source?.package ?? metadata.package?.name ?? null,
+      version: application.source?.version ?? metadata.package?.version ?? null,
+      repository: metadata.package?.repository ?? application.source?.repository ?? null,
+    },
+    package: metadata.package,
+    readme: metadata.readme,
+    capabilities,
+    warnings,
+  };
+}
+
+function probeCapabilityFromManaged(capability) {
+  return {
+    name: capability.name,
+    displayName: capability.displayName,
+    description: capability.description,
+    source: "managed",
+    kind: capability.kind,
+    status: capability.status,
+    riskLevel: capability.riskLevel,
+    riskTags: capability.riskTags,
+    requiresApproval: capability.requiresApproval,
+    invocationMode: capability.invocationMode,
+    inputSchema: capability.inputSchema,
+    metadata: {
+      provider: capability.provider,
+      version: capability.version,
+    },
+  };
+}
+
+function declaredProbeCapabilities(application, warnings) {
+  const manifest = application.source?.manifest && typeof application.source.manifest === "object"
+    ? application.source.manifest
+    : null;
+  const declared = Array.isArray(manifest?.capabilities) ? manifest.capabilities : [];
+  const prefix = `app.${slugify(application.id || application.name)}.declared`;
+  return declared
+    .map((capability, index) => {
+      if (!capability || typeof capability !== "object") {
+        warnings.push(`Ignored declared capability at index ${index}: expected object.`);
+        return null;
+      }
+      const id = slugify(capability.id ?? capability.name ?? `capability-${index + 1}`);
+      if (!id) {
+        warnings.push(`Ignored declared capability at index ${index}: missing id or name.`);
+        return null;
+      }
+      return {
+        name: `${prefix}.${id}`,
+        displayName: stringOrNull(capability.displayName ?? capability.name) ?? `Declared ${id}`,
+        description: stringOrNull(capability.description) ?? `Declared application capability ${id}.`,
+        source: "declared",
+        kind: stringOrNull(capability.kind) ?? "declared",
+        status: "candidate",
+        riskLevel: normalizeRiskLevel(capability.riskLevel, "medium"),
+        riskTags: normalizeStringList(capability.riskTags ?? capability.tags),
+        requiresApproval: Boolean(capability.requiresApproval),
+        invocationMode: "not_invokable",
+        inputSchema: capability.inputSchema && typeof capability.inputSchema === "object"
+          ? capability.inputSchema
+          : emptyInputSchema(),
+        metadata: publicJsonObject(capability.metadata),
+      };
+    })
+    .filter(Boolean);
+}
+
+function readApplicationMetadata(application, warnings) {
+  if (application.source?.type === "npm") {
+    const packageJson = packageJsonFromSourceManifest(application.source);
+    return {
+      package: summarizePackageJson(packageJson, application.source),
+      readme: readmeFromSourceManifest(application.source),
+    };
+  }
+  if (!["git", "local"].includes(application.source?.type) && application.kind !== "repository") {
+    return { package: null, readme: null };
+  }
+  const root = application.path ? resolve(application.path) : null;
+  if (!root || !existsSync(root)) {
+    warnings.push("Registered application path is not readable; filesystem metadata probe skipped.");
+    return { package: null, readme: null };
+  }
+  return {
+    package: readPackageJson(root, warnings),
+    readme: readReadmeSummary(root, warnings),
+  };
+}
+
+function packageJsonFromSourceManifest(source) {
+  const manifest = source?.manifest && typeof source.manifest === "object" ? source.manifest : null;
+  const packageJson = source?.packageJson && typeof source.packageJson === "object"
+    ? source.packageJson
+    : manifest?.packageJson && typeof manifest.packageJson === "object"
+      ? manifest.packageJson
+      : manifest;
+  if (!packageJson || typeof packageJson !== "object" || Array.isArray(packageJson)) {
+    return {
+      name: source?.package,
+      version: source?.version,
+    };
+  }
+  return {
+    ...packageJson,
+    name: packageJson.name ?? source?.package,
+    version: packageJson.version ?? source?.version,
+  };
+}
+
+function readmeFromSourceManifest(source) {
+  const manifest = source?.manifest && typeof source.manifest === "object" ? source.manifest : null;
+  const text = stringOrNull(source?.readme ?? manifest?.readme ?? manifest?.readmeText);
+  return text ? summarizeReadmeText(text) : null;
+}
+
+function readPackageJson(root, warnings) {
+  const path = resolve(root, "package.json");
+  if (!isPathInside(root, path) || !existsSync(path)) return null;
+  try {
+    const parsed = JSON.parse(readFileSync(path, "utf8"));
+    return summarizePackageJson(parsed);
+  } catch (error) {
+    warnings.push(`Could not parse package.json: ${error instanceof Error ? error.message : String(error)}`);
+    return null;
+  }
+}
+
+function readReadmeSummary(root, warnings) {
+  const candidates = ["README.md", "README.mdx", "README.txt", "readme.md", "readme.txt"];
+  for (const name of candidates) {
+    const path = resolve(root, name);
+    if (!isPathInside(root, path) || !existsSync(path)) continue;
+    try {
+      return summarizeReadmeText(readFileSync(path, "utf8"), name);
+    } catch (error) {
+      warnings.push(`Could not read ${name}: ${error instanceof Error ? error.message : String(error)}`);
+      return null;
+    }
+  }
+  return null;
+}
+
+function summarizePackageJson(packageJson, source = null) {
+  if (!packageJson || typeof packageJson !== "object" || Array.isArray(packageJson)) return null;
+  const scripts = objectWithStringValues(packageJson.scripts);
+  const bin = normalizeBin(packageJson.bin, packageJson.name ?? source?.package);
+  const exportsValue = summarizeExports(packageJson.exports);
+  return {
+    name: stringOrNull(packageJson.name) ?? stringOrNull(source?.package),
+    version: stringOrNull(packageJson.version) ?? stringOrNull(source?.version),
+    description: stringOrNull(packageJson.description),
+    type: stringOrNull(packageJson.type),
+    main: stringOrNull(packageJson.main),
+    module: stringOrNull(packageJson.module),
+    repository: normalizeRepository(packageJson.repository),
+    bin,
+    scripts,
+    exports: exportsValue,
+  };
+}
+
+function summarizeReadmeText(text, file = null) {
+  const normalized = String(text ?? "")
+    .replace(/\r/g, "")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line && !line.startsWith("<!--"))
+    .slice(0, 12);
+  const heading = normalized.find((line) => /^#\s+/.test(line))?.replace(/^#+\s*/, "") ?? null;
+  const summary = normalized.find((line) => !/^#/.test(line)) ?? heading;
+  return {
+    file,
+    heading,
+    summary: summary ? summary.slice(0, 300) : null,
+  };
+}
+
+function inferProbeCapabilities(application, metadata, warnings) {
+  const packageJson = metadata.package;
+  if (!packageJson) {
+    if (application.source?.type === "npm") {
+      warnings.push("NPM metadata probe had no package manifest fields to inspect.");
+    }
+    return [];
+  }
+  const prefix = `app.${slugify(application.id || application.name)}.inferred`;
+  const capabilities = [];
+  for (const [binName, target] of Object.entries(packageJson.bin ?? {})) {
+    capabilities.push(candidateProbeCapability({
+      name: `${prefix}.bin.${slugify(binName)}`,
+      displayName: `CLI bin ${binName}`,
+      description: `Inferred CLI entrypoint ${binName} from package metadata.`,
+      kind: "cli_bin",
+      riskLevel: "medium",
+      riskTags: ["local_execution", "requires_wrapper"],
+      metadata: { bin: binName, target },
+    }));
+  }
+  for (const [scriptName, command] of Object.entries(packageJson.scripts ?? {})) {
+    if (!isInterestingPackageScript(scriptName)) continue;
+    capabilities.push(candidateProbeCapability({
+      name: `${prefix}.script.${slugify(scriptName)}`,
+      displayName: `NPM script ${scriptName}`,
+      description: `Inferred npm script ${scriptName}; wrapper approval is required before invocation.`,
+      kind: "npm_script",
+      riskLevel: scriptRiskLevel(scriptName),
+      riskTags: ["local_execution", "requires_wrapper"],
+      metadata: { script: scriptName, command },
+    }));
+  }
+  if (packageJson.exports && Object.keys(packageJson.exports).length > 0) {
+    capabilities.push(candidateProbeCapability({
+      name: `${prefix}.module.exports`,
+      displayName: "Module exports",
+      description: "Package exports were detected for module integration review.",
+      kind: "module_exports",
+      riskLevel: "low",
+      riskTags: ["read_only", "requires_wrapper"],
+      metadata: { exports: packageJson.exports },
+    }));
+  }
+  if (metadata.readme?.summary) {
+    capabilities.push(candidateProbeCapability({
+      name: `${prefix}.docs.readme`,
+      displayName: "README summary",
+      description: "README documentation was detected for application inspection.",
+      kind: "documentation",
+      riskLevel: "low",
+      riskTags: ["read_only"],
+      metadata: { readme: metadata.readme },
+    }));
+  }
+  return capabilities;
+}
+
+function candidateProbeCapability({ name, displayName, description, kind, riskLevel, riskTags, metadata }) {
+  return {
+    name,
+    displayName,
+    description,
+    source: "inferred",
+    kind,
+    status: "candidate",
+    riskLevel,
+    riskTags,
+    requiresApproval: true,
+    invocationMode: "not_invokable",
+    inputSchema: emptyInputSchema(),
+    metadata,
+  };
+}
+
+function dedupeProbeCapabilities(capabilities) {
+  const seen = new Set();
+  return capabilities.filter((capability) => {
+    if (!capability?.name || seen.has(capability.name)) return false;
+    seen.add(capability.name);
+    return true;
+  });
+}
+
+function normalizeBin(bin, packageName) {
+  if (typeof bin === "string") {
+    const name = String(packageName ?? "cli").split("/").at(-1) || "cli";
+    return { [name]: bin };
+  }
+  return objectWithStringValues(bin);
+}
+
+function summarizeExports(exportsValue) {
+  if (!exportsValue) return null;
+  if (typeof exportsValue === "string") return { ".": exportsValue };
+  if (typeof exportsValue !== "object" || Array.isArray(exportsValue)) return null;
+  const summarized = {};
+  for (const [key, value] of Object.entries(exportsValue).slice(0, 20)) {
+    if (typeof value === "string") summarized[key] = value;
+    else if (value && typeof value === "object") summarized[key] = Object.keys(value).slice(0, 10);
+  }
+  return summarized;
+}
+
+function normalizeRepository(repository) {
+  if (!repository) return null;
+  if (typeof repository === "string") return repository;
+  if (typeof repository === "object" && !Array.isArray(repository)) {
+    return stringOrNull(repository.url) ?? null;
+  }
+  return null;
+}
+
+function objectWithStringValues(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  return Object.fromEntries(
+    Object.entries(value)
+      .filter(([, entry]) => typeof entry === "string")
+      .slice(0, 50),
+  );
+}
+
+function isInterestingPackageScript(name) {
+  return /^(start|dev|serve|build|test|lint|check|typecheck|preview|docs?|smoke|validate)$/i.test(String(name ?? ""));
+}
+
+function scriptRiskLevel(name) {
+  return /^(test|lint|check|typecheck|docs?|validate)$/i.test(String(name ?? "")) ? "low" : "medium";
+}
+
+function normalizeRiskLevel(value, fallback) {
+  const text = String(value ?? "").trim().toLowerCase();
+  return ["low", "medium", "high", "critical"].includes(text) ? text : fallback;
+}
+
+function normalizeStringList(value) {
+  return Array.isArray(value)
+    ? value.map((item) => String(item ?? "").trim()).filter(Boolean).slice(0, 20)
+    : [];
+}
+
+function publicJsonObject(value) {
+  return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+}
+
 function sourceFromLegacyBody(body) {
   if (body.repoUrl || body.gitUrl || body.repo) {
     return { type: "git", url: body.repoUrl ?? body.gitUrl ?? body.repo };
@@ -546,7 +892,14 @@ function normalizeApplicationSource(source = {}) {
   if (type === "npm") {
     const packageName = String(source.package ?? source.packageName ?? "").trim();
     if (!packageName) throw new Error("NPM application package is required.");
-    return { type, package: packageName, version: stringOrNull(source.version) ?? "latest" };
+    return {
+      type,
+      package: packageName,
+      version: stringOrNull(source.version) ?? "latest",
+      manifest: publicJsonObject(source.manifest),
+      packageJson: publicJsonObject(source.packageJson),
+      readme: stringOrNull(source.readme),
+    };
   }
   return {
     type: "manual",
@@ -646,9 +999,15 @@ function stringOrNull(value) {
   return text ? text : null;
 }
 
-function probeSummary(app) {
-  if (app.source.type === "npm") return `NPM package ${app.source.package}@${app.source.version ?? "latest"} registered.`;
-  if (app.source.type === "git") return `Git source ${app.source.url} registered.`;
-  if (app.source.type === "local") return `Local application path ${app.source.path} registered.`;
-  return "Manual application manifest registered.";
+function isPathInside(root, target) {
+  const rel = relative(resolve(root), resolve(target));
+  return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
+}
+
+function probeSummary(app, counts = {}) {
+  const suffix = ` Managed ${projectApplicationCapabilities(app).length}; declared ${counts.declaredCount ?? 0}; inferred ${counts.inferredCount ?? 0}.`;
+  if (app.source.type === "npm") return `NPM package ${app.source.package}@${app.source.version ?? "latest"} probed.${suffix}`;
+  if (app.source.type === "git") return `Git source ${app.source.url} probed.${suffix}`;
+  if (app.source.type === "local") return `Local application path ${app.source.path} probed.${suffix}`;
+  return `Manual application manifest probed.${suffix}`;
 }

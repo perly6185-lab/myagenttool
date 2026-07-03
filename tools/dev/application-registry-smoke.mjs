@@ -1,5 +1,4 @@
-import { mkdirSync } from "node:fs";
-import { existsSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFileSync, spawn } from "node:child_process";
@@ -11,6 +10,14 @@ const applicationPath = join(tmpdir(), `myagenttool-app-smoke-${Date.now()}`);
 const statePath = join(tmpdir(), `myagenttool-app-smoke-state-${Date.now()}.json`);
 mkdirSync(defaultProjectPath, { recursive: true });
 mkdirSync(applicationPath, { recursive: true });
+writeFileSync(join(applicationPath, "package.json"), JSON.stringify({
+  name: "smoke-app",
+  version: "1.0.0",
+  bin: { "smoke-app": "bin/smoke.js" },
+  scripts: { test: "node --test", start: "node server.js", postinstall: "node install.js" },
+  exports: { ".": "./index.js" },
+}, null, 2), "utf8");
+writeFileSync(join(applicationPath, "README.md"), "# Smoke App\n\nSmoke app registry fixture.\n", "utf8");
 
 const server = spawn(process.execPath, ["apps/server/src/index.mjs"], {
   cwd: process.cwd(),
@@ -64,7 +71,20 @@ try {
 
   const probed = await request("POST", `/api/applications/${registered.application.id}/probe`);
   assert(probed.application.probe?.status === "completed", "probe should complete");
-  assert(probed.application.probe.capabilities.includes(`${capabilityPrefix}.offline`), "probe should snapshot projected capability names");
+  assert(
+    probed.application.probe.capabilities.some((capability) => capability.name === `${capabilityPrefix}.offline` && capability.source === "managed"),
+    "probe should snapshot managed projected capabilities",
+  );
+  assert(
+    probed.application.probe.capabilities.some((capability) => capability.name === `${capabilityPrefix}.inferred.bin.smoke-app` && capability.source === "inferred"),
+    "probe should infer package bin candidates",
+  );
+  assert(
+    !probed.application.probe.capabilities.some((capability) => capability.name.includes("postinstall")),
+    "probe must not infer unsafe lifecycle scripts",
+  );
+  assert(probed.application.probe.package?.name === "smoke-app", "probe should summarize package metadata");
+  assert(probed.application.probe.readme?.heading === "Smoke App", "probe should summarize README metadata");
 
   const offline = await request("POST", `/api/applications/${registered.application.id}/offline`, { approvalToken: "operator-approved-offline" });
   assert(offline.invocation.result.output.status === "offline", "offline action should update status");
