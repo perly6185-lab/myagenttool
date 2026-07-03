@@ -78,7 +78,11 @@ async function fetchAgentCard(adapter, timeoutMs) {
  */
 async function consumeA2aStream({ endpoint, headers, payload, deadline, shouldCancel, onEvent }) {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), Math.max(1_000, deadline - Date.now()));
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, Math.max(1_000, deadline - Date.now()));
   const cancelTimer = setInterval(async () => {
     if (!shouldCancel()) return;
     clearInterval(cancelTimer);
@@ -142,6 +146,14 @@ async function consumeA2aStream({ endpoint, headers, payload, deadline, shouldCa
       }
     }
     throw new Error("A2A stream ended without a terminal event.");
+  } catch (error) {
+    // A --slow stream ends only via our timeout abort (or a cancel), so classify
+    // a timeout deterministically instead of racing a wall-clock comparison that
+    // can misread scheduling jitter as a plain failure.
+    if (timedOut) {
+      throw Object.assign(new Error("A2A stream exceeded its configured timeout."), { a2aTimedOut: true });
+    }
+    throw error;
   } finally {
     clearTimeout(timer);
     clearInterval(cancelTimer);
@@ -176,7 +188,7 @@ export async function callA2aAgent({ adapter, task, options = {}, onEvent = () =
         if (shouldCancel()) {
           return { status: "cancelled", summary: "A2A task was cancelled.", result: null };
         }
-        if (Date.now() >= deadline) {
+        if (error?.a2aTimedOut || Date.now() >= deadline) {
           return { status: "timed_out", summary: "A2A task exceeded its configured timeout.", result: null };
         }
         throw error;
