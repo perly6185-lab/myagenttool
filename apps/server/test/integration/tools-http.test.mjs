@@ -1047,19 +1047,36 @@ test("application orchestration recovery actions are guarded and audited", async
   });
   assert.equal(approvedRecovery.status, 200);
   const approvedActionRequest = ctx.state.applicationRecoveryActions.find((item) => item.id === approvalRequired.body.recoveryActionRequest.id);
-  assert.equal(approvedActionRequest?.status, "approval_approved");
+  assert.equal(approvedActionRequest?.status, "executed");
+  assert.ok(approvedActionRequest?.resultInvocationId);
+  assert.equal(approvedActionRequest?.resultOrchestrationId, "app-app_team_a-maintenance");
+  assert.ok(ctx.state.invocations.some((item) => item.id === approvedActionRequest?.resultInvocationId
+    && item.options?.metadata?.applicationAction === "generate_orchestration"
+    && item.status === "succeeded"));
+  assert.ok(findApplicationForTest("app_team_a").orchestrations?.some((item) => item.routineId === approvedActionRequest?.resultOrchestrationId));
   assert.ok(ctx.state.events.some((event) => event.invocationId === validation.id
     && event.type === "application_orchestration_recovery_approval_resolved"
     && event.data?.status === "approved"));
+  assert.ok(ctx.state.events.some((event) => event.invocationId === validation.id
+    && event.type === "application_orchestration_recovery_action_executed"
+    && event.data?.recoveryActionRequestId === approvalRequired.body.recoveryActionRequest.id));
+  const generatedInvocationCount = ctx.state.invocations.filter((item) => item.options?.metadata?.applicationAction === "generate_orchestration").length;
+  const approvedAgain = await call(`/api/codex/approval-broker/${encodeURIComponent(approvalRequired.body.approvalRequest.id)}/approve`, {
+    method: "POST",
+    token: "tok_a",
+  });
+  assert.equal(approvedAgain.status, 200);
+  assert.equal(approvedActionRequest?.status, "executed");
+  assert.equal(ctx.state.invocations.filter((item) => item.options?.metadata?.applicationAction === "generate_orchestration").length, generatedInvocationCount);
 
-  const unsupported = await call(`/api/applications/app_team_a/orchestrations/app-app_team_a-maintenance/runs/${encodeURIComponent(validation.id)}/recovery/actions`, {
+  const directRegenerate = await call(`/api/applications/app_team_a/orchestrations/app-app_team_a-maintenance/runs/${encodeURIComponent(validation.id)}/recovery/actions`, {
     method: "POST",
     body: { actionType: "regenerate_orchestration", approvalToken: "operator-approved-recovery" },
     token: "tok_a",
   });
-  assert.equal(unsupported.status, 501);
-  assert.equal(unsupported.body.error, "recovery_action_not_supported");
-  assert.equal(unsupported.body.recoveryActionRequest.status, "unsupported");
+  assert.equal(directRegenerate.status, 201);
+  assert.equal(directRegenerate.body.recoveryActionRequest.status, "executed");
+  assert.equal(directRegenerate.body.recoveryActionRequest.resultOrchestrationId, "app-app_team_a-maintenance");
 
   const foreign = await call(`/api/applications/app_team_a/orchestrations/app-app_team_a-maintenance/runs/${encodeURIComponent(runtime.id)}/recovery/actions`, {
     method: "POST",
