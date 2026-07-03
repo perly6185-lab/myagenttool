@@ -674,6 +674,23 @@ export interface ApplicationSnapshot {
   updatedAt?: string;
 }
 
+export interface ProjectTreeEntry {
+  name: string;
+  path: string;
+  kind: "directory" | "file" | "other";
+  gitStatus: string;
+}
+
+export interface ProjectTreeResponse {
+  projectId: string;
+  projectPath: string;
+  path: string;
+  search: string;
+  entries: ProjectTreeEntry[];
+  truncated: boolean;
+  gitSummary?: { modified?: number; added?: number; deleted?: number };
+}
+
 export interface ApplicationRegisterRequest {
   name?: string;
   projectId?: string | null;

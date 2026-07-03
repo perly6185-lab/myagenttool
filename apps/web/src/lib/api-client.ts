@@ -9,6 +9,7 @@ import type {
   ApplicationRegisterRequest,
   ApplicationSnapshot,
   ConsoleSnapshot,
+  ProjectTreeResponse,
   ReviewFindingQueryResponse,
   ToolDescriptor,
   ToolInvocationRequest,
@@ -305,6 +306,13 @@ export const api = {
     request("PATCH", `/api/projects/${encodeURIComponent(id)}`, payload),
   selectProject: (id: string) =>
     request("POST", `/api/projects/${encodeURIComponent(id)}`),
+  projectTree: (id: string, opts: { path?: string; search?: string } = {}) => {
+    const query = new URLSearchParams();
+    if (opts.path) query.set("path", opts.path);
+    if (opts.search) query.set("search", opts.search);
+    const suffix = query.toString() ? `?${query}` : "";
+    return request<ProjectTreeResponse>("GET", `/api/projects/${encodeURIComponent(id)}/tree${suffix}`);
+  },
   createWorktree: (
     projectId: string,
     payload: {
