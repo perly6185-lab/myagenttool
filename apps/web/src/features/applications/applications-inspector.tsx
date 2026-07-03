@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Clipboard, ExternalLink, Play } from "lucide-react";
+import { Clipboard, ExternalLink, Play, Search } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -279,6 +279,7 @@ function OrchestrationRunHistory({
     enabled: Boolean(application.id && orchestration.routineId),
     refetchInterval: 2000,
   });
+  const [expandedInvocationId, setExpandedInvocationId] = useState<string | null>(null);
   const runs = data?.runs ?? [];
 
   if (error) {
@@ -295,40 +296,139 @@ function OrchestrationRunHistory({
   return (
     <div className="space-y-1.5 border-t border-border pt-2">
       {runs.map((run) => (
-        <OrchestrationRunRow key={run.invocationId} run={run} onView={onView} />
+        <OrchestrationRunRow
+          key={run.invocationId}
+          application={application}
+          orchestration={orchestration}
+          run={run}
+          expanded={expandedInvocationId === run.invocationId}
+          onToggleInspect={() => setExpandedInvocationId((current) => current === run.invocationId ? null : run.invocationId)}
+          onView={onView}
+        />
       ))}
     </div>
   );
 }
 
 function OrchestrationRunRow({
+  application,
+  orchestration,
   run,
+  expanded,
+  onToggleInspect,
   onView,
 }: {
+  application: ApplicationSnapshot;
+  orchestration: ApplicationOrchestration;
   run: ApplicationOrchestrationRun;
+  expanded: boolean;
+  onToggleInspect: () => void;
   onView: (invocationId: string) => void;
 }) {
   return (
-    <div className="grid gap-2 text-xs sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center">
-      <div className="min-w-0 space-y-1">
-        <div className="flex flex-wrap items-center gap-2">
-          <Badge tone={statusTone(run.status)}>{readableStatus(run.status)}</Badge>
-          <span className="font-mono text-muted-foreground">{run.invocationId}</span>
-          <span className="text-muted-foreground">{shortTime(run.createdAt)}</span>
-          {run.agentId ? <span className="text-muted-foreground">{run.agentId}</span> : null}
+    <div className="space-y-2 rounded-md border border-border p-2 text-xs">
+      <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center">
+        <div className="min-w-0 space-y-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <Badge tone={statusTone(run.status)}>{readableStatus(run.status)}</Badge>
+            <span className="font-mono text-muted-foreground">{run.invocationId}</span>
+            <span className="text-muted-foreground">{shortTime(run.createdAt)}</span>
+            {run.agentId ? <span className="text-muted-foreground">{run.agentId}</span> : null}
+          </div>
+          {run.resultSummary || run.errorSummary ? (
+            <p className="[overflow-wrap:anywhere] text-muted-foreground">
+              {run.resultSummary ?? run.errorSummary}
+            </p>
+          ) : null}
         </div>
-        {run.resultSummary || run.errorSummary ? (
-          <p className="[overflow-wrap:anywhere] text-muted-foreground">
-            {run.resultSummary ?? run.errorSummary}
-          </p>
-        ) : null}
+        <div className="flex flex-wrap gap-2">
+          <Button size="sm" variant="secondary" onClick={onToggleInspect}>
+            <Search />
+            {expanded ? "Hide" : "Inspect"}
+          </Button>
+          <Button size="sm" variant="secondary" onClick={() => onView(run.invocationId)}>
+            <ExternalLink />
+            View
+          </Button>
+        </div>
       </div>
-      <Button size="sm" variant="secondary" onClick={() => onView(run.invocationId)}>
-        <ExternalLink />
-        View
-      </Button>
+      {expanded ? (
+        <OrchestrationRunDiagnostics
+          applicationId={application.id}
+          routineId={orchestration.routineId}
+          invocationId={run.invocationId}
+        />
+      ) : null}
     </div>
   );
+}
+
+function OrchestrationRunDiagnostics({
+  applicationId,
+  routineId,
+  invocationId,
+}: {
+  applicationId: string;
+  routineId: string;
+  invocationId: string;
+}) {
+  const { data, isLoading, error } = useQuery({
+    queryKey: ["application-orchestration-run", applicationId, routineId, invocationId],
+    queryFn: () => api.getApplicationOrchestrationRun(applicationId, routineId, invocationId),
+    enabled: Boolean(applicationId && routineId && invocationId),
+    refetchInterval: 2000,
+  });
+  const run = data?.run;
+
+  if (error) {
+    return <p className="rounded-md bg-destructive/10 p-2 text-destructive">Could not load run diagnostics.</p>;
+  }
+  if (isLoading || !run) {
+    return <p className="rounded-md bg-muted p-2 text-muted-foreground">Loading diagnostics...</p>;
+  }
+
+  return (
+    <div className="space-y-2 rounded-md bg-muted p-2">
+      <FactList
+        facts={[
+          { term: "Status", value: readableStatus(run.status) },
+          { term: "Agent", value: run.agentId ?? "Unassigned" },
+          { term: "Delivery", value: run.delivery?.state ?? run.deliveryState ?? "Not recorded" },
+          { term: "Dispatch attempts", value: formatValue(run.delivery?.dispatchAttempts) },
+          { term: "Cancellation", value: run.cancellation?.state ?? run.cancellationState ?? "None" },
+          { term: "Trace", value: run.traceId ?? "Not recorded" },
+          { term: "Policy", value: run.audit?.permissionDecision ?? run.policyDecisionId ?? "Not recorded" },
+          { term: "Cost", value: run.audit?.costSummary ?? "Not recorded" },
+        ]}
+      />
+      {run.result?.summary || run.errorSummary ? (
+        <div className="space-y-1">
+          {run.result?.summary ? <p className="[overflow-wrap:anywhere] text-muted-foreground">{run.result.summary}</p> : null}
+          {run.errorSummary ? <p className="[overflow-wrap:anywhere] text-destructive">{run.errorSummary}</p> : null}
+        </div>
+      ) : null}
+      <DiagnosticsBlock title="Metadata" value={run.metadata} />
+      <DiagnosticsBlock title="Result" value={run.result} />
+      <DiagnosticsBlock title="Delivery" value={run.delivery} />
+    </div>
+  );
+}
+
+function DiagnosticsBlock({ title, value }: { title: string; value?: unknown }) {
+  if (value == null) return null;
+  return (
+    <details className="rounded border border-border bg-background p-2">
+      <summary className="cursor-pointer text-xs font-medium">{title}</summary>
+      <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap break-words text-[11px] text-muted-foreground">
+        {JSON.stringify(value, null, 2)}
+      </pre>
+    </details>
+  );
+}
+
+function formatValue(value: unknown): string {
+  if (value === null || value === undefined || value === "") return "Not recorded";
+  return String(value);
 }
 
 function shortTime(value?: string | null): string {

@@ -680,6 +680,23 @@ export interface ApplicationOrchestrationRun {
   };
 }
 
+export interface ApplicationOrchestrationRunDetail extends ApplicationOrchestrationRun {
+  traceId?: string | null;
+  rootSpanId?: string | null;
+  approvalRequestId?: string | null;
+  policyDecisionId?: string | null;
+  delivery?: InvocationSnapshot["delivery"] | null;
+  cancellation?: InvocationSnapshot["cancellation"] | null;
+  result?: InvocationSnapshot["result"] | null;
+  audit?: {
+    permissionDecision?: string | null;
+    errorSummary?: string | null;
+    traceId?: string | null;
+    costSummary?: string | null;
+  } | null;
+  metadata?: Record<string, unknown>;
+}
+
 export interface ApplicationSnapshot {
   id: string;
   name: string;

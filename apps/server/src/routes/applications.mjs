@@ -9,6 +9,7 @@ export async function handleApplicationRoutes({
   state,
   actor,
   findApplication,
+  getApplicationOrchestrationRun,
   listApplicationCapabilities,
   listApplications,
   probeApplication,
@@ -96,6 +97,17 @@ export async function handleApplicationRoutes({
     const routineId = decodeURIComponent(orchestrationRunsMatch[2]);
     if (denyForeignApplication({ res, sendJson, state, actor, applicationId, findApplication })) return true;
     const result = listApplicationOrchestrationRuns(applicationId, routineId, url.searchParams);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  const orchestrationRunDetailMatch = url.pathname.match(/^\/api\/applications\/([^/]+)\/orchestrations\/([^/]+)\/runs\/([^/]+)$/);
+  if (orchestrationRunDetailMatch && req.method === "GET") {
+    const applicationId = decodeURIComponent(orchestrationRunDetailMatch[1]);
+    const routineId = decodeURIComponent(orchestrationRunDetailMatch[2]);
+    const invocationId = decodeURIComponent(orchestrationRunDetailMatch[3]);
+    if (denyForeignApplication({ res, sendJson, state, actor, applicationId, findApplication })) return true;
+    const result = getApplicationOrchestrationRun(applicationId, routineId, invocationId);
     sendJson(res, result.status, result.body);
     return true;
   }
