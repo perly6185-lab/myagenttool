@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { latestRoutineInvocation } from "@/features/applications/applications-inspector";
+import { latestRoutineInvocation, readableRecoveryAgentReason } from "@/features/applications/applications-inspector";
 import type { InvocationSnapshot } from "@/lib/console-state";
 
 describe("latestRoutineInvocation", () => {
@@ -23,6 +23,14 @@ describe("latestRoutineInvocation", () => {
     ] satisfies InvocationSnapshot[];
 
     expect(latestRoutineInvocation(invocations, "app_docs", "routine_docs_smoke")).toBeNull();
+  });
+});
+
+describe("readableRecoveryAgentReason", () => {
+  it("renders governed select-agent rejection reasons", () => {
+    expect(readableRecoveryAgentReason("application_control_missing")).toBe("missing application control");
+    expect(readableRecoveryAgentReason("device_unlinked")).toBe("device unlinked");
+    expect(readableRecoveryAgentReason("custom_reason")).toBe("custom_reason");
   });
 });
 

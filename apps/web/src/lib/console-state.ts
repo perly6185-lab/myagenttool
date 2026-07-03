@@ -730,6 +730,19 @@ export interface ApplicationOrchestrationRecovery {
   actions: ApplicationOrchestrationRecoveryAction[];
 }
 
+export interface ApplicationOrchestrationRecoveryAgentCandidate {
+  id: string;
+  name: string;
+  status: string;
+  healthStatus?: string | null;
+  locationType?: string | null;
+  adapterType?: string | null;
+  selectable: boolean;
+  reasons: string[];
+  preferred: boolean;
+  sourceAgent: boolean;
+}
+
 export interface ApplicationRecoveryActionRequest {
   id: string;
   applicationId: string;
