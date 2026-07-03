@@ -90,7 +90,7 @@ Successful creation returns a normal invocation id:
 {
   "tool": "ccusage.report",
   "invocationId": "inv_123",
-  "agentId": "agt_ccusage_daily",
+  "agentId": "agt_platform_application_wrapper",
   "status": "queued",
   "outputCollection": "importedUsageEstimates"
 }
