@@ -206,7 +206,7 @@ function ResultNote({
  * Sources the backend accepts for a report: a provider-specific source is only
  * valid for a matching provider report (source_report_mismatch otherwise).
  */
-function ccusageSourcesFor(report: string): Array<"all" | "codex" | "claude"> {
+export function ccusageSourcesFor(report: string): Array<"all" | "codex" | "claude"> {
   const sources: Array<"all" | "codex" | "claude"> = ["all"];
   if (report.startsWith("codex_")) sources.push("codex");
   if (report.startsWith("claude_")) sources.push("claude");

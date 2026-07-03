@@ -9,7 +9,8 @@
     "build": "vite build",
     "preview": "vite preview",
     "serve": "node ./src/index.mjs",
-    "test": "node ./src/index.mjs --check",
+    "test": "node ./src/index.mjs --check && vitest run",
+    "test:unit": "vitest run",
     "lint": "node ./src/index.mjs --check",
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
@@ -27,11 +28,16 @@
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.0.0",
+    "@testing-library/dom": "^10.4.0",
+    "@testing-library/jest-dom": "^6.6.3",
+    "@testing-library/react": "^16.1.0",
     "@types/react": "^19.0.2",
     "@types/react-dom": "^19.0.2",
     "@vitejs/plugin-react": "^4.3.4",
+    "jsdom": "^25.0.1",
     "tailwindcss": "^4.0.0",
     "typescript": "^5.7.2",
-    "vite": "^6.0.5"
+    "vite": "^6.0.5",
+    "vitest": "^2.1.9"
   }
 }
