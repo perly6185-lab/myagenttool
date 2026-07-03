@@ -7,6 +7,7 @@ import * as pty from "node-pty";
 import { callMcpTool, probeMcpServer } from "./mcp-client.mjs";
 import { callA2aAgent, probeA2aAgent } from "./a2a-client.mjs";
 import { probeContainerRuntime, runContainerAgent } from "./container-client.mjs";
+import { codexResumeArgs } from "./codex-resume.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const serverUrl = process.env.BRIDGE_SERVER_URL ?? "http://127.0.0.1:5001";
@@ -63,6 +64,24 @@ if (process.argv.includes("--check")) {
   const resumeArgs = codexArgsTemplate({ command: "codex", args: codexCliArgs() }, { options: { codexSessionMode: "continue_last" } });
   if (!resumeArgs.includes("resume") || resumeArgs.includes("--ephemeral")) {
     throw new Error("Codex continuation args are not configured.");
+  }
+  // True resume (#163): a resolved provider session id must be resumed BY ID,
+  // not via the global `--last`.
+  const resumeByIdArgs = codexArgsTemplate(
+    { command: "codex", args: codexCliArgs() },
+    { options: { codexSessionMode: "continue_last", codexResumeSessionId: "0198f2a1-DEF_4.5" } },
+  );
+  if (resumeByIdArgs[1] !== "resume" || resumeByIdArgs[2] !== "0198f2a1-DEF_4.5" || resumeByIdArgs.includes("--last")) {
+    throw new Error("Codex resume-by-session-id args are not configured.");
+  }
+  // A malformed/hostile session id (e.g. a leading dash) must be rejected and
+  // fall back to `--last`, never injected as an argv flag.
+  const unsafeResumeArgs = codexArgsTemplate(
+    { command: "codex", args: codexCliArgs() },
+    { options: { codexSessionMode: "continue_last", codexResumeSessionId: "--dangerously-bypass-approvals-and-sandbox" } },
+  );
+  if (unsafeResumeArgs[2] !== "--last" || unsafeResumeArgs.includes("--dangerously-bypass-approvals-and-sandbox")) {
+    throw new Error("Codex resume must reject an unsafe session id and fall back to --last.");
   }
   const imageArgs = insertCodexImageArgs(["exec", "--json", "{{task}}"], [{ path: "composer-image.png" }]);
   const taskArgIndex = imageArgs.indexOf("{{task}}");
@@ -1297,7 +1316,10 @@ function boundedString(value, maxLength) {
 function codexArgsTemplate(adapter, payload) {
   const args = Array.isArray(adapter.args) && adapter.args.length > 0 ? adapter.args : ["{{payloadJson}}"];
   if (isCodexCliCommand(adapter.command) && payload.options?.codexSessionMode === "continue_last") {
-    return ["exec", "resume", "--last", "--skip-git-repo-check", "--json", "{{task}}"];
+    // True resume (#163): continue the specific provider session the server
+    // resolved (resume by id), not whatever ran last globally. See codexResumeArgs
+    // for the safe-token guard + `--last` fallback.
+    return codexResumeArgs(payload.options);
   }
   return args;
 }
