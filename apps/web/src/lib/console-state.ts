@@ -73,6 +73,7 @@ export interface AgentSnapshot {
 export interface InvocationSnapshot {
   id: string;
   status?: string;
+  input?: { task?: string };
   agentId?: string;
   projectId?: string;
   worktreeId?: string | null;
