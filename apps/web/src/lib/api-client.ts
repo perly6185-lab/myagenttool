@@ -392,6 +392,8 @@ export const api = {
     request("GET", `/api/projects/${encodeURIComponent(projectId)}/github`),
   listBranches: (projectId: string) =>
     request("GET", `/api/projects/${encodeURIComponent(projectId)}/branches`),
+  gitSummary: (projectId: string) =>
+    request("GET", `/api/projects/${encodeURIComponent(projectId)}/git-summary`),
   suggestWorktreeName: (description: string) =>
     request("POST", "/api/worktree-name-suggestion", { description }),
 
