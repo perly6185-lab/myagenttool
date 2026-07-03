@@ -10,6 +10,7 @@ export async function handleApplicationRoutes({
   actor,
   findApplication,
   getApplicationOrchestrationRunRecovery,
+  listApplicationOrchestrationRecoveryAgentCandidates,
   getApplicationOrchestrationRun,
   listApplicationCapabilities,
   listApplications,
@@ -133,6 +134,17 @@ export async function handleApplicationRoutes({
     const invocationId = decodeURIComponent(orchestrationRunRecoveryMatch[3]);
     if (denyForeignApplication({ res, sendJson, state, actor, applicationId, findApplication })) return true;
     const result = getApplicationOrchestrationRunRecovery(applicationId, routineId, invocationId);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  const orchestrationRunRecoveryAgentCandidatesMatch = url.pathname.match(/^\/api\/applications\/([^/]+)\/orchestrations\/([^/]+)\/runs\/([^/]+)\/recovery\/agent-candidates$/);
+  if (orchestrationRunRecoveryAgentCandidatesMatch && req.method === "GET") {
+    const applicationId = decodeURIComponent(orchestrationRunRecoveryAgentCandidatesMatch[1]);
+    const routineId = decodeURIComponent(orchestrationRunRecoveryAgentCandidatesMatch[2]);
+    const invocationId = decodeURIComponent(orchestrationRunRecoveryAgentCandidatesMatch[3]);
+    if (denyForeignApplication({ res, sendJson, state, actor, applicationId, findApplication })) return true;
+    const result = listApplicationOrchestrationRecoveryAgentCandidates(applicationId, routineId, invocationId);
     sendJson(res, result.status, result.body);
     return true;
   }
