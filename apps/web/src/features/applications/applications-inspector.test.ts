@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { latestRoutineInvocation, readableRecoveryAgentReason } from "@/features/applications/applications-inspector";
+import {
+  latestRoutineInvocation,
+  readableRecoveryActionType,
+  readableRecoveryAgentReason,
+  readableRecoveryOutcome,
+} from "@/features/applications/applications-inspector";
 import type { InvocationSnapshot } from "@/lib/console-state";
 
 describe("latestRoutineInvocation", () => {
@@ -31,6 +36,15 @@ describe("readableRecoveryAgentReason", () => {
     expect(readableRecoveryAgentReason("application_control_missing")).toBe("missing application control");
     expect(readableRecoveryAgentReason("device_unlinked")).toBe("device unlinked");
     expect(readableRecoveryAgentReason("custom_reason")).toBe("custom_reason");
+  });
+});
+
+describe("recovery lineage labels", () => {
+  it("renders recovery action and outcome labels", () => {
+    expect(readableRecoveryActionType("select_agent")).toBe("Select agent");
+    expect(readableRecoveryActionType("custom_action")).toBe("custom_action");
+    expect(readableRecoveryOutcome("still_failed")).toBe("Still failed");
+    expect(readableRecoveryOutcome("custom_state")).toBe("custom_state");
   });
 });
 
