@@ -688,6 +688,10 @@ export interface ApplicationOrchestrationRun {
     orchestrationRelativePath?: string | null;
     retryOfInvocationId?: string | null;
     retryReason?: string | null;
+    recoveryActionType?: string | null;
+    recoveryOfInvocationId?: string | null;
+    recoveryReason?: string | null;
+    recoveryCategory?: string | null;
   };
 }
 

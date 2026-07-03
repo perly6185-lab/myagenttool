@@ -948,6 +948,96 @@ test("application orchestration recovery endpoint classifies common outcomes", a
   assert.equal(foreign.body.error, "application_not_found");
 });
 
+test("application orchestration recovery actions are guarded and audited", async () => {
+  const application = findApplicationForTest("app_team_a");
+  application.status = "active";
+  const generated = await call("/api/applications/app_team_a/orchestrations/generate", {
+    method: "POST",
+    body: { approvalToken: "operator-approved-generate" },
+    token: "tok_a",
+  });
+  assert.equal(generated.status, 201);
+
+  const runtime = await createApplicationOrchestrationRunForTest({ status: "failed" });
+  ctx.state.auditSummaries.unshift({
+    invocationId: runtime.id,
+    agentId: runtime.agentId,
+    errorSummary: "npm test failed with exit code 1.",
+    permissionDecision: "allow",
+    traceId: "trace_runtime_action",
+  });
+
+  const rerun = await call(`/api/applications/app_team_a/orchestrations/app-app_team_a-maintenance/runs/${encodeURIComponent(runtime.id)}/recovery/actions`, {
+    method: "POST",
+    body: { actionType: "rerun", reason: "Retry after npm failure." },
+    token: "tok_a",
+  });
+  assert.equal(rerun.status, 201);
+  assert.equal(rerun.body.recoveryAction.actionType, "rerun");
+  assert.equal(rerun.body.recoveryAction.recoveryOfInvocationId, runtime.id);
+  const rerunInvocation = ctx.state.invocations.find((item) => item.id === rerun.body.invocationId);
+  assert.equal(rerunInvocation?.options?.metadata?.recoveryActionType, "rerun");
+  assert.equal(rerunInvocation?.options?.metadata?.recoveryOfInvocationId, runtime.id);
+  assert.equal(rerunInvocation?.options?.metadata?.recoveryReason, "Retry after npm failure.");
+  assert.equal(rerunInvocation?.options?.metadata?.recoveryCategory, "runtime_error");
+  assert.ok(ctx.state.events.some((event) => event.invocationId === runtime.id
+    && event.type === "application_orchestration_recovery_action_requested"
+    && event.data?.actionType === "rerun"));
+
+  const viewInvocation = await call(`/api/applications/app_team_a/orchestrations/app-app_team_a-maintenance/runs/${encodeURIComponent(runtime.id)}/recovery/actions`, {
+    method: "POST",
+    body: { actionType: "view_invocation", reason: "Operator opened the recovery evidence." },
+    token: "tok_a",
+  });
+  assert.equal(viewInvocation.status, 200);
+  assert.equal(viewInvocation.body.status, "noop");
+  assert.ok(ctx.state.events.some((event) => event.invocationId === runtime.id
+    && event.type === "application_orchestration_recovery_action_requested"
+    && event.data?.actionType === "view_invocation"));
+
+  const notSuggested = await call(`/api/applications/app_team_a/orchestrations/app-app_team_a-maintenance/runs/${encodeURIComponent(runtime.id)}/recovery/actions`, {
+    method: "POST",
+    body: { actionType: "relink_device" },
+    token: "tok_a",
+  });
+  assert.equal(notSuggested.status, 400);
+  assert.equal(notSuggested.body.error, "recovery_action_not_suggested");
+
+  const validation = await createApplicationOrchestrationRunForTest({ status: "failed" });
+  ctx.state.events.unshift({
+    id: "evt_recovery_validation_action",
+    invocationId: validation.id,
+    type: "application_routine_validation_failed",
+    level: "warn",
+    message: "invalid_application_routine validation failed",
+    data: null,
+    createdAt: now(),
+  });
+  const approvalRequired = await call(`/api/applications/app_team_a/orchestrations/app-app_team_a-maintenance/runs/${encodeURIComponent(validation.id)}/recovery/actions`, {
+    method: "POST",
+    body: { actionType: "regenerate_orchestration" },
+    token: "tok_a",
+  });
+  assert.equal(approvalRequired.status, 409);
+  assert.equal(approvalRequired.body.error, "approval_required");
+
+  const unsupported = await call(`/api/applications/app_team_a/orchestrations/app-app_team_a-maintenance/runs/${encodeURIComponent(validation.id)}/recovery/actions`, {
+    method: "POST",
+    body: { actionType: "regenerate_orchestration", approvalToken: "operator-approved-recovery" },
+    token: "tok_a",
+  });
+  assert.equal(unsupported.status, 501);
+  assert.equal(unsupported.body.error, "recovery_action_not_supported");
+
+  const foreign = await call(`/api/applications/app_team_a/orchestrations/app-app_team_a-maintenance/runs/${encodeURIComponent(runtime.id)}/recovery/actions`, {
+    method: "POST",
+    body: { actionType: "rerun" },
+    token: "tok_b",
+  });
+  assert.equal(foreign.status, 404);
+  assert.equal(foreign.body.error, "application_not_found");
+});
+
 test("application lifecycle endpoints require governed approval", async () => {
   findApplicationForTest("app_team_a").status = "active";
   const blocked = await call("/api/applications/app_team_a/offline", {
