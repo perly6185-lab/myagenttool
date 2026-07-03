@@ -1,10 +1,11 @@
+import type { ReactElement } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { ErrorBoundary } from "@/components/common/error-boundary";
 
 afterEach(cleanup);
 
-function Boom({ label }: { label: string }): JSX.Element {
+function Boom({ label }: { label: string }): ReactElement {
   throw new Error(label);
 }
 
@@ -52,7 +53,7 @@ describe("ErrorBoundary", () => {
 
   it("clears the error when the user clicks Try again", () => {
     const spy = vi.spyOn(console, "error").mockImplementation(() => {});
-    function Flaky({ crash }: { crash: boolean }): JSX.Element {
+    function Flaky({ crash }: { crash: boolean }) {
       if (crash) throw new Error("transient");
       return <span>content back</span>;
     }
