@@ -782,6 +782,101 @@ test("application orchestration run detail endpoint returns scoped diagnostics",
   assert.equal(missingRun.body.error, "orchestration_run_not_found");
 });
 
+test("application orchestration run events and retry stay scoped to the routine", async () => {
+  const application = findApplicationForTest("app_team_a");
+  application.status = "active";
+  const generated = await call("/api/applications/app_team_a/orchestrations/generate", {
+    method: "POST",
+    body: { approvalToken: "operator-approved-generate" },
+    token: "tok_a",
+  });
+  assert.equal(generated.status, 201);
+
+  const original = await call("/api/applications/app_team_a/orchestrations/app-app_team_a-maintenance/run", {
+    method: "POST",
+    body: { agentId: "agt_platform_application_control" },
+    token: "tok_a",
+  });
+  assert.equal(original.status, 201);
+
+  ctx.state.events.push({
+    id: "evt_manual_late_app_retry_test",
+    invocationId: original.body.invocationId,
+    type: "manual_failure_observed",
+    level: "error",
+    message: "Synthetic failure for retry test.",
+    data: { applicationId: "app_team_a", routineId: "app-app_team_a-maintenance" },
+    createdAt: "2026-07-03T00:00:10.000Z",
+  }, {
+    id: "evt_manual_early_app_retry_test",
+    invocationId: original.body.invocationId,
+    type: "manual_run_started",
+    level: "info",
+    message: "Synthetic start for retry test.",
+    data: { applicationId: "app_team_a", routineId: "app-app_team_a-maintenance" },
+    createdAt: "2026-07-03T00:00:01.000Z",
+  }, {
+    id: "evt_manual_foreign_invocation_retry_test",
+    invocationId: "inv_foreign_for_retry_test",
+    type: "manual_noise",
+    level: "info",
+    message: "Foreign invocation noise.",
+    data: null,
+    createdAt: "2026-07-03T00:00:05.000Z",
+  });
+
+  const events = await call(`/api/applications/app_team_a/orchestrations/app-app_team_a-maintenance/runs/${encodeURIComponent(original.body.invocationId)}/events`, {
+    token: "tok_a",
+  });
+  assert.equal(events.status, 200);
+  assert.equal(events.body.invocationId, original.body.invocationId);
+  assert.ok(events.body.events.some((event) => event.type === "manual_failure_observed"));
+  assert.ok(events.body.events.findIndex((event) => event.id === "evt_manual_early_app_retry_test")
+    < events.body.events.findIndex((event) => event.id === "evt_manual_late_app_retry_test"));
+  assert.equal(events.body.events.some((event) => event.invocationId === "inv_foreign_for_retry_test"), false);
+
+  const retry = await call("/api/applications/app_team_a/orchestrations/app-app_team_a-maintenance/run", {
+    method: "POST",
+    body: {
+      agentId: "agt_platform_application_control",
+      retryOfInvocationId: original.body.invocationId,
+      retryReason: "Retry after synthetic failure.",
+    },
+    token: "tok_a",
+  });
+  assert.equal(retry.status, 201);
+  const retryInvocation = ctx.state.invocations.find((item) => item.id === retry.body.invocationId);
+  assert.equal(retryInvocation?.options?.metadata?.retryOfInvocationId, original.body.invocationId);
+  assert.equal(retryInvocation?.options?.metadata?.retryReason, "Retry after synthetic failure.");
+  assert.ok(ctx.state.events.some((event) => event.invocationId === retry.body.invocationId
+    && event.type === "application_orchestration_run_requested"
+    && event.data?.retryOfInvocationId === original.body.invocationId));
+
+  const listed = await call("/api/applications/app_team_a/orchestrations/app-app_team_a-maintenance/runs?limit=1", {
+    token: "tok_a",
+  });
+  assert.equal(listed.status, 200);
+  assert.equal(listed.body.runs[0].invocationId, retry.body.invocationId);
+  assert.equal(listed.body.runs[0].metadata.retryOfInvocationId, original.body.invocationId);
+
+  const badRetry = await call("/api/applications/app_team_a/orchestrations/app-app_team_a-maintenance/run", {
+    method: "POST",
+    body: {
+      agentId: "agt_platform_application_control",
+      retryOfInvocationId: "inv_not_an_app_run",
+    },
+    token: "tok_a",
+  });
+  assert.equal(badRetry.status, 404);
+  assert.equal(badRetry.body.error, "orchestration_run_not_found");
+
+  const foreign = await call(`/api/applications/app_team_a/orchestrations/app-app_team_a-maintenance/runs/${encodeURIComponent(original.body.invocationId)}/events`, {
+    token: "tok_b",
+  });
+  assert.equal(foreign.status, 404);
+  assert.equal(foreign.body.error, "application_not_found");
+});
+
 test("application lifecycle endpoints require governed approval", async () => {
   findApplicationForTest("app_team_a").status = "active";
   const blocked = await call("/api/applications/app_team_a/offline", {

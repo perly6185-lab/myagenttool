@@ -109,7 +109,14 @@ export interface InvocationEventSnapshot {
   createdAt: string;
   // `artifactId` / `targetInvocationId` let a platform-agent "action requested"
   // event deep-link to the surface where its decision is actually made.
-  data?: { agentId?: string; source?: string; artifactId?: string; targetInvocationId?: string; reportId?: string };
+  data?: {
+    agentId?: string;
+    source?: string;
+    artifactId?: string;
+    targetInvocationId?: string;
+    reportId?: string;
+    [key: string]: unknown;
+  } | null;
 }
 
 export interface AuditSnapshot {
@@ -675,9 +682,11 @@ export interface ApplicationOrchestrationRun {
     source?: string | null;
     applicationId?: string | null;
     applicationName?: string | null;
-    routineId?: string | null;
-    routineName?: string | null;
-    orchestrationRelativePath?: string | null;
+      routineId?: string | null;
+      routineName?: string | null;
+      orchestrationRelativePath?: string | null;
+      retryOfInvocationId?: string | null;
+      retryReason?: string | null;
   };
 }
 
