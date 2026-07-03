@@ -15,6 +15,12 @@
 
 import { spawn } from "node:child_process";
 
+// Cap captured output so a runaway command can't OOM the runner or produce a
+// RESULT line too large for the consumer's line buffer. Once exceeded we stop
+// accumulating and terminate the child (truncated output still yields a
+// well-formed RESULT via the non-JSON fallback).
+const MAX_CAPTURE_BYTES = 4 * 1024 * 1024;
+
 const options = parseArgs(process.argv.slice(2));
 if (!options.execCommand) fail("Missing --exec-command.");
 if (options.execCommand.startsWith("-")) fail("--exec-command must be a program, not a flag.");
@@ -87,10 +93,21 @@ function run(command, args, cwd) {
     });
     let stdout = "";
     let stderr = "";
-    child.stdout.on("data", (chunk) => { stdout += chunk.toString("utf8"); });
-    child.stderr.on("data", (chunk) => { stderr += chunk.toString("utf8"); });
+    let truncated = false;
+    const cap = (current, chunk) => {
+      if (truncated) return current;
+      const next = current + chunk.toString("utf8");
+      if (next.length > MAX_CAPTURE_BYTES) {
+        truncated = true;
+        try { child.kill("SIGKILL"); } catch { /* already gone */ }
+        return next.slice(0, MAX_CAPTURE_BYTES);
+      }
+      return next;
+    };
+    child.stdout.on("data", (chunk) => { stdout = cap(stdout, chunk); });
+    child.stderr.on("data", (chunk) => { stderr = cap(stderr, chunk); });
     child.on("error", (error) => resolveResult({ code: 127, stdout, stderr: `${stderr}${error.message}` }));
-    child.on("close", (code) => resolveResult({ code: code ?? 1, stdout, stderr }));
+    child.on("close", (code) => resolveResult({ code: truncated ? 1 : (code ?? 1), stdout, stderr }));
   });
 }
 

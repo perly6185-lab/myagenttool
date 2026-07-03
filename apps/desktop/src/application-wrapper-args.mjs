@@ -21,23 +21,19 @@ export function applicationWrapperArgs(renderedArgs, payload, { resolveCwd } = {
   // --exec-command rather than executing anything.
   if (!spec || typeof spec !== "object" || Array.isArray(spec)) return renderedArgs;
 
+  // Append our controlled flags FIRST, then the exec-args LAST. Order is
+  // irrelevant to the runner's parser, but this guarantees --cwd/--capability are
+  // never suppressed by an exec-arg VALUE that happens to equal a flag name (the
+  // exec-args are pure values, each consumed after its own --exec-arg).
   const injected = [...renderedArgs];
   const execCommand = boundedString(spec.execCommand, 200);
-  if (execCommand && !hasFlag(injected, "--exec-command")) {
-    injected.push("--exec-command", execCommand);
-  }
-  // Each arg is preceded by its own --exec-arg, so an arg that itself looks like
-  // a flag (e.g. "--json") is consumed as a value, never as a runner flag.
+  if (execCommand) injected.push("--exec-command", execCommand);
+  const cwd = typeof resolveCwd === "function" ? resolveCwd(spec, metadata) : null;
+  if (cwd) injected.push("--cwd", cwd);
+  const capability = boundedString(spec.capability, 200);
+  if (capability) injected.push("--capability", capability);
   for (const arg of Array.isArray(spec.execArgs) ? spec.execArgs : []) {
     injected.push("--exec-arg", String(arg));
-  }
-  const cwd = typeof resolveCwd === "function" ? resolveCwd(spec, metadata) : null;
-  if (cwd && !hasFlag(injected, "--cwd")) {
-    injected.push("--cwd", cwd);
-  }
-  const capability = boundedString(spec.capability, 200);
-  if (capability && !hasFlag(injected, "--capability")) {
-    injected.push("--capability", capability);
   }
   return injected;
 }
@@ -45,8 +41,4 @@ export function applicationWrapperArgs(renderedArgs, payload, { resolveCwd } = {
 function boundedString(value, maxLength) {
   const text = String(value ?? "").trim();
   return text && text.length <= maxLength ? text : null;
-}
-
-function hasFlag(args, flag) {
-  return args.includes(flag);
 }

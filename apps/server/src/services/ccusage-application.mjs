@@ -57,8 +57,11 @@ export function createCcusageApplicationRegistration({
           riskLevel: "low",
           riskTags: ["usage-report", "read-only"],
           // Read-only offline reports need no approval token — parity with the
-          // ccusage tool, whose offline reports were always allowed.
-          requiresApproval: false,
+          // ccusage tool's always-allowed offline reports. The one exception is
+          // the `session` report, which the tool classifies approval-required
+          // (CCUSAGE_APPROVAL_REQUIRED_REPORTS); it must keep that gate on the
+          // capability path too, so it is NOT invokable without an approvalToken.
+          requiresApproval: report.id === "session",
           filePolicy: "read_only",
           networkPolicy: "forbidden",
           argInputs: [
