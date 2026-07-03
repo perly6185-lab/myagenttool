@@ -28,14 +28,14 @@ export function ConfirmModal({
   onClose: () => void;
 }) {
   return (
-    <Modal open={open} onClose={onClose} title={title} description={description}>
+    <Modal open={open} onClose={onClose} title={title} description={description} closeDisabled={pending}>
       <div className="space-y-3">
         <p className="text-xs text-muted-foreground">
           This action is governed and requires explicit confirmation.
         </p>
         {error ? <p className="text-xs text-destructive">{error}</p> : null}
         <div className="flex justify-end gap-2">
-          <Button type="button" variant="secondary" size="sm" onClick={onClose}>
+          <Button type="button" variant="secondary" size="sm" disabled={pending} onClick={onClose}>
             Cancel
           </Button>
           <Button

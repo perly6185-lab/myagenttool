@@ -37,4 +37,29 @@ describe("ConfirmModal", () => {
     );
     expect(screen.getByText("approval_required")).toBeTruthy();
   });
+
+  it("keeps the dialog locked while the action is pending", () => {
+    const onConfirm = vi.fn();
+    const onClose = vi.fn();
+    render(
+      <ConfirmModal
+        open
+        title="Generate orchestration"
+        confirmLabel="Generate"
+        pending
+        onConfirm={onConfirm}
+        onClose={onClose}
+      />,
+    );
+
+    const confirmButton = screen.getByText("Working…") as HTMLButtonElement;
+    const cancelButton = screen.getByText("Cancel") as HTMLButtonElement;
+    expect(confirmButton.disabled).toBe(true);
+    expect(cancelButton.disabled).toBe(true);
+
+    fireEvent.click(cancelButton);
+    fireEvent.click(screen.getByLabelText("Close"));
+    expect(onConfirm).not.toHaveBeenCalled();
+    expect(onClose).not.toHaveBeenCalled();
+  });
 });

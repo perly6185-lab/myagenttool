@@ -11,6 +11,7 @@ export function Modal({
   description,
   children,
   size = "md",
+  closeDisabled = false,
 }: {
   open: boolean;
   onClose: () => void;
@@ -18,21 +19,26 @@ export function Modal({
   description?: string;
   children: ReactNode;
   size?: "md" | "lg";
+  closeDisabled?: boolean;
 }) {
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+      if (e.key === "Escape" && !closeDisabled) onClose();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [open, onClose]);
+  }, [closeDisabled, open, onClose]);
 
   if (!open) return null;
 
   return createPortal(
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-      <div className="absolute inset-0 bg-black/50" onClick={onClose} aria-hidden />
+      <div
+        className="absolute inset-0 bg-black/50"
+        onClick={closeDisabled ? undefined : onClose}
+        aria-hidden
+      />
       <div
         role="dialog"
         aria-modal="true"
@@ -41,7 +47,8 @@ export function Modal({
       >
         <button
           type="button"
-          onClick={onClose}
+          onClick={closeDisabled ? undefined : onClose}
+          disabled={closeDisabled}
           aria-label="Close"
           className="absolute right-3 top-3 grid size-7 place-items-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"
         >

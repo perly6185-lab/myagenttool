@@ -31,8 +31,10 @@ export function useAsyncAction() {
       setError(null);
       try {
         await run(action);
+        return true;
       } catch (caught) {
         setError(caught instanceof Error ? caught.message : "Action failed.");
+        return false;
       } finally {
         setPending(false);
       }
