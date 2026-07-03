@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   latestRoutineInvocation,
+  readableRecoveryActionAvailabilityReason,
   readableRecoveryActionType,
   readableRecoveryAgentReason,
   readableRecoveryOutcome,
@@ -45,6 +46,8 @@ describe("recovery lineage labels", () => {
   it("renders recovery action and outcome labels", () => {
     expect(readableRecoveryActionType("select_agent")).toBe("Select agent");
     expect(readableRecoveryActionType("custom_action")).toBe("custom_action");
+    expect(readableRecoveryActionAvailabilityReason("same_action_in_progress")).toBe("Already in progress");
+    expect(readableRecoveryActionAvailabilityReason("custom_reason")).toBe("custom_reason");
     expect(readableRecoveryOutcome("still_failed")).toBe("Still failed");
     expect(readableRecoveryOutcome("custom_state")).toBe("custom_state");
     expect(readableRecoveryOutcomeReason("result_failed")).toBe("Result failed");
