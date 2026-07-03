@@ -1,16 +1,127 @@
+import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { FactList } from "@/components/common/fact-list";
+import { ConfirmModal } from "@/components/common/confirm-modal";
 import { useConsoleState } from "@/data/use-console-state";
-import { api } from "@/data/use-console-actions";
+import { useAsyncAction, api } from "@/data/use-console-actions";
 import { useUiStore } from "@/store/ui-store";
 import { sourceSummary } from "@/features/applications/applications-view";
+import type { ApplicationSnapshot } from "@/lib/console-state";
+
+// Explicit-intent confirmation token for governed side-effecting actions. It is
+// an intent marker (tenancy is the real authz), not a cryptographic approval.
+const APPROVAL_TOKEN = "console-operator-confirmed";
 
 function riskTone(risk?: string): "neutral" | "warning" | "danger" {
   if (risk === "high" || risk === "critical") return "danger";
   if (risk === "medium") return "warning";
   return "neutral";
+}
+
+interface PendingConfirm {
+  title: string;
+  description: string;
+  confirmLabel: string;
+  destructive: boolean;
+  run: () => Promise<unknown>;
+}
+
+function ApplicationActions({ application }: { application: ApplicationSnapshot }) {
+  const { execute, pending, error } = useAsyncAction();
+  const [confirm, setConfirm] = useState<PendingConfirm | null>(null);
+  const status = application.status;
+
+  const lifecycle = (action: "probe" | "online" | "offline" | "archive" | "refresh") =>
+    api.applicationLifecycle(application.id, action, { approvalToken: APPROVAL_TOKEN });
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Lifecycle</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-2">
+        <div className="flex flex-wrap gap-2">
+          <Button size="sm" variant="secondary" disabled={pending} onClick={() => void execute(() => api.applicationLifecycle(application.id, "probe"))}>
+            Probe
+          </Button>
+          {status !== "active" && status !== "archived" ? (
+            <Button size="sm" variant="secondary" disabled={pending} onClick={() => setConfirm({
+              title: `Bring "${application.name}" online?`,
+              description: "Re-enables the application's execution-like capabilities.",
+              confirmLabel: "Bring online",
+              destructive: false,
+              run: () => lifecycle("online"),
+            })}>
+              Bring online
+            </Button>
+          ) : null}
+          {status === "active" ? (
+            <Button size="sm" variant="secondary" disabled={pending} onClick={() => setConfirm({
+              title: `Take "${application.name}" offline?`,
+              description: "Disables its execution-like capabilities until brought back online.",
+              confirmLabel: "Take offline",
+              destructive: true,
+              run: () => lifecycle("offline"),
+            })}>
+              Take offline
+            </Button>
+          ) : null}
+          {status !== "archived" ? (
+            <Button size="sm" variant="secondary" disabled={pending} onClick={() => setConfirm({
+              title: `Archive "${application.name}"?`,
+              description: "Archived applications can no longer be invoked.",
+              confirmLabel: "Archive",
+              destructive: true,
+              run: () => lifecycle("archive"),
+            })}>
+              Archive
+            </Button>
+          ) : null}
+          {status === "active" ? (
+            <Button size="sm" variant="secondary" disabled={pending} onClick={() => setConfirm({
+              title: `Refresh "${application.name}"?`,
+              description: "Re-records the application source state.",
+              confirmLabel: "Refresh",
+              destructive: false,
+              run: () => lifecycle("refresh"),
+            })}>
+              Refresh
+            </Button>
+          ) : null}
+          {status !== "archived" && status !== "offline" ? (
+            <Button size="sm" disabled={pending} onClick={() => setConfirm({
+              title: `Generate orchestration for "${application.name}"?`,
+              description: "Writes a governed LoopRoutine draft into the managed application directory.",
+              confirmLabel: "Generate",
+              destructive: false,
+              run: () => api.generateApplicationOrchestration(application.id, { approvalToken: APPROVAL_TOKEN }),
+            })}>
+              Generate orchestration
+            </Button>
+          ) : null}
+        </div>
+        {error ? <p className="text-xs text-destructive">{error}</p> : null}
+        <ConfirmModal
+          open={Boolean(confirm)}
+          title={confirm?.title ?? ""}
+          description={confirm?.description}
+          confirmLabel={confirm?.confirmLabel}
+          destructive={confirm?.destructive}
+          pending={pending}
+          onConfirm={() => {
+            if (!confirm) return;
+            const run = confirm.run;
+            setConfirm(null);
+            void execute(run);
+          }}
+          onClose={() => setConfirm(null)}
+        />
+      </CardContent>
+    </Card>
+  );
 }
 
 /** Right-pane detail for the application selected in the Applications view. */
@@ -65,6 +176,8 @@ export function ApplicationsInspector() {
           />
         </CardContent>
       </Card>
+
+      <ApplicationActions application={application} />
 
       <Card>
         <CardHeader>

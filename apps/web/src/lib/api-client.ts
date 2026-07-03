@@ -247,6 +247,13 @@ export const api = {
       "/api/applications/register",
       body,
     ),
+  applicationLifecycle: (
+    id: string,
+    action: "probe" | "online" | "offline" | "archive" | "refresh",
+    body: { approvalToken?: string } = {},
+  ) => request("POST", `/api/applications/${encodeURIComponent(id)}/${action}`, body),
+  generateApplicationOrchestration: (id: string, body: { approvalToken?: string } = {}) =>
+    request("POST", `/api/applications/${encodeURIComponent(id)}/orchestrations/generate`, body),
   createInvocation: (
     task: string,
     agentId: string | null,
