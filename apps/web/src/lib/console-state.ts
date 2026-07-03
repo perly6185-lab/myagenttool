@@ -623,6 +623,7 @@ export interface ConsoleSnapshot {
   claudeReviewFindings?: ClaudeReviewFinding[];
   reviewFindings?: ReviewFinding[];
   applications?: ApplicationSnapshot[];
+  applicationRecoveryActions?: ApplicationRecoveryActionRequest[];
   ledgerSummary?: LedgerSummary;
   budgetStatuses?: BudgetStatus[];
   teamBudgetStatuses?: TeamBudgetStatus[];
@@ -688,6 +689,10 @@ export interface ApplicationOrchestrationRun {
     orchestrationRelativePath?: string | null;
     retryOfInvocationId?: string | null;
     retryReason?: string | null;
+    recoveryActionType?: string | null;
+    recoveryOfInvocationId?: string | null;
+    recoveryReason?: string | null;
+    recoveryCategory?: string | null;
   };
 }
 
@@ -723,6 +728,25 @@ export interface ApplicationOrchestrationRecovery {
   humanApprovalRequired: boolean;
   summary: string;
   actions: ApplicationOrchestrationRecoveryAction[];
+}
+
+export interface ApplicationRecoveryActionRequest {
+  id: string;
+  applicationId: string;
+  routineId: string;
+  invocationId: string;
+  actionType: string;
+  status: string;
+  recoveryCategory?: string | null;
+  reason?: string | null;
+  requiresApproval?: boolean;
+  approvalRequestId?: string | null;
+  resultInvocationId?: string | null;
+  requestedBy?: string | null;
+  decidedAt?: string | null;
+  executedAt?: string | null;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface ApplicationSnapshot {
