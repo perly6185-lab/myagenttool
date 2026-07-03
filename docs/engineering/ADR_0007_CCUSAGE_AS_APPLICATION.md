@@ -1,6 +1,6 @@
 # ADR 0007: Re-home ccusage as an Application
 
-Status: accepted (revised twice on 2026-07-03 — Revision 2 is current)
+Status: accepted · Revision 2 implemented 2026-07-03 (ccusage runs via the Application capability path; bespoke-agent registration retired)
 
 Date: 2026-07-03
 
