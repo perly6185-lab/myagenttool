@@ -460,6 +460,10 @@ export function createServerRuntimeServices({
         routineValidationOk: validation.ok,
         retryOfInvocationId,
         retryReason,
+        recoveryActionType: typeof body?.recoveryActionType === "string" ? body.recoveryActionType : null,
+        recoveryOfInvocationId: typeof body?.recoveryOfInvocationId === "string" ? body.recoveryOfInvocationId : null,
+        recoveryReason: typeof body?.recoveryReason === "string" ? summarizeText(body.recoveryReason, 160) : null,
+        recoveryCategory: typeof body?.recoveryCategory === "string" ? body.recoveryCategory : null,
       },
       timeoutSeconds: Number(body?.timeoutSeconds ?? 30),
     });
@@ -557,6 +561,66 @@ export function createServerRuntimeServices({
     };
   }
 
+  function requestApplicationOrchestrationRecoveryAction(applicationId, routineId, invocationId, body = {}, actor = null) {
+    const run = getScopedApplicationOrchestrationInvocation(applicationId, routineId, invocationId);
+    if (run.status !== 200) return run;
+    const actionType = typeof body?.actionType === "string" ? body.actionType.trim() : "";
+    if (!actionType) {
+      return { status: 400, body: { error: "invalid_recovery_action", message: "actionType is required." } };
+    }
+    const events = applicationOrchestrationRunEvents(invocationId);
+    const recoveryModel = applicationOrchestrationRecovery(run.invocation, events);
+    const selectedAction = recoveryModel.actions.find((item) => item.type === actionType);
+    if (!selectedAction) {
+      appendRecoveryActionEvent("rejected", invocationId, applicationId, routineId, actionType, recoveryModel.category, "action_not_suggested");
+      return { status: 400, body: { error: "recovery_action_not_suggested", applicationId, routineId, invocationId, actionType } };
+    }
+    if (selectedAction.requiresApproval && !isApplicationActionApproved(body?.approvalToken)) {
+      appendRecoveryActionEvent("rejected", invocationId, applicationId, routineId, actionType, recoveryModel.category, "approval_required");
+      return { status: 409, body: { error: "approval_required", applicationId, routineId, invocationId, actionType } };
+    }
+    if (actionType === "view_invocation") {
+      const reason = summarizeText(body?.reason ?? selectedAction.description ?? recoveryModel.summary, 160);
+      appendRecoveryActionEvent("requested", invocationId, applicationId, routineId, actionType, recoveryModel.category, reason);
+      return {
+        status: 200,
+        body: { applicationId, routineId, invocationId, action: selectedAction, status: "noop" },
+      };
+    }
+    if (actionType !== "rerun") {
+      appendRecoveryActionEvent("rejected", invocationId, applicationId, routineId, actionType, recoveryModel.category, "action_not_supported");
+      return { status: 501, body: { error: "recovery_action_not_supported", applicationId, routineId, invocationId, actionType } };
+    }
+    const reason = summarizeText(body?.reason ?? selectedAction.description ?? recoveryModel.summary, 160);
+    appendRecoveryActionEvent("requested", invocationId, applicationId, routineId, actionType, recoveryModel.category, reason);
+    const result = runApplicationOrchestration(applicationId, routineId, {
+      agentId: typeof body?.agentId === "string" ? body.agentId : null,
+      timeoutSeconds: body?.timeoutSeconds,
+      retryOfInvocationId: invocationId,
+      retryReason: reason,
+      recoveryActionType: actionType,
+      recoveryOfInvocationId: invocationId,
+      recoveryReason: reason,
+      recoveryCategory: recoveryModel.category,
+    }, actor);
+    if (result.status >= 400) {
+      appendRecoveryActionEvent("rejected", invocationId, applicationId, routineId, actionType, recoveryModel.category, result.body?.error ?? "run_failed");
+      return result;
+    }
+    return {
+      status: result.status,
+      body: {
+        ...result.body,
+        recoveryAction: {
+          actionType,
+          recoveryCategory: recoveryModel.category,
+          recoveryOfInvocationId: invocationId,
+          recoveryReason: reason,
+        },
+      },
+    };
+  }
+
   function nextId(prefix) {
     const id = `${prefix}_${String(idCounter).padStart(4, "0")}`;
     idCounter += 1;
@@ -630,6 +694,10 @@ export function createServerRuntimeServices({
         orchestrationRelativePath: metadata.orchestrationRelativePath ?? null,
         retryOfInvocationId: metadata.retryOfInvocationId ?? null,
         retryReason: metadata.retryReason ?? null,
+        recoveryActionType: metadata.recoveryActionType ?? null,
+        recoveryOfInvocationId: metadata.recoveryOfInvocationId ?? null,
+        recoveryReason: metadata.recoveryReason ?? null,
+        recoveryCategory: metadata.recoveryCategory ?? null,
       },
     };
   }
@@ -742,6 +810,24 @@ export function createServerRuntimeServices({
     return { type, label, description, requiresApproval, target };
   }
 
+  function appendRecoveryActionEvent(kind, invocationId, applicationId, routineId, actionType, recoveryCategory, reason) {
+    appendEvent({
+      invocationId,
+      type: kind === "requested"
+        ? "application_orchestration_recovery_action_requested"
+        : "application_orchestration_recovery_action_rejected",
+      level: kind === "requested" ? "info" : "warn",
+      message: kind === "requested"
+        ? `Application orchestration recovery action ${actionType} requested.`
+        : `Application orchestration recovery action ${actionType} rejected.`,
+      data: { applicationId, routineId, actionType, recoveryCategory, reason },
+    });
+  }
+
+  function isApplicationActionApproved(token) {
+    return typeof token === "string" && token.startsWith("operator-approved");
+  }
+
   function applicationOrchestrationScope(applicationId, routineId) {
     const application = findApplication(applicationId);
     if (!application) {
@@ -830,6 +916,7 @@ export function createServerRuntimeServices({
     listApplicationOrchestrationRuns,
     probeApplication,
     registerApplication,
+    requestApplicationOrchestrationRecoveryAction,
     runApplicationOrchestration,
     transitionApplication,
     createCodexChangeReview,
@@ -944,6 +1031,7 @@ export function createServerRuntimeServices({
     listApplicationOrchestrationRuns,
     probeApplication,
     registerApplication,
+    requestApplicationOrchestrationRecoveryAction,
     runApplicationOrchestration,
     transitionApplication,
     createSshTarget,

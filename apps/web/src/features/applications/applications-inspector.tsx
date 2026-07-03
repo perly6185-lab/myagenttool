@@ -405,9 +405,16 @@ function OrchestrationRunDiagnostics({
   const recovery = recoveryData?.recovery;
 
   function retryRun() {
-    void execute(() => api.runApplicationOrchestration(applicationId, routineId, {
-      retryOfInvocationId: invocationId,
-      retryReason: run?.errorSummary ?? "Manual retry from application orchestration diagnostics.",
+    void execute(() => api.requestApplicationOrchestrationRecoveryAction(applicationId, routineId, invocationId, {
+      actionType: "rerun",
+      reason: run?.errorSummary ?? "Manual retry from application orchestration diagnostics.",
+    }));
+  }
+
+  function requestRecoveryAction(actionType: string, reason?: string | null) {
+    void execute(() => api.requestApplicationOrchestrationRecoveryAction(applicationId, routineId, invocationId, {
+      actionType,
+      reason,
     }));
   }
 
@@ -484,9 +491,27 @@ function OrchestrationRunDiagnostics({
               <ul className="space-y-1">
                 {recovery.actions.map((action) => (
                   <li key={`${action.type}:${action.label}`} className="rounded border border-border bg-muted p-2">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <span className="font-medium">{action.label}</span>
-                      {action.requiresApproval ? <Badge tone="warning">Approval</Badge> : null}
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="font-medium">{action.label}</span>
+                        {action.requiresApproval ? <Badge tone="warning">Approval</Badge> : null}
+                        {!isExecutableRecoveryAction(action.type) ? <Badge tone="neutral">Manual</Badge> : null}
+                      </div>
+                      {action.type === "rerun" ? (
+                        <Button
+                          size="sm"
+                          variant="secondary"
+                          disabled={!canRetry || pending}
+                          onClick={() => requestRecoveryAction(action.type, action.description)}
+                        >
+                          <Play />
+                          Run
+                        </Button>
+                      ) : (
+                        <Button size="sm" variant="secondary" disabled>
+                          {action.type === "view_invocation" ? "Open from View" : "Not supported"}
+                        </Button>
+                      )}
                     </div>
                     {action.description ? (
                       <p className="[overflow-wrap:anywhere] text-muted-foreground">{action.description}</p>
@@ -536,6 +561,10 @@ function recoveryTone(category: string): "neutral" | "success" | "warning" | "da
   if (["runtime_error", "unknown_failure"].includes(category)) return "danger";
   if (["dispatch_timeout", "agent_unavailable", "cancelled"].includes(category)) return "running";
   return "neutral";
+}
+
+function isExecutableRecoveryAction(actionType: string): boolean {
+  return actionType === "rerun";
 }
 
 function stringValue(value: unknown): string | null {
