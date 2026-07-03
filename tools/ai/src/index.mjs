@@ -108,6 +108,11 @@ import {
   planTriage,
   triageReport,
 } from "./feedback/triage.mjs";
+import {
+  buildRunFeedbackEvents,
+  lastCapabilityRecord,
+  looksLikeInfraFailure,
+} from "./evals/eval-signals.mjs";
 import { configureLoopWorktreeContext } from "./loop/worktree.mjs";
 import { configureLoopPromotionContext } from "./loop/promotion.mjs";
 import {
@@ -868,6 +873,32 @@ function check() {
   });
   if (triageMetrics.conversionRate !== 0.667 || triageMetrics.medianLatencyMinutes !== 10 || triageMetrics.falseTriage.rate !== 0.5) {
     fail("Feedback triage report sanity check failed.");
+  }
+
+  // Scheduled-eval signal detectors (#285/#286): infra-failure fingerprint,
+  // auth-failure event, capability-drop vs prior, infra exclusion from the line.
+  const infraSubcap = { byKind: { "issue-gate": { total: 6, resolved: 6 }, "pm-brief": { total: 6, resolved: 0 }, "review": { total: 3, resolved: 0 } } };
+  const healthySubcap = { passRate: 1, byKind: { "issue-gate": { total: 6, resolved: 6 }, "pm-brief": { total: 6, resolved: 6 }, "review": { total: 3, resolved: 3 } } };
+  if (!looksLikeInfraFailure(infraSubcap) || looksLikeInfraFailure(healthySubcap)) {
+    fail("Eval-signals infra-failure fingerprint sanity check failed.");
+  }
+  const authEvents = buildRunFeedbackEvents({ startedAt: "t", authFailure: true, authDetail: "x" });
+  if (authEvents.length !== 1 || authEvents[0].dedupeKey !== "eval-real:auth-preflight-failed") {
+    fail("Eval-signals auth-failure event sanity check failed.");
+  }
+  const infraEvents = buildRunFeedbackEvents({ startedAt: "t", subcap: infraSubcap }, [{ startedAt: "p", subcap: { passRate: 1 } }]);
+  if (!infraEvents.some((event) => event.dedupeKey === "eval-real:infra-failure") || infraEvents.some((event) => event.dedupeKey === "eval-real:capability-drop")) {
+    fail("Eval-signals infra event / drop-exclusion sanity check failed.");
+  }
+  const dropEvents = buildRunFeedbackEvents(
+    { startedAt: "t", subcap: { passRate: 0.6, byKind: { "issue-gate": { total: 6, resolved: 6 }, "pm-brief": { total: 6, resolved: 2 }, "review": { total: 3, resolved: 1 } } } },
+    [{ startedAt: "p", subcap: { passRate: 1 } }],
+  );
+  if (!dropEvents.some((event) => event.dedupeKey === "eval-real:capability-drop")) {
+    fail("Eval-signals capability-drop sanity check failed.");
+  }
+  if (lastCapabilityRecord([{ subcap: { passRate: 0.9 } }, { infraFailure: true, subcap: { passRate: 0.4 } }])?.subcap.passRate !== 0.9) {
+    fail("Eval-signals capability-record filter sanity check failed.");
   }
 
   console.log("[tools-ai:check] AI delivery helpers check OK");

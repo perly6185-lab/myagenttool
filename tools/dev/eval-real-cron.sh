@@ -10,6 +10,16 @@
 #
 # macOS caveat: cron only fires while the machine is awake; if the Mac sleeps
 # at night, either adjust the hour or migrate to launchd with StartInterval.
+#
+# AUTH caveat (#285): the Claude CLI login lives in the user's login session /
+# keychain, which a raw `crontab` job does NOT inherit — the CLI then runs
+# logged-out (prints "Please run /login" but exits 0). The runner now does an
+# auth preflight and fail-fasts instead of burning paid cases, but to actually
+# GET a real run the job must run inside the user session. Preferred fix:
+# install this as a per-user LaunchAgent (~/Library/LaunchAgents/*.plist,
+# `launchctl bootstrap gui/$(id -u)`) instead of crontab — LaunchAgents run in
+# the Aqua session and see the keychain. Until then, a logged-in Terminal
+# running `pnpm eval:real` on demand is the fallback.
 
 set -eu
 REPO="$(cd "$(dirname "$0")/../.." && pwd)"

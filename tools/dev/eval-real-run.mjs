@@ -22,6 +22,7 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { buildRunFeedbackEvents, looksLikeInfraFailure } from "../ai/src/evals/eval-signals.mjs";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const trendFile = resolve(repoRoot, ".myagenttool/evals/trend.jsonl");
@@ -44,14 +45,34 @@ if (!claudeVersion.ok) {
 const gitClean = tryRun("git", ["-C", repoRoot, "status", "--porcelain"]);
 const heldoutDirty = !gitClean.ok || gitClean.stdout.trim().length > 0;
 
-console.log(`[eval:real] claude ${claudeVersion.stdout.trim()} · repo ${heldoutDirty ? "DIRTY (held-out eval will be skipped)" : "clean"}`);
+// Auth preflight: `claude --version` only proves the binary exists. Under
+// cron's detached session the CLI is logged out and prints "Not logged in ·
+// Please run /login" while STILL EXITING 0 — so probe with a cheap prompt and
+// parse the OUTPUT, not the exit code. A logged-out run must not burn 15 paid
+// cases producing a misleading 40% (#285).
+const auth = authPreflight();
+console.log(`[eval:real] claude ${claudeVersion.stdout.trim()} · auth ${auth.ok ? "ok" : "FAILED"} · repo ${heldoutDirty ? "DIRTY (held-out eval will be skipped)" : "clean"}`);
+
 if (dryRun) {
-  console.log(`[eval:real] dry run OK — would run: subcap real${subcapOnly ? "" : " + held-out real"}; trend -> ${trendFile}`);
-  process.exit(0);
+  if (!auth.ok) console.error(`[eval:real] auth preflight FAILED: ${auth.detail}`);
+  console.log(`[eval:real] dry run ${auth.ok ? "OK" : "would fail-fast"} — would run: subcap real${subcapOnly ? "" : " + held-out real"}; trend -> ${trendFile}`);
+  process.exit(auth.ok ? 0 : 1);
+}
+
+const startedAt = new Date().toISOString();
+
+if (!auth.ok) {
+  // Fail-fast: no paid eval, emit a feedback event, and record an
+  // infraFailure trend row so the outage is visible but excluded from the
+  // capability line (#285/#286/#250).
+  const record = { startedAt, kind: subcapOnly ? "subcap-only" : "full", authFailure: true, authDetail: auth.detail, infraFailure: true, finishedAt: new Date().toISOString() };
+  appendTrend(record);
+  emitFeedbackEvents(record);
+  console.error(`[eval:real] auth preflight failed (${auth.detail}); skipped paid evals. Fix the cron login (see eval-real-cron.sh) — next run recovers.`);
+  process.exit(1);
 }
 
 // --- real runs --------------------------------------------------------------
-const startedAt = new Date().toISOString();
 const record = { startedAt, claude: claudeVersion.stdout.trim(), kind: subcapOnly ? "subcap-only" : "full" };
 
 {
@@ -97,9 +118,11 @@ if (!subcapOnly) {
   }
 }
 
+// A mid-run infra failure (provider died after the auth probe) is caught here
+// by the same provider-independent fingerprint the detector uses.
+record.infraFailure = looksLikeInfraFailure(record.subcap);
 record.finishedAt = new Date().toISOString();
-mkdirSync(dirname(trendFile), { recursive: true });
-appendFileSync(trendFile, `${JSON.stringify(record)}\n`, "utf8");
+appendTrend(record);
 console.log(`[eval:real] trend record appended: ${trendLine(record)}`);
 
 // --- L6 feedback events (docs/engineering/FEEDBACK_LOOP.md) -----------------
@@ -108,32 +131,10 @@ console.log(`[eval:real] trend record appended: ${trendLine(record)}`);
 emitFeedbackEvents(record);
 
 function emitFeedbackEvents(entry) {
-  const events = [];
-  if (entry.subcap?.error) {
-    events.push({
-      source: "eval-real", severity: "high",
-      title: "Real subcap eval failed to produce a summary",
-      detail: `Run ${entry.startedAt}: subcap eval error (${entry.subcap.error}). See .myagenttool/evals/cron.log.`,
-      dedupeKey: "eval-real:subcap-run-error",
-    });
-  }
-  const gate = entry.subcap?.byKind?.["issue-gate"];
-  if (gate && gate.resolved < gate.total) {
-    events.push({
-      source: "eval-real", severity: "high",
-      title: `Issue-gate cases failing in the real eval (${gate.resolved}/${gate.total})`,
-      detail: `Run ${entry.startedAt}: the product apply-gate cases must pass 100%; a miss here is a product bug, not a capability signal. Evidence under .myagenttool/evals/.`,
-      dedupeKey: "eval-real:issue-gate-regression",
-    });
-  }
-  if (entry.heldout?.error) {
-    events.push({
-      source: "eval-real", severity: "medium",
-      title: "Real held-out eval failed to produce a summary",
-      detail: `Run ${entry.startedAt}: held-out eval error (${entry.heldout.error}). See .myagenttool/evals/cron.log.`,
-      dedupeKey: "eval-real:heldout-run-error",
-    });
-  }
+  const prior = existsSync(trendFile)
+    ? readFileSync(trendFile, "utf8").split("\n").filter(Boolean).slice(0, -1).map((line) => tryParse(line)).filter(Boolean)
+    : [];
+  const events = buildRunFeedbackEvents(entry, prior);
   if (events.length === 0) return;
   const inbox = resolve(repoRoot, ".myagenttool/feedback/inbox.jsonl");
   mkdirSync(dirname(inbox), { recursive: true });
@@ -142,6 +143,34 @@ function emitFeedbackEvents(entry) {
     appendFileSync(inbox, `${JSON.stringify({ ...event, createdAt })}\n`, "utf8");
   }
   console.error(`[eval:real] ${events.length} feedback event(s) emitted; run \`pnpm ai:feedback-triage\` (cron applies automatically).`);
+}
+
+function appendTrend(entry) {
+  mkdirSync(dirname(trendFile), { recursive: true });
+  appendFileSync(trendFile, `${JSON.stringify(entry)}\n`, "utf8");
+}
+
+// Cheap auth probe: a logged-out CLI prints the /login notice and exits 0, so
+// the OUTPUT is the only reliable signal.
+function authPreflight() {
+  const probe = spawnSync("claude", ["-p", "reply with the single word ok"], {
+    encoding: "utf8", timeout: 60000, stdio: ["ignore", "pipe", "pipe"],
+  });
+  if (probe.error?.code === "ETIMEDOUT") return { ok: false, detail: "auth probe timed out" };
+  const out = `${probe.stdout ?? ""}${probe.stderr ?? ""}`.toLowerCase();
+  if (/not logged in|please run \/login|\/login\b/.test(out)) {
+    return { ok: false, detail: "claude CLI is not logged in (cron session lacks the login)" };
+  }
+  if (probe.status !== 0) return { ok: false, detail: `claude probe exited ${probe.status ?? "unknown"}` };
+  return { ok: true, detail: "" };
+}
+
+function tryParse(line) {
+  try {
+    return JSON.parse(line);
+  } catch {
+    return null;
+  }
 }
 
 // --- helpers ----------------------------------------------------------------
@@ -172,11 +201,13 @@ function tryRun(command, commandArgs) {
 }
 
 function trendLine(entry) {
+  if (entry.authFailure) return `${entry.startedAt.slice(0, 16)} [infra] auth preflight failed — no capability signal`;
   const subcap = entry.subcap?.total ? `subcap ${entry.subcap.resolved}/${entry.subcap.total}` : "subcap n/a";
   const heldout = entry.heldout?.total
     ? `heldout ${entry.heldout.resolved}/${entry.heldout.total}`
     : entry.heldout?.skipped ? `heldout skipped (${entry.heldout.skipped})` : "heldout n/a";
-  return `${entry.startedAt.slice(0, 16)} ${subcap} · ${heldout}`;
+  const infra = entry.infraFailure ? " [infra — excluded from capability line]" : "";
+  return `${entry.startedAt.slice(0, 16)} ${subcap} · ${heldout}${infra}`;
 }
 
 function printTrend() {
