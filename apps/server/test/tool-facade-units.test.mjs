@@ -6,7 +6,6 @@ import { createClaudeReviewImportService } from "../src/services/claude-review-i
 import { createCcusageImportService } from "../src/services/ccusage-imports.mjs";
 import { isGovernedCodexReviewAgent } from "../src/services/codex-agent.mjs";
 import { isGovernedClaudeReviewAgent } from "../src/services/claude-agent.mjs";
-import { isGovernedCcusageAgent } from "../src/services/ccusage-agent.mjs";
 
 const now = () => "2026-07-02T00:00:00.000Z";
 

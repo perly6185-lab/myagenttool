@@ -1,18 +1,15 @@
-// Smoke coverage for ccusage governance:
-// fixed report registrations, low-risk read-only metadata, custom registration
-// notes, disable lifecycle, no task-template injection in argv, and the Phase 2
-// wrapper RESULT output contract.
+// Smoke coverage for ccusage governance (post full-unification, ADR 0007):
+// the wrapper RESULT output contract, the pinned-install lifecycle recipe,
+// estimate import (non-authoritative, raw-omitted), and the ccusage.report tool
+// discovering + executing via the ccusage Application capability path.
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import {
-  CCUSAGE_REPORT_SPECS,
   CCUSAGE_TOOL_CONTRACT,
   CCUSAGE_VERSION,
-  createCcusageAgentRegistration,
-  createCcusageAgentRegistrations,
   createCcusageLifecycleRecipeInput,
 } from "../../apps/server/src/services/ccusage-agent.mjs";
 import {
@@ -20,7 +17,6 @@ import {
   createCodexReviewAgentRegistration,
 } from "../../apps/server/src/services/codex-agent.mjs";
 import { createCodexReviewImportService } from "../../apps/server/src/services/codex-review-imports.mjs";
-import { createAgentService } from "../../apps/server/src/services/agents.mjs";
 import { createCcusageImportService } from "../../apps/server/src/services/ccusage-imports.mjs";
 import { createInvocationCompletionRuntime } from "../../apps/server/src/services/invocations/completion.mjs";
 import { createM3Service } from "../../apps/server/src/services/m3.mjs";
@@ -36,64 +32,6 @@ const cliScriptPath = process.platform === "win32"
   ? "C:\\Users\\demo\\AppData\\Roaming\\npm\\node_modules\\ccusage\\src\\cli.js"
   : "/usr/local/lib/node_modules/ccusage/src/cli.js";
 const wrapperScriptPath = "tools/agents/ccusage-wrapper.mjs";
-
-{
-  const daily = createCcusageAgentRegistration({ cliScriptPath });
-  assert.equal(daily.id, "agt_ccusage_daily");
-  assert.equal(daily.command, "node");
-  assert.deepEqual(daily.args, [wrapperScriptPath, "--ccusage-cli", cliScriptPath, "--report", "daily"]);
-  assert.equal(daily.riskLevel, "low");
-  assert.deepEqual(daily.riskTags, ["read_only", "read_local", "shell_exec"]);
-  assert.equal(daily.economicModel, "free");
-  assert.equal(daily.toolContract.name, "ccusage.report");
-  assert.deepEqual(daily.toolContract.inputSchema.properties.report.enum, CCUSAGE_REPORT_SPECS.map((item) => item.id));
-  assert.ok(!daily.args.some((arg) => String(arg).includes("{{task}}") || String(arg).includes("{{payloadJson}}")),
-    "ccusage fixed report args must not render prompt text");
-  ok("registration spec: daily fixed args + low-risk metadata");
-}
-
-{
-  assert.throws(() => createCcusageAgentRegistration({ reportId: "custom_flags", cliScriptPath }), /Unsupported ccusage report id/);
-  assert.throws(() => createCcusageAgentRegistration({ reportId: "daily" }), /cliScriptPath is required/);
-  assert.throws(() => createCcusageAgentRegistration({ reportId: "daily", cliScriptPath, wrapperScriptPath: "" }), /wrapperScriptPath is required/);
-  ok("registration spec: rejects unsupported report id and missing paths");
-}
-
-{
-  const all = createCcusageAgentRegistrations({ cliScriptPath, costOwner: "team_finops" });
-  assert.equal(all.length, CCUSAGE_REPORT_SPECS.length);
-  assert.deepEqual(all.map((item) => item.id), CCUSAGE_REPORT_SPECS.map((item) => item.agentId));
-  assert.ok(all.every((item) => item.costOwner === "team_finops"));
-  assert.ok(all.some((item) => item.id === "agt_ccusage_codex_daily" && item.args.includes("codex_daily")));
-  assert.ok(all.some((item) => item.id === "agt_ccusage_claude_daily" && item.args.includes("claude_daily")));
-  ok("registration spec: creates all recommended report agents");
-}
-
-{
-  const state = { device: { id: "dev_local_001", status: "online" }, agents: [], lifecycleAuditRecords: [] };
-  let n = 0;
-  const svc = createAgentService({
-    state,
-    now: () => "2026-07-02T00:00:00Z",
-    nextId: (p) => `${p}_${++n}`,
-    appendEvent: () => {},
-  });
-  const agent = svc.registerAgent(createCcusageAgentRegistration({ reportId: "monthly", cliScriptPath, costOwner: "team_finops" }));
-  assert.equal(agent.id, "agt_ccusage_monthly");
-  assert.equal(agent.adapter.command, "node");
-  assert.deepEqual(agent.adapter.args, [wrapperScriptPath, "--ccusage-cli", cliScriptPath, "--report", "monthly"]);
-  assert.equal(agent.adapter.outputFormat, "plain_result");
-  assert.equal(agent.capabilities[0].riskLevel, "low");
-  assert.deepEqual(agent.capabilities[0].riskTags, ["read_only", "read_local", "shell_exec"]);
-  assert.equal(agent.economics.model, "free");
-  assert.equal(agent.economics.costOwner, "team_finops");
-  assert.equal(agent.toolContract.name, CCUSAGE_TOOL_CONTRACT.name);
-  assert.ok(agent.registrationNotes.risk.includes("fixed ccusage report command"));
-  const disabled = svc.disableAgent(agent);
-  assert.equal(disabled.status, "succeeded");
-  assert.equal(agent.status, "disabled");
-  ok("agent service: registers ccusage agent and preserves governance metadata");
-}
 
 {
   const fixtureDir = join(tmpdir(), `ccusage-wrapper-smoke-${process.pid}`);
@@ -208,9 +146,10 @@ const wrapperScriptPath = "tools/agents/ccusage-wrapper.mjs";
   };
   let n = 0;
   const now = () => "2026-07-02T00:00:00Z";
-  const agentSvc = createAgentService({ state, now, nextId: (p) => `${p}_${++n}`, appendEvent: () => {} });
-  const agent = agentSvc.registerAgent(createCcusageAgentRegistration({ cliScriptPath }));
-  agent.lifecycle.managedBy = "bridge";
+  // A minimal managed agent record — the ccusage install lifecycle recipe only
+  // needs an agent id in state (the bespoke registration factory is retired).
+  const agent = { id: "agt_ccusage_install", name: "ccusage installer", status: "available", lifecycle: { managedBy: "bridge" } };
+  state.agents.push(agent);
   const m3 = createM3Service({
     state,
     now,
