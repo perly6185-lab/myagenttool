@@ -615,6 +615,34 @@ export function createServerRuntimeServices({
         body: { applicationId, routineId, invocationId, action: selectedAction, recoveryActionRequest: actionRequest, status: "noop" },
       };
     }
+    if (actionType === "regenerate_orchestration") {
+      appendRecoveryActionEvent("requested", invocationId, applicationId, routineId, actionType, recoveryModel.category, reason, actionRequest);
+      executeApprovedApplicationRecoveryAction(actionRequest, actor);
+      if (actionRequest.status === "failed") {
+        return {
+          status: 500,
+          body: {
+            error: "recovery_action_execution_failed",
+            applicationId,
+            routineId,
+            invocationId,
+            actionType,
+            recoveryActionRequest: actionRequest,
+          },
+        };
+      }
+      return {
+        status: 201,
+        body: {
+          applicationId,
+          routineId,
+          invocationId,
+          action: selectedAction,
+          recoveryActionRequest: actionRequest,
+          status: actionRequest.status,
+        },
+      };
+    }
     if (actionType !== "rerun") {
       actionRequest.status = "unsupported";
       actionRequest.updatedAt = now();
@@ -674,6 +702,9 @@ export function createServerRuntimeServices({
       requiresApproval: Boolean(action.requiresApproval),
       approvalRequestId: null,
       resultInvocationId: null,
+      resultOrchestrationId: null,
+      resultOrchestrationRelativePath: null,
+      error: null,
       requestedBy: actor?.userId ?? "usr_local",
       decidedAt: null,
       executedAt: null,
@@ -727,9 +758,9 @@ export function createServerRuntimeServices({
     return request;
   }
 
-  function resolveCodexApprovalBrokerRequest(request, action) {
+  function resolveCodexApprovalBrokerRequest(request, action, actor = null) {
     const updated = resolveCodexApprovalBrokerRequestBase(request, action);
-    syncApplicationRecoveryActionApproval(updated);
+    syncApplicationRecoveryActionApproval(updated, actor);
     return updated;
   }
 
@@ -742,11 +773,12 @@ export function createServerRuntimeServices({
     }
   }
 
-  function syncApplicationRecoveryActionApproval(approvalRequest) {
+  function syncApplicationRecoveryActionApproval(approvalRequest, actor = null) {
     const requestId = approvalRequest?.applicationRecoveryActionRequestId;
     if (!requestId) return;
     const actionRequest = state.applicationRecoveryActions.find((item) => item.id === requestId);
     if (!actionRequest) return;
+    if (["executing", "executed", "failed"].includes(actionRequest.status)) return;
     const previousStatus = actionRequest.status;
     let nextStatus = "approval_pending";
     if (approvalRequest.status === "approved") {
@@ -774,6 +806,94 @@ export function createServerRuntimeServices({
         recoveryActionRequestId: actionRequest.id,
         approvalBrokerRequestId: approvalRequest.id,
         status: approvalRequest.status,
+      },
+    });
+    if (approvalRequest.status === "approved") {
+      executeApprovedApplicationRecoveryAction(actionRequest, actor);
+    }
+  }
+
+  function executeApprovedApplicationRecoveryAction(actionRequest, actor = null) {
+    if (actionRequest.actionType !== "regenerate_orchestration") return;
+    if (actionRequest.status === "executed" || actionRequest.status === "executing") return;
+    const application = findApplication(actionRequest.applicationId);
+    if (!application) {
+      markApplicationRecoveryActionFailed(actionRequest, "application_not_found");
+      return;
+    }
+    const capability = (listApplicationCapabilities(actionRequest.applicationId) ?? [])
+      .find((item) => item.name.endsWith(".generate_orchestration"));
+    if (!capability) {
+      markApplicationRecoveryActionFailed(actionRequest, "capability_not_found");
+      return;
+    }
+    actionRequest.status = "executing";
+    actionRequest.updatedAt = now();
+    persistStateSoon();
+    appendEvent({
+      invocationId: actionRequest.invocationId,
+      type: "application_orchestration_recovery_action_executing",
+      level: "info",
+      message: `Application orchestration recovery action ${actionRequest.actionType} is executing.`,
+      data: {
+        applicationId: actionRequest.applicationId,
+        routineId: actionRequest.routineId,
+        actionType: actionRequest.actionType,
+        recoveryActionRequestId: actionRequest.id,
+      },
+    });
+    const result = createCapabilityInvocation(capability.name, {
+      approvalToken: "operator-approved-application-recovery",
+      recoveryActionRequestId: actionRequest.id,
+      recoveryOfInvocationId: actionRequest.invocationId,
+      recoveryReason: actionRequest.reason,
+    }, actor);
+    if (result.status >= 400) {
+      markApplicationRecoveryActionFailed(actionRequest, result.body?.error ?? "execution_failed", result.body);
+      return;
+    }
+    const orchestration = result.body?.invocation?.result?.output?.orchestration ?? null;
+    actionRequest.status = "executed";
+    actionRequest.resultInvocationId = result.body?.invocationId ?? null;
+    actionRequest.resultOrchestrationId = orchestration?.id ?? null;
+    actionRequest.resultOrchestrationRelativePath = orchestration?.relativePath ?? null;
+    actionRequest.executedAt = now();
+    actionRequest.updatedAt = actionRequest.executedAt;
+    persistStateSoon();
+    appendEvent({
+      invocationId: actionRequest.invocationId,
+      type: "application_orchestration_recovery_action_executed",
+      level: "info",
+      message: `Application orchestration recovery action ${actionRequest.actionType} executed.`,
+      data: {
+        applicationId: actionRequest.applicationId,
+        routineId: actionRequest.routineId,
+        actionType: actionRequest.actionType,
+        recoveryActionRequestId: actionRequest.id,
+        resultInvocationId: actionRequest.resultInvocationId,
+        resultOrchestrationId: actionRequest.resultOrchestrationId,
+        resultOrchestrationRelativePath: actionRequest.resultOrchestrationRelativePath,
+      },
+    });
+  }
+
+  function markApplicationRecoveryActionFailed(actionRequest, error, details = null) {
+    actionRequest.status = "failed";
+    actionRequest.error = summarizeText(error, 160);
+    actionRequest.updatedAt = now();
+    persistStateSoon();
+    appendEvent({
+      invocationId: actionRequest.invocationId,
+      type: "application_orchestration_recovery_action_failed",
+      level: "warn",
+      message: `Application orchestration recovery action ${actionRequest.actionType} failed: ${actionRequest.error}.`,
+      data: {
+        applicationId: actionRequest.applicationId,
+        routineId: actionRequest.routineId,
+        actionType: actionRequest.actionType,
+        recoveryActionRequestId: actionRequest.id,
+        error: actionRequest.error,
+        details,
       },
     });
   }

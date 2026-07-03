@@ -66,7 +66,7 @@ export async function handleCodexRoutes({
     if (denyForeignProject({ res, sendJson, state, actor, projectId: codexInvocationProjectId(state, request.invocationId), notFound: { error: "codex_approval_request_not_found" } })) {
       return true;
     }
-    const updated = resolveCodexApprovalBrokerRequest(request, approvalMatch[2]);
+    const updated = resolveCodexApprovalBrokerRequest(request, approvalMatch[2], actor);
     sendJson(res, 200, { approvalRequest: updated });
     return true;
   }
