@@ -37,6 +37,7 @@ export function createServerState({ defaultProjectPath, now }) {
     tokens: [],
     projects: [defaultProject],
     applications: [],
+    applicationRecoveryActions: [],
     currentProjectId: defaultProject.id,
     projectTargets: [createProjectTargetRecord(defaultProject, now)],
     worktrees: [],
@@ -131,6 +132,7 @@ export function resetStateForSelfCheck({ state, now }) {
   }
   state.invocations = [];
   state.applications = [];
+  state.applicationRecoveryActions = [];
   state.events = [];
   state.traces = [];
   state.spans = [];

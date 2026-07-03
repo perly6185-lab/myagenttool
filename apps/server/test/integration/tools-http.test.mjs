@@ -1018,8 +1018,39 @@ test("application orchestration recovery actions are guarded and audited", async
     body: { actionType: "regenerate_orchestration" },
     token: "tok_a",
   });
-  assert.equal(approvalRequired.status, 409);
-  assert.equal(approvalRequired.body.error, "approval_required");
+  assert.equal(approvalRequired.status, 202);
+  assert.equal(approvalRequired.body.status, "approval_pending");
+  assert.equal(approvalRequired.body.recoveryActionRequest.status, "approval_pending");
+  assert.equal(approvalRequired.body.recoveryActionRequest.actionType, "regenerate_orchestration");
+  assert.ok(approvalRequired.body.approvalRequest.id);
+  assert.equal(approvalRequired.body.approvalRequest.applicationRecoveryActionRequestId, approvalRequired.body.recoveryActionRequest.id);
+  assert.ok(ctx.state.events.some((event) => event.invocationId === validation.id
+    && event.type === "application_orchestration_recovery_approval_requested"
+    && event.data?.recoveryActionRequestId === approvalRequired.body.recoveryActionRequest.id));
+
+  const foreignApprovalRead = await call(`/api/codex/approval-broker/${encodeURIComponent(approvalRequired.body.approvalRequest.id)}`, {
+    token: "tok_b",
+  });
+  assert.equal(foreignApprovalRead.status, 404);
+  assert.equal(foreignApprovalRead.body.error, "codex_approval_request_not_found");
+
+  const foreignApproval = await call(`/api/codex/approval-broker/${encodeURIComponent(approvalRequired.body.approvalRequest.id)}/approve`, {
+    method: "POST",
+    token: "tok_b",
+  });
+  assert.equal(foreignApproval.status, 404);
+  assert.equal(foreignApproval.body.error, "codex_approval_request_not_found");
+
+  const approvedRecovery = await call(`/api/codex/approval-broker/${encodeURIComponent(approvalRequired.body.approvalRequest.id)}/approve`, {
+    method: "POST",
+    token: "tok_a",
+  });
+  assert.equal(approvedRecovery.status, 200);
+  const approvedActionRequest = ctx.state.applicationRecoveryActions.find((item) => item.id === approvalRequired.body.recoveryActionRequest.id);
+  assert.equal(approvedActionRequest?.status, "approval_approved");
+  assert.ok(ctx.state.events.some((event) => event.invocationId === validation.id
+    && event.type === "application_orchestration_recovery_approval_resolved"
+    && event.data?.status === "approved"));
 
   const unsupported = await call(`/api/applications/app_team_a/orchestrations/app-app_team_a-maintenance/runs/${encodeURIComponent(validation.id)}/recovery/actions`, {
     method: "POST",
@@ -1028,6 +1059,7 @@ test("application orchestration recovery actions are guarded and audited", async
   });
   assert.equal(unsupported.status, 501);
   assert.equal(unsupported.body.error, "recovery_action_not_supported");
+  assert.equal(unsupported.body.recoveryActionRequest.status, "unsupported");
 
   const foreign = await call(`/api/applications/app_team_a/orchestrations/app-app_team_a-maintenance/runs/${encodeURIComponent(runtime.id)}/recovery/actions`, {
     method: "POST",
