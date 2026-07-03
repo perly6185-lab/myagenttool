@@ -8,6 +8,7 @@ import { callMcpTool, probeMcpServer } from "./mcp-client.mjs";
 import { callA2aAgent, probeA2aAgent } from "./a2a-client.mjs";
 import { probeContainerRuntime, runContainerAgent } from "./container-client.mjs";
 import { codexResumeArgs } from "./codex-resume.mjs";
+import { applicationWrapperArgs } from "./application-wrapper-args.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const serverUrl = process.env.BRIDGE_SERVER_URL ?? "http://127.0.0.1:5001";
@@ -151,6 +152,15 @@ if (process.argv.includes("--check")) {
   }
   if (claudeReviewPlan.args.includes("bypassPermissions") || claudeReviewPlan.args.includes("--permission-mode")) {
     throw new Error("Claude review wrapper rendered unallowlisted permission metadata.");
+  }
+  // #359: the application-wrapper runner must receive the server-resolved,
+  // approved command injected as discrete argv (never a shell string).
+  const appWrapperPlan = createCliSpawnPlan(
+    { type: "cli", command: "node", args: ["tools/agents/application-wrapper.mjs"] },
+    { invocationId: "inv_app_wrapper_check", task: "run", options: { metadata: { applicationWrapper: { execCommand: "ccusage", execArgs: ["daily", "--json"], capability: "app.app_ccusage.wrapper.daily" } } } },
+  );
+  if (!appWrapperPlan.args.includes("--exec-command") || !appWrapperPlan.args.includes("ccusage") || !appWrapperPlan.args.includes("--json")) {
+    throw new Error("Application wrapper exec injection is not configured.");
   }
   if (typeof pty.spawn !== "function") {
     throw new Error("node-pty is not available.");
@@ -1244,7 +1254,11 @@ function createCliSpawnPlan(adapter, payload) {
     : codexArgsTemplate(adapter, payload);
   const renderedArgs = isCodexCliCommand(adapter.command)
     ? applyCodexPermissionMode(renderArgs(argsTemplate, payloadJson, payload), payload)
-    : governedReviewWrapperArgs(renderArgs(argsTemplate, payloadJson, payload), payload);
+    : applicationWrapperArgs(
+        governedReviewWrapperArgs(renderArgs(argsTemplate, payloadJson, payload), payload),
+        payload,
+        { resolveCwd: (spec, metadata) => normalizedExistingPath(spec.cwd) ?? normalizedExistingPath(metadata?.worktreePath) ?? normalizedExistingPath(metadata?.projectPath) },
+      );
   const baseCommand = codexCommandOverride || String(adapter.command);
   const command = adapter.command === "demo-agent" || codexCommandOverride === "fixture"
     ? process.execPath
