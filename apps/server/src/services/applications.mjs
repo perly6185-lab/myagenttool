@@ -246,6 +246,29 @@ export function createApplicationService({
   };
 }
 
+// Resolve the governed execution plan for an npm-wrapper capability (#359).
+// Only a command registered on the application with status "approved" resolves;
+// anything else returns null. This is the single source of truth for WHAT may
+// execute — the bridge only ever runs a command that came through here, so an
+// unapproved or unregistered command can never reach execution.
+export function applicationWrapperExecutionPlan(application, commandId) {
+  const command = findNpmWrapperCommand(application, commandId);
+  if (!command) return null;
+  return {
+    capability: `app.${slugify(application.id || application.name)}.wrapper.${command.id}`,
+    commandId: command.id,
+    commandType: command.commandType,
+    command: command.command,
+    args: [...command.args],
+    cwd: command.cwd ?? ".",
+    timeoutSeconds: command.timeoutSeconds,
+    cancellation: command.cancellation,
+    envPolicy: command.envPolicy,
+    filePolicy: command.filePolicy,
+    networkPolicy: command.networkPolicy,
+  };
+}
+
 export function projectApplicationCapabilities(app) {
   const prefix = `app.${slugify(app.id || app.name)}`;
   const disabled = app.status === "offline" || app.status === "archived";
