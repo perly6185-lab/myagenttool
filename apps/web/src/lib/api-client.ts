@@ -16,22 +16,29 @@ import type {
   ToolInvocationResponse,
 } from "@/lib/console-state";
 
-const DEFAULT_API_BASE = "http://127.0.0.1:3001";
+// The dev server's default port (tools/dev/run-local-demo.mjs SERVER_PORT).
+const SERVER_PORT = "5001";
+const FALLBACK_API_BASE = `http://127.0.0.1:${SERVER_PORT}`;
 
-/** Localhost-only API override (via `?api=`) for local visual QA. */
+/**
+ * Resolve the API base. Priority:
+ *   1. `?api=<url>` override (any host — LAN / custom setups).
+ *   2. Same host the console was loaded from, on the server port — so both
+ *      localhost:5000 and <lan-ip>:5000 reach their server with no query param.
+ */
 export function resolveApiBase(): string {
-  if (typeof window === "undefined") return DEFAULT_API_BASE;
+  if (typeof window === "undefined") return FALLBACK_API_BASE;
   const override = new URLSearchParams(window.location.search).get("api");
-  if (!override) return DEFAULT_API_BASE;
-  try {
-    const url = new URL(override);
-    if (url.protocol === "http:" && ["127.0.0.1", "localhost"].includes(url.hostname)) {
-      return url.origin;
+  if (override) {
+    try {
+      return new URL(override).origin;
+    } catch {
+      /* fall through to the location-derived default */
     }
-  } catch {
-    return DEFAULT_API_BASE;
   }
-  return DEFAULT_API_BASE;
+  const { protocol, hostname } = window.location;
+  if (!hostname) return FALLBACK_API_BASE;
+  return `${protocol}//${hostname}:${SERVER_PORT}`;
 }
 
 const apiBase = resolveApiBase();
