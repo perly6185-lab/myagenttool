@@ -919,11 +919,11 @@ try {
   console.log("[smoke] M0 local invocation loop OK");
   console.log(`[smoke] offlineInvocation=${offlineInvocationId} cliInvocation=${invocationId} riskyInvocation=${riskyInvocationId} deniedInvocation=${deniedInvocationId} httpInvocation=${httpInvocationId} cancelledInvocation=${cancelInvocationId} logs=${logEvents.length} status=${invocation.status}`);
 } finally {
-  stopChildren();
+  await stopChildren();
   if (httpAgentServer) {
     await new Promise((resolve) => httpAgentServer.close(resolve));
   }
-  rmSync(stateDir, { recursive: true, force: true });
+  await removeStateDir();
 }
 
 function startHttpAgent() {
@@ -967,6 +967,7 @@ function start(name, command, args, env) {
     windowsHide: true,
     stdio: ["ignore", "pipe", "pipe"]
   });
+  child.exitPromise = new Promise((resolve) => child.once("exit", resolve));
   children.push(child);
   child.stdout.on("data", (chunk) => prefix(name, chunk));
   child.stderr.on("data", (chunk) => prefix(name, chunk));
@@ -1046,10 +1047,27 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function stopChildren() {
+async function stopChildren() {
+  const exits = [];
   for (const child of children) {
-    if (!child.killed) {
+    if (child.exitCode === null && child.signalCode === null) {
       child.kill("SIGTERM");
+      exits.push(Promise.race([child.exitPromise, sleep(2000)]));
+    }
+  }
+  await Promise.all(exits);
+}
+
+async function removeStateDir() {
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    try {
+      rmSync(stateDir, { recursive: true, force: true });
+      return;
+    } catch (error) {
+      if (!["ENOTEMPTY", "EBUSY", "EPERM"].includes(error?.code) || attempt === 4) {
+        throw error;
+      }
+      await sleep(100 * (attempt + 1));
     }
   }
 }

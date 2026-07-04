@@ -59,7 +59,9 @@ See `docs/engineering/NEXT_PHASE_PLAN_2026-07.md` for the operating plan.
   `discover -> access -> execute -> result` loop; the Application-specific
   evidence covered capability discovery, scoped registration/probe, wrapper
   descriptor projection, ccusage wrapper invocation semantics, and
-  tool-registry contract compatibility.
+  tool-registry contract compatibility. GitHub `desktop-smoke` also found a
+  Linux/Node cleanup race after successful smoke execution; `local-smoke` now
+  waits for child process exit and retries temporary state-directory cleanup.
 
 ## P1 - Durable control-plane state
 

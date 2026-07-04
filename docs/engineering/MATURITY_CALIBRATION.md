@@ -218,20 +218,24 @@ planning refresh measured the gates, not just task completion:
   behavior. The rerun after the Application planning refresh again covered the
   current Application contract tests: capability discovery, scoped Application
   registration/probe, wrapper descriptor projection, ccusage wrapper invocation
-  semantics, and tool-registry contract smoke compatibility.
+  semantics, and tool-registry contract smoke compatibility. GitHub
+  `desktop-smoke` then caught a Linux/Node cleanup race after a successful smoke
+  run (`ENOTEMPTY` while deleting the temporary state directory); `local-smoke`
+  now waits for child process exit and retries cleanup before removing the temp
+  directory, and the full local gate re-measured that path.
 - `pnpm github:dora` measured 206 merged PRs over 30 days: median lead time
   0.03h, p90 0.48h, deploy-frequency proxy 48.07/week, CI green on merged PRs
   73.8% (152/206, with 47 merged PRs carrying no checks), and 0 recorded
   change-failure incidents since the 2026-07-04 signal adoption. Evidence:
-  `.myagenttool/metrics/2026-07-04T13-42-04-436Z-dora/`.
+  `.myagenttool/metrics/2026-07-04T13-48-33-742Z-dora/`.
 - `pnpm github:backlog` measured 29 open issues with required labels 29/29,
   milestones 29/29, and 4 stale items older than 14 days (#118, #117, #116,
   #114). Evidence:
-  `.myagenttool/metrics/2026-07-04T13-42-13-525Z-backlog/`.
+  `.myagenttool/metrics/2026-07-04T13-48-42-928Z-backlog/`.
 - `pnpm ai:eval-heldout` measured the hermetic mock held-out set at 66.7%
   (4/6): hb-001, hb-002, hb-003, and hb-005 passed; hb-004 produced no file
   changes and hb-006 remains vacuous because verify already passes at base.
-  Evidence: `.myagenttool/evals/2026-07-04T13-42-19-930Z-heldout/`.
+  Evidence: `.myagenttool/evals/2026-07-04T13-48-50-159Z-heldout/`.
 
 ## How To Adopt
 
