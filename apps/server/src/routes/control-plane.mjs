@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import { canProvision, denyForeignProject, hashPassword, verifyPassword } from "../runtime/auth.mjs";
+import { publicDeviceView } from "../runtime/bridge-auth.mjs";
 import { computeNextRun, normalizeSchedule } from "../services/automation-schedule.mjs";
 
 const TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000;
@@ -149,7 +150,7 @@ export async function handleControlPlaneRoutes({
     }
     state.device.updatedAt = now();
     persistStateSoon();
-    sendJson(res, 200, { device: state.device });
+    sendJson(res, 200, { device: publicDeviceView(state.device) });
     return true;
   }
 

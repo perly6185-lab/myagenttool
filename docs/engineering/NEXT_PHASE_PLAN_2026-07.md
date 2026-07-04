@@ -67,6 +67,10 @@ policy.
 
 First slice:
 
+- Implementation status: the first P2 cut now issues a device-bound bridge
+  bearer, requires it on `/api/bridge/*` work routes, and refuses non-allowlisted
+  local CLI spawn plans before process start using an auditable local policy
+  manifest with file/network policy checks.
 - Register or issue a device-bound bridge credential.
 - Require bridge credentials on bridge polling and completion routes.
 - Add a local execution gate before process start.

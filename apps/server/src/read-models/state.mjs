@@ -1,4 +1,5 @@
 import { LOCAL_TEAM_ID, teamOf } from "../runtime/auth.mjs";
+import { publicDeviceView } from "../runtime/bridge-auth.mjs";
 
 export function buildPublicState({
   namespace,
@@ -65,7 +66,7 @@ export function buildPublicState({
     defaults: {
       cloneParentDir: defaultProjectPath,
     },
-    device: state.device,
+    device: publicDeviceView(state.device),
     // Never expose password hashes to any client.
     users: (state.users ?? []).map(({ passwordHash, ...user }) => user),
     teams: state.teams ?? [],

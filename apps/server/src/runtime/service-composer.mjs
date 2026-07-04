@@ -1,4 +1,5 @@
 import { createEventLogRuntime } from "./event-log.mjs";
+import { createBridgeCredentialRuntime } from "./bridge-auth.mjs";
 import { createPersistenceRuntime } from "./persistence.mjs";
 import { createReadModelRuntime } from "./read-models.mjs";
 import {
@@ -64,6 +65,10 @@ export function createServerRuntimeServices({
     persistStateSoon,
     getCodexEventHandlers: () => codexEventHandlers,
   });
+  const {
+    issueBridgeCredential,
+    requireBridgeCredential,
+  } = createBridgeCredentialRuntime({ state, now, persistStateSoon });
 
   const {
     addProject,
@@ -1511,6 +1516,9 @@ export function createServerRuntimeServices({
     state.device.status = "offline";
     state.device.unlinkState = "unlinked";
     state.device.credentialRevokedAt = now();
+    if (state.device.bridgeCredential) {
+      state.device.bridgeCredential.revokedAt = state.device.credentialRevokedAt;
+    }
     state.device.updatedAt = now();
     for (const agent of state.agents.filter((item) => item.location.type === "local_device")) {
       if (isAgentDisabled(agent)) {
@@ -1720,6 +1728,8 @@ export function createServerRuntimeServices({
     transitionLifecycleRecipe,
     updatePrivateDeploymentConfig,
     createAgentDryProbeRun,
+    issueBridgeCredential,
+    requireBridgeCredential,
     createIntegrationProbeRun,
     registerIntegrationArtifact,
     transitionIntegrationArtifact,
