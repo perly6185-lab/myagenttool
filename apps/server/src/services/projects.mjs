@@ -97,7 +97,11 @@ export function createProjectService({ state, now, nextId, appendEvent, persistS
     return project;
   }
 
-  function cloneProject(body = {}) {
+  // Async so the (potentially slow) `git clone` runs off the event loop instead
+  // of freezing the whole server for the duration (#305). Input is validated
+  // synchronously up front, so bad requests still reject immediately; only the
+  // clone itself awaits. Callers await it (the routes + application register).
+  async function cloneProject(body = {}) {
     const gitUrl = String(body.gitUrl ?? "").trim();
     if (!isLikelyGitUrl(gitUrl)) {
       throw new Error("A valid Git URL is required.");
@@ -115,9 +119,8 @@ export function createProjectService({ state, now, nextId, appendEvent, persistS
     if (existsSync(targetPath)) {
       throw new Error(`Project folder already exists: ${targetPath}`);
     }
-    execFileSync("git", ["clone", gitUrl, targetPath], {
+    await execFileAsync("git", ["clone", gitUrl, targetPath], {
       encoding: "utf8",
-      stdio: ["ignore", "pipe", "pipe"],
       timeout: 120_000,
     });
     return addProject({ name: body.name || name, path: targetPath, host: body.host ?? "local", color: body.color });

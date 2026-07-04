@@ -60,16 +60,10 @@ export function createApplicationService({
     // never from a caller-supplied ownerTeamId (spoofing vector).
     const ownerTeamId = actor?.teamId ?? "team_local";
     let project = null;
-    if (source.type === "git") {
-      project = cloneProject({
-        gitUrl: source.url,
-        parentPath: body.parentDir ?? body.parentPath,
-        name: body.folderName ?? name,
-        host: body.host ?? "local",
-        color: body.color,
-        ownerTeamId: actor?.teamId,
-      });
-    } else if (source.type === "local") {
+    // Git source clones in the BACKGROUND (#305): a large/slow `git clone` must
+    // never block the event loop. The app registers immediately in a "probing"
+    // state and transitions to registered/failed when the clone settles (below).
+    if (source.type === "local") {
       project = addProject({
         name,
         path: source.path,
@@ -84,7 +78,10 @@ export function createApplicationService({
       name,
       kind: normalizeApplicationKind(body.kind, source),
       source,
-      status: normalizeApplicationStatus(body.status ?? (body.autoOnline === false ? "registered" : "active")),
+      // Git source starts in "probing" until the background clone finishes.
+      status: source.type === "git"
+        ? "probing"
+        : normalizeApplicationStatus(body.status ?? (body.autoOnline === false ? "registered" : "active")),
       lifecycle: {
         state: "registered",
         lastOperation: "register",
@@ -111,6 +108,43 @@ export function createApplicationService({
         projectId: app.projectId,
       },
     });
+    // Background git clone — off the event loop; settle the app when done (#305).
+    if (source.type === "git") {
+      Promise.resolve(cloneProject({
+        gitUrl: source.url,
+        parentPath: body.parentDir ?? body.parentPath,
+        name: body.folderName ?? name,
+        host: body.host ?? "local",
+        color: body.color,
+        ownerTeamId: actor?.teamId,
+      })).then((cloned) => {
+        app.projectId = cloned.id;
+        app.path = cloned.path;
+        app.status = "registered";
+        app.lifecycle = { state: "registered", lastOperation: "clone", lastOperationAt: now() };
+        app.updatedAt = now();
+        appendEvent({
+          invocationId: null,
+          type: "application_clone_completed",
+          level: "info",
+          message: `${app.name} git source cloned.`,
+          data: { applicationId: app.id, projectId: cloned.id },
+        });
+        persistStateSoon();
+      }).catch((error) => {
+        app.status = "failed";
+        app.lifecycle = { state: "failed", lastOperation: "clone", lastOperationAt: now(), error: String(error?.message ?? error) };
+        app.updatedAt = now();
+        appendEvent({
+          invocationId: null,
+          type: "application_clone_failed",
+          level: "warn",
+          message: `${app.name} git clone failed: ${String(error?.message ?? error)}`,
+          data: { applicationId: app.id },
+        });
+        persistStateSoon();
+      });
+    }
     persistStateSoon();
     return app;
   }
