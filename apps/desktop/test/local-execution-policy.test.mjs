@@ -99,3 +99,57 @@ test("derives applicationWrapper file/network policies for the bridge gate", () 
     source: "application_wrapper",
   });
 });
+
+import { mkdirSync, mkdtempSync } from "node:fs";
+
+test("cwd confinement: allows a cwd inside the approved worktree root", () => {
+  const root = mkdtempSync(join(tmpdir(), "wt-root-"));
+  const inside = join(root, "sub");
+  mkdirSync(inside, { recursive: true });
+  const gate = localExecutionGate(
+    { options: { metadata: { worktreePath: root } } },
+    { type: "cli", command: "demo-agent" },
+    {
+      command: process.execPath,
+      args: [demoAgentPath, "--task", "hello"],
+      cwd: inside,
+      localPolicy: { filePolicy: "read_only", networkPolicy: "forbidden", source: "test" },
+    },
+    { manifest },
+  );
+  assert.equal(gate.allowed, true, gate.reason);
+  assert.deepEqual(gate.evidence.approvedRoots, [resolve(root)]);
+});
+
+test("cwd confinement: refuses a cwd outside the approved root", () => {
+  const root = mkdtempSync(join(tmpdir(), "wt-root-"));
+  const outside = mkdtempSync(join(tmpdir(), "elsewhere-")); // absolute + exists, but not under root
+  const gate = localExecutionGate(
+    { options: { metadata: { worktreePath: root } } },
+    { type: "cli", command: "demo-agent" },
+    {
+      command: process.execPath,
+      args: [demoAgentPath, "--task", "hello"],
+      cwd: outside,
+      localPolicy: { filePolicy: "read_only", networkPolicy: "forbidden", source: "test" },
+    },
+    { manifest },
+  );
+  assert.equal(gate.allowed, false);
+  assert.match(gate.reason, /outside the approved project or worktree root/);
+});
+
+test("cwd confinement: no derivable root leaves the run un-confined (skipped, not blocked)", () => {
+  const gate = localExecutionGate(
+    { options: {} },
+    { type: "cli", command: "demo-agent" },
+    {
+      command: process.execPath,
+      args: [demoAgentPath, "--task", "hello"],
+      cwd: tmpdir(),
+      localPolicy: { filePolicy: "read_only", networkPolicy: "forbidden", source: "test" },
+    },
+    { manifest },
+  );
+  assert.equal(gate.allowed, true, "with no approved root there is nothing to confine to");
+});
