@@ -98,10 +98,17 @@ Task board [Auto] on an issue
 
 ### Phase 2 — Verification gate + PR governance
 
-- Wire `ai:testing-plan` / verification into the chain; a red result blocks the
-  PR, and evidence is written into the PR body.
-- The auto-PR must satisfy `check-pr`'s dedicated-linked-issue-with-Project-
-  Fields rule, or it cannot pass pr-governance and merge.
+- **Gate — landed.** The reaction runs a project-configured verification command
+  in the worktree before publishing (`services/worktree-verify.mjs`). Passed →
+  publish + open PR with the verification evidence in the PR body; a failed real
+  check → `blocked` (no PR); unconfigured → the PR opens but is labelled
+  unverified (never fabricates a pass); a throwing verifier → `blocked`. The
+  command comes from `MYAGENTTOOL_AUTORUN_VERIFY_COMMAND_JSON` (array form, no
+  shell, never agent-proposed) so an editing agent can't choose what runs.
+- **PR governance — remaining.** The auto-PR must satisfy `check-pr`'s
+  dedicated-linked-issue-with-Project-Fields rule (link an issue that carries
+  `## Project Fields`), or it cannot pass pr-governance and merge. The evidence
+  body already satisfies the verification-evidence rule.
 
 ### Phase 3 — Auto-triggers
 
