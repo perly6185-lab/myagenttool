@@ -112,9 +112,17 @@ Task board [Auto] on an issue
 
 ### Phase 3 — Auto-triggers
 
-- Scan project issues by label/status (e.g. `status/ready` + an opt-in `auto`
-  label) and enqueue the Auto chain, bounded by concurrency caps, budget, and
-  approval.
+- **Landed.** A scan loop (`services/auto-trigger.mjs` +
+  `runtime/auto-trigger-scheduler.mjs`) starts an auto-run for each new open
+  issue carrying an opt-in label. **Off by default** — enabled only via
+  `MYAGENTTOOL_AUTOTRIGGER_ENABLED` (disabled → no timer, no gh calls).
+  Per-issue opt-in by label (`MYAGENTTOOL_AUTOTRIGGER_LABEL`, default `auto`);
+  dedup so an issue with any existing auto-run (incl. `blocked`) never respawns;
+  per-project concurrency cap (`MYAGENTTOOL_AUTOTRIGGER_MAX_CONCURRENT`, 1..10).
+  `startAutoRun` still enforces the approval + budget gates; merge stays human.
+  Because the trigger source is the issue, the auto-PR now `Closes #N` a real
+  issue — addressing the Phase 2 governance leftover when that issue carries
+  Project Fields.
 
 ### Phase 4 — Project status writeback
 
