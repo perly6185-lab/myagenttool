@@ -170,6 +170,7 @@ export function createTerminalService({
       ownerCodexSessionId: normalizeTerminalCodexSessionId(body.ownerCodexSessionId, body.ownerInvocationId),
       deviceId: state.device.id,
       userId: body.userId ?? "usr_local",
+      ownerTeamId: body.ownerTeamId ?? teamIdForUser(body.userId),
       repoPath: cwd,
       cwd,
       shell,
@@ -254,6 +255,10 @@ export function createTerminalService({
       data: { terminalSessionId: session.terminalSessionId, status: session.status },
     });
     persistStateSoon();
+  }
+
+  function teamIdForUser(userId) {
+    return state.users.find((user) => user.id === userId)?.teamId ?? "team_local";
   }
 
   function queueTerminalBridgeAction(session, actionType, payload = {}) {

@@ -1,3 +1,5 @@
+import { LOCAL_TEAM_ID } from "../runtime/auth.mjs";
+
 export async function handleTerminalRoutes({
   req,
   res,
@@ -55,7 +57,7 @@ export async function handleTerminalRoutes({
     const body = await readJson(req);
     let session;
     try {
-      session = createManagedTerminalSession({ ...body, userId: body.userId ?? actor?.userId });
+      session = createManagedTerminalSession({ ...body, userId: actor?.userId, ownerTeamId: actor?.teamId });
     } catch (error) {
       sendJson(res, 400, {
         error: "invalid_terminal_session",
@@ -69,7 +71,7 @@ export async function handleTerminalRoutes({
 
   const inputMatch = url.pathname.match(/^\/api\/terminal\/sessions\/([^/]+)\/input$/);
   if (req.method === "POST" && inputMatch) {
-    const session = state.terminalSessions.find((item) => item.terminalSessionId === decodeURIComponent(inputMatch[1]));
+    const session = findVisibleTerminalSession(state, actor, decodeURIComponent(inputMatch[1]));
     if (!session) {
       sendJson(res, 404, { error: "terminal_session_not_found" });
       return true;
@@ -86,7 +88,7 @@ export async function handleTerminalRoutes({
 
   const resizeMatch = url.pathname.match(/^\/api\/terminal\/sessions\/([^/]+)\/resize$/);
   if (req.method === "POST" && resizeMatch) {
-    const session = state.terminalSessions.find((item) => item.terminalSessionId === decodeURIComponent(resizeMatch[1]));
+    const session = findVisibleTerminalSession(state, actor, decodeURIComponent(resizeMatch[1]));
     if (!session) {
       sendJson(res, 404, { error: "terminal_session_not_found" });
       return true;
@@ -107,7 +109,7 @@ export async function handleTerminalRoutes({
 
   const closeMatch = url.pathname.match(/^\/api\/terminal\/sessions\/([^/]+)\/close$/);
   if (req.method === "POST" && closeMatch) {
-    const session = state.terminalSessions.find((item) => item.terminalSessionId === decodeURIComponent(closeMatch[1]));
+    const session = findVisibleTerminalSession(state, actor, decodeURIComponent(closeMatch[1]));
     if (!session) {
       sendJson(res, 404, { error: "terminal_session_not_found" });
       return true;
@@ -141,4 +143,21 @@ export async function handleTerminalRoutes({
   }
 
   return false;
+}
+
+function findVisibleTerminalSession(state, actor, terminalSessionId) {
+  const session = state.terminalSessions.find((item) => item.terminalSessionId === terminalSessionId);
+  if (!session) return null;
+  return terminalSessionVisible(state, actor, session) ? session : null;
+}
+
+function terminalSessionVisible(state, actor, session) {
+  if (!actor?.teamId) return true;
+  return terminalSessionTeamId(state, session) === actor.teamId;
+}
+
+function terminalSessionTeamId(state, session) {
+  if (session.ownerTeamId) return session.ownerTeamId;
+  const owner = state.users.find((user) => user.id === session.userId);
+  return owner?.teamId ?? LOCAL_TEAM_ID;
 }
