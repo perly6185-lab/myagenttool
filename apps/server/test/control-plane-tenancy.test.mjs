@@ -36,7 +36,7 @@ function baseState() {
 }
 
 /** Invoke the control-plane handler for one request, capturing the response. */
-async function call({ method, path, actor, body }) {
+async function call({ method, path, actor, body, deps = {} }) {
   const state = baseState();
   const calls = [];
   const handled = await handleControlPlaneRoutes({
@@ -50,10 +50,10 @@ async function call({ method, path, actor, body }) {
     now: () => "2026-07-01T00:00:00.000Z",
     nextId: (p) => `${p}_test`,
     appendEvent: () => {},
-    findAgent: () => null,
-    defaultAgent: () => null,
-    createInvocation: () => null,
-    startInvocationIfAllowed: () => {},
+    findAgent: deps.findAgent ?? (() => null),
+    defaultAgent: deps.defaultAgent ?? (() => null),
+    createInvocation: deps.createInvocation ?? (() => null),
+    startInvocationIfAllowed: deps.startInvocationIfAllowed ?? (() => {}),
     persistStateSoon: () => {},
     budgetStatusFor: () => null,
     upsertBudget: () => null,
@@ -94,6 +94,52 @@ test("PATCH /api/automations/:id — a foreign team cannot repoint it (404, fiel
   assert.equal(auto.prompt, "original prompt");
   assert.equal(auto.enabled, true);
   assert.equal(auto.agentId, "agent_x");
+});
+
+test("PATCH /api/automations/:id — owner cannot repoint it to a foreign project", async () => {
+  const { calls, state } = await call({
+    method: "PATCH",
+    path: "/api/automations/auto_1",
+    actor: { teamId: TEAM_A },
+    body: { projectId: "proj_b" },
+  });
+  assert.equal(calls.at(-1).status, 404);
+  assert.deepEqual(calls.at(-1).payload, { error: "project_not_found" });
+  assert.equal(state.automations[0].projectId, "proj_a");
+});
+
+test("POST /api/automations records the actor as createdBy", async () => {
+  const { calls, state } = await call({
+    method: "POST",
+    path: "/api/automations",
+    actor: { userId: "usr_a", teamId: TEAM_A },
+    body: { projectId: "proj_a", name: "daily", prompt: "go", schedule: { kind: "manual" } },
+  });
+  assert.equal(calls.at(-1).status, 201);
+  assert.equal(calls.at(-1).payload.automation.createdBy, "usr_a");
+  assert.equal(state.automations[0].createdBy, "usr_a");
+});
+
+test("POST /api/automations/:id/run binds child invocation metadata to the automation project", async () => {
+  const created = [];
+  const agent = { id: "agent_x", status: "available" };
+  const { calls } = await call({
+    method: "POST",
+    path: "/api/automations/auto_1/run",
+    actor: { userId: "usr_a", teamId: TEAM_A },
+    deps: {
+      findAgent: () => agent,
+      createInvocation: (task, ag, options) => {
+        const invocation = { id: "inv_1", status: "queued", task, agentId: ag.id, options };
+        created.push(invocation);
+        return invocation;
+      },
+    },
+  });
+  assert.equal(calls.at(-1).status, 201);
+  assert.equal(created.length, 1);
+  assert.equal(created[0].options.metadata.projectId, "proj_a");
+  assert.equal(created[0].options.projectId, undefined);
 });
 
 // Existence-hiding drift guard: the "exists but foreign" 404 must be

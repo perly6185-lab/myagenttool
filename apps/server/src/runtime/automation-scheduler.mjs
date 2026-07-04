@@ -51,9 +51,8 @@ export function runDueAutomations({
     if (agent) {
       try {
         const invocation = createInvocation(automation.prompt, agent, {
-          projectId: automation.projectId,
           requestedBy: automation.createdBy ?? "usr_local",
-          metadata: { automationId: automation.id, automationName: automation.name, scheduled: true },
+          metadata: { automationId: automation.id, automationName: automation.name, scheduled: true, projectId: automation.projectId },
         });
         startInvocationIfAllowed(invocation, agent);
         automation.lastInvocationId = invocation.id;

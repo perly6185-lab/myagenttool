@@ -202,7 +202,7 @@ export async function handleControlPlaneRoutes({
       lastInvocationId: null,
       runCount: 0,
       tokens: 0,
-      createdBy: "usr_local",
+      createdBy: actor?.userId ?? "usr_local",
       createdAt: now(),
     };
     state.automations.unshift(automation);
@@ -228,8 +228,7 @@ export async function handleControlPlaneRoutes({
     }
     const invocation = createInvocation(automation.prompt, agent, {
       actor,
-      projectId: automation.projectId,
-      metadata: { automationId: automation.id, automationName: automation.name },
+      metadata: { automationId: automation.id, automationName: automation.name, projectId: automation.projectId },
     });
     startInvocationIfAllowed(invocation, agent);
     automation.lastInvocationId = invocation.id;
@@ -260,7 +259,17 @@ export async function handleControlPlaneRoutes({
       return true;
     }
     const patch = await readJson(req);
-    if (patch.projectId !== undefined && state.projects.some((item) => item.id === patch.projectId)) automation.projectId = patch.projectId;
+    if (patch.projectId !== undefined) {
+      const nextProjectId = String(patch.projectId ?? "").trim();
+      if (!state.projects.some((item) => item.id === nextProjectId)) {
+        sendJson(res, 400, { error: "invalid_automation", message: "A known projectId is required." });
+        return true;
+      }
+      if (denyForeignProject({ res, sendJson, state, actor, projectId: nextProjectId, notFound: { error: "project_not_found" } })) {
+        return true;
+      }
+      automation.projectId = nextProjectId;
+    }
     if (patch.name !== undefined) automation.name = String(patch.name).trim() || automation.name;
     if (patch.prompt !== undefined) automation.prompt = String(patch.prompt);
     if (patch.schedule !== undefined) automation.schedule = normalizeSchedule(patch.schedule);
