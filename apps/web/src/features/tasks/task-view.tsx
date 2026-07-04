@@ -13,6 +13,7 @@ import { useUiStore } from "@/store/ui-store";
 import { cn } from "@/lib/cn";
 import { readableStatus, statusTone } from "@/lib/readable-labels";
 import { branchFromIssue, worktreeLinkFor } from "@/features/projects/worktree-payload";
+import { githubItemKindLabel, worktreeAutoRunPrompt } from "@myagenttool/protocol/issue-prompt";
 
 type GithubItem = {
   type: "issue" | "pr";
@@ -64,7 +65,7 @@ export function TaskView() {
   }
   // Create a paused automation scoped to this item; the user lands on it to tune.
   function automateIssue(row: Row) {
-    const kindLabel = row.type === "pr" ? "PR" : "Issue";
+    const kindLabel = githubItemKindLabel(row.type);
     void execute(async () => {
       const r = await api.createAutomation({
         name: `${kindLabel} #${row.number}: ${row.title}`.slice(0, 80),
@@ -72,7 +73,7 @@ export function TaskView() {
         branch: "main",
         schedule: { kind: "weekdays", time: "09:00" },
         enabled: false,
-        prompt: `Make progress on GitHub ${kindLabel} #${row.number}: ${row.title}.${row.url ? `\n${row.url}` : ""}\nReview the latest state, do the next useful step, and summarize what changed.`,
+        prompt: worktreeAutoRunPrompt({ type: row.type, number: row.number, title: row.title, url: row.url }),
       });
       setSection("automation");
       return r;
