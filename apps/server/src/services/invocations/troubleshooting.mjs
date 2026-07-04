@@ -14,7 +14,11 @@ export function createInvocationTroubleshootingRuntime({
     }
     const platformInvocation = createInvocation(`Troubleshoot invocation ${targetInvocation.id}`, platformAgent, {
       actor,
-      metadata: { targetInvocationId: targetInvocation.id }
+      metadata: {
+        targetInvocationId: targetInvocation.id,
+        projectId: targetInvocation.projectId ?? targetInvocation.options?.metadata?.projectId ?? null,
+        worktreeId: targetInvocation.worktreeId ?? targetInvocation.options?.metadata?.worktreeId ?? null,
+      }
     });
     appendEvent({
       invocationId: platformInvocation.id,

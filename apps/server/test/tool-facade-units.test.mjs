@@ -6,6 +6,7 @@ import { createClaudeReviewImportService } from "../src/services/claude-review-i
 import { createCcusageImportService } from "../src/services/ccusage-imports.mjs";
 import { isGovernedCodexReviewAgent } from "../src/services/codex-agent.mjs";
 import { isGovernedClaudeReviewAgent } from "../src/services/claude-agent.mjs";
+import { createToolService } from "../src/services/tools.mjs";
 
 const now = () => "2026-07-02T00:00:00.000Z";
 
@@ -88,6 +89,48 @@ test("isGovernedCodexReviewAgent rejects extra wrapper args", () => {
     args: ["/opt/myagenttool/tools/agents/codex-review-wrapper.mjs", "--mode", "diff-review", "--codex-cli", "evil.mjs"],
   });
   assert.equal(isGovernedCodexReviewAgent(extra), false);
+});
+
+// --- Tool invocation boundary ---
+
+test("createToolInvocation rejects a foreign project before creating an invocation", () => {
+  let createInvocationCalls = 0;
+  const state = {
+    projects: [
+      { id: "projA", ownerTeamId: "team_a" },
+      { id: "projB", ownerTeamId: "team_b" },
+    ],
+    worktrees: [
+      { id: "wtA", projectId: "projA", workspaceProjectId: "projA" },
+    ],
+    agents: [
+      governedReviewAgent({ id: "agt_codex_review_diff", tool: "codex.review.diff", wrapper: "codex-review-wrapper.mjs" }),
+    ],
+    device: { unlinkState: "linked" },
+  };
+  const { createToolInvocation } = createToolService({
+    state,
+    now,
+    appendEvent: () => {},
+    createInvocation: () => {
+      createInvocationCalls += 1;
+      throw new Error("foreign project must not create an invocation");
+    },
+    startInvocationIfAllowed: () => {},
+    findApplication: () => null,
+    findAgent: (id) => state.agents.find((agent) => agent.id === id) ?? null,
+    planApplicationWrapperInvocation: () => ({ ok: false, status: 500, body: { error: "unexpected_plan" } }),
+  });
+
+  const result = createToolInvocation(
+    "codex.review.diff",
+    { projectId: "projA", worktreeId: "wtA" },
+    { userId: "usr_b", teamId: "team_b" },
+  );
+
+  assert.equal(result.status, 404);
+  assert.equal(result.body.error, "project_not_found");
+  assert.equal(createInvocationCalls, 0);
 });
 
 // --- Codex review import service ---

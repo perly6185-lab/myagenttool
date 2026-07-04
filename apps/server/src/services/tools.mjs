@@ -81,10 +81,11 @@ export function createToolService({
     if (!runner || runner.status === "disabled") {
       return { status: 409, body: { error: "agent_not_available", message: "The platform Application Wrapper Runner agent is not available." } };
     }
-    const projectId = resolveToolProjectId(value.projectId, actor);
-    if (!projectId) {
-      return { status: 400, body: { error: "project_required", message: "A projectId is required when no actor-owned default project is available." } };
+    const project = resolveToolProjectId(value.projectId, actor);
+    if (!project.ok) {
+      return { status: project.status, body: project.body };
     }
+    const projectId = project.value;
     const planned = planApplicationWrapperInvocation({
       applicationId: application.id,
       commandId: value.report,
@@ -147,10 +148,11 @@ export function createToolService({
       return { status: validation.status, body: validation.body };
     }
     const value = validation.value;
-    const projectId = resolveToolProjectId(value.projectId, actor);
-    if (!projectId) {
-      return { status: 400, body: { error: "project_required", message: "A projectId is required when no actor-owned default project is available." } };
+    const project = resolveToolProjectId(value.projectId, actor);
+    if (!project.ok) {
+      return { status: project.status, body: project.body };
     }
+    const projectId = project.value;
     const worktree = findToolWorktree(value.worktreeId, projectId);
     if (!worktree) {
       return { status: 404, body: { error: "worktree_not_found" } };
@@ -235,12 +237,22 @@ export function createToolService({
 
   function resolveToolProjectId(projectId, actor) {
     if (projectId) {
-      return projectId;
+      const project = (state.projects ?? []).find((item) => item.id === projectId);
+      if (!project || (actor?.teamId && teamOf(project) !== actor.teamId)) {
+        return { ok: false, status: 404, body: { error: "project_not_found" } };
+      }
+      return { ok: true, value: project.id };
     }
     if (!actor?.teamId) {
-      return state.currentProjectId ?? state.projects?.[0]?.id ?? null;
+      const defaultProjectId = state.currentProjectId ?? state.projects?.[0]?.id ?? null;
+      return defaultProjectId
+        ? { ok: true, value: defaultProjectId }
+        : { ok: false, status: 400, body: { error: "project_required", message: "A projectId is required when no actor-owned default project is available." } };
     }
-    return (state.projects ?? []).find((project) => teamOf(project) === actor.teamId)?.id ?? null;
+    const ownedProjectId = (state.projects ?? []).find((project) => teamOf(project) === actor.teamId)?.id ?? null;
+    return ownedProjectId
+      ? { ok: true, value: ownedProjectId }
+      : { ok: false, status: 400, body: { error: "project_required", message: "A projectId is required when no actor-owned default project is available." } };
   }
 
   function findToolWorktree(worktreeId, projectId) {

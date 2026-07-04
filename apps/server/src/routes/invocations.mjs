@@ -78,8 +78,18 @@ export async function handleInvocationRoutes({
     }
     // Idempotency key: accept the standard `Idempotency-Key` header or a body
     // field so a retried create returns the same run instead of a duplicate.
+    const invocationOptions = invocationOptionsFromBody(body);
+    if (denyForeignInvocationScope({ res, sendJson, state, actor, metadata: invocationOptions.metadata })) {
+      return true;
+    }
+    const {
+      actor: _clientActor,
+      idempotencyKey: _clientIdempotencyKey,
+      requestedBy: _clientRequestedBy,
+      ...safeInvocationOptions
+    } = invocationOptions;
     const idempotencyKey = String(req.headers["idempotency-key"] ?? body.idempotencyKey ?? "").trim() || undefined;
-    const invocation = createInvocation(task, agent, { ...invocationOptionsFromBody(body), idempotencyKey, actor });
+    const invocation = createInvocation(task, agent, { ...safeInvocationOptions, idempotencyKey, actor });
     startInvocationIfAllowed(invocation, agent);
     sendJson(res, 201, { invocation });
     return true;
@@ -108,9 +118,19 @@ export async function handleInvocationRoutes({
       return true;
     }
     const compareOptions = body.options && typeof body.options === "object" && !Array.isArray(body.options) ? body.options : {};
+    const compareMetadata = stripReservedInvocationMetadata(compareOptions.metadata);
+    if (denyForeignInvocationScope({ res, sendJson, state, actor, metadata: compareMetadata })) {
+      return true;
+    }
+    const {
+      actor: _clientActor,
+      idempotencyKey: _clientIdempotencyKey,
+      requestedBy: _clientRequestedBy,
+      ...safeCompareOptions
+    } = compareOptions;
     const compareRun = createCompareRun(task, agents, {
-      ...compareOptions,
-      metadata: stripReservedInvocationMetadata(compareOptions.metadata),
+      ...safeCompareOptions,
+      metadata: compareMetadata,
       actor,
     });
     sendJson(res, 201, {
@@ -162,6 +182,31 @@ export async function handleInvocationRoutes({
 // top-level (invocation.projectId) and in metadata; fall back through both.
 function invocationProjectId(invocation) {
   return invocation?.projectId ?? invocation?.input?.metadata?.projectId ?? null;
+}
+
+function denyForeignInvocationScope({ res, sendJson, state, actor, metadata }) {
+  if (denyForeignProject({
+    res,
+    sendJson,
+    state,
+    actor,
+    projectId: metadata?.projectId,
+    notFound: { error: "project_not_found" },
+  })) {
+    return true;
+  }
+  const worktreeId = typeof metadata?.worktreeId === "string" ? metadata.worktreeId : null;
+  const worktree = worktreeId ? (state.worktrees ?? []).find((item) => item.id === worktreeId) : null;
+  if (!worktree) return false;
+  const worktreeProjectId = worktree.workspaceProjectId ?? worktree.projectId;
+  return denyForeignProject({
+    res,
+    sendJson,
+    state,
+    actor,
+    projectId: worktreeProjectId,
+    notFound: { error: "worktree_not_found" },
+  });
 }
 
 // Metadata keys that only the governed application-capability dispatch may set
