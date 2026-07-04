@@ -4,6 +4,8 @@ import {
   readableRecoveryActionAvailabilityReason,
   readableRecoveryActionType,
   readableRecoveryAgentReason,
+  readableRecoveryExplanationReason,
+  readableRecoveryExplanationState,
   readableRecoveryOutcome,
   readableRecoveryOutcomeReason,
   readableRecoveryTimelineStatus,
@@ -52,6 +54,10 @@ describe("recovery lineage labels", () => {
     expect(readableRecoveryOutcome("custom_state")).toBe("custom_state");
     expect(readableRecoveryOutcomeReason("result_failed")).toBe("Result failed");
     expect(readableRecoveryOutcomeReason("custom_reason")).toBe("custom_reason");
+    expect(readableRecoveryExplanationState("approval_pending")).toBe("Waiting for approval");
+    expect(readableRecoveryExplanationState("custom_state")).toBe("custom_state");
+    expect(readableRecoveryExplanationReason("same_action_approval_pending")).toBe("Duplicate approval pending");
+    expect(readableRecoveryExplanationReason("result_failed")).toBe("Result failed");
     expect(readableRecoveryTimelineStatus("approval_pending")).toBe("Approval pending");
     expect(readableRecoveryTimelineStatus("custom_status")).toBe("custom_status");
   });

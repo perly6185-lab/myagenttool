@@ -784,6 +784,25 @@ export interface ApplicationRecoveryTimelineEntry {
   createdAt?: string | null;
 }
 
+export interface ApplicationRecoveryExplanation {
+  selectedAction?: string | null;
+  state?: string | null;
+  reason?: string | null;
+  summary?: string | null;
+  nextStep?: string | null;
+  outcomeState?: string | null;
+  recoveryCategory?: string | null;
+  blockedReason?: string | null;
+  latestRequestId?: string | null;
+  recoveryActionRequestId?: string | null;
+  approvalRequestId?: string | null;
+  requestedAgentId?: string | null;
+  selectedAgentId?: string | null;
+  resultInvocationId?: string | null;
+  resultOrchestrationId?: string | null;
+  resultOrchestrationRelativePath?: string | null;
+}
+
 export interface ApplicationRecoveryActionRequest {
   id: string;
   applicationId: string;
@@ -813,6 +832,7 @@ export interface ApplicationRecoveryActionRequest {
     summary: string;
     nextStep?: string | null;
   } | null;
+  explanation?: ApplicationRecoveryExplanation | null;
   sourceInvocation?: ApplicationRecoveryInvocationBrief | null;
   resultInvocation?: ApplicationRecoveryInvocationBrief | null;
   timeline?: ApplicationRecoveryTimelineEntry[];

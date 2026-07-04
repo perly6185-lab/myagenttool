@@ -17,6 +17,7 @@ import type {
   ApplicationOrchestration,
   ApplicationOrchestrationRecoveryAction,
   ApplicationOrchestrationRecoveryAgentCandidate,
+  ApplicationRecoveryExplanation,
   ApplicationRecoveryActionRequest,
   ApplicationRecoveryTimelineEntry,
   ApplicationOrchestrationRun,
@@ -584,6 +585,7 @@ function RecoveryLineage({
   onViewInvocation: (invocationId: string) => void;
 }) {
   const outcome = request.outcome;
+  const explanation = request.explanation ?? null;
   const resultInvocationId = request.resultInvocation?.id ?? request.resultInvocationId ?? null;
   return (
     <details className="rounded border border-border bg-background p-2" open={open}>
@@ -595,26 +597,18 @@ function RecoveryLineage({
             <Badge tone={recoveryActionRequestTone(request.status)}>{readableRecoveryActionRequestStatus(request.status)}</Badge>
             {outcome ? <Badge tone={recoveryOutcomeTone(outcome.state)}>{readableRecoveryOutcome(outcome.state)}</Badge> : null}
             {outcome?.reason ? <Badge tone={recoveryOutcomeSeverityTone(outcome.severity)}>{readableRecoveryOutcomeReason(outcome.reason)}</Badge> : null}
+            {explanation?.state ? <Badge tone={recoveryExplanationTone(explanation.state)}>{readableRecoveryExplanationState(explanation.state)}</Badge> : null}
           </div>
           <span className="text-xs text-muted-foreground">{shortTime(request.updatedAt ?? request.createdAt)}</span>
         </div>
       </summary>
       <div className="mt-2 space-y-2">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          {outcome?.summary ? (
-            <p className="[overflow-wrap:anywhere] text-xs text-muted-foreground">{outcome.summary}</p>
-          ) : <span />}
-          {resultInvocationId ? (
-            <Button
-              size="sm"
-              variant="secondary"
-              onClick={() => onViewInvocation(resultInvocationId)}
-            >
-              <ExternalLink />
-              View recovered invocation
-            </Button>
-          ) : null}
-        </div>
+        <RecoveryExplanationPanel
+          explanation={explanation}
+          outcome={outcome}
+          fallbackResultInvocationId={resultInvocationId}
+          onViewInvocation={onViewInvocation}
+        />
         <FactList
           facts={[
             { term: "Source", value: request.sourceInvocation?.id ?? request.invocationId },
@@ -631,6 +625,71 @@ function RecoveryLineage({
         <RecoveryActionTimeline entries={request.timeline ?? []} />
       </div>
     </details>
+  );
+}
+
+function RecoveryExplanationPanel({
+  explanation,
+  outcome,
+  fallbackResultInvocationId,
+  onViewInvocation,
+}: {
+  explanation: ApplicationRecoveryExplanation | null;
+  outcome: ApplicationRecoveryActionRequest["outcome"];
+  fallbackResultInvocationId: string | null;
+  onViewInvocation: (invocationId: string) => void;
+}) {
+  if (!explanation && !outcome) return null;
+  const state = explanation?.state ?? outcome?.state ?? null;
+  const reason = explanation?.reason ?? outcome?.reason ?? null;
+  const summary = explanation?.summary ?? outcome?.summary ?? null;
+  const nextStep = explanation?.nextStep ?? outcome?.nextStep ?? null;
+  const resultInvocationId = explanation?.resultInvocationId ?? fallbackResultInvocationId;
+  const resultOrchestration = explanation?.resultOrchestrationRelativePath
+    ? `${explanation.resultOrchestrationId ?? "orchestration"} (${explanation.resultOrchestrationRelativePath})`
+    : explanation?.resultOrchestrationId ?? null;
+  const requestedAgent = explanation?.requestedAgentId && explanation.selectedAgentId && explanation.requestedAgentId !== explanation.selectedAgentId
+    ? `${explanation.requestedAgentId} -> ${explanation.selectedAgentId}`
+    : explanation?.selectedAgentId ?? explanation?.requestedAgentId ?? null;
+
+  return (
+    <div className="space-y-2 rounded border border-border bg-muted p-2">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-xs font-medium">Recovery guidance</span>
+          {explanation?.selectedAction ? <Badge tone="neutral">{readableRecoveryActionType(explanation.selectedAction)}</Badge> : null}
+          {state ? <Badge tone={recoveryExplanationTone(state)}>{readableRecoveryExplanationState(state)}</Badge> : null}
+          {reason ? <Badge tone={recoveryExplanationReasonTone(reason)}>{readableRecoveryExplanationReason(reason)}</Badge> : null}
+        </div>
+        {resultInvocationId ? (
+          <Button
+            size="sm"
+            variant="secondary"
+            onClick={() => onViewInvocation(resultInvocationId)}
+          >
+            <ExternalLink />
+            View result
+          </Button>
+        ) : null}
+      </div>
+      {summary ? <p className="[overflow-wrap:anywhere] text-xs text-muted-foreground">{summary}</p> : null}
+      {nextStep ? (
+        <p className="[overflow-wrap:anywhere] rounded bg-background px-2 py-1 text-xs">
+          <span className="font-medium">Next step: </span>
+          <span className="text-muted-foreground">{nextStep}</span>
+        </p>
+      ) : null}
+      <FactList
+        facts={[
+          { term: "Approval request", value: explanation?.approvalRequestId ?? "Not required" },
+          { term: "Duplicate guard", value: explanation?.blockedReason ? readableRecoveryActionAvailabilityReason(explanation.blockedReason) : "Clear" },
+          { term: "Latest request", value: explanation?.latestRequestId ?? explanation?.recoveryActionRequestId ?? "Not recorded" },
+          { term: "Result invocation", value: resultInvocationId ?? "Not linked" },
+          { term: "Result orchestration", value: resultOrchestration ?? "Not linked" },
+          { term: "Agent choice", value: requestedAgent ?? "Automatic" },
+        ]}
+      />
+    </div>
   );
 }
 
@@ -710,6 +769,7 @@ function RecoveryActionItem({
   const warningReason = action.availability?.warningReason ?? action.warningReason ?? null;
   const actionBlocked = action.availability?.state === "blocked" || Boolean(blockedReason);
   const disabled = pending || actionBlocked;
+  const latestExplanation = latestRequest?.explanation ?? null;
 
   return (
     <li className="rounded border border-border bg-muted p-2">
@@ -760,6 +820,25 @@ function RecoveryActionItem({
           {readableRecoveryActionAvailabilityReason(blockedReason ?? warningReason ?? "")}
           {action.latestRequestId ? ` (${action.latestRequestId})` : ""}
         </p>
+      ) : null}
+      {latestExplanation?.nextStep || latestExplanation?.approvalRequestId || latestExplanation?.resultInvocationId ? (
+        <div className="mt-2 space-y-1 rounded border border-border bg-background p-2 text-xs">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="font-medium">Latest action guidance</span>
+            {latestExplanation.state ? <Badge tone={recoveryExplanationTone(latestExplanation.state)}>{readableRecoveryExplanationState(latestExplanation.state)}</Badge> : null}
+            {latestExplanation.reason ? <Badge tone={recoveryExplanationReasonTone(latestExplanation.reason)}>{readableRecoveryExplanationReason(latestExplanation.reason)}</Badge> : null}
+          </div>
+          {latestExplanation.nextStep ? (
+            <p className="[overflow-wrap:anywhere] text-muted-foreground">{latestExplanation.nextStep}</p>
+          ) : null}
+          <FactList
+            facts={[
+              { term: "Approval request", value: latestExplanation.approvalRequestId ?? "Not required" },
+              { term: "Result invocation", value: latestExplanation.resultInvocationId ?? "Not linked" },
+              { term: "Result orchestration", value: latestExplanation.resultOrchestrationId ?? "Not linked" },
+            ]}
+          />
+        </div>
       ) : null}
       {isSelectAgent ? (
         <SelectAgentRecoveryPicker
@@ -935,6 +1014,22 @@ function recoveryOutcomeSeverityTone(severity?: string | null): "neutral" | "suc
   return "neutral";
 }
 
+function recoveryExplanationTone(state: string): "neutral" | "success" | "warning" | "danger" | "running" {
+  if (state === "executed" || state === "no_result_expected") return "success";
+  if (state === "approval_pending" || state === "executing" || state === "requested") return "running";
+  if (state === "blocked" || state === "approval_denied" || state === "approval_timed_out" || state === "unsupported") return "warning";
+  if (state === "failed" || state === "rejected") return "danger";
+  return "neutral";
+}
+
+function recoveryExplanationReasonTone(reason: string): "neutral" | "success" | "warning" | "danger" | "running" {
+  if (reason === "execution_completed" || reason === "result_succeeded" || reason === "no_result_expected") return "success";
+  if (reason === "approval_pending" || reason === "execution_in_progress" || reason === "recovery_requested") return "running";
+  if (reason.startsWith("result_") || reason.includes("failed") || reason === "healthy_agent_not_found") return "danger";
+  if (reason.includes("blocked") || reason.includes("pending") || reason.includes("unsupported")) return "warning";
+  return "neutral";
+}
+
 function recoveryTimelineTone(status: string): "neutral" | "success" | "warning" | "danger" | "running" {
   if (status === "executed" || status === "approval_approved") return "success";
   if (status === "executing") return "running";
@@ -972,6 +1067,39 @@ export function readableRecoveryOutcomeReason(reason: string): string {
     result_succeeded: "Result succeeded",
   };
   return labels[reason] ?? reason;
+}
+
+export function readableRecoveryExplanationState(state: string): string {
+  const labels: Record<string, string> = {
+    approval_denied: "Approval denied",
+    approval_pending: "Waiting for approval",
+    approval_timed_out: "Approval timed out",
+    blocked: "Blocked",
+    executed: "Executed",
+    executing: "Executing",
+    failed: "Failed",
+    no_result_expected: "View only",
+    rejected: "Rejected",
+    requested: "Requested",
+    unsupported: "Unsupported",
+  };
+  return labels[state] ?? state;
+}
+
+export function readableRecoveryExplanationReason(reason: string): string {
+  const labels: Record<string, string> = {
+    action_not_suggested: "Action not suggested",
+    approval_pending: "Approval pending",
+    execution_completed: "Execution completed",
+    execution_failed: "Execution failed",
+    execution_in_progress: "Execution in progress",
+    healthy_agent_not_found: "Healthy agent not found",
+    no_result_expected: "No result expected",
+    recovery_requested: "Recovery requested",
+    same_action_approval_pending: "Duplicate approval pending",
+    same_action_in_progress: "Duplicate action in progress",
+  };
+  return labels[reason] ?? readableRecoveryOutcomeReason(reason);
 }
 
 export function readableRecoveryActionType(actionType: string): string {
