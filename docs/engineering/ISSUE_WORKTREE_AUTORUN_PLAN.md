@@ -126,8 +126,14 @@ Task board [Auto] on an issue
 
 ### Phase 4 — Project status writeback
 
-- Advance issue/Project status (`in-progress → review`) as the chain runs, by
-  connecting the server to `github:sync-project` (today they are disconnected).
+- **Landed.** As an auto-run advances it moves the linked issue's status label:
+  start → `status/in-progress`, PR opened → `status/review`
+  (`services/issue-status.mjs`). **Off by default** — a GitHub write is an
+  outward-facing side effect, gated by `MYAGENTTOOL_AUTORUN_STATUS_WRITEBACK`
+  (disabled → the orchestrator skips it, no gh writes). Issue-linked runs only;
+  best-effort (a gh failure never breaks the run). This moves the label (the
+  governance source of truth); syncing the ProjectV2 board field still needs
+  `github:sync-project` (project scope).
 
 ## Cross-cutting dependencies
 
