@@ -25,12 +25,14 @@ function deps(state, invStatus = {}) {
 // A. Due + enabled fires and rolls forward.
 {
   const state = { automations: [
-    { id: "a1", enabled: true, nextRunAt: past, schedule: { kind: "interval", everyMinutes: 30 }, agentId: "ag", prompt: "go", projectId: "p1", runCount: 2 },
+    { id: "a1", enabled: true, nextRunAt: past, schedule: { kind: "interval", everyMinutes: 30 }, agentId: "ag", prompt: "go", projectId: "p1", createdBy: "usr_owner", runCount: 2 },
   ]};
   const { created, d } = deps(state);
   runDueAutomations(d);
   assert.equal(created.length, 1, "fired one");
   assert.equal(created[0].opts.metadata.scheduled, true);
+  assert.equal(created[0].opts.metadata.projectId, "p1");
+  assert.equal(created[0].opts.requestedBy, "usr_owner");
   assert.equal(state.automations[0].runCount, 3);
   assert.ok(Date.parse(state.automations[0].nextRunAt) > Date.now(), "rolled forward");
   ok("due automation fires + rolls forward");

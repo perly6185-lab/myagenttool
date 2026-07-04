@@ -293,6 +293,122 @@ test("POST /api/capabilities invokes ccusage wrapper capabilities with published
   assert.ok(!JSON.stringify(res.body).includes("ccusage-wrapper.mjs"), "direct capability response must not expose ccusage wrapper script");
 });
 
+test("POST /api/invocations guards worktree scope and ignores client control fields", async () => {
+  const before = ctx.state.invocations.length;
+  const foreignWorktree = await call("/api/invocations", {
+    method: "POST",
+    body: {
+      task: "Run with a foreign worktree.",
+      options: { metadata: { worktreeId: "wtB" } },
+    },
+    token: "tok_a",
+  });
+  assert.equal(foreignWorktree.status, 404);
+  assert.equal(foreignWorktree.body.error, "worktree_not_found");
+  assert.equal(ctx.state.invocations.length, before, "foreign worktree metadata must not create an invocation");
+
+  const spoofedControl = await call("/api/invocations", {
+    method: "POST",
+    body: {
+      task: "Run with spoofed control fields.",
+      projectId: "projA",
+      options: {
+        requestedBy: "usr_b",
+        idempotencyKey: "body-options-key",
+        metadata: { note: "kept" },
+      },
+    },
+    token: "tok_a",
+  });
+  assert.equal(spoofedControl.status, 201);
+  assert.equal(spoofedControl.body.invocation.requestedBy, "usr_a");
+  assert.equal(spoofedControl.body.invocation.idempotencyKey, null);
+  assert.equal(spoofedControl.body.invocation.options.metadata.projectId, "projA");
+  assert.equal(spoofedControl.body.invocation.options.metadata.note, "kept");
+});
+
+test("POST /api/compare-runs rejects foreign project/worktree metadata before child invocation creation", async () => {
+  const before = ctx.state.invocations.length;
+  const foreignProject = await call("/api/compare-runs", {
+    method: "POST",
+    body: {
+      task: "Compare two review agents.",
+      agentIds: ["agt_codex_review_diff", "agt_claude_review_diff"],
+      options: { metadata: { projectId: "projB" } },
+    },
+    token: "tok_a",
+  });
+  assert.equal(foreignProject.status, 404);
+  assert.equal(foreignProject.body.error, "project_not_found");
+  assert.equal(ctx.state.invocations.length, before, "foreign project metadata must not create child invocations");
+
+  const foreignWorktree = await call("/api/compare-runs", {
+    method: "POST",
+    body: {
+      task: "Compare two review agents.",
+      agentIds: ["agt_codex_review_diff", "agt_claude_review_diff"],
+      options: { metadata: { worktreeId: "wtB" } },
+    },
+    token: "tok_a",
+  });
+  assert.equal(foreignWorktree.status, 404);
+  assert.equal(foreignWorktree.body.error, "worktree_not_found");
+  assert.equal(ctx.state.invocations.length, before, "foreign worktree metadata must not create child invocations");
+});
+
+test("POST /api/compare-runs ignores client control fields on child invocations", async () => {
+  const res = await call("/api/compare-runs", {
+    method: "POST",
+    body: {
+      task: "Compare two review agents.",
+      agentIds: ["agt_codex_review_diff", "agt_claude_review_diff"],
+      options: {
+        requestedBy: "usr_b",
+        idempotencyKey: "same-child-key",
+        metadata: { projectId: "projA", note: "kept" },
+      },
+    },
+    token: "tok_a",
+  });
+  assert.equal(res.status, 201);
+  assert.equal(res.body.invocations.length, 2);
+  for (const invocation of res.body.invocations) {
+    assert.equal(invocation.requestedBy, "usr_a");
+    assert.equal(invocation.idempotencyKey, null);
+    assert.equal(invocation.options.metadata.projectId, "projA");
+    assert.equal(invocation.options.metadata.note, "kept");
+    assert.equal(invocation.options.metadata.compareRunId, res.body.compareRun.id);
+  }
+});
+
+test("POST /api/invocations/:id/troubleshoot binds the platform child invocation to the target scope", async () => {
+  ctx.state.invocations.unshift({
+    id: "inv_failed_scope",
+    projectId: "projA",
+    worktreeId: "wtA",
+    agentId: "agt_codex_review_diff",
+    status: "failed",
+    requestedBy: "usr_a",
+    createdAt: now(),
+    options: { metadata: { projectId: "projA", worktreeId: "wtA" } },
+  });
+  const beforeIds = new Set(ctx.state.invocations.map((item) => item.id));
+
+  const res = await call("/api/invocations/inv_failed_scope/troubleshoot", {
+    method: "POST",
+    token: "tok_a",
+  });
+
+  assert.equal(res.status, 201);
+  const child = ctx.state.invocations.find((item) => !beforeIds.has(item.id) && item.agentId === "agt_platform_troubleshooter");
+  assert.ok(child, "troubleshooter should create a platform invocation");
+  assert.equal(child.projectId, "projA");
+  assert.equal(child.worktreeId, "wtA");
+  assert.equal(child.options?.metadata?.targetInvocationId, "inv_failed_scope");
+  assert.equal(child.options?.metadata?.projectId, "projA");
+  assert.equal(child.options?.metadata?.worktreeId, "wtA");
+});
+
 test("POST /api/applications/register rejects duplicate explicit ids", async () => {
   const duplicate = await call("/api/applications/register", {
     method: "POST",
