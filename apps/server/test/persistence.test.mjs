@@ -100,6 +100,108 @@ test("persistence restores active control-plane records across runtime restart",
   }
 });
 
+test("persistence restores lifecycle recovery evidence and ledger spend across runtime restart", () => {
+  const root = join(tmpdir(), `myagenttool-persistence-evidence-test-${Date.now()}`);
+  const projectPath = join(root, "project");
+  const stateStorePath = join(root, "state", "snapshot.json");
+  mkdirSync(projectPath, { recursive: true });
+
+  try {
+    const first = createServerState({ defaultProjectPath: projectPath, now });
+    const m3 = m3ServiceFor(first.state);
+    const projectId = first.defaultProject.id;
+    m3.upsertBudget({ projectId, limitUsd: 2, policy: "block" });
+    const catalog = m3.createPrivateCatalogEntry({ packageName: "demo-agent", version: "1.2.3" });
+    m3.createSignedBundleManifest({
+      catalogEntryId: catalog.id,
+      packageName: "demo-agent",
+      version: "1.2.3",
+      signatureStatus: "not_required",
+    });
+    const recipe = m3.createLifecycleRecipe({
+      action: "update",
+      name: "Durable evidence update",
+      catalogEntryId: catalog.id,
+      source: {
+        type: "manual_entry",
+        uri: "manual://demo-agent",
+        author: "test",
+        version: "1.2.3",
+        signatureStatus: "not_required",
+      },
+      supportedPlatforms: [first.state.device.platform],
+      expectedBinary: "demo-agent",
+      rollback: { available: true, strategy: "previous_version", summary: "Restore demo-agent 1.2.2." },
+      command: {
+        summary: "Update demo agent.",
+        commandId: "demo_agent_update",
+        executable: "demo-agent",
+        args: ["--self-check-update"],
+        shell: false,
+      },
+    });
+    m3.transitionLifecycleRecipe(recipe, "approve");
+    assert.equal(m3.evaluateLifecyclePolicy(recipe).decision, "allowed");
+    const queued = m3.queueLifecycleAction(recipe);
+    m3.markLifecycleActionStarted(queued);
+    m3.completeLifecycleAction(queued, {
+      status: "failed",
+      summary: "Bridge update failed during restart test.",
+      exitCode: 42,
+      stderr: "permission denied",
+      rollbackAvailable: true,
+    });
+    const ledger = m3.recordInvocationLedgerEntry({
+      invocation: {
+        id: "inv_restart_cost",
+        agentId: "agt_demo_cli",
+        requestedBy: "usr_local",
+        projectId,
+        input: { metadata: { projectId } },
+      },
+      cost: { amountUsd: 2.5, currency: "USD", model: "gpt-restart", billable: true },
+      agent: first.state.agents.find((agent) => agent.id === "agt_demo_cli"),
+    });
+    assert(ledger, "test setup should create a spend-bearing ledger entry");
+
+    saveState(first, { stateStorePath });
+
+    const second = createServerState({ defaultProjectPath: projectPath, now });
+    restoreState(second, { stateStorePath });
+    const restoredM3 = m3ServiceFor(second.state);
+    const audit = second.state.lifecycleAuditRecords.find((item) => item.id === queued.id);
+    const rollback = second.state.lifecycleRollbackRequests.find((item) => item.failedActionId === queued.id);
+
+    assert.equal(audit?.status, "failed");
+    assert.equal(audit?.message, "Bridge update failed during restart test.");
+    assert.equal(audit?.result?.exitCode, 42);
+    assert.equal(audit?.result?.rollbackAvailable, true);
+    assert.equal(audit?.rollback?.strategy, "previous_version");
+    assert.equal(rollback?.status, "available");
+    assert.equal(rollback?.queuedActionId, null);
+    assert.match(rollback?.summary ?? "", /Restore demo-agent 1\.2\.2/);
+    assert.equal(second.state.lifecycleQueuedActions.find((item) => item.id === queued.id)?.result?.summary, "Bridge update failed during restart test.");
+
+    const restoredLedger = second.state.ledgerEntries.find((item) => item.id === ledger.id);
+    assert.equal(restoredLedger?.amountUsd, 2.5);
+    assert.equal(restoredLedger?.sourceRecordId, "inv_restart_cost");
+    const budget = restoredM3.budgetStatusFor(projectId);
+    assert.equal(budget.finalizedUsd, 2.5);
+    assert.equal(budget.spentUsd, 2.5);
+    assert.equal(budget.over, true);
+    assert.equal(restoredM3.ledgerSummary().totalCostUsd, 2.5);
+
+    restoredM3.updatePrivateDeploymentConfig({ mode: "private_deployment", auditExportEnabled: true });
+    const exportRequest = restoredM3.createAuditExportRequest({ subjects: ["lifecycle", "ledger"], dryRun: false });
+    assert.equal(exportRequest.status, "exported");
+    assert(exportRequest.manifest.recordRefs.some((ref) => ref.subject === "lifecycle" && ref.id === queued.id), "lifecycle audit record should remain exportable after restore");
+    assert(exportRequest.manifest.recordRefs.some((ref) => ref.subject === "lifecycle" && ref.id === rollback.id), "rollback request should remain exportable after restore");
+    assert(exportRequest.manifest.recordRefs.some((ref) => ref.subject === "ledger" && ref.id === ledger.id), "ledger entry should remain exportable after restore");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("runtime ids continue after restoring persisted state", () => {
   const root = join(tmpdir(), `myagenttool-persistence-id-test-${Date.now()}`);
   const projectPath = join(root, "project");
@@ -470,6 +572,41 @@ test("review and usage import mutations request persistence directly", () => {
 
 function now() {
   return "2026-07-04T00:00:00.000Z";
+}
+
+function saveState(runtimeState, { stateStorePath }) {
+  createPersistenceRuntime({
+    state: runtimeState.state,
+    enabled: true,
+    stateStorePath,
+    schemaVersion: 1,
+    now,
+    defaultProject: runtimeState.defaultProject,
+    sameProjectPath,
+  }).savePersistentState();
+}
+
+function restoreState(runtimeState, { stateStorePath }) {
+  createPersistenceRuntime({
+    state: runtimeState.state,
+    enabled: true,
+    stateStorePath,
+    schemaVersion: 1,
+    now,
+    defaultProject: runtimeState.defaultProject,
+    sameProjectPath,
+  }).restorePersistentState();
+}
+
+function m3ServiceFor(state) {
+  let id = 0;
+  return createM3Service({
+    state,
+    now,
+    nextId: (prefix) => `${prefix}_${++id}`,
+    appendEvent: () => {},
+    findAgent: (agentId) => state.agents.find((agent) => agent.id === agentId) ?? null,
+  });
 }
 
 function governedReviewAgent({ id, tool, wrapper }) {
