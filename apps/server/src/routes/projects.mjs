@@ -2,6 +2,7 @@ import { randomBytes } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { denyForeignProject } from "../runtime/auth.mjs";
+import { summarizeAutoRuns } from "../services/auto-run-metrics.mjs";
 
 export async function handleProjectRoutes({
   req,
@@ -154,7 +155,8 @@ export async function handleProjectRoutes({
   }
 
   if (req.method === "GET" && url.pathname === "/api/auto-runs") {
-    sendJson(res, 200, { autoRuns: state.autoRuns ?? [] });
+    const autoRuns = state.autoRuns ?? [];
+    sendJson(res, 200, { autoRuns, summary: summarizeAutoRuns(autoRuns) });
     return true;
   }
 
