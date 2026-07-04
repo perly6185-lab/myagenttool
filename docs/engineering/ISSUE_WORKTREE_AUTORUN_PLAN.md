@@ -82,11 +82,16 @@ Task board [Auto] on an issue
 
 ### Phase 1 — One-click Auto (manual trigger, full chain to PR)
 
-- Task board `[Auto]` action and an `auto-run` orchestrator state machine
-  (`materializing → running → verifying → pr_open → done/failed`).
-- Auto-create the bridge invocation on worktree creation, seeding the
-  issue-derived prompt. High-risk agents still land in
-  `waiting_for_local_approval`; Auto does not bypass approval.
+- **Kickoff — landed.** `services/auto-run.mjs` `startAutoRun()` materializes the
+  worktree from the issue, seeds the prompt via `worktreeAutoRunPrompt(link)`,
+  creates a bridge invocation targeting the worktree, and starts it, recording
+  an `autoRun` (`materializing → running | awaiting_approval → …`). High-risk
+  agents land in `awaiting_approval` because the invocation does — Auto never
+  bypasses the local-approval gate. `POST /api/projects/:id/auto-runs` +
+  `GET /api/auto-runs`; Task board `[Auto]` button drives it.
+- **Reaction — next slice.** Advance the auto-run when its invocation completes:
+  succeeded → verify → publish → open PR (reusing the Phase 0 routes); failed →
+  `failed`. Hook `completion.mjs` to move the state machine forward.
 
 ### Phase 2 — Verification gate + PR governance
 
