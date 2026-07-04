@@ -14,16 +14,30 @@ import {
 } from "../src/services/auto-trigger.mjs";
 
 test("resolveAutoTriggerConfig is off by default and reads the env opt-in", () => {
-  assert.deepEqual(resolveAutoTriggerConfig({}), { enabled: false, label: "auto", maxConcurrent: 1 });
+  assert.deepEqual(resolveAutoTriggerConfig({}), { enabled: false, label: "auto", maxConcurrent: 1, requireProjectFields: true });
   const on = resolveAutoTriggerConfig({
     MYAGENTTOOL_AUTOTRIGGER_ENABLED: "1",
     MYAGENTTOOL_AUTOTRIGGER_LABEL: "agent-ready",
     MYAGENTTOOL_AUTOTRIGGER_MAX_CONCURRENT: "3",
   });
-  assert.deepEqual(on, { enabled: true, label: "agent-ready", maxConcurrent: 3 });
+  assert.deepEqual(on, { enabled: true, label: "agent-ready", maxConcurrent: 3, requireProjectFields: true });
   // Cap is clamped into [1,10].
   assert.equal(resolveAutoTriggerConfig({ MYAGENTTOOL_AUTOTRIGGER_MAX_CONCURRENT: "999" }).maxConcurrent, 10);
   assert.equal(resolveAutoTriggerConfig({ MYAGENTTOOL_AUTOTRIGGER_MAX_CONCURRENT: "0" }).maxConcurrent, 1);
+  // Project-fields requirement can be opted out.
+  assert.equal(resolveAutoTriggerConfig({ MYAGENTTOOL_AUTOTRIGGER_REQUIRE_PROJECT_FIELDS: "0" }).requireProjectFields, false);
+});
+
+test("selectAutoTriggerCandidates requires Project Fields by default, and can opt out", () => {
+  const issues = [
+    { number: 1, title: "no fields", state: "open", body: "just a description" },
+    { number: 2, title: "has fields", state: "open", body: "## Project Fields\nMilestone: M3" },
+  ];
+  const withGate = selectAutoTriggerCandidates({ issues, autoRuns: [], projectId: "prj", maxConcurrent: 5 });
+  assert.deepEqual(withGate.map((i) => i.number), [2], "only the Project-Fields issue is eligible");
+
+  const noGate = selectAutoTriggerCandidates({ issues, autoRuns: [], projectId: "prj", maxConcurrent: 5, requireProjectFields: false });
+  assert.deepEqual(noGate.map((i) => i.number), [1, 2], "opt-out selects both");
 });
 
 test("selectAutoTriggerCandidates skips already-handled issues and honors the cap", () => {
@@ -33,7 +47,7 @@ test("selectAutoTriggerCandidates skips already-handled issues and honors the ca
     { number: 3, title: "three", state: "open" },
   ];
   const autoRuns = [{ projectId: "prj", link: { number: 1 }, status: "running" }]; // #1 handled + active
-  const selected = selectAutoTriggerCandidates({ issues, autoRuns, projectId: "prj", maxConcurrent: 2 });
+  const selected = selectAutoTriggerCandidates({ issues, autoRuns, projectId: "prj", maxConcurrent: 2, requireProjectFields: false });
   // #1 handled → skip; one active run + cap 2 → headroom 1 → only #2.
   assert.deepEqual(selected.map((i) => i.number), [2]);
 });
@@ -44,14 +58,14 @@ test("selectAutoTriggerCandidates ignores closed issues and settled runs don't c
     { number: 6, title: "open", state: "open" },
   ];
   const autoRuns = [{ projectId: "prj", link: { number: 9 }, status: "pr_open" }]; // settled, not active
-  const selected = selectAutoTriggerCandidates({ issues, autoRuns, projectId: "prj", maxConcurrent: 1 });
+  const selected = selectAutoTriggerCandidates({ issues, autoRuns, projectId: "prj", maxConcurrent: 1, requireProjectFields: false });
   assert.deepEqual(selected.map((i) => i.number), [6], "closed skipped; #6 within headroom");
 });
 
 test("selectAutoTriggerCandidates never re-triggers an issue with a settled (e.g. blocked) run", () => {
   const issues = [{ number: 7, title: "was blocked", state: "open" }];
   const autoRuns = [{ projectId: "prj", link: { number: 7 }, status: "blocked" }];
-  const selected = selectAutoTriggerCandidates({ issues, autoRuns, projectId: "prj", maxConcurrent: 5 });
+  const selected = selectAutoTriggerCandidates({ issues, autoRuns, projectId: "prj", maxConcurrent: 5, requireProjectFields: false });
   assert.deepEqual(selected, [], "a blocked issue is not respawned");
 });
 
@@ -86,7 +100,7 @@ test("scanOnce starts auto-runs only for ready repo-backed projects, with issue-
   const listedFor = [];
   const runtime = createAutoTriggerRuntime({
     state,
-    config: { enabled: true, label: "auto", maxConcurrent: 5 },
+    config: { enabled: true, label: "auto", maxConcurrent: 5, requireProjectFields: false },
     listLabeledIssues: async (project) => {
       listedFor.push(project.id);
       return [{ number: 42, title: "Add the Widget", url: "u", state: "open" }];
@@ -111,7 +125,7 @@ test("scanOnce keeps going when one project's issue list or a startAutoRun throw
   const started = [];
   const runtime = createAutoTriggerRuntime({
     state,
-    config: { enabled: true, label: "auto", maxConcurrent: 5 },
+    config: { enabled: true, label: "auto", maxConcurrent: 5, requireProjectFields: false },
     listLabeledIssues: async (project) => {
       if (project.id === "prj_norepo") throw new Error("gh failed");
       return [{ number: 1, title: "ok", state: "open" }];

@@ -24,12 +24,21 @@ export function resolveAutoTriggerConfig(env = process.env) {
     enabled: flag === "1" || flag === "true",
     label: env.MYAGENTTOOL_AUTOTRIGGER_LABEL || "auto",
     maxConcurrent: clampInt(env.MYAGENTTOOL_AUTOTRIGGER_MAX_CONCURRENT, 1, 1, 10),
+    // Only auto-run issues that carry `## Project Fields`, so the auto-PR they
+    // produce can pass pr-governance unattended. On by default; opt out with "0".
+    requireProjectFields: env.MYAGENTTOOL_AUTOTRIGGER_REQUIRE_PROJECT_FIELDS !== "0",
   };
+}
+
+// The governance gate an auto-PR must satisfy is a linked issue carrying a
+// `## Project Fields` block; mirror tools/github's hasProjectFields locally.
+export function issueHasProjectFields(body) {
+  return /##\s+Project Fields/i.test(body ?? "");
 }
 
 // Which label-filtered open issues to auto-run for one project: skip ones that
 // already have an auto-run, and stop at the project's concurrency headroom. Pure.
-export function selectAutoTriggerCandidates({ issues = [], autoRuns = [], projectId, maxConcurrent = 1 }) {
+export function selectAutoTriggerCandidates({ issues = [], autoRuns = [], projectId, maxConcurrent = 1, requireProjectFields = true }) {
   const projectRuns = autoRuns.filter((run) => run.projectId === projectId);
   const handled = new Set(projectRuns.map((run) => run.link?.number).filter((n) => Number.isFinite(n)));
   const active = projectRuns.filter((run) => ACTIVE_STATUSES.has(run.status)).length;
@@ -41,6 +50,8 @@ export function selectAutoTriggerCandidates({ issues = [], autoRuns = [], projec
     if (!Number.isFinite(issue?.number)) continue;
     if (issue.state && issue.state !== "open") continue;
     if (handled.has(issue.number)) continue;
+    // Skip issues that can't yield a governance-passing PR (no Project Fields).
+    if (requireProjectFields && !issueHasProjectFields(issue.body)) continue;
     selected.push(issue);
     headroom -= 1;
   }
@@ -71,6 +82,7 @@ export function createAutoTriggerRuntime({ state, config, listLabeledIssues, sta
         autoRuns: state.autoRuns ?? [],
         projectId: project.id,
         maxConcurrent: config.maxConcurrent,
+        requireProjectFields: config.requireProjectFields,
       });
       for (const issue of candidates) {
         try {
