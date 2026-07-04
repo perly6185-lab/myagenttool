@@ -277,6 +277,7 @@ export function createServerRuntimeServices({
   const {
     completeDiscoveryRun,
     completeIntegrationProbeRun,
+    createAgentDryProbeRun,
     createDiscoveryRun,
     createIntegrationArtifact,
     createIntegrationProbeRun,
@@ -1712,6 +1713,7 @@ export function createServerRuntimeServices({
     requestLifecycleLocalApproval,
     transitionLifecycleRecipe,
     updatePrivateDeploymentConfig,
+    createAgentDryProbeRun,
     createIntegrationProbeRun,
     registerIntegrationArtifact,
     transitionIntegrationArtifact,

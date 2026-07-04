@@ -12,10 +12,16 @@ runner cost, so local tests are the only gate — tests come before features.
 ## M1 — Foundations (in progress)
 
 - **#212 Broaden hermetic unit tests** — worktree naming/normalization
-  (`apps/server/test/worktree-naming.test.mjs`) and the loop-engine's
-  sanitization/id primitives (`tools/ai/test/routine-utils.test.mjs`) are done;
-  next, cover worktree lifecycle (create/teardown/diff) and loop promotion-gate
-  decisions. Zero decisions, low risk, locks behavior before feature work.
+  (`apps/server/test/worktree-naming.test.mjs`), the loop-engine's
+  sanitization/id primitives (`tools/ai/test/routine-utils.test.mjs`), worktree
+  lifecycle create/teardown (`apps/server/test/worktree-lifecycle.test.mjs`), the
+  worktree diff surface (`apps/server/test/worktree-diff.test.mjs` — porcelain
+  list, merge-base tracked diff, the `--no-index` untracked-as-addition path, and
+  the byte cap), and the loop promotion-gate decisions — both the human-gate
+  event replay (`tools/ai/test/loop-gate.test.mjs`) and the push-risk decision
+  (`tools/ai/test/loop-promotion-push-risks.test.mjs`) — are done. Remaining:
+  extend into promotion-results/evidence assembly if a regression surfaces. Zero
+  decisions, low risk, locks behavior before feature work.
 - **#213 Activate CI** — `ci.yml` add a `pull_request` trigger + flip
   `ENABLE_GITHUB_HOSTED_RUNNERS` + branch protection. ~30 min once cost approved.
 
@@ -37,11 +43,17 @@ phases:
 
 ## M3 — Ecosystem adapters (#211, parallelizable with M2)
 
-- **11A MCP bridge live client (M–L, desktop).** A live client in `apps/desktop`:
-  open the stdio/http transport, `tools/list`, send `tools/call` via the existing
-  `packages/adapters/src/mcp.mjs` descriptor, stream MCP notifications into the
-  invocation event model, map cancellation to `$/cancelRequest`. Register an MCP
-  server as an agent end-to-end.
+- **11A MCP bridge live client (desktop) — DONE.** The live client shipped
+  (`apps/desktop/src/mcp-client.mjs`): stdio *and* Streamable-HTTP transports,
+  `initialize`→`tools/list`→`tools/call`, MCP notifications forwarded into the
+  invocation event model, cancellation via `notifications/cancelled` + process
+  termination, and a health probe. It is wired into bridge dispatch
+  (`apps/desktop/src/index.mjs`) and server registration (`POST /api/agents
+  {type:"mcp"}`). Covered by `apps/desktop/test/mcp-client.test.mjs`,
+  `apps/server/test/mcp-registration.test.mjs`, and the end-to-end seam smoke
+  `tools/dev/mcp-agent-smoke.mjs`. Remaining follow-ups: server→client requests
+  (sampling/roots) are intentionally out of scope; the user-facing connect flow
+  is #137.
 - **11B A2A + container contract slices (S–M each).** Same declarative shape as
   the MCP slice (contract + config normalization + descriptor + unit tests) in
   `packages/adapters`; bridge-side clients follow.

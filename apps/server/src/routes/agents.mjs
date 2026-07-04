@@ -1,3 +1,5 @@
+import { normalizeMcpAdapterConfig } from "@myagenttool/adapters/mcp";
+
 import { isClaudeCliCommand, isCodexCliCommand } from "../services/agents.mjs";
 
 export async function handleAgentRoutes({
@@ -17,6 +19,8 @@ export async function handleAgentRoutes({
   disableAgent,
   enableAgent,
   createAgentHealthCheck,
+  createAgentDryProbeRun,
+  findIntegrationProbeRun,
   unlinkDevice,
 }) {
   if (req.method === "POST" && url.pathname === "/api/bridge/register") {
@@ -76,6 +80,46 @@ export async function handleAgentRoutes({
       createAgentHealthCheck(agent, actor);
     }
     sendJson(res, 201, { agent });
+    return true;
+  }
+
+  // Pre-flight dry-probe: validate an unregistered MCP config and hand it to the
+  // bridge for a handshake + tools/list, so the Connect Agent flow can show the
+  // operator what the config resolves to before any agent is registered (#137).
+  if (req.method === "POST" && url.pathname === "/api/agents/probe") {
+    const body = await readJson(req);
+    let adapter;
+    try {
+      adapter = { type: "mcp", ...normalizeMcpAdapterConfig(body.adapter ?? body) };
+    } catch (error) {
+      sendJson(res, 400, {
+        error: "invalid_agent_probe",
+        message: error instanceof Error ? error.message : String(error),
+      });
+      return true;
+    }
+    let probeRun;
+    try {
+      probeRun = createAgentDryProbeRun(adapter);
+    } catch (error) {
+      sendJson(res, 409, {
+        error: "agent_probe_unavailable",
+        message: error instanceof Error ? error.message : String(error),
+      });
+      return true;
+    }
+    sendJson(res, 202, { probeRun });
+    return true;
+  }
+
+  const probeStatusMatch = url.pathname.match(/^\/api\/agents\/probe\/([^/]+)$/);
+  if (req.method === "GET" && probeStatusMatch) {
+    const probeRun = findIntegrationProbeRun(decodeURIComponent(probeStatusMatch[1]));
+    if (!probeRun || probeRun.kind !== "agent_dry_probe") {
+      sendJson(res, 404, { error: "probe_run_not_found" });
+      return true;
+    }
+    sendJson(res, 200, { probeRun });
     return true;
   }
 

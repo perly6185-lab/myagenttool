@@ -33,6 +33,10 @@ export interface AgentAdapter {
   sandbox?: string;
   permissionMode?: string;
   args?: string[];
+  // MCP transport (stdio spawns `command`; http calls `url`).
+  transport?: string;
+  url?: string;
+  allowedTools?: string[];
 }
 
 export interface AgentEconomics {
