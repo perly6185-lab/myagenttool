@@ -20,6 +20,7 @@ import { createIntegrationService } from "../services/integrations.mjs";
 import { createInvocationService } from "../services/invocations.mjs";
 import { createM3Service } from "../services/m3.mjs";
 import { createProjectService, sameProjectPath } from "../services/projects.mjs";
+import { createAutoRunService } from "../services/auto-run.mjs";
 import { createTerminalService } from "../services/terminal.mjs";
 import { createToolService } from "../services/tools.mjs";
 
@@ -285,6 +286,19 @@ export function createServerRuntimeServices({
     redeliverExpiredDispatches,
     startInvocationIfAllowed,
   } = invocationService;
+
+  const { startAutoRun } = createAutoRunService({
+    state,
+    now,
+    nextId,
+    appendEvent,
+    persistStateSoon,
+    createWorktree,
+    findAgent,
+    defaultAgent,
+    createInvocation,
+    startInvocationIfAllowed,
+  });
 
   const {
     completeDiscoveryRun,
@@ -1829,6 +1843,7 @@ export function createServerRuntimeServices({
     createWorktree,
     createWorktreePr,
     publishWorktreeBranch,
+    startAutoRun,
     selectProject,
     removeProject,
     removeWorktree,

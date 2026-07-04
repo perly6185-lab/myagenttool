@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { RefreshCw, ExternalLink, GitBranch, Workflow } from "lucide-react";
+import { RefreshCw, ExternalLink, GitBranch, Workflow, Zap } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -62,6 +62,18 @@ export function TaskView() {
     setSelectedProjectId(projectId);
     setSelectedWorktreeId(worktreeId);
     setSection("projects");
+  }
+  // One-click Auto: materialize a worktree from the item and start an
+  // issue-seeded agent run in it, then jump into that worktree. Merge stays human.
+  function autoRunIssue(row: Row) {
+    void execute(async () => {
+      const r = (await api.startAutoRun(row.projectId, {
+        link: worktreeLinkFor(row),
+        name: branchFromIssue(row),
+      })) as { worktree?: { id: string } };
+      if (r.worktree?.id) openWorktree(r.worktree.id, row.projectId);
+      return r;
+    });
   }
   // Create a paused automation scoped to this item; the user lands on it to tune.
   function automateIssue(row: Row) {
@@ -253,9 +265,14 @@ export function TaskView() {
                               <GitBranch className="mr-1 size-3.5" /> Open
                             </Button>
                           ) : (
-                            <Button variant="secondary" size="sm" disabled={pending} onClick={() => setWtRow(r)} title="Create a worktree for this item">
-                              <GitBranch className="mr-1 size-3.5" /> Worktree
-                            </Button>
+                            <>
+                              <Button size="sm" disabled={pending} onClick={() => autoRunIssue(r)} title="Create a worktree and start an agent run for this item">
+                                <Zap className="mr-1 size-3.5" /> Auto
+                              </Button>
+                              <Button variant="secondary" size="sm" disabled={pending} onClick={() => setWtRow(r)} title="Create a worktree for this item">
+                                <GitBranch className="mr-1 size-3.5" /> Worktree
+                              </Button>
+                            </>
                           );
                         })()}
                         {r.url ? (
