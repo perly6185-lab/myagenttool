@@ -1,5 +1,6 @@
 import {
   AppWindow,
+  Bot,
   Boxes,
   FolderKanban,
   LayoutDashboard,
@@ -30,6 +31,7 @@ export const SECTIONS: SectionDef[] = [
   { key: "dashboard", label: "Overview", icon: LayoutDashboard, blurb: "Start a task and watch it run" },
   { key: "projects", label: "Projects", icon: FolderKanban, blurb: "Group work and own budgets" },
   { key: "task", label: "Task", icon: ListTodo, blurb: "GitHub issues and PRs as work items" },
+  { key: "autoRuns", label: "Auto-runs", icon: Bot, blurb: "Autonomous issue → worktree → PR runs" },
   { key: "automation", label: "Automation", icon: Workflow, blurb: "Rules that run agents on a trigger" },
   { key: "agentSkills", label: "Agent Skills", icon: Wand2, blurb: "Instruction docs rendered into agent runs" },
   { key: "invocations", label: "Invocations", icon: ListChecks, blurb: "Every call, status, and result" },

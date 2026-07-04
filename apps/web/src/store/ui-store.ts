@@ -5,6 +5,7 @@ export type SectionKey =
   | "dashboard"
   | "projects"
   | "task"
+  | "autoRuns"
   | "automation"
   | "agentSkills"
   | "invocations"

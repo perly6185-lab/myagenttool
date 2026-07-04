@@ -3,6 +3,7 @@ import type { SectionKey } from "@/store/ui-store";
 import { DashboardView } from "@/features/dashboard/dashboard-view";
 import { ProjectsView } from "@/features/projects/projects-view";
 import { TaskView } from "@/features/tasks/task-view";
+import { AutoRunsView } from "@/features/auto-runs/auto-runs-view";
 import { AutomationView } from "@/features/automation/automation-view";
 import { AgentSkillsView } from "@/features/agent-skills/agent-skills-view";
 import { InvocationsView } from "@/features/invocations/invocations-view";
@@ -24,6 +25,7 @@ export const SECTION_VIEWS: Record<SectionKey, ComponentType> = {
   dashboard: DashboardView,
   projects: ProjectsView,
   task: TaskView,
+  autoRuns: AutoRunsView,
   automation: AutomationView,
   agentSkills: AgentSkillsView,
   invocations: InvocationsView,
