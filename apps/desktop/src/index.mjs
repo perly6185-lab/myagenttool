@@ -333,6 +333,9 @@ async function runLifecycleAction(work) {
   }
   const plan = work.executionEnabled === true ? lifecycleCommandPlan(work.command) : null;
   if (!plan) {
+    // Uniform refusal auditing: a declined lifecycle spawn records structured
+    // refusal evidence (like the CLI local_execution_refused path), not just a
+    // prose failure — the bridge, not server policy, is declining local execution.
     await postLifecycleResult({
       lifecycleActionId: work.lifecycleActionId,
       status: "failed",
@@ -341,7 +344,15 @@ async function runLifecycleAction(work) {
       stdout: "",
       stderr: "",
       durationMs: null,
-      healthStatus: "unknown"
+      healthStatus: "unknown",
+      policyDecision: "local_execution_refused",
+      refusal: {
+        gate: "lifecycle_allowlist",
+        commandId: work.command?.commandId ?? null,
+        executable: work.command?.executable ?? null,
+        executionEnabled: work.executionEnabled === true,
+        reason: "Lifecycle command is not allowlisted for this Desktop Bridge build."
+      }
     });
     return;
   }

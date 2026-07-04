@@ -143,8 +143,16 @@ export function createPersistenceRuntime({
     for (const key of persistedObjectKeys) {
       snapshot[key] = state[key];
     }
-    mkdirSync(dirname(stateStorePath), { recursive: true });
-    durableWriteFileSync(stateStorePath, `${JSON.stringify(snapshot, null, 2)}\n`);
+    // A persistence write failure (state dir removed, disk full, permissions)
+    // must NOT crash the control plane — the in-memory state is intact and a
+    // later write can succeed. The atomic rename means a failed write also never
+    // corrupts the existing snapshot. Log and continue.
+    try {
+      mkdirSync(dirname(stateStorePath), { recursive: true });
+      durableWriteFileSync(stateStorePath, `${JSON.stringify(snapshot, null, 2)}\n`);
+    } catch (error) {
+      console.error(`[server] failed to persist state: ${error?.message ?? error}`);
+    }
   }
 
   function restorePersistentState() {

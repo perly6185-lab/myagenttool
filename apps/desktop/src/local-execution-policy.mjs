@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { isAbsolute, resolve } from "node:path";
+import { isAbsolute, resolve, sep } from "node:path";
 
 const FILE_POLICIES = new Set(["forbidden", "read_only", "workspace_write", "native_controls"]);
 const NETWORK_POLICIES = new Set(["forbidden", "restricted", "network", "native_controls"]);
@@ -59,11 +59,13 @@ export function localPolicyForAdapter(adapter, payload = {}) {
 export function localExecutionGate(work, adapter, spawnPlan, { permissionDecision, permissionHook, manifest } = {}) {
   const localPolicy = spawnPlan?.localPolicy ?? localPolicyForAdapter(adapter, work);
   const commandKind = classifySpawn(adapter, spawnPlan, manifest);
+  const approvedRoots = collectApprovedRoots(work);
   const evidence = {
     adapterType: adapter?.type ?? "unknown",
     adapterCommand: adapter?.command ?? null,
     command: spawnPlan?.command ?? null,
     cwd: spawnPlan?.cwd ?? null,
+    approvedRoots,
     commandKind,
     filePolicy: localPolicy.filePolicy,
     networkPolicy: localPolicy.networkPolicy,
@@ -80,6 +82,14 @@ export function localExecutionGate(work, adapter, spawnPlan, { permissionDecisio
   }
   if (!spawnPlan.cwd || !isAbsolute(spawnPlan.cwd) || !existsSync(spawnPlan.cwd)) {
     return refused("Local execution gate refused a missing or non-absolute working directory.", evidence);
+  }
+  // cwd confinement: the working directory must stay inside a root the
+  // invocation is actually scoped to (its project or worktree). Defense-in-depth
+  // against a cwd that escapes the approved workspace onto arbitrary paths. When
+  // no root can be derived, there is nothing to confine to, so the run is not
+  // blocked on this check alone.
+  if (approvedRoots.length > 0 && !approvedRoots.some((root) => pathWithin(root, spawnPlan.cwd))) {
+    return refused("Local execution gate refused a working directory outside the approved project or worktree root.", evidence);
   }
   if (spawnPlan.args.some((arg) => String(arg).includes("\0"))) {
     return refused("Local execution gate refused an argv containing a NUL byte.", evidence);
@@ -149,6 +159,22 @@ function isClaudeCliCommand(command) {
 function normalizePolicy(value, fallback) {
   const text = String(value ?? "").trim();
   return FILE_POLICIES.has(text) || NETWORK_POLICIES.has(text) ? text : fallback;
+}
+
+function collectApprovedRoots(work) {
+  const metadata = work?.options?.metadata && typeof work.options.metadata === "object" && !Array.isArray(work.options.metadata)
+    ? work.options.metadata
+    : {};
+  const roots = [work?.project?.path, metadata.worktreePath, metadata.projectPath].filter(
+    (value) => typeof value === "string" && value.trim(),
+  );
+  return [...new Set(roots.map((value) => resolve(value)))];
+}
+
+function pathWithin(root, target) {
+  const r = resolve(String(root));
+  const t = resolve(String(target));
+  return t === r || t.startsWith(r + sep);
 }
 
 function samePath(a, b) {

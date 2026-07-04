@@ -58,13 +58,15 @@ export async function handleApplicationRoutes({
   if (orchestrationGenerateMatch && req.method === "POST") {
     const applicationId = decodeURIComponent(orchestrationGenerateMatch[1]);
     if (denyForeignApplication({ res, sendJson, state, actor, applicationId, findApplication })) return true;
+    const body = await readJson(req);
+    if (denyForeignProjectFromBody({ res, sendJson, state, actor, body })) return true;
     const capability = (listApplicationCapabilities(applicationId) ?? [])
       .find((item) => item.name.endsWith(".generate_orchestration"));
     if (!capability) {
       sendJson(res, 404, { error: "application_not_found" });
       return true;
     }
-    const result = createCapabilityInvocation(capability.name, await readJson(req), actor);
+    const result = createCapabilityInvocation(capability.name, body, actor);
     sendJson(res, result.status, result.body);
     return true;
   }
@@ -178,13 +180,15 @@ export async function handleApplicationRoutes({
     const applicationId = decodeURIComponent(actionMatch[1]);
     if (denyForeignApplication({ res, sendJson, state, actor, applicationId, findApplication })) return true;
     if (["archive", "offline", "online", "refresh"].includes(actionMatch[2])) {
+      const body = await readJson(req);
+      if (denyForeignProjectFromBody({ res, sendJson, state, actor, body })) return true;
       const capability = (listApplicationCapabilities(applicationId) ?? [])
         .find((item) => item.name.endsWith(`.${actionMatch[2]}`));
       if (!capability) {
         sendJson(res, 404, { error: "application_not_found" });
         return true;
       }
-      const result = createCapabilityInvocation(capability.name, await readJson(req), actor);
+      const result = createCapabilityInvocation(capability.name, body, actor);
       sendJson(res, result.status, result.body);
       return true;
     }
@@ -255,4 +259,9 @@ function denyForeignApplication({ res, sendJson, state, actor, applicationId, fi
     return true;
   }
   return false;
+}
+
+function denyForeignProjectFromBody({ res, sendJson, state, actor, body }) {
+  const projectId = body && typeof body === "object" && !Array.isArray(body) ? body.projectId : null;
+  return denyForeignProject({ res, sendJson, state, actor, projectId, notFound: { error: "project_not_found" } });
 }

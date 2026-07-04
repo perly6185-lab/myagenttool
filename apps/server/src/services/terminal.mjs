@@ -1,3 +1,24 @@
+import { resolve, sep } from "node:path";
+
+// A local managed terminal is the broadest execution surface on the bridge (an
+// interactive shell). Its cwd must stay inside a registered project or worktree
+// root so a session can't be opened at an arbitrary path on the host. (Remote
+// SSH-relay terminals run on the remote target, not the bridge, so they use the
+// target's own workspace root and are out of scope here.)
+export function approvedLocalTerminalRoots(state) {
+  const projectRoots = (state?.projects ?? []).map((project) => project?.path).filter(Boolean);
+  const worktreeRoots = (state?.worktrees ?? []).map((worktree) => worktree?.path ?? worktree?.worktreePath).filter(Boolean);
+  return [...new Set([...projectRoots, ...worktreeRoots].map((path) => resolve(String(path))))];
+}
+
+export function terminalCwdWithinRoots(cwd, roots) {
+  const target = resolve(String(cwd));
+  return roots.some((root) => {
+    const r = resolve(String(root));
+    return target === r || target.startsWith(r + sep);
+  });
+}
+
 export function createTerminalRuntimeCapability({ now = defaultNow } = {}) {
   const platform = process.platform;
   const isWindows = platform === "win32";
@@ -166,6 +187,17 @@ export function createTerminalService({
     const cwd = runtimeKind === "remote_ssh_relay"
       ? normalizeTerminalCwd(body.cwd ?? sshTarget.workspaceRoot)
       : normalizeTerminalCwd(body.cwd);
+    // Confine a CLIENT-SUPPLIED local terminal cwd to a registered project/
+    // worktree root — a client must not open an interactive shell at an
+    // arbitrary path on the bridge host. The default (no cwd → the bridge's own
+    // working directory) is the trusted fallback and is not confined.
+    const requestedCwd = body.cwd != null && String(body.cwd).trim() ? String(body.cwd) : null;
+    if (runtimeKind !== "remote_ssh_relay" && requestedCwd) {
+      const roots = approvedLocalTerminalRoots(state);
+      if (roots.length > 0 && !terminalCwdWithinRoots(cwd, roots)) {
+        throw new Error("A local terminal working directory must be inside a registered project or worktree root.");
+      }
+    }
     const runtimeAvailable = runtimeKind === "remote_ssh_relay" ? capability.relay.available : capability.localPty.available;
     const session = {
       terminalSessionId: nextId("term"),

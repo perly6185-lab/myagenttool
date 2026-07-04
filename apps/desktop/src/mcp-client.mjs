@@ -19,11 +19,45 @@ const CLIENT_INFO = { name: "myagenttool-desktop-bridge", version: "0.0.0" };
 const HANDSHAKE_TIMEOUT_MS = 10_000;
 const CANCEL_GRACE_MS = 500;
 
+// A spawned MCP server is often a third-party npm package. Handing it the
+// bridge's full `process.env` would leak every secret/token in the bridge
+// process to untrusted code. Pass only a curated, non-secret base (enough for a
+// node/npx-based server to run) plus any env the operator explicitly configured
+// on the registration.
+const SAFE_MCP_ENV_KEYS = [
+  "PATH",
+  "HOME",
+  "USERPROFILE",
+  "LANG",
+  "LC_ALL",
+  "LC_CTYPE",
+  "TZ",
+  "TMPDIR",
+  "TMP",
+  "TEMP",
+  "SHELL",
+  "PATHEXT",
+  "SYSTEMROOT",
+  "windir",
+  "COMSPEC",
+  "NODE_EXTRA_CA_CERTS",
+];
+
+export function buildMcpChildEnv(adapter) {
+  const env = {};
+  for (const key of SAFE_MCP_ENV_KEYS) {
+    if (process.env[key] !== undefined) env[key] = process.env[key];
+  }
+  const explicit = adapter && typeof adapter.env === "object" && !Array.isArray(adapter.env) ? adapter.env : {};
+  for (const [key, value] of Object.entries(explicit)) env[String(key)] = String(value);
+  return env;
+}
+
 /** One newline-delimited JSON-RPC session over a child process's stdio. */
 function createStdioSession(adapter, onEvent) {
   const child = spawn(adapter.command, adapter.args ?? [], {
     stdio: ["pipe", "pipe", "pipe"],
-    env: process.env,
+    env: buildMcpChildEnv(adapter),
   });
 
   let nextId = 1;
