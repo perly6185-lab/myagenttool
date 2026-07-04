@@ -18,6 +18,46 @@ import { describeContainerRun } from "@myagenttool/adapters/container";
 const CANCEL_GRACE_MS = 500;
 const OUTPUT_TAIL_LIMIT = 4_000;
 
+// The bridge independently enforces the container safety invariants before
+// spawning — it does not trust that the server normalized the config (principle
+// #5: server approval is not local execution consent). A compromised or buggy
+// server that sends `network: host`, a non-allowlisted runtime, or an oversized
+// ceiling is refused here.
+const ALLOWED_CONTAINER_RUNTIMES = new Set(["docker", "podman"]);
+const ALLOWED_CONTAINER_NETWORKS = new Set(["none", "bridge"]);
+const CONTAINER_IMAGE_PATTERN = /^[a-z0-9]+([._\-/:][a-z0-9]+)*(@sha256:[0-9a-f]{64})?$/i;
+const CONTAINER_MAX_CPU = 8;
+const CONTAINER_MIN_MEMORY_MB = 64;
+const CONTAINER_MAX_MEMORY_MB = 16_384;
+
+/** Returns a refusal reason string if the run descriptor violates a local trust
+ *  invariant, or null if it is allowed. Exported so the mapping is pinned.
+ *  `allowTestRuntime` (never set in production) permits the node-script fake
+ *  runtime the container-client tests use in place of a real docker/podman CLI. */
+export function containerDescriptorRefusal(descriptor, { allowTestRuntime = false } = {}) {
+  const runtimeAllowed =
+    ALLOWED_CONTAINER_RUNTIMES.has(descriptor?.runtime) ||
+    (allowTestRuntime && [".cjs", ".js", ".mjs"].includes(extname(String(descriptor?.runtime ?? ""))));
+  if (!runtimeAllowed) {
+    return `runtime "${descriptor?.runtime}" is not allowlisted`;
+  }
+  if (!ALLOWED_CONTAINER_NETWORKS.has(descriptor?.network)) {
+    return `network "${descriptor?.network}" is not allowlisted (only none/bridge)`;
+  }
+  if (typeof descriptor?.image !== "string" || !CONTAINER_IMAGE_PATTERN.test(descriptor.image)) {
+    return `image "${descriptor?.image}" is not a valid reference`;
+  }
+  const cpu = Number(descriptor?.limits?.cpu);
+  if (!Number.isFinite(cpu) || cpu <= 0 || cpu > CONTAINER_MAX_CPU) {
+    return `cpu limit ${descriptor?.limits?.cpu} is out of bounds`;
+  }
+  const memoryMb = Number(descriptor?.limits?.memoryMb);
+  if (!Number.isFinite(memoryMb) || memoryMb < CONTAINER_MIN_MEMORY_MB || memoryMb > CONTAINER_MAX_MEMORY_MB) {
+    return `memory limit ${descriptor?.limits?.memoryMb} is out of bounds`;
+  }
+  return null;
+}
+
 let runCounter = 0;
 
 function runtimeCommand(runtime, args) {
@@ -50,12 +90,27 @@ export function containerRunArgs(descriptor, name) {
 }
 
 /** Run one task in a fresh container and wait for a terminal outcome. */
-export async function runContainerAgent({ adapter, task, onEvent = () => {}, shouldCancel = () => false }) {
+export async function runContainerAgent({ adapter, task, onEvent = () => {}, shouldCancel = () => false, allowTestRuntime = false }) {
   let descriptor;
   try {
     descriptor = describeContainerRun(adapter, task);
   } catch (error) {
     return { status: "failed", summary: `Container run rejected: ${error?.message ?? error}`, result: null };
+  }
+
+  // Bridge-side trust boundary: refuse a descriptor that violates a local
+  // invariant BEFORE any process starts, with structured refusal evidence.
+  const refusalReason = containerDescriptorRefusal(descriptor, { allowTestRuntime });
+  if (refusalReason) {
+    onEvent({ level: "error", message: `Container run refused by the local trust boundary: ${refusalReason}.` });
+    return {
+      status: "failed",
+      summary: `Container run refused by the local trust boundary: ${refusalReason}.`,
+      result: {
+        policyDecision: "local_execution_refused",
+        refusal: { gate: "container_descriptor", runtime: descriptor.runtime, network: descriptor.network, image: descriptor.image, reason: refusalReason },
+      },
+    };
   }
 
   const name = `myagent-run-${process.pid}-${++runCounter}`;
