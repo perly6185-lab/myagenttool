@@ -52,6 +52,9 @@ function registerMcpAgent(extra = {}) {
   const probe = await probeMcpServer(adapter);
   assert.equal(probe.ok, true, probe.message);
   assert.match(probe.message, /echo/, "probe reports the tool the fixture exposes");
+  // The dry-probe flow (#137) surfaces this structured list to the Connect
+  // Agent UI, so a config resolves to a visible tool set before registration.
+  assert.deepEqual(probe.tools, ["echo"], "probe returns the tool names as a structured list");
   ok("probeMcpServer handshakes and lists the fixture's tool");
 }
 

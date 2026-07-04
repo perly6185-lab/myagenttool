@@ -1145,6 +1145,20 @@ async function runDiscovery(work) {
 
 async function runIntegrationProbe(work) {
   const adapter = work.adapter;
+  // MCP dry-probe: run the same live client that executes MCP invocations, but
+  // stop at the handshake + tools/list so the Web Console can show the operator
+  // what a config resolves to *before* an agent is registered/enabled.
+  if (adapter?.type === "mcp") {
+    const probe = await probeMcpServer(adapter);
+    await request("POST", "/api/bridge/probe-complete", {
+      probeRunId: work.probeRunId,
+      status: probe.ok ? "succeeded" : "failed",
+      summary: probe.message,
+      details: probe.nextAction ? [probe.nextAction] : [],
+      tools: probe.tools ?? []
+    });
+    return;
+  }
   if (!adapter || adapter.type !== "cli") {
     await request("POST", "/api/bridge/probe-complete", {
       probeRunId: work.probeRunId,
