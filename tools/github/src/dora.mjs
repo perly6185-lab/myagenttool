@@ -11,7 +11,66 @@
 // Elite reference thresholds (2024 DORA snapshot, directional — see
 // MATURITY_CALIBRATION.md): lead time < 1 day; deploy on-demand.
 
-export function computeDoraStats(mergedPrs, { days, checksReadable = true, ciSource = "check-rollup", ciSince = null }) {
+// Date the change-failure convention was adopted. Merges before it could not
+// carry the marker, so a rate over a window that starts earlier is a lower
+// bound — surfaced with this date rather than faked.
+export const CHANGE_FAILURE_SIGNAL_SINCE = "2026-07-04";
+
+// A remediation PR names the merge it fixes with a `Change-failure: #N` marker
+// (one or more) in its body. That explicit, greppable link is the honest
+// incident signal — no inferred reverts, no faked backfill: only failures
+// recorded from the convention's adoption onward are counted.
+export function parseChangeFailureRefs(body) {
+  const refs = new Set();
+  const re = /change-failure:\s*((?:#\d+[\s,]*)+)/gi;
+  let match;
+  while ((match = re.exec(String(body ?? ""))) !== null) {
+    for (const token of match[1].match(/#\d+/g) ?? []) refs.add(Number(token.slice(1)));
+  }
+  return [...refs];
+}
+
+// Change failure rate + failed-deployment recovery time from the marker signal.
+// A change failure is an in-window merge (deploy) that a later merged PR
+// remediates. CFR = distinct culprits / window merges; recovery =
+// median(remediation.mergedAt - culprit.mergedAt). With no markers it reports
+// recorded:false + the signal-live-since date, never a fabricated ~5%.
+export function computeChangeFailures(mergedPrs, { signalSince = CHANGE_FAILURE_SIGNAL_SINCE } = {}) {
+  const byNumber = new Map(mergedPrs.map((pr) => [pr.number, pr]));
+  const remediatedAt = new Map(); // culprit number -> earliest remediation mergedAt
+  for (const pr of mergedPrs) {
+    for (const culprit of parseChangeFailureRefs(pr.body)) {
+      if (culprit === pr.number) continue; // a PR cannot remediate itself
+      const prior = remediatedAt.get(culprit);
+      if (!prior || (pr.mergedAt && pr.mergedAt < prior)) remediatedAt.set(culprit, pr.mergedAt);
+    }
+  }
+  const recoveryHours = [];
+  const incidents = [];
+  for (const [culprit, fixedAt] of remediatedAt) {
+    const culpritPr = byNumber.get(culprit);
+    if (!culpritPr?.mergedAt || !fixedAt) continue; // culprit merged outside the fetched window
+    const hours = (Date.parse(fixedAt) - Date.parse(culpritPr.mergedAt)) / 3_600_000;
+    if (Number.isFinite(hours) && hours >= 0) {
+      recoveryHours.push(hours);
+      incidents.push({ culprit, recoveryHours: round2(hours) });
+    }
+  }
+  recoveryHours.sort((a, b) => a - b);
+  const total = mergedPrs.length;
+  const culpritCount = incidents.length;
+  return {
+    signalSince,
+    recorded: culpritCount > 0,
+    culpritCount,
+    mergedPrCount: total,
+    changeFailureRate: total === 0 ? null : round3(culpritCount / total),
+    recoveryHours: { median: percentile(recoveryHours, 0.5), p90: percentile(recoveryHours, 0.9) },
+    incidents: incidents.sort((a, b) => a.culprit - b.culprit),
+  };
+}
+
+export function computeDoraStats(mergedPrs, { days, checksReadable = true, ciSource = "check-rollup", ciSince = null, signalSince = CHANGE_FAILURE_SIGNAL_SINCE }) {
   const leadTimesHours = mergedPrs
     .map((pr) => (Date.parse(pr.mergedAt) - Date.parse(pr.createdAt)) / 3_600_000)
     .filter((hours) => Number.isFinite(hours) && hours >= 0)
@@ -39,10 +98,7 @@ export function computeDoraStats(mergedPrs, { days, checksReadable = true, ciSou
       : { unavailable: "This token can read neither check runs nor Actions runs." },
     ciChecksSince: sinceSlice,
     eliteReference: { leadTimeHoursMedian: 24, deployFrequency: "on-demand" },
-    notInstrumented: {
-      changeFailureRate: "Needs a deploy + incident/rollback signal; no production deploys exist yet.",
-      failedDeploymentRecoveryTime: "Needs deploy failure timestamps; not measurable before a real deploy target.",
-    },
+    changeFailures: computeChangeFailures(mergedPrs, { signalSince }),
   };
 }
 
@@ -104,14 +160,32 @@ export function formatDoraReport(stats, { repo }) {
           `CI green on merges since ${stats.ciChecksSince.since.slice(0, 10)} (current discipline)`,
         )]
       : []),
-    `| Change failure rate | not instrumented | ~5% | — |`,
-    `| Failed deployment recovery time | not instrumented | < 1h | — |`,
+    formatChangeFailureRow(stats.changeFailures),
+    formatRecoveryRow(stats.changeFailures),
     "",
-    "Not-instrumented metrics need a real deploy target plus incident/rollback",
-    "signals; they are reported honestly rather than proxied. See",
-    "docs/engineering/MATURITY_CALIBRATION.md for how these feed the L2/L3/L5 gates.",
+    "Change failure rate + recovery time come from `Change-failure: #N` markers on",
+    "remediation PRs (adoption 2026-07-04) — an explicit incident signal, not an",
+    "inferred revert or a faked number; a window that starts before adoption is a",
+    "lower bound. Deploy frequency is still a merge-to-main proxy (no production",
+    "deploy pipeline). See docs/engineering/MATURITY_CALIBRATION.md for the gates.",
     "",
   ].join("\n");
+}
+
+function formatChangeFailureRow(cf) {
+  if (!cf || !cf.recorded) {
+    return `| Change failure rate (marker-traced) | 0 recorded incidents (signal live since ${cf?.signalSince ?? CHANGE_FAILURE_SIGNAL_SINCE}) | ~5% | — |`;
+  }
+  const status = cf.changeFailureRate <= 0.05 ? "meets" : "below";
+  return `| Change failure rate (marker-traced) | ${(cf.changeFailureRate * 100).toFixed(1)}% (${cf.culpritCount}/${cf.mergedPrCount}) | ~5% | ${status} |`;
+}
+
+function formatRecoveryRow(cf) {
+  const median = cf?.recoveryHours?.median ?? null;
+  if (!cf || !cf.recorded || median === null) {
+    return "| Failed deployment recovery time (fix-merge) | no incidents recorded yet | < 1h | — |";
+  }
+  return `| Failed deployment recovery time (fix-merge) | ${formatHours(median)} median | < 1h | ${median < 1 ? "meets" : "below"} |`;
 }
 
 function formatCiChecksRow(ci) {
@@ -141,7 +215,6 @@ export function doraSelfCheck() {
   if (stats.leadTimeHours.median !== 24) failures.push(`median lead time expected 24h, got ${stats.leadTimeHours.median}`);
   if (stats.leadTimeHours.max !== 48) failures.push(`max lead time expected 48h, got ${stats.leadTimeHours.max}`);
   if (stats.mergesPerWeek !== 3) failures.push(`merges/week expected 3, got ${stats.mergesPerWeek}`);
-  if (!stats.notInstrumented.changeFailureRate) failures.push("change failure rate must be reported as not instrumented");
   const empty = computeDoraStats([], { days: 30 });
   if (empty.leadTimeHours.median !== null) failures.push("empty window must report null lead time, not a fake number");
 
@@ -157,6 +230,20 @@ export function doraSelfCheck() {
   const inactive = computeCiChecks([{ number: 1 }, { number: 2 }]);
   if (inactive.ciActive || inactive.greenRate !== 0) {
     failures.push("all-unchecked PRs must read as CI-not-active with a 0 rate, not a fake pass");
+  }
+
+  // Change-failure marker signal: #11 remediates #10 (3h later); #12 is clean.
+  const cf = computeChangeFailures([
+    { number: 10, mergedAt: "2026-07-04T00:00:00Z", body: "feat: X" },
+    { number: 11, mergedAt: "2026-07-04T03:00:00Z", body: "fix: regression\n\nChange-failure: #10" },
+    { number: 12, mergedAt: "2026-07-05T00:00:00Z", body: "feat: Y" },
+  ]);
+  if (cf.culpritCount !== 1) failures.push(`change failures: expected 1 culprit, got ${cf.culpritCount}`);
+  if (cf.changeFailureRate !== 0.333) failures.push(`change failure rate expected 0.333, got ${cf.changeFailureRate}`);
+  if (cf.recoveryHours.median !== 3) failures.push(`recovery expected 3h median, got ${cf.recoveryHours.median}`);
+  const cfEmpty = computeChangeFailures([{ number: 1, mergedAt: "2026-07-04T00:00:00Z", body: "no marker here" }]);
+  if (cfEmpty.recorded || cfEmpty.changeFailureRate !== 0) {
+    failures.push("no markers must report recorded:false with rate 0, not a fabricated number");
   }
   return failures;
 }
@@ -174,4 +261,8 @@ function formatHours(hours) {
 
 function round2(value) {
   return value === null ? null : Math.round(value * 100) / 100;
+}
+
+function round3(value) {
+  return value === null ? null : Math.round(value * 1000) / 1000;
 }

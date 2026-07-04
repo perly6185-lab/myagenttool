@@ -164,10 +164,10 @@ function doraReport(args) {
   let checksReadable = true;
   let ciSource = "check-rollup";
   try {
-    prs = ghJson(listArgs("number,createdAt,mergedAt,statusCheckRollup"));
+    prs = ghJson(listArgs("number,createdAt,mergedAt,body,statusCheckRollup"));
   } catch {
     checksReadable = false;
-    prs = ghJson(listArgs("number,createdAt,mergedAt,headRefOid"));
+    prs = ghJson(listArgs("number,createdAt,mergedAt,body,headRefOid"));
   }
   prs = prs.filter((pr) => pr.mergedAt && pr.mergedAt >= since);
   if (prs.length >= limit) {
