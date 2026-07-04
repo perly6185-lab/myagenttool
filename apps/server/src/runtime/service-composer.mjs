@@ -20,6 +20,9 @@ import { createIntegrationService } from "../services/integrations.mjs";
 import { createInvocationService } from "../services/invocations.mjs";
 import { createM3Service } from "../services/m3.mjs";
 import { createProjectService, sameProjectPath } from "../services/projects.mjs";
+import { createAutoRunService } from "../services/auto-run.mjs";
+import { resolveAutoRunVerifyCommand, runWorktreeVerification } from "../services/worktree-verify.mjs";
+import { resolveStatusWritebackConfig, runIssueStatusTransition } from "../services/issue-status.mjs";
 import { createTerminalService } from "../services/terminal.mjs";
 import { createToolService } from "../services/tools.mjs";
 
@@ -78,6 +81,8 @@ export function createServerRuntimeServices({
     currentProject,
     gitProjectSummary,
     projectBranches,
+    publishWorktreeBranch,
+    createWorktreePr,
     worktreeDiff,
     projectGithubItems,
     projectForInvocation,
@@ -239,6 +244,11 @@ export function createServerRuntimeServices({
     persistStateSoon,
   });
 
+  // Late-bound so completion can trigger the auto-run reaction, which is created
+  // below (it needs createInvocation from this very service). Set after the
+  // auto-run service exists; until then completion has nothing to advance.
+  let advanceAutoRunHook = null;
+
   invocationService = createInvocationService({
     state,
     now,
@@ -265,6 +275,7 @@ export function createServerRuntimeServices({
     resolveResumeCodexSessionId,
     closeCodexSession,
     budgetGateForProject,
+    onInvocationCompleted: (invocation) => advanceAutoRunHook?.(invocation),
   });
 
   const {
@@ -283,6 +294,38 @@ export function createServerRuntimeServices({
     redeliverExpiredDispatches,
     startInvocationIfAllowed,
   } = invocationService;
+
+  const { startAutoRun, advanceAutoRunForInvocation } = createAutoRunService({
+    state,
+    now,
+    nextId,
+    appendEvent,
+    persistStateSoon,
+    createWorktree,
+    findAgent,
+    defaultAgent,
+    createInvocation,
+    startInvocationIfAllowed,
+    publishWorktreeBranch,
+    createWorktreePr,
+    // Verification gate: run the project-configured command in the worktree.
+    // No command configured -> unverified pass-through (PR labeled unverified);
+    // a configured command that fails blocks the PR.
+    verifyWorktree: async ({ worktree }) => {
+      const command = resolveAutoRunVerifyCommand();
+      if (!command || !worktree?.path) {
+        return { passed: true, verified: false, summary: "No verification command configured — PR opened unverified." };
+      }
+      return runWorktreeVerification({ cwd: worktree.path, command });
+    },
+    // Issue status writeback (ready -> in-progress -> review). Undefined when
+    // disabled so the orchestrator skips it entirely — no GitHub writes by default.
+    writeIssueStatus: resolveStatusWritebackConfig().enabled
+      ? async ({ issueNumber, repoPath, to }) => runIssueStatusTransition({ cwd: repoPath, issueNumber, to })
+      : undefined,
+  });
+  // Now that the reaction exists, let completion drive it.
+  advanceAutoRunHook = advanceAutoRunForInvocation;
 
   const {
     completeDiscoveryRun,
@@ -1825,6 +1868,9 @@ export function createServerRuntimeServices({
     cloneProject,
     createBlankProject,
     createWorktree,
+    createWorktreePr,
+    publishWorktreeBranch,
+    startAutoRun,
     selectProject,
     removeProject,
     removeWorktree,

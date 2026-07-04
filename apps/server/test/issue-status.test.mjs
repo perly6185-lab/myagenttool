@@ -1,0 +1,65 @@
+/*
+ * Phase 4 issue status writeback: the gh label transition and its config gate.
+ * Fake gh so no network; asserts the exact args and that failures never throw.
+ */
+
+import assert from "node:assert/strict";
+import { test } from "node:test";
+
+import {
+  resolveStatusWritebackConfig,
+  runIssueStatusTransition,
+  statusTransitionLabels,
+} from "../src/services/issue-status.mjs";
+
+test("resolveStatusWritebackConfig is off unless explicitly enabled", () => {
+  assert.deepEqual(resolveStatusWritebackConfig({}), { enabled: false });
+  assert.deepEqual(resolveStatusWritebackConfig({ MYAGENTTOOL_AUTORUN_STATUS_WRITEBACK: "1" }), { enabled: true });
+  assert.deepEqual(resolveStatusWritebackConfig({ MYAGENTTOOL_AUTORUN_STATUS_WRITEBACK: "true" }), { enabled: true });
+});
+
+test("statusTransitionLabels maps the forward transitions", () => {
+  assert.deepEqual(statusTransitionLabels("in-progress"), { add: ["status/in-progress"], remove: ["status/ready", "status/backlog"] });
+  assert.deepEqual(statusTransitionLabels("review"), { add: ["status/review"], remove: ["status/in-progress"] });
+  assert.equal(statusTransitionLabels("bogus"), null);
+});
+
+test("runIssueStatusTransition issues the right gh edit for in-progress", async () => {
+  const calls = [];
+  const gh = async (args, cwd) => calls.push({ args, cwd });
+  const result = await runIssueStatusTransition({ cwd: "/repo", issueNumber: 42, to: "in-progress", gh });
+
+  assert.equal(result.ok, true);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].cwd, "/repo");
+  assert.deepEqual(calls[0].args, [
+    "issue", "edit", "42",
+    "--add-label", "status/in-progress",
+    "--remove-label", "status/ready",
+    "--remove-label", "status/backlog",
+  ]);
+});
+
+test("runIssueStatusTransition review transition removes in-progress, adds review", async () => {
+  const calls = [];
+  const gh = async (args) => calls.push(args);
+  await runIssueStatusTransition({ cwd: "/repo", issueNumber: 7, to: "review", gh });
+  assert.deepEqual(calls[0], ["issue", "edit", "7", "--add-label", "status/review", "--remove-label", "status/in-progress"]);
+});
+
+test("runIssueStatusTransition never throws — a gh failure is a structured result", async () => {
+  const gh = async () => {
+    throw Object.assign(new Error("boom"), { stderr: "gh: not authenticated" });
+  };
+  const result = await runIssueStatusTransition({ cwd: "/repo", issueNumber: 1, to: "review", gh });
+  assert.equal(result.ok, false);
+  assert.match(result.error, /not authenticated/);
+});
+
+test("runIssueStatusTransition skips an unknown status without calling gh", async () => {
+  let called = false;
+  const gh = async () => { called = true; };
+  const result = await runIssueStatusTransition({ cwd: "/repo", issueNumber: 1, to: "done", gh });
+  assert.equal(result.skipped, true);
+  assert.equal(called, false);
+});

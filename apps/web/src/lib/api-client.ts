@@ -396,6 +396,17 @@ export const api = {
     },
   ) =>
     request("POST", `/api/projects/${encodeURIComponent(projectId)}/worktrees`, payload),
+  // One-click Auto: materialize a worktree from the issue and start an
+  // issue-seeded agent run in it. Merge stays human.
+  startAutoRun: (
+    projectId: string,
+    payload: {
+      link: { type: "issue" | "pr"; number: number; title: string; url: string | null; state: string };
+      agentId?: string;
+      name?: string;
+      baseBranch?: string;
+    },
+  ) => request("POST", `/api/projects/${encodeURIComponent(projectId)}/auto-runs`, payload),
   removeWorktree: (id: string) => request("DELETE", `/api/worktrees/${encodeURIComponent(id)}`),
   listWorktreeFiles: (id: string) => request("GET", `/api/worktrees/${encodeURIComponent(id)}/files`),
   searchWorktree: (id: string, q: string, mode: "name" | "content") =>

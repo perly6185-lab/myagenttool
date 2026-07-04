@@ -41,6 +41,7 @@ export function createServerState({ defaultProjectPath, now }) {
     currentProjectId: defaultProject.id,
     projectTargets: [createProjectTargetRecord(defaultProject, now)],
     worktrees: [],
+    autoRuns: [],
     agents: createDefaultAgents(now),
     invocations: [],
     compareRuns: [],

@@ -16,6 +16,9 @@ export async function handleProjectRoutes({
   cloneProject,
   createBlankProject,
   createWorktree,
+  createWorktreePr,
+  publishWorktreeBranch,
+  startAutoRun,
   selectProject,
   removeProject,
   removeWorktree,
@@ -147,6 +150,34 @@ export async function handleProjectRoutes({
       return true;
     }
     sendJson(res, 200, { removed, projects: state.projects, currentProjectId: state.currentProjectId, currentProject: currentProject() });
+    return true;
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/auto-runs") {
+    sendJson(res, 200, { autoRuns: state.autoRuns ?? [] });
+    return true;
+  }
+
+  const projectAutoRunMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/auto-runs$/);
+  if (projectAutoRunMatch && req.method === "POST") {
+    const projectId = decodeURIComponent(projectAutoRunMatch[1]);
+    if (denyForeignProject({ res, sendJson, state, actor, projectId, notFound: { error: "project_not_found" } })) {
+      return true;
+    }
+    const body = await readJson(req);
+    try {
+      const result = startAutoRun({
+        projectId,
+        link: body.link,
+        agentId: body.agentId,
+        name: body.name ?? body.branchName,
+        baseBranch: body.baseBranch ?? body.startPoint,
+        actor,
+      });
+      sendJson(res, 201, result);
+    } catch (error) {
+      sendJson(res, 400, { error: "auto_run_failed", message: errorMessage(error) });
+    }
     return true;
   }
 
@@ -363,13 +394,28 @@ export async function handleProjectRoutes({
       }
       return true;
     }
-    if ((action === "push" || action === "pr") && req.method === "POST") {
-      sendJson(res, 200, {
-        ok: true,
-        worktreeId: worktree.id,
-        skipped: true,
-        message: "Git publishing is not executed by the local server compatibility route.",
-      });
+    if (action === "push" && req.method === "POST") {
+      try {
+        const result = await publishWorktreeBranch(worktree.id);
+        sendJson(res, 200, result);
+      } catch (error) {
+        sendJson(res, 400, { error: "worktree_publish_failed", message: errorMessage(error) });
+      }
+      return true;
+    }
+    if (action === "pr" && req.method === "POST") {
+      let body = {};
+      try {
+        body = (await readJson(req)) ?? {};
+      } catch {
+        body = {};
+      }
+      try {
+        const result = await createWorktreePr(worktree.id, { title: body.title, body: body.body, base: body.base });
+        sendJson(res, 200, result);
+      } catch (error) {
+        sendJson(res, 400, { error: "worktree_pr_failed", message: errorMessage(error) });
+      }
       return true;
     }
   }

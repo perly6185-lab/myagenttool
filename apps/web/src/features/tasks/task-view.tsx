@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { RefreshCw, ExternalLink, GitBranch, Workflow } from "lucide-react";
+import { RefreshCw, ExternalLink, GitBranch, Workflow, Zap } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -13,6 +13,7 @@ import { useUiStore } from "@/store/ui-store";
 import { cn } from "@/lib/cn";
 import { readableStatus, statusTone } from "@/lib/readable-labels";
 import { branchFromIssue, worktreeLinkFor } from "@/features/projects/worktree-payload";
+import { githubItemKindLabel, worktreeAutoRunPrompt } from "@myagenttool/protocol/issue-prompt";
 
 type GithubItem = {
   type: "issue" | "pr";
@@ -62,9 +63,21 @@ export function TaskView() {
     setSelectedWorktreeId(worktreeId);
     setSection("projects");
   }
+  // One-click Auto: materialize a worktree from the item and start an
+  // issue-seeded agent run in it, then jump into that worktree. Merge stays human.
+  function autoRunIssue(row: Row) {
+    void execute(async () => {
+      const r = (await api.startAutoRun(row.projectId, {
+        link: worktreeLinkFor(row),
+        name: branchFromIssue(row),
+      })) as { worktree?: { id: string } };
+      if (r.worktree?.id) openWorktree(r.worktree.id, row.projectId);
+      return r;
+    });
+  }
   // Create a paused automation scoped to this item; the user lands on it to tune.
   function automateIssue(row: Row) {
-    const kindLabel = row.type === "pr" ? "PR" : "Issue";
+    const kindLabel = githubItemKindLabel(row.type);
     void execute(async () => {
       const r = await api.createAutomation({
         name: `${kindLabel} #${row.number}: ${row.title}`.slice(0, 80),
@@ -72,7 +85,7 @@ export function TaskView() {
         branch: "main",
         schedule: { kind: "weekdays", time: "09:00" },
         enabled: false,
-        prompt: `Make progress on GitHub ${kindLabel} #${row.number}: ${row.title}.${row.url ? `\n${row.url}` : ""}\nReview the latest state, do the next useful step, and summarize what changed.`,
+        prompt: worktreeAutoRunPrompt({ type: row.type, number: row.number, title: row.title, url: row.url }),
       });
       setSection("automation");
       return r;
@@ -252,9 +265,14 @@ export function TaskView() {
                               <GitBranch className="mr-1 size-3.5" /> Open
                             </Button>
                           ) : (
-                            <Button variant="secondary" size="sm" disabled={pending} onClick={() => setWtRow(r)} title="Create a worktree for this item">
-                              <GitBranch className="mr-1 size-3.5" /> Worktree
-                            </Button>
+                            <>
+                              <Button size="sm" disabled={pending} onClick={() => autoRunIssue(r)} title="Create a worktree and start an agent run for this item">
+                                <Zap className="mr-1 size-3.5" /> Auto
+                              </Button>
+                              <Button variant="secondary" size="sm" disabled={pending} onClick={() => setWtRow(r)} title="Create a worktree for this item">
+                                <GitBranch className="mr-1 size-3.5" /> Worktree
+                              </Button>
+                            </>
                           );
                         })()}
                         {r.url ? (

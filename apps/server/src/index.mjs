@@ -1,5 +1,6 @@
 import { resolve } from "node:path";
 import { startAutomationScheduler } from "./runtime/automation-scheduler.mjs";
+import { startAutoTriggerScheduler } from "./runtime/auto-trigger-scheduler.mjs";
 import { createHttpServer } from "./runtime/http-server.mjs";
 import { runProtocolSelfCheck } from "./runtime/self-check.mjs";
 import { createServerRuntimeServices } from "./runtime/service-composer.mjs";
@@ -54,6 +55,10 @@ server.listen(port, host, () => {
 // Fire due automations on a 30s tick (self-check exits above, so this only runs
 // for a real server). Pulls the same composed helpers the routes use.
 startAutomationScheduler({ now, ...httpDependencies });
+
+// Phase 3 auto-trigger: scan labeled issues and start auto-runs. Off unless
+// MYAGENTTOOL_AUTOTRIGGER_ENABLED is set — returns null (no timer) otherwise.
+startAutoTriggerScheduler({ state, ...httpDependencies });
 
 process.on("SIGINT", () => {
   savePersistentState();
