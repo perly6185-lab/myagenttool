@@ -36,11 +36,19 @@ export function createAutoRunService({
   defaultAgent,
   createInvocation,
   startInvocationIfAllowed,
+  commitWorktreeChanges,
   publishWorktreeBranch,
   createWorktreePr,
   verifyWorktree,
   writeIssueStatus,
 }) {
+  function commitMessageFor(autoRun) {
+    const link = autoRun.link;
+    if (link?.type === "issue" && Number.isFinite(link.number)) {
+      return `Auto-run: ${link.title ?? "changes"} (#${link.number})`;
+    }
+    return "Auto-run changes";
+  }
   // Best-effort issue status writeback (Phase 4). Only for issue-linked runs;
   // fire-and-forget so a slow/failed gh never blocks the orchestrator.
   function maybeWriteIssueStatus(autoRun, worktree, to) {
@@ -112,20 +120,15 @@ export function createAutoRunService({
       link: normalizedLink,
     });
 
-    // 2. Seed the prompt from the issue, and 3. start the agent run in the worktree.
-    const task = worktreeAutoRunPrompt(normalizedLink);
-    const invocation = createInvocation(task, agent, {
-      actor,
-      metadata: { worktreeId: worktree.id, projectId: worktree.projectId, autoRunId },
-    });
-    startInvocationIfAllowed(invocation, agent);
-
+    // Record the auto-run BEFORE starting the invocation so the dedup key exists
+    // even if invocation creation throws — otherwise auto-trigger, which dedups on
+    // autoRuns, would re-pick this issue every tick and pile up orphan worktrees.
     const autoRun = {
       id: autoRunId,
-      status: autoRunStatusForInvocation(invocation),
+      status: "materializing",
       projectId: worktree.sourceProjectId ?? worktree.projectId ?? projectId ?? null,
       worktreeId: worktree.id,
-      invocationId: invocation.id,
+      invocationId: null,
       agentId: agent.id,
       link: normalizedLink,
       branchName: worktree.branchName ?? worktree.branch ?? null,
@@ -134,6 +137,24 @@ export function createAutoRunService({
       updatedAt: createdAt,
     };
     state.autoRuns.unshift(autoRun);
+
+    // 2. Seed the prompt from the issue, and 3. start the agent run in the worktree.
+    let invocation;
+    try {
+      const task = worktreeAutoRunPrompt(normalizedLink);
+      invocation = createInvocation(task, agent, {
+        actor,
+        metadata: { worktreeId: worktree.id, projectId: worktree.projectId, autoRunId },
+      });
+      startInvocationIfAllowed(invocation, agent);
+    } catch (error) {
+      setAutoRunStatus(autoRun, "failed", { error: `Could not start the agent run: ${String(error?.message ?? error)}` });
+      persistStateSoon();
+      throw error;
+    }
+
+    autoRun.invocationId = invocation.id;
+    setAutoRunStatus(autoRun, autoRunStatusForInvocation(invocation));
     appendEvent({
       invocationId: invocation.id,
       type: "auto_run_started",
@@ -159,11 +180,31 @@ export function createAutoRunService({
       if (!autoRun || settledStatuses.has(autoRun.status)) return null;
 
       if (invocation.status === "succeeded") {
+        const worktree = state.worktrees.find((item) => item.id === autoRun.worktreeId) ?? null;
+
+        // Commit the agent's edits so they actually reach the PR (publish only
+        // ships commits), and stop early if the run produced nothing to open a PR
+        // with — otherwise gh pr create would fail with a confusing error.
+        if (typeof commitWorktreeChanges === "function") {
+          let commitResult;
+          try {
+            commitResult = await commitWorktreeChanges(autoRun.worktreeId, { message: commitMessageFor(autoRun) });
+          } catch (error) {
+            setAutoRunStatus(autoRun, "failed", { error: `Commit failed: ${String(error?.message ?? error)}` });
+            persistStateSoon();
+            return autoRun;
+          }
+          if (!commitResult.hasCommits) {
+            setAutoRunStatus(autoRun, "blocked", { error: "The agent run produced no changes to open a pull request with." });
+            persistStateSoon();
+            return autoRun;
+          }
+        }
+
         // Verification gate: run the project's checks in the worktree. A real
         // check that fails BLOCKS the PR; an unconfigured gate opens the PR but
         // labels it unverified (never fabricates a pass).
         setAutoRunStatus(autoRun, "verifying");
-        const worktree = state.worktrees.find((item) => item.id === autoRun.worktreeId) ?? null;
         let verification = { passed: true, verified: false, summary: "No verification command configured." };
         try {
           if (typeof verifyWorktree === "function") {
