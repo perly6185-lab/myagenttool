@@ -22,7 +22,7 @@ import { createM3Service } from "../services/m3.mjs";
 import { createProjectService, sameProjectPath } from "../services/projects.mjs";
 import { createAutoRunService } from "../services/auto-run.mjs";
 import { resolveAutoRunVerifyCommand, runWorktreeVerification } from "../services/worktree-verify.mjs";
-import { resolveStatusWritebackConfig, runIssueStatusTransition } from "../services/issue-status.mjs";
+import { resolveStatusWritebackConfig, runIssueComment, runIssueStatusTransition } from "../services/issue-status.mjs";
 import { createTerminalService } from "../services/terminal.mjs";
 import { createToolService } from "../services/tools.mjs";
 
@@ -327,6 +327,14 @@ export function createServerRuntimeServices({
     writeIssueStatus: resolveStatusWritebackConfig().enabled
       ? async ({ issueNumber, repoPath, to }) => runIssueStatusTransition({ cwd: repoPath, issueNumber, to })
       : undefined,
+    // Post an investigation auto-run's findings back to the issue. Gated by the
+    // same GitHub-write opt-in; undefined (off) still sets report_posted locally.
+    postIssueReport: resolveStatusWritebackConfig().enabled
+      ? async ({ issueNumber, repoPath, body }) => runIssueComment({ cwd: repoPath, issueNumber, body })
+      : undefined,
+    // Intent classifier: default heuristic in the service; an LLM classifier can
+    // be wired here later to override it.
+    classifyAutoRunIntent: undefined,
   });
   // Now that the reaction exists, let completion drive it.
   advanceAutoRunHook = advanceAutoRunForInvocation;

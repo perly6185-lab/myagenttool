@@ -40,7 +40,7 @@ test("success rate is PRs opened over completed runs (ignores in-flight)", () =>
   ]);
   // terminal = 4 (2 pr_open + 1 blocked + 1 failed); rate = 2/4.
   assert.equal(s.successRate, 0.5);
-  assert.deepEqual(s.outcomes, { prOpen: 2, blocked: 1, failed: 1 });
+  assert.deepEqual(s.outcomes, { prOpen: 2, blocked: 1, failed: 1, reportPosted: 0, needsInput: 0 });
 });
 
 test("verification outcomes and blocked reasons are aggregated", () => {
@@ -54,6 +54,21 @@ test("verification outcomes and blocked reasons are aggregated", () => {
   assert.deepEqual(s.verification, { passed: 1, failed: 2, unverified: 1 });
   assert.equal(s.blockedReasons[0].reason, "checks failed");
   assert.equal(s.blockedReasons[0].count, 2, "most common blocked reason first");
+});
+
+test("non-diff outcomes (report_posted/needs_input) are counted apart from the change rate", () => {
+  const s = summarizeAutoRuns([
+    { status: "pr_open" },
+    { status: "blocked", error: "x" },
+    { status: "report_posted" },
+    { status: "report_posted" },
+    { status: "needs_input" },
+  ]);
+  assert.equal(s.outcomes.reportPosted, 2);
+  assert.equal(s.outcomes.needsInput, 1);
+  // successRate is over change-shaped terminal only (pr_open+blocked+failed = 2): 1/2.
+  assert.equal(s.successRate, 0.5);
+  assert.equal(s.byStatus.report_posted, 2);
 });
 
 test("time-to-PR: median and p90 over pr_open runs", () => {

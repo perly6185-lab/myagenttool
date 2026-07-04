@@ -1,6 +1,7 @@
 import { worktreeAutoRunPrompt } from "@myagenttool/protocol/issue-prompt";
 
 import { normalizeWorktreeLink } from "./projects.mjs";
+import { classifyIntentFromText, isAutoRunIntent } from "./auto-run-intent.mjs";
 
 // One-click "Auto" orchestrator. It closes the seam the console never had:
 // turning a linked GitHub issue into a worktree AND a started agent run seeded
@@ -20,6 +21,8 @@ export const autoRunStates = [
   "verifying",
   "publishing",
   "pr_open",
+  "report_posted",
+  "needs_input",
   "blocked",
   "done",
   "failed",
@@ -41,7 +44,47 @@ export function createAutoRunService({
   createWorktreePr,
   verifyWorktree,
   writeIssueStatus,
+  classifyAutoRunIntent,
+  postIssueReport,
 }) {
+  // Resolve the issue intent: an injected classifier (e.g. LLM) overrides, else
+  // a conservative title heuristic. Determines how a no-diff outcome is routed.
+  function resolveIntent(link) {
+    if (typeof classifyAutoRunIntent === "function") {
+      try {
+        const result = classifyAutoRunIntent({ link });
+        if (isAutoRunIntent(result)) return result;
+      } catch {
+        /* fall back to the heuristic */
+      }
+    }
+    return classifyIntentFromText(link?.title ?? "");
+  }
+
+  // The agent's summary from the completed invocation — the deliverable for an
+  // investigation (there is no diff to ship).
+  function extractRunSummary(invocation) {
+    const result = invocation?.result;
+    if (!result) return null;
+    if (typeof result === "string") return result.slice(0, 4000);
+    if (typeof result.summary === "string") return result.summary.slice(0, 4000);
+    if (typeof result.text === "string") return result.text.slice(0, 4000);
+    try {
+      return JSON.stringify(result).slice(0, 2000);
+    } catch {
+      return null;
+    }
+  }
+
+  // Best-effort: post the investigation summary back to the issue (opt-in, gated
+  // by the same GitHub-write config as status writeback). Fire-and-forget.
+  function maybePostIssueReport(autoRun, worktree, body) {
+    if (typeof postIssueReport !== "function") return;
+    if (autoRun.link?.type !== "issue" || !Number.isFinite(autoRun.link?.number)) return;
+    const repoPath = worktree?.repoPath ?? null;
+    if (!repoPath || !body) return;
+    Promise.resolve(postIssueReport({ issueNumber: autoRun.link.number, repoPath, body })).catch(() => {});
+  }
   function commitMessageFor(autoRun) {
     const link = autoRun.link;
     if (link?.type === "issue" && Number.isFinite(link.number)) {
@@ -60,7 +103,7 @@ export function createAutoRunService({
   }
   // Reaction states already handled — advancing past them would re-open a PR.
   // `blocked` (verification failed) is terminal here; a human retries/fixes.
-  const settledStatuses = new Set(["pr_open", "blocked", "done", "failed"]);
+  const settledStatuses = new Set(["pr_open", "report_posted", "needs_input", "blocked", "done", "failed"]);
 
   // The PR body an auto-run opens with, carrying the verification evidence so the
   // pull request is honest about whether checks ran and passed.
@@ -131,6 +174,7 @@ export function createAutoRunService({
       invocationId: null,
       agentId: agent.id,
       link: normalizedLink,
+      intent: resolveIntent(normalizedLink),
       branchName: worktree.branchName ?? worktree.branch ?? null,
       requestedBy: actor?.userId ?? "usr_local",
       createdAt,
@@ -195,7 +239,23 @@ export function createAutoRunService({
             return autoRun;
           }
           if (!commitResult.hasCommits) {
-            setAutoRunStatus(autoRun, "blocked", { error: "The agent run produced no changes to open a pull request with." });
+            // No diff — route by intent instead of always treating it as a dead
+            // end. An investigation's deliverable IS the summary; a question hands
+            // the uncertainty back to a human; only a change with no diff is blocked.
+            const intent = autoRun.intent ?? "change";
+            if (intent === "investigation") {
+              const summary = extractRunSummary(invocation) ?? "Investigation complete — no code change was needed.";
+              maybePostIssueReport(autoRun, worktree, summary);
+              setAutoRunStatus(autoRun, "report_posted", { report: summary, error: null });
+            } else if (intent === "question") {
+              const summary = extractRunSummary(invocation);
+              setAutoRunStatus(autoRun, "needs_input", {
+                report: summary,
+                error: "The run needs a human decision before it can proceed.",
+              });
+            } else {
+              setAutoRunStatus(autoRun, "blocked", { error: "The agent run produced no changes to open a pull request with." });
+            }
             persistStateSoon();
             return autoRun;
           }

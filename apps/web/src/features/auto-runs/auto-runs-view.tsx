@@ -18,10 +18,12 @@ interface AutoRunRecord {
   id: string;
   status: string;
   link?: AutoRunLink | null;
+  intent?: string | null;
   branchName?: string | null;
   prNumber?: number | null;
   prUrl?: string | null;
   verification?: { passed: boolean; verified: boolean; summary?: string | null } | null;
+  report?: string | null;
   error?: string | null;
   createdAt?: string;
   updatedAt?: string;
@@ -30,7 +32,7 @@ interface AutoRunSummary {
   total: number;
   active: number;
   byStatus: Record<string, number>;
-  outcomes: { prOpen: number; blocked: number; failed: number };
+  outcomes: { prOpen: number; blocked: number; failed: number; reportPosted: number; needsInput: number };
   successRate: number | null;
   verification: { passed: number; failed: number; unverified: number };
   blockedReasons: { reason: string; count: number }[];
@@ -44,13 +46,15 @@ const STATUS_LABEL: Record<string, string> = {
   verifying: "Verifying",
   publishing: "Publishing",
   pr_open: "PR open",
+  report_posted: "Report posted",
+  needs_input: "Needs input",
   blocked: "Blocked",
   failed: "Failed",
 };
 function statusTone(status: string): Tone {
-  if (status === "pr_open") return "success";
+  if (status === "pr_open" || status === "report_posted") return "success";
   if (status === "failed") return "danger";
-  if (status === "blocked" || status === "awaiting_approval") return "warning";
+  if (status === "blocked" || status === "awaiting_approval" || status === "needs_input") return "warning";
   return "running";
 }
 
@@ -181,6 +185,11 @@ export function AutoRunsView() {
               hint={`p90 ${fmtDuration(summary.timeToPr.p90Seconds)} · n=${summary.timeToPr.count}`}
             />
           </div>
+          {summary.outcomes.reportPosted + summary.outcomes.needsInput > 0 ? (
+            <p className="text-xs text-muted-foreground">
+              Non-diff outcomes: {summary.outcomes.reportPosted} investigation report(s), {summary.outcomes.needsInput} needing input.
+            </p>
+          ) : null}
           {summary.blockedReasons.length > 0 ? (
             <Card>
               <CardHeader>
@@ -251,6 +260,9 @@ export function AutoRunsView() {
                     </span>
                   ) : null}
                 </div>
+                {run.report && (run.status === "report_posted" || run.status === "needs_input") ? (
+                  <p className="line-clamp-3 whitespace-pre-wrap rounded bg-muted/50 px-2 py-1 text-xs text-muted-foreground">{run.report}</p>
+                ) : null}
                 {run.error ? <p className="text-xs text-amber-600 dark:text-amber-400">{run.error}</p> : null}
               </CardContent>
             </Card>
