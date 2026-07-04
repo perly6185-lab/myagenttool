@@ -1,0 +1,117 @@
+# Issue → Worktree → Auto-run Plan
+
+This plan defines the development line that turns a GitHub issue into a
+worktree, runs a coding agent inside it, and opens a pull request — with a
+human still owning merge. It builds on the existing console/bridge execution
+path and the loop promotion pipeline rather than adding a third system.
+
+See [AI_DEVELOPMENT_WORKFLOW.md](AI_DEVELOPMENT_WORKFLOW.md) for the governed
+end-to-end flow this automates (Layer 5 of [AUTOMATION_PLAN.md](AUTOMATION_PLAN.md),
+"AI Development Execution"), and [AUTOMATION_PLAN.md](AUTOMATION_PLAN.md) for the
+guardrails (no autonomous merge, no silent local-execution permission).
+
+## Current state: two systems, one gap
+
+Roughly 60-70% of the primitives exist, but the orchestration layer that joins
+them is missing. Two execution systems run in parallel and do not talk:
+
+- **System A — Console / Bridge.** A real claude/codex CLI runs live in a
+  worktree's checkout (a worktree is modeled as its own project record whose
+  `path` is the agent cwd). Triggered manually from the console or by the
+  time-based automation scheduler firing a static prompt. It does **not** open a
+  PR, and until this plan's Phase 0 the console publish/PR routes were stubbed
+  (`skipped:true`).
+- **System B — Loop engine (`tools/ai`).** The native issue → branch → verify →
+  isolated worktree → push → PR pipeline, with a real `gh pr create` under
+  multi-step approval gating. Its built-in coding adapter is a mock/contract
+  stub that does **not** edit code; real edits need an external adapter binary.
+
+### Three missing seams
+
+1. **Issue → invocation + prompt.** Creating a worktree from an issue stores the
+   `agentId` and an issue `link`, but never creates an invocation, and the issue
+   body is never seeded as an agent prompt.
+2. **Auto-run the editing agent in the worktree.** System A's bridge can already
+   run claude/codex in a worktree cwd; only the trigger and prompt are missing.
+3. **Worktree work → PR.** The console publish/PR path was stubbed; the real
+   push + `gh pr create` machinery lives only in System B's promotion pipeline.
+
+Note: worktree teardown is intentionally non-destructive (files are kept on
+disk; asserted by `apps/server/test/worktree-lifecycle.test.mjs`). That is by
+design, not a gap.
+
+## Decisions
+
+- **Engine = hybrid.** System A's bridge does the editing (real claude/codex in
+  the worktree); reuse System B's `gh pr create` semantics for the PR. Skip
+  System B's non-editing adapter.
+- **Autonomy ceiling = auto through PR-open; merge stays human** (autonomy level
+  A3; respects the AUTOMATION_PLAN guardrails).
+- **Trigger = one-click Auto button first** (Task board issue row), then
+  label/status auto-triggers later.
+
+## Target chain (one-click Auto)
+
+```text
+Task board [Auto] on an issue
+  -> 1. create worktree issue-<n>-<slug>        [done: createWorktree]
+  -> 2. issue body -> agent prompt              [new: shared helper]
+  -> 3. auto-create bridge invocation(worktreeId)  [new: core seam]
+        agent edits code live in the worktree cwd   [done: bridge]
+  -> 4. run verification checks (green to proceed)   [new: ai:testing-plan]
+  -> 5. publish branch + gh pr create(referencing issue)  [Phase 0]
+  x  merge stays human                          [guardrail]
+```
+
+## Phases
+
+### Phase 0 — Foundation (enabling; no autonomous behavior)
+
+- **Real publish/PR server routes.** Replace the `skipped:true` stub with
+  `publishWorktreeBranch` (real `git push --set-upstream origin <branch>`) and
+  `createWorktreePr` (auto-publish if needed, then `gh pr create --base --head
+  --title --body`, defaulting title/body from the linked issue with a
+  `Closes #N` reference). gh is resolvable via `MYAGENTTOOL_GH_COMMAND(_JSON)`
+  so tests and locked-down installs can inject a stand-in. **Status: landed.**
+- **Issue metadata + prompt helper** (next slice): structure the issue
+  reference on the worktree record and extract a shared issue-body → prompt
+  helper (currently only in the Task board's Automate action).
+
+### Phase 1 — One-click Auto (manual trigger, full chain to PR)
+
+- Task board `[Auto]` action and an `auto-run` orchestrator state machine
+  (`materializing → running → verifying → pr_open → done/failed`).
+- Auto-create the bridge invocation on worktree creation, seeding the
+  issue-derived prompt. High-risk agents still land in
+  `waiting_for_local_approval`; Auto does not bypass approval.
+
+### Phase 2 — Verification gate + PR governance
+
+- Wire `ai:testing-plan` / verification into the chain; a red result blocks the
+  PR, and evidence is written into the PR body.
+- The auto-PR must satisfy `check-pr`'s dedicated-linked-issue-with-Project-
+  Fields rule, or it cannot pass pr-governance and merge.
+
+### Phase 3 — Auto-triggers
+
+- Scan project issues by label/status (e.g. `status/ready` + an opt-in `auto`
+  label) and enqueue the Auto chain, bounded by concurrency caps, budget, and
+  approval.
+
+### Phase 4 — Project status writeback
+
+- Advance issue/Project status (`in-progress → review`) as the chain runs, by
+  connecting the server to `github:sync-project` (today they are disconnected).
+
+## Cross-cutting dependencies
+
+- **Durable state.** Worktree and auto-run records are in-memory snapshots
+  today; the autonomous flow needs the P1 persistence work to be reliable.
+- **Bridge trust boundary.** Auto-dispatch must carry the device-bound bridge
+  credential and honor local execution consent — Auto must not silently enable
+  local execution.
+- **Preconditions.** Auto needs an online bridge and a configured editing agent;
+  the auto-PR only helps if it can satisfy pr-governance.
+- **Real risk is quality, not plumbing.** Edit quality plus verification
+  strength decide whether this line can run unattended; the Phase 2 gate is the
+  key control.

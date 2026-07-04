@@ -341,14 +341,111 @@ export function createProjectService({ state, now, nextId, appendEvent, persistS
     return removed;
   }
 
+  function worktreeRecord(worktreeId) {
+    return state.worktrees.find((item) => item.id === worktreeId) ?? null;
+  }
+
+  // Push the worktree's branch to origin and record its upstream. Real git push
+  // (no --force unless asked), so an unreachable/missing origin surfaces as an
+  // error rather than the old silent skipped:true stub.
+  async function publishWorktreeBranch(worktreeId, { force = false } = {}) {
+    const worktree = worktreeRecord(worktreeId);
+    if (!worktree) throw new Error("Worktree not found.");
+    const cwd = worktree.path ?? worktree.worktreePath;
+    const branch = worktree.branchName ?? worktree.branch;
+    if (!cwd || !existsSync(cwd)) throw new Error("Worktree working directory is missing.");
+    if (!branch) throw new Error("Worktree has no branch to publish.");
+    const remoteUrl = await originRemoteUrl(cwd);
+    if (!remoteUrl) throw new Error("No 'origin' remote to publish to. Add a remote first.");
+
+    const pushArgs = ["push", "--set-upstream", "origin", branch];
+    if (force) pushArgs.splice(1, 0, "--force-with-lease");
+    const push = await runGitCapture(cwd, pushArgs);
+    if (!push.ok) {
+      throw new Error(`git push failed: ${push.stderr || push.stdout || `exit ${push.code}`}`);
+    }
+
+    const upstreamProbe = await runGitCapture(cwd, ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"], { timeout: 5_000 });
+    worktree.published = true;
+    worktree.upstream = upstreamProbe.ok && upstreamProbe.stdout ? upstreamProbe.stdout : `origin/${branch}`;
+    worktree.lastSeenAt = now();
+    appendEvent({
+      invocationId: null,
+      type: "worktree_published",
+      level: "info",
+      message: `Published ${branch} to origin.`,
+      data: { worktreeId: worktree.id, branch, remoteUrl, upstream: worktree.upstream },
+    });
+    persistStateSoon();
+    return { ok: true, worktreeId: worktree.id, branch, remoteUrl, upstream: worktree.upstream, published: true };
+  }
+
+  // Open a pull request for the worktree's branch, publishing first if needed.
+  // Title/body default from the linked issue/PR so an issue-derived worktree
+  // opens a PR that references it (the "Closes #N" line).
+  async function createWorktreePr(worktreeId, { title, body, base } = {}) {
+    const worktree = worktreeRecord(worktreeId);
+    if (!worktree) throw new Error("Worktree not found.");
+    const cwd = worktree.path ?? worktree.worktreePath;
+    const branch = worktree.branchName ?? worktree.branch;
+    if (!cwd || !existsSync(cwd)) throw new Error("Worktree working directory is missing.");
+    if (!branch) throw new Error("Worktree has no branch for a pull request.");
+    const remoteUrl = await originRemoteUrl(cwd);
+    if (!remoteUrl) throw new Error("No 'origin' remote for a pull request. Add a GitHub remote first.");
+
+    // gh needs the head branch on the remote; publish if there's no upstream yet.
+    const upstreamProbe = await runGitCapture(cwd, ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"], { timeout: 5_000 });
+    if (!upstreamProbe.ok) {
+      await publishWorktreeBranch(worktreeId);
+    }
+
+    const baseBranch = normalizeWorktreeBase(base) ?? (await resolvePrBaseBranch(cwd, worktree));
+    const link = worktree.link ?? null;
+    const prTitle = String(title || link?.title || `Worktree ${branch}`).slice(0, 240);
+    const linkedRef =
+      link?.type === "issue" ? `\n\nCloses #${link.number}` : link?.type === "pr" ? `\n\nRelated to #${link.number}` : "";
+    const prBody = `${String(body ?? "").trim() || `Pull request for worktree branch \`${branch}\`.`}${linkedRef}\n`;
+
+    const gh = resolveGhCommand();
+    const args = [...gh.args, "pr", "create", "--base", baseBranch, "--head", branch, "--title", prTitle, "--body", prBody, "--json", "number,url,state"];
+    let stdout;
+    try {
+      const result = await execFileAsync(gh.command, args, {
+        cwd,
+        encoding: "utf8",
+        timeout: 30_000,
+        env: { ...process.env, GH_PROMPT_DISABLED: "1" },
+      });
+      stdout = result.stdout;
+    } catch (error) {
+      const detail = String(error?.stderr ?? error?.stdout ?? error?.message ?? "").trim();
+      throw new Error(`gh pr create failed: ${detail || `exit ${error?.code ?? 1}`}`);
+    }
+
+    const parsed = parseGhPrCreateOutput(stdout);
+    worktree.pr = { number: parsed.number, url: parsed.url, state: parsed.state };
+    worktree.lastSeenAt = now();
+    appendEvent({
+      invocationId: null,
+      type: "worktree_pr_created",
+      level: "info",
+      message: `Opened pull request for ${branch}.`,
+      data: { worktreeId: worktree.id, branch, base: baseBranch, number: parsed.number, url: parsed.url, link },
+    });
+    persistStateSoon();
+    return { ok: true, worktreeId: worktree.id, branch, base: baseBranch, number: parsed.number, url: parsed.url, state: parsed.state };
+  }
+
   return {
     addProject,
     cloneProject,
     createBlankProject,
     createWorktree,
+    createWorktreePr,
     currentProject,
     gitProjectSummary,
     projectBranches,
+    publishWorktreeBranch,
     worktreeDiff: (worktree) => worktreeDiff(worktree, { projectTargets: state.projectTargets }),
     projectGithubItems: (project) => projectGithubItems(project, { projectTargets: state.projectTargets }),
     projectForInvocation,
@@ -459,6 +556,78 @@ export function normalizeWorktreeBase(value) {
 function normalizeProjectColor(value, fallback = "#3b82f6") {
   const color = String(value ?? fallback).trim();
   return /^#[0-9a-f]{6}$/i.test(color) ? color : fallback;
+}
+
+// --- worktree publish / PR helpers -----------------------------------------
+// These back the console's "Publish branch" and "Open pull request" actions.
+// git/gh run out-of-process; the gh executable is resolvable via env so tests
+// (and locked-down installs) can inject a stand-in, mirroring the loop
+// promotion pipeline's MYAGENTTOOL_GH_COMMAND(_JSON) contract.
+
+async function runGitCapture(cwd, args, { timeout = 30_000 } = {}) {
+  try {
+    const { stdout } = await execFileAsync("git", ["-C", cwd, ...args], { encoding: "utf8", timeout });
+    return { ok: true, stdout: String(stdout).trim(), stderr: "", code: 0 };
+  } catch (error) {
+    return {
+      ok: false,
+      stdout: String(error?.stdout ?? "").trim(),
+      stderr: String(error?.stderr ?? error?.message ?? "").trim(),
+      code: error?.code ?? 1,
+    };
+  }
+}
+
+async function originRemoteUrl(cwd) {
+  const result = await runGitCapture(cwd, ["remote", "get-url", "origin"], { timeout: 5_000 });
+  return result.ok ? result.stdout : "";
+}
+
+// Mirror of tools/ai/src/loop/promotion-github.mjs resolveLoopWorktreePromotion
+// PrCreateCommand — kept local so the server never imports the CLI package.
+function resolveGhCommand() {
+  const rawJson = process.env.MYAGENTTOOL_GH_COMMAND_JSON;
+  if (rawJson) {
+    let parsed;
+    try {
+      parsed = JSON.parse(rawJson);
+    } catch (error) {
+      throw new Error(`MYAGENTTOOL_GH_COMMAND_JSON must be JSON, for example ["gh"]. Parse error: ${error.message}`);
+    }
+    if (!Array.isArray(parsed) || parsed.length === 0 || parsed.some((item) => typeof item !== "string" || item.length === 0)) {
+      throw new Error('MYAGENTTOOL_GH_COMMAND_JSON must be a non-empty string array, for example ["gh"].');
+    }
+    const [command, ...args] = parsed;
+    return { command, args };
+  }
+  return { command: process.env.MYAGENTTOOL_GH_COMMAND || "gh", args: [] };
+}
+
+function parseGhPrCreateOutput(stdout) {
+  const text = String(stdout ?? "").trim();
+  if (!text) return { number: null, url: null, state: null, raw: "" };
+  try {
+    const parsed = JSON.parse(text);
+    return { number: parsed.number ?? null, url: parsed.url ?? null, state: parsed.state ?? null, raw: text };
+  } catch {
+    const urlMatch = text.match(/https?:\/\/\S+/);
+    return { number: null, url: urlMatch?.[0] ?? null, state: null, raw: text };
+  }
+}
+
+// The PR base: an explicit worktree base branch when one was chosen, otherwise
+// origin's default branch, otherwise "main".
+async function resolvePrBaseBranch(cwd, worktree) {
+  if (worktree.baseBranch && worktree.baseBranch !== "HEAD") {
+    try {
+      return normalizeWorktreeBase(worktree.baseBranch) ?? "main";
+    } catch {
+      /* fall through to remote default */
+    }
+  }
+  const head = await runGitCapture(cwd, ["symbolic-ref", "--short", "refs/remotes/origin/HEAD"], { timeout: 5_000 });
+  if (head.ok && head.stdout) return head.stdout.replace(/^origin\//, "");
+  return "main";
 }
 
 export function normalizeWorktreeLink(value) {

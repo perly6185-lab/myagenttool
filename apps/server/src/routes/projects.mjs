@@ -16,6 +16,8 @@ export async function handleProjectRoutes({
   cloneProject,
   createBlankProject,
   createWorktree,
+  createWorktreePr,
+  publishWorktreeBranch,
   selectProject,
   removeProject,
   removeWorktree,
@@ -363,13 +365,28 @@ export async function handleProjectRoutes({
       }
       return true;
     }
-    if ((action === "push" || action === "pr") && req.method === "POST") {
-      sendJson(res, 200, {
-        ok: true,
-        worktreeId: worktree.id,
-        skipped: true,
-        message: "Git publishing is not executed by the local server compatibility route.",
-      });
+    if (action === "push" && req.method === "POST") {
+      try {
+        const result = await publishWorktreeBranch(worktree.id);
+        sendJson(res, 200, result);
+      } catch (error) {
+        sendJson(res, 400, { error: "worktree_publish_failed", message: errorMessage(error) });
+      }
+      return true;
+    }
+    if (action === "pr" && req.method === "POST") {
+      let body = {};
+      try {
+        body = (await readJson(req)) ?? {};
+      } catch {
+        body = {};
+      }
+      try {
+        const result = await createWorktreePr(worktree.id, { title: body.title, body: body.body, base: body.base });
+        sendJson(res, 200, result);
+      } catch (error) {
+        sendJson(res, 400, { error: "worktree_pr_failed", message: errorMessage(error) });
+      }
       return true;
     }
   }
