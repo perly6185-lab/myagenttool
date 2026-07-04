@@ -244,6 +244,10 @@ export function adapterText(adapter?: AgentAdapter): string {
   if (!adapter) return "-";
   if (adapter.type === "cli") return `CLI command: ${adapter.command}`;
   if (adapter.type === "http") return `HTTP endpoint: ${adapter.baseUrl}`;
+  if (adapter.type === "mcp") {
+    const target = adapter.transport === "http" ? adapter.url : adapter.command;
+    return `MCP server (${adapter.transport ?? "stdio"}): ${target ?? "unset"}`;
+  }
   if (adapter.type === "platform") return `Platform agent: ${adapter.name ?? "built-in"}`;
   return adapter.type ?? "-";
 }
@@ -298,6 +302,9 @@ export function readableDiscoverySource(source?: string): string {
 export function readableAdapterType(type?: string): string {
   if (type === "cli") return "CLI";
   if (type === "http") return "HTTP";
+  if (type === "mcp") return "MCP";
+  if (type === "a2a") return "A2A";
+  if (type === "container") return "Container";
   return type ?? "Unknown";
 }
 

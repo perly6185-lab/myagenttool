@@ -342,6 +342,11 @@ export const api = {
 
   registerAgent: (payload: Record<string, unknown>) => request("POST", "/api/agents", payload),
 
+  // Pre-flight dry-probe of an unregistered MCP config (#137): queue a bridge
+  // handshake + tools/list, then poll the run until it resolves.
+  probeAgent: (config: Record<string, unknown>) => request("POST", "/api/agents/probe", config),
+  getAgentProbe: (id: string) => request("GET", `/api/agents/probe/${encodeURIComponent(id)}`),
+
   createDiscovery: (payload: DiscoveryPayload) => request("POST", "/api/discovery", payload),
   registerCandidate: (runId: string, candidateId: string) =>
     request(

@@ -11,6 +11,7 @@ import { useAsyncAction, api } from "@/data/use-console-actions";
 import { useUiStore } from "@/store/ui-store";
 import { readableAdapterType, readableDiscoverySource } from "@/lib/readable-labels";
 import { RegisterCodingAgentCard } from "@/features/discovery/register-coding-agent-card";
+import { ConnectMcpServerCard } from "@/features/discovery/connect-mcp-server-card";
 import type { DiscoveryCandidate, DiscoveryRunSnapshot } from "@/lib/console-state";
 
 const FULL_SCOPE = [
@@ -91,6 +92,8 @@ export function DiscoveryView() {
         <RegisterCodingAgentCard kind="codex" />
         <RegisterCodingAgentCard kind="claude" />
       </div>
+
+      <ConnectMcpServerCard />
 
       <Card>
         <CardHeader>
