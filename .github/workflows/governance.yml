@@ -1,10 +1,13 @@
 name: Governance
 
-# pr-governance runs on every pull request (cost-gated like CI) in ADVISORY
-# mode: it fails on hard rules (linked issue, verification evidence) and warns
-# on risk-evidence routes, but is not yet a required status check. Promotion
-# path: `pnpm ci:activate --require-governance` once the green rate holds
-# (#243). The workflow_dispatch jobs below remain for manual runs.
+# pr-governance runs on every pull request (cost-gated like CI): it fails on
+# hard rules (linked issue with Project Fields metadata, verification evidence)
+# and warns on risk-evidence routes. It reads GitHub Projects via the
+# GOVERNANCE_PROJECTS_TOKEN secret (a PAT with Projects access) — the default
+# GITHUB_TOKEN cannot read ProjectsV2, which made the "linked work issue" rule
+# unsatisfiable (#390). Promote to a required status check with
+# `pnpm ci:activate --apply --require-governance`. The workflow_dispatch jobs
+# below remain for manual runs.
 
 on:
   pull_request:
@@ -52,7 +55,7 @@ jobs:
 
       - name: Check PR governance
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.GOVERNANCE_PROJECTS_TOKEN }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: pnpm github:check:pr
@@ -83,7 +86,7 @@ jobs:
 
       - name: Check PR governance
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.GOVERNANCE_PROJECTS_TOKEN }}
           PR_NUMBER: ${{ inputs.pr }}
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: pnpm github:check:pr
@@ -111,6 +114,6 @@ jobs:
 
       - name: Check issue hygiene
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.GOVERNANCE_PROJECTS_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: pnpm github:check:issues
