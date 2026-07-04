@@ -64,6 +64,22 @@ export function createCcusageApplicationRegistration({
           requiresApproval: report.id === "session",
           filePolicy: "read_only",
           networkPolicy: "forbidden",
+          compatibilityFacade: {
+            type: "tool",
+            name: "ccusage.report",
+            invocationMode: "tool-facade",
+          },
+          outputCollection: "importedUsageEstimates",
+          billing: {
+            authoritative: false,
+            externalBilled: true,
+            amountSource: "imported_ccusage_report",
+          },
+          resultImport: {
+            source: "ccusage",
+            kind: "usage_estimates",
+            amountSource: "imported_ccusage_report",
+          },
           argInputs: [
             { key: "since", flag: "--since", type: "date" },
             { key: "until", flag: "--until", type: "date" },

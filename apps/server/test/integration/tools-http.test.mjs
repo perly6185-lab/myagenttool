@@ -219,6 +219,12 @@ test("GET /api/capabilities includes governed tools and scoped application capab
   const teamA = await call("/api/capabilities", { token: "tok_a" });
   assert.equal(teamA.status, 200);
   assert.ok(teamA.body.capabilities.some((item) => item.name === "ccusage.report" && item.provider?.type === "tool"));
+  const ccusageDaily = teamA.body.capabilities.find((item) => item.name === "app.app_ccusage.wrapper.daily");
+  assert.equal(ccusageDaily?.provider?.type, "application");
+  assert.equal(ccusageDaily?.metadata?.compatibilityFacade?.name, "ccusage.report");
+  assert.equal(ccusageDaily?.metadata?.outputCollection, "importedUsageEstimates");
+  assert.equal(ccusageDaily?.metadata?.billing?.externalBilled, true);
+  assert.equal(ccusageDaily?.metadata?.resultImport?.amountSource, "imported_ccusage_report");
   assert.ok(teamA.body.capabilities.some((item) => item.name === "app.app_team_a.inspect" && item.provider?.type === "application"));
   assert.ok(!JSON.stringify(teamA.body.capabilities).includes("wrapper.mjs"), "capability discovery must not expose wrapper internals");
 

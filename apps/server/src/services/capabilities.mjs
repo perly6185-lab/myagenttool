@@ -164,7 +164,7 @@ export function createCapabilityService({
         invocationId: invocation.id,
         agentId: agent.id,
         status: invocation.status,
-        outputCollection: "invocations",
+        outputCollection: planned.outputCollection ?? "invocations",
         provider: capability.provider,
         invocation,
       },

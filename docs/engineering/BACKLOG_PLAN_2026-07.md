@@ -68,6 +68,10 @@ The Desktop Bridge should enforce local trust at the point of execution:
 The latest ccusage work makes the Application path real enough to be the next
 product-quality focus:
 
+- Status: first slice started on `feat/application-capability-runtime-closeout`;
+  ccusage Application wrapper capabilities now expose compatibility facade,
+  output collection, external-billed, and import semantics through discovery and
+  queued wrapper invocation metadata.
 - Keep `/api/tools` stable while `/api/capabilities` becomes the unified
   discovery surface.
 - Finish ccusage parity on the Application-backed tool facade, including

@@ -55,11 +55,16 @@ test("wrapper capability dispatches a queued bridge invocation with the resolved
   assert.equal(res.status, 202);
   assert.equal(res.body.status, "queued");
   assert.equal(res.body.agentId, "agt_platform_application_wrapper");
+  assert.equal(res.body.outputCollection, "importedUsageEstimates");
   assert.equal(created.length, 1);
   const meta = created[0].options.metadata;
   assert.equal(meta.capability, CAP);
   assert.equal(meta.applicationWrapper.execCommand, "ccusage");
   assert.deepEqual(meta.applicationWrapper.execArgs, ["daily", "--json", "--offline"]);
+  assert.equal(meta.applicationWrapper.compatibilityFacade.name, "ccusage.report");
+  assert.equal(meta.applicationWrapper.outputCollection, "importedUsageEstimates");
+  assert.equal(meta.applicationWrapper.billing.externalBilled, true);
+  assert.equal(meta.applicationWrapper.resultImport.amountSource, "imported_ccusage_report");
 });
 
 test("a read-only report command (requiresApproval:false) dispatches without an approvalToken", () => {

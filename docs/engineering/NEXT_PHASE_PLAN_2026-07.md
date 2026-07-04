@@ -91,6 +91,9 @@ assets without breaking the stable tool facade.
 
 First slice:
 
+- Implementation status: the first P3 cut now publishes ccusage Application
+  wrapper compatibility metadata through `/api/capabilities` and carries the
+  same output/import/billing semantics into queued wrapper invocations.
 - Keep `/api/tools/ccusage.report` stable for consumers.
 - Source the ccusage descriptor and execution path from the Application
   capability path where parity is already proven.
