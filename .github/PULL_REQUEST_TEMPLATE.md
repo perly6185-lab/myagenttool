@@ -17,6 +17,10 @@
 - Area:
 - Source issue:
 
+<!-- If this PR remediates a failure from a prior merge, record it so DORA can
+     measure change failure rate + recovery time:  Change-failure: #<culprit> -->
+
+
 ## Acceptance
 
 - [ ] Acceptance criteria are defined or linked.

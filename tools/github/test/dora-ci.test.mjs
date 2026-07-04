@@ -8,7 +8,13 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { computeCiChecks, computeDoraStats, formatDoraReport } from "../src/dora.mjs";
+import {
+  computeChangeFailures,
+  computeCiChecks,
+  computeDoraStats,
+  formatDoraReport,
+  parseChangeFailureRefs,
+} from "../src/dora.mjs";
 
 test("computeCiChecks: green requires every check successful; no-checks PRs count against the rate", () => {
   const ci = computeCiChecks([
@@ -70,4 +76,71 @@ test("ciChecksSince: the post-cutoff slice judges only merges at/after the cutof
   assert.equal(stats.ciChecksSince.mergedPrCount, 1);
   assert.equal(stats.ciChecksSince.greenRate, 1, "post-cutoff slice is fully green");
   assert.equal(compute(prs, { days: 60 }).ciChecksSince, null, "no cutoff → no slice");
+});
+
+test("parseChangeFailureRefs: extracts culprit numbers, ignores prose, dedupes", () => {
+  assert.deepEqual(parseChangeFailureRefs("fix\n\nChange-failure: #10"), [10]);
+  assert.deepEqual(parseChangeFailureRefs("Change-failure: #10, #12 #10"), [10, 12]);
+  assert.deepEqual(parseChangeFailureRefs("refs #99 but no marker"), []);
+  assert.deepEqual(parseChangeFailureRefs(undefined), []);
+});
+
+test("computeChangeFailures: CFR + recovery from marker pairs; a PR can't remediate itself", () => {
+  const cf = computeChangeFailures([
+    { number: 10, mergedAt: "2026-07-04T00:00:00Z", body: "feat" },
+    { number: 11, mergedAt: "2026-07-04T03:00:00Z", body: "fix\nChange-failure: #10" },
+    { number: 12, mergedAt: "2026-07-05T00:00:00Z", body: "feat" },
+    { number: 13, mergedAt: "2026-07-05T01:00:00Z", body: "Change-failure: #13" }, // self-ref ignored
+  ]);
+  assert.equal(cf.recorded, true);
+  assert.equal(cf.culpritCount, 1);
+  assert.equal(cf.changeFailureRate, 0.25, "1 culprit / 4 merges");
+  assert.equal(cf.recoveryHours.median, 3);
+  assert.deepEqual(cf.incidents, [{ culprit: 10, recoveryHours: 3 }]);
+});
+
+test("computeChangeFailures: earliest remediation wins for recovery", () => {
+  const cf = computeChangeFailures([
+    { number: 10, mergedAt: "2026-07-04T00:00:00Z", body: "feat" },
+    { number: 20, mergedAt: "2026-07-04T05:00:00Z", body: "Change-failure: #10" },
+    { number: 21, mergedAt: "2026-07-04T02:00:00Z", body: "Change-failure: #10" },
+  ]);
+  assert.equal(cf.culpritCount, 1, "one distinct culprit despite two remediations");
+  assert.equal(cf.recoveryHours.median, 2, "earliest fix (2h) sets recovery, not 5h");
+});
+
+test("computeChangeFailures: culprit outside the fetched window is skipped (no fake recovery)", () => {
+  const cf = computeChangeFailures([
+    { number: 30, mergedAt: "2026-07-06T00:00:00Z", body: "Change-failure: #999" },
+  ]);
+  assert.equal(cf.recorded, false, "unknown culprit mergedAt → not counted");
+  assert.equal(cf.changeFailureRate, 0);
+});
+
+test("computeChangeFailures: no markers → recorded:false with the signal-since date, never a fake number", () => {
+  const cf = computeChangeFailures([{ number: 1, mergedAt: "2026-07-04T00:00:00Z", body: "clean" }]);
+  assert.equal(cf.recorded, false);
+  assert.equal(cf.changeFailureRate, 0);
+  assert.equal(cf.recoveryHours.median, null);
+  assert.match(cf.signalSince, /^\d{4}-\d{2}-\d{2}$/);
+});
+
+test("formatDoraReport: renders marker-traced CFR + recovery rows; zero-incident is honest", () => {
+  const base = { number: 1, createdAt: "2026-07-04T00:00:00Z", mergedAt: "2026-07-04T01:00:00Z" };
+  const clean = formatDoraReport(computeDoraStats([base], { days: 7 }), { repo: "o/r" });
+  assert.match(clean, /Change failure rate \(marker-traced\) \| 0 recorded incidents \(signal live since 2026-07-04\)/);
+  assert.match(clean, /recovery time \(fix-merge\) \| no incidents recorded yet/i);
+
+  const withIncident = formatDoraReport(
+    computeDoraStats(
+      [
+        { ...base, number: 10, mergedAt: "2026-07-04T00:00:00Z" },
+        { number: 11, createdAt: "2026-07-04T02:00:00Z", mergedAt: "2026-07-04T02:00:00Z", body: "Change-failure: #10" },
+      ],
+      { days: 7 },
+    ),
+    { repo: "o/r" },
+  );
+  assert.match(withIncident, /Change failure rate \(marker-traced\) \| 50\.0% \(1\/2\)/);
+  assert.match(withIncident, /recovery time \(fix-merge\) \| 2h median .* below/i);
 });
