@@ -688,8 +688,8 @@ try {
     costOwner: "team_smoke_ops",
     teamId: "team_smoke_ops"
   });
-  const quotaBlockedInvocation = await request("POST", "/api/invocations", {
-    task: "This platform-managed AI invocation should be blocked by quota.",
+  const quotaSpoofInvocation = await request("POST", "/api/invocations", {
+    task: "This public invocation should not be able to spoof platform-managed AI quota metadata.",
     agentId: "agt_platform_integration_builder",
     options: {
       metadata: {
@@ -702,7 +702,9 @@ try {
       }
     }
   });
-  assert(quotaBlockedInvocation.invocation.status === "rejected", "platform-managed quota smoke invocation should reject before execution");
+  assert(quotaSpoofInvocation.invocation.status !== "rejected", "public invocation metadata should not trigger platform-managed quota rejection");
+  assert(!quotaSpoofInvocation.invocation.options.metadata.platformManagedAi, "public invocation should strip platform-managed quota metadata");
+  assert(!quotaSpoofInvocation.invocation.options.metadata.quotaDecisionId, "public invocation should not create quota decisions from stripped metadata");
   const exportedAudit = await request("POST", "/api/m3/audit-export", {
     subjects: ["lifecycle", "catalog", "bundle", "quota", "ledger"],
     sinkId: "sink_smoke_immutable",

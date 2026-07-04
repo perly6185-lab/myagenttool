@@ -374,6 +374,13 @@ export function createApplicationWrapperAgentRegistration({
 // execute — the bridge only ever runs a command that came through here, so an
 // unapproved or unregistered command can never reach execution.
 const WRAPPER_ARG_INPUT_TYPES = new Set(["date", "token", "enum", "string", "boolean-flag"]);
+const RESERVED_WRAPPER_ARG_INPUT_KEYS = new Set([
+  "approvalToken",
+  "idempotencyKey",
+  "permissionLevel",
+  "permissionMode",
+  "applicationWrapper",
+]);
 
 // Normalize a wrapper command's declared per-invocation flag inputs. Each entry
 // maps an input key to a `--flag` with a typed validator. Only these declared
@@ -388,6 +395,9 @@ function normalizeWrapperArgInputs(argInputs) {
     const key = String(entry.key ?? "").trim();
     if (!/^[a-zA-Z][a-zA-Z0-9_]{0,39}$/.test(key)) {
       throw new Error(`NPM wrapper argInput at index ${index} requires an alphanumeric key.`);
+    }
+    if (RESERVED_WRAPPER_ARG_INPUT_KEYS.has(key)) {
+      throw new Error(`NPM wrapper argInput ${key} uses a reserved control-plane key.`);
     }
     const flag = String(entry.flag ?? "").trim();
     if (!/^--[a-z0-9][a-z0-9-]*$/.test(flag)) {

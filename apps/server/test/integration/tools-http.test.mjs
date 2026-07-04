@@ -331,6 +331,40 @@ test("POST /api/applications/register scopes ownership to the authenticated acto
   assert.equal(hiddenFromB.body.error, "application_not_found");
 });
 
+test("application capability aliases reject a foreign body projectId before invocation creation", async () => {
+  const created = await call("/api/applications/register", {
+    method: "POST",
+    body: {
+      id: "alias_project_boundary",
+      name: "Alias Project Boundary",
+      source: { type: "npm", package: "@scope/alias-project-boundary" },
+    },
+    token: "tok_a",
+  });
+  assert.equal(created.status, 201);
+  assert.equal(created.body.application.ownerTeamId, TEAM_A);
+  assert.equal(created.body.application.projectId, null);
+
+  const before = ctx.state.invocations.length;
+  const blocked = await call("/api/applications/app_alias_project_boundary/offline", {
+    method: "POST",
+    body: { approvalToken: "operator-approved-offline", projectId: "projB" },
+    token: "tok_a",
+  });
+  assert.equal(blocked.status, 404);
+  assert.equal(blocked.body.error, "project_not_found");
+  assert.equal(ctx.state.invocations.length, before, "foreign projectId must not create an invocation");
+
+  const generateBlocked = await call("/api/applications/app_alias_project_boundary/orchestrations/generate", {
+    method: "POST",
+    body: { approvalToken: "operator-approved-generate", projectId: "projB" },
+    token: "tok_a",
+  });
+  assert.equal(generateBlocked.status, 404);
+  assert.equal(generateBlocked.body.error, "project_not_found");
+  assert.equal(ctx.state.invocations.length, before, "foreign generate projectId must not create an invocation");
+});
+
 test("POST /api/applications/register rejects cross-team duplicate sources", async () => {
   const duplicate = await call("/api/applications/register", {
     method: "POST",
