@@ -1,0 +1,134 @@
+# Next Phase Plan (2026-07)
+
+## Decision
+
+Adopt the next-phase strategy: stop broadening the platform and make the
+already-built control-plane loops durable, locally enforceable, and closable.
+
+The current codebase already has the major M0-M3 product shapes: web/server/
+desktop, identity and tenancy, governed tools, Application capabilities,
+lifecycle recipes, quota/ledger records, private deployment contracts, and
+ccusage moving through the Application capability path. The next phase should
+turn those shapes into dependable product foundations.
+
+## Operating sequence
+
+```text
+1. Re-baseline planning docs and local verification.
+2. Add durable state for audit, ledger, invocation, application, and identity.
+3. Enforce the Desktop Bridge trust boundary at local execution time.
+4. Close the Application capability runtime around ccusage.
+5. Close M3 with evidence, residual risks, and one lifecycle execution sample.
+```
+
+## Workstream 1 - Re-baseline
+
+Purpose: make the repo's written plan match the latest code.
+
+Acceptance:
+
+- `BACKLOG_PLAN_2026-07.md` points to durable state, bridge trust, Application
+  runtime, and M3 closeout as the active priorities.
+- Milestone references include this plan.
+- Local verification commands are recorded before deeper implementation begins.
+
+Verification:
+
+```text
+pnpm docs:check
+pnpm repo:check
+git diff --check
+```
+
+## Workstream 2 - Durable State
+
+Purpose: make audit, billing, invocation, and identity records survive restart
+and stop relying on capped in-memory arrays.
+
+First slice:
+
+- Introduce a store boundary with durable and in-memory implementations.
+- Persist users, teams, tokens, projects, invocations, events, approvals,
+  applications, lifecycle records, quota decisions, AI usage, and ledger rows.
+- Keep tests hermetic by defaulting test fixtures to the in-memory store.
+- Use transactional writes for dispatch claims, idempotency, and budget
+  admission where the current mutable state can race.
+
+Out of scope:
+
+- Cloud database operations.
+- Full schema migration framework.
+- Analytics warehouse or billing provider integration.
+
+## Workstream 3 - Bridge Trust Boundary
+
+Purpose: make local execution consent real instead of relying only on server
+policy.
+
+First slice:
+
+- Register or issue a device-bound bridge credential.
+- Require bridge credentials on bridge polling and completion routes.
+- Add a local execution gate before process start.
+- Check command id, executable, args, cwd, file/network policy, and approval
+  evidence against a local allowlist.
+- Return explicit refusal events when the bridge declines execution.
+
+Out of scope:
+
+- Remote device management.
+- Silent install, update, uninstall, or remediation.
+- Replacing the current transport.
+
+## Workstream 4 - Application Capability Runtime
+
+Purpose: make the Application path the primary pattern for governed software
+assets without breaking the stable tool facade.
+
+First slice:
+
+- Keep `/api/tools/ccusage.report` stable for consumers.
+- Source the ccusage descriptor and execution path from the Application
+  capability path where parity is already proven.
+- Preserve dynamic filters, import metadata, external-billed semantics, and
+  smoke coverage.
+- Make recovery actions explain selected action, blocked reason, execution
+  result, and next step.
+
+Out of scope:
+
+- General marketplace packaging.
+- Arbitrary npm execution.
+- Free-form wrapper arguments.
+
+## Workstream 5 - M3 Closeout
+
+Purpose: close the milestone around verified capability rather than open-ended
+automation.
+
+First slice:
+
+- Add `M3_ACCEPTANCE_CLOSEOUT.md`.
+- Document accepted scope for lifecycle recipes, review gates, quota/ledger,
+  private deployment shape, catalog/bundle metadata, and Application capability
+  runtime.
+- Pick one allowlisted lifecycle execution sample, preferably pinned ccusage
+  npm lifecycle.
+- Record residual risks for persistence, external export sinks, public
+  marketplace, payment, invoice, tax, and full repeatable workflows.
+
+Out of scope:
+
+- Production payment processing.
+- Public marketplace publishing.
+- External SIEM delivery.
+- Unsandboxed generated code execution.
+
+## Phase gate
+
+Do not start broad new adapters or marketplace work until these are true:
+
+- Audit and ledger rows survive restart.
+- Bridge execution requires local credential and local allowlist approval.
+- ccusage remains green through the Application-backed compatibility facade.
+- M3 closeout records accepted scope and deferred risks.

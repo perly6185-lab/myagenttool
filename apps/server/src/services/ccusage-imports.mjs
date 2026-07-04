@@ -9,6 +9,7 @@ export function createCcusageImportService({
   now,
   nextId,
   appendEvent,
+  persistStateSoon = () => {},
 }) {
   function recordCcusageImportedEstimates({ invocation, result, agent }) {
     // Import estimates whether the report arrived via the bespoke governed
@@ -90,6 +91,7 @@ export function createCcusageImportService({
         droppedRowCount,
       },
     });
+    persistStateSoon();
     return records;
   }
 

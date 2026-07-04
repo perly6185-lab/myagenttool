@@ -97,6 +97,7 @@ Primary source docs:
 - `docs/vision/DEPLOYMENT.md`
 - `docs/vision/EXTENSION_DISTRIBUTION.md`
 - `docs/engineering/M3_ISSUE_PLAN.md`
+- `docs/engineering/NEXT_PHASE_PLAN_2026-07.md`
 
 ## M4: Marketplace and Ecosystem
 
