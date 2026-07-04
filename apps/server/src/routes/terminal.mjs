@@ -27,7 +27,7 @@ export async function handleTerminalRoutes({
     const body = await readJson(req);
     let target;
     try {
-      target = createSshTarget(body);
+      target = createSshTarget({ ...body, createdByUserId: actor?.userId, ownerTeamId: actor?.teamId });
     } catch (error) {
       sendJson(res, 400, {
         error: "invalid_ssh_target",
@@ -42,7 +42,7 @@ export async function handleTerminalRoutes({
   const sshTestMatch = url.pathname.match(/^\/api\/ssh-targets\/([^/]+)\/test$/);
   if (req.method === "POST" && sshTestMatch) {
     const targetId = decodeURIComponent(sshTestMatch[1]);
-    const target = state.sshTargets.find((item) => item.id === targetId);
+    const target = findVisibleSshTarget(state, actor, targetId);
     if (!target) {
       sendJson(res, 404, { error: "ssh_target_not_found" });
       return true;
@@ -160,4 +160,15 @@ function terminalSessionTeamId(state, session) {
   if (session.ownerTeamId) return session.ownerTeamId;
   const owner = state.users.find((user) => user.id === session.userId);
   return owner?.teamId ?? LOCAL_TEAM_ID;
+}
+
+function findVisibleSshTarget(state, actor, targetId) {
+  const target = state.sshTargets.find((item) => item.id === targetId);
+  if (!target) return null;
+  return sshTargetVisible(actor, target) ? target : null;
+}
+
+function sshTargetVisible(actor, target) {
+  if (!actor?.teamId) return true;
+  return (target.ownerTeamId ?? LOCAL_TEAM_ID) === actor.teamId;
 }
