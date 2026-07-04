@@ -34,11 +34,29 @@ export function createAutoRunService({
   defaultAgent,
   createInvocation,
   startInvocationIfAllowed,
+  publishWorktreeBranch,
+  createWorktreePr,
 }) {
+  // Reaction states already handled — advancing past them would re-open a PR.
+  const settledStatuses = new Set(["pr_open", "done", "failed"]);
+
   function autoRunStatusForInvocation(invocation) {
     if (invocation.status === "waiting_for_local_approval") return "awaiting_approval";
     if (invocation.status === "rejected") return "failed";
     return "running";
+  }
+
+  function setAutoRunStatus(autoRun, status, extra) {
+    autoRun.status = status;
+    autoRun.updatedAt = now();
+    if (extra) Object.assign(autoRun, extra);
+    appendEvent({
+      invocationId: autoRun.invocationId,
+      type: "auto_run_status_changed",
+      level: status === "failed" ? "warn" : "info",
+      message: `Auto-run ${autoRun.id} → ${status}.`,
+      data: { autoRunId: autoRun.id, status, worktreeId: autoRun.worktreeId },
+    });
   }
 
   // Start an auto-run for a linked issue/PR: materialize the worktree, seed the
@@ -106,5 +124,37 @@ export function createAutoRunService({
     return { autoRun, worktree, invocation };
   }
 
-  return { startAutoRun };
+  // Reaction: when an auto-run's invocation reaches a terminal state, advance the
+  // state machine. On success, publish the branch and open the PR (Phase 2 will
+  // front-run a verification gate here). On failure, mark the auto-run failed.
+  // Called fire-and-forget from completion, so it never throws.
+  async function advanceAutoRunForInvocation(invocation) {
+    try {
+      const autoRun = state.autoRuns.find((item) => item.invocationId === invocation?.id);
+      if (!autoRun || settledStatuses.has(autoRun.status)) return null;
+
+      if (invocation.status === "succeeded") {
+        // Placeholder for the Phase 2 verification gate.
+        setAutoRunStatus(autoRun, "verifying");
+        setAutoRunStatus(autoRun, "publishing");
+        try {
+          await publishWorktreeBranch(autoRun.worktreeId);
+          const pr = await createWorktreePr(autoRun.worktreeId, {});
+          setAutoRunStatus(autoRun, "pr_open", { prNumber: pr?.number ?? null, prUrl: pr?.url ?? null, error: null });
+        } catch (error) {
+          setAutoRunStatus(autoRun, "failed", { error: String(error?.message ?? error) });
+        }
+      } else {
+        // failed | timed_out | cancelled | rejected
+        setAutoRunStatus(autoRun, "failed", { error: `Agent run ${invocation.status}.` });
+      }
+      persistStateSoon();
+      return autoRun;
+    } catch {
+      // Never let a reaction error escape the fire-and-forget caller.
+      return null;
+    }
+  }
+
+  return { startAutoRun, advanceAutoRunForInvocation };
 }

@@ -33,6 +33,7 @@ export function createInvocationService({
   resolveResumeCodexSessionId,
   budgetGateForProject,
   closeCodexSession,
+  onInvocationCompleted,
 }) {
   const {
     completeInvocation,
@@ -56,6 +57,7 @@ export function createInvocationService({
     recordCcusageImportedEstimates,
     recordCodexReviewFindings,
     recordClaudeReviewFindings,
+    onInvocationCompleted,
   });
   const {
     abortDirectHttpRun,

@@ -242,6 +242,11 @@ export function createServerRuntimeServices({
     persistStateSoon,
   });
 
+  // Late-bound so completion can trigger the auto-run reaction, which is created
+  // below (it needs createInvocation from this very service). Set after the
+  // auto-run service exists; until then completion has nothing to advance.
+  let advanceAutoRunHook = null;
+
   invocationService = createInvocationService({
     state,
     now,
@@ -268,6 +273,7 @@ export function createServerRuntimeServices({
     resolveResumeCodexSessionId,
     closeCodexSession,
     budgetGateForProject,
+    onInvocationCompleted: (invocation) => advanceAutoRunHook?.(invocation),
   });
 
   const {
@@ -287,7 +293,7 @@ export function createServerRuntimeServices({
     startInvocationIfAllowed,
   } = invocationService;
 
-  const { startAutoRun } = createAutoRunService({
+  const { startAutoRun, advanceAutoRunForInvocation } = createAutoRunService({
     state,
     now,
     nextId,
@@ -298,7 +304,11 @@ export function createServerRuntimeServices({
     defaultAgent,
     createInvocation,
     startInvocationIfAllowed,
+    publishWorktreeBranch,
+    createWorktreePr,
   });
+  // Now that the reaction exists, let completion drive it.
+  advanceAutoRunHook = advanceAutoRunForInvocation;
 
   const {
     completeDiscoveryRun,

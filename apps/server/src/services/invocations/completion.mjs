@@ -13,6 +13,7 @@ export function createInvocationCompletionRuntime({
   recordCcusageImportedEstimates,
   recordCodexReviewFindings,
   recordClaudeReviewFindings,
+  onInvocationCompleted,
 }) {
   function completeInvocation(invocation, body) {
     if (isTerminal(invocation.status)) {
@@ -82,6 +83,12 @@ export function createInvocationCompletionRuntime({
     closeCodexSession(invocation, terminalStatus);
     updateCompareRunForInvocation(invocation);
     persistStateSoon();
+    // Late-bound reaction hook (e.g. auto-run: succeeded -> publish -> open PR).
+    // Fire-and-forget: the advancer does its own I/O and error handling so a
+    // slow git/gh publish never blocks the bridge's completion response.
+    if (typeof onInvocationCompleted === "function") {
+      onInvocationCompleted(invocation);
+    }
   }
 
   function updateCompareRunForInvocation(invocation) {

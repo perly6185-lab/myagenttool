@@ -37,8 +37,8 @@ function fakeAgent(overrides = {}) {
 
 // Build an auto-run service over the real project service, capturing what it
 // hands the invocation layer. `invocationStatus` controls the gate outcome.
-function makeAutoRun({ agent = fakeAgent(), invocationStatus = "queued" } = {}) {
-  const calls = { createInvocation: [], startInvocationIfAllowed: [] };
+function makeAutoRun({ agent = fakeAgent(), invocationStatus = "queued", publishThrows = false } = {}) {
+  const calls = { createInvocation: [], startInvocationIfAllowed: [], publish: [], pr: [] };
   let counter = 0;
   const svc = createAutoRunService({
     state,
@@ -60,6 +60,15 @@ function makeAutoRun({ agent = fakeAgent(), invocationStatus = "queued" } = {}) 
     },
     startInvocationIfAllowed: (inv, ag) => {
       calls.startInvocationIfAllowed.push({ inv, ag });
+    },
+    publishWorktreeBranch: async (worktreeId) => {
+      calls.publish.push(worktreeId);
+      if (publishThrows) throw new Error("no origin remote");
+      return { ok: true };
+    },
+    createWorktreePr: async (worktreeId, payload) => {
+      calls.pr.push({ worktreeId, payload });
+      return { ok: true, number: 77, url: "https://github.com/o/r/pull/77", state: "OPEN" };
     },
   });
   return { svc, calls };
@@ -145,6 +154,74 @@ test("startAutoRun surfaces a rejected invocation as a failed auto-run", () => {
     name: "issue-8-nope",
   });
   assert.equal(autoRun.status, "failed");
+});
+
+test("advanceAutoRunForInvocation publishes and opens a PR when the run succeeds", async () => {
+  const { svc, calls } = makeAutoRun();
+  const { autoRun, invocation } = svc.startAutoRun({
+    projectId: sourceProjectId,
+    link: { type: "issue", number: 20, title: "Ship it", url: null, state: "open" },
+    agentId: "agt_1",
+    name: "issue-20-ship-it",
+  });
+
+  await svc.advanceAutoRunForInvocation({ ...invocation, status: "succeeded" });
+
+  assert.deepEqual(calls.publish, [autoRun.worktreeId], "published the worktree branch");
+  assert.equal(calls.pr.length, 1, "opened one PR");
+  assert.equal(calls.pr[0].worktreeId, autoRun.worktreeId);
+  assert.equal(autoRun.status, "pr_open");
+  assert.equal(autoRun.prNumber, 77);
+  assert.equal(autoRun.prUrl, "https://github.com/o/r/pull/77");
+});
+
+test("advanceAutoRunForInvocation marks the auto-run failed when the run fails", async () => {
+  const { svc, calls } = makeAutoRun();
+  const { autoRun, invocation } = svc.startAutoRun({
+    projectId: sourceProjectId,
+    link: { type: "issue", number: 21, title: "Broken", url: null, state: "open" },
+    agentId: "agt_1",
+    name: "issue-21-broken",
+  });
+
+  await svc.advanceAutoRunForInvocation({ ...invocation, status: "failed" });
+
+  assert.equal(autoRun.status, "failed");
+  assert.equal(calls.publish.length, 0, "a failed run never publishes");
+  assert.equal(calls.pr.length, 0);
+});
+
+test("advanceAutoRunForInvocation fails the auto-run (never throws) when publish errors", async () => {
+  const { svc, calls } = makeAutoRun({ publishThrows: true });
+  const { autoRun, invocation } = svc.startAutoRun({
+    projectId: sourceProjectId,
+    link: { type: "issue", number: 22, title: "No remote", url: null, state: "open" },
+    agentId: "agt_1",
+    name: "issue-22-no-remote",
+  });
+
+  await svc.advanceAutoRunForInvocation({ ...invocation, status: "succeeded" });
+
+  assert.equal(autoRun.status, "failed");
+  assert.match(autoRun.error, /no origin remote/);
+  assert.equal(calls.pr.length, 0, "a failed publish never opens a PR");
+});
+
+test("advanceAutoRunForInvocation is idempotent once the PR is open", async () => {
+  const { svc, calls } = makeAutoRun();
+  const { autoRun, invocation } = svc.startAutoRun({
+    projectId: sourceProjectId,
+    link: { type: "issue", number: 23, title: "Once", url: null, state: "open" },
+    agentId: "agt_1",
+    name: "issue-23-once",
+  });
+
+  const succeeded = { ...invocation, status: "succeeded" };
+  await svc.advanceAutoRunForInvocation(succeeded);
+  await svc.advanceAutoRunForInvocation(succeeded);
+
+  assert.equal(autoRun.status, "pr_open");
+  assert.equal(calls.pr.length, 1, "a second completion never re-opens the PR");
 });
 
 test("startAutoRun validates the link and the device link state", () => {
