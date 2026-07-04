@@ -2,9 +2,8 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { createElement, type ReactElement } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ApplicationsInspector } from "@/features/applications/applications-inspector";
+import { ApplicationsInspector, latestRoutineInvocation } from "@/features/applications/applications-inspector";
 import {
-  latestRoutineInvocation,
   readableRecoveryActionAvailabilityReason,
   readableRecoveryActionType,
   readableRecoveryAgentReason,
@@ -13,7 +12,7 @@ import {
   readableRecoveryOutcome,
   readableRecoveryOutcomeReason,
   readableRecoveryTimelineStatus,
-} from "@/features/applications/applications-inspector";
+} from "@/features/recovery/application-recovery-ui";
 import { useUiStore } from "@/store/ui-store";
 import type { ApplicationOrchestrationRecoveryAgentCandidate, ConsoleSnapshot, InvocationSnapshot } from "@/lib/console-state";
 
