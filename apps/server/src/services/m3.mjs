@@ -37,6 +37,7 @@ export function createM3Service({
   nextId,
   appendEvent,
   findAgent,
+  persistStateSoon = () => {},
 }) {
   function createPrivateCatalogEntry(body = {}) {
     const createdAt = now();
@@ -65,6 +66,7 @@ export function createM3Service({
       message: `Private catalog entry ${entry.packageName}@${entry.version} created.`,
       data: { catalogEntryId: entry.id, packageName: entry.packageName, version: entry.version },
     });
+    persistStateSoon();
     return entry;
   }
 
@@ -100,6 +102,7 @@ export function createM3Service({
       message: `Signed bundle policy: ${manifest.policy.decision}.`,
       data: { bundleId: manifest.id, signatureStatus: manifest.signatureStatus, decision: manifest.policy.decision },
     });
+    persistStateSoon();
     return manifest;
   }
 
@@ -165,6 +168,7 @@ export function createM3Service({
       message: `${recipe.name} created as a reviewable lifecycle recipe. No command was executed.`,
       data: { recipeId: recipe.id, action: recipe.action, reviewState: recipe.reviewState },
     });
+    persistStateSoon();
     return recipe;
   }
 
@@ -191,6 +195,7 @@ export function createM3Service({
       message: `${recipe.name} moved to ${nextState}. No lifecycle command was executed.`,
       data: { recipeId: recipe.id, reviewState: recipe.reviewState },
     });
+    persistStateSoon();
     return recipe;
   }
 
@@ -249,6 +254,7 @@ export function createM3Service({
       recipe.queueState = "blocked";
       recipe.updatedAt = now();
     }
+    persistStateSoon();
     return record;
   }
 
@@ -287,6 +293,7 @@ export function createM3Service({
       message: `${recipe.name} requires local approval before lifecycle queueing.`,
       data: { approvalId: approval.id, recipeId: recipe.id },
     });
+    persistStateSoon();
     return approval;
   }
 
@@ -312,6 +319,7 @@ export function createM3Service({
       message: `Lifecycle local approval ${approval.status}.`,
       data: { approvalId: approval.id, recipeId: approval.recipeId },
     });
+    persistStateSoon();
     return approval;
   }
 
@@ -329,6 +337,8 @@ export function createM3Service({
     const policy = latestLifecyclePolicy(recipe.id) ?? evaluateLifecyclePolicy(recipe);
     if (policy.decision === "blocked") {
       recipe.queueState = "blocked";
+      recipe.updatedAt = now();
+      persistStateSoon();
       throw new Error(policy.reason);
     }
     const approval = state.lifecycleLocalApprovals.find((item) => item.recipeId === recipe.id && item.status === "approved");
@@ -383,6 +393,7 @@ export function createM3Service({
       message: queued.summary,
       data: { queuedActionId: queued.id, recipeId: recipe.id, executionEnabled },
     });
+    persistStateSoon();
     return queued;
   }
 
@@ -428,6 +439,7 @@ export function createM3Service({
         message: lifecycleAction.result.summary,
         data: { queuedActionId: lifecycleAction.id, recipeId: lifecycleAction.recipeId, executionEnabled: false },
       });
+      persistStateSoon();
       return lifecycleAction;
     }
     lifecycleAction.status = "running";
@@ -449,6 +461,7 @@ export function createM3Service({
       message: "Desktop Bridge started allowlisted lifecycle execution.",
       data: { queuedActionId: lifecycleAction.id, recipeId: lifecycleAction.recipeId, commandId: lifecycleAction.command.commandId },
     });
+    persistStateSoon();
     return lifecycleAction;
   }
 
@@ -507,6 +520,7 @@ export function createM3Service({
     if (status === "failed" && lifecycleAction.result.rollbackAvailable) {
       createRollbackRequest(lifecycleAction, recipe);
     }
+    persistStateSoon();
     return lifecycleAction;
   }
 
@@ -542,6 +556,7 @@ export function createM3Service({
       message: rollback.summary,
       data: { rollbackRequestId: rollback.id, failedActionId: failedAction.id, recipeId: recipe.id },
     });
+    persistStateSoon();
     return rollback;
   }
 
@@ -598,6 +613,7 @@ export function createM3Service({
       message: queued.summary,
       data: { rollbackRequestId: rollback.id, queuedActionId: queued.id, executionEnabled },
     });
+    persistStateSoon();
     return queued;
   }
 
@@ -624,6 +640,7 @@ export function createM3Service({
     };
     state.quotaPolicies.unshift(policy);
     state.quotaPolicies = state.quotaPolicies.slice(0, 100);
+    persistStateSoon();
     return policy;
   }
 
@@ -649,6 +666,7 @@ export function createM3Service({
       data: quotaDecision,
     });
     if (providerMode === "platform_managed" && quotaDecision.decision !== "allowed") {
+      persistStateSoon();
       return {
         quotaDecision,
         usageRecord: null,
@@ -698,6 +716,7 @@ export function createM3Service({
       message: `AI usage recorded for ${provider}/${model}.`,
       data: { usageRecordId: usageRecord.id, quotaDecisionId: quotaDecision.id, ledgerEntryIds: usageRecord.ledgerEntryIds },
     });
+    persistStateSoon();
     return {
       quotaDecision,
       usageRecord,
@@ -776,6 +795,7 @@ export function createM3Service({
       message: "Private deployment export configuration updated.",
       data: { deploymentConfigId: config.id, mode: config.mode },
     });
+    persistStateSoon();
     return config;
   }
 
@@ -814,6 +834,7 @@ export function createM3Service({
         : "Audit export blocked by configuration findings.",
       data: { auditExportId: request.id, status: request.status, dryRun: request.dryRun },
     });
+    persistStateSoon();
     return request;
   }
 
@@ -924,6 +945,7 @@ export function createM3Service({
           : `Recorded unmetered token usage (${inputTokens}+${outputTokens} tokens) for ${model}.`,
       data: { ledgerEntryId: entry.id, amountUsd: entry.amountUsd, amountSource: source, inputTokens, outputTokens, projectId },
     });
+    persistStateSoon();
     return entry;
   }
 
@@ -1087,6 +1109,7 @@ export function createM3Service({
         message: `Team budget updated for ${team.name}.`,
         data: { budgetId: budget.id, teamId, policy: budget.policy },
       });
+      persistStateSoon();
       return budget;
     }
 
@@ -1116,6 +1139,7 @@ export function createM3Service({
       message: `Budget updated for ${project.name}.`,
       data: { budgetId: budget.id, projectId, policy: budget.policy },
     });
+    persistStateSoon();
     return budget;
   }
 

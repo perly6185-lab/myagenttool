@@ -12,12 +12,20 @@
  */
 
 import { spawn, spawnSync } from "node:child_process";
+import { extname } from "node:path";
 import { describeContainerRun } from "@myagenttool/adapters/container";
 
 const CANCEL_GRACE_MS = 500;
 const OUTPUT_TAIL_LIMIT = 4_000;
 
 let runCounter = 0;
+
+function runtimeCommand(runtime, args) {
+  if ([".cjs", ".js", ".mjs"].includes(extname(runtime))) {
+    return { command: process.execPath, args: [runtime, ...args] };
+  }
+  return { command: runtime, args };
+}
 
 /** Build the `run` argv from the shared descriptor. Exported for tests so the
  *  mapping from governed config to actual flags is pinned. */
@@ -54,7 +62,8 @@ export async function runContainerAgent({ adapter, task, onEvent = () => {}, sho
   const args = containerRunArgs(descriptor, name);
   onEvent({ level: "info", message: `Container starting: ${descriptor.runtime} run ${descriptor.image} (network ${descriptor.network}).` });
 
-  const child = spawn(descriptor.runtime, args, { stdio: ["ignore", "pipe", "pipe"] });
+  const spawnPlan = runtimeCommand(descriptor.runtime, args);
+  const child = spawn(spawnPlan.command, spawnPlan.args, { stdio: ["ignore", "pipe", "pipe"] });
 
   let outputTail = "";
   let spawnError = null;
@@ -78,7 +87,8 @@ export async function runContainerAgent({ adapter, task, onEvent = () => {}, sho
     // Ask the runtime to stop the container (the CLI process alone may detach),
     // then make sure the CLI child itself goes away.
     try {
-      spawn(descriptor.runtime, ["kill", name], { stdio: "ignore" }).on("error", () => undefined);
+      const killPlan = runtimeCommand(descriptor.runtime, ["kill", name]);
+      spawn(killPlan.command, killPlan.args, { stdio: "ignore" }).on("error", () => undefined);
     } catch {
       /* runtime gone */
     }
@@ -136,7 +146,8 @@ export async function runContainerAgent({ adapter, task, onEvent = () => {}, sho
 /** Health probe: the configured runtime binary must answer --version. Also
  *  surfaces the digest-pinning stance so unpinned images are visible. */
 export function probeContainerRuntime(adapter) {
-  const probe = spawnSync(adapter.runtime, ["--version"], { encoding: "utf8", timeout: 5_000 });
+  const probePlan = runtimeCommand(adapter.runtime, ["--version"]);
+  const probe = spawnSync(probePlan.command, probePlan.args, { encoding: "utf8", timeout: 5_000 });
   if (probe.error || probe.status !== 0) {
     return {
       ok: false,

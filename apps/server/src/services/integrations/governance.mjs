@@ -12,6 +12,7 @@ export function createIntegrationGovernanceRuntime({
   now,
   nextId,
   appendEvent,
+  persistStateSoon = () => {},
 }) {
   function updateIntegrationRetentionSettings(body = {}) {
     state.retentionSettings = {
@@ -29,6 +30,7 @@ export function createIntegrationGovernanceRuntime({
       message: "Integration data retention settings updated.",
       data: state.retentionSettings,
     });
+    persistStateSoon();
     return state.retentionSettings;
   }
 
@@ -73,6 +75,7 @@ export function createIntegrationGovernanceRuntime({
       message: "Quota decision recorded for integration artifact.",
       data: record,
     });
+    persistStateSoon();
     return record;
   }
 

@@ -7,6 +7,7 @@ export function createIntegrationProbeRuntime({
   nextId,
   appendEvent,
   findIntegrationArtifact,
+  persistStateSoon = () => {},
 }) {
   function createIntegrationProbeRun(artifact) {
     if (artifact.artifactType !== "adapter_config") {
@@ -45,6 +46,7 @@ export function createIntegrationProbeRuntime({
       message: `Probe queued for ${artifact.summary}.`,
       data: { probeRunId: probeRun.id, artifactId: artifact.id },
     });
+    persistStateSoon();
     if (adapter.type === "http") {
       queueMicrotask(() => runHttpIntegrationProbe(probeRun).catch((error) => {
         completeIntegrationProbeRun(probeRun, {
@@ -75,6 +77,7 @@ export function createIntegrationProbeRuntime({
       message: probeRun.summary,
       data: { probeRunId: probeRun.id, artifactId: probeRun.artifactId },
     });
+    persistStateSoon();
   }
 
   function completeIntegrationProbeRun(probeRun, body = {}) {
@@ -96,6 +99,7 @@ export function createIntegrationProbeRuntime({
       message: `${probeRun.summary} Registration remains explicit.`,
       data: { probeRunId: probeRun.id, artifactId: probeRun.artifactId, status: probeRun.status },
     });
+    persistStateSoon();
   }
 
   function findIntegrationProbeRun(id) {

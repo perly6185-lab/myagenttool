@@ -15,6 +15,7 @@ export function createIntegrationService({
   disableAgent,
   findAgent,
   registerAgent,
+  persistStateSoon = () => {},
 }) {
   const {
     completeDiscoveryRun,
@@ -30,6 +31,7 @@ export function createIntegrationService({
     appendEvent,
     disableAgent,
     registerAgent,
+    persistStateSoon,
   });
 
   const {
@@ -41,6 +43,7 @@ export function createIntegrationService({
     now,
     nextId,
     appendEvent,
+    persistStateSoon,
   });
 
   const {
@@ -55,6 +58,7 @@ export function createIntegrationService({
     appendEvent,
     buildIntegrationGovernance,
     recordQuotaDecision,
+    persistStateSoon,
   });
 
   const {
@@ -69,6 +73,7 @@ export function createIntegrationService({
     nextId,
     appendEvent,
     findIntegrationArtifact,
+    persistStateSoon,
   });
 
   const {
@@ -78,6 +83,7 @@ export function createIntegrationService({
     appendEvent,
     disableAgent,
     registerAgent,
+    persistStateSoon,
   });
 
   const {

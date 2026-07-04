@@ -5,6 +5,7 @@ const persistedArrayKeys = [
   "users",
   "teams",
   "tokens",
+  "agents",
   "applications",
   "applicationRecoveryActions",
   "projectTargets",
@@ -15,11 +16,16 @@ const persistedArrayKeys = [
   "traces",
   "spans",
   "auditSummaries",
+  "healthChecks",
+  "lifecycleAuditRecords",
   "lifecycleRecipes",
   "lifecyclePolicyDecisions",
   "lifecycleLocalApprovals",
   "lifecycleQueuedActions",
   "lifecycleRollbackRequests",
+  "discoveryRuns",
+  "integrationArtifacts",
+  "integrationProbeRuns",
   "privateCatalogEntries",
   "signedBundleManifests",
   "quotaDecisionRecords",
@@ -44,6 +50,18 @@ const persistedArrayKeys = [
   "codexHookEvents",
   "codexApprovalBrokerRequests",
   "codexImportedEvidenceRecords",
+  "terminalSessions",
+  "terminalEvidenceRecords",
+  "terminalBridgeActions",
+  "sshTargets",
+  "sshConnectionTests",
+];
+
+const persistedObjectKeys = [
+  "device",
+  "privateDeploymentConfig",
+  "retentionSettings",
+  "terminalRuntimeCapability",
 ];
 
 export function createPersistenceRuntime({
@@ -78,7 +96,9 @@ export function createPersistenceRuntime({
     for (const key of persistedArrayKeys) {
       snapshot[key] = state[key];
     }
-    snapshot.privateDeploymentConfig = state.privateDeploymentConfig;
+    for (const key of persistedObjectKeys) {
+      snapshot[key] = state[key];
+    }
     mkdirSync(dirname(stateStorePath), { recursive: true });
     writeFileSync(stateStorePath, `${JSON.stringify(snapshot, null, 2)}\n`);
   }
@@ -105,15 +125,31 @@ export function createPersistenceRuntime({
     }
     if (restoredProjects.length) {
       state.projects = restoredProjects;
-      state.currentProjectId = defaultPathProject.id;
+      state.currentProjectId = restoredProjects.some((project) => project.id === snapshot.currentProjectId)
+        ? snapshot.currentProjectId
+        : defaultPathProject.id;
+    }
+    const defaultArrays = {};
+    for (const key of persistedArrayKeys) {
+      defaultArrays[key] = Array.isArray(state[key]) ? state[key] : [];
     }
     for (const key of persistedArrayKeys) {
       if (Array.isArray(snapshot[key])) {
-        state[key] = snapshot[key];
+        state[key] = key === "agents"
+          ? mergeRecordsById(defaultArrays[key], snapshot[key])
+          : snapshot[key];
       }
     }
-    if (snapshot.privateDeploymentConfig) {
-      state.privateDeploymentConfig = snapshot.privateDeploymentConfig;
+    for (const key of persistedObjectKeys) {
+      if (isPlainObject(snapshot[key])) {
+        state[key] = {
+          ...(isPlainObject(state[key]) ? state[key] : {}),
+          ...snapshot[key],
+        };
+      }
+    }
+    if (state.device) {
+      state.device.status = "offline";
     }
   }
 
@@ -122,4 +158,23 @@ export function createPersistenceRuntime({
     restorePersistentState,
     savePersistentState,
   };
+}
+
+function mergeRecordsById(defaultRecords, restoredRecords) {
+  const merged = [];
+  const seen = new Set();
+  for (const record of restoredRecords) {
+    if (!record || typeof record.id !== "string") continue;
+    merged.push(record);
+    seen.add(record.id);
+  }
+  for (const record of defaultRecords) {
+    if (!record || typeof record.id !== "string" || seen.has(record.id)) continue;
+    merged.push(record);
+  }
+  return merged;
+}
+
+function isPlainObject(value) {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }

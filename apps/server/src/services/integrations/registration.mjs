@@ -15,6 +15,7 @@ export function createIntegrationRegistrationRuntime({
   appendEvent,
   disableAgent,
   registerAgent,
+  persistStateSoon = () => {},
 }) {
   function registerIntegrationArtifact(artifact) {
     if (artifact.artifactType !== "adapter_config") {
@@ -66,6 +67,7 @@ export function createIntegrationRegistrationRuntime({
         : `${agent.name} registered from tested artifact and left disabled.`,
       data: { artifactId: artifact.id, agentId: agent.id, disabled: isAgentDisabled(agent) },
     });
+    persistStateSoon();
     return agent;
   }
 

@@ -16,6 +16,7 @@ export function createDiscoveryRuntime({
   appendEvent,
   disableAgent,
   registerAgent,
+  persistStateSoon = () => {},
 }) {
   function createDiscoveryRun(body = {}) {
     const allowedScope = [
@@ -69,6 +70,7 @@ export function createDiscoveryRuntime({
       message: discoveryRun.message,
       data: { operationId: discoveryRun.id, operation: "discover", deviceId: state.device.id },
     });
+    persistStateSoon();
     return discoveryRun;
   }
 
@@ -93,6 +95,7 @@ export function createDiscoveryRuntime({
       message: discoveryRun.message,
       data: { operationId: discoveryRun.id, operation: "discover", deviceId: discoveryRun.deviceId },
     });
+    persistStateSoon();
   }
 
   function completeDiscoveryRun(discoveryRun, body) {
@@ -118,6 +121,7 @@ export function createDiscoveryRuntime({
         candidateCount: discoveryRun.candidates.length,
       },
     });
+    persistStateSoon();
   }
 
   function registerDiscoveredCandidate(discoveryRun, candidate) {
@@ -169,6 +173,7 @@ export function createDiscoveryRuntime({
         : `${candidate.name} was registered from discovery and left disabled for review.`,
       data: { operationId: discoveryRun.id, operation: "discover", agentId: agent.id, candidateId: candidate.id },
     });
+    persistStateSoon();
     return agent;
   }
 

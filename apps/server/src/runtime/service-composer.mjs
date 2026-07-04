@@ -55,6 +55,7 @@ export function createServerRuntimeServices({
     sameProjectPath,
   });
   restorePersistentState();
+  idCounter = nextIdCounterAfterState(state);
 
   const { appendEvent } = createEventLogRuntime({
     state,
@@ -119,7 +120,7 @@ export function createServerRuntimeServices({
     markHealthCheckStarted,
     nextBridgeHealthCheck,
     registerAgent,
-  } = createAgentService({ state, now, nextId, appendEvent });
+  } = createAgentService({ state, now, nextId, appendEvent, persistStateSoon });
 
   const {
     closeCodexSession,
@@ -209,24 +210,28 @@ export function createServerRuntimeServices({
     nextId,
     appendEvent,
     findAgent,
+    persistStateSoon,
   });
   const { recordCcusageImportedEstimates } = createCcusageImportService({
     state,
     now,
     nextId,
     appendEvent,
+    persistStateSoon,
   });
   const { recordCodexReviewFindings } = createCodexReviewImportService({
     state,
     now,
     nextId,
     appendEvent,
+    persistStateSoon,
   });
   const { recordClaudeReviewFindings } = createClaudeReviewImportService({
     state,
     now,
     nextId,
     appendEvent,
+    persistStateSoon,
   });
 
   invocationService = createInvocationService({
@@ -303,6 +308,7 @@ export function createServerRuntimeServices({
     disableAgent,
     findAgent,
     registerAgent,
+    persistStateSoon,
   });
 
   const {
@@ -1761,4 +1767,27 @@ export function createServerRuntimeServices({
     savePersistentState,
     selfCheckDependencies,
   };
+}
+
+function nextIdCounterAfterState(state) {
+  let max = 0;
+  const seen = new Set();
+  const visit = (value) => {
+    if (!value || typeof value !== "object") {
+      if (typeof value === "string") {
+        const match = value.match(/_(\d{4,})$/);
+        if (match) max = Math.max(max, Number(match[1]));
+      }
+      return;
+    }
+    if (seen.has(value)) return;
+    seen.add(value);
+    if (Array.isArray(value)) {
+      for (const item of value) visit(item);
+      return;
+    }
+    for (const item of Object.values(value)) visit(item);
+  };
+  visit(state);
+  return max + 1;
 }
