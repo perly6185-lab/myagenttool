@@ -4,6 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 
+import { buildEvidenceCenterRecords } from "../src/read-models/evidence-center.mjs";
+import { buildPublicState } from "../src/read-models/state.mjs";
 import { createPersistenceRuntime } from "../src/runtime/persistence.mjs";
 import { createServerRuntimeServices } from "../src/runtime/service-composer.mjs";
 import { createServerState } from "../src/runtime/state-factory.mjs";
@@ -12,6 +14,7 @@ import { CCUSAGE_VERSION } from "../src/services/ccusage-agent.mjs";
 import { createCcusageImportService } from "../src/services/ccusage-imports.mjs";
 import { createClaudeReviewImportService } from "../src/services/claude-review-imports.mjs";
 import { createCodexReviewImportService } from "../src/services/codex-review-imports.mjs";
+import { createCodexService } from "../src/services/codex.mjs";
 import { createIntegrationService } from "../src/services/integrations.mjs";
 import { createM3Service } from "../src/services/m3.mjs";
 import { sameProjectPath } from "../src/services/projects.mjs";
@@ -95,6 +98,341 @@ test("persistence restores active control-plane records across runtime restart",
     assert(second.state.sshConnectionTests.some((item) => item.id === "ssh_test_1"), "SSH connection tests should restore");
     assert(second.state.ledgerEntries.some((item) => item.id === "led_1"), "ledger entries should restore");
     assert.equal(second.state.retentionSettings.logsDays, 99);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("persistence restores lifecycle recovery evidence and ledger spend across runtime restart", () => {
+  const root = join(tmpdir(), `myagenttool-persistence-evidence-test-${Date.now()}`);
+  const projectPath = join(root, "project");
+  const stateStorePath = join(root, "state", "snapshot.json");
+  mkdirSync(projectPath, { recursive: true });
+
+  try {
+    const first = createServerState({ defaultProjectPath: projectPath, now });
+    const m3 = m3ServiceFor(first.state);
+    const projectId = first.defaultProject.id;
+    m3.upsertBudget({ projectId, limitUsd: 2, policy: "block" });
+    const catalog = m3.createPrivateCatalogEntry({ packageName: "demo-agent", version: "1.2.3" });
+    m3.createSignedBundleManifest({
+      catalogEntryId: catalog.id,
+      packageName: "demo-agent",
+      version: "1.2.3",
+      signatureStatus: "not_required",
+    });
+    const recipe = m3.createLifecycleRecipe({
+      action: "update",
+      name: "Durable evidence update",
+      catalogEntryId: catalog.id,
+      source: {
+        type: "manual_entry",
+        uri: "manual://demo-agent",
+        author: "test",
+        version: "1.2.3",
+        signatureStatus: "not_required",
+      },
+      supportedPlatforms: [first.state.device.platform],
+      expectedBinary: "demo-agent",
+      rollback: { available: true, strategy: "previous_version", summary: "Restore demo-agent 1.2.2." },
+      command: {
+        summary: "Update demo agent.",
+        commandId: "demo_agent_update",
+        executable: "demo-agent",
+        args: ["--self-check-update"],
+        shell: false,
+      },
+    });
+    m3.transitionLifecycleRecipe(recipe, "approve");
+    assert.equal(m3.evaluateLifecyclePolicy(recipe).decision, "allowed");
+    const queued = m3.queueLifecycleAction(recipe);
+    m3.markLifecycleActionStarted(queued);
+    m3.completeLifecycleAction(queued, {
+      status: "failed",
+      summary: "Bridge update failed during restart test.",
+      exitCode: 42,
+      stderr: "permission denied",
+      rollbackAvailable: true,
+    });
+    const ledger = m3.recordInvocationLedgerEntry({
+      invocation: {
+        id: "inv_restart_cost",
+        agentId: "agt_demo_cli",
+        requestedBy: "usr_local",
+        projectId,
+        input: { metadata: { projectId } },
+      },
+      cost: { amountUsd: 2.5, currency: "USD", model: "gpt-restart", billable: true },
+      agent: first.state.agents.find((agent) => agent.id === "agt_demo_cli"),
+    });
+    assert(ledger, "test setup should create a spend-bearing ledger entry");
+
+    saveState(first, { stateStorePath });
+
+    const second = createServerState({ defaultProjectPath: projectPath, now });
+    restoreState(second, { stateStorePath });
+    const restoredM3 = m3ServiceFor(second.state);
+    const audit = second.state.lifecycleAuditRecords.find((item) => item.id === queued.id);
+    const rollback = second.state.lifecycleRollbackRequests.find((item) => item.failedActionId === queued.id);
+
+    assert.equal(audit?.status, "failed");
+    assert.equal(audit?.message, "Bridge update failed during restart test.");
+    assert.equal(audit?.result?.exitCode, 42);
+    assert.equal(audit?.result?.rollbackAvailable, true);
+    assert.equal(audit?.rollback?.strategy, "previous_version");
+    assert.equal(rollback?.status, "available");
+    assert.equal(rollback?.queuedActionId, null);
+    assert.match(rollback?.summary ?? "", /Restore demo-agent 1\.2\.2/);
+    assert.equal(second.state.lifecycleQueuedActions.find((item) => item.id === queued.id)?.result?.summary, "Bridge update failed during restart test.");
+
+    const restoredLedger = second.state.ledgerEntries.find((item) => item.id === ledger.id);
+    assert.equal(restoredLedger?.amountUsd, 2.5);
+    assert.equal(restoredLedger?.sourceRecordId, "inv_restart_cost");
+    const budget = restoredM3.budgetStatusFor(projectId);
+    assert.equal(budget.finalizedUsd, 2.5);
+    assert.equal(budget.spentUsd, 2.5);
+    assert.equal(budget.over, true);
+    assert.equal(restoredM3.ledgerSummary().totalCostUsd, 2.5);
+
+    restoredM3.updatePrivateDeploymentConfig({ mode: "private_deployment", auditExportEnabled: true });
+    const exportRequest = restoredM3.createAuditExportRequest({ subjects: ["lifecycle", "ledger"], dryRun: false });
+    assert.equal(exportRequest.status, "exported");
+    assert(exportRequest.manifest.recordRefs.some((ref) => ref.subject === "lifecycle" && ref.id === queued.id), "lifecycle audit record should remain exportable after restore");
+    assert(exportRequest.manifest.recordRefs.some((ref) => ref.subject === "lifecycle" && ref.id === rollback.id), "rollback request should remain exportable after restore");
+    assert(exportRequest.manifest.recordRefs.some((ref) => ref.subject === "ledger" && ref.id === ledger.id), "ledger entry should remain exportable after restore");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("persistence restores imported usage and review evidence across runtime restart", () => {
+  const root = join(tmpdir(), `myagenttool-persistence-imported-evidence-test-${Date.now()}`);
+  const projectPath = join(root, "project");
+  const stateStorePath = join(root, "state", "snapshot.json");
+  mkdirSync(projectPath, { recursive: true });
+
+  try {
+    const first = createServerState({ defaultProjectPath: projectPath, now });
+    const projectId = first.defaultProject.id;
+    first.state.invocations.push(
+      { id: "inv_ccusage_restore", projectId, requestedBy: "usr_local", agentId: "agt_ccusage_daily", status: "succeeded" },
+      { id: "inv_codex_restore", projectId, requestedBy: "usr_local", agentId: "agt_codex_review_diff", status: "succeeded" },
+      { id: "inv_claude_restore", projectId, requestedBy: "usr_local", agentId: "agt_claude_review_diff", status: "succeeded" },
+    );
+    const imports = importServicesFor(first.state);
+    const usage = imports.ccusage.recordCcusageImportedEstimates({
+      invocation: {
+        id: "inv_ccusage_restore",
+        projectId,
+        requestedBy: "usr_local",
+        agentId: "agt_ccusage_daily",
+        options: { metadata: { projectId } },
+      },
+      result: {
+        output: {
+          source: "ccusage",
+          reportId: "daily",
+          offline: true,
+          filters: { since: "2026-07-01", timezone: "Asia/Shanghai" },
+          report: [{
+            provider: "codex",
+            model: "gpt-restart",
+            sessionId: "sess_restore",
+            inputTokens: 100,
+            outputTokens: 25,
+            totalCostUsd: 1.75,
+            rawLocalPath: "server-only-usage-detail",
+          }],
+        },
+      },
+      agent: governedCcusageAgent(),
+    });
+    const codexFindings = imports.codex.recordCodexReviewFindings({
+      invocation: { id: "inv_codex_restore", projectId, requestedBy: "usr_local", agentId: "agt_codex_review_diff" },
+      result: {
+        output: {
+          source: "codex",
+          tool: "codex.review.diff",
+          summary: "Codex found restore evidence.",
+          findings: [{
+            severity: "high",
+            file: "apps/server/src/services/persistence.mjs",
+            line: 12,
+            message: "Preserve imported usage evidence after restore.",
+            suggestion: "Assert public read models after restart.",
+            rawLocalPath: "server-only-codex-detail",
+          }],
+        },
+      },
+      agent: governedReviewAgent({ id: "agt_codex_review_diff", tool: "codex.review.diff", wrapper: "codex-review-wrapper.mjs" }),
+    });
+    const claudeFindings = imports.claude.recordClaudeReviewFindings({
+      invocation: { id: "inv_claude_restore", projectId, requestedBy: "usr_local", agentId: "agt_claude_review_diff" },
+      result: {
+        output: {
+          source: "claude",
+          tool: "claude.review.diff",
+          summary: "Claude found restore evidence.",
+          findings: [{
+            severity: "medium",
+            file: "apps/server/test/persistence.test.mjs",
+            line: 123,
+            message: "Keep normalized review evidence readable after restore.",
+            suggestion: "Check unified reviewFindings.",
+            rawLocalPath: "server-only-claude-detail",
+          }],
+        },
+      },
+      agent: governedReviewAgent({ id: "agt_claude_review_diff", tool: "claude.review.diff", wrapper: "claude-review-wrapper.mjs" }),
+    });
+    assert.equal(usage.length, 1);
+    assert.equal(codexFindings.length, 1);
+    assert.equal(claudeFindings.length, 1);
+
+    saveState(first, { stateStorePath });
+
+    const second = createServerState({ defaultProjectPath: projectPath, now });
+    restoreState(second, { stateStorePath });
+    const publicState = publicStateFor(second.state, { defaultProjectPath: projectPath });
+    const restoredUsage = second.state.importedUsageEstimates.find((item) => item.id === usage[0].id);
+    const publicUsage = publicState.importedUsageEstimates.find((item) => item.id === usage[0].id);
+    const publicCodex = publicState.reviewFindings.find((item) => item.id === codexFindings[0].id);
+    const publicClaude = publicState.reviewFindings.find((item) => item.id === claudeFindings[0].id);
+
+    assert.equal(restoredUsage?.estimatedCostUsd, 1.75);
+    assert.equal(restoredUsage?.filters?.timezone, "Asia/Shanghai");
+    assert.equal(restoredUsage?.raw?.rawLocalPath, "server-only-usage-detail");
+    assert.equal(publicUsage?.estimatedCostUsd, 1.75);
+    assert.ok(!("raw" in publicUsage), "public imported usage rows must not expose raw payloads after restore");
+    assert.equal(second.state.codexReviewFindings.find((item) => item.id === codexFindings[0].id)?.raw.rawLocalPath, "server-only-codex-detail");
+    assert.equal(second.state.claudeReviewFindings.find((item) => item.id === claudeFindings[0].id)?.raw.rawLocalPath, "server-only-claude-detail");
+    assert.equal(publicCodex?.source, "codex");
+    assert.equal(publicCodex?.severity, "high");
+    assert.equal(publicCodex?.message, "Preserve imported usage evidence after restore.");
+    assert.ok(!("raw" in publicCodex), "public Codex review finding must not expose raw payloads after restore");
+    assert.equal(publicClaude?.source, "claude");
+    assert.equal(publicClaude?.severity, "medium");
+    assert.equal(publicClaude?.message, "Keep normalized review evidence readable after restore.");
+    assert.ok(!("raw" in publicClaude), "public Claude review finding must not expose raw payloads after restore");
+
+    const restoredM3 = m3ServiceFor(second.state);
+    restoredM3.updatePrivateDeploymentConfig({ mode: "private_deployment", auditExportEnabled: true });
+    const exportRequest = restoredM3.createAuditExportRequest({ subjects: ["usage"], dryRun: false });
+    assert.equal(exportRequest.status, "exported");
+    assert(exportRequest.manifest.recordRefs.some((ref) => ref.subject === "usage" && ref.id === usage[0].id), "imported usage estimate should remain exportable after restore");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("persistence restores terminal and Codex evidence center linkage across runtime restart", () => {
+  const root = join(tmpdir(), `myagenttool-persistence-terminal-codex-test-${Date.now()}`);
+  const projectPath = join(root, "project");
+  const stateStorePath = join(root, "state", "snapshot.json");
+  mkdirSync(projectPath, { recursive: true });
+
+  try {
+    const first = createServerState({ defaultProjectPath: projectPath, now });
+    const projectId = first.defaultProject.id;
+    const invocation = {
+      id: "inv_codex_terminal_restore",
+      projectId,
+      requestedBy: "usr_local",
+      agentId: "agt_codex_cli",
+      input: { task: "Update durable evidence tests." },
+      options: { metadata: { projectId } },
+      status: "running",
+      createdAt: now(),
+    };
+    first.state.invocations.unshift(invocation);
+    const codex = codexServiceFor(first.state, { defaultProject: first.defaultProject });
+    const codexAgent = first.state.agents.find((agent) => agent.id === "agt_codex_cli");
+    const workspace = codex.createManagedCodexWorkspace({ invocationId: invocation.id, agent: codexAgent, workspacePolicy: "current_repo" });
+    const session = codex.createManagedCodexSession({
+      invocationId: invocation.id,
+      agent: codexAgent,
+      codexSessionMode: "new",
+      workspace,
+      actor: { userId: "usr_local" },
+    });
+    const codexEvent = {
+      id: "evt_codex_restore_file_change",
+      invocationId: invocation.id,
+      type: "agent_output",
+      message: "Codex edited a persistence test.",
+      data: {
+        source: "codex_jsonl",
+        eventType: "item.completed",
+        itemType: "file_change",
+        threadId: "thread_restore",
+        sessionId: "provider_session_restore",
+        fileChangeSummary: "Edited persistence restart coverage.",
+        fileChangePath: "apps/server/test/persistence.test.mjs",
+        fileChangeAction: "modify",
+        diffPreview: "@@ restart coverage @@",
+        changeRisk: "medium",
+      },
+      createdAt: now(),
+    };
+    codex.updateCodexSessionFromEvent(codexEvent);
+    const codexEvidence = codex.createCodexEvidenceRecord(codexEvent);
+    const changeReview = codex.createCodexChangeReview({
+      evidenceId: codexEvidence.id,
+      decision: "approved",
+      comment: "Restart evidence remains readable.",
+    });
+
+    const terminal = terminalServiceFor(first.state, { codexSessionForInvocation: codex.codexSessionForInvocation });
+    const terminalSession = terminal.createManagedTerminalSession({
+      ownerInvocationId: invocation.id,
+      ownerCodexSessionId: session.id,
+      userId: "usr_local",
+      cwd: projectPath,
+      shell: first.state.terminalRuntimeCapability.defaultShell,
+    });
+    const action = terminal.nextTerminalBridgeAction();
+    terminal.recordTerminalBridgeEvent({
+      terminalSessionId: terminalSession.terminalSessionId,
+      actionId: action.id,
+      type: "terminal.session.attached",
+      summary: "Managed terminal attached for restore test.",
+    });
+    terminal.recordTerminalBridgeEvent({
+      terminalSessionId: terminalSession.terminalSessionId,
+      type: "terminal.output.chunk",
+      summary: "Terminal produced restart evidence.",
+      output: "durable terminal output",
+      byteCount: 23,
+    });
+
+    saveState(first, { stateStorePath });
+
+    const second = createServerState({ defaultProjectPath: projectPath, now });
+    restoreState(second, { stateStorePath });
+    const publicState = publicStateFor(second.state, { defaultProjectPath: projectPath });
+    const restoredSession = second.state.codexSessions.find((item) => item.id === session.id);
+    const restoredTerminal = second.state.terminalSessions.find((item) => item.terminalSessionId === terminalSession.terminalSessionId);
+    const restoredAction = second.state.terminalBridgeActions.find((item) => item.id === action.id);
+    const codexCenter = publicState.evidenceCenterRecords.find((item) => item.id === codexEvidence.id);
+    const reviewCenter = publicState.evidenceCenterRecords.find((item) => item.id === changeReview.id);
+    const terminalCenters = publicState.evidenceCenterRecords.filter((item) => item.source === "managed_terminal_runtime" && item.codexSessionRegistryId === session.id);
+
+    assert.equal(restoredSession?.codexSessionId, "provider_session_restore");
+    assert.equal(restoredSession?.codexThreadId, "thread_restore");
+    assert(restoredSession?.evidenceIds.includes(codexEvidence.id), "restored Codex session should retain evidence linkage");
+    assert.equal(second.state.codexEvidenceRecords.find((item) => item.id === codexEvidence.id)?.fileChangeSummary, "Edited persistence restart coverage.");
+    assert.equal(second.state.codexChangeReviews.find((item) => item.id === changeReview.id)?.codexSessionRegistryId, session.id);
+    assert.equal(restoredTerminal?.ownerCodexSessionId, session.id);
+    assert(restoredTerminal?.evidenceIds.length >= 2, "restored terminal session should retain evidence ids");
+    assert.equal(restoredAction?.status, "completed");
+
+    assert.equal(codexCenter?.source, "managed_codex_jsonl");
+    assert.equal(codexCenter?.repoPath, projectPath);
+    assert.equal(codexCenter?.summary, "Edited persistence restart coverage.");
+    assert.equal(reviewCenter?.source, "managed_codex_review");
+    assert.equal(reviewCenter?.codexSessionRegistryId, session.id);
+    assert(terminalCenters.some((item) => item.summary === "Terminal produced restart evidence."), "Evidence Center should retain terminal output summary after restore");
+    assert(terminalCenters.every((item) => item.invocationId === invocation.id), "terminal evidence should retain owner invocation linkage");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -470,6 +808,107 @@ test("review and usage import mutations request persistence directly", () => {
 
 function now() {
   return "2026-07-04T00:00:00.000Z";
+}
+
+function saveState(runtimeState, { stateStorePath }) {
+  createPersistenceRuntime({
+    state: runtimeState.state,
+    enabled: true,
+    stateStorePath,
+    schemaVersion: 1,
+    now,
+    defaultProject: runtimeState.defaultProject,
+    sameProjectPath,
+  }).savePersistentState();
+}
+
+function restoreState(runtimeState, { stateStorePath }) {
+  createPersistenceRuntime({
+    state: runtimeState.state,
+    enabled: true,
+    stateStorePath,
+    schemaVersion: 1,
+    now,
+    defaultProject: runtimeState.defaultProject,
+    sameProjectPath,
+  }).restorePersistentState();
+}
+
+function m3ServiceFor(state) {
+  let id = 0;
+  return createM3Service({
+    state,
+    now,
+    nextId: (prefix) => `${prefix}_${++id}`,
+    appendEvent: () => {},
+    findAgent: (agentId) => state.agents.find((agent) => agent.id === agentId) ?? null,
+  });
+}
+
+function importServicesFor(state) {
+  let id = 0;
+  const nextId = (prefix) => `${prefix}_${++id}`;
+  return {
+    ccusage: createCcusageImportService({ state, now, nextId, appendEvent: () => {} }),
+    codex: createCodexReviewImportService({ state, now, nextId, appendEvent: () => {} }),
+    claude: createClaudeReviewImportService({ state, now, nextId, appendEvent: () => {} }),
+  };
+}
+
+function publicStateFor(state, { defaultProjectPath }) {
+  const currentProject = () => state.projects.find((item) => item.id === state.currentProjectId) ?? state.projects[0] ?? null;
+  const m3 = m3ServiceFor(state);
+  const findInvocation = (invocationId) => state.invocations.find((item) => item.id === invocationId) ?? null;
+  const codexSessionForInvocation = (invocationId) => state.codexSessions.find((session) => session.invocationId === invocationId) ?? null;
+  const repoPathForEvidence = (codexSessionRegistryId) => {
+    const session = state.codexSessions.find((item) => item.id === codexSessionRegistryId);
+    const workspace = session?.workspaceId ? state.codexWorkspaces.find((item) => item.id === session.workspaceId) : null;
+    return workspace?.repoPath ?? session?.repoPath ?? null;
+  };
+  return buildPublicState({
+    namespace: "test",
+    protocolVersion: "0.0.0",
+    state,
+    defaultProjectPath,
+    currentProject,
+    defaultAgent: () => state.agents[0] ?? null,
+    loopRoutineReadModel: () => [],
+    codexApprovalQueue: () => [],
+    evidenceCenterRecords: () => buildEvidenceCenterRecords({ state, findInvocation, codexSessionForInvocation, repoPathForEvidence }),
+    ledgerSummary: () => m3.ledgerSummary(),
+    budgetStatuses: () => m3.budgetStatuses(),
+    teamBudgetStatuses: () => m3.teamBudgetStatuses(),
+  });
+}
+
+function codexServiceFor(state, { defaultProject }) {
+  let id = 0;
+  const currentProject = () => state.projects.find((item) => item.id === state.currentProjectId) ?? defaultProject;
+  return createCodexService({
+    state,
+    now,
+    nextId: (prefix) => `${prefix}_${++id}`,
+    appendEvent: () => {},
+    currentProject,
+    findInvocation: (invocationId) => state.invocations.find((item) => item.id === invocationId) ?? null,
+    persistStateSoon: () => {},
+    uniqueStrings: (items) => [...new Set(items)],
+    worktreeForProject: () => null,
+  });
+}
+
+function terminalServiceFor(state, { codexSessionForInvocation }) {
+  let id = 0;
+  return createTerminalService({
+    state,
+    now,
+    nextId: (prefix) => `${prefix}_${++id}`,
+    appendEvent: () => {},
+    persistStateSoon: () => {},
+    summarizeText: (text) => String(text),
+    uniqueStrings: (items) => [...new Set(items)],
+    codexSessionForInvocation,
+  });
 }
 
 function governedReviewAgent({ id, tool, wrapper }) {

@@ -62,7 +62,17 @@ capabilities with `provider.type = "application"`. `/api/tools` remains the
 stable tool-only compatibility surface.
 Invoking application capabilities through `/api/capabilities/{name}/invocations`
 creates normal invocation/audit records backed by the platform Application
-Control agent.
+Control agent for control-plane actions or the platform Application Wrapper
+Runner for approved npm-wrapper capabilities.
+
+ccusage publishes wrapper capabilities such as
+`app.app_ccusage.wrapper.daily`. These capabilities declare
+`metadata.compatibilityFacade.name = "ccusage.report"`,
+`metadata.outputCollection = "importedUsageEstimates"`,
+`metadata.billing.externalBilled = true`, and
+`metadata.resultImport.amountSource = "imported_ccusage_report"`. Direct
+capability invocation returns the same output collection semantics as the stable
+tool facade while keeping wrapper script paths out of discovery responses.
 
 ## Invocation
 

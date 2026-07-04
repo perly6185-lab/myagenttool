@@ -48,6 +48,11 @@ See `docs/engineering/NEXT_PHASE_PLAN_2026-07.md` for the operating plan.
 Persistence is the highest-value foundation still missing from the architecture
 review. The first slice should be intentionally small:
 
+- Status: local durable-state hardening closeout is recorded in
+  [P1_DURABLE_STATE_CLOSEOUT.md](P1_DURABLE_STATE_CLOSEOUT.md). The current
+  accepted scope covers local snapshot restore for lifecycle/rollback/ledger,
+  imported usage/review evidence, and terminal/Codex Evidence Center linkage;
+  production-grade transactional persistence remains future work.
 - Add a durable store boundary with an in-memory adapter kept for tests and
   self-checks.
 - Persist tokens, users, teams, projects, invocations, events, approvals,
@@ -89,6 +94,9 @@ product-quality focus:
 - Status: third slice started on `feat/application-recovery-explanation-ui`;
   the Web Applications inspector now renders the recovery explanation as
   operator guidance in history and suggested action cards.
+- Status: runtime contract closeout landed; ccusage Application wrapper
+  semantics are published in the external consumer contract and enforced by the
+  tool-registry contract smoke inside `smoke:port`.
 - Keep `/api/tools` stable while `/api/capabilities` becomes the unified
   discovery surface.
 - Finish ccusage parity on the Application-backed tool facade, including
@@ -104,8 +112,8 @@ product-quality focus:
 
 M3 should close around what is already implemented instead of expanding:
 
-- Write `M3_ACCEPTANCE_CLOSEOUT.md` with accepted scope, evidence, residual
-  risks, and explicit non-goals.
+- Status: `M3_ACCEPTANCE_CLOSEOUT.md` records accepted scope, evidence, residual
+  risks, explicit non-goals, and latest ccusage/recovery guidance evidence.
 - Keep lifecycle execution to one allowlisted sample first, preferably the
   pinned ccusage npm lifecycle path.
 - Keep billing work to enforceable quota decisions, ledger attribution,

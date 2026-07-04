@@ -9,6 +9,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { capLedgerEntries, createM3Service } from "../src/services/m3.mjs";
+import { capLifecycleAuditRecords } from "../src/services/retention.mjs";
 
 const now = () => "2026-07-01T00:00:00.000Z";
 const stub = {
@@ -83,6 +84,42 @@ test("capLedgerEntries: spend re-sum is unchanged after trimming (no silent unde
   const after = m3.budgetStatusFor("projA").spentUsd;
   assert.equal(before, 40);
   assert.equal(after, 40, "trimming must not change spend");
+});
+
+test("capLifecycleAuditRecords: bounds routine rows but keeps recovery evidence", () => {
+  const routine = Array.from({ length: 150 }, (_, i) => ({
+    id: `routine_${i}`,
+    operation: "health_check",
+    status: i % 2 === 0 ? "queued" : "running",
+    createdAt: new Date(Date.UTC(2026, 6, 1, 0, i, 0)).toISOString(),
+  }));
+  const state = {
+    lifecycleAuditRecords: [
+      ...routine.slice(0, 75),
+      {
+        id: "old_failed",
+        operation: "update",
+        status: "failed",
+        result: { summary: "Desktop Bridge command failed.", rollbackAvailable: true },
+        completedAt: "2026-06-01T00:00:00.000Z",
+      },
+      {
+        id: "old_rollback",
+        operation: "rollback",
+        status: "queued",
+        rollback: { strategy: "reinstall_previous" },
+        createdAt: "2026-06-01T00:01:00.000Z",
+      },
+      ...routine.slice(75),
+    ],
+  };
+
+  capLifecycleAuditRecords(state, 100);
+
+  assert.equal(state.lifecycleAuditRecords.filter((item) => item.id.startsWith("routine_")).length, 100);
+  assert.ok(state.lifecycleAuditRecords.some((item) => item.id === "old_failed"), "failed result evidence survives");
+  assert.ok(state.lifecycleAuditRecords.some((item) => item.id === "old_rollback"), "rollback evidence survives");
+  assert.equal(state.lifecycleAuditRecords.length, 102);
 });
 
 test("teamBudgetStatuses: rolls per-project spend up to the owning team (M4)", () => {
