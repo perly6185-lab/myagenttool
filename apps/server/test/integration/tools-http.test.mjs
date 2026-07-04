@@ -1009,6 +1009,8 @@ test("application orchestration recovery actions are guarded and audited", async
   assert.equal(rerun.status, 201);
   assert.equal(rerun.body.recoveryAction.actionType, "rerun");
   assert.equal(rerun.body.recoveryAction.recoveryOfInvocationId, runtime.id);
+  assert.equal(rerun.body.explanation.selectedAction, "rerun");
+  assert.equal(rerun.body.explanation.state, "executed");
   const rerunInvocation = ctx.state.invocations.find((item) => item.id === rerun.body.invocationId);
   assert.equal(rerunInvocation?.options?.metadata?.recoveryActionType, "rerun");
   assert.equal(rerunInvocation?.options?.metadata?.recoveryOfInvocationId, runtime.id);
@@ -1025,6 +1027,8 @@ test("application orchestration recovery actions are guarded and audited", async
   });
   assert.equal(viewInvocation.status, 200);
   assert.equal(viewInvocation.body.status, "noop");
+  assert.equal(viewInvocation.body.explanation.state, "no_result_expected");
+  assert.equal(viewInvocation.body.explanation.nextStep, "Inspect the source invocation evidence.");
   assert.ok(ctx.state.events.some((event) => event.invocationId === runtime.id
     && event.type === "application_orchestration_recovery_action_requested"
     && event.data?.actionType === "view_invocation"));
@@ -1036,6 +1040,8 @@ test("application orchestration recovery actions are guarded and audited", async
   });
   assert.equal(notSuggested.status, 400);
   assert.equal(notSuggested.body.error, "recovery_action_not_suggested");
+  assert.equal(notSuggested.body.explanation.state, "rejected");
+  assert.equal(notSuggested.body.explanation.reason, "action_not_suggested");
 
   const validation = await createApplicationOrchestrationRunForTest({ status: "failed" });
   ctx.state.events.unshift({
@@ -1054,6 +1060,9 @@ test("application orchestration recovery actions are guarded and audited", async
   });
   assert.equal(approvalRequired.status, 202);
   assert.equal(approvalRequired.body.status, "approval_pending");
+  assert.equal(approvalRequired.body.explanation.state, "approval_pending");
+  assert.equal(approvalRequired.body.explanation.selectedAction, "regenerate_orchestration");
+  assert.equal(approvalRequired.body.explanation.approvalRequestId, approvalRequired.body.approvalRequest.id);
   assert.equal(approvalRequired.body.recoveryActionRequest.status, "approval_pending");
   assert.equal(approvalRequired.body.recoveryActionRequest.actionType, "regenerate_orchestration");
   assert.ok(approvalRequired.body.approvalRequest.id);
@@ -1076,6 +1085,9 @@ test("application orchestration recovery actions are guarded and audited", async
   assert.equal(duplicateRegenerate.status, 409);
   assert.equal(duplicateRegenerate.body.error, "recovery_action_blocked");
   assert.equal(duplicateRegenerate.body.blockedReason, "same_action_approval_pending");
+  assert.equal(duplicateRegenerate.body.explanation.state, "blocked");
+  assert.equal(duplicateRegenerate.body.explanation.blockedReason, "same_action_approval_pending");
+  assert.equal(duplicateRegenerate.body.explanation.latestRequestId, approvalRequired.body.recoveryActionRequest.id);
   assert.equal(duplicateRegenerate.body.latestRequestId, approvalRequired.body.recoveryActionRequest.id);
   assert.equal(ctx.state.applicationRecoveryActions.filter((item) => item.invocationId === validation.id
     && item.actionType === "regenerate_orchestration").length, 1);
@@ -1129,6 +1141,8 @@ test("application orchestration recovery actions are guarded and audited", async
   assert.equal(directRegenerate.status, 201);
   assert.equal(directRegenerate.body.recoveryActionRequest.status, "executed");
   assert.equal(directRegenerate.body.recoveryActionRequest.resultOrchestrationId, "app-app_team_a-maintenance");
+  assert.equal(directRegenerate.body.explanation.state, "executed");
+  assert.equal(directRegenerate.body.explanation.resultOrchestrationId, "app-app_team_a-maintenance");
 
   const unhealthy = await createApplicationOrchestrationRunForTest({
     status: "failed",
@@ -1159,6 +1173,8 @@ test("application orchestration recovery actions are guarded and audited", async
   assert.equal(selectAgent.status, 201);
   assert.equal(selectAgent.body.recoveryAction.actionType, "select_agent");
   assert.equal(selectAgent.body.recoveryAction.selectedAgentId, "agt_platform_application_control");
+  assert.equal(selectAgent.body.explanation.selectedAction, "select_agent");
+  assert.equal(selectAgent.body.explanation.selectedAgentId, "agt_platform_application_control");
   assert.equal(selectAgent.body.recoveryActionRequest.status, "executed");
   assert.equal(selectAgent.body.recoveryActionRequest.selectedAgentId, "agt_platform_application_control");
   assert.equal(selectAgent.body.recoveryActionRequest.requestedAgentId, "agt_platform_application_control");
@@ -1180,6 +1196,10 @@ test("application orchestration recovery actions are guarded and audited", async
   assert.equal(selectAgentReadModel?.outcome?.severity, "info");
   assert.match(selectAgentReadModel?.outcome?.nextStep ?? "", /Wait for the recovered invocation/);
   assert.match(selectAgentReadModel?.outcome?.summary ?? "", /^Recovered invocation is /);
+  assert.equal(selectAgentReadModel?.explanation?.selectedAction, "select_agent");
+  assert.equal(selectAgentReadModel?.explanation?.state, "executed");
+  assert.equal(selectAgentReadModel?.explanation?.selectedAgentId, "agt_platform_application_control");
+  assert.equal(selectAgentReadModel?.explanation?.nextStep, selectAgentReadModel?.outcome?.nextStep);
   assert.equal(selectAgentReadModel?.sourceInvocation?.id, unhealthy.id);
   assert.equal(selectAgentReadModel?.resultInvocation?.id, selectInvocation?.id);
   assert.equal(selectAgentReadModel?.resultInvocation?.agentId, "agt_platform_application_control");
@@ -1198,6 +1218,8 @@ test("application orchestration recovery actions are guarded and audited", async
   });
   assert.equal(selectUnhealthyAgent.status, 409);
   assert.equal(selectUnhealthyAgent.body.error, "healthy_agent_not_found");
+  assert.equal(selectUnhealthyAgent.body.explanation.state, "failed");
+  assert.equal(selectUnhealthyAgent.body.explanation.reason, "healthy_agent_not_found");
   assert.equal(selectUnhealthyAgent.body.recoveryActionRequest.status, "failed");
   assert.equal(selectUnhealthyAgent.body.recoveryActionRequest.selectedAgentId, null);
   assert.equal(selectUnhealthyAgent.body.recoveryActionRequest.requestedAgentId, "agt_demo_cli");
@@ -1217,6 +1239,8 @@ test("application orchestration recovery actions are guarded and audited", async
   assert.equal(rejectedSelectAgentReadModel?.outcome?.state, "needs_attention");
   assert.equal(rejectedSelectAgentReadModel?.outcomeReason, "healthy_agent_not_found");
   assert.equal(rejectedSelectAgentReadModel?.outcome?.severity, "danger");
+  assert.equal(rejectedSelectAgentReadModel?.explanation?.selectedAction, "select_agent");
+  assert.equal(rejectedSelectAgentReadModel?.explanation?.state, "failed");
   assert.match(rejectedSelectAgentReadModel?.outcome?.nextStep ?? "", /choose another recovery action/);
 
   const foreign = await call(`/api/applications/app_team_a/orchestrations/app-app_team_a-maintenance/runs/${encodeURIComponent(runtime.id)}/recovery/actions`, {
