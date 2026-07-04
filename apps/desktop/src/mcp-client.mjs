@@ -350,7 +350,7 @@ export async function probeMcpServer(adapter) {
     await handshake(session);
     const listed = await session.request("tools/list", {}, { timeoutMs: HANDSHAKE_TIMEOUT_MS }).promise;
     const tools = Array.isArray(listed?.tools) ? listed.tools.map((t) => t.name) : [];
-    return { ok: true, message: `MCP server is reachable and exposes ${tools.length} tool(s): ${tools.join(", ") || "none"}.` };
+    return { ok: true, message: `MCP server is reachable and exposes ${tools.length} tool(s): ${tools.join(", ") || "none"}.`, tools };
   } catch (error) {
     return {
       ok: false,

@@ -59,8 +59,53 @@ export function createIntegrationProbeRuntime({
     return probeRun;
   }
 
+  // Ad-hoc dry-probe of an unregistered agent config, so the Connect Agent flow
+  // can show a handshake + tool list *before* the operator registers/enables an
+  // agent (#137). Unlike createIntegrationProbeRun this is NOT gated on an
+  // approved adapter_config artifact — the adapter comes straight from the form,
+  // already validated by the adapter slice. MCP's live client runs on the
+  // bridge (both transports), so it queues for the bridge like a CLI probe.
+  function createAgentDryProbeRun(adapter) {
+    if (adapter?.type !== "mcp") {
+      throw new Error("Dry-probe currently supports MCP agent configs only.");
+    }
+    if (state.device.status !== "online" || state.device.unlinkState !== "linked") {
+      throw new Error("Desktop Bridge must be online before probing an MCP server.");
+    }
+    const createdAt = now();
+    const probeRun = {
+      id: nextId("lco_demo"),
+      artifactId: null,
+      kind: "agent_dry_probe",
+      deviceId: state.device.id,
+      requestedBy: "usr_local",
+      status: "queued",
+      adapter,
+      summary: "Dry-probe queued for an unregistered MCP config.",
+      details: [
+        "Handshake + tools/list only — no tool is invoked.",
+        "Passing probe does not register or enable an agent.",
+      ],
+      tools: [],
+      createdAt,
+      completedAt: null,
+    };
+    state.integrationProbeRuns.unshift(probeRun);
+    state.integrationProbeRuns = state.integrationProbeRuns.slice(0, 100);
+    appendEvent({
+      invocationId: null,
+      type: "integration_tested",
+      level: "info",
+      message: `Dry-probe queued for MCP ${adapter.transport} config.`,
+      data: { probeRunId: probeRun.id, adapterType: adapter.type },
+    });
+    return probeRun;
+  }
+
   function nextBridgeProbeRun() {
-    return state.integrationProbeRuns.find((item) => item.status === "queued" && item.adapter?.type === "cli");
+    return state.integrationProbeRuns.find(
+      (item) => item.status === "queued" && ["cli", "mcp"].includes(item.adapter?.type),
+    );
   }
 
   function markIntegrationProbeStarted(probeRun) {
@@ -85,6 +130,7 @@ export function createIntegrationProbeRuntime({
     probeRun.status = body.status === "failed" || !succeeded ? "failed" : "succeeded";
     probeRun.summary = String(body.summary ?? body.message ?? (succeeded ? "Probe passed." : "Probe failed."));
     probeRun.details = normalizeStringArray(body.details).length > 0 ? normalizeStringArray(body.details) : probeRun.details;
+    if (Array.isArray(body.tools)) probeRun.tools = body.tools.map(String);
     probeRun.completedAt = now();
     probeRun.updatedAt = probeRun.completedAt;
     const artifact = findIntegrationArtifact(probeRun.artifactId);
@@ -129,6 +175,7 @@ export function createIntegrationProbeRuntime({
 
   return {
     completeIntegrationProbeRun,
+    createAgentDryProbeRun,
     createIntegrationProbeRun,
     findIntegrationProbeRun,
     markIntegrationProbeStarted,

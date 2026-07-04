@@ -27,6 +27,10 @@ See `docs/engineering/NEXT_PHASE_PLAN_2026-07.md` for the operating plan.
 - **File or update issue references for deferred work.** Any new runtime scope
   should map back to persistence, bridge trust, Application capabilities, M3
   closeout, or billing/reporting.
+- **Recently landed baseline:** #212 broadened hermetic coverage for worktree
+  naming, lifecycle, diff, and loop promotion gates. #213 CI activation remains
+  the operational follow-up once hosted-runner cost approval and branch
+  protection are ready.
 
 ## P1 - Durable control-plane state
 
@@ -47,6 +51,11 @@ review. The first slice should be intentionally small:
 
 The Desktop Bridge should enforce local trust at the point of execution:
 
+- Status: first slice started on `feat/bridge-trust-boundary`; bridge bearer
+  credentialing and an auditable local execution policy manifest are now
+  implemented for the demo bridge path.
+- Context: the MCP bridge live client has landed; A2A/container contract slices
+  stay later backlog until the trust boundary and durable evidence are closed.
 - Issue or register a device-bound bridge credential.
 - Require bridge credentials on bridge polling, completion, lifecycle, and
   dispatch endpoints.
