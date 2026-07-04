@@ -298,6 +298,7 @@ export function createHttpServer({
         nextTerminalBridgeAction,
         recordTerminalBridgeEvent,
         recordTerminalEvidence,
+        requireBridgeCredential,
         summarizeText,
       })) {
         return;

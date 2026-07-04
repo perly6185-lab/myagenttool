@@ -13,6 +13,7 @@ export async function handleTerminalRoutes({
   nextTerminalBridgeAction,
   recordTerminalBridgeEvent,
   recordTerminalEvidence,
+  requireBridgeCredential,
   summarizeText,
 }) {
   if (req.method === "GET" && url.pathname === "/api/terminal/capability") {
@@ -117,12 +118,18 @@ export async function handleTerminalRoutes({
   }
 
   if (req.method === "GET" && url.pathname === "/api/bridge/terminal-next") {
+    if (!requireBridgeCredential({ req, res, sendJson })) {
+      return true;
+    }
     const action = nextTerminalBridgeAction();
     sendJson(res, action ? 200 : 204, action);
     return true;
   }
 
   if (req.method === "POST" && url.pathname === "/api/bridge/terminal-events") {
+    if (!requireBridgeCredential({ req, res, sendJson })) {
+      return true;
+    }
     const body = await readJson(req);
     const result = recordTerminalBridgeEvent(body);
     if (!result.ok) {
