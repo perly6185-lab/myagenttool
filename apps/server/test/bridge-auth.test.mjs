@@ -129,3 +129,36 @@ async function call(path, { method = "GET", body, token } = {}) {
   }
   return { status: response.status, body: parsed };
 }
+
+test("bridge credential idle-expires past the TTL and reissues on reconnect", async () => {
+  const { createBridgeCredentialRuntime } = await import("../src/runtime/bridge-auth.mjs");
+  let clockMs = Date.parse("2026-07-04T00:00:00.000Z");
+  const nowFn = () => new Date(clockMs).toISOString();
+  const st = { device: { id: "dev_1", unlinkState: "linked", credentialRevokedAt: null } };
+  const rt = createBridgeCredentialRuntime({ state: st, now: nowFn, persistStateSoon: () => {}, credentialIdleTtlMs: 1000 });
+
+  const { token } = rt.issueBridgeCredential();
+  const verify = (t) => {
+    let captured = null;
+    const result = rt.requireBridgeCredential({
+      req: { headers: { authorization: `Bearer ${t}` } },
+      res: {},
+      sendJson: (_res, status, body) => { captured = { status, body }; },
+    });
+    return { result, captured };
+  };
+
+  clockMs += 500; // within TTL → accepted, slides lastSeenAt to now
+  assert.ok(verify(token).result, "a valid token within the idle TTL is accepted");
+
+  clockMs += 2000; // 2s idle since last activity (500) → beyond the 1s TTL
+  const expired = verify(token);
+  assert.equal(expired.result, null);
+  assert.equal(expired.captured.body.error, "bridge_credentials_expired");
+
+  // Reconnect: issuing reissues a fresh token because the existing one idled out.
+  const reissued = rt.issueBridgeCredential();
+  assert.equal(reissued.issued, true);
+  assert.equal(typeof reissued.token, "string");
+  assert.notEqual(reissued.token, token);
+});

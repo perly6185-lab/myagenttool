@@ -1,11 +1,23 @@
 import crypto from "node:crypto";
 
 const TOKEN_BYTES = 32;
+// A bridge credential expires after this much inactivity. An active bridge polls
+// continuously so it never idles out; a LEAKED-but-unused bearer stops working
+// once the TTL elapses, bounding its lifetime without a manual revoke. Uses the
+// existing lastSeenAt (updated every request), so there is no extra state churn.
+const DEFAULT_CREDENTIAL_IDLE_TTL_MS = Number(process.env.MYAGENTTOOL_BRIDGE_CREDENTIAL_IDLE_TTL_MS) || 12 * 60 * 60 * 1000;
 
-export function createBridgeCredentialRuntime({ state, now, persistStateSoon }) {
+export function createBridgeCredentialRuntime({ state, now, persistStateSoon, credentialIdleTtlMs = DEFAULT_CREDENTIAL_IDLE_TTL_MS }) {
+  function credentialIsIdleExpired(credential, atMs = Date.parse(now())) {
+    const lastSeenMs = Date.parse(credential?.lastSeenAt ?? credential?.issuedAt ?? "");
+    return Number.isFinite(lastSeenMs) && Number.isFinite(atMs) && atMs - lastSeenMs > credentialIdleTtlMs;
+  }
+
   function issueBridgeCredential({ rotate = false } = {}) {
     const existing = currentCredential();
-    if (existing && !rotate) {
+    // Reuse a live credential; re-issue if rotating OR the existing one idled
+    // out, so a reconnecting bridge naturally recovers a fresh token.
+    if (existing && !rotate && !credentialIsIdleExpired(existing)) {
       return { credential: publicCredential(existing), token: null, issued: false };
     }
     const token = crypto.randomBytes(TOKEN_BYTES).toString("base64url");
@@ -38,6 +50,12 @@ export function createBridgeCredentialRuntime({ state, now, persistStateSoon }) 
     const token = bearer(req);
     if (!token || !verifyBridgeToken(token, credential.tokenHash)) {
       sendJson(res, 401, { error: "invalid_bridge_credentials" });
+      return null;
+    }
+    // Idle expiry: a valid token unused past the TTL is rejected (re-register to
+    // recover). Checked before refreshing lastSeenAt so the staleness is real.
+    if (credentialIsIdleExpired(credential)) {
+      sendJson(res, 401, { error: "bridge_credentials_expired" });
       return null;
     }
     credential.lastSeenAt = now();
