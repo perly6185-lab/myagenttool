@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 
+import { buildEvidenceCenterRecords } from "../src/read-models/evidence-center.mjs";
 import { buildPublicState } from "../src/read-models/state.mjs";
 import { createPersistenceRuntime } from "../src/runtime/persistence.mjs";
 import { createServerRuntimeServices } from "../src/runtime/service-composer.mjs";
@@ -13,6 +14,7 @@ import { CCUSAGE_VERSION } from "../src/services/ccusage-agent.mjs";
 import { createCcusageImportService } from "../src/services/ccusage-imports.mjs";
 import { createClaudeReviewImportService } from "../src/services/claude-review-imports.mjs";
 import { createCodexReviewImportService } from "../src/services/codex-review-imports.mjs";
+import { createCodexService } from "../src/services/codex.mjs";
 import { createIntegrationService } from "../src/services/integrations.mjs";
 import { createM3Service } from "../src/services/m3.mjs";
 import { sameProjectPath } from "../src/services/projects.mjs";
@@ -318,6 +320,119 @@ test("persistence restores imported usage and review evidence across runtime res
     const exportRequest = restoredM3.createAuditExportRequest({ subjects: ["usage"], dryRun: false });
     assert.equal(exportRequest.status, "exported");
     assert(exportRequest.manifest.recordRefs.some((ref) => ref.subject === "usage" && ref.id === usage[0].id), "imported usage estimate should remain exportable after restore");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("persistence restores terminal and Codex evidence center linkage across runtime restart", () => {
+  const root = join(tmpdir(), `myagenttool-persistence-terminal-codex-test-${Date.now()}`);
+  const projectPath = join(root, "project");
+  const stateStorePath = join(root, "state", "snapshot.json");
+  mkdirSync(projectPath, { recursive: true });
+
+  try {
+    const first = createServerState({ defaultProjectPath: projectPath, now });
+    const projectId = first.defaultProject.id;
+    const invocation = {
+      id: "inv_codex_terminal_restore",
+      projectId,
+      requestedBy: "usr_local",
+      agentId: "agt_codex_cli",
+      input: { task: "Update durable evidence tests." },
+      options: { metadata: { projectId } },
+      status: "running",
+      createdAt: now(),
+    };
+    first.state.invocations.unshift(invocation);
+    const codex = codexServiceFor(first.state, { defaultProject: first.defaultProject });
+    const codexAgent = first.state.agents.find((agent) => agent.id === "agt_codex_cli");
+    const workspace = codex.createManagedCodexWorkspace({ invocationId: invocation.id, agent: codexAgent, workspacePolicy: "current_repo" });
+    const session = codex.createManagedCodexSession({
+      invocationId: invocation.id,
+      agent: codexAgent,
+      codexSessionMode: "new",
+      workspace,
+      actor: { userId: "usr_local" },
+    });
+    const codexEvent = {
+      id: "evt_codex_restore_file_change",
+      invocationId: invocation.id,
+      type: "agent_output",
+      message: "Codex edited a persistence test.",
+      data: {
+        source: "codex_jsonl",
+        eventType: "item.completed",
+        itemType: "file_change",
+        threadId: "thread_restore",
+        sessionId: "provider_session_restore",
+        fileChangeSummary: "Edited persistence restart coverage.",
+        fileChangePath: "apps/server/test/persistence.test.mjs",
+        fileChangeAction: "modify",
+        diffPreview: "@@ restart coverage @@",
+        changeRisk: "medium",
+      },
+      createdAt: now(),
+    };
+    codex.updateCodexSessionFromEvent(codexEvent);
+    const codexEvidence = codex.createCodexEvidenceRecord(codexEvent);
+    const changeReview = codex.createCodexChangeReview({
+      evidenceId: codexEvidence.id,
+      decision: "approved",
+      comment: "Restart evidence remains readable.",
+    });
+
+    const terminal = terminalServiceFor(first.state, { codexSessionForInvocation: codex.codexSessionForInvocation });
+    const terminalSession = terminal.createManagedTerminalSession({
+      ownerInvocationId: invocation.id,
+      ownerCodexSessionId: session.id,
+      userId: "usr_local",
+      cwd: projectPath,
+      shell: first.state.terminalRuntimeCapability.defaultShell,
+    });
+    const action = terminal.nextTerminalBridgeAction();
+    terminal.recordTerminalBridgeEvent({
+      terminalSessionId: terminalSession.terminalSessionId,
+      actionId: action.id,
+      type: "terminal.session.attached",
+      summary: "Managed terminal attached for restore test.",
+    });
+    terminal.recordTerminalBridgeEvent({
+      terminalSessionId: terminalSession.terminalSessionId,
+      type: "terminal.output.chunk",
+      summary: "Terminal produced restart evidence.",
+      output: "durable terminal output",
+      byteCount: 23,
+    });
+
+    saveState(first, { stateStorePath });
+
+    const second = createServerState({ defaultProjectPath: projectPath, now });
+    restoreState(second, { stateStorePath });
+    const publicState = publicStateFor(second.state, { defaultProjectPath: projectPath });
+    const restoredSession = second.state.codexSessions.find((item) => item.id === session.id);
+    const restoredTerminal = second.state.terminalSessions.find((item) => item.terminalSessionId === terminalSession.terminalSessionId);
+    const restoredAction = second.state.terminalBridgeActions.find((item) => item.id === action.id);
+    const codexCenter = publicState.evidenceCenterRecords.find((item) => item.id === codexEvidence.id);
+    const reviewCenter = publicState.evidenceCenterRecords.find((item) => item.id === changeReview.id);
+    const terminalCenters = publicState.evidenceCenterRecords.filter((item) => item.source === "managed_terminal_runtime" && item.codexSessionRegistryId === session.id);
+
+    assert.equal(restoredSession?.codexSessionId, "provider_session_restore");
+    assert.equal(restoredSession?.codexThreadId, "thread_restore");
+    assert(restoredSession?.evidenceIds.includes(codexEvidence.id), "restored Codex session should retain evidence linkage");
+    assert.equal(second.state.codexEvidenceRecords.find((item) => item.id === codexEvidence.id)?.fileChangeSummary, "Edited persistence restart coverage.");
+    assert.equal(second.state.codexChangeReviews.find((item) => item.id === changeReview.id)?.codexSessionRegistryId, session.id);
+    assert.equal(restoredTerminal?.ownerCodexSessionId, session.id);
+    assert(restoredTerminal?.evidenceIds.length >= 2, "restored terminal session should retain evidence ids");
+    assert.equal(restoredAction?.status, "completed");
+
+    assert.equal(codexCenter?.source, "managed_codex_jsonl");
+    assert.equal(codexCenter?.repoPath, projectPath);
+    assert.equal(codexCenter?.summary, "Edited persistence restart coverage.");
+    assert.equal(reviewCenter?.source, "managed_codex_review");
+    assert.equal(reviewCenter?.codexSessionRegistryId, session.id);
+    assert(terminalCenters.some((item) => item.summary === "Terminal produced restart evidence."), "Evidence Center should retain terminal output summary after restore");
+    assert(terminalCenters.every((item) => item.invocationId === invocation.id), "terminal evidence should retain owner invocation linkage");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -743,6 +858,13 @@ function importServicesFor(state) {
 function publicStateFor(state, { defaultProjectPath }) {
   const currentProject = () => state.projects.find((item) => item.id === state.currentProjectId) ?? state.projects[0] ?? null;
   const m3 = m3ServiceFor(state);
+  const findInvocation = (invocationId) => state.invocations.find((item) => item.id === invocationId) ?? null;
+  const codexSessionForInvocation = (invocationId) => state.codexSessions.find((session) => session.invocationId === invocationId) ?? null;
+  const repoPathForEvidence = (codexSessionRegistryId) => {
+    const session = state.codexSessions.find((item) => item.id === codexSessionRegistryId);
+    const workspace = session?.workspaceId ? state.codexWorkspaces.find((item) => item.id === session.workspaceId) : null;
+    return workspace?.repoPath ?? session?.repoPath ?? null;
+  };
   return buildPublicState({
     namespace: "test",
     protocolVersion: "0.0.0",
@@ -752,10 +874,40 @@ function publicStateFor(state, { defaultProjectPath }) {
     defaultAgent: () => state.agents[0] ?? null,
     loopRoutineReadModel: () => [],
     codexApprovalQueue: () => [],
-    evidenceCenterRecords: () => [],
+    evidenceCenterRecords: () => buildEvidenceCenterRecords({ state, findInvocation, codexSessionForInvocation, repoPathForEvidence }),
     ledgerSummary: () => m3.ledgerSummary(),
     budgetStatuses: () => m3.budgetStatuses(),
     teamBudgetStatuses: () => m3.teamBudgetStatuses(),
+  });
+}
+
+function codexServiceFor(state, { defaultProject }) {
+  let id = 0;
+  const currentProject = () => state.projects.find((item) => item.id === state.currentProjectId) ?? defaultProject;
+  return createCodexService({
+    state,
+    now,
+    nextId: (prefix) => `${prefix}_${++id}`,
+    appendEvent: () => {},
+    currentProject,
+    findInvocation: (invocationId) => state.invocations.find((item) => item.id === invocationId) ?? null,
+    persistStateSoon: () => {},
+    uniqueStrings: (items) => [...new Set(items)],
+    worktreeForProject: () => null,
+  });
+}
+
+function terminalServiceFor(state, { codexSessionForInvocation }) {
+  let id = 0;
+  return createTerminalService({
+    state,
+    now,
+    nextId: (prefix) => `${prefix}_${++id}`,
+    appendEvent: () => {},
+    persistStateSoon: () => {},
+    summarizeText: (text) => String(text),
+    uniqueStrings: (items) => [...new Set(items)],
+    codexSessionForInvocation,
   });
 }
 
