@@ -135,6 +135,23 @@ Task board [Auto] on an issue
   governance source of truth); syncing the ProjectV2 board field still needs
   `github:sync-project` (project scope).
 
+### Follow-up hardening
+
+- **Project Fields gate on auto-trigger — landed.** Auto-trigger only starts a
+  run for an issue whose body carries `## Project Fields`, so its auto-PR can
+  pass pr-governance unattended. On by default;
+  `MYAGENTTOOL_AUTOTRIGGER_REQUIRE_PROJECT_FIELDS=0` opts out.
+- **End-to-end chain test — landed.** `apps/server/test/auto-run-e2e.test.mjs`
+  drives the real project service (real git worktree + push to a local bare
+  origin) through verify → publish → PR → status writeback; only the bridge and
+  gh are faked. A live-bridge run with a real editing agent still needs
+  infrastructure and is a manual/staging check.
+- **ProjectV2 board field sync — deliberately out.** The label is the governance
+  source of truth (`check-pr`/`check-issues` read labels; the board is derived),
+  so the Phase 4 label writeback already satisfies governance. Syncing the
+  ProjectV2 board single-select field needs a project-scope token and is left to
+  `github:sync-project`; the server does not mutate the board.
+
 ## Cross-cutting dependencies
 
 - **Durable state.** Worktree and auto-run records are in-memory snapshots
