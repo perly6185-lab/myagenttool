@@ -94,13 +94,17 @@ First slice:
 - Implementation status: the first P3 cut now publishes ccusage Application
   wrapper compatibility metadata through `/api/capabilities` and carries the
   same output/import/billing semantics into queued wrapper invocations.
+- Second-slice status: recovery action responses and the state read model now
+  expose an `explanation` object for selected action, guard/refusal reason,
+  execution result ids, and the operator next step.
 - Keep `/api/tools/ccusage.report` stable for consumers.
 - Source the ccusage descriptor and execution path from the Application
   capability path where parity is already proven.
 - Preserve dynamic filters, import metadata, external-billed semantics, and
   smoke coverage.
-- Make recovery actions explain selected action, blocked reason, execution
-  result, and next step.
+- Keep recovery explainability assertions green across approval pending,
+  duplicate-action guard, regenerate, rerun, view-only, and agent-selection
+  recovery paths.
 
 Out of scope:
 

@@ -176,10 +176,12 @@ function applicationRecoveryActionReadModel(request, invocationsById, events = [
     ? invocationsById.get(request.resultInvocationId) ?? null
     : null;
   const outcome = applicationRecoveryOutcome(request, resultInvocation);
+  const explanation = applicationRecoveryExplanation(request, outcome);
   return {
     ...request,
     outcome,
     outcomeReason: outcome.reason,
+    explanation,
     sourceInvocation: sourceInvocation ? invocationBrief(sourceInvocation) : null,
     resultInvocation: resultInvocation ? invocationBrief(resultInvocation) : null,
     timeline: applicationRecoveryTimeline(request, events),
@@ -308,6 +310,36 @@ function applicationRecoveryOutcome(request, resultInvocation) {
     summary: `Recovered invocation is ${resultInvocation.status ?? "in progress"}.`,
     nextStep: "Wait for the recovered invocation to complete.",
   };
+}
+
+function applicationRecoveryExplanation(request, outcome) {
+  return {
+    selectedAction: request.actionType ?? null,
+    state: recoveryExplanationState(request),
+    reason: request.error ?? outcome.reason,
+    summary: outcome.summary,
+    nextStep: outcome.nextStep,
+    outcomeState: outcome.state,
+    recoveryCategory: request.recoveryCategory ?? null,
+    recoveryActionRequestId: request.id ?? null,
+    approvalRequestId: request.approvalRequestId ?? null,
+    requestedAgentId: request.requestedAgentId ?? null,
+    selectedAgentId: request.selectedAgentId ?? null,
+    resultInvocationId: request.resultInvocationId ?? null,
+    resultOrchestrationId: request.resultOrchestrationId ?? null,
+    resultOrchestrationRelativePath: request.resultOrchestrationRelativePath ?? null,
+  };
+}
+
+function recoveryExplanationState(request) {
+  if (request.status === "noop") return "no_result_expected";
+  if (request.status === "approval_pending") return "approval_pending";
+  if (request.status === "approval_denied" || request.status === "approval_timed_out") return request.status;
+  if (request.status === "unsupported") return "unsupported";
+  if (request.status === "failed") return "failed";
+  if (request.status === "executed") return "executed";
+  if (request.status === "executing") return "executing";
+  return request.status ?? "requested";
 }
 
 function pendingRecoveryReason(status) {
