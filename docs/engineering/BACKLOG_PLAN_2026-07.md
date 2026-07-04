@@ -27,10 +27,21 @@ See `docs/engineering/NEXT_PHASE_PLAN_2026-07.md` for the operating plan.
 - **File or update issue references for deferred work.** Any new runtime scope
   should map back to persistence, bridge trust, Application capabilities, M3
   closeout, or billing/reporting.
-- **Recently landed baseline:** #212 broadened hermetic coverage for worktree
-  naming, lifecycle, diff, and loop promotion gates. #213 CI activation remains
-  the operational follow-up once hosted-runner cost approval and branch
-  protection are ready.
+- **Recently landed baseline:**
+  - #212 broadened hermetic coverage (worktree naming/lifecycle/diff, loop
+    promotion gates).
+  - #213 CI is **active and enforced**: `main` requires `verify`, `eval-gates`,
+    and `pr-governance` with admin enforcement.
+  - #390/#397 closed the pr-governance Projects-token gap: the check reads
+    Projects via the `GOVERNANCE_PROJECTS_TOKEN` secret, so the "linked work
+    issue with Project Fields" rule is satisfiable — the governance gate is now
+    enforced end-to-end rather than bypassed by admin override. Follow-up:
+    rotate that secret to a least-privilege `read:project` token.
+  - #394 instrumented DORA change-failure rate + recovery time from a
+    `Change-failure: #N` marker signal (honest zero until incidents are
+    recorded), replacing the two "not instrumented" rows.
+  - #137's MCP connect slice landed (#387): pre-flight dry-probe + Connect MCP
+    server card.
 
 ## P1 - Durable control-plane state
 
@@ -95,7 +106,7 @@ M3 should close around what is already implemented instead of expanding:
 
 ## Later backlog
 
-- MCP, A2A, and container live clients.
+- A2A and container live clients (the MCP live client + connect flow have landed).
 - Public marketplace and settlement.
 - External SIEM/export delivery providers.
 - Production identity providers, SSO, and full RBAC administration.
