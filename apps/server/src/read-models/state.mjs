@@ -22,12 +22,24 @@ export function buildPublicState({
   // or its project/invocation belongs to the actor's team.
   const teamId = actor?.teamId ?? null;
   const projectTeam = new Map((state.projects ?? []).map((p) => [p.id, teamOf(p)]));
+  const sshTargetTeam = new Map((state.sshTargets ?? []).map((target) => [target.id, target.ownerTeamId ?? LOCAL_TEAM_ID]));
   const projectVisible = (projectId) => {
     if (teamId == null || !projectId) return true; // unscoped, or a global/unowned row
     const owner = projectTeam.get(projectId);
     // An unknown/dangling projectId is NOT visible when scoped — defaulting to
     // the viewer's own team would leak every orphaned row to every team.
     return owner !== undefined && owner === teamId;
+  };
+  const sshTargetVisible = (target) =>
+    teamId == null || (target?.ownerTeamId ?? LOCAL_TEAM_ID) === teamId;
+  const sshTargetIdVisible = (targetId) => {
+    if (teamId == null || !targetId) return true;
+    const owner = sshTargetTeam.get(targetId);
+    return owner !== undefined && owner === teamId;
+  };
+  const eventVisible = (event) => {
+    if (!String(event?.type ?? "").startsWith("ssh.target.")) return true;
+    return sshTargetIdVisible(event?.data?.targetId);
   };
   const projects = (state.projects ?? []).filter((p) => projectVisible(p.id));
   const invocations = (state.invocations ?? []).filter((inv) => projectVisible(inv.projectId));
@@ -37,7 +49,7 @@ export function buildPublicState({
     teamId == null || !invocationId || visibleInvIds.has(invocationId);
   const byInvocation = (rows) => (rows ?? []).filter((r) => invVisible(r?.invocationId));
   const byProject = (rows) => (rows ?? []).filter((r) => projectVisible(r?.projectId));
-  const visibleEvents = byInvocation(state.events);
+  const visibleEvents = byInvocation(state.events).filter(eventVisible);
   const recoveryEventsByRequestId = groupRecoveryEventsByRequestId(visibleEvents);
   const applications = (state.applications ?? []).filter((application) => {
     if (application?.projectId) return projectVisible(application.projectId);
@@ -68,6 +80,11 @@ export function buildPublicState({
   const visibleTerminalEvidenceIds = new Set(terminalEvidenceRecords.map((evidence) => evidence.id));
   const terminalBridgeActions = (state.terminalBridgeActions ?? []).filter((action) =>
     teamId == null || visibleTerminalSessionIds.has(action?.terminalSessionId),
+  );
+  const sshTargets = (state.sshTargets ?? []).filter(sshTargetVisible);
+  const visibleSshTargetIds = new Set(sshTargets.map((target) => target.id));
+  const sshConnectionTests = (state.sshConnectionTests ?? []).filter((test) =>
+    teamId == null || visibleSshTargetIds.has(test?.targetId),
   );
   // A compare run is visible when it spans at least one invocation the team can
   // see; unscoped mode passes everything through.
@@ -170,8 +187,8 @@ export function buildPublicState({
     terminalSessions,
     terminalEvidenceRecords,
     terminalBridgeActions,
-    sshTargets: state.sshTargets,
-    sshConnectionTests: state.sshConnectionTests,
+    sshTargets,
+    sshConnectionTests,
   };
 }
 

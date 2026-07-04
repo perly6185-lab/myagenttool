@@ -121,6 +121,46 @@ before(async () => {
     status: "queued",
     createdAt: now(),
   });
+  state.sshTargets.push({
+    id: "ssh_a",
+    name: "team-a-ssh",
+    createdByUserId: "usr_a",
+    ownerTeamId: TEAM_A,
+    host: "team-a.internal",
+    port: 22,
+    user: "deployer",
+    authMethod: "ssh_agent",
+    credentialRef: "ssh-agent:default",
+    credentialStorage: "external_reference_only",
+    knownHostPolicy: "pinned_fingerprint",
+    knownHostFingerprint: "SHA256:team-a",
+    workspaceRoot: "/tmp/a",
+    platformHint: "linux",
+    agentForwarding: false,
+    keySelection: "explicit_key_ref",
+    status: "ready_for_manual_test",
+    trustStatus: "pinned",
+    remoteRelayEnabled: false,
+    createdAt: now(),
+    updatedAt: now(),
+    lastTestId: "ssh_test_a",
+  });
+  state.sshConnectionTests.push({
+    id: "ssh_test_a",
+    targetId: "ssh_a",
+    ownerTeamId: TEAM_A,
+    status: "ready_for_manual_test",
+    createdAt: now(),
+  });
+  state.events.push({
+    id: "evt_ssh_a",
+    invocationId: null,
+    type: "ssh.target.registered",
+    level: "info",
+    message: "SSH runtime target registered for safety preflight.",
+    data: { targetId: "ssh_a", host: "team-a.internal", user: "deployer" },
+    createdAt: now(),
+  });
 
   const { httpDependencies } = createServerRuntimeServices({
     namespace: "test",
@@ -183,10 +223,17 @@ test("read scoping: team B's /api/state hides team A's projects and evidence", a
   assert.ok(!terminalActionIds.includes("term_act_a"), "team B must NOT see team A's terminal bridge actions");
   const evidenceCenterIds = (b.body.evidenceCenterRecords ?? []).map((record) => record.id);
   assert.ok(!evidenceCenterIds.includes("tev_a"), "team B must NOT see team A's terminal evidence center row");
+  const sshTargetIds = (b.body.sshTargets ?? []).map((target) => target.id);
+  assert.ok(!sshTargetIds.includes("ssh_a"), "team B must NOT see team A's SSH target");
+  const sshTestIds = (b.body.sshConnectionTests ?? []).map((report) => report.id);
+  assert.ok(!sshTestIds.includes("ssh_test_a"), "team B must NOT see team A's SSH preflight report");
+  const eventIds = (b.body.events ?? []).map((event) => event.id);
+  assert.ok(!eventIds.includes("evt_ssh_a"), "team B must NOT see team A's SSH target events");
 
   const a = await call("/api/state", { token: "tok_a" });
   assert.ok((a.body.projects ?? []).some((p) => p.id === "projA"), "team A sees its own project");
   assert.ok((a.body.terminalSessions ?? []).some((session) => session.terminalSessionId === "term_a"), "team A sees its own terminal session");
+  assert.ok((a.body.sshTargets ?? []).some((target) => target.id === "ssh_a"), "team A sees its own SSH target");
 });
 
 test("write guard: team B cannot delete or repoint team A's automation (404)", async () => {
@@ -275,6 +322,63 @@ test("terminal session creation ignores caller-supplied userId", async () => {
   assert.equal(created.status, 201);
   assert.equal(created.body.session.userId, "usr_b");
   assert.equal(created.body.session.ownerTeamId, TEAM_B);
+});
+
+test("write guard: team B cannot test or use team A's SSH target", async () => {
+  const beforeA = await call("/api/state", { token: "tok_a" });
+  const beforeTestCount = beforeA.body.sshConnectionTests.length;
+  const beforeTerminalCount = beforeA.body.terminalSessions.length;
+
+  const foreignTest = await call("/api/ssh-targets/ssh_a/test", { token: "tok_b", method: "POST" });
+  assert.equal(foreignTest.status, 404);
+  assert.equal(foreignTest.body.error, "ssh_target_not_found");
+
+  const foreignRelay = await call("/api/terminal/sessions", {
+    token: "tok_b",
+    method: "POST",
+    body: { runtimeKind: "remote_ssh_relay", targetId: "ssh_a", cwd: "/tmp/a" },
+  });
+  assert.equal(foreignRelay.status, 400);
+  assert.equal(foreignRelay.body.error, "invalid_terminal_session");
+
+  const afterBlocked = await call("/api/state", { token: "tok_a" });
+  assert.equal(afterBlocked.body.sshConnectionTests.length, beforeTestCount, "foreign SSH test must not create a report");
+  assert.equal(afterBlocked.body.terminalSessions.length, beforeTerminalCount, "foreign relay must not create a terminal session");
+
+  const ownTest = await call("/api/ssh-targets/ssh_a/test", { token: "tok_a", method: "POST" });
+  assert.equal(ownTest.status, 202);
+  assert.equal(ownTest.body.report.ownerTeamId, TEAM_A);
+
+  const ownRelay = await call("/api/terminal/sessions", {
+    token: "tok_a",
+    method: "POST",
+    body: { runtimeKind: "remote_ssh_relay", targetId: "ssh_a" },
+  });
+  assert.equal(ownRelay.status, 201);
+  assert.equal(ownRelay.body.session.targetId, "ssh_a");
+  assert.equal(ownRelay.body.session.ownerTeamId, TEAM_A);
+});
+
+test("SSH target creation ignores caller-supplied ownership", async () => {
+  const created = await call("/api/ssh-targets", {
+    token: "tok_b",
+    method: "POST",
+    body: {
+      ownerTeamId: TEAM_A,
+      createdByUserId: "usr_a",
+      host: "team-b.internal",
+      port: 22,
+      user: "deployer",
+      authMethod: "ssh_agent",
+      knownHostPolicy: "pinned_fingerprint",
+      knownHostFingerprint: "SHA256:team-b",
+      workspaceRoot: "/tmp/b",
+      keySelection: "explicit_key_ref",
+    },
+  });
+  assert.equal(created.status, 201);
+  assert.equal(created.body.target.ownerTeamId, TEAM_B);
+  assert.equal(created.body.target.createdByUserId, "usr_b");
 });
 
 test("write guard: team B cannot resolve team A's codex approval request (404)", async () => {

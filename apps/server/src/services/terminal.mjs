@@ -50,6 +50,8 @@ export function createTerminalService({
     const target = {
       id: nextId("ssh_target"),
       name: summarizeText(body.name ?? `${user}@${host}:${port}`, 80),
+      createdByUserId: body.createdByUserId ?? "usr_local",
+      ownerTeamId: body.ownerTeamId ?? "team_local",
       host,
       port,
       user,
@@ -100,6 +102,7 @@ export function createTerminalService({
     const report = {
       id: nextId("ssh_test"),
       targetId: target.id,
+      ownerTeamId: target.ownerTeamId ?? "team_local",
       status: blocking.length > 0 ? "blocked" : warning.length > 0 ? "needs_review" : "ready_for_manual_test",
       auth: {
         method: target.authMethod,
@@ -153,7 +156,7 @@ export function createTerminalService({
   function createManagedTerminalSession(body = {}) {
     const capability = state.terminalRuntimeCapability;
     const runtimeKind = normalizeTerminalRuntimeKind(body.runtimeKind);
-    const sshTarget = runtimeKind === "remote_ssh_relay" ? latestReadySshTarget(body.targetId) : null;
+    const sshTarget = runtimeKind === "remote_ssh_relay" ? latestReadySshTarget(body.targetId, body.ownerTeamId) : null;
     if (runtimeKind === "remote_ssh_relay" && !sshTarget) {
       throw new Error("Remote relay terminal sessions require a ready SSH target preflight.");
     }
@@ -397,14 +400,19 @@ export function createTerminalService({
     return supported.includes(requested) ? requested : fallback;
   }
 
-  function latestReadySshTarget(targetId) {
+  function latestReadySshTarget(targetId, ownerTeamId = null) {
     const target = targetId
       ? state.sshTargets.find((item) => item.id === String(targetId))
-      : state.sshTargets[0];
+      : state.sshTargets.find((item) => sshTargetVisibleToTeam(item, ownerTeamId));
     if (!target) return null;
+    if (!sshTargetVisibleToTeam(target, ownerTeamId)) return null;
     const report = state.sshConnectionTests.find((item) => item.targetId === target.id);
     if (report?.status !== "ready_for_manual_test") return null;
     return target;
+  }
+
+  function sshTargetVisibleToTeam(target, ownerTeamId) {
+    return !ownerTeamId || (target.ownerTeamId ?? "team_local") === ownerTeamId;
   }
 
   return {
