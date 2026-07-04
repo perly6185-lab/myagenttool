@@ -7,6 +7,7 @@ import {
   normalizeStringArray,
   sanitizeAgentId,
 } from "../agents.mjs";
+import { capLifecycleAuditRecords } from "../retention.mjs";
 import { conservativeRiskHints } from "./helpers.mjs";
 
 export function createDiscoveryRuntime({
@@ -62,7 +63,7 @@ export function createDiscoveryRuntime({
       createdAt,
       completedAt: discoveryRun.completedAt,
     });
-    state.lifecycleAuditRecords = state.lifecycleAuditRecords.slice(0, 100);
+    capLifecycleAuditRecords(state);
     appendEvent({
       invocationId: null,
       type: "lifecycle_requested",
