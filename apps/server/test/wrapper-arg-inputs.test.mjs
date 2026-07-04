@@ -76,3 +76,37 @@ test("a value that looks like a flag can never inject an option", () => {
   const plan = applicationWrapperExecutionPlan(app, "daily", { timezone: "--dangerously" });
   assert.deepEqual(plan.args, ["daily", "--json"]); // leading "-" refused
 });
+
+test("reserved control-plane input keys cannot become wrapper argv", () => {
+  const state = { applications: [] };
+  const svc = createApplicationService({
+    state,
+    now: () => "2026-07-03T00:00:00.000Z",
+    nextId: (p) => `${p}_x`,
+    appendEvent: () => {},
+    persistStateSoon: () => {},
+    addProject: () => null,
+    cloneProject: () => null,
+    defaultProjectPath: "/tmp/repo",
+  });
+  assert.throws(() => svc.registerApplication({
+    id: "app_bad",
+    name: "bad",
+    autoOnline: false,
+    source: {
+      type: "npm",
+      package: "bad",
+      version: "1.0.0",
+      wrapper: {
+        mode: "installed-wrapper",
+        commands: [{
+          id: "run",
+          command: "bad",
+          args: ["run"],
+          status: "approved",
+          argInputs: [{ key: "approvalToken", flag: "--token", type: "token" }],
+        }],
+      },
+    },
+  }), /reserved control-plane key/);
+});
