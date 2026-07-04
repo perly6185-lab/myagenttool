@@ -620,10 +620,26 @@ export function createServerRuntimeServices({
     const selectedAction = recoveryModel.actions.find((item) => item.type === actionType);
     if (!selectedAction) {
       appendRecoveryActionEvent("rejected", invocationId, applicationId, routineId, actionType, recoveryModel.category, "action_not_suggested");
-      return { status: 400, body: { error: "recovery_action_not_suggested", applicationId, routineId, invocationId, actionType } };
+      return {
+        status: 400,
+        body: {
+          error: "recovery_action_not_suggested",
+          applicationId,
+          routineId,
+          invocationId,
+          actionType,
+          explanation: applicationRecoveryActionExplanation(null, {
+            actionType,
+            recoveryModel,
+            status: "rejected",
+            reason: "action_not_suggested",
+          }),
+        },
+      };
     }
     if (selectedAction.availability?.state === "blocked") {
       const blockedReason = selectedAction.blockedReason ?? selectedAction.availability.blockedReason ?? "recovery_action_blocked";
+      const latestRequestId = selectedAction.latestRequestId ?? selectedAction.availability.latestRequestId ?? null;
       appendRecoveryActionEvent("rejected", invocationId, applicationId, routineId, actionType, recoveryModel.category, blockedReason);
       return {
         status: 409,
@@ -634,8 +650,15 @@ export function createServerRuntimeServices({
           invocationId,
           actionType,
           blockedReason,
-          latestRequestId: selectedAction.latestRequestId ?? selectedAction.availability.latestRequestId ?? null,
+          latestRequestId,
           action: selectedAction,
+          explanation: applicationRecoveryActionExplanation(null, {
+            action: selectedAction,
+            recoveryModel,
+            status: "blocked",
+            blockedReason,
+            latestRequestId,
+          }),
         },
       };
     }
@@ -666,6 +689,11 @@ export function createServerRuntimeServices({
           recoveryActionRequest: actionRequest,
           approvalRequest,
           status: "approval_pending",
+          explanation: applicationRecoveryActionExplanation(actionRequest, {
+            action: selectedAction,
+            recoveryModel,
+            status: "approval_pending",
+          }),
         },
       };
     }
@@ -676,7 +704,19 @@ export function createServerRuntimeServices({
       appendRecoveryActionEvent("requested", invocationId, applicationId, routineId, actionType, recoveryModel.category, reason, actionRequest);
       return {
         status: 200,
-        body: { applicationId, routineId, invocationId, action: selectedAction, recoveryActionRequest: actionRequest, status: "noop" },
+        body: {
+          applicationId,
+          routineId,
+          invocationId,
+          action: selectedAction,
+          recoveryActionRequest: actionRequest,
+          status: "noop",
+          explanation: applicationRecoveryActionExplanation(actionRequest, {
+            action: selectedAction,
+            recoveryModel,
+            status: "noop",
+          }),
+        },
       };
     }
     if (actionType === "regenerate_orchestration") {
@@ -692,6 +732,11 @@ export function createServerRuntimeServices({
             invocationId,
             actionType,
             recoveryActionRequest: actionRequest,
+            explanation: applicationRecoveryActionExplanation(actionRequest, {
+              action: selectedAction,
+              recoveryModel,
+              status: "failed",
+            }),
           },
         };
       }
@@ -704,6 +749,10 @@ export function createServerRuntimeServices({
           action: selectedAction,
           recoveryActionRequest: actionRequest,
           status: actionRequest.status,
+          explanation: applicationRecoveryActionExplanation(actionRequest, {
+            action: selectedAction,
+            recoveryModel,
+          }),
         },
       };
     }
@@ -728,6 +777,11 @@ export function createServerRuntimeServices({
             invocationId,
             actionType,
             recoveryActionRequest: actionRequest,
+            explanation: applicationRecoveryActionExplanation(actionRequest, {
+              action: selectedAction,
+              recoveryModel,
+              status: "failed",
+            }),
           },
         };
       }
@@ -748,7 +802,18 @@ export function createServerRuntimeServices({
         actionRequest.updatedAt = now();
         persistStateSoon();
         appendRecoveryActionEvent("rejected", invocationId, applicationId, routineId, actionType, recoveryModel.category, actionRequest.error, actionRequest);
-        return result;
+        return {
+          ...result,
+          body: {
+            ...result.body,
+            recoveryActionRequest: actionRequest,
+            explanation: applicationRecoveryActionExplanation(actionRequest, {
+              action: selectedAction,
+              recoveryModel,
+              status: "failed",
+            }),
+          },
+        };
       }
       actionRequest.status = "executed";
       actionRequest.selectedAgentId = selectedAgent.agent.id;
@@ -782,6 +847,10 @@ export function createServerRuntimeServices({
             recoveryOfInvocationId: invocationId,
             recoveryReason: reason,
           },
+          explanation: applicationRecoveryActionExplanation(actionRequest, {
+            action: selectedAction,
+            recoveryModel,
+          }),
         },
       };
     }
@@ -790,7 +859,22 @@ export function createServerRuntimeServices({
       actionRequest.updatedAt = now();
       persistStateSoon();
       appendRecoveryActionEvent("rejected", invocationId, applicationId, routineId, actionType, recoveryModel.category, "action_not_supported", actionRequest);
-      return { status: 501, body: { error: "recovery_action_not_supported", applicationId, routineId, invocationId, actionType, recoveryActionRequest: actionRequest } };
+      return {
+        status: 501,
+        body: {
+          error: "recovery_action_not_supported",
+          applicationId,
+          routineId,
+          invocationId,
+          actionType,
+          recoveryActionRequest: actionRequest,
+          explanation: applicationRecoveryActionExplanation(actionRequest, {
+            action: selectedAction,
+            recoveryModel,
+            status: "unsupported",
+          }),
+        },
+      };
     }
     appendRecoveryActionEvent("requested", invocationId, applicationId, routineId, actionType, recoveryModel.category, reason, actionRequest);
     const result = runApplicationOrchestration(applicationId, routineId, {
@@ -808,7 +892,18 @@ export function createServerRuntimeServices({
       actionRequest.updatedAt = now();
       persistStateSoon();
       appendRecoveryActionEvent("rejected", invocationId, applicationId, routineId, actionType, recoveryModel.category, result.body?.error ?? "run_failed", actionRequest);
-      return result;
+      return {
+        ...result,
+        body: {
+          ...result.body,
+          recoveryActionRequest: actionRequest,
+          explanation: applicationRecoveryActionExplanation(actionRequest, {
+            action: selectedAction,
+            recoveryModel,
+            status: "failed",
+          }),
+        },
+      };
     }
     actionRequest.status = "executed";
     actionRequest.resultInvocationId = result.body?.invocationId ?? null;
@@ -826,8 +921,87 @@ export function createServerRuntimeServices({
           recoveryOfInvocationId: invocationId,
           recoveryReason: reason,
         },
+        explanation: applicationRecoveryActionExplanation(actionRequest, {
+          action: selectedAction,
+          recoveryModel,
+        }),
       },
     };
+  }
+
+  function applicationRecoveryActionExplanation(actionRequest = null, options = {}) {
+    const actionType = actionRequest?.actionType ?? options.action?.type ?? options.actionType ?? null;
+    const status = options.status ?? actionRequest?.status ?? "requested";
+    const blockedReason = options.blockedReason ?? options.action?.blockedReason ?? options.action?.availability?.blockedReason ?? null;
+    const latestRequestId = options.latestRequestId ?? options.action?.latestRequestId ?? options.action?.availability?.latestRequestId ?? null;
+    const reason = options.reason ?? actionRequest?.error ?? blockedReason ?? actionRequest?.reason ?? null;
+    const state = recoveryExplanationState(status, blockedReason);
+    return {
+      selectedAction: actionType,
+      state,
+      reason: recoveryExplanationReason(state, reason),
+      summary: recoveryExplanationSummary(state, actionType, reason),
+      nextStep: recoveryExplanationNextStep(state, blockedReason),
+      recoveryCategory: actionRequest?.recoveryCategory ?? options.recoveryModel?.category ?? null,
+      blockedReason,
+      latestRequestId,
+      recoveryActionRequestId: actionRequest?.id ?? null,
+      approvalRequestId: actionRequest?.approvalRequestId ?? null,
+      requestedAgentId: actionRequest?.requestedAgentId ?? null,
+      selectedAgentId: actionRequest?.selectedAgentId ?? null,
+      resultInvocationId: actionRequest?.resultInvocationId ?? null,
+      resultOrchestrationId: actionRequest?.resultOrchestrationId ?? null,
+      resultOrchestrationRelativePath: actionRequest?.resultOrchestrationRelativePath ?? null,
+    };
+  }
+
+  function recoveryExplanationState(status, blockedReason) {
+    if (blockedReason || status === "blocked") return "blocked";
+    if (status === "noop") return "no_result_expected";
+    if (status === "approval_pending") return "approval_pending";
+    if (status === "approval_denied" || status === "approval_timed_out") return status;
+    if (status === "unsupported") return "unsupported";
+    if (status === "failed") return "failed";
+    if (status === "executed") return "executed";
+    if (status === "executing") return "executing";
+    if (status === "rejected") return "rejected";
+    return "requested";
+  }
+
+  function recoveryExplanationReason(state, reason) {
+    if (state === "no_result_expected") return "no_result_expected";
+    if (state === "executed") return "execution_completed";
+    if (state === "executing") return "execution_in_progress";
+    if (state === "requested") return "recovery_requested";
+    return reason ?? state;
+  }
+
+  function recoveryExplanationSummary(state, actionType, reason) {
+    const action = actionType ?? "recovery";
+    if (state === "blocked") return `Recovery action ${action} is blocked: ${reason ?? "recovery_action_blocked"}.`;
+    if (state === "approval_pending") return `Recovery action ${action} is waiting for approval.`;
+    if (state === "no_result_expected") return `Recovery action ${action} records inspection only and does not create a result.`;
+    if (state === "executed") return `Recovery action ${action} executed successfully.`;
+    if (state === "failed") return `Recovery action ${action} failed: ${reason ?? "execution_failed"}.`;
+    if (state === "unsupported") return `Recovery action ${action} is not supported.`;
+    if (state === "rejected") return `Recovery action ${action} was rejected: ${reason ?? "rejected"}.`;
+    if (state === "executing") return `Recovery action ${action} is executing.`;
+    return `Recovery action ${action} was requested.`;
+  }
+
+  function recoveryExplanationNextStep(state, blockedReason) {
+    if (state === "blocked") {
+      return blockedReason === "same_action_approval_pending"
+        ? "Resolve the latest approval request before requesting this action again."
+        : "Wait for the in-progress recovery action to finish before requesting this action again.";
+    }
+    if (state === "approval_pending") return "Resolve the linked approval request before this recovery can execute.";
+    if (state === "no_result_expected") return "Inspect the source invocation evidence.";
+    if (state === "executed") return "Inspect the recovery result and continue with the recovered orchestration.";
+    if (state === "failed") return "Review the failure details and choose another recovery action.";
+    if (state === "unsupported" || state === "rejected") return "Choose one of the currently suggested recovery actions.";
+    if (state === "executing" || state === "requested") return "Wait for the recovery action to finish, then inspect the result.";
+    return "Review the recovery action audit trail.";
   }
 
   function createApplicationRecoveryActionRequest({ applicationId, routineId, invocationId, action, recoveryCategory, reason, actor }) {

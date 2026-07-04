@@ -83,12 +83,15 @@ product-quality focus:
   ccusage Application wrapper capabilities now expose compatibility facade,
   output collection, external-billed, and import semantics through discovery and
   queued wrapper invocation metadata.
+- Status: second slice started on `feat/application-recovery-explainability`;
+  recovery action APIs and `/api/state` now publish a shared explainability
+  shape for selected action, refusal/guard reason, result ids, and next step.
 - Keep `/api/tools` stable while `/api/capabilities` becomes the unified
   discovery surface.
 - Finish ccusage parity on the Application-backed tool facade, including
   descriptor, dynamic filters, import metadata, ledger semantics, and smoke
   coverage.
-- Make recovery actions explainable after execution: selected action, refusal
+- Keep recovery actions explainable after execution: selected action, refusal
   reason, result, next step, and duplicate-action guard evidence.
 - Generalize only after ccusage remains green through the compatibility facade.
 
