@@ -6,6 +6,7 @@ export function createInvocationCreationRuntime({
   nextId,
   appendEvent,
   persistStateSoon,
+  persistStateNow,
   defaultAgent,
   currentProject,
   worktreeForProject,
@@ -257,6 +258,10 @@ export function createInvocationCreationRuntime({
     if (projectWorktree?.worktreePath) {
       renderAgentSkillsIntoWorktree(agent, projectWorktree.worktreePath, state.agentSkills ?? []);
     }
+    // Durable barrier: an accepted (queued/running) invocation has no lease to
+    // recover it, so flush synchronously before returning — a crash in the
+    // debounce window must not silently drop a run the caller was told exists.
+    if (typeof persistStateNow === "function") persistStateNow();
     return invocation;
   }
 

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -940,3 +940,87 @@ function governedCcusageAgent() {
     capabilities: [{ name: "usage_cost_report" }],
   };
 }
+
+// --- WS2: durable snapshot writes (atomic tmp+fsync+rename) + a synchronous
+// barrier so an accepted invocation cannot be lost in the debounce window. ---
+
+let durabilityCounter = 0;
+function durabilityRuntime() {
+  const root = join(tmpdir(), `myagenttool-durability-${Date.now()}-${process.pid}-${++durabilityCounter}`);
+  const stateStorePath = join(root, "state", "snapshot.json");
+  const defaultProject = { id: "prj_default", path: join(root, "project") };
+  mkdirSync(defaultProject.path, { recursive: true });
+  const state = {
+    projects: [defaultProject],
+    currentProjectId: defaultProject.id,
+    worktrees: [],
+    invocations: [],
+    device: { id: "dev_1", status: "online" },
+  };
+  const rt = createPersistenceRuntime({
+    state,
+    enabled: true,
+    stateStorePath,
+    schemaVersion: 1,
+    now: () => "2026-07-04T00:00:00.000Z",
+    defaultProject,
+    sameProjectPath,
+  });
+  return { root, stateStorePath, state, rt };
+}
+
+test("persistStateNow: flushes synchronously, valid JSON, no leftover temp file", () => {
+  const { root, stateStorePath, state, rt } = durabilityRuntime();
+  try {
+    state.invocations.push({ id: "inv_1", status: "queued" });
+    rt.persistStateNow();
+    assert.ok(existsSync(stateStorePath), "the snapshot exists immediately (no debounce wait)");
+    assert.ok(!existsSync(`${stateStorePath}.tmp`), "the atomic temp file was renamed away, not left behind");
+    const snapshot = JSON.parse(readFileSync(stateStorePath, "utf8")); // throws if torn
+    assert.equal(snapshot.invocations[0].id, "inv_1");
+    assert.equal(snapshot.schemaVersion, 1);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("persistStateSoon: does NOT write synchronously (debounced)", () => {
+  const { root, stateStorePath, state, rt } = durabilityRuntime();
+  try {
+    state.invocations.push({ id: "inv_1", status: "queued" });
+    rt.persistStateSoon();
+    assert.ok(!existsSync(stateStorePath), "the debounced path defers the write");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("durable write round-trips through restore", () => {
+  const { root, stateStorePath, state, rt } = durabilityRuntime();
+  try {
+    state.invocations.push({ id: "inv_keep", status: "queued", idempotencyKey: "k1", requestedBy: "u1" });
+    rt.persistStateNow();
+    // Fresh state + a runtime pointed at the same file restores the record.
+    const restored = {
+      projects: [state.projects[0]],
+      currentProjectId: null,
+      worktrees: [],
+      invocations: [],
+      device: { id: "dev_1", status: "online" },
+    };
+    createPersistenceRuntime({
+      state: restored,
+      enabled: true,
+      stateStorePath,
+      schemaVersion: 1,
+      now: () => "t",
+      defaultProject: state.projects[0],
+      sameProjectPath,
+    }).restorePersistentState();
+    assert.equal(restored.invocations.length, 1);
+    assert.equal(restored.invocations[0].id, "inv_keep");
+    assert.equal(restored.invocations[0].idempotencyKey, "k1", "the idempotency key survives restart");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

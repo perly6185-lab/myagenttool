@@ -1,5 +1,34 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, writeSync } from "node:fs";
 import { dirname } from "node:path";
+
+// Durable atomic snapshot write. `writeFileSync` truncates the target in place
+// and does not fsync, so a crash mid-write left a torn file — and restore's
+// JSON.parse then threw and silently discarded ALL state (total loss, worse
+// than losing the last debounce window). Here: write a temp file, fsync it to
+// disk, then rename over the target (rename is atomic on POSIX), then fsync the
+// parent directory so the rename itself survives a power loss. The target is
+// therefore always either the previous complete snapshot or the new one.
+function durableWriteFileSync(path, data) {
+  const tmp = `${path}.tmp`;
+  const fd = openSync(tmp, "w");
+  try {
+    writeSync(fd, data);
+    fsyncSync(fd);
+  } finally {
+    closeSync(fd);
+  }
+  renameSync(tmp, path);
+  let dirFd;
+  try {
+    dirFd = openSync(dirname(path), "r");
+    fsyncSync(dirFd);
+  } catch {
+    // Some platforms (notably Windows) disallow fsync on a directory handle;
+    // the rename is still atomic, so this only weakens power-loss durability.
+  } finally {
+    if (dirFd !== undefined) closeSync(dirFd);
+  }
+}
 
 const persistedArrayKeys = [
   "users",
@@ -85,6 +114,20 @@ export function createPersistenceRuntime({
     }, 20);
   }
 
+  // Synchronous durable barrier: flush now instead of after the 20ms debounce,
+  // so a crash cannot lose the write. Call at commit points where the record
+  // has no other recovery path — notably an accepted invocation, which (unlike a
+  // dispatched one) has no lease to re-queue it. Cancels the pending debounce so
+  // the timer doesn't re-write redundantly.
+  function persistStateNow() {
+    if (!enabled) return;
+    if (saveStateTimer) {
+      clearTimeout(saveStateTimer);
+      saveStateTimer = null;
+    }
+    savePersistentState();
+  }
+
   function savePersistentState() {
     if (!enabled) return;
     const snapshot = {
@@ -101,7 +144,7 @@ export function createPersistenceRuntime({
       snapshot[key] = state[key];
     }
     mkdirSync(dirname(stateStorePath), { recursive: true });
-    writeFileSync(stateStorePath, `${JSON.stringify(snapshot, null, 2)}\n`);
+    durableWriteFileSync(stateStorePath, `${JSON.stringify(snapshot, null, 2)}\n`);
   }
 
   function restorePersistentState() {
@@ -156,6 +199,7 @@ export function createPersistenceRuntime({
 
   return {
     persistStateSoon,
+    persistStateNow,
     restorePersistentState,
     savePersistentState,
   };
