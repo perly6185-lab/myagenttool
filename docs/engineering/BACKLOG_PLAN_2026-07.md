@@ -42,6 +42,15 @@ See `docs/engineering/NEXT_PHASE_PLAN_2026-07.md` for the operating plan.
     recorded), replacing the two "not instrumented" rows.
   - #137's MCP connect slice landed (#387): pre-flight dry-probe + Connect MCP
     server card.
+- **2026-07-04 closeout measurement:** this branch's round-end gate measured
+  docs links (`pnpm docs:check`), repo scaffold (`pnpm repo:check`), all typed
+  workspace surfaces (`pnpm typecheck`), full workspace unit + local/port smoke
+  behavior (`pnpm test`), DORA delivery health (`pnpm github:dora`), backlog
+  hygiene (`pnpm github:backlog`), and held-out AI behavior
+  (`pnpm ai:eval-heldout`). The run caught and fixed missing current-device
+  dispatch ownership in tests plus a Windows cwd expectation; the remaining
+  measured gaps are CI green rate 73.8% vs 95%, four stale backlog items, and
+  mock held-out pass rate 4/6.
 
 ## P1 - Durable control-plane state
 
@@ -51,7 +60,11 @@ review. The first slice should be intentionally small:
 - Status: local durable-state hardening closeout is recorded in
   [P1_DURABLE_STATE_CLOSEOUT.md](P1_DURABLE_STATE_CLOSEOUT.md). The current
   accepted scope covers local snapshot restore for lifecycle/rollback/ledger,
-  imported usage/review evidence, and terminal/Codex Evidence Center linkage;
+  imported usage/review evidence, terminal/Codex Evidence Center linkage, and
+  restart/read-model/audit-ref coverage for lifecycle policy decisions, policy
+  decision records, approval requests, Codex approval broker requests, and audit
+  export requests. What was tested: after snapshot restore, approval, policy,
+  and export evidence still has explainable read-model and audit references;
   production-grade transactional persistence remains future work.
 - **WS2 landed:** invocation create is **idempotent** on a persisted,
   tenant-scoped client key (#418); snapshot writes are **atomic + fsync'd**
@@ -94,6 +107,11 @@ every local execution surface:
   not trust the server-normalized descriptor).
 - **Bridge credential idle-expiry (#439):** a leaked bearer stops working after
   the idle TTL; an active bridge never idles out.
+- **Credential ownership closeout (this PR):** bridge-owned work is checked
+  across polling, completion callbacks, lifecycle completion, dispatch
+  selection, health, discovery, and probe paths. What was tested: off-device
+  bridge work is filtered or refused before execution, and refusal events are
+  emitted as audit evidence rather than silent skips.
 - Remaining (#426): a bridge-side PTY gate mirroring the server-side terminal
   confinement, and general approval-evidence enforcement + an independent local
   consent record. The principle stands: server policy approval does not by
@@ -114,6 +132,11 @@ product-quality focus:
 - Status: third slice started on `feat/application-recovery-explanation-ui`;
   the Web Applications inspector now renders the recovery explanation as
   operator guidance in history and suggested action cards.
+- Status: `feat/recovery-explanation-web` extends the same operator
+  explanation pattern into Invocations and extracts shared recovery readable/
+  tone helpers so Applications and Invocations do not maintain separate
+  phrasing. What was tested: pending approval, duplicate-action guard, executed
+  result, and View result navigation are covered by Web unit regression tests.
 - Status: runtime contract closeout landed; ccusage Application wrapper
   semantics are published in the external consumer contract and enforced by the
   tool-registry contract smoke inside `smoke:port`.

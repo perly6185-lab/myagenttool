@@ -189,6 +189,40 @@ evidenced, not asserted):
   automate up to the PR, keep a human gate on merge/deploy. That convergence —
   not a maturity number — is the defensible external claim.
 
+## Latest Measurement (2026-07-04)
+
+Closeout on `feat/recovery-explanation-web` measured the gates, not just task
+completion:
+
+- `pnpm docs:check` verified Markdown relative links after the planning and
+  closeout docs changed.
+- `pnpm repo:check` verified the repository scaffold still matches the expected
+  workspace shape.
+- `pnpm typecheck` verified all typed workspace packages and apps, including
+  the Web `ConsoleSnapshot.agent` surface and the server/desktop bridge
+  contracts touched by the trust-boundary work.
+- `pnpm test` verified the workspace unit suites plus `smoke:local` and
+  `smoke:port`. The run initially caught two real closeout gaps: local CLI
+  dispatch tests were missing current-device ownership after the bridge
+  trust-boundary tightening, and terminal cwd confinement had a POSIX-only
+  assertion on Windows. After fixing those, the full run passed and re-measured
+  dispatch caps, off-device slot accounting, per-cwd serialization, bridge loop
+  refusal/approval/cancellation, and port smoke coverage for tool registry,
+  cost attribution, tenancy, worktree diff, and MCP agent behavior.
+- `pnpm github:dora` measured 206 merged PRs over 30 days: median lead time
+  0.03h, p90 0.48h, deploy-frequency proxy 48.07/week, CI green on merged PRs
+  73.8% (152/206, with 47 merged PRs carrying no checks), and 0 recorded
+  change-failure incidents since the 2026-07-04 signal adoption. Evidence:
+  `.myagenttool/metrics/2026-07-04T13-14-44-606Z-dora/`.
+- `pnpm github:backlog` measured 29 open issues with required labels 29/29,
+  milestones 29/29, and 4 stale items older than 14 days (#118, #117, #116,
+  #114). Evidence:
+  `.myagenttool/metrics/2026-07-04T13-14-56-518Z-backlog/`.
+- `pnpm ai:eval-heldout` measured the hermetic mock held-out set at 66.7%
+  (4/6): hb-001, hb-002, hb-003, and hb-005 passed; hb-004 produced no file
+  changes and hb-006 remains vacuous because verify already passes at base.
+  Evidence: `.myagenttool/evals/2026-07-04T13-15-07-662Z-heldout/`.
+
 ## How To Adopt
 
 This proposal is inert until measurement exists. Minimum instrumentation:
