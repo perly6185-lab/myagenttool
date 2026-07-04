@@ -47,6 +47,7 @@ export function createServerRuntimeServices({
 
   const {
     persistStateSoon,
+    persistStateNow,
     restorePersistentState,
     savePersistentState,
   } = createPersistenceRuntime({
@@ -77,6 +78,7 @@ export function createServerRuntimeServices({
     addProject,
     cloneProject,
     createBlankProject,
+    commitWorktreeChanges,
     createWorktree,
     currentProject,
     gitProjectSummary,
@@ -255,6 +257,7 @@ export function createServerRuntimeServices({
     nextId,
     appendEvent,
     persistStateSoon,
+    persistStateNow,
     dispatchLeaseMs,
     namespace,
     protocolVersion,
@@ -306,6 +309,7 @@ export function createServerRuntimeServices({
     defaultAgent,
     createInvocation,
     startInvocationIfAllowed,
+    commitWorktreeChanges,
     publishWorktreeBranch,
     createWorktreePr,
     // Verification gate: run the project-configured command in the worktree.
