@@ -54,7 +54,12 @@ See `docs/engineering/NEXT_PHASE_PLAN_2026-07.md` for the operating plan.
   null-device lifecycle/discovery/probe work is not bridge-dispatchable, legacy
   local invocation claims are bound to the current bridge device before
   ack/complete, and Invocations recovery guidance points at the active
-  recovery-action approval before the source invocation approval.
+  recovery-action approval before the source invocation approval. Application
+  planning follow-up re-ran the same gate after documenting the
+  `discover -> access -> execute -> result` loop; the Application-specific
+  evidence covered capability discovery, scoped registration/probe, wrapper
+  descriptor projection, ccusage wrapper invocation semantics, and
+  tool-registry contract compatibility.
 
 ## P1 - Durable control-plane state
 
@@ -149,6 +154,22 @@ product-quality focus:
 - Status: runtime contract closeout landed; ccusage Application wrapper
   semantics are published in the external consumer contract and enforced by the
   tool-registry contract smoke inside `smoke:port`.
+- Next focus: close the Application product loop as
+  `discover -> access -> execute -> result`, using ccusage as the reference
+  application before generalizing.
+- **Discover:** make Application capability descriptors complete enough for
+  external and Web callers to choose a capability without adapter knowledge:
+  readiness, risk, approval, schema, output collection, and result-import
+  metadata must be present and restart-safe.
+- **Access:** turn approval and local consent into visible state: owner scope,
+  approval request, duplicate guard, bridge ownership, and local allowlist
+  refusal should all produce operator-readable evidence.
+- **Execute:** move approved `installed-wrapper` commands from audited
+  execution-plan preview into the normal invocation/trace/audit path, preserving
+  reviewed argv construction and continuing to reject arbitrary npm execution.
+- **Result:** import completion output into the declared read model, link it
+  from invocation/Application/audit evidence, and show result/next-step guidance
+  in Applications and Invocations.
 - Keep `/api/tools` stable while `/api/capabilities` becomes the unified
   discovery surface.
 - Finish ccusage parity on the Application-backed tool facade, including

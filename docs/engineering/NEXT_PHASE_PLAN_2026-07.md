@@ -87,7 +87,12 @@ Out of scope:
 ## Workstream 4 - Application Capability Runtime
 
 Purpose: make the Application path the primary pattern for governed software
-assets without breaking the stable tool facade.
+assets without breaking the stable tool facade. The next cut is a closed-loop
+slice, not another descriptor-only slice:
+
+```text
+discover -> access -> execute -> result
+```
 
 First slice:
 
@@ -103,6 +108,20 @@ First slice:
 - Closeout status: ccusage Application wrapper semantics are published in the
   external consumer contract and enforced by the tool-registry contract smoke;
   recovery guidance has seeded UI regression coverage.
+- Discovery: keep `/api/capabilities?providerType=application` and
+  `/api/applications/:id/capabilities` as the supported surfaces, with
+  readiness, risk, approval, schema, output collection, and result-import
+  metadata present without exposing wrapper internals.
+- Access: require owner-scoped authorization plus explicit approval for
+  side-effecting Application capabilities, and keep local bridge allowlist
+  checks for command id, cwd, args, env, file policy, and network policy before
+  any spawn.
+- Execution: wire the approved `installed-wrapper` path through the normal
+  invocation/trace/audit flow for ccusage first, preserving reviewed wrapper
+  argv construction and rejecting free-form npm execution.
+- Result: import completion output into the declared read model, attach result
+  refs to invocation/Application/audit evidence, and render result links plus
+  next-step guidance in Applications and Invocations.
 - Keep `/api/tools/ccusage.report` stable for consumers.
 - Source the ccusage descriptor and execution path from the Application
   capability path where parity is already proven.
@@ -120,6 +139,15 @@ Out of scope:
 - General marketplace packaging.
 - Arbitrary npm execution.
 - Free-form wrapper arguments.
+
+Acceptance:
+
+- A ccusage Application capability can be registered, probed, discovered,
+  approved, bridge-executed, completed, imported, and inspected through both API
+  contract tests and the Web UI.
+- Regression coverage includes happy path, access denied, duplicate guard,
+  bridge/local-policy refusal, restart/read-model restore, and stable
+  `/api/tools/ccusage.report` compatibility.
 
 ## Workstream 5 - M3 Closeout
 

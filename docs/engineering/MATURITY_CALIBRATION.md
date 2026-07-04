@@ -191,16 +191,18 @@ evidenced, not asserted):
 
 ## Latest Measurement (2026-07-04)
 
-Closeout on `feat/recovery-explanation-web` measured the gates, not just task
-completion:
+Closeout on `feat/recovery-explanation-web` plus the Application closed-loop
+planning refresh measured the gates, not just task completion:
 
-- `pnpm docs:check` verified Markdown relative links after the planning and
-  closeout docs changed.
+- `pnpm docs:check` verified Markdown relative links after the closeout docs and
+  Application `discover -> access -> execute -> result` planning docs changed.
 - `pnpm repo:check` verified the repository scaffold still matches the expected
   workspace shape.
 - `pnpm typecheck` verified all typed workspace packages and apps, including
   the Web `ConsoleSnapshot.agent` surface and the server/desktop bridge
-  contracts touched by the trust-boundary work.
+  contracts touched by the trust-boundary work. The Application planning refresh
+  was docs-only, so this also re-checked that the branch's typed surfaces stayed
+  unchanged.
 - `pnpm test` verified the workspace unit suites plus `smoke:local` and
   `smoke:port`. The run initially caught two real closeout gaps: local CLI
   dispatch tests were missing current-device ownership after the bridge
@@ -213,20 +215,23 @@ completion:
   slot accounting, per-cwd serialization, bridge loop
   refusal/approval/cancellation, local smoke execution, and port smoke coverage
   for tool registry, cost attribution, tenancy, worktree diff, and MCP agent
-  behavior.
+  behavior. The rerun after the Application planning refresh again covered the
+  current Application contract tests: capability discovery, scoped Application
+  registration/probe, wrapper descriptor projection, ccusage wrapper invocation
+  semantics, and tool-registry contract smoke compatibility.
 - `pnpm github:dora` measured 206 merged PRs over 30 days: median lead time
   0.03h, p90 0.48h, deploy-frequency proxy 48.07/week, CI green on merged PRs
   73.8% (152/206, with 47 merged PRs carrying no checks), and 0 recorded
   change-failure incidents since the 2026-07-04 signal adoption. Evidence:
-  `.myagenttool/metrics/2026-07-04T13-34-36-320Z-dora/`.
+  `.myagenttool/metrics/2026-07-04T13-42-04-436Z-dora/`.
 - `pnpm github:backlog` measured 29 open issues with required labels 29/29,
   milestones 29/29, and 4 stale items older than 14 days (#118, #117, #116,
   #114). Evidence:
-  `.myagenttool/metrics/2026-07-04T13-34-46-479Z-backlog/`.
+  `.myagenttool/metrics/2026-07-04T13-42-13-525Z-backlog/`.
 - `pnpm ai:eval-heldout` measured the hermetic mock held-out set at 66.7%
   (4/6): hb-001, hb-002, hb-003, and hb-005 passed; hb-004 produced no file
   changes and hb-006 remains vacuous because verify already passes at base.
-  Evidence: `.myagenttool/evals/2026-07-04T13-34-53-550Z-heldout/`.
+  Evidence: `.myagenttool/evals/2026-07-04T13-42-19-930Z-heldout/`.
 
 ## How To Adopt
 
