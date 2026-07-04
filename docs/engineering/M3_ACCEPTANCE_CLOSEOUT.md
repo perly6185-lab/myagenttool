@@ -190,8 +190,12 @@ Accepted as skeleton / not-executed in M3, recorded honestly rather than claimed
   debounce, gated on `enabled`; a crash inside the debounce window loses the last
   writes (no WAL/append log). Service arrays are capped (`slice(0,100)`/`200`), so
   history is lossy by design — only spend-bearing ledger rows are protected.
-  Transactional dispatch-claim / budget-admission / idempotency hardening is the
-  next durable-state slice (backlog P1).
+  WS2 partially closed this: invocation create is now **idempotent** on a
+  client-provided key (persisted, tenant-scoped), and the **dispatch claim is
+  proven atomic** (synchronous claim-then-mark cannot interleave in the single-
+  threaded loop; test-locked). Budget admission is a check against actual spend
+  (no reservation model). A crash-safe WAL/append log is the remaining durability
+  slice (backlog P1).
 - **Platform-managed AI-usage pricing is skeleton.** `createLedgerEntryForUsage`
   records attribution with `unitPrice`/`amount` = `"unknown"`; real USD only comes
   from the invocation path. Quota "limit" is a request counter, not windowed

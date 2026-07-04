@@ -85,3 +85,23 @@ test("a disabled or unhealthy agent's queued run is not dispatchable", () => {
   assert.equal(rt.nextDispatchableInvocation(), undefined);
   delete agents.agt_off;
 });
+
+test("claim invariant: a dispatched run is not re-claimable (atomic claim, no double-dispatch)", () => {
+  // Two free worktrees, cap 2. Claiming must hand out each run exactly once —
+  // the WS2 dispatch-claim property. It holds because nextDispatchable +
+  // markDispatched run synchronously in the /api/bridge/next handler, so no
+  // second poll can interleave and re-claim the same run.
+  const inv = (id, w) => ({ id, agentId: "agt_cli", status: "queued", delivery: { state: "queued", dispatchAttempts: 0 }, input: { metadata: { worktreePath: w } } });
+  const rt = runtimeWith([inv("inv_a", "/w1"), inv("inv_b", "/w2")], 2);
+
+  const first = rt.nextDispatchableInvocation();
+  assert.equal(first.id, "inv_a");
+  rt.markDispatched(first);
+  assert.equal(first.status, "dispatching", "claim moved it out of the queue");
+
+  const second = rt.nextDispatchableInvocation();
+  assert.equal(second.id, "inv_b", "the next claim never re-hands the already-dispatched run");
+  rt.markDispatched(second);
+
+  assert.equal(rt.nextDispatchableInvocation(), undefined, "both claimed → nothing left, no double-dispatch");
+});
