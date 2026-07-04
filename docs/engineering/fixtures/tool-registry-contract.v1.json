@@ -5,6 +5,9 @@
     "GET /api/tools",
     "GET /api/tools/{toolName}",
     "POST /api/tools/{toolName}/invocations",
+    "GET /api/capabilities",
+    "GET /api/capabilities/{capabilityName}",
+    "POST /api/capabilities/{capabilityName}/invocations",
     "GET /api/review-findings",
     "GET /api/state"
   ],
@@ -182,9 +185,62 @@
       ]
     }
   },
+  "applicationCapabilities": {
+    "ccusageWrapper": {
+      "providerType": "application",
+      "kind": "npm_wrapper",
+      "namePattern": "app.app_ccusage.wrapper.{reportId}",
+      "exampleCapabilityName": "app.app_ccusage.wrapper.daily",
+      "compatibilityFacade": {
+        "type": "tool",
+        "name": "ccusage.report",
+        "invocationMode": "tool-facade"
+      },
+      "allowedInputFields": [
+        "since",
+        "until",
+        "timezone",
+        "approvalToken",
+        "projectId"
+      ],
+      "outputCollection": "importedUsageEstimates",
+      "billing": {
+        "authoritative": false,
+        "externalBilled": true,
+        "amountSource": "imported_ccusage_report"
+      },
+      "resultImport": {
+        "source": "ccusage",
+        "kind": "usage_estimates",
+        "amountSource": "imported_ccusage_report"
+      },
+      "exampleInput": {
+        "since": "2026-07-01",
+        "until": "2026-07-02",
+        "timezone": "Asia/Shanghai",
+        "projectId": "prj_local"
+      },
+      "directInvocation": {
+        "status": "queued",
+        "agentId": "agt_platform_application_wrapper",
+        "outputCollection": "importedUsageEstimates"
+      },
+      "stableErrorCodes": [
+        "capability_not_found",
+        "project_not_found",
+        "approval_required",
+        "application_archived",
+        "application_offline",
+        "wrapper_command_not_found",
+        "agent_not_available"
+      ]
+    }
+  },
   "consumerRules": [
     "Discover tools through GET /api/tools or GET /api/tools/{toolName}.",
+    "Discover generalized capabilities through GET /api/capabilities or GET /api/capabilities/{capabilityName}.",
     "Invoke tools only through POST /api/tools/{toolName}/invocations.",
+    "Invoke application capabilities only through POST /api/capabilities/{capabilityName}/invocations.",
     "Do not read, cache, replay, or synthesize local adapter command, argv, cwd, shell, sandbox, or env details.",
     "Treat 409 approval_required as a governance decision, not a transport failure.",
     "Poll GET /api/state by invocationId and read only the descriptor outputCollection.",

@@ -268,6 +268,31 @@ test("POST /api/capabilities proxies governed tools and executes application cap
   assert.equal(offline.body.invocation.result.output.status, "offline");
 });
 
+test("POST /api/capabilities invokes ccusage wrapper capabilities with published runtime semantics", async () => {
+  const res = await call("/api/capabilities/app.app_ccusage.wrapper.daily/invocations", {
+    method: "POST",
+    body: {
+      since: "2026-07-01",
+      until: "2026-07-02",
+      timezone: "Asia/Shanghai",
+      projectId: "projA",
+    },
+    token: "tok_a",
+  });
+  assert.equal(res.status, 202);
+  assert.equal(res.body.capability, "app.app_ccusage.wrapper.daily");
+  assert.equal(res.body.agentId, "agt_platform_application_wrapper");
+  assert.equal(res.body.outputCollection, "importedUsageEstimates");
+  const metadata = res.body.invocation?.options?.metadata;
+  assert.equal(metadata?.applicationWrapper?.compatibilityFacade?.name, "ccusage.report");
+  assert.equal(metadata?.applicationWrapper?.outputCollection, "importedUsageEstimates");
+  assert.equal(metadata?.applicationWrapper?.billing?.externalBilled, true);
+  assert.equal(metadata?.applicationWrapper?.resultImport?.source, "ccusage");
+  assert.equal(metadata?.applicationWrapper?.resultImport?.amountSource, "imported_ccusage_report");
+  assert.ok(!JSON.stringify(res.body).includes("application-wrapper.mjs"), "direct capability response must not expose runner script");
+  assert.ok(!JSON.stringify(res.body).includes("ccusage-wrapper.mjs"), "direct capability response must not expose ccusage wrapper script");
+});
+
 test("POST /api/applications/register rejects duplicate explicit ids", async () => {
   const duplicate = await call("/api/applications/register", {
     method: "POST",
