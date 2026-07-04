@@ -162,7 +162,9 @@ This decision does not change:
 - What ccusage reports or how estimates are computed.
 - The `non-authoritative` / `external_billed` treatment of imported estimates
   (they are never rolled into the metered ledger).
-- The `/api/tools/ccusage.report` request/response contract.
+- The `/api/tools/ccusage.report` request contract and report semantics. (The
+  response `agentId` intentionally changed to the platform runner
+  `agt_platform_application_wrapper` — see Revision 2.)
 
 ## Implementation Notes
 

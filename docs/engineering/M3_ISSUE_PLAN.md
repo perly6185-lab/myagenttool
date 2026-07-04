@@ -303,14 +303,16 @@ git diff --check
 | Private extension catalog and signed bundles | Lifecycle Recipe Artifact Schema | Private Catalog and Signed Bundle Verification |
 | Stable public API and versioned SDKs | M3 Issue Plan and Acceptance Map | Deferred until the lifecycle and billing contracts stabilize |
 | Private deployment alert sinks and SIEM export | Private Deployment and Audit Export Shape | External alert and SIEM delivery |
-| MCP, A2A, and container adapters | M3 Issue Plan and Acceptance Map | Deferred adapter-specific batches |
+| MCP, A2A, and container adapters | M3 Issue Plan and Acceptance Map | Landed: live clients + connect/probe + bridge execution (#137/#387); only adapter-specific hardening deferred |
 | Cost analyst and lifecycle advisor platform agents | Billing Ledger and Quota Enforcement Skeleton; Lifecycle Review and Approval Gates | Governed Repeatable Workflows and Platform Agents |
 | Repeatable task templates | M3 Issue Plan and Acceptance Map | Governed Repeatable Workflows and Platform Agents |
 
 ## M2 Follow-Up Carried Into M3
 
-- Persistent storage should replace demo in-memory integration artifacts before
-  commercial lifecycle or billing flows rely on them.
+- Persistent storage for integration artifacts, ledger, quota decisions, and
+  lifecycle records **landed (#388)**: the control-plane state is now a durable
+  file-backed snapshot store rather than demo in-memory arrays. Remaining work
+  is transactional/idempotency hardening, not the initial durability boundary.
 - Real provider-backed generation must keep the same review, probe, disabled
   registration, lifecycle, quota, and audit gates.
 - M2 quota decision records should become M3 enforceable quota decisions for
@@ -327,7 +329,8 @@ git diff --check
 - Invoice generation, tax handling, or paid subscription plan management.
 - Full enterprise identity, SSO, SIEM delivery, or provider-backed immutable
   audit implementation.
-- MCP, A2A, or container adapter execution.
+- ~~MCP, A2A, or container adapter execution.~~ (No longer a non-goal: live
+  clients + connect/probe + bridge execution landed in #137/#387.)
 - Long-lived worker pools or unattended lifecycle daemons.
 
 ## Verification Baseline
