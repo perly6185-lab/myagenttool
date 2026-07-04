@@ -59,6 +59,7 @@ export function createIntegrationService({
 
   const {
     completeIntegrationProbeRun,
+    createAgentDryProbeRun,
     createIntegrationProbeRun,
     findIntegrationProbeRun,
     markIntegrationProbeStarted,
@@ -93,6 +94,7 @@ export function createIntegrationService({
   return {
     completeDiscoveryRun,
     completeIntegrationProbeRun,
+    createAgentDryProbeRun,
     createDiscoveryRun,
     createIntegrationArtifact,
     createIntegrationProbeRun,

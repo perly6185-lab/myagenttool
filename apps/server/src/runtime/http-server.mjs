@@ -102,6 +102,7 @@ export function createHttpServer({
   requestLifecycleLocalApproval,
   transitionLifecycleRecipe,
   updatePrivateDeploymentConfig,
+  createAgentDryProbeRun,
   createIntegrationProbeRun,
   registerIntegrationArtifact,
   transitionIntegrationArtifact,
@@ -315,6 +316,8 @@ export function createHttpServer({
         disableAgent,
         enableAgent,
         createAgentHealthCheck,
+        createAgentDryProbeRun,
+        findIntegrationProbeRun,
         unlinkDevice,
       })) {
         return;

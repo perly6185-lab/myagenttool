@@ -3,11 +3,13 @@
  *
  * Consistent with the rest of this package, this is a *declarative* adapter: a
  * capability contract, config normalization/validation, and the request
- * descriptor an invocation maps to. The live MCP client (opening a stdio/HTTP
- * transport, listing tools, streaming results) belongs in the Desktop Bridge and
- * is the documented next step — see docs/vision/AGENT_ADAPTER_MATRIX.md. Keeping
- * the contract here means the server can register + validate an MCP agent, and
- * the mapping is testable without a live MCP server.
+ * descriptor an invocation maps to. The live MCP client that executes this
+ * contract (opening a stdio/HTTP transport, listing tools, streaming results,
+ * cancellation) lives in the Desktop Bridge — apps/desktop/src/mcp-client.mjs,
+ * see docs/vision/AGENT_ADAPTER_MATRIX.md. Keeping the contract here means the
+ * server can register + validate an MCP agent, and the mapping is testable
+ * without a live MCP server; the end-to-end seam is covered by
+ * tools/dev/mcp-agent-smoke.mjs.
  */
 
 /** Capabilities the MCP adapter path commits to, in the same shape as the M0
