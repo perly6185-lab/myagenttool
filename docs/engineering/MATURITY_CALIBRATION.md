@@ -195,10 +195,16 @@ This proposal is inert until measurement exists. Minimum instrumentation:
 
 1. **DORA counters** from git/PR/deploy events — feeds L2/L3/L5 gates. A
    minimal slice now exists (`pnpm github:dora`): PR-based lead time and a
-   merge-frequency proxy are measured; change failure rate and recovery time
-   are reported as **not instrumented** (they need a real deploy target +
-   incident signal) rather than proxied. First reading (2026-07-02, 30-day
-   window): 73 merged PRs, median lead time 0.02h, 17 merges/week. The L2
+   merge-frequency proxy are measured. **Change failure rate and recovery time
+   are now instrumented from an explicit incident signal** (adopted
+   2026-07-04): a remediation PR names the merge it fixes with a
+   `Change-failure: #N` marker in its body, and the report computes CFR =
+   distinct in-window culprits ÷ window merges, recovery = median(fix
+   mergedAt − culprit mergedAt). This is a recorded signal, not an inferred
+   revert or a faked ~5% — with no markers it reads `0 recorded incidents
+   (signal live since 2026-07-04)`, and a window that starts before adoption is
+   a lower bound. First reading (2026-07-02, 30-day window): 73 merged PRs,
+   median lead time 0.02h, 17 merges/week. The L2
    gate's CI-green-rate half is also instrumented in the same report
    (per-merged-PR check-run rollup, ≥95% target, all-merged-PRs denominator)
    with three honest states: measured, "CI not active", or "not measurable
