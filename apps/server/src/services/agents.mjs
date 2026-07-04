@@ -2,6 +2,8 @@ import { normalizeA2aAdapterConfig } from "@myagenttool/adapters/a2a";
 import { normalizeContainerAdapterConfig } from "@myagenttool/adapters/container";
 import { normalizeMcpAdapterConfig } from "@myagenttool/adapters/mcp";
 
+import { capLifecycleAuditRecords } from "./retention.mjs";
+
 export function createAgentService({ state, now, nextId, appendEvent, persistStateSoon = () => {} }) {
   const AGENT_FACTORIES = {
     cli: (body) => createCliAgent(body),
@@ -378,7 +380,7 @@ export function createAgentService({ state, now, nextId, appendEvent, persistSta
       completedAt: null,
     };
     state.lifecycleAuditRecords.unshift(record);
-    state.lifecycleAuditRecords = state.lifecycleAuditRecords.slice(0, 100);
+    capLifecycleAuditRecords(state);
     appendEvent({
       invocationId: null,
       type: "lifecycle_requested",

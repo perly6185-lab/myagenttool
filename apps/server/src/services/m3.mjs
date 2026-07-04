@@ -7,6 +7,7 @@ import {
   normalizeStringArray,
 } from "./agents.mjs";
 import { CCUSAGE_VERSION } from "./ccusage-agent.mjs";
+import { capLifecycleAuditRecords } from "./retention.mjs";
 
 const allowedLifecycleActions = ["install", "update", "uninstall"];
 const allowedRecipeSources = ["local_file", "workspace_catalog", "private_catalog", "generated_artifact", "manual_entry"];
@@ -383,7 +384,7 @@ export function createM3Service({
       createdAt,
       completedAt: null,
     });
-    state.lifecycleAuditRecords = state.lifecycleAuditRecords.slice(0, 100);
+    capLifecycleAuditRecords(state);
     recipe.queueState = "queued";
     recipe.updatedAt = now();
     appendEvent({
@@ -602,7 +603,7 @@ export function createM3Service({
       createdAt,
       completedAt: null,
     });
-    state.lifecycleAuditRecords = state.lifecycleAuditRecords.slice(0, 100);
+    capLifecycleAuditRecords(state);
     rollback.status = "queued";
     rollback.queuedActionId = queued.id;
     rollback.updatedAt = createdAt;
