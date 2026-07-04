@@ -37,8 +37,14 @@ function fakeAgent(overrides = {}) {
 
 // Build an auto-run service over the real project service, capturing what it
 // hands the invocation layer. `invocationStatus` controls the gate outcome.
-function makeAutoRun({ agent = fakeAgent(), invocationStatus = "queued", publishThrows = false } = {}) {
-  const calls = { createInvocation: [], startInvocationIfAllowed: [], publish: [], pr: [] };
+function makeAutoRun({
+  agent = fakeAgent(),
+  invocationStatus = "queued",
+  publishThrows = false,
+  // Verification result (or a throwing function). Default: unverified pass-through.
+  verify = { passed: true, verified: false, summary: "No verification command configured." },
+} = {}) {
+  const calls = { createInvocation: [], startInvocationIfAllowed: [], publish: [], pr: [], verify: [] };
   let counter = 0;
   const svc = createAutoRunService({
     state,
@@ -69,6 +75,10 @@ function makeAutoRun({ agent = fakeAgent(), invocationStatus = "queued", publish
     createWorktreePr: async (worktreeId, payload) => {
       calls.pr.push({ worktreeId, payload });
       return { ok: true, number: 77, url: "https://github.com/o/r/pull/77", state: "OPEN" };
+    },
+    verifyWorktree: async (ctx) => {
+      calls.verify.push(ctx);
+      return typeof verify === "function" ? verify(ctx) : verify;
     },
   });
   return { svc, calls };
@@ -222,6 +232,78 @@ test("advanceAutoRunForInvocation is idempotent once the PR is open", async () =
 
   assert.equal(autoRun.status, "pr_open");
   assert.equal(calls.pr.length, 1, "a second completion never re-opens the PR");
+});
+
+test("verification gate: a passing check opens the PR with verification evidence", async () => {
+  const { svc, calls } = makeAutoRun({ verify: { passed: true, verified: true, summary: "`pnpm -s typecheck` passed." } });
+  const { autoRun, invocation } = svc.startAutoRun({
+    projectId: sourceProjectId,
+    link: { type: "issue", number: 30, title: "Verified", url: null, state: "open" },
+    agentId: "agt_1",
+    name: "issue-30-verified",
+  });
+
+  await svc.advanceAutoRunForInvocation({ ...invocation, status: "succeeded" });
+
+  assert.equal(calls.verify.length, 1, "the gate ran");
+  assert.equal(autoRun.status, "pr_open");
+  assert.equal(autoRun.verification.passed, true);
+  assert.equal(calls.pr.length, 1);
+  assert.match(calls.pr[0].payload.body, /## Verification/);
+  assert.match(calls.pr[0].payload.body, /passed/);
+});
+
+test("verification gate: a failing check blocks the PR", async () => {
+  const { svc, calls } = makeAutoRun({ verify: { passed: false, verified: true, summary: "`pnpm -s test` failed (exit 1)." } });
+  const { autoRun, invocation } = svc.startAutoRun({
+    projectId: sourceProjectId,
+    link: { type: "issue", number: 31, title: "Broken tests", url: null, state: "open" },
+    agentId: "agt_1",
+    name: "issue-31-broken",
+  });
+
+  await svc.advanceAutoRunForInvocation({ ...invocation, status: "succeeded" });
+
+  assert.equal(autoRun.status, "blocked");
+  assert.match(autoRun.error, /failed/);
+  assert.equal(calls.publish.length, 0, "a blocked run never publishes");
+  assert.equal(calls.pr.length, 0, "a blocked run never opens a PR");
+});
+
+test("verification gate: an unconfigured gate opens the PR but labels it unverified", async () => {
+  const { svc, calls } = makeAutoRun(); // default: verified:false pass-through
+  const { autoRun, invocation } = svc.startAutoRun({
+    projectId: sourceProjectId,
+    link: { type: "issue", number: 32, title: "No gate", url: null, state: "open" },
+    agentId: "agt_1",
+    name: "issue-32-no-gate",
+  });
+
+  await svc.advanceAutoRunForInvocation({ ...invocation, status: "succeeded" });
+
+  assert.equal(autoRun.status, "pr_open", "unverified still opens a PR (Phase 1 behavior preserved)");
+  assert.equal(autoRun.verification.verified, false);
+  assert.match(calls.pr[0].payload.body, /not run/);
+});
+
+test("verification gate: a throwing verifier blocks the PR (never fabricates a pass)", async () => {
+  const { svc, calls } = makeAutoRun({
+    verify: () => {
+      throw new Error("verifier crashed");
+    },
+  });
+  const { autoRun, invocation } = svc.startAutoRun({
+    projectId: sourceProjectId,
+    link: { type: "issue", number: 33, title: "Crash", url: null, state: "open" },
+    agentId: "agt_1",
+    name: "issue-33-crash",
+  });
+
+  await svc.advanceAutoRunForInvocation({ ...invocation, status: "succeeded" });
+
+  assert.equal(autoRun.status, "blocked");
+  assert.match(autoRun.error, /verifier crashed/);
+  assert.equal(calls.pr.length, 0);
 });
 
 test("startAutoRun validates the link and the device link state", () => {

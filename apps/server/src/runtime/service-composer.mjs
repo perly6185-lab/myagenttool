@@ -21,6 +21,7 @@ import { createInvocationService } from "../services/invocations.mjs";
 import { createM3Service } from "../services/m3.mjs";
 import { createProjectService, sameProjectPath } from "../services/projects.mjs";
 import { createAutoRunService } from "../services/auto-run.mjs";
+import { resolveAutoRunVerifyCommand, runWorktreeVerification } from "../services/worktree-verify.mjs";
 import { createTerminalService } from "../services/terminal.mjs";
 import { createToolService } from "../services/tools.mjs";
 
@@ -306,6 +307,16 @@ export function createServerRuntimeServices({
     startInvocationIfAllowed,
     publishWorktreeBranch,
     createWorktreePr,
+    // Verification gate: run the project-configured command in the worktree.
+    // No command configured -> unverified pass-through (PR labeled unverified);
+    // a configured command that fails blocks the PR.
+    verifyWorktree: async ({ worktree }) => {
+      const command = resolveAutoRunVerifyCommand();
+      if (!command || !worktree?.path) {
+        return { passed: true, verified: false, summary: "No verification command configured — PR opened unverified." };
+      }
+      return runWorktreeVerification({ cwd: worktree.path, command });
+    },
   });
   // Now that the reaction exists, let completion drive it.
   advanceAutoRunHook = advanceAutoRunForInvocation;
