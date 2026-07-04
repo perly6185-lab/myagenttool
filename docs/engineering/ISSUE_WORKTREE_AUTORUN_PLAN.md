@@ -73,9 +73,12 @@ Task board [Auto] on an issue
   --title --body`, defaulting title/body from the linked issue with a
   `Closes #N` reference). gh is resolvable via `MYAGENTTOOL_GH_COMMAND(_JSON)`
   so tests and locked-down installs can inject a stand-in. **Status: landed.**
-- **Issue metadata + prompt helper** (next slice): structure the issue
-  reference on the worktree record and extract a shared issue-body → prompt
-  helper (currently only in the Task board's Automate action).
+- **Issue metadata + prompt helper.** The worktree record already carries a
+  structured issue/PR reference (`link`: type/number/title/url/state). The
+  issue → agent-prompt template, previously inline in the Task board's Automate
+  action, is now the shared `@myagenttool/protocol/issue-prompt`
+  `worktreeAutoRunPrompt(link)` so the server's future auto-run orchestrator and
+  the web share one source of truth. **Status: landed.**
 
 ### Phase 1 — One-click Auto (manual trigger, full chain to PR)
 
