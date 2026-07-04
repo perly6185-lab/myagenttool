@@ -89,9 +89,12 @@ Task board [Auto] on an issue
   agents land in `awaiting_approval` because the invocation does — Auto never
   bypasses the local-approval gate. `POST /api/projects/:id/auto-runs` +
   `GET /api/auto-runs`; Task board `[Auto]` button drives it.
-- **Reaction — next slice.** Advance the auto-run when its invocation completes:
-  succeeded → verify → publish → open PR (reusing the Phase 0 routes); failed →
-  `failed`. Hook `completion.mjs` to move the state machine forward.
+- **Reaction — landed.** `advanceAutoRunForInvocation()` runs when the auto-run's
+  invocation reaches a terminal state: succeeded → `verifying` (Phase 2 gate
+  placeholder) → `publishing` → open PR via the Phase 0 routes → `pr_open`;
+  failed/timed_out/cancelled → `failed`. Idempotent once settled; never throws.
+  Wired via a late-bound `onInvocationCompleted` hook threaded through the
+  invocation service into `completion.mjs`, so every completion path advances it.
 
 ### Phase 2 — Verification gate + PR governance
 
