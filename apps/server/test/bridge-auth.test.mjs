@@ -54,6 +54,11 @@ test("bridge registration issues a device-bound credential and protects bridge r
   const validPoll = await call("/api/bridge/next", { token: registered.body.bridgeToken });
   assert.equal(validPoll.status, 204);
 
+  const validTerminalPoll = await call("/api/bridge/terminal-next", { token: registered.body.bridgeToken });
+  assert.equal(validTerminalPoll.status, 204);
+
+  await assertBridgeCredentialRequired({ token: registered.body.bridgeToken });
+
   const registerWithoutBearer = await call("/api/bridge/register", { method: "POST", body: { bridgeVersion: "again" } });
   assert.equal(registerWithoutBearer.status, 401);
 
@@ -62,7 +67,50 @@ test("bridge registration issues a device-bound credential and protects bridge r
   const revokedPoll = await call("/api/bridge/next", { token: registered.body.bridgeToken });
   assert.equal(revokedPoll.status, 403);
   assert.equal(revokedPoll.body.error, "device_credentials_revoked");
+
+  await assertBridgeCredentialRevoked({ token: registered.body.bridgeToken });
 });
+
+const protectedBridgeRoutes = [
+  { method: "GET", path: "/api/bridge/next" },
+  { method: "GET", path: "/api/bridge/health-next" },
+  { method: "POST", path: "/api/bridge/health-complete", body: {} },
+  { method: "GET", path: "/api/bridge/discovery-next" },
+  { method: "POST", path: "/api/bridge/discovery-complete", body: {} },
+  { method: "GET", path: "/api/bridge/probe-next" },
+  { method: "POST", path: "/api/bridge/probe-complete", body: {} },
+  { method: "GET", path: "/api/bridge/lifecycle-next" },
+  { method: "POST", path: "/api/bridge/lifecycle-complete", body: {} },
+  { method: "GET", path: "/api/bridge/cancel-status?invocationId=missing" },
+  { method: "POST", path: "/api/bridge/ack", body: {} },
+  { method: "POST", path: "/api/bridge/events", body: {} },
+  { method: "POST", path: "/api/bridge/complete", body: {} },
+  { method: "GET", path: "/api/bridge/terminal-next" },
+  { method: "POST", path: "/api/bridge/terminal-events", body: {} },
+];
+
+async function assertBridgeCredentialRequired({ token }) {
+  for (const route of protectedBridgeRoutes) {
+    const missingCredential = await call(route.path, { method: route.method, body: route.body });
+    assert.equal(missingCredential.status, 401, `${route.method} ${route.path} should reject missing bridge credentials`);
+    assert.equal(missingCredential.body.error, "invalid_bridge_credentials");
+
+    const invalidCredential = await call(route.path, { method: route.method, body: route.body, token: "wrong-token" });
+    assert.equal(invalidCredential.status, 401, `${route.method} ${route.path} should reject invalid bridge credentials`);
+    assert.equal(invalidCredential.body.error, "invalid_bridge_credentials");
+  }
+
+  const stillValid = await call("/api/bridge/next", { token });
+  assert.equal(stillValid.status, 204);
+}
+
+async function assertBridgeCredentialRevoked({ token }) {
+  for (const route of protectedBridgeRoutes) {
+    const revoked = await call(route.path, { method: route.method, body: route.body, token });
+    assert.equal(revoked.status, 403, `${route.method} ${route.path} should reject revoked bridge credentials`);
+    assert.equal(revoked.body.error, "device_credentials_revoked");
+  }
+}
 
 async function call(path, { method = "GET", body, token } = {}) {
   const response = await fetch(`${base}${path}`, {
