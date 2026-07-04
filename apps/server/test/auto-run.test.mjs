@@ -44,7 +44,7 @@ function makeAutoRun({
   // Verification result (or a throwing function). Default: unverified pass-through.
   verify = { passed: true, verified: false, summary: "No verification command configured." },
 } = {}) {
-  const calls = { createInvocation: [], startInvocationIfAllowed: [], publish: [], pr: [], verify: [] };
+  const calls = { createInvocation: [], startInvocationIfAllowed: [], publish: [], pr: [], verify: [], status: [] };
   let counter = 0;
   const svc = createAutoRunService({
     state,
@@ -79,6 +79,9 @@ function makeAutoRun({
     verifyWorktree: async (ctx) => {
       calls.verify.push(ctx);
       return typeof verify === "function" ? verify(ctx) : verify;
+    },
+    writeIssueStatus: async (ctx) => {
+      calls.status.push(ctx);
     },
   });
   return { svc, calls };
@@ -304,6 +307,53 @@ test("verification gate: a throwing verifier blocks the PR (never fabricates a p
   assert.equal(autoRun.status, "blocked");
   assert.match(autoRun.error, /verifier crashed/);
   assert.equal(calls.pr.length, 0);
+});
+
+test("status writeback: in-progress on start, review when the PR opens (issue links only)", async () => {
+  const { svc, calls } = makeAutoRun();
+  const { autoRun, invocation, worktree } = svc.startAutoRun({
+    projectId: sourceProjectId,
+    link: { type: "issue", number: 40, title: "Track me", url: null, state: "open" },
+    agentId: "agt_1",
+    name: "issue-40-track-me",
+  });
+
+  // Started → in-progress.
+  assert.equal(calls.status.length, 1);
+  assert.deepEqual(
+    { to: calls.status[0].to, issueNumber: calls.status[0].issueNumber, repoPath: calls.status[0].repoPath },
+    { to: "in-progress", issueNumber: 40, repoPath: worktree.repoPath },
+  );
+
+  await svc.advanceAutoRunForInvocation({ ...invocation, status: "succeeded" });
+
+  // PR opened → review.
+  assert.equal(autoRun.status, "pr_open");
+  assert.equal(calls.status.length, 2);
+  assert.equal(calls.status[1].to, "review");
+});
+
+test("status writeback: never fires for a PR-linked auto-run", async () => {
+  const { svc, calls } = makeAutoRun();
+  const { invocation } = svc.startAutoRun({
+    projectId: sourceProjectId,
+    link: { type: "pr", number: 41, title: "A PR", url: null, state: "open" },
+    agentId: "agt_1",
+    name: "issue-41-a-pr",
+  });
+  await svc.advanceAutoRunForInvocation({ ...invocation, status: "succeeded" });
+  assert.equal(calls.status.length, 0, "PR-linked runs don't move an issue's status");
+});
+
+test("status writeback: a rejected start does not mark the issue in-progress", () => {
+  const { svc, calls } = makeAutoRun({ invocationStatus: "rejected" });
+  svc.startAutoRun({
+    projectId: sourceProjectId,
+    link: { type: "issue", number: 44, title: "Rejected", url: null, state: "open" },
+    agentId: "agt_1",
+    name: "issue-44-rejected",
+  });
+  assert.equal(calls.status.length, 0);
 });
 
 test("startAutoRun validates the link and the device link state", () => {

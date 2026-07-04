@@ -22,6 +22,7 @@ import { createM3Service } from "../services/m3.mjs";
 import { createProjectService, sameProjectPath } from "../services/projects.mjs";
 import { createAutoRunService } from "../services/auto-run.mjs";
 import { resolveAutoRunVerifyCommand, runWorktreeVerification } from "../services/worktree-verify.mjs";
+import { resolveStatusWritebackConfig, runIssueStatusTransition } from "../services/issue-status.mjs";
 import { createTerminalService } from "../services/terminal.mjs";
 import { createToolService } from "../services/tools.mjs";
 
@@ -317,6 +318,11 @@ export function createServerRuntimeServices({
       }
       return runWorktreeVerification({ cwd: worktree.path, command });
     },
+    // Issue status writeback (ready -> in-progress -> review). Undefined when
+    // disabled so the orchestrator skips it entirely — no GitHub writes by default.
+    writeIssueStatus: resolveStatusWritebackConfig().enabled
+      ? async ({ issueNumber, repoPath, to }) => runIssueStatusTransition({ cwd: repoPath, issueNumber, to })
+      : undefined,
   });
   // Now that the reaction exists, let completion drive it.
   advanceAutoRunHook = advanceAutoRunForInvocation;

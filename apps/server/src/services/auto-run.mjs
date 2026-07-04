@@ -39,7 +39,17 @@ export function createAutoRunService({
   publishWorktreeBranch,
   createWorktreePr,
   verifyWorktree,
+  writeIssueStatus,
 }) {
+  // Best-effort issue status writeback (Phase 4). Only for issue-linked runs;
+  // fire-and-forget so a slow/failed gh never blocks the orchestrator.
+  function maybeWriteIssueStatus(autoRun, worktree, to) {
+    if (typeof writeIssueStatus !== "function") return;
+    if (autoRun.link?.type !== "issue" || !Number.isFinite(autoRun.link?.number)) return;
+    const repoPath = worktree?.repoPath ?? null;
+    if (!repoPath) return;
+    Promise.resolve(writeIssueStatus({ issueNumber: autoRun.link.number, repoPath, to })).catch(() => {});
+  }
   // Reaction states already handled — advancing past them would re-open a PR.
   // `blocked` (verification failed) is terminal here; a human retries/fixes.
   const settledStatuses = new Set(["pr_open", "blocked", "done", "failed"]);
@@ -131,6 +141,10 @@ export function createAutoRunService({
       message: `Auto-run started for ${normalizedLink.type} #${normalizedLink.number}.`,
       data: { autoRunId, worktreeId: worktree.id, invocationId: invocation.id, status: autoRun.status },
     });
+    // The run has begun (or is parked for approval) — mark the issue in-progress.
+    if (autoRun.status !== "failed") {
+      maybeWriteIssueStatus(autoRun, worktree, "in-progress");
+    }
     persistStateSoon();
     return { autoRun, worktree, invocation };
   }
@@ -169,6 +183,7 @@ export function createAutoRunService({
           await publishWorktreeBranch(autoRun.worktreeId);
           const pr = await createWorktreePr(autoRun.worktreeId, { body: verificationEvidenceBody(verification) });
           setAutoRunStatus(autoRun, "pr_open", { prNumber: pr?.number ?? null, prUrl: pr?.url ?? null, error: null });
+          maybeWriteIssueStatus(autoRun, worktree, "review");
         } catch (error) {
           setAutoRunStatus(autoRun, "failed", { error: String(error?.message ?? error) });
         }
