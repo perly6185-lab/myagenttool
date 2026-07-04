@@ -142,7 +142,7 @@ function consoleState(): ConsoleSnapshot {
       agentId: "agt_demo_cli",
       projectId: "proj_docs",
       worktreeId: "wt_docs",
-      approvalRequestId: "cdx_appr_pending",
+      approvalRequestId: "cdx_appr_original",
       result: { summary: "Routine validation failed." },
       options: {
         metadata: {
@@ -190,6 +190,9 @@ function consoleState(): ConsoleSnapshot {
     tools: [],
     capabilities: [],
     approvalRequests: [{
+      id: "cdx_appr_original",
+      status: "approved",
+    }, {
       id: "cdx_appr_pending",
       status: "pending",
     }],

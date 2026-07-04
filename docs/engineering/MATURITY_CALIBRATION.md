@@ -205,23 +205,28 @@ completion:
   `smoke:port`. The run initially caught two real closeout gaps: local CLI
   dispatch tests were missing current-device ownership after the bridge
   trust-boundary tightening, and terminal cwd confinement had a POSIX-only
-  assertion on Windows. After fixing those, the full run passed and re-measured
-  dispatch caps, off-device slot accounting, per-cwd serialization, bridge loop
-  refusal/approval/cancellation, and port smoke coverage for tool registry,
-  cost attribution, tenancy, worktree diff, and MCP agent behavior.
+  assertion on Windows. Code review then found two more explainability/trust
+  gaps: null-device lifecycle/discovery/probe work could still be selected by
+  a bridge poller, and Invocations recovery guidance could show the original
+  invocation approval instead of the active recovery-action approval. After
+  fixing those, the full run passed and re-measured dispatch caps, off-device
+  slot accounting, per-cwd serialization, bridge loop
+  refusal/approval/cancellation, local smoke execution, and port smoke coverage
+  for tool registry, cost attribution, tenancy, worktree diff, and MCP agent
+  behavior.
 - `pnpm github:dora` measured 206 merged PRs over 30 days: median lead time
   0.03h, p90 0.48h, deploy-frequency proxy 48.07/week, CI green on merged PRs
   73.8% (152/206, with 47 merged PRs carrying no checks), and 0 recorded
   change-failure incidents since the 2026-07-04 signal adoption. Evidence:
-  `.myagenttool/metrics/2026-07-04T13-14-44-606Z-dora/`.
+  `.myagenttool/metrics/2026-07-04T13-34-36-320Z-dora/`.
 - `pnpm github:backlog` measured 29 open issues with required labels 29/29,
   milestones 29/29, and 4 stale items older than 14 days (#118, #117, #116,
   #114). Evidence:
-  `.myagenttool/metrics/2026-07-04T13-14-56-518Z-backlog/`.
+  `.myagenttool/metrics/2026-07-04T13-34-46-479Z-backlog/`.
 - `pnpm ai:eval-heldout` measured the hermetic mock held-out set at 66.7%
   (4/6): hb-001, hb-002, hb-003, and hb-005 passed; hb-004 produced no file
   changes and hb-006 remains vacuous because verify already passes at base.
-  Evidence: `.myagenttool/evals/2026-07-04T13-15-07-662Z-heldout/`.
+  Evidence: `.myagenttool/evals/2026-07-04T13-34-53-550Z-heldout/`.
 
 ## How To Adopt
 

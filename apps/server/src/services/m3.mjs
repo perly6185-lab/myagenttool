@@ -403,7 +403,7 @@ export function createM3Service({
       (item) =>
         item.status === "queued" &&
         item.executionEnabled === true &&
-        (item.deviceId == null || item.deviceId === state.device.id),
+        item.deviceId === state.device.id,
     ) ?? null;
   }
 

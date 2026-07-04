@@ -94,6 +94,9 @@ export function createInvocationDispatchRuntime({
   function markDispatched(invocation) {
     invocation.status = "dispatching";
     invocation.delivery.state = "dispatching";
+    if (invocation.delivery.deviceId == null) {
+      invocation.delivery.deviceId = state.device.id;
+    }
     invocation.delivery.dispatchAttempts += 1;
     invocation.delivery.lastDispatchAt = now();
     invocation.delivery.leaseExpiresAt = new Date(Date.now() + dispatchLeaseMs).toISOString();

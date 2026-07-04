@@ -209,6 +209,42 @@ async function assertBridgeWorkOwnership({ token }) {
   assert.equal(localQueuedInvocation.status, "dispatching");
   assert.equal(otherDeviceQueuedInvocation.status, "queued");
 
+  const localQueuedAck = await call("/api/bridge/ack", {
+    method: "POST",
+    body: { invocationId: localQueuedInvocation.id },
+    token,
+  });
+  assert.equal(localQueuedAck.status, 200);
+  const localQueuedComplete = await call("/api/bridge/complete", {
+    method: "POST",
+    body: { invocationId: localQueuedInvocation.id, status: "succeeded", summary: "local queued completion" },
+    token,
+  });
+  assert.equal(localQueuedComplete.status, 200);
+
+  const legacyLocalQueuedInvocation = bridgeInvocationFixture("inv_bridge_legacy_local_queued", {
+    status: "queued",
+    deliveryState: "queued",
+    deviceId: undefined,
+  });
+  state.invocations.unshift(legacyLocalQueuedInvocation);
+  const legacyInvocationPoll = await call("/api/bridge/next", { token });
+  assert.equal(legacyInvocationPoll.status, 200);
+  assert.equal(legacyInvocationPoll.body.invocationId, legacyLocalQueuedInvocation.id);
+  assert.equal(legacyLocalQueuedInvocation.delivery.deviceId, state.device.id, "legacy local claims should be bound to the current bridge");
+  const legacyAck = await call("/api/bridge/ack", {
+    method: "POST",
+    body: { invocationId: legacyLocalQueuedInvocation.id },
+    token,
+  });
+  assert.equal(legacyAck.status, 200);
+  const legacyComplete = await call("/api/bridge/complete", {
+    method: "POST",
+    body: { invocationId: legacyLocalQueuedInvocation.id, status: "succeeded", summary: "legacy local completion" },
+    token,
+  });
+  assert.equal(legacyComplete.status, 200);
+
   const otherDeviceLifecycle = lifecycleActionFixture("lco_bridge_other", {
     status: "running",
     deviceId: "dev_other_bridge",
@@ -237,15 +273,20 @@ async function assertBridgeWorkOwnership({ token }) {
     status: "queued",
     deviceId: "dev_other_bridge",
   });
+  const nullQueuedLifecycle = lifecycleActionFixture("lco_bridge_null_queued", {
+    status: "queued",
+    deviceId: null,
+  });
   const localQueuedLifecycle = lifecycleActionFixture("lco_bridge_local_queued", {
     status: "queued",
     deviceId: state.device.id,
   });
-  state.lifecycleQueuedActions.unshift(otherQueuedLifecycle, localQueuedLifecycle);
+  state.lifecycleQueuedActions.unshift(nullQueuedLifecycle, otherQueuedLifecycle, localQueuedLifecycle);
   const lifecyclePoll = await call("/api/bridge/lifecycle-next", { token });
   assert.equal(lifecyclePoll.status, 200);
   assert.equal(lifecyclePoll.body.lifecycleActionId, localQueuedLifecycle.id);
   assert.equal(localQueuedLifecycle.status, "running");
+  assert.equal(nullQueuedLifecycle.status, "queued");
   assert.equal(otherQueuedLifecycle.status, "queued");
 
   const localLifecycleComplete = await call("/api/bridge/lifecycle-complete", {
@@ -305,15 +346,20 @@ async function assertBridgeWorkOwnership({ token }) {
     status: "queued",
     deviceId: "dev_other_bridge",
   });
+  const nullQueuedDiscovery = discoveryRunFixture("dis_bridge_null_queued", {
+    status: "queued",
+    deviceId: null,
+  });
   const localQueuedDiscovery = discoveryRunFixture("dis_bridge_local_queued", {
     status: "queued",
     deviceId: state.device.id,
   });
-  state.discoveryRuns.unshift(otherQueuedDiscovery, localQueuedDiscovery);
+  state.discoveryRuns.unshift(nullQueuedDiscovery, otherQueuedDiscovery, localQueuedDiscovery);
   const discoveryPoll = await call("/api/bridge/discovery-next", { token });
   assert.equal(discoveryPoll.status, 200);
   assert.equal(discoveryPoll.body.discoveryRunId, localQueuedDiscovery.id);
   assert.equal(localQueuedDiscovery.status, "running");
+  assert.equal(nullQueuedDiscovery.status, "queued");
   assert.equal(otherQueuedDiscovery.status, "queued");
 
   const otherDeviceProbe = probeRunFixture("probe_bridge_other", {
@@ -335,15 +381,20 @@ async function assertBridgeWorkOwnership({ token }) {
     status: "queued",
     deviceId: "dev_other_bridge",
   });
+  const nullQueuedProbe = probeRunFixture("probe_bridge_null_queued", {
+    status: "queued",
+    deviceId: null,
+  });
   const localQueuedProbe = probeRunFixture("probe_bridge_local_queued", {
     status: "queued",
     deviceId: state.device.id,
   });
-  state.integrationProbeRuns.unshift(otherQueuedProbe, localQueuedProbe);
+  state.integrationProbeRuns.unshift(nullQueuedProbe, otherQueuedProbe, localQueuedProbe);
   const probePoll = await call("/api/bridge/probe-next", { token });
   assert.equal(probePoll.status, 200);
   assert.equal(probePoll.body.probeRunId, localQueuedProbe.id);
   assert.equal(localQueuedProbe.status, "running");
+  assert.equal(nullQueuedProbe.status, "queued");
   assert.equal(otherQueuedProbe.status, "queued");
 }
 

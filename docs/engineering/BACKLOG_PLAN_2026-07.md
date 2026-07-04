@@ -50,7 +50,11 @@ See `docs/engineering/NEXT_PHASE_PLAN_2026-07.md` for the operating plan.
   (`pnpm ai:eval-heldout`). The run caught and fixed missing current-device
   dispatch ownership in tests plus a Windows cwd expectation; the remaining
   measured gaps are CI green rate 73.8% vs 95%, four stale backlog items, and
-  mock held-out pass rate 4/6.
+  mock held-out pass rate 4/6. Code review follow-up additionally tested that
+  null-device lifecycle/discovery/probe work is not bridge-dispatchable, legacy
+  local invocation claims are bound to the current bridge device before
+  ack/complete, and Invocations recovery guidance points at the active
+  recovery-action approval before the source invocation approval.
 
 ## P1 - Durable control-plane state
 
@@ -110,8 +114,11 @@ every local execution surface:
 - **Credential ownership closeout (this PR):** bridge-owned work is checked
   across polling, completion callbacks, lifecycle completion, dispatch
   selection, health, discovery, and probe paths. What was tested: off-device
-  bridge work is filtered or refused before execution, and refusal events are
-  emitted as audit evidence rather than silent skips.
+  bridge work is filtered or refused before execution, null-device
+  lifecycle/discovery/probe work is skipped instead of claimed by any bridge,
+  legacy queued local invocations are stamped with the claiming device before
+  ack/complete, and refusal events are emitted as audit evidence rather than
+  silent skips.
 - Remaining (#426): a bridge-side PTY gate mirroring the server-side terminal
   confinement, and general approval-evidence enforcement + an independent local
   consent record. The principle stands: server policy approval does not by
@@ -136,7 +143,9 @@ product-quality focus:
   explanation pattern into Invocations and extracts shared recovery readable/
   tone helpers so Applications and Invocations do not maintain separate
   phrasing. What was tested: pending approval, duplicate-action guard, executed
-  result, and View result navigation are covered by Web unit regression tests.
+  result, and View result navigation are covered by Web unit regression tests;
+  review follow-up also verifies the operator explanation prefers the active
+  recovery-action approval over the original invocation approval.
 - Status: runtime contract closeout landed; ccusage Application wrapper
   semantics are published in the external consumer contract and enforced by the
   tool-registry contract smoke inside `smoke:port`.

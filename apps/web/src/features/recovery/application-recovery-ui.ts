@@ -267,9 +267,9 @@ export function recoveryApprovalRequestId(
   explanation: ApplicationRecoveryExplanation | null,
   request: ApplicationRecoveryActionRequest | null,
 ): string | null {
-  return invocation.approvalRequestId
-    ?? explanation?.approvalRequestId
+  return explanation?.approvalRequestId
     ?? request?.approvalRequestId
+    ?? invocation.approvalRequestId
     ?? null;
 }
 

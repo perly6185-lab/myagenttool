@@ -58,9 +58,13 @@ test("createAgentDryProbeRun: only MCP configs are supported for now", () => {
 
 test("nextBridgeProbeRun still serves CLI runs alongside MCP", () => {
   const { state, rt } = runtime();
-  state.integrationProbeRuns.push({ id: "cli_1", status: "queued", adapter: { type: "cli", command: "codex" } });
+  state.integrationProbeRuns.push(
+    { id: "cli_unowned", status: "queued", deviceId: null, adapter: { type: "cli", command: "codex" } },
+    { id: "cli_1", status: "queued", deviceId: "dev_1", adapter: { type: "cli", command: "codex" } },
+  );
   const found = rt.nextBridgeProbeRun();
   assert.ok(found, "a queued CLI probe is still dispatchable");
+  assert.equal(found.id, "cli_1");
   assert.equal(found.adapter.type, "cli");
 });
 
