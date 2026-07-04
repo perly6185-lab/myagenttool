@@ -10,6 +10,22 @@ export function githubItemKindLabel(type) {
   return type === "pr" ? "PR" : "Issue";
 }
 
+/** Lowercase, hyphenated, <=40-char slug from free text (empty -> "work"). */
+export function slugifyIssueTitle(text) {
+  return (
+    String(text ?? "")
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      .slice(0, 40) || "work"
+  );
+}
+
+/** Canonical branch name for a worktree off an issue: `issue-<n>-<title slug>`. */
+export function branchFromIssue(item) {
+  return `issue-${item?.number}-${slugifyIssueTitle(item?.title)}`;
+}
+
 /**
  * The task prompt an agent receives when it is pointed at a worktree created
  * from a GitHub issue/PR. `item` is the worktree link shape

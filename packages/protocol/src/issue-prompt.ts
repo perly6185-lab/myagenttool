@@ -13,6 +13,12 @@ export interface WorktreeLinkItem {
 /** Human label for a linked item: "Issue" or "PR". */
 export declare function githubItemKindLabel(type: "issue" | "pr"): "Issue" | "PR";
 
+/** Lowercase, hyphenated, <=40-char slug from free text (empty -> "work"). */
+export declare function slugifyIssueTitle(text: string): string;
+
+/** Canonical branch name for a worktree off an issue: `issue-<n>-<title slug>`. */
+export declare function branchFromIssue(item: { number: number; title: string }): string;
+
 /**
  * The task prompt an agent receives when it is pointed at a worktree created
  * from a GitHub issue/PR.

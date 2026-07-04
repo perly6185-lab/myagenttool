@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { githubItemKindLabel, worktreeAutoRunPrompt } from "../src/issue-prompt.mjs";
+import { branchFromIssue, githubItemKindLabel, slugifyIssueTitle, worktreeAutoRunPrompt } from "../src/issue-prompt.mjs";
 
 test("githubItemKindLabel labels PRs and issues", () => {
   assert.equal(githubItemKindLabel("pr"), "PR");
@@ -27,4 +27,15 @@ test("worktreeAutoRunPrompt handles PRs and omits the url line when absent", () 
   // No url → the title line is directly followed by the instruction line.
   assert.ok(!prompt.includes("null"), "a null url is never rendered");
   assert.equal(prompt.split("\n").length, 2, "exactly title line + instruction line");
+});
+
+test("slugifyIssueTitle lowercases, dashes unsafe runs, caps length, never empty", () => {
+  assert.equal(slugifyIssueTitle("Add the Widget!"), "add-the-widget");
+  assert.equal(slugifyIssueTitle("  Foo / Bar  "), "foo-bar");
+  assert.equal(slugifyIssueTitle("!!!"), "work", "no safe chars → work");
+  assert.ok(slugifyIssueTitle("x".repeat(80)).length <= 40, "capped at 40");
+});
+
+test("branchFromIssue builds issue-<n>-<slug>", () => {
+  assert.equal(branchFromIssue({ number: 12, title: "Add the Widget" }), "issue-12-add-the-widget");
 });
