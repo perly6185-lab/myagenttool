@@ -22,6 +22,10 @@ that make restored records useful after a server restart.
 - Restart tests now verify not only that rows reappear, but also that the
   restored rows still drive public read models, budget calculations, Evidence
   Center records, and audit export refs.
+- Policy and approval evidence now restores through the same bar: invocation
+  policy decisions, lifecycle policy decisions, invocation approvals, Codex
+  approval-broker requests, and audit export requests remain readable and
+  export-addressable after restart.
 
 ## Acceptance Matrix
 
@@ -39,6 +43,8 @@ that make restored records useful after a server restart.
 | Codex sessions after restart | `persistence restores terminal and Codex evidence center linkage across runtime restart` restores provider session id, thread id, and managed session evidence ids. | #414 |
 | Codex evidence and change reviews | The terminal/Codex restart test verifies Codex JSONL evidence and change reviews retain managed session linkage and Evidence Center reconstruction. | #414 |
 | Managed terminal evidence | The terminal/Codex restart test verifies terminal session owner Codex linkage, evidence ids, completed bridge action, and Evidence Center terminal output after restore. | #414 |
+| Policy and approval evidence after restart | `persistence restores policy and approval evidence across runtime restart` restores invocation policy decisions, denied approval requests, lifecycle policy decisions, pending Codex approval-broker requests, Evidence Center broker rows, and persisted audit export requests. | Current P1 follow-up |
+| Approval and policy audit refs after restart | The policy/approval restart test verifies a new post-restore audit export includes invocation policy, lifecycle policy, invocation approval, Codex broker approval, and denied-invocation audit refs. | Current P1 follow-up |
 
 ## Verification Commands
 
@@ -73,16 +79,8 @@ and `pr-governance` passing for #410, #412, #413, and #414 before merge.
 
 ## Next Recommended Slice
 
-If P1 continues, the best next slice is a focused restart test for policy and
-approval evidence:
-
-- `lifecyclePolicyDecisions`
-- `policyDecisionRecords`
-- `approvalRequests`
-- `codexApprovalBrokerRequests`
-- `auditExportRequests`
-
-The acceptance bar should match the slices above: create records through service
-methods, restore from disk, then verify read models or audit refs still explain
-who approved, what policy decided, what was exported, and what operator action
-remains.
+If P1 continues, the best next slice is a focused multi-tenant persisted
+snapshot test. The current tenancy tests primarily run with persistence
+disabled; the next useful bar is to write scoped records for two teams, restore
+from disk, then verify public read models, Evidence Center records, budgets, and
+audit export refs still hide foreign-team evidence.
