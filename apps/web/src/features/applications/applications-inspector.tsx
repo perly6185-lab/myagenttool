@@ -46,6 +46,7 @@ import type {
   ApplicationRecoveryTimelineEntry,
   ApplicationOrchestrationRun,
   ApplicationSnapshot,
+  ApplicationResultRef,
   InvocationSnapshot,
 } from "@/lib/console-state";
 
@@ -56,6 +57,13 @@ const APPROVAL_TOKEN = "console-operator-confirmed";
 function riskTone(risk?: string): "neutral" | "warning" | "danger" {
   if (risk === "high" || risk === "critical") return "danger";
   if (risk === "medium") return "warning";
+  return "neutral";
+}
+
+function readinessTone(state?: string): "neutral" | "success" | "warning" | "danger" {
+  if (state === "ready") return "success";
+  if (state === "needs_setup") return "warning";
+  if (state === "disabled") return "danger";
   return "neutral";
 }
 
@@ -159,6 +167,48 @@ function ApplicationActions({ application }: { application: ApplicationSnapshot 
           }}
           onClose={() => setConfirm(null)}
         />
+      </CardContent>
+    </Card>
+  );
+}
+
+function ApplicationResultSummary({
+  result,
+  onViewInvocation,
+}: {
+  result?: ApplicationResultRef | null;
+  onViewInvocation: (invocationId: string) => void;
+}) {
+  if (!result) return null;
+  const importedCount = result.importedRecordCount ?? result.importedRecordIds?.length ?? 0;
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Latest result</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        <div className="flex flex-wrap items-center gap-2">
+          <Badge tone={statusTone(result.status ?? "unknown")}>{readableStatus(result.status ?? "unknown")}</Badge>
+          {result.outputCollection ? <Badge tone="neutral">{result.outputCollection}</Badge> : null}
+          {importedCount > 0 ? <Badge tone="success">{importedCount} imported</Badge> : null}
+        </div>
+        <FactList
+          facts={[
+            { term: "Capability", value: result.capability ?? result.applicationAction ?? "—" },
+            { term: "Invocation", value: result.invocationId ?? "—" },
+            { term: "Completed", value: shortTime(result.completedAt) },
+            {
+              term: "Imported records",
+              value: importedCount > 0 ? (result.importedRecordIds ?? []).join(", ") || String(importedCount) : "None",
+            },
+          ]}
+        />
+        {result.invocationId ? (
+          <Button size="sm" variant="secondary" onClick={() => onViewInvocation(result.invocationId!)}>
+            <ExternalLink />
+            View invocation
+          </Button>
+        ) : null}
       </CardContent>
     </Card>
   );
@@ -980,6 +1030,8 @@ function shortTime(value?: string | null): string {
 export function ApplicationsInspector() {
   const { data: state } = useConsoleState();
   const selectedApplicationId = useUiStore((s) => s.selectedApplicationId);
+  const setSelectedInvocationId = useUiStore((s) => s.setSelectedInvocationId);
+  const setSection = useUiStore((s) => s.setSection);
   const application = (state?.applications ?? []).find((app) => app.id === selectedApplicationId);
 
   const { data: capabilityData } = useQuery({
@@ -1009,6 +1061,11 @@ export function ApplicationsInspector() {
   const orchestrations = application.orchestrations ?? [];
   const invocations = state?.invocations ?? [];
 
+  function viewInvocation(invocationId: string) {
+    setSelectedInvocationId(invocationId);
+    setSection("invocations");
+  }
+
   return (
     <div className="space-y-4">
       <Card>
@@ -1031,6 +1088,7 @@ export function ApplicationsInspector() {
       </Card>
 
       <ApplicationActions application={application} />
+      <ApplicationResultSummary result={application.latestResult} onViewInvocation={viewInvocation} />
 
       <Card>
         <CardHeader>
@@ -1041,16 +1099,24 @@ export function ApplicationsInspector() {
             <p className="text-sm text-muted-foreground">No capabilities projected.</p>
           ) : (
             capabilities.map((capability) => (
-              <div key={capability.name} className="flex items-center justify-between gap-2 text-sm">
+              <div key={capability.name} className="flex items-start justify-between gap-2 text-sm">
                 <span className="[overflow-wrap:anywhere]">
                   {capability.displayName ?? capability.name}
                   {capability.requiresApproval ? <span className="text-warning"> ⚠</span> : null}
                 </span>
-                <div className="flex shrink-0 gap-1.5">
+                <div className="flex shrink-0 flex-wrap justify-end gap-1.5">
                   <Badge tone={riskTone(capability.riskLevel)}>{capability.riskLevel ?? "—"}</Badge>
                   <Badge tone={capability.status === "disabled" ? "danger" : "success"}>
                     {capability.status ?? "—"}
                   </Badge>
+                  {capability.metadata?.readiness?.state ? (
+                    <Badge tone={readinessTone(capability.metadata.readiness.state)}>
+                      {capability.metadata.readiness.state}
+                    </Badge>
+                  ) : null}
+                  {capability.metadata?.resultPath?.outputCollection ? (
+                    <Badge tone="neutral">{capability.metadata.resultPath.outputCollection}</Badge>
+                  ) : null}
                 </div>
               </div>
             ))

@@ -5,7 +5,7 @@ export function buildEvidenceCenterRecords({
   repoPathForEvidence,
 }) {
   const records = [];
-  for (const evidence of state.codexEvidenceRecords) {
+  for (const evidence of state.codexEvidenceRecords ?? []) {
     records.push({
       id: evidence.id,
       type: evidence.fileChangeSummary ? "file_change" : evidence.commandSummary ? "command" : "jsonl_event",
@@ -21,7 +21,7 @@ export function buildEvidenceCenterRecords({
       createdAt: evidence.createdAt
     });
   }
-  for (const hook of state.codexHookEvents) {
+  for (const hook of state.codexHookEvents ?? []) {
     records.push({
       id: hook.id,
       type: "hook_event",
@@ -37,7 +37,7 @@ export function buildEvidenceCenterRecords({
       createdAt: hook.createdAt
     });
   }
-  for (const request of state.codexApprovalBrokerRequests) {
+  for (const request of state.codexApprovalBrokerRequests ?? []) {
     const session = request.codexSessionRegistryId ? state.codexSessions.find((item) => item.id === request.codexSessionRegistryId) : null;
     records.push({
       id: request.id,
@@ -54,7 +54,7 @@ export function buildEvidenceCenterRecords({
       createdAt: request.createdAt
     });
   }
-  for (const review of state.codexChangeReviews) {
+  for (const review of state.codexChangeReviews ?? []) {
     records.push({
       id: review.id,
       type: "change_review",
@@ -70,7 +70,23 @@ export function buildEvidenceCenterRecords({
       createdAt: review.createdAt
     });
   }
-  for (const event of state.events.filter((item) => item.type === "codex_runtime_warning")) {
+  for (const usage of state.importedUsageEstimates ?? []) {
+    records.push({
+      id: usage.id,
+      type: "usage_estimate",
+      source: "imported_ccusage_report",
+      redactionState: "summary_only",
+      invocationId: usage.invocationId,
+      codexSessionRegistryId: null,
+      agentId: usage.agentId ?? findInvocation(usage.invocationId)?.agentId ?? null,
+      repoPath: null,
+      summary: usageEstimateSummary(usage),
+      detail: usageEstimateDetail(usage),
+      marker: "imported",
+      createdAt: usage.createdAt
+    });
+  }
+  for (const event of (state.events ?? []).filter((item) => item.type === "codex_runtime_warning")) {
     records.push({
       id: event.id,
       type: "runtime_warning",
@@ -86,7 +102,7 @@ export function buildEvidenceCenterRecords({
       createdAt: event.createdAt
     });
   }
-  for (const evidence of state.terminalEvidenceRecords) {
+  for (const evidence of state.terminalEvidenceRecords ?? []) {
     records.push({
       id: evidence.id,
       type: evidence.type,
@@ -102,7 +118,7 @@ export function buildEvidenceCenterRecords({
       createdAt: evidence.createdAt
     });
   }
-  for (const imported of state.codexImportedEvidenceRecords) {
+  for (const imported of state.codexImportedEvidenceRecords ?? []) {
     records.push({
       id: imported.id,
       type: "imported_evidence",
@@ -119,4 +135,27 @@ export function buildEvidenceCenterRecords({
     });
   }
   return records.sort((a, b) => Date.parse(b.createdAt ?? 0) - Date.parse(a.createdAt ?? 0));
+}
+
+function usageEstimateSummary(usage) {
+  const report = usage.reportId ? `ccusage ${usage.reportId}` : "ccusage";
+  const model = [usage.provider, usage.model].filter(Boolean).join("/");
+  const cost = Number.isFinite(Number(usage.estimatedCostUsd))
+    ? `$${Number(usage.estimatedCostUsd).toFixed(6)}`
+    : "unknown cost";
+  return `${report}${model ? ` ${model}` : ""}: ${cost}`;
+}
+
+function usageEstimateDetail(usage) {
+  const parts = [
+    usage.periodStart ? `periodStart=${usage.periodStart}` : null,
+    usage.periodEnd ? `periodEnd=${usage.periodEnd}` : null,
+    usage.date ? `date=${usage.date}` : null,
+    usage.month ? `month=${usage.month}` : null,
+    usage.week ? `week=${usage.week}` : null,
+    usage.sessionId ? `session=${usage.sessionId}` : null,
+    Number.isFinite(Number(usage.totalTokens)) ? `tokens=${usage.totalTokens}` : null,
+    Number.isFinite(Number(usage.estimatedCostUsd)) ? `estimatedCostUsd=${usage.estimatedCostUsd}` : null,
+  ].filter(Boolean);
+  return parts.join(" · ") || "Imported ccusage usage estimate.";
 }

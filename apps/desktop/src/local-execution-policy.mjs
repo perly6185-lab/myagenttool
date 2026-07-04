@@ -3,6 +3,14 @@ import { isAbsolute, resolve, sep } from "node:path";
 
 const FILE_POLICIES = new Set(["forbidden", "read_only", "workspace_write", "native_controls"]);
 const NETWORK_POLICIES = new Set(["forbidden", "restricted", "network", "native_controls"]);
+const CCUSAGE_WRAPPER_ARGS = {
+  daily: ["daily", "--json", "--offline"],
+  weekly: ["weekly", "--json", "--offline"],
+  monthly: ["monthly", "--json", "--offline"],
+  session: ["session", "--json", "--offline"],
+  codex_daily: ["codex", "daily", "--json", "--offline"],
+  claude_daily: ["claude", "daily", "--json", "--offline"],
+};
 
 export function createLocalExecutionPolicyManifest({
   demoAgentPath,
@@ -18,6 +26,14 @@ export function createLocalExecutionPolicyManifest({
       "tools/agents/application-wrapper.mjs",
       "tools/agents/codex-review-wrapper.mjs",
       "tools/agents/claude-review-wrapper.mjs",
+    ],
+    applicationWrapperCommands: [
+      {
+        command: "ccusage",
+        capabilityPrefix: "app.app_ccusage.wrapper.",
+        filePolicy: "read_only",
+        networkPolicy: "forbidden",
+      },
     ],
     policies: {
       demoAgent: { file: ["read_only"], network: ["forbidden"] },
@@ -106,6 +122,13 @@ export function localExecutionGate(work, adapter, spawnPlan, { permissionDecisio
   if (!policyAllowed(manifest, commandKind, localPolicy)) {
     return refused("Local execution gate refused a command whose file or network policy exceeds the local allowlist.", evidence);
   }
+  if (isApplicationWrapperSpawn(spawnPlan, manifest)) {
+    const wrapperGate = applicationWrapperGate(work, spawnPlan, localPolicy, approvedRoots, manifest);
+    evidence.applicationWrapper = wrapperGate.evidence;
+    if (!wrapperGate.allowed) {
+      return refused(wrapperGate.reason, evidence);
+    }
+  }
   return { allowed: true, reason: "Local execution gate allowed the governed command.", evidence };
 }
 
@@ -146,6 +169,125 @@ function isAllowlistedNodeWrapper(adapter, spawnPlan, manifest = {}) {
     && String(adapter?.command ?? "") === "node";
 }
 
+function isApplicationWrapperSpawn(spawnPlan, manifest = {}) {
+  const command = String(spawnPlan?.command ?? "");
+  if (command !== "node" && command !== manifest.execPath) return false;
+  const script = String(spawnPlan?.args?.[0] ?? "").replaceAll("\\", "/");
+  return script.endsWith("tools/agents/application-wrapper.mjs");
+}
+
+function applicationWrapperGate(work, spawnPlan, localPolicy, approvedRoots, manifest = {}) {
+  const spec = applicationWrapperSpec(work);
+  const parsed = parseApplicationWrapperArgs(spawnPlan?.args ?? []);
+  const evidence = {
+    capability: parsed.capability ?? spec?.capability ?? null,
+    command: parsed.execCommand ?? spec?.execCommand ?? null,
+    execArgCount: parsed.execArgs?.length ?? 0,
+    cwd: parsed.cwd ?? null,
+    declaredFilePolicy: spec?.filePolicy ?? null,
+    declaredNetworkPolicy: spec?.networkPolicy ?? null,
+    localAllowlist: "applicationWrapperCommands",
+  };
+  if (!spec) {
+    return { allowed: false, reason: "Local execution gate refused an application wrapper without server-resolved metadata.", evidence };
+  }
+  if (!parsed.ok) {
+    return { allowed: false, reason: `Local execution gate refused malformed application wrapper argv: ${parsed.reason}`, evidence };
+  }
+  if (parsed.execCommand !== String(spec.execCommand ?? "").trim()) {
+    return { allowed: false, reason: "Local execution gate refused application wrapper command metadata mismatch.", evidence };
+  }
+  const specArgs = Array.isArray(spec.execArgs) ? spec.execArgs.map(String) : [];
+  if (!stringArrayEquals(parsed.execArgs, specArgs)) {
+    return { allowed: false, reason: "Local execution gate refused application wrapper args metadata mismatch.", evidence };
+  }
+  if (parsed.capability !== String(spec.capability ?? "").trim()) {
+    return { allowed: false, reason: "Local execution gate refused application wrapper capability metadata mismatch.", evidence };
+  }
+  if (spec.filePolicy !== localPolicy.filePolicy || spec.networkPolicy !== localPolicy.networkPolicy) {
+    return { allowed: false, reason: "Local execution gate refused application wrapper policy metadata mismatch.", evidence };
+  }
+  const allow = (manifest.applicationWrapperCommands ?? []).find((entry) =>
+    parsed.execCommand === entry.command && parsed.capability?.startsWith(entry.capabilityPrefix ?? ""),
+  );
+  if (!allow) {
+    return { allowed: false, reason: "Local execution gate refused a non-allowlisted application wrapper command.", evidence };
+  }
+  if (localPolicy.filePolicy !== allow.filePolicy || localPolicy.networkPolicy !== allow.networkPolicy) {
+    return { allowed: false, reason: "Local execution gate refused an application wrapper policy outside the command allowlist.", evidence };
+  }
+  if (parsed.cwd) {
+    if (!isAbsolute(parsed.cwd) || !existsSync(parsed.cwd)) {
+      return { allowed: false, reason: "Local execution gate refused an application wrapper cwd that is missing or non-absolute.", evidence };
+    }
+    if (approvedRoots.length > 0 && !approvedRoots.some((root) => pathWithin(root, parsed.cwd))) {
+      return { allowed: false, reason: "Local execution gate refused an application wrapper cwd outside the approved project or worktree root.", evidence };
+    }
+  }
+  if (!ccusageArgsAllowed(parsed.capability, parsed.execArgs)) {
+    return { allowed: false, reason: "Local execution gate refused application wrapper args outside the local allowlist.", evidence };
+  }
+  return { allowed: true, reason: "Local execution gate allowed the application wrapper command.", evidence };
+}
+
+function applicationWrapperSpec(work) {
+  const metadata = work?.options?.metadata && typeof work.options.metadata === "object" && !Array.isArray(work.options.metadata)
+    ? work.options.metadata
+    : {};
+  return metadata.applicationWrapper && typeof metadata.applicationWrapper === "object" && !Array.isArray(metadata.applicationWrapper)
+    ? metadata.applicationWrapper
+    : null;
+}
+
+function parseApplicationWrapperArgs(args) {
+  const parsed = { ok: true, capability: null, execCommand: null, execArgs: [], cwd: null };
+  for (let index = 1; index < args.length; index += 1) {
+    const arg = String(args[index] ?? "");
+    if (arg === "--capability") {
+      if (parsed.capability !== null) return { ...parsed, ok: false, reason: "duplicate --capability" };
+      parsed.capability = valueAt(args, ++index, arg);
+    } else if (arg === "--exec-command") {
+      if (parsed.execCommand !== null) return { ...parsed, ok: false, reason: "duplicate --exec-command" };
+      parsed.execCommand = valueAt(args, ++index, arg, { allowFlag: true });
+    } else if (arg === "--exec-arg") {
+      parsed.execArgs.push(valueAt(args, ++index, arg, { allowFlag: true }));
+    } else if (arg === "--cwd") {
+      if (parsed.cwd !== null) return { ...parsed, ok: false, reason: "duplicate --cwd" };
+      parsed.cwd = valueAt(args, ++index, arg);
+    } else {
+      return { ...parsed, ok: false, reason: `unsupported argument ${arg}` };
+    }
+  }
+  if (!parsed.execCommand) return { ...parsed, ok: false, reason: "missing --exec-command" };
+  if (!parsed.capability) return { ...parsed, ok: false, reason: "missing --capability" };
+  if (parsed.execCommand.startsWith("-")) return { ...parsed, ok: false, reason: "flag-shaped --exec-command" };
+  return parsed;
+}
+
+function valueAt(args, index, name, { allowFlag = false } = {}) {
+  const value = args[index];
+  if (value === undefined) return "";
+  const text = String(value);
+  if (!allowFlag && text.startsWith("--")) return "";
+  return text;
+}
+
+function ccusageArgsAllowed(capability, args) {
+  const report = String(capability ?? "").match(/^app\.app_ccusage\.wrapper\.([a-z0-9_]+)$/)?.[1] ?? null;
+  const base = report ? CCUSAGE_WRAPPER_ARGS[report] : null;
+  if (!base || !stringArrayStartsWith(args, base)) return false;
+  const rest = args.slice(base.length);
+  for (let index = 0; index < rest.length; index += 2) {
+    const flag = rest[index];
+    const value = rest[index + 1];
+    if (value === undefined) return false;
+    if ((flag === "--since" || flag === "--until") && /^\d{4}-\d{2}-\d{2}$/.test(value)) continue;
+    if (flag === "--timezone" && /^[A-Za-z0-9_+/:.][A-Za-z0-9_+/:.-]{0,63}$/.test(value)) continue;
+    return false;
+  }
+  return true;
+}
+
 function isCodexCliCommand(command) {
   const normalized = String(command ?? "").trim().toLowerCase();
   return ["codex", "codex.cmd", "codex.ps1", "codex.exe"].some((name) => normalized === name || normalized.endsWith(`/${name}`) || normalized.endsWith(`\\${name}`));
@@ -179,6 +321,19 @@ function pathWithin(root, target) {
 
 function samePath(a, b) {
   return Boolean(a && b) && resolve(String(a)) === resolve(String(b));
+}
+
+function stringArrayStartsWith(value, prefix) {
+  return Array.isArray(value)
+    && value.length >= prefix.length
+    && prefix.every((item, index) => String(value[index]) === item);
+}
+
+function stringArrayEquals(a, b) {
+  return Array.isArray(a)
+    && Array.isArray(b)
+    && a.length === b.length
+    && a.every((item, index) => String(item) === String(b[index]));
 }
 
 function refused(reason, evidence) {

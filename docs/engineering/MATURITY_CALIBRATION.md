@@ -191,51 +191,44 @@ evidenced, not asserted):
 
 ## Latest Measurement (2026-07-04)
 
-Closeout on `feat/recovery-explanation-web` plus the Application closed-loop
-planning refresh measured the gates, not just task completion:
+Closeout on `feat/recovery-explanation-web` now includes the Application
+`discover -> access -> execute -> result` implementation slice, not just the
+planning refresh:
 
-- `pnpm docs:check` verified Markdown relative links after the closeout docs and
-  Application `discover -> access -> execute -> result` planning docs changed.
+- `pnpm docs:check` verified Markdown relative links before this measurement
+  record was updated.
 - `pnpm repo:check` verified the repository scaffold still matches the expected
   workspace shape.
 - `pnpm typecheck` verified all typed workspace packages and apps, including
-  the Web `ConsoleSnapshot.agent` surface and the server/desktop bridge
-  contracts touched by the trust-boundary work. The Application planning refresh
-  was docs-only, so this also re-checked that the branch's typed surfaces stayed
-  unchanged.
-- `pnpm test` verified the workspace unit suites plus `smoke:local` and
-  `smoke:port`. The run initially caught two real closeout gaps: local CLI
-  dispatch tests were missing current-device ownership after the bridge
-  trust-boundary tightening, and terminal cwd confinement had a POSIX-only
-  assertion on Windows. Code review then found two more explainability/trust
-  gaps: null-device lifecycle/discovery/probe work could still be selected by
-  a bridge poller, and Invocations recovery guidance could show the original
-  invocation approval instead of the active recovery-action approval. After
-  fixing those, the full run passed and re-measured dispatch caps, off-device
-  slot accounting, per-cwd serialization, bridge loop
-  refusal/approval/cancellation, local smoke execution, and port smoke coverage
-  for tool registry, cost attribution, tenancy, worktree diff, and MCP agent
-  behavior. The rerun after the Application planning refresh again covered the
-  current Application contract tests: capability discovery, scoped Application
-  registration/probe, wrapper descriptor projection, ccusage wrapper invocation
-  semantics, and tool-registry contract smoke compatibility. GitHub
-  `desktop-smoke` then caught a Linux/Node cleanup race after a successful smoke
-  run (`ENOTEMPTY` while deleting the temporary state directory); `local-smoke`
-  now waits for child process exit and retries cleanup before removing the temp
-  directory, and the full local gate re-measured that path.
+  the new Web `ApplicationResultRef`/capability metadata types and the
+  server/desktop bridge contracts touched by the Application runtime work.
+- `pnpm test` verified workspace unit suites plus `smoke:local` and
+  `smoke:port`. What it specifically measured for this slice: Application
+  capability descriptors now publish readiness and result-path metadata; the
+  Desktop Bridge local execution gate allows the ccusage wrapper contract but
+  refuses non-allowlisted inner commands and child cwd escapes before spawn;
+  ccusage wrapper completion links imported rows across invocation result,
+  invocation metadata, application `latestResult`, audit summary, public state,
+  and Evidence Center; and the Web Applications inspector shows readiness,
+  result collection, imported record ids, and a result-invocation navigation
+  path. Full smoke re-measured tool-registry contract compatibility, cost
+  attribution, tenancy scoping, worktree diff, MCP behavior, and the local
+  bridge loop. `smoke:local` still emitted a handled
+  `bridge_invocation_not_active` event-post warning during cancellation timing,
+  but the suite completed successfully.
 - `pnpm github:dora` measured 206 merged PRs over 30 days: median lead time
   0.03h, p90 0.48h, deploy-frequency proxy 48.07/week, CI green on merged PRs
   73.8% (152/206, with 47 merged PRs carrying no checks), and 0 recorded
   change-failure incidents since the 2026-07-04 signal adoption. Evidence:
-  `.myagenttool/metrics/2026-07-04T13-48-33-742Z-dora/`.
+  `.myagenttool/metrics/2026-07-04T14-09-38-069Z-dora/`.
 - `pnpm github:backlog` measured 29 open issues with required labels 29/29,
   milestones 29/29, and 4 stale items older than 14 days (#118, #117, #116,
   #114). Evidence:
-  `.myagenttool/metrics/2026-07-04T13-48-42-928Z-backlog/`.
+  `.myagenttool/metrics/2026-07-04T14-09-30-546Z-backlog/`.
 - `pnpm ai:eval-heldout` measured the hermetic mock held-out set at 66.7%
   (4/6): hb-001, hb-002, hb-003, and hb-005 passed; hb-004 produced no file
   changes and hb-006 remains vacuous because verify already passes at base.
-  Evidence: `.myagenttool/evals/2026-07-04T13-48-50-159Z-heldout/`.
+  Evidence: `.myagenttool/evals/2026-07-04T14-09-27-859Z-heldout/`.
 
 ## How To Adopt
 

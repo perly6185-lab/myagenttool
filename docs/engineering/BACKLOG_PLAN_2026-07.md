@@ -47,21 +47,17 @@ See `docs/engineering/NEXT_PHASE_PLAN_2026-07.md` for the operating plan.
   workspace surfaces (`pnpm typecheck`), full workspace unit + local/port smoke
   behavior (`pnpm test`), DORA delivery health (`pnpm github:dora`), backlog
   hygiene (`pnpm github:backlog`), and held-out AI behavior
-  (`pnpm ai:eval-heldout`). The run caught and fixed missing current-device
-  dispatch ownership in tests plus a Windows cwd expectation; the remaining
-  measured gaps are CI green rate 73.8% vs 95%, four stale backlog items, and
-  mock held-out pass rate 4/6. Code review follow-up additionally tested that
-  null-device lifecycle/discovery/probe work is not bridge-dispatchable, legacy
-  local invocation claims are bound to the current bridge device before
-  ack/complete, and Invocations recovery guidance points at the active
-  recovery-action approval before the source invocation approval. Application
-  planning follow-up re-ran the same gate after documenting the
-  `discover -> access -> execute -> result` loop; the Application-specific
-  evidence covered capability discovery, scoped registration/probe, wrapper
-  descriptor projection, ccusage wrapper invocation semantics, and
-  tool-registry contract compatibility. GitHub `desktop-smoke` also found a
-  Linux/Node cleanup race after successful smoke execution; `local-smoke` now
-  waits for child process exit and retries temporary state-directory cleanup.
+  (`pnpm ai:eval-heldout`). The latest Application slice measured a real
+  `discover -> access -> execute -> result` loop: capability descriptors expose
+  readiness/result-path metadata, Desktop Bridge refuses non-allowlisted
+  application-wrapper inner commands and child-cwd escapes before spawn,
+  completion links imported ccusage rows across invocation/app/audit/public
+  state/Evidence Center, and Web Applications inspector shows the latest result
+  with a View invocation path. The remaining measured gaps are CI green rate
+  73.8% vs 95%, four stale backlog items (#118, #117, #116, #114), and mock
+  held-out pass rate 4/6. `smoke:local` emitted one handled
+  `bridge_invocation_not_active` event-post warning during cancellation timing,
+  but the suite completed successfully.
 
 ## P1 - Durable control-plane state
 
@@ -126,6 +122,13 @@ every local execution surface:
   legacy queued local invocations are stamped with the claiming device before
   ack/complete, and refusal events are emitted as audit evidence rather than
   silent skips.
+- **Application wrapper local gate (this PR):** the Desktop Bridge now checks
+  the wrapper's inner `execCommand`, `execArgs`, child `cwd`, and declared
+  file/network policy before spawning the fixed runner. What was tested:
+  ccusage's approved offline report argv is allowed, a `node -e` inner command
+  is refused as non-allowlisted, and a wrapper child cwd outside the approved
+  project/worktree root is refused with structured `local_execution_refused`
+  evidence.
 - Remaining (#426): a bridge-side PTY gate mirroring the server-side terminal
   confinement, and general approval-evidence enforcement + an independent local
   consent record. The principle stands: server policy approval does not by
@@ -156,9 +159,14 @@ product-quality focus:
 - Status: runtime contract closeout landed; ccusage Application wrapper
   semantics are published in the external consumer contract and enforced by the
   tool-registry contract smoke inside `smoke:port`.
-- Next focus: close the Application product loop as
-  `discover -> access -> execute -> result`, using ccusage as the reference
-  application before generalizing.
+- Status: `feat/recovery-explanation-web` now has the first closed-loop
+  ccusage reference slice. Discover exposes readiness/result-path metadata;
+  access/execute is locally re-gated by the Desktop Bridge allowlist before the
+  wrapper runner starts; result imports are linked to invocation/app/audit and
+  Evidence Center; and Web Applications inspector surfaces the latest result
+  with a navigation path back to the invocation.
+- Next focus: harden this same loop across restart/read-model evidence and
+  only then generalize beyond ccusage.
 - **Discover:** make Application capability descriptors complete enough for
   external and Web callers to choose a capability without adapter knowledge:
   readiness, risk, approval, schema, output collection, and result-import
