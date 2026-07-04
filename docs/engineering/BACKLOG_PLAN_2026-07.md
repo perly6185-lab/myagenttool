@@ -48,6 +48,11 @@ See `docs/engineering/NEXT_PHASE_PLAN_2026-07.md` for the operating plan.
 Persistence is the highest-value foundation still missing from the architecture
 review. The first slice should be intentionally small:
 
+- Status: local durable-state hardening closeout is recorded in
+  [P1_DURABLE_STATE_CLOSEOUT.md](P1_DURABLE_STATE_CLOSEOUT.md). The current
+  accepted scope covers local snapshot restore for lifecycle/rollback/ledger,
+  imported usage/review evidence, and terminal/Codex Evidence Center linkage;
+  production-grade transactional persistence remains future work.
 - Add a durable store boundary with an in-memory adapter kept for tests and
   self-checks.
 - Persist tokens, users, teams, projects, invocations, events, approvals,
