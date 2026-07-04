@@ -345,6 +345,35 @@ export function createProjectService({ state, now, nextId, appendEvent, persistS
     return state.worktrees.find((item) => item.id === worktreeId) ?? null;
   }
 
+  // Commit whatever the agent left in the worktree so the work actually reaches
+  // the PR — publish only ships commits. No-op (committed:false) when the tree is
+  // already clean. hasCommits reports whether the branch has any commit ahead of
+  // its base, so the caller can avoid opening an empty PR.
+  async function commitWorktreeChanges(worktreeId, { message } = {}) {
+    const worktree = worktreeRecord(worktreeId);
+    if (!worktree) throw new Error("Worktree not found.");
+    const cwd = worktree.path ?? worktree.worktreePath;
+    if (!cwd || !existsSync(cwd)) throw new Error("Worktree working directory is missing.");
+
+    const status = await runGitCapture(cwd, ["status", "--porcelain"], { timeout: 10_000 });
+    if (!status.ok) throw new Error(`git status failed: ${status.stderr || `exit ${status.code}`}`);
+    let committed = false;
+    if (status.stdout.trim()) {
+      const add = await runGitCapture(cwd, ["add", "-A"], { timeout: 20_000 });
+      if (!add.ok) throw new Error(`git add failed: ${add.stderr || `exit ${add.code}`}`);
+      const commit = await runGitCapture(cwd, ["commit", "-m", message || "Auto-run changes"], { timeout: 20_000 });
+      if (!commit.ok) throw new Error(`git commit failed: ${commit.stderr || commit.stdout || `exit ${commit.code}`}`);
+      committed = true;
+    }
+
+    // Does the branch have anything to open a PR with? Compare to the base ref
+    // (an explicit base branch, else origin's default, else main).
+    const base = await resolvePrBaseBranch(cwd, worktree);
+    const ahead = await runGitCapture(cwd, ["rev-list", "--count", `${base}..HEAD`], { timeout: 10_000 });
+    const hasCommits = ahead.ok ? Number(ahead.stdout) > 0 : committed;
+    return { committed, hasCommits, base };
+  }
+
   // Push the worktree's branch to origin and record its upstream. Real git push
   // (no --force unless asked), so an unreachable/missing origin surfaces as an
   // error rather than the old silent skipped:true stub.
@@ -440,6 +469,7 @@ export function createProjectService({ state, now, nextId, appendEvent, persistS
     addProject,
     cloneProject,
     createBlankProject,
+    commitWorktreeChanges,
     createWorktree,
     createWorktreePr,
     currentProject,

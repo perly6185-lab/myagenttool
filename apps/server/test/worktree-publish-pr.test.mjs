@@ -158,3 +158,21 @@ test("publishWorktreeBranch surfaces an error instead of silently skipping when 
 
   await assert.rejects(() => svc.publishWorktreeBranch(worktree.id), /origin/i);
 });
+
+test("commitWorktreeChanges commits a dirty worktree, is a no-op on a clean one", async () => {
+  const { worktree } = svc.createWorktree({ projectId: state.currentProjectId, name: "commit-me", branchName: "issue-11-commit-me" });
+
+  // Dirty tree → committed, and the branch is now ahead of its base.
+  writeFileSync(join(worktree.worktreePath, "new.txt"), "content\n");
+  const first = await svc.commitWorktreeChanges(worktree.id, { message: "Auto-run: thing (#11)" });
+  assert.equal(first.committed, true);
+  assert.equal(first.hasCommits, true);
+  const tracked = git(worktree.worktreePath, "ls-tree", "-r", "--name-only", "HEAD").split("\n");
+  assert.ok(tracked.includes("new.txt"), "the change is in the commit");
+  assert.equal(git(worktree.worktreePath, "log", "-1", "--pretty=%s"), "Auto-run: thing (#11)");
+
+  // Clean tree → nothing committed, but the branch still has the earlier commit.
+  const second = await svc.commitWorktreeChanges(worktree.id, { message: "noop" });
+  assert.equal(second.committed, false);
+  assert.equal(second.hasCommits, true);
+});

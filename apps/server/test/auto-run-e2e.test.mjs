@@ -106,7 +106,9 @@ beforeEach(() => {
     // Fake bridge: the agent run is represented by an invocation record.
     createInvocation: (task, ag, opts) => ({ id: "inv_e2e", status: "queued", input: { task }, worktreeId: opts?.metadata?.worktreeId ?? null }),
     startInvocationIfAllowed: () => {},
+    // REAL commit (the fix: the agent's uncommitted edits are committed here) +
     // REAL publish/PR (real git push to the bare origin + fake gh pr create).
+    commitWorktreeChanges: projectSvc.commitWorktreeChanges,
     publishWorktreeBranch: projectSvc.publishWorktreeBranch,
     createWorktreePr: projectSvc.createWorktreePr,
     // REAL verification runner with a trivially-passing command.
@@ -126,12 +128,11 @@ test("full chain: issue -> worktree -> agent edit -> verify -> push -> PR -> sta
     actor: { userId: "usr_x" },
   });
 
-  // The agent edits the worktree and commits (what the bridge would drive).
+  // The agent edits the worktree but LEAVES IT UNCOMMITTED (the common case).
+  // The fix's commit step must pick these up so they reach the PR.
   writeFileSync(join(worktree.worktreePath, "widget.txt"), "built\n");
-  git(worktree.worktreePath, "add", ".");
-  git(worktree.worktreePath, "commit", "-m", "add widget");
 
-  // The bridge reports the run succeeded → reaction runs verify+publish+PR.
+  // The bridge reports the run succeeded → reaction commits, verifies, publishes, PRs.
   await autoRunSvc.advanceAutoRunForInvocation({ ...invocation, status: "succeeded" });
   // Let the fire-and-forget status writebacks settle.
   await new Promise((resolve) => setTimeout(resolve, 20));
@@ -144,6 +145,9 @@ test("full chain: issue -> worktree -> agent edit -> verify -> push -> PR -> sta
 
   // The issue branch really landed on the bare origin.
   assert.ok(originBranches(repoDir).includes("issue-50-e2e-widget"), "branch pushed to origin");
+  // The agent's (uncommitted) edit was committed by the fix and is in the branch.
+  const tracked = git(worktree.worktreePath, "ls-tree", "-r", "--name-only", "HEAD").split("\n");
+  assert.ok(tracked.includes("widget.txt"), "the agent's edit was committed into the branch");
 
   // gh pr create was invoked for the issue branch.
   const captured = readFileSync(ghCapturePath, "utf8").trim().split("\n").map((l) => JSON.parse(l));

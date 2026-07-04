@@ -41,10 +41,13 @@ function makeAutoRun({
   agent = fakeAgent(),
   invocationStatus = "queued",
   publishThrows = false,
+  createInvocationThrows = false,
+  // Commit result (or a throwing function). Default: something was committed.
+  commit = { committed: true, hasCommits: true },
   // Verification result (or a throwing function). Default: unverified pass-through.
   verify = { passed: true, verified: false, summary: "No verification command configured." },
 } = {}) {
-  const calls = { createInvocation: [], startInvocationIfAllowed: [], publish: [], pr: [], verify: [], status: [] };
+  const calls = { createInvocation: [], startInvocationIfAllowed: [], commit: [], publish: [], pr: [], verify: [], status: [] };
   let counter = 0;
   const svc = createAutoRunService({
     state,
@@ -57,6 +60,7 @@ function makeAutoRun({
     defaultAgent: () => agent,
     createInvocation: (task, ag, options) => {
       calls.createInvocation.push({ task, agent: ag, options });
+      if (createInvocationThrows) throw new Error("dispatch exploded");
       return {
         id: "inv_fake_1",
         status: invocationStatus,
@@ -66,6 +70,10 @@ function makeAutoRun({
     },
     startInvocationIfAllowed: (inv, ag) => {
       calls.startInvocationIfAllowed.push({ inv, ag });
+    },
+    commitWorktreeChanges: async (worktreeId, opts) => {
+      calls.commit.push({ worktreeId, opts });
+      return typeof commit === "function" ? commit() : commit;
     },
     publishWorktreeBranch: async (worktreeId) => {
       calls.publish.push(worktreeId);
@@ -235,6 +243,68 @@ test("advanceAutoRunForInvocation is idempotent once the PR is open", async () =
 
   assert.equal(autoRun.status, "pr_open");
   assert.equal(calls.pr.length, 1, "a second completion never re-opens the PR");
+});
+
+test("reaction commits the agent's changes before publishing (F1)", async () => {
+  const { svc, calls } = makeAutoRun();
+  const { invocation, autoRun } = svc.startAutoRun({
+    projectId: sourceProjectId,
+    link: { type: "issue", number: 60, title: "Commit me", url: null, state: "open" },
+    agentId: "agt_1",
+    name: "issue-60-commit-me",
+  });
+  await svc.advanceAutoRunForInvocation({ ...invocation, status: "succeeded" });
+  assert.equal(calls.commit.length, 1, "changes were committed");
+  assert.equal(calls.commit[0].worktreeId, autoRun.worktreeId);
+  assert.match(calls.commit[0].opts.message, /#60/, "commit message references the issue");
+  assert.equal(calls.publish.length, 1, "then published");
+  assert.equal(autoRun.status, "pr_open");
+});
+
+test("reaction blocks (no PR) when the agent produced no changes (F1)", async () => {
+  const { svc, calls } = makeAutoRun({ commit: { committed: false, hasCommits: false } });
+  const { invocation, autoRun } = svc.startAutoRun({
+    projectId: sourceProjectId,
+    link: { type: "issue", number: 61, title: "Did nothing", url: null, state: "open" },
+    agentId: "agt_1",
+    name: "issue-61-nothing",
+  });
+  await svc.advanceAutoRunForInvocation({ ...invocation, status: "succeeded" });
+  assert.equal(autoRun.status, "blocked");
+  assert.match(autoRun.error, /no changes/i);
+  assert.equal(calls.publish.length, 0, "an empty run never publishes");
+  assert.equal(calls.pr.length, 0);
+});
+
+test("reaction fails when the commit itself errors (F1)", async () => {
+  const { svc, calls } = makeAutoRun({ commit: () => { throw new Error("no git identity"); } });
+  const { invocation, autoRun } = svc.startAutoRun({
+    projectId: sourceProjectId,
+    link: { type: "issue", number: 62, title: "Bad commit", url: null, state: "open" },
+    agentId: "agt_1",
+    name: "issue-62-bad",
+  });
+  await svc.advanceAutoRunForInvocation({ ...invocation, status: "succeeded" });
+  assert.equal(autoRun.status, "failed");
+  assert.match(autoRun.error, /Commit failed/);
+  assert.equal(calls.publish.length, 0);
+});
+
+test("startAutoRun records the auto-run even if the invocation fails to start (F2)", () => {
+  const { svc } = makeAutoRun({ createInvocationThrows: true });
+  assert.throws(
+    () => svc.startAutoRun({
+      projectId: sourceProjectId,
+      link: { type: "issue", number: 63, title: "Dispatch dies", url: null, state: "open" },
+      agentId: "agt_1",
+      name: "issue-63-dispatch",
+    }),
+    /dispatch exploded/,
+  );
+  // The dedup record exists (status failed), so auto-trigger won't re-pick #63.
+  assert.equal(state.autoRuns.length, 1);
+  assert.equal(state.autoRuns[0].link.number, 63);
+  assert.equal(state.autoRuns[0].status, "failed");
 });
 
 test("verification gate: a passing check opens the PR with verification evidence", async () => {
