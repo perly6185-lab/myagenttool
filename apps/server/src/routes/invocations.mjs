@@ -76,7 +76,10 @@ export async function handleInvocationRoutes({
       sendJson(res, 409, { error: "device_unlinked" });
       return true;
     }
-    const invocation = createInvocation(task, agent, { ...invocationOptionsFromBody(body), actor });
+    // Idempotency key: accept the standard `Idempotency-Key` header or a body
+    // field so a retried create returns the same run instead of a duplicate.
+    const idempotencyKey = String(req.headers["idempotency-key"] ?? body.idempotencyKey ?? "").trim() || undefined;
+    const invocation = createInvocation(task, agent, { ...invocationOptionsFromBody(body), idempotencyKey, actor });
     startInvocationIfAllowed(invocation, agent);
     sendJson(res, 201, { invocation });
     return true;

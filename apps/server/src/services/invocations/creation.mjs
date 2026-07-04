@@ -28,6 +28,26 @@ export function createInvocationCreationRuntime({
     if (!agent) {
       throw new Error("No agent is registered.");
     }
+    // Prefer an explicit requestedBy (the scheduler passes the automation's
+    // creator), then the acting user, then the local fallback.
+    const requestedBy = options.requestedBy ?? options.actor?.userId ?? "usr_local";
+    // Idempotency (WS2 durable-state hardening): a client-provided key dedups a
+    // retried create (e.g. a network-retried POST) so one logical request never
+    // spawns two runs. Scoped per requester so keys can't collide across
+    // tenants. Safe without a lock: createInvocation is fully synchronous, so
+    // this check-then-insert cannot interleave with a concurrent create in the
+    // single-threaded event loop; the key is persisted, so it also holds across
+    // restart.
+    const clientIdempotencyKey =
+      typeof options.idempotencyKey === "string" && options.idempotencyKey.trim()
+        ? options.idempotencyKey.trim()
+        : null;
+    if (clientIdempotencyKey) {
+      const existing = state.invocations.find(
+        (item) => item.idempotencyKey === clientIdempotencyKey && item.requestedBy === requestedBy,
+      );
+      if (existing) return existing;
+    }
     const id = nextId("inv_demo");
     const createdAt = now();
     const trace = createTrace(id, agent);
@@ -80,14 +100,13 @@ export function createInvocationCreationRuntime({
     const gateRejected = quotaGate?.allowed === false || budgetGate.blocked;
     const invocation = {
       id,
+      idempotencyKey: clientIdempotencyKey,
       ideaSessionId: null,
       compareRunId: null,
       agentId: agent.id,
       projectId: visibleProject?.id ?? project?.id ?? null,
       worktreeId: projectWorktree?.id ?? null,
-      // Prefer an explicit requestedBy (the scheduler passes the automation's
-      // creator), then the acting user, then the local fallback.
-      requestedBy: options.requestedBy ?? options.actor?.userId ?? "usr_local",
+      requestedBy,
       status: gateRejected ? "rejected" : policy.decision === "requires_local_approval" ? "waiting_for_local_approval" : directRun ? "running" : "queued",
       delivery: {
         deliveryId: nextId("del_demo"),
