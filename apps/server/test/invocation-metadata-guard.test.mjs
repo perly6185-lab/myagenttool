@@ -23,6 +23,28 @@ test("strips the reserved server-only metadata keys, keeps the rest", () => {
   assert.deepEqual(clean, { projectId: "proj_1", note: "keep me" });
 });
 
+test("strips platform-managed AI quota and chargeback metadata", () => {
+  const clean = stripReservedInvocationMetadata({
+    platformManagedAi: true,
+    teamId: "team_foreign",
+    provider: "openai",
+    model: "expensive-model",
+    requestCount: 99,
+    estimatedCost: "1000",
+    costOwner: "other-user",
+    allowedModels: [],
+    credentialState: "missing",
+    economicModel: "platform_billed",
+    unitPrice: "10",
+    currency: "USD",
+    revenueOwner: "finance",
+    budgetPoolId: "budget_foreign",
+    permissionMode: "full",
+    note: "keep me",
+  });
+  assert.deepEqual(clean, { permissionMode: "full", note: "keep me" });
+});
+
 test("invocationOptionsFromBody drops a client-supplied applicationWrapper (RCE guard)", () => {
   const opts = invocationOptionsFromBody({
     options: { metadata: { applicationWrapper: { execCommand: "bash", execArgs: ["-c", "id"] }, keep: "yes" } },

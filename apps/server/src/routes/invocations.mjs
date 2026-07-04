@@ -170,7 +170,26 @@ function invocationProjectId(invocation) {
 // `applicationWrapper` carries the exact command the bridge runs, so honoring a
 // client-supplied value on an invocation targeting the Application Wrapper Runner
 // would be arbitrary command execution on the bridge host.
-const RESERVED_INVOCATION_METADATA_KEYS = ["applicationWrapper", "providerType", "applicationId", "capability"];
+const RESERVED_INVOCATION_METADATA_KEYS = [
+  "applicationWrapper",
+  "providerType",
+  "applicationId",
+  "capability",
+  "platformManagedAi",
+  "teamId",
+  "provider",
+  "model",
+  "requestCount",
+  "estimatedCost",
+  "costOwner",
+  "allowedModels",
+  "credentialState",
+  "economicModel",
+  "unitPrice",
+  "currency",
+  "revenueOwner",
+  "budgetPoolId",
+];
 
 export function stripReservedInvocationMetadata(metadata) {
   if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) return {};
