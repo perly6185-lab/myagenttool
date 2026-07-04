@@ -47,7 +47,7 @@ function makeAutoRun({
   // Verification result (or a throwing function). Default: unverified pass-through.
   verify = { passed: true, verified: false, summary: "No verification command configured." },
 } = {}) {
-  const calls = { createInvocation: [], startInvocationIfAllowed: [], commit: [], publish: [], pr: [], verify: [], status: [] };
+  const calls = { createInvocation: [], startInvocationIfAllowed: [], commit: [], publish: [], pr: [], verify: [], status: [], report: [] };
   let counter = 0;
   const svc = createAutoRunService({
     state,
@@ -90,6 +90,9 @@ function makeAutoRun({
     },
     writeIssueStatus: async (ctx) => {
       calls.status.push(ctx);
+    },
+    postIssueReport: async (ctx) => {
+      calls.report.push(ctx);
     },
   });
   return { svc, calls };
@@ -274,6 +277,66 @@ test("reaction blocks (no PR) when the agent produced no changes (F1)", async ()
   assert.match(autoRun.error, /no changes/i);
   assert.equal(calls.publish.length, 0, "an empty run never publishes");
   assert.equal(calls.pr.length, 0);
+});
+
+test("startAutoRun classifies the issue intent from the title", () => {
+  const { svc } = makeAutoRun();
+  const { autoRun } = svc.startAutoRun({
+    projectId: sourceProjectId,
+    link: { type: "issue", number: 70, title: "Investigate why dispatch stalls", url: null, state: "open" },
+    agentId: "agt_1",
+    name: "issue-70-investigate",
+  });
+  assert.equal(autoRun.intent, "investigation");
+});
+
+test("no-diff investigation posts a report and succeeds (not blocked)", async () => {
+  const { svc, calls } = makeAutoRun({ commit: { committed: false, hasCommits: false } });
+  const { autoRun, invocation } = svc.startAutoRun({
+    projectId: sourceProjectId,
+    link: { type: "issue", number: 71, title: "Research queue backends", url: null, state: "open" },
+    agentId: "agt_1",
+    name: "issue-71-research",
+  });
+  assert.equal(autoRun.intent, "investigation");
+
+  await svc.advanceAutoRunForInvocation({ ...invocation, status: "succeeded", result: { summary: "Findings: Redis fits; Postgres is simpler." } });
+
+  assert.equal(autoRun.status, "report_posted", "investigation with findings is a success, not a dead-end");
+  assert.match(autoRun.report, /Findings: Redis fits/);
+  assert.equal(calls.report.length, 1, "the findings were posted back to the issue");
+  assert.equal(calls.report[0].issueNumber, 71);
+  assert.equal(calls.publish.length, 0, "no PR for an investigation with no diff");
+});
+
+test("no-diff question routes to needs_input (hands uncertainty back to a human)", async () => {
+  const { svc, calls } = makeAutoRun({ commit: { committed: false, hasCommits: false } });
+  const { autoRun, invocation } = svc.startAutoRun({
+    projectId: sourceProjectId,
+    link: { type: "issue", number: 72, title: "Should we drop the loop engine?", url: null, state: "open" },
+    agentId: "agt_1",
+    name: "issue-72-question",
+  });
+  assert.equal(autoRun.intent, "question");
+
+  await svc.advanceAutoRunForInvocation({ ...invocation, status: "succeeded", result: "Two viable paths; needs a product call." });
+
+  assert.equal(autoRun.status, "needs_input");
+  assert.match(autoRun.report, /Two viable paths/);
+  assert.equal(calls.pr.length, 0);
+});
+
+test("no-diff change is still blocked (a change that produced nothing)", async () => {
+  const { svc } = makeAutoRun({ commit: { committed: false, hasCommits: false } });
+  const { autoRun, invocation } = svc.startAutoRun({
+    projectId: sourceProjectId,
+    link: { type: "issue", number: 73, title: "Add a cache to the ledger", url: null, state: "open" },
+    agentId: "agt_1",
+    name: "issue-73-change",
+  });
+  assert.equal(autoRun.intent, "change");
+  await svc.advanceAutoRunForInvocation({ ...invocation, status: "succeeded" });
+  assert.equal(autoRun.status, "blocked");
 });
 
 test("reaction fails when the commit itself errors (F1)", async () => {

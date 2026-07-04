@@ -8,6 +8,7 @@ import { test } from "node:test";
 
 import {
   resolveStatusWritebackConfig,
+  runIssueComment,
   runIssueStatusTransition,
   statusTransitionLabels,
 } from "../src/services/issue-status.mjs";
@@ -54,6 +55,18 @@ test("runIssueStatusTransition never throws — a gh failure is a structured res
   const result = await runIssueStatusTransition({ cwd: "/repo", issueNumber: 1, to: "review", gh });
   assert.equal(result.ok, false);
   assert.match(result.error, /not authenticated/);
+});
+
+test("runIssueComment posts a comment via gh and never throws", async () => {
+  const calls = [];
+  const gh = async (args, cwd) => calls.push({ args, cwd });
+  const ok = await runIssueComment({ cwd: "/repo", issueNumber: 9, body: "Findings: use Redis.", gh });
+  assert.equal(ok.ok, true);
+  assert.deepEqual(calls[0].args, ["issue", "comment", "9", "--body", "Findings: use Redis."]);
+
+  const bad = await runIssueComment({ cwd: "/repo", issueNumber: 9, body: "x", gh: async () => { throw new Error("boom"); } });
+  assert.equal(bad.ok, false);
+  assert.match(bad.error, /boom/);
 });
 
 test("runIssueStatusTransition skips an unknown status without calling gh", async () => {

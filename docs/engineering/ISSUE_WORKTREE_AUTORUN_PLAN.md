@@ -152,6 +152,31 @@ Task board [Auto] on an issue
   ProjectV2 board single-select field needs a project-scope token and is left to
   `github:sync-project`; the server does not mutate the board.
 
+## Reliability for non-change intents (exploratory / uncertain issues)
+
+Not every issue is a "make this change" task, and the change-shaped flow
+(diff → verify → PR) mis-handles the others: an investigation that correctly
+produces findings-but-no-diff was wrongly `blocked`. The reaction now routes a
+no-diff outcome by the issue's **intent**:
+
+- **change** → no diff is still `blocked` (the change wasn't made).
+- **investigation** → the agent's summary is the deliverable → `report_posted`
+  (and the summary is posted back to the issue when GitHub writes are enabled).
+- **question** → `needs_input`, handing the uncertainty back to a human instead
+  of opening a speculative PR.
+
+Intent is classified at start (`services/auto-run-intent.mjs`) with a
+conservative title heuristic; an LLM classifier can be injected to override it.
+The metrics separate these non-diff outcomes from the change-shaped success rate,
+and the console renders them distinctly.
+
+**Still open (next slice):** feed the issue body + acceptance criteria into the
+prompt (the agent currently sees only title + url), and add an LLM-judge that
+checks the diff against the acceptance criteria — so verification proves "solved
+the right problem," not just "the build still passes." Track per-issue PR
+outcomes (merged as-is / reworked / rejected) as a held-out eval to quantify
+which issue types are safe to run unattended.
+
 ## Cross-cutting dependencies
 
 - **Durable state.** Worktree and auto-run records are in-memory snapshots

@@ -42,6 +42,17 @@ export async function runIssueStatusTransition({ cwd, issueNumber, to, gh = defa
   }
 }
 
+// Post a comment on the issue — used to deliver an investigation auto-run's
+// findings back to the issue. Never throws; returns a structured result.
+export async function runIssueComment({ cwd, issueNumber, body, gh = defaultGh }) {
+  try {
+    await gh(["issue", "comment", String(issueNumber), "--body", body], cwd);
+    return { ok: true, issueNumber };
+  } catch (error) {
+    return { ok: false, issueNumber, error: String(error?.stderr ?? error?.message ?? error).trim() };
+  }
+}
+
 async function defaultGh(args, cwd) {
   return execFileAsync("gh", args, { cwd, encoding: "utf8", timeout: 15_000, env: { ...process.env, GH_PROMPT_DISABLED: "1" } });
 }

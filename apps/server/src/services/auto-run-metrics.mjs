@@ -66,6 +66,10 @@ export function summarizeAutoRuns(autoRuns = []) {
   const prOpen = byStatus.pr_open ?? 0;
   const blocked = byStatus.blocked ?? 0;
   const failed = byStatus.failed ?? 0;
+  const reportPosted = byStatus.report_posted ?? 0;
+  const needsInput = byStatus.needs_input ?? 0;
+  // Change-shaped completions: a PR either opened or it didn't. Non-diff outcomes
+  // (investigation/question) are tracked separately so they don't skew the rate.
   const terminal = prOpen + blocked + failed;
   timeToPrSeconds.sort((a, b) => a - b);
 
@@ -73,7 +77,7 @@ export function summarizeAutoRuns(autoRuns = []) {
     total: autoRuns.length,
     active,
     byStatus,
-    outcomes: { prOpen, blocked, failed },
+    outcomes: { prOpen, blocked, failed, reportPosted, needsInput },
     // Fraction 0..1 of completed runs that opened a PR; null when there is no
     // completed run yet (avoids a fake 0% before any data exists).
     successRate: terminal > 0 ? prOpen / terminal : null,
