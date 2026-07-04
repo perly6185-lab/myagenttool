@@ -44,7 +44,7 @@ export async function handleProjectRoutes({
     let project;
     try {
       if (body.repoUrl) {
-        project = cloneProject({
+        project = await cloneProject({
           ...body,
           gitUrl: body.repoUrl,
           parentPath: body.parentDir,
@@ -70,7 +70,7 @@ export async function handleProjectRoutes({
     if (!body.ownerTeamId && actor?.teamId) body.ownerTeamId = actor.teamId;
     let project;
     try {
-      project = cloneProject(body);
+      project = await cloneProject(body);
     } catch (error) {
       sendJson(res, 400, {
         error: "invalid_project_clone",
