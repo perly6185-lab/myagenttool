@@ -53,6 +53,11 @@ review. The first slice should be intentionally small:
   accepted scope covers local snapshot restore for lifecycle/rollback/ledger,
   imported usage/review evidence, and terminal/Codex Evidence Center linkage;
   production-grade transactional persistence remains future work.
+- **WS2 landed:** invocation create is **idempotent** on a persisted,
+  tenant-scoped client key (#418); snapshot writes are **atomic + fsync'd**
+  (temp → fsync → rename → dir fsync) with a **synchronous durable barrier** at
+  the accepted-invocation commit and a crash-guard so a write failure is logged,
+  not fatal (#422). A per-record append-only WAL remains the scale option.
 - Add a durable store boundary with an in-memory adapter kept for tests and
   self-checks.
 - Persist tokens, users, teams, projects, invocations, events, approvals,
@@ -61,23 +66,38 @@ review. The first slice should be intentionally small:
 - Stop treating audit and ledger rows as capped demo arrays for any path that
   claims governance, billing, or export semantics.
 - Use store transactions to close dispatch claim, budget admission, and
-  idempotency races where practical.
+  idempotency races where practical. **Finding (WS2):** in the single-threaded
+  event loop, `createInvocation` and the `/api/bridge/next` claim are fully
+  synchronous, so dispatch-claim and budget-admission do not actually race —
+  only idempotency was a real gap (now closed, #418). The dispatch-claim
+  atomicity invariant is test-locked.
 
 ## P2 - Bridge trust boundary
 
-The Desktop Bridge should enforce local trust at the point of execution:
+The Desktop Bridge enforces local trust at the point of execution. The first cut
+(#392) added the bridge bearer credential (required on every `/api/bridge/*`
+route) + the CLI local-execution gate. WS3 then deepened the boundary across
+every local execution surface:
 
-- Status: first slice started on `feat/bridge-trust-boundary`; bridge bearer
-  credentialing and an auditable local execution policy manifest are now
-  implemented for the demo bridge path.
-- Context: the MCP bridge live client has landed; A2A/container contract slices
-  stay later backlog until the trust boundary and durable evidence are closed.
-- Issue or register a device-bound bridge credential.
-- Require bridge credentials on bridge polling, completion, lifecycle, and
-  dispatch endpoints.
-- Add a local allowlist/approval check before the bridge starts a process.
-- Preserve the principle that server policy approval does not by itself mean
-  local execution consent.
+- **MCP stdio env scoping (#427):** a spawned MCP server no longer inherits the
+  bridge's full `process.env` (secret-leak fix) — only a non-secret allowlist +
+  operator-configured env.
+- **CLI cwd confinement (#431):** the gate refuses a spawn cwd outside the
+  invocation's approved project/worktree root.
+- **Lifecycle refusal auditing (#431):** a non-allowlisted lifecycle spawn
+  records structured `local_execution_refused` evidence, not just prose.
+- **Terminal cwd confinement (#433):** a client-supplied local terminal cwd must
+  be inside a registered project/worktree root (the default bridge cwd stays
+  trusted).
+- **Container descriptor guard (#437):** the bridge independently enforces
+  runtime/network/image/resource invariants before spawn (principle #5 — it does
+  not trust the server-normalized descriptor).
+- **Bridge credential idle-expiry (#439):** a leaked bearer stops working after
+  the idle TTL; an active bridge never idles out.
+- Remaining (#426): a bridge-side PTY gate mirroring the server-side terminal
+  confinement, and general approval-evidence enforcement + an independent local
+  consent record. The principle stands: server policy approval does not by
+  itself mean local execution consent.
 
 ## P3 - Application capability runtime
 

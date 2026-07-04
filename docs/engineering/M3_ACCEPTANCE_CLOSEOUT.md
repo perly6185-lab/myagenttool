@@ -227,3 +227,12 @@ change-failure/recovery are instrumented
 ([MATURITY_CALIBRATION.md](MATURITY_CALIBRATION.md)); and `pnpm test` now runs
 the tool-registry contract smoke through `smoke:port`. The deferred items above
 are the durability-phase backlog, not M3 gaps.
+
+Post-M3 hardening (see [BACKLOG_PLAN_2026-07.md](BACKLOG_PLAN_2026-07.md)):
+durable-state WS2 landed idempotent invocation create + atomic/fsync snapshot
+writes with a durable barrier (#418, #422), and bridge-trust WS3 deepened the
+local-execution boundary across all five surfaces — MCP env scoping, CLI/terminal
+cwd confinement, lifecycle refusal auditing, the container descriptor guard, and
+bridge-credential idle-expiry (#427, #431, #433, #437, #439). These strengthen
+the durability and local-execution residual risks noted above rather than change
+M3's accepted scope.
