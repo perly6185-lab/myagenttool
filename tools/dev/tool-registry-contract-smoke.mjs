@@ -23,6 +23,9 @@ assert.deepEqual(fixture.stableEndpoints, [
   "GET /api/tools",
   "GET /api/tools/{toolName}",
   "POST /api/tools/{toolName}/invocations",
+  "GET /api/capabilities",
+  "GET /api/capabilities/{capabilityName}",
+  "POST /api/capabilities/{capabilityName}/invocations",
   "GET /api/review-findings",
   "GET /api/state",
 ]);
@@ -73,24 +76,26 @@ const appSvc = createApplicationService({
 });
 appSvc.registerApplication(createCcusageApplicationRegistration());
 
+const createInvocation = (task, agent, options) => {
+  const invocation = {
+    id: `inv_${state.invocations.length + 1}`,
+    agentId: agent.id,
+    projectId: options.metadata?.projectId ?? null,
+    worktreeId: options.metadata?.worktreeId ?? null,
+    requestedBy: options.requestedBy ?? null,
+    status: "queued",
+    input: { task },
+    options: { metadata: options.metadata ?? {} },
+  };
+  state.invocations.unshift(invocation);
+  return invocation;
+};
+
 const service = createToolService({
   state,
   now: () => "2026-07-02T00:00:00Z",
   appendEvent: (event) => state.events.push(event),
-  createInvocation: (task, agent, options) => {
-    const invocation = {
-      id: `inv_${state.invocations.length + 1}`,
-      agentId: agent.id,
-      projectId: options.metadata?.projectId ?? null,
-      worktreeId: options.metadata?.worktreeId ?? null,
-      requestedBy: options.requestedBy ?? null,
-      status: "queued",
-      input: { task },
-      options: { metadata: options.metadata ?? {} },
-    };
-    state.invocations.unshift(invocation);
-    return invocation;
-  },
+  createInvocation,
   startInvocationIfAllowed: () => {},
   findApplication: appSvc.findApplication,
   findAgent: (id) => state.agents.find((agent) => agent.id === id) ?? null,
@@ -122,14 +127,60 @@ const capabilities = createCapabilityService({
   listTools: service.listTools,
   getTool: service.getTool,
   createToolInvocation: service.createToolInvocation,
-  listApplications: () => [],
-  listApplicationCapabilities: () => [],
+  createInvocation,
+  completeInvocation: () => {},
+  findAgent: (id) => state.agents.find((agent) => agent.id === id) ?? null,
+  listApplications: appSvc.listApplications,
+  listApplicationCapabilities: appSvc.listApplicationCapabilities,
+  invokeApplicationCapability: appSvc.invokeApplicationCapability,
+  planApplicationWrapperInvocation: appSvc.planApplicationWrapperInvocation,
 }).listCapabilities({ userId: "usr_local", teamId: "team_local" });
 const ccusageCapability = capabilities.find((capability) => capability.name === "ccusage.report");
 assert.equal(ccusageCapability?.provider?.type, "tool");
 assert.equal(ccusageCapability?.invocationMode, "tool-facade");
+const ccusageAppSpec = fixture.applicationCapabilities.ccusageWrapper;
+const ccusageAppCapability = capabilities.find((capability) => capability.name === ccusageAppSpec.exampleCapabilityName);
+assert.equal(ccusageAppCapability?.provider?.type, ccusageAppSpec.providerType);
+assert.equal(ccusageAppCapability?.kind, ccusageAppSpec.kind);
+assert.equal(ccusageAppCapability?.metadata?.compatibilityFacade?.name, ccusageAppSpec.compatibilityFacade.name);
+assert.equal(ccusageAppCapability?.metadata?.outputCollection, ccusageAppSpec.outputCollection);
+assert.equal(ccusageAppCapability?.metadata?.billing?.externalBilled, ccusageAppSpec.billing.externalBilled);
+assert.equal(ccusageAppCapability?.metadata?.billing?.amountSource, ccusageAppSpec.billing.amountSource);
+assert.equal(ccusageAppCapability?.metadata?.resultImport?.source, ccusageAppSpec.resultImport.source);
+assert.equal(ccusageAppCapability?.metadata?.resultImport?.amountSource, ccusageAppSpec.resultImport.amountSource);
 assert(!JSON.stringify(capabilities).includes("wrapper.mjs"), "capability registry must not expose wrapper internals");
-ok("capability registry maps governed tools without exposing raw execution fields");
+ok("capability registry publishes ccusage compatibility facade semantics without raw wrapper scripts");
+
+const capabilityService = createCapabilityService({
+  state,
+  listTools: service.listTools,
+  getTool: service.getTool,
+  createToolInvocation: service.createToolInvocation,
+  createInvocation,
+  completeInvocation: () => {},
+  findAgent: (id) => state.agents.find((agent) => agent.id === id) ?? null,
+  listApplications: appSvc.listApplications,
+  listApplicationCapabilities: appSvc.listApplicationCapabilities,
+  invokeApplicationCapability: appSvc.invokeApplicationCapability,
+  planApplicationWrapperInvocation: appSvc.planApplicationWrapperInvocation,
+});
+
+const ccusageAppCreated = capabilityService.createCapabilityInvocation(
+  ccusageAppSpec.exampleCapabilityName,
+  ccusageAppSpec.exampleInput,
+  { userId: "usr_local", teamId: "team_local" },
+);
+assert.equal(ccusageAppCreated.status, 202);
+assert.equal(ccusageAppCreated.body.agentId, ccusageAppSpec.directInvocation.agentId);
+assert.equal(ccusageAppCreated.body.status, ccusageAppSpec.directInvocation.status);
+assert.equal(ccusageAppCreated.body.outputCollection, ccusageAppSpec.directInvocation.outputCollection);
+const wrapperMetadata = ccusageAppCreated.body.invocation?.options?.metadata?.applicationWrapper;
+assert.equal(wrapperMetadata?.compatibilityFacade?.name, ccusageAppSpec.compatibilityFacade.name);
+assert.equal(wrapperMetadata?.outputCollection, ccusageAppSpec.outputCollection);
+assert.equal(wrapperMetadata?.billing?.externalBilled, ccusageAppSpec.billing.externalBilled);
+assert.equal(wrapperMetadata?.resultImport?.amountSource, ccusageAppSpec.resultImport.amountSource);
+assert(!JSON.stringify(ccusageAppCreated.body).includes("wrapper.mjs"), "direct capability invocation must not expose wrapper scripts");
+ok("direct ccusage application capability invocation matches the published runtime semantics");
 
 const ccusageCreated = service.createToolInvocation("ccusage.report", fixture.tools["ccusage.report"].exampleInput, {
   userId: "usr_local",

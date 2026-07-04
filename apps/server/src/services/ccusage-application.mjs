@@ -2,11 +2,9 @@
 //
 // ccusage is an npm-sourced asset under management, not an autonomous agent. This
 // registers it as an Application whose six reports are projected as governed
-// npm-wrapper capabilities. This slice is descriptor-only and additive: the
-// existing `ccusage.report` governed tool + agents stay authoritative and
-// untouched. Backing the tool facade with these capabilities (and wiring real
-// execution) is a later phase, gated on the application-capability execution
-// runtime.
+// npm-wrapper capabilities. `/api/tools/ccusage.report` remains the stable
+// consumer facade, while execution and import semantics are sourced from this
+// Application capability path.
 
 export const CCUSAGE_APPLICATION_ID = "app_ccusage";
 export const CCUSAGE_DEFAULT_VERSION = "20.0.14";

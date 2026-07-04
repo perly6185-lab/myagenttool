@@ -14,6 +14,9 @@ The public surface is:
 GET /api/tools
 GET /api/tools/{toolName}
 POST /api/tools/{toolName}/invocations
+GET /api/capabilities
+GET /api/capabilities/{capabilityName}
+POST /api/capabilities/{capabilityName}/invocations
 GET /api/review-findings
 GET /api/state
 ```
@@ -51,6 +54,48 @@ settings, local env, or wrapper internals.
 
 Use `GET /api/tools/{toolName}` when an orchestrator needs the full schema and
 approval policy for one tool.
+
+`GET /api/capabilities` is the generalized discovery surface. It includes the
+tool descriptors above with `provider.type = "tool"` and application-projected
+capabilities with `provider.type = "application"`. Application capabilities are
+invoked only through
+`POST /api/capabilities/{capabilityName}/invocations`; consumers must not turn
+metadata into direct local process execution.
+
+The ccusage Application publishes six wrapper capabilities named
+`app.app_ccusage.wrapper.{reportId}`. These capabilities are the runtime backing
+for the stable `ccusage.report` facade and expose these public semantics:
+
+```json
+{
+  "provider": { "type": "application", "id": "app_ccusage" },
+  "kind": "npm_wrapper",
+  "metadata": {
+    "compatibilityFacade": {
+      "type": "tool",
+      "name": "ccusage.report",
+      "invocationMode": "tool-facade"
+    },
+    "outputCollection": "importedUsageEstimates",
+    "billing": {
+      "authoritative": false,
+      "externalBilled": true,
+      "amountSource": "imported_ccusage_report"
+    },
+    "resultImport": {
+      "source": "ccusage",
+      "kind": "usage_estimates",
+      "amountSource": "imported_ccusage_report"
+    }
+  }
+}
+```
+
+Direct invocation of a ccusage wrapper capability returns a queued invocation
+using `agt_platform_application_wrapper` and the same
+`outputCollection: "importedUsageEstimates"` as the tool facade. This path is
+for governed consumers that intentionally target the Application capability;
+most external callers should keep using `/api/tools/ccusage.report`.
 
 ## Invocation
 
@@ -172,6 +217,10 @@ request edit/apply behavior through this tool.
 `ccusage.report` writes normalized records to `importedUsageEstimates`. Join by
 `reportInvocationId`.
 
+`app.app_ccusage.wrapper.{reportId}` writes the same normalized records to
+`importedUsageEstimates` and carries the same non-authoritative,
+external-billed import semantics as `ccusage.report`.
+
 `codex.review.diff` writes normalized findings to `codexReviewFindings`. Join by
 `invocationId` or `reviewInvocationId`.
 
@@ -220,6 +269,8 @@ the underlying CLI directly.
 ## Consumer Rules
 
 - Discover first, then invoke by tool name.
+- Discover generalized capabilities before invoking an application capability by
+  capability name.
 - Validate input against `inputSchema` before calling.
 - Send only allowed fields; unknown fields are rejected.
 - Use `outputCollection` to decide where completion results appear.
@@ -234,8 +285,8 @@ the underlying CLI directly.
 ## Versioning
 
 Contract version `1` guarantees the endpoint shape, descriptor required fields,
-current tool names, current output collections, and the forbidden raw execution
-fields listed in the fixture.
+current tool names, current ccusage Application compatibility semantics, current
+output collections, and the forbidden raw execution fields listed in the fixture.
 
 Compatible changes:
 
