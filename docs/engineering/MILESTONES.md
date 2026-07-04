@@ -36,8 +36,9 @@ Accepted M0 architecture decisions:
 
 - Realtime transport: WebSocket bridge channel.
 - Desktop Bridge runtime: Node.js CLI/service-style process.
-- Server/storage/queue: Node.js server with relational persistence boundary and
-  database-backed queue records.
+- Server/storage/queue: Node.js server with a durable file-backed persistence
+  boundary (JSON state snapshot, #388); queue records are persisted in the
+  control-plane state store, not a relational database.
 - Web shell: focused plain-language invocation flow with expandable technical
   details.
 

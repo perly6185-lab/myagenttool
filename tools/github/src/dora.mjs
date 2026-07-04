@@ -5,8 +5,10 @@
 //   - Lead time for changes: merged-PR createdAt -> mergedAt (PR-based proxy).
 //   - Deploy frequency: merges to the default branch per week. PROXY — no
 //     production deploy pipeline exists yet; labeled as such in output.
-//   - Change failure rate / failed-deployment recovery time: NOT INSTRUMENTED
-//     (needs deploy + incident signal); reported as such, never faked.
+//   - Change failure rate / failed-deployment recovery time: instrumented from
+//     an explicit `Change-failure: #N` marker signal on remediation PRs
+//     (adopted 2026-07-04). Honest zero ("0 recorded incidents") until markers
+//     exist; a window before adoption is a lower bound. Never faked/inferred.
 //
 // Elite reference thresholds (2024 DORA snapshot, directional — see
 // MATURITY_CALIBRATION.md): lead time < 1 day; deploy on-demand.
