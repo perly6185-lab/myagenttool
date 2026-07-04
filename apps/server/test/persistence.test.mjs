@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 
+import { buildPublicState } from "../src/read-models/state.mjs";
 import { createPersistenceRuntime } from "../src/runtime/persistence.mjs";
 import { createServerRuntimeServices } from "../src/runtime/service-composer.mjs";
 import { createServerState } from "../src/runtime/state-factory.mjs";
@@ -197,6 +198,126 @@ test("persistence restores lifecycle recovery evidence and ledger spend across r
     assert(exportRequest.manifest.recordRefs.some((ref) => ref.subject === "lifecycle" && ref.id === queued.id), "lifecycle audit record should remain exportable after restore");
     assert(exportRequest.manifest.recordRefs.some((ref) => ref.subject === "lifecycle" && ref.id === rollback.id), "rollback request should remain exportable after restore");
     assert(exportRequest.manifest.recordRefs.some((ref) => ref.subject === "ledger" && ref.id === ledger.id), "ledger entry should remain exportable after restore");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("persistence restores imported usage and review evidence across runtime restart", () => {
+  const root = join(tmpdir(), `myagenttool-persistence-imported-evidence-test-${Date.now()}`);
+  const projectPath = join(root, "project");
+  const stateStorePath = join(root, "state", "snapshot.json");
+  mkdirSync(projectPath, { recursive: true });
+
+  try {
+    const first = createServerState({ defaultProjectPath: projectPath, now });
+    const projectId = first.defaultProject.id;
+    first.state.invocations.push(
+      { id: "inv_ccusage_restore", projectId, requestedBy: "usr_local", agentId: "agt_ccusage_daily", status: "succeeded" },
+      { id: "inv_codex_restore", projectId, requestedBy: "usr_local", agentId: "agt_codex_review_diff", status: "succeeded" },
+      { id: "inv_claude_restore", projectId, requestedBy: "usr_local", agentId: "agt_claude_review_diff", status: "succeeded" },
+    );
+    const imports = importServicesFor(first.state);
+    const usage = imports.ccusage.recordCcusageImportedEstimates({
+      invocation: {
+        id: "inv_ccusage_restore",
+        projectId,
+        requestedBy: "usr_local",
+        agentId: "agt_ccusage_daily",
+        options: { metadata: { projectId } },
+      },
+      result: {
+        output: {
+          source: "ccusage",
+          reportId: "daily",
+          offline: true,
+          filters: { since: "2026-07-01", timezone: "Asia/Shanghai" },
+          report: [{
+            provider: "codex",
+            model: "gpt-restart",
+            sessionId: "sess_restore",
+            inputTokens: 100,
+            outputTokens: 25,
+            totalCostUsd: 1.75,
+            rawLocalPath: "server-only-usage-detail",
+          }],
+        },
+      },
+      agent: governedCcusageAgent(),
+    });
+    const codexFindings = imports.codex.recordCodexReviewFindings({
+      invocation: { id: "inv_codex_restore", projectId, requestedBy: "usr_local", agentId: "agt_codex_review_diff" },
+      result: {
+        output: {
+          source: "codex",
+          tool: "codex.review.diff",
+          summary: "Codex found restore evidence.",
+          findings: [{
+            severity: "high",
+            file: "apps/server/src/services/persistence.mjs",
+            line: 12,
+            message: "Preserve imported usage evidence after restore.",
+            suggestion: "Assert public read models after restart.",
+            rawLocalPath: "server-only-codex-detail",
+          }],
+        },
+      },
+      agent: governedReviewAgent({ id: "agt_codex_review_diff", tool: "codex.review.diff", wrapper: "codex-review-wrapper.mjs" }),
+    });
+    const claudeFindings = imports.claude.recordClaudeReviewFindings({
+      invocation: { id: "inv_claude_restore", projectId, requestedBy: "usr_local", agentId: "agt_claude_review_diff" },
+      result: {
+        output: {
+          source: "claude",
+          tool: "claude.review.diff",
+          summary: "Claude found restore evidence.",
+          findings: [{
+            severity: "medium",
+            file: "apps/server/test/persistence.test.mjs",
+            line: 123,
+            message: "Keep normalized review evidence readable after restore.",
+            suggestion: "Check unified reviewFindings.",
+            rawLocalPath: "server-only-claude-detail",
+          }],
+        },
+      },
+      agent: governedReviewAgent({ id: "agt_claude_review_diff", tool: "claude.review.diff", wrapper: "claude-review-wrapper.mjs" }),
+    });
+    assert.equal(usage.length, 1);
+    assert.equal(codexFindings.length, 1);
+    assert.equal(claudeFindings.length, 1);
+
+    saveState(first, { stateStorePath });
+
+    const second = createServerState({ defaultProjectPath: projectPath, now });
+    restoreState(second, { stateStorePath });
+    const publicState = publicStateFor(second.state, { defaultProjectPath: projectPath });
+    const restoredUsage = second.state.importedUsageEstimates.find((item) => item.id === usage[0].id);
+    const publicUsage = publicState.importedUsageEstimates.find((item) => item.id === usage[0].id);
+    const publicCodex = publicState.reviewFindings.find((item) => item.id === codexFindings[0].id);
+    const publicClaude = publicState.reviewFindings.find((item) => item.id === claudeFindings[0].id);
+
+    assert.equal(restoredUsage?.estimatedCostUsd, 1.75);
+    assert.equal(restoredUsage?.filters?.timezone, "Asia/Shanghai");
+    assert.equal(restoredUsage?.raw?.rawLocalPath, "server-only-usage-detail");
+    assert.equal(publicUsage?.estimatedCostUsd, 1.75);
+    assert.ok(!("raw" in publicUsage), "public imported usage rows must not expose raw payloads after restore");
+    assert.equal(second.state.codexReviewFindings.find((item) => item.id === codexFindings[0].id)?.raw.rawLocalPath, "server-only-codex-detail");
+    assert.equal(second.state.claudeReviewFindings.find((item) => item.id === claudeFindings[0].id)?.raw.rawLocalPath, "server-only-claude-detail");
+    assert.equal(publicCodex?.source, "codex");
+    assert.equal(publicCodex?.severity, "high");
+    assert.equal(publicCodex?.message, "Preserve imported usage evidence after restore.");
+    assert.ok(!("raw" in publicCodex), "public Codex review finding must not expose raw payloads after restore");
+    assert.equal(publicClaude?.source, "claude");
+    assert.equal(publicClaude?.severity, "medium");
+    assert.equal(publicClaude?.message, "Keep normalized review evidence readable after restore.");
+    assert.ok(!("raw" in publicClaude), "public Claude review finding must not expose raw payloads after restore");
+
+    const restoredM3 = m3ServiceFor(second.state);
+    restoredM3.updatePrivateDeploymentConfig({ mode: "private_deployment", auditExportEnabled: true });
+    const exportRequest = restoredM3.createAuditExportRequest({ subjects: ["usage"], dryRun: false });
+    assert.equal(exportRequest.status, "exported");
+    assert(exportRequest.manifest.recordRefs.some((ref) => ref.subject === "usage" && ref.id === usage[0].id), "imported usage estimate should remain exportable after restore");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -606,6 +727,35 @@ function m3ServiceFor(state) {
     nextId: (prefix) => `${prefix}_${++id}`,
     appendEvent: () => {},
     findAgent: (agentId) => state.agents.find((agent) => agent.id === agentId) ?? null,
+  });
+}
+
+function importServicesFor(state) {
+  let id = 0;
+  const nextId = (prefix) => `${prefix}_${++id}`;
+  return {
+    ccusage: createCcusageImportService({ state, now, nextId, appendEvent: () => {} }),
+    codex: createCodexReviewImportService({ state, now, nextId, appendEvent: () => {} }),
+    claude: createClaudeReviewImportService({ state, now, nextId, appendEvent: () => {} }),
+  };
+}
+
+function publicStateFor(state, { defaultProjectPath }) {
+  const currentProject = () => state.projects.find((item) => item.id === state.currentProjectId) ?? state.projects[0] ?? null;
+  const m3 = m3ServiceFor(state);
+  return buildPublicState({
+    namespace: "test",
+    protocolVersion: "0.0.0",
+    state,
+    defaultProjectPath,
+    currentProject,
+    defaultAgent: () => state.agents[0] ?? null,
+    loopRoutineReadModel: () => [],
+    codexApprovalQueue: () => [],
+    evidenceCenterRecords: () => [],
+    ledgerSummary: () => m3.ledgerSummary(),
+    budgetStatuses: () => m3.budgetStatuses(),
+    teamBudgetStatuses: () => m3.teamBudgetStatuses(),
   });
 }
 
