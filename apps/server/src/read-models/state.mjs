@@ -53,6 +53,22 @@ export function buildPublicState({
   const importedVisible = (r) => teamId == null || (r?.teamId ?? LOCAL_TEAM_ID) === teamId;
   const visibleImported = (state.codexImportedEvidenceRecords ?? []).filter(importedVisible);
   const visibleImportedIds = new Set(visibleImported.map((r) => r.id));
+  const terminalSessionTeamId = (session) => {
+    if (session?.ownerTeamId) return session.ownerTeamId;
+    const owner = (state.users ?? []).find((user) => user.id === session?.userId);
+    return owner?.teamId ?? LOCAL_TEAM_ID;
+  };
+  const terminalSessionVisible = (session) =>
+    teamId == null || terminalSessionTeamId(session) === teamId;
+  const terminalSessions = (state.terminalSessions ?? []).filter(terminalSessionVisible);
+  const visibleTerminalSessionIds = new Set(terminalSessions.map((session) => session.terminalSessionId));
+  const terminalEvidenceRecords = (state.terminalEvidenceRecords ?? []).filter((evidence) =>
+    teamId == null || visibleTerminalSessionIds.has(evidence?.terminalSessionId),
+  );
+  const visibleTerminalEvidenceIds = new Set(terminalEvidenceRecords.map((evidence) => evidence.id));
+  const terminalBridgeActions = (state.terminalBridgeActions ?? []).filter((action) =>
+    teamId == null || visibleTerminalSessionIds.has(action?.terminalSessionId),
+  );
   // A compare run is visible when it spans at least one invocation the team can
   // see; unscoped mode passes everything through.
   const byCompareRun = (rows) =>
@@ -138,19 +154,22 @@ export function buildPublicState({
     codexChangeReviews: byInvocation(state.codexChangeReviews),
     codexHookEvents: byInvocation(state.codexHookEvents),
     codexApprovalQueue: codexApprovalQueue().filter((q) => invVisible(q?.invocationId)),
-    // The evidence center aggregates raw codex state, so re-apply scoping here:
-    // invocation-linked rows by invVisible, imported rows by their owning team.
-    // (Rows with a null invocationId that aren't imported — e.g. manual terminal
-    // surface evidence — stay visible; those are device-scoped by design.)
+    // The evidence center aggregates raw codex/terminal state, so re-apply
+    // scoping here: invocation-linked rows by invVisible, imported rows by
+    // owning team, and terminal rows by their owning terminal session.
     evidenceCenterRecords: evidenceCenterRecords().filter((r) =>
-      r?.type === "imported_evidence" ? visibleImportedIds.has(r.id) : invVisible(r?.invocationId),
+      r?.type === "imported_evidence"
+        ? visibleImportedIds.has(r.id)
+        : r?.source === "managed_terminal_runtime"
+          ? visibleTerminalEvidenceIds.has(r.id)
+          : invVisible(r?.invocationId),
     ),
     codexApprovalBrokerRequests: byInvocation(state.codexApprovalBrokerRequests),
     codexImportedEvidenceRecords: visibleImported,
     terminalRuntimeCapability: state.terminalRuntimeCapability,
-    terminalSessions: state.terminalSessions,
-    terminalEvidenceRecords: state.terminalEvidenceRecords,
-    terminalBridgeActions: state.terminalBridgeActions,
+    terminalSessions,
+    terminalEvidenceRecords,
+    terminalBridgeActions,
     sshTargets: state.sshTargets,
     sshConnectionTests: state.sshConnectionTests,
   };

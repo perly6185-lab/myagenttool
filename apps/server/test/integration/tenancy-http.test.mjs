@@ -82,6 +82,45 @@ before(async () => {
     invocationId: "inv_a",
     status: "pending",
   });
+  state.terminalSessions.push({
+    terminalSessionId: "term_a",
+    ownerInvocationId: "manual_terminal_surface",
+    ownerCodexSessionId: null,
+    deviceId: "dev_local_001",
+    userId: "usr_a",
+    ownerTeamId: TEAM_A,
+    repoPath: "/tmp/a",
+    cwd: "/tmp/a",
+    shell: "bash",
+    runtimeKind: "local_pty",
+    targetId: "local",
+    status: "attached",
+    evidenceIds: ["tev_a"],
+    startedAt: now(),
+    lastSeenAt: now(),
+  });
+  state.terminalEvidenceRecords.push({
+    id: "tev_a",
+    terminalSessionId: "term_a",
+    ownerInvocationId: "manual_terminal_surface",
+    ownerCodexSessionId: null,
+    type: "terminal_output_chunk",
+    source: "managed_terminal_runtime",
+    redactionState: "summary_only",
+    marker: "managed_terminal",
+    repoPath: "/tmp/a",
+    summary: "team a terminal output",
+    detail: "team a terminal output",
+    createdAt: now(),
+  });
+  state.terminalBridgeActions.push({
+    id: "term_act_a",
+    terminalSessionId: "term_a",
+    actionType: "input",
+    payload: { input: "team a secret command" },
+    status: "queued",
+    createdAt: now(),
+  });
 
   const { httpDependencies } = createServerRuntimeServices({
     namespace: "test",
@@ -136,9 +175,18 @@ test("read scoping: team B's /api/state hides team A's projects and evidence", a
   assert.ok(!projectIds.includes("projA"), "team B must NOT see team A's project");
   const evidenceIds = (b.body.codexImportedEvidenceRecords ?? []).map((e) => e.id);
   assert.ok(!evidenceIds.includes("imp_a"), "team B must NOT see team A's imported evidence");
+  const terminalIds = (b.body.terminalSessions ?? []).map((session) => session.terminalSessionId);
+  assert.ok(!terminalIds.includes("term_a"), "team B must NOT see team A's terminal session");
+  const terminalEvidenceIds = (b.body.terminalEvidenceRecords ?? []).map((evidence) => evidence.id);
+  assert.ok(!terminalEvidenceIds.includes("tev_a"), "team B must NOT see team A's terminal evidence");
+  const terminalActionIds = (b.body.terminalBridgeActions ?? []).map((action) => action.id);
+  assert.ok(!terminalActionIds.includes("term_act_a"), "team B must NOT see team A's terminal bridge actions");
+  const evidenceCenterIds = (b.body.evidenceCenterRecords ?? []).map((record) => record.id);
+  assert.ok(!evidenceCenterIds.includes("tev_a"), "team B must NOT see team A's terminal evidence center row");
 
   const a = await call("/api/state", { token: "tok_a" });
   assert.ok((a.body.projects ?? []).some((p) => p.id === "projA"), "team A sees its own project");
+  assert.ok((a.body.terminalSessions ?? []).some((session) => session.terminalSessionId === "term_a"), "team A sees its own terminal session");
 });
 
 test("write guard: team B cannot delete or repoint team A's automation (404)", async () => {
@@ -183,6 +231,50 @@ test("write guard: team B cannot cancel or troubleshoot team A's invocation (404
   assert.equal(cancel.status, 404);
   const troubleshoot = await call("/api/invocations/inv_a/troubleshoot", { token: "tok_b", method: "POST" });
   assert.equal(troubleshoot.status, 404);
+});
+
+test("write guard: team B cannot control team A's terminal session (404)", async () => {
+  const beforeActions = (await call("/api/state", { token: "tok_a" })).body.terminalBridgeActions.length;
+  const input = await call("/api/terminal/sessions/term_a/input", {
+    token: "tok_b",
+    method: "POST",
+    body: { input: "attacker" },
+  });
+  assert.equal(input.status, 404);
+  assert.equal(input.body.error, "terminal_session_not_found");
+
+  const resize = await call("/api/terminal/sessions/term_a/resize", {
+    token: "tok_b",
+    method: "POST",
+    body: { cols: 120, rows: 40 },
+  });
+  assert.equal(resize.status, 404);
+  assert.equal(resize.body.error, "terminal_session_not_found");
+
+  const close = await call("/api/terminal/sessions/term_a/close", { token: "tok_b", method: "POST" });
+  assert.equal(close.status, 404);
+  assert.equal(close.body.error, "terminal_session_not_found");
+
+  const afterBlockedActions = (await call("/api/state", { token: "tok_a" })).body.terminalBridgeActions.length;
+  assert.equal(afterBlockedActions, beforeActions, "foreign terminal writes must not enqueue bridge actions");
+
+  const own = await call("/api/terminal/sessions/term_a/input", {
+    token: "tok_a",
+    method: "POST",
+    body: { input: "legit" },
+  });
+  assert.equal(own.status, 202);
+});
+
+test("terminal session creation ignores caller-supplied userId", async () => {
+  const created = await call("/api/terminal/sessions", {
+    token: "tok_b",
+    method: "POST",
+    body: { userId: "usr_a", cwd: "/tmp/b" },
+  });
+  assert.equal(created.status, 201);
+  assert.equal(created.body.session.userId, "usr_b");
+  assert.equal(created.body.session.ownerTeamId, TEAM_B);
 });
 
 test("write guard: team B cannot resolve team A's codex approval request (404)", async () => {
