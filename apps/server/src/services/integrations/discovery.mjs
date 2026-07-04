@@ -76,7 +76,9 @@ export function createDiscoveryRuntime({
   }
 
   function nextBridgeDiscoveryRun() {
-    return state.discoveryRuns.find((item) => item.status === "queued");
+    return state.discoveryRuns.find(
+      (item) => item.status === "queued" && (item.deviceId == null || item.deviceId === state.device.id),
+    );
   }
 
   function markDiscoveryStarted(discoveryRun) {

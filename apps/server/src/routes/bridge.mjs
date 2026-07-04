@@ -42,6 +42,111 @@ export async function handleBridgeRoutes({
     return true;
   }
 
+  function bridgeInvocationGate(invocation, operation, { allowedStatuses, allowedDeliveryStates } = {}) {
+    if (!invocation) {
+      return { allowed: false, status: 404, body: { error: "invocation_not_found" } };
+    }
+    const delivery = invocation.delivery ?? {};
+    const evidence = {
+      operation,
+      deviceId: state.device.id,
+      deliveryDeviceId: delivery.deviceId ?? null,
+      deliveryState: delivery.state ?? null,
+      invocationStatus: invocation.status ?? null,
+    };
+    if (delivery.deviceId !== state.device.id) {
+      appendBridgeRefusalEvent(invocation, "bridge_invocation_not_owned", evidence);
+      return { allowed: false, status: 403, body: { error: "bridge_invocation_not_owned" } };
+    }
+    if (
+      (allowedStatuses && !allowedStatuses.includes(invocation.status)) ||
+      (allowedDeliveryStates && !allowedDeliveryStates.includes(delivery.state))
+    ) {
+      appendBridgeRefusalEvent(invocation, "bridge_invocation_not_active", evidence);
+      return { allowed: false, status: 409, body: { error: "bridge_invocation_not_active" } };
+    }
+    return { allowed: true };
+  }
+
+  function appendBridgeRefusalEvent(invocation, reason, evidence) {
+    appendEvent({
+      invocationId: invocation.id,
+      type: "bridge_delivery_refused",
+      level: "warn",
+      message: `Desktop Bridge ${evidence.operation} refused: ${reason}.`,
+      data: { ...evidence, reason },
+    });
+  }
+
+  function bridgeLifecycleGate(lifecycleAction, operation) {
+    if (!lifecycleAction) {
+      return { allowed: false, status: 404, body: { error: "lifecycle_action_not_found" } };
+    }
+    const evidence = {
+      operation,
+      lifecycleActionId: lifecycleAction.id,
+      deviceId: state.device.id,
+      actionDeviceId: lifecycleAction.deviceId ?? null,
+      lifecycleStatus: lifecycleAction.status ?? null,
+    };
+    if (lifecycleAction.deviceId !== state.device.id) {
+      appendBridgeLifecycleRefusalEvent("bridge_lifecycle_not_owned", evidence);
+      return { allowed: false, status: 403, body: { error: "bridge_lifecycle_not_owned" } };
+    }
+    if (lifecycleAction.status !== "running") {
+      appendBridgeLifecycleRefusalEvent("bridge_lifecycle_not_active", evidence);
+      return { allowed: false, status: 409, body: { error: "bridge_lifecycle_not_active" } };
+    }
+    return { allowed: true };
+  }
+
+  function appendBridgeLifecycleRefusalEvent(reason, evidence) {
+    appendEvent({
+      invocationId: null,
+      type: "bridge_lifecycle_refused",
+      level: "warn",
+      message: `Desktop Bridge ${evidence.operation} refused: ${reason}.`,
+      data: { ...evidence, reason },
+    });
+  }
+
+  function bridgeOperationGate(operation, operationName, { deviceId, allowedStatuses = ["running"] } = {}) {
+    if (!operation) {
+      return { allowed: false, status: 404, body: { error: `${operationName}_not_found` } };
+    }
+    const evidence = {
+      operation: operationName,
+      operationId: operation.id,
+      deviceId: state.device.id,
+      operationDeviceId: deviceId ?? null,
+      operationStatus: operation.status ?? null,
+    };
+    if (deviceId !== state.device.id) {
+      appendBridgeOperationRefusalEvent(`${operationName}_not_owned`, evidence);
+      return { allowed: false, status: 403, body: { error: `${operationName}_not_owned` } };
+    }
+    if (!allowedStatuses.includes(operation.status)) {
+      appendBridgeOperationRefusalEvent(`${operationName}_not_active`, evidence);
+      return { allowed: false, status: 409, body: { error: `${operationName}_not_active` } };
+    }
+    return { allowed: true };
+  }
+
+  function appendBridgeOperationRefusalEvent(reason, evidence) {
+    appendEvent({
+      invocationId: null,
+      type: "bridge_operation_refused",
+      level: "warn",
+      message: `Desktop Bridge ${evidence.operation} refused: ${reason}.`,
+      data: { ...evidence, reason },
+    });
+  }
+
+  function healthCheckDeviceId(operation) {
+    const agent = findAgent(operation?.agentId);
+    return operation?.deviceId ?? (agent?.location?.type === "local_device" ? agent.location.deviceId : null);
+  }
+
   if (req.method === "GET" && url.pathname === "/api/bridge/next") {
     state.device.lastSeenAt = now();
     if (state.device.unlinkState !== "linked") {
@@ -98,8 +203,9 @@ export async function handleBridgeRoutes({
   if (req.method === "POST" && url.pathname === "/api/bridge/health-complete") {
     const body = await readJson(req);
     const operation = state.healthChecks.find((item) => item.id === body.checkId && item.agentId === body.agentId);
-    if (!operation) {
-      sendJson(res, 404, { error: "health_check_not_found" });
+    const gate = bridgeOperationGate(operation, "health_check", { deviceId: healthCheckDeviceId(operation) });
+    if (!gate.allowed) {
+      sendJson(res, gate.status, gate.body);
       return true;
     }
 
@@ -150,8 +256,9 @@ export async function handleBridgeRoutes({
   if (req.method === "POST" && url.pathname === "/api/bridge/discovery-complete") {
     const body = await readJson(req);
     const discoveryRun = findDiscoveryRun(body.discoveryRunId);
-    if (!discoveryRun) {
-      sendJson(res, 404, { error: "discovery_run_not_found" });
+    const gate = bridgeOperationGate(discoveryRun, "discovery_run", { deviceId: discoveryRun?.deviceId ?? null });
+    if (!gate.allowed) {
+      sendJson(res, gate.status, gate.body);
       return true;
     }
 
@@ -217,8 +324,9 @@ export async function handleBridgeRoutes({
   if (req.method === "POST" && url.pathname === "/api/bridge/lifecycle-complete") {
     const body = await readJson(req);
     const lifecycleAction = state.lifecycleQueuedActions.find((item) => item.id === body.lifecycleActionId);
-    if (!lifecycleAction) {
-      sendJson(res, 404, { error: "lifecycle_action_not_found" });
+    const gate = bridgeLifecycleGate(lifecycleAction, "lifecycle-complete");
+    if (!gate.allowed) {
+      sendJson(res, gate.status, gate.body);
       return true;
     }
 
@@ -238,8 +346,9 @@ export async function handleBridgeRoutes({
   if (req.method === "POST" && url.pathname === "/api/bridge/probe-complete") {
     const body = await readJson(req);
     const probeRun = findIntegrationProbeRun(body.probeRunId);
-    if (!probeRun) {
-      sendJson(res, 404, { error: "probe_run_not_found" });
+    const gate = bridgeOperationGate(probeRun, "probe_run", { deviceId: probeRun?.deviceId ?? null });
+    if (!gate.allowed) {
+      sendJson(res, gate.status, gate.body);
       return true;
     }
     completeIntegrationProbeRun(probeRun, body);
@@ -249,8 +358,16 @@ export async function handleBridgeRoutes({
 
   if (req.method === "GET" && url.pathname === "/api/bridge/cancel-status") {
     const invocation = findInvocation(url.searchParams.get("invocationId"));
+    const gate = bridgeInvocationGate(invocation, "cancel-status", {
+      allowedStatuses: ["running", "cancelling"],
+      allowedDeliveryStates: ["acknowledged"],
+    });
+    if (!gate.allowed) {
+      sendJson(res, gate.status, gate.body);
+      return true;
+    }
     sendJson(res, 200, {
-      cancelRequested: invocation?.cancellation.state === "requested",
+      cancelRequested: invocation.cancellation.state === "requested",
     });
     return true;
   }
@@ -260,6 +377,14 @@ export async function handleBridgeRoutes({
     const invocation = findInvocation(body.invocationId);
     if (!invocation) {
       sendJson(res, 404, { error: "invocation_not_found" });
+      return true;
+    }
+    const gate = bridgeInvocationGate(invocation, "ack", {
+      allowedStatuses: ["dispatching"],
+      allowedDeliveryStates: ["dispatching"],
+    });
+    if (!gate.allowed) {
+      sendJson(res, gate.status, gate.body);
       return true;
     }
 
@@ -273,6 +398,14 @@ export async function handleBridgeRoutes({
     const invocation = findInvocation(body.invocationId);
     if (!invocation) {
       sendJson(res, 404, { error: "invocation_not_found" });
+      return true;
+    }
+    const gate = bridgeInvocationGate(invocation, "events", {
+      allowedStatuses: ["running", "cancelling"],
+      allowedDeliveryStates: ["acknowledged"],
+    });
+    if (!gate.allowed) {
+      sendJson(res, gate.status, gate.body);
       return true;
     }
     appendEvent({
@@ -291,6 +424,14 @@ export async function handleBridgeRoutes({
     const invocation = findInvocation(body.invocationId);
     if (!invocation) {
       sendJson(res, 404, { error: "invocation_not_found" });
+      return true;
+    }
+    const gate = bridgeInvocationGate(invocation, "complete", {
+      allowedStatuses: ["running", "cancelling"],
+      allowedDeliveryStates: ["acknowledged"],
+    });
+    if (!gate.allowed) {
+      sendJson(res, gate.status, gate.body);
       return true;
     }
 

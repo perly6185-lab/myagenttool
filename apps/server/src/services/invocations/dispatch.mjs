@@ -24,9 +24,17 @@ export function createInvocationDispatchRuntime({
     const agent = findAgent(invocation.agentId);
     if (!agent) return true;
     if (agent.location?.type !== "local_device") return false;
+    if (!belongsToThisBridge(invocation, agent)) return false;
     const adapter = agent.adapter ?? {};
     if (adapter.type === "mcp") return adapter.transport !== "http";
     return ["cli", "container"].includes(adapter.type);
+  }
+
+  function belongsToThisBridge(invocation, agent) {
+    const deliveryDeviceId = invocation.delivery?.deviceId ?? null;
+    const agentDeviceId = agent?.location?.type === "local_device" ? agent.location.deviceId : null;
+    const deviceId = deliveryDeviceId ?? agentDeviceId;
+    return deviceId === state.device.id;
   }
 
   // Force a terminal status on runs stuck in "cancelling" past a grace (e.g. the
@@ -74,6 +82,9 @@ export function createInvocationDispatchRuntime({
       }
       const agent = findAgent(item.agentId);
       if (!agent) {
+        return false;
+      }
+      if (agent.location?.type === "local_device" && !belongsToThisBridge(item, agent)) {
         return false;
       }
       return !isAgentDisabled(agent) && agent?.health?.status !== "unhealthy";

@@ -46,6 +46,23 @@ test("rejects a node script outside the local execution manifest", () => {
   assert.match(gate.reason, /non-allowlisted/);
 });
 
+test("rejects an allowlisted command when argv contains a NUL byte", () => {
+  const gate = localExecutionGate(
+    { options: {} },
+    { type: "cli", command: "demo-agent" },
+    {
+      command: process.execPath,
+      args: [demoAgentPath, "--task", "hello\0world"],
+      cwd,
+      localPolicy: { filePolicy: "read_only", networkPolicy: "forbidden", source: "test" },
+    },
+    { manifest },
+  );
+  assert.equal(gate.allowed, false);
+  assert.match(gate.reason, /NUL byte/);
+  assert.equal(gate.evidence.commandKind, "demoAgent");
+});
+
 test("requires approval evidence for full-access Codex execution", () => {
   const gate = localExecutionGate(
     { options: {} },

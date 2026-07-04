@@ -7,6 +7,7 @@
  */
 
 import assert from "node:assert/strict";
+import { resolve } from "node:path";
 import { test } from "node:test";
 
 import {
@@ -21,7 +22,10 @@ test("approvedLocalTerminalRoots collects project + worktree roots, resolved and
     projects: [{ path: "/approved/project" }, { path: "/approved/project" }],
     worktrees: [{ path: "/approved/worktree" }, { worktreePath: "/approved/wt2" }],
   });
-  assert.deepEqual(roots.sort(), ["/approved/project", "/approved/worktree", "/approved/wt2"].sort());
+  assert.deepEqual(
+    roots.sort(),
+    [resolve("/approved/project"), resolve("/approved/worktree"), resolve("/approved/wt2")].sort(),
+  );
 });
 
 test("terminalCwdWithinRoots: inside/equal true, outside and sibling-prefix false", () => {

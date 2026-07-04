@@ -104,7 +104,10 @@ export function createIntegrationProbeRuntime({
 
   function nextBridgeProbeRun() {
     return state.integrationProbeRuns.find(
-      (item) => item.status === "queued" && ["cli", "mcp"].includes(item.adapter?.type),
+      (item) =>
+        item.status === "queued" &&
+        ["cli", "mcp"].includes(item.adapter?.type) &&
+        (item.deviceId == null || item.deviceId === state.device.id),
     );
   }
 
