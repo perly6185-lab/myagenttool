@@ -487,6 +487,11 @@ export function createM3Service({
       durationMs: normalizeNullableNumber(body.durationMs, { min: 0 }),
       healthStatus: normalizeHealthStatus(body.healthStatus),
       rollbackAvailable: Boolean(body.rollbackAvailable ?? recipe?.rollback?.available),
+      // Structured refusal evidence when the bridge declines local execution
+      // (e.g. a non-allowlisted lifecycle command), so a decline is auditable in
+      // the action record rather than only a prose summary.
+      policyDecision: body.policyDecision === "local_execution_refused" ? "local_execution_refused" : null,
+      refusal: normalizeLifecycleRefusal(body.refusal),
     };
     if (recipe) {
       recipe.queueState = status;
@@ -1767,6 +1772,19 @@ function stringArrayEquals(left, right) {
 function normalizeLifecycleResultStatus(value) {
   const normalized = String(value ?? "").trim();
   return ["succeeded", "failed", "cancelled"].includes(normalized) ? normalized : "failed";
+}
+
+// Sanitize bridge-reported refusal evidence into a known shape — never store
+// arbitrary client-supplied fields on the audit record.
+function normalizeLifecycleRefusal(refusal) {
+  if (!refusal || typeof refusal !== "object" || Array.isArray(refusal)) return null;
+  return {
+    gate: String(refusal.gate ?? "unknown"),
+    commandId: refusal.commandId == null ? null : String(refusal.commandId),
+    executable: refusal.executable == null ? null : String(refusal.executable),
+    executionEnabled: Boolean(refusal.executionEnabled),
+    reason: String(refusal.reason ?? ""),
+  };
 }
 
 function normalizeHealthStatus(value) {

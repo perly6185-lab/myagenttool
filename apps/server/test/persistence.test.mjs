@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -1020,6 +1020,64 @@ test("durable write round-trips through restore", () => {
     assert.equal(restored.invocations.length, 1);
     assert.equal(restored.invocations[0].id, "inv_keep");
     assert.equal(restored.invocations[0].idempotencyKey, "k1", "the idempotency key survives restart");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a persistence write failure is logged, not fatal", () => {
+  const root = mkdtempSync(join(tmpdir(), "myagenttool-persist-fail-"));
+  try {
+    // Put a FILE where the state directory needs to be, so mkdir/write fails.
+    writeFileSync(join(root, "blocker"), "x");
+    const rt = createPersistenceRuntime({
+      state: { projects: [], currentProjectId: null, worktrees: [], invocations: [{ id: "inv_1" }], device: { id: "d" } },
+      enabled: true,
+      stateStorePath: join(root, "blocker", "state.json"), // parent is a file → write fails
+      schemaVersion: 1,
+      now: () => "t",
+      defaultProject: { id: "prj", path: root },
+      sameProjectPath,
+    });
+    assert.doesNotThrow(() => rt.persistStateNow(), "a failed persist must not crash the control plane");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("completeLifecycleAction records structured refusal evidence (WS3)", () => {
+  const root = mkdtempSync(join(tmpdir(), "myagenttool-lifecycle-refusal-"));
+  const projectPath = join(root, "project");
+  mkdirSync(projectPath, { recursive: true });
+  try {
+    const first = createServerState({ defaultProjectPath: projectPath, now });
+    const m3 = m3ServiceFor(first.state);
+    const action = { id: "lca_refused", recipeId: null, status: "running", createdAt: now() };
+    first.state.lifecycleQueuedActions.push(action);
+
+    m3.completeLifecycleAction(action, {
+      status: "failed",
+      summary: "Lifecycle command is not allowlisted for this Desktop Bridge build.",
+      policyDecision: "local_execution_refused",
+      refusal: {
+        gate: "lifecycle_allowlist",
+        commandId: "not_allowlisted",
+        executable: "demo-agent",
+        executionEnabled: true,
+        reason: "not allowlisted",
+      },
+    });
+
+    assert.equal(action.result.policyDecision, "local_execution_refused");
+    assert.equal(action.result.refusal.gate, "lifecycle_allowlist");
+    assert.equal(action.result.refusal.commandId, "not_allowlisted");
+    assert.equal(action.result.refusal.executable, "demo-agent");
+    // A normal completion carries no refusal (null, not undefined).
+    const ok = { id: "lca_ok", recipeId: null, status: "running", createdAt: now() };
+    first.state.lifecycleQueuedActions.push(ok);
+    m3.completeLifecycleAction(ok, { status: "succeeded", summary: "done" });
+    assert.equal(ok.result.policyDecision, null);
+    assert.equal(ok.result.refusal, null);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
