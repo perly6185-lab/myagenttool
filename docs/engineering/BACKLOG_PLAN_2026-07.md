@@ -86,6 +86,9 @@ product-quality focus:
 - Status: second slice started on `feat/application-recovery-explainability`;
   recovery action APIs and `/api/state` now publish a shared explainability
   shape for selected action, refusal/guard reason, result ids, and next step.
+- Status: third slice started on `feat/application-recovery-explanation-ui`;
+  the Web Applications inspector now renders the recovery explanation as
+  operator guidance in history and suggested action cards.
 - Keep `/api/tools` stable while `/api/capabilities` becomes the unified
   discovery surface.
 - Finish ccusage parity on the Application-backed tool facade, including
@@ -93,6 +96,8 @@ product-quality focus:
   coverage.
 - Keep recovery actions explainable after execution: selected action, refusal
   reason, result, next step, and duplicate-action guard evidence.
+- Keep the UI path aligned with that contract so approval, duplicate guard,
+  result, and next-step evidence are visible without opening raw diagnostics.
 - Generalize only after ccusage remains green through the compatibility facade.
 
 ## P4 - M3 closeout
