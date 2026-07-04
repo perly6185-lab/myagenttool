@@ -302,7 +302,14 @@ export function createApplicationService({
     }
     return {
       ok: true,
-      wrapper: { execCommand: plan.command, execArgs: plan.args, cwd: plan.cwd, capability: plan.capability },
+      wrapper: {
+        execCommand: plan.command,
+        execArgs: plan.args,
+        cwd: plan.cwd,
+        capability: plan.capability,
+        filePolicy: plan.filePolicy,
+        networkPolicy: plan.networkPolicy,
+      },
       timeoutSeconds: plan.timeoutSeconds,
     };
   }

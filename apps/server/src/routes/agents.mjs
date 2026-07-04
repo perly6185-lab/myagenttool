@@ -1,6 +1,7 @@
 import { normalizeMcpAdapterConfig } from "@myagenttool/adapters/mcp";
 
 import { isClaudeCliCommand, isCodexCliCommand } from "../services/agents.mjs";
+import { publicDeviceView } from "../runtime/bridge-auth.mjs";
 
 export async function handleAgentRoutes({
   req,
@@ -22,12 +23,25 @@ export async function handleAgentRoutes({
   createAgentDryProbeRun,
   findIntegrationProbeRun,
   unlinkDevice,
+  issueBridgeCredential,
+  requireBridgeCredential,
 }) {
   if (req.method === "POST" && url.pathname === "/api/bridge/register") {
     const body = await readJson(req);
     if (state.device.unlinkState !== "linked") {
       sendJson(res, 403, { error: "device_credentials_revoked" });
       return true;
+    }
+    const hasCredential = Boolean(state.device.bridgeCredential?.tokenHash);
+    let issuedCredential = null;
+    if (hasCredential) {
+      const credential = requireBridgeCredential({ req, res, sendJson });
+      if (!credential) return true;
+      if (body.rotateCredential === true) {
+        issuedCredential = issueBridgeCredential({ rotate: true });
+      }
+    } else {
+      issuedCredential = issueBridgeCredential({ rotate: true });
     }
     state.device.status = "online";
     state.device.lastSeenAt = now();
@@ -57,7 +71,13 @@ export async function handleAgentRoutes({
       level: "info",
       message: "Desktop Bridge registered local demo device.",
     });
-    sendJson(res, 200, { ok: true, device: state.device, agents: state.agents });
+    sendJson(res, 200, {
+      ok: true,
+      device: publicDeviceView(state.device),
+      agents: state.agents,
+      bridgeCredential: issuedCredential?.credential ?? publicDeviceView(state.device).bridgeCredential,
+      bridgeToken: issuedCredential?.token ?? null,
+    });
     return true;
   }
 
@@ -150,7 +170,7 @@ export async function handleAgentRoutes({
 
   if (req.method === "POST" && url.pathname === "/api/device/unlink") {
     unlinkDevice();
-    sendJson(res, 200, { device: state.device });
+    sendJson(res, 200, { device: publicDeviceView(state.device) });
     return true;
   }
 

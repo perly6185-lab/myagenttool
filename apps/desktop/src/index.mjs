@@ -9,6 +9,11 @@ import { callA2aAgent, probeA2aAgent } from "./a2a-client.mjs";
 import { probeContainerRuntime, runContainerAgent } from "./container-client.mjs";
 import { codexResumeArgs } from "./codex-resume.mjs";
 import { applicationWrapperArgs } from "./application-wrapper-args.mjs";
+import {
+  createLocalExecutionPolicyManifest,
+  localExecutionGate,
+  localPolicyForAdapter,
+} from "./local-execution-policy.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const serverUrl = process.env.BRIDGE_SERVER_URL ?? "http://127.0.0.1:5001";
@@ -17,6 +22,9 @@ const terminalPollIntervalMs = Number(process.env.BRIDGE_TERMINAL_POLL_INTERVAL_
 const demoAgentPath = resolve(__dirname, "demo-agent.mjs");
 const codexFixtureAgentPath = resolve(__dirname, "codex-fixture-agent.mjs");
 const remoteRelayPath = resolve(__dirname, "remote-relay.mjs");
+const localExecutionPolicyManifest = createLocalExecutionPolicyManifest({ demoAgentPath, codexFixtureAgentPath });
+const bridgeTokenPath = resolve(process.env.MYAGENTTOOL_BRIDGE_TOKEN_PATH ?? ".myagenttool/bridge-token.json");
+let bridgeToken = String(process.env.MYAGENTTOOL_BRIDGE_TOKEN ?? "").trim() || loadBridgeToken();
 
 if (process.argv.includes("--check")) {
   if (!existsSync(demoAgentPath) || !existsSync(codexFixtureAgentPath) || !existsSync(remoteRelayPath)) {
@@ -165,6 +173,15 @@ if (process.argv.includes("--check")) {
   if (typeof pty.spawn !== "function") {
     throw new Error("node-pty is not available.");
   }
+  const unsafeGate = localExecutionGate(
+    { invocationId: "inv_unsafe_gate", options: {} },
+    { type: "cli", command: "node", args: ["evil.mjs"] },
+    { command: process.execPath, args: [resolve("evil.mjs")], cwd: process.cwd() },
+    { permissionDecision: "not_required", permissionHook: null, manifest: localExecutionPolicyManifest },
+  );
+  if (unsafeGate.allowed) {
+    throw new Error("Local execution gate must reject non-allowlisted scripts.");
+  }
   const inheritedEnv = {
     CODEX_SANDBOX_NETWORK_DISABLED: "1",
     CODEX_CI: "1",
@@ -220,10 +237,14 @@ process.on("unhandledRejection", (reason) => {
 });
 
 await waitForServer();
-await request("POST", "/api/bridge/register", {
+const registration = await request("POST", "/api/bridge/register", {
   bridgeVersion: "0.0.0",
   capabilities: ["demo_cli_agent", "managed_terminal_pty", "remote_ssh_relay"]
 });
+if (registration?.bridgeToken) {
+  bridgeToken = registration.bridgeToken;
+  saveBridgeToken(bridgeToken, registration.bridgeCredential);
+}
 console.log(`[desktop] registered with ${serverUrl}`);
 
 // A transient server blip — e.g. ECONNRESET while the API restarts — must never
@@ -726,6 +747,31 @@ async function runInvocation(work) {
       result: {
         touchedUserFiles: false,
         policyDecision: permissionDecision
+      }
+    });
+    return;
+  }
+  const gate = localExecutionGate(work, adapter, spawnPlan, {
+    permissionDecision,
+    permissionHook,
+    manifest: localExecutionPolicyManifest,
+  });
+  if (!gate.allowed) {
+    await request("POST", "/api/bridge/events", {
+      invocationId,
+      type: "local_execution_refused",
+      level: "error",
+      message: gate.reason,
+      data: gate.evidence
+    });
+    await request("POST", "/api/bridge/complete", {
+      invocationId,
+      status: "failed",
+      summary: gate.reason,
+      result: {
+        touchedUserFiles: false,
+        policyDecision: "local_execution_refused",
+        localExecutionGate: gate.evidence
       }
     });
     return;
@@ -1290,11 +1336,13 @@ function createCliSpawnPlan(adapter, payload) {
   const cwd = adapter.workingDirectoryPolicy === "explicit" && adapter.workingDirectory
     ? String(adapter.workingDirectory)
     : projectCwd(payload);
+  const localPolicy = localPolicyForAdapter(adapter, payload);
   return {
     command,
     args,
     env,
     cwd,
+    localPolicy,
     sessionMode: payload.options?.codexSessionMode ?? "not_applicable",
     workspacePolicy: payload.options?.codexWorkspacePolicy ?? "current_repo",
     attachments: codexImageAttachments
@@ -2389,9 +2437,13 @@ async function waitForServer() {
 }
 
 async function request(method, path, body) {
+  const headers = {
+    ...(bridgeToken ? { Authorization: `Bearer ${bridgeToken}` } : {}),
+    ...(body ? { "Content-Type": "application/json" } : {}),
+  };
   const response = await fetch(`${serverUrl}${path}`, {
     method,
-    headers: body ? { "Content-Type": "application/json" } : undefined,
+    headers,
     body: body ? JSON.stringify(body) : undefined
   });
   if (response.status === 204) {
@@ -2402,6 +2454,31 @@ async function request(method, path, body) {
     throw new Error(`${method} ${path} failed: ${JSON.stringify(data)}`);
   }
   return data;
+}
+
+function loadBridgeToken() {
+  try {
+    if (!existsSync(bridgeTokenPath)) return "";
+    const data = JSON.parse(readFileSync(bridgeTokenPath, "utf8"));
+    return typeof data?.token === "string" ? data.token.trim() : "";
+  } catch {
+    return "";
+  }
+}
+
+function saveBridgeToken(token, credential = null) {
+  try {
+    mkdirSync(dirname(bridgeTokenPath), { recursive: true });
+    writeFileSync(bridgeTokenPath, `${JSON.stringify({
+      token,
+      credentialId: credential?.id ?? null,
+      tokenPrefix: credential?.tokenPrefix ?? String(token ?? "").slice(0, 8),
+      serverUrl,
+      savedAt: new Date().toISOString(),
+    }, null, 2)}\n`);
+  } catch (error) {
+    console.error(`[desktop] could not save bridge credential: ${error instanceof Error ? error.message : String(error)}`);
+  }
 }
 
 function sleep(ms) {

@@ -73,6 +73,8 @@ export function createHttpServer({
   enableAgent,
   createAgentHealthCheck,
   unlinkDevice,
+  issueBridgeCredential,
+  requireBridgeCredential,
   recordCodexHookEvent,
   expireCodexApprovalBrokerRequests,
   resolveCodexApprovalBrokerRequest,
@@ -175,7 +177,8 @@ export function createHttpServer({
       // public and handled downstream in control-plane; everything else needs a
       // live token when MYAGENT_REQUIRE_AUTH is on. ---
       const actor = resolveActor(state, req);
-      const publicPath = url.pathname === "/api/session";
+      const bridgePath = url.pathname.startsWith("/api/bridge/");
+      const publicPath = url.pathname === "/api/session" || bridgePath;
       if (REQUIRE_AUTH && !publicPath && !actor.authenticated) {
         sendJson(res, 401, { error: "unauthenticated", message: "Valid session token required." });
         return;
@@ -319,6 +322,8 @@ export function createHttpServer({
         createAgentDryProbeRun,
         findIntegrationProbeRun,
         unlinkDevice,
+        issueBridgeCredential,
+        requireBridgeCredential,
       })) {
         return;
       }
@@ -468,6 +473,7 @@ export function createHttpServer({
         acknowledgeInvocation,
         appendEvent,
         completeInvocation,
+        requireBridgeCredential,
       })) {
         return;
       }
