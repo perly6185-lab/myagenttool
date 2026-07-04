@@ -97,6 +97,9 @@ First slice:
 - Second-slice status: recovery action responses and the state read model now
   expose an `explanation` object for selected action, guard/refusal reason,
   execution result ids, and the operator next step.
+- Third-slice status: the Web Applications inspector now renders recovery
+  guidance from `explanation`, including approval request, duplicate guard,
+  result invocation/orchestration, agent choice, and next-step evidence.
 - Keep `/api/tools/ccusage.report` stable for consumers.
 - Source the ccusage descriptor and execution path from the Application
   capability path where parity is already proven.
@@ -105,6 +108,9 @@ First slice:
 - Keep recovery explainability assertions green across approval pending,
   duplicate-action guard, regenerate, rerun, view-only, and agent-selection
   recovery paths.
+- Keep the operator-facing recovery guidance visible in history and suggested
+  action cards so blocked/pending/executed recoveries do not require reading
+  raw JSON.
 
 Out of scope:
 
