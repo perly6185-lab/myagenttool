@@ -33,7 +33,15 @@ export async function handleBridgeRoutes({
   acknowledgeInvocation,
   appendEvent,
   completeInvocation,
+  requireBridgeCredential,
 }) {
+  if (!url.pathname.startsWith("/api/bridge/")) {
+    return false;
+  }
+  if (!requireBridgeCredential({ req, res, sendJson })) {
+    return true;
+  }
+
   if (req.method === "GET" && url.pathname === "/api/bridge/next") {
     state.device.lastSeenAt = now();
     if (state.device.unlinkState !== "linked") {

@@ -8,6 +8,7 @@ export function createClaudeReviewImportService({
   now,
   nextId,
   appendEvent,
+  persistStateSoon = () => {},
 }) {
   function recordClaudeReviewFindings({ invocation, result, agent }) {
     if (!isGovernedClaudeReviewAgent(agent) || !isClaudeReviewResult(result)) {
@@ -59,6 +60,7 @@ export function createClaudeReviewImportService({
         droppedFindingCount,
       },
     });
+    persistStateSoon();
     return records;
   }
 

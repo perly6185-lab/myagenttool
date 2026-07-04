@@ -1,5 +1,8 @@
 import { spawn } from "node:child_process";
+import { mkdtempSync, rmSync } from "node:fs";
 import http from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 const serverPort = 3211;
 const httpAgentPort = 3212;
@@ -8,11 +11,14 @@ const httpAgentUrl = `http://127.0.0.1:${httpAgentPort}`;
 const smokePngDataUrl = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=";
 const children = [];
 let httpAgentServer = null;
+const stateDir = mkdtempSync(join(tmpdir(), "myagenttool-local-smoke-"));
+const statePath = join(stateDir, "state.json");
 
 try {
   httpAgentServer = await startHttpAgent();
   start("server", process.execPath, ["apps/server/src/index.mjs"], {
-    SERVER_PORT: String(serverPort)
+    SERVER_PORT: String(serverPort),
+    MYAGENTTOOL_STATE_PATH: statePath
   });
 
   await waitFor(async () => {
@@ -915,6 +921,7 @@ try {
   if (httpAgentServer) {
     await new Promise((resolve) => httpAgentServer.close(resolve));
   }
+  rmSync(stateDir, { recursive: true, force: true });
 }
 
 function startHttpAgent() {

@@ -98,6 +98,7 @@ export function resetStateForSelfCheck({ state, now }) {
   state.device.status = "offline";
   state.device.unlinkState = "linked";
   state.device.credentialRevokedAt = null;
+  state.device.bridgeCredential = null;
   state.device.maxConcurrency = defaultMaxConcurrency;
   state.tokens = [];
   state.agents = state.agents.filter((agent) => defaultAgentIds.includes(agent.id));
@@ -202,6 +203,7 @@ function createDefaultDevice(now) {
     lastSeenAt: null,
     registeredCapabilities: [],
     credentialRevokedAt: null,
+    bridgeCredential: null,
     maxConcurrency: defaultMaxConcurrency,
     createdAt: now()
   };

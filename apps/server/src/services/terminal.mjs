@@ -89,6 +89,7 @@ export function createTerminalService({
         remoteRelayEnabled: target.remoteRelayEnabled,
       },
     });
+    persistStateSoon();
     return target;
   }
 
@@ -145,6 +146,7 @@ export function createTerminalService({
         checks: checks.map((check) => `${check.id}:${check.status}`),
       },
     });
+    persistStateSoon();
     return report;
   }
 
@@ -251,6 +253,7 @@ export function createTerminalService({
       message: "Managed terminal session closed.",
       data: { terminalSessionId: session.terminalSessionId, status: session.status },
     });
+    persistStateSoon();
   }
 
   function queueTerminalBridgeAction(session, actionType, payload = {}) {

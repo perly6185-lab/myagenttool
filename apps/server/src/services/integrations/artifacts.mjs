@@ -26,6 +26,7 @@ export function createIntegrationArtifactRuntime({
   appendEvent,
   buildIntegrationGovernance,
   recordQuotaDecision,
+  persistStateSoon = () => {},
 }) {
   function createIntegrationArtifact(body = {}) {
     const targetType = normalizeTargetType(body.targetType ?? body.adapterType ?? guessAdapterType(body));
@@ -61,6 +62,7 @@ export function createIntegrationArtifactRuntime({
       message: `${artifact.summary} It is reviewable and not enabled.`,
       data: { artifactId: artifact.id, artifactType: artifact.artifactType, reviewState: artifact.reviewState },
     });
+    persistStateSoon();
     return artifact;
   }
 
@@ -191,6 +193,7 @@ export function createIntegrationArtifactRuntime({
       message: `Generated ${generated.length} reviewable integration artifact(s) from ${sourceArtifact.id}.`,
       data: { sourceArtifactId: sourceArtifact.id, artifactIds: generated.map((item) => item.id) },
     });
+    persistStateSoon();
     return generated;
   }
 
@@ -213,6 +216,7 @@ export function createIntegrationArtifactRuntime({
       message: `${artifact.summary} moved to ${nextState}. No integration was enabled automatically.`,
       data: { artifactId: artifact.id, reviewState: nextState },
     });
+    persistStateSoon();
     return artifact;
   }
 

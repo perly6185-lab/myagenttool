@@ -1,4 +1,5 @@
 import { createEventLogRuntime } from "./event-log.mjs";
+import { createBridgeCredentialRuntime } from "./bridge-auth.mjs";
 import { createPersistenceRuntime } from "./persistence.mjs";
 import { createReadModelRuntime } from "./read-models.mjs";
 import {
@@ -55,6 +56,7 @@ export function createServerRuntimeServices({
     sameProjectPath,
   });
   restorePersistentState();
+  idCounter = nextIdCounterAfterState(state);
 
   const { appendEvent } = createEventLogRuntime({
     state,
@@ -63,6 +65,10 @@ export function createServerRuntimeServices({
     persistStateSoon,
     getCodexEventHandlers: () => codexEventHandlers,
   });
+  const {
+    issueBridgeCredential,
+    requireBridgeCredential,
+  } = createBridgeCredentialRuntime({ state, now, persistStateSoon });
 
   const {
     addProject,
@@ -119,7 +125,7 @@ export function createServerRuntimeServices({
     markHealthCheckStarted,
     nextBridgeHealthCheck,
     registerAgent,
-  } = createAgentService({ state, now, nextId, appendEvent });
+  } = createAgentService({ state, now, nextId, appendEvent, persistStateSoon });
 
   const {
     closeCodexSession,
@@ -209,24 +215,28 @@ export function createServerRuntimeServices({
     nextId,
     appendEvent,
     findAgent,
+    persistStateSoon,
   });
   const { recordCcusageImportedEstimates } = createCcusageImportService({
     state,
     now,
     nextId,
     appendEvent,
+    persistStateSoon,
   });
   const { recordCodexReviewFindings } = createCodexReviewImportService({
     state,
     now,
     nextId,
     appendEvent,
+    persistStateSoon,
   });
   const { recordClaudeReviewFindings } = createClaudeReviewImportService({
     state,
     now,
     nextId,
     appendEvent,
+    persistStateSoon,
   });
 
   invocationService = createInvocationService({
@@ -304,6 +314,7 @@ export function createServerRuntimeServices({
     disableAgent,
     findAgent,
     registerAgent,
+    persistStateSoon,
   });
 
   const {
@@ -1505,6 +1516,9 @@ export function createServerRuntimeServices({
     state.device.status = "offline";
     state.device.unlinkState = "unlinked";
     state.device.credentialRevokedAt = now();
+    if (state.device.bridgeCredential) {
+      state.device.bridgeCredential.revokedAt = state.device.credentialRevokedAt;
+    }
     state.device.updatedAt = now();
     for (const agent of state.agents.filter((item) => item.location.type === "local_device")) {
       if (isAgentDisabled(agent)) {
@@ -1714,6 +1728,8 @@ export function createServerRuntimeServices({
     transitionLifecycleRecipe,
     updatePrivateDeploymentConfig,
     createAgentDryProbeRun,
+    issueBridgeCredential,
+    requireBridgeCredential,
     createIntegrationProbeRun,
     registerIntegrationArtifact,
     transitionIntegrationArtifact,
@@ -1763,4 +1779,27 @@ export function createServerRuntimeServices({
     savePersistentState,
     selfCheckDependencies,
   };
+}
+
+function nextIdCounterAfterState(state) {
+  let max = 0;
+  const seen = new Set();
+  const visit = (value) => {
+    if (!value || typeof value !== "object") {
+      if (typeof value === "string") {
+        const match = value.match(/_(\d{4,})$/);
+        if (match) max = Math.max(max, Number(match[1]));
+      }
+      return;
+    }
+    if (seen.has(value)) return;
+    seen.add(value);
+    if (Array.isArray(value)) {
+      for (const item of value) visit(item);
+      return;
+    }
+    for (const item of Object.values(value)) visit(item);
+  };
+  visit(state);
+  return max + 1;
 }

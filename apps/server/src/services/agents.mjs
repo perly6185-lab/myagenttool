@@ -2,7 +2,7 @@ import { normalizeA2aAdapterConfig } from "@myagenttool/adapters/a2a";
 import { normalizeContainerAdapterConfig } from "@myagenttool/adapters/container";
 import { normalizeMcpAdapterConfig } from "@myagenttool/adapters/mcp";
 
-export function createAgentService({ state, now, nextId, appendEvent }) {
+export function createAgentService({ state, now, nextId, appendEvent, persistStateSoon = () => {} }) {
   const AGENT_FACTORIES = {
     cli: (body) => createCliAgent(body),
     http: (body) => createHttpAgent(body),
@@ -34,9 +34,11 @@ export function createAgentService({ state, now, nextId, appendEvent }) {
         merged.status = "disabled";
       }
       state.agents[existingIndex] = merged;
+      persistStateSoon();
       return merged;
     }
     state.agents.push(agent);
+    persistStateSoon();
     return agent;
   }
 
@@ -303,6 +305,7 @@ export function createAgentService({ state, now, nextId, appendEvent }) {
     agent.status = "disabled";
     agent.updatedAt = now();
     finishLifecycleOperation(operation, "succeeded", `${agent.name} is disabled. New invocations are blocked.`);
+    persistStateSoon();
     return operation;
   }
 
@@ -313,6 +316,7 @@ export function createAgentService({ state, now, nextId, appendEvent }) {
     agent.status = enabledAgentStatus(agent);
     agent.updatedAt = now();
     finishLifecycleOperation(operation, "succeeded", `${agent.name} is enabled.`);
+    persistStateSoon();
     return operation;
   }
 
@@ -327,6 +331,7 @@ export function createAgentService({ state, now, nextId, appendEvent }) {
       nextAction: "Wait for the health result.",
     };
     agent.updatedAt = now();
+    persistStateSoon();
 
     if (agent.adapter.type === "http" && agent.location.type === "remote_http") {
       queueMicrotask(() => runHttpHealthCheck(operation, agent).catch((error) => {
@@ -434,6 +439,7 @@ export function createAgentService({ state, now, nextId, appendEvent }) {
       agent.updatedAt = now();
     }
     startLifecycleOperation(operation, `Health check started for ${agent?.name ?? operation.agentId}.`);
+    persistStateSoon();
   }
 
   async function runHttpHealthCheck(operation, agent) {
@@ -489,6 +495,7 @@ export function createAgentService({ state, now, nextId, appendEvent }) {
       nextAction,
     };
     agent.updatedAt = now();
+    persistStateSoon();
   }
 
   function enabledAgentStatus(agent) {

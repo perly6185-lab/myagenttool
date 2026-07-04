@@ -302,7 +302,19 @@ export function createApplicationService({
     }
     return {
       ok: true,
-      wrapper: { execCommand: plan.command, execArgs: plan.args, cwd: plan.cwd, capability: plan.capability },
+      wrapper: {
+        execCommand: plan.command,
+        execArgs: plan.args,
+        cwd: plan.cwd,
+        capability: plan.capability,
+        filePolicy: plan.filePolicy,
+        networkPolicy: plan.networkPolicy,
+        compatibilityFacade: plan.compatibilityFacade,
+        outputCollection: plan.outputCollection,
+        billing: plan.billing,
+        resultImport: plan.resultImport,
+      },
+      outputCollection: plan.outputCollection,
       timeoutSeconds: plan.timeoutSeconds,
     };
   }
@@ -433,6 +445,10 @@ export function applicationWrapperExecutionPlan(application, commandId, input = 
     envPolicy: command.envPolicy,
     filePolicy: command.filePolicy,
     networkPolicy: command.networkPolicy,
+    compatibilityFacade: command.compatibilityFacade,
+    outputCollection: command.outputCollection,
+    billing: command.billing,
+    resultImport: command.resultImport,
   };
 }
 
@@ -503,6 +519,10 @@ function projectNpmWrapperCapabilities(app, prefix, disabled) {
           filePolicy: command.filePolicy,
           networkPolicy: command.networkPolicy,
         },
+        compatibilityFacade: command.compatibilityFacade,
+        outputCollection: command.outputCollection,
+        billing: command.billing,
+        resultImport: command.resultImport,
       },
     ));
 }
@@ -1004,6 +1024,10 @@ function publicNpmWrapperSnapshot(wrapper) {
       envPolicy: command.envPolicy,
       filePolicy: command.filePolicy,
       networkPolicy: command.networkPolicy,
+      compatibilityFacade: command.compatibilityFacade,
+      outputCollection: command.outputCollection,
+      billing: command.billing,
+      resultImport: command.resultImport,
     })),
   };
 }
@@ -1450,6 +1474,10 @@ function normalizeWrapperCommand(command, index) {
     envPolicy: normalizeEnvPolicy(command.envPolicy),
     filePolicy: normalizeAccessPolicy(command.filePolicy, "read_only"),
     networkPolicy: normalizeAccessPolicy(command.networkPolicy, "forbidden"),
+    compatibilityFacade: normalizeWrapperCompatibilityFacade(command.compatibilityFacade),
+    outputCollection: stringOrNull(command.outputCollection),
+    billing: normalizeWrapperBilling(command.billing),
+    resultImport: normalizeWrapperResultImport(command.resultImport),
   };
 }
 
@@ -1480,6 +1508,41 @@ function normalizeEnvPolicy(value) {
     allow: normalizeStringList(policy.allow),
     redact: normalizeStringList(policy.redact),
     inherit: policy.inherit === true,
+  };
+}
+
+function normalizeWrapperCompatibilityFacade(value) {
+  const facade = value && typeof value === "object" && !Array.isArray(value) ? value : null;
+  if (!facade) return null;
+  const name = stringOrNull(facade.name);
+  if (!name) return null;
+  return {
+    type: stringOrNull(facade.type) ?? "tool",
+    name,
+    invocationMode: stringOrNull(facade.invocationMode) ?? null,
+  };
+}
+
+function normalizeWrapperBilling(value) {
+  const billing = value && typeof value === "object" && !Array.isArray(value) ? value : null;
+  if (!billing) return null;
+  return {
+    authoritative: billing.authoritative === true,
+    externalBilled: billing.externalBilled === true,
+    amountSource: stringOrNull(billing.amountSource),
+  };
+}
+
+function normalizeWrapperResultImport(value) {
+  const resultImport = value && typeof value === "object" && !Array.isArray(value) ? value : null;
+  if (!resultImport) return null;
+  const source = stringOrNull(resultImport.source);
+  const kind = stringOrNull(resultImport.kind);
+  if (!source && !kind) return null;
+  return {
+    source,
+    kind,
+    amountSource: stringOrNull(resultImport.amountSource),
   };
 }
 

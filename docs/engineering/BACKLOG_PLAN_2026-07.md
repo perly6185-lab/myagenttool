@@ -1,71 +1,102 @@
 # Near-term backlog plan (2026-07)
 
-Execution plan for the backlog opened after the tenancy + identity workstream
-(#209–#213). Ordered by dependency × value × risk. CI (#213) is deferred on
-runner cost, so local tests are the only gate — tests come before features.
+This backlog supersedes the earlier #209-#213 sequencing. Auth and tenancy have
+landed, and the latest ccusage/Application work moved the active product line
+from "agent registry slices" toward governed Application capabilities.
 
+The next phase should therefore stop adding new surface area and make the
+existing control plane durable, locally enforceable, and easier to close out.
+
+```text
+re-baseline docs + tests
+  -> durable state and audit/ledger history
+  -> bridge credential + local execution gate
+  -> Application capability runtime closeout
+  -> M3 closeout and one lifecycle execution sample
 ```
-#212 broaden tests  →  #209 real auth (3 phases)  →  #211 adapters  →  #210 team cost allocation
-        └─ #213 CI slots in the moment runner cost is approved (small, high-leverage)
-```
 
-## M1 — Foundations (in progress)
+See `docs/engineering/NEXT_PHASE_PLAN_2026-07.md` for the operating plan.
 
-- **#212 Broaden hermetic unit tests** — worktree naming/normalization
-  (`apps/server/test/worktree-naming.test.mjs`), the loop-engine's
-  sanitization/id primitives (`tools/ai/test/routine-utils.test.mjs`), worktree
-  lifecycle create/teardown (`apps/server/test/worktree-lifecycle.test.mjs`), the
-  worktree diff surface (`apps/server/test/worktree-diff.test.mjs` — porcelain
-  list, merge-base tracked diff, the `--no-index` untracked-as-addition path, and
-  the byte cap), and the loop promotion-gate decisions — both the human-gate
-  event replay (`tools/ai/test/loop-gate.test.mjs`) and the push-risk decision
-  (`tools/ai/test/loop-promotion-push-risks.test.mjs`) — are done. Remaining:
-  extend into promotion-results/evidence assembly if a regression surfaces. Zero
-  decisions, low risk, locks behavior before feature work.
-- **#213 Activate CI** — `ci.yml` add a `pull_request` trigger + flip
-  `ENABLE_GITHUB_HOSTED_RUNNERS` + branch protection. ~30 min once cost approved.
+## P0 - Baseline and scope control
 
-## M2 — Make tenancy engage (#209, the capstone)
+- **Update planning docs.** Keep this backlog, milestones, ADR 0007, M3 issue
+  plan, and Application Capability Registry in sync with the latest code.
+- **Run the local gate before new feature work.** Use:
+  `pnpm docs:check`, `pnpm repo:check`, `pnpm typecheck`, `pnpm test`,
+  `pnpm smoke:local`, and `git diff --check`.
+- **File or update issue references for deferred work.** Any new runtime scope
+  should map back to persistence, bridge trust, Application capabilities, M3
+  closeout, or billing/reporting.
+- **Recently landed baseline:** #212 broadened hermetic coverage for worktree
+  naming, lifecycle, diff, and loop promotion gates. #213 CI activation remains
+  the operational follow-up once hosted-runner cost approval and branch
+  protection are ready.
 
-The tenancy guards are validated but dormant (auth off + login-as-anyone). Three
-phases:
+## P1 - Durable control-plane state
 
-- **9A server credential verification (S–M, backend).** Add a credential
-  (`passwordHash` / dev token) to users; `/api/session` verifies before minting a
-  token (replaces login-as-anyone); seed the local user with a dev credential.
-  Extend `multi-user-plumbing.test.mjs` to log in with real credentials.
-- **9B web login + token (M, frontend).** A login screen → `/api/session` → store
-  the bearer token → inject `Authorization` at the single choke point
-  (`apps/web/src/lib/api-client.ts`); 401 → login. Then tenant isolation is
-  visible in the UI.
-- **9C provisioning RBAC (S, backend).** Role checks on `POST /api/teams|users`
-  (owner/admin only) + minimal team/user management in the web.
+Persistence is the highest-value foundation still missing from the architecture
+review. The first slice should be intentionally small:
 
-## M3 — Ecosystem adapters (#211, parallelizable with M2)
+- Add a durable store boundary with an in-memory adapter kept for tests and
+  self-checks.
+- Persist tokens, users, teams, projects, invocations, events, approvals,
+  application records, lifecycle records, quota decisions, usage, and ledger
+  entries.
+- Stop treating audit and ledger rows as capped demo arrays for any path that
+  claims governance, billing, or export semantics.
+- Use store transactions to close dispatch claim, budget admission, and
+  idempotency races where practical.
 
-- **11A MCP bridge live client (desktop) — DONE.** The live client shipped
-  (`apps/desktop/src/mcp-client.mjs`): stdio *and* Streamable-HTTP transports,
-  `initialize`→`tools/list`→`tools/call`, MCP notifications forwarded into the
-  invocation event model, cancellation via `notifications/cancelled` + process
-  termination, and a health probe. It is wired into bridge dispatch
-  (`apps/desktop/src/index.mjs`) and server registration (`POST /api/agents
-  {type:"mcp"}`). Covered by `apps/desktop/test/mcp-client.test.mjs`,
-  `apps/server/test/mcp-registration.test.mjs`, and the end-to-end seam smoke
-  `tools/dev/mcp-agent-smoke.mjs`. Remaining follow-ups: server→client requests
-  (sampling/roots) are intentionally out of scope; the user-facing connect flow
-  is #137.
-- **11B A2A + container contract slices (S–M each).** Same declarative shape as
-  the MCP slice (contract + config normalization + descriptor + unit tests) in
-  `packages/adapters`; bridge-side clients follow.
+## P2 - Bridge trust boundary
 
-## M4 — Team-level cost allocation (#210, after #209)
+The Desktop Bridge should enforce local trust at the point of execution:
 
-Only meaningful once real teams exist. Extend budgets from project-level to team
-pools (`budgetPoolId` already exists on projects/ledger): aggregate spend by
-team, team budget status, team chargeback; revisit the m3 operator-level objects'
-team ownership. Extend `apps/server/test/economics.test.mjs`.
+- Status: first slice started on `feat/bridge-trust-boundary`; bridge bearer
+  credentialing and an auditable local execution policy manifest are now
+  implemented for the demo bridge path.
+- Context: the MCP bridge live client has landed; A2A/container contract slices
+  stay later backlog until the trust boundary and durable evidence are closed.
+- Issue or register a device-bound bridge credential.
+- Require bridge credentials on bridge polling, completion, lifecycle, and
+  dispatch endpoints.
+- Add a local allowlist/approval check before the bridge starts a process.
+- Preserve the principle that server policy approval does not by itself mean
+  local execution consent.
 
-## Suggested start
+## P3 - Application capability runtime
 
-M1 #212 (no decisions, locks behavior), while the CI cost decision is made; then
-M2 #209 — the payoff that makes the whole tenancy line real.
+The latest ccusage work makes the Application path real enough to be the next
+product-quality focus:
+
+- Status: first slice started on `feat/application-capability-runtime-closeout`;
+  ccusage Application wrapper capabilities now expose compatibility facade,
+  output collection, external-billed, and import semantics through discovery and
+  queued wrapper invocation metadata.
+- Keep `/api/tools` stable while `/api/capabilities` becomes the unified
+  discovery surface.
+- Finish ccusage parity on the Application-backed tool facade, including
+  descriptor, dynamic filters, import metadata, ledger semantics, and smoke
+  coverage.
+- Make recovery actions explainable after execution: selected action, refusal
+  reason, result, next step, and duplicate-action guard evidence.
+- Generalize only after ccusage remains green through the compatibility facade.
+
+## P4 - M3 closeout
+
+M3 should close around what is already implemented instead of expanding:
+
+- Write `M3_ACCEPTANCE_CLOSEOUT.md` with accepted scope, evidence, residual
+  risks, and explicit non-goals.
+- Keep lifecycle execution to one allowlisted sample first, preferably the
+  pinned ccusage npm lifecycle path.
+- Keep billing work to enforceable quota decisions, ledger attribution,
+  reporting shape, and chargeback export. Do not add payment, invoice, tax, or
+  public marketplace flows in this phase.
+
+## Later backlog
+
+- MCP, A2A, and container live clients.
+- Public marketplace and settlement.
+- External SIEM/export delivery providers.
+- Production identity providers, SSO, and full RBAC administration.
+- Repeatable workflow productization once persistence and audit are reliable.

@@ -8,6 +8,7 @@ export function createCodexReviewImportService({
   now,
   nextId,
   appendEvent,
+  persistStateSoon = () => {},
 }) {
   function recordCodexReviewFindings({ invocation, result, agent }) {
     if (!isGovernedCodexReviewAgent(agent) || !isCodexReviewResult(result)) {
@@ -59,6 +60,7 @@ export function createCodexReviewImportService({
         droppedFindingCount,
       },
     });
+    persistStateSoon();
     return records;
   }
 
