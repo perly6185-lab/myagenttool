@@ -7,6 +7,10 @@ real enforcement where it matters, and the Application capability runtime. Per
 all M3 server logic lives in `apps/server/src/services/m3.mjs` behind
 `apps/server/src/routes/m3.mjs`.
 
+Last refreshed after #407: ccusage Application wrapper runtime semantics are
+published in the external consumer contract, and recovery explanation guidance
+has seeded UI regression coverage.
+
 ## Accepted Scope
 
 ### Lifecycle recipes and execution
@@ -95,9 +99,15 @@ Acceptance evidence:
 - Unified discovery at `GET /api/capabilities` (governed tools + visible
   application caps, tenancy-filtered); the stable `GET /api/tools` facade remains.
 - ccusage runs via the Application capability path (`agt_platform_application_
-  wrapper`), import is non-authoritative / external-billed, and recovery-action
-  outcomes are explainable (`applicationRecoveryActionExplanation`: selected
-  action, reason, next step, recovery category — #396/#398).
+  wrapper`), import is non-authoritative / external-billed, and the public
+  contract records the Application wrapper compatibility facade, output
+  collection, billing stance, and result-import semantics (#396/#407).
+- Recovery-action outcomes are explainable end-to-end:
+  `applicationRecoveryActionExplanation` records selected action, reason, next
+  step, recovery category, approval ids, result invocation/orchestration ids, and
+  selected agent evidence (#398); the Web Applications inspector renders this
+  guidance in history and suggested action cards (#403), with seeded UI
+  regression coverage for pending-approval and executed recovery records (#406).
 
 Acceptance evidence:
 
@@ -105,6 +115,18 @@ Acceptance evidence:
   requires `approvalToken`, plan returned with `invocationPlan.executable ===
   false`), `tools/dev/ccusage-agent-smoke.mjs` (report parity, non-authoritative
   import, raw rows stripped), `apps/desktop/test/application-wrapper-*.test.mjs`.
+- `docs/engineering/fixtures/tool-registry-contract.v1.json` and
+  `tools/dev/tool-registry-contract-smoke.mjs` assert that `/api/capabilities`
+  publishes ccusage `compatibilityFacade`, `importedUsageEstimates`,
+  `externalBilled`, and `resultImport` semantics, and that direct wrapper
+  capability invocation returns the same output collection without exposing
+  wrapper script paths.
+- `apps/server/test/integration/tools-http.test.mjs` covers direct
+  `POST /api/capabilities/app.app_ccusage.wrapper.daily/invocations` and no
+  wrapper-script leakage.
+- `apps/web/src/features/applications/applications-inspector.test.ts` seeds
+  recovery explanation records and asserts the operator-facing guidance remains
+  visible.
 
 ### Durable control-plane state (#388)
 
@@ -143,6 +165,8 @@ Proven by `tools/dev/ccusage-agent-smoke.mjs` and the desktop self-check.
 - No automatic registration/enablement; wrapper capabilities return a plan
   (`executable === false`) until a linked bridge runs them.
 - ccusage import is non-authoritative and never rolled into the metered ledger.
+- Public capability discovery exposes compatibility and import semantics, not
+  executable wrapper script paths, local cwd, shell, or argv internals.
 - Destructive private-deployment entitlements (block export, delete user data,
   remove local software, prevent device unlink) are hardcoded off.
 
@@ -154,6 +178,7 @@ pnpm repo:check
 pnpm typecheck
 pnpm test
 pnpm smoke:local
+pnpm smoke:port
 git diff --check
 ```
 
@@ -191,6 +216,8 @@ auto-update, and unsandboxed generated-code execution remain out of scope. See
 ## Closeout Decision
 
 M3 is accepted around the scope above. The delivery discipline is itself now
-enforced: `main` requires `verify`, `eval-gates`, and `pr-governance`, and DORA
-change-failure/recovery are instrumented ([MATURITY_CALIBRATION.md](MATURITY_CALIBRATION.md)).
-The deferred items above are the durability-phase backlog, not M3 gaps.
+enforced: `main` requires `verify`, `eval-gates`, and `pr-governance`; DORA
+change-failure/recovery are instrumented
+([MATURITY_CALIBRATION.md](MATURITY_CALIBRATION.md)); and `pnpm test` now runs
+the tool-registry contract smoke through `smoke:port`. The deferred items above
+are the durability-phase backlog, not M3 gaps.

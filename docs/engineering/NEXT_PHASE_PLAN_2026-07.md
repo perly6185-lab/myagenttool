@@ -100,6 +100,9 @@ First slice:
 - Third-slice status: the Web Applications inspector now renders recovery
   guidance from `explanation`, including approval request, duplicate guard,
   result invocation/orchestration, agent choice, and next-step evidence.
+- Closeout status: ccusage Application wrapper semantics are published in the
+  external consumer contract and enforced by the tool-registry contract smoke;
+  recovery guidance has seeded UI regression coverage.
 - Keep `/api/tools/ccusage.report` stable for consumers.
 - Source the ccusage descriptor and execution path from the Application
   capability path where parity is already proven.
@@ -125,13 +128,11 @@ automation.
 
 First slice:
 
-- Add `M3_ACCEPTANCE_CLOSEOUT.md`.
-- Document accepted scope for lifecycle recipes, review gates, quota/ledger,
-  private deployment shape, catalog/bundle metadata, and Application capability
-  runtime.
-- Pick one allowlisted lifecycle execution sample, preferably pinned ccusage
-  npm lifecycle.
-- Record residual risks for persistence, external export sinks, public
+- Status: `M3_ACCEPTANCE_CLOSEOUT.md` exists and is refreshed with accepted
+  scope for lifecycle recipes, review gates, quota/ledger, private deployment
+  shape, catalog/bundle metadata, and Application capability runtime.
+- The allowlisted lifecycle execution sample is pinned ccusage npm lifecycle.
+- Residual risks are recorded for persistence, external export sinks, public
   marketplace, payment, invoice, tax, and full repeatable workflows.
 
 Out of scope:
