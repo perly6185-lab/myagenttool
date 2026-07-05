@@ -27,6 +27,8 @@ const apiMock = vi.hoisted(() => ({
   requestApplicationOrchestrationRecoveryAction: vi.fn(),
   confirmApplicationMcpCandidate: vi.fn(),
   approveApproval: vi.fn(),
+  getApplicationDescriptors: vi.fn(),
+  updateApplicationDescriptors: vi.fn(),
 }));
 
 vi.mock("@/lib/api-client", () => ({
@@ -41,6 +43,8 @@ vi.mock("@/lib/api-client", () => ({
     requestApplicationOrchestrationRecoveryAction: apiMock.requestApplicationOrchestrationRecoveryAction,
     confirmApplicationMcpCandidate: apiMock.confirmApplicationMcpCandidate,
     approveApproval: apiMock.approveApproval,
+    getApplicationDescriptors: apiMock.getApplicationDescriptors,
+    updateApplicationDescriptors: apiMock.updateApplicationDescriptors,
   },
 }));
 
@@ -149,6 +153,56 @@ describe("ApplicationsInspector recovery guidance", () => {
     expect(useUiStore.getState().selectedInvocationId).toBe("inv_app_ccusage");
   });
 
+  it("edits existing npm wrapper descriptors from the inspector", async () => {
+    apiMock.fetchState.mockResolvedValue(closedLoopConsoleState());
+    apiMock.listApplicationCapabilities.mockResolvedValue({
+      applicationId: "app_ccusage",
+      capabilities: [],
+    });
+    apiMock.getApplicationDescriptors.mockResolvedValue({
+      applicationId: "app_ccusage",
+      descriptors: {
+        mcpAgent: null,
+        npmWrapper: {
+          mode: "installed-wrapper",
+          installState: "installed",
+          packageManager: "npm",
+          commands: [{ id: "daily", commandType: "bin", command: "ccusage", status: "approved" }],
+        },
+        manualManifest: null,
+      },
+    });
+    apiMock.updateApplicationDescriptors.mockResolvedValue({
+      application: { id: "app_ccusage", name: "ccusage" },
+      capabilities: [],
+      descriptors: null,
+    });
+
+    useUiStore.setState({ selectedApplicationId: "app_ccusage" });
+    renderWithClient(createElement(ApplicationsInspector));
+
+    expect(await screen.findByText("Descriptors")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: /Edit descriptors/i }));
+
+    const wrapperEditor = await screen.findByLabelText("npm wrapper descriptor JSON");
+    expect((wrapperEditor as HTMLTextAreaElement).value).toContain('"command": "ccusage"');
+
+    const nextWrapper = {
+      mode: "installed-wrapper",
+      installState: "installed",
+      packageManager: "npm",
+      commands: [{ id: "weekly", commandType: "bin", command: "ccusage", args: ["weekly"], status: "approved" }],
+    };
+    fireEvent.change(wrapperEditor, { target: { value: JSON.stringify(nextWrapper, null, 2) } });
+    fireEvent.click(screen.getByRole("button", { name: /Save descriptors/i }));
+
+    await waitFor(() => {
+      expect(apiMock.updateApplicationDescriptors).toHaveBeenCalledWith("app_ccusage", {
+        npmWrapper: nextWrapper,
+      });
+    });
+  });
+
   it("renders autodetected MCP tools and the Application-bound render result", async () => {
     apiMock.fetchState.mockResolvedValue(mcpConsoleState());
     apiMock.listApplicationCapabilities.mockResolvedValue({
@@ -170,7 +224,7 @@ describe("ApplicationsInspector recovery guidance", () => {
     renderWithClient(createElement(ApplicationsInspector));
 
     expect(await screen.findByText("MCP tools")).toBeTruthy();
-    expect(await screen.findByText("agt_app_doocs_md_mcp")).toBeTruthy();
+    expect((await screen.findAllByText("agt_app_doocs_md_mcp")).length).toBeGreaterThan(0);
     expect(screen.getAllByText("doocs_md.render_markdown").length).toBeGreaterThan(0);
     expect(screen.getByText("high confidence")).toBeTruthy();
     expect(screen.getByText("node_entrypoint_inside_application_root")).toBeTruthy();

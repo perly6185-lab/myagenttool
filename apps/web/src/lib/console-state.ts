@@ -991,6 +991,7 @@ export interface ApplicationSnapshot {
   capabilitiesVersion?: number;
   probe?: ApplicationProbe | null;
   mcpAgent?: ApplicationMcpAgentSnapshot | null;
+  wrapper?: NpmWrapperSnapshot | null;
   orchestrations?: ApplicationOrchestration[];
   orchestrationIds?: string[];
   latestResult?: ApplicationResultRef | null;
@@ -1034,6 +1035,19 @@ export interface ApplicationRegisterRequest {
   projectId?: string | null;
   source: ApplicationSource;
   mcpAgent?: Record<string, unknown> | null;
+}
+
+export interface ApplicationDescriptorSnapshot {
+  mcpAgent?: Record<string, unknown> | null;
+  npmWrapper?: Record<string, unknown> | null;
+  manualManifest?: Record<string, unknown> | null;
+}
+
+export interface ApplicationDescriptorUpdateRequest {
+  name?: string;
+  mcpAgent?: Record<string, unknown>;
+  npmWrapper?: Record<string, unknown>;
+  manualManifest?: Record<string, unknown>;
 }
 
 export interface ApplicationCapability {

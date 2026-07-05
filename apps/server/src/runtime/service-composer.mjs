@@ -127,6 +127,7 @@ export function createServerRuntimeServices({
   const {
     confirmApplicationMcpCandidate: confirmApplicationMcpCandidateBase,
     findApplication,
+    getApplicationDescriptors,
     invokeApplicationCapability,
     listApplicationCapabilities,
     listApplications,
@@ -134,6 +135,7 @@ export function createServerRuntimeServices({
     probeApplication: probeApplicationBase,
     registerApplication: registerApplicationBase,
     transitionApplication,
+    updateApplicationDescriptors: updateApplicationDescriptorsBase,
   } = createApplicationService({
     state,
     now,
@@ -186,6 +188,12 @@ export function createServerRuntimeServices({
 
   function probeApplication(applicationId, actor = null) {
     const application = probeApplicationBase(applicationId, actor);
+    if (application) reconcileApplicationMcpAgent(application, actor);
+    return application;
+  }
+
+  function updateApplicationDescriptors(applicationId, body = {}, actor = null) {
+    const application = updateApplicationDescriptorsBase(applicationId, body, actor);
     if (application) reconcileApplicationMcpAgent(application, actor);
     return application;
   }
@@ -1884,6 +1892,7 @@ export function createServerRuntimeServices({
     createCapabilityInvocation,
     findApplication,
     confirmApplicationMcpCandidate,
+    getApplicationDescriptors,
     getApplicationOrchestrationRunRecovery,
     listApplicationOrchestrationRecoveryAgentCandidates,
     getApplicationOrchestrationRun,
@@ -1899,6 +1908,7 @@ export function createServerRuntimeServices({
     requestApplicationOrchestrationRecoveryAction,
     runApplicationOrchestration,
     transitionApplication,
+    updateApplicationDescriptors,
     createCodexChangeReview,
     createCodexImportedEvidenceRecord,
     createCompareRun,
@@ -2004,6 +2014,7 @@ export function createServerRuntimeServices({
     createCapabilityInvocation,
     findApplication,
     confirmApplicationMcpCandidate,
+    getApplicationDescriptors,
     getApplicationOrchestrationRunRecovery,
     listApplicationOrchestrationRecoveryAgentCandidates,
     getApplicationOrchestrationRun,
@@ -2019,6 +2030,7 @@ export function createServerRuntimeServices({
     requestApplicationOrchestrationRecoveryAction,
     runApplicationOrchestration,
     transitionApplication,
+    updateApplicationDescriptors,
     createSshTarget,
     createSshConnectionTest,
     createManagedTerminalSession,

@@ -11,6 +11,7 @@ export async function handleApplicationRoutes({
   actor,
   confirmApplicationMcpCandidate,
   findApplication,
+  getApplicationDescriptors,
   getApplicationOrchestrationRunRecovery,
   listApplicationOrchestrationRecoveryAgentCandidates,
   getApplicationOrchestrationRun,
@@ -21,6 +22,7 @@ export async function handleApplicationRoutes({
   registerApplication,
   requestApplicationOrchestrationRecoveryAction,
   transitionApplication,
+  updateApplicationDescriptors,
   createCapabilityInvocation,
   listApplicationOrchestrationRuns,
   runApplicationOrchestration,
@@ -190,6 +192,40 @@ export async function handleApplicationRoutes({
       return true;
     }
     sendJson(res, 200, { applicationId, capabilities });
+    return true;
+  }
+
+  const descriptorsMatch = url.pathname.match(/^\/api\/applications\/([^/]+)\/descriptors$/);
+  if (descriptorsMatch && (req.method === "GET" || req.method === "PATCH")) {
+    const applicationId = decodeURIComponent(descriptorsMatch[1]);
+    if (denyForeignApplication({ res, sendJson, state, actor, applicationId, findApplication })) return true;
+    if (req.method === "GET") {
+      const descriptors = getApplicationDescriptors(applicationId, actor);
+      if (!descriptors) {
+        sendJson(res, 404, { error: "application_not_found" });
+        return true;
+      }
+      sendJson(res, 200, descriptors);
+      return true;
+    }
+    const body = await readJson(req);
+    try {
+      const application = updateApplicationDescriptors(applicationId, body, actor);
+      if (!application) {
+        sendJson(res, 404, { error: "application_not_found" });
+        return true;
+      }
+      sendJson(res, 200, {
+        application: publicApplicationSnapshot(application),
+        capabilities: listApplicationCapabilities(application.id) ?? [],
+        descriptors: getApplicationDescriptors(application.id, actor)?.descriptors ?? null,
+      });
+    } catch (error) {
+      sendJson(res, 400, {
+        error: "invalid_application_descriptor",
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
     return true;
   }
 

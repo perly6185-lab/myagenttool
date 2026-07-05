@@ -890,6 +890,65 @@ test("metadata-only npm wrapper registrations do not project invokable commands"
   assert.ok(!capabilities.body.capabilities.some((item) => item.name === `app.${registered.body.application.id}.wrapper.lint`));
 });
 
+test("application descriptor endpoint edits npm wrapper descriptors and reprojects capabilities", async () => {
+  const registered = await call("/api/applications/register", {
+    method: "POST",
+    body: {
+      id: "npm_descriptor_edit",
+      name: "NPM Descriptor Edit",
+      source: {
+        type: "npm",
+        package: "@scope/descriptor-edit",
+        wrapper: {
+          mode: "installed-wrapper",
+          installState: "installed",
+          packageManager: "npm",
+          commands: [{
+            id: "lint",
+            commandType: "npm_script",
+            command: "lint",
+            status: "approved",
+            riskLevel: "low",
+          }],
+        },
+      },
+    },
+    token: "tok_a",
+  });
+  assert.equal(registered.status, 201);
+  assert.equal(registered.body.application.source.wrapper.commands[0].command, undefined, "public snapshots should keep wrapper commands redacted");
+  const appId = registered.body.application.id;
+
+  const descriptors = await call(`/api/applications/${encodeURIComponent(appId)}/descriptors`, { token: "tok_a" });
+  assert.equal(descriptors.status, 200);
+  assert.equal(descriptors.body.descriptors.npmWrapper.commands[0].command, "lint");
+
+  const updated = await call(`/api/applications/${encodeURIComponent(appId)}/descriptors`, {
+    method: "PATCH",
+    token: "tok_a",
+    body: {
+      npmWrapper: {
+        mode: "installed-wrapper",
+        installState: "installed",
+        packageManager: "npm",
+        commands: [{
+          id: "build",
+          commandType: "npm_script",
+          command: "build",
+          status: "approved",
+          riskLevel: "low",
+          requiresApproval: false,
+        }],
+      },
+    },
+  });
+  assert.equal(updated.status, 200);
+  assert.ok(updated.body.capabilities.some((item) => item.name === `app.${appId}.wrapper.build`));
+  assert.ok(!updated.body.capabilities.some((item) => item.name === `app.${appId}.wrapper.lint`));
+  assert.equal(updated.body.application.capabilitiesVersion, registered.body.application.capabilitiesVersion + 1);
+  assert.equal(updated.body.descriptors.npmWrapper.commands[0].command, "build");
+});
+
 test("POST /api/capabilities generate_orchestration writes a routine draft", async () => {
   const application = findApplicationForTest("app_team_a");
   application.status = "active";

@@ -174,6 +174,78 @@ export function createApplicationService({
     return app;
   }
 
+  function getApplicationDescriptors(applicationId, actor = null) {
+    const app = findApplication(applicationId);
+    if (!app || !actorCanAccessApplication(state, actor, app)) return null;
+    return applicationEditableDescriptors(app);
+  }
+
+  function updateApplicationDescriptors(applicationId, body = {}, actor = null) {
+    const app = findApplication(applicationId);
+    if (!app || !actorCanAccessApplication(state, actor, app)) return null;
+    if (!body || typeof body !== "object" || Array.isArray(body)) {
+      throw new Error("Application descriptor update must be an object.");
+    }
+    let changed = false;
+    if (Object.hasOwn(body, "name")) {
+      app.name = normalizeApplicationName(body.name);
+      changed = true;
+    }
+    if (Object.hasOwn(body, "mcpAgent")) {
+      if (!body.mcpAgent || typeof body.mcpAgent !== "object" || Array.isArray(body.mcpAgent)) {
+        throw new Error("Application mcpAgent descriptor must be a JSON object.");
+      }
+      app.mcpAgent = normalizeApplicationMcpAgent(body.mcpAgent, {
+        applicationId: app.id,
+        applicationName: app.name,
+        applicationPath: app.path ?? app.source?.path ?? null,
+      });
+      changed = true;
+    }
+    if (Object.hasOwn(body, "npmWrapper")) {
+      if (app.source?.type !== "npm") {
+        throw new Error("NPM wrapper descriptor can only be edited on npm applications.");
+      }
+      app.source.wrapper = normalizeNpmWrapper(body.npmWrapper);
+      changed = true;
+    }
+    if (Object.hasOwn(body, "manualManifest")) {
+      if (app.source?.type !== "manual") {
+        throw new Error("Manual manifest can only be edited on manual applications.");
+      }
+      if (!body.manualManifest || typeof body.manualManifest !== "object" || Array.isArray(body.manualManifest)) {
+        throw new Error("Manual manifest must be a JSON object.");
+      }
+      app.source.manifest = body.manualManifest;
+      changed = true;
+    }
+    if (changed) {
+      app.capabilitiesVersion = Math.max(1, Number(app.capabilitiesVersion ?? 1) + 1);
+      app.lifecycle = {
+        ...(app.lifecycle ?? {}),
+        state: app.lifecycle?.state ?? "registered",
+        lastOperation: "update_descriptors",
+        lastOperationAt: now(),
+        lastActorId: actor?.userId ?? null,
+      };
+      app.updatedAt = now();
+      appendEvent({
+        invocationId: null,
+        type: "application_descriptors_updated",
+        level: "info",
+        message: `${app.name} application descriptors updated.`,
+        data: {
+          applicationId: app.id,
+          mcpAgent: Object.hasOwn(body, "mcpAgent"),
+          npmWrapper: Object.hasOwn(body, "npmWrapper"),
+          manualManifest: Object.hasOwn(body, "manualManifest"),
+        },
+      });
+      persistStateSoon();
+    }
+    return app;
+  }
+
   function transitionApplication(applicationId, action, actor = null) {
     const app = findApplication(applicationId);
     if (!app) return null;
@@ -441,6 +513,7 @@ export function createApplicationService({
   return {
     findApplication,
     confirmApplicationMcpCandidate,
+    getApplicationDescriptors,
     invokeApplicationCapability,
     listApplicationCapabilities,
     listApplications,
@@ -448,6 +521,7 @@ export function createApplicationService({
     probeApplication,
     registerApplication,
     transitionApplication,
+    updateApplicationDescriptors,
   };
 }
 
@@ -1192,6 +1266,47 @@ export function publicApplicationSnapshot(application) {
   };
 }
 
+function applicationEditableDescriptors(application) {
+  return {
+    applicationId: application.id,
+    descriptors: {
+      mcpAgent: editableApplicationMcpAgentDescriptor(application.mcpAgent),
+      npmWrapper: application.source?.type === "npm" ? cloneJson(application.source.wrapper ?? null) : null,
+      manualManifest: application.source?.type === "manual" ? cloneJson(application.source.manifest ?? {}) : null,
+    },
+  };
+}
+
+function editableApplicationMcpAgentDescriptor(mcpAgent) {
+  if (!mcpAgent) return null;
+  const adapter = mcpAgent.adapter ?? {};
+  const descriptor = {
+    agentId: mcpAgent.agentId,
+    name: mcpAgent.name,
+    description: mcpAgent.description,
+    toolNamespace: mcpAgent.toolNamespace,
+    capabilityName: mcpAgent.capabilityName,
+    capabilityDescription: mcpAgent.capabilityDescription,
+    riskLevel: mcpAgent.riskLevel,
+    riskTags: mcpAgent.riskTags ?? [],
+    transport: adapter.transport,
+    allowedTools: adapter.allowedTools ?? [],
+    timeoutMs: adapter.timeoutMs,
+    startupTimeoutMs: adapter.startupTimeoutMs,
+    filePolicy: adapter.filePolicy,
+    networkPolicy: adapter.networkPolicy,
+  };
+  if (adapter.transport === "stdio") {
+    descriptor.command = adapter.command;
+    descriptor.args = adapter.args ?? [];
+    if (adapter.cwd) descriptor.cwd = adapter.cwd;
+  } else if (adapter.transport === "http") {
+    descriptor.url = adapter.url;
+    descriptor.headers = adapter.headers ?? {};
+  }
+  return cloneJson(descriptor);
+}
+
 function publicApplicationSourceSnapshot(source = {}) {
   if (source?.type === "npm") {
     const { wrapper, ...rest } = source;
@@ -1311,6 +1426,11 @@ function publicNpmWrapperSnapshot(wrapper) {
       resultImport: command.resultImport,
     })),
   };
+}
+
+function cloneJson(value) {
+  if (value === null || value === undefined) return null;
+  return JSON.parse(JSON.stringify(value));
 }
 
 function declaredProbeCapabilities(application, warnings) {

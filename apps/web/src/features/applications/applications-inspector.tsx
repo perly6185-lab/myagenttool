@@ -1,12 +1,14 @@
 import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Clipboard, ExternalLink, Play, Search } from "lucide-react";
+import { Clipboard, ExternalLink, Pencil, Play, Search } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Select } from "@/components/ui/input";
+import { Input, Select, Textarea } from "@/components/ui/input";
+import { Modal } from "@/components/ui/modal";
 import { FactList } from "@/components/common/fact-list";
 import { ConfirmModal } from "@/components/common/confirm-modal";
+import { Field } from "@/components/common/field";
 import { applicationRunDeepLink } from "@/app/deep-links";
 import { useConsoleState } from "@/data/use-console-state";
 import { useAsyncAction, api } from "@/data/use-console-actions";
@@ -201,6 +203,138 @@ function ApplicationActions({ application }: { application: ApplicationSnapshot 
           }}
           onClose={() => setConfirm(null)}
         />
+      </CardContent>
+    </Card>
+  );
+}
+
+function ApplicationDescriptorEditor({ application }: { application: ApplicationSnapshot }) {
+  const { execute, pending, error } = useAsyncAction();
+  const [open, setOpen] = useState(false);
+  const [name, setName] = useState(application.name);
+  const [mcpDescriptor, setMcpDescriptor] = useState("");
+  const [wrapperDescriptor, setWrapperDescriptor] = useState("");
+  const [manualManifest, setManualManifest] = useState("");
+  const [formError, setFormError] = useState<string | null>(null);
+
+  const descriptorsQuery = useQuery({
+    queryKey: ["application-descriptors", application.id],
+    queryFn: () => api.getApplicationDescriptors(application.id),
+    enabled: open,
+  });
+
+  useEffect(() => {
+    if (!open) return;
+    setName(application.name);
+  }, [application.name, open]);
+
+  useEffect(() => {
+    if (!open || !descriptorsQuery.data?.descriptors) return;
+    const descriptors = descriptorsQuery.data.descriptors;
+    setMcpDescriptor(prettyJson(descriptors.mcpAgent));
+    setWrapperDescriptor(prettyJson(descriptors.npmWrapper));
+    setManualManifest(prettyJson(descriptors.manualManifest));
+  }, [descriptorsQuery.data, open]);
+
+  function submit(event: React.FormEvent) {
+    event.preventDefault();
+    setFormError(null);
+    const update: Record<string, unknown> = {};
+    if (name.trim() && name.trim() !== application.name) update.name = name.trim();
+
+    const mcp = parseOptionalJsonObject(mcpDescriptor, "MCP descriptor");
+    if (mcp.error) {
+      setFormError(mcp.error);
+      return;
+    }
+    if (mcp.value) update.mcpAgent = mcp.value;
+
+    if (application.source.type === "npm") {
+      const wrapper = parseOptionalJsonObject(wrapperDescriptor, "npm wrapper descriptor");
+      if (wrapper.error) {
+        setFormError(wrapper.error);
+        return;
+      }
+      if (wrapper.value) update.npmWrapper = wrapper.value;
+    }
+
+    if (application.source.type === "manual") {
+      const manifest = parseOptionalJsonObject(manualManifest, "Manual manifest");
+      if (manifest.error) {
+        setFormError(manifest.error);
+        return;
+      }
+      if (manifest.value) update.manualManifest = manifest.value;
+    }
+
+    void execute(() => api.updateApplicationDescriptors(application.id, update)).then((ok) => {
+      if (ok) setOpen(false);
+    });
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Descriptors</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        <FactList
+          facts={[
+            { term: "MCP descriptor", value: application.mcpAgent ? application.mcpAgent.agentId ?? "registered" : "Not configured" },
+            { term: "npm wrapper", value: application.source.type === "npm" ? `${application.wrapper?.mode ?? "metadata-only"} · ${application.wrapper?.commands?.length ?? 0} command(s)` : "Not an npm Application" },
+            { term: "Manual manifest", value: application.source.type === "manual" ? "Editable" : "Not a manual Application" },
+          ]}
+        />
+        <Button size="sm" variant="secondary" onClick={() => setOpen(true)}>
+          <Pencil />
+          Edit descriptors
+        </Button>
+        <Modal open={open} onClose={() => setOpen(false)} title="Edit application descriptors" description="Update the reviewed descriptor JSON for this Application." size="lg">
+          <form className="space-y-3" onSubmit={submit}>
+            <Field label="Name">
+              <Input value={name} onChange={(event) => setName(event.target.value)} />
+            </Field>
+            <Field label="MCP descriptor JSON">
+              <Textarea
+                rows={7}
+                value={mcpDescriptor}
+                onChange={(event) => setMcpDescriptor(event.target.value)}
+                placeholder='{"transport":"stdio","command":"node","args":["server.mjs"],"allowedTools":["render"]}'
+              />
+            </Field>
+            {application.source.type === "npm" ? (
+              <Field label="npm wrapper descriptor JSON">
+                <Textarea
+                  rows={9}
+                  value={wrapperDescriptor}
+                  onChange={(event) => setWrapperDescriptor(event.target.value)}
+                  placeholder='{"mode":"installed-wrapper","installState":"installed","packageManager":"npm","commands":[{"id":"lint","commandType":"npm_script","command":"lint","status":"approved"}]}'
+                />
+              </Field>
+            ) : null}
+            {application.source.type === "manual" ? (
+              <Field label="Manual manifest JSON">
+                <Textarea
+                  rows={6}
+                  value={manualManifest}
+                  onChange={(event) => setManualManifest(event.target.value)}
+                  placeholder='{"capabilities":[]}'
+                />
+              </Field>
+            ) : null}
+            {descriptorsQuery.isLoading ? <p className="text-xs text-muted-foreground">Loading descriptors...</p> : null}
+            {descriptorsQuery.isError ? <p className="text-xs text-destructive">Could not load descriptors.</p> : null}
+            {formError || error ? <p className="text-xs text-destructive">{formError ?? error}</p> : null}
+            <div className="flex justify-end gap-2 pt-1">
+              <Button type="button" variant="secondary" size="sm" onClick={() => setOpen(false)}>
+                Cancel
+              </Button>
+              <Button type="submit" size="sm" disabled={pending || descriptorsQuery.isLoading}>
+                {pending ? "Saving..." : "Save descriptors"}
+              </Button>
+            </div>
+          </form>
+        </Modal>
       </CardContent>
     </Card>
   );
@@ -1154,6 +1288,25 @@ function formatValue(value: unknown): string {
   return String(value);
 }
 
+function prettyJson(value: unknown): string {
+  if (value === null || value === undefined) return "";
+  return JSON.stringify(value, null, 2);
+}
+
+function parseOptionalJsonObject(text: string, label: string): { value: Record<string, unknown> | null; error: string | null } {
+  const trimmed = text.trim();
+  if (!trimmed) return { value: null, error: null };
+  try {
+    const value = JSON.parse(trimmed) as unknown;
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      return { value: null, error: `${label} must be a JSON object.` };
+    }
+    return { value: value as Record<string, unknown>, error: null };
+  } catch (caught) {
+    return { value: null, error: `${label} is not valid JSON${caught instanceof Error ? `: ${caught.message}` : "."}` };
+  }
+}
+
 function stringValue(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value : null;
 }
@@ -1232,6 +1385,7 @@ export function ApplicationsInspector() {
       </Card>
 
       <ApplicationActions application={application} />
+      <ApplicationDescriptorEditor application={application} />
       <ApplicationResultSummary result={application.latestResult} onViewInvocation={viewInvocation} />
       <ApplicationMcpSummary application={application} />
 

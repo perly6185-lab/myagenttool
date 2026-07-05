@@ -6,6 +6,8 @@
 
 import type {
   ApplicationCapability,
+  ApplicationDescriptorSnapshot,
+  ApplicationDescriptorUpdateRequest,
   ApplicationOrchestrationRecovery,
   ApplicationOrchestrationRecoveryAgentCandidate,
   ApplicationOrchestrationRun,
@@ -258,6 +260,21 @@ export const api = {
     request<{ application: ApplicationSnapshot; capabilities: ApplicationCapability[] }>(
       "POST",
       "/api/applications/register",
+      body,
+    ),
+  getApplicationDescriptors: (id: string) =>
+    request<{ applicationId: string; descriptors: ApplicationDescriptorSnapshot }>(
+      "GET",
+      `/api/applications/${encodeURIComponent(id)}/descriptors`,
+    ),
+  updateApplicationDescriptors: (id: string, body: ApplicationDescriptorUpdateRequest) =>
+    request<{
+      application: ApplicationSnapshot;
+      capabilities: ApplicationCapability[];
+      descriptors: ApplicationDescriptorSnapshot | null;
+    }>(
+      "PATCH",
+      `/api/applications/${encodeURIComponent(id)}/descriptors`,
       body,
     ),
   applicationLifecycle: (
