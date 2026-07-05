@@ -348,6 +348,21 @@ export interface ImportedUsageEstimate {
   createdAt: string;
 }
 
+export interface EvidenceCenterRecord {
+  id: string;
+  type: string;
+  source: string;
+  redactionState?: string | null;
+  invocationId?: string | null;
+  codexSessionRegistryId?: string | null;
+  agentId?: string | null;
+  repoPath?: string | null;
+  summary: string;
+  detail?: string | null;
+  marker?: string | null;
+  createdAt?: string | null;
+}
+
 export interface CodexReviewFinding {
   id: string;
   source: "codex" | string;
@@ -719,6 +734,7 @@ export interface ConsoleSnapshot {
   retentionSettings?: RetentionSettings;
   ledgerEntries?: LedgerEntry[];
   importedUsageEstimates?: ImportedUsageEstimate[];
+  evidenceCenterRecords?: EvidenceCenterRecord[];
   codexReviewFindings?: CodexReviewFinding[];
   claudeReviewFindings?: ClaudeReviewFinding[];
   reviewFindings?: ReviewFinding[];

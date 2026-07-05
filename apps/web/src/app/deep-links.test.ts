@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   applicationRunDeepLink,
+  evidenceDeepLink,
   invocationDeepLink,
   webNavigationLinkDeepLink,
   webNavigationStateFromLink,
@@ -31,10 +32,22 @@ describe("deep link helpers", () => {
     expect(url.searchParams.get("run")).toBe("inv_docs");
   });
 
+  it("builds evidence detail links from an evidence id", () => {
+    const url = new URL(evidenceDeepLink("ev_123", "https://console.example.test/control?keep=yes&invocation=old#pane"));
+
+    expect(url.origin).toBe("https://console.example.test");
+    expect(url.pathname).toBe("/control");
+    expect(url.hash).toBe("#pane");
+    expect(url.searchParams.get("keep")).toBe("yes");
+    expect(url.searchParams.get("section")).toBe("audit");
+    expect(url.searchParams.get("invocation")).toBeNull();
+    expect(url.searchParams.get("evidence")).toBe("ev_123");
+  });
+
   it("builds links from server-provided relative Web navigation queries", () => {
     const url = new URL(webNavigationLinkDeepLink({
-      query: "?section=applications&application=app_docs&routine=routine_docs&run=inv_docs",
-    }, "https://console.example.test/control?keep=yes&section=invocations&invocation=old#pane"));
+      query: "?section=applications&application=app_docs&routine=routine_docs&run=inv_docs&evidence=ev_docs",
+    }, "https://console.example.test/control?keep=yes&section=invocations&invocation=old&evidence=old_ev#pane"));
 
     expect(url.origin).toBe("https://console.example.test");
     expect(url.pathname).toBe("/control");
@@ -45,6 +58,7 @@ describe("deep link helpers", () => {
     expect(url.searchParams.get("application")).toBe("app_docs");
     expect(url.searchParams.get("routine")).toBe("routine_docs");
     expect(url.searchParams.get("run")).toBe("inv_docs");
+    expect(url.searchParams.get("evidence")).toBe("ev_docs");
   });
 
   it("maps server-provided structured targets to UI navigation state", () => {
@@ -64,6 +78,18 @@ describe("deep link helpers", () => {
         routineId: "routine_docs",
         invocationId: "inv_docs",
       },
+    });
+
+    expect(webNavigationStateFromLink({
+      query: "?section=audit&evidence=ev_docs",
+      target: {
+        section: "audit",
+        evidence: "ev_docs",
+      },
+    })).toEqual({
+      section: "audit",
+      selectedApplicationRun: null,
+      selectedEvidenceId: "ev_docs",
     });
   });
 });

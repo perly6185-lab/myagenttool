@@ -1,6 +1,6 @@
 # P4 Evidence Detail Owner Surface
 
-Status: P4-3 design slice.
+Status: P4-3 runtime foundation in progress.
 
 Objective: make Evidence Center a first-class Web owner surface with stable
 selection, URL navigation, and operator-safe open/copy actions, instead of
@@ -15,8 +15,10 @@ treating evidence rows as incidental data inside other cards.
 - Web currently renders evidence-adjacent data through owner-specific surfaces:
   Audit, Review, Economics imported usage, Applications result panels,
   Invocations, and the context inspector.
-- Web does not yet type `evidenceCenterRecords`, does not have a selected
-  evidence id, and does not have a detail owner surface.
+- Runtime foundation status: Web now types `evidenceCenterRecords`, supports
+  `selectedEvidenceId`, parses/serializes `?evidence=...`, and can generate
+  Evidence detail links. The detail owner surface itself is still the next
+  implementation slice.
 
 ## Navigation Contract
 
@@ -54,7 +56,7 @@ Persist it with the other navigation selections. URL navigation should:
 
 ## Read Model Contract
 
-Add Web/protocol typing for:
+Add Web snapshot typing for:
 
 ```ts
 interface EvidenceCenterRecord {
@@ -126,11 +128,12 @@ The detail panel should show:
 
 ## Implementation Sequence
 
-1. Add Web/protocol `EvidenceCenterRecord` type and `evidenceCenterRecords` to
-   the Web snapshot type.
-2. Extend `ui-store` URL navigation with `selectedEvidenceId` and `evidence`.
-3. Add `evidenceDeepLink` helper and tests alongside existing deep-link
-   helpers.
+1. Status: landed. Add Web `EvidenceCenterRecord` type and
+   `evidenceCenterRecords` to the Web snapshot type.
+2. Status: landed. Extend `ui-store` URL navigation with `selectedEvidenceId`
+   and `evidence`.
+3. Status: landed. Add `evidenceDeepLink` helper and tests alongside existing
+   deep-link helpers.
 4. Build an Evidence Center panel in `AuditView`, backed by
    `state.evidenceCenterRecords`.
 5. Add select/open/copy behavior:

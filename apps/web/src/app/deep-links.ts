@@ -6,13 +6,14 @@ import {
   type UrlNavigationState,
 } from "@/store/ui-store";
 
-const NAVIGATION_QUERY_KEYS = ["section", "invocation", "application", "routine", "run"] as const;
+const NAVIGATION_QUERY_KEYS = ["section", "invocation", "application", "routine", "run", "evidence"] as const;
 
 interface WebNavigationTarget {
   section: SectionKey;
   selectedInvocationId?: string | null;
   selectedApplicationId?: string | null;
   selectedApplicationRun?: ApplicationRunSelection | null;
+  selectedEvidenceId?: string | null;
 }
 
 interface RelativeWebNavigationLink {
@@ -31,6 +32,7 @@ export function webDeepLink(target: WebNavigationTarget, href = currentHref()): 
     selectedInvocationId: target.selectedInvocationId ?? null,
     selectedApplicationId: target.selectedApplicationId ?? null,
     selectedApplicationRun: target.selectedApplicationRun ?? null,
+    selectedEvidenceId: target.selectedEvidenceId ?? null,
   });
   return url.toString();
 }
@@ -47,6 +49,13 @@ export function applicationRunDeepLink(selection: ApplicationRunSelection, href?
     section: "applications",
     selectedApplicationId: selection.applicationId,
     selectedApplicationRun: selection,
+  }, href);
+}
+
+export function evidenceDeepLink(evidenceId: string, href?: string): string {
+  return webDeepLink({
+    section: "audit",
+    selectedEvidenceId: evidenceId,
   }, href);
 }
 
@@ -73,6 +82,7 @@ export function webNavigationStateFromLink(link: RelativeWebNavigationLink): Url
   const applicationId = stringValue(target.application);
   const routineId = stringValue(target.routine);
   const runInvocationId = stringValue(target.run);
+  const evidenceId = stringValue(target.evidence);
   const navigation: UrlNavigationState = {};
 
   if (section && SECTION_KEYS.includes(section as SectionKey)) {
@@ -87,6 +97,9 @@ export function webNavigationStateFromLink(link: RelativeWebNavigationLink): Url
   navigation.selectedApplicationRun = applicationId && routineId && runInvocationId
     ? { applicationId, routineId, invocationId: runInvocationId }
     : null;
+  if (evidenceId) {
+    navigation.selectedEvidenceId = evidenceId;
+  }
   return navigation;
 }
 
