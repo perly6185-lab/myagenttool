@@ -1,6 +1,8 @@
 # P4 Web URL Navigation
 
-Status: P4-1 lightweight URL-backed navigation.
+Status: P4-2B closed. See
+[`P4_WEB_NAVIGATION_CLOSEOUT.md`](P4_WEB_NAVIGATION_CLOSEOUT.md) for the owner
+surface coverage matrix.
 
 Objective: make Web control-plane navigation refreshable and shareable without
 introducing a routing framework.
