@@ -24,10 +24,73 @@ afterEach(() => {
   useUiStore.setState({
     section: "dashboard",
     selectedInvocationId: null,
+    selectedApplicationId: null,
+    selectedApplicationRun: null,
   });
 });
 
 describe("InvocationsView operator explanation", () => {
+  it("routes server explanation actions to approval, result, and recovery timeline targets", async () => {
+    apiMock.fetchState.mockResolvedValue(actionExplanationState());
+    apiMock.getApplicationOrchestrationRunRecovery.mockResolvedValue({
+      applicationId: "app_docs",
+      routineId: "routine_docs_smoke",
+      invocationId: "inv_action",
+      recovery: {
+        category: "validation_failed",
+        confidence: 0.9,
+        retryRecommended: false,
+        humanApprovalRequired: true,
+        summary: "Recovery is pending approval.",
+        actions: [],
+      },
+    });
+
+    useUiStore.setState({ section: "invocations", selectedInvocationId: "inv_action" });
+    renderWithClient(createElement(InvocationsView));
+
+    expect(await screen.findByText("Actionable explanation")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: /Open approval/i }));
+    expect(useUiStore.getState().section).toBe("dashboard");
+    expect(useUiStore.getState().selectedInvocationId).toBe("inv_action");
+
+    useUiStore.setState({ section: "invocations", selectedInvocationId: "inv_action" });
+    await waitFor(() => expect(screen.getByText("Actionable explanation")).toBeTruthy());
+    fireEvent.click(screen.getByRole("button", { name: /View result/i }));
+    expect(useUiStore.getState().section).toBe("invocations");
+    expect(useUiStore.getState().selectedInvocationId).toBe("inv_result");
+
+    useUiStore.setState({ section: "invocations", selectedInvocationId: "inv_action" });
+    await waitFor(() => expect(screen.getByText("Actionable explanation")).toBeTruthy());
+    fireEvent.click(screen.getByRole("button", { name: /Open timeline/i }));
+    expect(useUiStore.getState().section).toBe("applications");
+    expect(useUiStore.getState().selectedApplicationId).toBe("app_docs");
+    expect(useUiStore.getState().selectedApplicationRun).toEqual({
+      applicationId: "app_docs",
+      routineId: "routine_docs_smoke",
+      invocationId: "inv_action",
+    });
+  });
+
+  it("routes troubleshooting report and source links from server explanation", async () => {
+    apiMock.fetchState.mockResolvedValue(actionExplanationState());
+
+    useUiStore.setState({ section: "invocations", selectedInvocationId: "inv_report" });
+    renderWithClient(createElement(InvocationsView));
+
+    expect(await screen.findByText("Troubleshooting report is ready.")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: /Open report/i }));
+    expect(useUiStore.getState().section).toBe("invocations");
+    expect(useUiStore.getState().selectedInvocationId).toBe("inv_failed");
+
+    useUiStore.setState({ section: "invocations", selectedInvocationId: "inv_report" });
+    await waitFor(() => expect(screen.getByText("Troubleshooting report is ready.")).toBeTruthy());
+    fireEvent.click(screen.getByRole("button", { name: /View source/i }));
+    expect(useUiStore.getState().section).toBe("invocations");
+    expect(useUiStore.getState().selectedInvocationId).toBe("inv_failed");
+  });
+
   it("prefers server-provided invocation explanation shape", async () => {
     apiMock.fetchState.mockResolvedValue(serverExplanationState());
 
@@ -35,7 +98,7 @@ describe("InvocationsView operator explanation", () => {
     renderWithClient(createElement(InvocationsView));
 
     expect(await screen.findByText("Server-side explanation is authoritative.")).toBeTruthy();
-    expect(screen.getByText("Scheduled automation")).toBeTruthy();
+    expect(screen.getAllByText("Scheduled automation").length).toBeGreaterThan(0);
     expect(screen.getByText("Policy gate is waiting for an operator.")).toBeTruthy();
     expect(screen.getByText("apr_server (pending)")).toBeTruthy();
     expect(screen.getByText("audit row")).toBeTruthy();
@@ -130,6 +193,142 @@ function renderWithClient(ui: ReactElement) {
     },
   });
   return render(<QueryClientProvider client={client}>{ui}</QueryClientProvider>);
+}
+
+function actionExplanationState(): ConsoleSnapshot {
+  return {
+    namespace: "test",
+    protocolVersion: "0.0.0",
+    serverTime: "2026-07-05T08:00:00.000Z",
+    device: {
+      id: "dev_local",
+      name: "Local bridge",
+      status: "online",
+      platform: "win32",
+      architecture: "x64",
+      lastSeenAt: "2026-07-05T08:00:00.000Z",
+    },
+    agent: null,
+    agents: [],
+    projects: [],
+    worktrees: [],
+    currentProjectId: "proj_docs",
+    invocations: [{
+      id: "inv_action",
+      status: "failed",
+      agentId: "agt_demo_cli",
+      projectId: "proj_docs",
+      explanation: {
+        state: "failed",
+        reason: "Validation failed.",
+        reasonCode: "failed",
+        summary: "Actionable explanation",
+        waitingOn: {
+          type: "approval",
+          id: "apr_action",
+          status: "pending",
+          label: "apr_action (pending)",
+        },
+        resultLocation: {
+          type: "invocation",
+          invocationId: "inv_result",
+          label: "inv_result",
+        },
+        nextAction: "Open the recovery timeline.",
+        approval: {
+          requestId: "apr_action",
+          status: "pending",
+        },
+        recovery: {
+          category: "validation_failed",
+          actionType: "regenerate_orchestration",
+          actionRequestId: "rec_action",
+          status: "approval_pending",
+          sourceInvocationId: "inv_action",
+          approvalRequestId: "apr_action",
+          resultInvocationId: "inv_result",
+        },
+        source: {
+          type: "application_orchestration",
+          applicationId: "app_docs",
+          applicationName: "Docs",
+          routineId: "routine_docs_smoke",
+        },
+      },
+      options: {
+        metadata: {
+          source: "application_orchestration",
+          applicationId: "app_docs",
+          routineId: "routine_docs_smoke",
+        },
+      },
+    }, {
+      id: "inv_result",
+      status: "queued",
+      agentId: "agt_demo_cli",
+      projectId: "proj_docs",
+      options: { metadata: {} },
+    }, {
+      id: "inv_failed",
+      status: "failed",
+      agentId: "agt_demo_cli",
+      projectId: "proj_docs",
+      options: { metadata: {} },
+    }, {
+      id: "inv_report",
+      status: "succeeded",
+      agentId: "agt_platform_troubleshooter",
+      projectId: "proj_docs",
+      explanation: {
+        state: "succeeded",
+        reason: "Troubleshooter generated a report.",
+        reasonCode: "succeeded",
+        summary: "Troubleshooting report is ready.",
+        resultLocation: {
+          type: "troubleshooting_report",
+          reportId: "trb_1",
+          label: "trb_1",
+        },
+        nextAction: "Open the troubleshooting report.",
+        source: {
+          type: "troubleshooting",
+          targetInvocationId: "inv_failed",
+        },
+      },
+      options: {
+        metadata: {
+          targetInvocationId: "inv_failed",
+        },
+      },
+    }],
+    events: [],
+    auditSummaries: [],
+    approvalRequests: [{
+      id: "apr_action",
+      invocationId: "inv_action",
+      status: "pending",
+    }],
+    applicationRecoveryActions: [{
+      id: "rec_action",
+      applicationId: "app_docs",
+      routineId: "routine_docs_smoke",
+      invocationId: "inv_action",
+      actionType: "regenerate_orchestration",
+      status: "approval_pending",
+      recoveryCategory: "validation_failed",
+      approvalRequestId: "apr_action",
+      resultInvocationId: "inv_result",
+      createdAt: "2026-07-05T08:00:00.000Z",
+      updatedAt: "2026-07-05T08:01:00.000Z",
+    }],
+    troubleshootingReports: [{
+      id: "trb_1",
+      invocationId: "inv_failed",
+      summary: "Troubleshooter reviewed inv_failed.",
+      bridgeState: "online",
+      logSummary: "No logs.",
+    }],
+  } as ConsoleSnapshot;
 }
 
 function serverExplanationState(): ConsoleSnapshot {

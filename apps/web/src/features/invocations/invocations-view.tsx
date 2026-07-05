@@ -1,4 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
+import type { ReactNode } from "react";
 import { ExternalLink } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge, StatusBadge } from "@/components/ui/badge";
@@ -36,6 +37,7 @@ import { useUiStore } from "@/store/ui-store";
 import { cn } from "@/lib/cn";
 import { readableDelivery, readableStatus, statusTone } from "@/lib/readable-labels";
 import type {
+  ApplicationRecoveryActionRequest,
   ConsoleSnapshot,
   InvocationExplanation,
   InvocationSnapshot,
@@ -46,6 +48,8 @@ export function InvocationsView() {
   const selectedInvocationId = useUiStore((s) => s.selectedInvocationId);
   const setSelectedInvocationId = useUiStore((s) => s.setSelectedInvocationId);
   const setSection = useUiStore((s) => s.setSection);
+  const setSelectedApplicationId = useUiStore((s) => s.setSelectedApplicationId);
+  const setSelectedApplicationRun = useUiStore((s) => s.setSelectedApplicationRun);
 
   const invocations = state?.invocations ?? [];
   const selected = resolveInvocation(state, selectedInvocationId);
@@ -56,6 +60,17 @@ export function InvocationsView() {
   function viewInvocation(invocationId: string) {
     setSelectedInvocationId(invocationId);
     setSection("invocations");
+  }
+
+  function viewApproval(invocationId: string) {
+    setSelectedInvocationId(invocationId);
+    setSection("dashboard");
+  }
+
+  function viewApplicationRun(applicationId: string, routineId: string, invocationId: string) {
+    setSelectedApplicationId(applicationId);
+    setSelectedApplicationRun({ applicationId, routineId, invocationId });
+    setSection("applications");
   }
 
   return (
@@ -114,6 +129,8 @@ export function InvocationsView() {
         <OperatorExplanationCard
           invocation={selected}
           state={state ?? null}
+          onViewApproval={viewApproval}
+          onViewApplicationRun={viewApplicationRun}
           onViewInvocation={viewInvocation}
         />
       ) : null}
@@ -133,10 +150,14 @@ export function InvocationsView() {
 function OperatorExplanationCard({
   invocation,
   state,
+  onViewApproval,
+  onViewApplicationRun,
   onViewInvocation,
 }: {
   invocation: InvocationSnapshot;
   state: ConsoleSnapshot | null;
+  onViewApproval: (invocationId: string) => void;
+  onViewApplicationRun: (applicationId: string, routineId: string, invocationId: string) => void;
   onViewInvocation: (invocationId: string) => void;
 }) {
   const serverExplanation = invocation.explanation ?? null;
@@ -198,6 +219,29 @@ function OperatorExplanationCard({
   const recoveryActionValue = latestRecoveryAction
     ? `${readableRecoveryActionType(latestRecoveryAction.actionType)} · ${readableRecoveryActionStatus(latestRecoveryAction.status, "inline")}`
     : serverRecoveryActionLabel(serverExplanation);
+  const recoveryRequest = recoveryRequestForExplanation(state, serverExplanation, latestRecoveryAction);
+  const approvalTargetInvocationId = approval?.invocationId ?? recoveryRequest?.invocationId ?? invocation.id;
+  const recoveryTimelineTarget = recoveryRequest
+    ? {
+        applicationId: recoveryRequest.applicationId,
+        routineId: recoveryRequest.routineId,
+        invocationId: recoveryRequest.invocationId,
+      }
+    : applicationId && routineId && (serverExplanation?.recovery?.sourceInvocationId ?? invocation.id)
+      ? {
+          applicationId,
+          routineId,
+          invocationId: serverExplanation?.recovery?.sourceInvocationId ?? invocation.id,
+        }
+      : null;
+  const troubleshootingTarget = serverExplanation?.resultLocation?.reportId
+    ? (state?.troubleshootingReports ?? []).find((report) => report.id === serverExplanation.resultLocation?.reportId) ?? null
+    : null;
+  const sourceInvocationId = serverExplanation?.source?.type === "troubleshooting"
+    ? serverExplanation.source.targetInvocationId ?? null
+    : serverExplanation?.source?.type === "recovery_result"
+      ? serverExplanation.source.invocationId ?? null
+      : serverExplanation?.recovery?.sourceInvocationId ?? null;
 
   return (
     <Card>
@@ -223,19 +267,66 @@ function OperatorExplanationCard({
         <FactList
           facts={[
             { term: "Why blocked", value: serverExplanation?.reason ?? recoveryBlockedReason(invocation, reasonCode) },
-            { term: "Waiting on", value: waitingOnLabel(serverExplanation) ?? recoveryWaitingOn({ approvalRequestId, approval, latestRecoveryAction }) },
-            { term: "Result", value: resultLabel },
-            { term: "Recovery action", value: recoveryActionValue },
+            {
+              term: "Waiting on",
+              value: approvalRequestId ? (
+                <ActionValue
+                  value={waitingOnLabel(serverExplanation) ?? recoveryWaitingOn({ approvalRequestId, approval, latestRecoveryAction })}
+                  actionLabel="Open approval"
+                  onAction={() => onViewApproval(approvalTargetInvocationId)}
+                />
+              ) : waitingOnLabel(serverExplanation) ?? recoveryWaitingOn({ approvalRequestId, approval, latestRecoveryAction }),
+            },
+            {
+              term: "Result",
+              value: resultInvocationId ? (
+                <ActionValue value={resultLabel} actionLabel="View result" onAction={() => onViewInvocation(resultInvocationId)} />
+              ) : troubleshootingTarget ? (
+                <ActionValue
+                  value={resultLabel}
+                  actionLabel="Open report"
+                  onAction={() => onViewInvocation(troubleshootingTarget.invocationId)}
+                />
+              ) : recoveryTimelineTarget && serverExplanation?.resultLocation?.type === "orchestration" ? (
+                <ActionValue
+                  value={resultLabel}
+                  actionLabel="Open application"
+                  onAction={() => onViewApplicationRun(
+                    recoveryTimelineTarget.applicationId,
+                    recoveryTimelineTarget.routineId,
+                    recoveryTimelineTarget.invocationId,
+                  )}
+                />
+              ) : resultLabel,
+            },
+            {
+              term: "Recovery action",
+              value: recoveryTimelineTarget ? (
+                <ActionValue
+                  value={recoveryActionValue}
+                  actionLabel="Open timeline"
+                  onAction={() => onViewApplicationRun(
+                    recoveryTimelineTarget.applicationId,
+                    recoveryTimelineTarget.routineId,
+                    recoveryTimelineTarget.invocationId,
+                  )}
+                />
+              ) : recoveryActionValue,
+            },
+            {
+              term: "Source",
+              value: sourceInvocationId ? (
+                <ActionValue
+                  value={sourceLabel ?? sourceInvocationId}
+                  actionLabel="View source"
+                  onAction={() => onViewInvocation(sourceInvocationId)}
+                />
+              ) : sourceLabel ?? "Direct invocation",
+            },
           ]}
         />
         {error ? <p className="text-xs text-destructive">Could not load recovery explanation.</p> : null}
         {isLoading ? <p className="text-xs text-muted-foreground">Loading recovery explanation...</p> : null}
-        {resultInvocationId ? (
-          <Button size="sm" variant="secondary" onClick={() => onViewInvocation(resultInvocationId)}>
-            <ExternalLink />
-            View result
-          </Button>
-        ) : null}
         {recovery?.actions.length ? (
           <div className="space-y-1 rounded-md border border-border bg-muted p-2">
             <p className="text-xs font-medium">Recommended recovery</p>
@@ -257,6 +348,26 @@ function OperatorExplanationCard({
 
 function stringValue(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value : null;
+}
+
+function ActionValue({
+  value,
+  actionLabel,
+  onAction,
+}: {
+  value: ReactNode;
+  actionLabel: string;
+  onAction: () => void;
+}) {
+  return (
+    <span className="flex flex-wrap items-center gap-2">
+      <span className="min-w-0 [overflow-wrap:anywhere]">{value}</span>
+      <Button size="sm" variant="secondary" onClick={onAction}>
+        <ExternalLink />
+        {actionLabel}
+      </Button>
+    </span>
+  );
 }
 
 function sourceBadgeLabel(explanation: InvocationExplanation | null): string | null {
@@ -290,4 +401,17 @@ function serverRecoveryActionLabel(explanation: InvocationExplanation | null): s
   if (!recovery?.actionType) return "Not requested";
   const status = recovery.status ? ` · ${readableRecoveryActionStatus(recovery.status, "inline")}` : "";
   return `${readableRecoveryActionType(recovery.actionType)}${status}`;
+}
+
+function recoveryRequestForExplanation(
+  state: ConsoleSnapshot | null,
+  explanation: InvocationExplanation | null,
+  fallback: ApplicationRecoveryActionRequest | null,
+): ApplicationRecoveryActionRequest | null {
+  const requestId = explanation?.recovery?.actionRequestId
+    ?? explanation?.source?.recoveryActionRequestId
+    ?? fallback?.id
+    ?? null;
+  if (!requestId) return fallback;
+  return (state?.applicationRecoveryActions ?? []).find((request) => request.id === requestId) ?? fallback;
 }
