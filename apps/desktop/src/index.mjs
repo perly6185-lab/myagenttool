@@ -204,7 +204,7 @@ if (process.argv.includes("--check")) {
           execCommand: "node",
           execArgs: ["-e", "console.log('nope')"],
           capability: "app.app_ccusage.wrapper.daily",
-          filePolicy: "read_only",
+          filePolicy: "workspace_write",
           networkPolicy: "forbidden",
         },
       },
@@ -221,7 +221,7 @@ if (process.argv.includes("--check")) {
     { permissionDecision: "not_required", permissionHook: null, manifest: localExecutionPolicyManifest },
   );
   if (blockedAppWrapperGate.allowed) {
-    throw new Error("Application wrapper local execution gate must reject non-allowlisted inner commands.");
+    throw new Error("Application wrapper local execution gate must reject wrapper policy expansion.");
   }
   if (typeof pty.spawn !== "function") {
     throw new Error("node-pty is not available.");

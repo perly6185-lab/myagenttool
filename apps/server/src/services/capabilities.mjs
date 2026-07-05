@@ -301,7 +301,7 @@ export function verifyApplicationApproval(input, {
   if (!matches) {
     return approvalVerificationError("approval_scope_mismatch", "Approval request does not match this Application action.", approvalRequestId, approval.status);
   }
-  return { approved: true, legacy: false, invocation };
+  return { approved: true, legacy: false, invocation: null };
 }
 
 function approvalVerificationError(error, reason, approvalRequestId, approvalStatus = null) {

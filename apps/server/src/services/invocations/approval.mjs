@@ -83,11 +83,21 @@ export function createInvocationApprovalRuntime({
     approval.status = "approved";
     approval.decidedAt = now();
     approval.decidedBy = decidedBy;
-    invocation.status = agent?.adapter.type === "http" ? "running" : "queued";
-    invocation.delivery.state = agent?.adapter.type === "http" ? "not_required" : "queued";
-    invocation.delivery.dispatchAttempts = agent?.adapter.type === "http" ? 1 : 0;
-    invocation.delivery.lastDispatchAt = agent?.adapter.type === "http" ? now() : null;
-    invocation.delivery.acknowledgedAt = agent?.adapter.type === "http" ? now() : null;
+    const approvalOnly = isApplicationApprovalOnlyInvocation(invocation);
+    invocation.status = approvalOnly ? "succeeded" : agent?.adapter.type === "http" ? "running" : "queued";
+    invocation.delivery.state = approvalOnly || agent?.adapter.type === "http" ? "not_required" : "queued";
+    invocation.delivery.dispatchAttempts = approvalOnly ? 0 : agent?.adapter.type === "http" ? 1 : 0;
+    invocation.delivery.lastDispatchAt = approvalOnly ? null : agent?.adapter.type === "http" ? now() : null;
+    invocation.delivery.acknowledgedAt = approvalOnly ? null : agent?.adapter.type === "http" ? now() : null;
+    if (approvalOnly) {
+      invocation.completedAt = now();
+      invocation.result = {
+        summary: "Local approval granted for Application action.",
+        approvalRequestId: approval.id,
+        applicationApproval: invocation.options?.metadata?.applicationApproval ?? null,
+      };
+      completeRootSpan(invocation, "succeeded");
+    }
     invocation.updatedAt = now();
     const policyRecord = state.policyDecisionRecords.find((item) => item.id === invocation.policyDecisionId);
     if (policyRecord) {
@@ -99,7 +109,7 @@ export function createInvocationApprovalRuntime({
       invocationId: invocation.id,
       type: "local_approval_granted",
       level: "info",
-      message: "Local approval granted. Invocation can run.",
+      message: approvalOnly ? "Local approval granted. Application action can be retried." : "Local approval granted. Invocation can run.",
       data: { approvalRequestId: approval.id }
     });
     appendEvent({
@@ -110,10 +120,18 @@ export function createInvocationApprovalRuntime({
     });
     appendEvent({
       invocationId: invocation.id,
-      type: agent?.adapter.type === "http" ? "invocation_started" : "delivery_queued",
+      type: approvalOnly ? "invocation_succeeded" : agent?.adapter.type === "http" ? "invocation_started" : "delivery_queued",
       level: "info",
-      message: agent?.adapter.type === "http" ? "HTTP Agent invocation started after approval." : "Invocation queued for Desktop Bridge after approval."
+      message: approvalOnly ? "Application approval evidence recorded." : agent?.adapter.type === "http" ? "HTTP Agent invocation started after approval." : "Invocation queued for Desktop Bridge after approval."
     });
+    if (approvalOnly) {
+      state.auditSummaries.push({
+        ...createAuditSummary(invocation, "Local approval granted for Application action."),
+        permissionDecision: "allowed",
+      });
+      recordAgentUsage(invocation, "succeeded");
+      return;
+    }
     startInvocationIfAllowed(invocation, agent);
   }
 
@@ -163,6 +181,14 @@ export function createInvocationApprovalRuntime({
     denyInvocation,
     evaluateInvocationPolicy,
   };
+}
+
+function isApplicationApprovalOnlyInvocation(invocation) {
+  const metadata = invocation?.options?.metadata;
+  return metadata?.providerType === "application"
+    && metadata.applicationApproval
+    && typeof metadata.applicationApproval === "object"
+    && !Array.isArray(metadata.applicationApproval);
 }
 
 function highestRiskLevel(levels) {
