@@ -1327,19 +1327,57 @@ export function createServerRuntimeServices({
         recoveryActionRequestId: actionRequest.id,
       },
     });
-    const result = createCapabilityInvocation(capability.name, {
-      approvalToken: "operator-approved-application-recovery",
+    const agent = findAgent("agt_platform_application_control");
+    if (!agent || agent.status === "disabled") {
+      markApplicationRecoveryActionFailed(actionRequest, "agent_not_available");
+      return;
+    }
+    const invocation = createInvocation(`Run application capability generate_orchestration for ${application.name}.`, agent, {
+      actor,
+      requestedBy: actor?.userId,
+      metadata: {
+        capability: capability.name,
+        providerType: "application",
+        applicationId: actionRequest.applicationId,
+        applicationAction: "generate_orchestration",
+        recoveryActionType: actionRequest.actionType,
+        recoveryActionRequestId: actionRequest.id,
+        recoveryOfInvocationId: actionRequest.invocationId,
+        recoveryReason: actionRequest.reason,
+        projectId: application.projectId ?? null,
+      },
+      timeoutSeconds: 30,
+    });
+    if (invocation.status === "rejected") {
+      markApplicationRecoveryActionFailed(actionRequest, "execution_rejected", { invocationId: invocation.id, status: invocation.status });
+      return;
+    }
+    const execution = invokeApplicationCapability(capability.name, approvedApplicationInput({
       recoveryActionRequestId: actionRequest.id,
       recoveryOfInvocationId: actionRequest.invocationId,
       recoveryReason: actionRequest.reason,
-    }, actor);
-    if (result.status >= 400) {
-      markApplicationRecoveryActionFailed(actionRequest, result.body?.error ?? "execution_failed", result.body);
+    }, { approved: true }), actor, { applicationId: actionRequest.applicationId });
+    if (!execution.ok) {
+      completeInvocation(invocation, {
+        status: "failed",
+        summary: execution.body?.reason ?? execution.body?.error ?? "Application recovery action failed.",
+        result: execution.body,
+      });
+      markApplicationRecoveryActionFailed(actionRequest, execution.body?.error ?? "execution_failed", execution.body);
       return;
     }
-    const orchestration = result.body?.invocation?.result?.output?.orchestration ?? null;
+    completeInvocation(invocation, {
+      status: "succeeded",
+      summary: execution.result.summary,
+      result: {
+        ...execution.result,
+        capability: capability.name,
+        provider: capability.provider,
+      },
+    });
+    const orchestration = execution.result?.output?.orchestration ?? null;
     actionRequest.status = "executed";
-    actionRequest.resultInvocationId = result.body?.invocationId ?? null;
+    actionRequest.resultInvocationId = invocation.id;
     actionRequest.resultOrchestrationId = orchestration?.id ?? null;
     actionRequest.resultOrchestrationRelativePath = orchestration?.relativePath ?? null;
     actionRequest.executedAt = now();

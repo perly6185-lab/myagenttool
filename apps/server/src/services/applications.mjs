@@ -340,9 +340,9 @@ export function createApplicationService({
     if (application.status === "offline" && !["inspect", "online"].includes(action)) {
       return { ok: false, status: 409, body: { error: "application_offline", applicationId: application.id } };
     }
-    // Every side-effecting action requires either the legacy explicit intent
-    // token or a verified approvalRequestId that the capability/composer layer
-    // has already checked against the matching invocation metadata.
+    // Every side-effecting action requires a verified approvalRequestId that the
+    // capability/composer layer has already checked against the matching
+    // invocation metadata.
     if ((["archive", "offline", "online", "refresh", "generate_orchestration"].includes(action) || action.startsWith("wrapper:")) && !hasApplicationApproval(input)) {
       return {
         ok: false,
@@ -373,7 +373,7 @@ export function createApplicationService({
 
   // Plan a wrapper-capability invocation for bridge execution (#359). Applies the
   // same guards as the synchronous path — tenancy, archived/offline status, and
-  // the mandatory approvalToken — then resolves the approved execution plan. On
+  // verified approvalRequestId — then resolves the approved execution plan. On
   // success returns the exact command the bridge runner must execute; the caller
   // (capability service) dispatches it as a queued invocation. Never returns an
   // unapproved command (applicationWrapperExecutionPlan is the allowlist).
@@ -808,13 +808,9 @@ function approvalInputSchema() {
     type: "object",
     additionalProperties: false,
     properties: {
-      approvalToken: { type: "string", minLength: 1, maxLength: 200 },
       approvalRequestId: { type: "string", minLength: 1, maxLength: 200 },
     },
-    anyOf: [
-      { required: ["approvalRequestId"] },
-      { required: ["approvalToken"] },
-    ],
+    required: ["approvalRequestId"],
   };
 }
 
@@ -868,13 +864,8 @@ function wrapperActionFromCapabilityName(capabilityName) {
   return match ? `wrapper:${match[1]}` : null;
 }
 
-function hasApprovalToken(input) {
-  return Boolean(input && typeof input === "object" && !Array.isArray(input) && String(input.approvalToken ?? "").trim());
-}
-
 function hasApplicationApproval(input) {
-  return hasApprovalToken(input)
-    || Boolean(input && typeof input === "object" && !Array.isArray(input) && input.__verifiedApplicationApproval === true);
+  return Boolean(input && typeof input === "object" && !Array.isArray(input) && input.__verifiedApplicationApproval === true);
 }
 
 function executeApplicationAction({ application, action, input, actor, defaultProjectPath, now = () => new Date().toISOString() }) {

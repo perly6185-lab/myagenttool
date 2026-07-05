@@ -94,8 +94,8 @@ Acceptance evidence:
 - Execution routes by kind (`createCapabilityInvocation`): tools → tool facade;
   non-wrapper application caps → synchronous Application Control agent; wrapper
   caps → async Application Wrapper Runner via the bridge, after tenancy/status/
-  approvalToken guards. The server resolves the approved command; the bridge
-  injects discrete argv.
+  approvalRequestId guards where the command requires approval. The server
+  resolves the approved command; the bridge injects discrete argv.
 - Unified discovery at `GET /api/capabilities` (governed tools + visible
   application caps, tenancy-filtered); the stable `GET /api/tools` facade remains.
 - ccusage runs via the Application capability path (`agt_platform_application_
@@ -112,9 +112,9 @@ Acceptance evidence:
 Acceptance evidence:
 
 - `tools/dev/application-registry-smoke.mjs` (registration, discovery, wrapper
-  requires `approvalToken`, plan returned with `invocationPlan.executable ===
-  false`), `tools/dev/ccusage-agent-smoke.mjs` (report parity, non-authoritative
-  import, raw rows stripped), `apps/desktop/test/application-wrapper-*.test.mjs`.
+  approvalRequestId issuance/verification), `tools/dev/ccusage-agent-smoke.mjs`
+  (report parity, non-authoritative import, raw rows stripped),
+  `apps/desktop/test/application-wrapper-*.test.mjs`.
 - `docs/engineering/fixtures/tool-registry-contract.v1.json` and
   `tools/dev/tool-registry-contract-smoke.mjs` assert that `/api/capabilities`
   publishes ccusage `compatibilityFacade`, `importedUsageEstimates`,

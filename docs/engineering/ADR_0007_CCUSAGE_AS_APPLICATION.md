@@ -119,8 +119,9 @@ behind the existing tool facade**:
    `ccusage@20.0.14`) and the standard Application lifecycle
    (draft → registered → active → offline).
 2. Project the six reports as **capabilities** of that application, executed by
-   the **platform Application Control agent**, reusing the existing
-   `wrapper:*` + `approvalToken` execution path.
+   the **platform Application Wrapper Runner**, reusing the Application
+   `wrapper:*` path and the normal approvalRequestId flow for
+   approval-required reports.
 3. **Keep `/api/tools/ccusage.report`** as a stable compatibility facade backed
    by the projected capability. `/api/capabilities` already unifies both
    `provider.type`s (`tool`, `application`), so no discovery or invocation

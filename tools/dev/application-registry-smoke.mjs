@@ -93,21 +93,26 @@ try {
     "approved npm wrapper command should project a governed capability",
   );
   const wrapperBlocked = await request("POST", `/api/capabilities/${npmPrefix}.wrapper.lint/invocations`, {}, { expectOk: false });
-  assert(wrapperBlocked.status === 409 && wrapperBlocked.data.error === "approval_required", "wrapper command should require approval");
-  const wrapperInvocation = await request("POST", `/api/capabilities/${npmPrefix}.wrapper.lint/invocations`, { approvalToken: "operator-approved-wrapper" });
-  assert(wrapperInvocation.invocation.result.output.command.id === "lint", "wrapper invocation should return the governed command plan");
-  assert(wrapperInvocation.invocation.result.output.invocationPlan.executable === false, "wrapper invocation should not execute npm yet");
+  assert(wrapperBlocked.status === 202 && wrapperBlocked.data.status === "waiting_for_local_approval", "wrapper command should issue a local approval request");
+  const wrapperApprovalRequestId = await approveApplicationRequest(wrapperBlocked.data);
+  const wrapperInvocation = await request("POST", `/api/capabilities/${npmPrefix}.wrapper.lint/invocations`, { approvalRequestId: wrapperApprovalRequestId }, { expectOk: false });
+  assert(
+    (wrapperInvocation.status === 202 && wrapperInvocation.data.status === "queued")
+      || (wrapperInvocation.status === 409 && wrapperInvocation.data.error === "agent_not_available"),
+    "approved wrapper invocation should pass approval verification and then queue or report a missing runner",
+  );
 
   const expectedRoutineId = `app-${registered.application.id}-maintenance`;
 
-  // Side-effecting actions require an explicit approvalToken; without one the
-  // gateway must reject before doing anything.
+  // Side-effecting actions require a real approvalRequestId; without one the
+  // gateway must request approval before doing anything.
   const generateNoToken = await request("POST", `/api/capabilities/${capabilityPrefix}.generate_orchestration/invocations`, {}, { expectOk: false });
-  assert(generateNoToken.status === 409 && generateNoToken.data?.error === "approval_required", "generate_orchestration without an approvalToken should be rejected");
+  assert(generateNoToken.status === 202 && generateNoToken.data?.approvalRequestId, "generate_orchestration without approval should request local approval");
   const offlineNoToken = await request("POST", `/api/applications/${registered.application.id}/offline`, {}, { expectOk: false });
-  assert(offlineNoToken.status === 409 && offlineNoToken.data?.error === "approval_required", "offline without an approvalToken should be rejected");
+  assert(offlineNoToken.status === 202 && offlineNoToken.data?.approvalRequestId, "offline without approval should request local approval");
 
-  const orchestration = await request("POST", `/api/capabilities/${capabilityPrefix}.generate_orchestration/invocations`, { approvalToken: "operator-approved-generate" });
+  const generateApprovalRequestId = await approveApplicationRequest(generateNoToken.data);
+  const orchestration = await request("POST", `/api/capabilities/${capabilityPrefix}.generate_orchestration/invocations`, { approvalRequestId: generateApprovalRequestId });
   const orchestrationDraft = orchestration.invocation.result.output.orchestration;
   const routinePath = orchestrationDraft.path;
   assert(orchestrationDraft.validation?.ok, "generate_orchestration should return server-side routine validation");
@@ -117,7 +122,9 @@ try {
   assert(routinePath.includes(join(".myagenttool", "applications")), "routine draft must live under the managed applications directory");
   const routineCheck = aiJson(["loop-routine-check", "--file", routinePath, "--json"], applicationPath);
   assert(routineCheck.validation?.ok, "generated routine spec should validate");
-  const generated = await request("POST", `/api/applications/${registered.application.id}/orchestrations/generate`, { approvalToken: "operator-approved-generate" });
+  const directGenerateApproval = await request("POST", `/api/applications/${registered.application.id}/orchestrations/generate`, {});
+  const directGenerateApprovalRequestId = await approveApplicationRequest(directGenerateApproval);
+  const generated = await request("POST", `/api/applications/${registered.application.id}/orchestrations/generate`, { approvalRequestId: directGenerateApprovalRequestId });
   assert(generated.invocation.result.output.orchestration.id === expectedRoutineId, "application orchestration endpoint should use the id-derived routine id");
   const orchestrations = await request("GET", `/api/applications/${registered.application.id}/orchestrations`);
   assert(orchestrations.orchestrations.some((item) => item.routineId === expectedRoutineId), "orchestration list should expose generated routine draft");
@@ -139,7 +146,8 @@ try {
   assert(probed.application.probe.package?.name === "smoke-app", "probe should summarize package metadata");
   assert(probed.application.probe.readme?.heading === "Smoke App", "probe should summarize README metadata");
 
-  const offline = await request("POST", `/api/applications/${registered.application.id}/offline`, { approvalToken: "operator-approved-offline" });
+  const offlineApprovalRequestId = await approveApplicationRequest(offlineNoToken.data);
+  const offline = await request("POST", `/api/applications/${registered.application.id}/offline`, { approvalRequestId: offlineApprovalRequestId });
   assert(offline.invocation.result.output.status === "offline", "offline action should update status");
   const offlineState = await request("GET", `/api/applications/${registered.application.id}`);
   const refresh = offlineState.capabilities.find((capability) => capability.name === `${capabilityPrefix}.refresh`);
@@ -176,6 +184,14 @@ async function request(method, path, body = undefined, options = {}) {
     throw new Error(`${method} ${path} failed: ${response.status} ${text}`);
   }
   return options.expectOk === false ? { status: response.status, data } : data;
+}
+
+async function approveApplicationRequest(responseBody) {
+  assert(responseBody.status === "waiting_for_local_approval", "approval request should be waiting for local approval");
+  assert(responseBody.approvalRequestId, "approval request id should be returned");
+  const approved = await request("POST", `/api/approvals/${encodeURIComponent(responseBody.approvalRequestId)}/approve`, {});
+  assert(approved.approval.status === "approved", "approval should be approved through the normal approval route");
+  return responseBody.approvalRequestId;
 }
 
 async function waitFor(check, label) {

@@ -280,11 +280,11 @@ export const api = {
   applicationLifecycle: (
     id: string,
     action: "probe" | "online" | "offline" | "archive" | "refresh",
-    body: { approvalToken?: string; approvalRequestId?: string } = {},
+    body: { approvalRequestId?: string } = {},
   ) => request("POST", `/api/applications/${encodeURIComponent(id)}/${action}`, body),
-  generateApplicationOrchestration: (id: string, body: { approvalToken?: string; approvalRequestId?: string } = {}) =>
+  generateApplicationOrchestration: (id: string, body: { approvalRequestId?: string } = {}) =>
     request("POST", `/api/applications/${encodeURIComponent(id)}/orchestrations/generate`, body),
-  confirmApplicationMcpCandidate: (id: string, candidateId: string, body: { approvalToken?: string; approvalRequestId?: string } = {}) =>
+  confirmApplicationMcpCandidate: (id: string, candidateId: string, body: { approvalRequestId?: string } = {}) =>
     request(
       "POST",
       `/api/applications/${encodeURIComponent(id)}/mcp-candidates/${encodeURIComponent(candidateId)}/confirm`,

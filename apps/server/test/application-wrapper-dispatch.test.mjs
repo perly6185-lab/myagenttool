@@ -16,6 +16,8 @@ const CAP = "app.app_ccusage.wrapper.daily";
 
 function harness({ agentAvailable = true } = {}) {
   const state = { applications: [], projects: [] };
+  const approvals = new Map();
+  const invocations = new Map();
   const appSvc = createApplicationService({
     state,
     now: () => "2026-07-03T00:00:00.000Z",
@@ -42,6 +44,14 @@ function harness({ agentAvailable = true } = {}) {
         approvalRequestId: options.requireLocalApproval ? `apr_${created.length + 1}` : null,
         options,
       };
+      invocations.set(invocation.id, invocation);
+      if (invocation.approvalRequestId) {
+        approvals.set(invocation.approvalRequestId, {
+          id: invocation.approvalRequestId,
+          status: "pending",
+          invocationId: invocation.id,
+        });
+      }
       created.push({ task, agent, options });
       return invocation;
     },
@@ -54,13 +64,15 @@ function harness({ agentAvailable = true } = {}) {
     listApplicationCapabilities: appSvc.listApplicationCapabilities,
     invokeApplicationCapability: appSvc.invokeApplicationCapability,
     planApplicationWrapperInvocation: appSvc.planApplicationWrapperInvocation,
+    findApprovalRequest: (id) => approvals.get(id) ?? null,
+    findInvocation: (id) => invocations.get(id) ?? null,
   });
-  return { capSvc, created };
+  return { approvals, capSvc, created };
 }
 
 test("wrapper capability dispatches a queued bridge invocation with the resolved command", () => {
   const { capSvc, created } = harness();
-  const res = capSvc.createCapabilityInvocation(CAP, { approvalToken: "ok" });
+  const res = capSvc.createCapabilityInvocation(CAP, {});
   assert.equal(res.status, 202);
   assert.equal(res.body.status, "queued");
   assert.equal(res.body.agentId, "agt_platform_application_wrapper");
@@ -76,7 +88,7 @@ test("wrapper capability dispatches a queued bridge invocation with the resolved
   assert.equal(meta.applicationWrapper.resultImport.amountSource, "imported_ccusage_report");
 });
 
-test("a read-only report command (requiresApproval:false) dispatches without an approvalToken", () => {
+test("a read-only report command (requiresApproval:false) dispatches without approval", () => {
   // ccusage report commands are requiresApproval:false — parity with the tool's
   // offline reports, which never needed a token. (The approval_required path for
   // requiresApproval:true commands is covered by the tools-http integration test.)
@@ -89,28 +101,28 @@ test("a read-only report command (requiresApproval:false) dispatches without an 
 
 test("when the wrapper agent is not registered, returns agent_not_available", () => {
   const { capSvc, created } = harness({ agentAvailable: false });
-  const res = capSvc.createCapabilityInvocation(CAP, { approvalToken: "ok" });
+  const res = capSvc.createCapabilityInvocation(CAP, {});
   assert.equal(res.status, 409);
   assert.equal(res.body.error, "agent_not_available");
   assert.equal(created.length, 0);
 });
 
 test("the session report requests real approval before dispatch", () => {
-  const { capSvc, created } = harness();
+  const { approvals, capSvc, created } = harness();
   const approval = capSvc.createCapabilityInvocation("app.app_ccusage.wrapper.session", {});
   assert.equal(approval.status, 202);
   assert.equal(approval.body.status, "waiting_for_local_approval");
   assert.equal(approval.body.approvalRequestId, "apr_1");
   assert.equal(created.length, 1);
   assert.equal(created[0].agent.id, "agt_platform_application_control");
-  // With a token it proceeds.
-  const ok = capSvc.createCapabilityInvocation("app.app_ccusage.wrapper.session", { approvalToken: "operator" });
+  approvals.get("apr_1").status = "approved";
+  const ok = capSvc.createCapabilityInvocation("app.app_ccusage.wrapper.session", { approvalRequestId: "apr_1" });
   assert.equal(ok.status, 202);
 });
 
 test("an unknown wrapper command resolves no plan and is refused", () => {
   const { capSvc, created } = harness();
-  const res = capSvc.createCapabilityInvocation("app.app_ccusage.wrapper.nonexistent", { approvalToken: "ok" });
+  const res = capSvc.createCapabilityInvocation("app.app_ccusage.wrapper.nonexistent", {});
   assert.equal(res.status, 404);
   assert.equal(created.length, 0);
 });

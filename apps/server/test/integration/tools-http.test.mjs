@@ -169,6 +169,20 @@ async function approveApplicationRequest(response, token = "tok_a") {
   return response.body.approvalRequestId;
 }
 
+async function generateApplicationOrchestrationForTest(applicationId = "app_team_a", token = "tok_a") {
+  const blocked = await call(`/api/applications/${encodeURIComponent(applicationId)}/orchestrations/generate`, {
+    method: "POST",
+    body: {},
+    token,
+  });
+  const approvalRequestId = await approveApplicationRequest(blocked, token);
+  return call(`/api/applications/${encodeURIComponent(applicationId)}/orchestrations/generate`, {
+    method: "POST",
+    body: { approvalRequestId },
+    token,
+  });
+}
+
 test("GET /api/tools discovers ccusage.report without exposing adapter argv", async () => {
   const res = await call("/api/tools");
   assert.equal(res.status, 200);
@@ -542,7 +556,7 @@ test("application capability aliases reject a foreign body projectId before invo
   const before = ctx.state.invocations.length;
   const blocked = await call("/api/applications/app_alias_project_boundary/offline", {
     method: "POST",
-    body: { approvalToken: "operator-approved-offline", projectId: "projB" },
+    body: { approvalRequestId: "apr_foreign_project_offline", projectId: "projB" },
     token: "tok_a",
   });
   assert.equal(blocked.status, 404);
@@ -551,7 +565,7 @@ test("application capability aliases reject a foreign body projectId before invo
 
   const generateBlocked = await call("/api/applications/app_alias_project_boundary/orchestrations/generate", {
     method: "POST",
-    body: { approvalToken: "operator-approved-generate", projectId: "projB" },
+    body: { approvalRequestId: "apr_foreign_project_generate", projectId: "projB" },
     token: "tok_a",
   });
   assert.equal(generateBlocked.status, 404);
@@ -710,7 +724,7 @@ test("POST /api/applications/:id/mcp-candidates/:candidateId/confirm requires in
 
   const foreign = await call(`/api/applications/${registered.body.application.id}/mcp-candidates/mcp.shell/confirm`, {
     method: "POST",
-    body: { approvalToken: "operator-confirmed" },
+    body: { approvalRequestId: "apr_foreign_mcp_confirm" },
     token: "tok_b",
   });
   assert.equal(foreign.status, 404);
@@ -1014,11 +1028,7 @@ test("application routine validation blocks unsafe drafts before writing", async
 
 test("application orchestration endpoints generate and list routine drafts", async () => {
   findApplicationForTest("app_team_a").status = "active";
-  const generated = await call("/api/applications/app_team_a/orchestrations/generate", {
-    method: "POST",
-    body: { approvalToken: "operator-approved-generate" },
-    token: "tok_a",
-  });
+  const generated = await generateApplicationOrchestrationForTest();
   assert.equal(generated.status, 201);
   assert.equal(generated.body.invocation.result.output.orchestration.id, "app-app_team_a-maintenance");
 
@@ -1034,11 +1044,7 @@ test("application orchestration endpoints generate and list routine drafts", asy
 test("application orchestration run endpoint creates governed invocations with routine metadata", async () => {
   const application = findApplicationForTest("app_team_a");
   application.status = "active";
-  const generated = await call("/api/applications/app_team_a/orchestrations/generate", {
-    method: "POST",
-    body: { approvalToken: "operator-approved-generate" },
-    token: "tok_a",
-  });
+  const generated = await generateApplicationOrchestrationForTest();
   assert.equal(generated.status, 201);
 
   const missing = await call("/api/applications/app_team_a/orchestrations/missing/run", {
@@ -1117,11 +1123,7 @@ test("application orchestration run endpoint creates governed invocations with r
 test("application orchestration runs endpoint lists scoped run history", async () => {
   const application = findApplicationForTest("app_team_a");
   application.status = "active";
-  const generated = await call("/api/applications/app_team_a/orchestrations/generate", {
-    method: "POST",
-    body: { approvalToken: "operator-approved-generate" },
-    token: "tok_a",
-  });
+  const generated = await generateApplicationOrchestrationForTest();
   assert.equal(generated.status, 201);
 
   const first = await call("/api/applications/app_team_a/orchestrations/app-app_team_a-maintenance/run", {
@@ -1165,11 +1167,7 @@ test("application orchestration runs endpoint lists scoped run history", async (
 test("application orchestration run detail endpoint returns scoped diagnostics", async () => {
   const application = findApplicationForTest("app_team_a");
   application.status = "active";
-  const generated = await call("/api/applications/app_team_a/orchestrations/generate", {
-    method: "POST",
-    body: { approvalToken: "operator-approved-generate" },
-    token: "tok_a",
-  });
+  const generated = await generateApplicationOrchestrationForTest();
   assert.equal(generated.status, 201);
 
   const created = await call("/api/applications/app_team_a/orchestrations/app-app_team_a-maintenance/run", {
@@ -1232,11 +1230,7 @@ test("application orchestration run detail endpoint returns scoped diagnostics",
 test("application orchestration run events and retry stay scoped to the routine", async () => {
   const application = findApplicationForTest("app_team_a");
   application.status = "active";
-  const generated = await call("/api/applications/app_team_a/orchestrations/generate", {
-    method: "POST",
-    body: { approvalToken: "operator-approved-generate" },
-    token: "tok_a",
-  });
+  const generated = await generateApplicationOrchestrationForTest();
   assert.equal(generated.status, 201);
 
   const original = await call("/api/applications/app_team_a/orchestrations/app-app_team_a-maintenance/run", {
@@ -1327,11 +1321,7 @@ test("application orchestration run events and retry stay scoped to the routine"
 test("application orchestration recovery endpoint classifies common outcomes", async () => {
   const application = findApplicationForTest("app_team_a");
   application.status = "active";
-  const generated = await call("/api/applications/app_team_a/orchestrations/generate", {
-    method: "POST",
-    body: { approvalToken: "operator-approved-generate" },
-    token: "tok_a",
-  });
+  const generated = await generateApplicationOrchestrationForTest();
   assert.equal(generated.status, 201);
 
   const success = await createApplicationOrchestrationRunForTest({ status: "succeeded" });
@@ -1420,11 +1410,7 @@ test("application orchestration recovery endpoint classifies common outcomes", a
 test("application orchestration recovery actions are guarded and audited", async () => {
   const application = findApplicationForTest("app_team_a");
   application.status = "active";
-  const generated = await call("/api/applications/app_team_a/orchestrations/generate", {
-    method: "POST",
-    body: { approvalToken: "operator-approved-generate" },
-    token: "tok_a",
-  });
+  const generated = await generateApplicationOrchestrationForTest();
   assert.equal(generated.status, 201);
 
   const runtime = await createApplicationOrchestrationRunForTest({ status: "failed" });

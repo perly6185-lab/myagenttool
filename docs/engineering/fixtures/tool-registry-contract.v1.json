@@ -200,7 +200,6 @@
         "since",
         "until",
         "timezone",
-        "approvalToken",
         "projectId"
       ],
       "outputCollection": "importedUsageEstimates",

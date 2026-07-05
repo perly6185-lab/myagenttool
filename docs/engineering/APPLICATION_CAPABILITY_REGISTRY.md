@@ -193,8 +193,8 @@ candidate confirmation — now uses the normal local approval issuance flow. The
 first request returns `202` with an `approvalRequestId`; after
 `/api/approvals/:id/approve`, the caller retries with that `approvalRequestId`
 and the server verifies the approval's invocation metadata matches the same
-Application, capability/action, and candidate/command. `approvalToken` remains a
-legacy compatibility input while callers migrate.
+Application, capability/action, and candidate/command. Legacy intent-token
+shortcuts are not accepted on the Application capability surface.
 
 `app.<application-id>.generate_orchestration` writes a Loop Routine draft into a
 platform-managed, per-application directory (keyed by the unique application id,

@@ -277,7 +277,6 @@ export function verifyApplicationApproval(input, {
   action = null,
   commandId = null,
 }) {
-  if (hasApprovalToken(input)) return { approved: true, legacy: true, invocation: null };
   const approvalRequestId = String(input?.approvalRequestId ?? "").trim();
   if (!approvalRequestId) return { approved: false };
   const approval = findApprovalRequest(approvalRequestId);
@@ -301,7 +300,7 @@ export function verifyApplicationApproval(input, {
   if (!matches) {
     return approvalVerificationError("approval_scope_mismatch", "Approval request does not match this Application action.", approvalRequestId, approval.status);
   }
-  return { approved: true, legacy: false, invocation: null };
+  return { approved: true, invocation: null };
 }
 
 function approvalVerificationError(error, reason, approvalRequestId, approvalStatus = null) {
@@ -320,7 +319,7 @@ function approvalVerificationError(error, reason, approvalRequestId, approvalSta
 }
 
 export function approvedApplicationInput(input, approval) {
-  if (approval?.approved && !approval.legacy) {
+  if (approval?.approved) {
     return { ...(input && typeof input === "object" && !Array.isArray(input) ? input : {}), __verifiedApplicationApproval: true };
   }
   return input;
@@ -328,10 +327,6 @@ export function approvedApplicationInput(input, approval) {
 
 function sideEffectingApplicationAction(action) {
   return ["archive", "offline", "online", "refresh", "generate_orchestration"].includes(action);
-}
-
-function hasApprovalToken(input) {
-  return Boolean(input && typeof input === "object" && !Array.isArray(input) && String(input.approvalToken ?? "").trim());
 }
 
 function actionFromCapabilityName(capabilityName) {
