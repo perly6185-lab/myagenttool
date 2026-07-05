@@ -17,10 +17,7 @@ import { ApplicationsView } from "@/features/applications/applications-view";
 import { EconomicsView } from "@/features/economics/economics-view";
 import { AuditView } from "@/features/audit/audit-view";
 
-/**
- * Section → screen map. Store-driven instead of URL-driven for the M0 console;
- * swapping in react-router later only touches this table and NavRail.
- */
+/** Section → screen map. The lightweight URL sync lives above this table. */
 export const SECTION_VIEWS: Record<SectionKey, ComponentType> = {
   dashboard: DashboardView,
   projects: ProjectsView,

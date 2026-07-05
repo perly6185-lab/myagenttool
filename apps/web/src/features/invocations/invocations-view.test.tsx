@@ -2,6 +2,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { createElement, type ReactElement } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { useUrlNavigationSync } from "@/app/url-navigation-sync";
 import { InvocationsView } from "@/features/invocations/invocations-view";
 import { useUiStore } from "@/store/ui-store";
 import type { ConsoleSnapshot } from "@/lib/console-state";
@@ -21,6 +22,7 @@ vi.mock("@/lib/api-client", () => ({
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
+  window.history.replaceState(null, "", "/");
   useUiStore.setState({
     section: "dashboard",
     selectedInvocationId: null,
@@ -47,19 +49,22 @@ describe("InvocationsView operator explanation", () => {
     });
 
     useUiStore.setState({ section: "invocations", selectedInvocationId: "inv_action" });
-    renderWithClient(createElement(InvocationsView));
+    renderWithClient(createElement(NavigationSyncedInvocationsView));
 
     expect(await screen.findByText("Actionable explanation")).toBeTruthy();
 
     fireEvent.click(screen.getByRole("button", { name: /Open approval/i }));
     expect(useUiStore.getState().section).toBe("dashboard");
     expect(useUiStore.getState().selectedInvocationId).toBe("inv_action");
+    await waitFor(() => expect(new URLSearchParams(window.location.search).get("section")).toBe("dashboard"));
+    expect(new URLSearchParams(window.location.search).get("invocation")).toBe("inv_action");
 
     useUiStore.setState({ section: "invocations", selectedInvocationId: "inv_action" });
     await waitFor(() => expect(screen.getByText("Actionable explanation")).toBeTruthy());
     fireEvent.click(screen.getByRole("button", { name: /View result/i }));
     expect(useUiStore.getState().section).toBe("invocations");
     expect(useUiStore.getState().selectedInvocationId).toBe("inv_result");
+    await waitFor(() => expect(new URLSearchParams(window.location.search).get("invocation")).toBe("inv_result"));
 
     useUiStore.setState({ section: "invocations", selectedInvocationId: "inv_action" });
     await waitFor(() => expect(screen.getByText("Actionable explanation")).toBeTruthy());
@@ -70,6 +75,13 @@ describe("InvocationsView operator explanation", () => {
       applicationId: "app_docs",
       routineId: "routine_docs_smoke",
       invocationId: "inv_action",
+    });
+    await waitFor(() => {
+      const params = new URLSearchParams(window.location.search);
+      expect(params.get("section")).toBe("applications");
+      expect(params.get("application")).toBe("app_docs");
+      expect(params.get("routine")).toBe("routine_docs_smoke");
+      expect(params.get("run")).toBe("inv_action");
     });
   });
 
@@ -351,6 +363,11 @@ function actionExplanationState(): ConsoleSnapshot {
       logSummary: "No logs.",
     }],
   } as ConsoleSnapshot;
+}
+
+function NavigationSyncedInvocationsView() {
+  useUrlNavigationSync();
+  return createElement(InvocationsView);
 }
 
 function missingTargetExplanationState(): ConsoleSnapshot {

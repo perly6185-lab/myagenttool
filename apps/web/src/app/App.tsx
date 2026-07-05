@@ -3,6 +3,7 @@ import { Topbar } from "@/components/layout/topbar";
 import { Inspector } from "@/components/layout/inspector";
 import { ErrorBoundary } from "@/components/common/error-boundary";
 import { SECTION_VIEWS } from "@/app/routes";
+import { useUrlNavigationSync } from "@/app/url-navigation-sync";
 import { useUiStore } from "@/store/ui-store";
 
 /**
@@ -11,6 +12,7 @@ import { useUiStore } from "@/store/ui-store";
  * stay fixed.
  */
 export function App() {
+  useUrlNavigationSync();
   const section = useUiStore((s) => s.section);
   const View = SECTION_VIEWS[section];
 
