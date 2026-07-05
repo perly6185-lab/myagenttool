@@ -19,6 +19,12 @@ export type SectionKey =
   | "economics"
   | "audit";
 
+export interface ApplicationRunSelection {
+  applicationId: string;
+  routineId: string;
+  invocationId: string;
+}
+
 interface UiState {
   section: SectionKey;
   selectedAgentId: string | null;
@@ -29,6 +35,7 @@ interface UiState {
   selectedAgentSkillId: string | null;
   selectedToolName: string | null;
   selectedApplicationId: string | null;
+  selectedApplicationRun: ApplicationRunSelection | null;
   /** Transient: the invocation whose Codex session the composer will continue on next send (#163). */
   resumeFromInvocationId: string | null;
   setSection: (section: SectionKey) => void;
@@ -40,13 +47,15 @@ interface UiState {
   setSelectedAgentSkillId: (id: string | null) => void;
   setSelectedToolName: (name: string | null) => void;
   setSelectedApplicationId: (id: string | null) => void;
+  setSelectedApplicationRun: (selection: ApplicationRunSelection | null) => void;
   setResumeFromInvocationId: (id: string | null) => void;
 }
 
-const SECTION_KEYS: SectionKey[] = [
+export const SECTION_KEYS: SectionKey[] = [
   "dashboard",
   "projects",
   "task",
+  "autoRuns",
   "automation",
   "agentSkills",
   "invocations",
@@ -61,11 +70,78 @@ const SECTION_KEYS: SectionKey[] = [
   "audit",
 ];
 
-/** A `?section=` deep-link, when valid, wins over any persisted section. */
-function sectionFromUrl(): SectionKey | null {
-  if (typeof window === "undefined") return null;
-  const param = new URLSearchParams(window.location.search).get("section");
-  return param && SECTION_KEYS.includes(param as SectionKey) ? (param as SectionKey) : null;
+export interface UrlNavigationState {
+  section?: SectionKey;
+  selectedInvocationId?: string | null;
+  selectedApplicationId?: string | null;
+  selectedApplicationRun?: ApplicationRunSelection | null;
+}
+
+const NAVIGATION_SEARCH_KEYS = ["section", "invocation", "application", "routine", "run"] as const;
+
+function stringParam(params: URLSearchParams, key: string): string | null {
+  const value = params.get(key)?.trim();
+  return value ? value : null;
+}
+
+function sectionParam(params: URLSearchParams): SectionKey | null {
+  const value = stringParam(params, "section");
+  return value && SECTION_KEYS.includes(value as SectionKey) ? (value as SectionKey) : null;
+}
+
+export function navigationFromSearch(search: string): UrlNavigationState {
+  const params = new URLSearchParams(search);
+  const hasNavigationParams = NAVIGATION_SEARCH_KEYS.some((key) => params.has(key));
+  if (!hasNavigationParams) return {};
+  const section = sectionParam(params);
+  const invocationId = stringParam(params, "invocation");
+  const applicationId = stringParam(params, "application");
+  const routineId = stringParam(params, "routine");
+  const runInvocationId = stringParam(params, "run");
+  const navigation: UrlNavigationState = {};
+  if (section) navigation.section = section;
+  navigation.selectedInvocationId = invocationId;
+  navigation.selectedApplicationId = applicationId;
+  navigation.selectedApplicationRun = applicationId && routineId && runInvocationId
+    ? { applicationId, routineId, invocationId: runInvocationId }
+    : null;
+  return navigation;
+}
+
+function navigationFromCurrentUrl(): UrlNavigationState {
+  return typeof window === "undefined" ? {} : navigationFromSearch(window.location.search);
+}
+
+function applyUrlNavigation<T extends Partial<UiState>>(state: T, navigation: UrlNavigationState): T {
+  if (navigation.section) state.section = navigation.section;
+  if (navigation.selectedInvocationId !== undefined) state.selectedInvocationId = navigation.selectedInvocationId;
+  if (navigation.selectedApplicationId !== undefined) state.selectedApplicationId = navigation.selectedApplicationId;
+  if (navigation.selectedApplicationRun !== undefined) state.selectedApplicationRun = navigation.selectedApplicationRun;
+  return state;
+}
+
+export function urlNavigationPatchFromSearch(search: string): Partial<UiState> {
+  return applyUrlNavigation({}, navigationFromSearch(search));
+}
+
+export function searchFromNavigationState(search: string, state: Pick<UiState,
+  "section"
+  | "selectedInvocationId"
+  | "selectedApplicationId"
+  | "selectedApplicationRun"
+>): string {
+  const params = new URLSearchParams(search);
+  for (const key of NAVIGATION_SEARCH_KEYS) params.delete(key);
+  params.set("section", state.section);
+  if (state.selectedInvocationId) params.set("invocation", state.selectedInvocationId);
+  const applicationId = state.selectedApplicationRun?.applicationId ?? state.selectedApplicationId;
+  if (applicationId) params.set("application", applicationId);
+  if (state.selectedApplicationRun) {
+    params.set("routine", state.selectedApplicationRun.routineId);
+    params.set("run", state.selectedApplicationRun.invocationId);
+  }
+  const next = params.toString();
+  return next ? `?${next}` : "";
 }
 
 /**
@@ -76,28 +152,33 @@ function sectionFromUrl(): SectionKey | null {
  */
 export const useUiStore = create<UiState>()(
   persist(
-    (set) => ({
-      section: sectionFromUrl() ?? "dashboard",
-      selectedAgentId: null,
-      selectedInvocationId: null,
-      selectedArtifactId: null,
-      selectedProjectId: null,
-      selectedWorktreeId: null,
-      selectedAgentSkillId: null,
-      selectedToolName: null,
-      selectedApplicationId: null,
-      resumeFromInvocationId: null,
-      setSection: (section) => set({ section }),
-      setSelectedAgentId: (selectedAgentId) => set({ selectedAgentId }),
-      setSelectedInvocationId: (selectedInvocationId) => set({ selectedInvocationId }),
-      setSelectedArtifactId: (selectedArtifactId) => set({ selectedArtifactId }),
-      setSelectedProjectId: (selectedProjectId) => set({ selectedProjectId }),
-      setSelectedWorktreeId: (selectedWorktreeId) => set({ selectedWorktreeId }),
-      setSelectedAgentSkillId: (selectedAgentSkillId) => set({ selectedAgentSkillId }),
-      setSelectedToolName: (selectedToolName) => set({ selectedToolName }),
-      setSelectedApplicationId: (selectedApplicationId) => set({ selectedApplicationId }),
-      setResumeFromInvocationId: (resumeFromInvocationId) => set({ resumeFromInvocationId }),
-    }),
+    (set) => {
+      const initialNavigation = navigationFromCurrentUrl();
+      return {
+        section: initialNavigation.section ?? "dashboard",
+        selectedAgentId: null,
+        selectedInvocationId: initialNavigation.selectedInvocationId ?? null,
+        selectedArtifactId: null,
+        selectedProjectId: null,
+        selectedWorktreeId: null,
+        selectedAgentSkillId: null,
+        selectedToolName: null,
+        selectedApplicationId: initialNavigation.selectedApplicationId ?? null,
+        selectedApplicationRun: initialNavigation.selectedApplicationRun ?? null,
+        resumeFromInvocationId: null,
+        setSection: (section) => set({ section }),
+        setSelectedAgentId: (selectedAgentId) => set({ selectedAgentId }),
+        setSelectedInvocationId: (selectedInvocationId) => set({ selectedInvocationId }),
+        setSelectedArtifactId: (selectedArtifactId) => set({ selectedArtifactId }),
+        setSelectedProjectId: (selectedProjectId) => set({ selectedProjectId }),
+        setSelectedWorktreeId: (selectedWorktreeId) => set({ selectedWorktreeId }),
+        setSelectedAgentSkillId: (selectedAgentSkillId) => set({ selectedAgentSkillId }),
+        setSelectedToolName: (selectedToolName) => set({ selectedToolName }),
+        setSelectedApplicationId: (selectedApplicationId) => set({ selectedApplicationId }),
+        setSelectedApplicationRun: (selectedApplicationRun) => set({ selectedApplicationRun }),
+        setResumeFromInvocationId: (resumeFromInvocationId) => set({ resumeFromInvocationId }),
+      };
+    },
     {
       name: "myagenttool-ui",
       version: 1,
@@ -113,6 +194,7 @@ export const useUiStore = create<UiState>()(
         selectedAgentSkillId: state.selectedAgentSkillId,
         selectedToolName: state.selectedToolName,
         selectedApplicationId: state.selectedApplicationId,
+        selectedApplicationRun: state.selectedApplicationRun,
       }),
       merge: (persisted, current) => {
         const saved = (persisted ?? {}) as Partial<UiState>;
@@ -121,9 +203,8 @@ export const useUiStore = create<UiState>()(
         if (!merged.section || !SECTION_KEYS.includes(merged.section)) {
           merged.section = "dashboard";
         }
-        // An explicit deep-link overrides the restored section.
-        const urlSection = sectionFromUrl();
-        if (urlSection) merged.section = urlSection;
+        // Explicit deep-link params override restored navigation selections.
+        applyUrlNavigation(merged, navigationFromCurrentUrl());
         return merged;
       },
     },

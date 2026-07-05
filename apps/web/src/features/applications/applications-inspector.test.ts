@@ -51,6 +51,7 @@ afterEach(() => {
     section: "dashboard",
     selectedApplicationId: null,
     selectedInvocationId: null,
+    selectedApplicationRun: null,
   });
 });
 
@@ -319,6 +320,38 @@ describe("ApplicationsInspector recovery guidance", () => {
         "inv_failed",
       );
     });
+  });
+
+  it("does not expand a stale selected application run into the wrong diagnostics", async () => {
+    apiMock.fetchState.mockResolvedValue(recoveryConsoleState());
+    apiMock.listApplicationCapabilities.mockResolvedValue({ applicationId: "app_docs", capabilities: [] });
+    apiMock.listApplicationOrchestrationRuns.mockResolvedValue({
+      applicationId: "app_docs",
+      routineId: "app-app_docs-maintenance",
+      runs: [{
+        invocationId: "inv_failed",
+        status: "failed",
+        agentId: "agt_demo_cli",
+        errorSummary: "Routine validation failed.",
+        createdAt: "2026-07-04T02:00:00.000Z",
+        updatedAt: "2026-07-04T02:01:00.000Z",
+      }],
+    });
+
+    useUiStore.setState({
+      selectedApplicationId: "app_docs",
+      selectedApplicationRun: {
+        applicationId: "app_docs",
+        routineId: "app-app_docs-maintenance",
+        invocationId: "inv_stale",
+      },
+    });
+    renderWithClient(createElement(ApplicationsInspector));
+
+    expect(await screen.findByText("inv_failed")).toBeTruthy();
+    expect(screen.queryByText("Run diagnostics")).toBeNull();
+    expect(apiMock.getApplicationOrchestrationRun).not.toHaveBeenCalled();
+    expect(apiMock.getApplicationOrchestrationRunRecovery).not.toHaveBeenCalled();
   });
 });
 

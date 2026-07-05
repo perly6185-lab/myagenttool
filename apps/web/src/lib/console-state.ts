@@ -88,6 +88,7 @@ export interface InvocationSnapshot {
   delivery?: { state?: string; dispatchAttempts?: number };
   cancellation?: { state?: string };
   result?: { summary?: string; touchedUserFiles?: boolean };
+  explanation?: InvocationExplanation | null;
   createdAt?: string;
   options?: {
     metadata?: {
@@ -103,6 +104,72 @@ export interface InvocationSnapshot {
       [key: string]: unknown;
     };
   };
+}
+
+export interface InvocationExplanation {
+  state?: string | null;
+  reason?: string | null;
+  reasonCode?: string | null;
+  summary?: string | null;
+  waitingOn?: {
+    type?: string | null;
+    id?: string | null;
+    status?: string | null;
+    label?: string | null;
+  } | null;
+  resultLocation?: {
+    type?: string | null;
+    invocationId?: string | null;
+    reportId?: string | null;
+    orchestrationId?: string | null;
+    relativePath?: string | null;
+    label?: string | null;
+  } | null;
+  nextAction?: string | null;
+  recovery?: {
+    category?: string | null;
+    actionType?: string | null;
+    actionRequestId?: string | null;
+    status?: string | null;
+    sourceInvocationId?: string | null;
+    approvalRequestId?: string | null;
+    resultInvocationId?: string | null;
+    resultOrchestrationId?: string | null;
+    resultOrchestrationRelativePath?: string | null;
+  } | null;
+  approval?: {
+    requestId?: string | null;
+    status?: string | null;
+    riskLevel?: string | null;
+    riskTags?: string[];
+    decidedBy?: string | null;
+    decidedAt?: string | null;
+  } | null;
+  source?: {
+    type?: string | null;
+    applicationId?: string | null;
+    applicationName?: string | null;
+    routineId?: string | null;
+    routineName?: string | null;
+    orchestrationRelativePath?: string | null;
+    recoveryOfInvocationId?: string | null;
+    recoveryActionType?: string | null;
+    automationId?: string | null;
+    automationName?: string | null;
+    scheduled?: boolean;
+    autoRunId?: string | null;
+    compareRunId?: string | null;
+    invocationId?: string | null;
+    recoveryActionRequestId?: string | null;
+    actionType?: string | null;
+    targetInvocationId?: string | null;
+    toolName?: string | null;
+    outputCollection?: string | null;
+    status?: string | null;
+    preferredInvocationId?: string | null;
+    siblingInvocationIds?: string[];
+    link?: Record<string, unknown> | null;
+  } | null;
 }
 
 export interface InvocationEventSnapshot {
@@ -176,6 +243,7 @@ export interface DiscoveryRunSnapshot {
 
 export interface ApprovalSnapshot {
   id: string;
+  invocationId?: string;
   status: string;
   riskLevel?: string;
   riskTags?: string[];
@@ -190,6 +258,7 @@ export interface PolicyDecisionSnapshot {
 }
 
 export interface TroubleshootingReport {
+  id?: string;
   invocationId: string;
   summary: string;
   bridgeState: string;
