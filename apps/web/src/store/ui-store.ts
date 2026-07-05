@@ -19,6 +19,12 @@ export type SectionKey =
   | "economics"
   | "audit";
 
+export interface ApplicationRunSelection {
+  applicationId: string;
+  routineId: string;
+  invocationId: string;
+}
+
 interface UiState {
   section: SectionKey;
   selectedAgentId: string | null;
@@ -29,6 +35,7 @@ interface UiState {
   selectedAgentSkillId: string | null;
   selectedToolName: string | null;
   selectedApplicationId: string | null;
+  selectedApplicationRun: ApplicationRunSelection | null;
   /** Transient: the invocation whose Codex session the composer will continue on next send (#163). */
   resumeFromInvocationId: string | null;
   setSection: (section: SectionKey) => void;
@@ -40,6 +47,7 @@ interface UiState {
   setSelectedAgentSkillId: (id: string | null) => void;
   setSelectedToolName: (name: string | null) => void;
   setSelectedApplicationId: (id: string | null) => void;
+  setSelectedApplicationRun: (selection: ApplicationRunSelection | null) => void;
   setResumeFromInvocationId: (id: string | null) => void;
 }
 
@@ -86,6 +94,7 @@ export const useUiStore = create<UiState>()(
       selectedAgentSkillId: null,
       selectedToolName: null,
       selectedApplicationId: null,
+      selectedApplicationRun: null,
       resumeFromInvocationId: null,
       setSection: (section) => set({ section }),
       setSelectedAgentId: (selectedAgentId) => set({ selectedAgentId }),
@@ -96,6 +105,7 @@ export const useUiStore = create<UiState>()(
       setSelectedAgentSkillId: (selectedAgentSkillId) => set({ selectedAgentSkillId }),
       setSelectedToolName: (selectedToolName) => set({ selectedToolName }),
       setSelectedApplicationId: (selectedApplicationId) => set({ selectedApplicationId }),
+      setSelectedApplicationRun: (selectedApplicationRun) => set({ selectedApplicationRun }),
       setResumeFromInvocationId: (resumeFromInvocationId) => set({ resumeFromInvocationId }),
     }),
     {
@@ -113,6 +123,7 @@ export const useUiStore = create<UiState>()(
         selectedAgentSkillId: state.selectedAgentSkillId,
         selectedToolName: state.selectedToolName,
         selectedApplicationId: state.selectedApplicationId,
+        selectedApplicationRun: state.selectedApplicationRun,
       }),
       merge: (persisted, current) => {
         const saved = (persisted ?? {}) as Partial<UiState>;

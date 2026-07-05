@@ -159,6 +159,9 @@ export interface InvocationExplanation {
     scheduled?: boolean;
     autoRunId?: string | null;
     compareRunId?: string | null;
+    invocationId?: string | null;
+    recoveryActionRequestId?: string | null;
+    actionType?: string | null;
     targetInvocationId?: string | null;
     toolName?: string | null;
     outputCollection?: string | null;
@@ -240,6 +243,7 @@ export interface DiscoveryRunSnapshot {
 
 export interface ApprovalSnapshot {
   id: string;
+  invocationId?: string;
   status: string;
   riskLevel?: string;
   riskTags?: string[];
@@ -254,6 +258,7 @@ export interface PolicyDecisionSnapshot {
 }
 
 export interface TroubleshootingReport {
+  id?: string;
   invocationId: string;
   summary: string;
   bridgeState: string;

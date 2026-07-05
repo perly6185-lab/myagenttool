@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Clipboard, ExternalLink, Play, Search } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -360,8 +360,18 @@ function OrchestrationRunHistory({
     enabled: Boolean(application.id && orchestration.routineId),
     refetchInterval: 2000,
   });
+  const selectedApplicationRun = useUiStore((s) => s.selectedApplicationRun);
   const [expandedInvocationId, setExpandedInvocationId] = useState<string | null>(null);
   const runs = data?.runs ?? [];
+
+  useEffect(() => {
+    if (
+      selectedApplicationRun?.applicationId === application.id
+      && selectedApplicationRun.routineId === orchestration.routineId
+    ) {
+      setExpandedInvocationId(selectedApplicationRun.invocationId);
+    }
+  }, [application.id, orchestration.routineId, selectedApplicationRun]);
 
   if (error) {
     return <p className="text-xs text-destructive">Could not load run history.</p>;
