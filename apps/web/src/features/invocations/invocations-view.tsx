@@ -184,9 +184,12 @@ function OperatorExplanationCard({
   const approval = approvalRequestId
     ? (state?.approvalRequests ?? []).find((item) => item.id === approvalRequestId) ?? null
     : null;
-  const resultInvocationId = serverExplanation?.resultLocation?.invocationId
+  const resultInvocationId = serverExplanation?.resultLocation?.type === "invocation"
+    ? serverExplanation.resultLocation.invocationId
     ?? serverExplanation?.recovery?.resultInvocationId
-    ?? recoveryResultInvocationId(recoveryExplanation, latestRecoveryAction);
+    ?? recoveryResultInvocationId(recoveryExplanation, latestRecoveryAction)
+    : serverExplanation?.recovery?.resultInvocationId
+      ?? recoveryResultInvocationId(recoveryExplanation, latestRecoveryAction);
   const resultOrchestration = serverExplanation?.resultLocation?.type === "orchestration"
     ? serverExplanation.resultLocation.label ?? serverExplanation.resultLocation.orchestrationId ?? null
     : recoveryResultOrchestrationLabel(recoveryExplanation);
@@ -220,7 +223,10 @@ function OperatorExplanationCard({
     ? `${readableRecoveryActionType(latestRecoveryAction.actionType)} · ${readableRecoveryActionStatus(latestRecoveryAction.status, "inline")}`
     : serverRecoveryActionLabel(serverExplanation);
   const recoveryRequest = recoveryRequestForExplanation(state, serverExplanation, latestRecoveryAction);
-  const approvalTargetInvocationId = approval?.invocationId ?? recoveryRequest?.invocationId ?? invocation.id;
+  const approvalTargetInvocationId = approval?.invocationId
+    ?? recoveryRequest?.invocationId
+    ?? (invocation.approvalRequestId === approvalRequestId ? invocation.id : null);
+  const approvalTargetMissing = Boolean(approvalRequestId && !approvalTargetInvocationId);
   const recoveryTimelineTarget = recoveryRequest
     ? {
         applicationId: recoveryRequest.applicationId,
@@ -234,14 +240,29 @@ function OperatorExplanationCard({
           invocationId: serverExplanation?.recovery?.sourceInvocationId ?? invocation.id,
         }
       : null;
-  const troubleshootingTarget = serverExplanation?.resultLocation?.reportId
+  const troubleshootingTarget = serverExplanation?.resultLocation?.type === "troubleshooting_report" && serverExplanation.resultLocation.reportId
     ? (state?.troubleshootingReports ?? []).find((report) => report.id === serverExplanation.resultLocation?.reportId) ?? null
     : null;
+  const resultInvocationTargetId = resultInvocationId && invocationExists(state, resultInvocationId)
+    ? resultInvocationId
+    : null;
+  const resultInvocationMissing = Boolean(resultInvocationId && !resultInvocationTargetId);
+  const troubleshootingInvocationTargetId = troubleshootingTarget?.invocationId && invocationExists(state, troubleshootingTarget.invocationId)
+    ? troubleshootingTarget.invocationId
+    : null;
+  const troubleshootingReportMissing = serverExplanation?.resultLocation?.type === "troubleshooting_report"
+    && Boolean(serverExplanation.resultLocation.reportId)
+    && !troubleshootingTarget;
+  const troubleshootingInvocationMissing = Boolean(troubleshootingTarget?.invocationId && !troubleshootingInvocationTargetId);
   const sourceInvocationId = serverExplanation?.source?.type === "troubleshooting"
     ? serverExplanation.source.targetInvocationId ?? null
     : serverExplanation?.source?.type === "recovery_result"
       ? serverExplanation.source.invocationId ?? null
       : serverExplanation?.recovery?.sourceInvocationId ?? null;
+  const sourceInvocationTargetId = sourceInvocationId && invocationExists(state, sourceInvocationId)
+    ? sourceInvocationId
+    : null;
+  const sourceInvocationMissing = Boolean(sourceInvocationId && !sourceInvocationTargetId);
 
   return (
     <Card>
@@ -269,24 +290,35 @@ function OperatorExplanationCard({
             { term: "Why blocked", value: serverExplanation?.reason ?? recoveryBlockedReason(invocation, reasonCode) },
             {
               term: "Waiting on",
-              value: approvalRequestId ? (
+              value: approvalRequestId && approvalTargetInvocationId ? (
                 <ActionValue
                   value={waitingOnLabel(serverExplanation) ?? recoveryWaitingOn({ approvalRequestId, approval, latestRecoveryAction })}
                   actionLabel="Open approval"
                   onAction={() => onViewApproval(approvalTargetInvocationId)}
                 />
+              ) : approvalTargetMissing ? (
+                <UnavailableTargetValue
+                  value={waitingOnLabel(serverExplanation) ?? recoveryWaitingOn({ approvalRequestId, approval, latestRecoveryAction })}
+                  reason="Approval target is not loaded."
+                />
               ) : waitingOnLabel(serverExplanation) ?? recoveryWaitingOn({ approvalRequestId, approval, latestRecoveryAction }),
             },
             {
               term: "Result",
-              value: resultInvocationId ? (
-                <ActionValue value={resultLabel} actionLabel="View result" onAction={() => onViewInvocation(resultInvocationId)} />
-              ) : troubleshootingTarget ? (
+              value: resultInvocationTargetId ? (
+                <ActionValue value={resultLabel} actionLabel="View result" onAction={() => onViewInvocation(resultInvocationTargetId)} />
+              ) : resultInvocationMissing ? (
+                <UnavailableTargetValue value={resultLabel} reason="Result invocation is not loaded." />
+              ) : troubleshootingInvocationTargetId ? (
                 <ActionValue
                   value={resultLabel}
                   actionLabel="Open report"
-                  onAction={() => onViewInvocation(troubleshootingTarget.invocationId)}
+                  onAction={() => onViewInvocation(troubleshootingInvocationTargetId)}
                 />
+              ) : troubleshootingReportMissing ? (
+                <UnavailableTargetValue value={resultLabel} reason="Troubleshooting report is not loaded." />
+              ) : troubleshootingInvocationMissing ? (
+                <UnavailableTargetValue value={resultLabel} reason="Troubleshooting invocation is not loaded." />
               ) : recoveryTimelineTarget && serverExplanation?.resultLocation?.type === "orchestration" ? (
                 <ActionValue
                   value={resultLabel}
@@ -315,11 +347,16 @@ function OperatorExplanationCard({
             },
             {
               term: "Source",
-              value: sourceInvocationId ? (
+              value: sourceInvocationTargetId ? (
                 <ActionValue
                   value={sourceLabel ?? sourceInvocationId}
                   actionLabel="View source"
-                  onAction={() => onViewInvocation(sourceInvocationId)}
+                  onAction={() => onViewInvocation(sourceInvocationTargetId)}
+                />
+              ) : sourceInvocationMissing ? (
+                <UnavailableTargetValue
+                  value={sourceLabel ?? sourceInvocationId}
+                  reason="Source invocation is not loaded."
                 />
               ) : sourceLabel ?? "Direct invocation",
             },
@@ -350,6 +387,10 @@ function stringValue(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value : null;
 }
 
+function invocationExists(state: ConsoleSnapshot | null, invocationId: string): boolean {
+  return (state?.invocations ?? []).some((item) => item.id === invocationId);
+}
+
 function ActionValue({
   value,
   actionLabel,
@@ -366,6 +407,21 @@ function ActionValue({
         <ExternalLink />
         {actionLabel}
       </Button>
+    </span>
+  );
+}
+
+function UnavailableTargetValue({
+  value,
+  reason,
+}: {
+  value: ReactNode;
+  reason: string;
+}) {
+  return (
+    <span className="flex flex-wrap items-center gap-2">
+      <span className="min-w-0 [overflow-wrap:anywhere]">{value}</span>
+      <span className="rounded-sm bg-muted px-2 py-1 text-xs text-muted-foreground">{reason}</span>
     </span>
   );
 }

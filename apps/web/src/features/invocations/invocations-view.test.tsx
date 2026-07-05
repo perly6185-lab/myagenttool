@@ -91,6 +91,27 @@ describe("InvocationsView operator explanation", () => {
     expect(useUiStore.getState().selectedInvocationId).toBe("inv_failed");
   });
 
+  it("keeps explanation rows explicit when action targets are absent", async () => {
+    apiMock.fetchState.mockResolvedValue(missingTargetExplanationState());
+
+    useUiStore.setState({ section: "invocations", selectedInvocationId: "inv_missing_targets" });
+    renderWithClient(createElement(InvocationsView));
+
+    expect(await screen.findByText("Targets are missing from the snapshot.")).toBeTruthy();
+    expect(screen.getByText("Approval target is not loaded.")).toBeTruthy();
+    expect(screen.getByText("Result invocation is not loaded.")).toBeTruthy();
+    expect(screen.getByText("Source invocation is not loaded.")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /Open approval/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /View result/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /View source/i })).toBeNull();
+
+    useUiStore.setState({ section: "invocations", selectedInvocationId: "inv_missing_report" });
+    await waitFor(() => expect(screen.getByText("Report target is missing from the snapshot.")).toBeTruthy());
+    expect(screen.getByText("Troubleshooting report is not loaded.")).toBeTruthy();
+    expect(screen.getByText("Source invocation is not loaded.")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /Open report/i })).toBeNull();
+  });
+
   it("prefers server-provided invocation explanation shape", async () => {
     apiMock.fetchState.mockResolvedValue(serverExplanationState());
 
@@ -103,6 +124,7 @@ describe("InvocationsView operator explanation", () => {
     expect(screen.getByText("apr_server (pending)")).toBeTruthy();
     expect(screen.getByText("audit row")).toBeTruthy();
     expect(screen.getByText("Approve or deny from the approvals queue.")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /View result/i })).toBeNull();
     expect(apiMock.getApplicationOrchestrationRunRecovery).not.toHaveBeenCalled();
   });
 
@@ -328,6 +350,92 @@ function actionExplanationState(): ConsoleSnapshot {
       bridgeState: "online",
       logSummary: "No logs.",
     }],
+  } as ConsoleSnapshot;
+}
+
+function missingTargetExplanationState(): ConsoleSnapshot {
+  return {
+    namespace: "test",
+    protocolVersion: "0.0.0",
+    serverTime: "2026-07-05T08:00:00.000Z",
+    device: {
+      id: "dev_local",
+      name: "Local bridge",
+      status: "online",
+      platform: "win32",
+      architecture: "x64",
+      lastSeenAt: "2026-07-05T08:00:00.000Z",
+    },
+    agent: null,
+    agents: [],
+    projects: [],
+    worktrees: [],
+    currentProjectId: "proj_docs",
+    invocations: [{
+      id: "inv_missing_targets",
+      status: "failed",
+      agentId: "agt_demo_cli",
+      projectId: "proj_docs",
+      explanation: {
+        state: "failed",
+        reason: "Missing related records.",
+        reasonCode: "failed",
+        summary: "Targets are missing from the snapshot.",
+        waitingOn: {
+          type: "approval",
+          id: "apr_missing",
+          status: "pending",
+          label: "apr_missing (pending)",
+        },
+        resultLocation: {
+          type: "invocation",
+          invocationId: "inv_result_missing",
+          label: "inv_result_missing",
+        },
+        nextAction: "Wait for the snapshot to include the target records.",
+        approval: {
+          requestId: "apr_missing",
+          status: "pending",
+        },
+        source: {
+          type: "recovery_result",
+          invocationId: "inv_source_missing",
+          recoveryActionRequestId: "rec_missing",
+        },
+      },
+      options: { metadata: {} },
+    }, {
+      id: "inv_missing_report",
+      status: "succeeded",
+      agentId: "agt_platform_troubleshooter",
+      projectId: "proj_docs",
+      explanation: {
+        state: "succeeded",
+        reason: "Troubleshooter generated a report.",
+        reasonCode: "succeeded",
+        summary: "Report target is missing from the snapshot.",
+        resultLocation: {
+          type: "troubleshooting_report",
+          reportId: "trb_missing",
+          label: "trb_missing",
+        },
+        nextAction: "Wait for the troubleshooting report to appear.",
+        source: {
+          type: "troubleshooting",
+          targetInvocationId: "inv_failed_missing",
+        },
+      },
+      options: {
+        metadata: {
+          targetInvocationId: "inv_failed_missing",
+        },
+      },
+    }],
+    events: [],
+    auditSummaries: [],
+    approvalRequests: [],
+    applicationRecoveryActions: [],
+    troubleshootingReports: [],
   } as ConsoleSnapshot;
 }
 
