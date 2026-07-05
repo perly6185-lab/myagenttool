@@ -16,6 +16,7 @@ beforeEach(() => {
     selectedInvocationId: null,
     selectedApplicationId: null,
     selectedApplicationRun: null,
+    selectedEvidenceId: null,
   });
 });
 
@@ -26,7 +27,7 @@ afterEach(() => {
 
 describe("useUrlNavigationSync", () => {
   it("hydrates store navigation from the current URL", () => {
-    window.history.replaceState(null, "", "/?section=applications&application=app_docs&routine=routine_docs&run=inv_docs");
+    window.history.replaceState(null, "", "/?section=applications&application=app_docs&routine=routine_docs&run=inv_docs&evidence=ev_docs");
 
     render(<SyncHarness />);
 
@@ -37,23 +38,26 @@ describe("useUrlNavigationSync", () => {
       routineId: "routine_docs",
       invocationId: "inv_docs",
     });
+    expect(useUiStore.getState().selectedEvidenceId).toBe("ev_docs");
   });
 
   it("writes store navigation changes back to the URL", async () => {
     render(<SyncHarness />);
 
     useUiStore.getState().setSelectedInvocationId("inv_result");
+    useUiStore.getState().setSelectedEvidenceId("ev_result");
     useUiStore.getState().setSection("invocations");
 
     await waitFor(() => {
       const params = new URLSearchParams(window.location.search);
       expect(params.get("section")).toBe("invocations");
       expect(params.get("invocation")).toBe("inv_result");
+      expect(params.get("evidence")).toBe("ev_result");
     });
   });
 
-  it("applies popstate URL changes without keeping stale run selections", () => {
-    window.history.replaceState(null, "", "/?section=applications&application=app_docs&routine=routine_docs&run=inv_docs");
+  it("applies popstate URL changes without keeping stale run or evidence selections", () => {
+    window.history.replaceState(null, "", "/?section=applications&application=app_docs&routine=routine_docs&run=inv_docs&evidence=ev_docs");
     render(<SyncHarness />);
 
     window.history.replaceState(null, "", "/?section=applications&application=app_other");
@@ -62,5 +66,6 @@ describe("useUrlNavigationSync", () => {
     expect(useUiStore.getState().section).toBe("applications");
     expect(useUiStore.getState().selectedApplicationId).toBe("app_other");
     expect(useUiStore.getState().selectedApplicationRun).toBeNull();
+    expect(useUiStore.getState().selectedEvidenceId).toBeNull();
   });
 });
