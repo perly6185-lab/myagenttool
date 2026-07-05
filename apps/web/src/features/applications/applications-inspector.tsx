@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Select } from "@/components/ui/input";
 import { FactList } from "@/components/common/fact-list";
 import { ConfirmModal } from "@/components/common/confirm-modal";
+import { applicationRunDeepLink } from "@/app/deep-links";
 import { useConsoleState } from "@/data/use-console-state";
 import { useAsyncAction, api } from "@/data/use-console-actions";
 import { useUiStore } from "@/store/ui-store";
@@ -472,6 +473,7 @@ function OrchestrationRunDiagnostics({
   canRetry: boolean;
 }) {
   const { execute, pending, error: retryError } = useAsyncAction();
+  const [copiedRunLink, setCopiedRunLink] = useState(false);
   const { data: state } = useConsoleState();
   const setSelectedInvocationId = useUiStore((s) => s.setSelectedInvocationId);
   const setSection = useUiStore((s) => s.setSection);
@@ -528,6 +530,11 @@ function OrchestrationRunDiagnostics({
     setSection("invocations");
   }
 
+  function copyRunLink() {
+    void navigator.clipboard?.writeText(applicationRunDeepLink({ applicationId, routineId, invocationId }));
+    setCopiedRunLink(true);
+  }
+
   if (error) {
     return <p className="rounded-md bg-destructive/10 p-2 text-destructive">Could not load run diagnostics.</p>;
   }
@@ -547,10 +554,22 @@ function OrchestrationRunDiagnostics({
             </p>
           ) : null}
         </div>
-        <Button size="sm" variant="secondary" disabled={!canRetry || pending} onClick={retryRun}>
-          <Play />
-          {pending ? "Retrying..." : "Re-run"}
-        </Button>
+        <div className="flex flex-wrap items-center gap-2">
+          <Button
+            size="icon"
+            variant="secondary"
+            title="Copy run link"
+            aria-label="Copy run link"
+            onClick={copyRunLink}
+          >
+            <Clipboard />
+          </Button>
+          <Button size="sm" variant="secondary" disabled={!canRetry || pending} onClick={retryRun}>
+            <Play />
+            {pending ? "Retrying..." : "Re-run"}
+          </Button>
+          {copiedRunLink ? <span className="text-xs text-success">Copied.</span> : null}
+        </div>
       </div>
       {retryError ? <p className="text-xs text-destructive">{retryError}</p> : null}
       <FactList

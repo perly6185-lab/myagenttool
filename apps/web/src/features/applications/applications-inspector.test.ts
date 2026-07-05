@@ -43,6 +43,7 @@ vi.mock("@/lib/api-client", () => ({
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
+  window.history.replaceState(null, "", "/");
   useUiStore.setState({
     section: "dashboard",
     selectedApplicationId: null,
@@ -50,6 +51,15 @@ afterEach(() => {
     selectedApplicationRun: null,
   });
 });
+
+function mockClipboard() {
+  const writeText = vi.fn();
+  Object.defineProperty(navigator, "clipboard", {
+    configurable: true,
+    value: { writeText },
+  });
+  return writeText;
+}
 
 describe("latestRoutineInvocation", () => {
   it("selects the newest matching application orchestration invocation", () => {
@@ -246,6 +256,79 @@ describe("ApplicationsInspector recovery guidance", () => {
         "inv_failed",
       );
     });
+  });
+
+  it("copies a shareable application run deep link from diagnostics", async () => {
+    const writeText = mockClipboard();
+    window.history.replaceState(null, "", "/console?keep=yes#recovery");
+    apiMock.fetchState.mockResolvedValue(recoveryConsoleState());
+    apiMock.listApplicationCapabilities.mockResolvedValue({ applicationId: "app_docs", capabilities: [] });
+    apiMock.listApplicationOrchestrationRuns.mockResolvedValue({
+      applicationId: "app_docs",
+      routineId: "app-app_docs-maintenance",
+      runs: [{
+        invocationId: "inv_failed",
+        status: "failed",
+        agentId: "agt_demo_cli",
+        errorSummary: "Routine validation failed.",
+        createdAt: "2026-07-04T02:00:00.000Z",
+        updatedAt: "2026-07-04T02:01:00.000Z",
+      }],
+    });
+    apiMock.getApplicationOrchestrationRun.mockResolvedValue({
+      applicationId: "app_docs",
+      routineId: "app-app_docs-maintenance",
+      run: {
+        invocationId: "inv_failed",
+        status: "failed",
+        agentId: "agt_demo_cli",
+        errorSummary: "Routine validation failed.",
+        createdAt: "2026-07-04T02:00:00.000Z",
+        updatedAt: "2026-07-04T02:01:00.000Z",
+        metadata: {
+          source: "application_orchestration",
+          applicationId: "app_docs",
+          routineId: "app-app_docs-maintenance",
+        },
+      },
+    });
+    apiMock.listApplicationOrchestrationRunEvents.mockResolvedValue({
+      applicationId: "app_docs",
+      routineId: "app-app_docs-maintenance",
+      invocationId: "inv_failed",
+      events: [],
+    });
+    apiMock.getApplicationOrchestrationRunRecovery.mockResolvedValue({
+      applicationId: "app_docs",
+      routineId: "app-app_docs-maintenance",
+      invocationId: "inv_failed",
+      recovery: {
+        category: "validation_failed",
+        confidence: 0.91,
+        retryRecommended: false,
+        humanApprovalRequired: true,
+        summary: "The routine failed validation; regenerate the orchestration.",
+        actions: [],
+      },
+    });
+
+    useUiStore.setState({ selectedApplicationId: "app_docs" });
+    renderWithClient(createElement(ApplicationsInspector));
+
+    fireEvent.click(await screen.findByRole("button", { name: /Inspect/i }));
+    expect(await screen.findByText("Run diagnostics")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: /Copy run link/i }));
+
+    expect(writeText).toHaveBeenCalledTimes(1);
+    const url = new URL(writeText.mock.calls[0][0] as string);
+    expect(url.pathname).toBe("/console");
+    expect(url.hash).toBe("#recovery");
+    expect(url.searchParams.get("keep")).toBe("yes");
+    expect(url.searchParams.get("section")).toBe("applications");
+    expect(url.searchParams.get("application")).toBe("app_docs");
+    expect(url.searchParams.get("routine")).toBe("app-app_docs-maintenance");
+    expect(url.searchParams.get("run")).toBe("inv_failed");
+    expect(screen.getByText("Copied.")).toBeTruthy();
   });
 
   it("does not expand a stale selected application run into the wrong diagnostics", async () => {
