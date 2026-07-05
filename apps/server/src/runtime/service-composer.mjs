@@ -803,6 +803,28 @@ export function createServerRuntimeServices({
         },
       };
     }
+    const approvalRetry = selectedAction.requiresApproval
+      ? verifyApplicationRecoveryActionApproval(body?.approvalRequestId, { applicationId, routineId, invocationId, actionType })
+      : { approved: false };
+    if (approvalRetry.error) return approvalRetry.error;
+    if (approvalRetry.approved && ["executed", "noop"].includes(approvalRetry.actionRequest.status)) {
+      return {
+        status: 200,
+        body: {
+          applicationId,
+          routineId,
+          invocationId,
+          action: selectedAction,
+          recoveryActionRequest: approvalRetry.actionRequest,
+          approvalRequest: approvalRetry.approvalRequest,
+          status: approvalRetry.actionRequest.status,
+          explanation: applicationRecoveryActionExplanation(approvalRetry.actionRequest, {
+            action: selectedAction,
+            recoveryModel,
+          }),
+        },
+      };
+    }
     if (selectedAction.availability?.state === "blocked") {
       const blockedReason = selectedAction.blockedReason ?? selectedAction.availability.blockedReason ?? "recovery_action_blocked";
       const latestRequestId = selectedAction.latestRequestId ?? selectedAction.availability.latestRequestId ?? null;
@@ -828,8 +850,8 @@ export function createServerRuntimeServices({
         },
       };
     }
-    const reason = summarizeText(body?.reason ?? selectedAction.description ?? recoveryModel.summary, 160);
-    const actionRequest = createApplicationRecoveryActionRequest({
+    const reason = approvalRetry.actionRequest?.reason ?? summarizeText(body?.reason ?? selectedAction.description ?? recoveryModel.summary, 160);
+    const actionRequest = approvalRetry.actionRequest ?? createApplicationRecoveryActionRequest({
       applicationId,
       routineId,
       invocationId,
@@ -838,7 +860,7 @@ export function createServerRuntimeServices({
       reason,
       actor,
     });
-    if (selectedAction.requiresApproval && !isApplicationActionApproved(body?.approvalToken)) {
+    if (selectedAction.requiresApproval && !approvalRetry.approved) {
       const approvalRequest = createApplicationRecoveryApprovalRequest(run.invocation, actionRequest, selectedAction, recoveryModel, actor);
       actionRequest.status = approvalRequest.status === "approved" ? "approval_approved" : approvalRequest.status === "denied" ? "approval_denied" : "approval_pending";
       actionRequest.approvalRequestId = approvalRequest.id;
@@ -1844,8 +1866,45 @@ export function createServerRuntimeServices({
     });
   }
 
-  function isApplicationActionApproved(token) {
-    return typeof token === "string" && token.startsWith("operator-approved");
+  function verifyApplicationRecoveryActionApproval(approvalRequestId, { applicationId, routineId, invocationId, actionType }) {
+    const id = String(approvalRequestId ?? "").trim();
+    if (!id) return { approved: false };
+    const approvalRequest = (state.codexApprovalBrokerRequests ?? []).find((item) => item.id === id) ?? null;
+    if (!approvalRequest) {
+      return recoveryApprovalVerificationError("approval_not_found", "Recovery approval request was not found.", id);
+    }
+    const actionRequest = (state.applicationRecoveryActions ?? [])
+      .find((item) => item.id === approvalRequest.applicationRecoveryActionRequestId) ?? null;
+    const matches = actionRequest
+      && approvalRequest.source === "application_recovery_action"
+      && approvalRequest.toolName === `application.recovery.${actionType}`
+      && actionRequest.applicationId === applicationId
+      && actionRequest.routineId === routineId
+      && actionRequest.invocationId === invocationId
+      && actionRequest.actionType === actionType
+      && actionRequest.approvalRequestId === approvalRequest.id;
+    if (!matches) {
+      return recoveryApprovalVerificationError("approval_scope_mismatch", "Recovery approval request does not match this action.", id, approvalRequest.status);
+    }
+    if (approvalRequest.status !== "approved") {
+      return recoveryApprovalVerificationError("approval_not_approved", "Recovery approval request has not been approved.", id, approvalRequest.status);
+    }
+    return { approved: true, approvalRequest, actionRequest };
+  }
+
+  function recoveryApprovalVerificationError(error, reason, approvalRequestId, approvalStatus = null) {
+    return {
+      approved: false,
+      error: {
+        status: 409,
+        body: {
+          error,
+          reason,
+          approvalRequestId,
+          approvalStatus,
+        },
+      },
+    };
   }
 
   function applicationOrchestrationScope(applicationId, routineId) {

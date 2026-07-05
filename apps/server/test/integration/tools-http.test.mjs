@@ -1514,6 +1514,14 @@ test("application orchestration recovery actions are guarded and audited", async
   assert.equal(pendingRegenerateAction?.availability?.state, "blocked");
   assert.equal(pendingRegenerateAction?.blockedReason, "same_action_approval_pending");
   assert.equal(pendingRegenerateAction?.latestRequestId, approvalRequired.body.recoveryActionRequest.id);
+  const pendingRetry = await call(`/api/applications/app_team_a/orchestrations/app-app_team_a-maintenance/runs/${encodeURIComponent(validation.id)}/recovery/actions`, {
+    method: "POST",
+    body: { actionType: "regenerate_orchestration", approvalRequestId: approvalRequired.body.approvalRequest.id },
+    token: "tok_a",
+  });
+  assert.equal(pendingRetry.status, 409);
+  assert.equal(pendingRetry.body.error, "approval_not_approved");
+  assert.equal(pendingRetry.body.approvalStatus, "pending");
   const duplicateRegenerate = await call(`/api/applications/app_team_a/orchestrations/app-app_team_a-maintenance/runs/${encodeURIComponent(validation.id)}/recovery/actions`, {
     method: "POST",
     body: { actionType: "regenerate_orchestration" },
@@ -1570,16 +1578,28 @@ test("application orchestration recovery actions are guarded and audited", async
   assert.equal(approvedActionRequest?.status, "executed");
   assert.equal(ctx.state.invocations.filter((item) => item.options?.metadata?.applicationAction === "generate_orchestration").length, generatedInvocationCount);
 
-  const directRegenerate = await call(`/api/applications/app_team_a/orchestrations/app-app_team_a-maintenance/runs/${encodeURIComponent(validation.id)}/recovery/actions`, {
+  const approvedRetry = await call(`/api/applications/app_team_a/orchestrations/app-app_team_a-maintenance/runs/${encodeURIComponent(validation.id)}/recovery/actions`, {
+    method: "POST",
+    body: { actionType: "regenerate_orchestration", approvalRequestId: approvalRequired.body.approvalRequest.id },
+    token: "tok_a",
+  });
+  assert.equal(approvedRetry.status, 200);
+  assert.equal(approvedRetry.body.recoveryActionRequest.id, approvalRequired.body.recoveryActionRequest.id);
+  assert.equal(approvedRetry.body.recoveryActionRequest.status, "executed");
+  assert.equal(approvedRetry.body.recoveryActionRequest.resultOrchestrationId, "app-app_team_a-maintenance");
+  assert.equal(approvedRetry.body.explanation.state, "executed");
+  assert.equal(approvedRetry.body.explanation.resultOrchestrationId, "app-app_team_a-maintenance");
+  assert.equal(ctx.state.invocations.filter((item) => item.options?.metadata?.applicationAction === "generate_orchestration").length, generatedInvocationCount);
+
+  const legacyTokenRegenerate = await call(`/api/applications/app_team_a/orchestrations/app-app_team_a-maintenance/runs/${encodeURIComponent(validation.id)}/recovery/actions`, {
     method: "POST",
     body: { actionType: "regenerate_orchestration", approvalToken: "operator-approved-recovery" },
     token: "tok_a",
   });
-  assert.equal(directRegenerate.status, 201);
-  assert.equal(directRegenerate.body.recoveryActionRequest.status, "executed");
-  assert.equal(directRegenerate.body.recoveryActionRequest.resultOrchestrationId, "app-app_team_a-maintenance");
-  assert.equal(directRegenerate.body.explanation.state, "executed");
-  assert.equal(directRegenerate.body.explanation.resultOrchestrationId, "app-app_team_a-maintenance");
+  assert.equal(legacyTokenRegenerate.status, 202);
+  assert.equal(legacyTokenRegenerate.body.status, "approval_pending");
+  assert.equal(legacyTokenRegenerate.body.recoveryActionRequest.status, "approval_pending");
+  assert.equal(ctx.state.invocations.filter((item) => item.options?.metadata?.applicationAction === "generate_orchestration").length, generatedInvocationCount);
 
   const unhealthy = await createApplicationOrchestrationRunForTest({
     status: "failed",

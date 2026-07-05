@@ -337,7 +337,7 @@ export const api = {
     id: string,
     routineId: string,
     invocationId: string,
-    body: { actionType: string; approvalToken?: string; reason?: string | null; agentId?: string | null } = { actionType: "" },
+    body: { actionType: string; approvalRequestId?: string; reason?: string | null; agentId?: string | null } = { actionType: "" },
   ) =>
     request(
       "POST",
