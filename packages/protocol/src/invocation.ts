@@ -106,6 +106,7 @@ export interface PolicyDecisionRecord {
 export interface InvocationTroubleshootingReport {
   id: TroubleshootingReportId;
   invocationId: InvocationId;
+  troubleshooterInvocationId?: InvocationId | null;
   platformAgentId: AgentId;
   requestedBy: UserId;
   status: "generated";
@@ -115,8 +116,19 @@ export interface InvocationTroubleshootingReport {
   logSummary: string;
   suggestedFixes: string[];
   remediationRequiresApproval: boolean;
+  webLinks?: {
+    failedInvocation?: WebNavigationLink | null;
+    troubleshooterInvocation?: WebNavigationLink | null;
+    applicationRun?: WebNavigationLink | null;
+  };
   summary: string;
   createdAt: IsoDateTime;
+}
+
+export interface WebNavigationLink {
+  label: string;
+  query: string;
+  target: JsonObject;
 }
 
 export interface Invocation {

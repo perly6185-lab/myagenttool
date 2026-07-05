@@ -36,6 +36,19 @@ local UI persistence restores the last workspace view.
 - Generated links keep the current origin, path, hash, and unrelated query
   parameters, then replace only the Web navigation parameters.
 
+## Server-Generated Links
+
+Troubleshooting reports may include relative Web navigation targets for:
+
+- The failed invocation.
+- The platform troubleshooter invocation that generated the report.
+- The application orchestration run, when the failed invocation has complete
+  `applicationId`, `routineId`, and invocation metadata.
+
+Server-generated links intentionally stay hostless and only carry the relative
+query plus structured target fields. The Web control plane or downstream report
+renderer owns the current origin, path, and copy/open behavior.
+
 ## Non-Goals
 
 - Full browser history entries for every selection change. P4-1 uses
