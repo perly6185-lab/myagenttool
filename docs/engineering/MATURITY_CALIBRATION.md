@@ -189,6 +189,47 @@ evidenced, not asserted):
   automate up to the PR, keep a human gate on merge/deploy. That convergence —
   not a maturity number — is the defensible external claim.
 
+## Latest Measurement (2026-07-04)
+
+Closeout on `feat/recovery-explanation-web` now includes the Application
+`discover -> access -> execute -> result` implementation slice, not just the
+planning refresh:
+
+- `pnpm docs:check` verified Markdown relative links before this measurement
+  record was updated.
+- `pnpm repo:check` verified the repository scaffold still matches the expected
+  workspace shape.
+- `pnpm typecheck` verified all typed workspace packages and apps, including
+  the new Web `ApplicationResultRef`/capability metadata types and the
+  server/desktop bridge contracts touched by the Application runtime work.
+- `pnpm test` verified workspace unit suites plus `smoke:local` and
+  `smoke:port`. What it specifically measured for this slice: Application
+  capability descriptors now publish readiness and result-path metadata; the
+  Desktop Bridge local execution gate allows the ccusage wrapper contract but
+  refuses non-allowlisted inner commands and child cwd escapes before spawn;
+  ccusage wrapper completion links imported rows across invocation result,
+  invocation metadata, application `latestResult`, audit summary, public state,
+  and Evidence Center; and the Web Applications inspector shows readiness,
+  result collection, imported record ids, and a result-invocation navigation
+  path. Full smoke re-measured tool-registry contract compatibility, cost
+  attribution, tenancy scoping, worktree diff, MCP behavior, and the local
+  bridge loop. `smoke:local` still emitted a handled
+  `bridge_invocation_not_active` event-post warning during cancellation timing,
+  but the suite completed successfully.
+- `pnpm github:dora` measured 206 merged PRs over 30 days: median lead time
+  0.03h, p90 0.48h, deploy-frequency proxy 48.07/week, CI green on merged PRs
+  73.8% (152/206, with 47 merged PRs carrying no checks), and 0 recorded
+  change-failure incidents since the 2026-07-04 signal adoption. Evidence:
+  `.myagenttool/metrics/2026-07-04T14-09-38-069Z-dora/`.
+- `pnpm github:backlog` measured 29 open issues with required labels 29/29,
+  milestones 29/29, and 4 stale items older than 14 days (#118, #117, #116,
+  #114). Evidence:
+  `.myagenttool/metrics/2026-07-04T14-09-30-546Z-backlog/`.
+- `pnpm ai:eval-heldout` measured the hermetic mock held-out set at 66.7%
+  (4/6): hb-001, hb-002, hb-003, and hb-005 passed; hb-004 produced no file
+  changes and hb-006 remains vacuous because verify already passes at base.
+  Evidence: `.myagenttool/evals/2026-07-04T14-09-27-859Z-heldout/`.
+
 ## How To Adopt
 
 This proposal is inert until measurement exists. Minimum instrumentation:

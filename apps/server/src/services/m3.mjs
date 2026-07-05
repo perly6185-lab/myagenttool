@@ -399,7 +399,12 @@ export function createM3Service({
   }
 
   function nextBridgeLifecycleAction() {
-    return state.lifecycleQueuedActions.find((item) => item.status === "queued" && item.executionEnabled === true) ?? null;
+    return state.lifecycleQueuedActions.find(
+      (item) =>
+        item.status === "queued" &&
+        item.executionEnabled === true &&
+        item.deviceId === state.device.id,
+    ) ?? null;
   }
 
   function markLifecycleActionStarted(lifecycleAction) {
@@ -1357,7 +1362,7 @@ export function createM3Service({
       quota: state.quotaDecisionRecords.length,
       usage: state.aiUsageRecords.length,
       ledger: state.ledgerEntries.length,
-      policy: state.policyDecisionRecords.length + state.lifecyclePolicyDecisions.length,
+      policy: policyAuditRecords().length,
       audit: state.auditSummaries.length,
       catalog: state.privateCatalogEntries.length,
       bundle: state.signedBundleManifests.length,
@@ -1402,11 +1407,20 @@ export function createM3Service({
     pushRefs("quota", state.quotaDecisionRecords);
     pushRefs("usage", [...state.aiUsageRecords, ...(state.importedUsageEstimates ?? [])]);
     pushRefs("ledger", state.ledgerEntries);
-    pushRefs("policy", [...state.policyDecisionRecords, ...state.lifecyclePolicyDecisions]);
+    pushRefs("policy", policyAuditRecords());
     pushRefs("audit", state.auditSummaries);
     pushRefs("catalog", state.privateCatalogEntries);
     pushRefs("bundle", state.signedBundleManifests);
     return refs;
+  }
+
+  function policyAuditRecords() {
+    return [
+      ...state.policyDecisionRecords,
+      ...state.lifecyclePolicyDecisions,
+      ...state.approvalRequests,
+      ...state.codexApprovalBrokerRequests,
+    ];
   }
 }
 

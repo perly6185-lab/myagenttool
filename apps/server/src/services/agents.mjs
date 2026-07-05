@@ -425,7 +425,12 @@ export function createAgentService({ state, now, nextId, appendEvent, persistSta
         return false;
       }
       const agent = findAgent(operation.agentId);
-      return agent?.adapter.type === "cli" && agent.location.type === "local_device";
+      const operationDeviceId = operation.deviceId ?? agent?.location?.deviceId ?? null;
+      return (
+        agent?.adapter.type === "cli" &&
+        agent.location.type === "local_device" &&
+        operationDeviceId === state.device.id
+      );
     });
   }
 

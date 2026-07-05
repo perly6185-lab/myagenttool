@@ -482,6 +482,7 @@ export function projectApplicationCapabilities(app) {
 }
 
 function managedCapability(app, name, displayName, kind, riskLevel, riskTags, requiresApproval, disabled, inputSchema, metadata = {}) {
+  const outputCollection = metadata.outputCollection ?? "invocations";
   return {
     name,
     version: "1",
@@ -500,7 +501,15 @@ function managedCapability(app, name, displayName, kind, riskLevel, riskTags, re
     status: disabled ? "disabled" : "available",
     inputSchema,
     outputSchema: { structuredResult: true, provider: "application" },
-    metadata,
+    metadata: {
+      readiness: capabilityReadiness(app, { disabled, kind, metadata }),
+      resultPath: {
+        outputCollection,
+        resultImport: metadata.resultImport ?? null,
+        evidenceCenter: outputCollection !== "invocations",
+      },
+      ...metadata,
+    },
   };
 }
 
@@ -521,6 +530,7 @@ function projectNpmWrapperCapabilities(app, prefix, disabled) {
       {
         wrapper: {
           mode: app.source.wrapper.mode,
+          installState: app.source.wrapper.installState,
           commandId: command.id,
           commandType: command.commandType,
           timeoutSeconds: command.timeoutSeconds,
@@ -530,11 +540,41 @@ function projectNpmWrapperCapabilities(app, prefix, disabled) {
           networkPolicy: command.networkPolicy,
         },
         compatibilityFacade: command.compatibilityFacade,
+        execution: {
+          mode: "bridge_wrapper",
+          agentId: "agt_platform_application_wrapper",
+        },
         outputCollection: command.outputCollection,
         billing: command.billing,
         resultImport: command.resultImport,
       },
     ));
+}
+
+function capabilityReadiness(app, { disabled, kind, metadata }) {
+  if (disabled) {
+    return {
+      state: "disabled",
+      reason: app.status === "archived" ? "application_archived" : "application_offline",
+      applicationStatus: app.status,
+    };
+  }
+  if (kind === "npm_wrapper") {
+    const installState = metadata?.wrapper?.installState ?? app.source?.wrapper?.installState ?? "unknown";
+    return {
+      state: installState === "installed" ? "ready" : "needs_setup",
+      reason: installState === "installed" ? "wrapper_installed" : "wrapper_not_confirmed_installed",
+      applicationStatus: app.status,
+      installState,
+      executionMode: "bridge_wrapper",
+    };
+  }
+  return {
+    state: "ready",
+    reason: "application_control_available",
+    applicationStatus: app.status,
+    executionMode: "application_control",
+  };
 }
 
 function emptyInputSchema() {

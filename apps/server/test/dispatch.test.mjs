@@ -14,7 +14,7 @@ import { createInvocationDispatchRuntime } from "../src/services/invocations/dis
 const cliAgent = {
   id: "agt_cli",
   adapter: { type: "cli" },
-  location: { type: "local_device" },
+  location: { type: "local_device", deviceId: "dev" },
   status: "available",
   lifecycle: { state: "enabled" },
   health: { status: "healthy" },

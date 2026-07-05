@@ -42,6 +42,22 @@ See `docs/engineering/NEXT_PHASE_PLAN_2026-07.md` for the operating plan.
     recorded), replacing the two "not instrumented" rows.
   - #137's MCP connect slice landed (#387): pre-flight dry-probe + Connect MCP
     server card.
+- **2026-07-04 closeout measurement:** this branch's round-end gate measured
+  docs links (`pnpm docs:check`), repo scaffold (`pnpm repo:check`), all typed
+  workspace surfaces (`pnpm typecheck`), full workspace unit + local/port smoke
+  behavior (`pnpm test`), DORA delivery health (`pnpm github:dora`), backlog
+  hygiene (`pnpm github:backlog`), and held-out AI behavior
+  (`pnpm ai:eval-heldout`). The latest Application slice measured a real
+  `discover -> access -> execute -> result` loop: capability descriptors expose
+  readiness/result-path metadata, Desktop Bridge refuses non-allowlisted
+  application-wrapper inner commands and child-cwd escapes before spawn,
+  completion links imported ccusage rows across invocation/app/audit/public
+  state/Evidence Center, and Web Applications inspector shows the latest result
+  with a View invocation path. The remaining measured gaps are CI green rate
+  73.8% vs 95%, four stale backlog items (#118, #117, #116, #114), and mock
+  held-out pass rate 4/6. `smoke:local` emitted one handled
+  `bridge_invocation_not_active` event-post warning during cancellation timing,
+  but the suite completed successfully.
 
 ## P1 - Durable control-plane state
 
@@ -51,7 +67,11 @@ review. The first slice should be intentionally small:
 - Status: local durable-state hardening closeout is recorded in
   [P1_DURABLE_STATE_CLOSEOUT.md](P1_DURABLE_STATE_CLOSEOUT.md). The current
   accepted scope covers local snapshot restore for lifecycle/rollback/ledger,
-  imported usage/review evidence, and terminal/Codex Evidence Center linkage;
+  imported usage/review evidence, terminal/Codex Evidence Center linkage, and
+  restart/read-model/audit-ref coverage for lifecycle policy decisions, policy
+  decision records, approval requests, Codex approval broker requests, and audit
+  export requests. What was tested: after snapshot restore, approval, policy,
+  and export evidence still has explainable read-model and audit references;
   production-grade transactional persistence remains future work.
 - **WS2 landed:** invocation create is **idempotent** on a persisted,
   tenant-scoped client key (#418); snapshot writes are **atomic + fsync'd**
@@ -94,6 +114,21 @@ every local execution surface:
   not trust the server-normalized descriptor).
 - **Bridge credential idle-expiry (#439):** a leaked bearer stops working after
   the idle TTL; an active bridge never idles out.
+- **Credential ownership closeout (this PR):** bridge-owned work is checked
+  across polling, completion callbacks, lifecycle completion, dispatch
+  selection, health, discovery, and probe paths. What was tested: off-device
+  bridge work is filtered or refused before execution, null-device
+  lifecycle/discovery/probe work is skipped instead of claimed by any bridge,
+  legacy queued local invocations are stamped with the claiming device before
+  ack/complete, and refusal events are emitted as audit evidence rather than
+  silent skips.
+- **Application wrapper local gate (this PR):** the Desktop Bridge now checks
+  the wrapper's inner `execCommand`, `execArgs`, child `cwd`, and declared
+  file/network policy before spawning the fixed runner. What was tested:
+  ccusage's approved offline report argv is allowed, a `node -e` inner command
+  is refused as non-allowlisted, and a wrapper child cwd outside the approved
+  project/worktree root is refused with structured `local_execution_refused`
+  evidence.
 - Remaining (#426): a bridge-side PTY gate mirroring the server-side terminal
   confinement, and general approval-evidence enforcement + an independent local
   consent record. The principle stands: server policy approval does not by
@@ -114,9 +149,37 @@ product-quality focus:
 - Status: third slice started on `feat/application-recovery-explanation-ui`;
   the Web Applications inspector now renders the recovery explanation as
   operator guidance in history and suggested action cards.
+- Status: `feat/recovery-explanation-web` extends the same operator
+  explanation pattern into Invocations and extracts shared recovery readable/
+  tone helpers so Applications and Invocations do not maintain separate
+  phrasing. What was tested: pending approval, duplicate-action guard, executed
+  result, and View result navigation are covered by Web unit regression tests;
+  review follow-up also verifies the operator explanation prefers the active
+  recovery-action approval over the original invocation approval.
 - Status: runtime contract closeout landed; ccusage Application wrapper
   semantics are published in the external consumer contract and enforced by the
   tool-registry contract smoke inside `smoke:port`.
+- Status: `feat/recovery-explanation-web` now has the first closed-loop
+  ccusage reference slice. Discover exposes readiness/result-path metadata;
+  access/execute is locally re-gated by the Desktop Bridge allowlist before the
+  wrapper runner starts; result imports are linked to invocation/app/audit and
+  Evidence Center; and Web Applications inspector surfaces the latest result
+  with a navigation path back to the invocation.
+- Next focus: harden this same loop across restart/read-model evidence and
+  only then generalize beyond ccusage.
+- **Discover:** make Application capability descriptors complete enough for
+  external and Web callers to choose a capability without adapter knowledge:
+  readiness, risk, approval, schema, output collection, and result-import
+  metadata must be present and restart-safe.
+- **Access:** turn approval and local consent into visible state: owner scope,
+  approval request, duplicate guard, bridge ownership, and local allowlist
+  refusal should all produce operator-readable evidence.
+- **Execute:** move approved `installed-wrapper` commands from audited
+  execution-plan preview into the normal invocation/trace/audit path, preserving
+  reviewed argv construction and continuing to reject arbitrary npm execution.
+- **Result:** import completion output into the declared read model, link it
+  from invocation/Application/audit evidence, and show result/next-step guidance
+  in Applications and Invocations.
 - Keep `/api/tools` stable while `/api/capabilities` becomes the unified
   discovery surface.
 - Finish ccusage parity on the Application-backed tool facade, including

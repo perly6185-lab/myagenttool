@@ -863,8 +863,22 @@ export interface ApplicationSnapshot {
   probe?: ApplicationProbe | null;
   orchestrations?: ApplicationOrchestration[];
   orchestrationIds?: string[];
+  latestResult?: ApplicationResultRef | null;
   createdAt?: string;
   updatedAt?: string;
+}
+
+export interface ApplicationResultRef {
+  applicationId: string;
+  capability?: string | null;
+  applicationAction?: string | null;
+  outputCollection?: string | null;
+  resultImport?: Record<string, unknown> | null;
+  importedRecordIds?: string[];
+  importedRecordCount?: number;
+  invocationId?: string | null;
+  status?: string | null;
+  completedAt?: string | null;
 }
 
 export interface ProjectTreeEntry {
@@ -903,4 +917,19 @@ export interface ApplicationCapability {
   requiresApproval?: boolean;
   invocationMode?: string;
   status?: string;
+  metadata?: {
+    readiness?: {
+      state?: string;
+      reason?: string;
+      applicationStatus?: string;
+      installState?: string;
+      executionMode?: string;
+    };
+    resultPath?: {
+      outputCollection?: string;
+      resultImport?: Record<string, unknown> | null;
+      evidenceCenter?: boolean;
+    };
+    [key: string]: unknown;
+  };
 }

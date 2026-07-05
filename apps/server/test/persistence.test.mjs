@@ -438,6 +438,128 @@ test("persistence restores terminal and Codex evidence center linkage across run
   }
 });
 
+test("persistence restores policy and approval evidence across runtime restart", () => {
+  const root = join(tmpdir(), `myagenttool-persistence-policy-approval-test-${Date.now()}`);
+  const projectPath = join(root, "project");
+  const stateStorePath = join(root, "state", "snapshot.json");
+  mkdirSync(projectPath, { recursive: true });
+
+  try {
+    const first = createServerState({ defaultProjectPath: projectPath, now });
+    const { httpDependencies: api } = createServerRuntimeServices({
+      namespace: "test",
+      protocolVersion: "0.0.0",
+      state: first.state,
+      defaultProject: first.defaultProject,
+      defaultProjectPath: projectPath,
+      persistenceEnabled: false,
+      stateStorePath,
+      stateSchemaVersion: 1,
+      dispatchLeaseMs: 30_000,
+      now,
+    });
+
+    const demoAgent = first.state.agents.find((agent) => agent.id === "agt_demo_cli");
+    const approvalInvocation = api.createInvocation("Run high-risk approval restore evidence.", demoAgent, {
+      requireLocalApproval: true,
+      actor: { userId: "usr_local", teamId: "team_local" },
+    });
+    const approval = api.findApprovalRequest(approvalInvocation.approvalRequestId);
+    assert(approval, "test setup should create an invocation approval request");
+    api.denyInvocation(approval, approvalInvocation, { userId: "usr_reviewer" });
+    const invocationPolicy = first.state.policyDecisionRecords.find((item) => item.id === approvalInvocation.policyDecisionId);
+    assert.equal(invocationPolicy?.decision, "denied");
+    assert.equal(approval.status, "denied");
+
+    const codexAgent = first.state.agents.find((agent) => agent.id === "agt_codex_cli");
+    const codexInvocation = api.createInvocation("Capture Codex broker approval restore evidence.", codexAgent, {
+      metadata: { permissionMode: "ask" },
+      actor: { userId: "usr_local", teamId: "team_local" },
+    });
+    const hook = api.recordCodexHookEvent({
+      invocationId: codexInvocation.id,
+      eventName: "PermissionRequest",
+      toolName: "shell_command",
+      summary: "Codex asks to run pnpm test for durable-state evidence.",
+      timeoutSeconds: 120,
+    });
+    assert.equal(hook.brokerRequest?.status, "pending");
+
+    const recipe = api.createLifecycleRecipe({
+      action: "update",
+      name: "Durable policy update",
+      source: {
+        type: "manual_entry",
+        uri: "manual://durable-policy-update",
+        author: "test",
+        version: "1.0.0",
+        signatureStatus: "not_required",
+      },
+      supportedPlatforms: [first.state.device.platform],
+      expectedBinary: "demo-agent",
+      riskLevel: "high",
+      rollback: { available: true, strategy: "previous_version", summary: "Restore demo-agent 0.9.0." },
+      command: {
+        summary: "Update demo agent.",
+        commandId: "demo_agent_update",
+        executable: "demo-agent",
+        args: ["--self-check-update"],
+        shell: false,
+      },
+    });
+    api.transitionLifecycleRecipe(recipe, "approve");
+    const lifecyclePolicy = api.evaluateLifecyclePolicy(recipe);
+    assert.equal(lifecyclePolicy.decision, "requires_local_approval");
+
+    api.updatePrivateDeploymentConfig({ mode: "private_deployment", auditExportEnabled: true });
+    const originalExport = api.createAuditExportRequest({ subjects: ["policy", "audit"], dryRun: false });
+    assert.equal(originalExport.status, "exported");
+
+    saveState(first, { stateStorePath });
+
+    const second = createServerState({ defaultProjectPath: projectPath, now });
+    restoreState(second, { stateStorePath });
+    const publicState = publicStateFor(second.state, { defaultProjectPath: projectPath });
+
+    const restoredApproval = second.state.approvalRequests.find((item) => item.id === approval.id);
+    const publicApproval = publicState.approvalRequests.find((item) => item.id === approval.id);
+    const restoredInvocationPolicy = second.state.policyDecisionRecords.find((item) => item.id === invocationPolicy.id);
+    const publicInvocationPolicy = publicState.policyDecisionRecords.find((item) => item.id === invocationPolicy.id);
+    const restoredLifecyclePolicy = second.state.lifecyclePolicyDecisions.find((item) => item.id === lifecyclePolicy.id);
+    const restoredBroker = second.state.codexApprovalBrokerRequests.find((item) => item.id === hook.brokerRequest.id);
+    const publicBroker = publicState.codexApprovalBrokerRequests.find((item) => item.id === hook.brokerRequest.id);
+    const brokerEvidence = publicState.evidenceCenterRecords.find((item) => item.id === hook.brokerRequest.id);
+    const restoredOriginalExport = second.state.auditExportRequests.find((item) => item.id === originalExport.id);
+
+    assert.equal(restoredApproval?.status, "denied");
+    assert.equal(restoredApproval?.decidedBy, "usr_reviewer");
+    assert.equal(publicApproval?.status, "denied");
+    assert.equal(restoredInvocationPolicy?.decision, "denied");
+    assert.equal(restoredInvocationPolicy?.approver, "usr_reviewer");
+    assert.equal(publicInvocationPolicy?.reason, "Local approval denied by user.");
+    assert.equal(restoredLifecyclePolicy?.decision, "requires_local_approval");
+    assert(publicState.lifecyclePolicyDecisions.some((item) => item.id === lifecyclePolicy.id), "lifecycle policy should remain visible after restore");
+    assert.equal(restoredBroker?.status, "pending");
+    assert.equal(restoredBroker?.toolName, "shell_command");
+    assert.equal(publicBroker?.summary, "Codex asks to run pnpm test for durable-state evidence.");
+    assert.equal(brokerEvidence?.source, "managed_codex_approval_broker");
+    assert.equal(brokerEvidence?.summary, "pending: shell_command");
+    assert.equal(restoredOriginalExport?.status, "exported");
+    assert(restoredOriginalExport?.manifest?.recordRefs.some((ref) => ref.subject === "policy" && ref.id === approval.id), "restored export request should retain approval refs");
+
+    const restoredM3 = m3ServiceFor(second.state);
+    const exportAfterRestore = restoredM3.createAuditExportRequest({ subjects: ["policy", "audit"], dryRun: false });
+    assert.equal(exportAfterRestore.status, "exported");
+    assert(exportAfterRestore.manifest.recordRefs.some((ref) => ref.subject === "policy" && ref.id === invocationPolicy.id), "invocation policy decision should remain exportable after restore");
+    assert(exportAfterRestore.manifest.recordRefs.some((ref) => ref.subject === "policy" && ref.id === lifecyclePolicy.id), "lifecycle policy decision should remain exportable after restore");
+    assert(exportAfterRestore.manifest.recordRefs.some((ref) => ref.subject === "policy" && ref.id === approval.id), "approval request should remain exportable after restore");
+    assert(exportAfterRestore.manifest.recordRefs.some((ref) => ref.subject === "policy" && ref.id === hook.brokerRequest.id), "Codex broker approval should remain exportable after restore");
+    assert(exportAfterRestore.manifest.recordRefs.some((ref) => ref.subject === "audit" && ref.id === approvalInvocation.id), "denied invocation audit summary should remain exportable after restore");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("runtime ids continue after restoring persisted state", () => {
   const root = join(tmpdir(), `myagenttool-persistence-id-test-${Date.now()}`);
   const projectPath = join(root, "project");

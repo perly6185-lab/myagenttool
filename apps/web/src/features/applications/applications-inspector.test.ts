@@ -2,9 +2,8 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { createElement, type ReactElement } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ApplicationsInspector } from "@/features/applications/applications-inspector";
+import { ApplicationsInspector, latestRoutineInvocation } from "@/features/applications/applications-inspector";
 import {
-  latestRoutineInvocation,
   readableRecoveryActionAvailabilityReason,
   readableRecoveryActionType,
   readableRecoveryAgentReason,
@@ -13,7 +12,7 @@ import {
   readableRecoveryOutcome,
   readableRecoveryOutcomeReason,
   readableRecoveryTimelineStatus,
-} from "@/features/applications/applications-inspector";
+} from "@/features/recovery/application-recovery-ui";
 import { useUiStore } from "@/store/ui-store";
 import type { ApplicationOrchestrationRecoveryAgentCandidate, ConsoleSnapshot, InvocationSnapshot } from "@/lib/console-state";
 
@@ -103,6 +102,38 @@ describe("recovery lineage labels", () => {
 });
 
 describe("ApplicationsInspector recovery guidance", () => {
+  it("renders the application discover to result loop and opens the result invocation", async () => {
+    apiMock.fetchState.mockResolvedValue(closedLoopConsoleState());
+    apiMock.listApplicationCapabilities.mockResolvedValue({
+      applicationId: "app_ccusage",
+      capabilities: [{
+        name: "app.app_ccusage.wrapper.daily",
+        displayName: "ccusage Daily Report",
+        riskLevel: "low",
+        status: "available",
+        requiresApproval: false,
+        metadata: {
+          readiness: { state: "ready", reason: "wrapper_installed", executionMode: "bridge_wrapper" },
+          resultPath: { outputCollection: "importedUsageEstimates", evidenceCenter: true },
+        },
+      }],
+    });
+
+    useUiStore.setState({ selectedApplicationId: "app_ccusage" });
+    renderWithClient(createElement(ApplicationsInspector));
+
+    expect(await screen.findByText("Latest result")).toBeTruthy();
+    expect(await screen.findByText("ccusage Daily Report")).toBeTruthy();
+    expect(await screen.findByText("ready")).toBeTruthy();
+    expect(screen.getAllByText("importedUsageEstimates").length).toBeGreaterThan(0);
+    expect(screen.getByText("use_1")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: /View invocation/i }));
+
+    expect(useUiStore.getState().section).toBe("invocations");
+    expect(useUiStore.getState().selectedInvocationId).toBe("inv_app_ccusage");
+  });
+
   it("renders seeded recovery explanation guidance in history and action cards", async () => {
     apiMock.fetchState.mockResolvedValue(recoveryConsoleState());
     apiMock.listApplicationCapabilities.mockResolvedValue({ applicationId: "app_docs", capabilities: [] });
@@ -376,6 +407,56 @@ function recoveryConsoleState(): ConsoleSnapshot {
       createdAt: "2026-07-04T02:02:00.000Z",
       updatedAt: "2026-07-04T02:03:00.000Z",
     }],
+  };
+}
+
+function closedLoopConsoleState(): ConsoleSnapshot {
+  return {
+    device: {
+      id: "dev_local",
+      name: "Local Workstation",
+      status: "online",
+      platform: "win32",
+      architecture: "x64",
+      lastSeenAt: "2026-07-04T03:00:00.000Z",
+    },
+    agent: null,
+    agents: [],
+    invocations: [{
+      id: "inv_app_ccusage",
+      status: "succeeded",
+      agentId: "agt_platform_application_wrapper",
+      createdAt: "2026-07-04T03:00:00.000Z",
+      options: {
+        metadata: {
+          providerType: "application",
+          applicationId: "app_ccusage",
+          capability: "app.app_ccusage.wrapper.daily",
+        },
+      },
+    }],
+    events: [],
+    auditSummaries: [],
+    applications: [{
+      id: "app_ccusage",
+      name: "ccusage",
+      kind: "npm",
+      status: "active",
+      source: { type: "npm", package: "ccusage", version: "20.0.14" },
+      latestResult: {
+        applicationId: "app_ccusage",
+        capability: "app.app_ccusage.wrapper.daily",
+        outputCollection: "importedUsageEstimates",
+        importedRecordIds: ["use_1"],
+        importedRecordCount: 1,
+        invocationId: "inv_app_ccusage",
+        status: "succeeded",
+        completedAt: "2026-07-04T03:05:00.000Z",
+      },
+      createdAt: "2026-07-04T02:00:00.000Z",
+      updatedAt: "2026-07-04T03:05:00.000Z",
+    }],
+    applicationRecoveryActions: [],
   };
 }
 

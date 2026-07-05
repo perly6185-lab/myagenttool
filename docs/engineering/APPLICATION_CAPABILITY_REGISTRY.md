@@ -184,3 +184,85 @@ npm package -> application asset -> governed report capability -> fixed wrapper 
 
 Existing `ccusage.report` APIs and import guards should remain compatible while
 adding an `app_ccusage` application record later.
+
+## Next Phase: Discovery -> Access -> Execute -> Result
+
+The next Application runtime slice should close the product loop around one
+reference application, then generalize only after that path is measured. The
+target operator path is:
+
+```text
+register/probe application
+  -> discover governed capabilities
+  -> request approved access
+  -> execute through the normal invocation path
+  -> inspect imported result, audit evidence, and next step
+```
+
+### 1. Discovery
+
+Discovery is the contract surface. A caller should be able to answer "what can
+this application do?" without seeing wrapper internals.
+
+- Keep `GET /api/capabilities?providerType=application` as the primary discovery
+  surface, with `/api/applications/:id/capabilities` as the focused view.
+- Publish readiness, risk, approval requirement, input schema, output schema,
+  `outputCollection`, and `resultImport` metadata for every projected
+  capability.
+- Treat inferred package scripts and exports as candidates until a reviewed
+  wrapper descriptor promotes them to approved capabilities.
+- Add regression coverage that discovery survives restart and remains scoped to
+  the owning team/project.
+
+### 2. Access
+
+Access is the consent and trust boundary. A caller may discover a capability
+without being able to execute it.
+
+- Require owner-scoped authorization plus an explicit approval request for every
+  side-effecting Application capability.
+- Show pending approval and duplicate-action guard evidence in both
+  Applications and Invocations, using the shared recovery/explanation helpers.
+- Carry bridge/device ownership into wrapper execution so access cannot be
+  replayed through an unbound bridge.
+- Keep local execution policy independent of server approval: command id, cwd,
+  args, env, file policy, and network policy must still pass the bridge-side
+  allowlist before spawn.
+
+### 3. Execute
+
+Execution should be a normal governed invocation, not a hidden adapter shortcut.
+
+- Wire the approved `installed-wrapper` path to the platform Application Wrapper
+  runner for the ccusage reference application first.
+- Preserve argv construction from the reviewed wrapper descriptor and validated
+  inputs; do not accept free-form npm commands or free-form wrapper args.
+- Emit invocation, trace, policy decision, local execution preview, refusal, and
+  completion events with the same audit semantics as other governed agents.
+- Keep `/api/tools/ccusage.report` compatible while it delegates to the
+  Application-backed execution path.
+
+### 4. Result
+
+Results are only closed when operators and external consumers can find the
+outcome without reading raw diagnostics.
+
+- Import wrapper completion output into the declared `outputCollection`
+  (`reviewFindings`, usage estimates, ledger-adjacent evidence, or application
+  result records as appropriate).
+- Attach result refs to the invocation, Application run history, audit summary,
+  and Evidence Center read model.
+- Render result links and next steps in Applications and Invocations, including
+  approval pending, policy refusal, executed result, and recovery/view-result
+  states.
+- Make restart tests prove that Application records, approval requests,
+  invocation result refs, imported evidence, and audit refs remain explainable.
+
+### Acceptance Bar
+
+The first closed-loop slice is accepted when a ccusage Application capability
+can be registered, discovered, approved, bridge-executed, completed, imported,
+and inspected through both the API contract and Web UI. The regression suite
+should cover the happy path plus access denied, duplicate guard, local policy
+refusal, restart/read-model restore, and stable `/api/tools/ccusage.report`
+compatibility.

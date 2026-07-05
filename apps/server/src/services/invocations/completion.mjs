@@ -50,7 +50,8 @@ export function createInvocationCompletionRuntime({
       message: body.summary ?? `Invocation ${terminalStatus}.`,
       data: body.result ?? null
     });
-    state.auditSummaries.push(createAuditSummary(invocation, body.summary ?? null));
+    const auditSummary = createAuditSummary(invocation, body.summary ?? null);
+    state.auditSummaries.push(auditSummary);
     recordAgentUsage(invocation, terminalStatus);
     // Attribute an agent-reported run cost (e.g. Claude's total_cost_usd, which
     // the bridge surfaces under result.cost) to the ledger + budget. No-ops when
@@ -60,26 +61,30 @@ export function createInvocationCompletionRuntime({
       recordInvocationLedgerEntry({ invocation, cost: reportedCost, agent: findAgent(invocation.agentId) });
     }
     if (terminalStatus === "succeeded" && typeof recordCcusageImportedEstimates === "function") {
-      recordCcusageImportedEstimates({
+      const records = recordCcusageImportedEstimates({
         invocation,
         result: body.result ?? null,
         agent: findAgent(invocation.agentId),
       });
+      attachApplicationResult({ invocation, auditSummary, records, outputCollection: "importedUsageEstimates" });
     }
     if (terminalStatus === "succeeded" && typeof recordCodexReviewFindings === "function") {
-      recordCodexReviewFindings({
+      const records = recordCodexReviewFindings({
         invocation,
         result: body.result ?? null,
         agent: findAgent(invocation.agentId),
       });
+      attachApplicationResult({ invocation, auditSummary, records, outputCollection: "codexReviewFindings" });
     }
     if (terminalStatus === "succeeded" && typeof recordClaudeReviewFindings === "function") {
-      recordClaudeReviewFindings({
+      const records = recordClaudeReviewFindings({
         invocation,
         result: body.result ?? null,
         agent: findAgent(invocation.agentId),
       });
+      attachApplicationResult({ invocation, auditSummary, records, outputCollection: "claudeReviewFindings" });
     }
+    attachApplicationResult({ invocation, auditSummary, records: [], outputCollection: "invocations" });
     closeCodexSession(invocation, terminalStatus);
     updateCompareRunForInvocation(invocation);
     persistStateSoon();
@@ -175,6 +180,59 @@ export function createInvocationCompletionRuntime({
       costSummary: "Demo agent cost is unknown; no billing was performed.",
       metadata: { namespace, protocolVersion }
     };
+  }
+
+  function attachApplicationResult({ invocation, auditSummary, records, outputCollection }) {
+    const metadata = invocation.options?.metadata;
+    if (metadata?.providerType !== "application" || !metadata.applicationId) {
+      return;
+    }
+    const importedRecords = Array.isArray(records) ? records : [];
+    if (outputCollection !== "invocations" && importedRecords.length === 0) {
+      return;
+    }
+    const existing = invocation.result?.applicationResult ?? metadata.applicationResult ?? null;
+    if (existing?.importedRecordIds?.length && importedRecords.length === 0) {
+      return;
+    }
+    const previous = JSON.stringify(existing ?? null);
+    const applicationResult = {
+      applicationId: metadata.applicationId,
+      capability: metadata.capability ?? null,
+      applicationAction: metadata.applicationAction ?? null,
+      outputCollection: importedRecords.length > 0
+        ? outputCollection
+        : existing?.outputCollection ?? metadata.applicationWrapper?.outputCollection ?? outputCollection,
+      resultImport: metadata.applicationWrapper?.resultImport ?? null,
+      importedRecordIds: importedRecords.map((record) => record.id),
+      importedRecordCount: importedRecords.length,
+      invocationId: invocation.id,
+      status: invocation.status,
+      completedAt: invocation.completedAt ?? now(),
+    };
+    invocation.options.metadata.applicationResult = applicationResult;
+    if (invocation.result && typeof invocation.result === "object" && !Array.isArray(invocation.result)) {
+      invocation.result.applicationResult = applicationResult;
+    }
+    auditSummary.applicationResult = applicationResult;
+    auditSummary.metadata = {
+      ...auditSummary.metadata,
+      applicationResult,
+    };
+    const application = (state.applications ?? []).find((item) => item.id === metadata.applicationId);
+    if (application) {
+      application.latestResult = applicationResult;
+      application.updatedAt = invocation.completedAt ?? now();
+    }
+    if (JSON.stringify(applicationResult) !== previous) {
+      appendEvent({
+        invocationId: invocation.id,
+        type: "application_result_recorded",
+        level: invocation.status === "succeeded" ? "info" : "warn",
+        message: `Application result recorded for ${metadata.capability ?? metadata.applicationId}.`,
+        data: applicationResult,
+      });
+    }
   }
 
   function completeRootSpan(invocation, terminalStatus) {

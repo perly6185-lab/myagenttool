@@ -12,6 +12,30 @@ import { useAsyncAction, api } from "@/data/use-console-actions";
 import { useUiStore } from "@/store/ui-store";
 import { sourceSummary } from "@/features/applications/applications-view";
 import { Transcript } from "@/features/invocations/transcript";
+import {
+  isExecutableRecoveryAction,
+  latestRecoveryActionRequest,
+  readableRecoveryActionAvailabilityReason,
+  readableRecoveryActionRequestStatus,
+  readableRecoveryActionType,
+  readableRecoveryAgentReason,
+  readableRecoveryCategory,
+  readableRecoveryExplanationReason,
+  readableRecoveryExplanationState,
+  readableRecoveryOutcome,
+  readableRecoveryOutcomeReason,
+  readableRecoveryTimelineStatus,
+  recoveryActionRequestTone,
+  recoveryAgentChoiceLabel,
+  recoveryExplanationReasonTone,
+  recoveryExplanationTone,
+  recoveryOutcomeSeverityTone,
+  recoveryOutcomeTone,
+  recoveryResultOrchestrationLabel,
+  recoveryTimelineTone,
+  recoveryTone,
+  sortedRecoveryActionRequests,
+} from "@/features/recovery/application-recovery-ui";
 import { readableStatus, statusTone } from "@/lib/readable-labels";
 import type {
   ApplicationOrchestration,
@@ -22,6 +46,7 @@ import type {
   ApplicationRecoveryTimelineEntry,
   ApplicationOrchestrationRun,
   ApplicationSnapshot,
+  ApplicationResultRef,
   InvocationSnapshot,
 } from "@/lib/console-state";
 
@@ -32,6 +57,13 @@ const APPROVAL_TOKEN = "console-operator-confirmed";
 function riskTone(risk?: string): "neutral" | "warning" | "danger" {
   if (risk === "high" || risk === "critical") return "danger";
   if (risk === "medium") return "warning";
+  return "neutral";
+}
+
+function readinessTone(state?: string): "neutral" | "success" | "warning" | "danger" {
+  if (state === "ready") return "success";
+  if (state === "needs_setup") return "warning";
+  if (state === "disabled") return "danger";
   return "neutral";
 }
 
@@ -135,6 +167,48 @@ function ApplicationActions({ application }: { application: ApplicationSnapshot 
           }}
           onClose={() => setConfirm(null)}
         />
+      </CardContent>
+    </Card>
+  );
+}
+
+function ApplicationResultSummary({
+  result,
+  onViewInvocation,
+}: {
+  result?: ApplicationResultRef | null;
+  onViewInvocation: (invocationId: string) => void;
+}) {
+  if (!result) return null;
+  const importedCount = result.importedRecordCount ?? result.importedRecordIds?.length ?? 0;
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Latest result</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        <div className="flex flex-wrap items-center gap-2">
+          <Badge tone={statusTone(result.status ?? "unknown")}>{readableStatus(result.status ?? "unknown")}</Badge>
+          {result.outputCollection ? <Badge tone="neutral">{result.outputCollection}</Badge> : null}
+          {importedCount > 0 ? <Badge tone="success">{importedCount} imported</Badge> : null}
+        </div>
+        <FactList
+          facts={[
+            { term: "Capability", value: result.capability ?? result.applicationAction ?? "—" },
+            { term: "Invocation", value: result.invocationId ?? "—" },
+            { term: "Completed", value: shortTime(result.completedAt) },
+            {
+              term: "Imported records",
+              value: importedCount > 0 ? (result.importedRecordIds ?? []).join(", ") || String(importedCount) : "None",
+            },
+          ]}
+        />
+        {result.invocationId ? (
+          <Button size="sm" variant="secondary" onClick={() => onViewInvocation(result.invocationId!)}>
+            <ExternalLink />
+            View invocation
+          </Button>
+        ) : null}
       </CardContent>
     </Card>
   );
@@ -645,12 +719,8 @@ function RecoveryExplanationPanel({
   const summary = explanation?.summary ?? outcome?.summary ?? null;
   const nextStep = explanation?.nextStep ?? outcome?.nextStep ?? null;
   const resultInvocationId = explanation?.resultInvocationId ?? fallbackResultInvocationId;
-  const resultOrchestration = explanation?.resultOrchestrationRelativePath
-    ? `${explanation.resultOrchestrationId ?? "orchestration"} (${explanation.resultOrchestrationRelativePath})`
-    : explanation?.resultOrchestrationId ?? null;
-  const requestedAgent = explanation?.requestedAgentId && explanation.selectedAgentId && explanation.requestedAgentId !== explanation.selectedAgentId
-    ? `${explanation.requestedAgentId} -> ${explanation.selectedAgentId}`
-    : explanation?.selectedAgentId ?? explanation?.requestedAgentId ?? null;
+  const resultOrchestration = recoveryResultOrchestrationLabel(explanation);
+  const requestedAgent = recoveryAgentChoiceLabel(explanation);
 
   return (
     <div className="space-y-2 rounded border border-border bg-muted p-2">
@@ -940,216 +1010,6 @@ function formatValue(value: unknown): string {
   return String(value);
 }
 
-function readableRecoveryCategory(category: string): string {
-  return category
-    .split("_")
-    .filter(Boolean)
-    .map((part) => part[0]?.toUpperCase() + part.slice(1))
-    .join(" ") || "Unknown";
-}
-
-function recoveryTone(category: string): "neutral" | "success" | "warning" | "danger" | "running" {
-  if (category === "none") return "success";
-  if (["validation_failed", "policy_blocked", "device_unlinked"].includes(category)) return "warning";
-  if (["runtime_error", "unknown_failure"].includes(category)) return "danger";
-  if (["dispatch_timeout", "agent_unavailable", "cancelled"].includes(category)) return "running";
-  return "neutral";
-}
-
-function isExecutableRecoveryAction(actionType: string): boolean {
-  return actionType === "rerun" || actionType === "select_agent";
-}
-
-function latestRecoveryActionRequest(
-  requests: ApplicationRecoveryActionRequest[],
-  actionType?: string,
-): ApplicationRecoveryActionRequest | null {
-  return sortedRecoveryActionRequests(requests)
-    .filter((request) => !actionType || request.actionType === actionType)[0] ?? null;
-}
-
-function sortedRecoveryActionRequests(requests: ApplicationRecoveryActionRequest[]): ApplicationRecoveryActionRequest[] {
-  return [...requests].sort(
-    (left, right) => Date.parse(right.updatedAt ?? right.createdAt) - Date.parse(left.updatedAt ?? left.createdAt),
-  );
-}
-
-function recoveryActionRequestTone(status: string): "neutral" | "success" | "warning" | "danger" | "running" {
-  if (status === "executed" || status === "approval_approved" || status === "noop") return "success";
-  if (status === "executing") return "running";
-  if (status === "approval_pending" || status === "requested") return "warning";
-  if (status === "failed" || status === "unsupported" || status === "approval_denied" || status === "approval_timed_out") return "danger";
-  return "neutral";
-}
-
-function readableRecoveryActionRequestStatus(status: string): string {
-  const labels: Record<string, string> = {
-    approval_approved: "Approved",
-    approval_denied: "Denied",
-    approval_pending: "Pending",
-    approval_timed_out: "Timed out",
-    executing: "Executing",
-    executed: "Executed",
-    failed: "Failed",
-    noop: "Viewed",
-    requested: "Requested",
-    unsupported: "Unsupported",
-  };
-  return labels[status] ?? status;
-}
-
-function recoveryOutcomeTone(state: string): "neutral" | "success" | "warning" | "danger" | "running" {
-  if (state === "recovered") return "success";
-  if (state === "pending") return "running";
-  if (state === "still_failed") return "danger";
-  if (state === "needs_attention") return "warning";
-  return "neutral";
-}
-
-function recoveryOutcomeSeverityTone(severity?: string | null): "neutral" | "success" | "warning" | "danger" | "running" {
-  if (severity === "success") return "success";
-  if (severity === "info") return "running";
-  if (severity === "warning") return "warning";
-  if (severity === "danger") return "danger";
-  return "neutral";
-}
-
-function recoveryExplanationTone(state: string): "neutral" | "success" | "warning" | "danger" | "running" {
-  if (state === "executed" || state === "no_result_expected") return "success";
-  if (state === "approval_pending" || state === "executing" || state === "requested") return "running";
-  if (state === "blocked" || state === "approval_denied" || state === "approval_timed_out" || state === "unsupported") return "warning";
-  if (state === "failed" || state === "rejected") return "danger";
-  return "neutral";
-}
-
-function recoveryExplanationReasonTone(reason: string): "neutral" | "success" | "warning" | "danger" | "running" {
-  if (reason === "execution_completed" || reason === "result_succeeded" || reason === "no_result_expected") return "success";
-  if (reason === "approval_pending" || reason === "execution_in_progress" || reason === "recovery_requested") return "running";
-  if (reason.startsWith("result_") || reason.includes("failed") || reason === "healthy_agent_not_found") return "danger";
-  if (reason.includes("blocked") || reason.includes("pending") || reason.includes("unsupported")) return "warning";
-  return "neutral";
-}
-
-function recoveryTimelineTone(status: string): "neutral" | "success" | "warning" | "danger" | "running" {
-  if (status === "executed" || status === "approval_approved") return "success";
-  if (status === "executing") return "running";
-  if (status === "requested" || status === "approval_pending") return "warning";
-  if (status === "failed" || status === "rejected" || status === "approval_denied" || status === "approval_timed_out") return "danger";
-  return "neutral";
-}
-
-export function readableRecoveryOutcome(state: string): string {
-  const labels: Record<string, string> = {
-    needs_attention: "Needs attention",
-    pending: "Pending",
-    recovered: "Recovered",
-    still_failed: "Still failed",
-  };
-  return labels[state] ?? state;
-}
-
-export function readableRecoveryOutcomeReason(reason: string): string {
-  const labels: Record<string, string> = {
-    approval_approved: "Approval approved",
-    approval_denied: "Approval denied",
-    approval_pending: "Approval pending",
-    approval_timed_out: "Approval timed out",
-    execution_failed_before_result: "Failed before result",
-    missing_result_invocation: "Missing result",
-    no_result_expected: "No result expected",
-    recovery_executing: "Executing",
-    recovery_requested: "Requested",
-    result_cancelled: "Result cancelled",
-    result_denied: "Result denied",
-    result_failed: "Result failed",
-    result_in_progress: "Result in progress",
-    result_invocation_not_visible: "Result not visible",
-    result_succeeded: "Result succeeded",
-  };
-  return labels[reason] ?? reason;
-}
-
-export function readableRecoveryExplanationState(state: string): string {
-  const labels: Record<string, string> = {
-    approval_denied: "Approval denied",
-    approval_pending: "Waiting for approval",
-    approval_timed_out: "Approval timed out",
-    blocked: "Blocked",
-    executed: "Executed",
-    executing: "Executing",
-    failed: "Failed",
-    no_result_expected: "View only",
-    rejected: "Rejected",
-    requested: "Requested",
-    unsupported: "Unsupported",
-  };
-  return labels[state] ?? state;
-}
-
-export function readableRecoveryExplanationReason(reason: string): string {
-  const labels: Record<string, string> = {
-    action_not_suggested: "Action not suggested",
-    approval_pending: "Approval pending",
-    execution_completed: "Execution completed",
-    execution_failed: "Execution failed",
-    execution_in_progress: "Execution in progress",
-    healthy_agent_not_found: "Healthy agent not found",
-    no_result_expected: "No result expected",
-    recovery_requested: "Recovery requested",
-    same_action_approval_pending: "Duplicate approval pending",
-    same_action_in_progress: "Duplicate action in progress",
-  };
-  return labels[reason] ?? readableRecoveryOutcomeReason(reason);
-}
-
-export function readableRecoveryActionType(actionType: string): string {
-  const labels: Record<string, string> = {
-    regenerate_orchestration: "Regenerate orchestration",
-    rerun: "Re-run",
-    select_agent: "Select agent",
-    view_invocation: "View invocation",
-  };
-  return labels[actionType] ?? actionType;
-}
-
-export function readableRecoveryActionAvailabilityReason(reason: string): string {
-  const labels: Record<string, string> = {
-    same_action_approval_pending: "Already pending approval",
-    same_action_in_progress: "Already in progress",
-    same_action_recently_failed: "Recently failed",
-  };
-  return labels[reason] ?? reason;
-}
-
-export function readableRecoveryTimelineStatus(status: string): string {
-  const labels: Record<string, string> = {
-    approval_approved: "Approved",
-    approval_denied: "Denied",
-    approval_pending: "Approval pending",
-    approval_resolved: "Approval resolved",
-    approval_timed_out: "Timed out",
-    executed: "Executed",
-    executing: "Executing",
-    failed: "Failed",
-    recorded: "Recorded",
-    rejected: "Rejected",
-    requested: "Requested",
-  };
-  return labels[status] ?? status;
-}
-
-export function readableRecoveryAgentReason(reason: string): string {
-  const labels: Record<string, string> = {
-    agent_disabled: "disabled",
-    agent_not_found: "not found",
-    agent_unavailable: "unavailable",
-    agent_unhealthy: "unhealthy",
-    application_control_missing: "missing application control",
-    device_unlinked: "device unlinked",
-  };
-  return labels[reason] ?? reason;
-}
-
 function stringValue(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value : null;
 }
@@ -1170,6 +1030,8 @@ function shortTime(value?: string | null): string {
 export function ApplicationsInspector() {
   const { data: state } = useConsoleState();
   const selectedApplicationId = useUiStore((s) => s.selectedApplicationId);
+  const setSelectedInvocationId = useUiStore((s) => s.setSelectedInvocationId);
+  const setSection = useUiStore((s) => s.setSection);
   const application = (state?.applications ?? []).find((app) => app.id === selectedApplicationId);
 
   const { data: capabilityData } = useQuery({
@@ -1199,6 +1061,11 @@ export function ApplicationsInspector() {
   const orchestrations = application.orchestrations ?? [];
   const invocations = state?.invocations ?? [];
 
+  function viewInvocation(invocationId: string) {
+    setSelectedInvocationId(invocationId);
+    setSection("invocations");
+  }
+
   return (
     <div className="space-y-4">
       <Card>
@@ -1221,6 +1088,7 @@ export function ApplicationsInspector() {
       </Card>
 
       <ApplicationActions application={application} />
+      <ApplicationResultSummary result={application.latestResult} onViewInvocation={viewInvocation} />
 
       <Card>
         <CardHeader>
@@ -1231,16 +1099,24 @@ export function ApplicationsInspector() {
             <p className="text-sm text-muted-foreground">No capabilities projected.</p>
           ) : (
             capabilities.map((capability) => (
-              <div key={capability.name} className="flex items-center justify-between gap-2 text-sm">
+              <div key={capability.name} className="flex items-start justify-between gap-2 text-sm">
                 <span className="[overflow-wrap:anywhere]">
                   {capability.displayName ?? capability.name}
                   {capability.requiresApproval ? <span className="text-warning"> ⚠</span> : null}
                 </span>
-                <div className="flex shrink-0 gap-1.5">
+                <div className="flex shrink-0 flex-wrap justify-end gap-1.5">
                   <Badge tone={riskTone(capability.riskLevel)}>{capability.riskLevel ?? "—"}</Badge>
                   <Badge tone={capability.status === "disabled" ? "danger" : "success"}>
                     {capability.status ?? "—"}
                   </Badge>
+                  {capability.metadata?.readiness?.state ? (
+                    <Badge tone={readinessTone(capability.metadata.readiness.state)}>
+                      {capability.metadata.readiness.state}
+                    </Badge>
+                  ) : null}
+                  {capability.metadata?.resultPath?.outputCollection ? (
+                    <Badge tone="neutral">{capability.metadata.resultPath.outputCollection}</Badge>
+                  ) : null}
                 </div>
               </div>
             ))

@@ -163,12 +163,64 @@ if (process.argv.includes("--check")) {
   }
   // #359: the application-wrapper runner must receive the server-resolved,
   // approved command injected as discrete argv (never a shell string).
+  const appWrapperWork = {
+    invocationId: "inv_app_wrapper_check",
+    task: "run",
+    options: {
+      metadata: {
+        applicationWrapper: {
+          execCommand: "ccusage",
+          execArgs: ["daily", "--json", "--offline"],
+          capability: "app.app_ccusage.wrapper.daily",
+          filePolicy: "read_only",
+          networkPolicy: "forbidden",
+        },
+      },
+    },
+  };
   const appWrapperPlan = createCliSpawnPlan(
     { type: "cli", command: "node", args: ["tools/agents/application-wrapper.mjs"] },
-    { invocationId: "inv_app_wrapper_check", task: "run", options: { metadata: { applicationWrapper: { execCommand: "ccusage", execArgs: ["daily", "--json"], capability: "app.app_ccusage.wrapper.daily" } } } },
+    appWrapperWork,
   );
-  if (!appWrapperPlan.args.includes("--exec-command") || !appWrapperPlan.args.includes("ccusage") || !appWrapperPlan.args.includes("--json")) {
+  if (!appWrapperPlan.args.includes("--exec-command") || !appWrapperPlan.args.includes("ccusage") || !appWrapperPlan.args.includes("--offline")) {
     throw new Error("Application wrapper exec injection is not configured.");
+  }
+  const appWrapperGate = localExecutionGate(
+    appWrapperWork,
+    { type: "cli", command: "node", args: ["tools/agents/application-wrapper.mjs"] },
+    appWrapperPlan,
+    { permissionDecision: "not_required", permissionHook: null, manifest: localExecutionPolicyManifest },
+  );
+  if (!appWrapperGate.allowed) {
+    throw new Error(`Application wrapper local execution gate rejected the allowlisted contract: ${appWrapperGate.reason}`);
+  }
+  const blockedAppWrapperWork = {
+    invocationId: "inv_app_wrapper_blocked_check",
+    task: "run",
+    options: {
+      metadata: {
+        applicationWrapper: {
+          execCommand: "node",
+          execArgs: ["-e", "console.log('nope')"],
+          capability: "app.app_ccusage.wrapper.daily",
+          filePolicy: "read_only",
+          networkPolicy: "forbidden",
+        },
+      },
+    },
+  };
+  const blockedAppWrapperPlan = createCliSpawnPlan(
+    { type: "cli", command: "node", args: ["tools/agents/application-wrapper.mjs"] },
+    blockedAppWrapperWork,
+  );
+  const blockedAppWrapperGate = localExecutionGate(
+    blockedAppWrapperWork,
+    { type: "cli", command: "node", args: ["tools/agents/application-wrapper.mjs"] },
+    blockedAppWrapperPlan,
+    { permissionDecision: "not_required", permissionHook: null, manifest: localExecutionPolicyManifest },
+  );
+  if (blockedAppWrapperGate.allowed) {
+    throw new Error("Application wrapper local execution gate must reject non-allowlisted inner commands.");
   }
   if (typeof pty.spawn !== "function") {
     throw new Error("node-pty is not available.");

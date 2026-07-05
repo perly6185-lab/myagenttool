@@ -58,6 +58,7 @@ test("bridge registration issues a device-bound credential and protects bridge r
   assert.equal(validTerminalPoll.status, 204);
 
   await assertBridgeCredentialRequired({ token: registered.body.bridgeToken });
+  await assertBridgeWorkOwnership({ token: registered.body.bridgeToken });
 
   const registerWithoutBearer = await call("/api/bridge/register", { method: "POST", body: { bridgeVersion: "again" } });
   assert.equal(registerWithoutBearer.status, 401);
@@ -110,6 +111,411 @@ async function assertBridgeCredentialRevoked({ token }) {
     assert.equal(revoked.status, 403, `${route.method} ${route.path} should reject revoked bridge credentials`);
     assert.equal(revoked.body.error, "device_credentials_revoked");
   }
+}
+
+async function assertBridgeWorkOwnership({ token }) {
+  const ownedInvocation = bridgeInvocationFixture("inv_bridge_owned", {
+    status: "dispatching",
+    deliveryState: "dispatching",
+    deviceId: state.device.id,
+  });
+  state.invocations.unshift(ownedInvocation);
+
+  const ack = await call("/api/bridge/ack", { method: "POST", body: { invocationId: ownedInvocation.id }, token });
+  assert.equal(ack.status, 200);
+  assert.equal(ownedInvocation.status, "running");
+  assert.equal(ownedInvocation.delivery.state, "acknowledged");
+
+  const event = await call("/api/bridge/events", {
+    method: "POST",
+    body: { invocationId: ownedInvocation.id, type: "log", level: "info", message: "owned event" },
+    token,
+  });
+  assert.equal(event.status, 200);
+
+  const complete = await call("/api/bridge/complete", {
+    method: "POST",
+    body: { invocationId: ownedInvocation.id, status: "succeeded", summary: "owned completion" },
+    token,
+  });
+  assert.equal(complete.status, 200);
+  assert.equal(ownedInvocation.status, "succeeded");
+
+  const offDeviceInvocation = bridgeInvocationFixture("inv_bridge_off_device", {
+    status: "running",
+    deliveryState: "acknowledged",
+    deviceId: "dev_other_bridge",
+  });
+  state.invocations.unshift(offDeviceInvocation);
+  const offDeviceComplete = await call("/api/bridge/complete", {
+    method: "POST",
+    body: { invocationId: offDeviceInvocation.id, status: "succeeded", summary: "spoofed completion" },
+    token,
+  });
+  assert.equal(offDeviceComplete.status, 403);
+  assert.equal(offDeviceComplete.body.error, "bridge_invocation_not_owned");
+  assert.equal(offDeviceInvocation.status, "running");
+  assert(
+    state.events.some(
+      (event) =>
+        event.invocationId === offDeviceInvocation.id &&
+        event.type === "bridge_delivery_refused" &&
+        event.data?.operation === "complete" &&
+        event.data?.reason === "bridge_invocation_not_owned",
+    ),
+    "off-device completion refusal should be auditable",
+  );
+
+  const inactiveInvocation = bridgeInvocationFixture("inv_bridge_waiting_approval", {
+    status: "waiting_for_local_approval",
+    deliveryState: "queued",
+    deviceId: state.device.id,
+  });
+  state.invocations.unshift(inactiveInvocation);
+  const inactiveAck = await call("/api/bridge/ack", {
+    method: "POST",
+    body: { invocationId: inactiveInvocation.id },
+    token,
+  });
+  assert.equal(inactiveAck.status, 409);
+  assert.equal(inactiveAck.body.error, "bridge_invocation_not_active");
+  assert(
+    state.events.some(
+      (event) =>
+        event.invocationId === inactiveInvocation.id &&
+        event.type === "bridge_delivery_refused" &&
+        event.data?.operation === "ack" &&
+        event.data?.reason === "bridge_invocation_not_active",
+    ),
+    "inactive ack refusal should be auditable",
+  );
+
+  state.agents.unshift(otherDeviceCliAgentFixture());
+  const otherDeviceQueuedInvocation = bridgeInvocationFixture("inv_bridge_other_device_queued", {
+    agentId: "agt_other_device_cli",
+    status: "queued",
+    deliveryState: "queued",
+    deviceId: "dev_other_bridge",
+  });
+  const localQueuedInvocation = bridgeInvocationFixture("inv_bridge_local_queued", {
+    status: "queued",
+    deliveryState: "queued",
+    deviceId: state.device.id,
+  });
+  state.invocations.unshift(otherDeviceQueuedInvocation, localQueuedInvocation);
+  const invocationPoll = await call("/api/bridge/next", { token });
+  assert.equal(invocationPoll.status, 200);
+  assert.equal(invocationPoll.body.invocationId, localQueuedInvocation.id);
+  assert.equal(localQueuedInvocation.status, "dispatching");
+  assert.equal(otherDeviceQueuedInvocation.status, "queued");
+
+  const localQueuedAck = await call("/api/bridge/ack", {
+    method: "POST",
+    body: { invocationId: localQueuedInvocation.id },
+    token,
+  });
+  assert.equal(localQueuedAck.status, 200);
+  const localQueuedComplete = await call("/api/bridge/complete", {
+    method: "POST",
+    body: { invocationId: localQueuedInvocation.id, status: "succeeded", summary: "local queued completion" },
+    token,
+  });
+  assert.equal(localQueuedComplete.status, 200);
+
+  const legacyLocalQueuedInvocation = bridgeInvocationFixture("inv_bridge_legacy_local_queued", {
+    status: "queued",
+    deliveryState: "queued",
+    deviceId: undefined,
+  });
+  state.invocations.unshift(legacyLocalQueuedInvocation);
+  const legacyInvocationPoll = await call("/api/bridge/next", { token });
+  assert.equal(legacyInvocationPoll.status, 200);
+  assert.equal(legacyInvocationPoll.body.invocationId, legacyLocalQueuedInvocation.id);
+  assert.equal(legacyLocalQueuedInvocation.delivery.deviceId, state.device.id, "legacy local claims should be bound to the current bridge");
+  const legacyAck = await call("/api/bridge/ack", {
+    method: "POST",
+    body: { invocationId: legacyLocalQueuedInvocation.id },
+    token,
+  });
+  assert.equal(legacyAck.status, 200);
+  const legacyComplete = await call("/api/bridge/complete", {
+    method: "POST",
+    body: { invocationId: legacyLocalQueuedInvocation.id, status: "succeeded", summary: "legacy local completion" },
+    token,
+  });
+  assert.equal(legacyComplete.status, 200);
+
+  const otherDeviceLifecycle = lifecycleActionFixture("lco_bridge_other", {
+    status: "running",
+    deviceId: "dev_other_bridge",
+  });
+  state.lifecycleQueuedActions.unshift(otherDeviceLifecycle);
+  const otherDeviceLifecycleComplete = await call("/api/bridge/lifecycle-complete", {
+    method: "POST",
+    body: { lifecycleActionId: otherDeviceLifecycle.id, status: "succeeded", summary: "spoofed lifecycle" },
+    token,
+  });
+  assert.equal(otherDeviceLifecycleComplete.status, 403);
+  assert.equal(otherDeviceLifecycleComplete.body.error, "bridge_lifecycle_not_owned");
+  assert.equal(otherDeviceLifecycle.status, "running");
+  assert(
+    state.events.some(
+      (event) =>
+        event.type === "bridge_lifecycle_refused" &&
+        event.data?.lifecycleActionId === otherDeviceLifecycle.id &&
+        event.data?.operation === "lifecycle-complete" &&
+        event.data?.reason === "bridge_lifecycle_not_owned",
+    ),
+    "off-device lifecycle refusal should be auditable",
+  );
+
+  const otherQueuedLifecycle = lifecycleActionFixture("lco_bridge_other_queued", {
+    status: "queued",
+    deviceId: "dev_other_bridge",
+  });
+  const nullQueuedLifecycle = lifecycleActionFixture("lco_bridge_null_queued", {
+    status: "queued",
+    deviceId: null,
+  });
+  const localQueuedLifecycle = lifecycleActionFixture("lco_bridge_local_queued", {
+    status: "queued",
+    deviceId: state.device.id,
+  });
+  state.lifecycleQueuedActions.unshift(nullQueuedLifecycle, otherQueuedLifecycle, localQueuedLifecycle);
+  const lifecyclePoll = await call("/api/bridge/lifecycle-next", { token });
+  assert.equal(lifecyclePoll.status, 200);
+  assert.equal(lifecyclePoll.body.lifecycleActionId, localQueuedLifecycle.id);
+  assert.equal(localQueuedLifecycle.status, "running");
+  assert.equal(nullQueuedLifecycle.status, "queued");
+  assert.equal(otherQueuedLifecycle.status, "queued");
+
+  const localLifecycleComplete = await call("/api/bridge/lifecycle-complete", {
+    method: "POST",
+    body: { lifecycleActionId: localQueuedLifecycle.id, status: "succeeded", summary: "local lifecycle complete" },
+    token,
+  });
+  assert.equal(localLifecycleComplete.status, 200);
+  assert.equal(localQueuedLifecycle.status, "succeeded");
+
+  const otherDeviceHealth = healthCheckFixture("lco_bridge_health_other", {
+    status: "running",
+    deviceId: "dev_other_bridge",
+  });
+  state.healthChecks.unshift(otherDeviceHealth);
+  const otherDeviceHealthComplete = await call("/api/bridge/health-complete", {
+    method: "POST",
+    body: { checkId: otherDeviceHealth.id, agentId: otherDeviceHealth.agentId, status: "healthy", message: "spoofed health" },
+    token,
+  });
+  assert.equal(otherDeviceHealthComplete.status, 403);
+  assert.equal(otherDeviceHealthComplete.body.error, "health_check_not_owned");
+  assert.equal(otherDeviceHealth.status, "running");
+  assertBridgeOperationRefused("health_check", otherDeviceHealth.id, "health_check_not_owned");
+
+  const otherQueuedHealth = healthCheckFixture("lco_bridge_health_other_queued", {
+    status: "queued",
+    deviceId: "dev_other_bridge",
+  });
+  const localQueuedHealth = healthCheckFixture("lco_bridge_health_local_queued", {
+    status: "queued",
+    deviceId: state.device.id,
+  });
+  state.healthChecks.unshift(otherQueuedHealth, localQueuedHealth);
+  const healthPoll = await call("/api/bridge/health-next", { token });
+  assert.equal(healthPoll.status, 200);
+  assert.equal(healthPoll.body.checkId, localQueuedHealth.id);
+  assert.equal(localQueuedHealth.status, "running");
+  assert.equal(otherQueuedHealth.status, "queued");
+
+  const otherDeviceDiscovery = discoveryRunFixture("dis_bridge_other", {
+    status: "running",
+    deviceId: "dev_other_bridge",
+  });
+  state.discoveryRuns.unshift(otherDeviceDiscovery);
+  const otherDeviceDiscoveryComplete = await call("/api/bridge/discovery-complete", {
+    method: "POST",
+    body: { discoveryRunId: otherDeviceDiscovery.id, status: "succeeded", candidates: [] },
+    token,
+  });
+  assert.equal(otherDeviceDiscoveryComplete.status, 403);
+  assert.equal(otherDeviceDiscoveryComplete.body.error, "discovery_run_not_owned");
+  assert.equal(otherDeviceDiscovery.status, "running");
+  assertBridgeOperationRefused("discovery_run", otherDeviceDiscovery.id, "discovery_run_not_owned");
+
+  const otherQueuedDiscovery = discoveryRunFixture("dis_bridge_other_queued", {
+    status: "queued",
+    deviceId: "dev_other_bridge",
+  });
+  const nullQueuedDiscovery = discoveryRunFixture("dis_bridge_null_queued", {
+    status: "queued",
+    deviceId: null,
+  });
+  const localQueuedDiscovery = discoveryRunFixture("dis_bridge_local_queued", {
+    status: "queued",
+    deviceId: state.device.id,
+  });
+  state.discoveryRuns.unshift(nullQueuedDiscovery, otherQueuedDiscovery, localQueuedDiscovery);
+  const discoveryPoll = await call("/api/bridge/discovery-next", { token });
+  assert.equal(discoveryPoll.status, 200);
+  assert.equal(discoveryPoll.body.discoveryRunId, localQueuedDiscovery.id);
+  assert.equal(localQueuedDiscovery.status, "running");
+  assert.equal(nullQueuedDiscovery.status, "queued");
+  assert.equal(otherQueuedDiscovery.status, "queued");
+
+  const otherDeviceProbe = probeRunFixture("probe_bridge_other", {
+    status: "running",
+    deviceId: "dev_other_bridge",
+  });
+  state.integrationProbeRuns.unshift(otherDeviceProbe);
+  const otherDeviceProbeComplete = await call("/api/bridge/probe-complete", {
+    method: "POST",
+    body: { probeRunId: otherDeviceProbe.id, status: "succeeded", summary: "spoofed probe" },
+    token,
+  });
+  assert.equal(otherDeviceProbeComplete.status, 403);
+  assert.equal(otherDeviceProbeComplete.body.error, "probe_run_not_owned");
+  assert.equal(otherDeviceProbe.status, "running");
+  assertBridgeOperationRefused("probe_run", otherDeviceProbe.id, "probe_run_not_owned");
+
+  const otherQueuedProbe = probeRunFixture("probe_bridge_other_queued", {
+    status: "queued",
+    deviceId: "dev_other_bridge",
+  });
+  const nullQueuedProbe = probeRunFixture("probe_bridge_null_queued", {
+    status: "queued",
+    deviceId: null,
+  });
+  const localQueuedProbe = probeRunFixture("probe_bridge_local_queued", {
+    status: "queued",
+    deviceId: state.device.id,
+  });
+  state.integrationProbeRuns.unshift(nullQueuedProbe, otherQueuedProbe, localQueuedProbe);
+  const probePoll = await call("/api/bridge/probe-next", { token });
+  assert.equal(probePoll.status, 200);
+  assert.equal(probePoll.body.probeRunId, localQueuedProbe.id);
+  assert.equal(localQueuedProbe.status, "running");
+  assert.equal(nullQueuedProbe.status, "queued");
+  assert.equal(otherQueuedProbe.status, "queued");
+}
+
+function assertBridgeOperationRefused(operation, operationId, reason) {
+  assert(
+    state.events.some(
+      (event) =>
+        event.type === "bridge_operation_refused" &&
+        event.data?.operation === operation &&
+        event.data?.operationId === operationId &&
+        event.data?.reason === reason,
+    ),
+    `${operation} refusal should be auditable`,
+  );
+}
+
+function otherDeviceCliAgentFixture() {
+  const demo = state.agents.find((agent) => agent.id === "agt_demo_cli");
+  return {
+    ...demo,
+    id: "agt_other_device_cli",
+    name: "Other Device CLI",
+    location: { type: "local_device", deviceId: "dev_other_bridge" },
+    health: { status: "healthy", checkedAt: now(), message: "Other device healthy.", nextAction: null },
+  };
+}
+
+function bridgeInvocationFixture(id, { agentId = "agt_demo_cli", status, deliveryState, deviceId }) {
+  return {
+    id,
+    agentId,
+    requestedBy: "usr_local",
+    status,
+    input: { task: id },
+    options: {},
+    delivery: {
+      state: deliveryState,
+      deviceId,
+      dispatchAttempts: deliveryState === "dispatching" ? 1 : 0,
+      lastDispatchAt: deliveryState === "dispatching" ? now() : null,
+      leaseExpiresAt: null,
+      bridgeCursor: null,
+    },
+    cancellation: { state: "none", requestedAt: null },
+    result: null,
+    createdAt: now(),
+    updatedAt: now(),
+  };
+}
+
+function lifecycleActionFixture(id, { status, deviceId }) {
+  return {
+    id,
+    recipeId: `rec_${id}`,
+    agentId: "agt_demo_cli",
+    deviceId,
+    requestedBy: "usr_local",
+    action: "update",
+    status,
+    executionEnabled: true,
+    command: {
+      summary: "Run the bridge-managed demo agent update fixture.",
+      commandId: "demo_agent_update",
+      executable: "demo-agent",
+      args: ["--self-check-update"],
+      shell: false,
+      packageManager: null,
+    },
+    summary: "Test lifecycle action.",
+    result: null,
+    createdAt: now(),
+    startedAt: status === "running" ? now() : null,
+    completedAt: null,
+  };
+}
+
+function healthCheckFixture(id, { status, deviceId }) {
+  return {
+    id,
+    agentId: "agt_demo_cli",
+    deviceId,
+    requestedBy: "usr_local",
+    operation: "health_check",
+    status,
+    reason: "Test health check.",
+    message: "Test health check.",
+    createdAt: now(),
+    completedAt: null,
+  };
+}
+
+function discoveryRunFixture(id, { status, deviceId }) {
+  return {
+    id,
+    deviceId,
+    requestedBy: "usr_local",
+    status,
+    scope: "conservative",
+    options: { userProvidedPaths: [], userProvidedEndpoints: [] },
+    message: "Test discovery run.",
+    candidates: [],
+    createdAt: now(),
+    completedAt: null,
+  };
+}
+
+function probeRunFixture(id, { status, deviceId }) {
+  return {
+    id,
+    artifactId: null,
+    kind: "agent_dry_probe",
+    deviceId,
+    requestedBy: "usr_local",
+    status,
+    adapter: { type: "cli", command: "demo-agent" },
+    summary: "Test probe run.",
+    details: [],
+    tools: [],
+    createdAt: now(),
+    completedAt: null,
+  };
 }
 
 async function call(path, { method = "GET", body, token } = {}) {

@@ -52,6 +52,11 @@ test("projects all six reports as read-only, low-risk npm-wrapper capabilities",
     const cap = wrapperCaps.find((c) => c.name === `app.app_ccusage.wrapper.${report.id}`);
     assert.ok(cap, `expected capability for ${report.id}`);
     assert.equal(cap.riskLevel, "low");
+    assert.equal(cap.metadata.readiness.state, "needs_setup");
+    assert.equal(cap.metadata.readiness.executionMode, "bridge_wrapper");
+    assert.equal(cap.metadata.resultPath.outputCollection, "importedUsageEstimates");
+    assert.equal(cap.metadata.resultPath.evidenceCenter, true);
+    assert.equal(cap.metadata.execution.agentId, "agt_platform_application_wrapper");
     assert.equal(cap.metadata.compatibilityFacade.name, "ccusage.report");
     assert.equal(cap.metadata.outputCollection, "importedUsageEstimates");
     assert.equal(cap.metadata.billing.authoritative, false);
