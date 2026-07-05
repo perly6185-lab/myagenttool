@@ -47,7 +47,7 @@ without introducing a router or broadening the product surface.
 | Auto-run detail links | Add when auto-runs expose a stable selected run id and detail pane. |
 | Compare-run detail links | Add when compare-runs expose a stable selected compare id and owner surface. |
 | Tool detail links | Add when tools have durable detail pages instead of descriptor cards/forms. |
-| Evidence detail links | Add when Evidence Center has a first-class selected evidence id and detail route/state. |
+| Evidence detail links | Design is in [`P4_EVIDENCE_DETAIL_OWNER_SURFACE.md`](P4_EVIDENCE_DETAIL_OWNER_SURFACE.md); implement when Evidence Center has a first-class selected evidence id and detail state. |
 | Browser history entries | Revisit if operators need back-button traversal through every selection change; P4 currently uses `history.replaceState`. |
 
 ## Verification
