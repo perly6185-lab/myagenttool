@@ -1,3 +1,8 @@
+import {
+  applicationRunWebLinkFromInvocation,
+  invocationWebLink,
+} from "../../read-models/web-navigation.mjs";
+
 export function createInvocationTroubleshootingRuntime({
   state,
   now,
@@ -28,7 +33,7 @@ export function createInvocationTroubleshootingRuntime({
       data: { targetInvocationId: targetInvocation.id }
     });
 
-    const report = buildTroubleshootingReport(targetInvocation, platformAgent, actor);
+    const report = buildTroubleshootingReport(targetInvocation, platformAgent, platformInvocation, actor);
     state.troubleshootingReports.unshift(report);
     state.troubleshootingReports = state.troubleshootingReports.slice(0, 100);
 
@@ -64,7 +69,7 @@ export function createInvocationTroubleshootingRuntime({
     return report;
   }
 
-  function buildTroubleshootingReport(invocation, platformAgent, actor = null) {
+  function buildTroubleshootingReport(invocation, platformAgent, platformInvocation, actor = null) {
     const agent = findAgent(invocation.agentId);
     const events = state.events.filter((item) => item.invocationId === invocation.id).reverse();
     const logEvents = events.filter((item) => item.type === "log" || item.type === "agent_output");
@@ -75,6 +80,7 @@ export function createInvocationTroubleshootingRuntime({
     return {
       id: nextId("trb_demo"),
       invocationId: invocation.id,
+      troubleshooterInvocationId: platformInvocation?.id ?? null,
       platformAgentId: platformAgent.id,
       requestedBy: actor?.userId ?? "usr_local",
       status: "generated",
@@ -84,8 +90,18 @@ export function createInvocationTroubleshootingRuntime({
       logSummary: summarizeLogs(logEvents),
       suggestedFixes,
       remediationRequiresApproval: true,
+      webLinks: troubleshootingWebLinks(invocation, platformInvocation),
       summary: `Troubleshooter reviewed ${invocation.id}: status ${invocation.status}; ${adapterError ?? "no adapter error text recorded"}.`,
       createdAt: now()
+    };
+  }
+
+  function troubleshootingWebLinks(invocation, platformInvocation) {
+    const applicationRun = applicationRunWebLinkFromInvocation(invocation);
+    return {
+      failedInvocation: invocationWebLink(invocation.id, "Open failed invocation"),
+      troubleshooterInvocation: invocationWebLink(platformInvocation?.id, "Open troubleshooter invocation"),
+      ...(applicationRun ? { applicationRun } : {}),
     };
   }
 

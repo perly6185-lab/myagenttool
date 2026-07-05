@@ -260,11 +260,23 @@ export interface PolicyDecisionSnapshot {
 export interface TroubleshootingReport {
   id?: string;
   invocationId: string;
+  troubleshooterInvocationId?: string | null;
   summary: string;
   bridgeState: string;
   adapterError?: string;
   logSummary: string;
   suggestedFixes?: string[];
+  webLinks?: {
+    failedInvocation?: WebNavigationLink | null;
+    troubleshooterInvocation?: WebNavigationLink | null;
+    applicationRun?: WebNavigationLink | null;
+  };
+}
+
+export interface WebNavigationLink {
+  label: string;
+  query: string;
+  target: Record<string, unknown>;
 }
 
 export interface AgentUsageSummary {

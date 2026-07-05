@@ -482,7 +482,14 @@ test("POST /api/invocations/:id/troubleshoot binds the platform child invocation
     status: "failed",
     requestedBy: "usr_a",
     createdAt: now(),
-    options: { metadata: { projectId: "projA", worktreeId: "wtA" } },
+    options: {
+      metadata: {
+        projectId: "projA",
+        worktreeId: "wtA",
+        applicationId: "app_docs",
+        routineId: "routine_docs_smoke",
+      },
+    },
   });
   const beforeIds = new Set(ctx.state.invocations.map((item) => item.id));
 
@@ -494,11 +501,20 @@ test("POST /api/invocations/:id/troubleshoot binds the platform child invocation
   assert.equal(res.status, 201);
   const child = ctx.state.invocations.find((item) => !beforeIds.has(item.id) && item.agentId === "agt_platform_troubleshooter");
   assert.ok(child, "troubleshooter should create a platform invocation");
+  assert.equal(res.body.report.troubleshooterInvocationId, child.id);
+  assert.equal(res.body.report.webLinks.failedInvocation.query, "?section=invocations&invocation=inv_failed_scope");
+  assert.equal(res.body.report.webLinks.troubleshooterInvocation.query, `?section=invocations&invocation=${child.id}`);
+  assert.equal(res.body.report.webLinks.applicationRun.query, "?section=applications&application=app_docs&routine=routine_docs_smoke&run=inv_failed_scope");
   assert.equal(child.projectId, "projA");
   assert.equal(child.worktreeId, "wtA");
   assert.equal(child.options?.metadata?.targetInvocationId, "inv_failed_scope");
   assert.equal(child.options?.metadata?.projectId, "projA");
   assert.equal(child.options?.metadata?.worktreeId, "wtA");
+  const state = await call("/api/state", { token: "tok_a" });
+  const report = state.body.troubleshootingReports.find((item) => item.id === res.body.report.id);
+  assert.equal(report.webLinks.failedInvocation.query, "?section=invocations&invocation=inv_failed_scope");
+  assert.equal(report.webLinks.troubleshooterInvocation.query, `?section=invocations&invocation=${child.id}`);
+  assert.equal(report.webLinks.applicationRun.query, "?section=applications&application=app_docs&routine=routine_docs_smoke&run=inv_failed_scope");
 });
 
 test("POST /api/applications/register rejects duplicate explicit ids", async () => {
