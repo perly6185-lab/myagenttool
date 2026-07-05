@@ -261,7 +261,15 @@ describe("ApplicationsInspector recovery guidance", () => {
     expect(screen.getByText("local_stdio_process")).toBeTruthy();
     expect(screen.getByText("read_only files / forbidden network")).toBeTruthy();
 
-    fireEvent.click(screen.getByRole("button", { name: /Confirm MCP/i }));
+    fireEvent.click(screen.getByRole("button", { name: /Review MCP/i }));
+
+    expect(await screen.findByRole("dialog", { name: /Review shell/i })).toBeTruthy();
+    expect(screen.getByText("Confirm this MCP candidate before it is registered as shared Application tools.")).toBeTruthy();
+    const confirmButton = screen.getByRole("button", { name: /Confirm MCP/i });
+    expect((confirmButton as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(screen.getByRole("checkbox", { name: /I reviewed the MCP source/i }));
+    expect((confirmButton as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(confirmButton);
 
     await waitFor(() => {
       expect(apiMock.approveApproval).toHaveBeenCalledWith("apr_mcp_confirm");

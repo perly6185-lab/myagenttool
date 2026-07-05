@@ -44,6 +44,7 @@ import type {
   ApplicationOrchestration,
   ApplicationOrchestrationRecoveryAction,
   ApplicationOrchestrationRecoveryAgentCandidate,
+  ApplicationProbeMcpServer,
   ApplicationRecoveryExplanation,
   ApplicationRecoveryActionRequest,
   ApplicationRecoveryTimelineEntry,
@@ -387,7 +388,24 @@ function ApplicationMcpSummary({ application }: { application: ApplicationSnapsh
   const { execute, pending, error } = useAsyncAction();
   const mcpAgent = application.mcpAgent;
   const servers = application.probe?.mcpServers ?? [];
+  const [confirmCandidate, setConfirmCandidate] = useState<ApplicationProbeMcpServer | null>(null);
+  const [acknowledged, setAcknowledged] = useState(false);
   if (!mcpAgent && servers.length === 0) return null;
+
+  function closeConfirm() {
+    if (pending) return;
+    setConfirmCandidate(null);
+    setAcknowledged(false);
+  }
+
+  function confirmManualCandidate(candidate: ApplicationProbeMcpServer) {
+    void execute(() => runWithApplicationApproval((approvalRequestId) =>
+      api.confirmApplicationMcpCandidate(application.id, candidate.id, approvalRequestId ? { approvalRequestId } : {}),
+    )).then((ok) => {
+      if (ok) closeConfirm();
+    });
+  }
+
   return (
     <Card>
       <CardHeader>
@@ -446,11 +464,12 @@ function ApplicationMcpSummary({ application }: { application: ApplicationSnapsh
                       size="sm"
                       variant="secondary"
                       disabled={pending}
-                      onClick={() => void execute(() => runWithApplicationApproval((approvalRequestId) =>
-                        api.confirmApplicationMcpCandidate(application.id, server.id, approvalRequestId ? { approvalRequestId } : {}),
-                      ))}
+                      onClick={() => {
+                        setConfirmCandidate(server);
+                        setAcknowledged(false);
+                      }}
                     >
-                      Confirm MCP
+                      Review MCP
                     </Button>
                   </div>
                 ) : null}
@@ -459,8 +478,95 @@ function ApplicationMcpSummary({ application }: { application: ApplicationSnapsh
           </div>
         ) : null}
         {error ? <p className="text-xs text-destructive">{error}</p> : null}
+        <ManualMcpConfirmModal
+          candidate={confirmCandidate}
+          open={Boolean(confirmCandidate)}
+          pending={pending}
+          acknowledged={acknowledged}
+          error={error}
+          onAcknowledgedChange={setAcknowledged}
+          onClose={closeConfirm}
+          onConfirm={() => {
+            if (confirmCandidate) confirmManualCandidate(confirmCandidate);
+          }}
+        />
       </CardContent>
     </Card>
+  );
+}
+
+function ManualMcpConfirmModal({
+  candidate,
+  open,
+  pending,
+  acknowledged,
+  error,
+  onAcknowledgedChange,
+  onClose,
+  onConfirm,
+}: {
+  candidate: ApplicationProbeMcpServer | null;
+  open: boolean;
+  pending: boolean;
+  acknowledged: boolean;
+  error: string | null;
+  onAcknowledgedChange: (value: boolean) => void;
+  onClose: () => void;
+  onConfirm: () => void;
+}) {
+  if (!candidate) return null;
+  const preview = candidate.adapterPreview?.command
+    ? `${candidate.adapterPreview.command} · ${candidate.adapterPreview.argCount ?? 0} args`
+    : candidate.adapterPreview?.url ?? "—";
+  return (
+    <Modal
+      open={open}
+      onClose={onClose}
+      title={`Review ${candidate.serverName}`}
+      description="Confirm this MCP candidate before it is registered as shared Application tools."
+      size="lg"
+      closeDisabled={pending}
+    >
+      <div className="space-y-3">
+        <div className="flex flex-wrap gap-1.5">
+          {candidate.transport ? <Badge tone="neutral">{candidate.transport}</Badge> : null}
+          {candidate.confidence ? <Badge tone={confidenceTone(candidate.confidence)}>{candidate.confidence} confidence</Badge> : null}
+          <Badge tone="warning">manual confirm</Badge>
+        </div>
+        <FactList
+          facts={[
+            { term: "Source", value: candidate.sourcePath ?? candidate.source ?? "—" },
+            { term: "Preview", value: preview },
+            { term: "Reason", value: candidate.review?.manualConfirmationReason ?? candidate.autoRegisterReason ?? "—" },
+            { term: "Boundary", value: candidate.review?.dataBoundary ?? "—" },
+            { term: "Policies", value: candidate.review ? `${candidate.review.filePolicy ?? "—"} files / ${candidate.review.networkPolicy ?? "—"} network` : "—" },
+            { term: "Endpoint", value: candidate.review?.endpointOrigin ?? "—" },
+            { term: "Tools", value: (candidate.allowedTools ?? []).join(", ") || "—" },
+          ]}
+        />
+        <label className="flex items-start gap-2 rounded-md border border-border bg-background p-3 text-xs">
+          <input
+            type="checkbox"
+            className="mt-0.5 size-4"
+            checked={acknowledged}
+            disabled={pending}
+            onChange={(event) => onAcknowledgedChange(event.target.checked)}
+          />
+          <span className="text-muted-foreground">
+            I reviewed the MCP source, local execution boundary, file/network policy, and allowed tools.
+          </span>
+        </label>
+        {error ? <p className="text-xs text-destructive">{error}</p> : null}
+        <div className="flex justify-end gap-2">
+          <Button type="button" variant="secondary" size="sm" disabled={pending} onClick={onClose}>
+            Cancel
+          </Button>
+          <Button type="button" size="sm" disabled={pending || !acknowledged} onClick={onConfirm}>
+            {pending ? "Confirming..." : "Confirm MCP"}
+          </Button>
+        </div>
+      </div>
+    </Modal>
   );
 }
 
