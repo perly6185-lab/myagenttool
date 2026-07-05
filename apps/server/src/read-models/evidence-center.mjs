@@ -86,6 +86,25 @@ export function buildEvidenceCenterRecords({
       createdAt: usage.createdAt
     });
   }
+  for (const audit of state.auditSummaries ?? []) {
+    const applicationResult = audit.applicationResult;
+    if (!applicationResult?.applicationId || !audit.invocationId) continue;
+    const invocation = findInvocation(audit.invocationId);
+    records.push({
+      id: `${audit.invocationId}:application_result`,
+      type: "application_result",
+      source: "application_capability_result",
+      redactionState: "summary_only",
+      invocationId: audit.invocationId,
+      codexSessionRegistryId: null,
+      agentId: audit.agentId ?? invocation?.agentId ?? null,
+      repoPath: null,
+      summary: applicationResultSummary(applicationResult, audit),
+      detail: applicationResultDetail(applicationResult, audit),
+      marker: "managed",
+      createdAt: audit.completedAt ?? invocation?.completedAt ?? invocation?.updatedAt
+    });
+  }
   for (const event of (state.events ?? []).filter((item) => item.type === "codex_runtime_warning")) {
     records.push({
       id: event.id,
@@ -135,6 +154,26 @@ export function buildEvidenceCenterRecords({
     });
   }
   return records.sort((a, b) => Date.parse(b.createdAt ?? 0) - Date.parse(a.createdAt ?? 0));
+}
+
+function applicationResultSummary(applicationResult, audit) {
+  const capability = applicationResult.capability ?? applicationResult.applicationAction ?? applicationResult.applicationId;
+  const tool = applicationResult.mcpToolName ? ` (${applicationResult.mcpToolName})` : "";
+  const status = applicationResult.status ?? audit.status ?? "completed";
+  return `${capability}${tool}: ${status}`;
+}
+
+function applicationResultDetail(applicationResult, audit) {
+  const parts = [
+    `applicationId=${applicationResult.applicationId}`,
+    applicationResult.capability ? `capability=${applicationResult.capability}` : null,
+    applicationResult.mcpToolName ? `mcpTool=${applicationResult.mcpToolName}` : null,
+    applicationResult.outputCollection ? `outputCollection=${applicationResult.outputCollection}` : null,
+    Number.isFinite(Number(applicationResult.importedRecordCount)) ? `importedRecordCount=${applicationResult.importedRecordCount}` : null,
+    audit.resultSummary ? `summary=${audit.resultSummary}` : null,
+    audit.errorSummary ? `error=${audit.errorSummary}` : null,
+  ].filter(Boolean);
+  return parts.join(" · ");
 }
 
 function usageEstimateSummary(usage) {

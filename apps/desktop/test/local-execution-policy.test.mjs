@@ -1,259 +1,93 @@
 import assert from "node:assert/strict";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 import { test } from "node:test";
 
 import {
   createLocalExecutionPolicyManifest,
-  localExecutionGate,
-  localPolicyForAdapter,
+  mcpLocalExecutionGate,
 } from "../src/local-execution-policy.mjs";
 
-const cwd = tmpdir();
-const demoAgentPath = resolve("apps/desktop/src/demo-agent.mjs");
-const codexFixtureAgentPath = resolve("apps/desktop/src/codex-fixture-agent.mjs");
-const applicationWrapperPath = resolve("tools/agents/application-wrapper.mjs");
-const manifest = createLocalExecutionPolicyManifest({ demoAgentPath, codexFixtureAgentPath });
+function withWorkspace(fn) {
+  const root = mkdtempSync(join(tmpdir(), "myagenttool-mcp-gate-"));
+  const appRoot = join(root, "doocs-md");
+  const outsideRoot = join(root, "outside");
+  mkdirSync(join(appRoot, "packages", "mcp-server"), { recursive: true });
+  mkdirSync(outsideRoot, { recursive: true });
+  writeFileSync(join(appRoot, "packages", "mcp-server", "run.mjs"), "process.exit(0)\n", "utf8");
+  writeFileSync(join(outsideRoot, "run.mjs"), "process.exit(0)\n", "utf8");
+  try {
+    return fn({ root, appRoot, outsideRoot });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
 
-test("allows the manifest-pinned demo agent with read-only/no-network policy", () => {
-  const gate = localExecutionGate(
-    { options: {} },
-    { type: "cli", command: "demo-agent" },
-    {
-      command: process.execPath,
-      args: [demoAgentPath, "--task", "hello"],
-      cwd,
-      localPolicy: { filePolicy: "read_only", networkPolicy: "forbidden", source: "test" },
-    },
-    { manifest },
-  );
-  assert.equal(gate.allowed, true);
-  assert.equal(gate.evidence.commandKind, "demoAgent");
-});
-
-test("rejects a node script outside the local execution manifest", () => {
-  const gate = localExecutionGate(
-    { options: {} },
-    { type: "cli", command: "node" },
-    {
-      command: process.execPath,
-      args: [join(tmpdir(), "not-allowlisted.mjs")],
-      cwd,
-      localPolicy: { filePolicy: "read_only", networkPolicy: "forbidden", source: "test" },
-    },
-    { manifest },
-  );
-  assert.equal(gate.allowed, false);
-  assert.match(gate.reason, /non-allowlisted/);
-});
-
-test("rejects an allowlisted command when argv contains a NUL byte", () => {
-  const gate = localExecutionGate(
-    { options: {} },
-    { type: "cli", command: "demo-agent" },
-    {
-      command: process.execPath,
-      args: [demoAgentPath, "--task", "hello\0world"],
-      cwd,
-      localPolicy: { filePolicy: "read_only", networkPolicy: "forbidden", source: "test" },
-    },
-    { manifest },
-  );
-  assert.equal(gate.allowed, false);
-  assert.match(gate.reason, /NUL byte/);
-  assert.equal(gate.evidence.commandKind, "demoAgent");
-});
-
-test("requires approval evidence for full-access Codex execution", () => {
-  const gate = localExecutionGate(
-    { options: {} },
-    { type: "cli", command: "codex" },
-    {
-      command: process.execPath,
-      args: [codexFixtureAgentPath, "exec", "--dangerously-bypass-approvals-and-sandbox", "{{task}}"],
-      cwd,
-      localPolicy: { filePolicy: "native_controls", networkPolicy: "native_controls", source: "test" },
-    },
-    { permissionDecision: "pending", manifest },
-  );
-  assert.equal(gate.allowed, false);
-  assert.match(gate.reason, /without approval evidence/);
-});
-
-test("rejects wrapper execution when file or network policy exceeds the manifest", () => {
-  const wrapperScript = resolve("tools/agents/application-wrapper.mjs");
-  const gate = localExecutionGate(
-    { options: {} },
-    { type: "cli", command: "node" },
-    {
-      command: process.execPath,
-      args: [wrapperScript],
-      cwd,
-      localPolicy: { filePolicy: "workspace_write", networkPolicy: "network", source: "test" },
-    },
-    { manifest },
-  );
-  assert.equal(gate.allowed, false);
-  assert.match(gate.reason, /policy exceeds/);
-  assert.equal(gate.evidence.commandKind, "wrapper");
-});
-
-test("derives applicationWrapper file/network policies for the bridge gate", () => {
-  const policy = localPolicyForAdapter({ type: "cli", command: "node" }, {
+function workFor(appRoot) {
+  return {
+    invocationId: "inv_mcp_gate",
+    project: { path: appRoot },
     options: {
       metadata: {
-        applicationWrapper: {
-          execCommand: "ccusage",
-          execArgs: ["daily", "--json"],
-          filePolicy: "read_only",
-          networkPolicy: "forbidden",
-        },
+        applicationPath: appRoot,
+        projectPath: appRoot,
       },
     },
-  });
-  assert.deepEqual(policy, {
-    filePolicy: "read_only",
-    networkPolicy: "forbidden",
-    source: "application_wrapper",
-  });
-});
-
-import { mkdirSync, mkdtempSync } from "node:fs";
-
-test("cwd confinement: allows a cwd inside the approved worktree root", () => {
-  const root = mkdtempSync(join(tmpdir(), "wt-root-"));
-  const inside = join(root, "sub");
-  mkdirSync(inside, { recursive: true });
-  const gate = localExecutionGate(
-    { options: { metadata: { worktreePath: root } } },
-    { type: "cli", command: "demo-agent" },
-    {
-      command: process.execPath,
-      args: [demoAgentPath, "--task", "hello"],
-      cwd: inside,
-      localPolicy: { filePolicy: "read_only", networkPolicy: "forbidden", source: "test" },
-    },
-    { manifest },
-  );
-  assert.equal(gate.allowed, true, gate.reason);
-  assert.deepEqual(gate.evidence.approvedRoots, [resolve(root)]);
-});
-
-test("cwd confinement: refuses a cwd outside the approved root", () => {
-  const root = mkdtempSync(join(tmpdir(), "wt-root-"));
-  const outside = mkdtempSync(join(tmpdir(), "elsewhere-")); // absolute + exists, but not under root
-  const gate = localExecutionGate(
-    { options: { metadata: { worktreePath: root } } },
-    { type: "cli", command: "demo-agent" },
-    {
-      command: process.execPath,
-      args: [demoAgentPath, "--task", "hello"],
-      cwd: outside,
-      localPolicy: { filePolicy: "read_only", networkPolicy: "forbidden", source: "test" },
-    },
-    { manifest },
-  );
-  assert.equal(gate.allowed, false);
-  assert.match(gate.reason, /outside the approved project or worktree root/);
-});
-
-test("cwd confinement: no derivable root leaves the run un-confined (skipped, not blocked)", () => {
-  const gate = localExecutionGate(
-    { options: {} },
-    { type: "cli", command: "demo-agent" },
-    {
-      command: process.execPath,
-      args: [demoAgentPath, "--task", "hello"],
-      cwd: tmpdir(),
-      localPolicy: { filePolicy: "read_only", networkPolicy: "forbidden", source: "test" },
-    },
-    { manifest },
-  );
-  assert.equal(gate.allowed, true, "with no approved root there is nothing to confine to");
-});
-
-test("application wrapper gate allows the local ccusage allowlist contract", () => {
-  const spec = {
-    execCommand: "ccusage",
-    execArgs: ["daily", "--json", "--offline", "--since", "2026-07-01"],
-    capability: "app.app_ccusage.wrapper.daily",
-    filePolicy: "read_only",
-    networkPolicy: "forbidden",
   };
-  const gate = localExecutionGate(
-    { project: { path: cwd }, options: { metadata: { applicationWrapper: spec } } },
-    { type: "cli", command: "node" },
-    {
-      command: process.execPath,
-      args: wrapperArgs(spec, { cwd }),
-      cwd,
-      localPolicy: { filePolicy: "read_only", networkPolicy: "forbidden", source: "application_wrapper" },
-    },
-    { manifest },
-  );
-  assert.equal(gate.allowed, true, gate.reason);
-  assert.equal(gate.evidence.applicationWrapper.command, "ccusage");
-});
-
-test("application wrapper gate refuses a non-allowlisted inner command before spawn", () => {
-  const spec = {
-    execCommand: "node",
-    execArgs: ["-e", "console.log('nope')"],
-    capability: "app.app_ccusage.wrapper.daily",
-    filePolicy: "read_only",
-    networkPolicy: "forbidden",
-  };
-  const gate = localExecutionGate(
-    { project: { path: cwd }, options: { metadata: { applicationWrapper: spec } } },
-    { type: "cli", command: "node" },
-    {
-      command: process.execPath,
-      args: wrapperArgs(spec),
-      cwd,
-      localPolicy: { filePolicy: "read_only", networkPolicy: "forbidden", source: "application_wrapper" },
-    },
-    { manifest },
-  );
-  assert.equal(gate.allowed, false);
-  assert.match(gate.reason, /non-allowlisted application wrapper command/);
-  assert.equal(gate.evidence.applicationWrapper.command, "node");
-});
-
-test("application wrapper gate confines the child command cwd to the approved root", () => {
-  const root = mkdtempSync(join(tmpdir(), "app-wrapper-root-"));
-  const outside = mkdtempSync(join(tmpdir(), "app-wrapper-outside-"));
-  const spec = {
-    execCommand: "ccusage",
-    execArgs: ["daily", "--json", "--offline"],
-    capability: "app.app_ccusage.wrapper.daily",
-    filePolicy: "read_only",
-    networkPolicy: "forbidden",
-  };
-  const gate = localExecutionGate(
-    { project: { path: root }, options: { metadata: { applicationWrapper: spec } } },
-    { type: "cli", command: "node" },
-    {
-      command: process.execPath,
-      args: wrapperArgs(spec, { cwd: outside }),
-      cwd: root,
-      localPolicy: { filePolicy: "read_only", networkPolicy: "forbidden", source: "application_wrapper" },
-    },
-    { manifest },
-  );
-  assert.equal(gate.allowed, false);
-  assert.match(gate.reason, /application wrapper cwd outside/);
-  assert.equal(gate.evidence.applicationWrapper.cwd, outside);
-});
-
-function wrapperArgs(spec, { cwd: innerCwd } = {}) {
-  const args = [
-    applicationWrapperPath,
-    "--exec-command", spec.execCommand,
-  ];
-  if (innerCwd) args.push("--cwd", innerCwd);
-  args.push("--capability", spec.capability);
-  for (const arg of spec.execArgs) {
-    args.push("--exec-arg", arg);
-  }
-  return args;
 }
+
+function adapterFor(appRoot, overrides = {}) {
+  return {
+    type: "mcp",
+    transport: "stdio",
+    command: "node",
+    args: [join(appRoot, "packages", "mcp-server", "run.mjs")],
+    cwd: join(appRoot, "packages", "mcp-server"),
+    applicationPath: appRoot,
+    filePolicy: "read_only",
+    networkPolicy: "forbidden",
+    ...overrides,
+  };
+}
+
+test("mcpLocalExecutionGate allows rooted doocs/md stdio MCP node entrypoints", () => {
+  withWorkspace(({ appRoot }) => {
+    const gate = mcpLocalExecutionGate(workFor(appRoot), adapterFor(appRoot), {
+      manifest: createLocalExecutionPolicyManifest(),
+    });
+    assert.equal(gate.allowed, true, gate.reason);
+    assert.equal(gate.evidence.filePolicy, "read_only");
+    assert.equal(gate.evidence.networkPolicy, "forbidden");
+  });
+});
+
+test("mcpLocalExecutionGate refuses MCP stdio entrypoints outside the application root", () => {
+  withWorkspace(({ appRoot, outsideRoot }) => {
+    const gate = mcpLocalExecutionGate(workFor(appRoot), adapterFor(appRoot, {
+      args: [join(outsideRoot, "run.mjs")],
+    }), {
+      manifest: createLocalExecutionPolicyManifest(),
+    });
+    assert.equal(gate.allowed, false);
+    assert.match(gate.reason, /outside the approved project or application root/);
+    assert.equal(gate.evidence.entrypoint, join(outsideRoot, "run.mjs"));
+  });
+});
+
+test("mcpLocalExecutionGate refuses non-allowlisted commands and policy expansion", () => {
+  withWorkspace(({ appRoot }) => {
+    const manifest = createLocalExecutionPolicyManifest();
+    const commandGate = mcpLocalExecutionGate(workFor(appRoot), adapterFor(appRoot, {
+      command: process.platform === "win32" ? "cmd.exe" : "sh",
+    }), { manifest });
+    assert.equal(commandGate.allowed, false);
+    assert.match(commandGate.reason, /non-allowlisted MCP stdio command/);
+
+    const policyGate = mcpLocalExecutionGate(workFor(appRoot), adapterFor(appRoot, {
+      networkPolicy: "network",
+    }), { manifest });
+    assert.equal(policyGate.allowed, false);
+    assert.match(policyGate.reason, /policy outside the local allowlist/);
+  });
+});

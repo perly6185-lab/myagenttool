@@ -100,3 +100,14 @@ test("blank/whitespace key is treated as no key", () => {
   svc.createInvocation("task", agent, { idempotencyKey: "", actor: { userId: "u1" } });
   assert.equal(state.invocations.length, 2);
 });
+
+test("protocol client tool options are preserved for bridge execution", () => {
+  const { svc } = runtime();
+  const invocation = svc.createInvocation("render", agent, {
+    toolName: "render_markdown",
+    toolArguments: { markdown: "# Hello", theme: "default" },
+    actor: { userId: "u1" },
+  });
+  assert.equal(invocation.options.toolName, "render_markdown");
+  assert.deepEqual(invocation.options.toolArguments, { markdown: "# Hello", theme: "default" });
+});

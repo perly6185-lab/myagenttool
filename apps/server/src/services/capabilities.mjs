@@ -15,7 +15,7 @@ export function createCapabilityService({
 }) {
   function listCapabilities(actor = null) {
     return [
-      ...listTools().map(toolToCapability),
+      ...listTools(actor).map(toolToCapability),
       ...visibleApplications(state, actor, listApplications()).flatMap((application) =>
         (listApplicationCapabilities(application.id) ?? []).map((capability) => ({
           ...capability,
@@ -35,7 +35,7 @@ export function createCapabilityService({
   }
 
   function createCapabilityInvocation(name, input = {}, actor = null) {
-    const tool = getTool(name);
+    const tool = getTool(name, actor);
     if (tool) {
       return createToolInvocation(name, input, actor);
     }
@@ -196,7 +196,7 @@ function toolToCapability(tool) {
       id: tool.name,
     },
     kind: "tool",
-    source: "governed_tool",
+    source: tool.source ?? "governed_tool",
     invocationMode: "tool-facade",
     status: tool.agents?.some((agent) => agent.status !== "disabled") ? "available" : "disabled",
   };

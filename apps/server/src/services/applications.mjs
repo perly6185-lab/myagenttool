@@ -1,13 +1,20 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { normalizeMcpAdapterConfig } from "@myagenttool/adapters/mcp";
 import { normalizeLoopRoutine, validateLoopRoutine } from "../../../../tools/ai/src/loop/routine.mjs";
 import { teamOf } from "../runtime/auth.mjs";
+import { sanitizeAgentId } from "./agents.mjs";
 
 const APPLICATION_SOURCE_TYPES = new Set(["git", "local", "npm", "manual"]);
 const APPLICATION_STATUSES = new Set(["draft", "probing", "registered", "active", "offline", "archived", "failed"]);
 const NPM_WRAPPER_MODES = new Set(["metadata-only", "installed-wrapper"]);
 const APPLICATION_ROUTINE_REQUIRED_APPROVALS = ["apply", "push", "pr-create", "pr-merge"];
 const APPLICATION_ROUTINE_RISK_LEVELS = ["low", "medium", "high", "critical"];
+const MCP_CONFIG_FILES = [
+  { relativePath: ".vscode/mcp.json", keys: ["servers", "mcpServers"] },
+  { relativePath: ".cursor/mcp.json", keys: ["mcpServers", "servers"] },
+  { relativePath: ".mcp.json", keys: ["mcpServers", "servers"] },
+];
 
 export function createApplicationService({
   state,
@@ -28,9 +35,15 @@ export function createApplicationService({
   }
 
   function registerApplication(body = {}, actor = null) {
-    const source = normalizeApplicationSource(body.source ?? sourceFromLegacyBody(body));
+    const rawSource = body.source ?? sourceFromLegacyBody(body);
+    const source = normalizeApplicationSource(rawSource);
     const name = normalizeApplicationName(body.name ?? nameFromSource(source));
     const requestedId = body.id == null ? null : sanitizeApplicationId(body.id);
+    const hasMcpAgentPatch =
+      Object.hasOwn(body, "mcpAgent") ||
+      Object.hasOwn(body, "mcp") ||
+      (rawSource && typeof rawSource === "object" && !Array.isArray(rawSource) && (Object.hasOwn(rawSource, "mcpAgent") || Object.hasOwn(rawSource, "mcp")));
+    const mcpAgentInput = body.mcpAgent ?? body.mcp ?? rawSource?.mcpAgent ?? rawSource?.mcp;
     const existing = findExistingApplicationBySource(state.applications ?? [], source);
     if (existing) {
       if (!actorCanAccessApplication(state, actor, existing)) {
@@ -43,6 +56,13 @@ export function createApplicationService({
       // Never let re-registration reassign ownership to a caller-supplied team;
       // access was already checked above. Keep the established owner.
       existing.ownerTeamId = existing.ownerTeamId ?? actor?.teamId ?? "team_local";
+      if (hasMcpAgentPatch) {
+        existing.mcpAgent = normalizeApplicationMcpAgent(mcpAgentInput, {
+          applicationId: existing.id,
+          applicationName: existing.name,
+          applicationPath: existing.path ?? existing.source?.path ?? null,
+        });
+      }
       existing.updatedAt = now();
       if (body.autoOnline !== false && existing.status === "registered") {
         existing.status = "active";
@@ -91,6 +111,11 @@ export function createApplicationService({
       path: project?.path ?? source.path ?? null,
       ownerTeamId: ownerTeamId ?? project?.ownerTeamId ?? "team_local",
       capabilitiesVersion: 1,
+      mcpAgent: normalizeApplicationMcpAgent(mcpAgentInput, {
+        applicationId,
+        applicationName: name,
+        applicationPath: project?.path ?? source.path ?? null,
+      }),
       orchestrationIds: [],
       createdAt,
       updatedAt: createdAt,
@@ -182,6 +207,9 @@ export function createApplicationService({
     if (!app) return null;
     const probedAt = now();
     const probe = buildApplicationProbe(app);
+    const autoRegisteredMcp = app.mcpAgent
+      ? null
+      : adoptProbeMcpAgent(app, probe.mcpServers, probedAt);
     app.probe = {
       status: "completed",
       checkedAt: probedAt,
@@ -191,6 +219,8 @@ export function createApplicationService({
       readme: probe.readme,
       capabilities: probe.capabilities,
       capabilityNames: probe.capabilities.map((capability) => capability.name),
+      mcpServers: probe.mcpServers.map(publicProbeMcpServer),
+      autoRegisteredMcpAgentId: autoRegisteredMcp?.agentId ?? null,
       warnings: probe.warnings,
     };
     app.lifecycle = {
@@ -210,6 +240,8 @@ export function createApplicationService({
         capabilityCount: app.probe.capabilities.length,
         inferredCapabilityCount: app.probe.capabilities.filter((capability) => capability.source === "inferred").length,
         declaredCapabilityCount: app.probe.capabilities.filter((capability) => capability.source === "declared").length,
+        mcpServerCandidateCount: app.probe.mcpServers.length,
+        autoRegisteredMcpAgentId: app.probe.autoRegisteredMcpAgentId,
       },
     });
     persistStateSoon();
@@ -319,8 +351,97 @@ export function createApplicationService({
     };
   }
 
+  function confirmApplicationMcpCandidate(applicationId, candidateId, input = {}, actor = null) {
+    const app = findApplication(applicationId);
+    if (!app) {
+      return { ok: false, status: 404, body: { error: "application_not_found" } };
+    }
+    if (app.status === "archived") {
+      return { ok: false, status: 409, body: { error: "application_archived", applicationId } };
+    }
+    if (app.mcpAgent?.agentId) {
+      return {
+        ok: false,
+        status: 409,
+        body: { error: "application_mcp_agent_already_registered", applicationId, agentId: app.mcpAgent.agentId },
+      };
+    }
+    if (!hasApprovalToken(input)) {
+      return {
+        ok: false,
+        status: 409,
+        body: {
+          error: "approval_required",
+          reason: "Confirming an MCP candidate requires an explicit approvalToken.",
+          applicationId,
+        },
+      };
+    }
+
+    const confirmedAt = now();
+    const warnings = [];
+    const candidates = inferApplicationMcpServers(app, warnings);
+    const candidate = candidates.find((item) => item.id === String(candidateId ?? "").trim());
+    if (!candidate?.mcpAgent) {
+      return { ok: false, status: 404, body: { error: "mcp_candidate_not_found", applicationId, candidateId } };
+    }
+    if (candidate.allowedTools.length === 0) {
+      return { ok: false, status: 422, body: { error: "mcp_candidate_not_ready", applicationId, candidateId } };
+    }
+
+    const mcpAgent = normalizeApplicationMcpAgent(candidate.mcpAgent, {
+      applicationId: app.id,
+      applicationName: app.name,
+      applicationPath: app.path ?? app.source?.path ?? null,
+    });
+    mcpAgent.discovery = {
+      source: "application_probe",
+      candidateId: candidate.id,
+      sourcePath: candidate.sourcePath,
+      detectedAt: confirmedAt,
+      autoRegistered: false,
+      manualConfirmed: true,
+      confirmedBy: actor?.userId ?? null,
+    };
+    mcpAgent.recovery = {
+      ...mcpAgent.recovery,
+      reason: "mcp_agent_confirmed_from_application_probe",
+      nextAction: "The confirmed MCP tools can be exposed after bridge-side execution policy checks.",
+    };
+    app.mcpAgent = mcpAgent;
+    app.probe = {
+      ...(app.probe ?? {}),
+      status: "completed",
+      checkedAt: confirmedAt,
+      mcpServers: candidates.map(publicProbeMcpServer),
+      confirmedMcpAgentId: mcpAgent.agentId,
+      warnings: [...(app.probe?.warnings ?? []), ...warnings],
+    };
+    app.lifecycle = {
+      ...app.lifecycle,
+      lastOperation: "confirm_mcp_candidate",
+      lastOperationAt: confirmedAt,
+      lastActorId: actor?.userId ?? null,
+    };
+    app.updatedAt = confirmedAt;
+    appendEvent({
+      invocationId: null,
+      type: "application_mcp_candidate_confirmed",
+      level: "info",
+      message: `${app.name} MCP candidate ${candidate.id} confirmed.`,
+      data: {
+        applicationId: app.id,
+        candidateId: candidate.id,
+        sharedToolNames: applicationMcpSharedToolNames(app),
+      },
+    });
+    persistStateSoon();
+    return { ok: true, status: 200, application: app, candidate: publicProbeMcpServer(candidate) };
+  }
+
   return {
     findApplication,
+    confirmApplicationMcpCandidate,
     invokeApplicationCapability,
     listApplicationCapabilities,
     listApplications,
@@ -366,6 +487,31 @@ export function createApplicationWrapperAgentRegistration({
       cancellation: "The Desktop Bridge attempts to terminate the wrapper process tree on cancellation.",
     },
   };
+}
+
+export function applicationMcpAgentRegistration(application) {
+  const mcp = application?.mcpAgent;
+  if (!mcp?.adapter) return null;
+  return {
+    id: mcp.agentId,
+    type: "mcp",
+    name: mcp.name ?? `${application.name} MCP`,
+    description: mcp.description ?? `MCP server for ${application.name}.`,
+    adapter: mcp.adapter,
+    capabilityName: mcp.capabilityName ?? `${mcp.toolNamespace ?? mcpToolSegment(application.name)}_mcp_tool_call`,
+    capabilityDescription: mcp.capabilityDescription ?? `Calls tools exposed by ${application.name}'s MCP server.`,
+    riskLevel: mcp.riskLevel ?? "medium",
+    riskTags: mcp.riskTags ?? ["local_execution", "mcp", "application_asset"],
+    toolNamespace: mcp.toolNamespace ?? mcpToolSegment(application.name),
+    sourceApplicationId: application.id,
+  };
+}
+
+export function applicationMcpSharedToolNames(application) {
+  const mcp = application?.mcpAgent;
+  if (!mcp) return [];
+  const namespace = mcp.toolNamespace ?? mcpToolSegment(application.name);
+  return normalizeStringList(mcp.allowedTools).map((toolName) => `${namespace}.${mcpToolSegment(toolName)}`);
 }
 
 // Resolve the governed execution plan for an npm-wrapper capability (#359).
@@ -982,17 +1128,56 @@ function upsertOrchestration(orchestrations = [], draft) {
   return [draft, ...existing];
 }
 
-function publicApplicationSnapshot(application) {
+export function publicApplicationSnapshot(application) {
+  const source = publicApplicationSourceSnapshot(application.source);
   return {
     id: application.id,
     name: application.name,
     kind: application.kind,
-    source: application.source,
+    source,
     status: application.status,
+    lifecycle: application.lifecycle,
     projectId: application.projectId,
     path: application.path,
+    ownerTeamId: application.ownerTeamId ?? null,
+    capabilitiesVersion: application.capabilitiesVersion,
+    probe: application.probe ?? null,
+    mcpAgent: publicApplicationMcpAgentSnapshot(application.mcpAgent),
     wrapper: application.source?.wrapper ? publicNpmWrapperSnapshot(application.source.wrapper) : null,
     orchestrationIds: application.orchestrationIds ?? [],
+    orchestrations: application.orchestrations ?? [],
+    latestResult: application.latestResult ?? null,
+    createdAt: application.createdAt,
+    updatedAt: application.updatedAt,
+  };
+}
+
+function publicApplicationSourceSnapshot(source = {}) {
+  if (source?.type === "npm") {
+    const { wrapper, ...rest } = source;
+    return {
+      ...rest,
+      wrapper: wrapper ? publicNpmWrapperSnapshot(wrapper) : null,
+    };
+  }
+  return source;
+}
+
+function publicApplicationMcpAgentSnapshot(mcpAgent) {
+  if (!mcpAgent) return null;
+  return {
+    agentId: mcpAgent.agentId,
+    name: mcpAgent.name,
+    description: mcpAgent.description,
+    allowedTools: mcpAgent.allowedTools ?? [],
+    toolNamespace: mcpAgent.toolNamespace,
+    sharedToolNames: mcpAgent.sharedToolNames ?? applicationMcpSharedToolNames({ name: mcpAgent.name, mcpAgent }),
+    agentStatus: mcpAgent.agentStatus,
+    lastRecoveredAt: mcpAgent.lastRecoveredAt ?? null,
+    riskLevel: mcpAgent.riskLevel,
+    riskTags: mcpAgent.riskTags ?? [],
+    recovery: mcpAgent.recovery ?? null,
+    discovery: mcpAgent.discovery ?? null,
   };
 }
 
@@ -1012,9 +1197,14 @@ function buildApplicationProbe(application) {
   const declared = declaredProbeCapabilities(application, warnings);
   const metadata = readApplicationMetadata(application, warnings);
   const inferred = inferProbeCapabilities(application, metadata, warnings);
+  const mcpServers = inferApplicationMcpServers(application, warnings);
   const capabilities = dedupeProbeCapabilities([...managed, ...declared, ...inferred]);
   return {
-    summary: probeSummary(application, { declaredCount: declared.length, inferredCount: inferred.length }),
+    summary: probeSummary(application, {
+      declaredCount: declared.length,
+      inferredCount: inferred.length,
+      mcpServerCount: mcpServers.length,
+    }),
     source: {
       type: application.source?.type ?? "unknown",
       path: application.path ?? null,
@@ -1026,6 +1216,7 @@ function buildApplicationProbe(application) {
     package: metadata.package,
     readme: metadata.readme,
     capabilities,
+    mcpServers,
     warnings,
   };
 }
@@ -1287,6 +1478,446 @@ function inferProbeCapabilities(application, metadata, warnings) {
   return capabilities;
 }
 
+function inferApplicationMcpServers(application, warnings) {
+  if (!["git", "local"].includes(application.source?.type) && application.kind !== "repository") return [];
+  const root = application.path ? resolve(application.path) : null;
+  if (!root || !existsSync(root)) return [];
+  const candidates = [];
+  for (const config of MCP_CONFIG_FILES) {
+    const path = resolve(root, config.relativePath);
+    if (!isPathInside(root, path) || !existsSync(path)) continue;
+    let parsed = null;
+    try {
+      parsed = JSON.parse(readFileSync(path, "utf8"));
+    } catch (error) {
+      warnings.push(`Could not parse MCP config ${config.relativePath}: ${error instanceof Error ? error.message : String(error)}`);
+      continue;
+    }
+    for (const key of config.keys) {
+      const servers = parsed?.[key];
+      if (!servers || typeof servers !== "object" || Array.isArray(servers)) continue;
+      for (const [serverName, server] of Object.entries(servers)) {
+        const candidate = mcpServerCandidateFromConfig({
+          application,
+          root,
+          serverName,
+          server,
+          source: "mcp_config",
+          relativePath: config.relativePath,
+          warnings,
+        });
+        if (candidate) candidates.push(candidate);
+      }
+    }
+  }
+  const packageCandidate = mcpServerCandidateFromPackage(application, root, warnings);
+  if (packageCandidate) candidates.push(packageCandidate);
+  return dedupeMcpServerCandidates(candidates);
+}
+
+function mcpServerCandidateFromConfig({
+  application,
+  root,
+  serverName,
+  server,
+  source,
+  relativePath,
+  warnings,
+}) {
+  if (!server || typeof server !== "object" || Array.isArray(server)) {
+    warnings.push(`Ignored MCP server ${serverName} in ${relativePath}: expected object.`);
+    return null;
+  }
+  const transport = String(server.type ?? server.transport ?? (server.url ? "http" : "stdio")).trim().toLowerCase();
+  if (transport === "http") {
+    const url = stringOrNull(server.url);
+    if (!url) return null;
+    const allowedTools = normalizeStringList(server.allowedTools ?? server.tools ?? server.toolNames);
+    return buildProbeMcpServer({
+      application,
+      source,
+      sourcePath: relativePath,
+      serverName,
+      adapter: {
+        transport: "http",
+        url,
+        allowedTools,
+        filePolicy: stringOrNull(server.filePolicy) ?? "read_only",
+        networkPolicy: stringOrNull(server.networkPolicy) ?? "restricted",
+        applicationPath: root,
+      },
+      allowedTools,
+      warnings,
+    });
+  }
+  if (transport !== "stdio") {
+    warnings.push(`Ignored MCP server ${serverName} in ${relativePath}: unsupported transport ${transport}.`);
+    return null;
+  }
+  const command = expandWorkspaceValue(server.command, root);
+  if (!command) {
+    warnings.push(`Ignored MCP server ${serverName} in ${relativePath}: missing command.`);
+    return null;
+  }
+  const cwd = expandWorkspaceValue(server.cwd, root);
+  const args = normalizeStringList(server.args).map((arg) => absolutizeMcpArg(expandWorkspaceValue(arg, root), { root, cwd }));
+  const allowedTools = uniqueStringList([
+    ...normalizeStringList(server.allowedTools ?? server.tools ?? server.toolNames),
+    ...inferMcpAllowedTools(root, { args, cwd }, warnings),
+  ]);
+  return buildProbeMcpServer({
+    application,
+    source,
+    sourcePath: relativePath,
+    serverName,
+    adapter: {
+      transport: "stdio",
+      command,
+      args,
+      cwd,
+      allowedTools,
+      filePolicy: stringOrNull(server.filePolicy) ?? "read_only",
+      networkPolicy: stringOrNull(server.networkPolicy) ?? "forbidden",
+      applicationPath: root,
+    },
+    allowedTools,
+    cwd,
+    warnings,
+  });
+}
+
+function mcpServerCandidateFromPackage(application, root, warnings) {
+  const mcpRoot = resolve(root, "packages", "mcp-server");
+  const packagePath = resolve(mcpRoot, "package.json");
+  if (!isPathInside(root, packagePath) || !existsSync(packagePath)) return null;
+  let packageJson = null;
+  try {
+    packageJson = JSON.parse(readFileSync(packagePath, "utf8"));
+  } catch (error) {
+    warnings.push(`Could not parse MCP package manifest packages/mcp-server/package.json: ${error instanceof Error ? error.message : String(error)}`);
+    return null;
+  }
+  const scripts = objectWithStringValues(packageJson.scripts);
+  const start = stringOrNull(scripts.start ?? scripts.dev);
+  if (!start) return null;
+  const parts = splitPackageScript(start);
+  if (parts.length === 0) return null;
+  const [command, ...rawArgs] = parts;
+  const args = rawArgs.map((arg) => absolutizeMcpArg(expandWorkspaceValue(arg, root), { root, cwd: mcpRoot }));
+  const allowedTools = inferMcpAllowedTools(root, { args, cwd: mcpRoot }, warnings);
+  return buildProbeMcpServer({
+    application,
+    source: "package_script",
+    sourcePath: "packages/mcp-server/package.json",
+    serverName: packageJson.name ?? "mcp-server",
+    adapter: {
+      transport: "stdio",
+      command,
+      args,
+      cwd: mcpRoot,
+      allowedTools,
+      filePolicy: "read_only",
+      networkPolicy: "forbidden",
+      applicationPath: root,
+    },
+    allowedTools,
+    cwd: mcpRoot,
+    warnings,
+  });
+}
+
+function buildProbeMcpServer({
+  application,
+  source,
+  sourcePath,
+  serverName,
+  adapter,
+  allowedTools,
+  cwd = null,
+  warnings,
+}) {
+  try {
+    normalizeMcpAdapterConfig(adapter);
+  } catch (error) {
+    warnings.push(`Ignored MCP server ${serverName}: ${error instanceof Error ? error.message : String(error)}`);
+    return null;
+  }
+  const toolNamespace = mcpToolSegment(application.name ?? application.id ?? serverName);
+  const normalizedAllowedTools = normalizeStringList(allowedTools);
+  const sharedToolNames = normalizedAllowedTools.map((toolName) => `${toolNamespace}.${mcpToolSegment(toolName)}`);
+  const candidateId = `mcp.${slugify(serverName || sourcePath || "server")}`;
+  const registration = mcpAutoRegistrationAssessment(adapter, application, normalizedAllowedTools);
+  const filePolicy = adapter.filePolicy ?? "read_only";
+  const networkPolicy = adapter.networkPolicy ?? (adapter.transport === "http" ? "restricted" : "forbidden");
+  return {
+    id: candidateId,
+    serverName: String(serverName ?? "mcp-server"),
+    source,
+    sourcePath,
+    transport: adapter.transport,
+    cwd: cwd ? normalizePathForMetadata(cwd) : null,
+    toolNamespace,
+    allowedTools: normalizedAllowedTools,
+    sharedToolNames,
+    status: normalizedAllowedTools.length > 0 ? "ready" : "needs_probe",
+    confidence: registration.confidence,
+    autoRegister: registration.autoRegister,
+    autoRegisterReason: registration.reason,
+    adapterPreview: adapter.transport === "stdio"
+      ? {
+          command: basename(adapter.command),
+          argCount: adapter.args?.length ?? 0,
+        }
+      : {
+          url: redactUrl(adapter.url),
+        },
+    review: mcpCandidateReview({
+      adapter,
+      filePolicy,
+      networkPolicy,
+      normalizedAllowedTools,
+      registration,
+    }),
+    mcpAgent: {
+      name: `${application.name ?? "Application"} MCP`,
+      description: `MCP server discovered from ${sourcePath}.`,
+      toolNamespace,
+      transport: adapter.transport,
+      ...(adapter.transport === "stdio"
+        ? { command: adapter.command, args: adapter.args ?? [], cwd: adapter.cwd ?? cwd ?? null }
+        : { url: adapter.url }),
+      allowedTools: normalizedAllowedTools,
+      filePolicy,
+      networkPolicy,
+      applicationPath: adapter.applicationPath ?? application.path ?? null,
+      riskTags: ["local_execution", "mcp", "application_asset"],
+    },
+  };
+}
+
+function mcpCandidateReview({ adapter, filePolicy, networkPolicy, normalizedAllowedTools, registration }) {
+  const base = {
+    dataBoundary: adapter.transport === "http" ? "bridge_to_http_endpoint" : "local_stdio_process",
+    requiresManualConfirmation: !registration.autoRegister,
+    manualConfirmationReason: registration.reason,
+    filePolicy,
+    networkPolicy,
+    allowedToolCount: normalizedAllowedTools.length,
+  };
+  if (adapter.transport !== "http") return base;
+  return {
+    ...base,
+    ...mcpHttpEndpointReview(adapter.url),
+  };
+}
+
+function mcpHttpEndpointReview(url) {
+  try {
+    const parsed = new URL(url);
+    return {
+      endpointOrigin: parsed.origin,
+      endpointHost: parsed.host,
+      endpointProtocol: parsed.protocol.replace(/:$/, ""),
+    };
+  } catch {
+    return {
+      endpointOrigin: null,
+      endpointHost: null,
+      endpointProtocol: null,
+    };
+  }
+}
+
+function mcpAutoRegistrationAssessment(adapter, application, allowedTools) {
+  if ((allowedTools ?? []).length === 0) {
+    return { autoRegister: false, confidence: "low", reason: "allowed_tools_missing" };
+  }
+  if (adapter.transport !== "stdio") {
+    return { autoRegister: false, confidence: "medium", reason: "http_transport_requires_manual_confirmation" };
+  }
+  const root = application.path ? resolve(application.path) : null;
+  if (!root || !existsSync(root)) {
+    return { autoRegister: false, confidence: "low", reason: "application_root_not_readable" };
+  }
+  const commandName = basename(adapter.command ?? "").toLowerCase();
+  if (!["node", "node.exe"].includes(commandName)) {
+    return { autoRegister: false, confidence: "medium", reason: "stdio_command_requires_manual_confirmation" };
+  }
+  const hasRootedScript = (adapter.args ?? []).some((arg) => {
+    if (!/\.(?:mjs|cjs|js|ts|tsx)$/i.test(arg) || !isAbsolute(arg)) return false;
+    const resolved = resolve(arg);
+    return isPathInside(root, resolved) && existsSync(resolved);
+  });
+  if (!hasRootedScript) {
+    return { autoRegister: false, confidence: "medium", reason: "stdio_entrypoint_not_rooted_in_application" };
+  }
+  if (adapter.cwd) {
+    const cwd = resolve(adapter.cwd);
+    if (!isPathInside(root, cwd) || !existsSync(cwd)) {
+      return { autoRegister: false, confidence: "medium", reason: "stdio_cwd_not_rooted_in_application" };
+    }
+  }
+  return { autoRegister: true, confidence: "high", reason: "node_entrypoint_inside_application_root" };
+}
+
+function adoptProbeMcpAgent(application, mcpServers, detectedAt) {
+  const candidate = (mcpServers ?? []).find((item) => item.autoRegister && item.mcpAgent);
+  if (!candidate) return null;
+  const mcpAgent = normalizeApplicationMcpAgent(candidate.mcpAgent, {
+    applicationId: application.id,
+    applicationName: application.name,
+    applicationPath: application.path ?? application.source?.path ?? null,
+  });
+  mcpAgent.discovery = {
+    source: "application_probe",
+    candidateId: candidate.id,
+    sourcePath: candidate.sourcePath,
+    detectedAt,
+    autoRegistered: true,
+  };
+  mcpAgent.recovery = {
+    ...mcpAgent.recovery,
+    reason: "mcp_agent_autodetected_from_application_probe",
+    nextAction: "The runtime can expose the discovered MCP tools after bridge-side execution policy checks.",
+  };
+  application.mcpAgent = mcpAgent;
+  return { agentId: mcpAgent.agentId, candidateId: candidate.id };
+}
+
+function publicProbeMcpServer(candidate) {
+  return {
+    id: candidate.id,
+    serverName: candidate.serverName,
+    source: candidate.source,
+    sourcePath: candidate.sourcePath,
+    transport: candidate.transport,
+    toolNamespace: candidate.toolNamespace,
+    allowedTools: candidate.allowedTools,
+    sharedToolNames: candidate.sharedToolNames,
+    status: candidate.status,
+    confidence: candidate.confidence,
+    autoRegister: candidate.autoRegister,
+    autoRegisterReason: candidate.autoRegisterReason,
+    adapterPreview: candidate.adapterPreview,
+    review: candidate.review,
+  };
+}
+
+function inferMcpAllowedTools(root, { args = [], cwd = null } = {}, warnings = []) {
+  const searchRoots = [];
+  const addRoot = (path) => {
+    if (!path) return;
+    const resolved = resolve(path);
+    if (isPathInside(root, resolved) && existsSync(resolved) && !searchRoots.includes(resolved)) {
+      searchRoots.push(resolved);
+    }
+  };
+  addRoot(cwd);
+  for (const arg of args) {
+    if (!/\.(?:mjs|cjs|js|ts|tsx)$/i.test(arg)) continue;
+    const scriptPath = resolve(arg);
+    if (isPathInside(root, scriptPath) && existsSync(scriptPath)) addRoot(dirname(scriptPath));
+  }
+  addRoot(resolve(root, "packages", "mcp-server"));
+  const files = [];
+  for (const searchRoot of searchRoots) {
+    for (const relativePath of ["src/index.ts", "src/index.js", "src/index.mjs", "index.ts", "index.js", "server.ts", "server.js", "README.md"]) {
+      const path = resolve(searchRoot, relativePath);
+      if (isPathInside(root, path) && existsSync(path) && !files.includes(path)) files.push(path);
+    }
+  }
+  const tools = [];
+  for (const file of files) {
+    try {
+      const text = readFileSync(file, "utf8");
+      tools.push(...toolNamesFromMcpSource(text), ...toolNamesFromMcpReadme(text));
+    } catch (error) {
+      warnings.push(`Could not inspect MCP tools in ${relative(root, file)}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  return uniqueStringList(tools).slice(0, 20);
+}
+
+function toolNamesFromMcpSource(text) {
+  const tools = [];
+  const pattern = /registerTool\(\s*([`'"])([^`'"]+)\1/g;
+  let match;
+  while ((match = pattern.exec(text))) {
+    if (match[2]) tools.push(match[2]);
+  }
+  return tools;
+}
+
+function toolNamesFromMcpReadme(text) {
+  const tools = [];
+  const pattern = /^#{2,4}\s+`([^`]+)`/gm;
+  let match;
+  while ((match = pattern.exec(text))) {
+    if (match[1] && /^[a-z0-9_:-]+$/i.test(match[1])) tools.push(match[1]);
+  }
+  return tools;
+}
+
+function expandWorkspaceValue(value, root) {
+  const text = String(value ?? "").trim();
+  if (!text) return "";
+  return text
+    .replace(/\$\{workspaceFolder\}/g, root)
+    .replace(/\$\{workspaceRoot\}/g, root);
+}
+
+function absolutizeMcpArg(arg, { root, cwd = null } = {}) {
+  if (!arg) return arg;
+  if (isAbsolute(arg)) {
+    const resolved = resolve(arg);
+    return isPathInside(root, resolved) ? resolved : arg;
+  }
+  if (!/\.(?:mjs|cjs|js|ts|tsx)$/i.test(arg)) return arg;
+  const base = cwd ? resolve(cwd) : root;
+  const resolved = resolve(base, arg);
+  return isPathInside(root, resolved) ? resolved : arg;
+}
+
+function splitPackageScript(value) {
+  const matches = String(value ?? "").match(/"[^"]*"|'[^']*'|\S+/g) ?? [];
+  return matches.map((part) => part.replace(/^["']|["']$/g, ""));
+}
+
+function dedupeMcpServerCandidates(candidates) {
+  const seen = new Set();
+  return candidates.filter((candidate) => {
+    const key = [
+      candidate.transport,
+      candidate.mcpAgent?.command ?? candidate.mcpAgent?.url ?? "",
+      ...(candidate.mcpAgent?.args ?? []),
+    ].join("\0");
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function normalizePathForMetadata(path) {
+  return String(path ?? "").replace(/\\/g, "/");
+}
+
+function redactUrl(url) {
+  try {
+    const parsed = new URL(url);
+    parsed.username = "";
+    parsed.password = "";
+    parsed.search = "";
+    parsed.hash = "";
+    return parsed.toString();
+  } catch {
+    return "http";
+  }
+}
+
+function uniqueStringList(values) {
+  return [...new Set((values ?? []).map((value) => String(value ?? "").trim()).filter(Boolean))];
+}
+
 function candidateProbeCapability({ name, displayName, description, kind, riskLevel, riskTags, metadata }) {
   return {
     name,
@@ -1427,6 +2058,55 @@ function normalizeApplicationSource(source = {}) {
       ? source.manifest
       : {},
   };
+}
+
+function normalizeApplicationMcpAgent(value, { applicationId, applicationName, applicationPath = null } = {}) {
+  if (value === undefined || value === null || value === false) return null;
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("Application mcpAgent must be an object.");
+  }
+  const adapterInput = value.adapter && typeof value.adapter === "object" && !Array.isArray(value.adapter)
+    ? value.adapter
+    : value;
+  const config = normalizeMcpAdapterConfig(normalizeApplicationMcpAdapterInput(adapterInput, applicationPath));
+  const toolNamespace = mcpToolSegment(value.toolNamespace ?? value.capabilityPrefix ?? applicationName ?? applicationId ?? "mcp");
+  const riskTags = normalizeStringList(value.riskTags ?? value.capabilityRiskTags);
+  return {
+    agentId: sanitizeAgentId(value.agentId ?? value.id ?? `${applicationId ?? toolNamespace}_mcp`),
+    name: stringOrNull(value.name) ?? `${applicationName ?? "Application"} MCP`,
+    description: stringOrNull(value.description) ?? `MCP server registered with ${applicationName ?? "this application"}.`,
+    adapter: { type: "mcp", ...config },
+    allowedTools: config.allowedTools,
+    toolNamespace,
+    capabilityName: stringOrNull(value.capabilityName) ?? `${toolNamespace}_mcp_tool_call`,
+    capabilityDescription: stringOrNull(value.capabilityDescription) ?? "Calls a tool exposed by the application's MCP server.",
+    riskLevel: normalizeRiskLevel(value.riskLevel, "medium"),
+    riskTags: riskTags.length ? riskTags : ["local_execution", "mcp", "application_asset"],
+    recovery: {
+      state: "registered",
+      reason: config.allowedTools.length ? "mcp_agent_descriptor_saved" : "mcp_agent_registered_without_allowed_tools",
+      nextAction: config.allowedTools.length
+        ? "The runtime can restore the MCP agent and shared tool projection on restart."
+        : "Run an MCP probe and save allowedTools before expecting shared capability projection.",
+    },
+  };
+}
+
+function normalizeApplicationMcpAdapterInput(adapterInput, applicationPath = null) {
+  const root = applicationPath ? resolve(applicationPath) : null;
+  if (!root || !existsSync(root)) return adapterInput;
+  const next = { ...adapterInput, applicationPath: adapterInput.applicationPath ?? root };
+  if (String(next.transport ?? "").trim() !== "stdio") return next;
+  const cwd = stringOrNull(next.cwd);
+  if (cwd) {
+    const resolvedCwd = isAbsolute(cwd) ? resolve(cwd) : resolve(root, cwd);
+    if (isPathInside(root, resolvedCwd)) next.cwd = resolvedCwd;
+  }
+  next.args = normalizeStringList(next.args).map((arg) => absolutizeMcpArg(arg, {
+    root,
+    cwd: next.cwd ?? root,
+  }));
+  return next;
 }
 
 function normalizeGitUrl(value) {
@@ -1646,6 +2326,15 @@ function slugify(value) {
     .slice(0, 72);
 }
 
+function mcpToolSegment(value) {
+  const text = String(value ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+  return text || "mcp";
+}
+
 function stringOrNull(value) {
   const text = String(value ?? "").trim();
   return text ? text : null;
@@ -1657,7 +2346,14 @@ function isPathInside(root, target) {
 }
 
 function probeSummary(app, counts = {}) {
-  const suffix = ` Managed ${projectApplicationCapabilities(app).length}; declared ${counts.declaredCount ?? 0}; inferred ${counts.inferredCount ?? 0}.`;
+  const mcp = app.mcpAgent?.allowedTools?.length
+    ? ` MCP shared tools ${app.mcpAgent.allowedTools.length}.`
+    : app.mcpAgent
+      ? " MCP descriptor saved without shared tools."
+      : counts.mcpServerCount
+        ? ` MCP server candidates ${counts.mcpServerCount}.`
+      : "";
+  const suffix = ` Managed ${projectApplicationCapabilities(app).length}; declared ${counts.declaredCount ?? 0}; inferred ${counts.inferredCount ?? 0}.${mcp}`;
   if (app.source.type === "npm") return `NPM package ${app.source.package}@${app.source.version ?? "latest"} probed.${suffix}`;
   if (app.source.type === "git") return `Git source ${app.source.url} probed.${suffix}`;
   if (app.source.type === "local") return `Local application path ${app.source.path} probed.${suffix}`;

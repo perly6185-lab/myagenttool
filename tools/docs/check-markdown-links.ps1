@@ -7,11 +7,22 @@ $failures = New-Object System.Collections.Generic.List[string]
 Get-ChildItem -Path $root -Recurse -Filter "*.md" -File |
   Where-Object {
     $relative = $_.FullName.Substring($root.Length).TrimStart("\", "/")
-    -not ($relative -like "node_modules*" -or $relative -like ".git*")
+    $segments = $relative -split "[\\/]"
+    $directory = $_.Directory
+    $nestedRepository = $false
+    while ($null -ne $directory -and $directory.FullName.Length -gt $root.Length) {
+      if (Test-Path -LiteralPath (Join-Path $directory.FullName ".git")) {
+        $nestedRepository = $true
+        break
+      }
+      $directory = $directory.Parent
+    }
+    -not ($segments -contains "node_modules" -or $segments -contains ".git" -or $segments -contains ".myagenttool" -or $nestedRepository)
   } |
   ForEach-Object {
   $path = $_.FullName
   $text = Get-Content -LiteralPath $path -Raw -Encoding UTF8
+  if ($null -eq $text) { $text = "" }
   foreach ($match in $pattern.Matches($text)) {
     $target = ($match.Groups[1].Value -split "#", 2)[0]
     if ([string]::IsNullOrWhiteSpace($target)) { continue }

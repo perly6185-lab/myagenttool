@@ -667,6 +667,37 @@ export interface ApplicationProbeCapability {
   riskLevel?: string;
 }
 
+export interface ApplicationProbeMcpServer {
+  id: string;
+  serverName: string;
+  source?: string;
+  sourcePath?: string;
+  transport?: "stdio" | "http" | string;
+  toolNamespace?: string;
+  allowedTools?: string[];
+  sharedToolNames?: string[];
+  status?: string;
+  confidence?: "low" | "medium" | "high" | string;
+  autoRegister?: boolean;
+  autoRegisterReason?: string | null;
+  adapterPreview?: {
+    command?: string;
+    argCount?: number;
+    url?: string;
+  };
+  review?: {
+    dataBoundary?: string;
+    requiresManualConfirmation?: boolean;
+    manualConfirmationReason?: string;
+    filePolicy?: string;
+    networkPolicy?: string;
+    allowedToolCount?: number;
+    endpointOrigin?: string | null;
+    endpointHost?: string | null;
+    endpointProtocol?: string | null;
+  };
+}
+
 export interface ApplicationProbe {
   status?: string;
   checkedAt?: string | null;
@@ -674,7 +705,36 @@ export interface ApplicationProbe {
   package?: Record<string, unknown> | null;
   readme?: string | null;
   capabilities?: ApplicationProbeCapability[];
+  capabilityNames?: string[];
+  mcpServers?: ApplicationProbeMcpServer[];
+  autoRegisteredMcpAgentId?: string | null;
+  confirmedMcpAgentId?: string | null;
   warnings?: string[];
+}
+
+export interface ApplicationMcpAgentSnapshot {
+  agentId?: string;
+  name?: string;
+  description?: string;
+  allowedTools?: string[];
+  toolNamespace?: string;
+  sharedToolNames?: string[];
+  agentStatus?: string;
+  lastRecoveredAt?: string | null;
+  recovery?: {
+    state?: string;
+    reason?: string;
+    nextAction?: string;
+  };
+  discovery?: {
+    source?: string;
+    candidateId?: string;
+    sourcePath?: string;
+    detectedAt?: string | null;
+    autoRegistered?: boolean;
+    manualConfirmed?: boolean;
+    confirmedBy?: string | null;
+  };
 }
 
 export interface ApplicationOrchestration {
@@ -861,6 +921,7 @@ export interface ApplicationSnapshot {
   ownerTeamId?: string | null;
   capabilitiesVersion?: number;
   probe?: ApplicationProbe | null;
+  mcpAgent?: ApplicationMcpAgentSnapshot | null;
   orchestrations?: ApplicationOrchestration[];
   orchestrationIds?: string[];
   latestResult?: ApplicationResultRef | null;
@@ -874,6 +935,7 @@ export interface ApplicationResultRef {
   applicationAction?: string | null;
   outputCollection?: string | null;
   resultImport?: Record<string, unknown> | null;
+  mcpToolName?: string | null;
   importedRecordIds?: string[];
   importedRecordCount?: number;
   invocationId?: string | null;

@@ -2,6 +2,7 @@ import {
   CCUSAGE_REPORT_SPECS,
   CCUSAGE_TOOL_CONTRACT,
 } from "./ccusage-agent.mjs";
+import { describeMcpToolCall } from "@myagenttool/adapters/mcp";
 import { CCUSAGE_APPLICATION_ID } from "./ccusage-application.mjs";
 import {
   CODEX_REVIEW_TOOL_CONTRACT,
@@ -14,6 +15,14 @@ import {
 import { teamOf } from "../runtime/auth.mjs";
 
 const CCUSAGE_APPROVAL_REQUIRED_REPORTS = new Set(["session"]);
+const MCP_TOOL_CONTROL_FIELDS = new Set([
+  "arguments",
+  "approvalToken",
+  "idempotencyKey",
+  "projectId",
+  "timeoutSeconds",
+  "toolArguments",
+]);
 
 export function createToolService({
   state,
@@ -25,12 +34,12 @@ export function createToolService({
   findAgent,
   planApplicationWrapperInvocation,
 }) {
-  function listTools() {
-    return discoverTools();
+  function listTools(actor = null) {
+    return discoverTools(actor);
   }
 
-  function getTool(name) {
-    return discoverTools().find((tool) => tool.name === name) ?? null;
+  function getTool(name, actor = null) {
+    return discoverTools(actor).find((tool) => tool.name === name) ?? null;
   }
 
   function createToolInvocation(name, input = {}, actor = null) {
@@ -58,6 +67,10 @@ export function createToolService({
         outputCollection: "claudeReviewFindings",
         agentLabel: "Claude",
       });
+    }
+    const mcpTool = findMcpToolDescriptor(name, actor);
+    if (mcpTool) {
+      return createMcpToolInvocation(mcpTool, input, actor);
     }
     return { status: 404, body: { error: "tool_not_found" } };
   }
@@ -209,22 +222,121 @@ export function createToolService({
     };
   }
 
+  function createMcpToolInvocation(tool, input, actor) {
+    const validation = validateMcpToolInput(input);
+    if (!validation.ok) {
+      return { status: validation.status, body: validation.body };
+    }
+    const value = validation.value;
+    const agent = findAgent(tool.mcp.agentId);
+    if (!agent) {
+      return { status: 409, body: { error: "agent_not_available", message: "The registered MCP agent is not available." } };
+    }
+    if (agent.status === "disabled") {
+      return { status: 409, body: { error: "agent_disabled", agentId: agent.id } };
+    }
+    if (agent.health?.status === "unhealthy") {
+      return { status: 409, body: { error: "agent_unhealthy", message: agent.health.message, agentId: agent.id } };
+    }
+    if (agent.location?.type === "local_device" && state.device?.unlinkState === "unlinked") {
+      return { status: 409, body: { error: "device_unlinked", agentId: agent.id } };
+    }
+    const project = resolveToolProjectId(value.projectId, actor);
+    if (!project.ok) {
+      return { status: project.status, body: project.body };
+    }
+    const projectId = project.value;
+    try {
+      describeMcpToolCall(agent.adapter, tool.mcp.toolName, value.toolArguments);
+    } catch (error) {
+      return {
+        status: /allowed tools/i.test(error?.message ?? "") ? 409 : 400,
+        body: {
+          error: /allowed tools/i.test(error?.message ?? "") ? "mcp_tool_not_allowed" : "invalid_mcp_tool_call",
+          message: error instanceof Error ? error.message : String(error),
+        },
+      };
+    }
+    const timeoutSeconds = value.timeoutSeconds ?? Math.ceil(Number(agent.adapter?.timeoutMs ?? 60_000) / 1000);
+    const application = agent.sourceApplicationId ? findApplication?.(agent.sourceApplicationId) ?? null : null;
+    const invocation = createInvocation(value.task ?? `Call MCP tool ${tool.mcp.toolName} via ${agent.name}.`, agent, {
+      actor,
+      requestedBy: actor?.userId,
+      toolName: tool.mcp.toolName,
+      toolArguments: value.toolArguments,
+      timeoutSeconds,
+      metadata: {
+        tool: tool.name,
+        toolVersion: tool.version,
+        providerType: "mcp",
+        mcpAgentId: agent.id,
+        mcpToolName: tool.mcp.toolName,
+        capability: tool.name,
+        applicationId: application?.id ?? agent.sourceApplicationId ?? null,
+        applicationName: application?.name ?? null,
+        applicationAction: "mcp_tool_call",
+        outputCollection: "invocations",
+        projectId,
+      },
+    });
+    startInvocationIfAllowed(invocation, agent);
+    appendEvent({
+      invocationId: invocation.id,
+      type: "tool_invocation_created",
+      level: "info",
+      message: `Tool ${tool.name} created MCP invocation ${tool.mcp.toolName}.`,
+      data: {
+        tool: tool.name,
+        version: tool.version,
+        agentId: agent.id,
+        mcpToolName: tool.mcp.toolName,
+      },
+    });
+    return {
+      status: 201,
+      body: {
+        tool: tool.name,
+        invocationId: invocation.id,
+        agentId: agent.id,
+        status: invocation.status,
+        outputCollection: "invocations",
+        invocation,
+      },
+    };
+  }
+
   // The ccusage app backs the tool; when the app service isn't wired (review-only
   // harnesses) the tool is simply absent.
   function resolveCcusageApp() {
     return typeof findApplication === "function" ? findApplication(CCUSAGE_APPLICATION_ID) : null;
   }
 
-  function discoverTools() {
+  function discoverTools(actor = null) {
     const ccusageApp = resolveCcusageApp();
     const ccusageAvailable = ccusageApp && ["registered", "active"].includes(ccusageApp.status);
     const codexReviewAgents = (state.agents ?? []).filter(isGovernedCodexReviewAgent);
     const claudeReviewAgents = (state.agents ?? []).filter(isGovernedClaudeReviewAgent);
+    const mcpAgents = (state.agents ?? []).filter((agent) => agentVisibleToActor(agent, actor));
+    const builtinNames = new Set([
+      ...(ccusageAvailable ? [CCUSAGE_TOOL_CONTRACT.name] : []),
+      ...(codexReviewAgents.length ? [CODEX_REVIEW_TOOL_CONTRACT.name] : []),
+      ...(claudeReviewAgents.length ? [CLAUDE_REVIEW_TOOL_CONTRACT.name] : []),
+    ]);
     return [
       ...(ccusageAvailable ? [buildCcusageToolDescriptor(ccusageApp)] : []),
       ...(codexReviewAgents.length ? [buildCodexReviewToolDescriptor(codexReviewAgents)] : []),
       ...(claudeReviewAgents.length ? [buildClaudeReviewToolDescriptor(claudeReviewAgents)] : []),
+      ...buildMcpToolDescriptors({ agents: mcpAgents, usedNames: builtinNames }),
     ];
+  }
+
+  function findMcpToolDescriptor(name, actor = null) {
+    const mcpAgents = (state.agents ?? []).filter((agent) => agentVisibleToActor(agent, actor));
+    return buildMcpToolDescriptors({ agents: mcpAgents, usedNames: new Set([
+      CCUSAGE_TOOL_CONTRACT.name,
+      CODEX_REVIEW_TOOL_CONTRACT.name,
+      CLAUDE_REVIEW_TOOL_CONTRACT.name,
+    ]) }).find((tool) => tool.name === name) ?? null;
   }
 
   function selectCodexReviewAgent() {
@@ -265,6 +377,21 @@ export function createToolService({
       : null;
   }
 
+  function agentVisibleToActor(agent, actor = null) {
+    return applicationVisibleToActor(agent?.sourceApplicationId ?? null, actor);
+  }
+
+  function applicationVisibleToActor(applicationId, actor = null) {
+    if (!applicationId || !actor?.teamId) return true;
+    const application = (state.applications ?? []).find((item) => item.id === applicationId);
+    if (!application) return false;
+    if (application.projectId) {
+      const project = (state.projects ?? []).find((item) => item.id === application.projectId);
+      return Boolean(project && teamOf(project) === actor.teamId);
+    }
+    return (application.ownerTeamId ?? "team_local") === actor.teamId;
+  }
+
   return {
     createToolInvocation,
     getTool,
@@ -273,6 +400,130 @@ export function createToolService({
     validateClaudeReviewInput,
     validateCcusageReportInput,
   };
+}
+
+function buildMcpToolDescriptors({ agents, usedNames }) {
+  const tools = [];
+  for (const agent of agents ?? []) {
+    if (agent?.adapter?.type !== "mcp") continue;
+    const allowedTools = normalizeStringList(agent.adapter.allowedTools);
+    if (allowedTools.length === 0) continue;
+    const namespace = mcpToolNamespace(agent);
+    for (const toolName of allowedTools) {
+      const baseName = `${namespace}.${slugifyToolSegment(toolName)}`;
+      const name = uniqueCapabilityName(baseName, usedNames);
+      tools.push(buildMcpToolDescriptor({ name, agent, toolName }));
+    }
+  }
+  return tools;
+}
+
+function buildMcpToolDescriptor({ name, agent, toolName }) {
+  const riskLevel = highestRiskLevel((agent.capabilities ?? []).map((capability) => capability?.riskLevel));
+  const riskTags = uniqueStrings([
+    "mcp",
+    agent.adapter?.transport === "http" ? "mcp_http" : "mcp_stdio",
+    ...(agent.capabilities ?? []).flatMap((capability) => capability?.riskTags ?? []),
+  ]);
+  return {
+    name,
+    version: "1",
+    displayName: toolName,
+    description: `Call MCP tool ${toolName} exposed by ${agent.name}.`,
+    riskLevel,
+    riskTags,
+    requiresLocalDevice: agent.location?.type === "local_device",
+    inputSchema: mcpToolInputSchema(),
+    outputSchema: {
+      type: "object",
+      additionalProperties: true,
+      description: "MCP tool result stored on the invocation.",
+    },
+    agents: [{
+      id: agent.id,
+      name: agent.name,
+      status: agent.health?.status === "unhealthy" ? "unhealthy" : agent.status,
+      transport: agent.adapter?.transport ?? "stdio",
+      toolName,
+    }],
+    approvalPolicy: {
+      defaultAllowedTools: "allowed",
+      unknownTool: "blocked",
+    },
+    authoritativeBilling: false,
+    outputCollection: "invocations",
+    source: "mcp_agent",
+    metadata: {
+      readiness: {
+        state: agent.status === "disabled" ? "disabled" : agent.health?.status === "unhealthy" ? "needs_setup" : "ready",
+        reason: "mcp_agent_registered",
+        executionMode: agent.adapter?.transport === "http" ? "mcp_http" : "mcp_stdio",
+      },
+      resultPath: {
+        outputCollection: "invocations",
+        evidenceCenter: true,
+      },
+      mcp: {
+        agentId: agent.id,
+        toolName,
+      },
+    },
+    application: agent.sourceApplicationId ? { id: agent.sourceApplicationId } : null,
+    mcp: {
+      agentId: agent.id,
+      toolName,
+      transport: agent.adapter?.transport ?? "stdio",
+    },
+  };
+}
+
+function mcpToolInputSchema() {
+  return {
+    type: "object",
+    additionalProperties: true,
+    properties: {
+      projectId: { type: "string" },
+      toolArguments: {
+        type: "object",
+        additionalProperties: true,
+        description: "Arguments passed to the MCP tool. If omitted, non-control top-level fields become tool arguments.",
+      },
+      timeoutSeconds: { type: "number" },
+    },
+  };
+}
+
+function mcpToolNamespace(agent) {
+  const explicit =
+    stringOrNull(agent.toolNamespace) ??
+    stringOrNull(agent.capabilityPrefix) ??
+    stringOrNull(agent.adapter?.toolNamespace) ??
+    stringOrNull(agent.adapter?.capabilityPrefix);
+  const raw = explicit ?? stringOrNull(agent.id) ?? stringOrNull(agent.name) ?? "mcp";
+  const normalized = slugifyToolSegment(raw)
+    .replace(/^agt_/, "")
+    .replace(/_mcp$/, "");
+  return normalized || "mcp";
+}
+
+function slugifyToolSegment(value) {
+  const text = String(value ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+  return text || "tool";
+}
+
+function uniqueCapabilityName(baseName, usedNames) {
+  let name = baseName;
+  let suffix = 2;
+  while (usedNames.has(name)) {
+    name = `${baseName}_${suffix}`;
+    suffix += 1;
+  }
+  usedNames.add(name);
+  return name;
 }
 
 function buildCcusageToolDescriptor(app) {
@@ -465,6 +716,35 @@ function validateReviewInput(input = {}) {
   };
 }
 
+function validateMcpToolInput(input = {}) {
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    return { ok: false, status: 400, body: { error: "invalid_input", message: "Tool input must be an object." } };
+  }
+  const explicitArguments = input.toolArguments ?? input.arguments;
+  let toolArguments = null;
+  if (explicitArguments !== undefined) {
+    if (!explicitArguments || typeof explicitArguments !== "object" || Array.isArray(explicitArguments)) {
+      return { ok: false, status: 400, body: { error: "invalid_tool_arguments", message: "MCP tool arguments must be an object." } };
+    }
+    toolArguments = { ...explicitArguments };
+  } else {
+    toolArguments = Object.fromEntries(
+      Object.entries(input).filter(([key]) => !MCP_TOOL_CONTROL_FIELDS.has(key)),
+    );
+  }
+  const timeoutSeconds = optionalPositiveSeconds(input.timeoutSeconds);
+  if (!timeoutSeconds.ok) return timeoutSeconds;
+  return {
+    ok: true,
+    value: {
+      projectId: stringOrNull(input.projectId),
+      task: stringOrNull(input.task),
+      timeoutSeconds: timeoutSeconds.value,
+      toolArguments,
+    },
+  };
+}
+
 function validateCodexReviewInput(input = {}) {
   return validateReviewInput(input);
 }
@@ -494,6 +774,35 @@ function buildClaudeReviewTask(value) {
   return `Review the selected worktree diff with Claude. Severity floor: ${value.severityFloor}.${suffix}`;
 }
 
+function optionalPositiveSeconds(value) {
+  if (value === undefined || value === null || value === "") {
+    return { ok: true, value: null };
+  }
+  const number = Number(value);
+  if (!Number.isFinite(number) || number <= 0) {
+    return { ok: false, status: 400, body: { error: "invalid_timeout_seconds" } };
+  }
+  return { ok: true, value: Math.ceil(number) };
+}
+
+function normalizeStringList(value) {
+  if (!Array.isArray(value)) return [];
+  return value.map((item) => String(item ?? "").trim()).filter(Boolean);
+}
+
+function uniqueStrings(values) {
+  return [...new Set(values.map((value) => String(value ?? "").trim()).filter(Boolean))];
+}
+
+function highestRiskLevel(values) {
+  const order = new Map(["low", "medium", "high", "critical"].map((level, index) => [level, index]));
+  let highest = null;
+  for (const value of values ?? []) {
+    const level = order.has(value) ? value : "medium";
+    if (!highest || order.get(level) > order.get(highest)) highest = level;
+  }
+  return highest ?? "medium";
+}
 
 function stringOrNull(value) {
   const text = String(value ?? "").trim();

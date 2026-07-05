@@ -67,6 +67,13 @@ function readinessTone(state?: string): "neutral" | "success" | "warning" | "dan
   return "neutral";
 }
 
+function confidenceTone(confidence?: string): "neutral" | "success" | "warning" | "danger" {
+  if (confidence === "high") return "success";
+  if (confidence === "medium") return "warning";
+  if (confidence === "low") return "danger";
+  return "neutral";
+}
+
 interface PendingConfirm {
   title: string;
   description: string;
@@ -195,6 +202,7 @@ function ApplicationResultSummary({
         <FactList
           facts={[
             { term: "Capability", value: result.capability ?? result.applicationAction ?? "—" },
+            { term: "MCP tool", value: result.mcpToolName ?? "—" },
             { term: "Invocation", value: result.invocationId ?? "—" },
             { term: "Completed", value: shortTime(result.completedAt) },
             {
@@ -209,6 +217,85 @@ function ApplicationResultSummary({
             View invocation
           </Button>
         ) : null}
+      </CardContent>
+    </Card>
+  );
+}
+
+function ApplicationMcpSummary({ application }: { application: ApplicationSnapshot }) {
+  const { execute, pending, error } = useAsyncAction();
+  const mcpAgent = application.mcpAgent;
+  const servers = application.probe?.mcpServers ?? [];
+  if (!mcpAgent && servers.length === 0) return null;
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>MCP tools</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        {mcpAgent ? (
+          <div className="space-y-2">
+            <div className="flex flex-wrap items-center gap-2">
+              <Badge tone="success">registered</Badge>
+              {mcpAgent.agentStatus ? <Badge tone={mcpAgent.agentStatus === "disabled" ? "danger" : "success"}>{mcpAgent.agentStatus}</Badge> : null}
+              {mcpAgent.toolNamespace ? <Badge tone="neutral">{mcpAgent.toolNamespace}</Badge> : null}
+              {mcpAgent.discovery?.autoRegistered ? <Badge tone="success">auto-registered</Badge> : null}
+            </div>
+            <FactList
+              facts={[
+                { term: "Agent", value: mcpAgent.agentId ?? "—" },
+                { term: "Tools", value: (mcpAgent.allowedTools ?? []).join(", ") || "—" },
+                { term: "Shared names", value: (mcpAgent.sharedToolNames ?? []).join(", ") || "—" },
+                { term: "Recovery", value: mcpAgent.recovery?.reason ?? "—" },
+              ]}
+            />
+            {mcpAgent.recovery?.nextAction ? (
+              <p className="[overflow-wrap:anywhere] rounded-md bg-muted px-3 py-2 text-xs text-muted-foreground">
+                {mcpAgent.recovery.nextAction}
+              </p>
+            ) : null}
+          </div>
+        ) : null}
+        {servers.length ? (
+          <div className="space-y-2">
+            {servers.map((server) => (
+              <div key={server.id} className="space-y-2 rounded-md border border-border p-3 text-xs">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <span className="font-medium">{server.serverName}</span>
+                  <div className="flex flex-wrap gap-1.5">
+                    {server.transport ? <Badge tone="neutral">{server.transport}</Badge> : null}
+                    {server.confidence ? <Badge tone={confidenceTone(server.confidence)}>{server.confidence} confidence</Badge> : null}
+                    {server.autoRegister ? <Badge tone="success">auto register</Badge> : <Badge tone="warning">manual confirm</Badge>}
+                  </div>
+                </div>
+                <FactList
+                  facts={[
+                    { term: "Source", value: server.sourcePath ?? server.source ?? "—" },
+                    { term: "Preview", value: server.adapterPreview?.command ? `${server.adapterPreview.command} · ${server.adapterPreview.argCount ?? 0} args` : server.adapterPreview?.url ?? "—" },
+                    { term: "Reason", value: server.autoRegisterReason ?? "—" },
+                    { term: "Boundary", value: server.review?.dataBoundary ?? "—" },
+                    { term: "Policies", value: server.review ? `${server.review.filePolicy ?? "—"} files / ${server.review.networkPolicy ?? "—"} network` : "—" },
+                    { term: "Endpoint", value: server.review?.endpointOrigin ?? "—" },
+                    { term: "Tools", value: (server.allowedTools ?? []).join(", ") || "—" },
+                  ]}
+                />
+                {!mcpAgent && !server.autoRegister && server.status === "ready" ? (
+                  <div className="flex justify-end">
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      disabled={pending}
+                      onClick={() => void execute(() => api.confirmApplicationMcpCandidate(application.id, server.id, { approvalToken: APPROVAL_TOKEN }))}
+                    >
+                      Confirm MCP
+                    </Button>
+                  </div>
+                ) : null}
+              </div>
+            ))}
+          </div>
+        ) : null}
+        {error ? <p className="text-xs text-destructive">{error}</p> : null}
       </CardContent>
     </Card>
   );
@@ -1089,6 +1176,7 @@ export function ApplicationsInspector() {
 
       <ApplicationActions application={application} />
       <ApplicationResultSummary result={application.latestResult} onViewInvocation={viewInvocation} />
+      <ApplicationMcpSummary application={application} />
 
       <Card>
         <CardHeader>

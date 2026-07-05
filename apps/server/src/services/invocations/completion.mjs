@@ -184,7 +184,7 @@ export function createInvocationCompletionRuntime({
 
   function attachApplicationResult({ invocation, auditSummary, records, outputCollection }) {
     const metadata = invocation.options?.metadata;
-    if (metadata?.providerType !== "application" || !metadata.applicationId) {
+    if (!["application", "mcp"].includes(metadata?.providerType) || !metadata.applicationId) {
       return;
     }
     const importedRecords = Array.isArray(records) ? records : [];
@@ -204,6 +204,7 @@ export function createInvocationCompletionRuntime({
         ? outputCollection
         : existing?.outputCollection ?? metadata.applicationWrapper?.outputCollection ?? outputCollection,
       resultImport: metadata.applicationWrapper?.resultImport ?? null,
+      mcpToolName: metadata.mcpToolName ?? null,
       importedRecordIds: importedRecords.map((record) => record.id),
       importedRecordCount: importedRecords.length,
       invocationId: invocation.id,

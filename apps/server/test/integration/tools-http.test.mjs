@@ -83,6 +83,31 @@ before(async () => {
     ...agentFromRegistration(createApplicationWrapperAgentRegistration()),
     status: "available",
     health: { status: "healthy", checkedAt: now(), message: "ok", nextAction: null },
+  }, {
+    id: "agt_doocs_md_mcp",
+    type: "mcp",
+    name: "doocs/md MCP",
+    description: "MCP fixture for shared tool projection.",
+    location: { type: "local_device", deviceId: state.device.id },
+    adapter: {
+      type: "mcp",
+      kind: "mcp",
+      transport: "stdio",
+      command: "D:/private/doocs-md-mcp.cmd",
+      args: ["--private"],
+      allowedTools: ["render_markdown", "list_themes"],
+      timeoutMs: 60_000,
+    },
+    capabilities: [{
+      name: "mcp_tool_call",
+      description: "Calls a tool exposed by the MCP server.",
+      riskLevel: "medium",
+      riskTags: ["local_execution", "mcp", "markdown_rendering"],
+    }],
+    sourceApplicationId: "app_team_a",
+    toolNamespace: "doocs_md",
+    status: "available",
+    health: { status: "unknown", checkedAt: null, message: "Health has not been checked yet.", nextAction: null },
   });
 
   const { httpDependencies } = createServerRuntimeServices({
@@ -226,11 +251,25 @@ test("GET /api/capabilities includes governed tools and scoped application capab
   assert.equal(ccusageDaily?.metadata?.billing?.externalBilled, true);
   assert.equal(ccusageDaily?.metadata?.resultImport?.amountSource, "imported_ccusage_report");
   assert.ok(teamA.body.capabilities.some((item) => item.name === "app.app_team_a.inspect" && item.provider?.type === "application"));
+  const mcpRender = teamA.body.capabilities.find((item) => item.name === "doocs_md.render_markdown");
+  assert.equal(mcpRender?.provider?.type, "tool");
+  assert.equal(mcpRender?.source, "mcp_agent");
+  assert.equal(mcpRender?.mcp?.agentId, "agt_doocs_md_mcp");
+  assert.equal(mcpRender?.mcp?.toolName, "render_markdown");
   assert.ok(!JSON.stringify(teamA.body.capabilities).includes("wrapper.mjs"), "capability discovery must not expose wrapper internals");
+  assert.ok(!JSON.stringify(teamA.body.capabilities).includes("doocs-md-mcp.cmd"), "MCP capability discovery must not expose adapter command");
+  assert.ok(!JSON.stringify(teamA.body.capabilities).includes("--private"), "MCP capability discovery must not expose adapter args");
 
   const teamB = await call("/api/capabilities?providerType=application", { token: "tok_b" });
   assert.equal(teamB.status, 200);
   assert.ok(!teamB.body.capabilities.some((item) => item.name === "app.app_team_a.inspect"), "foreign application capability should be hidden");
+
+  const teamBTools = await call("/api/capabilities?providerType=tool", { token: "tok_b" });
+  assert.equal(teamBTools.status, 200);
+  assert.ok(!teamBTools.body.capabilities.some((item) => item.name === "doocs_md.render_markdown"), "foreign application MCP tool should be hidden");
+  const teamBToolRegistry = await call("/api/tools", { token: "tok_b" });
+  assert.equal(teamBToolRegistry.status, 200);
+  assert.ok(!teamBToolRegistry.body.tools.some((item) => item.name === "doocs_md.render_markdown"), "foreign application MCP tool registry entry should be hidden");
 });
 
 test("POST /api/capabilities proxies governed tools and executes application capabilities", async () => {
@@ -266,6 +305,32 @@ test("POST /api/capabilities proxies governed tools and executes application cap
   });
   assert.equal(offline.status, 201);
   assert.equal(offline.body.invocation.result.output.status, "offline");
+
+  const mcp = await call("/api/capabilities/doocs_md.render_markdown/invocations", {
+    method: "POST",
+    body: { projectId: "projA", markdown: "# Shared", theme: "default" },
+    token: "tok_a",
+  });
+  assert.equal(mcp.status, 201);
+  assert.equal(mcp.body.tool, "doocs_md.render_markdown");
+  assert.equal(mcp.body.agentId, "agt_doocs_md_mcp");
+  assert.equal(mcp.body.outputCollection, "invocations");
+  const invocation = ctx.state.invocations.find((item) => item.id === mcp.body.invocationId);
+  assert.equal(invocation?.status, "queued");
+  assert.equal(invocation?.options?.toolName, "render_markdown");
+  assert.deepEqual(invocation?.options?.toolArguments, { markdown: "# Shared", theme: "default" });
+  assert.equal(invocation?.options?.metadata?.providerType, "mcp");
+  assert.equal(invocation?.options?.metadata?.tool, "doocs_md.render_markdown");
+  assert.ok(!JSON.stringify(mcp.body).includes("doocs-md-mcp.cmd"), "MCP capability invocation response must not expose adapter command");
+  assert.ok(!JSON.stringify(mcp.body).includes("--private"), "MCP capability invocation response must not expose adapter args");
+
+  const foreignMcp = await call("/api/capabilities/doocs_md.render_markdown/invocations", {
+    method: "POST",
+    body: { projectId: "projB", markdown: "# Nope" },
+    token: "tok_b",
+  });
+  assert.equal(foreignMcp.status, 404);
+  assert.equal(foreignMcp.body.error, "capability_not_found");
 });
 
 test("POST /api/capabilities invokes ccusage wrapper capabilities with published runtime semantics", async () => {
@@ -534,6 +599,131 @@ test("POST /api/applications/:id/probe infers local package metadata without exe
   assert.ok(probe.capabilities.some((item) => item.name === "app.app_team_a.inferred.module.exports" && item.source === "inferred"));
   assert.ok(!probe.capabilities.some((item) => item.name.includes("postinstall")), "unsafe lifecycle scripts should not be inferred");
   assert.ok(probe.capabilityNames.includes("app.app_team_a.offline"), "probe should keep a name index for compatibility");
+});
+
+test("POST /api/applications/:id/probe autodetects doocs/md MCP tools and exposes them as governed capabilities", async () => {
+  const root = "/tmp/doocs-auto-mcp";
+  writeDoocsMcpFixture(root);
+  const registered = await call("/api/applications/register", {
+    method: "POST",
+    body: {
+      id: "app_doocs_auto_mcp",
+      name: "doocs/md auto",
+      projectId: "projA",
+      source: { type: "local", path: root },
+    },
+    token: "tok_a",
+  });
+  assert.equal(registered.status, 201);
+  assert.equal(registered.body.application.mcpAgent, null);
+
+  const probed = await call(`/api/applications/${registered.body.application.id}/probe`, {
+    method: "POST",
+    body: {},
+    token: "tok_a",
+  });
+  assert.equal(probed.status, 200);
+  const app = probed.body.application;
+  assert.equal(app.probe.mcpServers.length, 1);
+  assert.deepEqual(app.probe.mcpServers[0].allowedTools, ["render_markdown", "list_themes"]);
+  assert.equal(app.probe.autoRegisteredMcpAgentId, "agt_app_doocs_auto_mcp_mcp");
+  assert.deepEqual(app.mcpAgent.sharedToolNames, ["doocs_md_auto.render_markdown", "doocs_md_auto.list_themes"]);
+  assert.equal(app.mcpAgent.adapter, undefined);
+  assert.equal(JSON.stringify(probed.body).includes("run.mjs"), false);
+
+  const tools = await call("/api/tools", { token: "tok_a" });
+  assert.equal(tools.status, 200);
+  assert.ok(tools.body.tools.some((tool) => tool.name === "doocs_md_auto.render_markdown" && tool.source === "mcp_agent"));
+
+  const invocation = await call("/api/capabilities/doocs_md_auto.render_markdown/invocations", {
+    method: "POST",
+    body: { projectId: "projA", markdown: "# Hello", theme: "default" },
+    token: "tok_a",
+  });
+  assert.equal(invocation.status, 201);
+  assert.equal(invocation.body.tool, "doocs_md_auto.render_markdown");
+  assert.equal(invocation.body.agentId, "agt_app_doocs_auto_mcp_mcp");
+  const stored = ctx.state.invocations.find((item) => item.id === invocation.body.invocationId);
+  assert.equal(stored?.options?.toolName, "render_markdown");
+  assert.deepEqual(stored?.options?.toolArguments, { markdown: "# Hello", theme: "default" });
+  assert.equal(JSON.stringify(tools.body).includes("run.mjs"), false);
+  assert.equal(JSON.stringify(invocation.body).includes("run.mjs"), false);
+});
+
+test("POST /api/applications/:id/mcp-candidates/:candidateId/confirm requires intent and returns a redacted Application", async () => {
+  const root = "/tmp/doocs-manual-mcp";
+  writeManualMcpFixture(root);
+  const registered = await call("/api/applications/register", {
+    method: "POST",
+    body: {
+      id: "app_doocs_manual_mcp_http",
+      name: "doocs/md manual",
+      projectId: "projA",
+      source: { type: "local", path: root },
+    },
+    token: "tok_a",
+  });
+  assert.equal(registered.status, 201);
+
+  const probed = await call(`/api/applications/${registered.body.application.id}/probe`, {
+    method: "POST",
+    body: {},
+    token: "tok_a",
+  });
+  assert.equal(probed.status, 200);
+  const candidate = probed.body.application.probe.mcpServers.find((server) => server.id === "mcp.shell");
+  const remote = probed.body.application.probe.mcpServers.find((server) => server.id === "mcp.remote");
+  assert.equal(candidate?.autoRegister, false);
+  assert.equal(candidate?.autoRegisterReason, "stdio_command_requires_manual_confirmation");
+  assert.equal(candidate?.review?.dataBoundary, "local_stdio_process");
+  assert.equal(candidate?.review?.filePolicy, "read_only");
+  assert.equal(candidate?.review?.networkPolicy, "forbidden");
+  assert.equal(remote?.autoRegister, false);
+  assert.equal(remote?.autoRegisterReason, "http_transport_requires_manual_confirmation");
+  assert.equal(remote?.adapterPreview?.url, "https://mcp.example.test/rpc");
+  assert.equal(remote?.review?.dataBoundary, "bridge_to_http_endpoint");
+  assert.equal(remote?.review?.endpointOrigin, "https://mcp.example.test");
+  assert.equal(remote?.review?.endpointHost, "mcp.example.test");
+  assert.equal(remote?.review?.networkPolicy, "restricted");
+  assert.equal(JSON.stringify(probed.body).includes("secret"), false);
+  assert.equal(probed.body.application.mcpAgent, null);
+
+  const approvalRequired = await call(`/api/applications/${registered.body.application.id}/mcp-candidates/mcp.shell/confirm`, {
+    method: "POST",
+    body: {},
+    token: "tok_a",
+  });
+  assert.equal(approvalRequired.status, 409);
+  assert.equal(approvalRequired.body.error, "approval_required");
+
+  const foreign = await call(`/api/applications/${registered.body.application.id}/mcp-candidates/mcp.shell/confirm`, {
+    method: "POST",
+    body: { approvalToken: "operator-confirmed" },
+    token: "tok_b",
+  });
+  assert.equal(foreign.status, 404);
+  assert.equal(foreign.body.error, "application_not_found");
+
+  const confirmed = await call(`/api/applications/${registered.body.application.id}/mcp-candidates/mcp.shell/confirm`, {
+    method: "POST",
+    body: { approvalToken: "operator-confirmed" },
+    token: "tok_a",
+  });
+  assert.equal(confirmed.status, 200);
+  assert.equal(confirmed.body.application.mcpAgent.discovery.manualConfirmed, true);
+  assert.equal(confirmed.body.application.mcpAgent.discovery.confirmedBy, "usr_a");
+  assert.deepEqual(confirmed.body.application.mcpAgent.sharedToolNames, ["doocs_md_manual.render_markdown"]);
+  assert.equal(confirmed.body.application.mcpAgent.adapter, undefined);
+  assert.equal(JSON.stringify(confirmed.body).includes("run.mjs"), false);
+  assert.equal(JSON.stringify(confirmed.body).includes("/bin/sh"), false);
+  assert.equal(JSON.stringify(confirmed.body).includes("secret"), false);
+
+  const capabilities = await call("/api/capabilities", { token: "tok_a" });
+  assert.equal(capabilities.status, 200);
+  assert.ok(capabilities.body.capabilities.some((capability) => capability.name === "doocs_md_manual.render_markdown" && capability.source === "mcp_agent"));
+  const tools = await call("/api/tools", { token: "tok_a" });
+  assert.equal(tools.status, 200);
+  assert.ok(tools.body.tools.some((tool) => tool.name === "doocs_md_manual.render_markdown" && tool.source === "mcp_agent"));
 });
 
 test("POST /api/applications/:id/probe infers npm metadata from registration manifest only", async () => {
@@ -1825,6 +2015,60 @@ function agentFromRegistration(registration) {
     registrationNotes: registration.registrationNotes,
     createdAt: now(),
   };
+}
+
+function writeDoocsMcpFixture(root) {
+  mkdirSync(`${root}/.vscode`, { recursive: true });
+  mkdirSync(`${root}/packages/mcp-server/src`, { recursive: true });
+  writeFileSync(`${root}/package.json`, JSON.stringify({
+    name: "md",
+    version: "2.1.0",
+    scripts: { mcp: "pnpm --filter @md/mcp-server" },
+  }, null, 2), "utf8");
+  writeFileSync(`${root}/.vscode/mcp.json`, JSON.stringify({
+    servers: {
+      md: {
+        type: "stdio",
+        command: "node",
+        args: ["--import", "tsx/esm", "${workspaceFolder}/packages/mcp-server/run.mjs"],
+        cwd: "${workspaceFolder}/packages/mcp-server",
+      },
+    },
+  }, null, 2), "utf8");
+  writeFileSync(`${root}/packages/mcp-server/package.json`, JSON.stringify({
+    name: "@md/mcp-server",
+    scripts: { start: "node --import tsx/esm run.mjs" },
+  }, null, 2), "utf8");
+  writeFileSync(`${root}/packages/mcp-server/run.mjs`, "import('./src/index.ts')\n", "utf8");
+  writeFileSync(`${root}/packages/mcp-server/src/index.ts`, [
+    "server.registerTool(`render_markdown`, {}, async () => ({}))",
+    "server.registerTool(`list_themes`, {}, async () => ({}))",
+  ].join("\n"), "utf8");
+}
+
+function writeManualMcpFixture(root) {
+  mkdirSync(`${root}/.vscode`, { recursive: true });
+  mkdirSync(`${root}/packages/mcp-server`, { recursive: true });
+  writeFileSync(`${root}/package.json`, JSON.stringify({
+    name: "md-manual",
+    version: "2.1.0",
+  }, null, 2), "utf8");
+  writeFileSync(`${root}/packages/mcp-server/run.mjs`, "process.exit(0)\n", "utf8");
+  writeFileSync(`${root}/.vscode/mcp.json`, JSON.stringify({
+    servers: {
+      shell: {
+        type: "stdio",
+        command: process.platform === "win32" ? "cmd.exe" : "sh",
+        args: ["${workspaceFolder}/packages/mcp-server/run.mjs"],
+        allowedTools: ["render_markdown"],
+      },
+      remote: {
+        type: "http",
+        url: "https://mcp.example.test/rpc?token=secret#fragment",
+        allowedTools: ["render_markdown"],
+      },
+    },
+  }, null, 2), "utf8");
 }
 
 async function createApplicationOrchestrationRunForTest({

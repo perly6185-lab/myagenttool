@@ -16,11 +16,16 @@ test("contract: MCP supports success/failure/cancellation/event streaming over s
 });
 
 test("normalize stdio: command required, args + defaults applied", () => {
-  const c = normalizeMcpAdapterConfig({ transport: "stdio", command: "mcp-fs", args: ["--root", "/x"] });
+  const c = normalizeMcpAdapterConfig({ transport: "stdio", command: "mcp-fs", args: ["--root", "/x"], cwd: "/x", applicationPath: "/x", startupTimeoutMs: 120_000 });
   assert.equal(c.transport, "stdio");
   assert.equal(c.command, "mcp-fs");
   assert.deepEqual(c.args, ["--root", "/x"]);
+  assert.equal(c.cwd, "/x");
+  assert.equal(c.applicationPath, "/x");
+  assert.equal(c.filePolicy, "read_only");
+  assert.equal(c.networkPolicy, "forbidden");
   assert.equal(c.timeoutMs, 60_000);
+  assert.equal(c.startupTimeoutMs, 120_000);
   assert.deepEqual(c.allowedTools, []);
   assert.throws(() => normalizeMcpAdapterConfig({ transport: "stdio" }), /requires a command/);
 });
@@ -31,11 +36,15 @@ test("normalize http: valid url required, headers preserved, timeout clamped", (
     url: "https://mcp.example/sse",
     headers: { authorization: "Bearer x" },
     timeoutMs: 10,
+    startupTimeoutMs: 10,
     allowedTools: ["search", " read "],
   });
   assert.equal(c.url, "https://mcp.example/sse");
   assert.equal(c.headers.authorization, "Bearer x");
+  assert.equal(c.filePolicy, "read_only");
+  assert.equal(c.networkPolicy, "restricted");
   assert.equal(c.timeoutMs, 1_000, "timeout clamped to the minimum");
+  assert.equal(c.startupTimeoutMs, 1_000, "startup timeout clamped to the minimum");
   assert.deepEqual(c.allowedTools, ["search", "read"]);
   assert.throws(() => normalizeMcpAdapterConfig({ transport: "http", url: "not-a-url" }), /valid http/);
 });

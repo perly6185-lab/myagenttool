@@ -13,13 +13,13 @@ export async function handleToolRoutes({
   createToolInvocation,
 }) {
   if (req.method === "GET" && url.pathname === "/api/tools") {
-    sendJson(res, 200, { tools: listTools() });
+    sendJson(res, 200, { tools: listTools(actor) });
     return true;
   }
 
   const toolMatch = url.pathname.match(/^\/api\/tools\/([^/]+)$/);
   if (req.method === "GET" && toolMatch) {
-    const tool = getTool(decodeURIComponent(toolMatch[1]));
+    const tool = getTool(decodeURIComponent(toolMatch[1]), actor);
     if (!tool) {
       sendJson(res, 404, { error: "tool_not_found" });
       return true;

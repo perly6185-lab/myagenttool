@@ -66,6 +66,12 @@ GET  /api/capabilities/:capabilityName
 POST /api/capabilities/:capabilityName/invocations
 GET  /api/applications/:id/orchestrations
 POST /api/applications/:id/orchestrations/generate
+POST /api/applications/:id/orchestrations/:routineId/run
+GET  /api/applications/:id/orchestrations/:routineId/runs
+GET  /api/applications/:id/orchestrations/:routineId/runs/:invocationId
+GET  /api/applications/:id/orchestrations/:routineId/runs/:invocationId/events
+GET  /api/applications/:id/orchestrations/:routineId/runs/:invocationId/recovery
+POST /api/applications/:id/orchestrations/:routineId/runs/:invocationId/recovery/actions
 ```
 
 `offline` does not delete files or registry history. It disables execution-like
@@ -126,41 +132,64 @@ commands. `installed-wrapper` can project approved commands as capabilities:
 app.<application-id>.wrapper.<command-id>
 ```
 
-Wrapper commands carry command allowlist metadata, input schema, env redaction,
-cwd, timeout, cancellation, file policy, and network policy. Only commands with
-`status = approved` are projected. Draft and disabled commands remain visible in
-the application source/probe metadata but are not invokable through
-`/api/capabilities`.
+Wrapper commands carry command allowlist metadata, declared per-invocation
+argument inputs, input schema, env redaction, cwd, timeout, cancellation, file
+policy, network policy, compatibility facade, billing semantics, and result
+import metadata. Only commands with `status = approved` are projected. Draft and
+disabled commands remain visible in the application source/probe metadata but
+are not invokable through `/api/capabilities`.
 
-The first wrapper slice still does not install packages or execute npm. A
-wrapper invocation creates the normal governed invocation, requires approval,
-and returns the audited wrapper execution plan with `executable = false`.
-Runtime adapter wiring is a follow-up slice.
+Approved `installed-wrapper` commands now execute as normal governed
+invocations through the platform Application Wrapper Runner. The server resolves
+the reviewed command and appends only declared, validated inputs; the Desktop
+Bridge independently re-checks the inner command, argv, cwd, file policy, and
+network policy before spawning the fixed wrapper runner. MyAgentTool still does
+not install arbitrary packages or accept free-form npm commands.
+
+The executable reference path is intentionally narrow: ccusage is the measured
+NPM wrapper example. General npm-wrapper execution should remain locally refused
+until a reviewed local manifest and consent model exists for broader assets.
+
+## Application MCP
+
+Applications may persist an `mcpAgent` descriptor or discover MCP server
+candidates during probe. A persisted descriptor can recover the corresponding
+Agent row and shared tool names after restart.
+
+Probe currently reads common project MCP config files such as `.vscode/mcp.json`,
+`.cursor/mcp.json`, and `.mcp.json`, supporting both `servers` and `mcpServers`.
+High-confidence stdio `node` entrypoints whose scripts stay inside the
+Application root can be auto-registered. Shell and HTTP candidates are retained
+as manual-confirm evidence; the Applications inspector can now confirm a ready
+manual candidate through an explicit intent action that persists the MCP
+descriptor and projects shared tool names.
+
+Application-scoped MCP tools are exposed as governed tool/capability names such
+as `doocs_md.render_markdown` without exposing adapter command, argv, or local
+paths to callers. The Desktop Bridge re-checks MCP stdio execution before spawn
+and records `local_execution_refused` evidence on policy mismatch.
 
 ## Relationship To Existing Agents
 
 Codex, Claude, and ccusage remain normal governed agents/tools. Application
-capabilities should reuse their existing facade pattern:
+capabilities reuse the same facade pattern:
 
 ```text
 discover contract -> validate input -> create invocation -> policy/audit/trace
 ```
 
-The next slice should generalize the Tool Registry so application capabilities
-can appear beside `ccusage.report`, `codex.review.diff`, and
-`claude.review.diff` without callers depending on adapter internals.
-
-The first generalized discovery slice adds `/api/capabilities` while keeping
+The generalized discovery slice adds `/api/capabilities` while keeping
 `/api/tools` stable. Existing tools are mapped with `provider.type = "tool"`;
 application-projected capabilities use `provider.type = "application"`.
 Application capability invocation runs through the platform
-`agt_platform_application_control` agent for the first synchronous execution
-slice. Every side-effecting action — `offline`, `archive`, `refresh`,
-`generate_orchestration`, and `wrapper:*` commands — requires an explicit
-`approvalToken` and returns `409 approval_required` without one. In this slice
-the token is an explicit-intent confirmation on an owner-scoped resource
-(tenancy is the real authorization boundary), **not** a cryptographic approval;
-a real approval-issuance/verification flow is tracked as follow-up.
+`agt_platform_application_control` agent for synchronous control-plane actions
+and through `agt_platform_application_wrapper` for approved npm-wrapper
+commands. Every side-effecting action — `offline`, `archive`, `refresh`,
+`generate_orchestration`, and approval-required `wrapper:*` commands — requires
+an explicit `approvalToken` and returns `409 approval_required` without one. In
+this slice the token is an explicit-intent confirmation on an owner-scoped
+resource (tenancy is the real authorization boundary), **not** a cryptographic
+approval; a real approval-issuance/verification flow is tracked as follow-up.
 
 `app.<application-id>.generate_orchestration` writes a Loop Routine draft into a
 platform-managed, per-application directory (keyed by the unique application id,
@@ -179,22 +208,22 @@ forbidden, and can be validated with `pnpm ai:loop-routine-check`.
 `ccusage` is the reference pattern for NPM-delivered utility software:
 
 ```text
-npm package -> application asset -> governed report capability -> fixed wrapper agents
+npm package -> application asset -> governed report capability -> Application Wrapper Runner
 ```
 
-Existing `ccusage.report` APIs and import guards should remain compatible while
-adding an `app_ccusage` application record later.
+`app_ccusage` now registers as a pinned npm-source Application, projects the six
+offline report capabilities, executes through the Application-backed wrapper
+path, imports usage estimates, and keeps the stable `ccusage.report` facade
+compatible.
 
-## Next Phase: Discovery -> Access -> Execute -> Result
+## Current Runtime Path
 
-The next Application runtime slice should close the product loop around one
-reference application, then generalize only after that path is measured. The
-target operator path is:
+The measured Application runtime loop is:
 
 ```text
 register/probe application
   -> discover governed capabilities
-  -> request approved access
+  -> request approved access or explicit intent
   -> execute through the normal invocation path
   -> inspect imported result, audit evidence, and next step
 ```
@@ -211,16 +240,23 @@ this application do?" without seeing wrapper internals.
   capability.
 - Treat inferred package scripts and exports as candidates until a reviewed
   wrapper descriptor promotes them to approved capabilities.
-- Add regression coverage that discovery survives restart and remains scoped to
-  the owning team/project.
+- Regression coverage now verifies Application MCP descriptor recovery after
+  restart, actor scoping for Application-bound MCP tools, and HTTP
+  list/detail/register/probe/confirm responses that expose only redacted
+  Application snapshots rather than raw MCP adapter command/args/url. MCP
+  candidates also publish structured review fields for manual confirmation:
+  data boundary, file/network policy, allowed tool count, and redacted HTTP
+  endpoint origin/host/protocol. The next hardening step is to keep
+  descriptor/result-path metadata restart-safe as the surface broadens beyond
+  the measured references.
 
 ### 2. Access
 
 Access is the consent and trust boundary. A caller may discover a capability
 without being able to execute it.
 
-- Require owner-scoped authorization plus an explicit approval request for every
-  side-effecting Application capability.
+- Require owner-scoped authorization plus explicit intent or an approval request
+  for every side-effecting Application capability.
 - Show pending approval and duplicate-action guard evidence in both
   Applications and Invocations, using the shared recovery/explanation helpers.
 - Carry bridge/device ownership into wrapper execution so access cannot be
@@ -233,8 +269,8 @@ without being able to execute it.
 
 Execution should be a normal governed invocation, not a hidden adapter shortcut.
 
-- Wire the approved `installed-wrapper` path to the platform Application Wrapper
-  runner for the ccusage reference application first.
+- Keep the approved `installed-wrapper` path wired to the platform Application
+  Wrapper Runner for the ccusage reference application.
 - Preserve argv construction from the reviewed wrapper descriptor and validated
   inputs; do not accept free-form npm commands or free-form wrapper args.
 - Emit invocation, trace, policy decision, local execution preview, refusal, and
@@ -250,19 +286,27 @@ outcome without reading raw diagnostics.
 - Import wrapper completion output into the declared `outputCollection`
   (`reviewFindings`, usage estimates, ledger-adjacent evidence, or application
   result records as appropriate).
-- Attach result refs to the invocation, Application run history, audit summary,
-  and Evidence Center read model.
+- Attach result refs to the invocation, Application latest result, audit
+  summary, and Evidence Center read model.
 - Render result links and next steps in Applications and Invocations, including
   approval pending, policy refusal, executed result, and recovery/view-result
   states.
-- Make restart tests prove that Application records, approval requests,
+- Keep restart tests proving that Application records, approval requests,
   invocation result refs, imported evidence, and audit refs remain explainable.
 
 ### Acceptance Bar
 
-The first closed-loop slice is accepted when a ccusage Application capability
-can be registered, discovered, approved, bridge-executed, completed, imported,
-and inspected through both the API contract and Web UI. The regression suite
-should cover the happy path plus access denied, duplicate guard, local policy
-refusal, restart/read-model restore, and stable `/api/tools/ccusage.report`
-compatibility.
+The first closed-loop slice is accepted for ccusage when its Application
+capability can be registered, discovered, bridge-executed, completed, imported,
+and inspected through both the API contract and Web UI.
+
+The second measured closed-loop slice is accepted for a doocs/md-style MCP
+Application when probe discovers the MCP server, high-confidence rooted `node`
+stdio is auto-registered, `render_markdown` executes through the MCP bridge
+path, result refs link back to invocation/Application/audit/Evidence Center,
+and Web shows MCP tools plus the View invocation path.
+
+The remaining acceptance work is to keep these paths green across restart and
+read-model restore, replace intent-marker approval tokens with real approval
+issuance, add deeper HTTP MCP live-probe/review evidence, and generalize npm
+wrapper execution only after local manifest and consent checks are in place.

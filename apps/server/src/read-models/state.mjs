@@ -1,5 +1,6 @@
 import { LOCAL_TEAM_ID, teamOf } from "../runtime/auth.mjs";
 import { publicDeviceView } from "../runtime/bridge-auth.mjs";
+import { publicApplicationSnapshot } from "../services/applications.mjs";
 
 export function buildPublicState({
   namespace,
@@ -104,7 +105,7 @@ export function buildPublicState({
     users: (state.users ?? []).map(({ passwordHash, ...user }) => user),
     teams: state.teams ?? [],
     projects,
-    applications,
+    applications: applications.map(publicApplicationSnapshot),
     applicationRecoveryActions: byInvocation(state.applicationRecoveryActions)
       .map((request) => applicationRecoveryActionReadModel(
         request,

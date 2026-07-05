@@ -135,6 +135,12 @@ export function createInvocationCreationRuntime({
         codexResumeSessionId,
         codexWorkspacePolicy,
         approvalMode: normalizeCodexApprovalMode(options.approvalMode ?? options.metadata?.permissionMode),
+        ...(typeof options.toolName === "string" && options.toolName.trim()
+          ? { toolName: options.toolName.trim() }
+          : {}),
+        ...(options.toolArguments && typeof options.toolArguments === "object" && !Array.isArray(options.toolArguments)
+          ? { toolArguments: options.toolArguments }
+          : {}),
         metadata: {
           demo: true,
           ...(options.metadata && typeof options.metadata === "object" && !Array.isArray(options.metadata) ? options.metadata : {}),

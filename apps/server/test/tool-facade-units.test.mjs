@@ -133,6 +133,156 @@ test("createToolInvocation rejects a foreign project before creating an invocati
   assert.equal(createInvocationCalls, 0);
 });
 
+test("MCP allowed tools project as governed tools without exposing adapter argv", () => {
+  const state = {
+    projects: [{ id: "projA", ownerTeamId: "team_a" }],
+    worktrees: [],
+    agents: [{
+      id: "agt_doocs_md_mcp",
+      name: "doocs/md MCP",
+      status: "available",
+      health: { status: "unknown" },
+      location: { type: "local_device", deviceId: "dev_1" },
+      adapter: {
+        type: "mcp",
+        kind: "mcp",
+        transport: "stdio",
+        command: "D:/private/doocs-md-mcp.cmd",
+        args: ["--private"],
+        allowedTools: ["render_markdown", "list_themes"],
+        timeoutMs: 60_000,
+      },
+      capabilities: [{ name: "mcp_tool_call", riskLevel: "medium", riskTags: ["local_execution", "markdown_rendering"] }],
+    }],
+    device: { id: "dev_1", unlinkState: "linked" },
+  };
+  const { listTools } = createToolService({
+    state,
+    now,
+    appendEvent: () => {},
+    createInvocation: () => {
+      throw new Error("descriptor discovery must not create an invocation");
+    },
+    startInvocationIfAllowed: () => {},
+    findApplication: () => null,
+    findAgent: (id) => state.agents.find((agent) => agent.id === id) ?? null,
+    planApplicationWrapperInvocation: () => ({ ok: false, status: 500, body: { error: "unexpected_plan" } }),
+  });
+
+  const render = listTools().find((tool) => tool.name === "doocs_md.render_markdown");
+  assert.equal(render?.source, "mcp_agent");
+  assert.equal(render?.mcp?.agentId, "agt_doocs_md_mcp");
+  assert.equal(render?.mcp?.toolName, "render_markdown");
+  assert.equal(render?.outputCollection, "invocations");
+  assert.equal(JSON.stringify(render).includes("doocs-md-mcp.cmd"), false);
+  assert.equal(JSON.stringify(render).includes("--private"), false);
+});
+
+test("MCP shared tool names are stable within the actor-visible application scope", () => {
+  const state = {
+    applications: [
+      { id: "app_team_a", name: "doocs/md", ownerTeamId: "team_a" },
+      { id: "app_team_b", name: "doocs/md", ownerTeamId: "team_b" },
+    ],
+    agents: ["a", "b"].map((suffix) => ({
+      id: `agt_doocs_${suffix}_mcp`,
+      name: `doocs/md MCP ${suffix}`,
+      status: "available",
+      health: { status: "unknown" },
+      location: { type: "local_device", deviceId: "dev_1" },
+      sourceApplicationId: suffix === "a" ? "app_team_a" : "app_team_b",
+      toolNamespace: "doocs_md",
+      adapter: {
+        type: "mcp",
+        kind: "mcp",
+        transport: "stdio",
+        command: "D:/private/doocs-md-mcp.cmd",
+        allowedTools: ["render_markdown"],
+        timeoutMs: 60_000,
+      },
+      capabilities: [{ name: "mcp_tool_call", riskLevel: "medium", riskTags: ["local_execution"] }],
+    })),
+    device: { id: "dev_1", unlinkState: "linked" },
+  };
+  const { getTool, listTools } = createToolService({
+    state,
+    now,
+    appendEvent: () => {},
+    createInvocation: () => {
+      throw new Error("descriptor discovery must not create an invocation");
+    },
+    startInvocationIfAllowed: () => {},
+    findApplication: () => null,
+    findAgent: (id) => state.agents.find((agent) => agent.id === id) ?? null,
+    planApplicationWrapperInvocation: () => ({ ok: false, status: 500, body: { error: "unexpected_plan" } }),
+  });
+
+  const teamBTools = listTools({ userId: "usr_b", teamId: "team_b" }).map((tool) => tool.name);
+  assert.deepEqual(teamBTools.filter((name) => name.startsWith("doocs_md.")), ["doocs_md.render_markdown"]);
+  assert.equal(getTool("doocs_md.render_markdown", { userId: "usr_b", teamId: "team_b" })?.mcp?.agentId, "agt_doocs_b_mcp");
+});
+
+test("MCP governed tool invocation preserves tool arguments for bridge execution", () => {
+  const events = [];
+  let started = null;
+  let created = null;
+  const state = {
+    projects: [{ id: "projA", ownerTeamId: "team_a" }],
+    worktrees: [],
+    agents: [{
+      id: "agt_doocs_md_mcp",
+      name: "doocs/md MCP",
+      status: "available",
+      health: { status: "unknown" },
+      location: { type: "local_device", deviceId: "dev_1" },
+      adapter: {
+        type: "mcp",
+        kind: "mcp",
+        transport: "stdio",
+        command: "D:/private/doocs-md-mcp.cmd",
+        args: ["--private"],
+        allowedTools: ["render_markdown"],
+        timeoutMs: 60_000,
+      },
+      capabilities: [{ name: "mcp_tool_call", riskLevel: "medium", riskTags: ["local_execution"] }],
+    }],
+    device: { id: "dev_1", unlinkState: "linked" },
+  };
+  const { createToolInvocation } = createToolService({
+    state,
+    now,
+    appendEvent: (event) => events.push(event),
+    createInvocation: (task, agent, options) => {
+      created = { task, agent, options };
+      return { id: "inv_mcp", agentId: agent.id, status: "queued", input: { task }, options };
+    },
+    startInvocationIfAllowed: (invocation, agent) => {
+      started = { invocation, agent };
+    },
+    findApplication: () => null,
+    findAgent: (id) => state.agents.find((agent) => agent.id === id) ?? null,
+    planApplicationWrapperInvocation: () => ({ ok: false, status: 500, body: { error: "unexpected_plan" } }),
+  });
+
+  const result = createToolInvocation(
+    "doocs_md.render_markdown",
+    { projectId: "projA", markdown: "# Hello", theme: "default" },
+    { userId: "usr_a", teamId: "team_a" },
+  );
+
+  assert.equal(result.status, 201);
+  assert.equal(result.body.tool, "doocs_md.render_markdown");
+  assert.equal(result.body.agentId, "agt_doocs_md_mcp");
+  assert.equal(created.options.toolName, "render_markdown");
+  assert.deepEqual(created.options.toolArguments, { markdown: "# Hello", theme: "default" });
+  assert.equal(created.options.metadata.providerType, "mcp");
+  assert.equal(created.options.metadata.projectId, "projA");
+  assert.equal(created.options.metadata.mcpToolName, "render_markdown");
+  assert.equal(started.invocation.id, "inv_mcp");
+  assert.equal(events.at(-1).type, "tool_invocation_created");
+  assert.equal(JSON.stringify(result.body).includes("doocs-md-mcp.cmd"), false);
+});
+
 // --- Codex review import service ---
 
 test("recordCodexReviewFindings imports and normalizes findings, keeping raw server-side", () => {

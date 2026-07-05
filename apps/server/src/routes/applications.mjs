@@ -1,4 +1,5 @@
 import { denyForeignProject, teamOf } from "../runtime/auth.mjs";
+import { publicApplicationSnapshot } from "../services/applications.mjs";
 
 export async function handleApplicationRoutes({
   req,
@@ -8,6 +9,7 @@ export async function handleApplicationRoutes({
   readJson,
   state,
   actor,
+  confirmApplicationMcpCandidate,
   findApplication,
   getApplicationOrchestrationRunRecovery,
   listApplicationOrchestrationRecoveryAgentCandidates,
@@ -24,7 +26,7 @@ export async function handleApplicationRoutes({
   runApplicationOrchestration,
 }) {
   if (req.method === "GET" && url.pathname === "/api/applications") {
-    sendJson(res, 200, { applications: visibleApplications(state, actor, listApplications()) });
+    sendJson(res, 200, { applications: visibleApplications(state, actor, listApplications()).map(publicApplicationSnapshot) });
     return true;
   }
 
@@ -42,7 +44,7 @@ export async function handleApplicationRoutes({
     try {
       const application = registerApplication(body, actor);
       sendJson(res, 201, {
-        application,
+        application: publicApplicationSnapshot(application),
         capabilities: listApplicationCapabilities(application.id) ?? [],
       });
     } catch (error) {
@@ -51,6 +53,22 @@ export async function handleApplicationRoutes({
         message: error instanceof Error ? error.message : String(error),
       });
     }
+    return true;
+  }
+
+  const mcpCandidateConfirmMatch = url.pathname.match(/^\/api\/applications\/([^/]+)\/mcp-candidates\/([^/]+)\/confirm$/);
+  if (mcpCandidateConfirmMatch && req.method === "POST") {
+    const applicationId = decodeURIComponent(mcpCandidateConfirmMatch[1]);
+    const candidateId = decodeURIComponent(mcpCandidateConfirmMatch[2]);
+    if (denyForeignApplication({ res, sendJson, state, actor, applicationId, findApplication })) return true;
+    const result = confirmApplicationMcpCandidate(applicationId, candidateId, await readJson(req), actor);
+    sendJson(res, result.status, result.ok
+      ? {
+          application: publicApplicationSnapshot(result.application),
+          candidate: result.candidate,
+          capabilities: listApplicationCapabilities(applicationId) ?? [],
+        }
+      : result.body);
     return true;
   }
 
@@ -201,7 +219,7 @@ export async function handleApplicationRoutes({
         return true;
       }
       sendJson(res, 200, {
-        application,
+        application: publicApplicationSnapshot(application),
         capabilities: listApplicationCapabilities(application.id) ?? [],
       });
     } catch (error) {
@@ -223,7 +241,7 @@ export async function handleApplicationRoutes({
       return true;
     }
     sendJson(res, 200, {
-      application,
+      application: publicApplicationSnapshot(application),
       capabilities: listApplicationCapabilities(application.id) ?? [],
     });
     return true;

@@ -10,7 +10,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 import { after, test } from "node:test";
 
-import { callMcpTool, probeMcpServer } from "../src/mcp-client.mjs";
+import { callMcpTool, mcpHandshakeTimeoutMs, probeMcpServer } from "../src/mcp-client.mjs";
 
 const fixture = resolve(dirname(fileURLToPath(import.meta.url)), "fixtures/mcp-echo-server.mjs");
 
@@ -22,6 +22,13 @@ const echoAdapter = (extra = {}) => ({
   allowedTools: [],
   timeoutMs: 5_000,
   ...extra,
+});
+
+test("mcpHandshakeTimeoutMs: slow-start servers can use the adapter timeout budget", () => {
+  assert.equal(mcpHandshakeTimeoutMs({}), 10_000);
+  assert.equal(mcpHandshakeTimeoutMs({ timeoutMs: 60_000 }), 60_000);
+  assert.equal(mcpHandshakeTimeoutMs({ timeoutMs: 60_000, startupTimeoutMs: 120_000 }), 120_000);
+  assert.equal(mcpHandshakeTimeoutMs({ timeoutMs: 1_000 }), 10_000);
 });
 
 test("happy path: handshake, single-tool default, echo result, notification forwarded", async () => {

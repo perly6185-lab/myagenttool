@@ -25,6 +25,7 @@ const apiMock = vi.hoisted(() => ({
   getApplicationOrchestrationRunRecovery: vi.fn(),
   listApplicationOrchestrationRecoveryAgentCandidates: vi.fn(),
   requestApplicationOrchestrationRecoveryAction: vi.fn(),
+  confirmApplicationMcpCandidate: vi.fn(),
 }));
 
 vi.mock("@/lib/api-client", () => ({
@@ -37,6 +38,7 @@ vi.mock("@/lib/api-client", () => ({
     getApplicationOrchestrationRunRecovery: apiMock.getApplicationOrchestrationRunRecovery,
     listApplicationOrchestrationRecoveryAgentCandidates: apiMock.listApplicationOrchestrationRecoveryAgentCandidates,
     requestApplicationOrchestrationRecoveryAction: apiMock.requestApplicationOrchestrationRecoveryAction,
+    confirmApplicationMcpCandidate: apiMock.confirmApplicationMcpCandidate,
   },
 }));
 
@@ -132,6 +134,72 @@ describe("ApplicationsInspector recovery guidance", () => {
 
     expect(useUiStore.getState().section).toBe("invocations");
     expect(useUiStore.getState().selectedInvocationId).toBe("inv_app_ccusage");
+  });
+
+  it("renders autodetected MCP tools and the Application-bound render result", async () => {
+    apiMock.fetchState.mockResolvedValue(mcpConsoleState());
+    apiMock.listApplicationCapabilities.mockResolvedValue({
+      applicationId: "app_doocs_md",
+      capabilities: [{
+        name: "doocs_md.render_markdown",
+        displayName: "render_markdown",
+        riskLevel: "medium",
+        status: "available",
+        source: "mcp_agent",
+        metadata: {
+          readiness: { state: "ready", reason: "mcp_agent_registered", executionMode: "mcp_stdio" },
+          resultPath: { outputCollection: "invocations", evidenceCenter: true },
+        },
+      }],
+    });
+
+    useUiStore.setState({ selectedApplicationId: "app_doocs_md" });
+    renderWithClient(createElement(ApplicationsInspector));
+
+    expect(await screen.findByText("MCP tools")).toBeTruthy();
+    expect(await screen.findByText("agt_app_doocs_md_mcp")).toBeTruthy();
+    expect(screen.getAllByText("doocs_md.render_markdown").length).toBeGreaterThan(0);
+    expect(screen.getByText("high confidence")).toBeTruthy();
+    expect(screen.getByText("node_entrypoint_inside_application_root")).toBeTruthy();
+    expect(screen.getAllByText("render_markdown").length).toBeGreaterThan(0);
+    expect(screen.getByText("inv_doocs_render")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: /View invocation/i }));
+
+    expect(useUiStore.getState().section).toBe("invocations");
+    expect(useUiStore.getState().selectedInvocationId).toBe("inv_doocs_render");
+  });
+
+  it("confirms a manual MCP candidate from the inspector", async () => {
+    apiMock.fetchState.mockResolvedValue(manualMcpCandidateConsoleState());
+    apiMock.listApplicationCapabilities.mockResolvedValue({
+      applicationId: "app_doocs_md_manual",
+      capabilities: [],
+    });
+    apiMock.confirmApplicationMcpCandidate.mockResolvedValue({
+      application: {
+        id: "app_doocs_md_manual",
+        mcpAgent: { agentId: "agt_app_doocs_md_manual_mcp" },
+      },
+    });
+
+    useUiStore.setState({ selectedApplicationId: "app_doocs_md_manual" });
+    renderWithClient(createElement(ApplicationsInspector));
+
+    expect(await screen.findByText("manual confirm")).toBeTruthy();
+    expect(screen.getByText("stdio_command_requires_manual_confirmation")).toBeTruthy();
+    expect(screen.getByText("local_stdio_process")).toBeTruthy();
+    expect(screen.getByText("read_only files / forbidden network")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: /Confirm MCP/i }));
+
+    await waitFor(() => {
+      expect(apiMock.confirmApplicationMcpCandidate).toHaveBeenCalledWith(
+        "app_doocs_md_manual",
+        "mcp.shell",
+        { approvalToken: "console-operator-confirmed" },
+      );
+    });
   });
 
   it("renders seeded recovery explanation guidance in history and action cards", async () => {
@@ -455,6 +523,158 @@ function closedLoopConsoleState(): ConsoleSnapshot {
       },
       createdAt: "2026-07-04T02:00:00.000Z",
       updatedAt: "2026-07-04T03:05:00.000Z",
+    }],
+    applicationRecoveryActions: [],
+  };
+}
+
+function mcpConsoleState(): ConsoleSnapshot {
+  return {
+    device: {
+      id: "dev_local",
+      name: "Local Workstation",
+      status: "online",
+      platform: "win32",
+      architecture: "x64",
+      lastSeenAt: "2026-07-05T04:00:00.000Z",
+    },
+    agent: null,
+    agents: [],
+    invocations: [{
+      id: "inv_doocs_render",
+      status: "succeeded",
+      agentId: "agt_app_doocs_md_mcp",
+      createdAt: "2026-07-05T04:00:00.000Z",
+      options: {
+        metadata: {
+          providerType: "mcp",
+          applicationId: "app_doocs_md",
+          capability: "doocs_md.render_markdown",
+          mcpToolName: "render_markdown",
+        },
+      },
+    }],
+    events: [],
+    auditSummaries: [],
+    applications: [{
+      id: "app_doocs_md",
+      name: "doocs/md",
+      kind: "repository",
+      status: "active",
+      source: { type: "local", path: "C:\\apps\\doocs-md" },
+      probe: {
+        status: "completed",
+        checkedAt: "2026-07-05T04:00:00.000Z",
+        summary: "Local application path C:\\apps\\doocs-md probed.",
+        capabilities: [],
+        mcpServers: [{
+          id: "mcp.md",
+          serverName: "md",
+          source: "mcp_config",
+          sourcePath: ".vscode/mcp.json",
+          transport: "stdio",
+          toolNamespace: "doocs_md",
+          allowedTools: ["render_markdown", "list_themes"],
+          sharedToolNames: ["doocs_md.render_markdown", "doocs_md.list_themes"],
+          status: "ready",
+          confidence: "high",
+          autoRegister: true,
+          autoRegisterReason: "node_entrypoint_inside_application_root",
+          adapterPreview: { command: "node", argCount: 1 },
+        }],
+        autoRegisteredMcpAgentId: "agt_app_doocs_md_mcp",
+      },
+      mcpAgent: {
+        agentId: "agt_app_doocs_md_mcp",
+        name: "doocs/md MCP",
+        allowedTools: ["render_markdown", "list_themes"],
+        toolNamespace: "doocs_md",
+        sharedToolNames: ["doocs_md.render_markdown", "doocs_md.list_themes"],
+        agentStatus: "available",
+        recovery: {
+          state: "registered",
+          reason: "mcp_agent_autodetected_from_application_probe",
+          nextAction: "The runtime can expose the discovered MCP tools after bridge-side execution policy checks.",
+        },
+        discovery: {
+          source: "application_probe",
+          candidateId: "mcp.md",
+          sourcePath: ".vscode/mcp.json",
+          detectedAt: "2026-07-05T04:00:00.000Z",
+          autoRegistered: true,
+        },
+      },
+      latestResult: {
+        applicationId: "app_doocs_md",
+        capability: "doocs_md.render_markdown",
+        mcpToolName: "render_markdown",
+        outputCollection: "invocations",
+        importedRecordIds: [],
+        importedRecordCount: 0,
+        invocationId: "inv_doocs_render",
+        status: "succeeded",
+        completedAt: "2026-07-05T04:01:00.000Z",
+      },
+      createdAt: "2026-07-05T03:00:00.000Z",
+      updatedAt: "2026-07-05T04:01:00.000Z",
+    }],
+    applicationRecoveryActions: [],
+  };
+}
+
+function manualMcpCandidateConsoleState(): ConsoleSnapshot {
+  return {
+    device: {
+      id: "dev_local",
+      name: "Local Workstation",
+      status: "online",
+      platform: "win32",
+      architecture: "x64",
+      lastSeenAt: "2026-07-05T05:00:00.000Z",
+    },
+    agent: null,
+    agents: [],
+    invocations: [],
+    events: [],
+    auditSummaries: [],
+    applications: [{
+      id: "app_doocs_md_manual",
+      name: "doocs/md",
+      kind: "repository",
+      status: "active",
+      source: { type: "local", path: "C:\\apps\\doocs-md" },
+      probe: {
+        status: "completed",
+        checkedAt: "2026-07-05T05:00:00.000Z",
+        summary: "Local application path C:\\apps\\doocs-md probed.",
+        capabilities: [],
+        mcpServers: [{
+          id: "mcp.shell",
+          serverName: "shell",
+          source: "mcp_config",
+          sourcePath: ".vscode/mcp.json",
+          transport: "stdio",
+          toolNamespace: "doocs_md",
+          allowedTools: ["render_markdown"],
+          sharedToolNames: ["doocs_md.render_markdown"],
+          status: "ready",
+          confidence: "medium",
+          autoRegister: false,
+          autoRegisterReason: "stdio_command_requires_manual_confirmation",
+          adapterPreview: { command: "cmd.exe", argCount: 1 },
+          review: {
+            dataBoundary: "local_stdio_process",
+            requiresManualConfirmation: true,
+            manualConfirmationReason: "stdio_command_requires_manual_confirmation",
+            filePolicy: "read_only",
+            networkPolicy: "forbidden",
+            allowedToolCount: 1,
+          },
+        }],
+      },
+      mcpAgent: null,
+      createdAt: "2026-07-05T05:00:00.000Z",
+      updatedAt: "2026-07-05T05:00:00.000Z",
     }],
     applicationRecoveryActions: [],
   };

@@ -58,6 +58,7 @@ function createStdioSession(adapter, onEvent) {
   const child = spawn(adapter.command, adapter.args ?? [], {
     stdio: ["pipe", "pipe", "pipe"],
     env: buildMcpChildEnv(adapter),
+    ...(adapter.cwd ? { cwd: adapter.cwd } : {}),
   });
 
   let nextId = 1;
@@ -276,12 +277,19 @@ function createMcpSession(adapter, onEvent) {
   return adapter.transport === "http" ? createHttpMcpSession(adapter, onEvent) : createStdioSession(adapter, onEvent);
 }
 
-async function handshake(session) {
+export function mcpHandshakeTimeoutMs(adapter) {
+  const configured = Number(adapter?.startupTimeoutMs ?? adapter?.timeoutMs);
+  return Number.isFinite(configured)
+    ? Math.max(HANDSHAKE_TIMEOUT_MS, Math.floor(configured))
+    : HANDSHAKE_TIMEOUT_MS;
+}
+
+async function handshake(session, timeoutMs = HANDSHAKE_TIMEOUT_MS) {
   await session.request("initialize", {
     protocolVersion: PROTOCOL_VERSION,
     capabilities: {},
     clientInfo: CLIENT_INFO,
-  }, { timeoutMs: HANDSHAKE_TIMEOUT_MS }).promise;
+  }, { timeoutMs }).promise;
   session.send({ jsonrpc: "2.0", method: "notifications/initialized" });
 }
 
@@ -314,14 +322,15 @@ function resolveToolName(adapter, options, tools) {
 export async function callMcpTool({ adapter, task, options = {}, onEvent = () => {}, shouldCancel = () => false }) {
   const session = createMcpSession(adapter, onEvent);
   const timeoutMs = Number(adapter.timeoutMs ?? 60_000);
+  const handshakeTimeoutMs = mcpHandshakeTimeoutMs(adapter);
   let cancelled = false;
   let cancelTimer = null;
 
   try {
-    await handshake(session);
+    await handshake(session, handshakeTimeoutMs);
     if (session.spawnError) throw session.spawnError;
 
-    const listed = await session.request("tools/list", {}, { timeoutMs: HANDSHAKE_TIMEOUT_MS }).promise;
+    const listed = await session.request("tools/list", {}, { timeoutMs: handshakeTimeoutMs }).promise;
     const tools = Array.isArray(listed?.tools) ? listed.tools : [];
     const toolName = resolveToolName(adapter, options, tools);
     const args =
@@ -380,9 +389,10 @@ export async function callMcpTool({ adapter, task, options = {}, onEvent = () =>
  *  command really is a speaking MCP server, not just an existing binary. */
 export async function probeMcpServer(adapter) {
   const session = createMcpSession(adapter, () => {});
+  const handshakeTimeoutMs = mcpHandshakeTimeoutMs(adapter);
   try {
-    await handshake(session);
-    const listed = await session.request("tools/list", {}, { timeoutMs: HANDSHAKE_TIMEOUT_MS }).promise;
+    await handshake(session, handshakeTimeoutMs);
+    const listed = await session.request("tools/list", {}, { timeoutMs: handshakeTimeoutMs }).promise;
     const tools = Array.isArray(listed?.tools) ? listed.tools.map((t) => t.name) : [];
     return { ok: true, message: `MCP server is reachable and exposes ${tools.length} tool(s): ${tools.join(", ") || "none"}.`, tools };
   } catch (error) {

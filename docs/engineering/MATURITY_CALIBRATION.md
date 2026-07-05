@@ -189,7 +189,60 @@ evidenced, not asserted):
   automate up to the PR, keep a human gate on merge/deploy. That convergence —
   not a maturity number — is the defensible external claim.
 
-## Latest Measurement (2026-07-04)
+## Latest Measurement (2026-07-05)
+
+Closeout on `feat/recovery-explanation-web` now includes the P1-P4
+Application MCP closed loop for doocs/md: durable explanation evidence,
+bridge-side local MCP trust checks, Application discovery/access/execute/result
+UX, and the round-end maturity/backlog measurement update.
+
+- `pnpm docs:check` verified Markdown relative links after the checker
+  hardening that ignores nested Git repositories such as a registered external
+  application checkout, skips generated dependency/state directories at any
+  depth, and treats empty Markdown files as empty text rather than a null regex
+  input.
+- `pnpm repo:check` verified the repository scaffold still matches the expected
+  workspace shape.
+- `pnpm typecheck` verified all typed workspace packages and apps, including the
+  server-side MCP tool facade, Application MCP probe/read-model types, desktop
+  MCP local-execution gate, and Web Applications inspector MCP/result fields.
+- `pnpm test` verified workspace unit suites plus `smoke:local` and
+  `smoke:port`. What it specifically measured for this closeout:
+  Application-bound MCP agents with `allowedTools` project governed shared tool
+  names such as `doocs_md.render_markdown`; Application probe reads both
+  `servers` and `mcpServers` config shapes, classifies high-confidence stdio
+  `node` entrypoints inside the Application root for auto-registration, keeps
+  shell/HTTP candidates as manual-confirm evidence, and redacts HTTP query
+  strings from previews; a doocs/md-like executable MCP fixture is invoked
+  through `doocs_md.render_markdown` and the result is linked back to the
+  invocation result, Application `latestResult`, audit summary, and Evidence
+  Center; MCP descriptors keep adapter command/argv hidden while publishing
+  readiness/result-path metadata; App-scoped MCP tools remain hidden from
+  foreign teams; the Desktop Bridge refuses MCP stdio execution before spawn
+  when command, cwd, args, file policy, or network policy violate the local
+  allowlist and records `local_execution_refused` evidence; and the Web
+  Applications inspector renders registered MCP tools, probe confidence,
+  latest MCP result, and the View invocation path. Existing durable-state tests
+  re-measured restart/read-model/audit-ref coverage for approval, policy, and
+  export evidence. MCP smoke still proves live registration, probe, call, and
+  allowlist refusal. `smoke:local` still emitted a handled
+  `bridge_invocation_not_active` event-post warning during cancellation timing,
+  but the suite completed successfully.
+- `pnpm github:dora` measured 206 merged PRs over 30 days: median lead time
+  0.03h, p90 0.48h, deploy-frequency proxy 48.07/week, CI green on merged PRs
+  73.8% (152/206, with 47 merged PRs carrying no checks), and 0 recorded
+  change-failure incidents since the 2026-07-04 signal adoption. Evidence:
+  `.myagenttool/metrics/2026-07-05T02-23-45-784Z-dora/`.
+- `pnpm github:backlog` measured 29 open issues with required labels 29/29,
+  milestones 29/29, and 9 stale items older than 14 days (#125, #124, #123,
+  #122, #121, #118, #117, #116, #114). Evidence:
+  `.myagenttool/metrics/2026-07-05T02-23-39-172Z-backlog/`.
+- `pnpm ai:eval-heldout` measured the hermetic mock held-out set at 66.7%
+  (4/6): hb-001, hb-002, hb-003, and hb-005 passed; hb-004 produced no file
+  changes and hb-006 remains vacuous because verify already passes at base.
+  Evidence: `.myagenttool/evals/2026-07-05T02-23-36-394Z-heldout/`.
+
+## Previous Measurement (2026-07-04)
 
 Closeout on `feat/recovery-explanation-web` now includes the Application
 `discover -> access -> execute -> result` implementation slice, not just the

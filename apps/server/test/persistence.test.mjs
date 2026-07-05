@@ -10,12 +10,15 @@ import { createPersistenceRuntime } from "../src/runtime/persistence.mjs";
 import { createServerRuntimeServices } from "../src/runtime/service-composer.mjs";
 import { createServerState } from "../src/runtime/state-factory.mjs";
 import { createAgentService } from "../src/services/agents.mjs";
+import { createApplicationService } from "../src/services/applications.mjs";
+import { CCUSAGE_APPLICATION_ID, createCcusageApplicationRegistration } from "../src/services/ccusage-application.mjs";
 import { CCUSAGE_VERSION } from "../src/services/ccusage-agent.mjs";
 import { createCcusageImportService } from "../src/services/ccusage-imports.mjs";
 import { createClaudeReviewImportService } from "../src/services/claude-review-imports.mjs";
 import { createCodexReviewImportService } from "../src/services/codex-review-imports.mjs";
 import { createCodexService } from "../src/services/codex.mjs";
 import { createIntegrationService } from "../src/services/integrations.mjs";
+import { createInvocationCompletionRuntime } from "../src/services/invocations/completion.mjs";
 import { createM3Service } from "../src/services/m3.mjs";
 import { sameProjectPath } from "../src/services/projects.mjs";
 import { createTerminalService } from "../src/services/terminal.mjs";
@@ -320,6 +323,119 @@ test("persistence restores imported usage and review evidence across runtime res
     const exportRequest = restoredM3.createAuditExportRequest({ subjects: ["usage"], dryRun: false });
     assert.equal(exportRequest.status, "exported");
     assert(exportRequest.manifest.recordRefs.some((ref) => ref.subject === "usage" && ref.id === usage[0].id), "imported usage estimate should remain exportable after restore");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("persistence restores Application result links across runtime restart", () => {
+  const root = join(tmpdir(), `myagenttool-persistence-application-result-test-${Date.now()}`);
+  const projectPath = join(root, "project");
+  const stateStorePath = join(root, "state", "snapshot.json");
+  mkdirSync(projectPath, { recursive: true });
+
+  try {
+    const first = createServerState({ defaultProjectPath: projectPath, now });
+    let id = 0;
+    const nextId = (prefix) => `${prefix}_${++id}`;
+    const appendEvent = (event) => first.state.events.push({ id: nextId("evt"), createdAt: now(), ...event });
+    first.state.agents.push({
+      id: "agt_platform_application_wrapper",
+      name: "Application Wrapper Runner",
+      economics: { model: "free", costOwner: "usr_local", currency: "USD" },
+    });
+    const appSvc = createApplicationService({
+      state: first.state,
+      now,
+      nextId,
+      appendEvent,
+      persistStateSoon: () => {},
+      addProject: () => null,
+      cloneProject: () => null,
+      defaultProjectPath: projectPath,
+    });
+    appSvc.registerApplication(createCcusageApplicationRegistration());
+    const invocation = {
+      id: "inv_app_ccusage_restore",
+      agentId: "agt_platform_application_wrapper",
+      requestedBy: "usr_local",
+      projectId: first.defaultProject.id,
+      status: "running",
+      input: { task: "Run application capability app.app_ccusage.wrapper.daily." },
+      options: {
+        metadata: {
+          providerType: "application",
+          applicationId: CCUSAGE_APPLICATION_ID,
+          capability: "app.app_ccusage.wrapper.daily",
+          applicationWrapper: {
+            outputCollection: "importedUsageEstimates",
+            resultImport: { source: "ccusage", kind: "usage_estimates", amountSource: "imported_ccusage_report" },
+          },
+        },
+      },
+      delivery: { deviceId: "dev_local_001" },
+      cancellation: { state: "none" },
+      createdAt: now(),
+    };
+    first.state.invocations.push(invocation);
+    const { recordCcusageImportedEstimates } = createCcusageImportService({
+      state: first.state,
+      now,
+      nextId,
+      appendEvent,
+    });
+    const completion = createInvocationCompletionRuntime({
+      state: first.state,
+      now,
+      appendEvent,
+      persistStateSoon: () => {},
+      namespace: "test",
+      protocolVersion: "0",
+      findAgent: (agentId) => first.state.agents.find((agent) => agent.id === agentId) ?? null,
+      findInvocation: (invocationId) => first.state.invocations.find((item) => item.id === invocationId) ?? null,
+      closeCodexSession: () => {},
+      isTerminal: (status) => ["succeeded", "failed", "cancelled", "timed_out", "expired", "rejected"].includes(status),
+      recordInvocationLedgerEntry: () => null,
+      recordCcusageImportedEstimates,
+    });
+
+    completion.completeInvocation(invocation, {
+      status: "succeeded",
+      summary: "Application wrapper daily report completed.",
+      result: {
+        output: {
+          source: "application",
+          capability: "app.app_ccusage.wrapper.daily",
+          report: [{ date: "2026-07-04", provider: "openai", model: "gpt-5", totalCostUsd: 0.25, totalTokens: 100 }],
+        },
+      },
+    });
+    const imported = first.state.importedUsageEstimates[0];
+    assert(imported, "test setup should import the ccusage Application result");
+
+    saveState(first, { stateStorePath });
+
+    const second = createServerState({ defaultProjectPath: projectPath, now });
+    restoreState(second, { stateStorePath });
+    const restoredInvocation = second.state.invocations.find((item) => item.id === invocation.id);
+    const restoredApp = second.state.applications.find((item) => item.id === CCUSAGE_APPLICATION_ID);
+    const restoredAudit = second.state.auditSummaries.find((item) => item.invocationId === invocation.id);
+    const publicState = publicStateFor(second.state, { defaultProjectPath: projectPath });
+    const publicApp = publicState.applications.find((item) => item.id === CCUSAGE_APPLICATION_ID);
+    const appEvidence = publicState.evidenceCenterRecords.find((item) => item.id === `${invocation.id}:application_result`);
+    const usageEvidence = publicState.evidenceCenterRecords.find((item) => item.id === imported.id);
+
+    assert.equal(restoredInvocation?.result?.applicationResult?.importedRecordIds?.[0], imported.id);
+    assert.equal(restoredInvocation?.options?.metadata?.applicationResult?.importedRecordCount, 1);
+    assert.equal(restoredApp?.latestResult?.invocationId, invocation.id);
+    assert.equal(restoredApp?.latestResult?.importedRecordIds?.[0], imported.id);
+    assert.equal(restoredAudit?.applicationResult?.importedRecordIds?.[0], imported.id);
+    assert.equal(publicApp?.latestResult?.importedRecordIds?.[0], imported.id);
+    assert.equal(appEvidence?.source, "application_capability_result");
+    assert.equal(appEvidence?.type, "application_result");
+    assert.match(appEvidence?.summary ?? "", /app\.app_ccusage\.wrapper\.daily/);
+    assert.equal(usageEvidence?.source, "imported_ccusage_report");
+    assert.equal(usageEvidence?.type, "usage_estimate");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

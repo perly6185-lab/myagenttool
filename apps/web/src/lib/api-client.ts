@@ -267,6 +267,12 @@ export const api = {
   ) => request("POST", `/api/applications/${encodeURIComponent(id)}/${action}`, body),
   generateApplicationOrchestration: (id: string, body: { approvalToken?: string } = {}) =>
     request("POST", `/api/applications/${encodeURIComponent(id)}/orchestrations/generate`, body),
+  confirmApplicationMcpCandidate: (id: string, candidateId: string, body: { approvalToken?: string } = {}) =>
+    request(
+      "POST",
+      `/api/applications/${encodeURIComponent(id)}/mcp-candidates/${encodeURIComponent(candidateId)}/confirm`,
+      body,
+    ),
   runApplicationOrchestration: (
     id: string,
     routineId: string,

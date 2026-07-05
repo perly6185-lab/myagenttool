@@ -13,6 +13,7 @@ import {
   createLocalExecutionPolicyManifest,
   localExecutionGate,
   localPolicyForAdapter,
+  mcpLocalExecutionGate,
 } from "./local-execution-policy.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -1021,6 +1022,27 @@ async function runInvocation(work) {
 // server, and completes the invocation with the client's terminal outcome. The
 // ack already happened in runInvocation before dispatching here.
 async function runMcpInvocation(work) {
+  const gate = mcpLocalExecutionGate(work, work.adapter, { manifest: localExecutionPolicyManifest });
+  if (!gate.allowed) {
+    await request("POST", "/api/bridge/events", {
+      invocationId: work.invocationId,
+      type: "local_execution_refused",
+      level: "error",
+      message: gate.reason,
+      data: gate.evidence
+    });
+    await request("POST", "/api/bridge/complete", {
+      invocationId: work.invocationId,
+      status: "failed",
+      summary: gate.reason,
+      result: {
+        touchedUserFiles: false,
+        policyDecision: "local_execution_refused",
+        localExecutionGate: gate.evidence
+      }
+    });
+    return;
+  }
   await runClientInvocation(work, callMcpTool, "MCP server");
 }
 

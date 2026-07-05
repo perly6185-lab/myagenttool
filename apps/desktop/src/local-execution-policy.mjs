@@ -40,6 +40,8 @@ export function createLocalExecutionPolicyManifest({
       codex: { file: ["native_controls", "workspace_write", "read_only"], network: ["native_controls", "restricted", "network"] },
       claude: { file: ["native_controls", "workspace_write", "read_only"], network: ["native_controls", "restricted", "network"] },
       wrapper: { file: ["read_only"], network: ["forbidden"] },
+      mcpStdio: { file: ["read_only"], network: ["forbidden", "restricted"] },
+      mcpHttp: { file: ["read_only"], network: ["restricted", "network"] },
     },
   };
 }
@@ -65,11 +67,82 @@ export function localPolicyForAdapter(adapter, payload = {}) {
       source: "coding_cli_native_controls",
     };
   }
+  if (adapter?.type === "mcp") {
+    return {
+      filePolicy: normalizePolicy(adapter?.filePolicy, "read_only"),
+      networkPolicy: normalizePolicy(adapter?.networkPolicy, adapter?.transport === "http" ? "restricted" : "forbidden"),
+      source: "mcp_adapter",
+    };
+  }
   return {
     filePolicy: normalizePolicy(adapter?.filePolicy, "read_only"),
     networkPolicy: normalizePolicy(adapter?.networkPolicy, "forbidden"),
     source: "adapter_default",
   };
+}
+
+export function mcpLocalExecutionGate(work, adapter, { manifest } = {}) {
+  const localPolicy = localPolicyForAdapter(adapter, work);
+  const approvedRoots = collectApprovedRoots(work, adapter);
+  const evidence = {
+    adapterType: adapter?.type ?? "unknown",
+    transport: adapter?.transport ?? null,
+    command: adapter?.command ?? null,
+    cwd: adapter?.cwd ?? null,
+    approvedRoots,
+    filePolicy: localPolicy.filePolicy,
+    networkPolicy: localPolicy.networkPolicy,
+    policySource: localPolicy.source,
+    manifestVersion: manifest?.version ?? null,
+  };
+  if (adapter?.type !== "mcp") {
+    return refused(`Local execution gate refused adapter type ${adapter?.type ?? "unknown"}.`, evidence);
+  }
+  if (adapter.transport === "http") {
+    if (!policyAllowed(manifest, "mcpHttp", localPolicy)) {
+      return refused("Local execution gate refused an MCP HTTP transport whose file or network policy exceeds the local allowlist.", evidence);
+    }
+    return { allowed: true, reason: "Local execution gate allowed the governed MCP HTTP transport.", evidence };
+  }
+  if (adapter.transport !== "stdio") {
+    return refused(`Local execution gate refused MCP transport ${adapter.transport ?? "unknown"}.`, evidence);
+  }
+  if (!adapter.command || !Array.isArray(adapter.args)) {
+    return refused("Local execution gate refused an incomplete MCP stdio adapter.", evidence);
+  }
+  const commandName = String(adapter.command).split(/[\\/]/).at(-1)?.toLowerCase();
+  if (!["node", "node.exe"].includes(commandName) && adapter.command !== process.execPath) {
+    return refused("Local execution gate refused a non-allowlisted MCP stdio command.", evidence);
+  }
+  if (adapter.args.some((arg) => String(arg).includes("\0"))) {
+    return refused("Local execution gate refused an MCP argv containing a NUL byte.", evidence);
+  }
+  if (!FILE_POLICIES.has(localPolicy.filePolicy) || !NETWORK_POLICIES.has(localPolicy.networkPolicy)) {
+    return refused("Local execution gate refused an unknown MCP file or network policy.", evidence);
+  }
+  if (!policyAllowed(manifest, "mcpStdio", localPolicy)) {
+    return refused("Local execution gate refused an MCP stdio policy outside the local allowlist.", evidence);
+  }
+  if (adapter.cwd) {
+    if (!isAbsolute(adapter.cwd) || !existsSync(adapter.cwd)) {
+      return refused("Local execution gate refused an MCP cwd that is missing or non-absolute.", evidence);
+    }
+    if (approvedRoots.length > 0 && !approvedRoots.some((root) => pathWithin(root, adapter.cwd))) {
+      return refused("Local execution gate refused an MCP cwd outside the approved project or application root.", evidence);
+    }
+  }
+  const entrypoint = mcpEntrypoint(adapter.args, adapter.cwd);
+  evidence.entrypoint = entrypoint;
+  if (!entrypoint) {
+    return refused("Local execution gate refused an MCP stdio adapter without a rooted script entrypoint.", evidence);
+  }
+  if (!isAbsolute(entrypoint) || !existsSync(entrypoint)) {
+    return refused("Local execution gate refused an MCP stdio entrypoint that is missing or non-absolute.", evidence);
+  }
+  if (approvedRoots.length > 0 && !approvedRoots.some((root) => pathWithin(root, entrypoint))) {
+    return refused("Local execution gate refused an MCP stdio entrypoint outside the approved project or application root.", evidence);
+  }
+  return { allowed: true, reason: "Local execution gate allowed the governed MCP stdio command.", evidence };
 }
 
 export function localExecutionGate(work, adapter, spawnPlan, { permissionDecision, permissionHook, manifest } = {}) {
@@ -303,14 +376,23 @@ function normalizePolicy(value, fallback) {
   return FILE_POLICIES.has(text) || NETWORK_POLICIES.has(text) ? text : fallback;
 }
 
-function collectApprovedRoots(work) {
+function collectApprovedRoots(work, adapter = null) {
   const metadata = work?.options?.metadata && typeof work.options.metadata === "object" && !Array.isArray(work.options.metadata)
     ? work.options.metadata
     : {};
-  const roots = [work?.project?.path, metadata.worktreePath, metadata.projectPath].filter(
+  const roots = [work?.project?.path, metadata.worktreePath, metadata.projectPath, metadata.applicationPath, adapter?.applicationPath].filter(
     (value) => typeof value === "string" && value.trim(),
   );
   return [...new Set(roots.map((value) => resolve(value)))];
+}
+
+function mcpEntrypoint(args, cwd = null) {
+  for (const arg of args ?? []) {
+    const text = String(arg ?? "");
+    if (!/\.(?:mjs|cjs|js|ts|tsx)$/i.test(text)) continue;
+    return isAbsolute(text) ? resolve(text) : cwd ? resolve(cwd, text) : null;
+  }
+  return null;
 }
 
 function pathWithin(root, target) {

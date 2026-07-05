@@ -27,6 +27,8 @@ export const MCP_ADAPTER_CONTRACT = Object.freeze({
 const TRANSPORTS = new Set(["stdio", "http"]);
 const DEFAULT_TIMEOUT_MS = 60_000;
 const MIN_TIMEOUT_MS = 1_000;
+const FILE_POLICIES = new Set(["forbidden", "read_only", "workspace_write", "native_controls"]);
+const NETWORK_POLICIES = new Set(["forbidden", "restricted", "network", "native_controls"]);
 
 function asStringArray(value) {
   if (!Array.isArray(value)) return [];
@@ -49,19 +51,35 @@ export function normalizeMcpAdapterConfig(input = {}) {
   const timeoutMs = Number.isFinite(Number(input.timeoutMs))
     ? Math.max(MIN_TIMEOUT_MS, Math.floor(Number(input.timeoutMs)))
     : DEFAULT_TIMEOUT_MS;
+  const startupTimeoutMs = Number.isFinite(Number(input.startupTimeoutMs))
+    ? Math.max(MIN_TIMEOUT_MS, Math.floor(Number(input.startupTimeoutMs)))
+    : null;
+  const filePolicy = normalizePolicy(input.filePolicy, FILE_POLICIES, "read_only");
+  const networkPolicy = normalizePolicy(
+    input.networkPolicy,
+    NETWORK_POLICIES,
+    transport === "http" ? "restricted" : "forbidden",
+  );
+  const applicationPath = stringOrNull(input.applicationPath);
 
   if (transport === "stdio") {
     const command = String(input.command ?? "").trim();
     if (!command) {
       throw new Error("MCP stdio transport requires a command.");
     }
+    const cwd = stringOrNull(input.cwd);
     return Object.freeze({
       kind: "mcp",
       transport,
       command,
       args: asStringArray(input.args),
+      ...(cwd ? { cwd } : {}),
+      ...(applicationPath ? { applicationPath } : {}),
+      filePolicy,
+      networkPolicy,
       allowedTools,
       timeoutMs,
+      ...(startupTimeoutMs !== null ? { startupTimeoutMs } : {}),
     });
   }
 
@@ -79,8 +97,12 @@ export function normalizeMcpAdapterConfig(input = {}) {
     transport,
     url,
     headers,
+    ...(applicationPath ? { applicationPath } : {}),
+    filePolicy,
+    networkPolicy,
     allowedTools,
     timeoutMs,
+    ...(startupTimeoutMs !== null ? { startupTimeoutMs } : {}),
   });
 }
 
@@ -104,4 +126,14 @@ export function describeMcpToolCall(config, toolName, args = {}) {
     method: "tools/call",
     params: { name, arguments: args_ },
   };
+}
+
+function normalizePolicy(value, allowed, fallback) {
+  const text = String(value ?? "").trim();
+  return allowed.has(text) ? text : fallback;
+}
+
+function stringOrNull(value) {
+  const text = String(value ?? "").trim();
+  return text ? text : null;
 }

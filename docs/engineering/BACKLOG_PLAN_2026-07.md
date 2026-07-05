@@ -58,6 +58,44 @@ See `docs/engineering/NEXT_PHASE_PLAN_2026-07.md` for the operating plan.
   held-out pass rate 4/6. `smoke:local` emitted one handled
   `bridge_invocation_not_active` event-post warning during cancellation timing,
   but the suite completed successfully.
+- **2026-07-05 P1-P4 Application MCP closed-loop measurement:** the doocs/md
+  path now covers discovery -> access -> execute -> result through its own MCP
+  server, with durable evidence and local bridge refusal checks. What was
+  tested: MCP agents with `allowedTools` publish stable governed tool names
+  such as `doocs_md.render_markdown`; discovery hides adapter command/argv
+  while retaining provider/tool metadata; `/api/capabilities/:name/invocations`
+  creates a bridge-dispatched invocation with preserved `toolName` and
+  `toolArguments`; an Application can persist an `mcpAgent` descriptor and
+  recover the Agent plus shared tool names after restart when the Agent row is
+  missing; existing durable-state tests still restore approval, policy, and
+  export evidence with explainable read-model/audit references; App-scoped MCP
+  tools are hidden from a foreign team in both `/api/tools` and
+  `/api/capabilities`; same-namespace MCP tools are named only within the
+  actor-visible Application scope; Application probe reads doocs/md-style
+  `.vscode/mcp.json`, `.cursor/mcp.json`, and root `.mcp.json` entries,
+  supports both `servers` and `mcpServers`, redacts HTTP query/hash/userinfo in
+  previews, auto-registers only high-confidence stdio `node` entrypoints whose
+  script stays inside the Application root, and keeps shell/HTTP candidates as
+  manual-confirm evidence; a doocs/md-like executable MCP fixture really calls
+  `render_markdown` and links the rendered result across invocation result,
+  Application `latestResult`, audit summary, and Evidence Center; the Desktop
+  Bridge refuses local MCP stdio execution before spawn when command, cwd,
+  entrypoint args, file policy, or network policy violates the local allowlist,
+  with structured `local_execution_refused` evidence; and the Web Applications
+  inspector shows registered MCP tools, probe confidence, latest MCP result,
+  and the View invocation path. The existing MCP smoke still proves live
+  registration, probe, call, and allowlist refusal.
+  Round-end gates measured docs links, repo scaffold, all typed workspace
+  surfaces, full workspace test + local/port smoke, DORA delivery health,
+  backlog hygiene, and held-out AI behavior. The remaining measured gaps are CI
+  green rate 73.8% vs 95%, 9 stale backlog items (#125, #124, #123, #122, #121,
+  #118, #117, #116, #114), and mock held-out pass rate 4/6. `docs:check` was
+  hardened to ignore nested Git repositories and generated dependency/state
+  directories, so registered external application checkouts no longer poison
+  repository-doc link validation. Evidence:
+  `.myagenttool/metrics/2026-07-05T02-23-45-784Z-dora/`,
+  `.myagenttool/metrics/2026-07-05T02-23-39-172Z-backlog/`, and
+  `.myagenttool/evals/2026-07-05T02-23-36-394Z-heldout/`.
 
 ## P1 - Durable control-plane state
 
@@ -129,6 +167,12 @@ every local execution surface:
   is refused as non-allowlisted, and a wrapper child cwd outside the approved
   project/worktree root is refused with structured `local_execution_refused`
   evidence.
+- **Application MCP local gate (this PR):** stdio MCP execution is now checked
+  at the Desktop Bridge before spawn. What was tested: rooted doocs/md-style
+  `node` entrypoints are allowed; entrypoints outside the Application root,
+  non-node commands, and expanded network policy are refused; refused bridge
+  execution completes the invocation as failed and emits structured
+  `local_execution_refused` evidence.
 - Remaining (#426): a bridge-side PTY gate mirroring the server-side terminal
   confinement, and general approval-evidence enforcement + an independent local
   consent record. The principle stands: server policy approval does not by
@@ -165,8 +209,29 @@ product-quality focus:
   wrapper runner starts; result imports are linked to invocation/app/audit and
   Evidence Center; and Web Applications inspector surfaces the latest result
   with a navigation path back to the invocation.
-- Next focus: harden this same loop across restart/read-model evidence and
-  only then generalize beyond ccusage.
+- Status: the doocs/md MCP slice now exercises the same closed-loop pattern
+  through a project-owned MCP server. Discover finds config/source candidates
+  with confidence/manual-confirm evidence; access publishes governed
+  `doocs_md.*` capability names without exposing adapter argv; execute calls
+  `render_markdown` through the MCP bridge path; result links the rendered
+  output across invocation/Application/audit/Evidence Center; and Web shows MCP
+  tools, probe confidence, latest result, and View invocation.
+- Status: live manual-confirm UX now exists for ready MCP candidates. The Web
+  Applications inspector can confirm a manual candidate through explicit intent,
+  and the server persists the descriptor, registers the Agent, and projects
+  shared tool names without exposing adapter argv.
+- Status: the HTTP Application surface now returns redacted Application
+  snapshots for list/detail/register/probe/confirm and `/api/state`; MCP
+  `adapter` command/args/url stay internal while Web still receives probe
+  previews, shared tool names, recovery, discovery, and latest-result refs.
+- Status: MCP candidates now carry structured manual-confirm review details:
+  data boundary, file/network policy, allowed tool count, and redacted HTTP
+  endpoint origin/host/protocol. The Applications inspector renders these
+  fields, while query tokens, headers, full argv, and raw adapter config remain
+  server-internal.
+- Next focus: keep restart/read-model evidence green while broadening beyond
+  ccusage and doocs/md, add real approval issuance/verification, and avoid
+  auto-registering anything riskier than rooted `node` stdio.
 - **Discover:** make Application capability descriptors complete enough for
   external and Web callers to choose a capability without adapter knowledge:
   readiness, risk, approval, schema, output collection, and result-import

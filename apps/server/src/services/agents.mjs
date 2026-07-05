@@ -121,7 +121,7 @@ export function createAgentService({ state, now, nextId, appendEvent, persistSta
     // the server locally; http reaches a remote endpoint — kept on the bridge
     // so servers on networks only the user's device can reach stay usable).
     const id = sanitizeAgentId(body.id ?? nextId("agt_mcp"));
-    return baseAgent({
+    const agent = baseAgent({
       id,
       type: "mcp",
       name: body.name ?? "MCP Server Agent",
@@ -148,6 +148,11 @@ export function createAgentService({ state, now, nextId, appendEvent, persistSta
       economics: normalizeAgentEconomics(body),
       toolContract: normalizeToolContract(body.toolContract ?? body.adapter?.toolContract),
     });
+    const toolNamespace = String(body.toolNamespace ?? body.adapter?.toolNamespace ?? "").trim();
+    if (toolNamespace) agent.toolNamespace = toolNamespace;
+    const sourceApplicationId = String(body.sourceApplicationId ?? body.applicationId ?? "").trim();
+    if (sourceApplicationId) agent.sourceApplicationId = sourceApplicationId;
+    return agent;
   }
 
   function createA2aAgent(body) {

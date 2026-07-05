@@ -10,7 +10,12 @@ import {
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, resolve, sep } from "node:path";
 import { createAgentSkillService } from "../services/agent-skills.mjs";
-import { createApplicationService, validateApplicationRoutineDraft } from "../services/applications.mjs";
+import {
+  applicationMcpAgentRegistration,
+  applicationMcpSharedToolNames,
+  createApplicationService,
+  validateApplicationRoutineDraft,
+} from "../services/applications.mjs";
 import { createCapabilityService } from "../services/capabilities.mjs";
 import { createCcusageImportService } from "../services/ccusage-imports.mjs";
 import { createClaudeReviewImportService } from "../services/claude-review-imports.mjs";
@@ -104,13 +109,25 @@ export function createServerRuntimeServices({
   } = createAgentSkillService({ state, now, nextId, persistStateSoon });
 
   const {
+    completeHealthCheck,
+    createAgentHealthCheck,
+    disableAgent,
+    enableAgent,
+    findAgent,
+    markHealthCheckStarted,
+    nextBridgeHealthCheck,
+    registerAgent,
+  } = createAgentService({ state, now, nextId, appendEvent, persistStateSoon });
+
+  const {
+    confirmApplicationMcpCandidate: confirmApplicationMcpCandidateBase,
     findApplication,
     invokeApplicationCapability,
     listApplicationCapabilities,
     listApplications,
     planApplicationWrapperInvocation,
-    probeApplication,
-    registerApplication,
+    probeApplication: probeApplicationBase,
+    registerApplication: registerApplicationBase,
     transitionApplication,
   } = createApplicationService({
     state,
@@ -123,16 +140,62 @@ export function createServerRuntimeServices({
     defaultProjectPath,
   });
 
-  const {
-    completeHealthCheck,
-    createAgentHealthCheck,
-    disableAgent,
-    enableAgent,
-    findAgent,
-    markHealthCheckStarted,
-    nextBridgeHealthCheck,
-    registerAgent,
-  } = createAgentService({ state, now, nextId, appendEvent, persistStateSoon });
+  function reconcileApplicationMcpAgent(application, actor = null, { startup = false } = {}) {
+    const registration = applicationMcpAgentRegistration(application);
+    if (!registration) return null;
+    const existed = Boolean(state.agents?.some((agent) => agent.id === registration.id));
+    const agent = registerAgent(registration, actor);
+    agent.sourceApplicationId = application.id;
+    agent.toolNamespace = registration.toolNamespace;
+    agent.updatedAt = now();
+    application.mcpAgent = {
+      ...application.mcpAgent,
+      agentId: agent.id,
+      agentStatus: agent.status,
+      sharedToolNames: applicationMcpSharedToolNames(application),
+      lastRecoveredAt: now(),
+    };
+    persistStateSoon();
+    if (!existed) {
+      appendEvent({
+        invocationId: null,
+        type: "application_mcp_agent_recovered",
+        level: startup ? "info" : "info",
+        message: `${application.name} MCP agent registered from application descriptor.`,
+        data: {
+          applicationId: application.id,
+          agentId: agent.id,
+          sharedToolNames: application.mcpAgent.sharedToolNames,
+          startup,
+        },
+      });
+    }
+    return agent;
+  }
+
+  function registerApplication(body = {}, actor = null) {
+    const application = registerApplicationBase(body, actor);
+    reconcileApplicationMcpAgent(application, actor);
+    return application;
+  }
+
+  function probeApplication(applicationId, actor = null) {
+    const application = probeApplicationBase(applicationId, actor);
+    if (application) reconcileApplicationMcpAgent(application, actor);
+    return application;
+  }
+
+  function confirmApplicationMcpCandidate(applicationId, candidateId, input = {}, actor = null) {
+    const result = confirmApplicationMcpCandidateBase(applicationId, candidateId, input, actor);
+    if (result?.application) {
+      reconcileApplicationMcpAgent(result.application, actor);
+    }
+    return result;
+  }
+
+  for (const application of state.applications ?? []) {
+    reconcileApplicationMcpAgent(application, null, { startup: true });
+  }
 
   const {
     closeCodexSession,
@@ -1774,11 +1837,13 @@ export function createServerRuntimeServices({
     codexSessionForInvocation,
     completeDiscoveryRun,
     completeHealthCheck,
+    confirmApplicationMcpCandidate,
     completeIntegrationProbeRun,
     completeInvocation,
     createAgentHealthCheck,
     createCapabilityInvocation,
     findApplication,
+    confirmApplicationMcpCandidate,
     getApplicationOrchestrationRunRecovery,
     listApplicationOrchestrationRecoveryAgentCandidates,
     getApplicationOrchestrationRun,
@@ -1898,6 +1963,7 @@ export function createServerRuntimeServices({
     deleteAgentSkill,
     createCapabilityInvocation,
     findApplication,
+    confirmApplicationMcpCandidate,
     getApplicationOrchestrationRunRecovery,
     listApplicationOrchestrationRecoveryAgentCandidates,
     getApplicationOrchestrationRun,

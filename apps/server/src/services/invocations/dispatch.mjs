@@ -11,7 +11,7 @@ export function createInvocationDispatchRuntime({
   // The directory a run occupies. Two runs in the same worktree (or the same
   // base project) must not execute concurrently — they'd write the same tree.
   function invocationDirKey(invocation) {
-    const meta = invocation.input?.metadata ?? {};
+    const meta = invocation.options?.metadata ?? invocation.input?.metadata ?? {};
     return meta.worktreePath || meta.projectPath || "__default__";
   }
 
