@@ -37,6 +37,7 @@ import { cn } from "@/lib/cn";
 import { readableDelivery, readableStatus, statusTone } from "@/lib/readable-labels";
 import type {
   ConsoleSnapshot,
+  InvocationExplanation,
   InvocationSnapshot,
 } from "@/lib/console-state";
 
@@ -138,10 +139,12 @@ function OperatorExplanationCard({
   state: ConsoleSnapshot | null;
   onViewInvocation: (invocationId: string) => void;
 }) {
+  const serverExplanation = invocation.explanation ?? null;
   const metadata = invocation.options?.metadata ?? {};
-  const applicationId = stringValue(metadata.applicationId);
-  const routineId = stringValue(metadata.routineId);
-  const isApplicationRun = metadata.source === "application_orchestration" && Boolean(applicationId && routineId);
+  const source = serverExplanation?.source ?? null;
+  const applicationId = stringValue(source?.applicationId) ?? stringValue(metadata.applicationId);
+  const routineId = stringValue(source?.routineId) ?? stringValue(metadata.routineId);
+  const isApplicationRun = (source?.type === "application_orchestration" || metadata.source === "application_orchestration") && Boolean(applicationId && routineId);
   const recoveryActions = sortedRecoveryActionRequests(
     (state?.applicationRecoveryActions ?? []).filter((request) => request.invocationId === invocation.id),
   );
@@ -153,26 +156,48 @@ function OperatorExplanationCard({
     refetchInterval: 2000,
   });
   const recovery = recoveryData?.recovery ?? null;
-  const explanation = latestRecoveryAction?.explanation ?? null;
-  const approvalRequestId = recoveryApprovalRequestId(invocation, explanation, latestRecoveryAction);
+  const recoveryExplanation = latestRecoveryAction?.explanation ?? null;
+  const approvalRequestId = serverExplanation?.approval?.requestId
+    ?? (serverExplanation?.waitingOn?.type === "approval" ? serverExplanation.waitingOn.id ?? null : null)
+    ?? recoveryApprovalRequestId(invocation, recoveryExplanation, latestRecoveryAction);
   const approval = approvalRequestId
     ? (state?.approvalRequests ?? []).find((item) => item.id === approvalRequestId) ?? null
     : null;
-  const resultInvocationId = recoveryResultInvocationId(explanation, latestRecoveryAction);
-  const resultOrchestration = recoveryResultOrchestrationLabel(explanation);
-  const summary = explanation?.summary
+  const resultInvocationId = serverExplanation?.resultLocation?.invocationId
+    ?? serverExplanation?.recovery?.resultInvocationId
+    ?? recoveryResultInvocationId(recoveryExplanation, latestRecoveryAction);
+  const resultOrchestration = serverExplanation?.resultLocation?.type === "orchestration"
+    ? serverExplanation.resultLocation.label ?? serverExplanation.resultLocation.orchestrationId ?? null
+    : recoveryResultOrchestrationLabel(recoveryExplanation);
+  const summary = serverExplanation?.summary
+    ?? recoveryExplanation?.summary
     ?? latestRecoveryAction?.outcome?.summary
     ?? recovery?.summary
     ?? invocation.result?.summary
     ?? latestInvocationRecoveryEventSummary(state, invocation.id)
     ?? defaultInvocationRecoverySummary(invocation);
-  const reason = explanation?.reason
+  const reasonCode = serverExplanation?.reasonCode
+    ?? recoveryExplanation?.reason
     ?? latestRecoveryAction?.outcome?.reason
     ?? recovery?.category
     ?? invocationStatusRecoveryReason(invocation);
-  const nextStep = explanation?.nextStep
+  const nextStep = serverExplanation?.nextAction
+    ?? recoveryExplanation?.nextStep
     ?? latestRecoveryAction?.outcome?.nextStep
     ?? recoveryDefaultNextStep(invocation, recovery, latestRecoveryAction);
+  const recoveryCategory = serverExplanation?.recovery?.category ?? recovery?.category ?? null;
+  const sourceLabel = sourceBadgeLabel(serverExplanation);
+  const recoveryState = recoveryExplanation?.state
+    ?? (serverExplanation?.state && ["approval_pending", "approval_denied", "failed", "executed", "executing"].includes(serverExplanation.state)
+      ? serverExplanation.state
+      : null);
+  const resultLabel = resultLocationLabel(serverExplanation)
+    ?? resultInvocationId
+    ?? resultOrchestration
+    ?? recoveryResultLabel(invocation);
+  const recoveryActionValue = latestRecoveryAction
+    ? `${readableRecoveryActionType(latestRecoveryAction.actionType)} · ${readableRecoveryActionStatus(latestRecoveryAction.status, "inline")}`
+    : serverRecoveryActionLabel(serverExplanation);
 
   return (
     <Card>
@@ -182,11 +207,11 @@ function OperatorExplanationCard({
       <CardContent className="space-y-3">
         <div className="flex flex-wrap items-center gap-2">
           <Badge tone={statusTone(invocation.status)}>{readableStatus(invocation.status)}</Badge>
-          {isApplicationRun ? <Badge tone="neutral">Application orchestration</Badge> : null}
-          {recovery ? <Badge tone={recoveryTone(recovery.category)}>{readableRecoveryCategory(recovery.category)}</Badge> : null}
-          {explanation?.state ? <Badge tone={recoveryExplanationTone(explanation.state)}>{readableRecoveryExplanationState(explanation.state)}</Badge> : null}
-          {reason ? <Badge tone={recoveryExplanationReasonTone(reason)}>{readableRecoveryExplanationReason(reason)}</Badge> : null}
-          {recovery?.humanApprovalRequired || approvalRequestId ? <Badge tone="warning">Approval</Badge> : null}
+          {sourceLabel ? <Badge tone="neutral">{sourceLabel}</Badge> : null}
+          {recoveryCategory ? <Badge tone={recoveryTone(recoveryCategory)}>{readableRecoveryCategory(recoveryCategory)}</Badge> : null}
+          {recoveryState ? <Badge tone={recoveryExplanationTone(recoveryState)}>{readableRecoveryExplanationState(recoveryState)}</Badge> : null}
+          {reasonCode ? <Badge tone={recoveryExplanationReasonTone(reasonCode)}>{readableRecoveryExplanationReason(reasonCode)}</Badge> : null}
+          {recovery?.humanApprovalRequired || approvalRequestId || serverExplanation?.approval ? <Badge tone="warning">Approval</Badge> : null}
         </div>
         <p className="[overflow-wrap:anywhere] text-sm text-muted-foreground">{summary}</p>
         {nextStep ? (
@@ -197,10 +222,10 @@ function OperatorExplanationCard({
         ) : null}
         <FactList
           facts={[
-            { term: "Why blocked", value: recoveryBlockedReason(invocation, reason) },
-            { term: "Waiting on", value: recoveryWaitingOn({ approvalRequestId, approval, latestRecoveryAction }) },
-            { term: "Result", value: resultInvocationId ?? resultOrchestration ?? recoveryResultLabel(invocation) },
-            { term: "Recovery action", value: latestRecoveryAction ? `${readableRecoveryActionType(latestRecoveryAction.actionType)} · ${readableRecoveryActionStatus(latestRecoveryAction.status, "inline")}` : "Not requested" },
+            { term: "Why blocked", value: serverExplanation?.reason ?? recoveryBlockedReason(invocation, reasonCode) },
+            { term: "Waiting on", value: waitingOnLabel(serverExplanation) ?? recoveryWaitingOn({ approvalRequestId, approval, latestRecoveryAction }) },
+            { term: "Result", value: resultLabel },
+            { term: "Recovery action", value: recoveryActionValue },
           ]}
         />
         {error ? <p className="text-xs text-destructive">Could not load recovery explanation.</p> : null}
@@ -232,4 +257,37 @@ function OperatorExplanationCard({
 
 function stringValue(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value : null;
+}
+
+function sourceBadgeLabel(explanation: InvocationExplanation | null): string | null {
+  const type = explanation?.source?.type;
+  if (type === "application_orchestration") return "Application orchestration";
+  if (type === "automation") return explanation?.source?.scheduled ? "Scheduled automation" : "Automation";
+  if (type === "auto_run") return "Auto-run";
+  if (type === "compare_run") return "Compare run";
+  if (type === "troubleshooting") return "Troubleshooting";
+  if (type === "recovery_result") return "Recovery result";
+  if (type === "tool") return "Tool";
+  return null;
+}
+
+function waitingOnLabel(explanation: InvocationExplanation | null): string | null {
+  const waitingOn = explanation?.waitingOn;
+  if (!waitingOn) return null;
+  if (waitingOn.label) return waitingOn.label;
+  if (waitingOn.id && waitingOn.status) return `${waitingOn.id} (${waitingOn.status})`;
+  return waitingOn.id ?? waitingOn.type ?? null;
+}
+
+function resultLocationLabel(explanation: InvocationExplanation | null): string | null {
+  const result = explanation?.resultLocation;
+  if (!result) return null;
+  return result.label ?? result.invocationId ?? result.reportId ?? result.relativePath ?? result.orchestrationId ?? null;
+}
+
+function serverRecoveryActionLabel(explanation: InvocationExplanation | null): string {
+  const recovery = explanation?.recovery;
+  if (!recovery?.actionType) return "Not requested";
+  const status = recovery.status ? ` · ${readableRecoveryActionStatus(recovery.status, "inline")}` : "";
+  return `${readableRecoveryActionType(recovery.actionType)}${status}`;
 }
