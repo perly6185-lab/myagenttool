@@ -28,6 +28,21 @@ afterEach(() => {
 });
 
 describe("InvocationsView operator explanation", () => {
+  it("prefers server-provided invocation explanation shape", async () => {
+    apiMock.fetchState.mockResolvedValue(serverExplanationState());
+
+    useUiStore.setState({ selectedInvocationId: "inv_server_explained" });
+    renderWithClient(createElement(InvocationsView));
+
+    expect(await screen.findByText("Server-side explanation is authoritative.")).toBeTruthy();
+    expect(screen.getByText("Scheduled automation")).toBeTruthy();
+    expect(screen.getByText("Policy gate is waiting for an operator.")).toBeTruthy();
+    expect(screen.getByText("apr_server (pending)")).toBeTruthy();
+    expect(screen.getByText("audit row")).toBeTruthy();
+    expect(screen.getByText("Approve or deny from the approvals queue.")).toBeTruthy();
+    expect(apiMock.getApplicationOrchestrationRunRecovery).not.toHaveBeenCalled();
+  });
+
   it("renders application recovery explanation for the selected invocation", async () => {
     apiMock.fetchState.mockResolvedValue(consoleState());
     apiMock.getApplicationOrchestrationRunRecovery.mockResolvedValue({
@@ -115,6 +130,76 @@ function renderWithClient(ui: ReactElement) {
     },
   });
   return render(<QueryClientProvider client={client}>{ui}</QueryClientProvider>);
+}
+
+function serverExplanationState(): ConsoleSnapshot {
+  return {
+    namespace: "test",
+    protocolVersion: "0.0.0",
+    serverTime: "2026-07-05T08:00:00.000Z",
+    device: {
+      id: "dev_local",
+      name: "Local bridge",
+      status: "online",
+      platform: "win32",
+      architecture: "x64",
+      lastSeenAt: "2026-07-05T08:00:00.000Z",
+    },
+    agent: null,
+    agents: [],
+    projects: [],
+    worktrees: [],
+    currentProjectId: "proj_docs",
+    invocations: [{
+      id: "inv_server_explained",
+      status: "waiting_for_local_approval",
+      agentId: "agt_demo_cli",
+      projectId: "proj_docs",
+      approvalRequestId: "apr_server",
+      explanation: {
+        state: "approval_pending",
+        reason: "Policy gate is waiting for an operator.",
+        reasonCode: "local_approval_pending",
+        summary: "Server-side explanation is authoritative.",
+        waitingOn: {
+          type: "approval",
+          id: "apr_server",
+          status: "pending",
+          label: "apr_server (pending)",
+        },
+        resultLocation: {
+          type: "audit_summary",
+          invocationId: "inv_server_explained",
+          label: "audit row",
+        },
+        nextAction: "Approve or deny from the approvals queue.",
+        approval: {
+          requestId: "apr_server",
+          status: "pending",
+          riskLevel: "high",
+        },
+        source: {
+          type: "automation",
+          automationId: "atm_docs",
+          automationName: "Docs audit",
+          scheduled: true,
+        },
+      },
+      options: {
+        metadata: {
+          automationId: "atm_docs",
+          automationName: "Docs audit",
+          scheduled: true,
+        },
+      },
+    }],
+    events: [],
+    auditSummaries: [],
+    approvalRequests: [{
+      id: "apr_server",
+      status: "pending",
+    }],
+  } as ConsoleSnapshot;
 }
 
 function consoleState(): ConsoleSnapshot {

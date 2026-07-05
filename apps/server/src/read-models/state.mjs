@@ -42,14 +42,15 @@ export function buildPublicState({
     return sshTargetIdVisible(event?.data?.targetId);
   };
   const projects = (state.projects ?? []).filter((p) => projectVisible(p.id));
-  const invocations = (state.invocations ?? []).filter((inv) => projectVisible(inv.projectId));
-  const visibleInvIds = new Set(invocations.map((inv) => inv.id));
-  const visibleInvocationsById = new Map(invocations.map((invocation) => [invocation.id, invocation]));
+  const visibleInvocations = (state.invocations ?? []).filter((inv) => projectVisible(inv.projectId));
+  const visibleInvIds = new Set(visibleInvocations.map((inv) => inv.id));
+  const visibleInvocationsById = new Map(visibleInvocations.map((invocation) => [invocation.id, invocation]));
   const invVisible = (invocationId) =>
     teamId == null || !invocationId || visibleInvIds.has(invocationId);
   const byInvocation = (rows) => (rows ?? []).filter((r) => invVisible(r?.invocationId));
   const byProject = (rows) => (rows ?? []).filter((r) => projectVisible(r?.projectId));
   const visibleEvents = byInvocation(state.events).filter(eventVisible);
+  const eventsByInvocationId = groupRowsByKey(visibleEvents, (event) => event?.invocationId);
   const recoveryEventsByRequestId = groupRecoveryEventsByRequestId(visibleEvents);
   const applications = (state.applications ?? []).filter((application) => {
     if (application?.projectId) return projectVisible(application.projectId);
@@ -92,6 +93,57 @@ export function buildPublicState({
     (rows ?? []).filter(
       (r) => teamId == null || (r?.childInvocationIds ?? []).some((id) => visibleInvIds.has(id)),
     );
+  const compareRuns = byCompareRun(state.compareRuns);
+  const compareRunsById = new Map(compareRuns.map((compareRun) => [compareRun.id, compareRun]));
+  const applicationRecoveryActions = byInvocation(state.applicationRecoveryActions)
+    .map((request) => applicationRecoveryActionReadModel(
+      request,
+      visibleInvocationsById,
+      recoveryEventsByRequestId.get(request.id) ?? [],
+    ));
+  const applicationRecoveryActionsByInvocationId = groupRowsByKey(
+    applicationRecoveryActions,
+    (request) => request?.invocationId,
+  );
+  const applicationRecoveryActionsByResultInvocationId = groupRowsByKey(
+    applicationRecoveryActions.filter((request) => request?.resultInvocationId),
+    (request) => request?.resultInvocationId,
+  );
+  const approvalRequests = byInvocation(state.approvalRequests);
+  const approvalRequestsById = new Map(approvalRequests.map((approval) => [approval.id, approval]));
+  const approvalRequestsByInvocationId = groupRowsByKey(approvalRequests, (approval) => approval?.invocationId);
+  const policyDecisionRecords = byInvocation(state.policyDecisionRecords);
+  const policyDecisionRecordsById = new Map(policyDecisionRecords.map((record) => [record.id, record]));
+  const policyDecisionRecordsByInvocationId = groupRowsByKey(policyDecisionRecords, (record) => record?.invocationId);
+  const auditSummaries = byInvocation(state.auditSummaries);
+  const auditSummariesByInvocationId = groupRowsByKey(auditSummaries, (audit) => audit?.invocationId);
+  const troubleshootingReports = byInvocation(state.troubleshootingReports);
+  const troubleshootingReportsByInvocationId = groupRowsByKey(
+    troubleshootingReports,
+    (report) => report?.invocationId,
+  );
+  const autoRuns = byProject(state.autoRuns);
+  const autoRunsByInvocationId = groupRowsByKey(
+    autoRuns.filter((autoRun) => visibleInvIds.has(autoRun?.invocationId)),
+    (autoRun) => autoRun?.invocationId,
+  );
+  const invocations = visibleInvocations.map((invocation) => ({
+    ...invocation,
+    explanation: buildInvocationExplanation(invocation, {
+      applicationRecoveryActionsByInvocationId,
+      applicationRecoveryActionsByResultInvocationId,
+      approvalRequestsById,
+      approvalRequestsByInvocationId,
+      auditSummariesByInvocationId,
+      autoRunsByInvocationId,
+      compareRunsById,
+      eventsByInvocationId,
+      invocationsById: visibleInvocationsById,
+      policyDecisionRecordsById,
+      policyDecisionRecordsByInvocationId,
+      troubleshootingReportsByInvocationId,
+    }),
+  }));
 
   return {
     namespace,
@@ -105,12 +157,7 @@ export function buildPublicState({
     teams: state.teams ?? [],
     projects,
     applications,
-    applicationRecoveryActions: byInvocation(state.applicationRecoveryActions)
-      .map((request) => applicationRecoveryActionReadModel(
-        request,
-        visibleInvocationsById,
-        recoveryEventsByRequestId.get(request.id) ?? [],
-      )),
+    applicationRecoveryActions,
     projectTargets: byProject(state.projectTargets),
     currentProjectId: state.currentProjectId,
     currentProject: currentProject(),
@@ -119,11 +166,11 @@ export function buildPublicState({
     agent: defaultAgent(),
     agents: state.agents,
     invocations,
-    compareRuns: byCompareRun(state.compareRuns),
+    compareRuns,
     events: visibleEvents,
     traces: byInvocation(state.traces),
     spans: byInvocation(state.spans),
-    auditSummaries: byInvocation(state.auditSummaries),
+    auditSummaries,
     healthChecks: state.healthChecks,
     lifecycleAuditRecords: state.lifecycleAuditRecords,
     lifecycleRecipes: state.lifecycleRecipes,
@@ -161,9 +208,9 @@ export function buildPublicState({
     privateDeploymentConfig: state.privateDeploymentConfig,
     auditExportRequests: state.auditExportRequests,
     retentionSettings: state.retentionSettings,
-    approvalRequests: byInvocation(state.approvalRequests),
-    policyDecisionRecords: byInvocation(state.policyDecisionRecords),
-    troubleshootingReports: byInvocation(state.troubleshootingReports),
+    approvalRequests,
+    policyDecisionRecords,
+    troubleshootingReports,
     agentUsageSummaries: state.agentUsageSummaries,
     codexSessions: byInvocation(state.codexSessions),
     codexWorkspaces: byInvocation(state.codexWorkspaces),
@@ -204,6 +251,389 @@ function groupRecoveryEventsByRequestId(events) {
     grouped.set(requestId, items);
   }
   return grouped;
+}
+
+function groupRowsByKey(rows, keyFor) {
+  const grouped = new Map();
+  for (const row of rows ?? []) {
+    const key = keyFor(row);
+    if (!key) continue;
+    const group = grouped.get(key) ?? [];
+    group.push(row);
+    grouped.set(key, group);
+  }
+  return grouped;
+}
+
+export function buildInvocationExplanation(invocation, context = {}) {
+  const status = invocation?.status ?? "unknown";
+  const metadata = objectValue(invocation?.options?.metadata);
+  const recoveryRequest = latestRow([
+    ...(context.applicationRecoveryActionsByInvocationId?.get(invocation.id) ?? []),
+    ...(context.applicationRecoveryActionsByResultInvocationId?.get(invocation.id) ?? []),
+  ]);
+  const recovery = invocationRecoveryExplanation(recoveryRequest, invocation);
+  const approval = invocationApprovalExplanation(invocation, context);
+  const source = invocationSourceExplanation(invocation, context, metadata, recoveryRequest);
+  const report = latestRow(context.troubleshootingReportsByInvocationId?.get(invocation.id) ?? []);
+  const policy = invocationPolicyRecord(invocation, context);
+  const audit = latestRow(context.auditSummariesByInvocationId?.get(invocation.id) ?? []);
+  const event = latestOperatorEvent(context.eventsByInvocationId?.get(invocation.id) ?? []);
+
+  const summary = recovery?.summary
+    ?? statusSummary(invocation, { approval, audit, event, policy, report });
+  const reason = recovery?.reasonText
+    ?? statusReason(invocation, { approval, audit, event, policy, report });
+  const reasonCode = recovery?.reasonCode
+    ?? statusReasonCode(invocation, { approval, audit, event, policy, report });
+  const waitingOn = recovery?.waitingOn
+    ?? statusWaitingOn(invocation, { approval, source });
+  const resultLocation = recovery?.resultLocation
+    ?? statusResultLocation(invocation, { audit, report });
+  const nextAction = recovery?.nextAction
+    ?? statusNextAction(invocation, { approval, report });
+
+  return {
+    state: invocationExplanationState(status, recovery, approval),
+    reason,
+    reasonCode,
+    summary,
+    waitingOn,
+    resultLocation,
+    nextAction,
+    recovery: recovery?.request ?? null,
+    approval: approval?.request ?? null,
+    source,
+  };
+}
+
+function invocationRecoveryExplanation(request, invocation) {
+  if (!request) return null;
+  const explanation = request.explanation ?? {};
+  const outcome = request.outcome ?? {};
+  const isResultInvocation = request.resultInvocationId === invocation?.id;
+  const actionLabel = request.actionType ?? explanation.selectedAction ?? "recovery";
+  const requestSummary = explanation.summary ?? outcome.summary ?? request.reason ?? null;
+  const summary = isResultInvocation
+    ? `This invocation is the result of ${actionLabel} recovery for ${request.invocationId}.`
+    : requestSummary ?? `Recovery action ${actionLabel} is ${request.status ?? "recorded"}.`;
+  const reasonCode = explanation.reason ?? outcome.reason ?? request.error ?? request.status ?? null;
+  const reasonText = recoveryReasonText(request, isResultInvocation, reasonCode);
+  const waitingOn = request.status === "approval_pending" || request.approvalRequestId
+    ? {
+        type: "approval",
+        id: request.approvalRequestId ?? null,
+        status: request.status === "approval_pending" ? "pending" : request.status ?? null,
+        label: request.approvalRequestId
+          ? `${request.approvalRequestId} (${request.status === "approval_pending" ? "pending approval" : request.status ?? "recorded"})`
+          : "Recovery approval",
+      }
+    : null;
+  const resultLocation = request.resultInvocationId
+    ? {
+        type: "invocation",
+        invocationId: request.resultInvocationId,
+        label: request.resultInvocationId,
+      }
+    : request.resultOrchestrationId
+      ? {
+          type: "orchestration",
+          orchestrationId: request.resultOrchestrationId,
+          relativePath: request.resultOrchestrationRelativePath ?? null,
+          label: request.resultOrchestrationRelativePath ?? request.resultOrchestrationId,
+        }
+      : null;
+  return {
+    reasonCode,
+    reasonText,
+    summary,
+    waitingOn,
+    resultLocation,
+    nextAction: explanation.nextStep ?? outcome.nextStep ?? recoveryNextAction(request),
+    request: {
+      category: request.recoveryCategory ?? explanation.recoveryCategory ?? null,
+      actionType: request.actionType ?? explanation.selectedAction ?? null,
+      actionRequestId: request.id ?? explanation.recoveryActionRequestId ?? null,
+      status: request.status ?? null,
+      sourceInvocationId: request.invocationId ?? null,
+      approvalRequestId: request.approvalRequestId ?? explanation.approvalRequestId ?? null,
+      resultInvocationId: request.resultInvocationId ?? explanation.resultInvocationId ?? null,
+      resultOrchestrationId: request.resultOrchestrationId ?? explanation.resultOrchestrationId ?? null,
+      resultOrchestrationRelativePath: request.resultOrchestrationRelativePath ?? explanation.resultOrchestrationRelativePath ?? null,
+    },
+  };
+}
+
+function recoveryReasonText(request, isResultInvocation, reasonCode) {
+  if (isResultInvocation) return `Recovery result for ${request.invocationId}.`;
+  if (request.status === "approval_pending") return "Recovery action is waiting for approval.";
+  if (request.status === "executing") return "Recovery action is executing.";
+  if (request.status === "executed") return "Recovery action executed.";
+  if (request.status === "failed") return request.error ?? "Recovery action failed.";
+  if (request.status === "approval_denied") return "Recovery approval was denied.";
+  if (request.status === "approval_timed_out") return "Recovery approval timed out.";
+  return reasonCode ? String(reasonCode).replaceAll("_", " ") : "Recovery action recorded.";
+}
+
+function recoveryNextAction(request) {
+  if (request.status === "approval_pending") return "Resolve the linked approval request before this recovery can execute.";
+  if (request.resultInvocationId) return "Inspect the recovery result invocation.";
+  if (request.status === "failed") return "Review the failure details and choose another recovery action.";
+  return "Review the recovery action audit trail.";
+}
+
+function invocationApprovalExplanation(invocation, context) {
+  const request = invocation?.approvalRequestId
+    ? context.approvalRequestsById?.get(invocation.approvalRequestId) ?? null
+    : latestRow(context.approvalRequestsByInvocationId?.get(invocation?.id) ?? []);
+  if (!request) return null;
+  return {
+    request: {
+      requestId: request.id,
+      status: request.status ?? null,
+      riskLevel: request.riskLevel ?? null,
+      riskTags: request.riskTags ?? [],
+      decidedBy: request.decidedBy ?? null,
+      decidedAt: request.decidedAt ?? null,
+    },
+  };
+}
+
+function invocationPolicyRecord(invocation, context) {
+  return invocation?.policyDecisionId
+    ? context.policyDecisionRecordsById?.get(invocation.policyDecisionId) ?? null
+    : latestRow(context.policyDecisionRecordsByInvocationId?.get(invocation?.id) ?? []);
+}
+
+function invocationSourceExplanation(invocation, context, metadata, recoveryRequest) {
+  const compareRunId = invocation?.compareRunId ?? stringOrNull(metadata.compareRunId);
+  const autoRun = latestRow(context.autoRunsByInvocationId?.get(invocation?.id) ?? []);
+  if (recoveryRequest?.resultInvocationId === invocation?.id) {
+    return {
+      type: "recovery_result",
+      invocationId: recoveryRequest.invocationId ?? null,
+      recoveryActionRequestId: recoveryRequest.id ?? null,
+      actionType: recoveryRequest.actionType ?? null,
+    };
+  }
+  if (stringOrNull(metadata.targetInvocationId)) {
+    return {
+      type: "troubleshooting",
+      targetInvocationId: stringOrNull(metadata.targetInvocationId),
+    };
+  }
+  if (metadata.source === "application_orchestration" || stringOrNull(metadata.applicationId)) {
+    return {
+      type: "application_orchestration",
+      applicationId: stringOrNull(metadata.applicationId),
+      applicationName: stringOrNull(metadata.applicationName),
+      routineId: stringOrNull(metadata.routineId),
+      routineName: stringOrNull(metadata.routineName),
+      orchestrationRelativePath: stringOrNull(metadata.orchestrationRelativePath),
+      recoveryOfInvocationId: stringOrNull(metadata.recoveryOfInvocationId),
+      recoveryActionType: stringOrNull(metadata.recoveryActionType),
+    };
+  }
+  if (stringOrNull(metadata.automationId)) {
+    return {
+      type: "automation",
+      automationId: stringOrNull(metadata.automationId),
+      automationName: stringOrNull(metadata.automationName),
+      scheduled: Boolean(metadata.scheduled),
+    };
+  }
+  if (autoRun) {
+    return {
+      type: "auto_run",
+      autoRunId: autoRun.id ?? null,
+      status: autoRun.status ?? null,
+      worktreeId: autoRun.worktreeId ?? null,
+      link: autoRun.link ?? null,
+    };
+  }
+  if (compareRunId) {
+    const compareRun = context.compareRunsById?.get(compareRunId) ?? null;
+    return {
+      type: "compare_run",
+      compareRunId,
+      status: compareRun?.status ?? null,
+      preferredInvocationId: compareRun?.preferredInvocationId ?? null,
+      siblingInvocationIds: (compareRun?.childInvocationIds ?? []).filter((id) => id !== invocation?.id),
+    };
+  }
+  if (metadata.source === "tool" || stringOrNull(metadata.toolName)) {
+    return {
+      type: "tool",
+      toolName: stringOrNull(metadata.toolName),
+      outputCollection: stringOrNull(metadata.outputCollection),
+    };
+  }
+  return { type: "direct" };
+}
+
+function statusSummary(invocation, { approval, audit, event, policy, report }) {
+  const status = invocation?.status;
+  if (status === "waiting_for_local_approval") return policy?.reason ?? "Invocation is blocked until local approval is resolved.";
+  if (status === "rejected") return audit?.errorSummary ?? policy?.reason ?? "Invocation was rejected before execution.";
+  if (status === "failed" || status === "timed_out") {
+    return audit?.errorSummary ?? invocation?.result?.summary ?? event?.message ?? `Invocation ${status}.`;
+  }
+  if (status === "cancelled") return invocation?.cancellation?.reason ?? audit?.errorSummary ?? "Invocation was cancelled.";
+  if (status === "cancelling") return "Cancellation was requested and is waiting for the runner to stop.";
+  if (status === "succeeded") return invocation?.result?.summary ?? "Invocation completed successfully.";
+  if (status === "queued") return "Invocation is queued for execution.";
+  if (status === "dispatching") return "Invocation is being dispatched to the runner.";
+  if (status === "running") return "Invocation is running.";
+  if (report?.summary) return report.summary;
+  if (approval?.request?.status === "denied") return "Local approval was denied.";
+  return `Invocation status is ${status ?? "unknown"}.`;
+}
+
+function statusReason(invocation, { approval, audit, event, policy }) {
+  const status = invocation?.status;
+  if (status === "waiting_for_local_approval") return policy?.reason ?? "Local approval is required before this invocation can run.";
+  if (status === "rejected") {
+    if (approval?.request?.status === "denied") return "Local approval was denied before execution.";
+    return audit?.errorSummary ?? policy?.reason ?? "Invocation was rejected before execution.";
+  }
+  if (status === "failed" || status === "timed_out") return audit?.errorSummary ?? event?.message ?? `Invocation ${status}.`;
+  if (status === "cancelled") return invocation?.cancellation?.reason ?? "Invocation was cancelled before completion.";
+  if (status === "queued") return "Waiting for an eligible runner.";
+  if (status === "running" || status === "dispatching" || status === "cancelling") return "Work is still in progress.";
+  if (status === "succeeded") return "Invocation succeeded.";
+  return "No blocking reason is recorded.";
+}
+
+function statusReasonCode(invocation, { approval }) {
+  const status = invocation?.status;
+  if (status === "waiting_for_local_approval") return "local_approval_pending";
+  if (status === "rejected" && approval?.request?.status === "denied") return "local_approval_denied";
+  if (status === "rejected") return "rejected";
+  if (status === "failed") return "failed";
+  if (status === "timed_out") return "timed_out";
+  if (status === "cancelled") return "cancelled";
+  if (status === "queued") return "queued";
+  if (status === "running" || status === "dispatching") return "in_progress";
+  if (status === "succeeded") return "succeeded";
+  return status ?? "unknown";
+}
+
+function statusWaitingOn(invocation, { approval, source }) {
+  if (invocation?.status === "waiting_for_local_approval" && approval?.request) {
+    return {
+      type: "approval",
+      id: approval.request.requestId,
+      status: approval.request.status,
+      label: `${approval.request.requestId} (${approval.request.status ?? "pending"})`,
+    };
+  }
+  if (invocation?.status === "queued") {
+    return {
+      type: "runner",
+      id: invocation.delivery?.deviceId ?? null,
+      status: invocation.delivery?.state ?? "queued",
+      label: invocation.delivery?.deviceId
+        ? `${invocation.delivery.deviceId} (${invocation.delivery?.state ?? "queued"})`
+        : "eligible runner",
+    };
+  }
+  if (invocation?.status === "cancelling") {
+    return {
+      type: "runner",
+      id: invocation.delivery?.deviceId ?? null,
+      status: invocation.cancellation?.state ?? "requested",
+      label: "runner cancellation acknowledgement",
+    };
+  }
+  if (source?.type === "compare_run" && source.status === "running") {
+    return {
+      type: "compare_run",
+      id: source.compareRunId,
+      status: source.status,
+      label: `${source.compareRunId} sibling results`,
+    };
+  }
+  return null;
+}
+
+function statusResultLocation(invocation, { audit, report }) {
+  if (report?.id) {
+    return {
+      type: "troubleshooting_report",
+      reportId: report.id,
+      label: report.id,
+    };
+  }
+  if (invocation?.result) {
+    return {
+      type: "invocation_result",
+      invocationId: invocation.id,
+      label: invocation.result?.summary ?? invocation.id,
+    };
+  }
+  if (audit) {
+    return {
+      type: "audit_summary",
+      invocationId: invocation.id,
+      label: audit.errorSummary ?? audit.resultSummary ?? "audit summary",
+    };
+  }
+  return null;
+}
+
+function statusNextAction(invocation, { approval, report }) {
+  const status = invocation?.status;
+  if (status === "waiting_for_local_approval") return "Approve or deny the local approval request.";
+  if (status === "rejected") return "Review the policy or approval decision, then retry only if the risk is acceptable.";
+  if (status === "failed" || status === "timed_out") {
+    return report?.id
+      ? "Open the troubleshooting report and choose an approved remediation path."
+      : "Review the timeline, run troubleshooting, or retry with adjusted inputs.";
+  }
+  if (status === "cancelled") return "Retry the invocation only if the work is still needed.";
+  if (status === "cancelling") return "Wait for cancellation acknowledgement before starting replacement work.";
+  if (status === "queued") return "Keep the target runner available and wait for dispatch.";
+  if (status === "dispatching" || status === "running") return "Wait for the invocation to finish, then inspect the result.";
+  if (status === "succeeded") return "Review the result and any generated evidence.";
+  if (approval?.request?.status === "pending") return "Resolve the pending approval request.";
+  return "Review the invocation timeline for the latest operator action.";
+}
+
+function invocationExplanationState(status, recovery, approval) {
+  if (recovery?.request?.status === "approval_pending") return "approval_pending";
+  if (recovery?.request?.status) return `recovery_${recovery.request.status}`;
+  if (status === "waiting_for_local_approval") return "approval_pending";
+  if (status === "rejected" && approval?.request?.status === "denied") return "approval_denied";
+  return status ?? "unknown";
+}
+
+function latestOperatorEvent(events) {
+  return latestRow((events ?? []).filter((event) =>
+    ["invocation_failed", "invocation_timed_out", "invocation_rejected", "local_approval_denied", "cancel_applied", "cancel_failed"].includes(event?.type),
+  ));
+}
+
+function latestRow(rows) {
+  const items = (rows ?? []).filter(Boolean);
+  if (items.length === 0) return null;
+  return items.slice().sort(compareUpdatedDesc)[0];
+}
+
+function compareUpdatedDesc(left, right) {
+  const rightTime = Date.parse(right?.updatedAt ?? right?.createdAt ?? right?.completedAt ?? "");
+  const leftTime = Date.parse(left?.updatedAt ?? left?.createdAt ?? left?.completedAt ?? "");
+  if (Number.isFinite(rightTime) && Number.isFinite(leftTime) && rightTime !== leftTime) {
+    return rightTime - leftTime;
+  }
+  return String(right?.id ?? "").localeCompare(String(left?.id ?? ""));
+}
+
+function objectValue(value) {
+  return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+}
+
+function stringOrNull(value) {
+  return typeof value === "string" && value.trim() ? value : null;
 }
 
 function applicationRecoveryActionReadModel(request, invocationsById, events = []) {
