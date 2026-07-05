@@ -49,6 +49,11 @@ Server-generated links intentionally stay hostless and only carry the relative
 query plus structured target fields. The Web control plane or downstream report
 renderer owns the current origin, path, and copy/open behavior.
 
+The Web operator explanation surface renders troubleshooting report links as
+open/copy actions, using the structured target to update control-plane
+selection and the relative query to create shareable links on the current Web
+origin.
+
 ## Non-Goals
 
 - Full browser history entries for every selection change. P4-1 uses
