@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { applicationRunDeepLink, invocationDeepLink, webNavigationLinkDeepLink } from "@/app/deep-links";
+import {
+  applicationRunDeepLink,
+  invocationDeepLink,
+  webNavigationLinkDeepLink,
+  webNavigationStateFromLink,
+} from "@/app/deep-links";
 
 describe("deep link helpers", () => {
   it("builds invocation links without dropping origin, path, hash, or unrelated params", () => {
@@ -40,5 +45,25 @@ describe("deep link helpers", () => {
     expect(url.searchParams.get("application")).toBe("app_docs");
     expect(url.searchParams.get("routine")).toBe("routine_docs");
     expect(url.searchParams.get("run")).toBe("inv_docs");
+  });
+
+  it("maps server-provided structured targets to UI navigation state", () => {
+    expect(webNavigationStateFromLink({
+      query: "?section=applications&application=app_docs&routine=routine_docs&run=inv_docs",
+      target: {
+        section: "applications",
+        application: "app_docs",
+        routine: "routine_docs",
+        run: "inv_docs",
+      },
+    })).toEqual({
+      section: "applications",
+      selectedApplicationId: "app_docs",
+      selectedApplicationRun: {
+        applicationId: "app_docs",
+        routineId: "routine_docs",
+        invocationId: "inv_docs",
+      },
+    });
   });
 });

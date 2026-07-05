@@ -1,4 +1,10 @@
-import { searchFromNavigationState, type ApplicationRunSelection, type SectionKey } from "@/store/ui-store";
+import {
+  SECTION_KEYS,
+  searchFromNavigationState,
+  type ApplicationRunSelection,
+  type SectionKey,
+  type UrlNavigationState,
+} from "@/store/ui-store";
 
 const NAVIGATION_QUERY_KEYS = ["section", "invocation", "application", "routine", "run"] as const;
 
@@ -11,6 +17,7 @@ interface WebNavigationTarget {
 
 interface RelativeWebNavigationLink {
   query: string;
+  target?: Record<string, unknown>;
 }
 
 function currentHref(): string {
@@ -57,4 +64,32 @@ export function webNavigationLinkDeepLink(link: RelativeWebNavigationLink, href 
   const next = current.toString();
   url.search = next ? `?${next}` : "";
   return url.toString();
+}
+
+export function webNavigationStateFromLink(link: RelativeWebNavigationLink): UrlNavigationState {
+  const target = link.target ?? {};
+  const section = stringValue(target.section);
+  const invocationId = stringValue(target.invocation);
+  const applicationId = stringValue(target.application);
+  const routineId = stringValue(target.routine);
+  const runInvocationId = stringValue(target.run);
+  const navigation: UrlNavigationState = {};
+
+  if (section && SECTION_KEYS.includes(section as SectionKey)) {
+    navigation.section = section as SectionKey;
+  }
+  if (invocationId) {
+    navigation.selectedInvocationId = invocationId;
+  }
+  if (applicationId) {
+    navigation.selectedApplicationId = applicationId;
+  }
+  navigation.selectedApplicationRun = applicationId && routineId && runInvocationId
+    ? { applicationId, routineId, invocationId: runInvocationId }
+    : null;
+  return navigation;
+}
+
+function stringValue(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
 }
