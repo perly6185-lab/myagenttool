@@ -31,6 +31,15 @@ afterEach(() => {
   });
 });
 
+function mockClipboard() {
+  const writeText = vi.fn();
+  Object.defineProperty(navigator, "clipboard", {
+    configurable: true,
+    value: { writeText },
+  });
+  return writeText;
+}
+
 describe("InvocationsView operator explanation", () => {
   it("routes server explanation actions to approval, result, and recovery timeline targets", async () => {
     apiMock.fetchState.mockResolvedValue(actionExplanationState());
@@ -101,6 +110,27 @@ describe("InvocationsView operator explanation", () => {
     fireEvent.click(screen.getByRole("button", { name: /View source/i }));
     expect(useUiStore.getState().section).toBe("invocations");
     expect(useUiStore.getState().selectedInvocationId).toBe("inv_failed");
+  });
+
+  it("copies a shareable invocation deep link from the operator explanation", async () => {
+    const writeText = mockClipboard();
+    window.history.replaceState(null, "", "/console?keep=yes#operator");
+    apiMock.fetchState.mockResolvedValue(actionExplanationState());
+
+    useUiStore.setState({ section: "invocations", selectedInvocationId: "inv_action" });
+    renderWithClient(createElement(InvocationsView));
+
+    expect(await screen.findByText("Actionable explanation")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: /Copy invocation link/i }));
+
+    expect(writeText).toHaveBeenCalledTimes(1);
+    const url = new URL(writeText.mock.calls[0][0] as string);
+    expect(url.pathname).toBe("/console");
+    expect(url.hash).toBe("#operator");
+    expect(url.searchParams.get("keep")).toBe("yes");
+    expect(url.searchParams.get("section")).toBe("invocations");
+    expect(url.searchParams.get("invocation")).toBe("inv_action");
+    expect(screen.getByText("Copied.")).toBeTruthy();
   });
 
   it("keeps explanation rows explicit when action targets are absent", async () => {

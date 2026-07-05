@@ -27,6 +27,15 @@ local UI persistence restores the last workspace view.
 ?section=applications&application=app_docs&routine=routine_docs_smoke&run=inv_123
 ```
 
+## Copy Entry Points
+
+- Invocation operator explanations expose a copy action for the selected
+  invocation deep link.
+- Application orchestration run diagnostics expose a copy action for the
+  selected application run deep link.
+- Generated links keep the current origin, path, hash, and unrelated query
+  parameters, then replace only the Web navigation parameters.
+
 ## Non-Goals
 
 - Full browser history entries for every selection change. P4-1 uses
