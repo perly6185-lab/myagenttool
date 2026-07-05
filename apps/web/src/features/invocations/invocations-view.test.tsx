@@ -95,10 +95,12 @@ describe("InvocationsView operator explanation", () => {
   });
 
   it("routes troubleshooting report and source links from server explanation", async () => {
+    const writeText = mockClipboard();
+    window.history.replaceState(null, "", "/console?keep=yes#operator");
     apiMock.fetchState.mockResolvedValue(actionExplanationState());
 
     useUiStore.setState({ section: "invocations", selectedInvocationId: "inv_report" });
-    renderWithClient(createElement(InvocationsView));
+    renderWithClient(createElement(NavigationSyncedInvocationsView));
 
     expect(await screen.findByText("Troubleshooting report is ready.")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: /Open report/i }));
@@ -110,6 +112,40 @@ describe("InvocationsView operator explanation", () => {
     fireEvent.click(screen.getByRole("button", { name: /View source/i }));
     expect(useUiStore.getState().section).toBe("invocations");
     expect(useUiStore.getState().selectedInvocationId).toBe("inv_failed");
+
+    useUiStore.setState({ section: "invocations", selectedInvocationId: "inv_report" });
+    await waitFor(() => expect(screen.getByText("Troubleshooting report links")).toBeTruthy());
+    fireEvent.click(screen.getByRole("button", { name: /^Open failed invocation$/i }));
+    expect(useUiStore.getState().section).toBe("invocations");
+    expect(useUiStore.getState().selectedInvocationId).toBe("inv_failed");
+
+    useUiStore.setState({ section: "invocations", selectedInvocationId: "inv_report" });
+    await waitFor(() => expect(screen.getByText("Troubleshooting report links")).toBeTruthy());
+    fireEvent.click(screen.getByRole("button", { name: /^Open troubleshooter invocation$/i }));
+    expect(useUiStore.getState().section).toBe("invocations");
+    expect(useUiStore.getState().selectedInvocationId).toBe("inv_report");
+
+    fireEvent.click(screen.getByRole("button", { name: /^Open application run$/i }));
+    expect(useUiStore.getState().section).toBe("applications");
+    expect(useUiStore.getState().selectedApplicationId).toBe("app_docs");
+    expect(useUiStore.getState().selectedApplicationRun).toEqual({
+      applicationId: "app_docs",
+      routineId: "routine_docs_smoke",
+      invocationId: "inv_failed",
+    });
+
+    useUiStore.setState({ section: "invocations", selectedInvocationId: "inv_report" });
+    await waitFor(() => expect(screen.getByText("Troubleshooting report links")).toBeTruthy());
+    fireEvent.click(screen.getByRole("button", { name: /^Copy Open application run$/i }));
+    expect(writeText).toHaveBeenCalledTimes(1);
+    const copied = new URL(writeText.mock.calls[0][0] as string);
+    expect(copied.pathname).toBe("/console");
+    expect(copied.hash).toBe("#operator");
+    expect(copied.searchParams.get("keep")).toBe("yes");
+    expect(copied.searchParams.get("section")).toBe("applications");
+    expect(copied.searchParams.get("application")).toBe("app_docs");
+    expect(copied.searchParams.get("routine")).toBe("routine_docs_smoke");
+    expect(copied.searchParams.get("run")).toBe("inv_failed");
   });
 
   it("copies a shareable invocation deep link from the operator explanation", async () => {
@@ -388,9 +424,38 @@ function actionExplanationState(): ConsoleSnapshot {
     troubleshootingReports: [{
       id: "trb_1",
       invocationId: "inv_failed",
+      troubleshooterInvocationId: "inv_report",
       summary: "Troubleshooter reviewed inv_failed.",
       bridgeState: "online",
       logSummary: "No logs.",
+      webLinks: {
+        failedInvocation: {
+          label: "Open failed invocation",
+          query: "?section=invocations&invocation=inv_failed",
+          target: {
+            section: "invocations",
+            invocation: "inv_failed",
+          },
+        },
+        troubleshooterInvocation: {
+          label: "Open troubleshooter invocation",
+          query: "?section=invocations&invocation=inv_report",
+          target: {
+            section: "invocations",
+            invocation: "inv_report",
+          },
+        },
+        applicationRun: {
+          label: "Open application run",
+          query: "?section=applications&application=app_docs&routine=routine_docs_smoke&run=inv_failed",
+          target: {
+            section: "applications",
+            application: "app_docs",
+            routine: "routine_docs_smoke",
+            run: "inv_failed",
+          },
+        },
+      },
     }],
   } as ConsoleSnapshot;
 }

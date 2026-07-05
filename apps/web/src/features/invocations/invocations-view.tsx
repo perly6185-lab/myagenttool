@@ -6,7 +6,7 @@ import { Badge, StatusBadge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/common/empty-state";
 import { FactList } from "@/components/common/fact-list";
-import { invocationDeepLink } from "@/app/deep-links";
+import { invocationDeepLink, webNavigationLinkDeepLink } from "@/app/deep-links";
 import { EventTimeline } from "@/features/invocations/event-timeline";
 import { DecisionAction } from "@/features/invocations/decision-action";
 import { useConsoleState } from "@/data/use-console-state";
@@ -34,7 +34,7 @@ import {
   recoveryWaitingOn,
   sortedRecoveryActionRequests,
 } from "@/features/recovery/application-recovery-ui";
-import { useUiStore } from "@/store/ui-store";
+import { SECTION_KEYS, useUiStore, type SectionKey } from "@/store/ui-store";
 import { cn } from "@/lib/cn";
 import { readableDelivery, readableStatus, statusTone } from "@/lib/readable-labels";
 import type {
@@ -42,6 +42,7 @@ import type {
   ConsoleSnapshot,
   InvocationExplanation,
   InvocationSnapshot,
+  WebNavigationLink,
 } from "@/lib/console-state";
 
 export function InvocationsView() {
@@ -72,6 +73,27 @@ export function InvocationsView() {
     setSelectedApplicationId(applicationId);
     setSelectedApplicationRun({ applicationId, routineId, invocationId });
     setSection("applications");
+  }
+
+  function viewWebNavigationLink(link: WebNavigationLink) {
+    const target = link.target ?? {};
+    const section = stringValue(target.section);
+    const invocationId = stringValue(target.invocation);
+    const applicationId = stringValue(target.application);
+    const routineId = stringValue(target.routine);
+    const runInvocationId = stringValue(target.run);
+
+    if (section === "applications" && applicationId && routineId && runInvocationId) {
+      viewApplicationRun(applicationId, routineId, runInvocationId);
+      return;
+    }
+    if (section === "invocations" && invocationId) {
+      viewInvocation(invocationId);
+      return;
+    }
+    if (section && SECTION_KEYS.includes(section as SectionKey)) {
+      setSection(section as SectionKey);
+    }
   }
 
   return (
@@ -133,6 +155,7 @@ export function InvocationsView() {
           onViewApproval={viewApproval}
           onViewApplicationRun={viewApplicationRun}
           onViewInvocation={viewInvocation}
+          onViewWebNavigationLink={viewWebNavigationLink}
         />
       ) : null}
 
@@ -154,12 +177,14 @@ function OperatorExplanationCard({
   onViewApproval,
   onViewApplicationRun,
   onViewInvocation,
+  onViewWebNavigationLink,
 }: {
   invocation: InvocationSnapshot;
   state: ConsoleSnapshot | null;
   onViewApproval: (invocationId: string) => void;
   onViewApplicationRun: (applicationId: string, routineId: string, invocationId: string) => void;
   onViewInvocation: (invocationId: string) => void;
+  onViewWebNavigationLink: (link: WebNavigationLink) => void;
 }) {
   const [copiedLink, setCopiedLink] = useState(false);
   const serverExplanation = invocation.explanation ?? null;
@@ -385,6 +410,12 @@ function OperatorExplanationCard({
         />
         {error ? <p className="text-xs text-destructive">Could not load recovery explanation.</p> : null}
         {isLoading ? <p className="text-xs text-muted-foreground">Loading recovery explanation...</p> : null}
+        {troubleshootingTarget?.webLinks ? (
+          <TroubleshootingReportLinks
+            links={troubleshootingTarget.webLinks}
+            onOpen={onViewWebNavigationLink}
+          />
+        ) : null}
         {recovery?.actions.length ? (
           <div className="space-y-1 rounded-md border border-border bg-muted p-2">
             <p className="text-xs font-medium">Recommended recovery</p>
@@ -404,8 +435,61 @@ function OperatorExplanationCard({
   );
 }
 
+function TroubleshootingReportLinks({
+  links,
+  onOpen,
+}: {
+  links: NonNullable<ConsoleSnapshot["troubleshootingReports"]>[number]["webLinks"];
+  onOpen: (link: WebNavigationLink) => void;
+}) {
+  const [copiedLabel, setCopiedLabel] = useState<string | null>(null);
+  const entries = [
+    links?.failedInvocation,
+    links?.troubleshooterInvocation,
+    links?.applicationRun,
+  ].filter(isWebNavigationLink);
+  if (!entries.length) return null;
+
+  function copyLink(link: WebNavigationLink) {
+    void navigator.clipboard?.writeText(webNavigationLinkDeepLink(link));
+    setCopiedLabel(link.label);
+  }
+
+  return (
+    <div className="space-y-2 rounded-md border border-border bg-muted p-2">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <p className="text-xs font-medium">Troubleshooting report links</p>
+        {copiedLabel ? <span className="text-xs text-success">Copied {copiedLabel}.</span> : null}
+      </div>
+      <div className="flex flex-wrap gap-2">
+        {entries.map((link) => (
+          <span key={`${link.label}:${link.query}`} className="inline-flex items-center gap-1">
+            <Button size="sm" variant="secondary" onClick={() => onOpen(link)}>
+              <ExternalLink />
+              {link.label}
+            </Button>
+            <Button
+              size="icon"
+              variant="secondary"
+              title={`Copy ${link.label}`}
+              aria-label={`Copy ${link.label}`}
+              onClick={() => copyLink(link)}
+            >
+              <Clipboard />
+            </Button>
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function stringValue(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value : null;
+}
+
+function isWebNavigationLink(value: WebNavigationLink | null | undefined): value is WebNavigationLink {
+  return Boolean(value && typeof value.label === "string" && typeof value.query === "string" && value.target);
 }
 
 function invocationExists(state: ConsoleSnapshot | null, invocationId: string): boolean {
