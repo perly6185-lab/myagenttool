@@ -652,7 +652,7 @@ export interface ConsoleSnapshot {
 export type ApplicationSource =
   | { type: "git"; url: string; ref?: string | null }
   | { type: "local"; path: string }
-  | { type: "npm"; package: string; version?: string | null; wrapper?: NpmWrapperSnapshot | null }
+  | { type: "npm"; package: string; version?: string | null; wrapper?: NpmWrapperSnapshot | Record<string, unknown> | null }
   | { type: "manual"; uri?: string | null; manifest?: Record<string, unknown> };
 
 export interface NpmWrapperSnapshot {
@@ -964,6 +964,7 @@ export interface ApplicationRegisterRequest {
   name?: string;
   projectId?: string | null;
   source: ApplicationSource;
+  mcpAgent?: Record<string, unknown> | null;
 }
 
 export interface ApplicationCapability {

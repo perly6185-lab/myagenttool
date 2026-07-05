@@ -7,6 +7,8 @@ export function createCapabilityService({
   createToolInvocation,
   createInvocation,
   completeInvocation,
+  findApprovalRequest = () => null,
+  findInvocation = () => null,
   findAgent,
   listApplications,
   listApplicationCapabilities,
@@ -64,7 +66,28 @@ export function createCapabilityService({
       }
       const action = actionFromCapabilityName(name);
       const applicationId = capability.provider.id;
-      const invocation = createInvocation(`Run application capability ${action} for ${capability.application?.name ?? applicationId}.`, agent, {
+      const approval = verifyApplicationApproval(input, {
+        findApprovalRequest,
+        findInvocation,
+        applicationId,
+        capability: name,
+        type: "application_action",
+        action,
+      });
+      if (sideEffectingApplicationAction(action) && !approval.approved) {
+        if (approval.error) return approval.error;
+        return requestApplicationApproval({
+          createInvocation,
+          agent,
+          actor,
+          task: `Approve application capability ${action} for ${capability.application?.name ?? applicationId}.`,
+          capability: name,
+          applicationId,
+          applicationProjectId: capability.application?.projectId ?? input?.projectId ?? null,
+          approval: { type: "application_action", action },
+        });
+      }
+      const invocation = approval.invocation ?? createInvocation(`Run application capability ${action} for ${capability.application?.name ?? applicationId}.`, agent, {
         actor,
         requestedBy: actor?.userId,
         metadata: {
@@ -89,7 +112,7 @@ export function createCapabilityService({
           },
         };
       }
-      const execution = invokeApplicationCapability(name, input, actor, { applicationId });
+      const execution = invokeApplicationCapability(name, approvedApplicationInput(input, approval), actor, { applicationId });
       if (!execution.ok) {
         completeInvocation(invocation, {
           status: "failed",
@@ -125,12 +148,40 @@ export function createCapabilityService({
 
   function dispatchApplicationWrapper(capability, name, commandId, input, actor) {
     const applicationId = capability.provider.id;
-    // Guards first (tenancy, status, approvalToken, approved-command resolution)
-    // so approval/authorization errors take precedence over agent availability —
-    // the same order the synchronous path enforced.
-    const planned = planApplicationWrapperInvocation({ applicationId, commandId, input, actor });
+    const approval = verifyApplicationApproval(input, {
+      findApprovalRequest,
+      findInvocation,
+      applicationId,
+      capability: name,
+      type: "application_wrapper",
+      commandId,
+    });
+    if (approval.error) return approval.error;
+    const planned = planApplicationWrapperInvocation({ applicationId, commandId, input: approvedApplicationInput(input, approval), actor });
     if (!planned.ok) {
-      return { status: planned.status, body: planned.body };
+      if (planned.body?.error !== "approval_required") {
+        return { status: planned.status, body: planned.body };
+      }
+      const approvalAgent = findAgent("agt_platform_application_control");
+      if (!approvalAgent || approvalAgent.status === "disabled") {
+        return {
+          status: 409,
+          body: {
+            error: "agent_not_available",
+            message: "The platform Application Control agent is not available.",
+          },
+        };
+      }
+      return requestApplicationApproval({
+        createInvocation,
+        agent: approvalAgent,
+        actor,
+        task: `Approve application wrapper capability ${name}.`,
+        capability: name,
+        applicationId,
+        applicationProjectId: capability.application?.projectId ?? input?.projectId ?? null,
+        approval: { type: "application_wrapper", commandId },
+      });
     }
     const agent = findAgent("agt_platform_application_wrapper");
     if (!agent || agent.status === "disabled") {
@@ -150,6 +201,7 @@ export function createCapabilityService({
         capability: name,
         providerType: "application",
         applicationId,
+        applicationPath: planned.wrapper.applicationPath ?? null,
         applicationWrapper: planned.wrapper,
         projectId: capability.application?.projectId ?? input?.projectId ?? null,
       },
@@ -176,6 +228,110 @@ export function createCapabilityService({
     getCapability,
     listCapabilities,
   };
+}
+
+export function requestApplicationApproval({
+  createInvocation,
+  agent,
+  actor,
+  task,
+  capability,
+  applicationId,
+  applicationProjectId,
+  approval,
+}) {
+  const invocation = createInvocation(task, agent, {
+    actor,
+    requestedBy: actor?.userId,
+    requireLocalApproval: true,
+    timeoutSeconds: 30,
+    metadata: {
+      capability,
+      providerType: "application",
+      applicationId,
+      applicationApproval: approval,
+      projectId: applicationProjectId ?? null,
+    },
+  });
+  return {
+    status: invocation.status === "rejected" ? 409 : 202,
+    body: {
+      capability,
+      invocationId: invocation.id,
+      agentId: agent.id,
+      status: invocation.status,
+      approvalRequestId: invocation.approvalRequestId ?? null,
+      approvalRequest: invocation.approvalRequestId ?? null,
+      approvalRequestRequired: true,
+      invocation,
+    },
+  };
+}
+
+export function verifyApplicationApproval(input, {
+  findApprovalRequest,
+  findInvocation,
+  applicationId,
+  capability,
+  type,
+  action = null,
+  commandId = null,
+}) {
+  if (hasApprovalToken(input)) return { approved: true, legacy: true, invocation: null };
+  const approvalRequestId = String(input?.approvalRequestId ?? "").trim();
+  if (!approvalRequestId) return { approved: false };
+  const approval = findApprovalRequest(approvalRequestId);
+  if (!approval) {
+    return approvalVerificationError("approval_not_found", "Approval request was not found.", approvalRequestId);
+  }
+  if (approval.status !== "approved") {
+    return approvalVerificationError("approval_not_approved", "Approval request has not been approved.", approvalRequestId, approval.status);
+  }
+  const invocation = findInvocation(approval.invocationId);
+  const metadata = invocation?.options?.metadata ?? {};
+  const approvalMetadata = metadata.applicationApproval ?? {};
+  const matches =
+    invocation
+    && metadata.providerType === "application"
+    && metadata.applicationId === applicationId
+    && metadata.capability === capability
+    && approvalMetadata.type === type
+    && (action === null || approvalMetadata.action === action)
+    && (commandId === null || approvalMetadata.commandId === commandId);
+  if (!matches) {
+    return approvalVerificationError("approval_scope_mismatch", "Approval request does not match this Application action.", approvalRequestId, approval.status);
+  }
+  return { approved: true, legacy: false, invocation };
+}
+
+function approvalVerificationError(error, reason, approvalRequestId, approvalStatus = null) {
+  return {
+    approved: false,
+    error: {
+      status: 409,
+      body: {
+        error,
+        reason,
+        approvalRequestId,
+        approvalStatus,
+      },
+    },
+  };
+}
+
+export function approvedApplicationInput(input, approval) {
+  if (approval?.approved && !approval.legacy) {
+    return { ...(input && typeof input === "object" && !Array.isArray(input) ? input : {}), __verifiedApplicationApproval: true };
+  }
+  return input;
+}
+
+function sideEffectingApplicationAction(action) {
+  return ["archive", "offline", "online", "refresh", "generate_orchestration"].includes(action);
+}
+
+function hasApprovalToken(input) {
+  return Boolean(input && typeof input === "object" && !Array.isArray(input) && String(input.approvalToken ?? "").trim());
 }
 
 function actionFromCapabilityName(capabilityName) {

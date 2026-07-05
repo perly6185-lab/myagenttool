@@ -3,14 +3,6 @@ import { isAbsolute, resolve, sep } from "node:path";
 
 const FILE_POLICIES = new Set(["forbidden", "read_only", "workspace_write", "native_controls"]);
 const NETWORK_POLICIES = new Set(["forbidden", "restricted", "network", "native_controls"]);
-const CCUSAGE_WRAPPER_ARGS = {
-  daily: ["daily", "--json", "--offline"],
-  weekly: ["weekly", "--json", "--offline"],
-  monthly: ["monthly", "--json", "--offline"],
-  session: ["session", "--json", "--offline"],
-  codex_daily: ["codex", "daily", "--json", "--offline"],
-  claude_daily: ["claude", "daily", "--json", "--offline"],
-};
 
 export function createLocalExecutionPolicyManifest({
   demoAgentPath,
@@ -29,8 +21,8 @@ export function createLocalExecutionPolicyManifest({
     ],
     applicationWrapperCommands: [
       {
-        command: "ccusage",
-        capabilityPrefix: "app.app_ccusage.wrapper.",
+        command: "*",
+        capabilityPrefix: "app.",
         filePolicy: "read_only",
         networkPolicy: "forbidden",
       },
@@ -280,8 +272,11 @@ function applicationWrapperGate(work, spawnPlan, localPolicy, approvedRoots, man
   if (spec.filePolicy !== localPolicy.filePolicy || spec.networkPolicy !== localPolicy.networkPolicy) {
     return { allowed: false, reason: "Local execution gate refused application wrapper policy metadata mismatch.", evidence };
   }
+  if (!genericApplicationWrapperAllowed(parsed)) {
+    return { allowed: false, reason: "Local execution gate refused unsafe application wrapper command or capability metadata.", evidence };
+  }
   const allow = (manifest.applicationWrapperCommands ?? []).find((entry) =>
-    parsed.execCommand === entry.command && parsed.capability?.startsWith(entry.capabilityPrefix ?? ""),
+    (entry.command === "*" || parsed.execCommand === entry.command) && parsed.capability?.startsWith(entry.capabilityPrefix ?? ""),
   );
   if (!allow) {
     return { allowed: false, reason: "Local execution gate refused a non-allowlisted application wrapper command.", evidence };
@@ -296,9 +291,6 @@ function applicationWrapperGate(work, spawnPlan, localPolicy, approvedRoots, man
     if (approvedRoots.length > 0 && !approvedRoots.some((root) => pathWithin(root, parsed.cwd))) {
       return { allowed: false, reason: "Local execution gate refused an application wrapper cwd outside the approved project or worktree root.", evidence };
     }
-  }
-  if (!ccusageArgsAllowed(parsed.capability, parsed.execArgs)) {
-    return { allowed: false, reason: "Local execution gate refused application wrapper args outside the local allowlist.", evidence };
   }
   return { allowed: true, reason: "Local execution gate allowed the application wrapper command.", evidence };
 }
@@ -345,20 +337,14 @@ function valueAt(args, index, name, { allowFlag = false } = {}) {
   return text;
 }
 
-function ccusageArgsAllowed(capability, args) {
-  const report = String(capability ?? "").match(/^app\.app_ccusage\.wrapper\.([a-z0-9_]+)$/)?.[1] ?? null;
-  const base = report ? CCUSAGE_WRAPPER_ARGS[report] : null;
-  if (!base || !stringArrayStartsWith(args, base)) return false;
-  const rest = args.slice(base.length);
-  for (let index = 0; index < rest.length; index += 2) {
-    const flag = rest[index];
-    const value = rest[index + 1];
-    if (value === undefined) return false;
-    if ((flag === "--since" || flag === "--until") && /^\d{4}-\d{2}-\d{2}$/.test(value)) continue;
-    if (flag === "--timezone" && /^[A-Za-z0-9_+/:.][A-Za-z0-9_+/:.-]{0,63}$/.test(value)) continue;
-    return false;
-  }
-  return true;
+function genericApplicationWrapperAllowed(parsed) {
+  const command = String(parsed.execCommand ?? "");
+  const capability = String(parsed.capability ?? "");
+  return /^[A-Za-z0-9@._+-][A-Za-z0-9@._+-]{0,127}$/.test(command)
+    && !command.includes("/")
+    && !command.includes("\\")
+    && /^app\.[a-z0-9._-]+\.wrapper\.[a-z0-9._-]+$/.test(capability)
+    && parsed.execArgs.every((arg) => String(arg).length <= 1000);
 }
 
 function isCodexCliCommand(command) {
@@ -403,12 +389,6 @@ function pathWithin(root, target) {
 
 function samePath(a, b) {
   return Boolean(a && b) && resolve(String(a)) === resolve(String(b));
-}
-
-function stringArrayStartsWith(value, prefix) {
-  return Array.isArray(value)
-    && value.length >= prefix.length
-    && prefix.every((item, index) => String(value[index]) === item);
 }
 
 function stringArrayEquals(a, b) {

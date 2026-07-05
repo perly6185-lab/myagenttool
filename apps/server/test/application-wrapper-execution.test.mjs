@@ -10,6 +10,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { resolve } from "node:path";
 
 import { createApplicationService, applicationWrapperExecutionPlan } from "../src/services/applications.mjs";
 import { createCcusageApplicationRegistration } from "../src/services/ccusage-application.mjs";
@@ -54,6 +55,37 @@ test("execution plan resolves an approved, registered command", () => {
   assert.equal(plan.command, "ccusage");
   assert.deepEqual(plan.args, ["daily", "--json", "--offline"]);
   assert.equal(plan.capability, "app.app_ccusage.wrapper.daily");
+});
+
+test("execution plan maps generic npm scripts through the package manager", () => {
+  const installPath = resolve("/tmp/generic-npm");
+  const app = {
+    id: "app_generic_npm",
+    name: "Generic NPM",
+    path: installPath,
+    source: {
+      type: "npm",
+      wrapper: {
+        mode: "installed-wrapper",
+        installPath,
+        packageManager: "pnpm",
+        commands: [{
+          id: "lint",
+          status: "approved",
+          commandType: "npm_script",
+          command: "lint",
+          args: ["--check"],
+          cwd: "packages/site",
+        }],
+      },
+    },
+  };
+  const plan = applicationWrapperExecutionPlan(app, "lint");
+  assert.equal(plan.command, "pnpm");
+  assert.deepEqual(plan.args, ["run", "lint", "--", "--check"]);
+  assert.equal(plan.cwd, resolve(installPath, "packages/site"));
+  assert.equal(plan.applicationPath, installPath);
+  assert.equal(plan.capability, "app.app_generic_npm.wrapper.lint");
 });
 
 test("execution plan refuses unknown, unapproved, or non-npm commands", () => {

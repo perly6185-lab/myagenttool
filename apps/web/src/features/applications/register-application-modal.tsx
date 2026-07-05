@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Modal } from "@/components/ui/modal";
 import { Button } from "@/components/ui/button";
-import { Input, Select } from "@/components/ui/input";
+import { Input, Select, Textarea } from "@/components/ui/input";
 import { Field } from "@/components/common/field";
 import { useConsoleState } from "@/data/use-console-state";
 import { useAsyncAction, api } from "@/data/use-console-actions";
@@ -25,6 +25,11 @@ export function RegisterApplicationModal({ open, onClose }: { open: boolean; onC
   const [manualUri, setManualUri] = useState("");
   const [name, setName] = useState("");
   const [projectId, setProjectId] = useState("");
+  const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [mcpDescriptor, setMcpDescriptor] = useState("");
+  const [wrapperDescriptor, setWrapperDescriptor] = useState("");
+  const [manualManifest, setManualManifest] = useState("");
+  const [formError, setFormError] = useState<string | null>(null);
 
   const projects = state?.projects ?? [];
 
@@ -47,11 +52,34 @@ export function RegisterApplicationModal({ open, onClose }: { open: boolean; onC
 
   function submit(event: React.FormEvent) {
     event.preventDefault();
+    setFormError(null);
     if (!source) return;
+    const mcpAgent = parseJsonObject(mcpDescriptor, "MCP descriptor");
+    if (mcpAgent.error) {
+      setFormError(mcpAgent.error);
+      return;
+    }
+    const wrapper = sourceType === "npm" ? parseJsonObject(wrapperDescriptor, "Wrapper descriptor") : { value: null, error: null };
+    if (wrapper.error) {
+      setFormError(wrapper.error);
+      return;
+    }
+    const manifest = sourceType === "manual" ? parseJsonObject(manualManifest, "Manual manifest") : { value: null, error: null };
+    if (manifest.error) {
+      setFormError(manifest.error);
+      return;
+    }
+    const sourceWithAdvanced: ApplicationSource =
+      source.type === "npm" && wrapper.value
+        ? { ...source, wrapper: wrapper.value }
+        : source.type === "manual" && manifest.value
+          ? { ...source, manifest: manifest.value }
+          : source;
     const body: ApplicationRegisterRequest = {
-      source,
+      source: sourceWithAdvanced,
       ...(name.trim() ? { name: name.trim() } : {}),
       ...(projectId ? { projectId } : {}),
+      ...(mcpAgent.value ? { mcpAgent: mcpAgent.value } : {}),
     };
     void execute(async () => {
       const result = await api.registerApplication(body);
@@ -61,6 +89,20 @@ export function RegisterApplicationModal({ open, onClose }: { open: boolean; onC
       }
       return result;
     });
+  }
+
+  function parseJsonObject(text: string, label: string): { value: Record<string, unknown> | null; error: string | null } {
+    const trimmed = text.trim();
+    if (!trimmed) return { value: null, error: null };
+    try {
+      const value = JSON.parse(trimmed) as unknown;
+      if (!value || typeof value !== "object" || Array.isArray(value)) {
+        return { value: null, error: `${label} must be a JSON object.` };
+      }
+      return { value: value as Record<string, unknown>, error: null };
+    } catch (caught) {
+      return { value: null, error: `${label} is not valid JSON${caught instanceof Error ? `: ${caught.message}` : "."}` };
+    }
   }
 
   return (
@@ -122,7 +164,50 @@ export function RegisterApplicationModal({ open, onClose }: { open: boolean; onC
           </Field>
         </div>
 
-        {error ? <p className="text-xs text-destructive">{error}</p> : null}
+        <div className="rounded-md border border-border">
+          <button
+            type="button"
+            className="flex w-full items-center justify-between px-3 py-2 text-left text-sm font-medium"
+            onClick={() => setAdvancedOpen((value) => !value)}
+          >
+            <span>Advanced descriptors</span>
+            <span className="text-xs text-muted-foreground">{advancedOpen ? "Hide" : "Show"}</span>
+          </button>
+          {advancedOpen ? (
+            <div className="space-y-3 border-t border-border p-3">
+              <Field label="MCP descriptor JSON (optional)">
+                <Textarea
+                  rows={5}
+                  value={mcpDescriptor}
+                  onChange={(event) => setMcpDescriptor(event.target.value)}
+                  placeholder='{"transport":"stdio","command":"node","args":["server.mjs"],"allowedTools":["render"]}'
+                />
+              </Field>
+              {sourceType === "npm" ? (
+                <Field label="npm wrapper descriptor JSON (optional)">
+                  <Textarea
+                    rows={7}
+                    value={wrapperDescriptor}
+                    onChange={(event) => setWrapperDescriptor(event.target.value)}
+                    placeholder='{"mode":"installed-wrapper","installState":"installed","packageManager":"npm","commands":[{"id":"lint","commandType":"npm_script","command":"lint","status":"approved"}]}'
+                  />
+                </Field>
+              ) : null}
+              {sourceType === "manual" ? (
+                <Field label="Manual manifest JSON (optional)">
+                  <Textarea
+                    rows={5}
+                    value={manualManifest}
+                    onChange={(event) => setManualManifest(event.target.value)}
+                    placeholder='{"capabilities":[]}'
+                  />
+                </Field>
+              ) : null}
+            </div>
+          ) : null}
+        </div>
+
+        {formError || error ? <p className="text-xs text-destructive">{formError ?? error}</p> : null}
         <div className="flex justify-end gap-2 pt-1">
           <Button type="button" variant="secondary" size="sm" onClick={onClose}>
             Cancel

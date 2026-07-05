@@ -6,6 +6,7 @@ import { test } from "node:test";
 
 import {
   createLocalExecutionPolicyManifest,
+  localExecutionGate,
   mcpLocalExecutionGate,
 } from "../src/local-execution-policy.mjs";
 
@@ -89,5 +90,51 @@ test("mcpLocalExecutionGate refuses non-allowlisted commands and policy expansio
     }), { manifest });
     assert.equal(policyGate.allowed, false);
     assert.match(policyGate.reason, /policy outside the local allowlist/);
+  });
+});
+
+test("localExecutionGate allows generic governed npm application wrappers", () => {
+  withWorkspace(({ appRoot }) => {
+    const manifest = createLocalExecutionPolicyManifest();
+    const applicationWrapper = {
+      execCommand: "npm",
+      execArgs: ["run", "lint"],
+      capability: "app.app_generic.wrapper.lint",
+      cwd: appRoot,
+      filePolicy: "read_only",
+      networkPolicy: "forbidden",
+    };
+    const work = {
+      ...workFor(appRoot),
+      options: {
+        metadata: {
+          ...workFor(appRoot).options.metadata,
+          applicationWrapper,
+        },
+      },
+    };
+    const spawnPlan = {
+      command: manifest.execPath,
+      args: [
+        "tools/agents/application-wrapper.mjs",
+        "--exec-command", "npm",
+        "--capability", "app.app_generic.wrapper.lint",
+        "--cwd", appRoot,
+        "--exec-arg", "run",
+        "--exec-arg", "lint",
+      ],
+      cwd: appRoot,
+    };
+    const allowed = localExecutionGate(work, { type: "cli", command: "node" }, spawnPlan, { manifest });
+    assert.equal(allowed.allowed, true, allowed.reason);
+
+    const expanded = localExecutionGate(
+      { ...work, options: { metadata: { ...work.options.metadata, applicationWrapper: { ...applicationWrapper, networkPolicy: "network" } } } },
+      { type: "cli", command: "node" },
+      spawnPlan,
+      { manifest },
+    );
+    assert.equal(expanded.allowed, false);
+    assert.match(expanded.reason, /policy/);
   });
 });

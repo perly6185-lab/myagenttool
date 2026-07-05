@@ -16,7 +16,12 @@ import {
   createApplicationService,
   validateApplicationRoutineDraft,
 } from "../services/applications.mjs";
-import { createCapabilityService } from "../services/capabilities.mjs";
+import {
+  approvedApplicationInput,
+  createCapabilityService,
+  requestApplicationApproval,
+  verifyApplicationApproval,
+} from "../services/capabilities.mjs";
 import { createCcusageImportService } from "../services/ccusage-imports.mjs";
 import { createClaudeReviewImportService } from "../services/claude-review-imports.mjs";
 import { createCodexReviewImportService } from "../services/codex-review-imports.mjs";
@@ -186,7 +191,39 @@ export function createServerRuntimeServices({
   }
 
   function confirmApplicationMcpCandidate(applicationId, candidateId, input = {}, actor = null) {
-    const result = confirmApplicationMcpCandidateBase(applicationId, candidateId, input, actor);
+    const approval = verifyApplicationApproval(input, {
+      findApprovalRequest: findApprovalRequestBase,
+      findInvocation,
+      applicationId,
+      capability: `app.${applicationId}.mcp_candidate.${candidateId}`,
+      type: "application_mcp_candidate",
+      candidateId,
+    });
+    if (!approval.approved) {
+      if (approval.error) return approval.error;
+      const agent = findAgent("agt_platform_application_control");
+      if (!agent || agent.status === "disabled") {
+        return {
+          status: 409,
+          body: {
+            error: "agent_not_available",
+            message: "The platform Application Control agent is not available.",
+          },
+        };
+      }
+      const application = findApplication(applicationId);
+      return requestApplicationApproval({
+        createInvocation,
+        agent,
+        actor,
+        task: `Approve MCP candidate ${candidateId} for ${application?.name ?? applicationId}.`,
+        capability: `app.${applicationId}.mcp_candidate.${candidateId}`,
+        applicationId,
+        applicationProjectId: application?.projectId ?? null,
+        approval: { type: "application_mcp_candidate", candidateId },
+      });
+    }
+    const result = confirmApplicationMcpCandidateBase(applicationId, candidateId, approvedApplicationInput(input, approval), actor);
     if (result?.application) {
       reconcileApplicationMcpAgent(result.application, actor);
     }
@@ -354,6 +391,7 @@ export function createServerRuntimeServices({
     createInvocation,
     createTroubleshootingReport,
     denyInvocation,
+    findApprovalRequest: findApprovalRequestBase,
     getAgentUsageSummary,
     markDispatched,
     nextDispatchableInvocation,
@@ -486,6 +524,8 @@ export function createServerRuntimeServices({
     listApplicationCapabilities,
     invokeApplicationCapability,
     planApplicationWrapperInvocation,
+    findApprovalRequest: findApprovalRequestBase,
+    findInvocation,
   });
 
   function runApplicationOrchestration(applicationId, routineId, body = {}, actor = null) {

@@ -80,9 +80,10 @@ View invocation navigation.
 
 ## Residual Risks
 
-- The Desktop Bridge Application wrapper allowlist is intentionally scoped to
-  ccusage. General npm-wrapper execution should remain locally refused until a
-  reviewed local manifest and consent model exist.
+- The Desktop Bridge Application wrapper allowlist has been generalized from
+  ccusage to reviewed `app.*.wrapper.*` descriptors, but only under the current
+  conservative local policy envelope: read-only files and forbidden network.
+  Write-capable or networked wrappers still need a broader consent model.
 - The current durable proof is read-model oriented. The next slice should add
   restart/read-model/audit-reference coverage for these Application result
   links.

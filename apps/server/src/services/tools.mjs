@@ -117,6 +117,7 @@ export function createToolService({
         capability: planned.wrapper.capability,
         providerType: "application",
         applicationId: application.id,
+        applicationPath: planned.wrapper.applicationPath ?? null,
         applicationWrapper: planned.wrapper,
         report: value.report,
         filters: {

@@ -112,13 +112,13 @@ First slice:
   `/api/applications/:id/capabilities` as the supported surfaces, with
   readiness, risk, approval, schema, output collection, and result-import
   metadata present without exposing wrapper internals.
-- Access: require owner-scoped authorization plus explicit approval for
-  side-effecting Application capabilities, and keep local bridge allowlist
-  checks for command id, cwd, args, env, file policy, and network policy before
-  any spawn.
-- Execution: wire the approved `installed-wrapper` path through the normal
-  invocation/trace/audit flow for ccusage first, preserving reviewed wrapper
-  argv construction and rejecting free-form npm execution.
+- Access: require owner-scoped authorization plus real local approval issuance
+  and verification for side-effecting Application capabilities, and keep local
+  bridge checks for command id, cwd, args, env, file policy, and network policy
+  before any spawn.
+- Execution: wire approved `installed-wrapper` descriptors through the normal
+  invocation/trace/audit flow beyond ccusage, preserving reviewed wrapper argv
+  construction and rejecting free-form npm execution.
 - Result: import completion output into the declared read model, attach result
   refs to invocation/Application/audit evidence, and render result links plus
   next-step guidance in Applications and Invocations.

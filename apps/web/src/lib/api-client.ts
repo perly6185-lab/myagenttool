@@ -263,11 +263,11 @@ export const api = {
   applicationLifecycle: (
     id: string,
     action: "probe" | "online" | "offline" | "archive" | "refresh",
-    body: { approvalToken?: string } = {},
+    body: { approvalToken?: string; approvalRequestId?: string } = {},
   ) => request("POST", `/api/applications/${encodeURIComponent(id)}/${action}`, body),
-  generateApplicationOrchestration: (id: string, body: { approvalToken?: string } = {}) =>
+  generateApplicationOrchestration: (id: string, body: { approvalToken?: string; approvalRequestId?: string } = {}) =>
     request("POST", `/api/applications/${encodeURIComponent(id)}/orchestrations/generate`, body),
-  confirmApplicationMcpCandidate: (id: string, candidateId: string, body: { approvalToken?: string } = {}) =>
+  confirmApplicationMcpCandidate: (id: string, candidateId: string, body: { approvalToken?: string; approvalRequestId?: string } = {}) =>
     request(
       "POST",
       `/api/applications/${encodeURIComponent(id)}/mcp-candidates/${encodeURIComponent(candidateId)}/confirm`,

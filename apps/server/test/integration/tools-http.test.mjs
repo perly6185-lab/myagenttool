@@ -155,6 +155,20 @@ async function call(path, options = {}) {
   return { status: res.status, body: parsed };
 }
 
+async function approveApplicationRequest(response, token = "tok_a") {
+  assert.equal(response.status, 202);
+  assert.equal(response.body.status, "waiting_for_local_approval");
+  assert.ok(response.body.approvalRequestId);
+  const approved = await call(`/api/approvals/${encodeURIComponent(response.body.approvalRequestId)}/approve`, {
+    method: "POST",
+    body: {},
+    token,
+  });
+  assert.equal(approved.status, 200);
+  assert.equal(approved.body.approval.status, "approved");
+  return response.body.approvalRequestId;
+}
+
 test("GET /api/tools discovers ccusage.report without exposing adapter argv", async () => {
   const res = await call("/api/tools");
   assert.equal(res.status, 200);
@@ -295,12 +309,11 @@ test("POST /api/capabilities proxies governed tools and executes application cap
     body: {},
     token: "tok_a",
   });
-  assert.equal(offlineWithoutApproval.status, 409);
-  assert.equal(offlineWithoutApproval.body.error, "approval_required");
+  const offlineApprovalRequestId = await approveApplicationRequest(offlineWithoutApproval);
 
   const offline = await call("/api/capabilities/app.app_team_a.offline/invocations", {
     method: "POST",
-    body: { approvalToken: "operator-approved-offline" },
+    body: { approvalRequestId: offlineApprovalRequestId },
     token: "tok_a",
   });
   assert.equal(offline.status, 201);
@@ -693,8 +706,7 @@ test("POST /api/applications/:id/mcp-candidates/:candidateId/confirm requires in
     body: {},
     token: "tok_a",
   });
-  assert.equal(approvalRequired.status, 409);
-  assert.equal(approvalRequired.body.error, "approval_required");
+  const approvalRequestId = await approveApplicationRequest(approvalRequired);
 
   const foreign = await call(`/api/applications/${registered.body.application.id}/mcp-candidates/mcp.shell/confirm`, {
     method: "POST",
@@ -706,7 +718,7 @@ test("POST /api/applications/:id/mcp-candidates/:candidateId/confirm requires in
 
   const confirmed = await call(`/api/applications/${registered.body.application.id}/mcp-candidates/mcp.shell/confirm`, {
     method: "POST",
-    body: { approvalToken: "operator-confirmed" },
+    body: { approvalRequestId },
     token: "tok_a",
   });
   assert.equal(confirmed.status, 200);
@@ -832,8 +844,7 @@ test("npm wrapper descriptors project only approved governed capabilities", asyn
     body: {},
     token: "tok_a",
   });
-  assert.equal(blocked.status, 409);
-  assert.equal(blocked.body.error, "approval_required");
+  const approvalRequestId = await approveApplicationRequest(blocked);
 
   // With approval, the wrapper capability now dispatches a QUEUED invocation to
   // the platform Application Wrapper Runner (bridge execution, #359), carrying
@@ -841,14 +852,15 @@ test("npm wrapper descriptors project only approved governed capabilities", asyn
   // returning a synchronous, non-executable descriptor.
   const invoked = await call(`/api/capabilities/app.${appId}.wrapper.lint/invocations`, {
     method: "POST",
-    body: { approvalToken: "operator-approved-wrapper" },
+    body: { approvalRequestId },
     token: "tok_a",
   });
   assert.equal(invoked.status, 202);
   assert.equal(invoked.body.agentId, "agt_platform_application_wrapper");
   assert.equal(invoked.body.status, "queued");
   const wrapper = invoked.body.invocation.options.metadata.applicationWrapper;
-  assert.equal(wrapper.execCommand, "lint");
+  assert.equal(wrapper.execCommand, "npm");
+  assert.deepEqual(wrapper.execArgs, ["run", "lint"]);
   assert.equal(wrapper.capability, `app.${appId}.wrapper.lint`);
 });
 
@@ -886,12 +898,11 @@ test("POST /api/capabilities generate_orchestration writes a routine draft", asy
     body: {},
     token: "tok_a",
   });
-  assert.equal(noToken.status, 409);
-  assert.equal(noToken.body.error, "approval_required");
+  const approvalRequestId = await approveApplicationRequest(noToken);
 
   const res = await call("/api/capabilities/app.app_team_a.generate_orchestration/invocations", {
     method: "POST",
-    body: { approvalToken: "operator-approved-generate" },
+    body: { approvalRequestId },
     token: "tok_a",
   });
   assert.equal(res.status, 201);
@@ -1624,12 +1635,11 @@ test("application lifecycle endpoints require governed approval", async () => {
     body: {},
     token: "tok_a",
   });
-  assert.equal(blocked.status, 409);
-  assert.equal(blocked.body.error, "approval_required");
+  const offlineApprovalRequestId = await approveApplicationRequest(blocked);
 
   const approved = await call("/api/applications/app_team_a/offline", {
     method: "POST",
-    body: { approvalToken: "operator-approved-offline" },
+    body: { approvalRequestId: offlineApprovalRequestId },
     token: "tok_a",
   });
   assert.equal(approved.status, 201);
@@ -1640,12 +1650,11 @@ test("application lifecycle endpoints require governed approval", async () => {
     body: {},
     token: "tok_a",
   });
-  assert.equal(onlineBlocked.status, 409);
-  assert.equal(onlineBlocked.body.error, "approval_required");
+  const onlineApprovalRequestId = await approveApplicationRequest(onlineBlocked);
 
   const online = await call("/api/applications/app_team_a/online", {
     method: "POST",
-    body: { approvalToken: "operator-approved-online" },
+    body: { approvalRequestId: onlineApprovalRequestId },
     token: "tok_a",
   });
   assert.equal(online.status, 201);

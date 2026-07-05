@@ -146,9 +146,12 @@ Bridge independently re-checks the inner command, argv, cwd, file policy, and
 network policy before spawning the fixed wrapper runner. MyAgentTool still does
 not install arbitrary packages or accept free-form npm commands.
 
-The executable reference path is intentionally narrow: ccusage is the measured
-NPM wrapper example. General npm-wrapper execution should remain locally refused
-until a reviewed local manifest and consent model exists for broader assets.
+The executable path now supports reviewed NPM wrapper descriptors beyond
+ccusage. `npm_script` commands are executed through the declared package manager
+(`npm`, `pnpm`, or `yarn`) and still pass through the fixed Application Wrapper
+Runner. The local Desktop Bridge gate remains conservative: generic wrappers are
+allowed only for server-resolved `app.*.wrapper.*` capabilities whose declared
+policy stays within read-only files and forbidden network access.
 
 ## Application MCP
 
@@ -185,11 +188,13 @@ Application capability invocation runs through the platform
 `agt_platform_application_control` agent for synchronous control-plane actions
 and through `agt_platform_application_wrapper` for approved npm-wrapper
 commands. Every side-effecting action — `offline`, `archive`, `refresh`,
-`generate_orchestration`, and approval-required `wrapper:*` commands — requires
-an explicit `approvalToken` and returns `409 approval_required` without one. In
-this slice the token is an explicit-intent confirmation on an owner-scoped
-resource (tenancy is the real authorization boundary), **not** a cryptographic
-approval; a real approval-issuance/verification flow is tracked as follow-up.
+`generate_orchestration`, approval-required `wrapper:*` commands, and manual MCP
+candidate confirmation — now uses the normal local approval issuance flow. The
+first request returns `202` with an `approvalRequestId`; after
+`/api/approvals/:id/approve`, the caller retries with that `approvalRequestId`
+and the server verifies the approval's invocation metadata matches the same
+Application, capability/action, and candidate/command. `approvalToken` remains a
+legacy compatibility input while callers migrate.
 
 `app.<application-id>.generate_orchestration` writes a Loop Routine draft into a
 platform-managed, per-application directory (keyed by the unique application id,

@@ -411,11 +411,16 @@ test("application MCP candidate manual confirmation registers shared tools", () 
     assert.equal(candidate.autoRegisterReason, "stdio_command_requires_manual_confirmation");
     assert.equal(api.findAgent("agt_app_doocs_md_manual_mcp"), undefined);
 
-    const denied = api.confirmApplicationMcpCandidate(app.id, "mcp.shell", {}, actor);
-    assert.equal(denied.status, 409);
-    assert.equal(denied.body.error, "approval_required");
+    const requested = api.confirmApplicationMcpCandidate(app.id, "mcp.shell", {}, actor);
+    assert.equal(requested.status, 202);
+    assert.equal(requested.body.status, "waiting_for_local_approval");
+    assert.ok(requested.body.approvalRequestId);
 
-    const confirmed = api.confirmApplicationMcpCandidate(app.id, "mcp.shell", { approvalToken: "operator-confirmed" }, actor);
+    const approval = api.findApprovalRequest(requested.body.approvalRequestId);
+    const approvalInvocation = api.findInvocation(approval.invocationId);
+    api.approveInvocation(approval, approvalInvocation, actor);
+
+    const confirmed = api.confirmApplicationMcpCandidate(app.id, "mcp.shell", { approvalRequestId: requested.body.approvalRequestId }, actor);
     assert.equal(confirmed.status, 200);
     assert.equal(confirmed.application.mcpAgent.discovery.manualConfirmed, true);
     assert.equal(confirmed.application.mcpAgent.discovery.autoRegistered, false);

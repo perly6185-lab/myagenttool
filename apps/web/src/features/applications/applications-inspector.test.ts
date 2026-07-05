@@ -26,6 +26,7 @@ const apiMock = vi.hoisted(() => ({
   listApplicationOrchestrationRecoveryAgentCandidates: vi.fn(),
   requestApplicationOrchestrationRecoveryAction: vi.fn(),
   confirmApplicationMcpCandidate: vi.fn(),
+  approveApproval: vi.fn(),
 }));
 
 vi.mock("@/lib/api-client", () => ({
@@ -39,6 +40,7 @@ vi.mock("@/lib/api-client", () => ({
     listApplicationOrchestrationRecoveryAgentCandidates: apiMock.listApplicationOrchestrationRecoveryAgentCandidates,
     requestApplicationOrchestrationRecoveryAction: apiMock.requestApplicationOrchestrationRecoveryAction,
     confirmApplicationMcpCandidate: apiMock.confirmApplicationMcpCandidate,
+    approveApproval: apiMock.approveApproval,
   },
 }));
 
@@ -176,12 +178,15 @@ describe("ApplicationsInspector recovery guidance", () => {
       applicationId: "app_doocs_md_manual",
       capabilities: [],
     });
-    apiMock.confirmApplicationMcpCandidate.mockResolvedValue({
-      application: {
-        id: "app_doocs_md_manual",
-        mcpAgent: { agentId: "agt_app_doocs_md_manual_mcp" },
-      },
-    });
+    apiMock.confirmApplicationMcpCandidate
+      .mockResolvedValueOnce({ approvalRequestId: "apr_mcp_confirm", status: "waiting_for_local_approval" })
+      .mockResolvedValueOnce({
+        application: {
+          id: "app_doocs_md_manual",
+          mcpAgent: { agentId: "agt_app_doocs_md_manual_mcp" },
+        },
+      });
+    apiMock.approveApproval.mockResolvedValue({ approval: { id: "apr_mcp_confirm", status: "approved" } });
 
     useUiStore.setState({ selectedApplicationId: "app_doocs_md_manual" });
     renderWithClient(createElement(ApplicationsInspector));
@@ -194,10 +199,11 @@ describe("ApplicationsInspector recovery guidance", () => {
     fireEvent.click(screen.getByRole("button", { name: /Confirm MCP/i }));
 
     await waitFor(() => {
-      expect(apiMock.confirmApplicationMcpCandidate).toHaveBeenCalledWith(
+      expect(apiMock.approveApproval).toHaveBeenCalledWith("apr_mcp_confirm");
+      expect(apiMock.confirmApplicationMcpCandidate).toHaveBeenLastCalledWith(
         "app_doocs_md_manual",
         "mcp.shell",
-        { approvalToken: "console-operator-confirmed" },
+        { approvalRequestId: "apr_mcp_confirm" },
       );
     });
   });

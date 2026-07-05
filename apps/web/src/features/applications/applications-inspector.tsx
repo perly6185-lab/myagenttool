@@ -50,10 +50,6 @@ import type {
   InvocationSnapshot,
 } from "@/lib/console-state";
 
-// Explicit-intent confirmation token for governed side-effecting actions. It is
-// an intent marker (tenancy is the real authz), not a cryptographic approval.
-const APPROVAL_TOKEN = "console-operator-confirmed";
-
 function riskTone(risk?: string): "neutral" | "warning" | "danger" {
   if (risk === "high" || risk === "critical") return "danger";
   if (risk === "medium") return "warning";
@@ -82,13 +78,41 @@ interface PendingConfirm {
   run: () => Promise<unknown>;
 }
 
+async function runWithApplicationApproval<T>(
+  request: (approvalRequestId?: string) => Promise<T>,
+): Promise<T> {
+  const initial = await request();
+  const approvalRequestId = applicationApprovalRequestId(initial);
+  if (!approvalRequestId) return initial;
+  await api.approveApproval(approvalRequestId);
+  return request(approvalRequestId);
+}
+
+function applicationApprovalRequestId(value: unknown): string | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const record = value as { approvalRequestId?: unknown; approvalRequest?: unknown };
+  if (typeof record.approvalRequestId === "string" && record.approvalRequestId.trim()) {
+    return record.approvalRequestId;
+  }
+  if (typeof record.approvalRequest === "string" && record.approvalRequest.trim()) {
+    return record.approvalRequest;
+  }
+  if (record.approvalRequest && typeof record.approvalRequest === "object" && !Array.isArray(record.approvalRequest)) {
+    const nested = record.approvalRequest as { id?: unknown };
+    return typeof nested.id === "string" && nested.id.trim() ? nested.id : null;
+  }
+  return null;
+}
+
 function ApplicationActions({ application }: { application: ApplicationSnapshot }) {
   const { execute, pending, error } = useAsyncAction();
   const [confirm, setConfirm] = useState<PendingConfirm | null>(null);
   const status = application.status;
 
   const lifecycle = (action: "probe" | "online" | "offline" | "archive" | "refresh") =>
-    api.applicationLifecycle(application.id, action, { approvalToken: APPROVAL_TOKEN });
+    runWithApplicationApproval((approvalRequestId) =>
+      api.applicationLifecycle(application.id, action, approvalRequestId ? { approvalRequestId } : {}),
+    );
 
   return (
     <Card>
@@ -150,7 +174,9 @@ function ApplicationActions({ application }: { application: ApplicationSnapshot 
               description: "Writes a governed LoopRoutine draft into the managed application directory.",
               confirmLabel: "Generate",
               destructive: false,
-              run: () => api.generateApplicationOrchestration(application.id, { approvalToken: APPROVAL_TOKEN }),
+              run: () => runWithApplicationApproval((approvalRequestId) =>
+                api.generateApplicationOrchestration(application.id, approvalRequestId ? { approvalRequestId } : {}),
+              ),
             })}>
               Generate orchestration
             </Button>
@@ -285,7 +311,9 @@ function ApplicationMcpSummary({ application }: { application: ApplicationSnapsh
                       size="sm"
                       variant="secondary"
                       disabled={pending}
-                      onClick={() => void execute(() => api.confirmApplicationMcpCandidate(application.id, server.id, { approvalToken: APPROVAL_TOKEN }))}
+                      onClick={() => void execute(() => runWithApplicationApproval((approvalRequestId) =>
+                        api.confirmApplicationMcpCandidate(application.id, server.id, approvalRequestId ? { approvalRequestId } : {}),
+                      ))}
                     >
                       Confirm MCP
                     </Button>

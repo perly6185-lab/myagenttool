@@ -35,12 +35,21 @@ function harness({ agentAvailable = true } = {}) {
     getTool: () => null,
     createToolInvocation: () => ({ status: 500 }),
     createInvocation: (task, agent, options) => {
-      const invocation = { id: "inv_1", status: "queued", agentId: agent.id, options };
+      const invocation = {
+        id: `inv_${created.length + 1}`,
+        status: options.requireLocalApproval ? "waiting_for_local_approval" : "queued",
+        agentId: agent.id,
+        approvalRequestId: options.requireLocalApproval ? `apr_${created.length + 1}` : null,
+        options,
+      };
       created.push({ task, agent, options });
       return invocation;
     },
     completeInvocation: () => {},
-    findAgent: (id) => (agentAvailable && id === "agt_platform_application_wrapper" ? { id, status: "available" } : null),
+    findAgent: (id) => {
+      if (id === "agt_platform_application_control") return { id, status: "available" };
+      return agentAvailable && id === "agt_platform_application_wrapper" ? { id, status: "available" } : null;
+    },
     listApplications: appSvc.listApplications,
     listApplicationCapabilities: appSvc.listApplicationCapabilities,
     invokeApplicationCapability: appSvc.invokeApplicationCapability,
@@ -86,12 +95,14 @@ test("when the wrapper agent is not registered, returns agent_not_available", ()
   assert.equal(created.length, 0);
 });
 
-test("the session report still requires an approvalToken (approval gate preserved on the capability path)", () => {
+test("the session report requests real approval before dispatch", () => {
   const { capSvc, created } = harness();
-  const denied = capSvc.createCapabilityInvocation("app.app_ccusage.wrapper.session", {});
-  assert.equal(denied.status, 409);
-  assert.equal(denied.body.error, "approval_required");
-  assert.equal(created.length, 0);
+  const approval = capSvc.createCapabilityInvocation("app.app_ccusage.wrapper.session", {});
+  assert.equal(approval.status, 202);
+  assert.equal(approval.body.status, "waiting_for_local_approval");
+  assert.equal(approval.body.approvalRequestId, "apr_1");
+  assert.equal(created.length, 1);
+  assert.equal(created[0].agent.id, "agt_platform_application_control");
   // With a token it proceeds.
   const ok = capSvc.createCapabilityInvocation("app.app_ccusage.wrapper.session", { approvalToken: "operator" });
   assert.equal(ok.status, 202);

@@ -258,8 +258,9 @@ planning refresh:
 - `pnpm test` verified workspace unit suites plus `smoke:local` and
   `smoke:port`. What it specifically measured for this slice: Application
   capability descriptors now publish readiness and result-path metadata; the
-  Desktop Bridge local execution gate allows the ccusage wrapper contract but
-  refuses non-allowlisted inner commands and child cwd escapes before spawn;
+  Desktop Bridge local execution gate allows reviewed generic NPM Application
+  wrappers within the read-only/no-network policy envelope and refuses policy
+  expansion, metadata mismatches, and child cwd escapes before spawn;
   ccusage wrapper completion links imported rows across invocation result,
   invocation metadata, application `latestResult`, audit summary, public state,
   and Evidence Center; and the Web Applications inspector shows readiness,

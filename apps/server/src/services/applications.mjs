@@ -268,18 +268,16 @@ export function createApplicationService({
     if (application.status === "offline" && !["inspect", "online"].includes(action)) {
       return { ok: false, status: 409, body: { error: "application_offline", applicationId: application.id } };
     }
-    // Every side-effecting action — status changes, the orchestration-draft
-    // write, and wrapper commands — requires an explicit approvalToken.
-    // NOTE: in this slice the token is an explicit-intent confirmation on an
-    // owner-scoped resource (tenancy is the real authorization boundary), not a
-    // cryptographic approval; a real approval-issuance flow is follow-up.
-    if ((["archive", "offline", "online", "refresh", "generate_orchestration"].includes(action) || action.startsWith("wrapper:")) && !hasApprovalToken(input)) {
+    // Every side-effecting action requires either the legacy explicit intent
+    // token or a verified approvalRequestId that the capability/composer layer
+    // has already checked against the matching invocation metadata.
+    if ((["archive", "offline", "online", "refresh", "generate_orchestration"].includes(action) || action.startsWith("wrapper:")) && !hasApplicationApproval(input)) {
       return {
         ok: false,
         status: 409,
         body: {
           error: "approval_required",
-          reason: `${action} requires an explicit approvalToken.`,
+          reason: `${action} requires an approved approvalRequestId.`,
           applicationId: application.id,
           action,
         },
@@ -325,8 +323,8 @@ export function createApplicationService({
     // Approval is required only for commands that declare it. A read-only report
     // command can set requiresApproval:false — preserving, e.g., the ccusage
     // tool's offline reports that never needed an approval token.
-    if (command.requiresApproval && !hasApprovalToken(input)) {
-      return { ok: false, status: 409, body: { error: "approval_required", reason: "This wrapper command requires an explicit approvalToken.", applicationId } };
+    if (command.requiresApproval && !hasApplicationApproval(input)) {
+      return { ok: false, status: 409, body: { error: "approval_required", reason: "This wrapper command requires an approved approvalRequestId.", applicationId } };
     }
     const plan = applicationWrapperExecutionPlan(application, commandId, input);
     if (!plan) {
@@ -338,6 +336,7 @@ export function createApplicationService({
         execCommand: plan.command,
         execArgs: plan.args,
         cwd: plan.cwd,
+        applicationPath: plan.applicationPath,
         capability: plan.capability,
         filePolicy: plan.filePolicy,
         networkPolicy: plan.networkPolicy,
@@ -366,13 +365,13 @@ export function createApplicationService({
         body: { error: "application_mcp_agent_already_registered", applicationId, agentId: app.mcpAgent.agentId },
       };
     }
-    if (!hasApprovalToken(input)) {
+    if (!hasApplicationApproval(input)) {
       return {
         ok: false,
         status: 409,
         body: {
           error: "approval_required",
-          reason: "Confirming an MCP candidate requires an explicit approvalToken.",
+          reason: "Confirming an MCP candidate requires an approved approvalRequestId.",
           applicationId,
         },
       };
@@ -588,14 +587,17 @@ function isValidWrapperArgValue(spec, value) {
 export function applicationWrapperExecutionPlan(application, commandId, input = {}) {
   const command = findNpmWrapperCommand(application, commandId);
   if (!command) return null;
+  const commandArgs = [...command.args, ...resolveWrapperInputArgs(command.argInputs, input)];
+  const execution = wrapperCommandExecution(application, command, commandArgs);
   return {
     capability: `app.${slugify(application.id || application.name)}.wrapper.${command.id}`,
     commandId: command.id,
     commandType: command.commandType,
-    command: command.command,
+    command: execution.command,
     // Base args + only the declared, validated per-invocation flag inputs.
-    args: [...command.args, ...resolveWrapperInputArgs(command.argInputs, input)],
-    cwd: command.cwd ?? ".",
+    args: execution.args,
+    cwd: resolveWrapperCwd(application, command.cwd),
+    applicationPath: resolveWrapperApplicationPath(application),
     timeoutSeconds: command.timeoutSeconds,
     cancellation: command.cancellation,
     envPolicy: command.envPolicy,
@@ -731,11 +733,44 @@ function approvalInputSchema() {
   return {
     type: "object",
     additionalProperties: false,
-    required: ["approvalToken"],
     properties: {
       approvalToken: { type: "string", minLength: 1, maxLength: 200 },
+      approvalRequestId: { type: "string", minLength: 1, maxLength: 200 },
     },
+    anyOf: [
+      { required: ["approvalRequestId"] },
+      { required: ["approvalToken"] },
+    ],
   };
+}
+
+function wrapperCommandExecution(application, command, args) {
+  if (command.commandType !== "npm_script") {
+    return { command: command.command, args };
+  }
+  const packageManager = application.source?.wrapper?.packageManager ?? "npm";
+  if (packageManager === "yarn") {
+    return { command: "yarn", args: ["run", command.command, ...args] };
+  }
+  return {
+    command: packageManager,
+    args: args.length ? ["run", command.command, "--", ...args] : ["run", command.command],
+  };
+}
+
+function resolveWrapperCwd(application, cwd) {
+  const base = resolveWrapperApplicationPath(application);
+  const text = String(cwd ?? ".").trim() || ".";
+  if (isAbsolute(text)) return text;
+  return base ? resolve(base, text) : text;
+}
+
+function resolveWrapperApplicationPath(application) {
+  const installPath = stringOrNull(application.source?.wrapper?.installPath);
+  if (installPath) return resolve(installPath);
+  const path = stringOrNull(application.path);
+  if (path) return resolve(path);
+  return null;
 }
 
 function applicationForCapability(capabilityName, applications, applicationId = null) {
@@ -761,6 +796,11 @@ function wrapperActionFromCapabilityName(capabilityName) {
 
 function hasApprovalToken(input) {
   return Boolean(input && typeof input === "object" && !Array.isArray(input) && String(input.approvalToken ?? "").trim());
+}
+
+function hasApplicationApproval(input) {
+  return hasApprovalToken(input)
+    || Boolean(input && typeof input === "object" && !Array.isArray(input) && input.__verifiedApplicationApproval === true);
 }
 
 function executeApplicationAction({ application, action, input, actor, defaultProjectPath, now = () => new Date().toISOString() }) {
