@@ -1,11 +1,12 @@
 import { useQuery } from "@tanstack/react-query";
-import type { ReactNode } from "react";
-import { ExternalLink } from "lucide-react";
+import { useState, type ReactNode } from "react";
+import { Clipboard, ExternalLink } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge, StatusBadge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/common/empty-state";
 import { FactList } from "@/components/common/fact-list";
+import { invocationDeepLink } from "@/app/deep-links";
 import { EventTimeline } from "@/features/invocations/event-timeline";
 import { DecisionAction } from "@/features/invocations/decision-action";
 import { useConsoleState } from "@/data/use-console-state";
@@ -160,6 +161,7 @@ function OperatorExplanationCard({
   onViewApplicationRun: (applicationId: string, routineId: string, invocationId: string) => void;
   onViewInvocation: (invocationId: string) => void;
 }) {
+  const [copiedLink, setCopiedLink] = useState(false);
   const serverExplanation = invocation.explanation ?? null;
   const metadata = invocation.options?.metadata ?? {};
   const source = serverExplanation?.source ?? null;
@@ -264,10 +266,29 @@ function OperatorExplanationCard({
     : null;
   const sourceInvocationMissing = Boolean(sourceInvocationId && !sourceInvocationTargetId);
 
+  function copyInvocationLink() {
+    void navigator.clipboard?.writeText(invocationDeepLink(invocation.id));
+    setCopiedLink(true);
+  }
+
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Operator explanation</CardTitle>
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <CardTitle>Operator explanation</CardTitle>
+          <div className="flex flex-wrap items-center gap-2">
+            <Button
+              size="icon"
+              variant="secondary"
+              title="Copy invocation link"
+              aria-label="Copy invocation link"
+              onClick={copyInvocationLink}
+            >
+              <Clipboard />
+            </Button>
+            {copiedLink ? <span className="text-xs text-success">Copied.</span> : null}
+          </div>
+        </div>
       </CardHeader>
       <CardContent className="space-y-3">
         <div className="flex flex-wrap items-center gap-2">
