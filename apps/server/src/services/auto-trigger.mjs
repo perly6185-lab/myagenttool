@@ -86,7 +86,7 @@ export function createAutoTriggerRuntime({ state, config, listLabeledIssues, sta
       });
       for (const issue of candidates) {
         try {
-          startAutoRun({
+          await startAutoRun({
             projectId: project.id,
             link: { type: "issue", number: issue.number, title: issue.title, url: issue.url ?? null, state: "open" },
             name: branchFromIssue({ number: issue.number, title: issue.title }),

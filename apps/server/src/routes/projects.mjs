@@ -168,7 +168,7 @@ export async function handleProjectRoutes({
     }
     const body = await readJson(req);
     try {
-      const result = startAutoRun({
+      const result = await startAutoRun({
         projectId,
         link: body.link,
         agentId: body.agentId,

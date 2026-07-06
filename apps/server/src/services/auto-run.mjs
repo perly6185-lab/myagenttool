@@ -1,7 +1,7 @@
 import { worktreeAutoRunPrompt } from "@myagenttool/protocol/issue-prompt";
 
 import { normalizeWorktreeLink } from "./projects.mjs";
-import { classifyIntentFromText, isAutoRunIntent } from "./auto-run-intent.mjs";
+import { intentForPath, resolveDecision } from "./auto-run-decision.mjs";
 
 // One-click "Auto" orchestrator. It closes the seam the console never had:
 // turning a linked GitHub issue into a worktree AND a started agent run seeded
@@ -44,22 +44,9 @@ export function createAutoRunService({
   createWorktreePr,
   verifyWorktree,
   writeIssueStatus,
-  classifyAutoRunIntent,
+  decideIssuePath,
   postIssueReport,
 }) {
-  // Resolve the issue intent: an injected classifier (e.g. LLM) overrides, else
-  // a conservative title heuristic. Determines how a no-diff outcome is routed.
-  function resolveIntent(link) {
-    if (typeof classifyAutoRunIntent === "function") {
-      try {
-        const result = classifyAutoRunIntent({ link });
-        if (isAutoRunIntent(result)) return result;
-      } catch {
-        /* fall back to the heuristic */
-      }
-    }
-    return classifyIntentFromText(link?.title ?? "");
-  }
 
   // The agent's summary from the completed invocation — the deliverable for an
   // investigation (there is no diff to ship).
@@ -135,7 +122,7 @@ export function createAutoRunService({
   // agent prompt from the issue, and start the invocation inside the worktree.
   // `name` is the branch name the caller already derives (shared branchFromIssue),
   // so the server does not re-implement issue branch naming.
-  function startAutoRun({ projectId, link, agentId, name, baseBranch, actor } = {}) {
+  async function startAutoRun({ projectId, link, agentId, name, baseBranch, actor } = {}) {
     const normalizedLink = normalizeWorktreeLink(link);
     if (!normalizedLink) {
       throw new Error("A GitHub issue or PR link is required to start an auto-run.");
@@ -153,6 +140,10 @@ export function createAutoRunService({
 
     const autoRunId = nextId("aur_demo");
     const createdAt = now();
+
+    // 0. Decision step: the injected decider (or the heuristic floor) triages the
+    // issue into a path BEFORE any execution. The decision is data, not action.
+    const decision = await resolveDecision({ link: normalizedLink, decideIssuePath });
 
     // 1. Materialize the worktree from the issue.
     const { worktree } = createWorktree({
@@ -174,13 +165,30 @@ export function createAutoRunService({
       invocationId: null,
       agentId: agent.id,
       link: normalizedLink,
-      intent: resolveIntent(normalizedLink),
+      decision,
+      // Legacy field, derived from the decision path for record continuity.
+      intent: intentForPath(decision.path),
       branchName: worktree.branchName ?? worktree.branch ?? null,
       requestedBy: actor?.userId ?? "usr_local",
       createdAt,
       updatedAt: createdAt,
     };
     state.autoRuns.unshift(autoRun);
+    // The routing decision is auditable evidence: path, who decided, and why.
+    appendEvent({
+      invocationId: null,
+      type: "auto_run_decided",
+      level: "info",
+      message: `Auto-run ${autoRunId} routed to "${decision.path}" by ${decision.decidedBy}.`,
+      data: {
+        autoRunId,
+        path: decision.path,
+        decidedBy: decision.decidedBy,
+        confidence: decision.confidence,
+        spawnChildIssues: decision.spawnChildIssues,
+        rationale: decision.rationale,
+      },
+    });
 
     // 2. Seed the prompt from the issue, and 3. start the agent run in the worktree.
     let invocation;
@@ -239,18 +247,25 @@ export function createAutoRunService({
             return autoRun;
           }
           if (!commitResult.hasCommits) {
-            // No diff — route by intent instead of always treating it as a dead
-            // end. An investigation's deliverable IS the summary; a question hands
-            // the uncertainty back to a human; only a change with no diff is blocked.
-            const intent = autoRun.intent ?? "change";
-            if (intent === "investigation") {
+            // No diff — route by the decided path instead of treating it as a
+            // dead end. A design/prototype run's deliverable IS the findings; a
+            // clarify run hands its questions back to a human; only a develop
+            // run with no diff is blocked. Old persisted records without a
+            // decision fall back to the legacy intent mapping.
+            const path = autoRun.decision?.path
+              ?? ({ investigation: "design", question: "clarify" }[autoRun.intent] ?? "develop");
+            if (path === "design" || path === "prototype") {
               const summary = extractRunSummary(invocation) ?? "Investigation complete — no code change was needed.";
               maybePostIssueReport(autoRun, worktree, summary);
               setAutoRunStatus(autoRun, "report_posted", { report: summary, error: null });
-            } else if (intent === "question") {
+            } else if (path === "clarify") {
+              const questions = autoRun.decision?.clarifyingQuestions ?? [];
               const summary = extractRunSummary(invocation);
+              const report = questions.length
+                ? `${summary ? `${summary}\n\n` : ""}Open questions:\n${questions.map((q) => `- ${q}`).join("\n")}`
+                : summary;
               setAutoRunStatus(autoRun, "needs_input", {
-                report: summary,
+                report,
                 error: "The run needs a human decision before it can proceed.",
               });
             } else {

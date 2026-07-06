@@ -19,6 +19,7 @@ interface AutoRunRecord {
   status: string;
   link?: AutoRunLink | null;
   intent?: string | null;
+  decision?: { path: string; decidedBy: string; confidence: number; rationale?: string | null } | null;
   branchName?: string | null;
   prNumber?: number | null;
   prUrl?: string | null;
@@ -248,6 +249,14 @@ export function AutoRunsView() {
                 </div>
                 <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">
                   <Stepper status={run.status} />
+                  {run.decision ? (
+                    <span
+                      className="rounded bg-muted px-1.5 py-0.5 font-medium"
+                      title={`${run.decision.rationale ?? ""} (by ${run.decision.decidedBy}, confidence ${Math.round((run.decision.confidence ?? 0) * 100)}%)`}
+                    >
+                      {run.decision.path}
+                    </span>
+                  ) : null}
                   {run.branchName ? (
                     <span className="inline-flex items-center gap-1">
                       <GitBranch className="size-3" /> {run.branchName}
