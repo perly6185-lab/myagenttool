@@ -26,6 +26,7 @@ interface AutoRunRecord {
   verification?: { passed: boolean; verified: boolean; summary?: string | null } | null;
   childIssues?: { number: number; url: string | null }[] | null;
   report?: string | null;
+  prState?: string | null;
   error?: string | null;
   createdAt?: string;
   updatedAt?: string;
@@ -37,6 +38,7 @@ interface AutoRunSummary {
   outcomes: { prOpen: number; blocked: number; failed: number; reportPosted: number; needsInput: number };
   successRate: number | null;
   verification: { passed: number; failed: number; unverified: number };
+  routing?: { alignmentRate: number | null; conclusive: number } | null;
   blockedReasons: { reason: string; count: number }[];
   timeToPr: { count: number; medianSeconds: number | null; p90Seconds: number | null };
 }
@@ -130,10 +132,12 @@ export function AutoRunsView() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (refresh = false) => {
     setLoading(true);
     try {
-      const data = (await api.listAutoRuns()) as { autoRuns?: AutoRunRecord[]; summary?: AutoRunSummary };
+      // Manual refresh also refreshes PR dispositions (bounded gh reads); the
+      // 10s poll never does, so it stays cheap.
+      const data = (await api.listAutoRuns(refresh)) as { autoRuns?: AutoRunRecord[]; summary?: AutoRunSummary };
       setRuns(data.autoRuns ?? []);
       setSummary(data.summary ?? null);
       setError(null);
@@ -162,7 +166,7 @@ export function AutoRunsView() {
           </h1>
           <p className="text-sm text-muted-foreground">Autonomous issue → worktree → agent → PR runs, and how the loop is performing.</p>
         </div>
-        <Button variant="secondary" size="sm" onClick={() => void load()} disabled={loading}>
+        <Button variant="secondary" size="sm" onClick={() => void load(true)} disabled={loading}>
           <RefreshCw className={cn("mr-1 size-3.5", loading && "animate-spin")} /> Refresh
         </Button>
       </div>
@@ -185,6 +189,11 @@ export function AutoRunsView() {
               label="Time to PR (median)"
               value={fmtDuration(summary.timeToPr.medianSeconds)}
               hint={`p90 ${fmtDuration(summary.timeToPr.p90Seconds)} · n=${summary.timeToPr.count}`}
+            />
+            <StatTile
+              label="Routing alignment"
+              value={summary.routing?.alignmentRate == null ? "—" : `${Math.round(summary.routing.alignmentRate * 100)}%`}
+              hint={`over ${summary.routing?.conclusive ?? 0} conclusive run(s)`}
             />
           </div>
           {summary.outcomes.reportPosted + summary.outcomes.needsInput > 0 ? (
@@ -241,6 +250,8 @@ export function AutoRunsView() {
                         <GitPullRequest className="size-3.5" /> PR #{run.prNumber}
                       </a>
                     ) : null}
+                    {run.prState === "MERGED" ? <Badge tone="success">merged</Badge> : null}
+                    {run.prState === "CLOSED" ? <Badge tone="warning">closed</Badge> : null}
                     {(run.childIssues ?? []).map((child) =>
                       child.url ? (
                         <a key={child.number} href={child.url} target="_blank" rel="noreferrer" className="text-xs text-primary hover:underline" title="Pending-decision child issue">

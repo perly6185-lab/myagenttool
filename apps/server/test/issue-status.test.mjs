@@ -69,6 +69,17 @@ test("runIssueBodyFetch reads the body via gh; failures and empties yield null",
   assert.equal(await runIssueBodyFetch({ cwd: "/repo", issueNumber: 12, gh: async () => { throw new Error("x"); } }), null);
 });
 
+test("runPrStateFetch reads OPEN/MERGED/CLOSED; junk and failures yield null", async () => {
+  const gh = async (args) => {
+    assert.deepEqual(args, ["pr", "view", "7", "--json", "state", "--jq", ".state"]);
+    return { stdout: "merged\n" };
+  };
+  assert.equal(await import("../src/services/issue-status.mjs").then((m) => m.runPrStateFetch({ cwd: "/r", prNumber: 7, gh })), "MERGED");
+  const { runPrStateFetch } = await import("../src/services/issue-status.mjs");
+  assert.equal(await runPrStateFetch({ cwd: "/r", prNumber: 7, gh: async () => ({ stdout: "weird" }) }), null);
+  assert.equal(await runPrStateFetch({ cwd: "/r", prNumber: 7, gh: async () => { throw new Error("x"); } }), null);
+});
+
 test("runIssueComment posts a comment via gh and never throws", async () => {
   const calls = [];
   const gh = async (args, cwd) => calls.push({ args, cwd });

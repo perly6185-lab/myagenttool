@@ -22,9 +22,10 @@ import { createM3Service } from "../services/m3.mjs";
 import { createProjectService, sameProjectPath } from "../services/projects.mjs";
 import { createAutoRunService } from "../services/auto-run.mjs";
 import { resolveAutoRunVerifyCommand, runWorktreeVerification } from "../services/worktree-verify.mjs";
-import { resolveStatusWritebackConfig, runIssueBodyFetch, runIssueComment, runIssueStatusTransition } from "../services/issue-status.mjs";
+import { resolveStatusWritebackConfig, runIssueBodyFetch, runIssueComment, runIssueStatusTransition, runPrStateFetch } from "../services/issue-status.mjs";
 import { resolveDeciderCommand, runDeciderCommand } from "../services/decision-command.mjs";
 import { childIssueBody, childIssueTitle, extractProjectFieldsBlock, runChildIssueCreate, spawnIssuesConfig } from "../services/auto-run-spawn.mjs";
+import { refreshPrDispositions } from "../services/auto-run-eval.mjs";
 import { createTerminalService } from "../services/terminal.mjs";
 import { createToolService } from "../services/tools.mjs";
 
@@ -362,6 +363,18 @@ export function createServerRuntimeServices({
   });
   // Now that the reaction exists, let completion drive it.
   advanceAutoRunHook = advanceAutoRunForInvocation;
+
+  // Routing-evaluation disposition refresh (slice 5): bounded, throttled,
+  // read-only gh; persists only when something changed.
+  async function refreshAutoRunPrDispositions() {
+    const result = await refreshPrDispositions({
+      state,
+      now,
+      fetchPrState: ({ prNumber, repoPath }) => runPrStateFetch({ cwd: repoPath, prNumber }),
+    });
+    if (result.updated > 0) persistStateSoon();
+    return result;
+  }
 
   const {
     completeDiscoveryRun,
@@ -1907,6 +1920,7 @@ export function createServerRuntimeServices({
     createWorktreePr,
     publishWorktreeBranch,
     startAutoRun,
+    refreshAutoRunPrDispositions,
     selectProject,
     removeProject,
     removeWorktree,

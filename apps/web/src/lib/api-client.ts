@@ -420,8 +420,9 @@ export const api = {
     request("POST", `/api/worktrees/${encodeURIComponent(id)}/pr`, payload),
   listGithubItems: (projectId: string) =>
     request("GET", `/api/projects/${encodeURIComponent(projectId)}/github`),
-  // Auto-run observability: the records plus an evaluation summary.
-  listAutoRuns: () => request("GET", "/api/auto-runs"),
+  // Auto-run observability: the records plus an evaluation summary. refresh=true
+  // also refreshes PR dispositions (bounded gh reads) for the routing evaluation.
+  listAutoRuns: (refresh = false) => request("GET", `/api/auto-runs${refresh ? "?refresh=1" : ""}`),
   listBranches: (projectId: string) =>
     request("GET", `/api/projects/${encodeURIComponent(projectId)}/branches`),
   gitSummary: (projectId: string) =>
