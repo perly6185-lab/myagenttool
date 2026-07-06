@@ -23,6 +23,31 @@ afterEach(() => {
 });
 
 describe("RegisterApplicationModal", () => {
+  it("previews approved npm wrapper capabilities before registration", () => {
+    render(<RegisterApplicationModal open={true} onClose={vi.fn()} />);
+
+    fireEvent.change(screen.getByLabelText("Source type"), { target: { value: "npm" } });
+    fireEvent.change(screen.getByLabelText("Package"), { target: { value: "@scope/report-tool" } });
+    fireEvent.click(screen.getByRole("button", { name: /Advanced descriptors/i }));
+    fireEvent.change(screen.getByLabelText("npm wrapper descriptor JSON (optional)"), {
+      target: {
+        value: JSON.stringify({
+          mode: "installed-wrapper",
+          packageManager: "npm",
+          commands: [
+            { id: "daily", commandType: "npm_script", command: "daily", status: "approved" },
+            { id: "draft", commandType: "npm_script", command: "draft", status: "draft" },
+          ],
+        }),
+      },
+    });
+
+    expect(screen.getByText("Capability impact")).toBeTruthy();
+    expect(screen.getByText("1 added")).toBeTruthy();
+    expect(screen.getByText("+ app.app_scope_report_tool.wrapper.daily")).toBeTruthy();
+    expect(screen.queryByText(/wrapper\.draft/)).toBeNull();
+  });
+
   it("surfaces structured npm wrapper descriptor validation errors", async () => {
     const onClose = vi.fn();
     apiMock.registerApplication.mockRejectedValue(

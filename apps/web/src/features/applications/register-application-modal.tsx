@@ -1,11 +1,13 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { Modal } from "@/components/ui/modal";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input, Select, Textarea } from "@/components/ui/input";
 import { Field } from "@/components/common/field";
 import { useConsoleState } from "@/data/use-console-state";
 import { useAsyncAction, api } from "@/data/use-console-actions";
 import { useUiStore } from "@/store/ui-store";
+import { parseOptionalJsonObject, wrapperCapabilityImpact } from "@/features/applications/descriptor-utils";
 import type { ApplicationRegisterRequest, ApplicationSource } from "@/lib/console-state";
 
 type SourceType = ApplicationSource["type"];
@@ -32,6 +34,14 @@ export function RegisterApplicationModal({ open, onClose }: { open: boolean; onC
   const [formError, setFormError] = useState<string | null>(null);
 
   const projects = state?.projects ?? [];
+  const previewApplicationId = useMemo(
+    () => `app_${slugSegment(name.trim() || npmPackage.trim() || "npm_application")}`,
+    [name, npmPackage],
+  );
+  const wrapperImpact = useMemo(
+    () => sourceType === "npm" ? wrapperCapabilityImpact(previewApplicationId, null, wrapperDescriptor) : null,
+    [previewApplicationId, sourceType, wrapperDescriptor],
+  );
 
   function buildSource(): ApplicationSource | null {
     switch (sourceType) {
@@ -54,17 +64,17 @@ export function RegisterApplicationModal({ open, onClose }: { open: boolean; onC
     event.preventDefault();
     setFormError(null);
     if (!source) return;
-    const mcpAgent = parseJsonObject(mcpDescriptor, "MCP descriptor");
+    const mcpAgent = parseOptionalJsonObject(mcpDescriptor, "MCP descriptor");
     if (mcpAgent.error) {
       setFormError(mcpAgent.error);
       return;
     }
-    const wrapper = sourceType === "npm" ? parseJsonObject(wrapperDescriptor, "Wrapper descriptor") : { value: null, error: null };
+    const wrapper = sourceType === "npm" ? parseOptionalJsonObject(wrapperDescriptor, "Wrapper descriptor") : { value: null, error: null };
     if (wrapper.error) {
       setFormError(wrapper.error);
       return;
     }
-    const manifest = sourceType === "manual" ? parseJsonObject(manualManifest, "Manual manifest") : { value: null, error: null };
+    const manifest = sourceType === "manual" ? parseOptionalJsonObject(manualManifest, "Manual manifest") : { value: null, error: null };
     if (manifest.error) {
       setFormError(manifest.error);
       return;
@@ -89,20 +99,6 @@ export function RegisterApplicationModal({ open, onClose }: { open: boolean; onC
       }
       return result;
     });
-  }
-
-  function parseJsonObject(text: string, label: string): { value: Record<string, unknown> | null; error: string | null } {
-    const trimmed = text.trim();
-    if (!trimmed) return { value: null, error: null };
-    try {
-      const value = JSON.parse(trimmed) as unknown;
-      if (!value || typeof value !== "object" || Array.isArray(value)) {
-        return { value: null, error: `${label} must be a JSON object.` };
-      }
-      return { value: value as Record<string, unknown>, error: null };
-    } catch (caught) {
-      return { value: null, error: `${label} is not valid JSON${caught instanceof Error ? `: ${caught.message}` : "."}` };
-    }
   }
 
   return (
@@ -184,14 +180,30 @@ export function RegisterApplicationModal({ open, onClose }: { open: boolean; onC
                 />
               </Field>
               {sourceType === "npm" ? (
-                <Field label="npm wrapper descriptor JSON (optional)">
-                  <Textarea
-                    rows={7}
-                    value={wrapperDescriptor}
-                    onChange={(event) => setWrapperDescriptor(event.target.value)}
-                    placeholder='{"mode":"installed-wrapper","installState":"installed","packageManager":"npm","commands":[{"id":"lint","commandType":"npm_script","command":"lint","status":"approved"}]}'
-                  />
-                </Field>
+                <>
+                  <Field label="npm wrapper descriptor JSON (optional)">
+                    <Textarea
+                      rows={7}
+                      value={wrapperDescriptor}
+                      onChange={(event) => setWrapperDescriptor(event.target.value)}
+                      placeholder='{"mode":"installed-wrapper","installState":"installed","packageManager":"npm","commands":[{"id":"lint","commandType":"npm_script","command":"lint","status":"approved"}]}'
+                    />
+                  </Field>
+                  {wrapperImpact ? (
+                    <div className="rounded-md border border-border/70 p-3 text-xs">
+                      <div className="mb-2 font-medium">Capability impact</div>
+                      <div className="flex flex-wrap gap-2">
+                        <Badge tone={wrapperImpact.added.length ? "success" : "neutral"}>{wrapperImpact.added.length} added</Badge>
+                        <Badge tone="neutral">{wrapperImpact.unchanged.length} unchanged</Badge>
+                      </div>
+                      {wrapperImpact.added.length ? (
+                        <p className="mt-2 break-words text-muted-foreground">
+                          {wrapperImpact.added.map((capability) => `+ ${capability}`).join(" · ")}
+                        </p>
+                      ) : null}
+                    </div>
+                  ) : null}
+                </>
               ) : null}
               {sourceType === "manual" ? (
                 <Field label="Manual manifest JSON (optional)">
@@ -219,4 +231,15 @@ export function RegisterApplicationModal({ open, onClose }: { open: boolean; onC
       </form>
     </Modal>
   );
+}
+
+function slugSegment(value: string): string {
+  const text = value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .replaceAll(".", "_")
+    .replaceAll("-", "_");
+  return text || "npm_application";
 }

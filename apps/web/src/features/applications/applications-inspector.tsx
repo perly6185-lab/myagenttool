@@ -13,6 +13,7 @@ import { applicationRunDeepLink } from "@/app/deep-links";
 import { useConsoleState } from "@/data/use-console-state";
 import { useAsyncAction, api } from "@/data/use-console-actions";
 import { useUiStore } from "@/store/ui-store";
+import { parseOptionalJsonObject, prettyJson, wrapperCapabilityImpact } from "@/features/applications/descriptor-utils";
 import { sourceSummary } from "@/features/applications/applications-view";
 import { Transcript } from "@/features/invocations/transcript";
 import {
@@ -52,7 +53,6 @@ import type {
   ApplicationSnapshot,
   ApplicationResultRef,
   InvocationSnapshot,
-  NpmWrapperSnapshot,
 } from "@/lib/console-state";
 
 function riskTone(risk?: string): "neutral" | "warning" | "danger" {
@@ -1423,55 +1423,6 @@ function DiagnosticsBlock({ title, value }: { title: string; value?: unknown }) 
 function formatValue(value: unknown): string {
   if (value === null || value === undefined || value === "") return "Not recorded";
   return String(value);
-}
-
-function prettyJson(value: unknown): string {
-  if (value === null || value === undefined) return "";
-  return JSON.stringify(value, null, 2);
-}
-
-function wrapperCapabilityImpact(applicationId: string, current: NpmWrapperSnapshot | null | undefined, descriptorText: string) {
-  const trimmed = descriptorText.trim();
-  if (!trimmed) return null;
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(trimmed);
-  } catch {
-    return null;
-  }
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
-  const next = parsed as { mode?: unknown; commands?: unknown };
-  if (String(next.mode ?? "metadata-only") !== "installed-wrapper" || !Array.isArray(next.commands)) return null;
-  const prefix = `app.${applicationId}.wrapper.`;
-  const currentNames = new Set(
-    (current?.commands ?? [])
-      .filter((command) => command.status === "approved")
-      .map((command) => `${prefix}${command.id}`),
-  );
-  const nextNames = new Set(
-    next.commands
-      .filter((command): command is { id?: unknown; status?: unknown } => Boolean(command && typeof command === "object" && !Array.isArray(command)))
-      .filter((command) => String(command.status ?? "draft") === "approved" && String(command.id ?? "").trim())
-      .map((command) => `${prefix}${String(command.id).trim()}`),
-  );
-  const added = [...nextNames].filter((name) => !currentNames.has(name)).sort();
-  const removed = [...currentNames].filter((name) => !nextNames.has(name)).sort();
-  const unchanged = [...nextNames].filter((name) => currentNames.has(name)).sort();
-  return { added, removed, unchanged };
-}
-
-function parseOptionalJsonObject(text: string, label: string): { value: Record<string, unknown> | null; error: string | null } {
-  const trimmed = text.trim();
-  if (!trimmed) return { value: null, error: null };
-  try {
-    const value = JSON.parse(trimmed) as unknown;
-    if (!value || typeof value !== "object" || Array.isArray(value)) {
-      return { value: null, error: `${label} must be a JSON object.` };
-    }
-    return { value: value as Record<string, unknown>, error: null };
-  } catch (caught) {
-    return { value: null, error: `${label} is not valid JSON${caught instanceof Error ? `: ${caught.message}` : "."}` };
-  }
 }
 
 function stringValue(value: unknown): string | null {
