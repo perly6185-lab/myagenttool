@@ -22,7 +22,7 @@ import { createM3Service } from "../services/m3.mjs";
 import { createProjectService, sameProjectPath } from "../services/projects.mjs";
 import { createAutoRunService } from "../services/auto-run.mjs";
 import { resolveAutoRunVerifyCommand, runWorktreeVerification } from "../services/worktree-verify.mjs";
-import { resolveStatusWritebackConfig, runIssueBodyFetch, runIssueComment, runIssueStatusTransition, runPrMerge, runPrStateFetch } from "../services/issue-status.mjs";
+import { resolveStatusWritebackConfig, runIssueBodyFetch, runIssueComment, runIssueStatusTransition, runPrChecks, runPrMerge, runPrStateFetch } from "../services/issue-status.mjs";
 import { deciderTimeoutMs, resolveDeciderCommand, runDeciderCommand } from "../services/decision-command.mjs";
 import { childIssueBody, childIssueTitle, extractProjectFieldsBlock, runChildIssueCreate, spawnIssuesConfig } from "../services/auto-run-spawn.mjs";
 import { refreshPrDispositions } from "../services/auto-run-eval.mjs";
@@ -402,8 +402,12 @@ export function createServerRuntimeServices({
       state,
       now,
       fetchPrState: ({ prNumber, repoPath }) => runPrStateFetch({ cwd: repoPath, prNumber }),
+      // CI check posture for the merge decision (read-only gh; shown on the card).
+      fetchPrChecks: ({ prNumber, repoPath }) => runPrChecks({ cwd: repoPath, prNumber }),
     });
-    if (result.updated > 0) persistStateSoon();
+    // A run's prChecks can change even when prState didn't, so persist whenever
+    // any run was refreshed, not only on a state transition.
+    if (result.checked > 0) persistStateSoon();
     return result;
   }
 

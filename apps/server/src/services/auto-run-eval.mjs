@@ -76,6 +76,7 @@ export function routingEvaluation(autoRuns = []) {
 export async function refreshPrDispositions({
   state,
   fetchPrState,
+  fetchPrChecks,
   now = () => new Date().toISOString(),
   maxChecks = 10,
   minIntervalMs = 10 * 60 * 1000,
@@ -99,6 +100,11 @@ export async function refreshPrDispositions({
       if (prState && ["OPEN", "MERGED", "CLOSED"].includes(prState) && prState !== run.prState) {
         run.prState = prState;
         updated += 1;
+      }
+      // CI check posture so the console can show it before a human merges.
+      if (typeof fetchPrChecks === "function" && run.prState !== "MERGED" && run.prState !== "CLOSED") {
+        const prChecks = await fetchPrChecks({ prNumber: run.prNumber, repoPath: project.path });
+        if (prChecks) run.prChecks = prChecks;
       }
     } catch {
       run.prStateCheckedAt = now();

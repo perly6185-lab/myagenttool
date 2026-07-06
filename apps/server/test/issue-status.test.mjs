@@ -11,8 +11,37 @@ import {
   runIssueBodyFetch,
   runIssueComment,
   runIssueStatusTransition,
+  runPrChecks,
   statusTransitionLabels,
 } from "../src/services/issue-status.mjs";
+
+const ghChecks = (rollup) => async (args) => {
+  assert.deepEqual(args, ["pr", "view", "7", "--json", "statusCheckRollup"]);
+  return { stdout: JSON.stringify({ statusCheckRollup: rollup }) };
+};
+
+test("runPrChecks: no checks → state NONE", async () => {
+  assert.deepEqual(await runPrChecks({ cwd: "/r", prNumber: 7, gh: ghChecks([]) }), { total: 0, passed: 0, failed: 0, pending: 0, state: "NONE" });
+});
+
+test("runPrChecks: all green → SUCCESS", async () => {
+  const r = await runPrChecks({ cwd: "/r", prNumber: 7, gh: ghChecks([{ conclusion: "SUCCESS" }, { conclusion: "SKIPPED" }]) });
+  assert.deepEqual(r, { total: 2, passed: 2, failed: 0, pending: 0, state: "SUCCESS" });
+});
+
+test("runPrChecks: any failure → FAILURE (even with pending)", async () => {
+  const r = await runPrChecks({ cwd: "/r", prNumber: 7, gh: ghChecks([{ conclusion: "SUCCESS" }, { conclusion: "FAILURE" }, { status: "IN_PROGRESS" }]) });
+  assert.deepEqual(r, { total: 3, passed: 1, failed: 1, pending: 1, state: "FAILURE" });
+});
+
+test("runPrChecks: some pending, none failed → PENDING", async () => {
+  const r = await runPrChecks({ cwd: "/r", prNumber: 7, gh: ghChecks([{ conclusion: "SUCCESS" }, { state: "PENDING" }]) });
+  assert.deepEqual(r, { total: 2, passed: 1, failed: 0, pending: 1, state: "PENDING" });
+});
+
+test("runPrChecks: gh failure → null (never throws)", async () => {
+  assert.equal(await runPrChecks({ cwd: "/r", prNumber: 7, gh: async () => { throw new Error("x"); } }), null);
+});
 
 test("resolveStatusWritebackConfig is off unless explicitly enabled", () => {
   assert.deepEqual(resolveStatusWritebackConfig({}), { enabled: false });
