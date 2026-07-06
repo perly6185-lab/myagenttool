@@ -9,8 +9,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { spawn } from "node:child_process";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
 
 import { createApplicationService, applicationWrapperExecutionPlan } from "../src/services/applications.mjs";
 import { createCcusageApplicationRegistration } from "../src/services/ccusage-application.mjs";
@@ -32,9 +34,12 @@ function ccusageApp() {
   return svc.registerApplication(createCcusageApplicationRegistration());
 }
 
-function runRunner(args) {
+function runRunner(args, options = {}) {
   return new Promise((resolve) => {
-    const child = spawn(process.execPath, [RUNNER, ...args], { stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn(process.execPath, [RUNNER, ...args], {
+      stdio: ["ignore", "pipe", "pipe"],
+      ...(options.env ? { env: { ...process.env, ...options.env } } : {}),
+    });
     let stdout = "";
     let stderr = "";
     child.stdout.on("data", (c) => { stdout += c; });
@@ -116,6 +121,33 @@ test("runner spawns exactly the command it is handed and emits a structured RESU
   assert.equal(result.output.source, "application");
   assert.equal(result.output.capability, "app.app_ccusage.wrapper.daily");
   assert.deepEqual(result.output.report, { rows: 1 });
+});
+
+test("runner resolves Windows npm .cmd shims without opening a shell", { skip: process.platform !== "win32" }, async () => {
+  const root = join(tmpdir(), `myagenttool-wrapper-shim-${process.pid}`);
+  rmSync(root, { recursive: true, force: true });
+  const packageDir = join(root, "node_modules", "fixture-cli", "src");
+  mkdirSync(packageDir, { recursive: true });
+  writeFileSync(join(packageDir, "cli.js"), "console.log(JSON.stringify({shim:true,args:process.argv.slice(2)}));\n", "utf8");
+  writeFileSync(join(root, "fixture-cli.cmd"), [
+    "@ECHO off",
+    "SETLOCAL",
+    "SET dp0=%~dp0",
+    "endLocal & \"%_prog%\" \"%dp0%\\node_modules\\fixture-cli\\src\\cli.js\" %*",
+  ].join("\r\n"), "utf8");
+  try {
+    const { code, stdout } = await runRunner([
+      "--capability", "app.fixture.wrapper.daily",
+      "--exec-command", "fixture-cli",
+      "--exec-arg", "daily",
+      "--exec-arg", "--json",
+    ], { env: { PATH: `${root};${process.env.PATH ?? ""}` } });
+    assert.equal(code, 0);
+    const result = resultFrom(stdout);
+    assert.deepEqual(result.output.report, { shim: true, args: ["daily", "--json"] });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("runner refuses a missing command and a flag-shaped command (no injection)", async () => {

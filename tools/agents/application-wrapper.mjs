@@ -14,6 +14,8 @@
 //     --exec-command ccusage --exec-arg daily --exec-arg --json [--cwd DIR]
 
 import { spawn } from "node:child_process";
+import { existsSync, readFileSync } from "node:fs";
+import { delimiter, dirname, extname, join } from "node:path";
 
 // Cap captured output so a runaway command can't OOM the runner or produce a
 // RESULT line too large for the consumer's line buffer. Once exceeded we stop
@@ -85,7 +87,8 @@ function requireValueAllowingFlags(args, index, name) {
 
 function run(command, args, cwd) {
   return new Promise((resolveResult) => {
-    const child = spawn(command, args, {
+    const resolved = resolveSpawnCommand(command, args);
+    const child = spawn(resolved.command, resolved.args, {
       cwd: cwd || process.cwd(),
       windowsHide: true,
       shell: false,
@@ -109,6 +112,40 @@ function run(command, args, cwd) {
     child.on("error", (error) => resolveResult({ code: 127, stdout, stderr: `${stderr}${error.message}` }));
     child.on("close", (code) => resolveResult({ code: truncated ? 1 : (code ?? 1), stdout, stderr }));
   });
+}
+
+function resolveSpawnCommand(command, args) {
+  if (process.platform !== "win32") return { command, args };
+  const shim = findWindowsNpmCmdShim(command);
+  if (!shim) return { command, args };
+  const target = npmCmdShimTarget(shim);
+  return target ? { command: process.execPath, args: [target, ...args] } : { command, args };
+}
+
+function findWindowsNpmCmdShim(command) {
+  const text = String(command ?? "").trim();
+  if (!text || extname(text)) return null;
+  const hasDirectory = /[\\/]/.test(text);
+  const candidates = hasDirectory
+    ? [`${text}.cmd`]
+    : (process.env.PATH ?? "")
+      .split(delimiter)
+      .filter(Boolean)
+      .map((dir) => join(dir, `${text}.cmd`));
+  return candidates.find((candidate) => existsSync(candidate)) ?? null;
+}
+
+function npmCmdShimTarget(shimPath) {
+  let text = "";
+  try {
+    text = readFileSync(shimPath, "utf8");
+  } catch {
+    return null;
+  }
+  const match = text.match(/"%dp0%\\([^"]+?\.js)"/i);
+  if (!match) return null;
+  const target = join(dirname(shimPath), match[1]);
+  return existsSync(target) ? target : null;
 }
 
 function printHelp() {
