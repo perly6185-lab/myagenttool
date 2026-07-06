@@ -64,6 +64,8 @@ const persistedArrayKeys = [
   "ledgerEntries",
   "importedUsageEstimates",
   "codexReviewFindings",
+  "codexChangePlans",
+  "codexPatchProposals",
   "claudeReviewFindings",
   "budgets",
   "automations",

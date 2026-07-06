@@ -59,6 +59,8 @@ export function buildPublicState({
   });
   const importedUsagePublic = (rows) => byInvocation(rows).map(({ raw, ...row }) => row);
   const codexReviewFindings = byInvocation(state.codexReviewFindings).map(({ raw, ...row }) => row);
+  const codexChangePlans = byInvocation(state.codexChangePlans).map(({ raw, ...row }) => row);
+  const codexPatchProposals = byInvocation(state.codexPatchProposals).map(({ raw, ...row }) => row);
   const claudeReviewFindings = byInvocation(state.claudeReviewFindings).map(({ raw, ...row }) => row);
   const reviewFindings = [...codexReviewFindings, ...claudeReviewFindings].sort(compareReviewFindings);
   // Imported evidence has no invocation, so it can't ride byInvocation (a null
@@ -190,6 +192,8 @@ export function buildPublicState({
     ledgerEntries: byProject(state.ledgerEntries),
     importedUsageEstimates: importedUsagePublic(state.importedUsageEstimates),
     codexReviewFindings,
+    codexChangePlans,
+    codexPatchProposals,
     claudeReviewFindings,
     reviewFindings,
     ledgerSummary: typeof ledgerSummary === "function" ? ledgerSummary() : null,

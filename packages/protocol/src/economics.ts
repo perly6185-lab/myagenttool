@@ -4,6 +4,8 @@ import type {
   AIProviderId,
   AIUsageRecordId,
   ClaudeReviewFindingId,
+  CodexChangePlanId,
+  CodexPatchProposalId,
   CodexReviewFindingId,
   DecimalString,
   DeviceId,
@@ -165,6 +167,77 @@ export interface CodexReviewFinding {
   suggestion?: string | null;
   confidence: "low" | "medium" | "high";
   authoritative: false;
+  raw?: Record<string, unknown>;
+  createdAt: IsoDateTime;
+}
+
+export interface CodexChangePlanStep {
+  title: string;
+  rationale?: string | null;
+  files: string[];
+  risk: "low" | "medium" | "high";
+}
+
+export interface CodexChangePlan {
+  id: CodexChangePlanId;
+  source: "codex" | string;
+  planInvocationId: InvocationId;
+  invocationId: InvocationId;
+  projectId?: string | null;
+  worktreeId?: string | null;
+  requestedBy?: UserId | string | null;
+  agentId?: AgentId | null;
+  planAgentName?: string | null;
+  tool: "codex.plan.change" | string;
+  mode: string;
+  severityFloor?: string | null;
+  goal?: string | null;
+  constraints?: string | null;
+  summary?: string | null;
+  steps: CodexChangePlanStep[];
+  openQuestions: string[];
+  verification: string[];
+  authoritative: false;
+  droppedStepCount?: number;
+  raw?: Record<string, unknown>;
+  createdAt: IsoDateTime;
+}
+
+export interface CodexPatchProposalFile {
+  path: string;
+  changeType: "add" | "modify" | "delete" | "rename" | "unknown";
+  risk: "low" | "medium" | "high";
+}
+
+export interface CodexPatchProposal {
+  id: CodexPatchProposalId;
+  source: "codex" | string;
+  proposalInvocationId: InvocationId;
+  invocationId: InvocationId;
+  projectId?: string | null;
+  worktreeId?: string | null;
+  requestedBy?: UserId | string | null;
+  agentId?: AgentId | null;
+  proposalAgentName?: string | null;
+  tool: "codex.propose.patch" | string;
+  mode: string;
+  basePlanId?: CodexChangePlanId | string | null;
+  goal?: string | null;
+  constraints?: string | null;
+  maxFiles?: number | null;
+  summary?: string | null;
+  files: CodexPatchProposalFile[];
+  diffPreview: string;
+  patchSha256: string;
+  verification: string[];
+  immutable: true;
+  reviewState: "generated" | "reviewed" | "approved" | "rejected" | "applied" | string;
+  authoritative: false;
+  droppedFileCount?: number;
+  appliedInvocationId?: InvocationId | null;
+  appliedAt?: IsoDateTime | null;
+  applySummary?: string | null;
+  applyResult?: Record<string, unknown>;
   raw?: Record<string, unknown>;
   createdAt: IsoDateTime;
 }

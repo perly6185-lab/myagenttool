@@ -132,6 +132,112 @@ if (process.argv.includes("--check")) {
   if (codexReviewPlan.args.includes("must-not-render") || codexReviewPlan.args.includes("--shell")) {
     throw new Error("Codex review wrapper rendered unallowlisted metadata.");
   }
+  const codexPlanPlan = createCliSpawnPlan({
+    type: "cli",
+    command: "node",
+    args: ["tools/agents/codex-plan-wrapper.mjs", "--mode", "change-plan"],
+    outputFormat: "plain_result",
+  }, {
+    invocationId: "inv_codex_plan_check",
+    task: "plan",
+    options: {
+      metadata: {
+        tool: "codex.plan.change",
+        worktreePath: process.cwd(),
+        goal: "Add governed patch proposal artifacts.",
+        constraints: "Do not write files.",
+        severityFloor: "high",
+        shell: "must-not-render",
+      },
+    },
+  });
+  if (!codexPlanPlan.args.includes("--cwd") || !codexPlanPlan.args.includes(process.cwd())) {
+    throw new Error("Codex plan wrapper cwd injection is not configured.");
+  }
+  if (!codexPlanPlan.args.includes("--goal") || !codexPlanPlan.args.includes("Add governed patch proposal artifacts.")) {
+    throw new Error("Codex plan wrapper goal injection is not configured.");
+  }
+  if (!codexPlanPlan.args.includes("--constraints") || !codexPlanPlan.args.includes("Do not write files.")) {
+    throw new Error("Codex plan wrapper constraints injection is not configured.");
+  }
+  if (!codexPlanPlan.args.includes("--severity-floor") || !codexPlanPlan.args.includes("high")) {
+    throw new Error("Codex plan wrapper severity injection is not configured.");
+  }
+  if (codexPlanPlan.args.includes("must-not-render") || codexPlanPlan.args.includes("--shell")) {
+    throw new Error("Codex plan wrapper rendered unallowlisted metadata.");
+  }
+  const codexPatchProposalPlan = createCliSpawnPlan({
+    type: "cli",
+    command: "node",
+    args: ["tools/agents/codex-patch-proposal-wrapper.mjs", "--mode", "patch-proposal"],
+    outputFormat: "plain_result",
+  }, {
+    invocationId: "inv_codex_patch_proposal_check",
+    task: "propose patch",
+    options: {
+      metadata: {
+        tool: "codex.propose.patch",
+        worktreePath: process.cwd(),
+        goal: "Generate an immutable patch proposal.",
+        constraints: "Do not write files.",
+        basePlanId: "cpl_demo_check",
+        maxFiles: 7,
+        shell: "must-not-render",
+      },
+    },
+  });
+  if (!codexPatchProposalPlan.args.includes("--cwd") || !codexPatchProposalPlan.args.includes(process.cwd())) {
+    throw new Error("Codex patch proposal wrapper cwd injection is not configured.");
+  }
+  if (!codexPatchProposalPlan.args.includes("--goal") || !codexPatchProposalPlan.args.includes("Generate an immutable patch proposal.")) {
+    throw new Error("Codex patch proposal wrapper goal injection is not configured.");
+  }
+  if (!codexPatchProposalPlan.args.includes("--constraints") || !codexPatchProposalPlan.args.includes("Do not write files.")) {
+    throw new Error("Codex patch proposal wrapper constraints injection is not configured.");
+  }
+  if (!codexPatchProposalPlan.args.includes("--base-plan-id") || !codexPatchProposalPlan.args.includes("cpl_demo_check")) {
+    throw new Error("Codex patch proposal wrapper base plan injection is not configured.");
+  }
+  if (!codexPatchProposalPlan.args.includes("--max-files") || !codexPatchProposalPlan.args.includes("7")) {
+    throw new Error("Codex patch proposal wrapper max-files injection is not configured.");
+  }
+  if (codexPatchProposalPlan.args.includes("must-not-render") || codexPatchProposalPlan.args.includes("--shell")) {
+    throw new Error("Codex patch proposal wrapper rendered unallowlisted metadata.");
+  }
+  const codexApplyPatchPlan = createCliSpawnPlan({
+    type: "cli",
+    command: "node",
+    args: ["tools/agents/codex-apply-patch-wrapper.mjs", "--mode", "apply-patch"],
+    outputFormat: "plain_result",
+  }, {
+    invocationId: "inv_codex_apply_patch_check",
+    task: "apply patch",
+    options: {
+      metadata: {
+        tool: "codex.apply.patch",
+        worktreePath: process.cwd(),
+        patchFilePath: process.execPath,
+        proposalId: "cpp_demo_check",
+        patchSha256: "a".repeat(64),
+        shell: "must-not-render",
+      },
+    },
+  });
+  if (!codexApplyPatchPlan.args.includes("--cwd") || !codexApplyPatchPlan.args.includes(process.cwd())) {
+    throw new Error("Codex apply patch wrapper cwd injection is not configured.");
+  }
+  if (!codexApplyPatchPlan.args.includes("--patch-file") || !codexApplyPatchPlan.args.includes(process.execPath)) {
+    throw new Error("Codex apply patch wrapper patch-file injection is not configured.");
+  }
+  if (!codexApplyPatchPlan.args.includes("--proposal-id") || !codexApplyPatchPlan.args.includes("cpp_demo_check")) {
+    throw new Error("Codex apply patch wrapper proposal-id injection is not configured.");
+  }
+  if (!codexApplyPatchPlan.args.includes("--patch-sha256") || !codexApplyPatchPlan.args.includes("a".repeat(64))) {
+    throw new Error("Codex apply patch wrapper patch hash injection is not configured.");
+  }
+  if (codexApplyPatchPlan.args.includes("must-not-render") || codexApplyPatchPlan.args.includes("--shell")) {
+    throw new Error("Codex apply patch wrapper rendered unallowlisted metadata.");
+  }
   const claudeReviewPlan = createCliSpawnPlan({
     type: "cli",
     command: "node",
@@ -214,14 +320,25 @@ if (process.argv.includes("--check")) {
     { type: "cli", command: "node", args: ["tools/agents/application-wrapper.mjs"] },
     blockedAppWrapperWork,
   );
+  const tamperedAppWrapperWork = {
+    ...blockedAppWrapperWork,
+    options: {
+      metadata: {
+        applicationWrapper: {
+          ...blockedAppWrapperWork.options.metadata.applicationWrapper,
+          execCommand: "npm",
+        },
+      },
+    },
+  };
   const blockedAppWrapperGate = localExecutionGate(
-    blockedAppWrapperWork,
+    tamperedAppWrapperWork,
     { type: "cli", command: "node", args: ["tools/agents/application-wrapper.mjs"] },
     blockedAppWrapperPlan,
     { permissionDecision: "not_required", permissionHook: null, manifest: localExecutionPolicyManifest },
   );
   if (blockedAppWrapperGate.allowed) {
-    throw new Error("Application wrapper local execution gate must reject wrapper policy expansion.");
+    throw new Error("Application wrapper local execution gate must reject wrapper metadata mismatch.");
   }
   if (typeof pty.spawn !== "function") {
     throw new Error("node-pty is not available.");
@@ -1400,7 +1517,7 @@ function createCliSpawnPlan(adapter, payload) {
   const renderedArgs = isCodexCliCommand(adapter.command)
     ? applyCodexPermissionMode(renderArgs(argsTemplate, payloadJson, payload), payload)
     : applicationWrapperArgs(
-        governedReviewWrapperArgs(renderArgs(argsTemplate, payloadJson, payload), payload),
+        governedToolWrapperArgs(renderArgs(argsTemplate, payloadJson, payload), payload),
         payload,
         { resolveCwd: (spec, metadata) => normalizedExistingPath(spec.cwd) ?? normalizedExistingPath(metadata?.worktreePath) ?? normalizedExistingPath(metadata?.projectPath) },
       );
@@ -1442,11 +1559,12 @@ function projectCwd(payload) {
   return process.cwd();
 }
 
-function governedReviewWrapperArgs(renderedArgs, payload) {
+function governedToolWrapperArgs(renderedArgs, payload) {
   const metadata = payload.options?.metadata && typeof payload.options.metadata === "object" && !Array.isArray(payload.options.metadata)
     ? payload.options.metadata
     : {};
-  if (!usesGovernedReviewWrapper(String(metadata.tool ?? ""), renderedArgs)) {
+  const tool = String(metadata.tool ?? "");
+  if (!usesGovernedToolWrapper(tool, renderedArgs)) {
     return renderedArgs;
   }
   const injected = [...renderedArgs];
@@ -1454,9 +1572,43 @@ function governedReviewWrapperArgs(renderedArgs, payload) {
   if (cwd && !hasFlag(injected, "--cwd")) {
     injected.push("--cwd", cwd);
   }
-  const instruction = boundedString(metadata.instruction, 1200);
-  if (instruction && !hasFlag(injected, "--instruction")) {
-    injected.push("--instruction", instruction);
+  if (tool === "codex.apply.patch") {
+    const patchFile = normalizedExistingPath(metadata.patchFilePath);
+    if (patchFile && !hasFlag(injected, "--patch-file")) {
+      injected.push("--patch-file", patchFile);
+    }
+    const proposalId = boundedString(metadata.proposalId, 160);
+    if (proposalId && /^[A-Za-z0-9_.:-]+$/.test(proposalId) && !hasFlag(injected, "--proposal-id")) {
+      injected.push("--proposal-id", proposalId);
+    }
+    const patchSha256 = boundedString(metadata.patchSha256, 64);
+    if (patchSha256 && /^[A-Fa-f0-9]{64}$/.test(patchSha256) && !hasFlag(injected, "--patch-sha256")) {
+      injected.push("--patch-sha256", patchSha256.toLowerCase());
+    }
+  } else if (tool === "codex.plan.change" || tool === "codex.propose.patch") {
+    const goal = boundedString(metadata.goal, 2000);
+    if (goal && !hasFlag(injected, "--goal")) {
+      injected.push("--goal", goal);
+    }
+    const constraints = boundedString(metadata.constraints, 2000);
+    if (constraints && !hasFlag(injected, "--constraints")) {
+      injected.push("--constraints", constraints);
+    }
+    if (tool === "codex.propose.patch") {
+      const basePlanId = boundedString(metadata.basePlanId, 120);
+      if (basePlanId && /^[A-Za-z0-9_.:-]+$/.test(basePlanId) && !hasFlag(injected, "--base-plan-id")) {
+        injected.push("--base-plan-id", basePlanId);
+      }
+      const maxFiles = Number(metadata.maxFiles);
+      if (Number.isInteger(maxFiles) && maxFiles >= 1 && maxFiles <= 25 && !hasFlag(injected, "--max-files")) {
+        injected.push("--max-files", String(maxFiles));
+      }
+    }
+  } else {
+    const instruction = boundedString(metadata.instruction, 1200);
+    if (instruction && !hasFlag(injected, "--instruction")) {
+      injected.push("--instruction", instruction);
+    }
   }
   const severityFloor = ["low", "medium", "high"].includes(String(metadata.severityFloor ?? ""))
     ? String(metadata.severityFloor)
@@ -1467,12 +1619,18 @@ function governedReviewWrapperArgs(renderedArgs, payload) {
   return injected;
 }
 
-function usesGovernedReviewWrapper(tool, args) {
+function usesGovernedToolWrapper(tool, args) {
   const wrapper = tool === "codex.review.diff"
     ? "codex-review-wrapper.mjs"
-    : tool === "claude.review.diff"
-      ? "claude-review-wrapper.mjs"
-      : null;
+    : tool === "codex.plan.change"
+      ? "codex-plan-wrapper.mjs"
+      : tool === "codex.propose.patch"
+        ? "codex-patch-proposal-wrapper.mjs"
+        : tool === "codex.apply.patch"
+          ? "codex-apply-patch-wrapper.mjs"
+          : tool === "claude.review.diff"
+            ? "claude-review-wrapper.mjs"
+            : null;
   // Require the full canonical directory segment, not just the basename — a
   // bare-basename match would let a script at an arbitrary path
   // (…/evil/codex-review-wrapper.mjs) receive the injected governed flags.

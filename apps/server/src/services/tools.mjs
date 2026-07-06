@@ -1,3 +1,8 @@
+import { createHash } from "node:crypto";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import {
   CCUSAGE_REPORT_SPECS,
   CCUSAGE_TOOL_CONTRACT,
@@ -5,7 +10,13 @@ import {
 import { describeMcpToolCall } from "@myagenttool/adapters/mcp";
 import { CCUSAGE_APPLICATION_ID } from "./ccusage-application.mjs";
 import {
+  CODEX_APPLY_PATCH_TOOL_CONTRACT,
+  CODEX_PLAN_TOOL_CONTRACT,
+  CODEX_PATCH_PROPOSAL_TOOL_CONTRACT,
   CODEX_REVIEW_TOOL_CONTRACT,
+  isGovernedCodexApplyPatchAgent,
+  isGovernedCodexPlanAgent,
+  isGovernedCodexPatchProposalAgent,
   isGovernedCodexReviewAgent,
 } from "./codex-agent.mjs";
 import {
@@ -32,6 +43,8 @@ export function createToolService({
   startInvocationIfAllowed,
   findApplication,
   findAgent,
+  findApprovalRequest,
+  findInvocation,
   planApplicationWrapperInvocation,
 }) {
   function listTools(actor = null) {
@@ -56,6 +69,15 @@ export function createToolService({
         outputCollection: "codexReviewFindings",
         agentLabel: "Codex",
       });
+    }
+    if (name === CODEX_PLAN_TOOL_CONTRACT.name) {
+      return createPlanInvocation(input, actor);
+    }
+    if (name === CODEX_PATCH_PROPOSAL_TOOL_CONTRACT.name) {
+      return createPatchProposalInvocation(input, actor);
+    }
+    if (name === CODEX_APPLY_PATCH_TOOL_CONTRACT.name) {
+      return createApplyPatchInvocation(input, actor);
     }
     if (name === CLAUDE_REVIEW_TOOL_CONTRACT.name) {
       return createReviewInvocation({
@@ -223,6 +245,361 @@ export function createToolService({
     };
   }
 
+  function createPlanInvocation(input, actor) {
+    const validation = validateCodexPlanInput(input);
+    if (!validation.ok) {
+      return { status: validation.status, body: validation.body };
+    }
+    const value = validation.value;
+    const project = resolveToolProjectId(value.projectId, actor);
+    if (!project.ok) {
+      return { status: project.status, body: project.body };
+    }
+    const projectId = project.value;
+    const worktree = findToolWorktree(value.worktreeId, projectId);
+    if (!worktree) {
+      return { status: 404, body: { error: "worktree_not_found" } };
+    }
+    const agent = selectCodexPlanAgent(actor);
+    if (!agent) {
+      return { status: 409, body: { error: "agent_not_available", message: "No governed Codex change plan agent is available." } };
+    }
+    if (agent.status === "disabled") {
+      return { status: 409, body: { error: "agent_not_available", message: "The governed Codex change plan agent is disabled.", agentId: agent.id } };
+    }
+    if (agent.health?.status === "unhealthy") {
+      return { status: 409, body: { error: "agent_not_available", message: agent.health.message ?? "The governed Codex change plan agent is unhealthy.", agentId: agent.id } };
+    }
+    if (agent.location?.type === "local_device" && state.device?.unlinkState === "unlinked") {
+      return { status: 409, body: { error: "agent_not_available", message: "The local device is unlinked.", agentId: agent.id } };
+    }
+    const invocation = createInvocation(buildCodexPlanTask(value), agent, {
+      actor,
+      requestedBy: actor?.userId,
+      metadata: {
+        tool: CODEX_PLAN_TOOL_CONTRACT.name,
+        toolVersion: CODEX_PLAN_TOOL_CONTRACT.version,
+        projectId,
+        worktreeId: worktree.id,
+        goal: value.goal,
+        constraints: value.constraints,
+        severityFloor: value.severityFloor,
+      },
+      timeoutSeconds: 120,
+    });
+    startInvocationIfAllowed(invocation, agent);
+    appendEvent({
+      invocationId: invocation.id,
+      type: "tool_invocation_created",
+      level: "info",
+      message: `Tool ${CODEX_PLAN_TOOL_CONTRACT.name} created change plan invocation.`,
+      data: {
+        tool: CODEX_PLAN_TOOL_CONTRACT.name,
+        version: CODEX_PLAN_TOOL_CONTRACT.version,
+        agentId: agent.id,
+        worktreeId: worktree.id,
+      },
+    });
+    return {
+      status: 201,
+      body: {
+        tool: CODEX_PLAN_TOOL_CONTRACT.name,
+        invocationId: invocation.id,
+        agentId: agent.id,
+        status: invocation.status,
+        outputCollection: "codexChangePlans",
+        invocation,
+      },
+    };
+  }
+
+  function createPatchProposalInvocation(input, actor) {
+    const validation = validateCodexPatchProposalInput(input);
+    if (!validation.ok) {
+      return { status: validation.status, body: validation.body };
+    }
+    const value = validation.value;
+    const project = resolveToolProjectId(value.projectId, actor);
+    if (!project.ok) {
+      return { status: project.status, body: project.body };
+    }
+    const projectId = project.value;
+    const worktree = findToolWorktree(value.worktreeId, projectId);
+    if (!worktree) {
+      return { status: 404, body: { error: "worktree_not_found" } };
+    }
+    if (value.basePlanId) {
+      const basePlan = (state.codexChangePlans ?? []).find((item) => item.id === value.basePlanId);
+      if (!basePlan) {
+        return { status: 404, body: { error: "base_plan_not_found" } };
+      }
+      if (basePlan.projectId !== projectId || basePlan.worktreeId !== worktree.id) {
+        return { status: 409, body: { error: "base_plan_scope_mismatch" } };
+      }
+    }
+    if (value.maxFiles > 15) {
+      return {
+        status: 409,
+        body: {
+          error: "approval_required",
+          reason: "Patch proposals over 15 files require explicit approval before Codex runs.",
+        },
+      };
+    }
+    const agent = selectCodexPatchProposalAgent(actor);
+    if (!agent) {
+      return { status: 409, body: { error: "agent_not_available", message: "No governed Codex patch proposal agent is available." } };
+    }
+    if (agent.status === "disabled") {
+      return { status: 409, body: { error: "agent_not_available", message: "The governed Codex patch proposal agent is disabled.", agentId: agent.id } };
+    }
+    if (agent.health?.status === "unhealthy") {
+      return { status: 409, body: { error: "agent_not_available", message: agent.health.message ?? "The governed Codex patch proposal agent is unhealthy.", agentId: agent.id } };
+    }
+    if (agent.location?.type === "local_device" && state.device?.unlinkState === "unlinked") {
+      return { status: 409, body: { error: "agent_not_available", message: "The local device is unlinked.", agentId: agent.id } };
+    }
+    const invocation = createInvocation(buildCodexPatchProposalTask(value), agent, {
+      actor,
+      requestedBy: actor?.userId,
+      metadata: {
+        tool: CODEX_PATCH_PROPOSAL_TOOL_CONTRACT.name,
+        toolVersion: CODEX_PATCH_PROPOSAL_TOOL_CONTRACT.version,
+        projectId,
+        worktreeId: worktree.id,
+        goal: value.goal,
+        constraints: value.constraints,
+        basePlanId: value.basePlanId,
+        maxFiles: value.maxFiles,
+      },
+      timeoutSeconds: 180,
+    });
+    startInvocationIfAllowed(invocation, agent);
+    appendEvent({
+      invocationId: invocation.id,
+      type: "tool_invocation_created",
+      level: "info",
+      message: `Tool ${CODEX_PATCH_PROPOSAL_TOOL_CONTRACT.name} created patch proposal invocation.`,
+      data: {
+        tool: CODEX_PATCH_PROPOSAL_TOOL_CONTRACT.name,
+        version: CODEX_PATCH_PROPOSAL_TOOL_CONTRACT.version,
+        agentId: agent.id,
+        worktreeId: worktree.id,
+        basePlanId: value.basePlanId,
+      },
+    });
+    return {
+      status: 201,
+      body: {
+        tool: CODEX_PATCH_PROPOSAL_TOOL_CONTRACT.name,
+        invocationId: invocation.id,
+        agentId: agent.id,
+        status: invocation.status,
+        outputCollection: "codexPatchProposals",
+        invocation,
+      },
+    };
+  }
+
+  function createApplyPatchInvocation(input, actor) {
+    const validation = validateCodexApplyPatchInput(input);
+    if (!validation.ok) {
+      return { status: validation.status, body: validation.body };
+    }
+    const value = validation.value;
+    const project = resolveToolProjectId(value.projectId, actor);
+    if (!project.ok) {
+      return { status: project.status, body: project.body };
+    }
+    const projectId = project.value;
+    const worktree = findToolWorktree(value.worktreeId, projectId);
+    if (!worktree) {
+      return { status: 404, body: { error: "worktree_not_found" } };
+    }
+    const proposal = findCodexPatchProposal(state, value.proposalId);
+    if (!proposal) {
+      return { status: 404, body: { error: "proposal_not_found" } };
+    }
+    if (proposal.projectId !== projectId || proposal.worktreeId !== worktree.id) {
+      return { status: 409, body: { error: "proposal_scope_mismatch" } };
+    }
+    if (proposal.reviewState !== "approved") {
+      return {
+        status: 409,
+        body: {
+          error: "proposal_not_approved",
+          reason: "Only reviewed and approved patch proposals can be applied.",
+          reviewState: proposal.reviewState ?? null,
+        },
+      };
+    }
+    if (proposal.patchSha256 !== value.patchSha256) {
+      return { status: 409, body: { error: "patch_hash_mismatch" } };
+    }
+    const rawDiff = normalizePatchText(proposal.raw?.diff);
+    if (!rawDiff) {
+      return { status: 409, body: { error: "proposal_missing_diff" } };
+    }
+    if (sha256(rawDiff) !== value.patchSha256) {
+      return { status: 409, body: { error: "patch_hash_mismatch", reason: "Stored proposal diff does not match its reviewed hash." } };
+    }
+    const approval = verifyCodexApplyApproval(value, { projectId, worktreeId: worktree.id });
+    if (!approval.approved) {
+      if (approval.error) return approval.error;
+      return requestCodexApplyApproval({ value, projectId, worktree, actor });
+    }
+    const agent = selectCodexApplyPatchAgent(actor);
+    if (!agent) {
+      return { status: 409, body: { error: "agent_not_available", message: "No governed Codex apply patch agent is available." } };
+    }
+    if (agent.status === "disabled") {
+      return { status: 409, body: { error: "agent_not_available", message: "The governed Codex apply patch agent is disabled.", agentId: agent.id } };
+    }
+    if (agent.health?.status === "unhealthy") {
+      return { status: 409, body: { error: "agent_not_available", message: agent.health.message ?? "The governed Codex apply patch agent is unhealthy.", agentId: agent.id } };
+    }
+    if (agent.location?.type === "local_device" && state.device?.unlinkState === "unlinked") {
+      return { status: 409, body: { error: "agent_not_available", message: "The local device is unlinked.", agentId: agent.id } };
+    }
+    const patchFile = createTempPatchFileForProposal(proposal, rawDiff);
+    const invocation = createInvocation(buildCodexApplyPatchTask(value), agent, {
+      actor,
+      requestedBy: actor?.userId,
+      metadata: {
+        tool: CODEX_APPLY_PATCH_TOOL_CONTRACT.name,
+        toolVersion: CODEX_APPLY_PATCH_TOOL_CONTRACT.version,
+        projectId,
+        worktreeId: worktree.id,
+        proposalId: value.proposalId,
+        patchSha256: value.patchSha256,
+        approvalRequestId: value.approvalRequestId,
+        patchFilePath: patchFile,
+      },
+      timeoutSeconds: 120,
+    });
+    startInvocationIfAllowed(invocation, agent);
+    appendEvent({
+      invocationId: invocation.id,
+      type: "tool_invocation_created",
+      level: "info",
+      message: `Tool ${CODEX_APPLY_PATCH_TOOL_CONTRACT.name} created approved patch apply invocation.`,
+      data: {
+        tool: CODEX_APPLY_PATCH_TOOL_CONTRACT.name,
+        version: CODEX_APPLY_PATCH_TOOL_CONTRACT.version,
+        agentId: agent.id,
+        worktreeId: worktree.id,
+        proposalId: value.proposalId,
+        patchSha256: value.patchSha256,
+        approvalRequestId: value.approvalRequestId,
+      },
+    });
+    return {
+      status: 201,
+      body: {
+        tool: CODEX_APPLY_PATCH_TOOL_CONTRACT.name,
+        invocationId: invocation.id,
+        agentId: agent.id,
+        status: invocation.status,
+        outputCollection: "codexPatchProposals",
+        invocation,
+      },
+    };
+  }
+
+  function requestCodexApplyApproval({ value, projectId, worktree, actor }) {
+    const agent = findAgent?.("agt_platform_application_control") ?? null;
+    if (!agent || agent.status === "disabled") {
+      return {
+        status: 409,
+        body: {
+          error: "agent_not_available",
+          message: "The platform Application Control agent is not available to request patch apply approval.",
+        },
+      };
+    }
+    const invocation = createInvocation(`Approve applying Codex patch proposal ${value.proposalId}.`, agent, {
+      actor,
+      requestedBy: actor?.userId,
+      requireLocalApproval: true,
+      timeoutSeconds: 30,
+      metadata: {
+        tool: CODEX_APPLY_PATCH_TOOL_CONTRACT.name,
+        toolVersion: CODEX_APPLY_PATCH_TOOL_CONTRACT.version,
+        providerType: "tool",
+        capability: CODEX_APPLY_PATCH_TOOL_CONTRACT.name,
+        projectId,
+        worktreeId: worktree.id,
+        proposalId: value.proposalId,
+        patchSha256: value.patchSha256,
+        toolApproval: {
+          type: "codex_apply_patch",
+          proposalId: value.proposalId,
+          patchSha256: value.patchSha256,
+        },
+      },
+    });
+    return {
+      status: invocation.status === "rejected" ? 409 : 202,
+      body: {
+        tool: CODEX_APPLY_PATCH_TOOL_CONTRACT.name,
+        invocationId: invocation.id,
+        agentId: agent.id,
+        status: invocation.status,
+        approvalRequestId: invocation.approvalRequestId ?? null,
+        approvalRequest: invocation.approvalRequestId ?? null,
+        approvalRequestRequired: true,
+        outputCollection: "codexPatchProposals",
+        invocation,
+      },
+    };
+  }
+
+  function verifyCodexApplyApproval(value, { projectId, worktreeId }) {
+    const approvalRequestId = value.approvalRequestId;
+    if (!approvalRequestId) return { approved: false };
+    const approval = findApprovalRequest?.(approvalRequestId) ?? (state.approvalRequests ?? []).find((item) => item.id === approvalRequestId) ?? null;
+    if (!approval) {
+      return codexApplyApprovalError("approval_not_found", "Approval request was not found.", approvalRequestId);
+    }
+    if (approval.status !== "approved") {
+      return codexApplyApprovalError("approval_not_approved", "Approval request has not been approved.", approvalRequestId, approval.status);
+    }
+    const approvalInvocation = findInvocation?.(approval.invocationId) ?? (state.invocations ?? []).find((item) => item.id === approval.invocationId) ?? null;
+    const metadata = approvalInvocation?.options?.metadata ?? {};
+    const toolApproval = metadata.toolApproval ?? {};
+    const matches =
+      approvalInvocation
+      && metadata.providerType === "tool"
+      && metadata.tool === CODEX_APPLY_PATCH_TOOL_CONTRACT.name
+      && metadata.capability === CODEX_APPLY_PATCH_TOOL_CONTRACT.name
+      && metadata.projectId === projectId
+      && metadata.worktreeId === worktreeId
+      && metadata.proposalId === value.proposalId
+      && metadata.patchSha256 === value.patchSha256
+      && toolApproval.type === "codex_apply_patch"
+      && toolApproval.proposalId === value.proposalId
+      && toolApproval.patchSha256 === value.patchSha256;
+    if (!matches) {
+      return codexApplyApprovalError("approval_scope_mismatch", "Approval request does not match this patch apply request.", approvalRequestId, approval.status);
+    }
+    return { approved: true, approval, invocation: approvalInvocation };
+  }
+
+  function codexApplyApprovalError(error, reason, approvalRequestId, approvalStatus = null) {
+    return {
+      approved: false,
+      error: {
+        status: 409,
+        body: {
+          error,
+          reason,
+          approvalRequestId,
+          approvalStatus,
+        },
+      },
+    };
+  }
+
   function createMcpToolInvocation(tool, input, actor) {
     const validation = validateMcpToolInput(input);
     if (!validation.ok) {
@@ -316,16 +693,25 @@ export function createToolService({
     const ccusageApp = resolveCcusageApp();
     const ccusageAvailable = ccusageApp && ["registered", "active"].includes(ccusageApp.status);
     const codexReviewAgents = (state.agents ?? []).filter((agent) => isGovernedCodexReviewAgent(agent) && agentVisibleToActor(state, agent, actor));
+    const codexPlanAgents = (state.agents ?? []).filter((agent) => isGovernedCodexPlanAgent(agent) && agentVisibleToActor(state, agent, actor));
+    const codexPatchProposalAgents = (state.agents ?? []).filter((agent) => isGovernedCodexPatchProposalAgent(agent) && agentVisibleToActor(state, agent, actor));
+    const codexApplyPatchAgents = (state.agents ?? []).filter((agent) => isGovernedCodexApplyPatchAgent(agent) && agentVisibleToActor(state, agent, actor));
     const claudeReviewAgents = (state.agents ?? []).filter((agent) => isGovernedClaudeReviewAgent(agent) && agentVisibleToActor(state, agent, actor));
     const mcpAgents = (state.agents ?? []).filter((agent) => agentVisibleToActor(state, agent, actor));
     const builtinNames = new Set([
       ...(ccusageAvailable ? [CCUSAGE_TOOL_CONTRACT.name] : []),
       ...(codexReviewAgents.length ? [CODEX_REVIEW_TOOL_CONTRACT.name] : []),
+      ...(codexPlanAgents.length ? [CODEX_PLAN_TOOL_CONTRACT.name] : []),
+      ...(codexPatchProposalAgents.length ? [CODEX_PATCH_PROPOSAL_TOOL_CONTRACT.name] : []),
+      ...(codexApplyPatchAgents.length ? [CODEX_APPLY_PATCH_TOOL_CONTRACT.name] : []),
       ...(claudeReviewAgents.length ? [CLAUDE_REVIEW_TOOL_CONTRACT.name] : []),
     ]);
     return [
       ...(ccusageAvailable ? [buildCcusageToolDescriptor(ccusageApp)] : []),
       ...(codexReviewAgents.length ? [buildCodexReviewToolDescriptor(codexReviewAgents)] : []),
+      ...(codexPlanAgents.length ? [buildCodexPlanToolDescriptor(codexPlanAgents)] : []),
+      ...(codexPatchProposalAgents.length ? [buildCodexPatchProposalToolDescriptor(codexPatchProposalAgents)] : []),
+      ...(codexApplyPatchAgents.length ? [buildCodexApplyPatchToolDescriptor(codexApplyPatchAgents)] : []),
       ...(claudeReviewAgents.length ? [buildClaudeReviewToolDescriptor(claudeReviewAgents)] : []),
       ...buildMcpToolDescriptors({ agents: mcpAgents, usedNames: builtinNames }),
     ];
@@ -336,12 +722,27 @@ export function createToolService({
     return buildMcpToolDescriptors({ agents: mcpAgents, usedNames: new Set([
       CCUSAGE_TOOL_CONTRACT.name,
       CODEX_REVIEW_TOOL_CONTRACT.name,
+      CODEX_PLAN_TOOL_CONTRACT.name,
+      CODEX_PATCH_PROPOSAL_TOOL_CONTRACT.name,
+      CODEX_APPLY_PATCH_TOOL_CONTRACT.name,
       CLAUDE_REVIEW_TOOL_CONTRACT.name,
     ]) }).find((tool) => tool.name === name) ?? null;
   }
 
   function selectCodexReviewAgent(actor = null) {
     return (state.agents ?? []).find((agent) => isGovernedCodexReviewAgent(agent) && agentVisibleToActor(state, agent, actor)) ?? null;
+  }
+
+  function selectCodexPlanAgent(actor = null) {
+    return (state.agents ?? []).find((agent) => isGovernedCodexPlanAgent(agent) && agentVisibleToActor(state, agent, actor)) ?? null;
+  }
+
+  function selectCodexPatchProposalAgent(actor = null) {
+    return (state.agents ?? []).find((agent) => isGovernedCodexPatchProposalAgent(agent) && agentVisibleToActor(state, agent, actor)) ?? null;
+  }
+
+  function selectCodexApplyPatchAgent(actor = null) {
+    return (state.agents ?? []).find((agent) => isGovernedCodexApplyPatchAgent(agent) && agentVisibleToActor(state, agent, actor)) ?? null;
   }
 
   function selectClaudeReviewAgent(actor = null) {
@@ -383,6 +784,8 @@ export function createToolService({
     getTool,
     listTools,
     validateCodexReviewInput,
+    validateCodexPlanInput,
+    validateCodexPatchProposalInput,
     validateClaudeReviewInput,
     validateCcusageReportInput,
   };
@@ -571,6 +974,87 @@ function buildCodexReviewToolDescriptor(agents) {
   };
 }
 
+function buildCodexPlanToolDescriptor(agents) {
+  return {
+    name: CODEX_PLAN_TOOL_CONTRACT.name,
+    version: CODEX_PLAN_TOOL_CONTRACT.version,
+    displayName: "Codex Change Plan",
+    description: "Run a governed read-only Codex planning pass over a project worktree.",
+    riskLevel: "low",
+    riskTags: ["read_only", "read_project", "planning", "local_agent"],
+    requiresLocalDevice: true,
+    inputSchema: CODEX_PLAN_TOOL_CONTRACT.inputSchema,
+    outputSchema: CODEX_PLAN_TOOL_CONTRACT.outputSchema,
+    agents: agents.map((agent) => ({
+      id: agent.id,
+      name: agent.name,
+      status: agent.status,
+      mode: "change-plan",
+    })),
+    approvalPolicy: {
+      defaultReadOnlyPlan: "allowed",
+      patchProposal: "approval_required",
+      applyPatch: "approval_required",
+    },
+    authoritativeBilling: false,
+    outputCollection: "codexChangePlans",
+  };
+}
+
+function buildCodexPatchProposalToolDescriptor(agents) {
+  return {
+    name: CODEX_PATCH_PROPOSAL_TOOL_CONTRACT.name,
+    version: CODEX_PATCH_PROPOSAL_TOOL_CONTRACT.version,
+    displayName: "Codex Patch Proposal",
+    description: "Generate an immutable reviewable patch proposal artifact without mutating files.",
+    riskLevel: "medium",
+    riskTags: ["read_project", "patch_artifact", "code_generation", "local_agent"],
+    requiresLocalDevice: true,
+    inputSchema: CODEX_PATCH_PROPOSAL_TOOL_CONTRACT.inputSchema,
+    outputSchema: CODEX_PATCH_PROPOSAL_TOOL_CONTRACT.outputSchema,
+    agents: agents.map((agent) => ({
+      id: agent.id,
+      name: agent.name,
+      status: agent.status,
+      mode: "patch-proposal",
+    })),
+    approvalPolicy: {
+      defaultPatchProposal: "allowed",
+      largeScope: "approval_required",
+      applyPatch: "approval_required",
+    },
+    authoritativeBilling: false,
+    outputCollection: "codexPatchProposals",
+  };
+}
+
+function buildCodexApplyPatchToolDescriptor(agents) {
+  return {
+    name: CODEX_APPLY_PATCH_TOOL_CONTRACT.name,
+    version: CODEX_APPLY_PATCH_TOOL_CONTRACT.version,
+    displayName: "Codex Apply Patch",
+    description: "Apply an approved immutable Codex patch proposal to the selected worktree.",
+    riskLevel: "medium",
+    riskTags: ["workspace_write", "patch_apply", "local_agent"],
+    requiresLocalDevice: true,
+    inputSchema: CODEX_APPLY_PATCH_TOOL_CONTRACT.inputSchema,
+    outputSchema: CODEX_APPLY_PATCH_TOOL_CONTRACT.outputSchema,
+    agents: agents.map((agent) => ({
+      id: agent.id,
+      name: agent.name,
+      status: agent.status,
+      mode: "apply-patch",
+    })),
+    approvalPolicy: {
+      defaultApplyPatch: "approval_required",
+      requiresApprovedProposal: "required",
+      requiresPatchHashMatch: "required",
+    },
+    authoritativeBilling: false,
+    outputCollection: "codexPatchProposals",
+  };
+}
+
 function buildClaudeReviewToolDescriptor(agents) {
   return {
     name: CLAUDE_REVIEW_TOOL_CONTRACT.name,
@@ -735,6 +1219,136 @@ function validateCodexReviewInput(input = {}) {
   return validateReviewInput(input);
 }
 
+function validateCodexPlanInput(input = {}) {
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    return { ok: false, status: 400, body: { error: "invalid_input", message: "Tool input must be an object." } };
+  }
+  const allowed = new Set(["projectId", "worktreeId", "goal", "constraints", "severityFloor"]);
+  const unknown = Object.keys(input).filter((key) => !allowed.has(key));
+  if (unknown.length) {
+    return { ok: false, status: 400, body: { error: "unknown_field", fields: unknown } };
+  }
+  const projectId = stringOrNull(input.projectId);
+  if (!projectId) {
+    return { ok: false, status: 400, body: { error: "project_required" } };
+  }
+  const worktreeId = stringOrNull(input.worktreeId);
+  if (!worktreeId) {
+    return { ok: false, status: 400, body: { error: "worktree_required" } };
+  }
+  const goal = stringOrNull(input.goal);
+  if (!goal) {
+    return { ok: false, status: 400, body: { error: "goal_required" } };
+  }
+  if (goal.length > 2000) {
+    return { ok: false, status: 400, body: { error: "goal_too_long", maxLength: 2000 } };
+  }
+  const constraints = stringOrNull(input.constraints);
+  if (constraints && constraints.length > 2000) {
+    return { ok: false, status: 400, body: { error: "constraints_too_long", maxLength: 2000 } };
+  }
+  const severityFloor = input.severityFloor === undefined ? "low" : String(input.severityFloor);
+  if (!["low", "medium", "high"].includes(severityFloor)) {
+    return { ok: false, status: 400, body: { error: "invalid_severity_floor" } };
+  }
+  return {
+    ok: true,
+    value: {
+      projectId,
+      worktreeId,
+      goal,
+      constraints,
+      severityFloor,
+    },
+  };
+}
+
+function validateCodexPatchProposalInput(input = {}) {
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    return { ok: false, status: 400, body: { error: "invalid_input", message: "Tool input must be an object." } };
+  }
+  const allowed = new Set(["projectId", "worktreeId", "goal", "constraints", "basePlanId", "maxFiles"]);
+  const unknown = Object.keys(input).filter((key) => !allowed.has(key));
+  if (unknown.length) {
+    return { ok: false, status: 400, body: { error: "unknown_field", fields: unknown } };
+  }
+  const projectId = stringOrNull(input.projectId);
+  if (!projectId) {
+    return { ok: false, status: 400, body: { error: "project_required" } };
+  }
+  const worktreeId = stringOrNull(input.worktreeId);
+  if (!worktreeId) {
+    return { ok: false, status: 400, body: { error: "worktree_required" } };
+  }
+  const goal = stringOrNull(input.goal);
+  if (!goal) {
+    return { ok: false, status: 400, body: { error: "goal_required" } };
+  }
+  if (goal.length > 2000) {
+    return { ok: false, status: 400, body: { error: "goal_too_long", maxLength: 2000 } };
+  }
+  const constraints = stringOrNull(input.constraints);
+  if (constraints && constraints.length > 2000) {
+    return { ok: false, status: 400, body: { error: "constraints_too_long", maxLength: 2000 } };
+  }
+  const basePlanId = stringOrNull(input.basePlanId);
+  const maxFiles = input.maxFiles === undefined || input.maxFiles === null || input.maxFiles === ""
+    ? 10
+    : Number(input.maxFiles);
+  if (!Number.isInteger(maxFiles) || maxFiles < 1 || maxFiles > 25) {
+    return { ok: false, status: 400, body: { error: "invalid_max_files", min: 1, max: 25 } };
+  }
+  return {
+    ok: true,
+    value: {
+      projectId,
+      worktreeId,
+      goal,
+      constraints,
+      basePlanId,
+      maxFiles,
+    },
+  };
+}
+
+function validateCodexApplyPatchInput(input = {}) {
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    return { ok: false, status: 400, body: { error: "invalid_input", message: "Tool input must be an object." } };
+  }
+  const allowed = new Set(["projectId", "worktreeId", "proposalId", "patchSha256", "approvalRequestId"]);
+  const unknown = Object.keys(input).filter((key) => !allowed.has(key));
+  if (unknown.length) {
+    return { ok: false, status: 400, body: { error: "unknown_field", fields: unknown } };
+  }
+  const projectId = stringOrNull(input.projectId);
+  if (!projectId) {
+    return { ok: false, status: 400, body: { error: "project_required" } };
+  }
+  const worktreeId = stringOrNull(input.worktreeId);
+  if (!worktreeId) {
+    return { ok: false, status: 400, body: { error: "worktree_required" } };
+  }
+  const proposalId = stringOrNull(input.proposalId);
+  if (!proposalId) {
+    return { ok: false, status: 400, body: { error: "proposal_required" } };
+  }
+  const patchSha256 = stringOrNull(input.patchSha256);
+  if (!patchSha256 || !/^[a-f0-9]{64}$/i.test(patchSha256)) {
+    return { ok: false, status: 400, body: { error: "patch_hash_required" } };
+  }
+  const approvalRequestId = stringOrNull(input.approvalRequestId);
+  return {
+    ok: true,
+    value: {
+      projectId,
+      worktreeId,
+      proposalId,
+      patchSha256: patchSha256.toLowerCase(),
+      approvalRequestId,
+    },
+  };
+}
+
 function validateClaudeReviewInput(input = {}) {
   return validateReviewInput(input);
 }
@@ -753,6 +1367,25 @@ function buildCcusageTask(value) {
 function buildCodexReviewTask(value) {
   const suffix = value.instruction ? ` Instruction: ${value.instruction}` : "";
   return `Review the selected worktree diff with Codex. Severity floor: ${value.severityFloor}.${suffix}`;
+}
+
+function buildCodexPlanTask(value) {
+  const suffix = value.constraints ? ` Constraints: ${value.constraints}` : "";
+  return `Plan the requested change with Codex. Goal: ${value.goal}.${suffix}`;
+}
+
+function buildCodexPatchProposalTask(value) {
+  const pieces = [
+    `Goal: ${value.goal}.`,
+    value.constraints ? `Constraints: ${value.constraints}.` : null,
+    value.basePlanId ? `Base plan: ${value.basePlanId}.` : null,
+    `Max files: ${value.maxFiles}.`,
+  ].filter(Boolean);
+  return `Generate a reviewable patch proposal with Codex. ${pieces.join(" ")}`;
+}
+
+function buildCodexApplyPatchTask(value) {
+  return `Apply approved Codex patch proposal ${value.proposalId}. Patch SHA-256: ${value.patchSha256}.`;
 }
 
 function buildClaudeReviewTask(value) {
@@ -788,6 +1421,27 @@ function highestRiskLevel(values) {
     if (!highest || order.get(level) > order.get(highest)) highest = level;
   }
   return highest ?? "medium";
+}
+
+function findCodexPatchProposal(state, proposalId) {
+  return (state.codexPatchProposals ?? []).find((item) => item.id === proposalId) ?? null;
+}
+
+function normalizePatchText(value) {
+  const text = String(value ?? "").replace(/\r\n/g, "\n").trim();
+  return text || null;
+}
+
+function createTempPatchFileForProposal(proposal, diff) {
+  const dir = mkdtempSync(join(tmpdir(), "myagenttool-codex-apply-"));
+  const safeProposalId = String(proposal.id ?? "proposal").replace(/[^A-Za-z0-9_.-]/g, "_").slice(0, 80);
+  const patchFile = join(dir, `${safeProposalId}.patch`);
+  writeFileSync(patchFile, `${diff}\n`, "utf8");
+  return patchFile;
+}
+
+function sha256(text) {
+  return createHash("sha256").update(String(text), "utf8").digest("hex");
 }
 
 function stringOrNull(value) {

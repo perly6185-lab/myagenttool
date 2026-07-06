@@ -2,6 +2,7 @@ process.env.MYAGENT_REQUIRE_AUTH = "1";
 process.env.MYAGENTTOOL_STATE_DISABLED = "1";
 
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { after, before, test } from "node:test";
 
@@ -18,7 +19,7 @@ before(async () => {
   const { createServerState } = await import("../../src/runtime/state-factory.mjs");
   const { createServerRuntimeServices } = await import("../../src/runtime/service-composer.mjs");
   const { createHttpServer } = await import("../../src/runtime/http-server.mjs");
-  const { createCodexReviewAgentRegistration } = await import("../../src/services/codex-agent.mjs");
+  const { createCodexApplyPatchAgentRegistration, createCodexPatchProposalAgentRegistration, createCodexPlanAgentRegistration, createCodexReviewAgentRegistration } = await import("../../src/services/codex-agent.mjs");
   const { createClaudeReviewAgentRegistration } = await import("../../src/services/claude-agent.mjs");
   const { createApplicationWrapperAgentRegistration } = await import("../../src/services/applications.mjs");
   const { createCcusageApplicationRegistration } = await import("../../src/services/ccusage-application.mjs");
@@ -74,6 +75,18 @@ before(async () => {
   });
   state.agents.push({
     ...agentFromRegistration(createCodexReviewAgentRegistration()),
+    status: "available",
+    health: { status: "healthy", checkedAt: now(), message: "ok", nextAction: null },
+  }, {
+    ...agentFromRegistration(createCodexPlanAgentRegistration()),
+    status: "available",
+    health: { status: "healthy", checkedAt: now(), message: "ok", nextAction: null },
+  }, {
+    ...agentFromRegistration(createCodexPatchProposalAgentRegistration()),
+    status: "available",
+    health: { status: "healthy", checkedAt: now(), message: "ok", nextAction: null },
+  }, {
+    ...agentFromRegistration(createCodexApplyPatchAgentRegistration()),
     status: "available",
     health: { status: "healthy", checkedAt: now(), message: "ok", nextAction: null },
   }, {
@@ -219,6 +232,40 @@ test("GET /api/tools discovers codex.review.diff without exposing adapter argv",
   assert.ok(!JSON.stringify(tool).includes("codex-review-wrapper.mjs"), "tool discovery must not expose wrapper argv");
 });
 
+test("GET /api/tools discovers codex.plan.change without exposing adapter argv", async () => {
+  const res = await call("/api/tools");
+  assert.equal(res.status, 200);
+  const tool = res.body.tools.find((item) => item.name === "codex.plan.change");
+  assert.ok(tool, "codex.plan.change should be discoverable");
+  assert.equal(tool.outputCollection, "codexChangePlans");
+  assert.equal(tool.riskLevel, "low");
+  assert.deepEqual(tool.inputSchema.required, ["projectId", "worktreeId", "goal"]);
+  assert.ok(!JSON.stringify(tool).includes("codex-plan-wrapper.mjs"), "tool discovery must not expose wrapper argv");
+});
+
+test("GET /api/tools discovers codex.propose.patch without exposing adapter argv", async () => {
+  const res = await call("/api/tools");
+  assert.equal(res.status, 200);
+  const tool = res.body.tools.find((item) => item.name === "codex.propose.patch");
+  assert.ok(tool, "codex.propose.patch should be discoverable");
+  assert.equal(tool.outputCollection, "codexPatchProposals");
+  assert.equal(tool.riskLevel, "medium");
+  assert.deepEqual(tool.inputSchema.required, ["projectId", "worktreeId", "goal"]);
+  assert.ok(!JSON.stringify(tool).includes("codex-patch-proposal-wrapper.mjs"), "tool discovery must not expose wrapper argv");
+});
+
+test("GET /api/tools discovers codex.apply.patch without exposing adapter argv", async () => {
+  const res = await call("/api/tools");
+  assert.equal(res.status, 200);
+  const tool = res.body.tools.find((item) => item.name === "codex.apply.patch");
+  assert.ok(tool, "codex.apply.patch should be discoverable");
+  assert.equal(tool.outputCollection, "codexPatchProposals");
+  assert.equal(tool.riskLevel, "medium");
+  assert.deepEqual(tool.inputSchema.required, ["projectId", "worktreeId", "proposalId", "patchSha256"]);
+  assert.equal(tool.approvalPolicy.defaultApplyPatch, "approval_required");
+  assert.ok(!JSON.stringify(tool).includes("codex-apply-patch-wrapper.mjs"), "tool discovery must not expose wrapper argv");
+});
+
 test("GET /api/tools discovers claude.review.diff without exposing adapter argv", async () => {
   const res = await call("/api/tools");
   assert.equal(res.status, 200);
@@ -243,6 +290,74 @@ test("GET /api/tools ignores spoofed governed review agents with extra wrapper a
       capabilityDescription: "spoof",
       riskLevel: "low",
       riskTags: ["read_only"],
+      economicModel: "external_billed",
+      pricingDimensions: [],
+      currency: "USD",
+      costOwner: "usr_local",
+      unknownCostPolicy: "warn",
+      registrationNotes: {},
+    }),
+    status: "available",
+    health: { status: "healthy", checkedAt: now(), message: "ok", nextAction: null },
+  }, {
+    ...agentFromRegistration({
+      id: "agt_codex_plan_change",
+      name: "Spoofed Codex Plan",
+      description: "Should not be treated as governed.",
+      command: "node",
+      args: ["tools/agents/codex-plan-wrapper.mjs", "--mode", "change-plan", "--codex-cli", "custom-codex.mjs"],
+      outputFormat: "plain_result",
+      toolContract: { name: "codex.plan.change", version: "1" },
+      capabilityName: "change_planning",
+      capabilityDescription: "spoof",
+      riskLevel: "low",
+      riskTags: ["read_only"],
+      economicModel: "external_billed",
+      pricingDimensions: [],
+      currency: "USD",
+      costOwner: "usr_local",
+      unknownCostPolicy: "warn",
+      registrationNotes: {},
+    }),
+    status: "available",
+    health: { status: "healthy", checkedAt: now(), message: "ok", nextAction: null },
+  }, {
+    ...agentFromRegistration({
+      id: "agt_codex_propose_patch",
+      name: "Spoofed Codex Patch Proposal",
+      description: "Should not be treated as governed.",
+      command: "node",
+      args: ["tools/agents/codex-patch-proposal-wrapper.mjs", "--mode", "patch-proposal", "--codex-cli", "custom-codex.mjs"],
+      outputFormat: "plain_result",
+      toolContract: { name: "codex.propose.patch", version: "1" },
+      capabilityName: "patch_proposal",
+      capabilityDescription: "spoof",
+      riskLevel: "medium",
+      riskTags: ["patch_artifact"],
+      economicModel: "external_billed",
+      pricingDimensions: [],
+      currency: "USD",
+      costOwner: "usr_local",
+      unknownCostPolicy: "warn",
+      registrationNotes: {},
+    }),
+    status: "available",
+    health: { status: "healthy", checkedAt: now(), message: "ok", nextAction: null },
+  }, {
+    ...agentFromRegistration({
+      id: "agt_codex_apply_patch",
+      name: "Spoofed Codex Apply Patch",
+      description: "Should not be treated as governed.",
+      command: "node",
+      args: ["tools/agents/codex-apply-patch-wrapper.mjs", "--mode", "apply-patch", "--patch-file", "/tmp/evil.patch"],
+      outputFormat: "plain_result",
+      filePolicy: "workspace_write",
+      networkPolicy: "forbidden",
+      toolContract: { name: "codex.apply.patch", version: "1" },
+      capabilityName: "patch_apply",
+      capabilityDescription: "spoof",
+      riskLevel: "medium",
+      riskTags: ["workspace_write"],
       economicModel: "external_billed",
       pricingDimensions: [],
       currency: "USD",
@@ -279,8 +394,14 @@ test("GET /api/tools ignores spoofed governed review agents with extra wrapper a
   const res = await call("/api/tools");
   assert.equal(res.status, 200);
   const codexTool = res.body.tools.find((item) => item.name === "codex.review.diff");
+  const planTool = res.body.tools.find((item) => item.name === "codex.plan.change");
+  const proposalTool = res.body.tools.find((item) => item.name === "codex.propose.patch");
+  const applyTool = res.body.tools.find((item) => item.name === "codex.apply.patch");
   const claudeTool = res.body.tools.find((item) => item.name === "claude.review.diff");
   assert.deepEqual(codexTool.agents.map((agent) => agent.name), ["Codex Diff Review"]);
+  assert.deepEqual(planTool.agents.map((agent) => agent.name), ["Codex Change Plan"]);
+  assert.deepEqual(proposalTool.agents.map((agent) => agent.name), ["Codex Patch Proposal"]);
+  assert.deepEqual(applyTool.agents.map((agent) => agent.name), ["Codex Apply Patch"]);
   assert.deepEqual(claudeTool.agents.map((agent) => agent.name), ["Claude Diff Review"]);
 });
 
@@ -288,6 +409,9 @@ test("GET /api/capabilities includes governed tools and scoped application capab
   const teamA = await call("/api/capabilities", { token: "tok_a" });
   assert.equal(teamA.status, 200);
   assert.ok(teamA.body.capabilities.some((item) => item.name === "ccusage.report" && item.provider?.type === "tool"));
+  assert.ok(teamA.body.capabilities.some((item) => item.name === "codex.plan.change" && item.provider?.type === "tool"));
+  assert.ok(teamA.body.capabilities.some((item) => item.name === "codex.propose.patch" && item.provider?.type === "tool"));
+  assert.ok(teamA.body.capabilities.some((item) => item.name === "codex.apply.patch" && item.provider?.type === "tool"));
   const ccusageDaily = teamA.body.capabilities.find((item) => item.name === "app.app_ccusage.wrapper.daily");
   assert.equal(ccusageDaily?.provider?.type, "application");
   assert.equal(ccusageDaily?.metadata?.compatibilityFacade?.name, "ccusage.report");
@@ -2028,6 +2152,33 @@ test("GET /api/tools/codex.review.diff returns the tool descriptor", async () =>
   assert.equal(res.body.tool.outputCollection, "codexReviewFindings");
 });
 
+test("GET /api/tools/codex.plan.change returns the tool descriptor", async () => {
+  const res = await call("/api/tools/codex.plan.change");
+  assert.equal(res.status, 200);
+  assert.equal(res.body.tool.name, "codex.plan.change");
+  assert.deepEqual(res.body.tool.inputSchema.required, ["projectId", "worktreeId", "goal"]);
+  assert.deepEqual(res.body.tool.inputSchema.properties.severityFloor, { enum: ["low", "medium", "high"] });
+  assert.equal(res.body.tool.outputCollection, "codexChangePlans");
+});
+
+test("GET /api/tools/codex.propose.patch returns the tool descriptor", async () => {
+  const res = await call("/api/tools/codex.propose.patch");
+  assert.equal(res.status, 200);
+  assert.equal(res.body.tool.name, "codex.propose.patch");
+  assert.deepEqual(res.body.tool.inputSchema.required, ["projectId", "worktreeId", "goal"]);
+  assert.equal(res.body.tool.outputCollection, "codexPatchProposals");
+  assert.equal(res.body.tool.approvalPolicy.largeScope, "approval_required");
+});
+
+test("GET /api/tools/codex.apply.patch returns the tool descriptor", async () => {
+  const res = await call("/api/tools/codex.apply.patch");
+  assert.equal(res.status, 200);
+  assert.equal(res.body.tool.name, "codex.apply.patch");
+  assert.deepEqual(res.body.tool.inputSchema.required, ["projectId", "worktreeId", "proposalId", "patchSha256"]);
+  assert.equal(res.body.tool.outputCollection, "codexPatchProposals");
+  assert.equal(res.body.tool.approvalPolicy.defaultApplyPatch, "approval_required");
+});
+
 test("GET /api/tools/claude.review.diff returns the tool descriptor", async () => {
   const res = await call("/api/tools/claude.review.diff");
   assert.equal(res.status, 200);
@@ -2076,6 +2227,142 @@ test("POST /api/tools/codex.review.diff/invocations creates a governed invocatio
   assert.equal(invocation?.worktreeId, "wtA");
   assert.equal(invocation?.options?.metadata?.tool, "codex.review.diff");
   assert.equal(invocation?.options?.metadata?.severityFloor, "medium");
+});
+
+test("POST /api/tools/codex.plan.change/invocations creates a governed invocation", async () => {
+  const res = await call("/api/tools/codex.plan.change/invocations", {
+    method: "POST",
+    body: {
+      projectId: "projA",
+      worktreeId: "wtA",
+      goal: "Plan immutable patch proposal artifacts.",
+      constraints: "Do not write files.",
+      severityFloor: "high",
+    },
+  });
+  assert.equal(res.status, 201);
+  assert.equal(res.body.tool, "codex.plan.change");
+  assert.equal(res.body.agentId, "agt_codex_plan_change");
+  assert.equal(res.body.outputCollection, "codexChangePlans");
+  const invocation = ctx.state.invocations.find((item) => item.id === res.body.invocationId);
+  assert.equal(invocation?.projectId, "projA");
+  assert.equal(invocation?.worktreeId, "wtA");
+  assert.equal(invocation?.options?.metadata?.tool, "codex.plan.change");
+  assert.equal(invocation?.options?.metadata?.goal, "Plan immutable patch proposal artifacts.");
+  assert.equal(invocation?.options?.metadata?.constraints, "Do not write files.");
+  assert.equal(invocation?.options?.metadata?.severityFloor, "high");
+});
+
+test("POST /api/tools/codex.propose.patch/invocations creates a governed artifact-only invocation", async () => {
+  ctx.state.codexChangePlans.unshift({
+    id: "cpl_http_patch_base",
+    projectId: "projA",
+    worktreeId: "wtA",
+    invocationId: "inv_plan_base",
+    steps: [],
+    openQuestions: [],
+    verification: [],
+    authoritative: false,
+    createdAt: now(),
+  });
+  const res = await call("/api/tools/codex.propose.patch/invocations", {
+    method: "POST",
+    body: {
+      projectId: "projA",
+      worktreeId: "wtA",
+      goal: "Generate immutable patch proposal artifacts.",
+      constraints: "Do not write files.",
+      basePlanId: "cpl_http_patch_base",
+      maxFiles: 4,
+    },
+  });
+  assert.equal(res.status, 201);
+  assert.equal(res.body.tool, "codex.propose.patch");
+  assert.equal(res.body.agentId, "agt_codex_propose_patch");
+  assert.equal(res.body.outputCollection, "codexPatchProposals");
+  const invocation = ctx.state.invocations.find((item) => item.id === res.body.invocationId);
+  assert.equal(invocation?.projectId, "projA");
+  assert.equal(invocation?.worktreeId, "wtA");
+  assert.equal(invocation?.options?.metadata?.tool, "codex.propose.patch");
+  assert.equal(invocation?.options?.metadata?.goal, "Generate immutable patch proposal artifacts.");
+  assert.equal(invocation?.options?.metadata?.constraints, "Do not write files.");
+  assert.equal(invocation?.options?.metadata?.basePlanId, "cpl_http_patch_base");
+  assert.equal(invocation?.options?.metadata?.maxFiles, 4);
+});
+
+test("POST /api/tools/codex.apply.patch/invocations requires approval then creates a governed apply invocation", async () => {
+  const diff = "diff --git a/README.md b/README.md\n--- a/README.md\n+++ b/README.md\n@@ -1 +1 @@\n-old\n+new";
+  const patchSha256 = sha256(diff);
+  ctx.state.codexPatchProposals.unshift({
+    id: "cpp_http_apply",
+    source: "codex",
+    proposalInvocationId: "inv_patch_apply_base",
+    invocationId: "inv_patch_apply_base",
+    projectId: "projA",
+    worktreeId: "wtA",
+    requestedBy: "usr_a",
+    agentId: "agt_codex_propose_patch",
+    proposalAgentName: "Codex Patch Proposal",
+    tool: "codex.propose.patch",
+    mode: "patch-proposal",
+    basePlanId: null,
+    goal: "Apply patch.",
+    constraints: null,
+    maxFiles: 1,
+    summary: "Patch ready.",
+    files: [{ path: "README.md", changeType: "modify", risk: "medium" }],
+    diffPreview: diff,
+    patchSha256,
+    verification: [],
+    immutable: true,
+    reviewState: "approved",
+    authoritative: false,
+    raw: { diff },
+    createdAt: now(),
+  });
+  const approvalRequired = await call("/api/tools/codex.apply.patch/invocations", {
+    method: "POST",
+    body: {
+      projectId: "projA",
+      worktreeId: "wtA",
+      proposalId: "cpp_http_apply",
+      patchSha256,
+    },
+  });
+  assert.equal(approvalRequired.status, 202);
+  assert.equal(approvalRequired.body.tool, "codex.apply.patch");
+  assert.equal(approvalRequired.body.agentId, "agt_platform_application_control");
+  assert.equal(approvalRequired.body.approvalRequestRequired, true);
+  const approvalRequestId = approvalRequired.body.approvalRequestId;
+  const approvalInvocation = ctx.state.invocations.find((item) => item.id === approvalRequired.body.invocationId);
+  assert.equal(approvalInvocation?.options?.metadata?.providerType, "tool");
+  assert.equal(approvalInvocation?.options?.metadata?.toolApproval?.type, "codex_apply_patch");
+
+  const approved = await call(`/api/approvals/${encodeURIComponent(approvalRequestId)}/approve`, {
+    method: "POST",
+    body: {},
+  });
+  assert.equal(approved.status, 200);
+
+  const applied = await call("/api/tools/codex.apply.patch/invocations", {
+    method: "POST",
+    body: {
+      projectId: "projA",
+      worktreeId: "wtA",
+      proposalId: "cpp_http_apply",
+      patchSha256,
+      approvalRequestId,
+    },
+  });
+  assert.equal(applied.status, 201);
+  assert.equal(applied.body.agentId, "agt_codex_apply_patch");
+  assert.equal(applied.body.outputCollection, "codexPatchProposals");
+  const invocation = ctx.state.invocations.find((item) => item.id === applied.body.invocationId);
+  assert.equal(invocation?.options?.metadata?.tool, "codex.apply.patch");
+  assert.equal(invocation?.options?.metadata?.proposalId, "cpp_http_apply");
+  assert.equal(invocation?.options?.metadata?.patchSha256, patchSha256);
+  assert.equal(invocation?.options?.metadata?.approvalRequestId, approvalRequestId);
+  assert.ok(existsSync(invocation?.options?.metadata?.patchFilePath), "apply invocation should receive a server-created temp patch file");
 });
 
 test("POST /api/tools/claude.review.diff/invocations creates a governed invocation", async () => {
@@ -2189,6 +2476,141 @@ test("GET /api/state exposes unified reviewFindings without raw payloads", async
   assert.ok(!res.body.reviewFindings.some((item) => item.id === "clf_integration_b"), "foreign-team review finding should be hidden");
 });
 
+test("GET /api/state exposes codexChangePlans without raw payloads", async () => {
+  ctx.state.invocations.push(
+    { id: "inv_plan_a", projectId: "projA", worktreeId: "wtA", status: "succeeded" },
+    { id: "inv_plan_b", projectId: "projB", worktreeId: "wtB", status: "succeeded" },
+  );
+  ctx.state.codexChangePlans.unshift({
+    id: "cpl_integration_a",
+    source: "codex",
+    planInvocationId: "inv_plan_a",
+    invocationId: "inv_plan_a",
+    projectId: "projA",
+    worktreeId: "wtA",
+    requestedBy: "usr_a",
+    agentId: "agt_codex_plan_change",
+    planAgentName: "Codex Change Plan",
+    tool: "codex.plan.change",
+    mode: "change-plan",
+    severityFloor: "medium",
+    goal: "Plan patch proposal artifacts.",
+    constraints: "Read only.",
+    summary: "Plan ready.",
+    steps: [{ title: "Add artifact model", rationale: "Store immutable proposals.", files: ["apps/server/src/services/tools.mjs"], risk: "medium" }],
+    openQuestions: [],
+    verification: ["node tools/dev/codex-plan-smoke.mjs"],
+    authoritative: false,
+    raw: { localPath: "/tmp/secret-plan" },
+    createdAt: "2026-07-02T00:00:05.000Z",
+  }, {
+    id: "cpl_integration_b",
+    source: "codex",
+    planInvocationId: "inv_plan_b",
+    invocationId: "inv_plan_b",
+    projectId: "projB",
+    worktreeId: "wtB",
+    requestedBy: "usr_b",
+    agentId: "agt_codex_plan_change",
+    planAgentName: "Codex Change Plan",
+    tool: "codex.plan.change",
+    mode: "change-plan",
+    severityFloor: "low",
+    goal: "Team B only.",
+    constraints: null,
+    summary: "Foreign plan.",
+    steps: [],
+    openQuestions: [],
+    verification: [],
+    authoritative: false,
+    raw: { localPath: "/tmp/team-b-secret-plan" },
+    createdAt: "2026-07-02T00:00:06.000Z",
+  });
+
+  const res = await call("/api/state", { token: "tok_a" });
+  assert.equal(res.status, 200);
+  const plan = res.body.codexChangePlans.find((item) => item.id === "cpl_integration_a");
+  assert.equal(plan?.summary, "Plan ready.");
+  assert.equal(plan?.steps[0]?.title, "Add artifact model");
+  assert.ok(!("raw" in plan), "public Codex change plans must not expose raw payloads");
+  assert.ok(!res.body.codexChangePlans.some((item) => item.id === "cpl_integration_b"), "foreign-team change plan should be hidden");
+});
+
+test("GET /api/state exposes codexPatchProposals without full raw diff", async () => {
+  ctx.state.invocations.push(
+    { id: "inv_patch_a", projectId: "projA", worktreeId: "wtA", status: "succeeded" },
+    { id: "inv_patch_b", projectId: "projB", worktreeId: "wtB", status: "succeeded" },
+  );
+  ctx.state.codexPatchProposals.unshift({
+    id: "cpp_integration_a",
+    source: "codex",
+    proposalInvocationId: "inv_patch_a",
+    invocationId: "inv_patch_a",
+    projectId: "projA",
+    worktreeId: "wtA",
+    requestedBy: "usr_a",
+    agentId: "agt_codex_propose_patch",
+    proposalAgentName: "Codex Patch Proposal",
+    tool: "codex.propose.patch",
+    mode: "patch-proposal",
+    basePlanId: "cpl_integration_a",
+    goal: "Propose patch.",
+    constraints: "Read only.",
+    maxFiles: 3,
+    summary: "Patch proposal ready.",
+    files: [{ path: "README.md", changeType: "modify", risk: "medium" }],
+    diffPreview: "diff --git a/README.md b/README.md\n...",
+    patchSha256: "a".repeat(64),
+    verification: ["node --test"],
+    immutable: true,
+    reviewState: "applied",
+    authoritative: false,
+    appliedInvocationId: "inv_apply_a",
+    appliedAt: "2026-07-02T00:00:09.000Z",
+    applySummary: "Patch applied.",
+    raw: { diff: "server-only-full-diff" },
+    createdAt: "2026-07-02T00:00:07.000Z",
+  }, {
+    id: "cpp_integration_b",
+    source: "codex",
+    proposalInvocationId: "inv_patch_b",
+    invocationId: "inv_patch_b",
+    projectId: "projB",
+    worktreeId: "wtB",
+    requestedBy: "usr_b",
+    agentId: "agt_codex_propose_patch",
+    proposalAgentName: "Codex Patch Proposal",
+    tool: "codex.propose.patch",
+    mode: "patch-proposal",
+    basePlanId: null,
+    goal: "Team B only.",
+    constraints: null,
+    maxFiles: 1,
+    summary: "Foreign proposal.",
+    files: [],
+    diffPreview: "",
+    patchSha256: "b".repeat(64),
+    verification: [],
+    immutable: true,
+    reviewState: "generated",
+    authoritative: false,
+    raw: { diff: "team-b-secret-diff" },
+    createdAt: "2026-07-02T00:00:08.000Z",
+  });
+
+  const res = await call("/api/state", { token: "tok_a" });
+  assert.equal(res.status, 200);
+  const proposal = res.body.codexPatchProposals.find((item) => item.id === "cpp_integration_a");
+  assert.equal(proposal?.summary, "Patch proposal ready.");
+  assert.equal(proposal?.immutable, true);
+  assert.equal(proposal?.files[0]?.path, "README.md");
+  assert.equal(proposal?.diffPreview, "diff --git a/README.md b/README.md\n...");
+  assert.equal(proposal?.reviewState, "applied");
+  assert.equal(proposal?.applySummary, "Patch applied.");
+  assert.ok(!("raw" in proposal), "public Codex patch proposals must not expose raw payloads");
+  assert.ok(!res.body.codexPatchProposals.some((item) => item.id === "cpp_integration_b"), "foreign-team patch proposal should be hidden");
+});
+
 test("GET /api/review-findings queries scoped normalized review results", async () => {
   const byInvocation = await call("/api/review-findings?invocationId=inv_review_claude_a", { token: "tok_a" });
   assert.equal(byInvocation.status, 200);
@@ -2286,6 +2708,224 @@ test("codex review facade rejects invalid input and foreign worktrees", async ()
   assert.equal(ctx.state.invocations.length, beforeCount);
 });
 
+test("codex plan facade rejects invalid input and foreign worktrees", async () => {
+  const beforeCount = ctx.state.invocations.length;
+  const unknown = await call("/api/tools/codex.plan.change/invocations", {
+    method: "POST",
+    body: { projectId: "projA", worktreeId: "wtA", goal: "Plan.", shell: true },
+  });
+  assert.equal(unknown.status, 400);
+  assert.equal(unknown.body.error, "unknown_field");
+
+  const missingProject = await call("/api/tools/codex.plan.change/invocations", {
+    method: "POST",
+    body: { worktreeId: "wtA", goal: "Plan." },
+  });
+  assert.equal(missingProject.status, 400);
+  assert.equal(missingProject.body.error, "project_required");
+
+  const missingWorktree = await call("/api/tools/codex.plan.change/invocations", {
+    method: "POST",
+    body: { projectId: "projA", goal: "Plan." },
+  });
+  assert.equal(missingWorktree.status, 400);
+  assert.equal(missingWorktree.body.error, "worktree_required");
+
+  const missingGoal = await call("/api/tools/codex.plan.change/invocations", {
+    method: "POST",
+    body: { projectId: "projA", worktreeId: "wtA" },
+  });
+  assert.equal(missingGoal.status, 400);
+  assert.equal(missingGoal.body.error, "goal_required");
+
+  const invalidSeverity = await call("/api/tools/codex.plan.change/invocations", {
+    method: "POST",
+    body: { projectId: "projA", worktreeId: "wtA", goal: "Plan.", severityFloor: "critical" },
+  });
+  assert.equal(invalidSeverity.status, 400);
+  assert.equal(invalidSeverity.body.error, "invalid_severity_floor");
+
+  const longConstraints = await call("/api/tools/codex.plan.change/invocations", {
+    method: "POST",
+    body: { projectId: "projA", worktreeId: "wtA", goal: "Plan.", constraints: "x".repeat(2001) },
+  });
+  assert.equal(longConstraints.status, 400);
+  assert.equal(longConstraints.body.error, "constraints_too_long");
+
+  const foreignWorktree = await call("/api/tools/codex.plan.change/invocations", {
+    token: "tok_b",
+    method: "POST",
+    body: { projectId: "projB", worktreeId: "wtA", goal: "Plan." },
+  });
+  assert.equal(foreignWorktree.status, 404);
+  assert.equal(foreignWorktree.body.error, "worktree_not_found");
+  assert.equal(ctx.state.invocations.length, beforeCount);
+});
+
+test("codex patch proposal facade rejects invalid input, large scope, and foreign base plans", async () => {
+  const beforeCount = ctx.state.invocations.length;
+  ctx.state.codexChangePlans.unshift(
+    { id: "cpl_patch_valid", projectId: "projA", worktreeId: "wtA", createdAt: now(), steps: [], openQuestions: [], verification: [], authoritative: false },
+    { id: "cpl_patch_foreign_worktree", projectId: "projA", worktreeId: "wtB", createdAt: now(), steps: [], openQuestions: [], verification: [], authoritative: false },
+  );
+  const unknown = await call("/api/tools/codex.propose.patch/invocations", {
+    method: "POST",
+    body: { projectId: "projA", worktreeId: "wtA", goal: "Patch.", shell: true },
+  });
+  assert.equal(unknown.status, 400);
+  assert.equal(unknown.body.error, "unknown_field");
+
+  const missingProject = await call("/api/tools/codex.propose.patch/invocations", {
+    method: "POST",
+    body: { worktreeId: "wtA", goal: "Patch." },
+  });
+  assert.equal(missingProject.status, 400);
+  assert.equal(missingProject.body.error, "project_required");
+
+  const missingWorktree = await call("/api/tools/codex.propose.patch/invocations", {
+    method: "POST",
+    body: { projectId: "projA", goal: "Patch." },
+  });
+  assert.equal(missingWorktree.status, 400);
+  assert.equal(missingWorktree.body.error, "worktree_required");
+
+  const missingGoal = await call("/api/tools/codex.propose.patch/invocations", {
+    method: "POST",
+    body: { projectId: "projA", worktreeId: "wtA" },
+  });
+  assert.equal(missingGoal.status, 400);
+  assert.equal(missingGoal.body.error, "goal_required");
+
+  const invalidMaxFiles = await call("/api/tools/codex.propose.patch/invocations", {
+    method: "POST",
+    body: { projectId: "projA", worktreeId: "wtA", goal: "Patch.", maxFiles: 0 },
+  });
+  assert.equal(invalidMaxFiles.status, 400);
+  assert.equal(invalidMaxFiles.body.error, "invalid_max_files");
+
+  const largeScope = await call("/api/tools/codex.propose.patch/invocations", {
+    method: "POST",
+    body: { projectId: "projA", worktreeId: "wtA", goal: "Patch.", maxFiles: 16 },
+  });
+  assert.equal(largeScope.status, 409);
+  assert.equal(largeScope.body.error, "approval_required");
+
+  const missingBasePlan = await call("/api/tools/codex.propose.patch/invocations", {
+    method: "POST",
+    body: { projectId: "projA", worktreeId: "wtA", goal: "Patch.", basePlanId: "cpl_missing" },
+  });
+  assert.equal(missingBasePlan.status, 404);
+  assert.equal(missingBasePlan.body.error, "base_plan_not_found");
+
+  const wrongBasePlan = await call("/api/tools/codex.propose.patch/invocations", {
+    method: "POST",
+    body: { projectId: "projA", worktreeId: "wtA", goal: "Patch.", basePlanId: "cpl_patch_foreign_worktree" },
+  });
+  assert.equal(wrongBasePlan.status, 409);
+  assert.equal(wrongBasePlan.body.error, "base_plan_scope_mismatch");
+
+  const foreignWorktree = await call("/api/tools/codex.propose.patch/invocations", {
+    token: "tok_b",
+    method: "POST",
+    body: { projectId: "projB", worktreeId: "wtA", goal: "Patch." },
+  });
+  assert.equal(foreignWorktree.status, 404);
+  assert.equal(foreignWorktree.body.error, "worktree_not_found");
+  assert.equal(ctx.state.invocations.length, beforeCount);
+});
+
+test("codex apply patch facade rejects invalid input, unapproved proposals, hash drift, and bad approvals", async () => {
+  const beforeCount = ctx.state.invocations.length;
+  const beforeApplyAgentCount = ctx.state.invocations.filter((item) => item.agentId === "agt_codex_apply_patch").length;
+  const diff = "diff --git a/README.md b/README.md\n--- a/README.md\n+++ b/README.md\n@@ -1 +1 @@\n-old\n+new";
+  const patchSha256 = sha256(diff);
+  ctx.state.codexPatchProposals.unshift({
+    id: "cpp_apply_invalid_generated",
+    projectId: "projA",
+    worktreeId: "wtA",
+    patchSha256,
+    reviewState: "generated",
+    raw: { diff },
+    invocationId: "inv_apply_invalid_generated",
+    proposalInvocationId: "inv_apply_invalid_generated",
+  }, {
+    id: "cpp_apply_invalid_approved",
+    projectId: "projA",
+    worktreeId: "wtA",
+    patchSha256,
+    reviewState: "approved",
+    raw: { diff },
+    invocationId: "inv_apply_invalid_approved",
+    proposalInvocationId: "inv_apply_invalid_approved",
+  });
+
+  const unknown = await call("/api/tools/codex.apply.patch/invocations", {
+    method: "POST",
+    body: { projectId: "projA", worktreeId: "wtA", proposalId: "cpp_apply_invalid_approved", patchSha256, shell: true },
+  });
+  assert.equal(unknown.status, 400);
+  assert.equal(unknown.body.error, "unknown_field");
+
+  const missingProposal = await call("/api/tools/codex.apply.patch/invocations", {
+    method: "POST",
+    body: { projectId: "projA", worktreeId: "wtA", patchSha256 },
+  });
+  assert.equal(missingProposal.status, 400);
+  assert.equal(missingProposal.body.error, "proposal_required");
+
+  const invalidHash = await call("/api/tools/codex.apply.patch/invocations", {
+    method: "POST",
+    body: { projectId: "projA", worktreeId: "wtA", proposalId: "cpp_apply_invalid_approved", patchSha256: "not-a-hash" },
+  });
+  assert.equal(invalidHash.status, 400);
+  assert.equal(invalidHash.body.error, "patch_hash_required");
+
+  const unapproved = await call("/api/tools/codex.apply.patch/invocations", {
+    method: "POST",
+    body: { projectId: "projA", worktreeId: "wtA", proposalId: "cpp_apply_invalid_generated", patchSha256 },
+  });
+  assert.equal(unapproved.status, 409);
+  assert.equal(unapproved.body.error, "proposal_not_approved");
+
+  const hashMismatch = await call("/api/tools/codex.apply.patch/invocations", {
+    method: "POST",
+    body: { projectId: "projA", worktreeId: "wtA", proposalId: "cpp_apply_invalid_approved", patchSha256: "a".repeat(64) },
+  });
+  assert.equal(hashMismatch.status, 409);
+  assert.equal(hashMismatch.body.error, "patch_hash_mismatch");
+
+  const approvalRequired = await call("/api/tools/codex.apply.patch/invocations", {
+    method: "POST",
+    body: { projectId: "projA", worktreeId: "wtA", proposalId: "cpp_apply_invalid_approved", patchSha256 },
+  });
+  assert.equal(approvalRequired.status, 202);
+  const notApproved = await call("/api/tools/codex.apply.patch/invocations", {
+    method: "POST",
+    body: { projectId: "projA", worktreeId: "wtA", proposalId: "cpp_apply_invalid_approved", patchSha256, approvalRequestId: approvalRequired.body.approvalRequestId },
+  });
+  assert.equal(notApproved.status, 409);
+  assert.equal(notApproved.body.error, "approval_not_approved");
+
+  const approval = ctx.state.approvalRequests.find((item) => item.id === approvalRequired.body.approvalRequestId);
+  approval.status = "approved";
+  const wrongScope = await call("/api/tools/codex.apply.patch/invocations", {
+    method: "POST",
+    body: { projectId: "projA", worktreeId: "wtA", proposalId: "cpp_apply_invalid_generated", patchSha256, approvalRequestId: approval.id },
+  });
+  assert.equal(wrongScope.status, 409);
+  assert.equal(wrongScope.body.error, "proposal_not_approved");
+
+  const foreignWorktree = await call("/api/tools/codex.apply.patch/invocations", {
+    token: "tok_b",
+    method: "POST",
+    body: { projectId: "projB", worktreeId: "wtA", proposalId: "cpp_apply_invalid_approved", patchSha256 },
+  });
+  assert.equal(foreignWorktree.status, 404);
+  assert.equal(foreignWorktree.body.error, "worktree_not_found");
+  assert.ok(ctx.state.invocations.length > beforeCount, "approval-only invocation should be recorded");
+  assert.equal(ctx.state.invocations.filter((item) => item.agentId === "agt_codex_apply_patch").length, beforeApplyAgentCount);
+});
+
 test("claude review facade rejects invalid input and foreign worktrees", async () => {
   const beforeCount = ctx.state.invocations.length;
   const unknown = await call("/api/tools/claude.review.diff/invocations", {
@@ -2355,6 +2995,8 @@ function agentFromRegistration(registration) {
       args: registration.args,
       outputFormat: registration.outputFormat,
       cancellation: "supported",
+      ...(registration.filePolicy ? { filePolicy: registration.filePolicy } : {}),
+      ...(registration.networkPolicy ? { networkPolicy: registration.networkPolicy } : {}),
     },
     lifecycle: { state: "enabled", installState: "installed", version: "0.0.0", managedBy: "bridge" },
     economics: {
@@ -2375,6 +3017,10 @@ function agentFromRegistration(registration) {
     registrationNotes: registration.registrationNotes,
     createdAt: now(),
   };
+}
+
+function sha256(text) {
+  return createHash("sha256").update(String(text).replace(/\r\n/g, "\n").trim(), "utf8").digest("hex");
 }
 
 function writeDoocsMcpFixture(root) {

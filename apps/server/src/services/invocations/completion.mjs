@@ -12,6 +12,9 @@ export function createInvocationCompletionRuntime({
   recordInvocationLedgerEntry,
   recordCcusageImportedEstimates,
   recordCodexReviewFindings,
+  recordCodexChangePlan,
+  recordCodexPatchProposal,
+  recordCodexPatchApply,
   recordClaudeReviewFindings,
   onInvocationCompleted,
 }) {
@@ -75,6 +78,30 @@ export function createInvocationCompletionRuntime({
         agent: findAgent(invocation.agentId),
       });
       attachApplicationResult({ invocation, auditSummary, records, outputCollection: "codexReviewFindings" });
+    }
+    if (terminalStatus === "succeeded" && typeof recordCodexChangePlan === "function") {
+      const records = recordCodexChangePlan({
+        invocation,
+        result: body.result ?? null,
+        agent: findAgent(invocation.agentId),
+      });
+      attachApplicationResult({ invocation, auditSummary, records, outputCollection: "codexChangePlans" });
+    }
+    if (terminalStatus === "succeeded" && typeof recordCodexPatchProposal === "function") {
+      const records = recordCodexPatchProposal({
+        invocation,
+        result: body.result ?? null,
+        agent: findAgent(invocation.agentId),
+      });
+      attachApplicationResult({ invocation, auditSummary, records, outputCollection: "codexPatchProposals" });
+    }
+    if (terminalStatus === "succeeded" && typeof recordCodexPatchApply === "function") {
+      const records = recordCodexPatchApply({
+        invocation,
+        result: body.result ?? null,
+        agent: findAgent(invocation.agentId),
+      });
+      attachApplicationResult({ invocation, auditSummary, records, outputCollection: "codexPatchProposals" });
     }
     if (terminalStatus === "succeeded" && typeof recordClaudeReviewFindings === "function") {
       const records = recordClaudeReviewFindings({

@@ -85,6 +85,8 @@ export function createAgentService({ state, now, nextId, appendEvent, persistSta
         outputFormat: normalizeCliOutputFormat(body.outputFormat ?? body.adapter?.outputFormat, command),
         sandbox: body.sandbox ?? body.adapter?.sandbox ?? null,
         permissionMode: claudeCommand ? claudeMode : null,
+        ...(body.filePolicy ?? body.adapter?.filePolicy ? { filePolicy: String(body.filePolicy ?? body.adapter.filePolicy) } : {}),
+        ...(body.networkPolicy ?? body.adapter?.networkPolicy ? { networkPolicy: String(body.networkPolicy ?? body.adapter.networkPolicy) } : {}),
       },
       capabilities: [
         {

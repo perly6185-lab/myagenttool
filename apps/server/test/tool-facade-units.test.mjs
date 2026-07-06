@@ -1,10 +1,15 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import { existsSync } from "node:fs";
 import { test } from "node:test";
 
 import { createCodexReviewImportService } from "../src/services/codex-review-imports.mjs";
+import { createCodexPlanImportService } from "../src/services/codex-plan-imports.mjs";
+import { createCodexPatchProposalImportService } from "../src/services/codex-patch-proposal-imports.mjs";
+import { createCodexPatchApplyImportService } from "../src/services/codex-patch-apply-imports.mjs";
 import { createClaudeReviewImportService } from "../src/services/claude-review-imports.mjs";
 import { createCcusageImportService } from "../src/services/ccusage-imports.mjs";
-import { isGovernedCodexReviewAgent } from "../src/services/codex-agent.mjs";
+import { isGovernedCodexApplyPatchAgent, isGovernedCodexPatchProposalAgent, isGovernedCodexPlanAgent, isGovernedCodexReviewAgent } from "../src/services/codex-agent.mjs";
 import { isGovernedClaudeReviewAgent } from "../src/services/claude-agent.mjs";
 import { createToolService } from "../src/services/tools.mjs";
 
@@ -28,6 +33,53 @@ function governedReviewAgent({ id, tool, wrapper, args }) {
   };
 }
 
+function governedPlanAgent({ args } = {}) {
+  return {
+    id: "agt_codex_plan_change",
+    name: "Codex Change Plan agent",
+    adapter: {
+      type: "cli",
+      command: "node",
+      args: args ?? ["/opt/myagenttool/tools/agents/codex-plan-wrapper.mjs", "--mode", "change-plan"],
+      outputFormat: "plain_result",
+    },
+    toolContract: { name: "codex.plan.change" },
+    capabilities: [{ name: "change_planning" }],
+  };
+}
+
+function governedPatchProposalAgent({ args } = {}) {
+  return {
+    id: "agt_codex_propose_patch",
+    name: "Codex Patch Proposal agent",
+    adapter: {
+      type: "cli",
+      command: "node",
+      args: args ?? ["/opt/myagenttool/tools/agents/codex-patch-proposal-wrapper.mjs", "--mode", "patch-proposal"],
+      outputFormat: "plain_result",
+    },
+    toolContract: { name: "codex.propose.patch" },
+    capabilities: [{ name: "patch_proposal" }],
+  };
+}
+
+function governedApplyPatchAgent({ args, filePolicy = "workspace_write", networkPolicy = "forbidden" } = {}) {
+  return {
+    id: "agt_codex_apply_patch",
+    name: "Codex Apply Patch agent",
+    adapter: {
+      type: "cli",
+      command: "node",
+      args: args ?? ["/opt/myagenttool/tools/agents/codex-apply-patch-wrapper.mjs", "--mode", "apply-patch"],
+      outputFormat: "plain_result",
+      filePolicy,
+      networkPolicy,
+    },
+    toolContract: { name: "codex.apply.patch" },
+    capabilities: [{ name: "patch_apply" }],
+  };
+}
+
 function governedCcusageAgent() {
   return {
     id: "agt_ccusage_daily",
@@ -44,12 +96,16 @@ function governedCcusageAgent() {
 }
 
 function importState() {
-  return { codexReviewFindings: [], claudeReviewFindings: [], importedUsageEstimates: [] };
+  return { codexReviewFindings: [], codexChangePlans: [], codexPatchProposals: [], claudeReviewFindings: [], importedUsageEstimates: [] };
 }
 
 function makeCounter(prefix) {
   let n = 0;
   return () => `${prefix}_${(n += 1)}`;
+}
+
+function sha256(text) {
+  return createHash("sha256").update(String(text).replace(/\r\n/g, "\n").trim(), "utf8").digest("hex");
 }
 
 // --- Governed-agent identity (regression for the basename→full-path fix) ---
@@ -69,6 +125,37 @@ test("isGovernedCodexReviewAgent rejects a wrapper path outside tools/agents", (
 test("isGovernedCodexReviewAgent accepts the canonical absolute wrapper path", () => {
   const good = governedReviewAgent({ id: "agt_codex_review_diff", tool: "codex.review.diff", wrapper: "codex-review-wrapper.mjs" });
   assert.equal(isGovernedCodexReviewAgent(good), true);
+});
+
+test("isGovernedCodexPlanAgent accepts only the canonical change-plan wrapper", () => {
+  assert.equal(isGovernedCodexPlanAgent(governedPlanAgent()), true);
+  assert.equal(isGovernedCodexPlanAgent(governedPlanAgent({
+    args: ["/tmp/evil/codex-plan-wrapper.mjs", "--mode", "change-plan"],
+  })), false);
+  assert.equal(isGovernedCodexPlanAgent(governedPlanAgent({
+    args: ["/opt/myagenttool/tools/agents/codex-plan-wrapper.mjs", "--mode", "change-plan", "--codex-cli", "evil.mjs"],
+  })), false);
+});
+
+test("isGovernedCodexPatchProposalAgent accepts only the canonical patch-proposal wrapper", () => {
+  assert.equal(isGovernedCodexPatchProposalAgent(governedPatchProposalAgent()), true);
+  assert.equal(isGovernedCodexPatchProposalAgent(governedPatchProposalAgent({
+    args: ["/tmp/evil/codex-patch-proposal-wrapper.mjs", "--mode", "patch-proposal"],
+  })), false);
+  assert.equal(isGovernedCodexPatchProposalAgent(governedPatchProposalAgent({
+    args: ["/opt/myagenttool/tools/agents/codex-patch-proposal-wrapper.mjs", "--mode", "patch-proposal", "--codex-cli", "evil.mjs"],
+  })), false);
+});
+
+test("isGovernedCodexApplyPatchAgent accepts only the canonical apply wrapper with workspace-write policy", () => {
+  assert.equal(isGovernedCodexApplyPatchAgent(governedApplyPatchAgent()), true);
+  assert.equal(isGovernedCodexApplyPatchAgent(governedApplyPatchAgent({
+    args: ["/tmp/evil/codex-apply-patch-wrapper.mjs", "--mode", "apply-patch"],
+  })), false);
+  assert.equal(isGovernedCodexApplyPatchAgent(governedApplyPatchAgent({
+    args: ["/opt/myagenttool/tools/agents/codex-apply-patch-wrapper.mjs", "--mode", "apply-patch", "--patch-file", "/tmp/evil.patch"],
+  })), false);
+  assert.equal(isGovernedCodexApplyPatchAgent(governedApplyPatchAgent({ filePolicy: "read_only" })), false);
 });
 
 test("isGovernedClaudeReviewAgent rejects a wrapper path outside tools/agents", () => {
@@ -131,6 +218,172 @@ test("createToolInvocation rejects a foreign project before creating an invocati
   assert.equal(result.status, 404);
   assert.equal(result.body.error, "project_not_found");
   assert.equal(createInvocationCalls, 0);
+});
+
+test("createToolInvocation for codex.plan.change requires explicit project scope", () => {
+  let createInvocationCalls = 0;
+  const state = {
+    projects: [{ id: "projA", ownerTeamId: "team_a" }],
+    worktrees: [{ id: "wtA", projectId: "projA", workspaceProjectId: "projA" }],
+    agents: [governedPlanAgent()],
+    device: { unlinkState: "linked" },
+  };
+  const { createToolInvocation } = createToolService({
+    state,
+    now,
+    appendEvent: () => {},
+    createInvocation: () => {
+      createInvocationCalls += 1;
+      throw new Error("missing project must not create an invocation");
+    },
+    startInvocationIfAllowed: () => {},
+    findApplication: () => null,
+    findAgent: (id) => state.agents.find((agent) => agent.id === id) ?? null,
+    planApplicationWrapperInvocation: () => ({ ok: false, status: 500, body: { error: "unexpected_plan" } }),
+  });
+
+  const result = createToolInvocation(
+    "codex.plan.change",
+    { worktreeId: "wtA", goal: "Plan a safe change." },
+    { userId: "usr_a", teamId: "team_a" },
+  );
+
+  assert.equal(result.status, 400);
+  assert.equal(result.body.error, "project_required");
+  assert.equal(createInvocationCalls, 0);
+});
+
+test("createToolInvocation for codex.propose.patch validates base plan scope before invocation", () => {
+  let createInvocationCalls = 0;
+  const state = {
+    projects: [{ id: "projA", ownerTeamId: "team_a" }],
+    worktrees: [{ id: "wtA", projectId: "projA", workspaceProjectId: "projA" }],
+    codexChangePlans: [{ id: "cpl_other", projectId: "projA", worktreeId: "wtOther" }],
+    agents: [governedPatchProposalAgent()],
+    device: { unlinkState: "linked" },
+  };
+  const { createToolInvocation } = createToolService({
+    state,
+    now,
+    appendEvent: () => {},
+    createInvocation: () => {
+      createInvocationCalls += 1;
+      throw new Error("invalid base plan must not create an invocation");
+    },
+    startInvocationIfAllowed: () => {},
+    findApplication: () => null,
+    findAgent: (id) => state.agents.find((agent) => agent.id === id) ?? null,
+    planApplicationWrapperInvocation: () => ({ ok: false, status: 500, body: { error: "unexpected_plan" } }),
+  });
+
+  const mismatch = createToolInvocation(
+    "codex.propose.patch",
+    { projectId: "projA", worktreeId: "wtA", goal: "Propose.", basePlanId: "cpl_other" },
+    { userId: "usr_a", teamId: "team_a" },
+  );
+  assert.equal(mismatch.status, 409);
+  assert.equal(mismatch.body.error, "base_plan_scope_mismatch");
+
+  const large = createToolInvocation(
+    "codex.propose.patch",
+    { projectId: "projA", worktreeId: "wtA", goal: "Propose.", maxFiles: 16 },
+    { userId: "usr_a", teamId: "team_a" },
+  );
+  assert.equal(large.status, 409);
+  assert.equal(large.body.error, "approval_required");
+  assert.equal(createInvocationCalls, 0);
+});
+
+test("createToolInvocation for codex.apply.patch requires approved proposal, hash, and approval token before applying", () => {
+  const diff = "diff --git a/README.md b/README.md\n--- a/README.md\n+++ b/README.md\n@@ -1 +1 @@\n-old\n+new";
+  const patchSha256 = sha256(diff);
+  const state = {
+    projects: [{ id: "projA", ownerTeamId: "team_a" }],
+    worktrees: [{ id: "wtA", projectId: "projA", workspaceProjectId: "projA" }],
+    codexPatchProposals: [{
+      id: "cpp_apply",
+      projectId: "projA",
+      worktreeId: "wtA",
+      patchSha256,
+      reviewState: "approved",
+      raw: { diff },
+    }],
+    invocations: [],
+    approvalRequests: [],
+    agents: [
+      governedApplyPatchAgent(),
+      { id: "agt_platform_application_control", name: "Application Control", adapter: { type: "platform" }, capabilities: [{ name: "application_control" }], status: "available" },
+    ],
+    device: { unlinkState: "linked" },
+  };
+  let seq = 0;
+  const events = [];
+  const { createToolInvocation } = createToolService({
+    state,
+    now,
+    appendEvent: (event) => events.push(event),
+    createInvocation: (task, agent, options = {}) => {
+      seq += 1;
+      const approvalRequestId = options.requireLocalApproval ? `apr_${seq}` : null;
+      const invocation = {
+        id: `inv_${seq}`,
+        task,
+        agentId: agent.id,
+        projectId: options.metadata?.projectId ?? null,
+        worktreeId: options.metadata?.worktreeId ?? null,
+        status: options.requireLocalApproval ? "waiting_for_local_approval" : "queued",
+        approvalRequestId,
+        options: { metadata: options.metadata ?? {} },
+      };
+      state.invocations.unshift(invocation);
+      if (approvalRequestId) {
+        state.approvalRequests.unshift({ id: approvalRequestId, invocationId: invocation.id, status: "pending" });
+      }
+      return invocation;
+    },
+    startInvocationIfAllowed: () => {},
+    findApplication: () => null,
+    findAgent: (id) => state.agents.find((agent) => agent.id === id) ?? null,
+    findApprovalRequest: (id) => state.approvalRequests.find((approval) => approval.id === id) ?? null,
+    findInvocation: (id) => state.invocations.find((invocation) => invocation.id === id) ?? null,
+    planApplicationWrapperInvocation: () => ({ ok: false, status: 500, body: { error: "unexpected_plan" } }),
+  });
+
+  const unreviewed = createToolInvocation(
+    "codex.apply.patch",
+    { projectId: "projA", worktreeId: "wtA", proposalId: "cpp_apply", patchSha256: "b".repeat(64) },
+    { userId: "usr_a", teamId: "team_a" },
+  );
+  assert.equal(unreviewed.status, 409);
+  assert.equal(unreviewed.body.error, "patch_hash_mismatch");
+
+  const approvalRequired = createToolInvocation(
+    "codex.apply.patch",
+    { projectId: "projA", worktreeId: "wtA", proposalId: "cpp_apply", patchSha256 },
+    { userId: "usr_a", teamId: "team_a" },
+  );
+  assert.equal(approvalRequired.status, 202);
+  assert.equal(approvalRequired.body.agentId, "agt_platform_application_control");
+  assert.equal(approvalRequired.body.approvalRequestRequired, true);
+  assert.equal(state.invocations[0].options.metadata.toolApproval.type, "codex_apply_patch");
+  assert.equal(state.invocations.filter((item) => item.agentId === "agt_codex_apply_patch").length, 0);
+
+  const approval = state.approvalRequests.find((item) => item.id === approvalRequired.body.approvalRequestId);
+  approval.status = "approved";
+  const applied = createToolInvocation(
+    "codex.apply.patch",
+    { projectId: "projA", worktreeId: "wtA", proposalId: "cpp_apply", patchSha256, approvalRequestId: approval.id },
+    { userId: "usr_a", teamId: "team_a" },
+  );
+  assert.equal(applied.status, 201);
+  assert.equal(applied.body.agentId, "agt_codex_apply_patch");
+  assert.equal(applied.body.outputCollection, "codexPatchProposals");
+  const invocation = state.invocations.find((item) => item.id === applied.body.invocationId);
+  assert.equal(invocation.options.metadata.tool, "codex.apply.patch");
+  assert.equal(invocation.options.metadata.proposalId, "cpp_apply");
+  assert.equal(invocation.options.metadata.patchSha256, patchSha256);
+  assert.equal(existsSync(invocation.options.metadata.patchFilePath), true);
+  assert.ok(events.some((event) => event.type === "tool_invocation_created" && event.data?.tool === "codex.apply.patch"));
 });
 
 test("MCP allowed tools project as governed tools without exposing adapter argv", () => {
@@ -363,6 +616,172 @@ test("recordCodexReviewFindings caps findings per review and reports the dropped
   assert.equal(records.length, 1000);
   assert.equal(state.codexReviewFindings.length, 1000);
   assert.equal(events.at(-1).data.droppedFindingCount, 5);
+});
+
+// --- Codex plan import service ---
+
+test("recordCodexChangePlan imports and normalizes plans, keeping raw server-side", () => {
+  const state = importState();
+  const events = [];
+  const { recordCodexChangePlan } = createCodexPlanImportService({ state, now, nextId: makeCounter("cpl"), appendEvent: (e) => events.push(e) });
+  const [rec] = recordCodexChangePlan({
+    invocation: {
+      id: "inv_plan",
+      projectId: "projA",
+      worktreeId: "wtA",
+      requestedBy: "usr_a",
+      agentId: "agt_codex_plan_change",
+      options: { metadata: { goal: "Add plan tests.", constraints: "No writes." } },
+    },
+    result: { output: {
+      source: "codex",
+      tool: "codex.plan.change",
+      mode: "change-plan",
+      severityFloor: "medium",
+      summary: "Plan ready.",
+      steps: [
+        { title: "Add descriptor tests", rationale: "Prove discovery.", files: ["apps/server/src/services/tools.mjs"], risk: "high" },
+        { title: "", rationale: "Dropped because title is empty.", files: ["x.ts"], risk: "low" },
+        "bad",
+      ],
+      openQuestions: ["Should projectId be required?"],
+      verification: ["node --test"],
+    } },
+    agent: governedPlanAgent(),
+  });
+
+  assert.equal(state.codexChangePlans.length, 1);
+  assert.equal(rec.projectId, "projA");
+  assert.equal(rec.worktreeId, "wtA");
+  assert.equal(rec.goal, "Add plan tests.");
+  assert.equal(rec.constraints, "No writes.");
+  assert.equal(rec.steps.length, 1);
+  assert.equal(rec.steps[0].risk, "high");
+  assert.ok(rec.raw, "raw payload retained on the server-side record");
+  assert.equal(events.at(-1).type, "codex_change_plan_recorded");
+});
+
+test("recordCodexChangePlan ignores non-governed agents and caps step count", () => {
+  const state = importState();
+  const events = [];
+  const { recordCodexChangePlan } = createCodexPlanImportService({ state, now, nextId: makeCounter("cpl"), appendEvent: (e) => events.push(e) });
+  const result = { output: {
+    source: "codex",
+    tool: "codex.plan.change",
+    steps: Array.from({ length: 105 }, (_, i) => ({ title: `Step ${i}`, files: [`f${i}.ts`], risk: "bogus" })),
+  } };
+
+  assert.deepEqual(recordCodexChangePlan({
+    invocation: { id: "inv_bad" },
+    result,
+    agent: governedPlanAgent({ args: ["/tmp/evil/codex-plan-wrapper.mjs", "--mode", "change-plan"] }),
+  }), []);
+
+  const records = recordCodexChangePlan({
+    invocation: { id: "inv_cap", projectId: "projA" },
+    result,
+    agent: governedPlanAgent(),
+  });
+  assert.equal(records.length, 1);
+  assert.equal(records[0].steps.length, 100);
+  assert.equal(records[0].steps[0].risk, "medium");
+  assert.equal(events.at(-1).data.droppedStepCount, 5);
+});
+
+// --- Codex patch proposal import service ---
+
+test("recordCodexPatchProposal imports immutable proposals, keeping full diff server-side", () => {
+  const state = importState();
+  const events = [];
+  const { recordCodexPatchProposal } = createCodexPatchProposalImportService({ state, now, nextId: makeCounter("cpp"), appendEvent: (e) => events.push(e) });
+  const diff = "diff --git a/a.ts b/a.ts\n--- a/a.ts\n+++ b/a.ts\n@@ -1 +1 @@\n-old\n+new\n";
+  const [rec] = recordCodexPatchProposal({
+    invocation: {
+      id: "inv_patch",
+      projectId: "projA",
+      worktreeId: "wtA",
+      requestedBy: "usr_a",
+      agentId: "agt_codex_propose_patch",
+      options: { metadata: { goal: "Generate patch.", constraints: "No writes.", basePlanId: "cpl_1", maxFiles: 3 } },
+    },
+    result: { output: {
+      source: "codex",
+      tool: "codex.propose.patch",
+      mode: "patch-proposal",
+      summary: "Patch ready.",
+      files: [
+        { path: "a.ts", changeType: "modify", risk: "high" },
+        { path: "", changeType: "add", risk: "low" },
+      ],
+      diff,
+      verification: ["node --test"],
+    } },
+    agent: governedPatchProposalAgent(),
+  });
+
+  assert.equal(state.codexPatchProposals.length, 1);
+  assert.equal(rec.projectId, "projA");
+  assert.equal(rec.basePlanId, "cpl_1");
+  assert.equal(rec.immutable, true);
+  assert.equal(rec.reviewState, "generated");
+  assert.equal(rec.files.length, 1);
+  assert.equal(rec.files[0].risk, "high");
+  assert.equal(rec.diffPreview, diff.trim());
+  assert.equal(rec.patchSha256.length, 64);
+  assert.equal(rec.raw.diff, diff.trim());
+  assert.equal(events.at(-1).type, "codex_patch_proposal_recorded");
+});
+
+test("recordCodexPatchProposal ignores non-governed agents, errored results, and empty diffs", () => {
+  const state = importState();
+  const { recordCodexPatchProposal } = createCodexPatchProposalImportService({ state, now, nextId: makeCounter("cpp"), appendEvent: () => {} });
+  const goodResult = { output: { source: "codex", tool: "codex.propose.patch", diff: "diff --git a/a b/a\n" } };
+  assert.deepEqual(recordCodexPatchProposal({
+    invocation: { id: "inv_bad" },
+    result: goodResult,
+    agent: governedPatchProposalAgent({ args: ["/tmp/evil/codex-patch-proposal-wrapper.mjs", "--mode", "patch-proposal"] }),
+  }), []);
+  assert.deepEqual(recordCodexPatchProposal({
+    invocation: { id: "inv_error" },
+    result: { output: { source: "codex", tool: "codex.propose.patch", error: "boom", diff: "diff" } },
+    agent: governedPatchProposalAgent(),
+  }), []);
+  assert.deepEqual(recordCodexPatchProposal({
+    invocation: { id: "inv_empty" },
+    result: { output: { source: "codex", tool: "codex.propose.patch", diff: "" } },
+    agent: governedPatchProposalAgent(),
+  }), []);
+  assert.equal(state.codexPatchProposals.length, 0);
+});
+
+test("recordCodexPatchApply marks the matching approved proposal as applied", () => {
+  const state = importState();
+  const events = [];
+  state.codexPatchProposals.push({
+    id: "cpp_apply_import",
+    projectId: "projA",
+    worktreeId: "wtA",
+    patchSha256: "a".repeat(64),
+    reviewState: "approved",
+  });
+  const { recordCodexPatchApply } = createCodexPatchApplyImportService({ state, now, appendEvent: (e) => events.push(e) });
+  const records = recordCodexPatchApply({
+    invocation: { id: "inv_apply", options: { metadata: { proposalId: "cpp_apply_import", patchSha256: "a".repeat(64) } } },
+    result: { output: {
+      source: "codex",
+      tool: "codex.apply.patch",
+      proposalId: "cpp_apply_import",
+      patchSha256: "a".repeat(64),
+      applied: true,
+      files: ["README.md"],
+    } },
+    agent: governedApplyPatchAgent(),
+  });
+  assert.equal(records.length, 1);
+  assert.equal(state.codexPatchProposals[0].reviewState, "applied");
+  assert.equal(state.codexPatchProposals[0].appliedInvocationId, "inv_apply");
+  assert.equal(state.codexPatchProposals[0].applyResult.files[0], "README.md");
+  assert.equal(events.at(-1).type, "codex_patch_proposal_applied");
 });
 
 // --- Claude review import service (parallel behavior) ---

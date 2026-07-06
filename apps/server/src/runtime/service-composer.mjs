@@ -24,6 +24,9 @@ import {
 } from "../services/capabilities.mjs";
 import { createCcusageImportService } from "../services/ccusage-imports.mjs";
 import { createClaudeReviewImportService } from "../services/claude-review-imports.mjs";
+import { createCodexPlanImportService } from "../services/codex-plan-imports.mjs";
+import { createCodexPatchProposalImportService } from "../services/codex-patch-proposal-imports.mjs";
+import { createCodexPatchApplyImportService } from "../services/codex-patch-apply-imports.mjs";
 import { createCodexReviewImportService } from "../services/codex-review-imports.mjs";
 import { createCodexService } from "../services/codex.mjs";
 import { createIntegrationService } from "../services/integrations.mjs";
@@ -390,6 +393,26 @@ export function createServerRuntimeServices({
     appendEvent,
     persistStateSoon,
   });
+  const { recordCodexChangePlan } = createCodexPlanImportService({
+    state,
+    now,
+    nextId,
+    appendEvent,
+    persistStateSoon,
+  });
+  const { recordCodexPatchProposal } = createCodexPatchProposalImportService({
+    state,
+    now,
+    nextId,
+    appendEvent,
+    persistStateSoon,
+  });
+  const { recordCodexPatchApply } = createCodexPatchApplyImportService({
+    state,
+    now,
+    appendEvent,
+    persistStateSoon,
+  });
   const { recordClaudeReviewFindings } = createClaudeReviewImportService({
     state,
     now,
@@ -418,6 +441,9 @@ export function createServerRuntimeServices({
     recordInvocationLedgerEntry,
     recordCcusageImportedEstimates,
     recordCodexReviewFindings,
+    recordCodexChangePlan,
+    recordCodexPatchProposal,
+    recordCodexPatchApply,
     recordClaudeReviewFindings,
     currentProject,
     worktreeForProject,
@@ -557,6 +583,8 @@ export function createServerRuntimeServices({
     startInvocationIfAllowed,
     findApplication,
     findAgent,
+    findApprovalRequest: findApprovalRequestBase,
+    findInvocation,
     planApplicationWrapperInvocation,
   });
 

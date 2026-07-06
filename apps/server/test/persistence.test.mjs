@@ -14,6 +14,9 @@ import { createApplicationService } from "../src/services/applications.mjs";
 import { CCUSAGE_APPLICATION_ID, createCcusageApplicationRegistration } from "../src/services/ccusage-application.mjs";
 import { CCUSAGE_VERSION } from "../src/services/ccusage-agent.mjs";
 import { createCcusageImportService } from "../src/services/ccusage-imports.mjs";
+import { createCodexPlanImportService } from "../src/services/codex-plan-imports.mjs";
+import { createCodexPatchProposalImportService } from "../src/services/codex-patch-proposal-imports.mjs";
+import { createCodexPatchApplyImportService } from "../src/services/codex-patch-apply-imports.mjs";
 import { createClaudeReviewImportService } from "../src/services/claude-review-imports.mjs";
 import { createCodexReviewImportService } from "../src/services/codex-review-imports.mjs";
 import { createCodexService } from "../src/services/codex.mjs";
@@ -220,6 +223,8 @@ test("persistence restores imported usage and review evidence across runtime res
     first.state.invocations.push(
       { id: "inv_ccusage_restore", projectId, requestedBy: "usr_local", agentId: "agt_ccusage_daily", status: "succeeded" },
       { id: "inv_codex_restore", projectId, requestedBy: "usr_local", agentId: "agt_codex_review_diff", status: "succeeded" },
+      { id: "inv_codex_plan_restore", projectId, requestedBy: "usr_local", agentId: "agt_codex_plan_change", status: "succeeded" },
+      { id: "inv_codex_patch_restore", projectId, requestedBy: "usr_local", agentId: "agt_codex_propose_patch", status: "succeeded" },
       { id: "inv_claude_restore", projectId, requestedBy: "usr_local", agentId: "agt_claude_review_diff", status: "succeeded" },
     );
     const imports = importServicesFor(first.state);
@@ -269,6 +274,76 @@ test("persistence restores imported usage and review evidence across runtime res
       },
       agent: governedReviewAgent({ id: "agt_codex_review_diff", tool: "codex.review.diff", wrapper: "codex-review-wrapper.mjs" }),
     });
+    const codexPlan = imports.plan.recordCodexChangePlan({
+      invocation: {
+        id: "inv_codex_plan_restore",
+        projectId,
+        requestedBy: "usr_local",
+        agentId: "agt_codex_plan_change",
+        options: { metadata: { projectId, worktreeId: "wt_restore", goal: "Restore plan evidence.", constraints: "Read only." } },
+      },
+      result: {
+        output: {
+          source: "codex",
+          tool: "codex.plan.change",
+          mode: "change-plan",
+          severityFloor: "medium",
+          summary: "Codex planned restore evidence.",
+          steps: [{
+            title: "Persist change plans",
+            rationale: "Plans should survive restart.",
+            files: ["apps/server/src/runtime/persistence.mjs"],
+            risk: "medium",
+            rawLocalPath: "server-only-plan-detail",
+          }],
+          openQuestions: ["Should raw stay server-side?"],
+          verification: ["node --test test/persistence.test.mjs"],
+        },
+      },
+      agent: governedPlanAgent(),
+    });
+    const codexPatchProposal = imports.patch.recordCodexPatchProposal({
+      invocation: {
+        id: "inv_codex_patch_restore",
+        projectId,
+        requestedBy: "usr_local",
+        agentId: "agt_codex_propose_patch",
+        options: { metadata: { projectId, worktreeId: "wt_restore", goal: "Restore patch proposal.", basePlanId: codexPlan[0].id, maxFiles: 4 } },
+      },
+      result: {
+        output: {
+          source: "codex",
+          tool: "codex.propose.patch",
+          mode: "patch-proposal",
+          summary: "Codex proposed restore patch.",
+          files: [{ path: "README.md", changeType: "modify", risk: "low" }],
+          diff: "diff --git a/README.md b/README.md\n--- a/README.md\n+++ b/README.md\n@@ -1 +1 @@\n-old\n+new\nserver-only-patch-detail",
+          verification: ["node --test test/persistence.test.mjs"],
+        },
+      },
+      agent: governedPatchProposalAgent(),
+    });
+    codexPatchProposal[0].reviewState = "approved";
+    imports.apply.recordCodexPatchApply({
+      invocation: {
+        id: "inv_codex_apply_restore",
+        projectId,
+        requestedBy: "usr_local",
+        agentId: "agt_codex_apply_patch",
+        options: { metadata: { projectId, worktreeId: "wt_restore", proposalId: codexPatchProposal[0].id, patchSha256: codexPatchProposal[0].patchSha256 } },
+      },
+      result: {
+        output: {
+          source: "codex",
+          tool: "codex.apply.patch",
+          proposalId: codexPatchProposal[0].id,
+          patchSha256: codexPatchProposal[0].patchSha256,
+          applied: true,
+          files: ["README.md"],
+        },
+      },
+      agent: governedApplyPatchAgent(),
+    });
     const claudeFindings = imports.claude.recordClaudeReviewFindings({
       invocation: { id: "inv_claude_restore", projectId, requestedBy: "usr_local", agentId: "agt_claude_review_diff" },
       result: {
@@ -290,6 +365,8 @@ test("persistence restores imported usage and review evidence across runtime res
     });
     assert.equal(usage.length, 1);
     assert.equal(codexFindings.length, 1);
+    assert.equal(codexPlan.length, 1);
+    assert.equal(codexPatchProposal.length, 1);
     assert.equal(claudeFindings.length, 1);
 
     saveState(first, { stateStorePath });
@@ -300,6 +377,8 @@ test("persistence restores imported usage and review evidence across runtime res
     const restoredUsage = second.state.importedUsageEstimates.find((item) => item.id === usage[0].id);
     const publicUsage = publicState.importedUsageEstimates.find((item) => item.id === usage[0].id);
     const publicCodex = publicState.reviewFindings.find((item) => item.id === codexFindings[0].id);
+    const publicPlan = publicState.codexChangePlans.find((item) => item.id === codexPlan[0].id);
+    const publicPatchProposal = publicState.codexPatchProposals.find((item) => item.id === codexPatchProposal[0].id);
     const publicClaude = publicState.reviewFindings.find((item) => item.id === claudeFindings[0].id);
 
     assert.equal(restoredUsage?.estimatedCostUsd, 1.75);
@@ -313,6 +392,18 @@ test("persistence restores imported usage and review evidence across runtime res
     assert.equal(publicCodex?.severity, "high");
     assert.equal(publicCodex?.message, "Preserve imported usage evidence after restore.");
     assert.ok(!("raw" in publicCodex), "public Codex review finding must not expose raw payloads after restore");
+    assert.equal(second.state.codexChangePlans.find((item) => item.id === codexPlan[0].id)?.raw.steps[0].rawLocalPath, "server-only-plan-detail");
+    assert.equal(publicPlan?.summary, "Codex planned restore evidence.");
+    assert.equal(publicPlan?.steps[0]?.title, "Persist change plans");
+    assert.ok(!("raw" in publicPlan), "public Codex change plan must not expose raw payloads after restore");
+    assert.equal(second.state.codexPatchProposals.find((item) => item.id === codexPatchProposal[0].id)?.raw.diff.includes("server-only-patch-detail"), true);
+    assert.equal(second.state.codexPatchProposals.find((item) => item.id === codexPatchProposal[0].id)?.reviewState, "applied");
+    assert.equal(publicPatchProposal?.summary, "Codex proposed restore patch.");
+    assert.equal(publicPatchProposal?.immutable, true);
+    assert.equal(publicPatchProposal?.files[0]?.path, "README.md");
+    assert.equal(publicPatchProposal?.reviewState, "applied");
+    assert.equal(publicPatchProposal?.appliedInvocationId, "inv_codex_apply_restore");
+    assert.ok(!("raw" in publicPatchProposal), "public Codex patch proposal must not expose raw payloads after restore");
     assert.equal(publicClaude?.source, "claude");
     assert.equal(publicClaude?.severity, "medium");
     assert.equal(publicClaude?.message, "Keep normalized review evidence readable after restore.");
@@ -1119,6 +1210,8 @@ test("integration and terminal mutations request persistence directly", () => {
 test("review and usage import mutations request persistence directly", () => {
   const state = {
     codexReviewFindings: [],
+    codexChangePlans: [],
+    codexPatchProposals: [],
     claudeReviewFindings: [],
     importedUsageEstimates: [],
   };
@@ -1137,6 +1230,34 @@ test("review and usage import mutations request persistence directly", () => {
     agent: governedReviewAgent({ id: "agt_codex_review_diff", tool: "codex.review.diff", wrapper: "codex-review-wrapper.mjs" }),
   });
   assert(persistCount > beforeCodex, "Codex review imports should persist");
+
+  const plan = createCodexPlanImportService({ state, now, nextId, appendEvent: () => {}, persistStateSoon });
+  const beforePlan = persistCount;
+  plan.recordCodexChangePlan({
+    invocation: { id: "inv_plan", projectId: "proj_a", requestedBy: "usr_local", agentId: "agt_codex_plan_change" },
+    result: { output: { source: "codex", tool: "codex.plan.change", steps: [{ title: "Plan", files: ["a.ts"], risk: "low" }] } },
+    agent: governedPlanAgent(),
+  });
+  assert(persistCount > beforePlan, "Codex change plan imports should persist");
+
+  const patch = createCodexPatchProposalImportService({ state, now, nextId, appendEvent: () => {}, persistStateSoon });
+  const beforePatch = persistCount;
+  patch.recordCodexPatchProposal({
+    invocation: { id: "inv_patch", projectId: "proj_a", requestedBy: "usr_local", agentId: "agt_codex_propose_patch" },
+    result: { output: { source: "codex", tool: "codex.propose.patch", files: [{ path: "a.ts", changeType: "modify", risk: "low" }], diff: "diff --git a/a.ts b/a.ts\n" } },
+    agent: governedPatchProposalAgent(),
+  });
+  assert(persistCount > beforePatch, "Codex patch proposal imports should persist");
+  state.codexPatchProposals[0].reviewState = "approved";
+
+  const apply = createCodexPatchApplyImportService({ state, now, appendEvent: () => {}, persistStateSoon });
+  const beforeApply = persistCount;
+  apply.recordCodexPatchApply({
+    invocation: { id: "inv_apply", projectId: "proj_a", requestedBy: "usr_local", agentId: "agt_codex_apply_patch", options: { metadata: { proposalId: state.codexPatchProposals[0].id, patchSha256: state.codexPatchProposals[0].patchSha256 } } },
+    result: { output: { source: "codex", tool: "codex.apply.patch", proposalId: state.codexPatchProposals[0].id, patchSha256: state.codexPatchProposals[0].patchSha256, applied: true, files: ["a.ts"] } },
+    agent: governedApplyPatchAgent(),
+  });
+  assert(persistCount > beforeApply, "Codex patch apply imports should persist");
 
   const claude = createClaudeReviewImportService({ state, now, nextId, appendEvent: () => {}, persistStateSoon });
   const beforeClaude = persistCount;
@@ -1202,6 +1323,9 @@ function importServicesFor(state) {
   return {
     ccusage: createCcusageImportService({ state, now, nextId, appendEvent: () => {} }),
     codex: createCodexReviewImportService({ state, now, nextId, appendEvent: () => {} }),
+    plan: createCodexPlanImportService({ state, now, nextId, appendEvent: () => {} }),
+    patch: createCodexPatchProposalImportService({ state, now, nextId, appendEvent: () => {} }),
+    apply: createCodexPatchApplyImportService({ state, now, appendEvent: () => {} }),
     claude: createClaudeReviewImportService({ state, now, nextId, appendEvent: () => {} }),
   };
 }
@@ -1274,6 +1398,53 @@ function governedReviewAgent({ id, tool, wrapper }) {
     },
     toolContract: { name: tool },
     capabilities: [{ name: "code_review" }],
+  };
+}
+
+function governedPlanAgent() {
+  return {
+    id: "agt_codex_plan_change",
+    name: "Codex Change Plan agent",
+    adapter: {
+      type: "cli",
+      command: "node",
+      args: ["/opt/myagenttool/tools/agents/codex-plan-wrapper.mjs", "--mode", "change-plan"],
+      outputFormat: "plain_result",
+    },
+    toolContract: { name: "codex.plan.change" },
+    capabilities: [{ name: "change_planning" }],
+  };
+}
+
+function governedPatchProposalAgent() {
+  return {
+    id: "agt_codex_propose_patch",
+    name: "Codex Patch Proposal agent",
+    adapter: {
+      type: "cli",
+      command: "node",
+      args: ["/opt/myagenttool/tools/agents/codex-patch-proposal-wrapper.mjs", "--mode", "patch-proposal"],
+      outputFormat: "plain_result",
+    },
+    toolContract: { name: "codex.propose.patch" },
+    capabilities: [{ name: "patch_proposal" }],
+  };
+}
+
+function governedApplyPatchAgent() {
+  return {
+    id: "agt_codex_apply_patch",
+    name: "Codex Apply Patch agent",
+    adapter: {
+      type: "cli",
+      command: "node",
+      args: ["/opt/myagenttool/tools/agents/codex-apply-patch-wrapper.mjs", "--mode", "apply-patch"],
+      outputFormat: "plain_result",
+      filePolicy: "workspace_write",
+      networkPolicy: "forbidden",
+    },
+    toolContract: { name: "codex.apply.patch" },
+    capabilities: [{ name: "patch_apply" }],
   };
 }
 

@@ -398,6 +398,75 @@ export interface ClaudeReviewFinding {
   createdAt: string;
 }
 
+export interface CodexChangePlanStep {
+  title: string;
+  rationale?: string | null;
+  files: string[];
+  risk: "low" | "medium" | "high";
+}
+
+export interface CodexChangePlan {
+  id: string;
+  source: "codex" | string;
+  planInvocationId: string;
+  invocationId: string;
+  projectId?: string | null;
+  worktreeId?: string | null;
+  requestedBy?: string | null;
+  agentId?: string | null;
+  planAgentName?: string | null;
+  tool: "codex.plan.change" | string;
+  mode: string;
+  severityFloor?: string | null;
+  goal?: string | null;
+  constraints?: string | null;
+  summary?: string | null;
+  steps: CodexChangePlanStep[];
+  openQuestions: string[];
+  verification: string[];
+  authoritative: false;
+  droppedStepCount?: number;
+  createdAt: string;
+}
+
+export interface CodexPatchProposalFile {
+  path: string;
+  changeType: "add" | "modify" | "delete" | "rename" | "unknown";
+  risk: "low" | "medium" | "high";
+}
+
+export interface CodexPatchProposal {
+  id: string;
+  source: "codex" | string;
+  proposalInvocationId: string;
+  invocationId: string;
+  projectId?: string | null;
+  worktreeId?: string | null;
+  requestedBy?: string | null;
+  agentId?: string | null;
+  proposalAgentName?: string | null;
+  tool: "codex.propose.patch" | string;
+  mode: string;
+  basePlanId?: string | null;
+  goal?: string | null;
+  constraints?: string | null;
+  maxFiles?: number | null;
+  summary?: string | null;
+  files: CodexPatchProposalFile[];
+  diffPreview: string;
+  patchSha256: string;
+  verification: string[];
+  immutable: true;
+  reviewState: "generated" | "reviewed" | "approved" | "rejected" | "applied" | string;
+  authoritative: false;
+  droppedFileCount?: number;
+  appliedInvocationId?: string | null;
+  appliedAt?: string | null;
+  applySummary?: string | null;
+  applyResult?: Record<string, unknown>;
+  createdAt: string;
+}
+
 export interface ReviewFinding {
   id: string;
   source: "codex" | "claude" | string;
@@ -456,6 +525,13 @@ export interface ToolInvocationRequest {
   projectId?: string | null;
   worktreeId?: string | null;
   instruction?: string | null;
+  goal?: string | null;
+  constraints?: string | null;
+  basePlanId?: string | null;
+  maxFiles?: number | null;
+  proposalId?: string | null;
+  patchSha256?: string | null;
+  approvalRequestId?: string | null;
   severityFloor?: "low" | "medium" | "high";
 }
 
@@ -720,6 +796,8 @@ export interface ConsoleSnapshot {
   ledgerEntries?: LedgerEntry[];
   importedUsageEstimates?: ImportedUsageEstimate[];
   codexReviewFindings?: CodexReviewFinding[];
+  codexChangePlans?: CodexChangePlan[];
+  codexPatchProposals?: CodexPatchProposal[];
   claudeReviewFindings?: ClaudeReviewFinding[];
   reviewFindings?: ReviewFinding[];
   applications?: ApplicationSnapshot[];

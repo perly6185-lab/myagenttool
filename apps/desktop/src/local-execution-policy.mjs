@@ -17,6 +17,9 @@ export function createLocalExecutionPolicyManifest({
     nodeWrappers: [
       "tools/agents/application-wrapper.mjs",
       "tools/agents/codex-review-wrapper.mjs",
+      "tools/agents/codex-plan-wrapper.mjs",
+      "tools/agents/codex-patch-proposal-wrapper.mjs",
+      "tools/agents/codex-apply-patch-wrapper.mjs",
       "tools/agents/claude-review-wrapper.mjs",
     ],
     applicationWrapperCommands: [

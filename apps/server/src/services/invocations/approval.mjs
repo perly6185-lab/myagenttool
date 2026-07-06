@@ -83,7 +83,7 @@ export function createInvocationApprovalRuntime({
     approval.status = "approved";
     approval.decidedAt = now();
     approval.decidedBy = decidedBy;
-    const approvalOnly = isApplicationApprovalOnlyInvocation(invocation);
+    const approvalOnly = isApprovalOnlyInvocation(invocation);
     invocation.status = approvalOnly ? "succeeded" : agent?.adapter.type === "http" ? "running" : "queued";
     invocation.delivery.state = approvalOnly || agent?.adapter.type === "http" ? "not_required" : "queued";
     invocation.delivery.dispatchAttempts = approvalOnly ? 0 : agent?.adapter.type === "http" ? 1 : 0;
@@ -92,9 +92,10 @@ export function createInvocationApprovalRuntime({
     if (approvalOnly) {
       invocation.completedAt = now();
       invocation.result = {
-        summary: "Local approval granted for Application action.",
+        summary: approvalOnlySummary(invocation),
         approvalRequestId: approval.id,
         applicationApproval: invocation.options?.metadata?.applicationApproval ?? null,
+        toolApproval: invocation.options?.metadata?.toolApproval ?? null,
       };
       completeRootSpan(invocation, "succeeded");
     }
@@ -109,7 +110,7 @@ export function createInvocationApprovalRuntime({
       invocationId: invocation.id,
       type: "local_approval_granted",
       level: "info",
-      message: approvalOnly ? "Local approval granted. Application action can be retried." : "Local approval granted. Invocation can run.",
+      message: approvalOnly ? "Local approval granted. The approved action can be retried." : "Local approval granted. Invocation can run.",
       data: { approvalRequestId: approval.id }
     });
     appendEvent({
@@ -122,11 +123,11 @@ export function createInvocationApprovalRuntime({
       invocationId: invocation.id,
       type: approvalOnly ? "invocation_succeeded" : agent?.adapter.type === "http" ? "invocation_started" : "delivery_queued",
       level: "info",
-      message: approvalOnly ? "Application approval evidence recorded." : agent?.adapter.type === "http" ? "HTTP Agent invocation started after approval." : "Invocation queued for Desktop Bridge after approval."
+      message: approvalOnly ? "Approval evidence recorded." : agent?.adapter.type === "http" ? "HTTP Agent invocation started after approval." : "Invocation queued for Desktop Bridge after approval."
     });
     if (approvalOnly) {
       state.auditSummaries.push({
-        ...createAuditSummary(invocation, "Local approval granted for Application action."),
+        ...createAuditSummary(invocation, approvalOnlySummary(invocation)),
         permissionDecision: "allowed",
       });
       recordAgentUsage(invocation, "succeeded");
@@ -183,12 +184,25 @@ export function createInvocationApprovalRuntime({
   };
 }
 
-function isApplicationApprovalOnlyInvocation(invocation) {
+function isApprovalOnlyInvocation(invocation) {
   const metadata = invocation?.options?.metadata;
-  return metadata?.providerType === "application"
+  const applicationApproval = metadata?.providerType === "application"
     && metadata.applicationApproval
     && typeof metadata.applicationApproval === "object"
     && !Array.isArray(metadata.applicationApproval);
+  const toolApproval = metadata?.providerType === "tool"
+    && metadata.toolApproval
+    && typeof metadata.toolApproval === "object"
+    && !Array.isArray(metadata.toolApproval);
+  return Boolean(applicationApproval || toolApproval);
+}
+
+function approvalOnlySummary(invocation) {
+  const metadata = invocation?.options?.metadata ?? {};
+  if (metadata.providerType === "tool") {
+    return "Local approval granted for tool action.";
+  }
+  return "Local approval granted for Application action.";
 }
 
 function highestRiskLevel(levels) {

@@ -5,6 +5,8 @@ import type {
   AgentUsageSummary,
   AIUsageRecord,
   ClaudeReviewFinding,
+  CodexChangePlan,
+  CodexPatchProposal,
   CodexReviewFinding,
   ReviewFinding,
   ImportedUsageEstimate,
@@ -55,6 +57,8 @@ export type LocalDemoServerState = {
   ledgerEntries: LedgerEntry[];
   importedUsageEstimates: ImportedUsageEstimate[];
   codexReviewFindings: CodexReviewFinding[];
+  codexChangePlans: CodexChangePlan[];
+  codexPatchProposals: CodexPatchProposal[];
   claudeReviewFindings: ClaudeReviewFinding[];
   reviewFindings: ReviewFinding[];
   privateDeploymentConfig: PrivateDeploymentConfig;
