@@ -48,6 +48,8 @@ function makeAutoRun({
   verify = { passed: true, verified: false, summary: "No verification command configured." },
   // Injected decision agent (slice 1). Default undefined -> heuristic floor.
   decideIssuePath = undefined,
+  // Injected issue-body fetch (slice 2). Default undefined -> title-only prompts.
+  fetchIssueBody = undefined,
 } = {}) {
   const calls = { createInvocation: [], startInvocationIfAllowed: [], commit: [], publish: [], pr: [], verify: [], status: [], report: [] };
   let counter = 0;
@@ -97,6 +99,7 @@ function makeAutoRun({
       calls.report.push(ctx);
     },
     decideIssuePath,
+    fetchIssueBody,
   });
   return { svc, calls };
 }
@@ -146,7 +149,8 @@ test("startAutoRun materializes the worktree and starts an issue-seeded invocati
   // The invocation was created with the issue-derived prompt, targeting the worktree.
   assert.equal(calls.createInvocation.length, 1);
   const created = calls.createInvocation[0];
-  assert.match(created.task, /^Make progress on GitHub Issue #12: Add the widget\./);
+  assert.match(created.task, /^GitHub Issue #12: Add the widget\./);
+  assert.match(created.task, /Implement the change/, "develop role instructions seeded");
   assert.equal(created.options.metadata.worktreeId, worktree.id);
   assert.equal(created.agent.id, "agt_1");
   assert.equal(invocation.input.task, created.task, "invocation carries the seeded prompt");
@@ -345,6 +349,60 @@ test("a low-confidence heavy decision degrades to clarify (questions surface in 
   await svc.advanceAutoRunForInvocation({ ...invocation, status: "succeeded" });
   assert.equal(autoRun.status, "needs_input");
   assert.match(autoRun.report, /Which queue backend is in scope\?/);
+});
+
+test("the issue body reaches both the decider and the role prompt", async () => {
+  const seenByDecider = [];
+  const { svc, calls } = makeAutoRun({
+    fetchIssueBody: async ({ issueNumber, repoPath }) => {
+      assert.equal(issueNumber, 80);
+      assert.ok(repoPath, "fetch gets the source repo path");
+      return "## Acceptance\n- [ ] cache hits served";
+    },
+    decideIssuePath: async ({ link, issueBody }) => {
+      seenByDecider.push({ link, issueBody });
+      return { path: "develop", confidence: 0.9, rationale: "clear change" };
+    },
+  });
+  const { autoRun } = await svc.startAutoRun({
+    projectId: sourceProjectId,
+    link: { type: "issue", number: 80, title: "Add caching", url: null, state: "open" },
+    agentId: "agt_1",
+    name: "issue-80-body",
+  });
+  assert.match(seenByDecider[0].issueBody, /cache hits served/, "decider sees the body");
+  assert.match(calls.createInvocation[0].task, /cache hits served/, "prompt carries the body");
+  assert.equal(autoRun.decision.path, "develop");
+});
+
+test("a failing body fetch degrades to a title-only prompt (run proceeds)", async () => {
+  const { svc, calls } = makeAutoRun({
+    fetchIssueBody: async () => {
+      throw new Error("gh offline");
+    },
+  });
+  const { autoRun } = await svc.startAutoRun({
+    projectId: sourceProjectId,
+    link: { type: "issue", number: 81, title: "Fix the crash", url: null, state: "open" },
+    agentId: "agt_1",
+    name: "issue-81-nobody",
+  });
+  assert.equal(autoRun.status, "running");
+  assert.match(calls.createInvocation[0].task, /^GitHub Issue #81: Fix the crash\./);
+  assert.ok(!calls.createInvocation[0].task.includes("description:"), "no body block");
+});
+
+test("a design-decided run gets the design role prompt (no implementation)", async () => {
+  const { svc, calls } = makeAutoRun({
+    decideIssuePath: async () => ({ path: "design", confidence: 0.9, rationale: "open solution space" }),
+  });
+  await svc.startAutoRun({
+    projectId: sourceProjectId,
+    link: { type: "issue", number: 82, title: "Rework the queue", url: null, state: "open" },
+    agentId: "agt_1",
+    name: "issue-82-design",
+  });
+  assert.match(calls.createInvocation[0].task, /Do NOT implement/, "design role instructions");
 });
 
 test("a broken decision agent falls back to the heuristic (run never fails)", async () => {

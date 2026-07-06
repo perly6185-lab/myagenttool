@@ -42,6 +42,18 @@ export async function runIssueStatusTransition({ cwd, issueNumber, to, gh = defa
   }
 }
 
+// Read the issue body (read-only, no opt-in needed — same trust level as the
+// console's live gh issue listing). Null on any failure.
+export async function runIssueBodyFetch({ cwd, issueNumber, gh = defaultGh }) {
+  try {
+    const result = await gh(["issue", "view", String(issueNumber), "--json", "body", "--jq", ".body"], cwd);
+    const body = String(result?.stdout ?? "").trim();
+    return body || null;
+  } catch {
+    return null;
+  }
+}
+
 // Post a comment on the issue — used to deliver an investigation auto-run's
 // findings back to the issue. Never throws; returns a structured result.
 export async function runIssueComment({ cwd, issueNumber, body, gh = defaultGh }) {

@@ -22,7 +22,7 @@ import { createM3Service } from "../services/m3.mjs";
 import { createProjectService, sameProjectPath } from "../services/projects.mjs";
 import { createAutoRunService } from "../services/auto-run.mjs";
 import { resolveAutoRunVerifyCommand, runWorktreeVerification } from "../services/worktree-verify.mjs";
-import { resolveStatusWritebackConfig, runIssueComment, runIssueStatusTransition } from "../services/issue-status.mjs";
+import { resolveStatusWritebackConfig, runIssueBodyFetch, runIssueComment, runIssueStatusTransition } from "../services/issue-status.mjs";
 import { createTerminalService } from "../services/terminal.mjs";
 import { createToolService } from "../services/tools.mjs";
 
@@ -336,6 +336,8 @@ export function createServerRuntimeServices({
     // be wired here (slice 3). Undefined -> the heuristic floor decides, which
     // is byte-compatible with the previous intent routing.
     decideIssuePath: undefined,
+    // Read-only issue body fetch: context for the decision and the role prompt.
+    fetchIssueBody: async ({ issueNumber, repoPath }) => runIssueBodyFetch({ cwd: repoPath, issueNumber }),
   });
   // Now that the reaction exists, let completion drive it.
   advanceAutoRunHook = advanceAutoRunForInvocation;
