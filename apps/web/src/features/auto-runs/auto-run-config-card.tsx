@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { api } from "@/data/use-console-actions";
+import { cn } from "@/lib/cn";
 
 interface AutoRunConfig {
   autoTrigger: { enabled: boolean; label: string; maxConcurrent: number; requireProjectFields: boolean };
@@ -14,6 +15,7 @@ interface AutoRunConfig {
   deciderTimeoutMs: number;
   judgeTimeoutMs: number;
   requireChecksGreenToMerge: boolean;
+  autonomyKillSwitch: boolean;
   commands: { verify: boolean; decider: boolean; judge: boolean };
   settings: Record<string, unknown>;
 }
@@ -31,6 +33,7 @@ interface Draft {
   deciderTimeoutMs: number;
   judgeTimeoutMs: number;
   requireChecksGreenToMerge: boolean;
+  autonomyKillSwitch: boolean;
 }
 
 function toDraft(c: AutoRunConfig): Draft {
@@ -46,6 +49,7 @@ function toDraft(c: AutoRunConfig): Draft {
     deciderTimeoutMs: c.deciderTimeoutMs,
     judgeTimeoutMs: c.judgeTimeoutMs,
     requireChecksGreenToMerge: c.requireChecksGreenToMerge,
+    autonomyKillSwitch: c.autonomyKillSwitch,
   };
 }
 
@@ -149,8 +153,16 @@ export function AutoRunConfigCard() {
       </CardHeader>
       {open ? (
         <CardContent className="flex flex-col gap-4">
+          {/* O0 kill switch — global emergency brake, applies immediately. */}
+          <label className={cn("flex items-center justify-between gap-3 rounded-lg border px-3 py-2", draft.autonomyKillSwitch ? "border-red-500/60 bg-red-500/5" : "border-border")}>
+            <span className="min-w-0">
+              <span className={cn("block text-sm font-semibold", draft.autonomyKillSwitch && "text-red-600 dark:text-red-400")}>Kill switch — halt all autonomous runs</span>
+              <span className="block text-xs text-muted-foreground">Applies immediately: auto-trigger stops scanning and new runs are refused. Merge is unaffected.</span>
+            </span>
+            <input type="checkbox" className="mt-0.5 shrink-0" checked={draft.autonomyKillSwitch} onChange={(e) => set("autonomyKillSwitch", e.target.checked)} />
+          </label>
           <p className="text-xs text-muted-foreground">
-            Safe knobs are editable here; saved values <strong>apply on the next server start</strong>. The verify / decider /
+            Safe knobs are editable here; saved values <strong>apply on the next server start</strong> (the kill switch and require-green-checks apply immediately). The verify / decider /
             judge <em>commands</em> stay env-only (they choose what runs — a trust boundary) and show read-only below.
           </p>
 

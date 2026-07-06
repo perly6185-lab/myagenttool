@@ -40,6 +40,9 @@ export function startAutoTriggerScheduler(deps, { intervalMs = TICK_MS, env = pr
     log: (message) => console.log(`[auto-trigger] ${message}`),
   });
   const timer = setInterval(() => {
+    // O0 kill switch: a global brake checked every tick so flipping it on halts
+    // the unattended surface immediately (no restart needed).
+    if (deps?.state?.autoRunSettings?.autonomyKillSwitch) return;
     void runtime.scanOnce();
   }, intervalMs);
   timer.unref?.();
