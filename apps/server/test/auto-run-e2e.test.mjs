@@ -59,7 +59,7 @@ before(() => {
     [
       "import { appendFileSync } from 'node:fs';",
       "appendFileSync(process.env.GH_CAPTURE, JSON.stringify(process.argv.slice(2)) + '\\n');",
-      "process.stdout.write(JSON.stringify({ number: 50, url: 'https://github.com/o/r/pull/50', state: 'OPEN' }));",
+      "process.stdout.write('https://github.com/o/r/pull/50\\n');",
       "",
     ].join("\n"),
   );
