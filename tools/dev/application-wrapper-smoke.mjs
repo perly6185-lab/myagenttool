@@ -80,6 +80,19 @@ try {
         installPath: applicationPath,
         packageManager: "npm",
         commands: [{
+          id: "report",
+          displayName: "Generic wrapper report",
+          commandType: "custom",
+          command: "node",
+          args: ["smoke-wrapper.mjs", "--report"],
+          cwd: ".",
+          status: "approved",
+          riskLevel: "low",
+          requiresApproval: false,
+          filePolicy: "read_only",
+          networkPolicy: "forbidden",
+          timeoutSeconds: 20,
+        }, {
           id: "smoke",
           displayName: "Generic wrapper smoke",
           commandType: "custom",
@@ -92,13 +105,34 @@ try {
           filePolicy: "read_only",
           networkPolicy: "forbidden",
           timeoutSeconds: 20,
+        }, {
+          id: "draft",
+          displayName: "Draft wrapper smoke",
+          commandType: "custom",
+          command: "node",
+          args: ["smoke-wrapper.mjs", "--draft"],
+          cwd: ".",
+          status: "draft",
+          riskLevel: "low",
+          requiresApproval: true,
+          filePolicy: "read_only",
+          networkPolicy: "forbidden",
+          timeoutSeconds: 20,
         }],
       },
     },
   });
   const capability = `app.${registered.application.id}.wrapper.smoke`;
+  const reportCapability = `app.${registered.application.id}.wrapper.report`;
   assert(registered.capabilities.some((item) => item.name === capability), "generic wrapper capability should be projected");
-  ok("generic npm Application registered");
+  assert(registered.capabilities.some((item) => item.name === reportCapability), "read-only wrapper capability should be projected");
+  assert(!registered.capabilities.some((item) => item.name.endsWith(".wrapper.draft")), "draft wrapper command should not be projected");
+  ok("generic npm Application registered with approved and draft commands");
+
+  const reportInvocation = await request("POST", `/api/capabilities/${reportCapability}/invocations`, {});
+  assert(reportInvocation.status === "queued", "read-only wrapper call should queue without approval");
+  assert(reportInvocation.agentId === "agt_platform_application_wrapper", "read-only wrapper invocation should target the platform wrapper runner");
+  ok("read-only wrapper invocation queued without approval");
 
   const approvalRequired = await request("POST", `/api/capabilities/${capability}/invocations`, {});
   assert(approvalRequired.status === "waiting_for_local_approval", "first wrapper call should request local approval");
@@ -117,17 +151,23 @@ try {
   const finalState = await waitFor(async () => {
     const state = await request("GET", "/api/state");
     const invocation = state.invocations.find((item) => item.id === invoked.invocationId);
-    if (invocation?.status === "succeeded") return state;
-    if (["failed", "cancelled", "timed_out", "expired", "rejected"].includes(invocation?.status)) {
-      throw new Error(`Generic wrapper invocation ended unexpectedly: ${invocation.status} ${JSON.stringify(invocation.result)}`);
+    const reportRun = state.invocations.find((item) => item.id === reportInvocation.invocationId);
+    if (invocation?.status === "succeeded" && reportRun?.status === "succeeded") return state;
+    for (const candidate of [invocation, reportRun]) {
+      if (["failed", "cancelled", "timed_out", "expired", "rejected"].includes(candidate?.status)) {
+        throw new Error(`Generic wrapper invocation ended unexpectedly: ${candidate.status} ${JSON.stringify(candidate.result)}`);
+      }
     }
     return false;
   }, "Desktop Bridge generic wrapper execution", 15_000);
   const completed = finalState.invocations.find((item) => item.id === invoked.invocationId);
+  const completedReport = finalState.invocations.find((item) => item.id === reportInvocation.invocationId);
   const report = completed.result?.output?.report;
+  const readOnlyReport = completedReport.result?.output?.report;
   assert(report?.marker === "generic-npm-application-wrapper-smoke", "runner should execute the generic wrapper command");
   assert(report?.cwd === resolve(applicationPath), "wrapper command should run in the Application install path");
   assert(report?.argv?.includes("--from-wrapper"), "server-resolved wrapper args should reach the child command");
+  assert(readOnlyReport?.argv?.includes("--report"), "read-only wrapper args should reach the child command");
   assert(completed.options?.metadata?.applicationWrapper?.execCommand === "node", "metadata should carry the resolved command");
   assert(
     finalState.events.some((event) => event.invocationId === invoked.invocationId && event.type === "invocation_succeeded"),

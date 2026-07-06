@@ -206,6 +206,7 @@ export function createApplicationService({
       if (app.source?.type !== "npm") {
         throw new Error("NPM wrapper descriptor can only be edited on npm applications.");
       }
+      assertValidNpmWrapperDescriptor(body.npmWrapper, app);
       app.source.wrapper = normalizeNpmWrapper(body.npmWrapper);
       changed = true;
     }
@@ -2299,6 +2300,14 @@ function normalizeApplicationStatus(value) {
   return APPLICATION_STATUSES.has(text) ? text : "registered";
 }
 
+class ApplicationDescriptorValidationError extends Error {
+  constructor(errors) {
+    super("Application descriptor validation failed.");
+    this.name = "ApplicationDescriptorValidationError";
+    this.validationErrors = errors;
+  }
+}
+
 function normalizeNpmWrapper(wrapper = {}) {
   const value = wrapper && typeof wrapper === "object" && !Array.isArray(wrapper) ? wrapper : {};
   const mode = NPM_WRAPPER_MODES.has(String(value.mode ?? "")) ? String(value.mode) : "metadata-only";
@@ -2370,6 +2379,178 @@ function normalizeWrapperCommandType(value) {
 function normalizeWrapperCommandStatus(value) {
   const text = String(value ?? "").trim();
   return ["draft", "approved", "disabled"].includes(text) ? text : "draft";
+}
+
+function assertValidNpmWrapperDescriptor(wrapper, application) {
+  const errors = validateNpmWrapperDescriptor(wrapper, application);
+  if (errors.length) throw new ApplicationDescriptorValidationError(errors);
+}
+
+function validateNpmWrapperDescriptor(wrapper, application) {
+  const errors = [];
+  const value = wrapper && typeof wrapper === "object" && !Array.isArray(wrapper) ? wrapper : null;
+  if (!value) {
+    return [descriptorError("npmWrapper", "invalid_descriptor", "NPM wrapper descriptor must be a JSON object.")];
+  }
+  const mode = String(value.mode ?? "").trim();
+  if (mode && !NPM_WRAPPER_MODES.has(mode)) {
+    errors.push(descriptorError("npmWrapper.mode", "invalid_mode", "mode must be metadata-only or installed-wrapper."));
+  }
+  const packageManager = String(value.packageManager ?? "").trim();
+  if (packageManager && !["npm", "pnpm", "yarn"].includes(packageManager)) {
+    errors.push(descriptorError("npmWrapper.packageManager", "invalid_package_manager", "packageManager must be npm, pnpm, or yarn."));
+  }
+  const installPath = stringOrNull(value.installPath);
+  const basePath = installPath ?? stringOrNull(application?.path ?? application?.source?.path);
+  if (installPath && !isAbsolute(installPath)) {
+    errors.push(descriptorError("npmWrapper.installPath", "relative_install_path", "installPath must be an absolute path."));
+  }
+  if (value.commands !== undefined && !Array.isArray(value.commands)) {
+    errors.push(descriptorError("npmWrapper.commands", "invalid_commands", "commands must be an array."));
+    return errors;
+  }
+  const commands = Array.isArray(value.commands) ? value.commands : [];
+  if (commands.length > 30) {
+    errors.push(descriptorError("npmWrapper.commands", "too_many_commands", "At most 30 wrapper commands can be declared."));
+  }
+  const ids = new Map();
+  commands.slice(0, 30).forEach((command, index) => {
+    validateNpmWrapperCommandDescriptor(command, index, { errors, ids, basePath });
+  });
+  return errors;
+}
+
+function validateNpmWrapperCommandDescriptor(command, index, { errors, ids, basePath }) {
+  const path = `npmWrapper.commands[${index}]`;
+  if (!command || typeof command !== "object" || Array.isArray(command)) {
+    errors.push(descriptorError(path, "invalid_command", "Command must be a JSON object."));
+    return;
+  }
+  const id = slugify(command.id ?? command.name ?? command.script ?? command.bin);
+  if (!id) {
+    errors.push(descriptorError(`${path}.id`, "missing_id", "Command requires id, name, script, or bin."));
+  } else if (ids.has(id)) {
+    errors.push(descriptorError(`${path}.id`, "duplicate_id", `Command id duplicates ${ids.get(id)}.`));
+  } else {
+    ids.set(id, `${path}.id`);
+  }
+  const commandType = String(command.commandType ?? (command.script ? "npm_script" : command.bin ? "bin" : "custom")).trim();
+  if (command.commandType !== undefined && !["npm_script", "bin", "custom"].includes(commandType)) {
+    errors.push(descriptorError(`${path}.commandType`, "invalid_command_type", "commandType must be npm_script, bin, or custom."));
+  }
+  const commandText = stringOrNull(command.command ?? command.script ?? command.bin);
+  if (!commandText) {
+    errors.push(descriptorError(`${path}.command`, "missing_command", "Command requires command, script, or bin."));
+  } else {
+    validateWrapperCommandText(commandText, commandType, `${path}.command`, errors);
+  }
+  validateWrapperCwd(command.cwd, `${path}.cwd`, basePath, errors);
+  validateWrapperArgs(command.args, `${path}.args`, errors);
+  validateWrapperArgInputDescriptors(command.argInputs, `${path}.argInputs`, errors);
+  if (command.status !== undefined && !["draft", "approved", "disabled"].includes(String(command.status).trim())) {
+    errors.push(descriptorError(`${path}.status`, "invalid_status", "status must be draft, approved, or disabled."));
+  }
+  if (command.filePolicy !== undefined && !["forbidden", "read_only", "workspace_write", "network"].includes(String(command.filePolicy).trim())) {
+    errors.push(descriptorError(`${path}.filePolicy`, "invalid_file_policy", "filePolicy must be forbidden, read_only, workspace_write, or network."));
+  }
+  if (command.networkPolicy !== undefined && !["forbidden", "read_only", "workspace_write", "network"].includes(String(command.networkPolicy).trim())) {
+    errors.push(descriptorError(`${path}.networkPolicy`, "invalid_network_policy", "networkPolicy must be forbidden, read_only, workspace_write, or network."));
+  }
+}
+
+function validateWrapperCommandText(commandText, commandType, path, errors) {
+  if (/[\r\n]/.test(commandText)) {
+    errors.push(descriptorError(path, "invalid_command", "Command must not contain newlines."));
+  }
+  if (/[&|;<>()`$]/.test(commandText)) {
+    errors.push(descriptorError(path, "shell_syntax_forbidden", "Command must be a discrete binary or npm script name, not shell syntax."));
+  }
+  if (commandType === "npm_script") {
+    if (/^(pre|post)?(install|publish|pack|prepare|prepublish|prepack|postpack)$/.test(commandText)) {
+      errors.push(descriptorError(path, "unsafe_lifecycle_script", "Unsafe npm lifecycle scripts cannot be approved as wrapper commands."));
+    }
+    if (/\s/.test(commandText) || commandText.startsWith("-")) {
+      errors.push(descriptorError(path, "invalid_script_name", "npm_script command must be a single script name."));
+    }
+  }
+  if (commandType === "custom" && /\s/.test(commandText)) {
+    errors.push(descriptorError(path, "invalid_custom_command", "custom command must be one executable, with arguments declared in args."));
+  }
+}
+
+function validateWrapperCwd(cwd, path, basePath, errors) {
+  const text = stringOrNull(cwd) ?? ".";
+  if (/[\r\n]/.test(text)) {
+    errors.push(descriptorError(path, "invalid_cwd", "cwd must not contain newlines."));
+    return;
+  }
+  if (!basePath) {
+    if (isAbsolute(text)) errors.push(descriptorError(path, "absolute_cwd_without_base", "Absolute cwd requires an installPath or application path."));
+    return;
+  }
+  const resolvedBase = resolve(basePath);
+  const resolvedCwd = isAbsolute(text) ? resolve(text) : resolve(resolvedBase, text);
+  if (!pathWithin(resolvedBase, resolvedCwd)) {
+    errors.push(descriptorError(path, "cwd_escapes_application", "cwd must stay inside the Application install path."));
+  }
+}
+
+function validateWrapperArgs(args, path, errors) {
+  if (args === undefined) return;
+  if (!Array.isArray(args)) {
+    errors.push(descriptorError(path, "invalid_args", "args must be an array."));
+    return;
+  }
+  args.slice(0, 100).forEach((arg, index) => {
+    const value = String(arg ?? "");
+    if (value.length > 400 || /[\r\n]/.test(value)) {
+      errors.push(descriptorError(`${path}[${index}]`, "invalid_arg", "args entries must be short single-line strings."));
+    }
+  });
+}
+
+function validateWrapperArgInputDescriptors(argInputs, path, errors) {
+  if (argInputs === undefined) return;
+  if (!Array.isArray(argInputs)) {
+    errors.push(descriptorError(path, "invalid_arg_inputs", "argInputs must be an array."));
+    return;
+  }
+  const keys = new Set();
+  for (const [index, entry] of argInputs.slice(0, 20).entries()) {
+    const itemPath = `${path}[${index}]`;
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+      errors.push(descriptorError(itemPath, "invalid_arg_input", "argInput must be a JSON object."));
+      continue;
+    }
+    const key = String(entry.key ?? "").trim();
+    if (!/^[a-zA-Z][a-zA-Z0-9_]{0,39}$/.test(key)) {
+      errors.push(descriptorError(`${itemPath}.key`, "invalid_arg_input_key", "argInput key must be alphanumeric and start with a letter."));
+    } else if (keys.has(key)) {
+      errors.push(descriptorError(`${itemPath}.key`, "duplicate_arg_input_key", "argInput keys must be unique."));
+    }
+    keys.add(key);
+    if (RESERVED_WRAPPER_ARG_INPUT_KEYS.has(key)) {
+      errors.push(descriptorError(`${itemPath}.key`, "reserved_arg_input_key", "argInput key is reserved for platform control fields."));
+    }
+    if (!/^--[a-z0-9][a-z0-9-]*$/.test(String(entry.flag ?? "").trim())) {
+      errors.push(descriptorError(`${itemPath}.flag`, "invalid_arg_input_flag", "argInput flag must be a --kebab-case option."));
+    }
+    if (entry.type !== undefined && !WRAPPER_ARG_INPUT_TYPES.has(String(entry.type))) {
+      errors.push(descriptorError(`${itemPath}.type`, "invalid_arg_input_type", "argInput type is not supported."));
+    }
+  }
+  if (argInputs.length > 20) {
+    errors.push(descriptorError(path, "too_many_arg_inputs", "At most 20 argInputs can be declared."));
+  }
+}
+
+function descriptorError(path, code, message) {
+  return { path, code, message };
+}
+
+function pathWithin(base, candidate) {
+  const rel = relative(base, candidate);
+  return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
 }
 
 function normalizeTimeoutSeconds(value) {

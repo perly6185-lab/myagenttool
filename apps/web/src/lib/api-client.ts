@@ -193,8 +193,12 @@ async function request<T = unknown>(
   if (response.status === 204) return undefined as T;
   const data = await response.json().catch(() => ({}));
   if (!response.ok) {
-    const record = data as { message?: string; error?: string };
-    throw new Error(record.message ?? record.error ?? `${method} ${path} failed.`);
+    const record = data as { message?: string; error?: string; validation?: { errors?: Array<{ path?: string; message?: string }> } };
+    const validation = record.validation?.errors
+      ?.map((item) => [item.path, item.message].filter(Boolean).join(": "))
+      .filter(Boolean)
+      .join("; ");
+    throw new Error(validation || record.message || record.error || `${method} ${path} failed.`);
   }
   return data as T;
 }

@@ -953,6 +953,36 @@ test("application descriptor endpoint edits npm wrapper descriptors and reprojec
   assert.equal(descriptors.status, 200);
   assert.equal(descriptors.body.descriptors.npmWrapper.commands[0].command, "lint");
 
+  const invalid = await call(`/api/applications/${encodeURIComponent(appId)}/descriptors`, {
+    method: "PATCH",
+    token: "tok_a",
+    body: {
+      npmWrapper: {
+        mode: "installed-wrapper",
+        packageManager: "bun",
+        commands: [{
+          id: "install",
+          commandType: "npm_script",
+          command: "postinstall",
+          status: "approved",
+        }, {
+          id: "install",
+          commandType: "custom",
+          command: "node && rm -rf .",
+          status: "approved",
+        }],
+      },
+    },
+  });
+  assert.equal(invalid.status, 422);
+  assert.equal(invalid.body.error, "invalid_application_descriptor");
+  assert.ok(invalid.body.validation.errors.some((item) => item.path === "npmWrapper.packageManager" && item.code === "invalid_package_manager"));
+  assert.ok(invalid.body.validation.errors.some((item) => item.code === "unsafe_lifecycle_script"));
+  assert.ok(invalid.body.validation.errors.some((item) => item.code === "duplicate_id"));
+  assert.ok(invalid.body.validation.errors.some((item) => item.code === "shell_syntax_forbidden"));
+  const afterInvalid = await call(`/api/applications/${encodeURIComponent(appId)}/descriptors`, { token: "tok_a" });
+  assert.equal(afterInvalid.body.descriptors.npmWrapper.commands[0].command, "lint");
+
   const updated = await call(`/api/applications/${encodeURIComponent(appId)}/descriptors`, {
     method: "PATCH",
     token: "tok_a",

@@ -221,9 +221,13 @@ export async function handleApplicationRoutes({
         descriptors: getApplicationDescriptors(application.id, actor)?.descriptors ?? null,
       });
     } catch (error) {
-      sendJson(res, 400, {
+      const validationErrors = error && typeof error === "object" && Array.isArray(error.validationErrors)
+        ? error.validationErrors
+        : null;
+      sendJson(res, validationErrors ? 422 : 400, {
         error: "invalid_application_descriptor",
         message: error instanceof Error ? error.message : String(error),
+        ...(validationErrors ? { validation: { errors: validationErrors } } : {}),
       });
     }
     return true;

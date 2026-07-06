@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Clipboard, ExternalLink, Pencil, Play, Search } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -52,6 +52,7 @@ import type {
   ApplicationSnapshot,
   ApplicationResultRef,
   InvocationSnapshot,
+  NpmWrapperSnapshot,
 } from "@/lib/console-state";
 
 function riskTone(risk?: string): "neutral" | "warning" | "danger" {
@@ -237,6 +238,17 @@ function ApplicationDescriptorEditor({ application }: { application: Application
     setManualManifest(prettyJson(descriptors.manualManifest));
   }, [descriptorsQuery.data, open]);
 
+  const descriptorDirty = Boolean(descriptorsQuery.data?.descriptors) && (
+    name.trim() !== application.name
+    || mcpDescriptor !== prettyJson(descriptorsQuery.data?.descriptors.mcpAgent)
+    || wrapperDescriptor !== prettyJson(descriptorsQuery.data?.descriptors.npmWrapper)
+    || manualManifest !== prettyJson(descriptorsQuery.data?.descriptors.manualManifest)
+  );
+  const wrapperImpact = useMemo(
+    () => application.source.type === "npm" ? wrapperCapabilityImpact(application.id, application.wrapper, wrapperDescriptor) : null,
+    [application.id, application.source.type, application.wrapper, wrapperDescriptor],
+  );
+
   function submit(event: React.FormEvent) {
     event.preventDefault();
     setFormError(null);
@@ -283,6 +295,9 @@ function ApplicationDescriptorEditor({ application }: { application: Application
           facts={[
             { term: "MCP descriptor", value: application.mcpAgent ? application.mcpAgent.agentId ?? "registered" : "Not configured" },
             { term: "npm wrapper", value: application.source.type === "npm" ? `${application.wrapper?.mode ?? "metadata-only"} · ${application.wrapper?.commands?.length ?? 0} command(s)` : "Not an npm Application" },
+            { term: "Wrapper install", value: application.source.type === "npm" ? application.wrapper?.installState ?? "not_installed" : "Not an npm Application" },
+            { term: "Capabilities version", value: application.capabilitiesVersion ?? "Not recorded" },
+            { term: "Last descriptor edit", value: application.lifecycle?.lastOperation === "update_descriptors" ? shortTime(application.lifecycle.lastOperationAt) : "Not recorded" },
             { term: "Manual manifest", value: application.source.type === "manual" ? "Editable" : "Not a manual Application" },
           ]}
         />
@@ -325,6 +340,22 @@ function ApplicationDescriptorEditor({ application }: { application: Application
             ) : null}
             {descriptorsQuery.isLoading ? <p className="text-xs text-muted-foreground">Loading descriptors...</p> : null}
             {descriptorsQuery.isError ? <p className="text-xs text-destructive">Could not load descriptors.</p> : null}
+            {descriptorDirty ? <p className="text-xs text-muted-foreground">Unsaved descriptor changes</p> : null}
+            {wrapperImpact ? (
+              <div className="rounded-md border border-border/70 p-3 text-xs">
+                <div className="mb-2 font-medium">Capability impact</div>
+                <div className="flex flex-wrap gap-2">
+                  <Badge tone={wrapperImpact.added.length ? "success" : "neutral"}>{wrapperImpact.added.length} added</Badge>
+                  <Badge tone={wrapperImpact.removed.length ? "danger" : "neutral"}>{wrapperImpact.removed.length} removed</Badge>
+                  <Badge tone="neutral">{wrapperImpact.unchanged.length} unchanged</Badge>
+                </div>
+                {[...wrapperImpact.added, ...wrapperImpact.removed].length ? (
+                  <p className="mt-2 text-muted-foreground">
+                    {[...wrapperImpact.added.map((name) => `+ ${name}`), ...wrapperImpact.removed.map((name) => `- ${name}`)].join(" · ")}
+                  </p>
+                ) : null}
+              </div>
+            ) : null}
             {formError || error ? <p className="text-xs text-destructive">{formError ?? error}</p> : null}
             <div className="flex justify-end gap-2 pt-1">
               <Button type="button" variant="secondary" size="sm" onClick={() => setOpen(false)}>
@@ -1397,6 +1428,36 @@ function formatValue(value: unknown): string {
 function prettyJson(value: unknown): string {
   if (value === null || value === undefined) return "";
   return JSON.stringify(value, null, 2);
+}
+
+function wrapperCapabilityImpact(applicationId: string, current: NpmWrapperSnapshot | null | undefined, descriptorText: string) {
+  const trimmed = descriptorText.trim();
+  if (!trimmed) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(trimmed);
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+  const next = parsed as { mode?: unknown; commands?: unknown };
+  if (String(next.mode ?? "metadata-only") !== "installed-wrapper" || !Array.isArray(next.commands)) return null;
+  const prefix = `app.${applicationId}.wrapper.`;
+  const currentNames = new Set(
+    (current?.commands ?? [])
+      .filter((command) => command.status === "approved")
+      .map((command) => `${prefix}${command.id}`),
+  );
+  const nextNames = new Set(
+    next.commands
+      .filter((command): command is { id?: unknown; status?: unknown } => Boolean(command && typeof command === "object" && !Array.isArray(command)))
+      .filter((command) => String(command.status ?? "draft") === "approved" && String(command.id ?? "").trim())
+      .map((command) => `${prefix}${String(command.id).trim()}`),
+  );
+  const added = [...nextNames].filter((name) => !currentNames.has(name)).sort();
+  const removed = [...currentNames].filter((name) => !nextNames.has(name)).sort();
+  const unchanged = [...nextNames].filter((name) => currentNames.has(name)).sort();
+  return { added, removed, unchanged };
 }
 
 function parseOptionalJsonObject(text: string, label: string): { value: Record<string, unknown> | null; error: string | null } {
