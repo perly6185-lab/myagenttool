@@ -13,16 +13,17 @@
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { PROVISIONAL_FLOORS } from "../../../../tools/ai/src/evals/eval-signals.mjs";
 
 // Same anchor eval-real-run.mjs uses so the two always agree on the path.
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../../..");
 const TREND_FILE = resolve(REPO_ROOT, ".myagenttool/evals/trend.jsonl");
 
-// Provisional regression floors. #250 replaces these with lines derived from
-// >=3 real runs (see docs/engineering/MATURITY_CALIBRATION.md); until then a
-// run below the floor is flagged but the number is explicitly "provisional".
-// held-out 0.6 mirrors the existing --min-pass-rate; subcap 0.6 is a placeholder.
-export const PROVISIONAL_FLOORS = { subcap: 0.6, heldout: 0.6 };
+// PROVISIONAL_FLOORS is the shared source of truth (tools/ai/src/evals/
+// eval-signals.mjs) — the same line the scheduled runner exits non-zero on, so
+// the panel's below-floor badge and the red cron log can never disagree.
+// Re-exported for callers/tests of this module.
+export { PROVISIONAL_FLOORS };
 const MIN_RUNS_FOR_LINES = 3; // #250 acceptance: lines need >=3 real runs per set.
 
 /** A record carries real rates only if it didn't fail auth/infra preflight. */
@@ -39,6 +40,9 @@ function metricPoint(record, key) {
     passRate: block.passRate,
     resolved: block.resolved ?? null,
     total: block.total ?? null,
+    // Per-kind breakdown (subcap: issue-gate/pm-brief/review) so the panel can
+    // show WHICH capability moved, not just the aggregate. Null when absent.
+    byKind: block.byKind ?? null,
   };
 }
 

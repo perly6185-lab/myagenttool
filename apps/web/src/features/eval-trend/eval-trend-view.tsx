@@ -12,6 +12,7 @@ interface MetricPoint {
   passRate: number;
   resolved: number | null;
   total: number | null;
+  byKind?: Record<string, { total: number; resolved: number }> | null;
 }
 interface MetricSummary {
   latest: MetricPoint | null;
@@ -111,6 +112,22 @@ function MetricCard({ title, metric, minRuns }: { title: string; metric: MetricS
                 />
               ))}
             </div>
+            {latest.byKind ? (
+              <div className="flex flex-col gap-0.5 border-t border-border pt-1.5">
+                {Object.entries(latest.byKind).map(([kind, k]) => {
+                  const kindRate = k.total > 0 ? k.resolved / k.total : 0;
+                  const kindMiss = k.total > 0 && k.resolved < k.total;
+                  return (
+                    <div key={kind} className="flex items-center justify-between gap-2 text-xs">
+                      <span className="text-muted-foreground">{kind}</span>
+                      <span className={cn("tabular-nums", kindMiss ? "text-amber-600 dark:text-amber-400" : "text-muted-foreground")}>
+                        {k.resolved}/{k.total} · {pct(kindRate)}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            ) : null}
             <p className="text-xs text-muted-foreground">
               Floor {pct(metric.floor)}
               {metric.floorProvisional ? " (provisional — #250 sets the real line once ≥" : " (≥"}

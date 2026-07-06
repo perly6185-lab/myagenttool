@@ -110,8 +110,10 @@ import {
 } from "./feedback/triage.mjs";
 import {
   buildRunFeedbackEvents,
+  floorBreaches,
   lastCapabilityRecord,
   looksLikeInfraFailure,
+  runRegressed,
 } from "./evals/eval-signals.mjs";
 import { configureLoopWorktreeContext } from "./loop/worktree.mjs";
 import { configureLoopPromotionContext } from "./loop/promotion.mjs";
@@ -899,6 +901,24 @@ function check() {
   }
   if (lastCapabilityRecord([{ subcap: { passRate: 0.9 } }, { infraFailure: true, subcap: { passRate: 0.4 } }])?.subcap.passRate !== 0.9) {
     fail("Eval-signals capability-record filter sanity check failed.");
+  }
+  // Absolute floor breach: a real metric below its floor emits a below-floor
+  // event AND flips runRegressed (which the scheduled runner exits non-zero on).
+  const belowRecord = { startedAt: "t", subcap: { passRate: 0.4, byKind: { "issue-gate": { total: 6, resolved: 6 }, "pm-brief": { total: 6, resolved: 2 }, "review": { total: 3, resolved: 3 } } } };
+  const belowEvents = buildRunFeedbackEvents(belowRecord, []);
+  if (!belowEvents.some((event) => event.dedupeKey === "eval-real:below-floor-subcap")) {
+    fail("Eval-signals below-floor event sanity check failed.");
+  }
+  if (!runRegressed(belowRecord) || floorBreaches(belowRecord).length !== 1) {
+    fail("Eval-signals runRegressed/floorBreaches sanity check failed.");
+  }
+  // An auth/infra outage is NOT a capability regression — never exits red on it.
+  if (runRegressed({ authFailure: true }) || runRegressed({ subcap: { passRate: 0.4, byKind: { "issue-gate": { total: 6, resolved: 6 }, "pm-brief": { total: 6, resolved: 0 }, "review": { total: 3, resolved: 0 } } } })) {
+    fail("Eval-signals runRegressed must exclude auth/infra outages.");
+  }
+  // A healthy run above the floor never regresses.
+  if (runRegressed({ subcap: { passRate: 1, byKind: { "issue-gate": { total: 6, resolved: 6 }, "pm-brief": { total: 6, resolved: 6 }, "review": { total: 3, resolved: 3 } } } })) {
+    fail("Eval-signals runRegressed false-positive on a healthy run.");
   }
 
   console.log("[tools-ai:check] AI delivery helpers check OK");
