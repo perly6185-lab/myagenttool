@@ -260,6 +260,10 @@ codex_output_invalid
 
 ## Development Plan
 
+The detailed next-phase build plan lives in
+[Codex Next Capabilities Plan](CODEX_NEXT_CAPABILITIES_PLAN.md). This section
+keeps the stable governance sequence and acceptance shape.
+
 ### Phase 1: Contract And Descriptor
 
 - Define `CODEX_REVIEW_TOOL_CONTRACT`.
