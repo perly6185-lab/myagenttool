@@ -33,6 +33,70 @@ export function sourceSummary(source: ApplicationSource): string {
   }
 }
 
+export function applicationNextStep(app: ApplicationSnapshot): { title: string; detail: string; tone: Tone } {
+  if (app.status === "failed") {
+    return {
+      title: "Needs attention",
+      detail: app.lifecycle?.error ?? "Inspect the failed lifecycle event and retry after fixing the source.",
+      tone: "danger",
+    };
+  }
+  if (app.status === "probing") {
+    return {
+      title: "Source setup running",
+      detail: "Wait for the git clone or probe operation to finish before enabling execution.",
+      tone: "warning",
+    };
+  }
+  if (app.status === "archived") {
+    return {
+      title: "Archived",
+      detail: "Restore by registering a fresh application if this asset needs to run again.",
+      tone: "danger",
+    };
+  }
+  if (app.status === "offline") {
+    return {
+      title: "Offline",
+      detail: "Bring the application online to re-enable execution-like capabilities.",
+      tone: "warning",
+    };
+  }
+  if (!app.probe) {
+    return {
+      title: "Probe recommended",
+      detail: "Run a probe to discover capabilities, MCP candidates, and wrapper readiness.",
+      tone: "warning",
+    };
+  }
+  if (app.probe.warnings?.length) {
+    return {
+      title: "Probe warnings",
+      detail: app.probe.warnings[0],
+      tone: "warning",
+    };
+  }
+  if (app.wrapper?.mode === "installed-wrapper" && app.wrapper.installState !== "installed") {
+    return {
+      title: "Wrapper setup needed",
+      detail: "Confirm the npm wrapper is installed before wrapper commands can execute.",
+      tone: "warning",
+    };
+  }
+  if (!app.orchestrationIds?.length) {
+    return {
+      title: "Ready for orchestration",
+      detail: "Generate a governed orchestration draft when this application needs maintenance.",
+      tone: "success",
+    };
+  }
+  return {
+    title: "Ready",
+    detail: "Capabilities, probe evidence, and orchestration drafts are available.",
+    tone: "success",
+  };
+}
+
 /** Registered applications and their governed capabilities (read-only slice). */
 export function ApplicationsView() {
   const { data: state } = useConsoleState();
@@ -79,6 +143,7 @@ export function ApplicationsView() {
             <option value="all">All statuses</option>
             <option value="active">Active</option>
             <option value="registered">Registered</option>
+            <option value="probing">Probing</option>
             <option value="offline">Offline</option>
             <option value="archived">Archived</option>
             <option value="failed">Failed</option>
@@ -110,42 +175,54 @@ export function ApplicationsView() {
         />
       ) : (
         <div className="grid gap-4 xl:grid-cols-2">
-          {applications.map((app) => (
-            <Card
-              key={app.id}
-              onClick={() => setSelectedApplicationId(app.id)}
-              onFocusCapture={() => setSelectedApplicationId(app.id)}
-              tabIndex={0}
-              className={cn(
-                "cursor-pointer transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-                selectedApplicationId === app.id && "border-primary/50",
-              )}
-            >
-              <CardHeader>
-                <div className="flex items-start justify-between gap-3">
-                  <CardTitle>{app.name}</CardTitle>
-                  <Badge tone={statusTone(app.status)}>{app.status}</Badge>
-                </div>
-                <p className="text-sm text-muted-foreground">
-                  {app.kind} · {app.source.type}
-                </p>
-              </CardHeader>
-              <CardContent className="space-y-2">
-                <p className="[overflow-wrap:anywhere] font-mono text-xs text-muted-foreground">
-                  {sourceSummary(app.source)}
-                </p>
-                <div className="flex flex-wrap gap-1.5">
-                  {projectName(app.projectId) ? <Badge>{projectName(app.projectId)}</Badge> : null}
-                  {app.probe?.capabilities?.length ? (
-                    <Badge>{app.probe.capabilities.length} probed capabilities</Badge>
-                  ) : null}
-                  {app.orchestrationIds?.length ? (
-                    <Badge>{app.orchestrationIds.length} orchestration(s)</Badge>
-                  ) : null}
-                </div>
-              </CardContent>
-            </Card>
-          ))}
+          {applications.map((app) => {
+            const nextStep = applicationNextStep(app);
+            return (
+              <Card
+                key={app.id}
+                onClick={() => setSelectedApplicationId(app.id)}
+                onFocusCapture={() => setSelectedApplicationId(app.id)}
+                tabIndex={0}
+                className={cn(
+                  "cursor-pointer transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                  selectedApplicationId === app.id && "border-primary/50",
+                )}
+              >
+                <CardHeader>
+                  <div className="flex items-start justify-between gap-3">
+                    <CardTitle>{app.name}</CardTitle>
+                    <Badge tone={statusTone(app.status)}>{app.status}</Badge>
+                  </div>
+                  <p className="text-sm text-muted-foreground">
+                    {app.kind} · {app.source.type}
+                  </p>
+                </CardHeader>
+                <CardContent className="space-y-3">
+                  <p className="[overflow-wrap:anywhere] font-mono text-xs text-muted-foreground">
+                    {sourceSummary(app.source)}
+                  </p>
+                  <div className="rounded-md border border-border bg-muted/40 p-2">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Badge tone={nextStep.tone}>{nextStep.title}</Badge>
+                      {app.lifecycle?.lastOperation ? (
+                        <span className="text-xs text-muted-foreground">Last: {app.lifecycle.lastOperation}</span>
+                      ) : null}
+                    </div>
+                    <p className="mt-1 [overflow-wrap:anywhere] text-xs text-muted-foreground">{nextStep.detail}</p>
+                  </div>
+                  <div className="flex flex-wrap gap-1.5">
+                    {projectName(app.projectId) ? <Badge>{projectName(app.projectId)}</Badge> : null}
+                    {app.probe?.capabilities?.length ? (
+                      <Badge>{app.probe.capabilities.length} probed capabilities</Badge>
+                    ) : null}
+                    {app.orchestrationIds?.length ? (
+                      <Badge>{app.orchestrationIds.length} orchestration(s)</Badge>
+                    ) : null}
+                  </div>
+                </CardContent>
+              </Card>
+            );
+          })}
         </div>
       )}
     </div>

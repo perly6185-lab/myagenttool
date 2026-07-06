@@ -43,6 +43,7 @@ import {
 } from "@/features/recovery/application-recovery-ui";
 import { readableStatus, statusTone } from "@/lib/readable-labels";
 import type {
+  ApplicationEventSnapshot,
   ApplicationOrchestration,
   ApplicationOrchestrationRecoveryAction,
   ApplicationOrchestrationRecoveryAgentCandidate,
@@ -1428,6 +1429,73 @@ function shortTime(value?: string | null): string {
   });
 }
 
+function applicationEventTone(level?: string | null): "neutral" | "success" | "warning" | "danger" {
+  if (level === "error") return "danger";
+  if (level === "warn" || level === "warning") return "warning";
+  if (level === "info") return "success";
+  return "neutral";
+}
+
+function applicationEventDataSummary(event: ApplicationEventSnapshot): string | null {
+  const data = event.data ?? {};
+  const parts = [
+    typeof data.sourceType === "string" ? `source ${data.sourceType}` : null,
+    typeof data.status === "string" ? `status ${data.status}` : null,
+    typeof data.capabilityCount === "number" ? `${data.capabilityCount} capabilities` : null,
+    typeof data.mcpServerCandidateCount === "number" ? `${data.mcpServerCandidateCount} MCP candidates` : null,
+    typeof data.commandId === "string" ? `command ${data.commandId}` : null,
+    typeof data.action === "string" ? `action ${data.action}` : null,
+    typeof data.projectId === "string" ? `project ${data.projectId}` : null,
+  ].filter(Boolean);
+  return parts.length ? parts.join(" · ") : null;
+}
+
+function ApplicationEventTimeline({
+  events,
+  loading,
+  error,
+}: {
+  events: ApplicationEventSnapshot[];
+  loading: boolean;
+  error: boolean;
+}) {
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Application timeline</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-2">
+        {error ? (
+          <p className="text-sm text-destructive">Could not load application events.</p>
+        ) : loading ? (
+          <p className="text-sm text-muted-foreground">Loading events...</p>
+        ) : !events.length ? (
+          <p className="text-sm text-muted-foreground">No application events recorded yet.</p>
+        ) : (
+          <ul className="space-y-2">
+            {events.map((event) => {
+              const summary = applicationEventDataSummary(event);
+              return (
+                <li key={event.id} className="rounded-md border border-border p-2">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Badge tone={applicationEventTone(event.level)}>{event.level ?? "event"}</Badge>
+                    <span className="[overflow-wrap:anywhere] font-mono text-xs">{event.type}</span>
+                    <span className="text-xs text-muted-foreground">{shortTime(event.createdAt)}</span>
+                  </div>
+                  {event.message ? (
+                    <p className="mt-1 [overflow-wrap:anywhere] text-sm text-muted-foreground">{event.message}</p>
+                  ) : null}
+                  {summary ? <p className="mt-1 [overflow-wrap:anywhere] text-xs text-muted-foreground">{summary}</p> : null}
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
 /** Right-pane detail for the application selected in the Applications view. */
 export function ApplicationsInspector() {
   const { data: state } = useConsoleState();
@@ -1441,6 +1509,12 @@ export function ApplicationsInspector() {
     queryFn: () => api.listApplicationCapabilities(application!.id),
     enabled: Boolean(application?.id),
     refetchInterval: 2000,
+  });
+  const { data: eventData, isLoading: eventsLoading, error: eventsError } = useQuery({
+    queryKey: ["application-events", application?.id],
+    queryFn: () => api.listApplicationEvents(application!.id, 12),
+    enabled: Boolean(application?.id),
+    refetchInterval: 3000,
   });
 
   if (!application) {
@@ -1490,6 +1564,11 @@ export function ApplicationsInspector() {
       </Card>
 
       <ApplicationActions application={application} />
+      <ApplicationEventTimeline
+        events={eventData?.events ?? []}
+        loading={eventsLoading}
+        error={Boolean(eventsError)}
+      />
       <ApplicationDescriptorEditor application={application} />
       <ApplicationResultSummary result={application.latestResult} onViewInvocation={viewInvocation} />
       <ApplicationMcpSummary application={application} />

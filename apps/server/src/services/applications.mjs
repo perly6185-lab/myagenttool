@@ -336,6 +336,17 @@ export function createApplicationService({
     return app ? projectApplicationCapabilities(app) : null;
   }
 
+  function listApplicationEvents(applicationId, searchParams = new URLSearchParams()) {
+    const app = findApplication(applicationId);
+    if (!app) return null;
+    const limit = clampEventLimit(searchParams?.get?.("limit") ?? 20);
+    return (state.events ?? [])
+      .filter((event) => event?.data?.applicationId === applicationId)
+      .sort((left, right) => Date.parse(right.createdAt ?? "") - Date.parse(left.createdAt ?? ""))
+      .slice(0, limit)
+      .map(publicApplicationEvent);
+  }
+
   function invokeApplicationCapability(capabilityName, input = {}, actor = null, options = {}) {
     const application = applicationForCapability(capabilityName, listApplications(), options.applicationId);
     if (!application) {
@@ -745,6 +756,7 @@ export function createApplicationService({
     grantApplicationWrapperPolicyConsent,
     invokeApplicationCapability,
     listApplicationCapabilities,
+    listApplicationEvents,
     listApplications,
     planApplicationWrapperInvocation,
     probeApplication,
@@ -752,6 +764,24 @@ export function createApplicationService({
     registerApplication,
     transitionApplication,
     updateApplicationDescriptors,
+  };
+}
+
+function clampEventLimit(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return 20;
+  return Math.max(1, Math.min(100, Math.floor(number)));
+}
+
+function publicApplicationEvent(event) {
+  return {
+    id: event.id,
+    invocationId: event.invocationId ?? null,
+    type: event.type,
+    level: event.level,
+    message: event.message,
+    data: event.data ?? null,
+    createdAt: event.createdAt,
   };
 }
 

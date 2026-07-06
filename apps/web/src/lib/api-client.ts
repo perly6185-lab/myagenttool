@@ -8,6 +8,7 @@ import type {
   ApplicationCapability,
   ApplicationDescriptorSnapshot,
   ApplicationDescriptorUpdateRequest,
+  ApplicationEventSnapshot,
   ApplicationOrchestrationRecovery,
   ApplicationOrchestrationRecoveryAgentCandidate,
   ApplicationOrchestrationRun,
@@ -259,6 +260,11 @@ export const api = {
     request<{ applicationId: string; capabilities: ApplicationCapability[] }>(
       "GET",
       `/api/applications/${encodeURIComponent(id)}/capabilities`,
+    ),
+  listApplicationEvents: (id: string, limit = 20) =>
+    request<{ applicationId: string; events: ApplicationEventSnapshot[] }>(
+      "GET",
+      `/api/applications/${encodeURIComponent(id)}/events?limit=${encodeURIComponent(String(limit))}`,
     ),
   registerApplication: (body: ApplicationRegisterRequest) =>
     request<{ application: ApplicationSnapshot; capabilities: ApplicationCapability[] }>(

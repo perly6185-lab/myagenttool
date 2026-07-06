@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { sourceSummary } from "@/features/applications/applications-view";
+import { applicationNextStep, sourceSummary } from "@/features/applications/applications-view";
+import type { ApplicationSnapshot } from "@/lib/console-state";
 
 describe("sourceSummary", () => {
   it("summarizes each application source type", () => {
@@ -11,3 +12,32 @@ describe("sourceSummary", () => {
     expect(sourceSummary({ type: "manual" })).toBe("manual manifest");
   });
 });
+
+describe("applicationNextStep", () => {
+  it("prioritizes actionable application guidance", () => {
+    expect(applicationNextStep(application({ status: "failed", lifecycle: { error: "Clone failed." } })).title).toBe("Needs attention");
+    expect(applicationNextStep(application({ status: "active", probe: null })).title).toBe("Probe recommended");
+    expect(applicationNextStep(application({
+      status: "active",
+      probe: { warnings: ["README not readable."], capabilities: [] },
+    })).detail).toBe("README not readable.");
+    expect(applicationNextStep(application({
+      status: "active",
+      probe: { capabilities: [] },
+      orchestrationIds: ["routine"],
+    })).title).toBe("Ready");
+  });
+});
+
+function application(overrides: Partial<ApplicationSnapshot>): ApplicationSnapshot {
+  return {
+    id: "app_docs",
+    name: "Docs",
+    kind: "repository",
+    source: { type: "local", path: "/repo" },
+    status: "active",
+    createdAt: "2026-07-06T00:00:00.000Z",
+    updatedAt: "2026-07-06T00:00:00.000Z",
+    ...overrides,
+  };
+}

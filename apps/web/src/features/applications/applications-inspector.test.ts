@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { createElement, type ReactElement } from "react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApplicationsInspector, latestRoutineInvocation } from "@/features/applications/applications-inspector";
 import {
   readableRecoveryActionAvailabilityReason,
@@ -19,6 +19,7 @@ import type { ApplicationOrchestrationRecoveryAgentCandidate, ConsoleSnapshot, I
 const apiMock = vi.hoisted(() => ({
   fetchState: vi.fn(),
   listApplicationCapabilities: vi.fn(),
+  listApplicationEvents: vi.fn(),
   listApplicationOrchestrationRuns: vi.fn(),
   getApplicationOrchestrationRun: vi.fn(),
   listApplicationOrchestrationRunEvents: vi.fn(),
@@ -35,6 +36,7 @@ vi.mock("@/lib/api-client", () => ({
   fetchState: apiMock.fetchState,
   api: {
     listApplicationCapabilities: apiMock.listApplicationCapabilities,
+    listApplicationEvents: apiMock.listApplicationEvents,
     listApplicationOrchestrationRuns: apiMock.listApplicationOrchestrationRuns,
     getApplicationOrchestrationRun: apiMock.getApplicationOrchestrationRun,
     listApplicationOrchestrationRunEvents: apiMock.listApplicationOrchestrationRunEvents,
@@ -48,9 +50,14 @@ vi.mock("@/lib/api-client", () => ({
   },
 }));
 
+beforeEach(() => {
+  apiMock.listApplicationEvents.mockResolvedValue({ applicationId: "app", events: [] });
+});
+
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
+  apiMock.listApplicationEvents.mockReset();
   window.history.replaceState(null, "", "/");
   useUiStore.setState({
     section: "dashboard",
@@ -137,12 +144,27 @@ describe("ApplicationsInspector recovery guidance", () => {
         },
       }],
     });
+    apiMock.listApplicationEvents.mockResolvedValue({
+      applicationId: "app_ccusage",
+      events: [{
+        id: "evt_app_probe",
+        invocationId: null,
+        type: "application_probed",
+        level: "info",
+        message: "ccusage application probe completed.",
+        data: { applicationId: "app_ccusage", capabilityCount: 2, mcpServerCandidateCount: 0 },
+        createdAt: "2026-07-04T03:01:00.000Z",
+      }],
+    });
 
     useUiStore.setState({ selectedApplicationId: "app_ccusage" });
     renderWithClient(createElement(ApplicationsInspector));
 
     expect(await screen.findByText("Latest result")).toBeTruthy();
     expect(await screen.findByText("ccusage Daily Report")).toBeTruthy();
+    expect(await screen.findByText("Application timeline")).toBeTruthy();
+    expect(await screen.findByText("application_probed")).toBeTruthy();
+    expect(await screen.findByText(/2 capabilities/)).toBeTruthy();
     expect(await screen.findByText("ready")).toBeTruthy();
     expect(screen.getAllByText("importedUsageEstimates").length).toBeGreaterThan(0);
     expect(screen.getByText("use_1")).toBeTruthy();

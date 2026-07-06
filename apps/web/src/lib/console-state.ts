@@ -914,6 +914,16 @@ export interface ApplicationMcpAgentSnapshot {
   };
 }
 
+export interface ApplicationEventSnapshot {
+  id: string;
+  invocationId?: string | null;
+  type: string;
+  level?: "info" | "warn" | "error" | string;
+  message?: string | null;
+  createdAt?: string | null;
+  data?: Record<string, unknown> | null;
+}
+
 export interface ApplicationOrchestration {
   routineId: string;
   status?: string;
@@ -1092,7 +1102,7 @@ export interface ApplicationSnapshot {
   kind: string;
   source: ApplicationSource;
   status: "draft" | "probing" | "registered" | "active" | "offline" | "archived" | "failed" | string;
-  lifecycle?: { state?: string; lastOperation?: string; lastOperationAt?: string | null };
+  lifecycle?: { state?: string; lastOperation?: string; lastOperationAt?: string | null; error?: string | null; lastActorId?: string | null };
   projectId?: string | null;
   path?: string | null;
   ownerTeamId?: string | null;

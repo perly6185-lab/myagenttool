@@ -17,6 +17,7 @@ export async function handleApplicationRoutes({
   listApplicationOrchestrationRecoveryAgentCandidates,
   getApplicationOrchestrationRun,
   listApplicationCapabilities,
+  listApplicationEvents,
   listApplications,
   listApplicationOrchestrationRunEvents,
   probeApplication,
@@ -232,6 +233,19 @@ export async function handleApplicationRoutes({
       return true;
     }
     sendJson(res, 200, { applicationId, capabilities });
+    return true;
+  }
+
+  const eventsMatch = url.pathname.match(/^\/api\/applications\/([^/]+)\/events$/);
+  if (eventsMatch && req.method === "GET") {
+    const applicationId = decodeURIComponent(eventsMatch[1]);
+    if (denyForeignApplication({ res, sendJson, state, actor, applicationId, findApplication })) return true;
+    const events = listApplicationEvents(applicationId, url.searchParams);
+    if (!events) {
+      sendJson(res, 404, { error: "application_not_found" });
+      return true;
+    }
+    sendJson(res, 200, { applicationId, events });
     return true;
   }
 

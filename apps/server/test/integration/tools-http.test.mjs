@@ -763,6 +763,51 @@ test("POST /api/applications/register rejects a non-object body without crashing
   assert.equal(res.body.error, "invalid_application");
 });
 
+test("GET /api/applications/:id/events returns scoped application timeline", async () => {
+  ctx.state.events.push({
+    id: "evt_app_timeline_old",
+    invocationId: null,
+    type: "application_registered",
+    level: "info",
+    message: "Old application event.",
+    data: { applicationId: "app_team_a", sourceType: "local" },
+    createdAt: "2099-01-01T00:00:01.000Z",
+  }, {
+    id: "evt_app_timeline_new",
+    invocationId: null,
+    type: "application_probed",
+    level: "info",
+    message: "New application event.",
+    data: { applicationId: "app_team_a", capabilityCount: 3 },
+    createdAt: "2099-01-01T00:00:02.000Z",
+  }, {
+    id: "evt_app_timeline_foreign",
+    invocationId: null,
+    type: "application_probed",
+    level: "info",
+    message: "Foreign application event.",
+    data: { applicationId: "app_other" },
+    createdAt: "2099-01-01T00:00:03.000Z",
+  }, {
+    id: "evt_app_timeline_noise",
+    invocationId: null,
+    type: "application_probed",
+    level: "info",
+    message: "Unscoped application noise.",
+    data: null,
+    createdAt: "2099-01-01T00:00:04.000Z",
+  });
+
+  const events = await call("/api/applications/app_team_a/events?limit=2", { token: "tok_a" });
+  assert.equal(events.status, 200);
+  assert.equal(events.body.applicationId, "app_team_a");
+  assert.deepEqual(events.body.events.map((event) => event.id), ["evt_app_timeline_new", "evt_app_timeline_old"]);
+  assert.equal(events.body.events[0].data.capabilityCount, 3);
+
+  const foreign = await call("/api/applications/app_team_a/events", { token: "tok_b" });
+  assert.equal(foreign.status, 404);
+});
+
 test("POST /api/applications/:id/probe infers local package metadata without executable scripts", async () => {
   const res = await call("/api/applications/app_team_a/probe", {
     method: "POST",
