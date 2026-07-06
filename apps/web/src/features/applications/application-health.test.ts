@@ -6,7 +6,7 @@ import {
   applicationTriageCounts,
   sortApplicationsForTriage,
   sourceSummary,
-} from "@/features/applications/applications-view";
+} from "@/features/applications/application-health";
 import type { ApplicationSnapshot } from "@/lib/console-state";
 
 describe("sourceSummary", () => {

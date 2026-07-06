@@ -16,7 +16,7 @@ import { useUiStore } from "@/store/ui-store";
 import { DescriptorFeedbackList, WrapperCapabilityImpactPanel } from "@/features/applications/descriptor-feedback";
 import { parseOptionalJsonObject, prettyJson, wrapperCapabilityImpact } from "@/features/applications/descriptor-utils";
 import { NpmWrapperCommandBuilder } from "@/features/applications/wrapper-command-builder";
-import { sourceSummary } from "@/features/applications/applications-view";
+import { sourceSummary } from "@/features/applications/application-health";
 import { Transcript } from "@/features/invocations/transcript";
 import {
   isExecutableRecoveryAction,
