@@ -255,8 +255,13 @@ export function createInvocationCreationRuntime({
     }
     // Render applicable agent-skills into the resolved worktree (best-effort,
     // idempotent, git-excluded) so the agent sees them when the bridge runs it.
+    // An auto-run seeds its decided role in metadata.role, so role-restricted
+    // skills render only for their role; a run with no role gets the
+    // unrestricted skills.
     if (projectWorktree?.worktreePath) {
-      renderAgentSkillsIntoWorktree(agent, projectWorktree.worktreePath, state.agentSkills ?? []);
+      renderAgentSkillsIntoWorktree(agent, projectWorktree.worktreePath, state.agentSkills ?? [], {
+        role: typeof requestedMetadata.role === "string" ? requestedMetadata.role : undefined,
+      });
     }
     // Durable barrier: an accepted (queued/running) invocation has no lease to
     // recover it, so flush synchronously before returning — a crash in the

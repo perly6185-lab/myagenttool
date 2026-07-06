@@ -686,6 +686,7 @@ export interface AutomationSnapshot {
 }
 
 export type AgentSkillTarget = "claude" | "codex";
+export type AgentSkillPath = "develop" | "design" | "prototype" | "clarify";
 
 export interface AgentSkillToolBinding {
   cli?: string;
@@ -699,6 +700,7 @@ export interface AgentSkillSnapshot {
   description: string;
   body: string;
   targets: AgentSkillTarget[];
+  paths?: AgentSkillPath[];
   tool?: AgentSkillToolBinding;
   enabled: boolean;
   createdAt: string;

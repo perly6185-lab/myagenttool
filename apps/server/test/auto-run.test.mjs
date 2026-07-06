@@ -158,6 +158,7 @@ test("startAutoRun materializes the worktree and starts an issue-seeded invocati
   assert.match(created.task, /^GitHub Issue #12: Add the widget\./);
   assert.match(created.task, /Implement the change/, "develop role instructions seeded");
   assert.equal(created.options.metadata.worktreeId, worktree.id);
+  assert.equal(created.options.metadata.role, "develop", "decided path seeded as role for skill selection");
   assert.equal(created.agent.id, "agt_1");
   assert.equal(invocation.input.task, created.task, "invocation carries the seeded prompt");
   assert.equal(calls.startInvocationIfAllowed.length, 1, "the run is actually kicked off");
@@ -409,6 +410,7 @@ test("a design-decided run gets the design role prompt (no implementation)", asy
     name: "issue-82-design",
   });
   assert.match(calls.createInvocation[0].task, /Do NOT implement/, "design role instructions");
+  assert.equal(calls.createInvocation[0].options.metadata.role, "design", "design path seeded as role so design-only skills render");
 });
 
 test("a design run spawns a pending-decision child issue and parks (slice 4)", async () => {

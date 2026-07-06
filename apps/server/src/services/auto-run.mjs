@@ -251,7 +251,9 @@ export function createAutoRunService({
       const task = roleAutoRunPrompt(normalizedLink, { path: decision.path, issueBody });
       invocation = createInvocation(task, agent, {
         actor,
-        metadata: { worktreeId: worktree.id, projectId: worktree.projectId, autoRunId },
+        // role carries the decided path so role-restricted agent-skills render
+        // for this run (creation.mjs → renderAgentSkillsIntoWorktree).
+        metadata: { worktreeId: worktree.id, projectId: worktree.projectId, autoRunId, role: decision.path },
       });
       startInvocationIfAllowed(invocation, agent);
     } catch (error) {
@@ -431,12 +433,14 @@ export function createAutoRunService({
     }
 
     const issueBody = await maybeFetchIssueBody(autoRun.link, autoRun.projectId);
-    const task = roleAutoRunPrompt(autoRun.link, { path: autoRun.decision?.path ?? "develop", issueBody });
+    const retryPath = autoRun.decision?.path ?? "develop";
+    const task = roleAutoRunPrompt(autoRun.link, { path: retryPath, issueBody });
     let invocation;
     try {
       invocation = createInvocation(task, agent, {
         actor,
-        metadata: { worktreeId: worktree.id, projectId: worktree.projectId, autoRunId: autoRun.id },
+        // Same role seeding as the initial run so role-restricted skills render.
+        metadata: { worktreeId: worktree.id, projectId: worktree.projectId, autoRunId: autoRun.id, role: retryPath },
       });
       startInvocationIfAllowed(invocation, agent);
     } catch (error) {
