@@ -52,6 +52,8 @@ function makeAutoRun({
   fetchIssueBody = undefined,
   // Injected child-issue spawner (slice 4). Default undefined -> no spawning.
   spawnChildIssue = undefined,
+  // Injected acceptance judge (Phase B). Default undefined -> step skipped.
+  judgeAcceptance = undefined,
 } = {}) {
   const calls = { createInvocation: [], startInvocationIfAllowed: [], commit: [], publish: [], pr: [], verify: [], status: [], report: [] };
   let counter = 0;
@@ -103,6 +105,7 @@ function makeAutoRun({
     decideIssuePath,
     fetchIssueBody,
     spawnChildIssue,
+    judgeAcceptance,
   });
   return { svc, calls };
 }
@@ -786,6 +789,63 @@ test("retryAutoRun refuses non-settled runs and missing worktrees", async () => 
   autoRun.status = "failed";
   autoRun.worktreeId = "wtr_gone";
   await assert.rejects(() => svc.retryAutoRun(autoRun.id), /no longer exists/);
+});
+
+async function judgeRun(svc, number, name) {
+  const { autoRun, invocation } = await svc.startAutoRun({
+    projectId: sourceProjectId,
+    link: { type: "issue", number, title: "Add the thing", url: null, state: "open" },
+    agentId: "agt_1",
+    name,
+  });
+  await svc.advanceAutoRunForInvocation({ ...invocation, status: "succeeded" });
+  return autoRun;
+}
+
+test("acceptance judge: a negative verdict blocks the PR with the gaps (Phase B)", async () => {
+  const { svc, calls } = makeAutoRun({
+    judgeAcceptance: async () => ({ solved: false, confidence: 0.85, summary: "wrong endpoint", gaps: ["acceptance case 2 unhandled"] }),
+  });
+  const autoRun = await judgeRun(svc, 110, "issue-110-judge-block");
+  assert.equal(autoRun.status, "blocked");
+  assert.match(autoRun.error, /does not solve the issue/);
+  assert.match(autoRun.error, /acceptance case 2 unhandled/);
+  assert.deepEqual(autoRun.judgment.solved, false);
+  assert.equal(calls.pr.length, 0, "no PR on a negative verdict");
+});
+
+test("acceptance judge: a positive verdict opens the PR with the judgment as evidence", async () => {
+  const { svc, calls } = makeAutoRun({
+    judgeAcceptance: async ({ worktree, autoRun }) => {
+      assert.ok(worktree?.id, "judge gets the worktree");
+      assert.ok(autoRun?.link, "judge gets the run's link");
+      return { solved: true, confidence: 0.92, summary: "matches acceptance", gaps: [] };
+    },
+  });
+  const autoRun = await judgeRun(svc, 111, "issue-111-judge-pass");
+  assert.equal(autoRun.status, "pr_open");
+  assert.equal(autoRun.judgment.solved, true);
+  assert.match(calls.pr[0].payload.body, /Acceptance judgment: solved \(confidence 92%\)/);
+});
+
+test("acceptance judge: a broken judge never blocks — PR opens labelled honestly", async () => {
+  const { svc, calls } = makeAutoRun({
+    judgeAcceptance: async () => {
+      throw new Error("judge exploded");
+    },
+  });
+  const autoRun = await judgeRun(svc, 112, "issue-112-judge-error");
+  assert.equal(autoRun.status, "pr_open", "infra failure must not block delivery");
+  assert.equal(autoRun.judgment.solved, null);
+  assert.match(calls.pr[0].payload.body, /judge errored/);
+});
+
+test("acceptance judge: unconfigured -> skipped, evidence says not run", async () => {
+  const { svc, calls } = makeAutoRun();
+  const autoRun = await judgeRun(svc, 113, "issue-113-judge-skip");
+  assert.equal(autoRun.status, "pr_open");
+  assert.equal(autoRun.judgment, undefined, "no judgment recorded when the step is off");
+  assert.match(calls.pr[0].payload.body, /Acceptance judgment: not run/);
 });
 
 test("startAutoRun validates the link and the device link state", async () => {

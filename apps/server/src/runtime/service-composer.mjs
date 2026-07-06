@@ -26,6 +26,7 @@ import { resolveStatusWritebackConfig, runIssueBodyFetch, runIssueComment, runIs
 import { resolveDeciderCommand, runDeciderCommand } from "../services/decision-command.mjs";
 import { childIssueBody, childIssueTitle, extractProjectFieldsBlock, runChildIssueCreate, spawnIssuesConfig } from "../services/auto-run-spawn.mjs";
 import { refreshPrDispositions } from "../services/auto-run-eval.mjs";
+import { resolveJudgeCommand, runAcceptanceJudge } from "../services/auto-run-judge.mjs";
 import { createTerminalService } from "../services/terminal.mjs";
 import { createToolService } from "../services/tools.mjs";
 
@@ -362,6 +363,20 @@ export function createServerRuntimeServices({
           });
         }
       : undefined,
+    // Acceptance judge (Phase B): operator-configured one-shot command judging
+    // "does this diff solve this issue?". Unconfigured -> undefined -> skipped.
+    judgeAcceptance: (() => {
+      const command = resolveJudgeCommand();
+      return command
+        ? async ({ worktree, autoRun }) => {
+            const diff = worktreeDiff(worktree)?.diff ?? "";
+            const issueBody = autoRun.link?.type === "issue" && worktree?.repoPath
+              ? await runIssueBodyFetch({ cwd: worktree.repoPath, issueNumber: autoRun.link.number })
+              : null;
+            return runAcceptanceJudge({ command, link: autoRun.link, issueBody, diff });
+          }
+        : undefined;
+    })(),
   });
   // Now that the reaction exists, let completion drive it.
   advanceAutoRunHook = advanceAutoRunForInvocation;

@@ -41,6 +41,8 @@ export function summarizeAutoRuns(autoRuns = []) {
 
   let active = 0;
   const verification = { passed: 0, failed: 0, unverified: 0 };
+  // Acceptance-judge verdicts (Phase B): solved / notSolved / unavailable.
+  const judgments = { solved: 0, notSolved: 0, unavailable: 0 };
   const blockedReasonCounts = {};
   const timeToPrSeconds = [];
   // Routing decisions (slice 5 will evaluate them against outcomes).
@@ -68,6 +70,12 @@ export function summarizeAutoRuns(autoRuns = []) {
       if (!run.verification.verified) verification.unverified += 1;
       else if (run.verification.passed) verification.passed += 1;
       else verification.failed += 1;
+    }
+
+    if (run.judgment) {
+      if (run.judgment.solved === true) judgments.solved += 1;
+      else if (run.judgment.solved === false) judgments.notSolved += 1;
+      else judgments.unavailable += 1;
     }
 
     if (run.status === "blocked" && run.error) {
@@ -99,6 +107,7 @@ export function summarizeAutoRuns(autoRuns = []) {
     // completed run yet (avoids a fake 0% before any data exists).
     successRate: terminal > 0 ? prOpen / terminal : null,
     verification,
+    judgments,
     decisions,
     // Was the routing right? Per-path alignment + PR dispositions (slice 5).
     routing: routingEvaluation(autoRuns),
