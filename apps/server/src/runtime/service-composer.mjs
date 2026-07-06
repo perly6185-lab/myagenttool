@@ -311,12 +311,14 @@ export function createServerRuntimeServices({
   // composer time, so console edits take effect on the next server start.
   const autoRunEnv = autoRunSettingsEnvOverlay(state.autoRunSettings);
 
-  const { startAutoRun, advanceAutoRunForInvocation, syncAutoRunOnApproval, retryAutoRun, mergeAutoRunPr } = createAutoRunService({
+  const { startAutoRun, advanceAutoRunForInvocation, syncAutoRunOnApproval, retryAutoRun, mergeAutoRunPr, reapStuckAutoRuns } = createAutoRunService({
     state,
     now,
     nextId,
     // O0 cost brake: refuse to start a run when the project is over budget.
     budgetStatusFor,
+    // O1 reliability: find a run's invocation for stuck/crash reconcile.
+    findInvocation,
     appendEvent,
     persistStateSoon,
     createWorktree,
@@ -1960,6 +1962,7 @@ export function createServerRuntimeServices({
     publishWorktreeBranch,
     startAutoRun,
     retryAutoRun,
+    reapStuckAutoRuns,
     mergeAutoRunPr,
     refreshAutoRunPrDispositions,
     selectProject,
