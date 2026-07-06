@@ -104,3 +104,9 @@ test("autonomyKillSwitch: normalized bool + exposed in effective config", () => 
   assert.equal(resolveAutoRunConfig({ autoRunSettings: { autonomyKillSwitch: true } }, {}).autonomyKillSwitch, true);
   assert.equal(resolveAutoRunConfig({}, {}).autonomyKillSwitch, false, "default off");
 });
+
+test("autoApproveNonCodePaths: normalized bool + exposed", () => {
+  assert.equal(normalizeAutoRunSettings({ autoApproveNonCodePaths: "1" }).autoApproveNonCodePaths, true);
+  assert.equal(resolveAutoRunConfig({ autoRunSettings: { autoApproveNonCodePaths: true } }, {}).autoApproveNonCodePaths, true);
+  assert.equal(resolveAutoRunConfig({}, {}).autoApproveNonCodePaths, false, "default off");
+});

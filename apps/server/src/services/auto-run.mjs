@@ -17,6 +17,11 @@ import { judgmentEvidence } from "./auto-run-judge.mjs";
 // awaiting_approval because the invocation itself does (Auto never bypasses the
 // local-approval gate). The reaction (advanceAutoRunForInvocation) runs the
 // verification gate and opens the PR — a failed real check blocks it.
+// O2: decision paths whose runs may be auto-approved by operator policy — the
+// non-code paths (a design brief / a clarify question / a throwaway spike),
+// never `develop` (which edits product code and opens a PR).
+const AUTO_APPROVABLE_PATHS = new Set(["design", "clarify", "prototype"]);
+
 export const autoRunStates = [
   "materializing",
   "running",
@@ -43,6 +48,7 @@ export function createAutoRunService({
   budgetStatusFor,
   createInvocation,
   findInvocation,
+  autoApproveInvocation,
   startInvocationIfAllowed,
   commitWorktreeChanges,
   publishWorktreeBranch,
@@ -298,6 +304,29 @@ export function createAutoRunService({
       message: `Auto-run started for ${normalizedLink.type} #${normalizedLink.number}.`,
       data: { autoRunId, worktreeId: worktree.id, invocationId: invocation.id, status: autoRun.status },
     });
+    // O2 graduated approval: auto-approve NON-CODE paths (design/clarify/
+    // prototype — these produce a summary/spike, never a product-code PR) when
+    // the operator opts in, lifting the human from the low-risk paths. develop
+    // (edits code + opens a PR) ALWAYS stays human, and merge always stays human.
+    // Uses the existing approve path (a human's click, applied by policy), fully
+    // audited; the approval hook flips the run to running. Default off = today.
+    if (
+      autoRun.status === "awaiting_approval" &&
+      state.autoRunSettings?.autoApproveNonCodePaths &&
+      AUTO_APPROVABLE_PATHS.has(decision.path) &&
+      typeof autoApproveInvocation === "function"
+    ) {
+      const approved = autoApproveInvocation({ invocationId: invocation.id, actor: { userId: "usr_autorun_policy" } });
+      if (approved) {
+        appendEvent({
+          invocationId: invocation.id,
+          type: "auto_run_auto_approved",
+          level: "info",
+          message: `Auto-run ${autoRunId} auto-approved by operations policy (non-code path: ${decision.path}).`,
+          data: { autoRunId, path: decision.path },
+        });
+      }
+    }
     // The run has begun (or is parked for approval) — mark the issue in-progress.
     if (autoRun.status !== "failed") {
       maybeWriteIssueStatus(autoRun, worktree, "in-progress");

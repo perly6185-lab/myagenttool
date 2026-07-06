@@ -319,6 +319,16 @@ export function createServerRuntimeServices({
     budgetStatusFor,
     // O1 reliability: find a run's invocation for stuck/crash reconcile.
     findInvocation,
+    // O2 graduated approval: apply a human-equivalent approval by policy (used
+    // only for operator-opted-in non-code paths). Reuses the existing approve
+    // path — no change to the security policy that decides who needs approval.
+    autoApproveInvocation: ({ invocationId, actor }) => {
+      const approval = (state.approvalRequests ?? []).find((item) => item.invocationId === invocationId && item.status === "pending");
+      const invocation = findInvocation(invocationId);
+      if (!approval || !invocation) return false;
+      approveInvocation(approval, invocation, actor ?? null);
+      return true;
+    },
     appendEvent,
     persistStateSoon,
     createWorktree,

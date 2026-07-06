@@ -82,6 +82,9 @@ export function normalizeAutoRunSettings(patch = {}, prev = {}) {
     // O0 kill switch (UI-only): when true, halt ALL autonomous runs (auto-trigger
     // stops scanning and startAutoRun refuses). The global emergency brake.
     autonomyKillSwitch: keep("autonomyKillSwitch", asBool),
+    // O2 graduated approval (UI-only): auto-approve NON-CODE paths (design/
+    // clarify/prototype). develop and merge always stay human. Default off.
+    autoApproveNonCodePaths: keep("autoApproveNonCodePaths", asBool),
   };
 }
 
@@ -136,6 +139,8 @@ export function resolveAutoRunConfig(state = {}, baseEnv = process.env) {
     requireChecksGreenToMerge: Boolean(settings.requireChecksGreenToMerge),
     // O0 global kill switch (not env-backed): halts all autonomous runs.
     autonomyKillSwitch: Boolean(settings.autonomyKillSwitch),
+    // O2 graduated approval (not env-backed): auto-approve non-code paths.
+    autoApproveNonCodePaths: Boolean(settings.autoApproveNonCodePaths),
     // Command knobs are env-only; expose only whether each is configured.
     commands: {
       verify: Boolean(resolveAutoRunVerifyCommand()),

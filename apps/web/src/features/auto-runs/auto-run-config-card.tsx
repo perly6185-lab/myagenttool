@@ -16,6 +16,7 @@ interface AutoRunConfig {
   judgeTimeoutMs: number;
   requireChecksGreenToMerge: boolean;
   autonomyKillSwitch: boolean;
+  autoApproveNonCodePaths: boolean;
   commands: { verify: boolean; decider: boolean; judge: boolean };
   settings: Record<string, unknown>;
 }
@@ -34,6 +35,7 @@ interface Draft {
   judgeTimeoutMs: number;
   requireChecksGreenToMerge: boolean;
   autonomyKillSwitch: boolean;
+  autoApproveNonCodePaths: boolean;
 }
 
 function toDraft(c: AutoRunConfig): Draft {
@@ -50,6 +52,7 @@ function toDraft(c: AutoRunConfig): Draft {
     judgeTimeoutMs: c.judgeTimeoutMs,
     requireChecksGreenToMerge: c.requireChecksGreenToMerge,
     autonomyKillSwitch: c.autonomyKillSwitch,
+    autoApproveNonCodePaths: c.autoApproveNonCodePaths,
   };
 }
 
@@ -171,6 +174,7 @@ export function AutoRunConfigCard() {
             <Toggle label="Require Project Fields" hint="Only auto-trigger issues carrying ## Project Fields." checked={draft.autoTriggerRequireProjectFields} onChange={(v) => set("autoTriggerRequireProjectFields", v)} />
             <Toggle label="Status writeback" hint="Move the linked issue's status label as the run advances." checked={draft.statusWriteback} onChange={(v) => set("statusWriteback", v)} />
             <Toggle label="Spawn child issues" hint="A design decision spawns a governed child issue." checked={draft.spawnIssues} onChange={(v) => set("spawnIssues", v)} />
+            <Toggle label="Auto-approve non-code paths" hint="Skip human approval for design/clarify/prototype runs (no code, no PR). develop + merge stay human." checked={draft.autoApproveNonCodePaths} onChange={(v) => set("autoApproveNonCodePaths", v)} />
             <Toggle label="Decider fast path" hint="Strong lexical signals skip the LLM decider hop." checked={draft.deciderFastPath} onChange={(v) => set("deciderFastPath", v)} />
             <Toggle label="Require green PR checks to merge" hint="Block the in-tool Merge unless the PR's checks are green (applies immediately)." checked={draft.requireChecksGreenToMerge} onChange={(v) => set("requireChecksGreenToMerge", v)} />
           </div>
