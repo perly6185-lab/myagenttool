@@ -3,6 +3,7 @@ import { roleAutoRunPrompt } from "@myagenttool/protocol/issue-prompt";
 import { normalizeWorktreeLink } from "./projects.mjs";
 import { intentForPath, resolveDecision } from "./auto-run-decision.mjs";
 import { isSpawnedChildBody } from "./auto-run-spawn.mjs";
+import { judgmentEvidence } from "./auto-run-judge.mjs";
 
 // One-click "Auto" orchestrator. It closes the seam the console never had:
 // turning a linked GitHub issue into a worktree AND a started agent run seeded
@@ -49,6 +50,7 @@ export function createAutoRunService({
   fetchIssueBody,
   postIssueReport,
   spawnChildIssue,
+  judgeAcceptance,
 }) {
   // Best-effort issue body fetch (issue links only): richer context for both the
   // decision and the role prompt. Null on any failure — the run proceeds on the
@@ -143,9 +145,9 @@ export function createAutoRunService({
 
   // The PR body an auto-run opens with, carrying the verification evidence so the
   // pull request is honest about whether checks ran and passed.
-  function verificationEvidenceBody(verification) {
+  function verificationEvidenceBody(verification, judgment) {
     const state = verification.verified ? (verification.passed ? "passed" : "failed") : "not run (no verification command configured)";
-    return `Automated auto-run pull request.\n\n## Verification\n- Checks: ${state}\n${verification.summary ? `\n${verification.summary}\n` : ""}`;
+    return `Automated auto-run pull request.\n\n## Verification\n- Checks: ${state}\n${judgmentEvidence(judgment)}\n${verification.summary ? `\n${verification.summary}\n` : ""}`;
   }
 
   function autoRunStatusForInvocation(invocation) {
@@ -357,10 +359,31 @@ export function createAutoRunService({
           persistStateSoon();
           return autoRun;
         }
+        // Acceptance judge (Phase B): did the diff solve THIS issue — the quality
+        // the build/tests can't see. A real negative verdict blocks; an infra
+        // failure (null) never does, it just labels the PR honestly.
+        let judgment;
+        if (typeof judgeAcceptance === "function") {
+          try {
+            judgment = await judgeAcceptance({ worktree, autoRun });
+          } catch {
+            judgment = null;
+          }
+          autoRun.judgment = judgment
+            ? { solved: judgment.solved, confidence: judgment.confidence, summary: judgment.summary ?? null, gaps: judgment.gaps ?? [] }
+            : { solved: null, confidence: null, summary: "Judge errored — verdict unavailable.", gaps: [] };
+          if (judgment && judgment.solved === false) {
+            const gaps = judgment.gaps.length ? ` Gaps: ${judgment.gaps.join("; ")}` : "";
+            setAutoRunStatus(autoRun, "blocked", { error: `Acceptance judge: the change does not solve the issue.${gaps}` });
+            maybeWriteIssueStatus(autoRun, worktree, "review");
+            persistStateSoon();
+            return autoRun;
+          }
+        }
         setAutoRunStatus(autoRun, "publishing");
         try {
           await publishWorktreeBranch(autoRun.worktreeId);
-          const pr = await createWorktreePr(autoRun.worktreeId, { body: verificationEvidenceBody(verification) });
+          const pr = await createWorktreePr(autoRun.worktreeId, { body: verificationEvidenceBody(verification, judgment) });
           setAutoRunStatus(autoRun, "pr_open", { prNumber: pr?.number ?? null, prUrl: pr?.url ?? null, error: null });
           maybeWriteIssueStatus(autoRun, worktree, "review");
         } catch (error) {

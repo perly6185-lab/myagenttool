@@ -25,6 +25,7 @@ interface AutoRunRecord {
   prUrl?: string | null;
   verification?: { passed: boolean; verified: boolean; summary?: string | null } | null;
   childIssues?: { number: number; url: string | null }[] | null;
+  judgment?: { solved: boolean | null; confidence: number | null; summary?: string | null; gaps?: string[] } | null;
   report?: string | null;
   prState?: string | null;
   error?: string | null;
@@ -287,6 +288,14 @@ export function AutoRunsView() {
                     <span className="inline-flex items-center gap-1">
                       <ShieldCheck className="size-3" />
                       {run.verification.verified ? (run.verification.passed ? "verified" : "check failed") : "unverified"}
+                    </span>
+                  ) : null}
+                  {run.judgment ? (
+                    <span
+                      className="inline-flex items-center gap-1"
+                      title={`${run.judgment.summary ?? ""}${(run.judgment.gaps ?? []).map((g) => `\n- ${g}`).join("")}`}
+                    >
+                      ⚖ {run.judgment.solved === true ? "solves issue" : run.judgment.solved === false ? "does NOT solve issue" : "judge unavailable"}
                     </span>
                   ) : null}
                 </div>

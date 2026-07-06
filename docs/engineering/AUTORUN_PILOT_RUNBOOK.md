@@ -67,6 +67,13 @@ Optional: `MYAGENTTOOL_AUTORUN_VERIFY_COMMAND_JSON` (e.g. `'["mvn","-q","test"]'
 — when the toolchain is unavailable locally, leave it unset and PRs open
 honestly labelled *unverified* rather than faking a pass.
 
+Optional: `MYAGENTTOOL_AUTORUN_JUDGE_COMMAND_JSON` — the acceptance judge
+(Phase B): a one-shot command reading `{ link, issueBody, diff }` on stdin and
+printing `{"solved":bool,"confidence":0..1,"summary":"...","gaps":[...]}`. A
+negative verdict BLOCKS the PR with the gaps; a broken judge never blocks (the
+PR opens labelled "judge errored"). `MYAGENTTOOL_AUTORUN_JUDGE_TIMEOUT_MS`
+defaults to 120s.
+
 ## 3. Bridge
 
 ```bash
