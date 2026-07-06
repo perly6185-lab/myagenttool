@@ -409,7 +409,7 @@ function createDefaultAgents(now) {
         args: codexCliArgs(),
         workingDirectoryPolicy: "bridge_default",
         environmentPolicy: "inherit_safe",
-        timeoutSeconds: 120,
+        timeoutSeconds: 600,
         cancellation: "supported",
         outputFormat: "codex_jsonl",
         sandbox: null
@@ -462,7 +462,7 @@ function createDefaultAgents(now) {
         args: claudeCliArgs("acceptEdits"),
         workingDirectoryPolicy: "bridge_default",
         environmentPolicy: "inherit_safe",
-        timeoutSeconds: 180,
+        timeoutSeconds: 600,
         cancellation: "supported",
         outputFormat: "claude_jsonl",
         sandbox: null,

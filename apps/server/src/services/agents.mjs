@@ -79,7 +79,9 @@ export function createAgentService({ state, now, nextId, appendEvent, persistSta
         workingDirectoryPolicy: body.workingDirectory ? "explicit" : "bridge_default",
         environmentPolicy: body.env ? "explicit_only" : "inherit_safe",
         env: normalizeEnv(body.env),
-        timeoutSeconds: Number(body.timeoutSeconds ?? (claudeCommand ? 180 : codexCommand ? 120 : 30)),
+        // Coding agents default to 600s: real edit tasks routinely exceed the
+        // old 180/120s and were being killed mid-run (field-pilot finding #1).
+        timeoutSeconds: Number(body.timeoutSeconds ?? (codingAgent ? 600 : 30)),
         cancellation: "supported",
         outputFormat: normalizeCliOutputFormat(body.outputFormat ?? body.adapter?.outputFormat, command),
         sandbox: body.sandbox ?? body.adapter?.sandbox ?? null,
