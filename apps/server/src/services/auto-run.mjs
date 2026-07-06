@@ -52,6 +52,7 @@ export function createAutoRunService({
   postIssueReport,
   spawnChildIssue,
   judgeAcceptance,
+  mergePr,
 }) {
   // Best-effort issue body fetch (issue links only): richer context for both the
   // decision and the role prompt. Null on any failure — the run proceeds on the
@@ -470,5 +471,38 @@ export function createAutoRunService({
     return { autoRun, invocation };
   }
 
-  return { startAutoRun, advanceAutoRunForInvocation, syncAutoRunOnApproval, retryAutoRun };
+  // Human-triggered PR merge from the console. The merge stays human — this only
+  // runs when a person clicks Merge on a pr_open run; it is never automatic.
+  // Guards: the run must have an open PR; a MERGED run is a no-op. On success
+  // the record flips to prState=MERGED (the routing eval then counts it merged).
+  async function mergeAutoRunPr(autoRunId, { actor } = {}) {
+    const autoRun = state.autoRuns.find((item) => item.id === autoRunId);
+    if (!autoRun) throw new Error("Auto-run not found.");
+    if (autoRun.prState === "MERGED") return { ok: true, alreadyMerged: true, prNumber: autoRun.prNumber };
+    if (autoRun.status !== "pr_open" || !autoRun.prNumber) {
+      throw new Error("Only an auto-run with an open PR can be merged.");
+    }
+    if (typeof mergePr !== "function") throw new Error("PR merge is not available on this server.");
+    const project = state.projects.find((item) => item.id === autoRun.projectId) ?? null;
+    const repoPath = project?.path;
+    if (!repoPath) throw new Error("The auto-run's project path is unavailable.");
+
+    const result = await mergePr({ prNumber: autoRun.prNumber, repoPath });
+    if (!result?.ok) {
+      throw new Error(result?.error || "gh pr merge failed.");
+    }
+    autoRun.prState = "MERGED";
+    autoRun.prStateCheckedAt = now();
+    appendEvent({
+      invocationId: autoRun.invocationId,
+      type: "auto_run_pr_merged",
+      level: "info",
+      message: `Auto-run ${autoRun.id} PR #${autoRun.prNumber} merged by ${actor?.userId ?? "usr_local"}.`,
+      data: { autoRunId: autoRun.id, prNumber: autoRun.prNumber, method: result.method ?? "squash" },
+    });
+    persistStateSoon();
+    return { ok: true, prNumber: autoRun.prNumber, prState: "MERGED" };
+  }
+
+  return { startAutoRun, advanceAutoRunForInvocation, syncAutoRunOnApproval, retryAutoRun, mergeAutoRunPr };
 }

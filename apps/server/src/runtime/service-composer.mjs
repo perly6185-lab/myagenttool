@@ -22,7 +22,7 @@ import { createM3Service } from "../services/m3.mjs";
 import { createProjectService, sameProjectPath } from "../services/projects.mjs";
 import { createAutoRunService } from "../services/auto-run.mjs";
 import { resolveAutoRunVerifyCommand, runWorktreeVerification } from "../services/worktree-verify.mjs";
-import { resolveStatusWritebackConfig, runIssueBodyFetch, runIssueComment, runIssueStatusTransition, runPrStateFetch } from "../services/issue-status.mjs";
+import { resolveStatusWritebackConfig, runIssueBodyFetch, runIssueComment, runIssueStatusTransition, runPrMerge, runPrStateFetch } from "../services/issue-status.mjs";
 import { deciderTimeoutMs, resolveDeciderCommand, runDeciderCommand } from "../services/decision-command.mjs";
 import { childIssueBody, childIssueTitle, extractProjectFieldsBlock, runChildIssueCreate, spawnIssuesConfig } from "../services/auto-run-spawn.mjs";
 import { refreshPrDispositions } from "../services/auto-run-eval.mjs";
@@ -311,7 +311,7 @@ export function createServerRuntimeServices({
   // composer time, so console edits take effect on the next server start.
   const autoRunEnv = autoRunSettingsEnvOverlay(state.autoRunSettings);
 
-  const { startAutoRun, advanceAutoRunForInvocation, syncAutoRunOnApproval, retryAutoRun } = createAutoRunService({
+  const { startAutoRun, advanceAutoRunForInvocation, syncAutoRunOnApproval, retryAutoRun, mergeAutoRunPr } = createAutoRunService({
     state,
     now,
     nextId,
@@ -387,6 +387,9 @@ export function createServerRuntimeServices({
           }
         : undefined;
     })(),
+    // Human-triggered PR merge from the console (merge stays human — only fired
+    // by a person clicking Merge on a pr_open run, never automatically).
+    mergePr: ({ prNumber, repoPath }) => runPrMerge({ cwd: repoPath, prNumber }),
   });
   // Now that the reaction exists, let completion drive it.
   advanceAutoRunHook = advanceAutoRunForInvocation;
@@ -1949,6 +1952,7 @@ export function createServerRuntimeServices({
     publishWorktreeBranch,
     startAutoRun,
     retryAutoRun,
+    mergeAutoRunPr,
     refreshAutoRunPrDispositions,
     selectProject,
     removeProject,

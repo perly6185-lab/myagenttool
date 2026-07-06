@@ -24,6 +24,7 @@ export async function handleProjectRoutes({
   publishWorktreeBranch,
   startAutoRun,
   retryAutoRun,
+  mergeAutoRunPr,
   refreshAutoRunPrDispositions,
   selectProject,
   removeProject,
@@ -166,6 +167,18 @@ export async function handleProjectRoutes({
       sendJson(res, 200, result);
     } catch (error) {
       sendJson(res, 400, { error: "auto_run_retry_failed", message: errorMessage(error) });
+    }
+    return true;
+  }
+
+  const autoRunMergeMatch = url.pathname.match(/^\/api\/auto-runs\/([^\/]+)\/merge$/);
+  if (autoRunMergeMatch && req.method === "POST") {
+    // Human-triggered PR merge (merge stays human — a person clicking Merge).
+    try {
+      const result = await mergeAutoRunPr(decodeURIComponent(autoRunMergeMatch[1]), { actor });
+      sendJson(res, 200, result);
+    } catch (error) {
+      sendJson(res, 400, { error: "auto_run_merge_failed", message: errorMessage(error) });
     }
     return true;
   }

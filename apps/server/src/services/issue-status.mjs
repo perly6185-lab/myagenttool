@@ -66,6 +66,20 @@ export async function runPrStateFetch({ cwd, prNumber, gh = defaultGh }) {
   }
 }
 
+// Human-triggered PR merge from the console (the merge stays human — this is a
+// person clicking Merge in the tool, never an automatic step). Runs
+// `gh pr merge <n> --<method>` in the project repo. Never throws; returns a
+// structured result the caller turns into prState = MERGED on success.
+export async function runPrMerge({ cwd, prNumber, method = "squash", gh = defaultGh }) {
+  const allowed = ["squash", "merge", "rebase"].includes(method) ? method : "squash";
+  try {
+    await gh(["pr", "merge", String(prNumber), `--${allowed}`], cwd);
+    return { ok: true, prNumber, method: allowed };
+  } catch (error) {
+    return { ok: false, prNumber, error: String(error?.stderr ?? error?.message ?? error).trim() };
+  }
+}
+
 // Post a comment on the issue — used to deliver an investigation auto-run's
 // findings back to the issue. Never throws; returns a structured result.
 export async function runIssueComment({ cwd, issueNumber, body, gh = defaultGh }) {
