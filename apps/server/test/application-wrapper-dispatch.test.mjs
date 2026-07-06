@@ -14,7 +14,7 @@ import { createCcusageApplicationRegistration } from "../src/services/ccusage-ap
 
 const CAP = "app.app_ccusage.wrapper.daily";
 
-function harness({ agentAvailable = true } = {}) {
+function harness({ agentAvailable = true, registration = createCcusageApplicationRegistration() } = {}) {
   const state = { applications: [], projects: [] };
   const approvals = new Map();
   const invocations = new Map();
@@ -28,7 +28,7 @@ function harness({ agentAvailable = true } = {}) {
     cloneProject: () => null,
     defaultProjectPath: "/tmp/repo",
   });
-  appSvc.registerApplication(createCcusageApplicationRegistration());
+  appSvc.registerApplication(registration);
 
   const created = [];
   const capSvc = createCapabilityService({
@@ -67,7 +67,7 @@ function harness({ agentAvailable = true } = {}) {
     findApprovalRequest: (id) => approvals.get(id) ?? null,
     findInvocation: (id) => invocations.get(id) ?? null,
   });
-  return { approvals, capSvc, created };
+  return { approvals, appSvc, capSvc, created };
 }
 
 test("wrapper capability dispatches a queued bridge invocation with the resolved command", () => {
@@ -124,5 +124,45 @@ test("an unknown wrapper command resolves no plan and is refused", () => {
   const { capSvc, created } = harness();
   const res = capSvc.createCapabilityInvocation("app.app_ccusage.wrapper.nonexistent", {});
   assert.equal(res.status, 404);
+  assert.equal(created.length, 0);
+});
+
+test("write or network wrapper policies are discoverable but blocked before approval or dispatch", () => {
+  const { capSvc, created } = harness({
+    registration: {
+      id: "app_policy_fixture",
+      name: "Policy Fixture",
+      source: {
+        type: "npm",
+        package: "@scope/policy-fixture",
+        wrapper: {
+          mode: "installed-wrapper",
+          installState: "installed",
+          commands: [{
+            id: "write",
+            displayName: "Workspace write wrapper",
+            commandType: "custom",
+            command: "node",
+            status: "approved",
+            riskLevel: "high",
+            requiresApproval: true,
+            filePolicy: "workspace_write",
+            networkPolicy: "network",
+          }],
+        },
+      },
+    },
+  });
+  const capability = capSvc.getCapability("app.app_policy_fixture.wrapper.write");
+  assert.equal(capability.status, "disabled");
+  assert.equal(capability.metadata.readiness.state, "needs_consent");
+  assert.equal(capability.metadata.readiness.reason, "wrapper_policy_exceeds_current_consent_model");
+  assert.equal(capability.metadata.wrapper.policySupported, false);
+
+  const res = capSvc.createCapabilityInvocation("app.app_policy_fixture.wrapper.write", {});
+  assert.equal(res.status, 409);
+  assert.equal(res.body.error, "application_wrapper_policy_not_supported");
+  assert.equal(res.body.filePolicy, "workspace_write");
+  assert.equal(res.body.networkPolicy, "network");
   assert.equal(created.length, 0);
 });

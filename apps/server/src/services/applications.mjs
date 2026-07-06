@@ -394,6 +394,23 @@ export function createApplicationService({
     if (!command) {
       return { ok: false, status: 404, body: { error: "wrapper_command_not_found", applicationId, commandId } };
     }
+    const policySupport = applicationWrapperPolicySupport(command);
+    if (!policySupport.supported) {
+      return {
+        ok: false,
+        status: 409,
+        body: {
+          error: "application_wrapper_policy_not_supported",
+          reason: policySupport.reason,
+          applicationId,
+          commandId,
+          filePolicy: command.filePolicy,
+          networkPolicy: command.networkPolicy,
+          supportedFilePolicy: "read_only",
+          supportedNetworkPolicy: "forbidden",
+        },
+      };
+    }
     // Approval is required only for commands that declare it. A read-only report
     // command can set requiresApproval:false — preserving, e.g., the ccusage
     // tool's offline reports that never needed an approval token.
@@ -707,6 +724,7 @@ export function projectApplicationCapabilities(app) {
 
 function managedCapability(app, name, displayName, kind, riskLevel, riskTags, requiresApproval, disabled, inputSchema, metadata = {}) {
   const outputCollection = metadata.outputCollection ?? "invocations";
+  const { capabilityStatus, ...capabilityMetadata } = metadata;
   return {
     name,
     version: "1",
@@ -722,17 +740,17 @@ function managedCapability(app, name, displayName, kind, riskLevel, riskTags, re
     riskTags,
     requiresApproval,
     invocationMode: "gateway",
-    status: disabled ? "disabled" : "available",
+    status: capabilityStatus ?? (disabled ? "disabled" : "available"),
     inputSchema,
     outputSchema: { structuredResult: true, provider: "application" },
     metadata: {
-      readiness: capabilityReadiness(app, { disabled, kind, metadata }),
+      readiness: capabilityReadiness(app, { disabled, kind, metadata: capabilityMetadata }),
       resultPath: {
         outputCollection,
-        resultImport: metadata.resultImport ?? null,
+        resultImport: capabilityMetadata.resultImport ?? null,
         evidenceCenter: outputCollection !== "invocations",
       },
-      ...metadata,
+      ...capabilityMetadata,
     },
   };
 }
@@ -741,38 +759,44 @@ function projectNpmWrapperCapabilities(app, prefix, disabled) {
   if (app.source?.type !== "npm" || app.source.wrapper?.mode !== "installed-wrapper") return [];
   return (app.source.wrapper.commands ?? [])
     .filter((command) => command.status === "approved")
-    .map((command) => managedCapability(
-      app,
-      `${prefix}.wrapper.${command.id}`,
-      command.displayName,
-      "npm_wrapper",
-      command.riskLevel,
-      [...new Set(["local_execution", "npm_wrapper", ...command.riskTags])],
-      command.requiresApproval,
-      disabled,
-      command.inputSchema,
-      {
-        wrapper: {
-          mode: app.source.wrapper.mode,
-          installState: app.source.wrapper.installState,
-          commandId: command.id,
-          commandType: command.commandType,
-          timeoutSeconds: command.timeoutSeconds,
-          cancellation: command.cancellation,
-          envPolicy: command.envPolicy,
-          filePolicy: command.filePolicy,
-          networkPolicy: command.networkPolicy,
+    .map((command) => {
+      const policySupport = applicationWrapperPolicySupport(command);
+      return managedCapability(
+        app,
+        `${prefix}.wrapper.${command.id}`,
+        command.displayName,
+        "npm_wrapper",
+        command.riskLevel,
+        [...new Set(["local_execution", "npm_wrapper", ...command.riskTags])],
+        command.requiresApproval,
+        disabled,
+        command.inputSchema,
+        {
+          capabilityStatus: policySupport.supported ? undefined : "disabled",
+          wrapper: {
+            mode: app.source.wrapper.mode,
+            installState: app.source.wrapper.installState,
+            commandId: command.id,
+            commandType: command.commandType,
+            timeoutSeconds: command.timeoutSeconds,
+            cancellation: command.cancellation,
+            envPolicy: command.envPolicy,
+            filePolicy: command.filePolicy,
+            networkPolicy: command.networkPolicy,
+            policySupported: policySupport.supported,
+            policyUnsupportedReason: policySupport.reason,
+          },
+          compatibilityFacade: command.compatibilityFacade,
+          execution: {
+            mode: "bridge_wrapper",
+            agentId: "agt_platform_application_wrapper",
+          },
+          outputCollection: command.outputCollection,
+          billing: command.billing,
+          resultImport: command.resultImport,
         },
-        compatibilityFacade: command.compatibilityFacade,
-        execution: {
-          mode: "bridge_wrapper",
-          agentId: "agt_platform_application_wrapper",
-        },
-        outputCollection: command.outputCollection,
-        billing: command.billing,
-        resultImport: command.resultImport,
-      },
-    ));
+      );
+    });
 }
 
 function capabilityReadiness(app, { disabled, kind, metadata }) {
@@ -785,6 +809,17 @@ function capabilityReadiness(app, { disabled, kind, metadata }) {
   }
   if (kind === "npm_wrapper") {
     const installState = metadata?.wrapper?.installState ?? app.source?.wrapper?.installState ?? "unknown";
+    if (installState === "installed" && metadata?.wrapper?.policySupported === false) {
+      return {
+        state: "needs_consent",
+        reason: "wrapper_policy_exceeds_current_consent_model",
+        applicationStatus: app.status,
+        installState,
+        executionMode: "bridge_wrapper",
+        filePolicy: metadata.wrapper.filePolicy ?? null,
+        networkPolicy: metadata.wrapper.networkPolicy ?? null,
+      };
+    }
     return {
       state: installState === "installed" ? "ready" : "needs_setup",
       reason: installState === "installed" ? "wrapper_installed" : "wrapper_not_confirmed_installed",
@@ -2321,6 +2356,18 @@ class ApplicationDescriptorValidationError extends Error {
     this.name = "ApplicationDescriptorValidationError";
     this.validationErrors = errors;
   }
+}
+
+function applicationWrapperPolicySupport(command) {
+  const filePolicy = command?.filePolicy ?? "read_only";
+  const networkPolicy = command?.networkPolicy ?? "forbidden";
+  if (filePolicy !== "read_only" || networkPolicy !== "forbidden") {
+    return {
+      supported: false,
+      reason: "Current Application wrapper consent model only supports read_only files and forbidden network access.",
+    };
+  }
+  return { supported: true, reason: null };
 }
 
 function normalizeNpmWrapper(wrapper = {}) {

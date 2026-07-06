@@ -84,9 +84,32 @@ View invocation navigation.
   ccusage to reviewed `app.*.wrapper.*` descriptors, but only under the current
   conservative local policy envelope: read-only files and forbidden network.
   Write-capable or networked wrappers still need a broader consent model.
-- The current durable proof is read-model oriented. The next slice should add
-  restart/read-model/audit-reference coverage for these Application result
-  links.
 - CI green rate remains below the L2 target because historical merged PRs still
   include no-check merges; backlog stale items and the mock held-out misses are
   unchanged product maturity gaps.
+
+## 2026-07-06 Follow-up
+
+- Added restart/read-model coverage for generic NPM Application wrapper
+  descriptors. The regression restores a persisted Application and proves that
+  editable descriptors, approved wrapper capability projection, readiness
+  metadata, result path metadata, declared arg inputs, execution planning, and
+  public wrapper snapshots all survive runtime restart.
+- Added a server-side consent boundary for wrapper policies beyond the current
+  read-only/no-network envelope. Write-capable or networked wrapper descriptors
+  remain discoverable for review, but their capabilities are marked `disabled`
+  with readiness `needs_consent`, and invocation is blocked with
+  `application_wrapper_policy_not_supported` before approval or bridge dispatch.
+- Re-ran focused Application verification:
+  `pnpm --filter @myagenttool/server exec node --test --test-name-pattern
+  "Application (result links|descriptors and wrapper projection)"
+  test/persistence.test.mjs`.
+
+Remaining design work is now concentrated on two expansion gates:
+
+- Define the future consent model that can safely promote write-capable or
+  networked Application wrappers from `needs_consent` to executable, including
+  per-run data boundaries, destination disclosure, bridge/device binding, and
+  revocation/audit behavior.
+- Deepen HTTP MCP review and live-probe evidence before treating HTTP MCP
+  candidates as executable shared Application tools.

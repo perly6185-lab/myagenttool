@@ -894,6 +894,58 @@ test("npm wrapper descriptors project only approved governed capabilities", asyn
   assert.equal(wrapper.capability, `app.${appId}.wrapper.lint`);
 });
 
+test("write or network npm wrapper policies are visible but not invokable without the future consent model", async () => {
+  const registered = await call("/api/applications/register", {
+    method: "POST",
+    body: {
+      id: "npm_wrapper_policy_fixture",
+      name: "NPM Wrapper Policy Fixture",
+      source: {
+        type: "npm",
+        package: "@scope/wrapper-policy-fixture",
+        version: "1.0.0",
+        wrapper: {
+          mode: "installed-wrapper",
+          installState: "installed",
+          packageManager: "npm",
+          commands: [{
+            id: "deploy",
+            displayName: "Deploy wrapper",
+            commandType: "npm_script",
+            command: "deploy",
+            status: "approved",
+            riskLevel: "high",
+            requiresApproval: false,
+            filePolicy: "workspace_write",
+            networkPolicy: "network",
+          }],
+        },
+      },
+    },
+    token: "tok_a",
+  });
+  assert.equal(registered.status, 201);
+  const appId = registered.body.application.id;
+
+  const capabilities = await call("/api/capabilities?providerType=application", { token: "tok_a" });
+  const deployCapability = capabilities.body.capabilities.find((item) => item.name === `app.${appId}.wrapper.deploy`);
+  assert.ok(deployCapability, "approved write/network wrapper should remain discoverable for review");
+  assert.equal(deployCapability.status, "disabled");
+  assert.equal(deployCapability.metadata.readiness.state, "needs_consent");
+  assert.equal(deployCapability.metadata.readiness.reason, "wrapper_policy_exceeds_current_consent_model");
+  assert.equal(deployCapability.metadata.wrapper.policySupported, false);
+
+  const unsupported = await call(`/api/capabilities/app.${appId}.wrapper.deploy/invocations`, {
+    method: "POST",
+    body: {},
+    token: "tok_a",
+  });
+  assert.equal(unsupported.status, 409);
+  assert.equal(unsupported.body.error, "application_wrapper_policy_not_supported");
+  assert.equal(unsupported.body.filePolicy, "workspace_write");
+  assert.equal(unsupported.body.networkPolicy, "network");
+});
+
 test("metadata-only npm wrapper registrations do not project invokable commands", async () => {
   const registered = await call("/api/applications/register", {
     method: "POST",

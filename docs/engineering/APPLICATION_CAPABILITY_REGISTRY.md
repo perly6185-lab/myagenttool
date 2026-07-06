@@ -152,6 +152,11 @@ ccusage. `npm_script` commands are executed through the declared package manager
 Runner. The local Desktop Bridge gate remains conservative: generic wrappers are
 allowed only for server-resolved `app.*.wrapper.*` capabilities whose declared
 policy stays within read-only files and forbidden network access.
+The server mirrors that consent boundary: approved wrapper commands that declare
+write-capable file access or network access remain discoverable for review, but
+their projected capability is marked `disabled` with readiness
+`needs_consent`, and invocation returns `application_wrapper_policy_not_supported`
+until a broader consent model is designed.
 
 ## Application MCP
 
@@ -251,9 +256,10 @@ this application do?" without seeing wrapper internals.
   Application snapshots rather than raw MCP adapter command/args/url. MCP
   candidates also publish structured review fields for manual confirmation:
   data boundary, file/network policy, allowed tool count, and redacted HTTP
-  endpoint origin/host/protocol. The next hardening step is to keep
-  descriptor/result-path metadata restart-safe as the surface broadens beyond
-  the measured references.
+  endpoint origin/host/protocol. Restart coverage now also proves generic NPM
+  wrapper descriptors, approved wrapper capability projection, readiness
+  metadata, result-path metadata, declared arg inputs, and execution plans are
+  rebuilt from persisted Application state.
 
 ### 2. Access
 
@@ -266,6 +272,9 @@ without being able to execute it.
   Applications and Invocations, using the shared recovery/explanation helpers.
 - Carry bridge/device ownership into wrapper execution so access cannot be
   replayed through an unbound bridge.
+- Keep write-capable or networked wrapper descriptors reviewable but disabled
+  until the consent model can capture per-run data boundaries, destination
+  disclosure, bridge/device binding, and revocation semantics.
 - Keep local execution policy independent of server approval: command id, cwd,
   args, env, file policy, and network policy must still pass the bridge-side
   allowlist before spawn.
@@ -296,8 +305,9 @@ outcome without reading raw diagnostics.
 - Render result links and next steps in Applications and Invocations, including
   approval pending, policy refusal, executed result, and recovery/view-result
   states.
-- Keep restart tests proving that Application records, approval requests,
-  invocation result refs, imported evidence, and audit refs remain explainable.
+- Keep restart tests proving that Application records, descriptors, approval
+  requests, invocation result refs, imported evidence, audit refs, and projected
+  capability result paths remain explainable.
 
 ### Acceptance Bar
 
@@ -311,7 +321,10 @@ stdio is auto-registered, `render_markdown` executes through the MCP bridge
 path, result refs link back to invocation/Application/audit/Evidence Center,
 and Web shows MCP tools plus the View invocation path.
 
-The remaining acceptance work is to keep these paths green across restart and
-read-model restore, replace intent-marker approval tokens with real approval
-issuance, add deeper HTTP MCP live-probe/review evidence, and generalize npm
-wrapper execution only after local manifest and consent checks are in place.
+The remaining acceptance work is to define the consent model that can safely
+promote write-capable or networked wrappers from `needs_consent` to executable,
+and to add deeper HTTP MCP live-probe/review evidence before HTTP MCP candidates
+become executable shared Application tools. The measured ccusage and
+doocs/md-style paths now have restart/read-model coverage for result links,
+descriptor recovery, capability projection, and conservative wrapper policy
+gating.

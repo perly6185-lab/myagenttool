@@ -441,6 +441,119 @@ test("persistence restores Application result links across runtime restart", () 
   }
 });
 
+test("persistence restores Application descriptors and wrapper projection across runtime restart", () => {
+  const root = join(tmpdir(), `myagenttool-persistence-application-descriptor-test-${Date.now()}`);
+  const projectPath = join(root, "project");
+  const installPath = join(root, "generic-wrapper-app");
+  const stateStorePath = join(root, "state", "snapshot.json");
+  mkdirSync(projectPath, { recursive: true });
+  mkdirSync(installPath, { recursive: true });
+
+  try {
+    const first = createServerState({ defaultProjectPath: projectPath, now });
+    let id = 0;
+    const firstApplications = createApplicationService({
+      state: first.state,
+      now,
+      nextId: (prefix) => `${prefix}_${++id}`,
+      appendEvent: (event) => first.state.events.push({ id: `evt_${++id}`, createdAt: now(), ...event }),
+      persistStateSoon: () => {},
+      addProject: () => null,
+      cloneProject: () => null,
+      defaultProjectPath: projectPath,
+    });
+    const registered = firstApplications.registerApplication({
+      id: "app_generic_restart",
+      name: "Generic Restart Wrapper",
+      source: {
+        type: "npm",
+        package: "@scope/generic-restart-wrapper",
+        version: "1.0.0",
+        wrapper: {
+          mode: "installed-wrapper",
+          installState: "installed",
+          installPath,
+          packageManager: "pnpm",
+          commands: [{
+            id: "report",
+            displayName: "Generic restart report",
+            commandType: "npm_script",
+            command: "report",
+            args: ["--json"],
+            cwd: ".",
+            status: "approved",
+            riskLevel: "low",
+            riskTags: ["read_only"],
+            requiresApproval: false,
+            inputSchema: {
+              type: "object",
+              additionalProperties: false,
+              properties: { since: { type: "string" } },
+            },
+            argInputs: [{ key: "since", flag: "--since", type: "date" }],
+            filePolicy: "read_only",
+            networkPolicy: "forbidden",
+            outputCollection: "importedUsageEstimates",
+            resultImport: { source: "generic", kind: "usage_estimates", amountSource: "generic_report" },
+          }, {
+            id: "draft",
+            displayName: "Draft command",
+            commandType: "custom",
+            command: "node",
+            status: "draft",
+          }],
+        },
+      },
+    });
+    assert.equal(registered.id, "app_generic_restart");
+
+    saveState(first, { stateStorePath });
+
+    const second = createServerState({ defaultProjectPath: projectPath, now });
+    restoreState(second, { stateStorePath });
+    const restoredApplications = createApplicationService({
+      state: second.state,
+      now,
+      nextId: (prefix) => `${prefix}_restored`,
+      appendEvent: () => {},
+      persistStateSoon: () => {},
+      addProject: () => null,
+      cloneProject: () => null,
+      defaultProjectPath: projectPath,
+    });
+    const descriptors = restoredApplications.getApplicationDescriptors("app_generic_restart");
+    const capabilities = restoredApplications.listApplicationCapabilities("app_generic_restart");
+    const report = capabilities.find((item) => item.name === "app.app_generic_restart.wrapper.report");
+    const draft = capabilities.find((item) => item.name === "app.app_generic_restart.wrapper.draft");
+    const plan = restoredApplications.planApplicationWrapperInvocation({
+      applicationId: "app_generic_restart",
+      commandId: "report",
+      input: { since: "2026-07-01" },
+    });
+    const publicState = publicStateFor(second.state, { defaultProjectPath: projectPath });
+    const publicApp = publicState.applications.find((item) => item.id === "app_generic_restart");
+
+    assert.equal(descriptors?.descriptors?.npmWrapper?.installPath, installPath);
+    assert.equal(descriptors?.descriptors?.npmWrapper?.commands?.[0]?.argInputs?.[0]?.key, "since");
+    assert.equal(report?.kind, "npm_wrapper");
+    assert.equal(report?.metadata?.readiness?.state, "ready");
+    assert.equal(report?.metadata?.readiness?.executionMode, "bridge_wrapper");
+    assert.equal(report?.metadata?.resultPath?.outputCollection, "importedUsageEstimates");
+    assert.equal(report?.metadata?.resultPath?.resultImport?.amountSource, "generic_report");
+    assert.equal(report?.metadata?.wrapper?.filePolicy, "read_only");
+    assert.equal(draft, undefined, "draft wrapper commands must not project invokable capabilities after restore");
+    assert.equal(plan.ok, true);
+    assert.equal(plan.wrapper.execCommand, "pnpm");
+    assert.deepEqual(plan.wrapper.execArgs, ["run", "report", "--", "--json", "--since", "2026-07-01"]);
+    assert.equal(plan.wrapper.outputCollection, "importedUsageEstimates");
+    assert.equal(plan.wrapper.resultImport.amountSource, "generic_report");
+    assert.equal(publicApp?.wrapper?.installState, "installed");
+    assert.equal(publicApp?.wrapper?.commands?.find((command) => command.id === "report")?.status, "approved");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("persistence restores terminal and Codex evidence center linkage across runtime restart", () => {
   const root = join(tmpdir(), `myagenttool-persistence-terminal-codex-test-${Date.now()}`);
   const projectPath = join(root, "project");
