@@ -148,7 +148,7 @@ Roles reuse the existing pieces end to end:
 Each slice lands independently, tests-first, through the normal governance flow
 (tracking issue with Project Fields → PR → required checks → human merge).
 
-### Slice 1 — decision step + router (replaces the intent classifier)
+### Slice 1 — decision step + router (replaces the intent classifier) — landed
 
 - Widen the socket: `classifyAutoRunIntent` → `decideIssuePath` returning the
   contract; heuristic fallback maps today's intents onto it
@@ -161,14 +161,23 @@ Each slice lands independently, tests-first, through the normal governance flow
   today's intent routing; with a fake injected agent, the decision is recorded,
   gated, and routed. Pure-logic tests throughout.
 
-### Slice 2 — role prompts + role skills
+### Slice 2 — role prompts + issue context — landed
 
-- Fetch the issue body (gh, best-effort) and thread body + acceptance criteria
-  into the prompt for **all** paths.
-- Seed the three role skills as agent-skills records; select by decided path;
-  role-specific verification wiring (design runs don't require a diff).
-- **Acceptance**: a develop run's prompt contains the issue body; a design run
-  completes without a diff and settles as `report_posted`.
+- Fetch the issue body (gh, read-only, best-effort) and thread it into both the
+  decision (`decideIssuePath({link, issueBody})`) and the role prompt — the
+  agent finally sees what the issue asks, not just its title.
+- `roleAutoRunPrompt(link, {path, issueBody})`: develop implements and commits;
+  design and clarify explicitly must NOT change product code (their deliverable
+  is the final summary); prototype builds a throwaway, time-boxed spike.
+- **Design note — role skills deferred.** Agent-skills render *every* enabled
+  applicable skill into a worktree; there is no per-run selection, so seeding
+  three role skills would put all three role instructions into every run.
+  Role instructions therefore travel in the prompt; dedicated role skill
+  records (and decision-aware skill selection) wait until roles need distinct
+  tools or verification, alongside slice 4.
+- **Acceptance**: a develop run's prompt contains the issue body; a
+  design-decided run gets the design instructions and, with no diff, settles as
+  `report_posted`; a failing body fetch degrades to a title-only prompt.
 
 ### Slice 3 — decision agent (LLM) + hybrid fast path
 

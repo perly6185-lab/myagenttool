@@ -24,3 +24,12 @@ export declare function branchFromIssue(item: { number: number; title: string })
  * from a GitHub issue/PR.
  */
 export declare function worktreeAutoRunPrompt(item: WorktreeLinkItem): string;
+
+/**
+ * The role-aware task prompt for a decided auto-run path
+ * (develop | design | prototype | clarify); includes the issue body when given.
+ */
+export declare function roleAutoRunPrompt(
+  item: WorktreeLinkItem,
+  options?: { path?: "develop" | "design" | "prototype" | "clarify"; issueBody?: string | null },
+): string;

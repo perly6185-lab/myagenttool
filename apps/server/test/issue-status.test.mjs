@@ -8,6 +8,7 @@ import { test } from "node:test";
 
 import {
   resolveStatusWritebackConfig,
+  runIssueBodyFetch,
   runIssueComment,
   runIssueStatusTransition,
   statusTransitionLabels,
@@ -55,6 +56,17 @@ test("runIssueStatusTransition never throws — a gh failure is a structured res
   const result = await runIssueStatusTransition({ cwd: "/repo", issueNumber: 1, to: "review", gh });
   assert.equal(result.ok, false);
   assert.match(result.error, /not authenticated/);
+});
+
+test("runIssueBodyFetch reads the body via gh; failures and empties yield null", async () => {
+  const gh = async (args, cwd) => {
+    assert.deepEqual(args, ["issue", "view", "12", "--json", "body", "--jq", ".body"]);
+    assert.equal(cwd, "/repo");
+    return { stdout: "The body.\n" };
+  };
+  assert.equal(await runIssueBodyFetch({ cwd: "/repo", issueNumber: 12, gh }), "The body.");
+  assert.equal(await runIssueBodyFetch({ cwd: "/repo", issueNumber: 12, gh: async () => ({ stdout: "  " }) }), null);
+  assert.equal(await runIssueBodyFetch({ cwd: "/repo", issueNumber: 12, gh: async () => { throw new Error("x"); } }), null);
 });
 
 test("runIssueComment posts a comment via gh and never throws", async () => {

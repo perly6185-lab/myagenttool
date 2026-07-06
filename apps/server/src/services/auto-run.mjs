@@ -1,4 +1,4 @@
-import { worktreeAutoRunPrompt } from "@myagenttool/protocol/issue-prompt";
+import { roleAutoRunPrompt } from "@myagenttool/protocol/issue-prompt";
 
 import { normalizeWorktreeLink } from "./projects.mjs";
 import { intentForPath, resolveDecision } from "./auto-run-decision.mjs";
@@ -45,8 +45,24 @@ export function createAutoRunService({
   verifyWorktree,
   writeIssueStatus,
   decideIssuePath,
+  fetchIssueBody,
   postIssueReport,
 }) {
+  // Best-effort issue body fetch (issue links only): richer context for both the
+  // decision and the role prompt. Null on any failure — the run proceeds on the
+  // title alone rather than failing on a gh hiccup.
+  async function maybeFetchIssueBody(link, projectId) {
+    if (typeof fetchIssueBody !== "function") return null;
+    if (link?.type !== "issue" || !Number.isFinite(link?.number)) return null;
+    const project = state.projects.find((item) => item.id === projectId) ?? null;
+    if (!project?.path) return null;
+    try {
+      const body = await fetchIssueBody({ issueNumber: link.number, repoPath: project.path });
+      return typeof body === "string" && body.trim() ? body : null;
+    } catch {
+      return null;
+    }
+  }
 
   // The agent's summary from the completed invocation — the deliverable for an
   // investigation (there is no diff to ship).
@@ -143,7 +159,9 @@ export function createAutoRunService({
 
     // 0. Decision step: the injected decider (or the heuristic floor) triages the
     // issue into a path BEFORE any execution. The decision is data, not action.
-    const decision = await resolveDecision({ link: normalizedLink, decideIssuePath });
+    // Both the decider and the role prompt get the issue body when it's readable.
+    const issueBody = await maybeFetchIssueBody(normalizedLink, projectId ?? state.currentProjectId);
+    const decision = await resolveDecision({ link: normalizedLink, issueBody, decideIssuePath });
 
     // 1. Materialize the worktree from the issue.
     const { worktree } = createWorktree({
@@ -193,7 +211,7 @@ export function createAutoRunService({
     // 2. Seed the prompt from the issue, and 3. start the agent run in the worktree.
     let invocation;
     try {
-      const task = worktreeAutoRunPrompt(normalizedLink);
+      const task = roleAutoRunPrompt(normalizedLink, { path: decision.path, issueBody });
       invocation = createInvocation(task, agent, {
         actor,
         metadata: { worktreeId: worktree.id, projectId: worktree.projectId, autoRunId },

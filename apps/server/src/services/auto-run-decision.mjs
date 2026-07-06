@@ -69,11 +69,11 @@ export function normalizeDecision(raw) {
  * is exactly today's behavior), so gating it would change behavior when no
  * agent is configured.
  */
-export async function resolveDecision({ link, decideIssuePath, minConfidence = decisionConfig().minConfidence } = {}) {
+export async function resolveDecision({ link, issueBody = null, decideIssuePath, minConfidence = decisionConfig().minConfidence } = {}) {
   if (typeof decideIssuePath !== "function") return heuristicDecision(link);
   let decision = null;
   try {
-    decision = normalizeDecision(await decideIssuePath({ link }));
+    decision = normalizeDecision(await decideIssuePath({ link, issueBody }));
   } catch {
     decision = null;
   }
