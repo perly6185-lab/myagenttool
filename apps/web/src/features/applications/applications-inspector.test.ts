@@ -209,18 +209,38 @@ describe("ApplicationsInspector recovery guidance", () => {
     const wrapperEditor = await screen.findByLabelText("npm wrapper descriptor JSON");
     expect((wrapperEditor as HTMLTextAreaElement).value).toContain('"command": "ccusage"');
 
-    const nextWrapper = {
-      mode: "installed-wrapper",
-      installState: "installed",
-      packageManager: "npm",
-      commands: [{ id: "weekly", commandType: "bin", command: "ccusage", args: ["weekly"], status: "approved" }],
-    };
-    fireEvent.change(wrapperEditor, { target: { value: JSON.stringify(nextWrapper, null, 2) } });
+    fireEvent.change(screen.getByLabelText("Wrapper command id"), { target: { value: "weekly" } });
+    fireEvent.change(screen.getByLabelText("Display name"), { target: { value: "Weekly usage" } });
+    fireEvent.change(screen.getByLabelText("Command type"), { target: { value: "bin" } });
+    fireEvent.change(screen.getByLabelText("Command"), { target: { value: "ccusage" } });
+    fireEvent.change(screen.getByLabelText("Risk"), { target: { value: "low" } });
+    fireEvent.click(screen.getByRole("button", { name: /Apply command draft/i }));
+
+    expect((wrapperEditor as HTMLTextAreaElement).value).toContain('"id": "weekly"');
+    expect((wrapperEditor as HTMLTextAreaElement).value).toContain('"id": "daily"');
     fireEvent.click(screen.getByRole("button", { name: /Save descriptors/i }));
 
     await waitFor(() => {
       expect(apiMock.updateApplicationDescriptors).toHaveBeenCalledWith("app_ccusage", {
-        npmWrapper: nextWrapper,
+        npmWrapper: {
+          mode: "installed-wrapper",
+          installState: "installed",
+          packageManager: "npm",
+          commands: [
+            { id: "daily", commandType: "bin", command: "ccusage", status: "approved" },
+            {
+              id: "weekly",
+              displayName: "Weekly usage",
+              commandType: "bin",
+              command: "ccusage",
+              status: "approved",
+              riskLevel: "low",
+              requiresApproval: true,
+              filePolicy: "read_only",
+              networkPolicy: "forbidden",
+            },
+          ],
+        },
       });
     });
   });

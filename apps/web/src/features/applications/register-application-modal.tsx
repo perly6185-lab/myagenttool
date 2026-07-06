@@ -8,6 +8,7 @@ import { useAsyncAction, api } from "@/data/use-console-actions";
 import { useUiStore } from "@/store/ui-store";
 import { DescriptorFeedbackList, WrapperCapabilityImpactPanel } from "@/features/applications/descriptor-feedback";
 import { parseOptionalJsonObject, wrapperCapabilityImpact } from "@/features/applications/descriptor-utils";
+import { NpmWrapperCommandBuilder } from "@/features/applications/wrapper-command-builder";
 import type { ApplicationRegisterRequest, ApplicationSource } from "@/lib/console-state";
 
 type SourceType = ApplicationSource["type"];
@@ -181,6 +182,10 @@ export function RegisterApplicationModal({ open, onClose }: { open: boolean; onC
               </Field>
               {sourceType === "npm" ? (
                 <>
+                  <NpmWrapperCommandBuilder
+                    descriptorText={wrapperDescriptor}
+                    onDescriptorTextChange={setWrapperDescriptor}
+                  />
                   <Field label="npm wrapper descriptor JSON (optional)">
                     <Textarea
                       rows={7}

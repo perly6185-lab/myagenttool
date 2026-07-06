@@ -15,6 +15,7 @@ import { useAsyncAction, api } from "@/data/use-console-actions";
 import { useUiStore } from "@/store/ui-store";
 import { DescriptorFeedbackList, WrapperCapabilityImpactPanel } from "@/features/applications/descriptor-feedback";
 import { parseOptionalJsonObject, prettyJson, wrapperCapabilityImpact } from "@/features/applications/descriptor-utils";
+import { NpmWrapperCommandBuilder } from "@/features/applications/wrapper-command-builder";
 import { sourceSummary } from "@/features/applications/applications-view";
 import { Transcript } from "@/features/invocations/transcript";
 import {
@@ -321,14 +322,20 @@ function ApplicationDescriptorEditor({ application }: { application: Application
               />
             </Field>
             {application.source.type === "npm" ? (
-              <Field label="npm wrapper descriptor JSON">
-                <Textarea
-                  rows={9}
-                  value={wrapperDescriptor}
-                  onChange={(event) => setWrapperDescriptor(event.target.value)}
-                  placeholder='{"mode":"installed-wrapper","installState":"installed","packageManager":"npm","commands":[{"id":"lint","commandType":"npm_script","command":"lint","status":"approved"}]}'
+              <>
+                <NpmWrapperCommandBuilder
+                  descriptorText={wrapperDescriptor}
+                  onDescriptorTextChange={setWrapperDescriptor}
                 />
-              </Field>
+                <Field label="npm wrapper descriptor JSON">
+                  <Textarea
+                    rows={9}
+                    value={wrapperDescriptor}
+                    onChange={(event) => setWrapperDescriptor(event.target.value)}
+                    placeholder='{"mode":"installed-wrapper","installState":"installed","packageManager":"npm","commands":[{"id":"lint","commandType":"npm_script","command":"lint","status":"approved"}]}'
+                  />
+                </Field>
+              </>
             ) : null}
             {application.source.type === "manual" ? (
               <Field label="Manual manifest JSON">

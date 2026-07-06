@@ -16,6 +16,23 @@ export interface DescriptorFeedbackIssue {
   message: string;
 }
 
+export interface NpmWrapperCommandDraft {
+  id?: string;
+  displayName?: string;
+  commandType?: string;
+  command?: string;
+  status?: string;
+  riskLevel?: string;
+  filePolicy?: string;
+  networkPolicy?: string;
+  requiresApproval?: boolean;
+}
+
+export interface DescriptorTextResult {
+  text: string | null;
+  error: string | null;
+}
+
 export function prettyJson(value: unknown): string {
   if (value === null || value === undefined) return "";
   return JSON.stringify(value, null, 2);
@@ -33,6 +50,50 @@ export function parseOptionalJsonObject(text: string, label: string): JsonObject
   } catch (caught) {
     return { value: null, error: `${label} is not valid JSON${caught instanceof Error ? `: ${caught.message}` : "."}` };
   }
+}
+
+export function buildNpmWrapperDescriptorDraft(
+  descriptorText: string,
+  draft: NpmWrapperCommandDraft,
+): DescriptorTextResult {
+  const command = String(draft.command ?? "").trim();
+  const id = slugSegment(draft.id || draft.displayName || command);
+  if (!id) return { text: null, error: "Wrapper command requires an id or command." };
+  if (!command) return { text: null, error: "Wrapper command requires a command." };
+
+  const parsed = parseOptionalJsonObject(descriptorText, "npm wrapper descriptor");
+  if (parsed.error) return { text: null, error: parsed.error };
+  const descriptor: Record<string, unknown> = {
+    mode: "installed-wrapper",
+    installState: "installed",
+    packageManager: "npm",
+    ...(parsed.value ?? {}),
+  };
+  const commands = Array.isArray(descriptor.commands)
+    ? descriptor.commands.filter((item: unknown) => item && typeof item === "object" && !Array.isArray(item))
+    : [];
+  const nextCommand = {
+    id,
+    ...(String(draft.displayName ?? "").trim() ? { displayName: String(draft.displayName).trim() } : {}),
+    commandType: normalizeChoice(draft.commandType, ["npm_script", "bin", "custom"], "npm_script"),
+    command,
+    status: normalizeChoice(draft.status, ["approved", "draft", "disabled"], "approved"),
+    riskLevel: normalizeChoice(draft.riskLevel, ["low", "medium", "high", "critical"], "medium"),
+    requiresApproval: draft.requiresApproval !== false,
+    filePolicy: normalizeChoice(draft.filePolicy, ["forbidden", "read_only", "workspace_write"], "read_only"),
+    networkPolicy: normalizeChoice(draft.networkPolicy, ["forbidden", "restricted", "network"], "forbidden"),
+  };
+  const withoutExisting = commands.filter((item: unknown) => String((item as { id?: unknown }).id ?? "") !== id);
+  return {
+    text: prettyJson({
+      ...descriptor,
+      mode: "installed-wrapper",
+      installState: descriptor.installState ?? "installed",
+      packageManager: descriptor.packageManager ?? "npm",
+      commands: [...withoutExisting, nextCommand],
+    }),
+    error: null,
+  };
 }
 
 export function wrapperCapabilityImpact(
@@ -81,4 +142,19 @@ export function descriptorFeedbackIssues(message: string | null | undefined): De
       if (!match) return { path: null, message: part };
       return { path: match[1], message: match[2] };
     });
+}
+
+function normalizeChoice(value: unknown, allowed: string[], fallback: string): string {
+  const text = String(value ?? "").trim();
+  return allowed.includes(text) ? text : fallback;
+}
+
+function slugSegment(value: string): string {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .replaceAll(".", "_")
+    .replaceAll("-", "_");
 }
