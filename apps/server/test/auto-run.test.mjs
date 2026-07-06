@@ -906,3 +906,25 @@ test("mergeAutoRunPr: a failed gh merge throws with the error, record stays OPEN
   await assert.rejects(() => svc.mergeAutoRunPr("aur_merge_4"), /not mergeable/);
   assert.equal(run.prState, "OPEN", "no false MERGED on failure");
 });
+
+test("mergeAutoRunPr: require-green-checks setting blocks merge when checks not green", async () => {
+  const { svc, calls } = makeAutoRun();
+  state.autoRunSettings = { requireChecksGreenToMerge: true };
+  state.autoRuns.push({ id: "aur_g1", status: "pr_open", projectId: sourceProjectId, prNumber: 5, prState: "OPEN", prChecks: { state: "FAILURE" } });
+  await assert.rejects(() => svc.mergeAutoRunPr("aur_g1"), /green PR checks/);
+  assert.equal(calls.merge.length, 0, "no gh merge when blocked");
+  // Unknown (never fetched) also blocks.
+  state.autoRuns.push({ id: "aur_g2", status: "pr_open", projectId: sourceProjectId, prNumber: 6, prState: "OPEN" });
+  await assert.rejects(() => svc.mergeAutoRunPr("aur_g2"), /green PR checks/);
+});
+
+test("mergeAutoRunPr: require-green-checks setting allows merge when checks green", async () => {
+  const { svc, calls } = makeAutoRun();
+  state.autoRunSettings = { requireChecksGreenToMerge: true };
+  const run = { id: "aur_g3", status: "pr_open", projectId: sourceProjectId, prNumber: 8, prState: "OPEN", prChecks: { state: "SUCCESS" } };
+  state.autoRuns.push(run);
+  const result = await svc.mergeAutoRunPr("aur_g3");
+  assert.equal(result.ok, true);
+  assert.equal(run.prState, "MERGED");
+  assert.equal(calls.merge.length, 1);
+});

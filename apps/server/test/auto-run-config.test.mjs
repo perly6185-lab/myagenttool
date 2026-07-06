@@ -90,3 +90,11 @@ test("resolveAutoRunConfig with empty state reflects env defaults", () => {
   assert.equal(cfg.autoTrigger.label, "auto", "env/default label");
   assert.equal(cfg.commands.verify, false);
 });
+
+test("requireChecksGreenToMerge: normalized bool + exposed in effective config", () => {
+  const s = normalizeAutoRunSettings({ requireChecksGreenToMerge: "1" });
+  assert.equal(s.requireChecksGreenToMerge, true);
+  const cfg = resolveAutoRunConfig({ autoRunSettings: { requireChecksGreenToMerge: true } }, {});
+  assert.equal(cfg.requireChecksGreenToMerge, true);
+  assert.equal(resolveAutoRunConfig({}, {}).requireChecksGreenToMerge, false, "default off");
+});
