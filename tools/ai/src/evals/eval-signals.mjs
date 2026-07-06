@@ -4,6 +4,36 @@
 // hermetically. tools/dev/eval-real-run.mjs supplies the run record + prior
 // trend and turns the returned events into inbox lines.
 
+// Provisional regression floors — the SINGLE source of truth shared by the
+// scheduled runner (exit-non-zero on breach) and the server observability panel
+// (below-floor badge). #250 replaces these with lines derived from >=3 real
+// runs (docs/engineering/MATURITY_CALIBRATION.md); until then a breach is
+// flagged but the number is explicitly provisional. held-out 0.6 mirrors the
+// existing --min-pass-rate; subcap 0.6 is a conservative placeholder.
+export const PROVISIONAL_FLOORS = { subcap: 0.6, heldout: 0.6 };
+
+// Which real capability metrics fell below their floor line. Pure. Infra/auth
+// rows carry no real passRate, so they can never register a breach here.
+export function floorBreaches(record, floors = PROVISIONAL_FLOORS) {
+  const breaches = [];
+  for (const metric of ["subcap", "heldout"]) {
+    const rate = record?.[metric]?.passRate;
+    const floor = floors?.[metric];
+    if (Number.isFinite(rate) && Number.isFinite(floor) && rate < floor) {
+      breaches.push({ metric, passRate: rate, floor });
+    }
+  }
+  return breaches;
+}
+
+// Did this run regress below a floor line? The scheduled runner keys its
+// non-zero exit on this so cron/LaunchAgent logs turn red. Auth/infra runs are
+// outages, not capability regressions — they never count.
+export function runRegressed(record, floors = PROVISIONAL_FLOORS) {
+  if (record?.authFailure || looksLikeInfraFailure(record?.subcap)) return false;
+  return floorBreaches(record, floors).length > 0;
+}
+
 // Infra-failure fingerprint: issue-gate cases are provider-INDEPENDENT (pure
 // product logic, no model call), so a full issue-gate alongside a total wipe of
 // the provider-backed kinds (pm-brief, review) means the provider/auth broke —
@@ -28,7 +58,7 @@ export function lastCapabilityRecord(records) {
 
 // Build the L6 feedback events for one run. Deterministic; dedupeKeys are
 // stable so nightly repeats of the same condition fold to one issue.
-export function buildRunFeedbackEvents(record, priorRecords = [], { dropThreshold = 0.2 } = {}) {
+export function buildRunFeedbackEvents(record, priorRecords = [], { dropThreshold = 0.2, floors = PROVISIONAL_FLOORS } = {}) {
   const events = [];
   const startedAt = record.startedAt ?? "";
 
@@ -75,6 +105,17 @@ export function buildRunFeedbackEvents(record, priorRecords = [], { dropThreshol
         title: `Capability drop: subcap pass rate fell to ${(record.subcap.passRate * 100).toFixed(0)}%`,
         detail: `Run ${startedAt}: subcap pass rate ${(record.subcap.passRate * 100).toFixed(0)}% is >=${(dropThreshold * 100).toFixed(0)}pp below the prior ${(prev.subcap.passRate * 100).toFixed(0)}% (${prev.startedAt}). Investigate before hardening the gate line (#250).`,
         dedupeKey: "eval-real:capability-drop",
+      });
+    }
+    // Absolute floor breach (distinct from the relative drop above): a real
+    // metric below its provisional #250 gate line. This is what the scheduled
+    // runner exits non-zero on, so the alert and the red log agree.
+    for (const breach of floorBreaches(record, floors)) {
+      events.push({
+        source: "eval-real", severity: "high",
+        title: `${breach.metric} pass rate ${(breach.passRate * 100).toFixed(0)}% is below the ${(breach.floor * 100).toFixed(0)}% floor`,
+        detail: `Run ${startedAt}: ${breach.metric} fell below the provisional #250 gate line (${(breach.floor * 100).toFixed(0)}%). The scheduled run exits non-zero so cron/LaunchAgent logs turn red. The floor is provisional until #250 derives the real line from >=3 real runs.`,
+        dedupeKey: `eval-real:below-floor-${breach.metric}`,
       });
     }
   }

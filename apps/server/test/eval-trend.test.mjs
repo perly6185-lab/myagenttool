@@ -19,6 +19,12 @@ const subcap = (startedAt, passRate, resolved, total) => ({
   subcap: { passRate, resolved, total, byKind: {} },
 });
 
+const subcapWithKinds = (startedAt, byKind) => {
+  const resolved = Object.values(byKind).reduce((a, k) => a + k.resolved, 0);
+  const total = Object.values(byKind).reduce((a, k) => a + k.total, 0);
+  return { startedAt, kind: "subcap-only", subcap: { passRate: total ? resolved / total : 0, resolved, total, byKind } };
+};
+
 const authFail = (startedAt) => ({
   startedAt,
   kind: "subcap-only",
@@ -92,6 +98,25 @@ test("held-out {skipped: 'repo dirty'} is not a real point", () => {
   assert.equal(s.heldout.realRuns, 0, "a skipped held-out block yields no metric point");
   assert.equal(s.heldout.latest, null);
   assert.equal(s.subcap.realRuns, 1);
+});
+
+test("byKind breakdown is carried onto the latest metric point", () => {
+  const s = summarizeEvalTrend([
+    subcapWithKinds("2026-07-06T06:34:00Z", {
+      "issue-gate": { total: 6, resolved: 6 },
+      "pm-brief": { total: 6, resolved: 4 },
+      "review": { total: 3, resolved: 3 },
+    }),
+  ]);
+  assert.equal(s.subcap.latest.byKind["pm-brief"].resolved, 4, "per-kind breakdown reaches the panel");
+  assert.equal(s.subcap.latest.byKind["issue-gate"].total, 6);
+});
+
+test("provisional floors are the shared eval-signals source (0.6), labelled provisional", () => {
+  assert.equal(PROVISIONAL_FLOORS.subcap, 0.6);
+  assert.equal(PROVISIONAL_FLOORS.heldout, 0.6);
+  const s = summarizeEvalTrend([subcap("2026-07-06T06:34:00Z", 1, 15, 15)]);
+  assert.equal(s.subcap.floor, PROVISIONAL_FLOORS.subcap, "panel floor == shared runner floor");
 });
 
 test("readEvalTrend: missing file → [], garbage lines skipped", () => {
