@@ -66,6 +66,31 @@ export async function runPrStateFetch({ cwd, prNumber, gh = defaultGh }) {
   }
 }
 
+// Summarize a PR's CI checks (statusCheckRollup) so the console can show the
+// human the check posture BEFORE they merge — a merge decision shouldn't be
+// blind. Never throws; null on failure. state: NONE (no checks) | SUCCESS |
+// FAILURE (any failed) | PENDING (some still running, none failed).
+export async function runPrChecks({ cwd, prNumber, gh = defaultGh }) {
+  try {
+    const result = await gh(["pr", "view", String(prNumber), "--json", "statusCheckRollup"], cwd);
+    const rollup = JSON.parse(result?.stdout ?? "{}")?.statusCheckRollup ?? [];
+    let passed = 0;
+    let failed = 0;
+    let pending = 0;
+    for (const check of rollup) {
+      const s = String(check?.conclusion || check?.state || check?.status || "").toUpperCase();
+      if (["SUCCESS", "NEUTRAL", "SKIPPED"].includes(s)) passed += 1;
+      else if (["FAILURE", "ERROR", "CANCELLED", "TIMED_OUT", "ACTION_REQUIRED", "STARTUP_FAILURE"].includes(s)) failed += 1;
+      else pending += 1; // IN_PROGRESS / QUEUED / PENDING / EXPECTED / ""
+    }
+    const total = rollup.length;
+    const state = total === 0 ? "NONE" : failed > 0 ? "FAILURE" : pending > 0 ? "PENDING" : "SUCCESS";
+    return { total, passed, failed, pending, state };
+  } catch {
+    return null;
+  }
+}
+
 // Human-triggered PR merge from the console (the merge stays human — this is a
 // person clicking Merge in the tool, never an automatic step). Runs
 // `gh pr merge <n> --<method>` in the project repo. Never throws; returns a

@@ -29,6 +29,7 @@ interface AutoRunRecord {
   judgment?: { solved: boolean | null; confidence: number | null; summary?: string | null; gaps?: string[] } | null;
   report?: string | null;
   prState?: string | null;
+  prChecks?: { total: number; passed: number; failed: number; pending: number; state: "NONE" | "SUCCESS" | "FAILURE" | "PENDING" } | null;
   error?: string | null;
   createdAt?: string;
   updatedAt?: string;
@@ -97,6 +98,35 @@ function StatTile({ label, value, hint }: { label: string; value: string; hint?:
       {hint ? <p className="mt-0.5 text-xs text-muted-foreground">{hint}</p> : null}
     </div>
   );
+}
+
+function checksChip(pc: AutoRunRecord["prChecks"]): { label: string; tone: Tone } {
+  if (!pc || pc.total === 0) return { label: "no checks", tone: "neutral" };
+  if (pc.state === "FAILURE") return { label: `checks ✗${pc.failed}`, tone: "danger" };
+  if (pc.state === "PENDING") return { label: `checks ${pc.pending} pending`, tone: "warning" };
+  return { label: `checks ${pc.passed}✓`, tone: "success" };
+}
+
+// Is merging this run risky (unverified / unjudged / checks not green)? Returns
+// the reasons + a confirm message so the human merges INFORMED, not blind — the
+// gap the live demo exposed (a zero-check unverified PR merged with a blank
+// prompt). Merge stays a human decision; this just shows what they're deciding.
+function mergeRisk(run: AutoRunRecord): { warn: boolean; confirmMsg: string } {
+  const reasons: string[] = [];
+  if (!run.verification?.verified) reasons.push("verification not run");
+  else if (!run.verification.passed) reasons.push("verification FAILED");
+  if (!run.judgment || run.judgment.solved !== true) reasons.push("acceptance judge did not confirm");
+  const pc = run.prChecks;
+  if (!pc || pc.total === 0) reasons.push("no PR checks");
+  else if (pc.state === "FAILURE") reasons.push(`${pc.failed} PR check(s) failing`);
+  else if (pc.state === "PENDING") reasons.push(`${pc.pending} PR check(s) still running`);
+  if (reasons.length === 0) {
+    return { warn: false, confirmMsg: `Merge PR #${run.prNumber}? Verified and checks are green.` };
+  }
+  return {
+    warn: true,
+    confirmMsg: `⚠ Merge PR #${run.prNumber} WITHOUT full verification?\n\n- ${reasons.join("\n- ")}\n\nThis is the human merge gate — merge anyway?`,
+  };
 }
 
 function Stepper({ status }: { status: string }) {
@@ -257,19 +287,29 @@ export function AutoRunsView() {
                     {run.prState === "MERGED" ? <Badge tone="success">merged</Badge> : null}
                     {run.prState === "CLOSED" ? <Badge tone="warning">closed</Badge> : null}
                     {run.prNumber && run.status === "pr_open" && run.prState !== "MERGED" && run.prState !== "CLOSED" ? (
-                      <Button
-                        variant="primary"
-                        size="sm"
-                        className="h-6 px-2 text-xs"
-                        title="Merge this PR — the human merge step (runs gh pr merge)"
-                        onClick={() => {
-                          // The merge stays human: a person confirms, in-tool, before we merge.
-                          if (!window.confirm(`Merge PR #${run.prNumber}? This is the human merge step.`)) return;
-                          void api.mergeAutoRunPr(run.id).then(() => load()).catch(() => load());
-                        }}
-                      >
-                        <GitMerge className="mr-1 size-3" /> Merge
-                      </Button>
+                      (() => {
+                        const chip = checksChip(run.prChecks);
+                        const risk = mergeRisk(run);
+                        return (
+                          <>
+                            <Badge tone={chip.tone} title="PR CI checks — refresh to update">{chip.label}</Badge>
+                            <Button
+                              variant={risk.warn ? "secondary" : "primary"}
+                              size="sm"
+                              className="h-6 px-2 text-xs"
+                              title={risk.warn ? "Merge — but this run is not fully verified (see confirm)" : "Merge this PR — verified and checks green"}
+                              onClick={() => {
+                                // The merge stays human: a person confirms, in-tool, informed by
+                                // the run's verification posture, before we merge.
+                                if (!window.confirm(risk.confirmMsg)) return;
+                                void api.mergeAutoRunPr(run.id).then(() => load()).catch(() => load());
+                              }}
+                            >
+                              <GitMerge className={cn("mr-1 size-3", risk.warn && "text-amber-600 dark:text-amber-400")} /> Merge
+                            </Button>
+                          </>
+                        );
+                      })()
                     ) : null}
                     {(run.childIssues ?? []).map((child) =>
                       child.url ? (
