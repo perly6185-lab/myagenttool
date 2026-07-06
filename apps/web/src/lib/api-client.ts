@@ -447,8 +447,14 @@ export const api = {
     request("POST", `/api/worktrees/${encodeURIComponent(id)}/pr`, payload),
   listGithubItems: (projectId: string) =>
     request("GET", `/api/projects/${encodeURIComponent(projectId)}/github`),
-  // Auto-run observability: the records plus an evaluation summary.
-  listAutoRuns: () => request("GET", "/api/auto-runs"),
+  // Auto-run observability: the records plus an evaluation summary. refresh=true
+  // also refreshes PR dispositions (bounded gh reads) for the routing evaluation.
+  listAutoRuns: (refresh = false) => request("GET", `/api/auto-runs${refresh ? "?refresh=1" : ""}`),
+  // Retry a failed/blocked auto-run on its existing worktree.
+  retryAutoRun: (id: string) => request("POST", `/api/auto-runs/${encodeURIComponent(id)}/retry`),
+  // Scheduled real-agent eval trend (#248): read-only view of the local
+  // trend.jsonl so capability regressions surface in the console, not just cron.log.
+  listEvalTrend: () => request("GET", "/api/eval-trend"),
   listBranches: (projectId: string) =>
     request("GET", `/api/projects/${encodeURIComponent(projectId)}/branches`),
   gitSummary: (projectId: string) =>

@@ -1,6 +1,8 @@
 # P4 Web URL Navigation
 
-Status: P4-1 lightweight URL-backed navigation.
+Status: P4-2B closed. See
+[`P4_WEB_NAVIGATION_CLOSEOUT.md`](P4_WEB_NAVIGATION_CLOSEOUT.md) for the owner
+surface coverage matrix.
 
 Objective: make Web control-plane navigation refreshable and shareable without
 introducing a routing framework.
@@ -49,10 +51,10 @@ Server-generated links intentionally stay hostless and only carry the relative
 query plus structured target fields. The Web control plane or downstream report
 renderer owns the current origin, path, and copy/open behavior.
 
-The Web operator explanation surface renders troubleshooting report links as
-open/copy actions, using the structured target to update control-plane
-selection and the relative query to create shareable links on the current Web
-origin.
+The Web operator explanation and context inspector report surfaces render
+troubleshooting report links as open/copy actions, using the structured target
+to update control-plane selection and the relative query to create shareable
+links on the current Web origin.
 
 ## Non-Goals
 

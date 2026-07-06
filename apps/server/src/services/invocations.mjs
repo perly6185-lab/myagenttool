@@ -38,6 +38,7 @@ export function createInvocationService({
   budgetGateForProject,
   closeCodexSession,
   onInvocationCompleted,
+  onInvocationApproved,
 }) {
   const {
     completeInvocation,
@@ -92,6 +93,7 @@ export function createInvocationService({
     createAuditSummary,
     recordAgentUsage,
     startInvocationIfAllowed,
+    onInvocationApproved,
   });
   const { createInvocation } = createInvocationCreationRuntime({
     state,

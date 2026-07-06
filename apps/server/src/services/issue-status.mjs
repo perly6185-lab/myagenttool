@@ -42,6 +42,30 @@ export async function runIssueStatusTransition({ cwd, issueNumber, to, gh = defa
   }
 }
 
+// Read the issue body (read-only, no opt-in needed — same trust level as the
+// console's live gh issue listing). Null on any failure.
+export async function runIssueBodyFetch({ cwd, issueNumber, gh = defaultGh }) {
+  try {
+    const result = await gh(["issue", "view", String(issueNumber), "--json", "body", "--jq", ".body"], cwd);
+    const body = String(result?.stdout ?? "").trim();
+    return body || null;
+  } catch {
+    return null;
+  }
+}
+
+// Read a PR's state (OPEN | MERGED | CLOSED) for the routing evaluation's
+// disposition signal. Read-only; null on any failure.
+export async function runPrStateFetch({ cwd, prNumber, gh = defaultGh }) {
+  try {
+    const result = await gh(["pr", "view", String(prNumber), "--json", "state", "--jq", ".state"], cwd);
+    const prState = String(result?.stdout ?? "").trim().toUpperCase();
+    return ["OPEN", "MERGED", "CLOSED"].includes(prState) ? prState : null;
+  } catch {
+    return null;
+  }
+}
+
 // Post a comment on the issue — used to deliver an investigation auto-run's
 // findings back to the issue. Never throws; returns a structured result.
 export async function runIssueComment({ cwd, issueNumber, body, gh = defaultGh }) {

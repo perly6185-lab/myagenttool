@@ -35,7 +35,11 @@ import { createM3Service } from "../services/m3.mjs";
 import { createProjectService, sameProjectPath } from "../services/projects.mjs";
 import { createAutoRunService } from "../services/auto-run.mjs";
 import { resolveAutoRunVerifyCommand, runWorktreeVerification } from "../services/worktree-verify.mjs";
-import { resolveStatusWritebackConfig, runIssueComment, runIssueStatusTransition } from "../services/issue-status.mjs";
+import { resolveStatusWritebackConfig, runIssueBodyFetch, runIssueComment, runIssueStatusTransition, runPrStateFetch } from "../services/issue-status.mjs";
+import { resolveDeciderCommand, runDeciderCommand } from "../services/decision-command.mjs";
+import { childIssueBody, childIssueTitle, extractProjectFieldsBlock, runChildIssueCreate, spawnIssuesConfig } from "../services/auto-run-spawn.mjs";
+import { refreshPrDispositions } from "../services/auto-run-eval.mjs";
+import { resolveJudgeCommand, runAcceptanceJudge } from "../services/auto-run-judge.mjs";
 import { createTerminalService } from "../services/terminal.mjs";
 import { createToolService } from "../services/tools.mjs";
 
@@ -425,6 +429,7 @@ export function createServerRuntimeServices({
   // below (it needs createInvocation from this very service). Set after the
   // auto-run service exists; until then completion has nothing to advance.
   let advanceAutoRunHook = null;
+  let approvalAutoRunHook = null;
 
   invocationService = createInvocationService({
     state,
@@ -457,6 +462,7 @@ export function createServerRuntimeServices({
     closeCodexSession,
     budgetGateForProject,
     onInvocationCompleted: (invocation) => advanceAutoRunHook?.(invocation),
+    onInvocationApproved: (invocation) => approvalAutoRunHook?.(invocation),
   });
 
   const {
@@ -477,7 +483,7 @@ export function createServerRuntimeServices({
     startInvocationIfAllowed,
   } = invocationService;
 
-  const { startAutoRun, advanceAutoRunForInvocation } = createAutoRunService({
+  const { startAutoRun, advanceAutoRunForInvocation, syncAutoRunOnApproval, retryAutoRun } = createAutoRunService({
     state,
     now,
     nextId,
@@ -511,12 +517,61 @@ export function createServerRuntimeServices({
     postIssueReport: resolveStatusWritebackConfig().enabled
       ? async ({ issueNumber, repoPath, body }) => runIssueComment({ cwd: repoPath, issueNumber, body })
       : undefined,
-    // Intent classifier: default heuristic in the service; an LLM classifier can
-    // be wired here later to override it.
-    classifyAutoRunIntent: undefined,
+    // Decision step (ISSUE_DECISION_AGENT_PLAN.md slice 3): an operator-configured
+    // one-shot command (any LLM CLI/script; issue context JSON on stdin, decision
+    // JSON on stdout). Unconfigured -> undefined -> the heuristic floor decides,
+    // byte-compatible with the previous intent routing.
+    decideIssuePath: (() => {
+      const command = resolveDeciderCommand();
+      return command
+        ? async ({ link, issueBody }) => runDeciderCommand({ command, input: { link, issueBody } })
+        : undefined;
+    })(),
+    // Read-only issue body fetch: context for the decision and the role prompt.
+    fetchIssueBody: async ({ issueNumber, repoPath }) => runIssueBodyFetch({ cwd: repoPath, issueNumber }),
+    // Governed child-issue spawning (slice 4): a design deliverable becomes a
+    // pending-decision child issue (parent fields inherited, never auto-labelled,
+    // depth-1 marked). Off by default; undefined -> the orchestrator skips it.
+    spawnChildIssue: spawnIssuesConfig().enabled
+      ? async ({ parentLink, design, repoPath }) => {
+          const parentBody = await runIssueBodyFetch({ cwd: repoPath, issueNumber: parentLink.number });
+          return runChildIssueCreate({
+            cwd: repoPath,
+            title: childIssueTitle(parentLink),
+            body: childIssueBody({ parentLink, design, projectFieldsBlock: extractProjectFieldsBlock(parentBody) }),
+          });
+        }
+      : undefined,
+    // Acceptance judge (Phase B): operator-configured one-shot command judging
+    // "does this diff solve this issue?". Unconfigured -> undefined -> skipped.
+    judgeAcceptance: (() => {
+      const command = resolveJudgeCommand();
+      return command
+        ? async ({ worktree, autoRun }) => {
+            const diff = worktreeDiff(worktree)?.diff ?? "";
+            const issueBody = autoRun.link?.type === "issue" && worktree?.repoPath
+              ? await runIssueBodyFetch({ cwd: worktree.repoPath, issueNumber: autoRun.link.number })
+              : null;
+            return runAcceptanceJudge({ command, link: autoRun.link, issueBody, diff });
+          }
+        : undefined;
+    })(),
   });
   // Now that the reaction exists, let completion drive it.
   advanceAutoRunHook = advanceAutoRunForInvocation;
+  approvalAutoRunHook = syncAutoRunOnApproval;
+
+  // Routing-evaluation disposition refresh (slice 5): bounded, throttled,
+  // read-only gh; persists only when something changed.
+  async function refreshAutoRunPrDispositions() {
+    const result = await refreshPrDispositions({
+      state,
+      now,
+      fetchPrState: ({ prNumber, repoPath }) => runPrStateFetch({ cwd: repoPath, prNumber }),
+    });
+    if (result.updated > 0) persistStateSoon();
+    return result;
+  }
 
   const {
     completeDiscoveryRun,
@@ -2169,6 +2224,8 @@ export function createServerRuntimeServices({
     createWorktreePr,
     publishWorktreeBranch,
     startAutoRun,
+    retryAutoRun,
+    refreshAutoRunPrDispositions,
     selectProject,
     removeProject,
     removeWorktree,

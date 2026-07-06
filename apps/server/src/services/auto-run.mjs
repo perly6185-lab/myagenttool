@@ -1,7 +1,9 @@
-import { worktreeAutoRunPrompt } from "@myagenttool/protocol/issue-prompt";
+import { roleAutoRunPrompt } from "@myagenttool/protocol/issue-prompt";
 
 import { normalizeWorktreeLink } from "./projects.mjs";
-import { classifyIntentFromText, isAutoRunIntent } from "./auto-run-intent.mjs";
+import { intentForPath, resolveDecision } from "./auto-run-decision.mjs";
+import { isSpawnedChildBody } from "./auto-run-spawn.mjs";
+import { judgmentEvidence } from "./auto-run-judge.mjs";
 
 // One-click "Auto" orchestrator. It closes the seam the console never had:
 // turning a linked GitHub issue into a worktree AND a started agent run seeded
@@ -44,21 +46,26 @@ export function createAutoRunService({
   createWorktreePr,
   verifyWorktree,
   writeIssueStatus,
-  classifyAutoRunIntent,
+  decideIssuePath,
+  fetchIssueBody,
   postIssueReport,
+  spawnChildIssue,
+  judgeAcceptance,
 }) {
-  // Resolve the issue intent: an injected classifier (e.g. LLM) overrides, else
-  // a conservative title heuristic. Determines how a no-diff outcome is routed.
-  function resolveIntent(link) {
-    if (typeof classifyAutoRunIntent === "function") {
-      try {
-        const result = classifyAutoRunIntent({ link });
-        if (isAutoRunIntent(result)) return result;
-      } catch {
-        /* fall back to the heuristic */
-      }
+  // Best-effort issue body fetch (issue links only): richer context for both the
+  // decision and the role prompt. Null on any failure — the run proceeds on the
+  // title alone rather than failing on a gh hiccup.
+  async function maybeFetchIssueBody(link, projectId) {
+    if (typeof fetchIssueBody !== "function") return null;
+    if (link?.type !== "issue" || !Number.isFinite(link?.number)) return null;
+    const project = state.projects.find((item) => item.id === projectId) ?? null;
+    if (!project?.path) return null;
+    try {
+      const body = await fetchIssueBody({ issueNumber: link.number, repoPath: project.path });
+      return typeof body === "string" && body.trim() ? body : null;
+    } catch {
+      return null;
     }
-    return classifyIntentFromText(link?.title ?? "");
   }
 
   // The agent's summary from the completed invocation — the deliverable for an
@@ -73,6 +80,37 @@ export function createAutoRunService({
       return JSON.stringify(result).slice(0, 2000);
     } catch {
       return null;
+    }
+  }
+
+  // Governed child-issue spawning (slice 4): a design/prototype deliverable
+  // becomes a pending-decision child issue. Guards: opt-in (composer wires
+  // spawnChildIssue only when enabled), issue links only, depth-1 (a spawned
+  // child never spawns grandchildren), and one child per parent issue (dedup
+  // across all runs). Best-effort: a spawn failure never breaks the run.
+  async function maybeSpawnChildIssue(autoRun, worktree, design) {
+    if (typeof spawnChildIssue !== "function") return null;
+    if (autoRun.link?.type !== "issue" || !Number.isFinite(autoRun.link?.number)) return null;
+    if (autoRun.isChildIssue) return null;
+    const repoPath = worktree?.repoPath ?? null;
+    if (!repoPath) return null;
+    const alreadySpawned = state.autoRuns.some(
+      (run) => run.link?.number === autoRun.link.number && Array.isArray(run.childIssues) && run.childIssues.length > 0,
+    );
+    if (alreadySpawned) return null;
+    try {
+      const child = await spawnChildIssue({ parentLink: autoRun.link, design, repoPath });
+      if (!child || !Number.isFinite(child.number)) return null;
+      appendEvent({
+        invocationId: autoRun.invocationId,
+        type: "auto_run_child_spawned",
+        level: "info",
+        message: `Auto-run ${autoRun.id} spawned pending-decision child issue #${child.number}.`,
+        data: { autoRunId: autoRun.id, parentIssue: autoRun.link.number, childIssue: child.number, url: child.url ?? null },
+      });
+      return { child: { number: child.number, url: child.url ?? null } };
+    } catch (error) {
+      return { error: `Child issue spawn failed: ${String(error?.message ?? error)}` };
     }
   }
 
@@ -107,9 +145,9 @@ export function createAutoRunService({
 
   // The PR body an auto-run opens with, carrying the verification evidence so the
   // pull request is honest about whether checks ran and passed.
-  function verificationEvidenceBody(verification) {
+  function verificationEvidenceBody(verification, judgment) {
     const state = verification.verified ? (verification.passed ? "passed" : "failed") : "not run (no verification command configured)";
-    return `Automated auto-run pull request.\n\n## Verification\n- Checks: ${state}\n${verification.summary ? `\n${verification.summary}\n` : ""}`;
+    return `Automated auto-run pull request.\n\n## Verification\n- Checks: ${state}\n${judgmentEvidence(judgment)}\n${verification.summary ? `\n${verification.summary}\n` : ""}`;
   }
 
   function autoRunStatusForInvocation(invocation) {
@@ -135,7 +173,7 @@ export function createAutoRunService({
   // agent prompt from the issue, and start the invocation inside the worktree.
   // `name` is the branch name the caller already derives (shared branchFromIssue),
   // so the server does not re-implement issue branch naming.
-  function startAutoRun({ projectId, link, agentId, name, baseBranch, actor } = {}) {
+  async function startAutoRun({ projectId, link, agentId, name, baseBranch, actor } = {}) {
     const normalizedLink = normalizeWorktreeLink(link);
     if (!normalizedLink) {
       throw new Error("A GitHub issue or PR link is required to start an auto-run.");
@@ -153,6 +191,12 @@ export function createAutoRunService({
 
     const autoRunId = nextId("aur_demo");
     const createdAt = now();
+
+    // 0. Decision step: the injected decider (or the heuristic floor) triages the
+    // issue into a path BEFORE any execution. The decision is data, not action.
+    // Both the decider and the role prompt get the issue body when it's readable.
+    const issueBody = await maybeFetchIssueBody(normalizedLink, projectId ?? state.currentProjectId);
+    const decision = await resolveDecision({ link: normalizedLink, issueBody, decideIssuePath });
 
     // 1. Materialize the worktree from the issue.
     const { worktree } = createWorktree({
@@ -174,21 +218,42 @@ export function createAutoRunService({
       invocationId: null,
       agentId: agent.id,
       link: normalizedLink,
-      intent: resolveIntent(normalizedLink),
+      decision,
+      // Legacy field, derived from the decision path for record continuity.
+      intent: intentForPath(decision.path),
+      // Depth-1 guard: a spawned child issue may never spawn grandchildren.
+      isChildIssue: isSpawnedChildBody(issueBody),
       branchName: worktree.branchName ?? worktree.branch ?? null,
       requestedBy: actor?.userId ?? "usr_local",
       createdAt,
       updatedAt: createdAt,
     };
     state.autoRuns.unshift(autoRun);
+    // The routing decision is auditable evidence: path, who decided, and why.
+    appendEvent({
+      invocationId: null,
+      type: "auto_run_decided",
+      level: "info",
+      message: `Auto-run ${autoRunId} routed to "${decision.path}" by ${decision.decidedBy}.`,
+      data: {
+        autoRunId,
+        path: decision.path,
+        decidedBy: decision.decidedBy,
+        confidence: decision.confidence,
+        spawnChildIssues: decision.spawnChildIssues,
+        rationale: decision.rationale,
+      },
+    });
 
     // 2. Seed the prompt from the issue, and 3. start the agent run in the worktree.
     let invocation;
     try {
-      const task = worktreeAutoRunPrompt(normalizedLink);
+      const task = roleAutoRunPrompt(normalizedLink, { path: decision.path, issueBody });
       invocation = createInvocation(task, agent, {
         actor,
-        metadata: { worktreeId: worktree.id, projectId: worktree.projectId, autoRunId },
+        // role carries the decided path so role-restricted agent-skills render
+        // for this run (creation.mjs → renderAgentSkillsIntoWorktree).
+        metadata: { worktreeId: worktree.id, projectId: worktree.projectId, autoRunId, role: decision.path },
       });
       startInvocationIfAllowed(invocation, agent);
     } catch (error) {
@@ -239,20 +304,37 @@ export function createAutoRunService({
             return autoRun;
           }
           if (!commitResult.hasCommits) {
-            // No diff — route by intent instead of always treating it as a dead
-            // end. An investigation's deliverable IS the summary; a question hands
-            // the uncertainty back to a human; only a change with no diff is blocked.
-            const intent = autoRun.intent ?? "change";
-            if (intent === "investigation") {
+            // No diff — route by the decided path instead of treating it as a
+            // dead end. A design/prototype run's deliverable IS the findings; a
+            // clarify run hands its questions back to a human; only a develop
+            // run with no diff is blocked. Old persisted records without a
+            // decision fall back to the legacy intent mapping.
+            const path = autoRun.decision?.path
+              ?? ({ investigation: "design", question: "clarify" }[autoRun.intent] ?? "develop");
+            if (path === "design" || path === "prototype") {
               const summary = extractRunSummary(invocation) ?? "Investigation complete — no code change was needed.";
               maybePostIssueReport(autoRun, worktree, summary);
-              setAutoRunStatus(autoRun, "report_posted", { report: summary, error: null });
-            } else if (intent === "question") {
-              const summary = extractRunSummary(invocation);
-              setAutoRunStatus(autoRun, "needs_input", {
+              const spawn = await maybeSpawnChildIssue(autoRun, worktree, summary);
+              setAutoRunStatus(autoRun, "report_posted", {
                 report: summary,
+                error: null,
+                ...(spawn?.child ? { childIssues: [spawn.child] } : {}),
+                ...(spawn?.error ? { spawnError: spawn.error } : {}),
+              });
+              // The design is delivered and waits on a human — the issue label
+              // should say review, not linger at in-progress. (Pilot finding.)
+              maybeWriteIssueStatus(autoRun, worktree, "review");
+            } else if (path === "clarify") {
+              const questions = autoRun.decision?.clarifyingQuestions ?? [];
+              const summary = extractRunSummary(invocation);
+              const report = questions.length
+                ? `${summary ? `${summary}\n\n` : ""}Open questions:\n${questions.map((q) => `- ${q}`).join("\n")}`
+                : summary;
+              setAutoRunStatus(autoRun, "needs_input", {
+                report,
                 error: "The run needs a human decision before it can proceed.",
               });
+              maybeWriteIssueStatus(autoRun, worktree, "review");
             } else {
               setAutoRunStatus(autoRun, "blocked", { error: "The agent run produced no changes to open a pull request with." });
             }
@@ -279,10 +361,31 @@ export function createAutoRunService({
           persistStateSoon();
           return autoRun;
         }
+        // Acceptance judge (Phase B): did the diff solve THIS issue — the quality
+        // the build/tests can't see. A real negative verdict blocks; an infra
+        // failure (null) never does, it just labels the PR honestly.
+        let judgment;
+        if (typeof judgeAcceptance === "function") {
+          try {
+            judgment = await judgeAcceptance({ worktree, autoRun });
+          } catch {
+            judgment = null;
+          }
+          autoRun.judgment = judgment
+            ? { solved: judgment.solved, confidence: judgment.confidence, summary: judgment.summary ?? null, gaps: judgment.gaps ?? [] }
+            : { solved: null, confidence: null, summary: "Judge errored — verdict unavailable.", gaps: [] };
+          if (judgment && judgment.solved === false) {
+            const gaps = judgment.gaps.length ? ` Gaps: ${judgment.gaps.join("; ")}` : "";
+            setAutoRunStatus(autoRun, "blocked", { error: `Acceptance judge: the change does not solve the issue.${gaps}` });
+            maybeWriteIssueStatus(autoRun, worktree, "review");
+            persistStateSoon();
+            return autoRun;
+          }
+        }
         setAutoRunStatus(autoRun, "publishing");
         try {
           await publishWorktreeBranch(autoRun.worktreeId);
-          const pr = await createWorktreePr(autoRun.worktreeId, { body: verificationEvidenceBody(verification) });
+          const pr = await createWorktreePr(autoRun.worktreeId, { body: verificationEvidenceBody(verification, judgment) });
           setAutoRunStatus(autoRun, "pr_open", { prNumber: pr?.number ?? null, prUrl: pr?.url ?? null, error: null });
           maybeWriteIssueStatus(autoRun, worktree, "review");
         } catch (error) {
@@ -300,5 +403,63 @@ export function createAutoRunService({
     }
   }
 
-  return { startAutoRun, advanceAutoRunForInvocation };
+  // Reflect a granted approval on the run card: without this the auto-run sat
+  // at awaiting_approval until a terminal state. (Pilot finding.)
+  function syncAutoRunOnApproval(invocation) {
+    const autoRun = state.autoRuns.find((item) => item.invocationId === invocation?.id);
+    if (!autoRun || autoRun.status !== "awaiting_approval") return null;
+    setAutoRunStatus(autoRun, "running");
+    persistStateSoon();
+    return autoRun;
+  }
+
+  // Retry a failed/blocked auto-run on its existing worktree: rebuild the role
+  // prompt and start a fresh invocation for the same record. Without this a
+  // failed run dead-ended — the trigger dedup (correctly) never re-picks an
+  // issue that has a settled run. (Pilot finding.)
+  async function retryAutoRun(autoRunId, { actor } = {}) {
+    const autoRun = state.autoRuns.find((item) => item.id === autoRunId);
+    if (!autoRun) throw new Error("Auto-run not found.");
+    if (!["failed", "blocked"].includes(autoRun.status)) {
+      throw new Error("Only a failed or blocked auto-run can be retried.");
+    }
+    const worktree = state.worktrees.find((item) => item.id === autoRun.worktreeId) ?? null;
+    if (!worktree) throw new Error("The auto-run's worktree no longer exists; start a fresh run instead.");
+    const agent = (autoRun.agentId ? findAgent(autoRun.agentId) : null) ?? defaultAgent();
+    if (!agent) throw new Error("No agent is registered to retry this run.");
+    if (agent.status === "disabled") throw new Error("The selected agent is disabled.");
+    if (agent.location?.type === "local_device" && state.device?.unlinkState !== "linked") {
+      throw new Error("The target device is unlinked; link it before retrying.");
+    }
+
+    const issueBody = await maybeFetchIssueBody(autoRun.link, autoRun.projectId);
+    const retryPath = autoRun.decision?.path ?? "develop";
+    const task = roleAutoRunPrompt(autoRun.link, { path: retryPath, issueBody });
+    let invocation;
+    try {
+      invocation = createInvocation(task, agent, {
+        actor,
+        // Same role seeding as the initial run so role-restricted skills render.
+        metadata: { worktreeId: worktree.id, projectId: worktree.projectId, autoRunId: autoRun.id, role: retryPath },
+      });
+      startInvocationIfAllowed(invocation, agent);
+    } catch (error) {
+      setAutoRunStatus(autoRun, "failed", { error: `Retry could not start the agent run: ${String(error?.message ?? error)}` });
+      persistStateSoon();
+      throw error;
+    }
+    autoRun.invocationId = invocation.id;
+    setAutoRunStatus(autoRun, autoRunStatusForInvocation(invocation), { error: null, prNumber: null, prUrl: null });
+    appendEvent({
+      invocationId: invocation.id,
+      type: "auto_run_retried",
+      level: "info",
+      message: `Auto-run ${autoRun.id} retried on its existing worktree.`,
+      data: { autoRunId: autoRun.id, worktreeId: worktree.id, invocationId: invocation.id, status: autoRun.status },
+    });
+    persistStateSoon();
+    return { autoRun, invocation };
+  }
+
+  return { startAutoRun, advanceAutoRunForInvocation, syncAutoRunOnApproval, retryAutoRun };
 }

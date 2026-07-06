@@ -11,6 +11,7 @@ export function createInvocationApprovalRuntime({
   createAuditSummary,
   recordAgentUsage,
   startInvocationIfAllowed,
+  onInvocationApproved,
 }) {
   function evaluateInvocationPolicy(agent, options = {}) {
     const capabilities = Array.isArray(agent.capabilities) ? agent.capabilities : [];
@@ -134,6 +135,11 @@ export function createInvocationApprovalRuntime({
       return;
     }
     startInvocationIfAllowed(invocation, agent);
+    // Late-bound reaction hook (e.g. auto-run: reflect the approval on the run
+    // card instead of leaving it parked at awaiting_approval).
+    if (typeof onInvocationApproved === "function") {
+      onInvocationApproved(invocation);
+    }
   }
 
   function denyInvocation(approval, invocation, actor = null) {

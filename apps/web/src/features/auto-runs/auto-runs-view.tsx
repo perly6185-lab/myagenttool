@@ -19,11 +19,15 @@ interface AutoRunRecord {
   status: string;
   link?: AutoRunLink | null;
   intent?: string | null;
+  decision?: { path: string; decidedBy: string; confidence: number; rationale?: string | null } | null;
   branchName?: string | null;
   prNumber?: number | null;
   prUrl?: string | null;
   verification?: { passed: boolean; verified: boolean; summary?: string | null } | null;
+  childIssues?: { number: number; url: string | null }[] | null;
+  judgment?: { solved: boolean | null; confidence: number | null; summary?: string | null; gaps?: string[] } | null;
   report?: string | null;
+  prState?: string | null;
   error?: string | null;
   createdAt?: string;
   updatedAt?: string;
@@ -35,6 +39,7 @@ interface AutoRunSummary {
   outcomes: { prOpen: number; blocked: number; failed: number; reportPosted: number; needsInput: number };
   successRate: number | null;
   verification: { passed: number; failed: number; unverified: number };
+  routing?: { alignmentRate: number | null; conclusive: number } | null;
   blockedReasons: { reason: string; count: number }[];
   timeToPr: { count: number; medianSeconds: number | null; p90Seconds: number | null };
 }
@@ -128,10 +133,12 @@ export function AutoRunsView() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (refresh = false) => {
     setLoading(true);
     try {
-      const data = (await api.listAutoRuns()) as { autoRuns?: AutoRunRecord[]; summary?: AutoRunSummary };
+      // Manual refresh also refreshes PR dispositions (bounded gh reads); the
+      // 10s poll never does, so it stays cheap.
+      const data = (await api.listAutoRuns(refresh)) as { autoRuns?: AutoRunRecord[]; summary?: AutoRunSummary };
       setRuns(data.autoRuns ?? []);
       setSummary(data.summary ?? null);
       setError(null);
@@ -160,7 +167,7 @@ export function AutoRunsView() {
           </h1>
           <p className="text-sm text-muted-foreground">Autonomous issue → worktree → agent → PR runs, and how the loop is performing.</p>
         </div>
-        <Button variant="secondary" size="sm" onClick={() => void load()} disabled={loading}>
+        <Button variant="secondary" size="sm" onClick={() => void load(true)} disabled={loading}>
           <RefreshCw className={cn("mr-1 size-3.5", loading && "animate-spin")} /> Refresh
         </Button>
       </div>
@@ -183,6 +190,11 @@ export function AutoRunsView() {
               label="Time to PR (median)"
               value={fmtDuration(summary.timeToPr.medianSeconds)}
               hint={`p90 ${fmtDuration(summary.timeToPr.p90Seconds)} · n=${summary.timeToPr.count}`}
+            />
+            <StatTile
+              label="Routing alignment"
+              value={summary.routing?.alignmentRate == null ? "—" : `${Math.round(summary.routing.alignmentRate * 100)}%`}
+              hint={`over ${summary.routing?.conclusive ?? 0} conclusive run(s)`}
             />
           </div>
           {summary.outcomes.reportPosted + summary.outcomes.needsInput > 0 ? (
@@ -239,6 +251,17 @@ export function AutoRunsView() {
                         <GitPullRequest className="size-3.5" /> PR #{run.prNumber}
                       </a>
                     ) : null}
+                    {run.prState === "MERGED" ? <Badge tone="success">merged</Badge> : null}
+                    {run.prState === "CLOSED" ? <Badge tone="warning">closed</Badge> : null}
+                    {(run.childIssues ?? []).map((child) =>
+                      child.url ? (
+                        <a key={child.number} href={child.url} target="_blank" rel="noreferrer" className="text-xs text-primary hover:underline" title="Pending-decision child issue">
+                          → #{child.number}
+                        </a>
+                      ) : (
+                        <span key={child.number} className="text-xs text-muted-foreground">→ #{child.number}</span>
+                      ),
+                    )}
                     {run.link?.url ? (
                       <a href={run.link.url} target="_blank" rel="noreferrer" className="text-muted-foreground hover:text-foreground" title="Open on GitHub">
                         <ExternalLink className="size-4" />
@@ -248,6 +271,14 @@ export function AutoRunsView() {
                 </div>
                 <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">
                   <Stepper status={run.status} />
+                  {run.decision ? (
+                    <span
+                      className="rounded bg-muted px-1.5 py-0.5 font-medium"
+                      title={`${run.decision.rationale ?? ""} (by ${run.decision.decidedBy}, confidence ${Math.round((run.decision.confidence ?? 0) * 100)}%)`}
+                    >
+                      {run.decision.path}
+                    </span>
+                  ) : null}
                   {run.branchName ? (
                     <span className="inline-flex items-center gap-1">
                       <GitBranch className="size-3" /> {run.branchName}
@@ -259,7 +290,29 @@ export function AutoRunsView() {
                       {run.verification.verified ? (run.verification.passed ? "verified" : "check failed") : "unverified"}
                     </span>
                   ) : null}
+                  {run.judgment ? (
+                    <span
+                      className="inline-flex items-center gap-1"
+                      title={`${run.judgment.summary ?? ""}${(run.judgment.gaps ?? []).map((g) => `\n- ${g}`).join("")}`}
+                    >
+                      ⚖ {run.judgment.solved === true ? "solves issue" : run.judgment.solved === false ? "does NOT solve issue" : "judge unavailable"}
+                    </span>
+                  ) : null}
                 </div>
+                {run.status === "failed" || run.status === "blocked" ? (
+                  <div>
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      onClick={() => {
+                        void api.retryAutoRun(run.id).then(() => load()).catch(() => load());
+                      }}
+                      title="Retry this run on its existing worktree"
+                    >
+                      <RefreshCw className="mr-1 size-3" /> Retry
+                    </Button>
+                  </div>
+                ) : null}
                 {run.report && (run.status === "report_posted" || run.status === "needs_input") ? (
                   <p className="line-clamp-3 whitespace-pre-wrap rounded bg-muted/50 px-2 py-1 text-xs text-muted-foreground">{run.report}</p>
                 ) : null}

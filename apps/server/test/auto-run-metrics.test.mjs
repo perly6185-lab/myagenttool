@@ -56,6 +56,29 @@ test("verification outcomes and blocked reasons are aggregated", () => {
   assert.equal(s.blockedReasons[0].count, 2, "most common blocked reason first");
 });
 
+test("routing decisions are aggregated by path and decider", () => {
+  const s = summarizeAutoRuns([
+    { status: "running", decision: { path: "develop", decidedBy: "heuristic", confidence: 0.3 } },
+    { status: "pr_open", decision: { path: "develop", decidedBy: "agent", confidence: 0.9 } },
+    { status: "report_posted", decision: { path: "design", decidedBy: "agent", confidence: 0.8 } },
+    { status: "failed" }, // legacy record without a decision
+  ]);
+  assert.equal(s.decisions.byPath.develop, 2);
+  assert.equal(s.decisions.byPath.design, 1);
+  assert.deepEqual(s.decisions.byDecidedBy, { agent: 2, heuristic: 1 });
+});
+
+test("decision via (heuristic / fast-path / agent / fallback) is aggregated", () => {
+  const s = summarizeAutoRuns([
+    { status: "running", decision: { path: "develop", decidedBy: "heuristic", via: "heuristic" } },
+    { status: "running", decision: { path: "clarify", decidedBy: "heuristic", via: "fast-path" } },
+    { status: "running", decision: { path: "design", decidedBy: "agent", via: "agent" } },
+    { status: "running", decision: { path: "develop", decidedBy: "heuristic", via: "fallback" } },
+    { status: "running", decision: { path: "develop", decidedBy: "heuristic" } }, // legacy: no via
+  ]);
+  assert.deepEqual(s.decisions.byVia, { heuristic: 2, "fast-path": 1, agent: 1, fallback: 1 });
+});
+
 test("non-diff outcomes (report_posted/needs_input) are counted apart from the change rate", () => {
   const s = summarizeAutoRuns([
     { status: "pr_open" },

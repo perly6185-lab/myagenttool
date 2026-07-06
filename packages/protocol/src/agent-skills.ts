@@ -10,6 +10,11 @@ import type { IsoDateTime } from "./common.js";
 // which are read-only reference docs bound to a routine, a different concept.
 export type AgentSkillTarget = "claude" | "codex";
 
+// Auto-run decision roles. A skill may restrict itself to one or more roles so
+// a design-decided run gets design skills and a develop run gets coding skills,
+// instead of every run rendering every enabled skill. See `AgentSkill.paths`.
+export type AgentSkillPath = "develop" | "design" | "prototype" | "clarify";
+
 // Optional binding to an external capability the skill drives. The capability
 // logic lives in one place; claude reaches it via an MCP server, codex via the
 // CLI. The skill body tells each agent *when* to call it.
@@ -32,6 +37,12 @@ export interface AgentSkill {
   description: string; // one-line; SKILL.md frontmatter + codex trigger line
   body: string; // markdown instructions (when/how to use)
   targets: AgentSkillTarget[];
+  // Optional auto-run role restriction. Empty/omitted = renders for every run
+  // (the default, backward-compatible). Non-empty = only rendered when the run's
+  // decided path is in this list — so roles can carry distinct tools/skills.
+  // Manual (non-auto-run) invocations carry no role, so they render only the
+  // unrestricted skills; a role-restricted skill never leaks into them.
+  paths?: AgentSkillPath[];
   tool?: AgentSkillToolBinding;
   enabled: boolean;
   createdAt: IsoDateTime;

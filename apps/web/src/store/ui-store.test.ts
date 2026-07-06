@@ -16,6 +16,7 @@ describe("ui-store persistence", () => {
       routineId: "routine_123",
       invocationId: "inv_123",
     });
+    useUiStore.getState().setSelectedEvidenceId("ev_123");
 
     const raw = localStorage.getItem("myagenttool-ui");
     expect(raw).toBeTruthy();
@@ -28,15 +29,17 @@ describe("ui-store persistence", () => {
       routineId: "routine_123",
       invocationId: "inv_123",
     });
+    expect(parsed.state.selectedEvidenceId).toBe("ev_123");
     // Setter functions must never be serialized.
     expect(parsed.state.setSection).toBeUndefined();
     expect(parsed.state.setSelectedApplicationId).toBeUndefined();
+    expect(parsed.state.setSelectedEvidenceId).toBeUndefined();
   });
 });
 
 describe("URL navigation helpers", () => {
   it("parses valid navigation params and ignores unknown sections", () => {
-    expect(navigationFromSearch("?section=applications&application=app_1&routine=routine_1&run=inv_1")).toEqual({
+    expect(navigationFromSearch("?section=applications&application=app_1&routine=routine_1&run=inv_1&evidence=ev_1")).toEqual({
       section: "applications",
       selectedInvocationId: null,
       selectedApplicationId: "app_1",
@@ -45,18 +48,20 @@ describe("URL navigation helpers", () => {
         routineId: "routine_1",
         invocationId: "inv_1",
       },
+      selectedEvidenceId: "ev_1",
     });
 
     expect(navigationFromSearch("?section=missing&application=app_1&routine=routine_1")).toMatchObject({
       selectedInvocationId: null,
       selectedApplicationId: "app_1",
       selectedApplicationRun: null,
+      selectedEvidenceId: null,
     });
     expect(navigationFromSearch("")).toEqual({});
   });
 
   it("serializes navigation state while preserving unrelated query params", () => {
-    const search = searchFromNavigationState("?keep=yes&section=dashboard&invocation=old", {
+    const search = searchFromNavigationState("?keep=yes&section=dashboard&invocation=old&evidence=old_ev", {
       section: "applications",
       selectedInvocationId: "inv_selected",
       selectedApplicationId: "app_selected",
@@ -65,6 +70,7 @@ describe("URL navigation helpers", () => {
         routineId: "routine_run",
         invocationId: "inv_run",
       },
+      selectedEvidenceId: "ev_selected",
     });
     const params = new URLSearchParams(search);
 
@@ -74,5 +80,21 @@ describe("URL navigation helpers", () => {
     expect(params.get("application")).toBe("app_run");
     expect(params.get("routine")).toBe("routine_run");
     expect(params.get("run")).toBe("inv_run");
+    expect(params.get("evidence")).toBe("ev_selected");
+  });
+
+  it("clears stale evidence params when evidence is absent from navigation state", () => {
+    const search = searchFromNavigationState("?keep=yes&section=audit&evidence=old_ev", {
+      section: "audit",
+      selectedInvocationId: null,
+      selectedApplicationId: null,
+      selectedApplicationRun: null,
+      selectedEvidenceId: null,
+    });
+    const params = new URLSearchParams(search);
+
+    expect(params.get("keep")).toBe("yes");
+    expect(params.get("section")).toBe("audit");
+    expect(params.get("evidence")).toBeNull();
   });
 });

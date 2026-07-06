@@ -59,7 +59,7 @@ before(() => {
     [
       "import { appendFileSync } from 'node:fs';",
       "appendFileSync(process.env.GH_CAPTURE, JSON.stringify(process.argv.slice(2)) + '\\n');",
-      "process.stdout.write(JSON.stringify({ number: 50, url: 'https://github.com/o/r/pull/50', state: 'OPEN' }));",
+      "process.stdout.write('https://github.com/o/r/pull/50\\n');",
       "",
     ].join("\n"),
   );
@@ -121,7 +121,7 @@ beforeEach(() => {
 
 test("full chain: issue -> worktree -> agent edit -> verify -> push -> PR -> status", async () => {
   const link = { type: "issue", number: 50, title: "E2E widget", url: null, state: "open" };
-  const { autoRun, worktree, invocation } = autoRunSvc.startAutoRun({
+  const { autoRun, worktree, invocation } = await autoRunSvc.startAutoRun({
     projectId: sourceId,
     link,
     name: "issue-50-e2e-widget",

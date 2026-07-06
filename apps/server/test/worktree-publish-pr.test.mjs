@@ -60,7 +60,7 @@ before(() => {
       "import { appendFileSync } from 'node:fs';",
       "const argv = process.argv.slice(2);",
       "appendFileSync(process.env.GH_CAPTURE, JSON.stringify(argv) + '\\n');",
-      "process.stdout.write(JSON.stringify({ number: 42, url: 'https://github.com/o/r/pull/42', state: 'OPEN' }));",
+      "process.stdout.write('https://github.com/o/r/pull/42\\n'); // real gh prints the PR URL",
       "",
     ].join("\n"),
   );
@@ -132,6 +132,7 @@ test("createWorktreePr publishes if needed, calls gh with base/head, and closes 
   const captured = readFileSync(ghCapturePath, "utf8").trim().split("\n").map((line) => JSON.parse(line));
   const createCall = captured.find((argv) => argv[0] === "pr" && argv[1] === "create");
   assert.ok(createCall, "gh pr create was invoked");
+  assert.ok(!createCall.includes("--json"), "real gh pr create has no --json flag (field-pilot finding)");
   const baseIdx = createCall.indexOf("--base");
   assert.equal(createCall[baseIdx + 1], "main");
   const headIdx = createCall.indexOf("--head");

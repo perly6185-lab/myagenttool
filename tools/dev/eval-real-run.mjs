@@ -22,7 +22,7 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { buildRunFeedbackEvents, looksLikeInfraFailure } from "../ai/src/evals/eval-signals.mjs";
+import { buildRunFeedbackEvents, floorBreaches, looksLikeInfraFailure, PROVISIONAL_FLOORS, runRegressed } from "../ai/src/evals/eval-signals.mjs";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const trendFile = resolve(repoRoot, ".myagenttool/evals/trend.jsonl");
@@ -129,6 +129,19 @@ console.log(`[eval:real] trend record appended: ${trendLine(record)}`);
 // Unattended runs must not let regressions rot silently: emit intake events
 // for the triage pipeline. dedupeKey keeps nightly repeats from re-filing.
 emitFeedbackEvents(record);
+
+// Enforce the (provisional) #250 gate line: a real metric below its floor makes
+// the scheduled run exit non-zero so cron/LaunchAgent logs turn red — a
+// regression can no longer complete "green". Auth/infra outages already exited
+// above; runRegressed excludes them so an outage never masquerades as a
+// capability regression here.
+if (runRegressed(record, PROVISIONAL_FLOORS)) {
+  const breaches = floorBreaches(record, PROVISIONAL_FLOORS)
+    .map((b) => `${b.metric} ${(b.passRate * 100).toFixed(0)}% < ${(b.floor * 100).toFixed(0)}%`)
+    .join(", ");
+  console.error(`[eval:real] REGRESSION: capability below provisional floor (${breaches}); exiting non-zero so the scheduled log turns red. Floor is provisional until #250 sets the real line.`);
+  process.exit(2);
+}
 
 function emitFeedbackEvents(entry) {
   const prior = existsSync(trendFile)

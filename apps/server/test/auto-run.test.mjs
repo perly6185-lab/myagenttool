@@ -46,6 +46,14 @@ function makeAutoRun({
   commit = { committed: true, hasCommits: true },
   // Verification result (or a throwing function). Default: unverified pass-through.
   verify = { passed: true, verified: false, summary: "No verification command configured." },
+  // Injected decision agent (slice 1). Default undefined -> heuristic floor.
+  decideIssuePath = undefined,
+  // Injected issue-body fetch (slice 2). Default undefined -> title-only prompts.
+  fetchIssueBody = undefined,
+  // Injected child-issue spawner (slice 4). Default undefined -> no spawning.
+  spawnChildIssue = undefined,
+  // Injected acceptance judge (Phase B). Default undefined -> step skipped.
+  judgeAcceptance = undefined,
 } = {}) {
   const calls = { createInvocation: [], startInvocationIfAllowed: [], commit: [], publish: [], pr: [], verify: [], status: [], report: [] };
   let counter = 0;
@@ -94,6 +102,10 @@ function makeAutoRun({
     postIssueReport: async (ctx) => {
       calls.report.push(ctx);
     },
+    decideIssuePath,
+    fetchIssueBody,
+    spawnChildIssue,
+    judgeAcceptance,
   });
   return { svc, calls };
 }
@@ -123,11 +135,11 @@ beforeEach(() => {
   state.currentProjectId = source.id;
 });
 
-test("startAutoRun materializes the worktree and starts an issue-seeded invocation", () => {
+test("startAutoRun materializes the worktree and starts an issue-seeded invocation", async () => {
   const { svc, calls } = makeAutoRun();
   const link = { type: "issue", number: 12, title: "Add the widget", url: "https://github.com/o/r/issues/12", state: "open" };
 
-  const { autoRun, worktree, invocation } = svc.startAutoRun({
+  const { autoRun, worktree, invocation } = await svc.startAutoRun({
     projectId: sourceProjectId,
     link,
     agentId: "agt_1",
@@ -143,8 +155,10 @@ test("startAutoRun materializes the worktree and starts an issue-seeded invocati
   // The invocation was created with the issue-derived prompt, targeting the worktree.
   assert.equal(calls.createInvocation.length, 1);
   const created = calls.createInvocation[0];
-  assert.match(created.task, /^Make progress on GitHub Issue #12: Add the widget\./);
+  assert.match(created.task, /^GitHub Issue #12: Add the widget\./);
+  assert.match(created.task, /Implement the change/, "develop role instructions seeded");
   assert.equal(created.options.metadata.worktreeId, worktree.id);
+  assert.equal(created.options.metadata.role, "develop", "decided path seeded as role for skill selection");
   assert.equal(created.agent.id, "agt_1");
   assert.equal(invocation.input.task, created.task, "invocation carries the seeded prompt");
   assert.equal(calls.startInvocationIfAllowed.length, 1, "the run is actually kicked off");
@@ -158,9 +172,9 @@ test("startAutoRun materializes the worktree and starts an issue-seeded invocati
   assert.equal(autoRun.link.number, 12);
 });
 
-test("startAutoRun reflects the local-approval gate instead of bypassing it", () => {
+test("startAutoRun reflects the local-approval gate instead of bypassing it", async () => {
   const { svc } = makeAutoRun({ invocationStatus: "waiting_for_local_approval" });
-  const { autoRun } = svc.startAutoRun({
+  const { autoRun } = await svc.startAutoRun({
     projectId: sourceProjectId,
     link: { type: "issue", number: 3, title: "Risky", url: null, state: "open" },
     agentId: "agt_1",
@@ -169,9 +183,9 @@ test("startAutoRun reflects the local-approval gate instead of bypassing it", ()
   assert.equal(autoRun.status, "awaiting_approval");
 });
 
-test("startAutoRun surfaces a rejected invocation as a failed auto-run", () => {
+test("startAutoRun surfaces a rejected invocation as a failed auto-run", async () => {
   const { svc } = makeAutoRun({ invocationStatus: "rejected" });
-  const { autoRun } = svc.startAutoRun({
+  const { autoRun } = await svc.startAutoRun({
     projectId: sourceProjectId,
     link: { type: "pr", number: 8, title: "Nope", url: null, state: "open" },
     agentId: "agt_1",
@@ -182,7 +196,7 @@ test("startAutoRun surfaces a rejected invocation as a failed auto-run", () => {
 
 test("advanceAutoRunForInvocation publishes and opens a PR when the run succeeds", async () => {
   const { svc, calls } = makeAutoRun();
-  const { autoRun, invocation } = svc.startAutoRun({
+  const { autoRun, invocation } = await svc.startAutoRun({
     projectId: sourceProjectId,
     link: { type: "issue", number: 20, title: "Ship it", url: null, state: "open" },
     agentId: "agt_1",
@@ -201,7 +215,7 @@ test("advanceAutoRunForInvocation publishes and opens a PR when the run succeeds
 
 test("advanceAutoRunForInvocation marks the auto-run failed when the run fails", async () => {
   const { svc, calls } = makeAutoRun();
-  const { autoRun, invocation } = svc.startAutoRun({
+  const { autoRun, invocation } = await svc.startAutoRun({
     projectId: sourceProjectId,
     link: { type: "issue", number: 21, title: "Broken", url: null, state: "open" },
     agentId: "agt_1",
@@ -217,7 +231,7 @@ test("advanceAutoRunForInvocation marks the auto-run failed when the run fails",
 
 test("advanceAutoRunForInvocation fails the auto-run (never throws) when publish errors", async () => {
   const { svc, calls } = makeAutoRun({ publishThrows: true });
-  const { autoRun, invocation } = svc.startAutoRun({
+  const { autoRun, invocation } = await svc.startAutoRun({
     projectId: sourceProjectId,
     link: { type: "issue", number: 22, title: "No remote", url: null, state: "open" },
     agentId: "agt_1",
@@ -233,7 +247,7 @@ test("advanceAutoRunForInvocation fails the auto-run (never throws) when publish
 
 test("advanceAutoRunForInvocation is idempotent once the PR is open", async () => {
   const { svc, calls } = makeAutoRun();
-  const { autoRun, invocation } = svc.startAutoRun({
+  const { autoRun, invocation } = await svc.startAutoRun({
     projectId: sourceProjectId,
     link: { type: "issue", number: 23, title: "Once", url: null, state: "open" },
     agentId: "agt_1",
@@ -250,7 +264,7 @@ test("advanceAutoRunForInvocation is idempotent once the PR is open", async () =
 
 test("reaction commits the agent's changes before publishing (F1)", async () => {
   const { svc, calls } = makeAutoRun();
-  const { invocation, autoRun } = svc.startAutoRun({
+  const { invocation, autoRun } = await svc.startAutoRun({
     projectId: sourceProjectId,
     link: { type: "issue", number: 60, title: "Commit me", url: null, state: "open" },
     agentId: "agt_1",
@@ -266,7 +280,7 @@ test("reaction commits the agent's changes before publishing (F1)", async () => 
 
 test("reaction blocks (no PR) when the agent produced no changes (F1)", async () => {
   const { svc, calls } = makeAutoRun({ commit: { committed: false, hasCommits: false } });
-  const { invocation, autoRun } = svc.startAutoRun({
+  const { invocation, autoRun } = await svc.startAutoRun({
     projectId: sourceProjectId,
     link: { type: "issue", number: 61, title: "Did nothing", url: null, state: "open" },
     agentId: "agt_1",
@@ -279,20 +293,241 @@ test("reaction blocks (no PR) when the agent produced no changes (F1)", async ()
   assert.equal(calls.pr.length, 0);
 });
 
-test("startAutoRun classifies the issue intent from the title", () => {
+test("startAutoRun records a heuristic decision (path + legacy intent) from the title", async () => {
   const { svc } = makeAutoRun();
-  const { autoRun } = svc.startAutoRun({
+  const { autoRun } = await svc.startAutoRun({
     projectId: sourceProjectId,
     link: { type: "issue", number: 70, title: "Investigate why dispatch stalls", url: null, state: "open" },
     agentId: "agt_1",
     name: "issue-70-investigate",
   });
-  assert.equal(autoRun.intent, "investigation");
+  assert.equal(autoRun.decision.path, "design");
+  assert.equal(autoRun.decision.decidedBy, "heuristic");
+  assert.ok(autoRun.decision.rationale, "the decision carries a rationale");
+  assert.equal(autoRun.intent, "investigation", "legacy intent derived from the path");
+});
+
+test("an injected decision agent routes the run and is recorded as evidence", async () => {
+  const { svc, calls } = makeAutoRun({
+    commit: { committed: false, hasCommits: false },
+    decideIssuePath: async () => ({
+      path: "design",
+      spawnChildIssues: false,
+      confidence: 0.9,
+      rationale: "Solution space is open; needs a design first.",
+    }),
+  });
+  const { autoRun, invocation } = await svc.startAutoRun({
+    projectId: sourceProjectId,
+    link: { type: "issue", number: 74, title: "Add the cache", url: null, state: "open" },
+    agentId: "agt_1",
+    name: "issue-74-agent-decided",
+  });
+  // Title says "change", but the agent's decision wins.
+  assert.equal(autoRun.decision.path, "design");
+  assert.equal(autoRun.decision.decidedBy, "agent");
+  assert.equal(autoRun.decision.confidence, 0.9);
+
+  await svc.advanceAutoRunForInvocation({ ...invocation, status: "succeeded", result: "Design findings." });
+  assert.equal(autoRun.status, "report_posted", "no-diff routed by the agent's path, not the title");
+  assert.equal(calls.report.length, 1);
+});
+
+test("a low-confidence heavy decision degrades to clarify (questions surface in the report)", async () => {
+  const { svc } = makeAutoRun({
+    commit: { committed: false, hasCommits: false },
+    decideIssuePath: async () => ({
+      path: "prototype",
+      spawnChildIssues: true,
+      confidence: 0.2,
+      rationale: "Maybe a spike?",
+      clarifyingQuestions: ["Which queue backend is in scope?"],
+    }),
+  });
+  const { autoRun, invocation } = await svc.startAutoRun({
+    projectId: sourceProjectId,
+    link: { type: "issue", number: 75, title: "Do the thing", url: null, state: "open" },
+    agentId: "agt_1",
+    name: "issue-75-low-confidence",
+  });
+  assert.equal(autoRun.decision.path, "clarify", "heavy path below the confidence gate degrades");
+  assert.equal(autoRun.decision.spawnChildIssues, false);
+
+  await svc.advanceAutoRunForInvocation({ ...invocation, status: "succeeded" });
+  assert.equal(autoRun.status, "needs_input");
+  assert.match(autoRun.report, /Which queue backend is in scope\?/);
+});
+
+test("the issue body reaches both the decider and the role prompt", async () => {
+  const seenByDecider = [];
+  const { svc, calls } = makeAutoRun({
+    fetchIssueBody: async ({ issueNumber, repoPath }) => {
+      assert.equal(issueNumber, 80);
+      assert.ok(repoPath, "fetch gets the source repo path");
+      return "## Acceptance\n- [ ] cache hits served";
+    },
+    decideIssuePath: async ({ link, issueBody }) => {
+      seenByDecider.push({ link, issueBody });
+      return { path: "develop", confidence: 0.9, rationale: "clear change" };
+    },
+  });
+  const { autoRun } = await svc.startAutoRun({
+    projectId: sourceProjectId,
+    link: { type: "issue", number: 80, title: "Add caching", url: null, state: "open" },
+    agentId: "agt_1",
+    name: "issue-80-body",
+  });
+  assert.match(seenByDecider[0].issueBody, /cache hits served/, "decider sees the body");
+  assert.match(calls.createInvocation[0].task, /cache hits served/, "prompt carries the body");
+  assert.equal(autoRun.decision.path, "develop");
+});
+
+test("a failing body fetch degrades to a title-only prompt (run proceeds)", async () => {
+  const { svc, calls } = makeAutoRun({
+    fetchIssueBody: async () => {
+      throw new Error("gh offline");
+    },
+  });
+  const { autoRun } = await svc.startAutoRun({
+    projectId: sourceProjectId,
+    link: { type: "issue", number: 81, title: "Fix the crash", url: null, state: "open" },
+    agentId: "agt_1",
+    name: "issue-81-nobody",
+  });
+  assert.equal(autoRun.status, "running");
+  assert.match(calls.createInvocation[0].task, /^GitHub Issue #81: Fix the crash\./);
+  assert.ok(!calls.createInvocation[0].task.includes("description:"), "no body block");
+});
+
+test("a design-decided run gets the design role prompt (no implementation)", async () => {
+  const { svc, calls } = makeAutoRun({
+    decideIssuePath: async () => ({ path: "design", confidence: 0.9, rationale: "open solution space" }),
+  });
+  await svc.startAutoRun({
+    projectId: sourceProjectId,
+    link: { type: "issue", number: 82, title: "Rework the queue", url: null, state: "open" },
+    agentId: "agt_1",
+    name: "issue-82-design",
+  });
+  assert.match(calls.createInvocation[0].task, /Do NOT implement/, "design role instructions");
+  assert.equal(calls.createInvocation[0].options.metadata.role, "design", "design path seeded as role so design-only skills render");
+});
+
+test("a design run spawns a pending-decision child issue and parks (slice 4)", async () => {
+  const spawnCalls = [];
+  const { svc, calls } = makeAutoRun({
+    commit: { committed: false, hasCommits: false },
+    decideIssuePath: async () => ({ path: "design", confidence: 0.9, rationale: "open space" }),
+    spawnChildIssue: async (ctx) => {
+      spawnCalls.push(ctx);
+      return { number: 90, url: "https://github.com/o/r/issues/90" };
+    },
+  });
+  const { autoRun, invocation } = await svc.startAutoRun({
+    projectId: sourceProjectId,
+    link: { type: "issue", number: 89, title: "Rework the queue", url: null, state: "open" },
+    agentId: "agt_1",
+    name: "issue-89-design-spawn",
+  });
+
+  await svc.advanceAutoRunForInvocation({ ...invocation, status: "succeeded", result: "Design: use Redis." });
+
+  assert.equal(autoRun.status, "report_posted", "parent parks as report_posted");
+  assert.deepEqual(autoRun.childIssues, [{ number: 90, url: "https://github.com/o/r/issues/90" }]);
+  assert.equal(spawnCalls.length, 1);
+  assert.equal(spawnCalls[0].parentLink.number, 89);
+  assert.match(spawnCalls[0].design, /use Redis/);
+  assert.ok(spawnCalls[0].repoPath, "spawner gets the repo path");
+  assert.equal(calls.pr.length, 0, "no PR from a design run");
+});
+
+test("depth-1: a run on a spawned child issue never spawns grandchildren", async () => {
+  const spawnCalls = [];
+  const { svc } = makeAutoRun({
+    commit: { committed: false, hasCommits: false },
+    decideIssuePath: async () => ({ path: "design", confidence: 0.9, rationale: "r" }),
+    // The issue body identifies this issue as a spawned child.
+    fetchIssueBody: async () => "Design...\n<!-- myagent:autorun:child-of:#89 -->\n## Project Fields\nMilestone: M3",
+    spawnChildIssue: async (ctx) => {
+      spawnCalls.push(ctx);
+      return { number: 91, url: null };
+    },
+  });
+  const { autoRun, invocation } = await svc.startAutoRun({
+    projectId: sourceProjectId,
+    link: { type: "issue", number: 90, title: "Implement: Rework the queue", url: null, state: "open" },
+    agentId: "agt_1",
+    name: "issue-90-child",
+  });
+  assert.equal(autoRun.isChildIssue, true);
+
+  await svc.advanceAutoRunForInvocation({ ...invocation, status: "succeeded" });
+
+  assert.equal(spawnCalls.length, 0, "a child issue never spawns");
+  assert.equal(autoRun.status, "report_posted");
+});
+
+test("one child per parent issue: a second design run does not respawn", async () => {
+  let spawned = 0;
+  const opts = {
+    commit: { committed: false, hasCommits: false },
+    decideIssuePath: async () => ({ path: "design", confidence: 0.9, rationale: "r" }),
+    spawnChildIssue: async () => {
+      spawned += 1;
+      return { number: 92, url: null };
+    },
+  };
+  const { svc } = makeAutoRun(opts);
+  const link = { type: "issue", number: 93, title: "Rework storage", url: null, state: "open" };
+  const first = await svc.startAutoRun({ projectId: sourceProjectId, link, agentId: "agt_1", name: "issue-93-a" });
+  await svc.advanceAutoRunForInvocation({ ...first.invocation, status: "succeeded" });
+  assert.equal(spawned, 1);
+
+  const second = await svc.startAutoRun({ projectId: sourceProjectId, link, agentId: "agt_1", name: "issue-93-b" });
+  await svc.advanceAutoRunForInvocation({ ...second.invocation, status: "succeeded" });
+  assert.equal(spawned, 1, "dedup: the parent already has a child");
+});
+
+test("a failing spawner still parks the run as report_posted (best-effort)", async () => {
+  const { svc } = makeAutoRun({
+    commit: { committed: false, hasCommits: false },
+    decideIssuePath: async () => ({ path: "design", confidence: 0.9, rationale: "r" }),
+    spawnChildIssue: async () => {
+      throw new Error("gh not authenticated");
+    },
+  });
+  const { autoRun, invocation } = await svc.startAutoRun({
+    projectId: sourceProjectId,
+    link: { type: "issue", number: 94, title: "Rework auth", url: null, state: "open" },
+    agentId: "agt_1",
+    name: "issue-94-spawnfail",
+  });
+  await svc.advanceAutoRunForInvocation({ ...invocation, status: "succeeded" });
+  assert.equal(autoRun.status, "report_posted");
+  assert.match(autoRun.spawnError, /gh not authenticated/);
+  assert.equal(autoRun.childIssues, undefined);
+});
+
+test("a broken decision agent falls back to the heuristic (run never fails)", async () => {
+  const { svc } = makeAutoRun({
+    decideIssuePath: async () => {
+      throw new Error("decider exploded");
+    },
+  });
+  const { autoRun } = await svc.startAutoRun({
+    projectId: sourceProjectId,
+    link: { type: "issue", number: 76, title: "Fix the crash", url: null, state: "open" },
+    agentId: "agt_1",
+    name: "issue-76-fallback",
+  });
+  assert.equal(autoRun.decision.decidedBy, "heuristic");
+  assert.equal(autoRun.decision.path, "develop");
+  assert.equal(autoRun.status, "running");
 });
 
 test("no-diff investigation posts a report and succeeds (not blocked)", async () => {
   const { svc, calls } = makeAutoRun({ commit: { committed: false, hasCommits: false } });
-  const { autoRun, invocation } = svc.startAutoRun({
+  const { autoRun, invocation } = await svc.startAutoRun({
     projectId: sourceProjectId,
     link: { type: "issue", number: 71, title: "Research queue backends", url: null, state: "open" },
     agentId: "agt_1",
@@ -311,7 +546,7 @@ test("no-diff investigation posts a report and succeeds (not blocked)", async ()
 
 test("no-diff question routes to needs_input (hands uncertainty back to a human)", async () => {
   const { svc, calls } = makeAutoRun({ commit: { committed: false, hasCommits: false } });
-  const { autoRun, invocation } = svc.startAutoRun({
+  const { autoRun, invocation } = await svc.startAutoRun({
     projectId: sourceProjectId,
     link: { type: "issue", number: 72, title: "Should we drop the loop engine?", url: null, state: "open" },
     agentId: "agt_1",
@@ -328,7 +563,7 @@ test("no-diff question routes to needs_input (hands uncertainty back to a human)
 
 test("no-diff change is still blocked (a change that produced nothing)", async () => {
   const { svc } = makeAutoRun({ commit: { committed: false, hasCommits: false } });
-  const { autoRun, invocation } = svc.startAutoRun({
+  const { autoRun, invocation } = await svc.startAutoRun({
     projectId: sourceProjectId,
     link: { type: "issue", number: 73, title: "Add a cache to the ledger", url: null, state: "open" },
     agentId: "agt_1",
@@ -341,7 +576,7 @@ test("no-diff change is still blocked (a change that produced nothing)", async (
 
 test("reaction fails when the commit itself errors (F1)", async () => {
   const { svc, calls } = makeAutoRun({ commit: () => { throw new Error("no git identity"); } });
-  const { invocation, autoRun } = svc.startAutoRun({
+  const { invocation, autoRun } = await svc.startAutoRun({
     projectId: sourceProjectId,
     link: { type: "issue", number: 62, title: "Bad commit", url: null, state: "open" },
     agentId: "agt_1",
@@ -353,9 +588,9 @@ test("reaction fails when the commit itself errors (F1)", async () => {
   assert.equal(calls.publish.length, 0);
 });
 
-test("startAutoRun records the auto-run even if the invocation fails to start (F2)", () => {
+test("startAutoRun records the auto-run even if the invocation fails to start (F2)", async () => {
   const { svc } = makeAutoRun({ createInvocationThrows: true });
-  assert.throws(
+  await assert.rejects(
     () => svc.startAutoRun({
       projectId: sourceProjectId,
       link: { type: "issue", number: 63, title: "Dispatch dies", url: null, state: "open" },
@@ -372,7 +607,7 @@ test("startAutoRun records the auto-run even if the invocation fails to start (F
 
 test("verification gate: a passing check opens the PR with verification evidence", async () => {
   const { svc, calls } = makeAutoRun({ verify: { passed: true, verified: true, summary: "`pnpm -s typecheck` passed." } });
-  const { autoRun, invocation } = svc.startAutoRun({
+  const { autoRun, invocation } = await svc.startAutoRun({
     projectId: sourceProjectId,
     link: { type: "issue", number: 30, title: "Verified", url: null, state: "open" },
     agentId: "agt_1",
@@ -391,7 +626,7 @@ test("verification gate: a passing check opens the PR with verification evidence
 
 test("verification gate: a failing check blocks the PR", async () => {
   const { svc, calls } = makeAutoRun({ verify: { passed: false, verified: true, summary: "`pnpm -s test` failed (exit 1)." } });
-  const { autoRun, invocation } = svc.startAutoRun({
+  const { autoRun, invocation } = await svc.startAutoRun({
     projectId: sourceProjectId,
     link: { type: "issue", number: 31, title: "Broken tests", url: null, state: "open" },
     agentId: "agt_1",
@@ -408,7 +643,7 @@ test("verification gate: a failing check blocks the PR", async () => {
 
 test("verification gate: an unconfigured gate opens the PR but labels it unverified", async () => {
   const { svc, calls } = makeAutoRun(); // default: verified:false pass-through
-  const { autoRun, invocation } = svc.startAutoRun({
+  const { autoRun, invocation } = await svc.startAutoRun({
     projectId: sourceProjectId,
     link: { type: "issue", number: 32, title: "No gate", url: null, state: "open" },
     agentId: "agt_1",
@@ -428,7 +663,7 @@ test("verification gate: a throwing verifier blocks the PR (never fabricates a p
       throw new Error("verifier crashed");
     },
   });
-  const { autoRun, invocation } = svc.startAutoRun({
+  const { autoRun, invocation } = await svc.startAutoRun({
     projectId: sourceProjectId,
     link: { type: "issue", number: 33, title: "Crash", url: null, state: "open" },
     agentId: "agt_1",
@@ -444,7 +679,7 @@ test("verification gate: a throwing verifier blocks the PR (never fabricates a p
 
 test("status writeback: in-progress on start, review when the PR opens (issue links only)", async () => {
   const { svc, calls } = makeAutoRun();
-  const { autoRun, invocation, worktree } = svc.startAutoRun({
+  const { autoRun, invocation, worktree } = await svc.startAutoRun({
     projectId: sourceProjectId,
     link: { type: "issue", number: 40, title: "Track me", url: null, state: "open" },
     agentId: "agt_1",
@@ -468,7 +703,7 @@ test("status writeback: in-progress on start, review when the PR opens (issue li
 
 test("status writeback: never fires for a PR-linked auto-run", async () => {
   const { svc, calls } = makeAutoRun();
-  const { invocation } = svc.startAutoRun({
+  const { invocation } = await svc.startAutoRun({
     projectId: sourceProjectId,
     link: { type: "pr", number: 41, title: "A PR", url: null, state: "open" },
     agentId: "agt_1",
@@ -478,9 +713,9 @@ test("status writeback: never fires for a PR-linked auto-run", async () => {
   assert.equal(calls.status.length, 0, "PR-linked runs don't move an issue's status");
 });
 
-test("status writeback: a rejected start does not mark the issue in-progress", () => {
+test("status writeback: a rejected start does not mark the issue in-progress", async () => {
   const { svc, calls } = makeAutoRun({ invocationStatus: "rejected" });
-  svc.startAutoRun({
+  await svc.startAutoRun({
     projectId: sourceProjectId,
     link: { type: "issue", number: 44, title: "Rejected", url: null, state: "open" },
     agentId: "agt_1",
@@ -489,13 +724,139 @@ test("status writeback: a rejected start does not mark the issue in-progress", (
   assert.equal(calls.status.length, 0);
 });
 
-test("startAutoRun validates the link and the device link state", () => {
+test("syncAutoRunOnApproval moves an approved run off awaiting_approval (pilot #3)", async () => {
+  const { svc } = makeAutoRun({ invocationStatus: "waiting_for_local_approval" });
+  const { autoRun, invocation } = await svc.startAutoRun({
+    projectId: sourceProjectId,
+    link: { type: "issue", number: 95, title: "Risky change", url: null, state: "open" },
+    agentId: "agt_1",
+    name: "issue-95-approval-sync",
+  });
+  assert.equal(autoRun.status, "awaiting_approval");
+
+  svc.syncAutoRunOnApproval(invocation);
+  assert.equal(autoRun.status, "running", "the card reflects the approval");
+  assert.equal(svc.syncAutoRunOnApproval({ id: "inv_unknown" }), null, "unknown invocation is a no-op");
+});
+
+test("report_posted and needs_input write the issue status forward to review (pilot #7)", async () => {
+  const { svc, calls } = makeAutoRun({
+    commit: { committed: false, hasCommits: false },
+    decideIssuePath: async () => ({ path: "design", confidence: 0.9, rationale: "r" }),
+  });
+  const { invocation } = await svc.startAutoRun({
+    projectId: sourceProjectId,
+    link: { type: "issue", number: 96, title: "Rework thing", url: null, state: "open" },
+    agentId: "agt_1",
+    name: "issue-96-review-writeback",
+  });
+  await svc.advanceAutoRunForInvocation({ ...invocation, status: "succeeded", result: "Design." });
+  const transitions = calls.status.map((c) => `${c.issueNumber}:${c.to}`);
+  assert.deepEqual(transitions, ["96:in-progress", "96:review"], "design delivered → review");
+});
+
+test("retryAutoRun restarts a failed run on its existing worktree (pilot #9)", async () => {
+  const { svc, calls } = makeAutoRun({ publishThrows: true });
+  const { autoRun, invocation } = await svc.startAutoRun({
+    projectId: sourceProjectId,
+    link: { type: "issue", number: 97, title: "Fix the crash", url: null, state: "open" },
+    agentId: "agt_1",
+    name: "issue-97-retry",
+  });
+  await svc.advanceAutoRunForInvocation({ ...invocation, status: "succeeded" });
+  assert.equal(autoRun.status, "failed", "publish blew up -> failed");
+  const worktreesBefore = state.worktrees.length;
+
+  const { invocation: second } = await svc.retryAutoRun(autoRun.id, { actor: { userId: "usr_x" } });
+
+  assert.equal(autoRun.status, "running", "retried run is live again");
+  assert.equal(autoRun.invocationId, second.id, "record points at the fresh invocation");
+  assert.equal(autoRun.error, null, "stale error cleared");
+  assert.equal(state.worktrees.length, worktreesBefore, "no new worktree — retry reuses the existing one");
+  assert.equal(calls.createInvocation.length, 2);
+  assert.match(calls.createInvocation[1].task, /Implement the change/, "role prompt rebuilt from the decision");
+});
+
+test("retryAutoRun refuses non-settled runs and missing worktrees", async () => {
   const { svc } = makeAutoRun();
-  assert.throws(() => svc.startAutoRun({ projectId: sourceProjectId, link: null, agentId: "agt_1" }), /issue or PR link/i);
+  const { autoRun } = await svc.startAutoRun({
+    projectId: sourceProjectId,
+    link: { type: "issue", number: 98, title: "Running", url: null, state: "open" },
+    agentId: "agt_1",
+    name: "issue-98-guards",
+  });
+  await assert.rejects(() => svc.retryAutoRun(autoRun.id), /failed or blocked/);
+  await assert.rejects(() => svc.retryAutoRun("aur_nope"), /not found/i);
+
+  autoRun.status = "failed";
+  autoRun.worktreeId = "wtr_gone";
+  await assert.rejects(() => svc.retryAutoRun(autoRun.id), /no longer exists/);
+});
+
+async function judgeRun(svc, number, name) {
+  const { autoRun, invocation } = await svc.startAutoRun({
+    projectId: sourceProjectId,
+    link: { type: "issue", number, title: "Add the thing", url: null, state: "open" },
+    agentId: "agt_1",
+    name,
+  });
+  await svc.advanceAutoRunForInvocation({ ...invocation, status: "succeeded" });
+  return autoRun;
+}
+
+test("acceptance judge: a negative verdict blocks the PR with the gaps (Phase B)", async () => {
+  const { svc, calls } = makeAutoRun({
+    judgeAcceptance: async () => ({ solved: false, confidence: 0.85, summary: "wrong endpoint", gaps: ["acceptance case 2 unhandled"] }),
+  });
+  const autoRun = await judgeRun(svc, 110, "issue-110-judge-block");
+  assert.equal(autoRun.status, "blocked");
+  assert.match(autoRun.error, /does not solve the issue/);
+  assert.match(autoRun.error, /acceptance case 2 unhandled/);
+  assert.deepEqual(autoRun.judgment.solved, false);
+  assert.equal(calls.pr.length, 0, "no PR on a negative verdict");
+});
+
+test("acceptance judge: a positive verdict opens the PR with the judgment as evidence", async () => {
+  const { svc, calls } = makeAutoRun({
+    judgeAcceptance: async ({ worktree, autoRun }) => {
+      assert.ok(worktree?.id, "judge gets the worktree");
+      assert.ok(autoRun?.link, "judge gets the run's link");
+      return { solved: true, confidence: 0.92, summary: "matches acceptance", gaps: [] };
+    },
+  });
+  const autoRun = await judgeRun(svc, 111, "issue-111-judge-pass");
+  assert.equal(autoRun.status, "pr_open");
+  assert.equal(autoRun.judgment.solved, true);
+  assert.match(calls.pr[0].payload.body, /Acceptance judgment: solved \(confidence 92%\)/);
+});
+
+test("acceptance judge: a broken judge never blocks — PR opens labelled honestly", async () => {
+  const { svc, calls } = makeAutoRun({
+    judgeAcceptance: async () => {
+      throw new Error("judge exploded");
+    },
+  });
+  const autoRun = await judgeRun(svc, 112, "issue-112-judge-error");
+  assert.equal(autoRun.status, "pr_open", "infra failure must not block delivery");
+  assert.equal(autoRun.judgment.solved, null);
+  assert.match(calls.pr[0].payload.body, /judge errored/);
+});
+
+test("acceptance judge: unconfigured -> skipped, evidence says not run", async () => {
+  const { svc, calls } = makeAutoRun();
+  const autoRun = await judgeRun(svc, 113, "issue-113-judge-skip");
+  assert.equal(autoRun.status, "pr_open");
+  assert.equal(autoRun.judgment, undefined, "no judgment recorded when the step is off");
+  assert.match(calls.pr[0].payload.body, /Acceptance judgment: not run/);
+});
+
+test("startAutoRun validates the link and the device link state", async () => {
+  const { svc } = makeAutoRun();
+  await assert.rejects(() => svc.startAutoRun({ projectId: sourceProjectId, link: null, agentId: "agt_1" }), /issue or PR link/i);
 
   state.device.unlinkState = "unlinked";
   const unlinked = makeAutoRun();
-  assert.throws(
+  await assert.rejects(
     () => unlinked.svc.startAutoRun({
       projectId: sourceProjectId,
       link: { type: "issue", number: 1, title: "x", url: null, state: "open" },

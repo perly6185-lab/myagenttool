@@ -6,6 +6,7 @@ export type SectionKey =
   | "projects"
   | "task"
   | "autoRuns"
+  | "evalTrend"
   | "automation"
   | "agentSkills"
   | "invocations"
@@ -36,6 +37,7 @@ interface UiState {
   selectedToolName: string | null;
   selectedApplicationId: string | null;
   selectedApplicationRun: ApplicationRunSelection | null;
+  selectedEvidenceId: string | null;
   /** Transient: the invocation whose Codex session the composer will continue on next send (#163). */
   resumeFromInvocationId: string | null;
   setSection: (section: SectionKey) => void;
@@ -48,6 +50,7 @@ interface UiState {
   setSelectedToolName: (name: string | null) => void;
   setSelectedApplicationId: (id: string | null) => void;
   setSelectedApplicationRun: (selection: ApplicationRunSelection | null) => void;
+  setSelectedEvidenceId: (id: string | null) => void;
   setResumeFromInvocationId: (id: string | null) => void;
 }
 
@@ -56,6 +59,7 @@ export const SECTION_KEYS: SectionKey[] = [
   "projects",
   "task",
   "autoRuns",
+  "evalTrend",
   "automation",
   "agentSkills",
   "invocations",
@@ -75,9 +79,10 @@ export interface UrlNavigationState {
   selectedInvocationId?: string | null;
   selectedApplicationId?: string | null;
   selectedApplicationRun?: ApplicationRunSelection | null;
+  selectedEvidenceId?: string | null;
 }
 
-const NAVIGATION_SEARCH_KEYS = ["section", "invocation", "application", "routine", "run"] as const;
+const NAVIGATION_SEARCH_KEYS = ["section", "invocation", "application", "routine", "run", "evidence"] as const;
 
 function stringParam(params: URLSearchParams, key: string): string | null {
   const value = params.get(key)?.trim();
@@ -98,6 +103,7 @@ export function navigationFromSearch(search: string): UrlNavigationState {
   const applicationId = stringParam(params, "application");
   const routineId = stringParam(params, "routine");
   const runInvocationId = stringParam(params, "run");
+  const evidenceId = stringParam(params, "evidence");
   const navigation: UrlNavigationState = {};
   if (section) navigation.section = section;
   navigation.selectedInvocationId = invocationId;
@@ -105,6 +111,7 @@ export function navigationFromSearch(search: string): UrlNavigationState {
   navigation.selectedApplicationRun = applicationId && routineId && runInvocationId
     ? { applicationId, routineId, invocationId: runInvocationId }
     : null;
+  navigation.selectedEvidenceId = evidenceId;
   return navigation;
 }
 
@@ -117,6 +124,7 @@ function applyUrlNavigation<T extends Partial<UiState>>(state: T, navigation: Ur
   if (navigation.selectedInvocationId !== undefined) state.selectedInvocationId = navigation.selectedInvocationId;
   if (navigation.selectedApplicationId !== undefined) state.selectedApplicationId = navigation.selectedApplicationId;
   if (navigation.selectedApplicationRun !== undefined) state.selectedApplicationRun = navigation.selectedApplicationRun;
+  if (navigation.selectedEvidenceId !== undefined) state.selectedEvidenceId = navigation.selectedEvidenceId;
   return state;
 }
 
@@ -129,6 +137,7 @@ export function searchFromNavigationState(search: string, state: Pick<UiState,
   | "selectedInvocationId"
   | "selectedApplicationId"
   | "selectedApplicationRun"
+  | "selectedEvidenceId"
 >): string {
   const params = new URLSearchParams(search);
   for (const key of NAVIGATION_SEARCH_KEYS) params.delete(key);
@@ -140,6 +149,7 @@ export function searchFromNavigationState(search: string, state: Pick<UiState,
     params.set("routine", state.selectedApplicationRun.routineId);
     params.set("run", state.selectedApplicationRun.invocationId);
   }
+  if (state.selectedEvidenceId) params.set("evidence", state.selectedEvidenceId);
   const next = params.toString();
   return next ? `?${next}` : "";
 }
@@ -165,6 +175,7 @@ export const useUiStore = create<UiState>()(
         selectedToolName: null,
         selectedApplicationId: initialNavigation.selectedApplicationId ?? null,
         selectedApplicationRun: initialNavigation.selectedApplicationRun ?? null,
+        selectedEvidenceId: initialNavigation.selectedEvidenceId ?? null,
         resumeFromInvocationId: null,
         setSection: (section) => set({ section }),
         setSelectedAgentId: (selectedAgentId) => set({ selectedAgentId }),
@@ -176,6 +187,7 @@ export const useUiStore = create<UiState>()(
         setSelectedToolName: (selectedToolName) => set({ selectedToolName }),
         setSelectedApplicationId: (selectedApplicationId) => set({ selectedApplicationId }),
         setSelectedApplicationRun: (selectedApplicationRun) => set({ selectedApplicationRun }),
+        setSelectedEvidenceId: (selectedEvidenceId) => set({ selectedEvidenceId }),
         setResumeFromInvocationId: (resumeFromInvocationId) => set({ resumeFromInvocationId }),
       };
     },
@@ -195,6 +207,7 @@ export const useUiStore = create<UiState>()(
         selectedToolName: state.selectedToolName,
         selectedApplicationId: state.selectedApplicationId,
         selectedApplicationRun: state.selectedApplicationRun,
+        selectedEvidenceId: state.selectedEvidenceId,
       }),
       merge: (persisted, current) => {
         const saved = (persisted ?? {}) as Partial<UiState>;

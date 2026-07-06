@@ -2,6 +2,8 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { StatusBadge } from "@/components/ui/badge";
 import { FactList } from "@/components/common/fact-list";
+import { WebNavigationLinkActions } from "@/components/common/web-navigation-link-actions";
+import { webNavigationStateFromLink } from "@/app/deep-links";
 import { useAsyncAction, api } from "@/data/use-console-actions";
 import { useConsoleState } from "@/data/use-console-state";
 import { useUiStore } from "@/store/ui-store";
@@ -25,11 +27,16 @@ import {
   statusTone,
   usageText,
 } from "@/lib/readable-labels";
+import type { WebNavigationLink } from "@/lib/console-state";
 
 export function RunContextInspector() {
   const { data: state } = useConsoleState();
   const selectedAgentId = useUiStore((s) => s.selectedAgentId);
   const selectedInvocationId = useUiStore((s) => s.selectedInvocationId);
+  const setSelectedInvocationId = useUiStore((s) => s.setSelectedInvocationId);
+  const setSelectedApplicationId = useUiStore((s) => s.setSelectedApplicationId);
+  const setSelectedApplicationRun = useUiStore((s) => s.setSelectedApplicationRun);
+  const setSection = useUiStore((s) => s.setSection);
   const { execute, pending } = useAsyncAction();
 
   const { agent } = resolveAgents(state, selectedAgentId);
@@ -38,6 +45,22 @@ export function RunContextInspector() {
   const audit = auditFor(state, invocation);
   const report = troubleshootingFor(state, invocation);
   const usage = usageFor(state, agent);
+
+  function openWebNavigationLink(link: WebNavigationLink) {
+    const navigation = webNavigationStateFromLink(link);
+    if (navigation.selectedInvocationId !== undefined) {
+      setSelectedInvocationId(navigation.selectedInvocationId);
+    }
+    if (navigation.selectedApplicationId !== undefined) {
+      setSelectedApplicationId(navigation.selectedApplicationId);
+    }
+    if (navigation.selectedApplicationRun !== undefined) {
+      setSelectedApplicationRun(navigation.selectedApplicationRun);
+    }
+    if (navigation.section) {
+      setSection(navigation.section);
+    }
+  }
 
   return (
     <div className="space-y-4">
@@ -133,6 +156,18 @@ export function RunContextInspector() {
                   { term: "Fixes", value: report.suggestedFixes?.join(" ") ?? "Review the timeline and retry safely." },
                 ]}
               />
+              {report.webLinks ? (
+                <WebNavigationLinkActions
+                  title="Report links"
+                  links={[
+                    report.webLinks.failedInvocation,
+                    report.webLinks.troubleshooterInvocation,
+                    report.webLinks.applicationRun,
+                  ]}
+                  onOpen={openWebNavigationLink}
+                  className="mt-3"
+                />
+              ) : null}
             </div>
           ) : null}
         </CardContent>

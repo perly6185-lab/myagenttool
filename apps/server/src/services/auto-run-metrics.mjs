@@ -1,4 +1,5 @@
 import { autoRunStates } from "./auto-run.mjs";
+import { routingEvaluation } from "./auto-run-eval.mjs";
 
 // Observability + evaluation for the autonomous auto-run loop. A pure summary of
 // the auto-run records so the console can render live progress and a tracking
@@ -40,17 +41,41 @@ export function summarizeAutoRuns(autoRuns = []) {
 
   let active = 0;
   const verification = { passed: 0, failed: 0, unverified: 0 };
+  // Acceptance-judge verdicts (Phase B): solved / notSolved / unavailable.
+  const judgments = { solved: 0, notSolved: 0, unavailable: 0 };
   const blockedReasonCounts = {};
   const timeToPrSeconds = [];
+  // Routing decisions (slice 5 will evaluate them against outcomes).
+  const decisions = {
+    byPath: { develop: 0, design: 0, prototype: 0, clarify: 0 },
+    byDecidedBy: { agent: 0, heuristic: 0 },
+    // How the decision was reached: heuristic (no decider), fast-path (lexical
+    // signal skipped the decider), agent, or fallback (decider failed).
+    byVia: { heuristic: 0, "fast-path": 0, agent: 0, fallback: 0 },
+  };
 
   for (const run of autoRuns) {
     byStatus[run.status] = (byStatus[run.status] ?? 0) + 1;
     if (ACTIVE_STATUSES.has(run.status)) active += 1;
 
+    if (run.decision?.path) {
+      decisions.byPath[run.decision.path] = (decisions.byPath[run.decision.path] ?? 0) + 1;
+      const by = run.decision.decidedBy === "agent" ? "agent" : "heuristic";
+      decisions.byDecidedBy[by] += 1;
+      const via = ["heuristic", "fast-path", "agent", "fallback"].includes(run.decision.via) ? run.decision.via : "heuristic";
+      decisions.byVia[via] += 1;
+    }
+
     if (run.verification) {
       if (!run.verification.verified) verification.unverified += 1;
       else if (run.verification.passed) verification.passed += 1;
       else verification.failed += 1;
+    }
+
+    if (run.judgment) {
+      if (run.judgment.solved === true) judgments.solved += 1;
+      else if (run.judgment.solved === false) judgments.notSolved += 1;
+      else judgments.unavailable += 1;
     }
 
     if (run.status === "blocked" && run.error) {
@@ -82,6 +107,10 @@ export function summarizeAutoRuns(autoRuns = []) {
     // completed run yet (avoids a fake 0% before any data exists).
     successRate: terminal > 0 ? prOpen / terminal : null,
     verification,
+    judgments,
+    decisions,
+    // Was the routing right? Per-path alignment + PR dispositions (slice 5).
+    routing: routingEvaluation(autoRuns),
     blockedReasons: topReasons(blockedReasonCounts),
     timeToPr: {
       count: timeToPrSeconds.length,

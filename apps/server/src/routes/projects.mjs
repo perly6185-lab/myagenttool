@@ -3,6 +3,7 @@ import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, writeFile
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { denyForeignProject } from "../runtime/auth.mjs";
 import { summarizeAutoRuns } from "../services/auto-run-metrics.mjs";
+import { readEvalTrend, summarizeEvalTrend } from "../services/eval-trend.mjs";
 
 export async function handleProjectRoutes({
   req,
@@ -20,6 +21,8 @@ export async function handleProjectRoutes({
   createWorktreePr,
   publishWorktreeBranch,
   startAutoRun,
+  retryAutoRun,
+  refreshAutoRunPrDispositions,
   selectProject,
   removeProject,
   removeWorktree,
@@ -154,9 +157,39 @@ export async function handleProjectRoutes({
     return true;
   }
 
+  const autoRunRetryMatch = url.pathname.match(/^\/api\/auto-runs\/([^\/]+)\/retry$/);
+  if (autoRunRetryMatch && req.method === "POST") {
+    try {
+      const result = await retryAutoRun(decodeURIComponent(autoRunRetryMatch[1]), { actor });
+      sendJson(res, 200, result);
+    } catch (error) {
+      sendJson(res, 400, { error: "auto_run_retry_failed", message: errorMessage(error) });
+    }
+    return true;
+  }
+
   if (req.method === "GET" && url.pathname === "/api/auto-runs") {
+    // ?refresh=1 (the console's manual Refresh) also refreshes PR dispositions
+    // (bounded, throttled, read-only gh) so the routing evaluation sees final
+    // outcomes; the 10s poll stays cheap.
+    if (url.searchParams.get("refresh") === "1" && typeof refreshAutoRunPrDispositions === "function") {
+      try {
+        await refreshAutoRunPrDispositions();
+      } catch {
+        /* best-effort */
+      }
+    }
     const autoRuns = state.autoRuns ?? [];
     sendJson(res, 200, { autoRuns, summary: summarizeAutoRuns(autoRuns) });
+    return true;
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/eval-trend") {
+    // Results-side view of the scheduled real-agent evals (#248). Read-only,
+    // best-effort: the eval scheduler is a separate LaunchAgent, this just
+    // surfaces its local trend.jsonl so capability regressions are visible.
+    const records = readEvalTrend();
+    sendJson(res, 200, { records, summary: summarizeEvalTrend(records) });
     return true;
   }
 
@@ -168,7 +201,7 @@ export async function handleProjectRoutes({
     }
     const body = await readJson(req);
     try {
-      const result = startAutoRun({
+      const result = await startAutoRun({
         projectId,
         link: body.link,
         agentId: body.agentId,
