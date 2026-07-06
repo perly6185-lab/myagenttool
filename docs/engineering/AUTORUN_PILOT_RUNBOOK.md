@@ -123,3 +123,45 @@ curl -X PATCH :5101/api/projects/<projectId> -H 'Content-Type: application/json'
   re-probed on bridge registration.
 - **Status lag**: an approved run's auto-run card stays `awaiting_approval`
   until a terminal state (known observability gap).
+
+## Acceptance judge (Phase B) — field-validated sample
+
+The judge wrapper the pilot validated with the real `claude` CLI (haiku): both
+directions verified live — a README-only diff against issue #3 judged
+`solved:false` (0.99) with four precise gaps (would block the PR); the pilot's
+real implementation diff judged `solved:true` (0.98).
+
+```js
+// judge.mjs — pilot acceptance judge wrapping the claude CLI
+import { execFileSync } from "node:child_process";
+let raw = "";
+process.stdin.on("data", (c) => (raw += c));
+process.stdin.on("end", () => {
+  const { link, issueBody, diff } = JSON.parse(raw);
+  const prompt = [
+    "You are an acceptance judge. Decide whether this code diff actually solves this GitHub issue —",
+    "not whether the code is pretty, but whether the issue's request and acceptance criteria are met.",
+    "",
+    `Issue #${link.number}: ${link.title}`,
+    "",
+    issueBody ? `Issue description:\n${issueBody}` : "(no description)",
+    "",
+    "The diff:",
+    "```diff",
+    diff || "(empty diff)",
+    "```",
+    "",
+    'Respond with ONLY a JSON object, no prose, no code fences:',
+    '{"solved":boolean,"confidence":0..1,"summary":"one sentence","gaps":["unmet acceptance points, only when solved is false"]}',
+  ].join("\n");
+  process.stdout.write(execFileSync("claude", ["-p", prompt, "--model", "haiku"], { encoding: "utf8", timeout: 110_000, maxBuffer: 1024 * 1024 }));
+});
+```
+
+Wire it with `MYAGENTTOOL_AUTORUN_JUDGE_COMMAND_JSON='["node","/path/to/judge.mjs"]'`.
+
+Correction to an earlier caution: bridge polling errors are NOT silent — they
+are logged throttled (one line per 5s). The pilot's "silent stall" was the
+stale-unhealthy health verdict (fixed: re-probe on registration). The one real
+credential UX gap — a raw-stack crash when registration is refused — now prints
+the recovery steps instead.
