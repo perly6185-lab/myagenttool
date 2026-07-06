@@ -920,6 +920,47 @@ test("metadata-only npm wrapper registrations do not project invokable commands"
   assert.ok(!capabilities.body.capabilities.some((item) => item.name === `app.${registered.body.application.id}.wrapper.lint`));
 });
 
+test("application register rejects invalid npm wrapper descriptors before persistence", async () => {
+  const invalid = await call("/api/applications/register", {
+    method: "POST",
+    body: {
+      id: "npm_invalid_wrapper_registration",
+      name: "NPM Invalid Wrapper Registration",
+      source: {
+        type: "npm",
+        package: "@scope/invalid-wrapper-registration",
+        wrapper: {
+          mode: "installed-wrapper",
+          packageManager: "bun",
+          commands: [{
+            id: "install",
+            commandType: "npm_script",
+            command: "postinstall",
+            status: "approved",
+          }, {
+            id: "install",
+            commandType: "custom",
+            command: "node && rm -rf .",
+            status: "approved",
+          }],
+        },
+      },
+    },
+    token: "tok_a",
+  });
+  assert.equal(invalid.status, 422);
+  assert.equal(invalid.body.error, "invalid_application_descriptor");
+  assert.ok(invalid.body.validation.errors.some((item) => item.path === "npmWrapper.packageManager" && item.code === "invalid_package_manager"));
+  assert.ok(invalid.body.validation.errors.some((item) => item.code === "unsafe_lifecycle_script"));
+  assert.ok(invalid.body.validation.errors.some((item) => item.code === "duplicate_id"));
+  assert.ok(invalid.body.validation.errors.some((item) => item.code === "shell_syntax_forbidden"));
+
+  const list = await call("/api/applications", { token: "tok_a" });
+  assert.ok(!list.body.applications.some((item) => item.id === "app_npm_invalid_wrapper_registration"));
+  const capabilities = await call("/api/capabilities?providerType=application", { token: "tok_a" });
+  assert.ok(!capabilities.body.capabilities.some((item) => item.name.startsWith("app.app_npm_invalid_wrapper_registration.")));
+});
+
 test("application descriptor endpoint edits npm wrapper descriptors and reprojects capabilities", async () => {
   const registered = await call("/api/applications/register", {
     method: "POST",

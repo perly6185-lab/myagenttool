@@ -50,9 +50,13 @@ export async function handleApplicationRoutes({
         capabilities: listApplicationCapabilities(application.id) ?? [],
       });
     } catch (error) {
-      sendJson(res, 400, {
-        error: "invalid_application",
+      const validationErrors = error && typeof error === "object" && Array.isArray(error.validationErrors)
+        ? error.validationErrors
+        : null;
+      sendJson(res, validationErrors ? 422 : 400, {
+        error: validationErrors ? "invalid_application_descriptor" : "invalid_application",
         message: error instanceof Error ? error.message : String(error),
+        ...(validationErrors ? { validation: { errors: validationErrors } } : {}),
       });
     }
     return true;

@@ -36,6 +36,7 @@ export function createApplicationService({
 
   function registerApplication(body = {}, actor = null) {
     const rawSource = body.source ?? sourceFromLegacyBody(body);
+    assertValidApplicationRegistrationSource(rawSource);
     const source = normalizeApplicationSource(rawSource);
     const name = normalizeApplicationName(body.name ?? nameFromSource(source));
     const requestedId = body.id == null ? null : sanitizeApplicationId(body.id);
@@ -2210,6 +2211,20 @@ function normalizeApplicationSource(source = {}) {
       ? source.manifest
       : {},
   };
+}
+
+function assertValidApplicationRegistrationSource(source) {
+  const value = source && typeof source === "object" && !Array.isArray(source) ? source : null;
+  if (!value) return;
+  const type = String(value.type ?? "").trim().toLowerCase();
+  if (type !== "npm" || !Object.hasOwn(value, "wrapper")) return;
+  assertValidNpmWrapperDescriptor(value.wrapper, {
+    path: stringOrNull(value.path),
+    source: {
+      path: stringOrNull(value.path),
+      package: stringOrNull(value.package ?? value.packageName),
+    },
+  });
 }
 
 function normalizeApplicationMcpAgent(value, { applicationId, applicationName, applicationPath = null } = {}) {
