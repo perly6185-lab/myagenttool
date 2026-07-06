@@ -53,6 +53,7 @@ export function createAutoRunService({
   spawnChildIssue,
   judgeAcceptance,
   mergePr,
+  fetchPrChecks,
 }) {
   // Best-effort issue body fetch (issue links only): richer context for both the
   // decision and the role prompt. Null on any failure — the run proceeds on the
@@ -482,17 +483,28 @@ export function createAutoRunService({
     if (autoRun.status !== "pr_open" || !autoRun.prNumber) {
       throw new Error("Only an auto-run with an open PR can be merged.");
     }
-    // Opt-in hard gate: when the operator requires green checks, refuse a merge
-    // unless the last-seen PR checks are all green (unknown/failing/pending all
-    // block). Refresh the PR dispositions to update prChecks, or disable it.
-    if (state.autoRunSettings?.requireChecksGreenToMerge && autoRun.prChecks?.state !== "SUCCESS") {
-      const posture = autoRun.prChecks?.state ? autoRun.prChecks.state.toLowerCase() : "unknown (not fetched)";
-      throw new Error(`Merge blocked: setting requires green PR checks, but checks are ${posture}. Refresh the PR checks or disable "require green checks to merge".`);
-    }
     if (typeof mergePr !== "function") throw new Error("PR merge is not available on this server.");
     const project = state.projects.find((item) => item.id === autoRun.projectId) ?? null;
     const repoPath = project?.path;
     if (!repoPath) throw new Error("The auto-run's project path is unavailable.");
+
+    // Opt-in hard gate: when the operator requires green checks, refuse a merge
+    // unless the checks are all green (unknown/failing/pending all block). Re-fetch
+    // FRESH here — trusting the throttled poll's prChecks would let a since-gone-red
+    // PR through on stale-green. A fetch failure leaves prChecks as-is → still gated.
+    if (state.autoRunSettings?.requireChecksGreenToMerge) {
+      if (typeof fetchPrChecks === "function") {
+        const fresh = await fetchPrChecks({ prNumber: autoRun.prNumber, repoPath });
+        if (fresh) {
+          autoRun.prChecks = fresh;
+          autoRun.prStateCheckedAt = now();
+        }
+      }
+      if (autoRun.prChecks?.state !== "SUCCESS") {
+        const posture = autoRun.prChecks?.state ? autoRun.prChecks.state.toLowerCase() : "unknown (not fetched)";
+        throw new Error(`Merge blocked: setting requires green PR checks, but checks are ${posture}. Fix the checks or disable "require green checks to merge".`);
+      }
+    }
 
     const result = await mergePr({ prNumber: autoRun.prNumber, repoPath });
     if (!result?.ok) {
