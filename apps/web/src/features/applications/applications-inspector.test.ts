@@ -176,6 +176,63 @@ describe("ApplicationsInspector recovery guidance", () => {
     expect(useUiStore.getState().selectedInvocationId).toBe("inv_app_ccusage");
   });
 
+  it("summarizes and filters application timeline events by level", async () => {
+    apiMock.fetchState.mockResolvedValue(closedLoopConsoleState());
+    apiMock.listApplicationCapabilities.mockResolvedValue({
+      applicationId: "app_ccusage",
+      capabilities: [],
+    });
+    apiMock.listApplicationEvents.mockResolvedValue({
+      applicationId: "app_ccusage",
+      events: [{
+        id: "evt_app_error",
+        invocationId: null,
+        type: "application_probe_failed",
+        level: "error",
+        message: "Probe failed because package metadata was missing.",
+        data: { applicationId: "app_ccusage", action: "probe" },
+        createdAt: "2026-07-04T03:03:00.000Z",
+      }, {
+        id: "evt_app_warn",
+        invocationId: null,
+        type: "application_wrapper_warning",
+        level: "warn",
+        message: "Wrapper install is not complete.",
+        data: { applicationId: "app_ccusage", status: "registered" },
+        createdAt: "2026-07-04T03:02:00.000Z",
+      }, {
+        id: "evt_app_info",
+        invocationId: null,
+        type: "application_registered",
+        level: "info",
+        message: "Application registered.",
+        data: { applicationId: "app_ccusage", sourceType: "npm" },
+        createdAt: "2026-07-04T03:01:00.000Z",
+      }],
+    });
+
+    useUiStore.setState({ selectedApplicationId: "app_ccusage" });
+    renderWithClient(createElement(ApplicationsInspector));
+
+    expect(await screen.findByText("1 error")).toBeTruthy();
+    expect(screen.getByText("3 of 3 event(s)")).toBeTruthy();
+    expect(screen.getByText(/Latest attention item: Probe failed/)).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: /Errors 1/i }));
+    expect(screen.getByText("1 of 3 event(s)")).toBeTruthy();
+    expect(screen.getByText("application_probe_failed")).toBeTruthy();
+    expect(screen.queryByText("application_wrapper_warning")).toBeNull();
+    expect(screen.queryByText("application_registered")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: /Warnings 1/i }));
+    expect(screen.getByText("application_wrapper_warning")).toBeTruthy();
+    expect(screen.queryByText("application_probe_failed")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: /Info 1/i }));
+    expect(screen.getByText("application_registered")).toBeTruthy();
+    expect(screen.queryByText("application_wrapper_warning")).toBeNull();
+  });
+
   it("edits existing npm wrapper descriptors from the inspector", async () => {
     apiMock.fetchState.mockResolvedValue(closedLoopConsoleState());
     apiMock.listApplicationCapabilities.mockResolvedValue({

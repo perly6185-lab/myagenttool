@@ -1443,6 +1443,16 @@ function applicationEventTone(level?: string | null): "neutral" | "success" | "w
   return "neutral";
 }
 
+type ApplicationEventLevelFilter = "all" | "error" | "warning" | "info";
+type ApplicationEventActualLevel = Exclude<ApplicationEventLevelFilter, "all"> | "other";
+
+function normalizedApplicationEventLevel(level?: string | null): ApplicationEventActualLevel {
+  if (level === "error") return "error";
+  if (level === "warn" || level === "warning") return "warning";
+  if (level === "info") return "info";
+  return "other";
+}
+
 function applicationEventDataSummary(event: ApplicationEventSnapshot): string | null {
   const data = event.data ?? {};
   const parts = [
@@ -1466,6 +1476,30 @@ function ApplicationEventTimeline({
   loading: boolean;
   error: boolean;
 }) {
+  const [levelFilter, setLevelFilter] = useState<ApplicationEventLevelFilter>("all");
+  const counts = useMemo(() => {
+    const next = { error: 0, warning: 0, info: 0, other: 0 };
+    for (const event of events) {
+      const level = normalizedApplicationEventLevel(event.level);
+      next[level] += 1;
+    }
+    return next;
+  }, [events]);
+  const filteredEvents = useMemo(
+    () => events.filter((event) => levelFilter === "all" || normalizedApplicationEventLevel(event.level) === levelFilter),
+    [events, levelFilter],
+  );
+  const latestProblem = events.find((event) => {
+    const level = normalizedApplicationEventLevel(event.level);
+    return level === "error" || level === "warning";
+  });
+  const filters: Array<{ value: ApplicationEventLevelFilter; label: string; count: number; tone: "neutral" | "success" | "warning" | "danger" }> = [
+    { value: "all", label: "All", count: events.length, tone: "neutral" },
+    { value: "error", label: "Errors", count: counts.error, tone: "danger" },
+    { value: "warning", label: "Warnings", count: counts.warning, tone: "warning" },
+    { value: "info", label: "Info", count: counts.info, tone: "success" },
+  ];
+
   return (
     <Card>
       <CardHeader>
@@ -1479,24 +1513,61 @@ function ApplicationEventTimeline({
         ) : !events.length ? (
           <p className="text-sm text-muted-foreground">No application events recorded yet.</p>
         ) : (
-          <ul className="space-y-2">
-            {events.map((event) => {
-              const summary = applicationEventDataSummary(event);
-              return (
-                <li key={event.id} className="rounded-md border border-border p-2">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <Badge tone={applicationEventTone(event.level)}>{event.level ?? "event"}</Badge>
-                    <span className="[overflow-wrap:anywhere] font-mono text-xs">{event.type}</span>
-                    <span className="text-xs text-muted-foreground">{shortTime(event.createdAt)}</span>
-                  </div>
-                  {event.message ? (
-                    <p className="mt-1 [overflow-wrap:anywhere] text-sm text-muted-foreground">{event.message}</p>
-                  ) : null}
-                  {summary ? <p className="mt-1 [overflow-wrap:anywhere] text-xs text-muted-foreground">{summary}</p> : null}
-                </li>
-              );
-            })}
-          </ul>
+          <>
+            <div className="rounded-md border border-border bg-muted/40 p-2">
+              <div className="flex flex-wrap items-center gap-2">
+                <Badge tone={counts.error ? "danger" : counts.warning ? "warning" : "success"}>
+                  {counts.error ? `${counts.error} error${counts.error === 1 ? "" : "s"}` : counts.warning ? `${counts.warning} warning${counts.warning === 1 ? "" : "s"}` : "No recent problems"}
+                </Badge>
+                <span className="text-xs text-muted-foreground">
+                  {filteredEvents.length} of {events.length} event(s)
+                </span>
+                {counts.info ? <Badge tone="success">{counts.info} info</Badge> : null}
+                {counts.other ? <Badge tone="neutral">{counts.other} other</Badge> : null}
+              </div>
+              {latestProblem ? (
+                <p className="mt-1 [overflow-wrap:anywhere] text-xs text-muted-foreground">
+                  Latest attention item: {latestProblem.message ?? latestProblem.type}
+                </p>
+              ) : null}
+            </div>
+            <div className="flex flex-wrap gap-2" aria-label="Application event level filter">
+              {filters.map((filter) => (
+                <Button
+                  key={filter.value}
+                  size="sm"
+                  variant={levelFilter === filter.value ? "secondary" : "ghost"}
+                  className="h-7 px-2 text-xs"
+                  onClick={() => setLevelFilter(filter.value)}
+                >
+                  {filter.label}
+                  <Badge tone={filter.tone}>{filter.count}</Badge>
+                </Button>
+              ))}
+            </div>
+            {!filteredEvents.length ? (
+              <p className="text-sm text-muted-foreground">No events match this level.</p>
+            ) : (
+              <ul className="space-y-2">
+                {filteredEvents.map((event) => {
+                  const summary = applicationEventDataSummary(event);
+                  return (
+                    <li key={event.id} className="rounded-md border border-border p-2">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <Badge tone={applicationEventTone(event.level)}>{event.level ?? "event"}</Badge>
+                        <span className="[overflow-wrap:anywhere] font-mono text-xs">{event.type}</span>
+                        <span className="text-xs text-muted-foreground">{shortTime(event.createdAt)}</span>
+                      </div>
+                      {event.message ? (
+                        <p className="mt-1 [overflow-wrap:anywhere] text-sm text-muted-foreground">{event.message}</p>
+                      ) : null}
+                      {summary ? <p className="mt-1 [overflow-wrap:anywhere] text-xs text-muted-foreground">{summary}</p> : null}
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+          </>
         )}
       </CardContent>
     </Card>
