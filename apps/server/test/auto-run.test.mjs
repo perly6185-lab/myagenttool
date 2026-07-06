@@ -57,6 +57,7 @@ function makeAutoRun({
   // Injected PR merge runner. Default: a successful merge.
   mergePr = async ({ prNumber }) => ({ ok: true, prNumber, method: "squash" }),
   fetchPrChecks = undefined,
+  budgetStatusFor = undefined,
 } = {}) {
   const calls = { createInvocation: [], startInvocationIfAllowed: [], commit: [], publish: [], pr: [], verify: [], status: [], report: [], merge: [] };
   let counter = 0;
@@ -114,6 +115,7 @@ function makeAutoRun({
       return mergePr(args);
     },
     fetchPrChecks,
+    budgetStatusFor,
   });
   return { svc, calls };
 }
@@ -938,4 +940,31 @@ test("mergeAutoRunPr: require-green re-fetches FRESH checks — stale-green bloc
   state.autoRuns.push({ id: "aur_fresh1", status: "pr_open", projectId: sourceProjectId, prNumber: 11, prState: "OPEN", prChecks: { state: "SUCCESS" } });
   await assert.rejects(() => svc.mergeAutoRunPr("aur_fresh1"), /green PR checks/);
   assert.equal(calls.merge.length, 0, "no gh merge on stale-green-now-red");
+});
+
+test("O0 kill switch: startAutoRun refuses when autonomyKillSwitch is on", async () => {
+  const { svc, calls } = makeAutoRun();
+  state.autoRunSettings = { autonomyKillSwitch: true };
+  await assert.rejects(
+    () => svc.startAutoRun({ projectId: sourceProjectId, link: { type: "issue", number: 1, title: "x", url: null, state: "open" }, agentId: "agt_1" }),
+    /kill switch/i,
+  );
+  assert.equal(calls.createInvocation.length, 0, "no spend when killed");
+  assert.equal(state.autoRuns.length, 0, "no run record created");
+});
+
+test("O0 budget gate: startAutoRun refuses when the project is over budget", async () => {
+  const { svc, calls } = makeAutoRun({ budgetStatusFor: () => ({ over: true, spentUsd: 12, limitUsd: 10 }) });
+  await assert.rejects(
+    () => svc.startAutoRun({ projectId: sourceProjectId, link: { type: "issue", number: 2, title: "y", url: null, state: "open" }, agentId: "agt_1" }),
+    /Budget exceeded/,
+  );
+  assert.equal(calls.createInvocation.length, 0, "no spend when over budget");
+});
+
+test("O0 budget gate: under-budget run proceeds normally", async () => {
+  const { svc, calls } = makeAutoRun({ budgetStatusFor: () => ({ over: false, spentUsd: 3, limitUsd: 10 }) });
+  const { autoRun } = await svc.startAutoRun({ projectId: sourceProjectId, link: { type: "issue", number: 3, title: "z", url: null, state: "open" }, agentId: "agt_1", name: "issue-3-z" });
+  assert.equal(autoRun.status, "running", "proceeds when under budget");
+  assert.equal(calls.createInvocation.length, 1);
 });

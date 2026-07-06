@@ -98,3 +98,9 @@ test("requireChecksGreenToMerge: normalized bool + exposed in effective config",
   assert.equal(cfg.requireChecksGreenToMerge, true);
   assert.equal(resolveAutoRunConfig({}, {}).requireChecksGreenToMerge, false, "default off");
 });
+
+test("autonomyKillSwitch: normalized bool + exposed in effective config", () => {
+  assert.equal(normalizeAutoRunSettings({ autonomyKillSwitch: "1" }).autonomyKillSwitch, true);
+  assert.equal(resolveAutoRunConfig({ autoRunSettings: { autonomyKillSwitch: true } }, {}).autonomyKillSwitch, true);
+  assert.equal(resolveAutoRunConfig({}, {}).autonomyKillSwitch, false, "default off");
+});

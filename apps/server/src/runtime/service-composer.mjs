@@ -315,6 +315,8 @@ export function createServerRuntimeServices({
     state,
     now,
     nextId,
+    // O0 cost brake: refuse to start a run when the project is over budget.
+    budgetStatusFor,
     appendEvent,
     persistStateSoon,
     createWorktree,

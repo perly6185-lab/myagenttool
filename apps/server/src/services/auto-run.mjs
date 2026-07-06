@@ -39,6 +39,7 @@ export function createAutoRunService({
   createWorktree,
   findAgent,
   defaultAgent,
+  budgetStatusFor,
   createInvocation,
   startInvocationIfAllowed,
   commitWorktreeChanges,
@@ -190,6 +191,19 @@ export function createAutoRunService({
     }
     if (agent.location?.type === "local_device" && state.device?.unlinkState !== "linked") {
       throw new Error("The target device is unlinked; link it before starting an auto-run.");
+    }
+    // O0 cost brake — hard gates BEFORE any spend (worktree/agent). The kill
+    // switch halts all autonomous runs immediately; the budget gate refuses when
+    // the project is over its cap. Both are fail-closed and cover the manual
+    // [Auto] button, the API, and auto-trigger (all funnel through here).
+    if (state.autoRunSettings?.autonomyKillSwitch) {
+      throw new Error("Autonomy is disabled by the kill switch. Turn it off in Auto-run configuration to resume.");
+    }
+    if (typeof budgetStatusFor === "function" && projectId) {
+      const budget = budgetStatusFor(projectId);
+      if (budget?.over) {
+        throw new Error(`Budget exceeded for this project (spent $${budget.spentUsd} of $${budget.limitUsd}). Raise the budget or reset spend before starting more runs.`);
+      }
     }
 
     const autoRunId = nextId("aur_demo");

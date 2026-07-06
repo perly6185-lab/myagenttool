@@ -79,6 +79,9 @@ export function normalizeAutoRunSettings(patch = {}, prev = {}) {
     // UI-only guard (no env twin): block the in-tool merge unless PR checks are
     // green. Null/false = allow the informed-but-unblocked human merge.
     requireChecksGreenToMerge: keep("requireChecksGreenToMerge", asBool),
+    // O0 kill switch (UI-only): when true, halt ALL autonomous runs (auto-trigger
+    // stops scanning and startAutoRun refuses). The global emergency brake.
+    autonomyKillSwitch: keep("autonomyKillSwitch", asBool),
   };
 }
 
@@ -131,6 +134,8 @@ export function resolveAutoRunConfig(state = {}, baseEnv = process.env) {
     judgeTimeoutMs: judgeTimeoutMs(env),
     // UI-only guard (not env-backed): require green PR checks before an in-tool merge.
     requireChecksGreenToMerge: Boolean(settings.requireChecksGreenToMerge),
+    // O0 global kill switch (not env-backed): halts all autonomous runs.
+    autonomyKillSwitch: Boolean(settings.autonomyKillSwitch),
     // Command knobs are env-only; expose only whether each is configured.
     commands: {
       verify: Boolean(resolveAutoRunVerifyCommand()),
