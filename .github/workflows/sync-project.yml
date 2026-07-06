@@ -1,0 +1,81 @@
+name: Sync Project Fields
+
+# Manually-triggered board sync: pushes each work issue's Project Fields
+# (Status, Type, Priority, …) into the GitHub ProjectV2 board. This is the
+# WRITE half that the auto-run status writeback (P4) deliberately left out —
+# moving a Status LABEL is best-effort/local, but the ProjectV2 board field
+# needs a Projects-scoped token, which only exists as the GOVERNANCE_PROJECTS_TOKEN
+# secret (the same one pr-governance reads with). Running here reuses that
+# secret so the token never leaves CI.
+#
+# PRECONDITION: GOVERNANCE_PROJECTS_TOKEN must carry Projects **Read and write**
+# — pr-governance only needs Read, so if the secret was minted read-only, a
+# --apply run fails; regenerate the PAT with Read+Write and overwrite the secret.
+#
+# Default run is a DRY RUN (apply=false) so you preview the operations first;
+# flip apply=true to write the board.
+
+on:
+  workflow_dispatch:
+    inputs:
+      project:
+        description: ProjectV2 number (find via `gh project list --owner <owner>`)
+        required: true
+        type: string
+      owner:
+        description: Project owner (user or org)
+        required: true
+        default: perly6185-lab
+        type: string
+      milestone:
+        description: Milestone filter (e.g. M2) — set this OR issues
+        required: false
+        type: string
+      issues:
+        description: Comma-separated issue numbers (e.g. 250,492) — set this OR milestone
+        required: false
+        type: string
+      apply:
+        description: Write the board (false = dry-run preview only)
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+  issues: read
+
+jobs:
+  sync-project:
+    if: vars.ENABLE_GITHUB_HOSTED_RUNNERS == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Sync project fields
+        env:
+          GH_TOKEN: ${{ secrets.GOVERNANCE_PROJECTS_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          node tools/github/src/index.mjs sync-project \
+            --repo "${{ github.repository }}" \
+            --owner "${{ inputs.owner }}" \
+            --project "${{ inputs.project }}" \
+            ${{ inputs.milestone && format('--milestone {0}', inputs.milestone) || '' }} \
+            ${{ inputs.issues && format('--issues {0}', inputs.issues) || '' }} \
+            ${{ inputs.apply && '--apply' || '' }}
