@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { applicationNextStep, applicationTriageBucket, applicationTriageCounts, sourceSummary } from "@/features/applications/applications-view";
+import {
+  applicationMatchesSearch,
+  applicationNextStep,
+  applicationTriageBucket,
+  applicationTriageCounts,
+  sortApplicationsForTriage,
+  sourceSummary,
+} from "@/features/applications/applications-view";
 import type { ApplicationSnapshot } from "@/lib/console-state";
 
 describe("sourceSummary", () => {
@@ -51,6 +58,65 @@ describe("application triage", () => {
       warning: 1,
       ready: 1,
     });
+  });
+});
+
+describe("application search and ordering", () => {
+  it("matches application search across name, id, source, path, and guidance", () => {
+    const app = application({
+      id: "app_ccusage",
+      name: "ccusage Reports",
+      kind: "npm",
+      source: { type: "npm", package: "@acme/ccusage", version: "2.0.0" },
+      path: "/apps/ccusage",
+      status: "failed",
+      lifecycle: { error: "Package metadata missing." },
+    });
+
+    expect(applicationMatchesSearch(app, "ccusage")).toBe(true);
+    expect(applicationMatchesSearch(app, "@acme 2.0.0")).toBe(true);
+    expect(applicationMatchesSearch(app, "/apps metadata")).toBe(true);
+    expect(applicationMatchesSearch(app, "needs attention")).toBe(true);
+    expect(applicationMatchesSearch(app, "doocs")).toBe(false);
+  });
+
+  it("sorts attention first, then newest updates within each triage bucket", () => {
+    const ordered = sortApplicationsForTriage([
+      application({
+        id: "app_ready_new",
+        name: "Ready New",
+        status: "active",
+        probe: { capabilities: [] },
+        orchestrationIds: ["routine"],
+        updatedAt: "2026-07-06T03:00:00.000Z",
+      }),
+      application({
+        id: "app_watch",
+        name: "Watch",
+        status: "active",
+        probe: null,
+        updatedAt: "2026-07-06T01:00:00.000Z",
+      }),
+      application({
+        id: "app_attention_old",
+        name: "Attention Old",
+        status: "failed",
+        updatedAt: "2026-07-06T00:00:00.000Z",
+      }),
+      application({
+        id: "app_attention_new",
+        name: "Attention New",
+        status: "failed",
+        updatedAt: "2026-07-06T02:00:00.000Z",
+      }),
+    ]);
+
+    expect(ordered.map((app) => app.id)).toEqual([
+      "app_attention_new",
+      "app_attention_old",
+      "app_watch",
+      "app_ready_new",
+    ]);
   });
 });
 

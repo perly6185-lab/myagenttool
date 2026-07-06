@@ -2,7 +2,7 @@ import { useMemo, useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Select } from "@/components/ui/input";
+import { Input, Select } from "@/components/ui/input";
 import { Field } from "@/components/common/field";
 import { EmptyState } from "@/components/common/empty-state";
 import { SectionHeading } from "@/components/common/section-heading";
@@ -116,6 +116,45 @@ export function applicationTriageCounts(applications: ApplicationSnapshot[]): Re
   );
 }
 
+export function applicationMatchesSearch(app: ApplicationSnapshot, query: string): boolean {
+  const terms = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  if (!terms.length) return true;
+  const haystack = [
+    app.id,
+    app.name,
+    app.kind,
+    app.status,
+    sourceSummary(app.source),
+    app.path,
+    app.projectId,
+    app.ownerTeamId,
+    app.lifecycle?.lastOperation,
+    app.lifecycle?.error,
+    applicationNextStep(app).title,
+    applicationNextStep(app).detail,
+  ].filter(Boolean).join(" ").toLowerCase();
+  return terms.every((term) => haystack.includes(term));
+}
+
+export function sortApplicationsForTriage(applications: ApplicationSnapshot[]): ApplicationSnapshot[] {
+  const triageRank: Record<ReturnType<typeof applicationTriageBucket>, number> = {
+    attention: 0,
+    warning: 1,
+    ready: 2,
+  };
+  return [...applications].sort((left, right) => {
+    const triageDelta = triageRank[applicationTriageBucket(left)] - triageRank[applicationTriageBucket(right)];
+    if (triageDelta !== 0) return triageDelta;
+
+    const leftUpdated = Date.parse(left.updatedAt ?? left.createdAt ?? "");
+    const rightUpdated = Date.parse(right.updatedAt ?? right.createdAt ?? "");
+    const timeDelta = (Number.isNaN(rightUpdated) ? 0 : rightUpdated) - (Number.isNaN(leftUpdated) ? 0 : leftUpdated);
+    if (timeDelta !== 0) return timeDelta;
+
+    return left.name.localeCompare(right.name);
+  });
+}
+
 /** Registered applications and their governed capabilities (read-only slice). */
 export function ApplicationsView() {
   const { data: state } = useConsoleState();
@@ -125,6 +164,7 @@ export function ApplicationsView() {
   const [status, setStatus] = useState<"all" | ApplicationSnapshot["status"]>("all");
   const [kind, setKind] = useState<"all" | string>("all");
   const [triage, setTriage] = useState<ApplicationTriageFilter>("all");
+  const [search, setSearch] = useState("");
   const [registerOpen, setRegisterOpen] = useState(false);
 
   const all = state?.applications ?? [];
@@ -141,10 +181,16 @@ export function ApplicationsView() {
       ),
     [all, status, kind],
   );
-  const triageCounts = useMemo(() => applicationTriageCounts(scopedApplications), [scopedApplications]);
+  const searchedApplications = useMemo(
+    () => scopedApplications.filter((app) => applicationMatchesSearch(app, search)),
+    [scopedApplications, search],
+  );
+  const triageCounts = useMemo(() => applicationTriageCounts(searchedApplications), [searchedApplications]);
   const applications = useMemo(
-    () => scopedApplications.filter((app) => triage === "all" || applicationTriageBucket(app) === triage),
-    [scopedApplications, triage],
+    () => sortApplicationsForTriage(
+      searchedApplications.filter((app) => triage === "all" || applicationTriageBucket(app) === triage),
+    ),
+    [searchedApplications, triage],
   );
 
   return (
@@ -163,6 +209,13 @@ export function ApplicationsView() {
       <RegisterApplicationModal open={registerOpen} onClose={() => setRegisterOpen(false)} />
 
       <div className="flex flex-wrap items-end gap-3">
+        <Field label="Search" className="w-64">
+          <Input
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Name, id, source, path"
+          />
+        </Field>
         <Field label="Status" className="w-40">
           <Select value={status} onChange={(e) => setStatus(e.target.value as typeof status)}>
             <option value="all">All statuses</option>
@@ -194,7 +247,7 @@ export function ApplicationsView() {
         </Field>
         <div className="flex flex-wrap items-center gap-2 pb-2">
           <span className="text-xs text-muted-foreground">
-            {applications.length} of {scopedApplications.length} application(s)
+            {applications.length} of {searchedApplications.length} application(s)
           </span>
           {triageCounts.attention ? <Badge tone="danger">{triageCounts.attention} attention</Badge> : null}
           {triageCounts.warning ? <Badge tone="warning">{triageCounts.warning} watch</Badge> : null}
@@ -207,7 +260,7 @@ export function ApplicationsView() {
           title={all.length ? "No applications match these filters" : "No applications registered"}
           hint={
             all.length
-              ? "Loosen the status or kind filter."
+              ? "Loosen the search, status, kind, or triage filter."
               : "Register an application (git, local, npm, or manual) to expose its governed capabilities."
           }
         />
