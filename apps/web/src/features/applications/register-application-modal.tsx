@@ -1,12 +1,12 @@
 import { useMemo, useState } from "react";
 import { Modal } from "@/components/ui/modal";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input, Select, Textarea } from "@/components/ui/input";
 import { Field } from "@/components/common/field";
 import { useConsoleState } from "@/data/use-console-state";
 import { useAsyncAction, api } from "@/data/use-console-actions";
 import { useUiStore } from "@/store/ui-store";
+import { DescriptorFeedbackList, WrapperCapabilityImpactPanel } from "@/features/applications/descriptor-feedback";
 import { parseOptionalJsonObject, wrapperCapabilityImpact } from "@/features/applications/descriptor-utils";
 import type { ApplicationRegisterRequest, ApplicationSource } from "@/lib/console-state";
 
@@ -189,20 +189,7 @@ export function RegisterApplicationModal({ open, onClose }: { open: boolean; onC
                       placeholder='{"mode":"installed-wrapper","installState":"installed","packageManager":"npm","commands":[{"id":"lint","commandType":"npm_script","command":"lint","status":"approved"}]}'
                     />
                   </Field>
-                  {wrapperImpact ? (
-                    <div className="rounded-md border border-border/70 p-3 text-xs">
-                      <div className="mb-2 font-medium">Capability impact</div>
-                      <div className="flex flex-wrap gap-2">
-                        <Badge tone={wrapperImpact.added.length ? "success" : "neutral"}>{wrapperImpact.added.length} added</Badge>
-                        <Badge tone="neutral">{wrapperImpact.unchanged.length} unchanged</Badge>
-                      </div>
-                      {wrapperImpact.added.length ? (
-                        <p className="mt-2 break-words text-muted-foreground">
-                          {wrapperImpact.added.map((capability) => `+ ${capability}`).join(" · ")}
-                        </p>
-                      ) : null}
-                    </div>
-                  ) : null}
+                  <WrapperCapabilityImpactPanel impact={wrapperImpact} />
                 </>
               ) : null}
               {sourceType === "manual" ? (
@@ -219,7 +206,7 @@ export function RegisterApplicationModal({ open, onClose }: { open: boolean; onC
           ) : null}
         </div>
 
-        {formError || error ? <p className="text-xs text-destructive">{formError ?? error}</p> : null}
+        <DescriptorFeedbackList message={formError ?? error} />
         <div className="flex justify-end gap-2 pt-1">
           <Button type="button" variant="secondary" size="sm" onClick={onClose}>
             Cancel

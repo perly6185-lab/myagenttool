@@ -203,6 +203,53 @@ describe("ApplicationsInspector recovery guidance", () => {
     });
   });
 
+  it("renders descriptor validation feedback from the inspector", async () => {
+    apiMock.fetchState.mockResolvedValue(closedLoopConsoleState());
+    apiMock.listApplicationCapabilities.mockResolvedValue({
+      applicationId: "app_ccusage",
+      capabilities: [],
+    });
+    apiMock.getApplicationDescriptors.mockResolvedValue({
+      applicationId: "app_ccusage",
+      descriptors: {
+        mcpAgent: null,
+        npmWrapper: {
+          mode: "installed-wrapper",
+          installState: "installed",
+          packageManager: "npm",
+          commands: [{ id: "daily", commandType: "bin", command: "ccusage", status: "approved" }],
+        },
+        manualManifest: null,
+      },
+    });
+    apiMock.updateApplicationDescriptors.mockRejectedValue(
+      new Error("npmWrapper.commands[0].command: Command must not contain newlines.; npmWrapper.packageManager: packageManager must be npm, pnpm, or yarn."),
+    );
+
+    useUiStore.setState({ selectedApplicationId: "app_ccusage" });
+    renderWithClient(createElement(ApplicationsInspector));
+
+    expect(await screen.findByText("Descriptors")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: /Edit descriptors/i }));
+    const wrapperEditor = await screen.findByLabelText("npm wrapper descriptor JSON");
+    fireEvent.change(wrapperEditor, {
+      target: {
+        value: JSON.stringify({
+          mode: "installed-wrapper",
+          packageManager: "bun",
+          commands: [{ id: "daily", commandType: "custom", command: "node\nbad", status: "approved" }],
+        }),
+      },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /Save descriptors/i }));
+
+    expect(await screen.findByText("Descriptor feedback")).toBeTruthy();
+    expect(screen.getByText("npmWrapper.commands[0].command:")).toBeTruthy();
+    expect(screen.getByText("Command must not contain newlines.")).toBeTruthy();
+    expect(screen.getByText("npmWrapper.packageManager:")).toBeTruthy();
+    expect(screen.getByText("packageManager must be npm, pnpm, or yarn.")).toBeTruthy();
+  });
+
   it("renders autodetected MCP tools and the Application-bound render result", async () => {
     apiMock.fetchState.mockResolvedValue(mcpConsoleState());
     apiMock.listApplicationCapabilities.mockResolvedValue({

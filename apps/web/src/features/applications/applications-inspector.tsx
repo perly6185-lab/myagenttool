@@ -13,6 +13,7 @@ import { applicationRunDeepLink } from "@/app/deep-links";
 import { useConsoleState } from "@/data/use-console-state";
 import { useAsyncAction, api } from "@/data/use-console-actions";
 import { useUiStore } from "@/store/ui-store";
+import { DescriptorFeedbackList, WrapperCapabilityImpactPanel } from "@/features/applications/descriptor-feedback";
 import { parseOptionalJsonObject, prettyJson, wrapperCapabilityImpact } from "@/features/applications/descriptor-utils";
 import { sourceSummary } from "@/features/applications/applications-view";
 import { Transcript } from "@/features/invocations/transcript";
@@ -341,22 +342,8 @@ function ApplicationDescriptorEditor({ application }: { application: Application
             {descriptorsQuery.isLoading ? <p className="text-xs text-muted-foreground">Loading descriptors...</p> : null}
             {descriptorsQuery.isError ? <p className="text-xs text-destructive">Could not load descriptors.</p> : null}
             {descriptorDirty ? <p className="text-xs text-muted-foreground">Unsaved descriptor changes</p> : null}
-            {wrapperImpact ? (
-              <div className="rounded-md border border-border/70 p-3 text-xs">
-                <div className="mb-2 font-medium">Capability impact</div>
-                <div className="flex flex-wrap gap-2">
-                  <Badge tone={wrapperImpact.added.length ? "success" : "neutral"}>{wrapperImpact.added.length} added</Badge>
-                  <Badge tone={wrapperImpact.removed.length ? "danger" : "neutral"}>{wrapperImpact.removed.length} removed</Badge>
-                  <Badge tone="neutral">{wrapperImpact.unchanged.length} unchanged</Badge>
-                </div>
-                {[...wrapperImpact.added, ...wrapperImpact.removed].length ? (
-                  <p className="mt-2 text-muted-foreground">
-                    {[...wrapperImpact.added.map((name) => `+ ${name}`), ...wrapperImpact.removed.map((name) => `- ${name}`)].join(" · ")}
-                  </p>
-                ) : null}
-              </div>
-            ) : null}
-            {formError || error ? <p className="text-xs text-destructive">{formError ?? error}</p> : null}
+            <WrapperCapabilityImpactPanel impact={wrapperImpact} />
+            <DescriptorFeedbackList message={formError ?? error} />
             <div className="flex justify-end gap-2 pt-1">
               <Button type="button" variant="secondary" size="sm" onClick={() => setOpen(false)}>
                 Cancel

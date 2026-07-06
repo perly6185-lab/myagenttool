@@ -85,7 +85,9 @@ describe("RegisterApplicationModal", () => {
         },
       });
     });
-    expect(await screen.findByText("npmWrapper.packageManager: packageManager must be npm, pnpm, or yarn.")).toBeTruthy();
+    expect(await screen.findByText("Descriptor feedback")).toBeTruthy();
+    expect(screen.getByText("npmWrapper.packageManager:")).toBeTruthy();
+    expect(screen.getByText("packageManager must be npm, pnpm, or yarn.")).toBeTruthy();
     expect(onClose).not.toHaveBeenCalled();
   });
 });

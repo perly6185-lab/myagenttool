@@ -11,6 +11,11 @@ export interface WrapperCapabilityImpact {
   unchanged: string[];
 }
 
+export interface DescriptorFeedbackIssue {
+  path: string | null;
+  message: string;
+}
+
 export function prettyJson(value: unknown): string {
   if (value === null || value === undefined) return "";
   return JSON.stringify(value, null, 2);
@@ -62,4 +67,18 @@ export function wrapperCapabilityImpact(
   const removed = [...currentNames].filter((name) => !nextNames.has(name)).sort();
   const unchanged = [...nextNames].filter((name) => currentNames.has(name)).sort();
   return { added, removed, unchanged };
+}
+
+export function descriptorFeedbackIssues(message: string | null | undefined): DescriptorFeedbackIssue[] {
+  const text = String(message ?? "").trim();
+  if (!text) return [];
+  return text
+    .split(";")
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .map((part) => {
+      const match = part.match(/^([a-zA-Z][a-zA-Z0-9_.[\]-]*):\s*(.+)$/);
+      if (!match) return { path: null, message: part };
+      return { path: match[1], message: match[2] };
+    });
 }
