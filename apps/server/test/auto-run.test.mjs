@@ -54,8 +54,10 @@ function makeAutoRun({
   spawnChildIssue = undefined,
   // Injected acceptance judge (Phase B). Default undefined -> step skipped.
   judgeAcceptance = undefined,
+  // Injected PR merge runner. Default: a successful merge.
+  mergePr = async ({ prNumber }) => ({ ok: true, prNumber, method: "squash" }),
 } = {}) {
-  const calls = { createInvocation: [], startInvocationIfAllowed: [], commit: [], publish: [], pr: [], verify: [], status: [], report: [] };
+  const calls = { createInvocation: [], startInvocationIfAllowed: [], commit: [], publish: [], pr: [], verify: [], status: [], report: [], merge: [] };
   let counter = 0;
   const svc = createAutoRunService({
     state,
@@ -106,6 +108,10 @@ function makeAutoRun({
     fetchIssueBody,
     spawnChildIssue,
     judgeAcceptance,
+    mergePr: async (args) => {
+      calls.merge.push(args);
+      return mergePr(args);
+    },
   });
   return { svc, calls };
 }
@@ -864,4 +870,39 @@ test("startAutoRun validates the link and the device link state", async () => {
     }),
     /unlinked/i,
   );
+});
+
+test("mergeAutoRunPr: a pr_open run merges (human step) and flips to MERGED", async () => {
+  const { svc, calls } = makeAutoRun();
+  const run = { id: "aur_merge_1", status: "pr_open", projectId: sourceProjectId, prNumber: 42, prState: "OPEN", invocationId: "inv_x" };
+  state.autoRuns.push(run);
+  const result = await svc.mergeAutoRunPr("aur_merge_1", { actor: { userId: "usr_local" } });
+  assert.equal(result.ok, true);
+  assert.equal(result.prState, "MERGED");
+  assert.equal(run.prState, "MERGED", "record flipped to MERGED");
+  assert.equal(calls.merge.length, 1, "gh merge invoked once");
+  assert.equal(calls.merge[0].prNumber, 42);
+});
+
+test("mergeAutoRunPr: refuses a run without an open PR (only pr_open + prNumber)", async () => {
+  const { svc, calls } = makeAutoRun();
+  state.autoRuns.push({ id: "aur_merge_2", status: "running", projectId: sourceProjectId, prNumber: null });
+  await assert.rejects(() => svc.mergeAutoRunPr("aur_merge_2"), /open PR/);
+  assert.equal(calls.merge.length, 0, "no gh merge attempted");
+});
+
+test("mergeAutoRunPr: already MERGED is a no-op (idempotent)", async () => {
+  const { svc, calls } = makeAutoRun();
+  state.autoRuns.push({ id: "aur_merge_3", status: "pr_open", projectId: sourceProjectId, prNumber: 7, prState: "MERGED" });
+  const result = await svc.mergeAutoRunPr("aur_merge_3");
+  assert.equal(result.alreadyMerged, true);
+  assert.equal(calls.merge.length, 0, "no gh call when already merged");
+});
+
+test("mergeAutoRunPr: a failed gh merge throws with the error, record stays OPEN", async () => {
+  const { svc } = makeAutoRun({ mergePr: async () => ({ ok: false, error: "not mergeable" }) });
+  const run = { id: "aur_merge_4", status: "pr_open", projectId: sourceProjectId, prNumber: 9, prState: "OPEN" };
+  state.autoRuns.push(run);
+  await assert.rejects(() => svc.mergeAutoRunPr("aur_merge_4"), /not mergeable/);
+  assert.equal(run.prState, "OPEN", "no false MERGED on failure");
 });
