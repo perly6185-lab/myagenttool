@@ -97,6 +97,25 @@ export function applicationNextStep(app: ApplicationSnapshot): { title: string; 
   };
 }
 
+export type ApplicationTriageFilter = "all" | "attention" | "warning" | "ready";
+
+export function applicationTriageBucket(app: ApplicationSnapshot): Exclude<ApplicationTriageFilter, "all"> {
+  const tone = applicationNextStep(app).tone;
+  if (tone === "danger") return "attention";
+  if (tone === "warning") return "warning";
+  return "ready";
+}
+
+export function applicationTriageCounts(applications: ApplicationSnapshot[]): Record<Exclude<ApplicationTriageFilter, "all">, number> {
+  return applications.reduce(
+    (counts, app) => {
+      counts[applicationTriageBucket(app)] += 1;
+      return counts;
+    },
+    { attention: 0, warning: 0, ready: 0 },
+  );
+}
+
 /** Registered applications and their governed capabilities (read-only slice). */
 export function ApplicationsView() {
   const { data: state } = useConsoleState();
@@ -105,6 +124,7 @@ export function ApplicationsView() {
 
   const [status, setStatus] = useState<"all" | ApplicationSnapshot["status"]>("all");
   const [kind, setKind] = useState<"all" | string>("all");
+  const [triage, setTriage] = useState<ApplicationTriageFilter>("all");
   const [registerOpen, setRegisterOpen] = useState(false);
 
   const all = state?.applications ?? [];
@@ -114,12 +134,17 @@ export function ApplicationsView() {
   }, [state?.projects]);
 
   const kinds = useMemo(() => Array.from(new Set(all.map((app) => app.kind))).sort(), [all]);
-  const applications = useMemo(
+  const scopedApplications = useMemo(
     () =>
       all.filter(
         (app) => (status === "all" || app.status === status) && (kind === "all" || app.kind === kind),
       ),
     [all, status, kind],
+  );
+  const triageCounts = useMemo(() => applicationTriageCounts(scopedApplications), [scopedApplications]);
+  const applications = useMemo(
+    () => scopedApplications.filter((app) => triage === "all" || applicationTriageBucket(app) === triage),
+    [scopedApplications, triage],
   );
 
   return (
@@ -159,9 +184,22 @@ export function ApplicationsView() {
             ))}
           </Select>
         </Field>
-        <span className="pb-2 text-xs text-muted-foreground">
-          {applications.length} of {all.length} application(s)
-        </span>
+        <Field label="Triage" className="w-48">
+          <Select value={triage} onChange={(e) => setTriage(e.target.value as ApplicationTriageFilter)}>
+            <option value="all">All triage states</option>
+            <option value="attention">Needs attention</option>
+            <option value="warning">Watch</option>
+            <option value="ready">Ready</option>
+          </Select>
+        </Field>
+        <div className="flex flex-wrap items-center gap-2 pb-2">
+          <span className="text-xs text-muted-foreground">
+            {applications.length} of {scopedApplications.length} application(s)
+          </span>
+          {triageCounts.attention ? <Badge tone="danger">{triageCounts.attention} attention</Badge> : null}
+          {triageCounts.warning ? <Badge tone="warning">{triageCounts.warning} watch</Badge> : null}
+          {triageCounts.ready ? <Badge tone="success">{triageCounts.ready} ready</Badge> : null}
+        </div>
       </div>
 
       {!applications.length ? (

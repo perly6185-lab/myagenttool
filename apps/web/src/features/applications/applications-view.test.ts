@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { applicationNextStep, sourceSummary } from "@/features/applications/applications-view";
+import { applicationNextStep, applicationTriageBucket, applicationTriageCounts, sourceSummary } from "@/features/applications/applications-view";
 import type { ApplicationSnapshot } from "@/lib/console-state";
 
 describe("sourceSummary", () => {
@@ -26,6 +26,31 @@ describe("applicationNextStep", () => {
       probe: { capabilities: [] },
       orchestrationIds: ["routine"],
     })).title).toBe("Ready");
+  });
+});
+
+describe("application triage", () => {
+  it("buckets applications by their current operator next step", () => {
+    expect(applicationTriageBucket(application({ status: "failed" }))).toBe("attention");
+    expect(applicationTriageBucket(application({ status: "active", probe: null }))).toBe("warning");
+    expect(applicationTriageBucket(application({
+      status: "active",
+      probe: { capabilities: [] },
+      orchestrationIds: ["routine"],
+    }))).toBe("ready");
+  });
+
+  it("counts triage buckets for the current application scope", () => {
+    expect(applicationTriageCounts([
+      application({ id: "app_failed", status: "failed" }),
+      application({ id: "app_probe", status: "active", probe: null }),
+      application({ id: "app_ready", status: "active", probe: { capabilities: [] }, orchestrationIds: ["routine"] }),
+      application({ id: "app_archived", status: "archived" }),
+    ])).toEqual({
+      attention: 2,
+      warning: 1,
+      ready: 1,
+    });
   });
 });
 
