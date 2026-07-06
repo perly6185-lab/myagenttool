@@ -244,6 +244,7 @@ test("[B] the develop run commits, verifies, pushes to origin, and opens the PR"
 
   assert.deepEqual(statusWrites, [
     "#100 -> status/in-progress",
+    "#100 -> status/review", // design delivered → the parent moves to review (pilot #7)
     "#101 -> status/in-progress",
     "#101 -> status/review",
   ]);

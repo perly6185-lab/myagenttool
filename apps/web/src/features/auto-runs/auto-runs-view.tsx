@@ -290,6 +290,20 @@ export function AutoRunsView() {
                     </span>
                   ) : null}
                 </div>
+                {run.status === "failed" || run.status === "blocked" ? (
+                  <div>
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      onClick={() => {
+                        void api.retryAutoRun(run.id).then(() => load()).catch(() => load());
+                      }}
+                      title="Retry this run on its existing worktree"
+                    >
+                      <RefreshCw className="mr-1 size-3" /> Retry
+                    </Button>
+                  </div>
+                ) : null}
                 {run.report && (run.status === "report_posted" || run.status === "needs_input") ? (
                   <p className="line-clamp-3 whitespace-pre-wrap rounded bg-muted/50 px-2 py-1 text-xs text-muted-foreground">{run.report}</p>
                 ) : null}

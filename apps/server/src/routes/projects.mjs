@@ -20,6 +20,7 @@ export async function handleProjectRoutes({
   createWorktreePr,
   publishWorktreeBranch,
   startAutoRun,
+  retryAutoRun,
   refreshAutoRunPrDispositions,
   selectProject,
   removeProject,
@@ -152,6 +153,17 @@ export async function handleProjectRoutes({
       return true;
     }
     sendJson(res, 200, { removed, projects: state.projects, currentProjectId: state.currentProjectId, currentProject: currentProject() });
+    return true;
+  }
+
+  const autoRunRetryMatch = url.pathname.match(/^\/api\/auto-runs\/([^\/]+)\/retry$/);
+  if (autoRunRetryMatch && req.method === "POST") {
+    try {
+      const result = await retryAutoRun(decodeURIComponent(autoRunRetryMatch[1]), { actor });
+      sendJson(res, 200, result);
+    } catch (error) {
+      sendJson(res, 400, { error: "auto_run_retry_failed", message: errorMessage(error) });
+    }
     return true;
   }
 
