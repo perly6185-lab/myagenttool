@@ -26,6 +26,8 @@ export interface ApplicationRunSelection {
   invocationId: string;
 }
 
+export type ApplicationEventLevelSelection = "all" | "error" | "warning" | "info";
+
 interface UiState {
   section: SectionKey;
   selectedAgentId: string | null;
@@ -37,6 +39,7 @@ interface UiState {
   selectedToolName: string | null;
   selectedApplicationId: string | null;
   selectedApplicationRun: ApplicationRunSelection | null;
+  selectedApplicationEventLevel: ApplicationEventLevelSelection;
   selectedEvidenceId: string | null;
   /** Transient: the invocation whose Codex session the composer will continue on next send (#163). */
   resumeFromInvocationId: string | null;
@@ -50,6 +53,7 @@ interface UiState {
   setSelectedToolName: (name: string | null) => void;
   setSelectedApplicationId: (id: string | null) => void;
   setSelectedApplicationRun: (selection: ApplicationRunSelection | null) => void;
+  setSelectedApplicationEventLevel: (level: ApplicationEventLevelSelection) => void;
   setSelectedEvidenceId: (id: string | null) => void;
   setResumeFromInvocationId: (id: string | null) => void;
 }
@@ -79,10 +83,11 @@ export interface UrlNavigationState {
   selectedInvocationId?: string | null;
   selectedApplicationId?: string | null;
   selectedApplicationRun?: ApplicationRunSelection | null;
+  selectedApplicationEventLevel?: ApplicationEventLevelSelection;
   selectedEvidenceId?: string | null;
 }
 
-const NAVIGATION_SEARCH_KEYS = ["section", "invocation", "application", "routine", "run", "evidence"] as const;
+const NAVIGATION_SEARCH_KEYS = ["section", "invocation", "application", "routine", "run", "eventLevel", "evidence"] as const;
 
 function stringParam(params: URLSearchParams, key: string): string | null {
   const value = params.get(key)?.trim();
@@ -94,6 +99,11 @@ function sectionParam(params: URLSearchParams): SectionKey | null {
   return value && SECTION_KEYS.includes(value as SectionKey) ? (value as SectionKey) : null;
 }
 
+function applicationEventLevelParam(params: URLSearchParams): ApplicationEventLevelSelection | null {
+  const value = stringParam(params, "eventLevel");
+  return value === "all" || value === "error" || value === "warning" || value === "info" ? value : null;
+}
+
 export function navigationFromSearch(search: string): UrlNavigationState {
   const params = new URLSearchParams(search);
   const hasNavigationParams = NAVIGATION_SEARCH_KEYS.some((key) => params.has(key));
@@ -103,6 +113,7 @@ export function navigationFromSearch(search: string): UrlNavigationState {
   const applicationId = stringParam(params, "application");
   const routineId = stringParam(params, "routine");
   const runInvocationId = stringParam(params, "run");
+  const eventLevel = applicationEventLevelParam(params);
   const evidenceId = stringParam(params, "evidence");
   const navigation: UrlNavigationState = {};
   if (section) navigation.section = section;
@@ -111,6 +122,7 @@ export function navigationFromSearch(search: string): UrlNavigationState {
   navigation.selectedApplicationRun = applicationId && routineId && runInvocationId
     ? { applicationId, routineId, invocationId: runInvocationId }
     : null;
+  navigation.selectedApplicationEventLevel = eventLevel ?? "all";
   navigation.selectedEvidenceId = evidenceId;
   return navigation;
 }
@@ -124,6 +136,7 @@ function applyUrlNavigation<T extends Partial<UiState>>(state: T, navigation: Ur
   if (navigation.selectedInvocationId !== undefined) state.selectedInvocationId = navigation.selectedInvocationId;
   if (navigation.selectedApplicationId !== undefined) state.selectedApplicationId = navigation.selectedApplicationId;
   if (navigation.selectedApplicationRun !== undefined) state.selectedApplicationRun = navigation.selectedApplicationRun;
+  if (navigation.selectedApplicationEventLevel !== undefined) state.selectedApplicationEventLevel = navigation.selectedApplicationEventLevel;
   if (navigation.selectedEvidenceId !== undefined) state.selectedEvidenceId = navigation.selectedEvidenceId;
   return state;
 }
@@ -137,6 +150,7 @@ export function searchFromNavigationState(search: string, state: Pick<UiState,
   | "selectedInvocationId"
   | "selectedApplicationId"
   | "selectedApplicationRun"
+  | "selectedApplicationEventLevel"
   | "selectedEvidenceId"
 >): string {
   const params = new URLSearchParams(search);
@@ -148,6 +162,9 @@ export function searchFromNavigationState(search: string, state: Pick<UiState,
   if (state.selectedApplicationRun) {
     params.set("routine", state.selectedApplicationRun.routineId);
     params.set("run", state.selectedApplicationRun.invocationId);
+  }
+  if (state.section === "applications" && state.selectedApplicationEventLevel !== "all") {
+    params.set("eventLevel", state.selectedApplicationEventLevel);
   }
   if (state.selectedEvidenceId) params.set("evidence", state.selectedEvidenceId);
   const next = params.toString();
@@ -175,6 +192,7 @@ export const useUiStore = create<UiState>()(
         selectedToolName: null,
         selectedApplicationId: initialNavigation.selectedApplicationId ?? null,
         selectedApplicationRun: initialNavigation.selectedApplicationRun ?? null,
+        selectedApplicationEventLevel: initialNavigation.selectedApplicationEventLevel ?? "all",
         selectedEvidenceId: initialNavigation.selectedEvidenceId ?? null,
         resumeFromInvocationId: null,
         setSection: (section) => set({ section }),
@@ -187,6 +205,7 @@ export const useUiStore = create<UiState>()(
         setSelectedToolName: (selectedToolName) => set({ selectedToolName }),
         setSelectedApplicationId: (selectedApplicationId) => set({ selectedApplicationId }),
         setSelectedApplicationRun: (selectedApplicationRun) => set({ selectedApplicationRun }),
+        setSelectedApplicationEventLevel: (selectedApplicationEventLevel) => set({ selectedApplicationEventLevel }),
         setSelectedEvidenceId: (selectedEvidenceId) => set({ selectedEvidenceId }),
         setResumeFromInvocationId: (resumeFromInvocationId) => set({ resumeFromInvocationId }),
       };
@@ -207,6 +226,7 @@ export const useUiStore = create<UiState>()(
         selectedToolName: state.selectedToolName,
         selectedApplicationId: state.selectedApplicationId,
         selectedApplicationRun: state.selectedApplicationRun,
+        selectedApplicationEventLevel: state.selectedApplicationEventLevel,
         selectedEvidenceId: state.selectedEvidenceId,
       }),
       merge: (persisted, current) => {

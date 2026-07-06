@@ -57,6 +57,7 @@ import type {
   ApplicationResultRef,
   InvocationSnapshot,
 } from "@/lib/console-state";
+import type { ApplicationEventLevelSelection } from "@/store/ui-store";
 
 function riskTone(risk?: string): "neutral" | "warning" | "danger" {
   if (risk === "high" || risk === "critical") return "danger";
@@ -1443,8 +1444,7 @@ function applicationEventTone(level?: string | null): "neutral" | "success" | "w
   return "neutral";
 }
 
-type ApplicationEventLevelFilter = "all" | "error" | "warning" | "info";
-type ApplicationEventActualLevel = Exclude<ApplicationEventLevelFilter, "all"> | "other";
+type ApplicationEventActualLevel = Exclude<ApplicationEventLevelSelection, "all"> | "other";
 
 function normalizedApplicationEventLevel(level?: string | null): ApplicationEventActualLevel {
   if (level === "error") return "error";
@@ -1476,7 +1476,8 @@ function ApplicationEventTimeline({
   loading: boolean;
   error: boolean;
 }) {
-  const [levelFilter, setLevelFilter] = useState<ApplicationEventLevelFilter>("all");
+  const levelFilter = useUiStore((s) => s.selectedApplicationEventLevel);
+  const setLevelFilter = useUiStore((s) => s.setSelectedApplicationEventLevel);
   const counts = useMemo(() => {
     const next = { error: 0, warning: 0, info: 0, other: 0 };
     for (const event of events) {
@@ -1493,7 +1494,7 @@ function ApplicationEventTimeline({
     const level = normalizedApplicationEventLevel(event.level);
     return level === "error" || level === "warning";
   });
-  const filters: Array<{ value: ApplicationEventLevelFilter; label: string; count: number; tone: "neutral" | "success" | "warning" | "danger" }> = [
+  const filters: Array<{ value: ApplicationEventLevelSelection; label: string; count: number; tone: "neutral" | "success" | "warning" | "danger" }> = [
     { value: "all", label: "All", count: events.length, tone: "neutral" },
     { value: "error", label: "Errors", count: counts.error, tone: "danger" },
     { value: "warning", label: "Warnings", count: counts.warning, tone: "warning" },

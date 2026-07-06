@@ -1,4 +1,5 @@
 import {
+  type ApplicationEventLevelSelection,
   SECTION_KEYS,
   searchFromNavigationState,
   type ApplicationRunSelection,
@@ -6,13 +7,14 @@ import {
   type UrlNavigationState,
 } from "@/store/ui-store";
 
-const NAVIGATION_QUERY_KEYS = ["section", "invocation", "application", "routine", "run", "evidence"] as const;
+const NAVIGATION_QUERY_KEYS = ["section", "invocation", "application", "routine", "run", "eventLevel", "evidence"] as const;
 
 interface WebNavigationTarget {
   section: SectionKey;
   selectedInvocationId?: string | null;
   selectedApplicationId?: string | null;
   selectedApplicationRun?: ApplicationRunSelection | null;
+  selectedApplicationEventLevel?: ApplicationEventLevelSelection;
   selectedEvidenceId?: string | null;
 }
 
@@ -32,6 +34,7 @@ export function webDeepLink(target: WebNavigationTarget, href = currentHref()): 
     selectedInvocationId: target.selectedInvocationId ?? null,
     selectedApplicationId: target.selectedApplicationId ?? null,
     selectedApplicationRun: target.selectedApplicationRun ?? null,
+    selectedApplicationEventLevel: target.selectedApplicationEventLevel ?? "all",
     selectedEvidenceId: target.selectedEvidenceId ?? null,
   });
   return url.toString();
@@ -82,6 +85,7 @@ export function webNavigationStateFromLink(link: RelativeWebNavigationLink): Url
   const applicationId = stringValue(target.application);
   const routineId = stringValue(target.routine);
   const runInvocationId = stringValue(target.run);
+  const eventLevel = applicationEventLevelValue(target.eventLevel);
   const evidenceId = stringValue(target.evidence);
   const navigation: UrlNavigationState = {};
 
@@ -97,6 +101,9 @@ export function webNavigationStateFromLink(link: RelativeWebNavigationLink): Url
   navigation.selectedApplicationRun = applicationId && routineId && runInvocationId
     ? { applicationId, routineId, invocationId: runInvocationId }
     : null;
+  if (eventLevel) {
+    navigation.selectedApplicationEventLevel = eventLevel;
+  }
   if (evidenceId) {
     navigation.selectedEvidenceId = evidenceId;
   }
@@ -105,4 +112,9 @@ export function webNavigationStateFromLink(link: RelativeWebNavigationLink): Url
 
 function stringValue(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function applicationEventLevelValue(value: unknown): "all" | "error" | "warning" | "info" | null {
+  const text = stringValue(value);
+  return text === "all" || text === "error" || text === "warning" || text === "info" ? text : null;
 }

@@ -21,6 +21,7 @@ import {
 } from "@/features/applications/application-health";
 import type { ApplicationSnapshot } from "@/lib/console-state";
 import type { Tone } from "@/lib/readable-labels";
+import type { ApplicationEventLevelSelection } from "@/store/ui-store";
 
 function statusTone(status: string): Tone {
   if (status === "active") return "success";
@@ -34,6 +35,7 @@ export function ApplicationsView() {
   const { data: state } = useConsoleState();
   const selectedApplicationId = useUiStore((s) => s.selectedApplicationId);
   const setSelectedApplicationId = useUiStore((s) => s.setSelectedApplicationId);
+  const setSelectedApplicationEventLevel = useUiStore((s) => s.setSelectedApplicationEventLevel);
 
   const [status, setStatus] = useState<"all" | ApplicationSnapshot["status"]>("all");
   const [kind, setKind] = useState<"all" | string>("all");
@@ -66,6 +68,11 @@ export function ApplicationsView() {
     ),
     [searchedApplications, triage],
   );
+
+  function selectApplication(applicationId: string, eventLevel: ApplicationEventLevelSelection = "all") {
+    setSelectedApplicationId(applicationId);
+    setSelectedApplicationEventLevel(eventLevel);
+  }
 
   return (
     <div className="space-y-5">
@@ -142,11 +149,17 @@ export function ApplicationsView() {
         <div className="grid gap-4 xl:grid-cols-2">
           {applications.map((app) => {
             const nextStep = applicationNextStep(app);
+            const triageBucket = applicationTriageBucket(app);
+            const attentionEventLevel: ApplicationEventLevelSelection | null = triageBucket === "attention"
+              ? "error"
+              : triageBucket === "warning"
+                ? "warning"
+                : null;
             return (
               <Card
                 key={app.id}
-                onClick={() => setSelectedApplicationId(app.id)}
-                onFocusCapture={() => setSelectedApplicationId(app.id)}
+                onClick={() => selectApplication(app.id)}
+                onFocusCapture={() => selectApplication(app.id)}
                 tabIndex={0}
                 className={cn(
                   "cursor-pointer transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
@@ -174,6 +187,19 @@ export function ApplicationsView() {
                       ) : null}
                     </div>
                     <p className="mt-1 [overflow-wrap:anywhere] text-xs text-muted-foreground">{nextStep.detail}</p>
+                    {attentionEventLevel ? (
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="mt-2 h-7 px-2 text-xs"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          selectApplication(app.id, attentionEventLevel);
+                        }}
+                      >
+                        {attentionEventLevel === "error" ? "View errors" : "View warnings"}
+                      </Button>
+                    ) : null}
                   </div>
                   <div className="flex flex-wrap gap-1.5">
                     {projectName(app.projectId) ? <Badge>{projectName(app.projectId)}</Badge> : null}

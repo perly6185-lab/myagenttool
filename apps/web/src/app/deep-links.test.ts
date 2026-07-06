@@ -46,7 +46,7 @@ describe("deep link helpers", () => {
 
   it("builds links from server-provided relative Web navigation queries", () => {
     const url = new URL(webNavigationLinkDeepLink({
-      query: "?section=applications&application=app_docs&routine=routine_docs&run=inv_docs&evidence=ev_docs",
+      query: "?section=applications&application=app_docs&routine=routine_docs&run=inv_docs&eventLevel=error&evidence=ev_docs",
     }, "https://console.example.test/control?keep=yes&section=invocations&invocation=old&evidence=old_ev#pane"));
 
     expect(url.origin).toBe("https://console.example.test");
@@ -58,6 +58,7 @@ describe("deep link helpers", () => {
     expect(url.searchParams.get("application")).toBe("app_docs");
     expect(url.searchParams.get("routine")).toBe("routine_docs");
     expect(url.searchParams.get("run")).toBe("inv_docs");
+    expect(url.searchParams.get("eventLevel")).toBe("error");
     expect(url.searchParams.get("evidence")).toBe("ev_docs");
   });
 
@@ -69,6 +70,7 @@ describe("deep link helpers", () => {
         application: "app_docs",
         routine: "routine_docs",
         run: "inv_docs",
+        eventLevel: "warning",
       },
     })).toEqual({
       section: "applications",
@@ -78,6 +80,7 @@ describe("deep link helpers", () => {
         routineId: "routine_docs",
         invocationId: "inv_docs",
       },
+      selectedApplicationEventLevel: "warning",
     });
 
     expect(webNavigationStateFromLink({

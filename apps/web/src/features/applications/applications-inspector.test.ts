@@ -65,6 +65,7 @@ afterEach(() => {
     selectedApplicationId: null,
     selectedInvocationId: null,
     selectedApplicationRun: null,
+    selectedApplicationEventLevel: "all",
   });
 });
 
