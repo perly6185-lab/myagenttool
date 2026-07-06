@@ -42,10 +42,18 @@ export function summarizeAutoRuns(autoRuns = []) {
   const verification = { passed: 0, failed: 0, unverified: 0 };
   const blockedReasonCounts = {};
   const timeToPrSeconds = [];
+  // Routing decisions (slice 5 will evaluate them against outcomes).
+  const decisions = { byPath: { develop: 0, design: 0, prototype: 0, clarify: 0 }, byDecidedBy: { agent: 0, heuristic: 0 } };
 
   for (const run of autoRuns) {
     byStatus[run.status] = (byStatus[run.status] ?? 0) + 1;
     if (ACTIVE_STATUSES.has(run.status)) active += 1;
+
+    if (run.decision?.path) {
+      decisions.byPath[run.decision.path] = (decisions.byPath[run.decision.path] ?? 0) + 1;
+      const by = run.decision.decidedBy === "agent" ? "agent" : "heuristic";
+      decisions.byDecidedBy[by] += 1;
+    }
 
     if (run.verification) {
       if (!run.verification.verified) verification.unverified += 1;
@@ -82,6 +90,7 @@ export function summarizeAutoRuns(autoRuns = []) {
     // completed run yet (avoids a fake 0% before any data exists).
     successRate: terminal > 0 ? prOpen / terminal : null,
     verification,
+    decisions,
     blockedReasons: topReasons(blockedReasonCounts),
     timeToPr: {
       count: timeToPrSeconds.length,

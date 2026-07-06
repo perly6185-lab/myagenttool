@@ -332,9 +332,10 @@ export function createServerRuntimeServices({
     postIssueReport: resolveStatusWritebackConfig().enabled
       ? async ({ issueNumber, repoPath, body }) => runIssueComment({ cwd: repoPath, issueNumber, body })
       : undefined,
-    // Intent classifier: default heuristic in the service; an LLM classifier can
-    // be wired here later to override it.
-    classifyAutoRunIntent: undefined,
+    // Decision step (ISSUE_DECISION_AGENT_PLAN.md): the LLM decision agent will
+    // be wired here (slice 3). Undefined -> the heuristic floor decides, which
+    // is byte-compatible with the previous intent routing.
+    decideIssuePath: undefined,
   });
   // Now that the reaction exists, let completion drive it.
   advanceAutoRunHook = advanceAutoRunForInvocation;
