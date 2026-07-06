@@ -60,7 +60,10 @@ export async function handleAgentRoutes({
       // health is unknown OR stuck at "checking" — the latter is a stale probe
       // from a prior bridge session that dropped before reporting; a live check
       // reaches a terminal healthy/unhealthy, so reconnects don't loop.
-      if (agent.adapter?.type === "cli" && (!agent.health || ["unknown", "checking"].includes(agent.health.status))) {
+      // Re-probe unhealthy too: an "unhealthy" verdict recorded while the bridge
+      // was offline is stale the moment the bridge registers — without this the
+      // cached verdict blocks dispatch forever. (Found by the field pilot.)
+      if (agent.adapter?.type === "cli" && (!agent.health || ["unknown", "checking", "unhealthy"].includes(agent.health.status))) {
         createAgentHealthCheck(agent, actor);
       }
     }

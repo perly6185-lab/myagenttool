@@ -436,7 +436,9 @@ export function createProjectService({ state, now, nextId, appendEvent, persistS
     const prBody = `${String(body ?? "").trim() || `Pull request for worktree branch \`${branch}\`.`}${linkedRef}\n`;
 
     const gh = resolveGhCommand();
-    const args = [...gh.args, "pr", "create", "--base", baseBranch, "--head", branch, "--title", prTitle, "--body", prBody, "--json", "number,url,state"];
+    // NB: real gh has no --json on `pr create` (field-pilot finding; the test
+    // stub accepted it silently). gh prints the created PR URL on stdout.
+    const args = [...gh.args, "pr", "create", "--base", baseBranch, "--head", branch, "--title", prTitle, "--body", prBody];
     let stdout;
     try {
       const result = await execFileAsync(gh.command, args, {
@@ -640,8 +642,9 @@ function parseGhPrCreateOutput(stdout) {
     const parsed = JSON.parse(text);
     return { number: parsed.number ?? null, url: parsed.url ?? null, state: parsed.state ?? null, raw: text };
   } catch {
-    const urlMatch = text.match(/https?:\/\/\S+/);
-    return { number: null, url: urlMatch?.[0] ?? null, state: null, raw: text };
+    // Real gh prints the created PR URL; derive the number from it.
+    const urlMatch = text.match(/https?:\/\/\S+\/pull\/(\d+)/);
+    return { number: urlMatch ? Number(urlMatch[1]) : null, url: urlMatch?.[0] ?? null, state: urlMatch ? "OPEN" : null, raw: text };
   }
 }
 

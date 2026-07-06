@@ -72,7 +72,7 @@ before(() => {
 
   // Stub gh at the network edge (publish/PR flow still runs the real code).
   const fakeGh = join(root, "fake-gh.mjs");
-  writeFileSync(fakeGh, "process.stdout.write(JSON.stringify({ number: 500, url: 'https://github.com/o/r/pull/500', state: 'OPEN' }));\n");
+  writeFileSync(fakeGh, "process.stdout.write('https://github.com/o/r/pull/500\\n');\n");
   savedGhEnv = process.env.MYAGENTTOOL_GH_COMMAND_JSON;
   process.env.MYAGENTTOOL_GH_COMMAND_JSON = JSON.stringify(["node", fakeGh]);
 
