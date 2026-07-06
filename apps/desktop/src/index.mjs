@@ -1333,7 +1333,8 @@ function cliCandidate({ id, name, command, source, confidence, riskLevel, riskTa
       type: "cli",
       command,
       args: codexCommand ? codexCliArgs() : ["{{payloadJson}}"],
-      timeoutSeconds: codexCommand ? 120 : 30,
+      // Coding agents default to 600s (real edit tasks exceed the old 120s).
+      timeoutSeconds: codexCommand ? 600 : 30,
       cancellation: "supported",
       outputFormat: codexCommand ? "codex_jsonl" : "plain_result",
       sandbox: null
