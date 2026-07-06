@@ -32,7 +32,8 @@ const apiMock = vi.hoisted(() => ({
   updateApplicationDescriptors: vi.fn(),
 }));
 
-vi.mock("@/lib/api-client", () => ({
+vi.mock("@/lib/api-client", async () => ({
+  ...(await vi.importActual<typeof import("@/lib/api-client")>("@/lib/api-client")),
   fetchState: apiMock.fetchState,
   api: {
     listApplicationCapabilities: apiMock.listApplicationCapabilities,
@@ -264,9 +265,27 @@ describe("ApplicationsInspector recovery guidance", () => {
         manualManifest: null,
       },
     });
-    apiMock.updateApplicationDescriptors.mockRejectedValue(
-      new Error("npmWrapper.commands[0].command: Command must not contain newlines.; npmWrapper.packageManager: packageManager must be npm, pnpm, or yarn."),
-    );
+    const { ApiError } = await import("@/lib/api-client");
+    apiMock.updateApplicationDescriptors.mockRejectedValue(new ApiError({
+      status: 422,
+      method: "PATCH",
+      path: "/api/applications/app_ccusage/descriptors",
+      body: {
+        error: "invalid_application_descriptor",
+        applicationId: "app_ccusage",
+        validation: {
+          errors: [{
+            path: "npmWrapper.commands[0].command",
+            code: "invalid_command",
+            message: "Command must not contain newlines.",
+          }, {
+            path: "npmWrapper.packageManager",
+            code: "invalid_package_manager",
+            message: "packageManager must be npm, pnpm, or yarn.",
+          }],
+        },
+      },
+    }));
 
     useUiStore.setState({ selectedApplicationId: "app_ccusage" });
     renderWithClient(createElement(ApplicationsInspector));
@@ -286,6 +305,8 @@ describe("ApplicationsInspector recovery guidance", () => {
     fireEvent.click(screen.getByRole("button", { name: /Save descriptors/i }));
 
     expect(await screen.findByText("Descriptor feedback")).toBeTruthy();
+    expect(screen.getByText(/code invalid_application_descriptor/)).toBeTruthy();
+    expect(screen.getByText(/application app_ccusage/)).toBeTruthy();
     expect(screen.getByText("npmWrapper.commands[0].command:")).toBeTruthy();
     expect(screen.getByText("Command must not contain newlines.")).toBeTruthy();
     expect(screen.getByText("npmWrapper.packageManager:")).toBeTruthy();

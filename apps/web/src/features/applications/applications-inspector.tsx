@@ -214,7 +214,7 @@ function ApplicationActions({ application }: { application: ApplicationSnapshot 
 }
 
 function ApplicationDescriptorEditor({ application }: { application: ApplicationSnapshot }) {
-  const { execute, pending, error } = useAsyncAction();
+  const { execute, pending, error, errorDetail } = useAsyncAction();
   const [open, setOpen] = useState(false);
   const [name, setName] = useState(application.name);
   const [mcpDescriptor, setMcpDescriptor] = useState("");
@@ -351,7 +351,7 @@ function ApplicationDescriptorEditor({ application }: { application: Application
             {descriptorsQuery.isError ? <p className="text-xs text-destructive">Could not load descriptors.</p> : null}
             {descriptorDirty ? <p className="text-xs text-muted-foreground">Unsaved descriptor changes</p> : null}
             <WrapperCapabilityImpactPanel impact={wrapperImpact} />
-            <DescriptorFeedbackList message={formError ?? error} />
+            <DescriptorFeedbackList message={formError ?? error} error={formError ? null : errorDetail} />
             <div className="flex justify-end gap-2 pt-1">
               <Button type="button" variant="secondary" size="sm" onClick={() => setOpen(false)}>
                 Cancel

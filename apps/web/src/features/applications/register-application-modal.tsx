@@ -17,7 +17,7 @@ type SourceType = ApplicationSource["type"];
 export function RegisterApplicationModal({ open, onClose }: { open: boolean; onClose: () => void }) {
   const { data: state } = useConsoleState();
   const setSelectedApplicationId = useUiStore((s) => s.setSelectedApplicationId);
-  const { execute, pending, error } = useAsyncAction();
+  const { execute, pending, error, errorDetail } = useAsyncAction();
 
   const [sourceType, setSourceType] = useState<SourceType>("git");
   const [gitUrl, setGitUrl] = useState("");
@@ -211,7 +211,7 @@ export function RegisterApplicationModal({ open, onClose }: { open: boolean; onC
           ) : null}
         </div>
 
-        <DescriptorFeedbackList message={formError ?? error} />
+        <DescriptorFeedbackList message={formError ?? error} error={formError ? null : errorDetail} />
         <div className="flex justify-end gap-2 pt-1">
           <Button type="button" variant="secondary" size="sm" onClick={onClose}>
             Cancel

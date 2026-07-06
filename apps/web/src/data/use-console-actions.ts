@@ -24,15 +24,18 @@ export function useAsyncAction() {
   const run = useConsoleActions();
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [errorDetail, setErrorDetail] = useState<unknown>(null);
 
   const execute = useCallback(
     async (action: () => Promise<unknown>) => {
       setPending(true);
       setError(null);
+      setErrorDetail(null);
       try {
         await run(action);
         return true;
       } catch (caught) {
+        setErrorDetail(caught);
         setError(caught instanceof Error ? caught.message : "Action failed.");
         return false;
       } finally {
@@ -42,7 +45,7 @@ export function useAsyncAction() {
     [run],
   );
 
-  return { execute, pending, error };
+  return { execute, pending, error, errorDetail };
 }
 
 export { api };

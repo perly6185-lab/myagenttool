@@ -6,7 +6,8 @@ const apiMock = vi.hoisted(() => ({
   registerApplication: vi.fn(),
 }));
 
-vi.mock("@/lib/api-client", () => ({
+vi.mock("@/lib/api-client", async () => ({
+  ...(await vi.importActual<typeof import("@/lib/api-client")>("@/lib/api-client")),
   api: {
     registerApplication: apiMock.registerApplication,
   },
@@ -97,9 +98,22 @@ describe("RegisterApplicationModal", () => {
 
   it("surfaces structured npm wrapper descriptor validation errors", async () => {
     const onClose = vi.fn();
-    apiMock.registerApplication.mockRejectedValue(
-      new Error("npmWrapper.packageManager: packageManager must be npm, pnpm, or yarn."),
-    );
+    const { ApiError } = await import("@/lib/api-client");
+    apiMock.registerApplication.mockRejectedValue(new ApiError({
+      status: 422,
+      method: "POST",
+      path: "/api/applications/register",
+      body: {
+        error: "invalid_application_descriptor",
+        validation: {
+          errors: [{
+            path: "npmWrapper.packageManager",
+            code: "invalid_package_manager",
+            message: "packageManager must be npm, pnpm, or yarn.",
+          }],
+        },
+      },
+    }));
 
     render(<RegisterApplicationModal open={true} onClose={onClose} />);
 
@@ -133,6 +147,8 @@ describe("RegisterApplicationModal", () => {
       });
     });
     expect(await screen.findByText("Descriptor feedback")).toBeTruthy();
+    expect(screen.getByText(/code invalid_application_descriptor/)).toBeTruthy();
+    expect(screen.getByText(/status 422/)).toBeTruthy();
     expect(screen.getByText("npmWrapper.packageManager:")).toBeTruthy();
     expect(screen.getByText("packageManager must be npm, pnpm, or yarn.")).toBeTruthy();
     expect(onClose).not.toHaveBeenCalled();

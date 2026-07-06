@@ -65,6 +65,46 @@ export interface SessionUser {
   teamId?: string;
 }
 
+export interface ApiErrorBody {
+  error?: string;
+  message?: string;
+  reason?: string;
+  action?: string;
+  applicationId?: string;
+  validation?: { errors?: Array<{ path?: string; code?: string; message?: string }> };
+  [key: string]: unknown;
+}
+
+export class ApiError extends Error {
+  status: number;
+  method: string;
+  path: string;
+  body: ApiErrorBody;
+  code?: string;
+  reason?: string;
+  validationErrors: Array<{ path?: string; code?: string; message?: string }>;
+
+  constructor(input: { status: number; method: string; path: string; body: ApiErrorBody }) {
+    const validation = input.body.validation?.errors
+      ?.map((item) => [item.path, item.message].filter(Boolean).join(": "))
+      .filter(Boolean)
+      .join("; ");
+    super(validation || input.body.message || input.body.reason || input.body.error || `${input.method} ${input.path} failed.`);
+    this.name = "ApiError";
+    this.status = input.status;
+    this.method = input.method;
+    this.path = input.path;
+    this.body = input.body;
+    this.code = input.body.error;
+    this.reason = input.body.reason;
+    this.validationErrors = input.body.validation?.errors ?? [];
+  }
+}
+
+export function isApiError(value: unknown): value is ApiError {
+  return value instanceof ApiError;
+}
+
 let memoryToken: string | null = null;
 let memoryUser: SessionUser | null = null;
 let sessionPromise: Promise<string | null> | null = null;
@@ -194,12 +234,12 @@ async function request<T = unknown>(
   if (response.status === 204) return undefined as T;
   const data = await response.json().catch(() => ({}));
   if (!response.ok) {
-    const record = data as { message?: string; error?: string; validation?: { errors?: Array<{ path?: string; message?: string }> } };
-    const validation = record.validation?.errors
-      ?.map((item) => [item.path, item.message].filter(Boolean).join(": "))
-      .filter(Boolean)
-      .join("; ");
-    throw new Error(validation || record.message || record.error || `${method} ${path} failed.`);
+    throw new ApiError({
+      status: response.status,
+      method,
+      path,
+      body: data && typeof data === "object" && !Array.isArray(data) ? data as ApiErrorBody : {},
+    });
   }
   return data as T;
 }
