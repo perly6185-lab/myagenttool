@@ -311,6 +311,31 @@ function createDefaultAgentSkills(now) {
       createdAt,
       updatedAt: createdAt,
     },
+    {
+      // A role-scoped skill (paths: ["design"]) — a working example of per-run
+      // role selection. Only renders on a design-decided auto-run, so it never
+      // touches develop/prototype/clarify runs or manual invocations.
+      id: "skl_design_brief",
+      name: "Design Brief",
+      slug: "design-brief",
+      description: "On a design-decided run, produce a design brief — do not change product code.",
+      body: [
+        "This run was routed to the DESIGN role. Your deliverable is a written",
+        "design brief, not an implementation.",
+        "",
+        "- Restate the problem and the acceptance criteria from the issue.",
+        "- Lay out 1-3 approaches with trade-offs; recommend one.",
+        "- List the files/areas a follow-up develop run would touch.",
+        "- Call out open questions that need a human decision.",
+        "",
+        "Do NOT edit product code. The summary you return is the artifact.",
+      ].join("\n"),
+      targets: ["claude", "codex"],
+      paths: ["design"],
+      enabled: true,
+      createdAt,
+      updatedAt: createdAt,
+    },
   ];
 }
 

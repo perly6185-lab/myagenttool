@@ -8,9 +8,10 @@ import { useConsoleState } from "@/data/use-console-state";
 import { useAsyncAction, api } from "@/data/use-console-actions";
 import { useUiStore } from "@/store/ui-store";
 import { cn } from "@/lib/cn";
-import type { AgentSkillSnapshot, AgentSkillTarget } from "@/lib/console-state";
+import type { AgentSkillPath, AgentSkillSnapshot, AgentSkillTarget } from "@/lib/console-state";
 
 const ALL_TARGETS: AgentSkillTarget[] = ["claude", "codex"];
+const ALL_PATHS: AgentSkillPath[] = ["develop", "design", "prototype", "clarify"];
 
 interface Draft {
   name: string;
@@ -18,6 +19,7 @@ interface Draft {
   description: string;
   body: string;
   targets: AgentSkillTarget[];
+  paths: AgentSkillPath[];
   cli: string;
   enabled: boolean;
 }
@@ -29,6 +31,7 @@ function toDraft(skill: AgentSkillSnapshot | null): Draft {
     description: skill?.description ?? "",
     body: skill?.body ?? "",
     targets: skill?.targets ?? ["claude"],
+    paths: skill?.paths ?? [],
     cli: skill?.tool?.cli ?? "",
     enabled: skill?.enabled ?? true,
   };
@@ -57,6 +60,12 @@ export function AgentSkillsView() {
       targets: d.targets.includes(t) ? d.targets.filter((x) => x !== t) : [...d.targets, t],
     }));
 
+  const togglePath = (p: AgentSkillPath) =>
+    setDraft((d) => ({
+      ...d,
+      paths: d.paths.includes(p) ? d.paths.filter((x) => x !== p) : [...d.paths, p],
+    }));
+
   const save = () => {
     const payload = {
       name: draft.name,
@@ -64,6 +73,7 @@ export function AgentSkillsView() {
       description: draft.description,
       body: draft.body,
       targets: draft.targets,
+      paths: draft.paths,
       enabled: draft.enabled,
       tool: draft.cli ? { cli: draft.cli, ...(skill?.tool?.mcp ? { mcp: skill.tool.mcp } : {}) } : undefined,
     };
@@ -165,6 +175,25 @@ export function AgentSkillsView() {
                     )}
                   >
                     {t}
+                  </button>
+                ))}
+              </div>
+            </Field>
+            <Field label="Auto-run roles" hint="None selected = every run. Otherwise only these decided roles render it.">
+              <div className="flex flex-wrap gap-2">
+                {ALL_PATHS.map((p) => (
+                  <button
+                    key={p}
+                    type="button"
+                    onClick={() => togglePath(p)}
+                    className={cn(
+                      "rounded-full border px-3 py-1 text-xs font-medium capitalize transition-colors",
+                      draft.paths.includes(p)
+                        ? "border-primary/40 bg-primary/10 text-primary"
+                        : "border-border text-muted-foreground hover:bg-accent/60",
+                    )}
+                  >
+                    {p}
                   </button>
                 ))}
               </div>
