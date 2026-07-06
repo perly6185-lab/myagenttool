@@ -1,4 +1,4 @@
-import type { ApplicationSnapshot, ApplicationSource } from "@/lib/console-state";
+import type { ApplicationRecoveryActionRequest, ApplicationSnapshot, ApplicationSource } from "@/lib/console-state";
 import type { Tone } from "@/lib/readable-labels";
 
 export function sourceSummary(source: ApplicationSource): string {
@@ -135,4 +135,18 @@ export function sortApplicationsForTriage(applications: ApplicationSnapshot[]): 
 
     return left.name.localeCompare(right.name);
   });
+}
+
+export function latestApplicationRecoveryAction(
+  applicationId: string,
+  requests: ApplicationRecoveryActionRequest[],
+): ApplicationRecoveryActionRequest | null {
+  return requests
+    .filter((request) => request.applicationId === applicationId)
+    .sort((left, right) => timestampValue(right.updatedAt ?? right.createdAt) - timestampValue(left.updatedAt ?? left.createdAt))[0] ?? null;
+}
+
+function timestampValue(value?: string | null): number {
+  const timestamp = Date.parse(value ?? "");
+  return Number.isNaN(timestamp) ? 0 : timestamp;
 }

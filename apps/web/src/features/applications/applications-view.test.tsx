@@ -56,6 +56,26 @@ describe("ApplicationsView timeline routing", () => {
   });
 });
 
+describe("ApplicationsView recovery summary", () => {
+  it("shows the latest recovery action and opens its diagnostics run", async () => {
+    renderWithClient(createElement(ApplicationsView));
+
+    expect((await screen.findAllByText("Pending")).length).toBeGreaterThan(0);
+    expect(screen.getByText("Regenerate orchestration")).toBeTruthy();
+    expect(screen.getByText("Resolve the linked approval request before this recovery can execute.")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: /View recovery/i }));
+
+    expect(useUiStore.getState().selectedApplicationId).toBe("app_failed");
+    expect(useUiStore.getState().selectedApplicationRun).toEqual({
+      applicationId: "app_failed",
+      routineId: "routine_failed",
+      invocationId: "inv_failed",
+    });
+    expect(useUiStore.getState().selectedApplicationEventLevel).toBe("all");
+  });
+});
+
 function renderWithClient(ui: ReactElement) {
   const client = new QueryClient({
     defaultOptions: {
@@ -101,6 +121,32 @@ function consoleState(): ConsoleSnapshot {
       createdAt: "2026-07-06T00:00:00.000Z",
       updatedAt: "2026-07-06T02:00:00.000Z",
     }],
-    applicationRecoveryActions: [],
+    applicationRecoveryActions: [{
+      id: "rec_failed_pending",
+      applicationId: "app_failed",
+      routineId: "routine_failed",
+      invocationId: "inv_failed",
+      actionType: "regenerate_orchestration",
+      status: "approval_pending",
+      recoveryCategory: "validation_failed",
+      reason: "Routine validation failed.",
+      requiresApproval: true,
+      approvalRequestId: "appr_failed",
+      outcome: {
+        state: "pending",
+        reason: "approval_pending",
+        severity: "info",
+        summary: "Recovery is pending approval.",
+        nextStep: "Resolve the linked approval request before this recovery can execute.",
+      },
+      explanation: {
+        selectedAction: "regenerate_orchestration",
+        state: "approval_pending",
+        reason: "approval_pending",
+        nextStep: "Resolve the linked approval request before this recovery can execute.",
+      },
+      createdAt: "2026-07-06T03:05:00.000Z",
+      updatedAt: "2026-07-06T03:06:00.000Z",
+    }],
   };
 }

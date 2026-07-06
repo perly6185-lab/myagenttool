@@ -15,10 +15,18 @@ import {
   applicationNextStep,
   applicationTriageBucket,
   applicationTriageCounts,
+  latestApplicationRecoveryAction,
   sortApplicationsForTriage,
   sourceSummary,
   type ApplicationTriageFilter,
 } from "@/features/applications/application-health";
+import {
+  readableRecoveryActionRequestStatus,
+  readableRecoveryActionType,
+  readableRecoveryOutcome,
+  recoveryActionRequestTone,
+  recoveryOutcomeTone,
+} from "@/features/recovery/application-recovery-ui";
 import type { ApplicationSnapshot } from "@/lib/console-state";
 import type { Tone } from "@/lib/readable-labels";
 import type { ApplicationEventLevelSelection } from "@/store/ui-store";
@@ -35,6 +43,7 @@ export function ApplicationsView() {
   const { data: state } = useConsoleState();
   const selectedApplicationId = useUiStore((s) => s.selectedApplicationId);
   const setSelectedApplicationId = useUiStore((s) => s.setSelectedApplicationId);
+  const setSelectedApplicationRun = useUiStore((s) => s.setSelectedApplicationRun);
   const setSelectedApplicationEventLevel = useUiStore((s) => s.setSelectedApplicationEventLevel);
 
   const [status, setStatus] = useState<"all" | ApplicationSnapshot["status"]>("all");
@@ -44,6 +53,7 @@ export function ApplicationsView() {
   const [registerOpen, setRegisterOpen] = useState(false);
 
   const all = state?.applications ?? [];
+  const recoveryActions = state?.applicationRecoveryActions ?? [];
   const projectName = useMemo(() => {
     const map = new Map((state?.projects ?? []).map((project) => [project.id, project.name]));
     return (id?: string | null) => (id ? map.get(id) ?? id : null);
@@ -71,7 +81,14 @@ export function ApplicationsView() {
 
   function selectApplication(applicationId: string, eventLevel: ApplicationEventLevelSelection = "all") {
     setSelectedApplicationId(applicationId);
+    setSelectedApplicationRun(null);
     setSelectedApplicationEventLevel(eventLevel);
+  }
+
+  function selectRecoveryRun(applicationId: string, routineId: string, invocationId: string) {
+    setSelectedApplicationId(applicationId);
+    setSelectedApplicationRun({ applicationId, routineId, invocationId });
+    setSelectedApplicationEventLevel("all");
   }
 
   return (
@@ -149,6 +166,7 @@ export function ApplicationsView() {
         <div className="grid gap-4 xl:grid-cols-2">
           {applications.map((app) => {
             const nextStep = applicationNextStep(app);
+            const latestRecoveryAction = latestApplicationRecoveryAction(app.id, recoveryActions);
             const triageBucket = applicationTriageBucket(app);
             const attentionEventLevel: ApplicationEventLevelSelection | null = triageBucket === "attention"
               ? "error"
@@ -201,6 +219,43 @@ export function ApplicationsView() {
                       </Button>
                     ) : null}
                   </div>
+                  {latestRecoveryAction ? (
+                    <div className="rounded-md border border-border bg-muted/40 p-2">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="text-xs font-medium">Latest recovery</span>
+                        <Badge tone={recoveryActionRequestTone(latestRecoveryAction.status)}>
+                          {readableRecoveryActionRequestStatus(latestRecoveryAction.status)}
+                        </Badge>
+                        <span className="text-xs text-muted-foreground">{readableRecoveryActionType(latestRecoveryAction.actionType)}</span>
+                        {latestRecoveryAction.recoveryCategory ? (
+                          <span className="text-xs text-muted-foreground">{latestRecoveryAction.recoveryCategory}</span>
+                        ) : null}
+                        {latestRecoveryAction.outcome?.state ? (
+                          <Badge tone={recoveryOutcomeTone(latestRecoveryAction.outcome.state)}>
+                            {readableRecoveryOutcome(latestRecoveryAction.outcome.state)}
+                          </Badge>
+                        ) : null}
+                      </div>
+                      <p className="mt-1 [overflow-wrap:anywhere] text-xs text-muted-foreground">
+                        {latestRecoveryAction.explanation?.nextStep
+                          ?? latestRecoveryAction.outcome?.nextStep
+                          ?? latestRecoveryAction.outcome?.summary
+                          ?? latestRecoveryAction.reason
+                          ?? "Open diagnostics to inspect the latest recovery action."}
+                      </p>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="mt-2 h-7 px-2 text-xs"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          selectRecoveryRun(app.id, latestRecoveryAction.routineId, latestRecoveryAction.invocationId);
+                        }}
+                      >
+                        View recovery
+                      </Button>
+                    </div>
+                  ) : null}
                   <div className="flex flex-wrap gap-1.5">
                     {projectName(app.projectId) ? <Badge>{projectName(app.projectId)}</Badge> : null}
                     {app.probe?.capabilities?.length ? (

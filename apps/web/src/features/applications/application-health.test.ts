@@ -4,10 +4,11 @@ import {
   applicationNextStep,
   applicationTriageBucket,
   applicationTriageCounts,
+  latestApplicationRecoveryAction,
   sortApplicationsForTriage,
   sourceSummary,
 } from "@/features/applications/application-health";
-import type { ApplicationSnapshot } from "@/lib/console-state";
+import type { ApplicationRecoveryActionRequest, ApplicationSnapshot } from "@/lib/console-state";
 
 describe("sourceSummary", () => {
   it("summarizes each application source type", () => {
@@ -120,6 +121,18 @@ describe("application search and ordering", () => {
   });
 });
 
+describe("latestApplicationRecoveryAction", () => {
+  it("selects the newest recovery action for one application", () => {
+    const latest = latestApplicationRecoveryAction("app_docs", [
+      recoveryAction({ id: "rec_old", applicationId: "app_docs", updatedAt: "2026-07-06T01:00:00.000Z" }),
+      recoveryAction({ id: "rec_other", applicationId: "app_other", updatedAt: "2026-07-06T04:00:00.000Z" }),
+      recoveryAction({ id: "rec_new", applicationId: "app_docs", updatedAt: "2026-07-06T03:00:00.000Z" }),
+    ]);
+
+    expect(latest?.id).toBe("rec_new");
+  });
+});
+
 function application(overrides: Partial<ApplicationSnapshot>): ApplicationSnapshot {
   return {
     id: "app_docs",
@@ -127,6 +140,20 @@ function application(overrides: Partial<ApplicationSnapshot>): ApplicationSnapsh
     kind: "repository",
     source: { type: "local", path: "/repo" },
     status: "active",
+    createdAt: "2026-07-06T00:00:00.000Z",
+    updatedAt: "2026-07-06T00:00:00.000Z",
+    ...overrides,
+  };
+}
+
+function recoveryAction(overrides: Partial<ApplicationRecoveryActionRequest>): ApplicationRecoveryActionRequest {
+  return {
+    id: "rec",
+    applicationId: "app_docs",
+    routineId: "routine_docs",
+    invocationId: "inv_docs",
+    actionType: "rerun",
+    status: "executed",
     createdAt: "2026-07-06T00:00:00.000Z",
     updatedAt: "2026-07-06T00:00:00.000Z",
     ...overrides,
