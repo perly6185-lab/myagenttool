@@ -80,10 +80,9 @@ View invocation navigation.
 
 ## Residual Risks
 
-- The Desktop Bridge Application wrapper allowlist has been generalized from
-  ccusage to reviewed `app.*.wrapper.*` descriptors, but only under the current
-  conservative local policy envelope: read-only files and forbidden network.
-  Write-capable or networked wrappers still need a broader consent model.
+- The Desktop Bridge Application wrapper allowlist now supports elevated
+  write/network policies when server-side wrapper policy consent exists, but
+  revocation, expiry, and operator-facing recovery UI still need a product pass.
 - CI green rate remains below the L2 target because historical merged PRs still
   include no-check merges; backlog stale items and the mock held-out misses are
   unchanged product maturity gaps.
@@ -99,7 +98,15 @@ View invocation navigation.
   read-only/no-network envelope. Write-capable or networked wrapper descriptors
   remain discoverable for review, but their capabilities are marked `disabled`
   with readiness `needs_consent`, and invocation is blocked with
-  `application_wrapper_policy_not_supported` before approval or bridge dispatch.
+  `application_wrapper_policy_consent_required` before approval or bridge
+  dispatch.
+- Implemented explicit Application wrapper policy consent. `POST
+  /api/applications/:id/wrapper-commands/:commandId/policy-consent` uses the
+  normal local approval flow to persist a command-scoped consent grant for the
+  declared file/network policy. After consent, the wrapper capability projects
+  as ready, elevated policies still require per-run approval, and the Desktop
+  Bridge allowlist accepts the elevated wrapper only when command, argv,
+  capability, cwd, and policy metadata match the server-resolved plan.
 - Added an HTTP MCP live-probe gate. HTTP MCP candidates now publish redacted
   endpoint review plus `liveProbe` state, and confirmation is blocked with
   `mcp_http_live_probe_required` until successful probe evidence exists.
@@ -116,9 +123,7 @@ View invocation navigation.
 
 Remaining design work is now concentrated on two expansion gates:
 
-- Define the future consent model that can safely promote write-capable or
-  networked Application wrappers from `needs_consent` to executable, including
-  per-run data boundaries, destination disclosure, bridge/device binding, and
-  revocation/audit behavior.
+- Add revocation/expiry and UI recovery for elevated Application wrapper policy
+  consent, including destination disclosure and bridge/device binding cues.
 - Extend HTTP MCP operator UX around live-probe retries, endpoint diffs, and
   failure recovery now that the server-side promotion path is wired.

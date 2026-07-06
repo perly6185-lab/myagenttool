@@ -397,27 +397,26 @@ export function createApplicationService({
     if (!command) {
       return { ok: false, status: 404, body: { error: "wrapper_command_not_found", applicationId, commandId } };
     }
-    const policySupport = applicationWrapperPolicySupport(command);
+    const policySupport = applicationWrapperPolicySupport(application, command);
     if (!policySupport.supported) {
       return {
         ok: false,
         status: 409,
         body: {
-          error: "application_wrapper_policy_not_supported",
+          error: "application_wrapper_policy_consent_required",
           reason: policySupport.reason,
           applicationId,
           commandId,
           filePolicy: command.filePolicy,
           networkPolicy: command.networkPolicy,
-          supportedFilePolicy: "read_only",
-          supportedNetworkPolicy: "forbidden",
+          consentEndpoint: `/api/applications/${encodeURIComponent(applicationId)}/wrapper-commands/${encodeURIComponent(commandId)}/policy-consent`,
         },
       };
     }
     // Approval is required only for commands that declare it. A read-only report
     // command can set requiresApproval:false — preserving, e.g., the ccusage
     // tool's offline reports that never needed an approval token.
-    if (command.requiresApproval && !hasApplicationApproval(input)) {
+    if (applicationWrapperInvocationRequiresApproval(command, policySupport) && !hasApplicationApproval(input)) {
       return { ok: false, status: 409, body: { error: "approval_required", reason: "This wrapper command requires an approved approvalRequestId.", applicationId } };
     }
     const plan = applicationWrapperExecutionPlan(application, commandId, input);
@@ -640,10 +639,88 @@ export function createApplicationService({
     };
   }
 
+  function grantApplicationWrapperPolicyConsent(applicationId, commandId, input = {}, actor = null) {
+    const app = findApplication(applicationId);
+    if (!app) {
+      return { ok: false, status: 404, body: { error: "application_not_found" } };
+    }
+    if (app.status === "archived") {
+      return { ok: false, status: 409, body: { error: "application_archived", applicationId } };
+    }
+    const command = findNpmWrapperCommand(app, commandId);
+    if (!command) {
+      return { ok: false, status: 404, body: { error: "wrapper_command_not_found", applicationId, commandId } };
+    }
+    if (applicationWrapperPolicyBaselineSupported(command)) {
+      return {
+        ok: false,
+        status: 409,
+        body: {
+          error: "application_wrapper_policy_consent_not_required",
+          reason: "This wrapper command already stays within the default read-only/no-network policy envelope.",
+          applicationId,
+          commandId,
+        },
+      };
+    }
+    if (!hasApplicationApproval(input)) {
+      return {
+        ok: false,
+        status: 409,
+        body: {
+          error: "approval_required",
+          reason: "Granting Application wrapper policy consent requires an approved approvalRequestId.",
+          applicationId,
+          commandId,
+        },
+      };
+    }
+    const grantedAt = now();
+    const consent = {
+      state: "granted",
+      modelVersion: 1,
+      scope: "application_wrapper_command",
+      commandId: command.id,
+      filePolicy: command.filePolicy,
+      networkPolicy: command.networkPolicy,
+      requiresPerRunApproval: true,
+      grantedAt,
+      grantedBy: actor?.userId ?? null,
+      reason: stringOrNull(input.reason),
+    };
+    app.wrapperPolicyConsents = {
+      ...(app.wrapperPolicyConsents ?? {}),
+      [command.id]: consent,
+    };
+    app.lifecycle = {
+      ...app.lifecycle,
+      lastOperation: "grant_wrapper_policy_consent",
+      lastOperationAt: grantedAt,
+      lastActorId: actor?.userId ?? null,
+    };
+    app.updatedAt = grantedAt;
+    appendEvent({
+      invocationId: null,
+      type: "application_wrapper_policy_consent_granted",
+      level: "warn",
+      message: `${app.name} wrapper command ${command.id} policy consent granted.`,
+      data: {
+        applicationId: app.id,
+        commandId: command.id,
+        filePolicy: command.filePolicy,
+        networkPolicy: command.networkPolicy,
+        grantedBy: actor?.userId ?? null,
+      },
+    });
+    persistStateSoon();
+    return { ok: true, status: 200, application: app, commandId: command.id, consent: publicApplicationWrapperPolicyConsent(consent) };
+  }
+
   return {
     findApplication,
     confirmApplicationMcpCandidate,
     getApplicationDescriptors,
+    grantApplicationWrapperPolicyConsent,
     invokeApplicationCapability,
     listApplicationCapabilities,
     listApplications,
@@ -872,7 +949,7 @@ function projectNpmWrapperCapabilities(app, prefix, disabled) {
   return (app.source.wrapper.commands ?? [])
     .filter((command) => command.status === "approved")
     .map((command) => {
-      const policySupport = applicationWrapperPolicySupport(command);
+      const policySupport = applicationWrapperPolicySupport(app, command);
       return managedCapability(
         app,
         `${prefix}.wrapper.${command.id}`,
@@ -880,7 +957,7 @@ function projectNpmWrapperCapabilities(app, prefix, disabled) {
         "npm_wrapper",
         command.riskLevel,
         [...new Set(["local_execution", "npm_wrapper", ...command.riskTags])],
-        command.requiresApproval,
+        applicationWrapperInvocationRequiresApproval(command, policySupport),
         disabled,
         command.inputSchema,
         {
@@ -897,6 +974,7 @@ function projectNpmWrapperCapabilities(app, prefix, disabled) {
             networkPolicy: command.networkPolicy,
             policySupported: policySupport.supported,
             policyUnsupportedReason: policySupport.reason,
+            policyConsent: policySupport.consent ? publicApplicationWrapperPolicyConsent(policySupport.consent) : null,
           },
           compatibilityFacade: command.compatibilityFacade,
           execution: {
@@ -924,7 +1002,7 @@ function capabilityReadiness(app, { disabled, kind, metadata }) {
     if (installState === "installed" && metadata?.wrapper?.policySupported === false) {
       return {
         state: "needs_consent",
-        reason: "wrapper_policy_exceeds_current_consent_model",
+        reason: "wrapper_policy_requires_explicit_consent",
         applicationStatus: app.status,
         installState,
         executionMode: "bridge_wrapper",
@@ -934,10 +1012,15 @@ function capabilityReadiness(app, { disabled, kind, metadata }) {
     }
     return {
       state: installState === "installed" ? "ready" : "needs_setup",
-      reason: installState === "installed" ? "wrapper_installed" : "wrapper_not_confirmed_installed",
+      reason: installState === "installed"
+        ? metadata?.wrapper?.policyConsent?.state === "granted"
+          ? "wrapper_policy_consent_granted"
+          : "wrapper_installed"
+        : "wrapper_not_confirmed_installed",
       applicationStatus: app.status,
       installState,
       executionMode: "bridge_wrapper",
+      policyConsent: metadata?.wrapper?.policyConsent ?? null,
     };
   }
   return {
@@ -1398,6 +1481,7 @@ export function publicApplicationSnapshot(application) {
     probe: application.probe ?? null,
     mcpAgent: publicApplicationMcpAgentSnapshot(application.mcpAgent),
     wrapper: application.source?.wrapper ? publicNpmWrapperSnapshot(application.source.wrapper) : null,
+    wrapperPolicyConsents: publicApplicationWrapperPolicyConsents(application),
     orchestrationIds: application.orchestrationIds ?? [],
     orchestrations: application.orchestrations ?? [],
     latestResult: application.latestResult ?? null,
@@ -1565,6 +1649,33 @@ function publicNpmWrapperSnapshot(wrapper) {
       billing: command.billing,
       resultImport: command.resultImport,
     })),
+  };
+}
+
+function publicApplicationWrapperPolicyConsents(application) {
+  const consents = application?.wrapperPolicyConsents && typeof application.wrapperPolicyConsents === "object" && !Array.isArray(application.wrapperPolicyConsents)
+    ? application.wrapperPolicyConsents
+    : {};
+  return Object.fromEntries(
+    Object.entries(consents)
+      .filter(([, consent]) => consent?.state === "granted")
+      .map(([commandId, consent]) => [commandId, publicApplicationWrapperPolicyConsent(consent)]),
+  );
+}
+
+function publicApplicationWrapperPolicyConsent(consent) {
+  if (!consent || typeof consent !== "object" || Array.isArray(consent)) return null;
+  return {
+    state: consent.state,
+    modelVersion: consent.modelVersion ?? 1,
+    scope: consent.scope ?? "application_wrapper_command",
+    commandId: consent.commandId,
+    filePolicy: consent.filePolicy,
+    networkPolicy: consent.networkPolicy,
+    requiresPerRunApproval: consent.requiresPerRunApproval !== false,
+    grantedAt: consent.grantedAt ?? null,
+    grantedBy: consent.grantedBy ?? null,
+    reason: consent.reason ?? null,
   };
 }
 
@@ -2550,16 +2661,38 @@ class ApplicationDescriptorValidationError extends Error {
   }
 }
 
-function applicationWrapperPolicySupport(command) {
+function applicationWrapperPolicySupport(application, command) {
+  if (applicationWrapperPolicyBaselineSupported(command)) {
+    return { supported: true, reason: null, consent: null, consentRequired: false };
+  }
+  const consent = applicationWrapperPolicyConsentFor(application, command);
+  if (consent) {
+    return { supported: true, reason: null, consent, consentRequired: true };
+  }
+  return {
+    supported: false,
+    reason: "Application wrapper command requires explicit policy consent before write-capable file access or network access can execute.",
+    consent: null,
+    consentRequired: true,
+  };
+}
+
+function applicationWrapperPolicyBaselineSupported(command) {
   const filePolicy = command?.filePolicy ?? "read_only";
   const networkPolicy = command?.networkPolicy ?? "forbidden";
-  if (filePolicy !== "read_only" || networkPolicy !== "forbidden") {
-    return {
-      supported: false,
-      reason: "Current Application wrapper consent model only supports read_only files and forbidden network access.",
-    };
-  }
-  return { supported: true, reason: null };
+  return filePolicy === "read_only" && networkPolicy === "forbidden";
+}
+
+function applicationWrapperPolicyConsentFor(application, command) {
+  const consent = application?.wrapperPolicyConsents?.[command?.id];
+  if (!consent || consent.state !== "granted") return null;
+  if (consent.commandId !== command.id) return null;
+  if (consent.filePolicy !== command.filePolicy || consent.networkPolicy !== command.networkPolicy) return null;
+  return consent;
+}
+
+function applicationWrapperInvocationRequiresApproval(command, policySupport) {
+  return Boolean(command?.requiresApproval || policySupport?.consentRequired);
 }
 
 function normalizeNpmWrapper(wrapper = {}) {

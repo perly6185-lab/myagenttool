@@ -79,11 +79,14 @@ export function createInvocationCreationRuntime({
           })
         : null;
     const requestedMetadata = options.metadata && typeof options.metadata === "object" && !Array.isArray(options.metadata) ? options.metadata : {};
+    const hasExplicitProjectId = Object.hasOwn(requestedMetadata, "projectId");
     const requestedWorktree = requestedMetadata.worktreeId
       ? state.worktrees.find((item) => item.id === requestedMetadata.worktreeId)
       : null;
-    const visibleProject = requestedMetadata.projectId
-      ? state.projects.find((item) => item.id === requestedMetadata.projectId) ?? currentProject()
+    const visibleProject = hasExplicitProjectId
+      ? requestedMetadata.projectId
+        ? state.projects.find((item) => item.id === requestedMetadata.projectId) ?? currentProject()
+        : null
       : requestedWorktree?.projectId
         ? state.projects.find((item) => item.id === requestedWorktree.projectId) ?? currentProject()
         : currentProject();

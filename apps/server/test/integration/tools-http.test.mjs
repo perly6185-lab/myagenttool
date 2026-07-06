@@ -160,12 +160,19 @@ async function approveApplicationRequest(response, token = "tok_a") {
   assert.equal(response.status, 202);
   assert.equal(response.body.status, "waiting_for_local_approval");
   assert.ok(response.body.approvalRequestId);
+  const pendingApproval = ctx.state.approvalRequests.find((item) => item.id === response.body.approvalRequestId);
+  assert.ok(pendingApproval, JSON.stringify({ approvalRequestId: response.body.approvalRequestId, approvals: ctx.state.approvalRequests }));
+  assert.ok(ctx.state.invocations.find((item) => item.id === pendingApproval.invocationId), JSON.stringify({
+    approval: pendingApproval,
+    invocationIds: ctx.state.invocations.map((item) => item.id).slice(0, 10),
+    responseInvocationId: response.body.invocationId,
+  }));
   const approved = await call(`/api/approvals/${encodeURIComponent(response.body.approvalRequestId)}/approve`, {
     method: "POST",
     body: {},
     token,
   });
-  assert.equal(approved.status, 200);
+  assert.equal(approved.status, 200, JSON.stringify(approved.body));
   assert.equal(approved.body.approval.status, "approved");
   return response.body.approvalRequestId;
 }
@@ -1029,7 +1036,7 @@ test("npm wrapper descriptors project only approved governed capabilities", asyn
   assert.equal(wrapper.capability, `app.${appId}.wrapper.lint`);
 });
 
-test("write or network npm wrapper policies are visible but not invokable without the future consent model", async () => {
+test("write or network npm wrapper policies require explicit consent before wrapper dispatch", async () => {
   const registered = await call("/api/applications/register", {
     method: "POST",
     body: {
@@ -1067,7 +1074,7 @@ test("write or network npm wrapper policies are visible but not invokable withou
   assert.ok(deployCapability, "approved write/network wrapper should remain discoverable for review");
   assert.equal(deployCapability.status, "disabled");
   assert.equal(deployCapability.metadata.readiness.state, "needs_consent");
-  assert.equal(deployCapability.metadata.readiness.reason, "wrapper_policy_exceeds_current_consent_model");
+  assert.equal(deployCapability.metadata.readiness.reason, "wrapper_policy_requires_explicit_consent");
   assert.equal(deployCapability.metadata.wrapper.policySupported, false);
 
   const unsupported = await call(`/api/capabilities/app.${appId}.wrapper.deploy/invocations`, {
@@ -1076,9 +1083,54 @@ test("write or network npm wrapper policies are visible but not invokable withou
     token: "tok_a",
   });
   assert.equal(unsupported.status, 409);
-  assert.equal(unsupported.body.error, "application_wrapper_policy_not_supported");
+  assert.equal(unsupported.body.error, "application_wrapper_policy_consent_required");
   assert.equal(unsupported.body.filePolicy, "workspace_write");
   assert.equal(unsupported.body.networkPolicy, "network");
+
+  const consentRequired = await call(`/api/applications/${appId}/wrapper-commands/deploy/policy-consent`, {
+    method: "POST",
+    body: { reason: "Deploy wrapper needs workspace write and network." },
+    token: "tok_a",
+  });
+  const consentApprovalRequestId = await approveApplicationRequest(consentRequired);
+
+  const consented = await call(`/api/applications/${appId}/wrapper-commands/deploy/policy-consent`, {
+    method: "POST",
+    body: { approvalRequestId: consentApprovalRequestId, reason: "Deploy wrapper needs workspace write and network." },
+    token: "tok_a",
+  });
+  assert.equal(consented.status, 200);
+  assert.equal(consented.body.consent.state, "granted");
+  assert.equal(consented.body.consent.requiresPerRunApproval, true);
+  assert.equal(consented.body.application.wrapperPolicyConsents.deploy.state, "granted");
+
+  const readyCapabilities = await call("/api/capabilities?providerType=application", { token: "tok_a" });
+  const readyDeployCapability = readyCapabilities.body.capabilities.find((item) => item.name === `app.${appId}.wrapper.deploy`);
+  assert.equal(readyDeployCapability.status, "available");
+  assert.equal(readyDeployCapability.requiresApproval, true);
+  assert.equal(readyDeployCapability.metadata.readiness.state, "ready");
+  assert.equal(readyDeployCapability.metadata.readiness.reason, "wrapper_policy_consent_granted");
+  assert.equal(readyDeployCapability.metadata.wrapper.policySupported, true);
+  assert.equal(readyDeployCapability.metadata.wrapper.policyConsent.state, "granted");
+
+  const runApprovalRequired = await call(`/api/capabilities/app.${appId}.wrapper.deploy/invocations`, {
+    method: "POST",
+    body: {},
+    token: "tok_a",
+  });
+  const runApprovalRequestId = await approveApplicationRequest(runApprovalRequired);
+
+  const invoked = await call(`/api/capabilities/app.${appId}.wrapper.deploy/invocations`, {
+    method: "POST",
+    body: { approvalRequestId: runApprovalRequestId },
+    token: "tok_a",
+  });
+  assert.equal(invoked.status, 202);
+  assert.equal(invoked.body.agentId, "agt_platform_application_wrapper");
+  const wrapper = invoked.body.invocation.options.metadata.applicationWrapper;
+  assert.equal(wrapper.filePolicy, "workspace_write");
+  assert.equal(wrapper.networkPolicy, "network");
+  assert.deepEqual(wrapper.execArgs, ["run", "deploy"]);
 });
 
 test("metadata-only npm wrapper registrations do not project invokable commands", async () => {

@@ -12,6 +12,7 @@ export async function handleApplicationRoutes({
   confirmApplicationMcpCandidate,
   findApplication,
   getApplicationDescriptors,
+  grantApplicationWrapperPolicyConsent,
   getApplicationOrchestrationRunRecovery,
   listApplicationOrchestrationRecoveryAgentCandidates,
   getApplicationOrchestrationRun,
@@ -90,6 +91,23 @@ export async function handleApplicationRoutes({
       ? {
           application: publicApplicationSnapshot(result.application),
           candidate: result.candidate,
+          capabilities: listApplicationCapabilities(applicationId) ?? [],
+        }
+      : result.body);
+    return true;
+  }
+
+  const wrapperPolicyConsentMatch = url.pathname.match(/^\/api\/applications\/([^/]+)\/wrapper-commands\/([^/]+)\/policy-consent$/);
+  if (wrapperPolicyConsentMatch && req.method === "POST") {
+    const applicationId = decodeURIComponent(wrapperPolicyConsentMatch[1]);
+    const commandId = decodeURIComponent(wrapperPolicyConsentMatch[2]);
+    if (denyForeignApplication({ res, sendJson, state, actor, applicationId, findApplication })) return true;
+    const result = grantApplicationWrapperPolicyConsent(applicationId, commandId, await readJson(req), actor);
+    sendJson(res, result.status, result.ok
+      ? {
+          application: publicApplicationSnapshot(result.application),
+          commandId: result.commandId,
+          consent: result.consent,
           capabilities: listApplicationCapabilities(applicationId) ?? [],
         }
       : result.body);

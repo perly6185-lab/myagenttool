@@ -26,12 +26,60 @@ export function createLocalExecutionPolicyManifest({
         filePolicy: "read_only",
         networkPolicy: "forbidden",
       },
+      {
+        command: "*",
+        capabilityPrefix: "app.",
+        filePolicy: "forbidden",
+        networkPolicy: "forbidden",
+      },
+      {
+        command: "*",
+        capabilityPrefix: "app.",
+        filePolicy: "forbidden",
+        networkPolicy: "restricted",
+      },
+      {
+        command: "*",
+        capabilityPrefix: "app.",
+        filePolicy: "forbidden",
+        networkPolicy: "network",
+      },
+      {
+        command: "*",
+        capabilityPrefix: "app.",
+        filePolicy: "workspace_write",
+        networkPolicy: "forbidden",
+      },
+      {
+        command: "*",
+        capabilityPrefix: "app.",
+        filePolicy: "read_only",
+        networkPolicy: "restricted",
+      },
+      {
+        command: "*",
+        capabilityPrefix: "app.",
+        filePolicy: "read_only",
+        networkPolicy: "network",
+      },
+      {
+        command: "*",
+        capabilityPrefix: "app.",
+        filePolicy: "workspace_write",
+        networkPolicy: "restricted",
+      },
+      {
+        command: "*",
+        capabilityPrefix: "app.",
+        filePolicy: "workspace_write",
+        networkPolicy: "network",
+      },
     ],
     policies: {
       demoAgent: { file: ["read_only"], network: ["forbidden"] },
       codex: { file: ["native_controls", "workspace_write", "read_only"], network: ["native_controls", "restricted", "network"] },
       claude: { file: ["native_controls", "workspace_write", "read_only"], network: ["native_controls", "restricted", "network"] },
-      wrapper: { file: ["read_only"], network: ["forbidden"] },
+      wrapper: { file: ["forbidden", "read_only", "workspace_write"], network: ["forbidden", "restricted", "network"] },
       mcpStdio: { file: ["read_only"], network: ["forbidden", "restricted"] },
       mcpHttp: { file: ["read_only"], network: ["restricted", "network"] },
     },
@@ -164,12 +212,14 @@ export function localExecutionGate(work, adapter, spawnPlan, { permissionDecisio
   if (!spawnPlan.cwd || !isAbsolute(spawnPlan.cwd) || !existsSync(spawnPlan.cwd)) {
     return refused("Local execution gate refused a missing or non-absolute working directory.", evidence);
   }
+  const applicationWrapperSpawn = isApplicationWrapperSpawn(spawnPlan, manifest);
   // cwd confinement: the working directory must stay inside a root the
   // invocation is actually scoped to (its project or worktree). Defense-in-depth
   // against a cwd that escapes the approved workspace onto arbitrary paths. When
   // no root can be derived, there is nothing to confine to, so the run is not
-  // blocked on this check alone.
-  if (approvedRoots.length > 0 && !approvedRoots.some((root) => pathWithin(root, spawnPlan.cwd))) {
+  // blocked on this check alone. The fixed Application Wrapper runner starts in
+  // the repo root; its inner --cwd is checked below against approved roots.
+  if (!applicationWrapperSpawn && approvedRoots.length > 0 && !approvedRoots.some((root) => pathWithin(root, spawnPlan.cwd))) {
     return refused("Local execution gate refused a working directory outside the approved project or worktree root.", evidence);
   }
   if (spawnPlan.args.some((arg) => String(arg).includes("\0"))) {
@@ -187,7 +237,7 @@ export function localExecutionGate(work, adapter, spawnPlan, { permissionDecisio
   if (!policyAllowed(manifest, commandKind, localPolicy)) {
     return refused("Local execution gate refused a command whose file or network policy exceeds the local allowlist.", evidence);
   }
-  if (isApplicationWrapperSpawn(spawnPlan, manifest)) {
+  if (applicationWrapperSpawn) {
     const wrapperGate = applicationWrapperGate(work, spawnPlan, localPolicy, approvedRoots, manifest);
     evidence.applicationWrapper = wrapperGate.evidence;
     if (!wrapperGate.allowed) {
@@ -276,13 +326,13 @@ function applicationWrapperGate(work, spawnPlan, localPolicy, approvedRoots, man
     return { allowed: false, reason: "Local execution gate refused unsafe application wrapper command or capability metadata.", evidence };
   }
   const allow = (manifest.applicationWrapperCommands ?? []).find((entry) =>
-    (entry.command === "*" || parsed.execCommand === entry.command) && parsed.capability?.startsWith(entry.capabilityPrefix ?? ""),
+    (entry.command === "*" || parsed.execCommand === entry.command)
+    && parsed.capability?.startsWith(entry.capabilityPrefix ?? "")
+    && localPolicy.filePolicy === entry.filePolicy
+    && localPolicy.networkPolicy === entry.networkPolicy,
   );
   if (!allow) {
     return { allowed: false, reason: "Local execution gate refused a non-allowlisted application wrapper command.", evidence };
-  }
-  if (localPolicy.filePolicy !== allow.filePolicy || localPolicy.networkPolicy !== allow.networkPolicy) {
-    return { allowed: false, reason: "Local execution gate refused an application wrapper policy outside the command allowlist.", evidence };
   }
   if (parsed.cwd) {
     if (!isAbsolute(parsed.cwd) || !existsSync(parsed.cwd)) {

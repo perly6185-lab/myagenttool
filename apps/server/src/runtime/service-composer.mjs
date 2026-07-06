@@ -128,6 +128,7 @@ export function createServerRuntimeServices({
     confirmApplicationMcpCandidate: confirmApplicationMcpCandidateBase,
     findApplication,
     getApplicationDescriptors,
+    grantApplicationWrapperPolicyConsent: grantApplicationWrapperPolicyConsentBase,
     invokeApplicationCapability,
     listApplicationCapabilities,
     listApplications,
@@ -241,6 +242,42 @@ export function createServerRuntimeServices({
 
   async function probeApplicationMcpCandidate(applicationId, candidateId, input = {}, actor = null) {
     return probeApplicationMcpCandidateBase(applicationId, candidateId, input, actor);
+  }
+
+  function grantApplicationWrapperPolicyConsent(applicationId, commandId, input = {}, actor = null) {
+    const approval = verifyApplicationApproval(input, {
+      findApprovalRequest: findApprovalRequestBase,
+      findInvocation,
+      applicationId,
+      capability: `app.${applicationId}.wrapper.${commandId}.policy_consent`,
+      type: "application_wrapper_policy_consent",
+      commandId,
+    });
+    if (!approval.approved) {
+      if (approval.error) return approval.error;
+      const agent = findAgent("agt_platform_application_control");
+      if (!agent || agent.status === "disabled") {
+        return {
+          status: 409,
+          body: {
+            error: "agent_not_available",
+            message: "The platform Application Control agent is not available.",
+          },
+        };
+      }
+      const application = findApplication(applicationId);
+      return requestApplicationApproval({
+        createInvocation,
+        agent,
+        actor,
+        task: `Approve wrapper policy consent for ${commandId} on ${application?.name ?? applicationId}.`,
+        capability: `app.${applicationId}.wrapper.${commandId}.policy_consent`,
+        applicationId,
+        applicationProjectId: application?.projectId ?? null,
+        approval: { type: "application_wrapper_policy_consent", commandId },
+      });
+    }
+    return grantApplicationWrapperPolicyConsentBase(applicationId, commandId, approvedApplicationInput(input, approval), actor);
   }
 
   for (const application of state.applications ?? []) {
@@ -1995,6 +2032,7 @@ export function createServerRuntimeServices({
     findApplication,
     confirmApplicationMcpCandidate,
     getApplicationDescriptors,
+    grantApplicationWrapperPolicyConsent,
     getApplicationOrchestrationRunRecovery,
     listApplicationOrchestrationRecoveryAgentCandidates,
     getApplicationOrchestrationRun,
@@ -2118,6 +2156,7 @@ export function createServerRuntimeServices({
     findApplication,
     confirmApplicationMcpCandidate,
     getApplicationDescriptors,
+    grantApplicationWrapperPolicyConsent,
     getApplicationOrchestrationRunRecovery,
     listApplicationOrchestrationRecoveryAgentCandidates,
     getApplicationOrchestrationRun,

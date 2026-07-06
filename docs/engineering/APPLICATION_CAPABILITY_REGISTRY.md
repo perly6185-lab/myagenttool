@@ -58,6 +58,7 @@ GET  /api/applications/:id
 POST /api/applications/:id/probe
 POST /api/applications/:id/mcp-candidates/:candidateId/probe
 POST /api/applications/:id/mcp-candidates/:candidateId/confirm
+POST /api/applications/:id/wrapper-commands/:commandId/policy-consent
 POST /api/applications/:id/online
 POST /api/applications/:id/offline
 POST /api/applications/:id/archive
@@ -151,14 +152,22 @@ not install arbitrary packages or accept free-form npm commands.
 The executable path now supports reviewed NPM wrapper descriptors beyond
 ccusage. `npm_script` commands are executed through the declared package manager
 (`npm`, `pnpm`, or `yarn`) and still pass through the fixed Application Wrapper
-Runner. The local Desktop Bridge gate remains conservative: generic wrappers are
-allowed only for server-resolved `app.*.wrapper.*` capabilities whose declared
-policy stays within read-only files and forbidden network access.
-The server mirrors that consent boundary: approved wrapper commands that declare
-write-capable file access or network access remain discoverable for review, but
-their projected capability is marked `disabled` with readiness
-`needs_consent`, and invocation returns `application_wrapper_policy_not_supported`
-until a broader consent model is designed.
+Runner. Approved wrapper commands that declare write-capable file access or
+network access remain discoverable for review, but start as `disabled` with
+readiness `needs_consent`; invocation returns
+`application_wrapper_policy_consent_required` until an operator grants explicit
+policy consent through `POST
+/api/applications/:id/wrapper-commands/:commandId/policy-consent`.
+
+Policy consent is persisted on the Application with the command id, file policy,
+network policy, grant time, grant actor, and consent model version. The grant
+itself requires the normal local approval flow. Once granted, the capability
+projects as `available`/`ready` with `wrapper_policy_consent_granted`, but
+elevated wrapper commands still force per-run approval even if the descriptor
+sets `requiresApproval: false`. The Desktop Bridge also keeps an independent
+allowlist: the child wrapper argv, capability name, cwd, file policy, and network
+policy must exactly match the server-resolved `applicationWrapper` metadata
+before the fixed wrapper runner is spawned.
 
 ## Application MCP
 
@@ -288,8 +297,8 @@ without being able to execute it.
 - Carry bridge/device ownership into wrapper execution so access cannot be
   replayed through an unbound bridge.
 - Keep write-capable or networked wrapper descriptors reviewable but disabled
-  until the consent model can capture per-run data boundaries, destination
-  disclosure, bridge/device binding, and revocation semantics.
+  until explicit policy consent is granted; after consent, keep per-run approval
+  and bridge-side metadata matching as the execution boundary.
 - Keep local execution policy independent of server approval: command id, cwd,
   args, env, file policy, and network policy must still pass the bridge-side
   allowlist before spawn.
@@ -336,9 +345,9 @@ stdio is auto-registered, `render_markdown` executes through the MCP bridge
 path, result refs link back to invocation/Application/audit/Evidence Center,
 and Web shows MCP tools plus the View invocation path.
 
-The remaining acceptance work is to define the consent model that can safely
-promote write-capable or networked wrappers from `needs_consent` to executable.
-The measured ccusage and doocs/md-style paths now have restart/read-model
-coverage for result links, descriptor recovery, capability projection,
-conservative wrapper policy gating, HTTP MCP live-probe gating, and HTTP MCP
-live-probe promotion to confirmed shared tools.
+The remaining acceptance work is to add revocation/expiry UX for elevated
+wrapper policy consent and richer HTTP MCP operator recovery. The measured
+ccusage and doocs/md-style paths now have restart/read-model coverage for result
+links, descriptor recovery, capability projection, explicit wrapper policy
+consent, HTTP MCP live-probe gating, and HTTP MCP live-probe promotion to
+confirmed shared tools.

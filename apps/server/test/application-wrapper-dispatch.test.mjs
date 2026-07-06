@@ -127,8 +127,8 @@ test("an unknown wrapper command resolves no plan and is refused", () => {
   assert.equal(created.length, 0);
 });
 
-test("write or network wrapper policies are discoverable but blocked before approval or dispatch", () => {
-  const { capSvc, created } = harness({
+test("write or network wrapper policies require explicit consent before approval and dispatch", () => {
+  const { approvals, appSvc, capSvc, created } = harness({
     registration: {
       id: "app_policy_fixture",
       name: "Policy Fixture",
@@ -156,13 +156,46 @@ test("write or network wrapper policies are discoverable but blocked before appr
   const capability = capSvc.getCapability("app.app_policy_fixture.wrapper.write");
   assert.equal(capability.status, "disabled");
   assert.equal(capability.metadata.readiness.state, "needs_consent");
-  assert.equal(capability.metadata.readiness.reason, "wrapper_policy_exceeds_current_consent_model");
+  assert.equal(capability.metadata.readiness.reason, "wrapper_policy_requires_explicit_consent");
   assert.equal(capability.metadata.wrapper.policySupported, false);
 
   const res = capSvc.createCapabilityInvocation("app.app_policy_fixture.wrapper.write", {});
   assert.equal(res.status, 409);
-  assert.equal(res.body.error, "application_wrapper_policy_not_supported");
+  assert.equal(res.body.error, "application_wrapper_policy_consent_required");
   assert.equal(res.body.filePolicy, "workspace_write");
   assert.equal(res.body.networkPolicy, "network");
   assert.equal(created.length, 0);
+
+  const consent = appSvc.grantApplicationWrapperPolicyConsent("app_policy_fixture", "write", {
+    approvalRequestId: "apr_policy_consent",
+    __verifiedApplicationApproval: true,
+    reason: "Allow deploy fixture network/write policy.",
+  }, { userId: "usr_a", teamId: "team_local" });
+  assert.equal(consent.status, 200);
+  assert.equal(consent.consent.state, "granted");
+  assert.equal(consent.consent.requiresPerRunApproval, true);
+
+  const ready = capSvc.getCapability("app.app_policy_fixture.wrapper.write");
+  assert.equal(ready.status, "available");
+  assert.equal(ready.requiresApproval, true);
+  assert.equal(ready.metadata.readiness.state, "ready");
+  assert.equal(ready.metadata.readiness.reason, "wrapper_policy_consent_granted");
+  assert.equal(ready.metadata.wrapper.policySupported, true);
+  assert.equal(ready.metadata.wrapper.policyConsent.state, "granted");
+
+  const approval = capSvc.createCapabilityInvocation("app.app_policy_fixture.wrapper.write", {});
+  assert.equal(approval.status, 202);
+  assert.equal(approval.body.status, "waiting_for_local_approval");
+  assert.equal(created.length, 1);
+  approvals.get(approval.body.approvalRequestId).status = "approved";
+
+  const queued = capSvc.createCapabilityInvocation("app.app_policy_fixture.wrapper.write", {
+    approvalRequestId: approval.body.approvalRequestId,
+  });
+  assert.equal(queued.status, 202);
+  assert.equal(queued.body.agentId, "agt_platform_application_wrapper");
+  assert.equal(created.length, 2);
+  const wrapper = created[1].options.metadata.applicationWrapper;
+  assert.equal(wrapper.filePolicy, "workspace_write");
+  assert.equal(wrapper.networkPolicy, "network");
 });
