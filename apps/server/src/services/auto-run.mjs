@@ -47,6 +47,7 @@ export function createAutoRunService({
   verifyWorktree,
   writeIssueStatus,
   decideIssuePath,
+  decisionSettings = null,
   fetchIssueBody,
   postIssueReport,
   spawnChildIssue,
@@ -196,7 +197,15 @@ export function createAutoRunService({
     // issue into a path BEFORE any execution. The decision is data, not action.
     // Both the decider and the role prompt get the issue body when it's readable.
     const issueBody = await maybeFetchIssueBody(normalizedLink, projectId ?? state.currentProjectId);
-    const decision = await resolveDecision({ link: normalizedLink, issueBody, decideIssuePath });
+    const decision = await resolveDecision({
+      link: normalizedLink,
+      issueBody,
+      decideIssuePath,
+      // Console-saved overrides when present; undefined falls back to the env
+      // defaults inside resolveDecision (decisionConfig()).
+      minConfidence: decisionSettings?.minConfidence,
+      fastPath: decisionSettings?.fastPath,
+    });
 
     // 1. Materialize the worktree from the issue.
     const { worktree } = createWorktree({

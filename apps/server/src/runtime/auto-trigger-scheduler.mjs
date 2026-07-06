@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 
 import { createAutoTriggerRuntime, resolveAutoTriggerConfig } from "../services/auto-trigger.mjs";
+import { autoRunSettingsEnvOverlay } from "../services/auto-run-config.mjs";
 
 const execFileAsync = promisify(execFile);
 const TICK_MS = 60_000;
@@ -27,7 +28,9 @@ function makeListLabeledIssues(state) {
 // feature is disabled, which is the default — nothing auto-triggers unless an
 // operator opts in via MYAGENTTOOL_AUTOTRIGGER_ENABLED.
 export function startAutoTriggerScheduler(deps, { intervalMs = TICK_MS, env = process.env } = {}) {
-  const config = resolveAutoTriggerConfig(env);
+  // Console-saved auto-trigger knobs (state.autoRunSettings) overlaid on env, so
+  // enabling/labeling auto-trigger in the UI takes effect on the next start.
+  const config = resolveAutoTriggerConfig(autoRunSettingsEnvOverlay(deps?.state?.autoRunSettings, env));
   if (!config.enabled) return null;
   const runtime = createAutoTriggerRuntime({
     state: deps.state,
