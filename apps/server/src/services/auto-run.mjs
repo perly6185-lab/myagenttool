@@ -2,6 +2,7 @@ import { roleAutoRunPrompt } from "@myagenttool/protocol/issue-prompt";
 
 import { normalizeWorktreeLink } from "./projects.mjs";
 import { intentForPath, resolveDecision } from "./auto-run-decision.mjs";
+import { isSpawnedChildBody } from "./auto-run-spawn.mjs";
 
 // One-click "Auto" orchestrator. It closes the seam the console never had:
 // turning a linked GitHub issue into a worktree AND a started agent run seeded
@@ -47,6 +48,7 @@ export function createAutoRunService({
   decideIssuePath,
   fetchIssueBody,
   postIssueReport,
+  spawnChildIssue,
 }) {
   // Best-effort issue body fetch (issue links only): richer context for both the
   // decision and the role prompt. Null on any failure — the run proceeds on the
@@ -76,6 +78,37 @@ export function createAutoRunService({
       return JSON.stringify(result).slice(0, 2000);
     } catch {
       return null;
+    }
+  }
+
+  // Governed child-issue spawning (slice 4): a design/prototype deliverable
+  // becomes a pending-decision child issue. Guards: opt-in (composer wires
+  // spawnChildIssue only when enabled), issue links only, depth-1 (a spawned
+  // child never spawns grandchildren), and one child per parent issue (dedup
+  // across all runs). Best-effort: a spawn failure never breaks the run.
+  async function maybeSpawnChildIssue(autoRun, worktree, design) {
+    if (typeof spawnChildIssue !== "function") return null;
+    if (autoRun.link?.type !== "issue" || !Number.isFinite(autoRun.link?.number)) return null;
+    if (autoRun.isChildIssue) return null;
+    const repoPath = worktree?.repoPath ?? null;
+    if (!repoPath) return null;
+    const alreadySpawned = state.autoRuns.some(
+      (run) => run.link?.number === autoRun.link.number && Array.isArray(run.childIssues) && run.childIssues.length > 0,
+    );
+    if (alreadySpawned) return null;
+    try {
+      const child = await spawnChildIssue({ parentLink: autoRun.link, design, repoPath });
+      if (!child || !Number.isFinite(child.number)) return null;
+      appendEvent({
+        invocationId: autoRun.invocationId,
+        type: "auto_run_child_spawned",
+        level: "info",
+        message: `Auto-run ${autoRun.id} spawned pending-decision child issue #${child.number}.`,
+        data: { autoRunId: autoRun.id, parentIssue: autoRun.link.number, childIssue: child.number, url: child.url ?? null },
+      });
+      return { child: { number: child.number, url: child.url ?? null } };
+    } catch (error) {
+      return { error: `Child issue spawn failed: ${String(error?.message ?? error)}` };
     }
   }
 
@@ -186,6 +219,8 @@ export function createAutoRunService({
       decision,
       // Legacy field, derived from the decision path for record continuity.
       intent: intentForPath(decision.path),
+      // Depth-1 guard: a spawned child issue may never spawn grandchildren.
+      isChildIssue: isSpawnedChildBody(issueBody),
       branchName: worktree.branchName ?? worktree.branch ?? null,
       requestedBy: actor?.userId ?? "usr_local",
       createdAt,
@@ -275,7 +310,13 @@ export function createAutoRunService({
             if (path === "design" || path === "prototype") {
               const summary = extractRunSummary(invocation) ?? "Investigation complete — no code change was needed.";
               maybePostIssueReport(autoRun, worktree, summary);
-              setAutoRunStatus(autoRun, "report_posted", { report: summary, error: null });
+              const spawn = await maybeSpawnChildIssue(autoRun, worktree, summary);
+              setAutoRunStatus(autoRun, "report_posted", {
+                report: summary,
+                error: null,
+                ...(spawn?.child ? { childIssues: [spawn.child] } : {}),
+                ...(spawn?.error ? { spawnError: spawn.error } : {}),
+              });
             } else if (path === "clarify") {
               const questions = autoRun.decision?.clarifyingQuestions ?? [];
               const summary = extractRunSummary(invocation);

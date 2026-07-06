@@ -24,6 +24,7 @@ interface AutoRunRecord {
   prNumber?: number | null;
   prUrl?: string | null;
   verification?: { passed: boolean; verified: boolean; summary?: string | null } | null;
+  childIssues?: { number: number; url: string | null }[] | null;
   report?: string | null;
   error?: string | null;
   createdAt?: string;
@@ -240,6 +241,15 @@ export function AutoRunsView() {
                         <GitPullRequest className="size-3.5" /> PR #{run.prNumber}
                       </a>
                     ) : null}
+                    {(run.childIssues ?? []).map((child) =>
+                      child.url ? (
+                        <a key={child.number} href={child.url} target="_blank" rel="noreferrer" className="text-xs text-primary hover:underline" title="Pending-decision child issue">
+                          → #{child.number}
+                        </a>
+                      ) : (
+                        <span key={child.number} className="text-xs text-muted-foreground">→ #{child.number}</span>
+                      ),
+                    )}
                     {run.link?.url ? (
                       <a href={run.link.url} target="_blank" rel="noreferrer" className="text-muted-foreground hover:text-foreground" title="Open on GitHub">
                         <ExternalLink className="size-4" />

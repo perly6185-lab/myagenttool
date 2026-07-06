@@ -24,6 +24,7 @@ import { createAutoRunService } from "../services/auto-run.mjs";
 import { resolveAutoRunVerifyCommand, runWorktreeVerification } from "../services/worktree-verify.mjs";
 import { resolveStatusWritebackConfig, runIssueBodyFetch, runIssueComment, runIssueStatusTransition } from "../services/issue-status.mjs";
 import { resolveDeciderCommand, runDeciderCommand } from "../services/decision-command.mjs";
+import { childIssueBody, childIssueTitle, extractProjectFieldsBlock, runChildIssueCreate, spawnIssuesConfig } from "../services/auto-run-spawn.mjs";
 import { createTerminalService } from "../services/terminal.mjs";
 import { createToolService } from "../services/tools.mjs";
 
@@ -345,6 +346,19 @@ export function createServerRuntimeServices({
     })(),
     // Read-only issue body fetch: context for the decision and the role prompt.
     fetchIssueBody: async ({ issueNumber, repoPath }) => runIssueBodyFetch({ cwd: repoPath, issueNumber }),
+    // Governed child-issue spawning (slice 4): a design deliverable becomes a
+    // pending-decision child issue (parent fields inherited, never auto-labelled,
+    // depth-1 marked). Off by default; undefined -> the orchestrator skips it.
+    spawnChildIssue: spawnIssuesConfig().enabled
+      ? async ({ parentLink, design, repoPath }) => {
+          const parentBody = await runIssueBodyFetch({ cwd: repoPath, issueNumber: parentLink.number });
+          return runChildIssueCreate({
+            cwd: repoPath,
+            title: childIssueTitle(parentLink),
+            body: childIssueBody({ parentLink, design, projectFieldsBlock: extractProjectFieldsBlock(parentBody) }),
+          });
+        }
+      : undefined,
   });
   // Now that the reaction exists, let completion drive it.
   advanceAutoRunHook = advanceAutoRunForInvocation;

@@ -50,6 +50,8 @@ function makeAutoRun({
   decideIssuePath = undefined,
   // Injected issue-body fetch (slice 2). Default undefined -> title-only prompts.
   fetchIssueBody = undefined,
+  // Injected child-issue spawner (slice 4). Default undefined -> no spawning.
+  spawnChildIssue = undefined,
 } = {}) {
   const calls = { createInvocation: [], startInvocationIfAllowed: [], commit: [], publish: [], pr: [], verify: [], status: [], report: [] };
   let counter = 0;
@@ -100,6 +102,7 @@ function makeAutoRun({
     },
     decideIssuePath,
     fetchIssueBody,
+    spawnChildIssue,
   });
   return { svc, calls };
 }
@@ -403,6 +406,101 @@ test("a design-decided run gets the design role prompt (no implementation)", asy
     name: "issue-82-design",
   });
   assert.match(calls.createInvocation[0].task, /Do NOT implement/, "design role instructions");
+});
+
+test("a design run spawns a pending-decision child issue and parks (slice 4)", async () => {
+  const spawnCalls = [];
+  const { svc, calls } = makeAutoRun({
+    commit: { committed: false, hasCommits: false },
+    decideIssuePath: async () => ({ path: "design", confidence: 0.9, rationale: "open space" }),
+    spawnChildIssue: async (ctx) => {
+      spawnCalls.push(ctx);
+      return { number: 90, url: "https://github.com/o/r/issues/90" };
+    },
+  });
+  const { autoRun, invocation } = await svc.startAutoRun({
+    projectId: sourceProjectId,
+    link: { type: "issue", number: 89, title: "Rework the queue", url: null, state: "open" },
+    agentId: "agt_1",
+    name: "issue-89-design-spawn",
+  });
+
+  await svc.advanceAutoRunForInvocation({ ...invocation, status: "succeeded", result: "Design: use Redis." });
+
+  assert.equal(autoRun.status, "report_posted", "parent parks as report_posted");
+  assert.deepEqual(autoRun.childIssues, [{ number: 90, url: "https://github.com/o/r/issues/90" }]);
+  assert.equal(spawnCalls.length, 1);
+  assert.equal(spawnCalls[0].parentLink.number, 89);
+  assert.match(spawnCalls[0].design, /use Redis/);
+  assert.ok(spawnCalls[0].repoPath, "spawner gets the repo path");
+  assert.equal(calls.pr.length, 0, "no PR from a design run");
+});
+
+test("depth-1: a run on a spawned child issue never spawns grandchildren", async () => {
+  const spawnCalls = [];
+  const { svc } = makeAutoRun({
+    commit: { committed: false, hasCommits: false },
+    decideIssuePath: async () => ({ path: "design", confidence: 0.9, rationale: "r" }),
+    // The issue body identifies this issue as a spawned child.
+    fetchIssueBody: async () => "Design...\n<!-- myagent:autorun:child-of:#89 -->\n## Project Fields\nMilestone: M3",
+    spawnChildIssue: async (ctx) => {
+      spawnCalls.push(ctx);
+      return { number: 91, url: null };
+    },
+  });
+  const { autoRun, invocation } = await svc.startAutoRun({
+    projectId: sourceProjectId,
+    link: { type: "issue", number: 90, title: "Implement: Rework the queue", url: null, state: "open" },
+    agentId: "agt_1",
+    name: "issue-90-child",
+  });
+  assert.equal(autoRun.isChildIssue, true);
+
+  await svc.advanceAutoRunForInvocation({ ...invocation, status: "succeeded" });
+
+  assert.equal(spawnCalls.length, 0, "a child issue never spawns");
+  assert.equal(autoRun.status, "report_posted");
+});
+
+test("one child per parent issue: a second design run does not respawn", async () => {
+  let spawned = 0;
+  const opts = {
+    commit: { committed: false, hasCommits: false },
+    decideIssuePath: async () => ({ path: "design", confidence: 0.9, rationale: "r" }),
+    spawnChildIssue: async () => {
+      spawned += 1;
+      return { number: 92, url: null };
+    },
+  };
+  const { svc } = makeAutoRun(opts);
+  const link = { type: "issue", number: 93, title: "Rework storage", url: null, state: "open" };
+  const first = await svc.startAutoRun({ projectId: sourceProjectId, link, agentId: "agt_1", name: "issue-93-a" });
+  await svc.advanceAutoRunForInvocation({ ...first.invocation, status: "succeeded" });
+  assert.equal(spawned, 1);
+
+  const second = await svc.startAutoRun({ projectId: sourceProjectId, link, agentId: "agt_1", name: "issue-93-b" });
+  await svc.advanceAutoRunForInvocation({ ...second.invocation, status: "succeeded" });
+  assert.equal(spawned, 1, "dedup: the parent already has a child");
+});
+
+test("a failing spawner still parks the run as report_posted (best-effort)", async () => {
+  const { svc } = makeAutoRun({
+    commit: { committed: false, hasCommits: false },
+    decideIssuePath: async () => ({ path: "design", confidence: 0.9, rationale: "r" }),
+    spawnChildIssue: async () => {
+      throw new Error("gh not authenticated");
+    },
+  });
+  const { autoRun, invocation } = await svc.startAutoRun({
+    projectId: sourceProjectId,
+    link: { type: "issue", number: 94, title: "Rework auth", url: null, state: "open" },
+    agentId: "agt_1",
+    name: "issue-94-spawnfail",
+  });
+  await svc.advanceAutoRunForInvocation({ ...invocation, status: "succeeded" });
+  assert.equal(autoRun.status, "report_posted");
+  assert.match(autoRun.spawnError, /gh not authenticated/);
+  assert.equal(autoRun.childIssues, undefined);
 });
 
 test("a broken decision agent falls back to the heuristic (run never fails)", async () => {
