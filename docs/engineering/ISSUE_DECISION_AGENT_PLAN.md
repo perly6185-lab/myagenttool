@@ -223,11 +223,32 @@ Each slice lands independently, tests-first, through the normal governance flow
 - **Acceptance**: met — a design run yields a governed child issue and a parked
   parent; implementation starts only after human labelling.
 
-### Slice 5 — routing evaluation
+### Slice 5 — routing evaluation — landed
 
-- Track per-path outcomes (PR merged as-is / reworked / rejected; design
-  accepted / discarded) and feed a held-out eval: was the routing right?
-- Use it to tune the fast path and confidence thresholds with data.
+- **Alignment cross-tab** (`routingEvaluation`): each decided path scored
+  against what its run actually did — develop is aligned when a PR opened and
+  misaligned when it produced nothing; design/prototype are aligned on a report
+  and *diverted* when they opened a PR anyway (a develop-shaped signal); clarify
+  is aligned parking for input. In-flight/failed runs are inconclusive. An
+  overall alignment rate (null before data) plus per-path buckets ship in the
+  `/api/auto-runs` summary and as a console stat tile.
+- **PR dispositions**: the console's manual Refresh (`?refresh=1`) also
+  refreshes each opened PR's final state (merged / closed) — bounded (≤10 gh
+  reads), throttled (10-minute per-run), read-only, terminal states never
+  re-checked; the 10s poll stays cheap. Dispositions surface per path in the
+  evaluation and as badges on run cards.
+- **Tuning loop**: alignment by path × `via` (heuristic / fast-path / agent /
+  fallback) is exactly the data needed to tune the fast path and the confidence
+  threshold; thresholds stay env-configured so tuning is an ops change, not a
+  code change.
+
+## Status
+
+All five slices are landed. The chain is complete: decision (agent or
+heuristic, gated, audited) → role-appropriate execution → verified PR or
+pending-decision child issue → human decision → implementation → evaluated
+routing. Every autonomous surface remains opt-in and off by default; merge is
+never automated.
 
 ## Risks
 

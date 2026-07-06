@@ -20,6 +20,7 @@ export async function handleProjectRoutes({
   createWorktreePr,
   publishWorktreeBranch,
   startAutoRun,
+  refreshAutoRunPrDispositions,
   selectProject,
   removeProject,
   removeWorktree,
@@ -155,6 +156,16 @@ export async function handleProjectRoutes({
   }
 
   if (req.method === "GET" && url.pathname === "/api/auto-runs") {
+    // ?refresh=1 (the console's manual Refresh) also refreshes PR dispositions
+    // (bounded, throttled, read-only gh) so the routing evaluation sees final
+    // outcomes; the 10s poll stays cheap.
+    if (url.searchParams.get("refresh") === "1" && typeof refreshAutoRunPrDispositions === "function") {
+      try {
+        await refreshAutoRunPrDispositions();
+      } catch {
+        /* best-effort */
+      }
+    }
     const autoRuns = state.autoRuns ?? [];
     sendJson(res, 200, { autoRuns, summary: summarizeAutoRuns(autoRuns) });
     return true;

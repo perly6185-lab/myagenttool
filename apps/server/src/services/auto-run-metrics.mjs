@@ -1,4 +1,5 @@
 import { autoRunStates } from "./auto-run.mjs";
+import { routingEvaluation } from "./auto-run-eval.mjs";
 
 // Observability + evaluation for the autonomous auto-run loop. A pure summary of
 // the auto-run records so the console can render live progress and a tracking
@@ -99,6 +100,8 @@ export function summarizeAutoRuns(autoRuns = []) {
     successRate: terminal > 0 ? prOpen / terminal : null,
     verification,
     decisions,
+    // Was the routing right? Per-path alignment + PR dispositions (slice 5).
+    routing: routingEvaluation(autoRuns),
     blockedReasons: topReasons(blockedReasonCounts),
     timeToPr: {
       count: timeToPrSeconds.length,
