@@ -317,6 +317,9 @@ export function createAutoRunService({
                 ...(spawn?.child ? { childIssues: [spawn.child] } : {}),
                 ...(spawn?.error ? { spawnError: spawn.error } : {}),
               });
+              // The design is delivered and waits on a human — the issue label
+              // should say review, not linger at in-progress. (Pilot finding.)
+              maybeWriteIssueStatus(autoRun, worktree, "review");
             } else if (path === "clarify") {
               const questions = autoRun.decision?.clarifyingQuestions ?? [];
               const summary = extractRunSummary(invocation);
@@ -327,6 +330,7 @@ export function createAutoRunService({
                 report,
                 error: "The run needs a human decision before it can proceed.",
               });
+              maybeWriteIssueStatus(autoRun, worktree, "review");
             } else {
               setAutoRunStatus(autoRun, "blocked", { error: "The agent run produced no changes to open a pull request with." });
             }
@@ -374,5 +378,61 @@ export function createAutoRunService({
     }
   }
 
-  return { startAutoRun, advanceAutoRunForInvocation };
+  // Reflect a granted approval on the run card: without this the auto-run sat
+  // at awaiting_approval until a terminal state. (Pilot finding.)
+  function syncAutoRunOnApproval(invocation) {
+    const autoRun = state.autoRuns.find((item) => item.invocationId === invocation?.id);
+    if (!autoRun || autoRun.status !== "awaiting_approval") return null;
+    setAutoRunStatus(autoRun, "running");
+    persistStateSoon();
+    return autoRun;
+  }
+
+  // Retry a failed/blocked auto-run on its existing worktree: rebuild the role
+  // prompt and start a fresh invocation for the same record. Without this a
+  // failed run dead-ended — the trigger dedup (correctly) never re-picks an
+  // issue that has a settled run. (Pilot finding.)
+  async function retryAutoRun(autoRunId, { actor } = {}) {
+    const autoRun = state.autoRuns.find((item) => item.id === autoRunId);
+    if (!autoRun) throw new Error("Auto-run not found.");
+    if (!["failed", "blocked"].includes(autoRun.status)) {
+      throw new Error("Only a failed or blocked auto-run can be retried.");
+    }
+    const worktree = state.worktrees.find((item) => item.id === autoRun.worktreeId) ?? null;
+    if (!worktree) throw new Error("The auto-run's worktree no longer exists; start a fresh run instead.");
+    const agent = (autoRun.agentId ? findAgent(autoRun.agentId) : null) ?? defaultAgent();
+    if (!agent) throw new Error("No agent is registered to retry this run.");
+    if (agent.status === "disabled") throw new Error("The selected agent is disabled.");
+    if (agent.location?.type === "local_device" && state.device?.unlinkState !== "linked") {
+      throw new Error("The target device is unlinked; link it before retrying.");
+    }
+
+    const issueBody = await maybeFetchIssueBody(autoRun.link, autoRun.projectId);
+    const task = roleAutoRunPrompt(autoRun.link, { path: autoRun.decision?.path ?? "develop", issueBody });
+    let invocation;
+    try {
+      invocation = createInvocation(task, agent, {
+        actor,
+        metadata: { worktreeId: worktree.id, projectId: worktree.projectId, autoRunId: autoRun.id },
+      });
+      startInvocationIfAllowed(invocation, agent);
+    } catch (error) {
+      setAutoRunStatus(autoRun, "failed", { error: `Retry could not start the agent run: ${String(error?.message ?? error)}` });
+      persistStateSoon();
+      throw error;
+    }
+    autoRun.invocationId = invocation.id;
+    setAutoRunStatus(autoRun, autoRunStatusForInvocation(invocation), { error: null, prNumber: null, prUrl: null });
+    appendEvent({
+      invocationId: invocation.id,
+      type: "auto_run_retried",
+      level: "info",
+      message: `Auto-run ${autoRun.id} retried on its existing worktree.`,
+      data: { autoRunId: autoRun.id, worktreeId: worktree.id, invocationId: invocation.id, status: autoRun.status },
+    });
+    persistStateSoon();
+    return { autoRun, invocation };
+  }
+
+  return { startAutoRun, advanceAutoRunForInvocation, syncAutoRunOnApproval, retryAutoRun };
 }

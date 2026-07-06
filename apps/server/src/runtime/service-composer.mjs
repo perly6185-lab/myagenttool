@@ -253,6 +253,7 @@ export function createServerRuntimeServices({
   // below (it needs createInvocation from this very service). Set after the
   // auto-run service exists; until then completion has nothing to advance.
   let advanceAutoRunHook = null;
+  let approvalAutoRunHook = null;
 
   invocationService = createInvocationService({
     state,
@@ -282,6 +283,7 @@ export function createServerRuntimeServices({
     closeCodexSession,
     budgetGateForProject,
     onInvocationCompleted: (invocation) => advanceAutoRunHook?.(invocation),
+    onInvocationApproved: (invocation) => approvalAutoRunHook?.(invocation),
   });
 
   const {
@@ -301,7 +303,7 @@ export function createServerRuntimeServices({
     startInvocationIfAllowed,
   } = invocationService;
 
-  const { startAutoRun, advanceAutoRunForInvocation } = createAutoRunService({
+  const { startAutoRun, advanceAutoRunForInvocation, syncAutoRunOnApproval, retryAutoRun } = createAutoRunService({
     state,
     now,
     nextId,
@@ -363,6 +365,7 @@ export function createServerRuntimeServices({
   });
   // Now that the reaction exists, let completion drive it.
   advanceAutoRunHook = advanceAutoRunForInvocation;
+  approvalAutoRunHook = syncAutoRunOnApproval;
 
   // Routing-evaluation disposition refresh (slice 5): bounded, throttled,
   // read-only gh; persists only when something changed.
@@ -1920,6 +1923,7 @@ export function createServerRuntimeServices({
     createWorktreePr,
     publishWorktreeBranch,
     startAutoRun,
+    retryAutoRun,
     refreshAutoRunPrDispositions,
     selectProject,
     removeProject,

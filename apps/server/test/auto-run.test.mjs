@@ -719,6 +719,75 @@ test("status writeback: a rejected start does not mark the issue in-progress", a
   assert.equal(calls.status.length, 0);
 });
 
+test("syncAutoRunOnApproval moves an approved run off awaiting_approval (pilot #3)", async () => {
+  const { svc } = makeAutoRun({ invocationStatus: "waiting_for_local_approval" });
+  const { autoRun, invocation } = await svc.startAutoRun({
+    projectId: sourceProjectId,
+    link: { type: "issue", number: 95, title: "Risky change", url: null, state: "open" },
+    agentId: "agt_1",
+    name: "issue-95-approval-sync",
+  });
+  assert.equal(autoRun.status, "awaiting_approval");
+
+  svc.syncAutoRunOnApproval(invocation);
+  assert.equal(autoRun.status, "running", "the card reflects the approval");
+  assert.equal(svc.syncAutoRunOnApproval({ id: "inv_unknown" }), null, "unknown invocation is a no-op");
+});
+
+test("report_posted and needs_input write the issue status forward to review (pilot #7)", async () => {
+  const { svc, calls } = makeAutoRun({
+    commit: { committed: false, hasCommits: false },
+    decideIssuePath: async () => ({ path: "design", confidence: 0.9, rationale: "r" }),
+  });
+  const { invocation } = await svc.startAutoRun({
+    projectId: sourceProjectId,
+    link: { type: "issue", number: 96, title: "Rework thing", url: null, state: "open" },
+    agentId: "agt_1",
+    name: "issue-96-review-writeback",
+  });
+  await svc.advanceAutoRunForInvocation({ ...invocation, status: "succeeded", result: "Design." });
+  const transitions = calls.status.map((c) => `${c.issueNumber}:${c.to}`);
+  assert.deepEqual(transitions, ["96:in-progress", "96:review"], "design delivered → review");
+});
+
+test("retryAutoRun restarts a failed run on its existing worktree (pilot #9)", async () => {
+  const { svc, calls } = makeAutoRun({ publishThrows: true });
+  const { autoRun, invocation } = await svc.startAutoRun({
+    projectId: sourceProjectId,
+    link: { type: "issue", number: 97, title: "Fix the crash", url: null, state: "open" },
+    agentId: "agt_1",
+    name: "issue-97-retry",
+  });
+  await svc.advanceAutoRunForInvocation({ ...invocation, status: "succeeded" });
+  assert.equal(autoRun.status, "failed", "publish blew up -> failed");
+  const worktreesBefore = state.worktrees.length;
+
+  const { invocation: second } = await svc.retryAutoRun(autoRun.id, { actor: { userId: "usr_x" } });
+
+  assert.equal(autoRun.status, "running", "retried run is live again");
+  assert.equal(autoRun.invocationId, second.id, "record points at the fresh invocation");
+  assert.equal(autoRun.error, null, "stale error cleared");
+  assert.equal(state.worktrees.length, worktreesBefore, "no new worktree — retry reuses the existing one");
+  assert.equal(calls.createInvocation.length, 2);
+  assert.match(calls.createInvocation[1].task, /Implement the change/, "role prompt rebuilt from the decision");
+});
+
+test("retryAutoRun refuses non-settled runs and missing worktrees", async () => {
+  const { svc } = makeAutoRun();
+  const { autoRun } = await svc.startAutoRun({
+    projectId: sourceProjectId,
+    link: { type: "issue", number: 98, title: "Running", url: null, state: "open" },
+    agentId: "agt_1",
+    name: "issue-98-guards",
+  });
+  await assert.rejects(() => svc.retryAutoRun(autoRun.id), /failed or blocked/);
+  await assert.rejects(() => svc.retryAutoRun("aur_nope"), /not found/i);
+
+  autoRun.status = "failed";
+  autoRun.worktreeId = "wtr_gone";
+  await assert.rejects(() => svc.retryAutoRun(autoRun.id), /no longer exists/);
+});
+
 test("startAutoRun validates the link and the device link state", async () => {
   const { svc } = makeAutoRun();
   await assert.rejects(() => svc.startAutoRun({ projectId: sourceProjectId, link: null, agentId: "agt_1" }), /issue or PR link/i);

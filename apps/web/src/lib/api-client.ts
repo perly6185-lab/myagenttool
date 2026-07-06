@@ -423,6 +423,8 @@ export const api = {
   // Auto-run observability: the records plus an evaluation summary. refresh=true
   // also refreshes PR dispositions (bounded gh reads) for the routing evaluation.
   listAutoRuns: (refresh = false) => request("GET", `/api/auto-runs${refresh ? "?refresh=1" : ""}`),
+  // Retry a failed/blocked auto-run on its existing worktree.
+  retryAutoRun: (id: string) => request("POST", `/api/auto-runs/${encodeURIComponent(id)}/retry`),
   listBranches: (projectId: string) =>
     request("GET", `/api/projects/${encodeURIComponent(projectId)}/branches`),
   gitSummary: (projectId: string) =>
