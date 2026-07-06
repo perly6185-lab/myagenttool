@@ -20,6 +20,7 @@ export function runDueAutomations({
   state,
   now,
   createInvocation,
+  createCapabilityInvocation,
   startInvocationIfAllowed,
   findAgent,
   defaultAgent,
@@ -47,25 +48,63 @@ export function runDueAutomations({
       changed = true;
       continue;
     }
-    const agent = findAgent(automation.agentId) ?? defaultAgent();
-    if (agent) {
+    if (automation.kind === "application_capability") {
       try {
-        const invocation = createInvocation(automation.prompt, agent, {
-          requestedBy: automation.createdBy ?? "usr_local",
-          metadata: { automationId: automation.id, automationName: automation.name, scheduled: true, projectId: automation.projectId },
+        const result = runScheduledApplicationCapabilityAutomation(automation, {
+          createCapabilityInvocation,
+          now,
         });
-        startInvocationIfAllowed(invocation, agent);
-        automation.lastInvocationId = invocation.id;
+        if (result.invocationId) automation.lastInvocationId = result.invocationId;
         automation.lastRunAt = now();
         automation.runCount = (automation.runCount ?? 0) + 1;
       } catch {
-        // A bad agent/project shouldn't wedge the scheduler; skip and roll forward.
+        // A bad target shouldn't wedge the scheduler; skip and roll forward.
+      }
+    } else {
+      const agent = findAgent(automation.agentId) ?? defaultAgent();
+      if (agent) {
+        try {
+          const invocation = createInvocation(automation.prompt, agent, {
+            requestedBy: automation.createdBy ?? "usr_local",
+            metadata: { automationId: automation.id, automationName: automation.name, scheduled: true, projectId: automation.projectId },
+          });
+          startInvocationIfAllowed(invocation, agent);
+          automation.lastInvocationId = invocation.id;
+          automation.lastRunAt = now();
+          automation.runCount = (automation.runCount ?? 0) + 1;
+        } catch {
+          // A bad agent/project shouldn't wedge the scheduler; skip and roll forward.
+        }
       }
     }
     automation.nextRunAt = computeNextRun(schedule, nowMs);
     changed = true;
   }
   if (changed) persistStateSoon();
+}
+
+export function runScheduledApplicationCapabilityAutomation(automation, {
+  createCapabilityInvocation,
+  now,
+} = {}) {
+  const target = automation?.target ?? {};
+  const capabilityName = typeof target.capabilityName === "string" ? target.capabilityName.trim() : "";
+  if (!capabilityName || typeof createCapabilityInvocation !== "function") {
+    return { invocationId: null };
+  }
+  const input = target.input && typeof target.input === "object" && !Array.isArray(target.input) ? target.input : {};
+  const response = createCapabilityInvocation(capabilityName, {
+    ...input,
+    projectId: automation.projectId,
+  }, { userId: automation.createdBy ?? "usr_local" }, {
+    automation: { id: automation.id, name: automation.name, scheduled: true },
+  });
+  const body = response?.body ?? {};
+  return {
+    invocationId: body.invocationId ?? body.invocation?.id ?? null,
+    status: response?.status ?? 202,
+    ranAt: now(),
+  };
 }
 
 /** Start the 30s scheduler tick. Unref'd so it never keeps the process alive.

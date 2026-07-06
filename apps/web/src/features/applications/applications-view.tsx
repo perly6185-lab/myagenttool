@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { CalendarClock } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -38,6 +39,35 @@ function statusTone(status: string): Tone {
   return "neutral";
 }
 
+function automationScheduleCounts(app: ApplicationSnapshot) {
+  return app.healthSummary?.automationCounts ?? { failing: 0, waitingForApproval: 0, paused: 0, attention: 0 };
+}
+
+function hasAutomationScheduleSignal(app: ApplicationSnapshot): boolean {
+  const counts = automationScheduleCounts(app);
+  return counts.failing > 0 || counts.waitingForApproval > 0 || counts.paused > 0;
+}
+
+function scheduleLabel(count: number, label: string): string {
+  return `${count} ${label}${count === 1 ? "" : "s"}`;
+}
+
+function automationScheduleDetail(app: ApplicationSnapshot): string {
+  const latest = app.healthSummary?.latestAutomationAttention;
+  if (latest?.name && latest.nextAction) return `${latest.name}: ${latest.nextAction}`;
+  if (latest?.name && latest.lastErrorSummary) return `${latest.name}: ${latest.lastErrorSummary}`;
+  if (latest?.name) return latest.name;
+  return "Open schedules to inspect the affected capability automation.";
+}
+
+function applicationScheduleButtonLabel(app: ApplicationSnapshot): string {
+  const status = app.healthSummary?.latestAutomationAttention?.status;
+  if (status === "failing") return "Inspect failing schedule";
+  if (status === "waiting_for_approval") return "Review approval";
+  if (status === "paused") return "Resume paused schedule";
+  return "View schedules";
+}
+
 /** Registered applications and their governed capabilities (read-only slice). */
 export function ApplicationsView() {
   const { data: state } = useConsoleState();
@@ -45,6 +75,7 @@ export function ApplicationsView() {
   const setSelectedApplicationId = useUiStore((s) => s.setSelectedApplicationId);
   const setSelectedApplicationRun = useUiStore((s) => s.setSelectedApplicationRun);
   const setSelectedApplicationEventLevel = useUiStore((s) => s.setSelectedApplicationEventLevel);
+  const setSelectedApplicationAutomationId = useUiStore((s) => s.setSelectedApplicationAutomationId);
 
   const [status, setStatus] = useState<"all" | ApplicationSnapshot["status"]>("all");
   const [kind, setKind] = useState<"all" | string>("all");
@@ -79,16 +110,18 @@ export function ApplicationsView() {
     [searchedApplications, triage],
   );
 
-  function selectApplication(applicationId: string, eventLevel: ApplicationEventLevelSelection = "all") {
+  function selectApplication(applicationId: string, eventLevel: ApplicationEventLevelSelection = "all", automationId: string | null = null) {
     setSelectedApplicationId(applicationId);
     setSelectedApplicationRun(null);
     setSelectedApplicationEventLevel(eventLevel);
+    setSelectedApplicationAutomationId(automationId);
   }
 
   function selectRecoveryRun(applicationId: string, routineId: string, invocationId: string) {
     setSelectedApplicationId(applicationId);
     setSelectedApplicationRun({ applicationId, routineId, invocationId });
     setSelectedApplicationEventLevel("all");
+    setSelectedApplicationAutomationId(null);
   }
 
   return (
@@ -167,10 +200,10 @@ export function ApplicationsView() {
           {applications.map((app) => {
             const nextStep = applicationNextStep(app);
             const latestRecoveryAction = app.healthSummary?.latestRecoveryAction ?? latestApplicationRecoveryAction(app.id, recoveryActions);
-            const triageBucket = applicationTriageBucket(app);
-            const attentionEventLevel: ApplicationEventLevelSelection | null = triageBucket === "attention"
+            const automationCounts = automationScheduleCounts(app);
+            const attentionEventLevel: ApplicationEventLevelSelection | null = (app.healthSummary?.eventCounts.error ?? 0) > 0
               ? "error"
-              : triageBucket === "warning"
+              : (app.healthSummary?.eventCounts.warning ?? 0) > 0
                 ? "warning"
                 : null;
             return (
@@ -219,6 +252,37 @@ export function ApplicationsView() {
                       </Button>
                     ) : null}
                   </div>
+                  {hasAutomationScheduleSignal(app) ? (
+                    <div className="rounded-md border border-border bg-muted/40 p-2">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="text-xs font-medium">Schedules</span>
+                        {automationCounts.failing > 0 ? (
+                          <Badge tone="danger">{scheduleLabel(automationCounts.failing, "failing schedule")}</Badge>
+                        ) : null}
+                        {automationCounts.waitingForApproval > 0 ? (
+                          <Badge tone="warning">{automationCounts.waitingForApproval} waiting approval</Badge>
+                        ) : null}
+                        {automationCounts.paused > 0 ? (
+                          <Badge tone="neutral">{scheduleLabel(automationCounts.paused, "paused schedule")}</Badge>
+                        ) : null}
+                      </div>
+                      <p className="mt-1 [overflow-wrap:anywhere] text-xs text-muted-foreground">
+                        {automationScheduleDetail(app)}
+                      </p>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="mt-2 h-7 px-2 text-xs"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          selectApplication(app.id, "all", app.healthSummary?.latestAutomationAttention?.automationId ?? null);
+                        }}
+                      >
+                        <CalendarClock />
+                        {applicationScheduleButtonLabel(app)}
+                      </Button>
+                    </div>
+                  ) : null}
                   {latestRecoveryAction ? (
                     <div className="rounded-md border border-border bg-muted/40 p-2">
                       <div className="flex flex-wrap items-center gap-2">

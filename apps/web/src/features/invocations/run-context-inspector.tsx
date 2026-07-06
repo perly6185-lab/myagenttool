@@ -36,6 +36,7 @@ export function RunContextInspector() {
   const setSelectedInvocationId = useUiStore((s) => s.setSelectedInvocationId);
   const setSelectedApplicationId = useUiStore((s) => s.setSelectedApplicationId);
   const setSelectedApplicationRun = useUiStore((s) => s.setSelectedApplicationRun);
+  const setSelectedApplicationAutomationId = useUiStore((s) => s.setSelectedApplicationAutomationId);
   const setSection = useUiStore((s) => s.setSection);
   const { execute, pending } = useAsyncAction();
 
@@ -56,6 +57,11 @@ export function RunContextInspector() {
     }
     if (navigation.selectedApplicationRun !== undefined) {
       setSelectedApplicationRun(navigation.selectedApplicationRun);
+    }
+    if (navigation.selectedApplicationAutomationId !== undefined) {
+      setSelectedApplicationAutomationId(navigation.selectedApplicationAutomationId);
+    } else if (navigation.selectedApplicationId !== undefined || navigation.selectedApplicationRun !== undefined) {
+      setSelectedApplicationAutomationId(null);
     }
     if (navigation.section) {
       setSection(navigation.section);

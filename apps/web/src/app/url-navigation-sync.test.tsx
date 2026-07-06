@@ -17,6 +17,7 @@ beforeEach(() => {
     selectedApplicationId: null,
     selectedApplicationRun: null,
     selectedApplicationEventLevel: "all",
+    selectedApplicationAutomationId: null,
     selectedEvidenceId: null,
   });
 });
@@ -28,7 +29,7 @@ afterEach(() => {
 
 describe("useUrlNavigationSync", () => {
   it("hydrates store navigation from the current URL", () => {
-    window.history.replaceState(null, "", "/?section=applications&application=app_docs&routine=routine_docs&run=inv_docs&eventLevel=warning&evidence=ev_docs");
+    window.history.replaceState(null, "", "/?section=applications&application=app_docs&routine=routine_docs&run=inv_docs&eventLevel=warning&automation=atm_docs&evidence=ev_docs");
 
     render(<SyncHarness />);
 
@@ -40,6 +41,7 @@ describe("useUrlNavigationSync", () => {
       invocationId: "inv_docs",
     });
     expect(useUiStore.getState().selectedApplicationEventLevel).toBe("warning");
+    expect(useUiStore.getState().selectedApplicationAutomationId).toBe("atm_docs");
     expect(useUiStore.getState().selectedEvidenceId).toBe("ev_docs");
   });
 
@@ -61,7 +63,7 @@ describe("useUrlNavigationSync", () => {
   });
 
   it("applies popstate URL changes without keeping stale run or evidence selections", () => {
-    window.history.replaceState(null, "", "/?section=applications&application=app_docs&routine=routine_docs&run=inv_docs&eventLevel=error&evidence=ev_docs");
+    window.history.replaceState(null, "", "/?section=applications&application=app_docs&routine=routine_docs&run=inv_docs&eventLevel=error&automation=atm_docs&evidence=ev_docs");
     render(<SyncHarness />);
 
     window.history.replaceState(null, "", "/?section=applications&application=app_other");
@@ -71,6 +73,7 @@ describe("useUrlNavigationSync", () => {
     expect(useUiStore.getState().selectedApplicationId).toBe("app_other");
     expect(useUiStore.getState().selectedApplicationRun).toBeNull();
     expect(useUiStore.getState().selectedApplicationEventLevel).toBe("all");
+    expect(useUiStore.getState().selectedApplicationAutomationId).toBeNull();
     expect(useUiStore.getState().selectedEvidenceId).toBeNull();
   });
 });

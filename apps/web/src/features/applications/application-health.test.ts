@@ -31,6 +31,72 @@ describe("applicationNextStep", () => {
     })).detail).toBe("README not readable.");
     expect(applicationNextStep(application({
       status: "active",
+      probe: {
+        capabilities: [],
+        diff: { addedCapabilityNames: ["app.docs.inferred.script.test"], removedCapabilityNames: [] },
+      },
+    })).title).toBe("Probe changes detected");
+    expect(applicationNextStep(application({
+      status: "active",
+      wrapper: {
+        mode: "installed-wrapper",
+        installState: "installed",
+        readiness: {
+          state: "needs_setup",
+          reason: "wrapper_command_unresolved",
+          blockedCommandIds: ["test"],
+        },
+      },
+      probe: { warnings: ["README not readable."], capabilities: [] },
+    })).detail).toBe("1 wrapper command(s) need setup: wrapper_command_unresolved.");
+    expect(applicationNextStep(application({
+      status: "active",
+      probe: { capabilities: [] },
+      orchestrationIds: ["routine"],
+      healthSummary: {
+        applicationId: "app_docs",
+        eventCounts: { error: 0, warning: 0, info: 0, other: 0 },
+        eventCount: 0,
+        automationCounts: { failing: 1, waitingForApproval: 0, paused: 0, attention: 1 },
+        latestAutomationAttention: {
+          automationId: "atm_docs",
+          name: "Docs daily",
+          status: "failing",
+          failureStreak: 2,
+          latestInvocationId: "inv_docs",
+          lastErrorSummary: "Wrapper command exited 1.",
+          nextAction: "Pause the schedule and inspect the latest invocation.",
+        },
+      },
+    }))).toEqual({
+      title: "Schedule failing",
+      detail: "Wrapper command exited 1.",
+      tone: "danger",
+    });
+    expect(applicationNextStep(application({
+      status: "active",
+      probe: { capabilities: [] },
+      orchestrationIds: ["routine"],
+      healthSummary: {
+        applicationId: "app_docs",
+        eventCounts: { error: 0, warning: 0, info: 0, other: 0 },
+        eventCount: 0,
+        automationCounts: { failing: 0, waitingForApproval: 1, paused: 0, attention: 1 },
+        latestAutomationAttention: {
+          automationId: "atm_docs",
+          name: "Docs daily",
+          status: "waiting_for_approval",
+          failureStreak: 0,
+          latestInvocationId: "inv_docs",
+          nextAction: "Resolve the linked approval request before the automation can continue.",
+        },
+      },
+    }))).toMatchObject({
+      title: "Schedule waiting for approval",
+      tone: "warning",
+    });
+    expect(applicationNextStep(application({
+      status: "active",
       probe: { capabilities: [] },
       orchestrationIds: ["routine"],
     })).title).toBe("Ready");
@@ -54,8 +120,21 @@ describe("application triage", () => {
       application({ id: "app_probe", status: "active", probe: null }),
       application({ id: "app_ready", status: "active", probe: { capabilities: [] }, orchestrationIds: ["routine"] }),
       application({ id: "app_archived", status: "archived" }),
+      application({
+        id: "app_schedule_failed",
+        status: "active",
+        probe: { capabilities: [] },
+        orchestrationIds: ["routine"],
+        healthSummary: {
+          applicationId: "app_schedule_failed",
+          eventCounts: { error: 0, warning: 0, info: 0, other: 0 },
+          eventCount: 0,
+          automationCounts: { failing: 1, waitingForApproval: 0, paused: 0, attention: 1 },
+          latestAutomationAttention: null,
+        },
+      }),
     ])).toEqual({
-      attention: 2,
+      attention: 3,
       warning: 1,
       ready: 1,
     });

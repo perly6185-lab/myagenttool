@@ -43,6 +43,25 @@ export function applicationNextStep(app: ApplicationSnapshot): { title: string; 
       tone: "warning",
     };
   }
+  const automationCounts = app.healthSummary?.automationCounts;
+  const automationAttention = app.healthSummary?.latestAutomationAttention;
+  if ((automationCounts?.failing ?? 0) > 0) {
+    return {
+      title: "Schedule failing",
+      detail: automationAttention?.lastErrorSummary
+        ?? automationAttention?.nextAction
+        ?? `${automationCounts?.failing ?? 0} ${pluralSchedule(automationCounts?.failing ?? 0)} failing.`,
+      tone: "danger",
+    };
+  }
+  if ((automationCounts?.waitingForApproval ?? 0) > 0) {
+    return {
+      title: "Schedule waiting for approval",
+      detail: automationAttention?.nextAction
+        ?? `${automationCounts?.waitingForApproval ?? 0} ${pluralSchedule(automationCounts?.waitingForApproval ?? 0)} waiting for approval.`,
+      tone: "warning",
+    };
+  }
   if (!app.probe) {
     return {
       title: "Probe recommended",
@@ -50,10 +69,26 @@ export function applicationNextStep(app: ApplicationSnapshot): { title: string; 
       tone: "warning",
     };
   }
+  const wrapperReadinessProblem = applicationWrapperReadinessProblem(app);
+  if (wrapperReadinessProblem) {
+    return {
+      title: "Wrapper setup needed",
+      detail: wrapperReadinessProblem,
+      tone: "warning",
+    };
+  }
   if (app.probe.warnings?.length) {
     return {
       title: "Probe warnings",
       detail: app.probe.warnings[0],
+      tone: "warning",
+    };
+  }
+  const probeChangeCount = applicationProbeChangeCount(app);
+  if (probeChangeCount > 0) {
+    return {
+      title: "Probe changes detected",
+      detail: `${probeChangeCount} capability or MCP candidate change(s) since the previous probe.`,
       tone: "warning",
     };
   }
@@ -76,6 +111,33 @@ export function applicationNextStep(app: ApplicationSnapshot): { title: string; 
     detail: "Capabilities, probe evidence, and orchestration drafts are available.",
     tone: "success",
   };
+}
+
+function pluralSchedule(count: number): string {
+  return count === 1 ? "schedule is" : "schedules are";
+}
+
+function applicationWrapperReadinessProblem(app: ApplicationSnapshot): string | null {
+  const readiness = app.wrapper?.readiness;
+  if (!readiness || readiness.state === "ready") return null;
+  const blocked = readiness.blockedCommandIds?.length ?? 0;
+  if (blocked > 0) {
+    return `${blocked} wrapper command(s) need setup: ${readiness.reason ?? "wrapper_static_check_failed"}.`;
+  }
+  return readiness.reason ? `Wrapper static check needs setup: ${readiness.reason}.` : "Wrapper static check needs setup.";
+}
+
+function applicationProbeChangeCount(app: ApplicationSnapshot): number {
+  const diff = app.probe?.diff;
+  if (!diff) return 0;
+  return [
+    diff.addedCapabilityNames,
+    diff.removedCapabilityNames,
+    diff.changedCapabilityNames,
+    diff.addedMcpServerIds,
+    diff.removedMcpServerIds,
+    diff.changedMcpServerIds,
+  ].reduce((count, values) => count + (values?.length ?? 0), 0);
 }
 
 export type ApplicationTriageFilter = "all" | "attention" | "warning" | "ready";

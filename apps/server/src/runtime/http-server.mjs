@@ -216,6 +216,8 @@ export function createHttpServer({
         findAgent,
         defaultAgent,
         createInvocation,
+        createCapabilityInvocation,
+        getCapability,
         startInvocationIfAllowed,
         persistStateSoon,
         budgetStatusFor,

@@ -12,9 +12,10 @@ import { useAsyncAction, api } from "@/data/use-console-actions";
 import { useUiStore } from "@/store/ui-store";
 import { cn } from "@/lib/cn";
 import { readableStatus, statusTone } from "@/lib/readable-labels";
-import type { AutomationSnapshot } from "@/lib/console-state";
+import type { AuditSnapshot, AutomationSnapshot, InvocationSnapshot } from "@/lib/console-state";
 
 type ScheduleKind = "weekdays" | "daily" | "interval";
+type AutomationHealthFilter = "all" | "failing" | "approval" | "paused" | "healthy";
 
 // Preset automation templates (the "Use template" menu). Each pre-fills the
 // form's name, prompt, and schedule so common scheduled tasks are one click.
@@ -60,6 +61,140 @@ const TEMPLATES: AutomationTemplate[] = [
   },
 ];
 
+function isApplicationCapabilityAutomation(automation: AutomationSnapshot) {
+  return automation.kind === "application_capability" || automation.target?.type === "application_capability";
+}
+
+function automationTargetLabel(automation: AutomationSnapshot) {
+  if (isApplicationCapabilityAutomation(automation)) {
+    return shortCapabilityName(automation.target?.capabilityName ?? "Application capability");
+  }
+  return "Agent prompt";
+}
+
+function shortCapabilityName(value: string) {
+  const parts = value.split(".").filter(Boolean);
+  if (value.includes(".wrapper.")) return `wrapper.${parts.at(-1)}`;
+  return parts.slice(-2).join(".") || value;
+}
+
+function automationRunSummary(automation: AutomationSnapshot, runs: InvocationSnapshot[], audits: AuditSnapshot[]) {
+  const health = automation.healthSummary;
+  if (health) {
+    return {
+      label: automationHealthLabel(health.status, health.failureStreak ?? 0),
+      tone: automationHealthTone(health.status),
+      detail: health.lastErrorSummary
+        ?? health.latestRun?.errorSummary
+        ?? health.latestRun?.resultSummary
+        ?? health.nextAction
+        ?? "No run history yet.",
+    };
+  }
+  const latest = runs[0] ?? null;
+  if (!latest) return { label: "No runs", tone: "neutral" as const, detail: "No run history yet." };
+  const audit = audits.find((item) => item.invocationId === latest.id);
+  const failed = ["failed", "rejected"].includes(latest.status ?? "");
+  const consecutiveFailures = runs.findIndex((run) => !["failed", "rejected"].includes(run.status ?? ""));
+  const failureCount = consecutiveFailures === -1 ? runs.length : consecutiveFailures;
+  if (failed) {
+    return {
+      label: failureCount > 1 ? `${failureCount} failures` : "Failed",
+      tone: "danger" as const,
+      detail: audit?.errorSummary ?? latest.result?.summary ?? latest.explanation?.summary ?? "Latest run failed.",
+    };
+  }
+  if (latest.approvalRequestId || latest.explanation?.approval?.requestId) {
+    return {
+      label: "Approval",
+      tone: "warning" as const,
+      detail: latest.approvalRequestId ?? latest.explanation?.approval?.requestId ?? "Waiting for approval.",
+    };
+  }
+  if (latest.status === "succeeded") {
+    return {
+      label: "Healthy",
+      tone: "success" as const,
+      detail: latest.result?.summary ?? "Latest run succeeded.",
+    };
+  }
+  return {
+    label: readableStatus(latest.status),
+    tone: statusTone(latest.status),
+    detail: latest.input?.task ?? "Latest run is in progress.",
+  };
+}
+
+function latestAutomationInvocationId(automation: AutomationSnapshot) {
+  return automation.healthSummary?.latestRun?.invocationId ?? automation.lastInvocationId ?? null;
+}
+
+function automationNeedsAttention(automation: AutomationSnapshot) {
+  const status = automationHealthStatus(automation);
+  return status === "failing" || status === "waiting_for_approval" || status === "paused";
+}
+
+function automationHealthLabel(status?: string | null, failureStreak = 0) {
+  if (status === "failing" && failureStreak > 1) return `${failureStreak} failures`;
+  if (status === "failing") return "Failed";
+  if (status === "waiting_for_approval") return "Approval";
+  if (status === "running") return "Running";
+  if (status === "healthy") return "Healthy";
+  if (status === "paused") return "Paused";
+  return "Scheduled";
+}
+
+function automationHealthTone(status?: string | null): "neutral" | "success" | "warning" | "danger" {
+  if (status === "healthy") return "success";
+  if (status === "failing") return "danger";
+  if (status === "waiting_for_approval" || status === "paused") return "warning";
+  return "neutral";
+}
+
+function automationHealthStatus(automation: AutomationSnapshot) {
+  return automation.healthSummary?.status ?? (!automation.enabled ? "paused" : "scheduled");
+}
+
+function automationHealthPriority(status?: string | null) {
+  if (status === "failing") return 0;
+  if (status === "waiting_for_approval") return 1;
+  if (status === "running") return 2;
+  if (status === "paused") return 3;
+  if (status === "scheduled") return 4;
+  if (status === "healthy") return 5;
+  return 6;
+}
+
+function sortAutomationsForHealth(automations: AutomationSnapshot[]) {
+  return [...automations].sort((left, right) => {
+    const priority = automationHealthPriority(automationHealthStatus(left)) - automationHealthPriority(automationHealthStatus(right));
+    if (priority !== 0) return priority;
+    return String(left.name).localeCompare(String(right.name));
+  });
+}
+
+function automationMatchesHealthFilter(automation: AutomationSnapshot, filter: AutomationHealthFilter) {
+  const status = automationHealthStatus(automation);
+  if (filter === "all") return true;
+  if (filter === "approval") return status === "waiting_for_approval";
+  return status === filter;
+}
+
+function automationHealthCounts(automations: AutomationSnapshot[]) {
+  return automations.reduce(
+    (counts, automation) => {
+      counts.all += 1;
+      const status = automationHealthStatus(automation);
+      if (status === "failing") counts.failing += 1;
+      if (status === "waiting_for_approval") counts.approval += 1;
+      if (status === "paused") counts.paused += 1;
+      if (status === "healthy") counts.healthy += 1;
+      return counts;
+    },
+    { all: 0, failing: 0, approval: 0, paused: 0, healthy: 0 } satisfies Record<AutomationHealthFilter, number>,
+  );
+}
+
 // Automation = a saved task that runs an agent on a schedule/trigger. The cron
 // scheduler that fires it is a follow-up; "Run now" already creates a real
 // invocation. List on the left, the selected rule's detail on the right.
@@ -69,20 +204,26 @@ export function AutomationView() {
   const automations = state?.automations ?? [];
   const agents = state?.agents ?? [];
   const projects = state?.projects ?? [];
+  const auditSummaries = state?.auditSummaries ?? [];
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const [editing, setEditing] = useState<AutomationSnapshot | null>(null);
   const [detailTab, setDetailTab] = useState<"overview" | "runs">("overview");
+  const [healthFilter, setHealthFilter] = useState<AutomationHealthFilter>("all");
   const setSection = useUiStore((s) => s.setSection);
   const setSelectedInvocationId = useUiStore((s) => s.setSelectedInvocationId);
 
-  const selected = automations.find((a) => a.id === selectedId) ?? automations[0] ?? null;
+  const healthCounts = automationHealthCounts(automations);
+  const filteredAutomations = sortAutomationsForHealth(automations)
+    .filter((automation) => automationMatchesHealthFilter(automation, healthFilter));
+  const selected = filteredAutomations.find((a) => a.id === selectedId) ?? filteredAutomations[0] ?? null;
   const agentName = (id: string) => agents.find((a) => a.id === id)?.name ?? id;
   const projectName = (id: string) => projects.find((p) => p.id === id)?.name ?? id;
   // Invocations this rule has triggered (run-now + scheduled), newest first.
   // Guard on `selected`: with no selection, `selected?.id` is undefined and would
   // match every ordinary invocation (whose automationId is also undefined).
   const runs = selected ? (state?.invocations ?? []).filter((i) => i.options?.metadata?.automationId === selected.id) : [];
+  const selectedSummary = selected ? automationRunSummary(selected, runs, auditSummaries) : null;
 
   function openRun(invId: string) {
     setSelectedInvocationId(invId);
@@ -115,10 +256,34 @@ export function AutomationView() {
           </div>
         </CardHeader>
         <CardContent className="space-y-2">
+          <div className="grid grid-cols-2 gap-1.5 text-xs">
+            {([
+              ["all", "All"],
+              ["failing", "Failing"],
+              ["approval", "Approval"],
+              ["paused", "Paused"],
+              ["healthy", "Healthy"],
+            ] as const).map(([value, label]) => (
+              <button
+                key={value}
+                type="button"
+                onClick={() => setHealthFilter(value)}
+                className={cn(
+                  "rounded-md border px-2 py-1.5 text-left transition",
+                  healthFilter === value ? "border-primary bg-primary/5 text-foreground" : "border-border text-muted-foreground hover:bg-muted/40",
+                  value === "all" ? "col-span-2" : "",
+                )}
+              >
+                {label} {healthCounts[value]}
+              </button>
+            ))}
+          </div>
           {automations.length === 0 ? (
             <EmptyState title="No automations" hint="Scheduled agent runs will appear here." />
+          ) : filteredAutomations.length === 0 ? (
+            <EmptyState title="No matching automations" hint="Adjust the health filter to see more rules." />
           ) : (
-            automations.map((a) => (
+            filteredAutomations.map((a) => (
               <button
                 key={a.id}
                 type="button"
@@ -138,7 +303,7 @@ export function AutomationView() {
                 <div className="mt-1 truncate text-xs text-muted-foreground">{a.schedule.label}</div>
                 <div className="mt-0.5 truncate text-xs text-muted-foreground">
                   {projectName(a.projectId)}
-                  {a.branch ? ` · ${a.branch}` : ""} · {agentName(a.agentId)}
+                  {a.branch && !isApplicationCapabilityAutomation(a) ? ` · ${a.branch}` : ""} · {automationTargetLabel(a)}
                 </div>
               </button>
             ))
@@ -154,10 +319,11 @@ export function AutomationView() {
                 <div className="flex items-center gap-2">
                   <CardTitle>{selected.name}</CardTitle>
                   <Badge tone={selected.enabled ? "success" : "neutral"}>{selected.enabled ? "Enabled" : "Paused"}</Badge>
+                  {selectedSummary ? <Badge tone={selectedSummary.tone}>{selectedSummary.label}</Badge> : null}
                 </div>
                 <p className="text-sm text-muted-foreground">
                   {projectName(selected.projectId)}
-                  {selected.branch ? ` / ${selected.branch}` : ""}
+                  {selected.branch && !isApplicationCapabilityAutomation(selected) ? ` / ${selected.branch}` : ""} · {automationTargetLabel(selected)}
                 </p>
               </div>
               <div className="flex items-center gap-1.5">
@@ -232,7 +398,8 @@ export function AutomationView() {
                 items={[
                   { term: "Schedule", value: selected.schedule.label },
                   { term: "Next run", value: selected.nextRunAt ? new Date(selected.nextRunAt).toLocaleString() : selected.enabled ? "—" : "Paused" },
-                  { term: "Run location", value: selected.branch ?? "—" },
+                  { term: "Target", value: automationTargetLabel(selected) },
+                  { term: "Run location", value: isApplicationCapabilityAutomation(selected) ? "Application runner" : selected.branch ?? "—" },
                   { term: "Session", value: selected.sessionMode === "fresh" ? "Fresh each run" : selected.sessionMode ?? "—" },
                   { term: "Source", value: `${projectName(selected.projectId)}${selected.branch ? ` · ${selected.branch}` : ""}` },
                   { term: "Grace", value: selected.graceHours != null ? `${selected.graceHours} hours` : "—" },
@@ -241,6 +408,33 @@ export function AutomationView() {
                 ]}
               />
             </div>
+            {selectedSummary ? (
+              <div className="rounded-lg border border-border p-4">
+                <div className="space-y-3">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Badge tone={selectedSummary.tone}>{selectedSummary.label}</Badge>
+                    <span className="[overflow-wrap:anywhere] text-sm text-muted-foreground">{selectedSummary.detail}</span>
+                  </div>
+                  {automationNeedsAttention(selected) ? (
+                    <div className="flex flex-wrap gap-2">
+                      <Button size="sm" variant="secondary" disabled={pending} onClick={() => toggle(selected)}>
+                        {selected.enabled ? <Pause /> : <Play />}
+                        {selected.enabled ? "Pause schedule" : "Resume schedule"}
+                      </Button>
+                      <Button size="sm" disabled={pending} onClick={() => runNow(selected)}>
+                        <Play />
+                        Run now
+                      </Button>
+                      {latestAutomationInvocationId(selected) ? (
+                        <Button size="sm" variant="secondary" onClick={() => openRun(latestAutomationInvocationId(selected)!)}>
+                          View latest run
+                        </Button>
+                      ) : null}
+                    </div>
+                  ) : null}
+                </div>
+              </div>
+            ) : null}
             <div className="rounded-lg border border-border p-4">
               <FactGrid
                 cols="grid-cols-2 sm:grid-cols-4"

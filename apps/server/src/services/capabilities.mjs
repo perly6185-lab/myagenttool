@@ -36,7 +36,7 @@ export function createCapabilityService({
     return listCapabilities(actor).find((capability) => capability.name === name) ?? null;
   }
 
-  function createCapabilityInvocation(name, input = {}, actor = null) {
+  function createCapabilityInvocation(name, input = {}, actor = null, context = {}) {
     const tool = getTool(name, actor);
     if (tool) {
       return createToolInvocation(name, input, actor);
@@ -52,7 +52,7 @@ export function createCapabilityService({
       // synchronous below.
       const wrapperCommandId = wrapperCommandIdFromCapabilityName(name);
       if (wrapperCommandId) {
-        return dispatchApplicationWrapper(capability, name, wrapperCommandId, input, actor);
+        return dispatchApplicationWrapper(capability, name, wrapperCommandId, input, actor, context);
       }
       const agent = findAgent("agt_platform_application_control");
       if (!agent || agent.status === "disabled") {
@@ -85,6 +85,7 @@ export function createCapabilityService({
           applicationId,
           applicationProjectId: capability.application?.projectId ?? input?.projectId ?? null,
           approval: { type: "application_action", action },
+          automation: context.automation,
         });
       }
       const invocation = approval.invocation ?? createInvocation(`Run application capability ${action} for ${capability.application?.name ?? applicationId}.`, agent, {
@@ -95,6 +96,7 @@ export function createCapabilityService({
           providerType: "application",
           applicationId,
           applicationAction: action,
+          ...automationMetadata(context.automation),
           projectId: capability.application?.projectId ?? input?.projectId ?? null,
         },
         timeoutSeconds: 30,
@@ -146,7 +148,7 @@ export function createCapabilityService({
     return { status: 409, body: { error: "capability_not_invokable", capability: name } };
   }
 
-  function dispatchApplicationWrapper(capability, name, commandId, input, actor) {
+  function dispatchApplicationWrapper(capability, name, commandId, input, actor, context = {}) {
     const applicationId = capability.provider.id;
     const approval = verifyApplicationApproval(input, {
       findApprovalRequest,
@@ -181,6 +183,7 @@ export function createCapabilityService({
         applicationId,
         applicationProjectId: capability.application?.projectId ?? input?.projectId ?? null,
         approval: { type: "application_wrapper", commandId },
+        automation: context.automation,
       });
     }
     const agent = findAgent("agt_platform_application_wrapper");
@@ -203,6 +206,7 @@ export function createCapabilityService({
         applicationId,
         applicationPath: planned.wrapper.applicationPath ?? null,
         applicationWrapper: planned.wrapper,
+        ...automationMetadata(context.automation),
         projectId: capability.application?.projectId ?? input?.projectId ?? null,
       },
     });
@@ -230,6 +234,15 @@ export function createCapabilityService({
   };
 }
 
+function automationMetadata(automation = null) {
+  if (!automation || typeof automation !== "object" || Array.isArray(automation)) return {};
+  return {
+    automationId: typeof automation.id === "string" ? automation.id : null,
+    automationName: typeof automation.name === "string" ? automation.name : null,
+    scheduled: Boolean(automation.scheduled),
+  };
+}
+
 export function requestApplicationApproval({
   createInvocation,
   agent,
@@ -239,6 +252,7 @@ export function requestApplicationApproval({
   applicationId,
   applicationProjectId,
   approval,
+  automation = null,
 }) {
   const invocation = createInvocation(task, agent, {
     actor,
@@ -250,6 +264,7 @@ export function requestApplicationApproval({
       providerType: "application",
       applicationId,
       applicationApproval: approval,
+      ...automationMetadata(automation),
       projectId: applicationProjectId ?? null,
     },
   });

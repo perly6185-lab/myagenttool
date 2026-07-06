@@ -301,6 +301,22 @@ export const api = {
       "GET",
       `/api/applications/${encodeURIComponent(id)}/capabilities`,
     ),
+  createCapabilityInvocation: (name: string, input: Record<string, unknown> = {}) =>
+    request<Record<string, unknown>>(
+      "POST",
+      `/api/capabilities/${encodeURIComponent(name)}/invocations`,
+      input,
+    ),
+  grantApplicationWrapperPolicyConsent: (
+    id: string,
+    commandId: string,
+    body: { approvalRequestId?: string; reason?: string | null } = {},
+  ) =>
+    request<Record<string, unknown>>(
+      "POST",
+      `/api/applications/${encodeURIComponent(id)}/wrapper-commands/${encodeURIComponent(commandId)}/policy-consent`,
+      body,
+    ),
   listApplicationEvents: (id: string, limit = 20) =>
     request<{ applicationId: string; events: ApplicationEventSnapshot[] }>(
       "GET",

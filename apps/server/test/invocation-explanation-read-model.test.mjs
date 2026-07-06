@@ -229,3 +229,163 @@ test("public invocation explanation captures compare, automation, auto-run, and 
   assert.equal(snapshot.invocations.find((item) => item.id === "inv_failed").explanation.resultLocation.reportId, "trb_1");
   assert.equal(snapshot.invocations.find((item) => item.id === "inv_troubleshooter").explanation.source.type, "troubleshooting");
 });
+
+test("public automation snapshot carries health summary from visible runs", () => {
+  const snapshot = publicState(baseState({
+    automations: [{
+      id: "atm_app_daily",
+      name: "ccusage daily",
+      enabled: true,
+      kind: "application_capability",
+      projectId: "proj_a",
+      schedule: { kind: "daily", time: "09:00", label: "Daily at 09:00" },
+      nextRunAt: "2026-07-06T09:00:00.000Z",
+      agentId: "agt_platform_application_wrapper",
+      prompt: "Run application capability app.app_ccusage.wrapper.daily.",
+      lastRunAt: "2026-07-05T11:00:00.000Z",
+      lastInvocationId: "inv_auto_failed_new",
+      runCount: 2,
+      target: {
+        type: "application_capability",
+        applicationId: "app_ccusage",
+        capabilityName: "app.app_ccusage.wrapper.daily",
+      },
+    }],
+    invocations: [{
+      id: "inv_auto_failed_new",
+      projectId: "proj_a",
+      agentId: "agt_platform_application_wrapper",
+      status: "failed",
+      result: { summary: "Wrapper command exited 1." },
+      delivery: { state: "not_required", deviceId: null },
+      cancellation: { state: "none" },
+      options: { metadata: { automationId: "atm_app_daily", automationName: "ccusage daily", scheduled: true } },
+      createdAt: "2026-07-05T11:00:00.000Z",
+    }, {
+      id: "inv_auto_failed_old",
+      projectId: "proj_a",
+      agentId: "agt_platform_application_wrapper",
+      status: "failed",
+      delivery: { state: "not_required", deviceId: null },
+      cancellation: { state: "none" },
+      options: { metadata: { automationId: "atm_app_daily", automationName: "ccusage daily", scheduled: true } },
+      createdAt: "2026-07-05T10:00:00.000Z",
+    }],
+    auditSummaries: [{
+      invocationId: "inv_auto_failed_new",
+      errorSummary: "Wrapper command exited 1.",
+    }],
+  }));
+
+  const automation = snapshot.automations.find((item) => item.id === "atm_app_daily");
+  assert.equal(automation.healthSummary.status, "failing");
+  assert.equal(automation.healthSummary.failureStreak, 2);
+  assert.equal(automation.healthSummary.latestRun.invocationId, "inv_auto_failed_new");
+  assert.equal(automation.healthSummary.latestRun.errorSummary, "Wrapper command exited 1.");
+  assert.equal(automation.healthSummary.lastErrorSummary, "Wrapper command exited 1.");
+  assert.match(automation.healthSummary.nextAction, /Pause the schedule/);
+});
+
+test("public application snapshot aggregates application automation health", () => {
+  const snapshot = publicState(baseState({
+    applications: [{
+      id: "app_ccusage",
+      name: "ccusage",
+      kind: "npm",
+      source: { type: "npm", package: "@acme/ccusage" },
+      status: "active",
+      projectId: "proj_a",
+      ownerTeamId: "team_a",
+      createdAt: "2026-07-05T00:00:00.000Z",
+      updatedAt: "2026-07-05T00:00:00.000Z",
+    }],
+    automations: [{
+      id: "atm_failed",
+      name: "Daily report",
+      enabled: true,
+      kind: "application_capability",
+      projectId: "proj_a",
+      schedule: { kind: "daily", time: "09:00", label: "Daily at 09:00" },
+      nextRunAt: "2026-07-06T09:00:00.000Z",
+      agentId: "agt_platform_application_wrapper",
+      prompt: "Run daily report.",
+      target: {
+        type: "application_capability",
+        applicationId: "app_ccusage",
+        capabilityName: "app.app_ccusage.wrapper.daily",
+      },
+      createdAt: "2026-07-05T09:00:00.000Z",
+      updatedAt: "2026-07-05T09:00:00.000Z",
+    }, {
+      id: "atm_waiting",
+      name: "Weekly export",
+      enabled: true,
+      kind: "application_capability",
+      projectId: "proj_a",
+      schedule: { kind: "weekdays", time: "10:00", label: "Weekdays at 10:00" },
+      nextRunAt: "2026-07-06T10:00:00.000Z",
+      agentId: "agt_platform_application_wrapper",
+      prompt: "Run weekly export.",
+      target: {
+        type: "application_capability",
+        applicationId: "app_ccusage",
+        capabilityName: "app.app_ccusage.wrapper.export",
+      },
+      createdAt: "2026-07-05T10:00:00.000Z",
+      updatedAt: "2026-07-05T10:00:00.000Z",
+    }, {
+      id: "atm_paused",
+      name: "Paused cleanup",
+      enabled: false,
+      kind: "application_capability",
+      projectId: "proj_a",
+      schedule: { kind: "daily", time: "11:00", label: "Daily at 11:00" },
+      nextRunAt: null,
+      agentId: "agt_platform_application_wrapper",
+      prompt: "Run cleanup.",
+      target: {
+        type: "application_capability",
+        applicationId: "app_ccusage",
+        capabilityName: "app.app_ccusage.wrapper.cleanup",
+      },
+      createdAt: "2026-07-05T11:00:00.000Z",
+      updatedAt: "2026-07-05T11:00:00.000Z",
+    }],
+    invocations: [{
+      id: "inv_failed",
+      projectId: "proj_a",
+      agentId: "agt_platform_application_wrapper",
+      status: "failed",
+      result: { summary: "Wrapper command exited 1." },
+      delivery: { state: "not_required", deviceId: null },
+      cancellation: { state: "none" },
+      options: { metadata: { automationId: "atm_failed", scheduled: true } },
+      createdAt: "2026-07-05T09:01:00.000Z",
+    }, {
+      id: "inv_waiting",
+      projectId: "proj_a",
+      agentId: "agt_platform_application_wrapper",
+      status: "waiting_for_local_approval",
+      approvalRequestId: "apr_waiting",
+      delivery: { state: "not_required", deviceId: null },
+      cancellation: { state: "none" },
+      options: { metadata: { automationId: "atm_waiting", scheduled: true } },
+      createdAt: "2026-07-05T10:01:00.000Z",
+    }],
+    auditSummaries: [{
+      invocationId: "inv_failed",
+      errorSummary: "Wrapper command exited 1.",
+    }],
+  }));
+
+  const application = snapshot.applications.find((item) => item.id === "app_ccusage");
+  assert.equal(application.healthSummary.automationCounts.failing, 1);
+  assert.equal(application.healthSummary.automationCounts.waitingForApproval, 1);
+  assert.equal(application.healthSummary.automationCounts.paused, 1);
+  assert.equal(application.healthSummary.automationCounts.attention, 2);
+  assert.equal(application.healthSummary.latestAutomationAttention.automationId, "atm_failed");
+  assert.equal(application.healthSummary.latestAutomationAttention.name, "Daily report");
+  assert.equal(application.healthSummary.latestAutomationAttention.status, "failing");
+  assert.equal(application.healthSummary.latestAutomationAttention.latestInvocationId, "inv_failed");
+  assert.equal(application.healthSummary.latestAutomationAttention.lastErrorSummary, "Wrapper command exited 1.");
+});

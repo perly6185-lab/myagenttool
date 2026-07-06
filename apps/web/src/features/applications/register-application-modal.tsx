@@ -17,6 +17,7 @@ type SourceType = ApplicationSource["type"];
 export function RegisterApplicationModal({ open, onClose }: { open: boolean; onClose: () => void }) {
   const { data: state } = useConsoleState();
   const setSelectedApplicationId = useUiStore((s) => s.setSelectedApplicationId);
+  const setSelectedApplicationAutomationId = useUiStore((s) => s.setSelectedApplicationAutomationId);
   const { execute, pending, error, errorDetail } = useAsyncAction();
 
   const [sourceType, setSourceType] = useState<SourceType>("git");
@@ -96,6 +97,7 @@ export function RegisterApplicationModal({ open, onClose }: { open: boolean; onC
       const result = await api.registerApplication(body);
       if (result?.application?.id) {
         setSelectedApplicationId(result.application.id);
+        setSelectedApplicationAutomationId(null);
         onClose();
       }
       return result;

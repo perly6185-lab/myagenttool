@@ -288,8 +288,10 @@ export function createApplicationService({
     const app = findApplication(applicationId);
     if (!app) return null;
     const probedAt = now();
-    const probe = buildApplicationProbe(app);
+    const previousProbe = app.probe ?? null;
+    const probe = buildApplicationProbe(app, { checkedAt: probedAt });
     probe.mcpServers = mergeStoredMcpLiveProbeEvidence(app, probe.mcpServers);
+    const diff = previousProbe ? applicationProbeDiff(previousProbe, probe) : null;
     const autoRegisteredMcp = app.mcpAgent
       ? null
       : adoptProbeMcpAgent(app, probe.mcpServers, probedAt);
@@ -305,6 +307,7 @@ export function createApplicationService({
       mcpServers: probe.mcpServers.map(publicProbeMcpServer),
       autoRegisteredMcpAgentId: autoRegisteredMcp?.agentId ?? null,
       warnings: probe.warnings,
+      diff,
     };
     app.lifecycle = {
       ...app.lifecycle,
@@ -325,6 +328,13 @@ export function createApplicationService({
         declaredCapabilityCount: app.probe.capabilities.filter((capability) => capability.source === "declared").length,
         mcpServerCandidateCount: app.probe.mcpServers.length,
         autoRegisteredMcpAgentId: app.probe.autoRegisteredMcpAgentId,
+        probeDiff: diff,
+        wrapperReadiness: probe.wrapperReadiness ? {
+          state: probe.wrapperReadiness.state,
+          reason: probe.wrapperReadiness.reason,
+          commandCount: probe.wrapperReadiness.commandCount,
+          blockedCommandIds: probe.wrapperReadiness.blockedCommandIds,
+        } : null,
       },
     });
     persistStateSoon();
@@ -1017,8 +1027,11 @@ function projectNpmWrapperCapabilities(app, prefix, disabled) {
           wrapper: {
             mode: app.source.wrapper.mode,
             installState: app.source.wrapper.installState,
+            readiness: publicNpmWrapperReadiness(app.source.wrapper.readiness),
+            commandReadiness: publicNpmWrapperCommandReadiness(app.source.wrapper.readiness, command.id),
             commandId: command.id,
             commandType: command.commandType,
+            argInputs: publicNpmWrapperArgInputs(command.argInputs),
             timeoutSeconds: command.timeoutSeconds,
             cancellation: command.cancellation,
             envPolicy: command.envPolicy,
@@ -1051,6 +1064,21 @@ function capabilityReadiness(app, { disabled, kind, metadata }) {
   }
   if (kind === "npm_wrapper") {
     const installState = metadata?.wrapper?.installState ?? app.source?.wrapper?.installState ?? "unknown";
+    const wrapperReadiness = metadata?.wrapper?.readiness ?? null;
+    const commandReadiness = metadata?.wrapper?.commandReadiness ?? null;
+    if (wrapperReadiness && commandReadiness?.state && commandReadiness.state !== "ready") {
+      return {
+        state: "needs_setup",
+        reason: commandReadiness.reason ?? wrapperReadiness.reason ?? "wrapper_static_check_failed",
+        applicationStatus: app.status,
+        installState,
+        executionMode: "bridge_wrapper",
+        wrapperCheckedAt: wrapperReadiness.checkedAt ?? null,
+        applicationPath: wrapperReadiness.applicationPath ?? null,
+        packageJsonFound: wrapperReadiness.packageJsonFound ?? null,
+        commandReadiness,
+      };
+    }
     if (installState === "installed" && metadata?.wrapper?.policySupported === false) {
       return {
         state: "needs_consent",
@@ -1623,11 +1651,15 @@ function highestCapabilityRiskLevel(capabilities) {
   return highest;
 }
 
-function buildApplicationProbe(application) {
+function buildApplicationProbe(application, options = {}) {
   const warnings = [];
+  const metadata = readApplicationMetadata(application, warnings);
+  const wrapperReadiness = buildNpmWrapperReadiness(application, metadata, options.checkedAt ?? null);
+  if (application.source?.wrapper && wrapperReadiness) {
+    application.source.wrapper.readiness = wrapperReadiness;
+  }
   const managed = projectApplicationCapabilities(application).map(probeCapabilityFromManaged);
   const declared = declaredProbeCapabilities(application, warnings);
-  const metadata = readApplicationMetadata(application, warnings);
   const inferred = inferProbeCapabilities(application, metadata, warnings);
   const mcpServers = inferApplicationMcpServers(application, warnings);
   const capabilities = dedupeProbeCapabilities([...managed, ...declared, ...inferred]);
@@ -1650,7 +1682,114 @@ function buildApplicationProbe(application) {
     capabilities,
     mcpServers,
     warnings,
+    wrapperReadiness,
   };
+}
+
+function buildNpmWrapperReadiness(application, metadata, checkedAt = null) {
+  const wrapper = application.source?.wrapper;
+  if (application.source?.type !== "npm" || !wrapper || wrapper.mode !== "installed-wrapper") return null;
+  const approvedCommands = (wrapper.commands ?? []).filter((command) => command.status === "approved");
+  const applicationPath = resolveWrapperApplicationPath(application);
+  const base = applicationPath && existsSync(applicationPath) ? applicationPath : null;
+  const localPackage = base ? readPackageJson(base, []) : null;
+  const packageMetadata = localPackage ?? metadata?.package ?? null;
+
+  if (wrapper.installState !== "installed") {
+    return {
+      state: "needs_setup",
+      reason: "wrapper_not_confirmed_installed",
+      checkedAt,
+      applicationPath,
+      packageManager: wrapper.packageManager,
+      packageJsonFound: Boolean(packageMetadata),
+      commandCount: approvedCommands.length,
+      readyCommandIds: [],
+      blockedCommandIds: approvedCommands.map((command) => command.id),
+      commands: approvedCommands.map((command) => ({
+        id: command.id,
+        state: "needs_setup",
+        reason: "wrapper_not_confirmed_installed",
+      })),
+    };
+  }
+
+  if (!applicationPath) {
+    return wrapperReadinessBlocked({
+      reason: "wrapper_application_path_missing",
+      checkedAt,
+      applicationPath,
+      packageManager: wrapper.packageManager,
+      packageJsonFound: Boolean(packageMetadata),
+      commands: approvedCommands,
+    });
+  }
+
+  if (!base) {
+    return wrapperReadinessBlocked({
+      reason: "wrapper_application_path_not_found",
+      checkedAt,
+      applicationPath,
+      packageManager: wrapper.packageManager,
+      packageJsonFound: false,
+      commands: approvedCommands,
+    });
+  }
+
+  const commandReadiness = approvedCommands.map((command) =>
+    npmWrapperCommandReadiness(command, packageMetadata));
+  const blockedCommandIds = commandReadiness
+    .filter((command) => command.state !== "ready")
+    .map((command) => command.id);
+  return {
+    state: blockedCommandIds.length ? "needs_setup" : "ready",
+    reason: blockedCommandIds.length ? "wrapper_command_unresolved" : "wrapper_static_check_passed",
+    checkedAt,
+    applicationPath,
+    packageManager: wrapper.packageManager,
+    packageJsonFound: Boolean(packageMetadata),
+    commandCount: approvedCommands.length,
+    readyCommandIds: commandReadiness.filter((command) => command.state === "ready").map((command) => command.id),
+    blockedCommandIds,
+    commands: commandReadiness,
+  };
+}
+
+function wrapperReadinessBlocked({ reason, checkedAt, applicationPath, packageManager, packageJsonFound, commands }) {
+  return {
+    state: "needs_setup",
+    reason,
+    checkedAt,
+    applicationPath,
+    packageManager,
+    packageJsonFound,
+    commandCount: commands.length,
+    readyCommandIds: [],
+    blockedCommandIds: commands.map((command) => command.id),
+    commands: commands.map((command) => ({
+      id: command.id,
+      state: "needs_setup",
+      reason,
+    })),
+  };
+}
+
+function npmWrapperCommandReadiness(command, packageMetadata) {
+  if (command.commandType === "npm_script") {
+    if (!packageMetadata) return { id: command.id, state: "needs_setup", reason: "package_json_not_found" };
+    return Object.hasOwn(packageMetadata.scripts ?? {}, command.command)
+      ? { id: command.id, state: "ready", reason: "npm_script_found" }
+      : { id: command.id, state: "needs_setup", reason: "npm_script_not_found" };
+  }
+  if (command.commandType === "bin") {
+    if (!packageMetadata) return { id: command.id, state: "needs_setup", reason: "package_json_not_found" };
+    return Object.hasOwn(packageMetadata.bin ?? {}, command.command)
+      ? { id: command.id, state: "ready", reason: "package_bin_found" }
+      : { id: command.id, state: "needs_setup", reason: "package_bin_not_found" };
+  }
+  return command.command
+    ? { id: command.id, state: "ready", reason: "custom_command_declared" }
+    : { id: command.id, state: "needs_setup", reason: "custom_command_missing" };
 }
 
 function probeCapabilityFromManaged(capability) {
@@ -1673,6 +1812,91 @@ function probeCapabilityFromManaged(capability) {
   };
 }
 
+function applicationProbeDiff(previousProbe, nextProbe) {
+  const previousCapabilities = new Map((previousProbe?.capabilities ?? [])
+    .filter((capability) => capability?.name)
+    .map((capability) => [capability.name, capabilitySignature(capability)]));
+  const nextCapabilities = new Map((nextProbe?.capabilities ?? [])
+    .filter((capability) => capability?.name)
+    .map((capability) => [capability.name, capabilitySignature(capability)]));
+  const previousMcpServers = new Map((previousProbe?.mcpServers ?? [])
+    .filter((server) => server?.id)
+    .map((server) => [server.id, mcpServerSignature(server)]));
+  const nextMcpServers = new Map((nextProbe?.mcpServers ?? [])
+    .filter((server) => server?.id)
+    .map((server) => [server.id, mcpServerSignature(server)]));
+
+  return {
+    previousCheckedAt: previousProbe?.checkedAt ?? null,
+    addedCapabilityNames: sortedDifference(nextCapabilities, previousCapabilities),
+    removedCapabilityNames: sortedDifference(previousCapabilities, nextCapabilities),
+    changedCapabilityNames: sortedChangedKeys(previousCapabilities, nextCapabilities),
+    addedMcpServerIds: sortedDifference(nextMcpServers, previousMcpServers),
+    removedMcpServerIds: sortedDifference(previousMcpServers, nextMcpServers),
+    changedMcpServerIds: sortedChangedKeys(previousMcpServers, nextMcpServers),
+  };
+}
+
+function sortedDifference(left, right) {
+  return [...left.keys()].filter((key) => !right.has(key)).sort();
+}
+
+function sortedChangedKeys(previous, next) {
+  return [...next.keys()]
+    .filter((key) => previous.has(key) && previous.get(key) !== next.get(key))
+    .sort();
+}
+
+function capabilitySignature(capability) {
+  return stableJson({
+    source: capability?.source ?? null,
+    riskLevel: capability?.riskLevel ?? null,
+    riskTags: capability?.riskTags ?? [],
+    kind: capability?.kind ?? null,
+    metadata: probeCapabilityMetadataSignature(capability?.metadata ?? {}),
+  });
+}
+
+function probeCapabilityMetadataSignature(metadata) {
+  return deepOmitKeys(metadata, new Set(["checkedAt", "wrapperCheckedAt"]));
+}
+
+function mcpServerSignature(server) {
+  return stableJson({
+    serverName: server?.serverName ?? null,
+    source: server?.source ?? null,
+    sourcePath: server?.sourcePath ?? null,
+    transport: server?.transport ?? null,
+    toolNamespace: server?.toolNamespace ?? null,
+    allowedTools: server?.allowedTools ?? [],
+    sharedToolNames: server?.sharedToolNames ?? [],
+    status: server?.status ?? null,
+    confidence: server?.confidence ?? null,
+    autoRegister: server?.autoRegister ?? null,
+    autoRegisterReason: server?.autoRegisterReason ?? null,
+  });
+}
+
+function deepOmitKeys(value, omittedKeys) {
+  if (Array.isArray(value)) return value.map((item) => deepOmitKeys(item, omittedKeys));
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value)
+        .filter(([key]) => !omittedKeys.has(key))
+        .map(([key, item]) => [key, deepOmitKeys(item, omittedKeys)]),
+    );
+  }
+  return value;
+}
+
+function stableJson(value) {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
+  if (value && typeof value === "object") {
+    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableJson(value[key])}`).join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
 function findNpmWrapperCommand(application, commandId) {
   if (application.source?.type !== "npm") return null;
   return (application.source.wrapper?.commands ?? []).find((command) => command.id === commandId && command.status === "approved") ?? null;
@@ -1684,6 +1908,7 @@ function publicNpmWrapperSnapshot(wrapper) {
     mode: wrapper.mode,
     installState: wrapper.installState,
     packageManager: wrapper.packageManager,
+    readiness: publicNpmWrapperReadiness(wrapper.readiness),
     commands: (wrapper.commands ?? []).map((command) => ({
       id: command.id,
       displayName: command.displayName,
@@ -1692,6 +1917,7 @@ function publicNpmWrapperSnapshot(wrapper) {
       riskLevel: command.riskLevel,
       riskTags: command.riskTags,
       requiresApproval: command.requiresApproval,
+      argInputs: publicNpmWrapperArgInputs(command.argInputs),
       timeoutSeconds: command.timeoutSeconds,
       cancellation: command.cancellation,
       envPolicy: command.envPolicy,
@@ -1703,6 +1929,39 @@ function publicNpmWrapperSnapshot(wrapper) {
       resultImport: command.resultImport,
     })),
   };
+}
+
+function publicNpmWrapperReadiness(readiness) {
+  if (!readiness || typeof readiness !== "object" || Array.isArray(readiness)) return null;
+  return {
+    state: readiness.state ?? "unknown",
+    reason: readiness.reason ?? null,
+    checkedAt: readiness.checkedAt ?? null,
+    applicationPath: readiness.applicationPath ?? null,
+    packageManager: readiness.packageManager ?? null,
+    packageJsonFound: Boolean(readiness.packageJsonFound),
+    commandCount: readiness.commandCount ?? 0,
+    readyCommandIds: readiness.readyCommandIds ?? [],
+    blockedCommandIds: readiness.blockedCommandIds ?? [],
+    commands: (readiness.commands ?? []).map((command) => ({
+      id: command.id,
+      state: command.state ?? "unknown",
+      reason: command.reason ?? null,
+    })),
+  };
+}
+
+function publicNpmWrapperCommandReadiness(readiness, commandId) {
+  return publicNpmWrapperReadiness(readiness)?.commands.find((command) => command.id === commandId) ?? null;
+}
+
+function publicNpmWrapperArgInputs(argInputs) {
+  return (Array.isArray(argInputs) ? argInputs : []).map((input) => ({
+    key: input.key,
+    flag: input.flag,
+    type: input.type,
+    values: input.values ?? [],
+  }));
 }
 
 function publicApplicationWrapperPolicyConsents(application) {

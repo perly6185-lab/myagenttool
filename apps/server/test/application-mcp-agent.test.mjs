@@ -317,6 +317,51 @@ test("application probe autodetects a doocs/md MCP server and registers shared t
   }
 });
 
+test("application reprobe records capability diff and event evidence", () => {
+  const root = mkdtempSync(join(tmpdir(), "myagenttool-app-probe-diff-"));
+  const projectPath = join(root, "npm-app");
+  mkdirSync(projectPath, { recursive: true });
+  try {
+    writeFileSync(join(projectPath, "package.json"), JSON.stringify({
+      name: "probe-diff-app",
+      version: "1.0.0",
+      scripts: { lint: "eslint ." },
+    }), "utf8");
+
+    const { api } = runtime({ projectPath });
+    const actor = { userId: "usr_a", teamId: "team_local" };
+    const app = api.registerApplication({
+      id: "app_probe_diff",
+      name: "Probe Diff",
+      source: { type: "local", path: projectPath },
+    }, actor);
+
+    const first = api.probeApplication(app.id, actor);
+    assert.equal(first.probe.diff, null);
+    assert(first.probe.capabilityNames.includes("app.app_probe_diff.inferred.script.lint"));
+
+    writeFileSync(join(projectPath, "package.json"), JSON.stringify({
+      name: "probe-diff-app",
+      version: "1.0.0",
+      scripts: { test: "node --test" },
+    }), "utf8");
+
+    const second = api.probeApplication(app.id, actor);
+    assert.deepEqual(second.probe.diff.addedCapabilityNames, ["app.app_probe_diff.inferred.script.test"]);
+    assert.deepEqual(second.probe.diff.removedCapabilityNames, ["app.app_probe_diff.inferred.script.lint"]);
+    assert.deepEqual(second.probe.diff.changedCapabilityNames, []);
+    assert.deepEqual(second.probe.diff.addedMcpServerIds, []);
+    assert.deepEqual(second.probe.diff.removedMcpServerIds, []);
+
+    const probedEvents = api.state.events.filter((event) =>
+      event.type === "application_probed" && event.data?.applicationId === app.id);
+    const diffEvent = probedEvents.find((event) => event.data?.probeDiff);
+    assert.deepEqual(diffEvent.data.probeDiff.addedCapabilityNames, ["app.app_probe_diff.inferred.script.test"]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("application MCP tool calls doocs/md render_markdown and records result evidence", async () => {
   const root = mkdtempSync(join(tmpdir(), "myagenttool-app-mcp-render-"));
   const projectPath = join(root, "doocs-md");

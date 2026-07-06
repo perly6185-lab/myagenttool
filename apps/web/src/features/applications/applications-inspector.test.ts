@@ -19,6 +19,8 @@ import type { ApplicationOrchestrationRecoveryAgentCandidate, ConsoleSnapshot, I
 const apiMock = vi.hoisted(() => ({
   fetchState: vi.fn(),
   listApplicationCapabilities: vi.fn(),
+  createCapabilityInvocation: vi.fn(),
+  grantApplicationWrapperPolicyConsent: vi.fn(),
   listApplicationEvents: vi.fn(),
   listApplicationOrchestrationRuns: vi.fn(),
   getApplicationOrchestrationRun: vi.fn(),
@@ -28,6 +30,10 @@ const apiMock = vi.hoisted(() => ({
   requestApplicationOrchestrationRecoveryAction: vi.fn(),
   confirmApplicationMcpCandidate: vi.fn(),
   approveApproval: vi.fn(),
+  createAutomation: vi.fn(),
+  runAutomation: vi.fn(),
+  updateAutomation: vi.fn(),
+  deleteAutomation: vi.fn(),
   getApplicationDescriptors: vi.fn(),
   updateApplicationDescriptors: vi.fn(),
 }));
@@ -37,6 +43,8 @@ vi.mock("@/lib/api-client", async () => ({
   fetchState: apiMock.fetchState,
   api: {
     listApplicationCapabilities: apiMock.listApplicationCapabilities,
+    createCapabilityInvocation: apiMock.createCapabilityInvocation,
+    grantApplicationWrapperPolicyConsent: apiMock.grantApplicationWrapperPolicyConsent,
     listApplicationEvents: apiMock.listApplicationEvents,
     listApplicationOrchestrationRuns: apiMock.listApplicationOrchestrationRuns,
     getApplicationOrchestrationRun: apiMock.getApplicationOrchestrationRun,
@@ -46,13 +54,24 @@ vi.mock("@/lib/api-client", async () => ({
     requestApplicationOrchestrationRecoveryAction: apiMock.requestApplicationOrchestrationRecoveryAction,
     confirmApplicationMcpCandidate: apiMock.confirmApplicationMcpCandidate,
     approveApproval: apiMock.approveApproval,
+    createAutomation: apiMock.createAutomation,
+    runAutomation: apiMock.runAutomation,
+    updateAutomation: apiMock.updateAutomation,
+    deleteAutomation: apiMock.deleteAutomation,
     getApplicationDescriptors: apiMock.getApplicationDescriptors,
     updateApplicationDescriptors: apiMock.updateApplicationDescriptors,
   },
 }));
 
 beforeEach(() => {
+  HTMLElement.prototype.scrollIntoView = vi.fn();
   apiMock.listApplicationEvents.mockResolvedValue({ applicationId: "app", events: [] });
+  apiMock.createCapabilityInvocation.mockResolvedValue({ invocationId: "inv_wrapper_run", status: "queued" });
+  apiMock.grantApplicationWrapperPolicyConsent.mockResolvedValue({ consent: { state: "granted" } });
+  apiMock.createAutomation.mockResolvedValue({ automation: { id: "atm_app_daily", nextRunAt: "2026-07-05T09:00:00.000Z" } });
+  apiMock.runAutomation.mockResolvedValue({ invocationId: "inv_auto_run", status: "queued" });
+  apiMock.updateAutomation.mockResolvedValue({ automation: { id: "atm_app_daily" } });
+  apiMock.deleteAutomation.mockResolvedValue({});
 });
 
 afterEach(() => {
@@ -66,6 +85,7 @@ afterEach(() => {
     selectedInvocationId: null,
     selectedApplicationRun: null,
     selectedApplicationEventLevel: "all",
+    selectedApplicationAutomationId: null,
   });
 });
 
@@ -163,7 +183,7 @@ describe("ApplicationsInspector recovery guidance", () => {
     renderWithClient(createElement(ApplicationsInspector));
 
     expect(await screen.findByText("Latest result")).toBeTruthy();
-    expect(await screen.findByText("ccusage Daily Report")).toBeTruthy();
+    expect((await screen.findAllByText("ccusage Daily Report")).length).toBeGreaterThan(0);
     expect(await screen.findByText("Application timeline")).toBeTruthy();
     expect(await screen.findByText("application_probed")).toBeTruthy();
     expect(await screen.findByText(/2 capabilities/)).toBeTruthy();
@@ -175,6 +195,490 @@ describe("ApplicationsInspector recovery guidance", () => {
 
     expect(useUiStore.getState().section).toBe("invocations");
     expect(useUiStore.getState().selectedInvocationId).toBe("inv_app_ccusage");
+  });
+
+  it("renders probe diff groups in the probe card", async () => {
+    const state = closedLoopConsoleState();
+    state.applications![0].probe = {
+      status: "completed",
+      checkedAt: "2026-07-04T03:05:00.000Z",
+      summary: "NPM package ccusage@20.0.14 probed.",
+      capabilities: [],
+      diff: {
+        previousCheckedAt: "2026-07-04T03:00:00.000Z",
+        addedCapabilityNames: ["app.app_ccusage.wrapper.daily"],
+        removedCapabilityNames: ["app.app_ccusage.wrapper.weekly"],
+        changedMcpServerIds: ["mcp.ccusage"],
+      },
+    };
+    state.applications![0].wrapper = {
+      mode: "installed-wrapper",
+      installState: "installed",
+      readiness: {
+        state: "needs_setup",
+        reason: "wrapper_command_unresolved",
+        checkedAt: "2026-07-04T03:05:00.000Z",
+        readyCommandIds: ["daily"],
+        blockedCommandIds: ["weekly"],
+      },
+      commands: [],
+    };
+    apiMock.fetchState.mockResolvedValue(state);
+    apiMock.listApplicationCapabilities.mockResolvedValue({
+      applicationId: "app_ccusage",
+      capabilities: [],
+    });
+
+    useUiStore.setState({ selectedApplicationId: "app_ccusage" });
+    renderWithClient(createElement(ApplicationsInspector));
+
+    expect(await screen.findByText("Added capabilities")).toBeTruthy();
+    expect(screen.getByText("Removed capabilities")).toBeTruthy();
+    expect(screen.getByText("Changed MCP candidates")).toBeTruthy();
+    expect(screen.getAllByText("wrapper.daily").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("wrapper.weekly").length).toBeGreaterThan(0);
+    expect(screen.getByText("mcp.ccusage")).toBeTruthy();
+    expect(screen.getByText("wrapper_command_unresolved")).toBeTruthy();
+    expect(screen.getByText(/1 ready · 1 blocked/)).toBeTruthy();
+  });
+
+  it("runs a wrapper capability with descriptor-declared inputs", async () => {
+    apiMock.fetchState.mockResolvedValue(closedLoopConsoleState());
+    apiMock.listApplicationCapabilities.mockResolvedValue({
+      applicationId: "app_ccusage",
+      capabilities: [{
+        name: "app.app_ccusage.wrapper.daily",
+        displayName: "ccusage Daily Report",
+        kind: "npm_wrapper",
+        riskLevel: "low",
+        status: "available",
+        requiresApproval: false,
+        metadata: {
+          readiness: { state: "ready", reason: "wrapper_installed", executionMode: "bridge_wrapper" },
+          wrapper: {
+            commandId: "daily",
+            argInputs: [
+              { key: "since", flag: "--since", type: "date" },
+              { key: "source", flag: "--source", type: "enum", values: ["all", "codex"] },
+              { key: "offline", flag: "--offline", type: "boolean-flag" },
+            ],
+          },
+        },
+      }],
+    });
+
+    useUiStore.setState({ selectedApplicationId: "app_ccusage" });
+    renderWithClient(createElement(ApplicationsInspector));
+
+    fireEvent.change(await screen.findByLabelText("since"), { target: { value: "2026-07-01" } });
+    fireEvent.change(screen.getByLabelText("source"), { target: { value: "codex" } });
+    fireEvent.click(screen.getByLabelText("--offline"));
+    fireEvent.click(screen.getByRole("button", { name: /^Run$/i }));
+
+    await waitFor(() => expect(apiMock.createCapabilityInvocation).toHaveBeenCalledWith(
+      "app.app_ccusage.wrapper.daily",
+      { since: "2026-07-01", source: "codex", offline: true },
+    ));
+    expect(useUiStore.getState().section).toBe("invocations");
+    expect(useUiStore.getState().selectedInvocationId).toBe("inv_wrapper_run");
+  });
+
+  it("creates an application capability automation from a wrapper capability", async () => {
+    const state = closedLoopConsoleState();
+    state.applications![0].projectId = "prj_myagenttool";
+    apiMock.fetchState.mockResolvedValue(state);
+    apiMock.listApplicationCapabilities.mockResolvedValue({
+      applicationId: "app_ccusage",
+      capabilities: [{
+        name: "app.app_ccusage.wrapper.daily",
+        displayName: "ccusage Daily Report",
+        provider: { type: "application", id: "app_ccusage" },
+        kind: "npm_wrapper",
+        riskLevel: "low",
+        status: "available",
+        requiresApproval: false,
+        metadata: {
+          readiness: { state: "ready", reason: "wrapper_installed", executionMode: "bridge_wrapper" },
+          wrapper: { commandId: "daily", argInputs: [] },
+        },
+      }],
+    });
+
+    useUiStore.setState({ selectedApplicationId: "app_ccusage" });
+    renderWithClient(createElement(ApplicationsInspector));
+
+    fireEvent.click(await screen.findByRole("button", { name: /^Schedule$/i }));
+
+    await waitFor(() => expect(apiMock.createAutomation).toHaveBeenCalledWith({
+      kind: "application_capability",
+      name: "ccusage · ccusage Daily Report",
+      projectId: "prj_myagenttool",
+      enabled: true,
+      schedule: { kind: "daily", time: "09:00" },
+      target: {
+        type: "application_capability",
+        applicationId: "app_ccusage",
+        capabilityName: "app.app_ccusage.wrapper.daily",
+        input: {},
+      },
+    }));
+    expect(await screen.findByText(/Scheduled/)).toBeTruthy();
+  });
+
+  it("stores descriptor-declared wrapper inputs on an application capability automation", async () => {
+    const state = closedLoopConsoleState();
+    state.applications![0].projectId = "prj_myagenttool";
+    apiMock.fetchState.mockResolvedValue(state);
+    apiMock.listApplicationCapabilities.mockResolvedValue({
+      applicationId: "app_ccusage",
+      capabilities: [{
+        name: "app.app_ccusage.wrapper.daily",
+        displayName: "ccusage Daily Report",
+        provider: { type: "application", id: "app_ccusage" },
+        kind: "npm_wrapper",
+        riskLevel: "low",
+        status: "available",
+        requiresApproval: false,
+        metadata: {
+          readiness: { state: "ready", reason: "wrapper_installed", executionMode: "bridge_wrapper" },
+          wrapper: {
+            commandId: "daily",
+            argInputs: [
+              { key: "since", flag: "--since", type: "date" },
+              { key: "source", flag: "--source", type: "enum", values: ["all", "codex"] },
+              { key: "offline", flag: "--offline", type: "boolean-flag" },
+            ],
+          },
+        },
+      }],
+    });
+
+    useUiStore.setState({ selectedApplicationId: "app_ccusage" });
+    renderWithClient(createElement(ApplicationsInspector));
+
+    fireEvent.change(await screen.findByLabelText("Schedule since"), { target: { value: "2026-07-01" } });
+    fireEvent.change(screen.getByLabelText("Schedule source"), { target: { value: "codex" } });
+    fireEvent.click(screen.getByLabelText("Schedule --offline"));
+    fireEvent.click(screen.getByRole("button", { name: /^Schedule$/i }));
+
+    await waitFor(() => expect(apiMock.createAutomation).toHaveBeenCalledWith({
+      kind: "application_capability",
+      name: "ccusage · ccusage Daily Report",
+      projectId: "prj_myagenttool",
+      enabled: true,
+      schedule: { kind: "daily", time: "09:00" },
+      target: {
+        type: "application_capability",
+        applicationId: "app_ccusage",
+        capabilityName: "app.app_ccusage.wrapper.daily",
+        input: { since: "2026-07-01", source: "codex", offline: true },
+      },
+    }));
+  });
+
+  it("runs an existing application capability automation from the capability panel", async () => {
+    const state = closedLoopConsoleState();
+    state.applications![0].projectId = "prj_myagenttool";
+    state.automations = [{
+      id: "atm_app_daily",
+      name: "ccusage · ccusage Daily Report",
+      enabled: true,
+      kind: "application_capability",
+      projectId: "prj_myagenttool",
+      schedule: { kind: "daily", time: "09:00", label: "Daily at 09:00" },
+      nextRunAt: "2026-07-05T09:00:00.000Z",
+      agentId: "agt_platform_application_wrapper",
+      prompt: "Run application capability app.app_ccusage.wrapper.daily.",
+      lastRunAt: null,
+      lastInvocationId: "inv_app_ccusage",
+      runCount: 1,
+      target: {
+        type: "application_capability",
+        applicationId: "app_ccusage",
+        capabilityName: "app.app_ccusage.wrapper.daily",
+        input: {},
+      },
+    }];
+    apiMock.fetchState.mockResolvedValue(state);
+    apiMock.listApplicationCapabilities.mockResolvedValue({
+      applicationId: "app_ccusage",
+      capabilities: [{
+        name: "app.app_ccusage.wrapper.daily",
+        displayName: "ccusage Daily Report",
+        provider: { type: "application", id: "app_ccusage" },
+        kind: "npm_wrapper",
+        riskLevel: "low",
+        status: "available",
+        requiresApproval: false,
+        metadata: {
+          readiness: { state: "ready", reason: "wrapper_installed", executionMode: "bridge_wrapper" },
+          wrapper: { commandId: "daily", argInputs: [] },
+        },
+      }],
+    });
+
+    useUiStore.setState({ selectedApplicationId: "app_ccusage" });
+    renderWithClient(createElement(ApplicationsInspector));
+
+    expect(await screen.findByText(/Daily at 09:00/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Run automation now" }));
+
+    await waitFor(() => expect(apiMock.runAutomation).toHaveBeenCalledWith("atm_app_daily"));
+    expect(useUiStore.getState().section).toBe("invocations");
+    expect(useUiStore.getState().selectedInvocationId).toBe("inv_auto_run");
+  });
+
+  it("focuses a selected application automation and opens its approval run", async () => {
+    const state = closedLoopConsoleState();
+    state.applications![0].projectId = "prj_myagenttool";
+    state.automations = [{
+      id: "atm_app_daily",
+      name: "ccusage · ccusage Daily Report",
+      enabled: true,
+      kind: "application_capability",
+      projectId: "prj_myagenttool",
+      schedule: { kind: "daily", time: "09:00", label: "Daily at 09:00" },
+      nextRunAt: "2026-07-05T09:00:00.000Z",
+      agentId: "agt_platform_application_wrapper",
+      prompt: "Run application capability app.app_ccusage.wrapper.daily.",
+      lastRunAt: "2026-07-05T09:00:00.000Z",
+      lastInvocationId: "inv_auto_waiting",
+      runCount: 1,
+      healthSummary: {
+        automationId: "atm_app_daily",
+        status: "waiting_for_approval",
+        failureStreak: 0,
+        runCount: 1,
+        latestRun: {
+          invocationId: "inv_auto_waiting",
+          status: "waiting_for_local_approval",
+          scheduled: true,
+          createdAt: "2026-07-05T09:00:00.000Z",
+        },
+        nextAction: "Resolve the linked approval request before the automation can continue.",
+      },
+      target: {
+        type: "application_capability",
+        applicationId: "app_ccusage",
+        capabilityName: "app.app_ccusage.wrapper.daily",
+        input: {},
+      },
+    }];
+    apiMock.fetchState.mockResolvedValue(state);
+    apiMock.listApplicationCapabilities.mockResolvedValue({
+      applicationId: "app_ccusage",
+      capabilities: [{
+        name: "app.app_ccusage.wrapper.daily",
+        displayName: "ccusage Daily Report",
+        provider: { type: "application", id: "app_ccusage" },
+        kind: "npm_wrapper",
+        riskLevel: "low",
+        status: "available",
+        requiresApproval: false,
+        metadata: {
+          readiness: { state: "ready", reason: "wrapper_installed", executionMode: "bridge_wrapper" },
+          wrapper: { commandId: "daily", argInputs: [] },
+        },
+      }],
+    });
+
+    useUiStore.setState({
+      selectedApplicationId: "app_ccusage",
+      selectedApplicationAutomationId: "atm_app_daily",
+    });
+    renderWithClient(createElement(ApplicationsInspector));
+
+    expect(await screen.findByText("focused")).toBeTruthy();
+    expect(screen.getByText("Approval")).toBeTruthy();
+    expect(screen.getByText(/Resolve the linked approval request before the automation can continue/)).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: /Review approval/i }));
+
+    expect(useUiStore.getState().section).toBe("invocations");
+    expect(useUiStore.getState().selectedInvocationId).toBe("inv_auto_waiting");
+  });
+
+  it("surfaces consecutive failures for scheduled application capability runs", async () => {
+    const state = closedLoopConsoleState();
+    state.applications![0].projectId = "prj_myagenttool";
+    state.invocations = [
+      {
+        id: "inv_auto_failed_new",
+        status: "failed",
+        agentId: "agt_platform_application_wrapper",
+        createdAt: "2026-07-05T11:00:00.000Z",
+        result: { summary: "Wrapper command exited 1." },
+        options: {
+          metadata: {
+            providerType: "application",
+            applicationId: "app_ccusage",
+            capability: "app.app_ccusage.wrapper.daily",
+            automationId: "atm_app_daily",
+            automationName: "ccusage · ccusage Daily Report",
+            scheduled: true,
+          },
+        },
+      },
+      {
+        id: "inv_auto_failed_old",
+        status: "failed",
+        agentId: "agt_platform_application_wrapper",
+        createdAt: "2026-07-05T10:00:00.000Z",
+        options: {
+          metadata: {
+            providerType: "application",
+            applicationId: "app_ccusage",
+            capability: "app.app_ccusage.wrapper.daily",
+            automationId: "atm_app_daily",
+            automationName: "ccusage · ccusage Daily Report",
+            scheduled: true,
+          },
+        },
+      },
+    ];
+    state.auditSummaries = [{
+      invocationId: "inv_auto_failed_new",
+      errorSummary: "Wrapper command exited 1.",
+    }];
+    state.automations = [{
+      id: "atm_app_daily",
+      name: "ccusage · ccusage Daily Report",
+      enabled: true,
+      kind: "application_capability",
+      projectId: "prj_myagenttool",
+      schedule: { kind: "daily", time: "09:00", label: "Daily at 09:00" },
+      nextRunAt: "2026-07-06T09:00:00.000Z",
+      agentId: "agt_platform_application_wrapper",
+      prompt: "Run application capability app.app_ccusage.wrapper.daily.",
+      lastRunAt: "2026-07-05T11:00:00.000Z",
+      lastInvocationId: "inv_auto_failed_new",
+      runCount: 2,
+      target: {
+        type: "application_capability",
+        applicationId: "app_ccusage",
+        capabilityName: "app.app_ccusage.wrapper.daily",
+        input: {},
+      },
+    }];
+    apiMock.fetchState.mockResolvedValue(state);
+    apiMock.listApplicationCapabilities.mockResolvedValue({
+      applicationId: "app_ccusage",
+      capabilities: [{
+        name: "app.app_ccusage.wrapper.daily",
+        displayName: "ccusage Daily Report",
+        provider: { type: "application", id: "app_ccusage" },
+        kind: "npm_wrapper",
+        riskLevel: "low",
+        status: "available",
+        requiresApproval: false,
+        metadata: {
+          readiness: { state: "ready", reason: "wrapper_installed", executionMode: "bridge_wrapper" },
+          wrapper: { commandId: "daily", argInputs: [] },
+        },
+      }],
+    });
+
+    useUiStore.setState({ selectedApplicationId: "app_ccusage" });
+    renderWithClient(createElement(ApplicationsInspector));
+
+    expect(await screen.findByText("2 consecutive failures")).toBeTruthy();
+    expect(screen.getAllByText("Wrapper command exited 1.").length).toBeGreaterThan(0);
+    expect(screen.getByText(/Pause the schedule/)).toBeTruthy();
+    expect(screen.getByRole("button", { name: /View latest run/i })).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: /View latest run/i }));
+    expect(useUiStore.getState().section).toBe("invocations");
+    expect(useUiStore.getState().selectedInvocationId).toBe("inv_auto_failed_new");
+  });
+
+  it("approves and retries a wrapper run when per-run approval is required", async () => {
+    apiMock.fetchState.mockResolvedValue(closedLoopConsoleState());
+    apiMock.approveApproval.mockResolvedValue({ approval: { id: "apr_run", status: "approved" } });
+    apiMock.createCapabilityInvocation
+      .mockResolvedValueOnce({ approvalRequestId: "apr_run", status: "waiting_for_local_approval" })
+      .mockResolvedValueOnce({ invocationId: "inv_after_approval", status: "queued" });
+    apiMock.listApplicationCapabilities.mockResolvedValue({
+      applicationId: "app_ccusage",
+      capabilities: [{
+        name: "app.app_ccusage.wrapper.session",
+        displayName: "ccusage Session Report",
+        provider: { type: "application", id: "app_ccusage" },
+        kind: "npm_wrapper",
+        riskLevel: "medium",
+        status: "available",
+        requiresApproval: true,
+        metadata: {
+          readiness: { state: "ready", reason: "wrapper_installed", executionMode: "bridge_wrapper" },
+          wrapper: { commandId: "session", policySupported: true, argInputs: [] },
+        },
+      }],
+    });
+
+    useUiStore.setState({ selectedApplicationId: "app_ccusage" });
+    renderWithClient(createElement(ApplicationsInspector));
+
+    fireEvent.click(await screen.findByRole("button", { name: /^Run$/i }));
+
+    await waitFor(() => expect(apiMock.approveApproval).toHaveBeenCalledWith("apr_run"));
+    expect(apiMock.createCapabilityInvocation).toHaveBeenNthCalledWith(1, "app.app_ccusage.wrapper.session", {});
+    expect(apiMock.createCapabilityInvocation).toHaveBeenNthCalledWith(2, "app.app_ccusage.wrapper.session", { approvalRequestId: "apr_run" });
+    expect(useUiStore.getState().selectedInvocationId).toBe("inv_after_approval");
+  });
+
+  it("grants wrapper policy consent before running a policy-blocked command", async () => {
+    apiMock.fetchState.mockResolvedValue(closedLoopConsoleState());
+    apiMock.approveApproval.mockResolvedValue({ approval: { id: "apr_policy", status: "approved" } });
+    apiMock.grantApplicationWrapperPolicyConsent
+      .mockResolvedValueOnce({ approvalRequestId: "apr_policy", status: "waiting_for_local_approval" })
+      .mockResolvedValueOnce({ consent: { state: "granted" } });
+    apiMock.createCapabilityInvocation.mockResolvedValueOnce({ invocationId: "inv_policy_run", status: "queued" });
+    apiMock.listApplicationCapabilities.mockResolvedValue({
+      applicationId: "app_ccusage",
+      capabilities: [{
+        name: "app.app_ccusage.wrapper.deploy",
+        displayName: "Deploy",
+        provider: { type: "application", id: "app_ccusage" },
+        kind: "npm_wrapper",
+        riskLevel: "high",
+        status: "disabled",
+        requiresApproval: true,
+        metadata: {
+          readiness: { state: "needs_consent", reason: "wrapper_policy_requires_explicit_consent", executionMode: "bridge_wrapper" },
+          wrapper: {
+            commandId: "deploy",
+            policySupported: false,
+            filePolicy: "workspace_write",
+            networkPolicy: "network",
+            argInputs: [],
+          },
+        },
+      }],
+    });
+
+    useUiStore.setState({ selectedApplicationId: "app_ccusage" });
+    renderWithClient(createElement(ApplicationsInspector));
+
+    fireEvent.click(await screen.findByRole("button", { name: /^Run$/i }));
+
+    await waitFor(() => expect(apiMock.grantApplicationWrapperPolicyConsent).toHaveBeenCalledTimes(2));
+    expect(apiMock.approveApproval).toHaveBeenCalledWith("apr_policy");
+    expect(apiMock.grantApplicationWrapperPolicyConsent).toHaveBeenNthCalledWith(
+      1,
+      "app_ccusage",
+      "deploy",
+      { reason: "Allow wrapper command deploy policy for app.app_ccusage.wrapper.deploy." },
+    );
+    expect(apiMock.grantApplicationWrapperPolicyConsent).toHaveBeenNthCalledWith(
+      2,
+      "app_ccusage",
+      "deploy",
+      {
+        approvalRequestId: "apr_policy",
+        reason: "Allow wrapper command deploy policy for app.app_ccusage.wrapper.deploy.",
+      },
+    );
+    expect(apiMock.createCapabilityInvocation).toHaveBeenCalledWith("app.app_ccusage.wrapper.deploy", {});
+    expect(useUiStore.getState().selectedInvocationId).toBe("inv_policy_run");
   });
 
   it("summarizes and filters application timeline events by level", async () => {
@@ -234,6 +738,106 @@ describe("ApplicationsInspector recovery guidance", () => {
     expect(screen.queryByText("application_wrapper_warning")).toBeNull();
   });
 
+  it("shows application run history diagnostics and filters timeline by capability", async () => {
+    const state = closedLoopConsoleState();
+    state.invocations = [{
+      id: "inv_daily_failed",
+      status: "failed",
+      agentId: "agt_platform_application_wrapper",
+      createdAt: "2026-07-04T04:00:00.000Z",
+      options: {
+        metadata: {
+          providerType: "application",
+          applicationId: "app_ccusage",
+          capability: "app.app_ccusage.wrapper.daily",
+          applicationWrapper: { commandId: "daily" },
+        },
+      },
+    }, {
+      id: "inv_weekly_ok",
+      status: "succeeded",
+      agentId: "agt_platform_application_wrapper",
+      createdAt: "2026-07-04T03:30:00.000Z",
+      result: { summary: "Weekly report imported." },
+      options: {
+        metadata: {
+          providerType: "application",
+          applicationId: "app_ccusage",
+          capability: "app.app_ccusage.wrapper.weekly",
+          applicationWrapper: { commandId: "weekly" },
+        },
+      },
+    }];
+    state.auditSummaries = [{
+      invocationId: "inv_daily_failed",
+      errorSummary: "agent_not_available: Application Wrapper Runner is not available.",
+    }];
+    apiMock.fetchState.mockResolvedValue(state);
+    apiMock.listApplicationCapabilities.mockResolvedValue({
+      applicationId: "app_ccusage",
+      capabilities: [{
+        name: "app.app_ccusage.wrapper.daily",
+        displayName: "Daily",
+        provider: { type: "application", id: "app_ccusage" },
+        kind: "npm_wrapper",
+        riskLevel: "low",
+        status: "available",
+        requiresApproval: false,
+        metadata: {
+          readiness: { state: "ready", reason: "wrapper_installed", executionMode: "bridge_wrapper" },
+          wrapper: { commandId: "daily", policySupported: true, argInputs: [] },
+        },
+      }, {
+        name: "app.app_ccusage.wrapper.weekly",
+        displayName: "Weekly",
+        provider: { type: "application", id: "app_ccusage" },
+        kind: "npm_wrapper",
+        riskLevel: "low",
+        status: "available",
+        requiresApproval: false,
+        metadata: {
+          readiness: { state: "ready", reason: "wrapper_installed", executionMode: "bridge_wrapper" },
+          wrapper: { commandId: "weekly", policySupported: true, argInputs: [] },
+        },
+      }],
+    });
+    apiMock.listApplicationEvents.mockResolvedValue({
+      applicationId: "app_ccusage",
+      events: [{
+        id: "evt_daily",
+        invocationId: "inv_daily_failed",
+        type: "application_wrapper_failed",
+        level: "error",
+        message: "Daily failed.",
+        data: { applicationId: "app_ccusage", capability: "app.app_ccusage.wrapper.daily", commandId: "daily" },
+        createdAt: "2026-07-04T04:01:00.000Z",
+      }, {
+        id: "evt_weekly",
+        invocationId: "inv_weekly_ok",
+        type: "application_wrapper_completed",
+        level: "info",
+        message: "Weekly completed.",
+        data: { applicationId: "app_ccusage", capability: "app.app_ccusage.wrapper.weekly", commandId: "weekly" },
+        createdAt: "2026-07-04T03:31:00.000Z",
+      }],
+    });
+
+    useUiStore.setState({ selectedApplicationId: "app_ccusage" });
+    renderWithClient(createElement(ApplicationsInspector));
+
+    expect(await screen.findByText("Latest activity")).toBeTruthy();
+    expect(screen.getAllByText("Agent unavailable").length).toBeGreaterThan(0);
+    expect(screen.getByText(/Register or enable the required application runner/)).toBeTruthy();
+    expect(await screen.findByText("inv_daily_failed")).toBeTruthy();
+
+    fireEvent.change(screen.getByLabelText("Application event capability filter"), {
+      target: { value: "app.app_ccusage.wrapper.weekly" },
+    });
+
+    expect(screen.getByText("Weekly completed.")).toBeTruthy();
+    expect(screen.queryByText("Daily failed.")).toBeNull();
+  });
+
   it("edits existing npm wrapper descriptors from the inspector", async () => {
     apiMock.fetchState.mockResolvedValue(closedLoopConsoleState());
     apiMock.listApplicationCapabilities.mockResolvedValue({
@@ -266,7 +870,9 @@ describe("ApplicationsInspector recovery guidance", () => {
     fireEvent.click(screen.getByRole("button", { name: /Edit descriptors/i }));
 
     const wrapperEditor = await screen.findByLabelText("npm wrapper descriptor JSON");
-    expect((wrapperEditor as HTMLTextAreaElement).value).toContain('"command": "ccusage"');
+    await waitFor(() => {
+      expect((wrapperEditor as HTMLTextAreaElement).value).toContain('"command": "ccusage"');
+    });
 
     fireEvent.change(screen.getByLabelText("Wrapper command id"), { target: { value: "weekly" } });
     fireEvent.change(screen.getByLabelText("Display name"), { target: { value: "Weekly usage" } });
@@ -397,7 +1003,7 @@ describe("ApplicationsInspector recovery guidance", () => {
     expect(screen.getByText("high confidence")).toBeTruthy();
     expect(screen.getByText("node_entrypoint_inside_application_root")).toBeTruthy();
     expect(screen.getAllByText("render_markdown").length).toBeGreaterThan(0);
-    expect(screen.getByText("inv_doocs_render")).toBeTruthy();
+    expect(screen.getAllByText("inv_doocs_render").length).toBeGreaterThan(0);
 
     fireEvent.click(screen.getByRole("button", { name: /View invocation/i }));
 

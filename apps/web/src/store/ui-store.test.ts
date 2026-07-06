@@ -17,6 +17,7 @@ describe("ui-store persistence", () => {
       invocationId: "inv_123",
     });
     useUiStore.getState().setSelectedApplicationEventLevel("error");
+    useUiStore.getState().setSelectedApplicationAutomationId("atm_123");
     useUiStore.getState().setSelectedEvidenceId("ev_123");
 
     const raw = localStorage.getItem("myagenttool-ui");
@@ -31,6 +32,7 @@ describe("ui-store persistence", () => {
       invocationId: "inv_123",
     });
     expect(parsed.state.selectedApplicationEventLevel).toBe("error");
+    expect(parsed.state.selectedApplicationAutomationId).toBe("atm_123");
     expect(parsed.state.selectedEvidenceId).toBe("ev_123");
     // Setter functions must never be serialized.
     expect(parsed.state.setSection).toBeUndefined();
@@ -41,7 +43,7 @@ describe("ui-store persistence", () => {
 
 describe("URL navigation helpers", () => {
   it("parses valid navigation params and ignores unknown sections", () => {
-    expect(navigationFromSearch("?section=applications&application=app_1&routine=routine_1&run=inv_1&eventLevel=error&evidence=ev_1")).toEqual({
+    expect(navigationFromSearch("?section=applications&application=app_1&routine=routine_1&run=inv_1&eventLevel=error&automation=atm_1&evidence=ev_1")).toEqual({
       section: "applications",
       selectedInvocationId: null,
       selectedApplicationId: "app_1",
@@ -51,6 +53,7 @@ describe("URL navigation helpers", () => {
         invocationId: "inv_1",
       },
       selectedApplicationEventLevel: "error",
+      selectedApplicationAutomationId: "atm_1",
       selectedEvidenceId: "ev_1",
     });
 
@@ -58,6 +61,7 @@ describe("URL navigation helpers", () => {
       selectedInvocationId: null,
       selectedApplicationId: "app_1",
       selectedApplicationRun: null,
+      selectedApplicationAutomationId: null,
       selectedEvidenceId: null,
     });
     expect(navigationFromSearch("")).toEqual({});
@@ -74,6 +78,7 @@ describe("URL navigation helpers", () => {
         invocationId: "inv_run",
       },
       selectedApplicationEventLevel: "warning",
+      selectedApplicationAutomationId: "atm_selected",
       selectedEvidenceId: "ev_selected",
     });
     const params = new URLSearchParams(search);
@@ -85,22 +90,25 @@ describe("URL navigation helpers", () => {
     expect(params.get("routine")).toBe("routine_run");
     expect(params.get("run")).toBe("inv_run");
     expect(params.get("eventLevel")).toBe("warning");
+    expect(params.get("automation")).toBe("atm_selected");
     expect(params.get("evidence")).toBe("ev_selected");
   });
 
-  it("clears stale evidence params when evidence is absent from navigation state", () => {
-    const search = searchFromNavigationState("?keep=yes&section=audit&evidence=old_ev", {
+  it("clears stale evidence and application automation params when absent from navigation state", () => {
+    const search = searchFromNavigationState("?keep=yes&section=audit&automation=old_atm&evidence=old_ev", {
       section: "audit",
       selectedInvocationId: null,
       selectedApplicationId: null,
       selectedApplicationRun: null,
       selectedApplicationEventLevel: "all",
+      selectedApplicationAutomationId: null,
       selectedEvidenceId: null,
     });
     const params = new URLSearchParams(search);
 
     expect(params.get("keep")).toBe("yes");
     expect(params.get("section")).toBe("audit");
+    expect(params.get("automation")).toBeNull();
     expect(params.get("evidence")).toBeNull();
   });
 });

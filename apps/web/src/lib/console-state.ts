@@ -747,6 +747,14 @@ export interface AutomationSnapshot {
   id: string;
   name: string;
   enabled: boolean;
+  healthSummary?: AutomationHealthSummary | null;
+  kind?: "prompt" | "application_capability" | string;
+  target?: {
+    type?: "application_capability" | string;
+    applicationId?: string | null;
+    capabilityName?: string | null;
+    input?: Record<string, unknown> | null;
+  } | null;
   projectId: string;
   branch?: string;
   schedule: AutomationSchedule;
@@ -757,8 +765,28 @@ export interface AutomationSnapshot {
   agentId: string;
   prompt: string;
   lastRunAt: string | null;
+  lastInvocationId?: string | null;
   runCount?: number;
   tokens?: number;
+}
+
+export interface AutomationHealthSummary {
+  automationId?: string | null;
+  status?: "healthy" | "failing" | "waiting_for_approval" | "running" | "paused" | "scheduled" | string;
+  failureStreak?: number;
+  runCount?: number;
+  latestRun?: {
+    invocationId?: string | null;
+    status?: string | null;
+    scheduled?: boolean;
+    createdAt?: string | null;
+    completedAt?: string | null;
+    resultSummary?: string | null;
+    errorSummary?: string | null;
+  } | null;
+  lastErrorSummary?: string | null;
+  nextAction?: string | null;
+  updatedAt?: string | null;
 }
 
 export type AgentSkillTarget = "claude" | "codex";
@@ -835,7 +863,29 @@ export type ApplicationSource =
 export interface NpmWrapperSnapshot {
   mode?: string;
   installState?: string;
-  commands?: { id: string; commandType?: string; command?: string; status?: string; riskLevel?: string }[];
+  packageManager?: string;
+  readiness?: NpmWrapperReadinessSnapshot | null;
+  commands?: { id: string; commandType?: string; command?: string; status?: string; riskLevel?: string; argInputs?: NpmWrapperArgInputSnapshot[] }[];
+}
+
+export interface NpmWrapperReadinessSnapshot {
+  state?: string;
+  reason?: string | null;
+  checkedAt?: string | null;
+  applicationPath?: string | null;
+  packageManager?: string | null;
+  packageJsonFound?: boolean;
+  commandCount?: number;
+  readyCommandIds?: string[];
+  blockedCommandIds?: string[];
+  commands?: { id: string; state?: string; reason?: string | null }[];
+}
+
+export interface NpmWrapperArgInputSnapshot {
+  key: string;
+  flag?: string;
+  type?: "date" | "token" | "enum" | "string" | "boolean-flag" | string;
+  values?: string[];
 }
 
 export interface ApplicationProbeCapability {
@@ -875,6 +925,16 @@ export interface ApplicationProbeMcpServer {
   };
 }
 
+export interface ApplicationProbeDiff {
+  previousCheckedAt?: string | null;
+  addedCapabilityNames?: string[];
+  removedCapabilityNames?: string[];
+  changedCapabilityNames?: string[];
+  addedMcpServerIds?: string[];
+  removedMcpServerIds?: string[];
+  changedMcpServerIds?: string[];
+}
+
 export interface ApplicationProbe {
   status?: string;
   checkedAt?: string | null;
@@ -886,6 +946,7 @@ export interface ApplicationProbe {
   mcpServers?: ApplicationProbeMcpServer[];
   autoRegisteredMcpAgentId?: string | null;
   confirmedMcpAgentId?: string | null;
+  diff?: ApplicationProbeDiff | null;
   warnings?: string[];
 }
 
@@ -1108,6 +1169,21 @@ export interface ApplicationHealthSummary {
   lastEventAt?: string | null;
   latestAttentionEvent?: ApplicationEventSnapshot | null;
   latestRecoveryAction?: ApplicationRecoveryActionRequest | null;
+  automationCounts?: {
+    failing: number;
+    waitingForApproval: number;
+    paused: number;
+    attention: number;
+  };
+  latestAutomationAttention?: {
+    automationId?: string | null;
+    name?: string | null;
+    status?: "healthy" | "failing" | "waiting_for_approval" | "running" | "paused" | "scheduled" | string;
+    failureStreak?: number;
+    latestInvocationId?: string | null;
+    lastErrorSummary?: string | null;
+    nextAction?: string | null;
+  } | null;
 }
 
 export interface ApplicationSnapshot {
@@ -1203,6 +1279,16 @@ export interface ApplicationCapability {
       applicationStatus?: string;
       installState?: string;
       executionMode?: string;
+    };
+    wrapper?: {
+      commandId?: string;
+      commandType?: string;
+      argInputs?: NpmWrapperArgInputSnapshot[];
+      filePolicy?: string;
+      networkPolicy?: string;
+      policySupported?: boolean;
+      policyUnsupportedReason?: string | null;
+      [key: string]: unknown;
     };
     resultPath?: {
       outputCollection?: string;

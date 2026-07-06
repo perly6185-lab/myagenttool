@@ -19,6 +19,8 @@ export async function handleControlPlaneRoutes({
   findAgent,
   defaultAgent,
   createInvocation,
+  createCapabilityInvocation,
+  getCapability,
   startInvocationIfAllowed,
   persistStateSoon,
   budgetStatusFor,
@@ -169,8 +171,14 @@ export async function handleControlPlaneRoutes({
   }
 
   if (req.method === "POST" && url.pathname === "/api/automations") {
-    const body = await readJson(req);
-    const projectId = String(body.projectId ?? "").trim();
+    const rawBody = await readJson(req);
+    const body = rawBody && typeof rawBody === "object" && !Array.isArray(rawBody) ? rawBody : {};
+    const target = normalizeAutomationTarget(body, { getCapability, actor });
+    if (!target.ok) {
+      sendJson(res, target.status, target.body);
+      return true;
+    }
+    const projectId = String(body.projectId ?? target.projectId ?? "").trim();
     if (!state.projects.some((item) => item.id === projectId)) {
       sendJson(res, 400, { error: "invalid_automation", message: "A known projectId is required." });
       return true;
@@ -197,7 +205,9 @@ export async function handleControlPlaneRoutes({
       graceHours: Number.isFinite(Number(body.graceHours)) ? Number(body.graceHours) : 12,
       precheck: typeof body.precheck === "string" && body.precheck.trim() ? body.precheck.trim() : "None",
       agentId: findAgent(body.agentId)?.id ?? defaultAgent()?.id ?? null,
-      prompt: String(body.prompt ?? ""),
+      kind: target.kind,
+      target: target.target,
+      prompt: String(body.prompt ?? target.prompt ?? ""),
       lastRunAt: null,
       lastInvocationId: null,
       runCount: 0,
@@ -222,6 +232,16 @@ export async function handleControlPlaneRoutes({
       return true;
     }
     const agent = findAgent(automation.agentId) ?? defaultAgent();
+    if (automation.kind === "application_capability") {
+      const result = runApplicationCapabilityAutomation(automation, {
+        actor,
+        createCapabilityInvocation,
+        now,
+        persistStateSoon,
+      });
+      sendJson(res, result.status, result.body);
+      return true;
+    }
     if (!agent) {
       sendJson(res, 404, { error: "agent_not_found" });
       return true;
@@ -272,6 +292,17 @@ export async function handleControlPlaneRoutes({
     }
     if (patch.name !== undefined) automation.name = String(patch.name).trim() || automation.name;
     if (patch.prompt !== undefined) automation.prompt = String(patch.prompt);
+    if (patch.target !== undefined || patch.kind !== undefined) {
+      const target = normalizeAutomationTarget({ ...automation, ...patch }, { getCapability, actor });
+      if (!target.ok) {
+        sendJson(res, target.status, target.body);
+        return true;
+      }
+      automation.kind = target.kind;
+      automation.target = target.target;
+      if (target.projectId) automation.projectId = target.projectId;
+      if (!automation.prompt && target.prompt) automation.prompt = target.prompt;
+    }
     if (patch.schedule !== undefined) automation.schedule = normalizeSchedule(patch.schedule);
     if (patch.agentId !== undefined && findAgent(patch.agentId)) automation.agentId = patch.agentId;
     if (patch.branch !== undefined) automation.branch = String(patch.branch);
@@ -288,4 +319,75 @@ export async function handleControlPlaneRoutes({
   }
 
   return false;
+}
+
+export function runApplicationCapabilityAutomation(automation, {
+  actor = null,
+  createCapabilityInvocation,
+  now,
+  persistStateSoon = () => {},
+} = {}) {
+  const target = automation?.target ?? {};
+  const capabilityName = typeof target.capabilityName === "string" ? target.capabilityName.trim() : "";
+  if (!capabilityName || typeof createCapabilityInvocation !== "function") {
+    return { status: 400, body: { error: "invalid_automation", message: "Application capability automation target is missing." } };
+  }
+  const input = target.input && typeof target.input === "object" && !Array.isArray(target.input) ? target.input : {};
+  const response = createCapabilityInvocation(capabilityName, {
+    ...input,
+    projectId: automation.projectId,
+  }, actor, {
+    automation: { id: automation.id, name: automation.name, scheduled: false },
+  });
+  const body = response?.body ?? {};
+  const invocationId = body.invocationId ?? body.invocation?.id ?? null;
+  if (invocationId) automation.lastInvocationId = invocationId;
+  automation.lastRunAt = now();
+  automation.runCount = (automation.runCount ?? 0) + 1;
+  persistStateSoon();
+  return {
+    status: response?.status ?? 202,
+    body: {
+      ...body,
+      automation,
+    },
+  };
+}
+
+export function normalizeAutomationTarget(body = {}, { getCapability = () => null, actor = null } = {}) {
+  const source = body && typeof body === "object" && !Array.isArray(body) ? body : {};
+  const rawKind = typeof source.kind === "string" ? source.kind : source.target?.type;
+  if (rawKind !== "application_capability") {
+    return { ok: true, kind: "prompt", target: null, projectId: null, prompt: null };
+  }
+  const rawTarget = source.target && typeof source.target === "object" && !Array.isArray(source.target) ? source.target : source;
+  const capabilityName = String(rawTarget.capabilityName ?? rawTarget.capability ?? "").trim();
+  if (!capabilityName) {
+    return {
+      ok: false,
+      status: 400,
+      body: { error: "invalid_automation", message: "Application capability automation requires capabilityName." },
+    };
+  }
+  const capability = getCapability(capabilityName, actor);
+  if (!capability || capability.provider?.type !== "application") {
+    return {
+      ok: false,
+      status: 404,
+      body: { error: "capability_not_found", message: "Application capability was not found." },
+    };
+  }
+  const input = rawTarget.input && typeof rawTarget.input === "object" && !Array.isArray(rawTarget.input) ? rawTarget.input : {};
+  return {
+    ok: true,
+    kind: "application_capability",
+    projectId: capability.application?.projectId ?? source.projectId ?? null,
+    prompt: `Run application capability ${capabilityName}.`,
+    target: {
+      type: "application_capability",
+      applicationId: capability.provider.id,
+      capabilityName,
+      input,
+    },
+  };
 }

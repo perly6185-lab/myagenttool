@@ -29,6 +29,7 @@ afterEach(() => {
     selectedInvocationId: null,
     selectedApplicationId: null,
     selectedApplicationRun: null,
+    selectedApplicationAutomationId: null,
   });
 });
 
@@ -67,6 +68,7 @@ describe("RunContextInspector troubleshooting report links", () => {
       routineId: "routine_docs_smoke",
       invocationId: "inv_failed",
     });
+    expect(useUiStore.getState().selectedApplicationAutomationId).toBe("atm_docs_daily");
 
     fireEvent.click(screen.getByRole("button", { name: /^Copy Open application run$/i }));
     expect(writeText).toHaveBeenCalledTimes(1);
@@ -78,6 +80,7 @@ describe("RunContextInspector troubleshooting report links", () => {
     expect(copied.searchParams.get("application")).toBe("app_docs");
     expect(copied.searchParams.get("routine")).toBe("routine_docs_smoke");
     expect(copied.searchParams.get("run")).toBe("inv_failed");
+    expect(copied.searchParams.get("automation")).toBe("atm_docs_daily");
   });
 });
 
@@ -154,12 +157,13 @@ function consoleState(): ConsoleSnapshot {
         },
         applicationRun: {
           label: "Open application run",
-          query: "?section=applications&application=app_docs&routine=routine_docs_smoke&run=inv_failed",
+          query: "?section=applications&application=app_docs&routine=routine_docs_smoke&run=inv_failed&automation=atm_docs_daily",
           target: {
             section: "applications",
             application: "app_docs",
             routine: "routine_docs_smoke",
             run: "inv_failed",
+            automation: "atm_docs_daily",
           },
         },
       },

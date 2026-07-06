@@ -7,7 +7,7 @@ import {
   type UrlNavigationState,
 } from "@/store/ui-store";
 
-const NAVIGATION_QUERY_KEYS = ["section", "invocation", "application", "routine", "run", "eventLevel", "evidence"] as const;
+const NAVIGATION_QUERY_KEYS = ["section", "invocation", "application", "routine", "run", "eventLevel", "automation", "evidence"] as const;
 
 interface WebNavigationTarget {
   section: SectionKey;
@@ -15,6 +15,7 @@ interface WebNavigationTarget {
   selectedApplicationId?: string | null;
   selectedApplicationRun?: ApplicationRunSelection | null;
   selectedApplicationEventLevel?: ApplicationEventLevelSelection;
+  selectedApplicationAutomationId?: string | null;
   selectedEvidenceId?: string | null;
 }
 
@@ -35,6 +36,7 @@ export function webDeepLink(target: WebNavigationTarget, href = currentHref()): 
     selectedApplicationId: target.selectedApplicationId ?? null,
     selectedApplicationRun: target.selectedApplicationRun ?? null,
     selectedApplicationEventLevel: target.selectedApplicationEventLevel ?? "all",
+    selectedApplicationAutomationId: target.selectedApplicationAutomationId ?? null,
     selectedEvidenceId: target.selectedEvidenceId ?? null,
   });
   return url.toString();
@@ -86,6 +88,7 @@ export function webNavigationStateFromLink(link: RelativeWebNavigationLink): Url
   const routineId = stringValue(target.routine);
   const runInvocationId = stringValue(target.run);
   const eventLevel = applicationEventLevelValue(target.eventLevel);
+  const automationId = stringValue(target.automation);
   const evidenceId = stringValue(target.evidence);
   const navigation: UrlNavigationState = {};
 
@@ -103,6 +106,9 @@ export function webNavigationStateFromLink(link: RelativeWebNavigationLink): Url
     : null;
   if (eventLevel) {
     navigation.selectedApplicationEventLevel = eventLevel;
+  }
+  if (automationId) {
+    navigation.selectedApplicationAutomationId = automationId;
   }
   if (evidenceId) {
     navigation.selectedEvidenceId = evidenceId;

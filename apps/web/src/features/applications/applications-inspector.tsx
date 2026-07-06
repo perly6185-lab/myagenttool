@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Clipboard, ExternalLink, Pencil, Play, Search } from "lucide-react";
+import { CalendarClock, Clipboard, ExternalLink, Pause, Pencil, Play, Search, Trash2 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -13,6 +13,7 @@ import { applicationRunDeepLink } from "@/app/deep-links";
 import { useConsoleState } from "@/data/use-console-state";
 import { useAsyncAction, api } from "@/data/use-console-actions";
 import { useUiStore } from "@/store/ui-store";
+import { cn } from "@/lib/cn";
 import { DescriptorFeedbackList, WrapperCapabilityImpactPanel } from "@/features/applications/descriptor-feedback";
 import { parseOptionalJsonObject, prettyJson, wrapperCapabilityImpact } from "@/features/applications/descriptor-utils";
 import { NpmWrapperCommandBuilder } from "@/features/applications/wrapper-command-builder";
@@ -48,13 +49,18 @@ import type {
   ApplicationOrchestration,
   ApplicationOrchestrationRecoveryAction,
   ApplicationOrchestrationRecoveryAgentCandidate,
+  ApplicationProbeDiff,
   ApplicationProbeMcpServer,
   ApplicationRecoveryExplanation,
   ApplicationRecoveryActionRequest,
   ApplicationRecoveryTimelineEntry,
   ApplicationOrchestrationRun,
+  ApplicationCapability,
   ApplicationSnapshot,
   ApplicationResultRef,
+  AuditSnapshot,
+  AutomationSnapshot,
+  NpmWrapperArgInputSnapshot,
   InvocationSnapshot,
 } from "@/lib/console-state";
 import type { ApplicationEventLevelSelection } from "@/store/ui-store";
@@ -77,6 +83,334 @@ function confidenceTone(confidence?: string): "neutral" | "success" | "warning" 
   if (confidence === "medium") return "warning";
   if (confidence === "low") return "danger";
   return "neutral";
+}
+
+function probeDiffGroups(diff?: ApplicationProbeDiff | null) {
+  if (!diff) return [];
+  return [
+    { label: "Added capabilities", values: diff.addedCapabilityNames ?? [], tone: "success" as const },
+    { label: "Removed capabilities", values: diff.removedCapabilityNames ?? [], tone: "danger" as const },
+    { label: "Changed capabilities", values: diff.changedCapabilityNames ?? [], tone: "warning" as const },
+    { label: "Added MCP candidates", values: diff.addedMcpServerIds ?? [], tone: "success" as const },
+    { label: "Removed MCP candidates", values: diff.removedMcpServerIds ?? [], tone: "danger" as const },
+    { label: "Changed MCP candidates", values: diff.changedMcpServerIds ?? [], tone: "warning" as const },
+  ].filter((group) => group.values.length > 0);
+}
+
+function shortProbeDiffName(value: string) {
+  const parts = String(value).split(".").filter(Boolean);
+  return parts.slice(-2).join(".") || value;
+}
+
+function isWrapperCapability(capability: ApplicationCapability) {
+  return capability.kind === "npm_wrapper" || Boolean(capability.metadata?.wrapper?.commandId);
+}
+
+function capabilityAutomations(
+  automations: AutomationSnapshot[],
+  application: ApplicationSnapshot,
+  capability: ApplicationCapability,
+) {
+  return automations
+    .filter((automation) =>
+      automation.kind === "application_capability"
+      && automation.target?.type === "application_capability"
+      && automation.target.applicationId === application.id
+      && automation.target.capabilityName === capability.name
+    )
+    .sort((left, right) => {
+      const priority = automationHealthPriority(left.healthSummary?.status) - automationHealthPriority(right.healthSummary?.status);
+      if (priority !== 0) return priority;
+      return String(left.name).localeCompare(String(right.name));
+    });
+}
+
+function automationHealthPriority(status?: string | null) {
+  if (status === "failing") return 0;
+  if (status === "waiting_for_approval") return 1;
+  if (status === "running") return 2;
+  if (status === "paused") return 3;
+  if (status === "scheduled") return 4;
+  if (status === "healthy") return 5;
+  return 6;
+}
+
+function capabilityResultMessage(result: Record<string, unknown> | null): string | null {
+  if (!result) return null;
+  const status = typeof result.status === "string" ? result.status : null;
+  const invocationId = typeof result.invocationId === "string" ? result.invocationId : null;
+  const error = typeof result.error === "string" ? result.error : null;
+  const reason = typeof result.reason === "string" ? result.reason : null;
+  const approvalRequestId = typeof result.approvalRequestId === "string" ? result.approvalRequestId : null;
+  const consentEndpoint = typeof result.consentEndpoint === "string" ? result.consentEndpoint : null;
+  const consent = result.consent && typeof result.consent === "object" ? result.consent as { state?: unknown } : null;
+  if (invocationId) return `Queued ${invocationId}.`;
+  if (consent?.state === "granted") return "Policy consent granted.";
+  if (approvalRequestId) return `Approval requested: ${approvalRequestId}.`;
+  if (consentEndpoint) return `Policy consent required before this command can run.`;
+  if (error || reason) return [error, reason].filter(Boolean).join(": ");
+  return status ? `Request status: ${status}.` : null;
+}
+
+function formStringValue(value: unknown) {
+  return typeof value === "string" ? value : "";
+}
+
+function wrapperArgInputPayload(argInputs: NpmWrapperArgInputSnapshot[], values: Record<string, string | boolean>) {
+  const payload: Record<string, unknown> = {};
+  for (const input of argInputs) {
+    const value = values[input.key];
+    if (input.type === "boolean-flag") {
+      if (value === true) payload[input.key] = true;
+      continue;
+    }
+    if (typeof value === "string" && value.trim()) payload[input.key] = value.trim();
+  }
+  return payload;
+}
+
+function wrapperInputSummary(input?: Record<string, unknown> | null) {
+  const entries = Object.entries(input ?? {}).filter(([, value]) => value !== undefined && value !== null && value !== "");
+  if (!entries.length) return "Inputs default";
+  return entries
+    .map(([key, value]) => `${key}=${value === true ? "true" : String(value)}`)
+    .join(" · ");
+}
+
+interface ApplicationRunRecord {
+  invocation: InvocationSnapshot;
+  capability: string | null;
+  routineId: string | null;
+  kind: "wrapper" | "mcp" | "orchestration" | "application" | "unknown";
+  audit: AuditSnapshot | null;
+}
+
+function applicationRuns(
+  application: ApplicationSnapshot,
+  invocations: InvocationSnapshot[],
+  audits: AuditSnapshot[],
+): ApplicationRunRecord[] {
+  const auditsByInvocation = new Map(audits.map((audit) => [audit.invocationId, audit]));
+  return invocations
+    .filter((invocation) => invocationApplicationId(invocation) === application.id)
+    .map((invocation) => ({
+      invocation,
+      capability: invocationCapability(invocation),
+      routineId: invocationRoutineId(invocation),
+      kind: invocationApplicationKind(invocation),
+      audit: auditsByInvocation.get(invocation.id) ?? null,
+    }))
+    .sort((left, right) => timestampValue(right.invocation.createdAt) - timestampValue(left.invocation.createdAt));
+}
+
+function invocationApplicationId(invocation: InvocationSnapshot): string | null {
+  const metadata = invocation.options?.metadata ?? {};
+  return stringValue(metadata.applicationId) ?? invocation.explanation?.source?.applicationId ?? null;
+}
+
+function invocationCapability(invocation: InvocationSnapshot): string | null {
+  const metadata = invocation.options?.metadata ?? {};
+  return stringValue(metadata.capability)
+    ?? stringValue(metadata.applicationAction)
+    ?? invocation.explanation?.source?.toolName
+    ?? null;
+}
+
+function invocationRoutineId(invocation: InvocationSnapshot): string | null {
+  const metadata = invocation.options?.metadata ?? {};
+  return stringValue(metadata.routineId) ?? invocation.explanation?.source?.routineId ?? null;
+}
+
+function invocationApplicationKind(invocation: InvocationSnapshot): ApplicationRunRecord["kind"] {
+  const metadata = invocation.options?.metadata ?? {};
+  if (metadata.source === "application_orchestration" || metadata.routineId) return "orchestration";
+  if (metadata.providerType === "mcp" || metadata.mcpToolName) return "mcp";
+  if (metadata.applicationWrapper) return "wrapper";
+  if (metadata.providerType === "application" || metadata.applicationAction) return "application";
+  return "unknown";
+}
+
+function capabilityRuns(runs: ApplicationRunRecord[], capabilityName: string, limit = 3) {
+  return runs
+    .filter((run) => run.capability === capabilityName)
+    .slice(0, limit);
+}
+
+function invocationAutomationId(invocation: InvocationSnapshot): string | null {
+  const metadata = invocation.options?.metadata ?? {};
+  return stringValue(metadata.automationId) ?? invocation.explanation?.source?.automationId ?? null;
+}
+
+function automationRuns(runs: ApplicationRunRecord[], automation: AutomationSnapshot) {
+  return runs.filter((run) => invocationAutomationId(run.invocation) === automation.id);
+}
+
+function automationDiagnostics(
+  automation: AutomationSnapshot,
+  runs: ApplicationRunRecord[],
+  capability?: ApplicationCapability | null,
+): { title: string; detail: string; tone: "neutral" | "success" | "warning" | "danger"; nextAction: string; consecutiveFailures: number } {
+  const health = automation.healthSummary;
+  if (health) {
+    const latest = health.latestRun;
+    const failureStreak = health.failureStreak ?? 0;
+    return {
+      title: automationHealthTitle(health.status, failureStreak),
+      detail: health.lastErrorSummary
+        ?? latest?.errorSummary
+        ?? latest?.resultSummary
+        ?? (automation.enabled ? `Next run ${automation.nextRunAt ? shortTime(automation.nextRunAt) : "not scheduled"}.` : "This schedule is paused."),
+      tone: automationHealthTone(health.status),
+      nextAction: health.nextAction ?? "Wait for the next scheduled run or use Run now.",
+      consecutiveFailures: failureStreak,
+    };
+  }
+  const latest = runs[0] ?? null;
+  if (!latest) {
+    return {
+      title: automation.enabled ? "Scheduled" : "Paused",
+      detail: automation.enabled
+        ? `Next run ${automation.nextRunAt ? shortTime(automation.nextRunAt) : "not scheduled"}.`
+        : "This schedule is paused.",
+      tone: automation.enabled ? "neutral" : "warning",
+      nextAction: automation.enabled ? "Wait for the next scheduled run or use Run now." : "Resume the schedule when you want it to run again.",
+      consecutiveFailures: 0,
+    };
+  }
+  const base = runDiagnostics(latest, capability);
+  const consecutiveFailures = runs.findIndex((run) => !["failed", "rejected"].includes(run.invocation.status ?? ""));
+  const failureCount = consecutiveFailures === -1 ? runs.length : consecutiveFailures;
+  if (failureCount > 0) {
+    return {
+      ...base,
+      title: failureCount > 1 ? `${failureCount} consecutive failures` : base.title,
+      nextAction: failureCount > 1
+        ? "Pause the schedule if it is noisy, then inspect the latest invocation before retrying."
+        : base.nextAction,
+      consecutiveFailures: failureCount,
+    };
+  }
+  if (latest.invocation.status === "succeeded") {
+    return {
+      ...base,
+      title: "Healthy",
+      detail: base.detail,
+      consecutiveFailures: 0,
+    };
+  }
+  return { ...base, consecutiveFailures: 0 };
+}
+
+function automationHealthTitle(status?: string | null, failureStreak = 0) {
+  if (status === "failing" && failureStreak > 1) return `${failureStreak} consecutive failures`;
+  if (status === "failing") return "Failed";
+  if (status === "waiting_for_approval") return "Approval";
+  if (status === "running") return "Running";
+  if (status === "healthy") return "Healthy";
+  if (status === "paused") return "Paused";
+  return "Scheduled";
+}
+
+function automationHealthTone(status?: string | null): "neutral" | "success" | "warning" | "danger" {
+  if (status === "healthy") return "success";
+  if (status === "failing") return "danger";
+  if (status === "waiting_for_approval" || status === "paused") return "warning";
+  return "neutral";
+}
+
+function latestAutomationInvocationId(automation: AutomationSnapshot) {
+  return automation.healthSummary?.latestRun?.invocationId ?? automation.lastInvocationId ?? null;
+}
+
+function focusedAutomationActionLabel(automation: AutomationSnapshot) {
+  const status = automation.healthSummary?.status ?? (!automation.enabled ? "paused" : "scheduled");
+  if (status === "waiting_for_approval") return "Review approval";
+  if (status === "paused") return "Resume schedule";
+  return "View latest run";
+}
+
+function automationNeedsAttention(automation: AutomationSnapshot) {
+  const status = automation.healthSummary?.status ?? (!automation.enabled ? "paused" : "scheduled");
+  return status === "failing" || status === "waiting_for_approval" || status === "paused";
+}
+
+function scrollAutomationIntoView(automationId: string) {
+  const element = Array.from(document.querySelectorAll<HTMLElement>("[data-application-automation-id]"))
+    .find((item) => item.dataset.applicationAutomationId === automationId);
+  element?.scrollIntoView({ block: "center", behavior: "smooth" });
+}
+
+function runDiagnostics(
+  run: ApplicationRunRecord,
+  capability?: ApplicationCapability | null,
+): { title: string; detail: string; tone: "neutral" | "success" | "warning" | "danger"; nextAction: string } {
+  const status = run.invocation.status ?? "unknown";
+  const readiness = capability?.metadata?.readiness;
+  const auditText = [run.audit?.errorSummary, run.invocation.result?.summary, run.invocation.explanation?.summary]
+    .filter(Boolean)
+    .join(" ");
+  if (readiness?.state === "needs_setup") {
+    return {
+      title: "Wrapper setup blocked",
+      detail: readiness.reason ?? "Wrapper readiness check is not passing.",
+      tone: "warning",
+      nextAction: "Run probe and fix the wrapper descriptor or install path before retrying.",
+    };
+  }
+  if (readiness?.state === "needs_consent") {
+    return {
+      title: "Policy consent needed",
+      detail: readiness.reason ?? "This wrapper command needs policy consent.",
+      tone: "warning",
+      nextAction: "Use the Run control to grant policy consent, then retry.",
+    };
+  }
+  if (run.invocation.approvalRequestId || run.invocation.explanation?.approval?.requestId) {
+    return {
+      title: "Waiting on approval",
+      detail: run.invocation.approvalRequestId ?? run.invocation.explanation?.approval?.requestId ?? "Approval required.",
+      tone: "warning",
+      nextAction: "Approve or deny the linked request from the invocation details.",
+    };
+  }
+  if (status === "succeeded") {
+    return {
+      title: "Completed",
+      detail: run.invocation.result?.summary ?? run.audit?.errorSummary ?? "Run completed successfully.",
+      tone: "success",
+      nextAction: "Inspect the result if you need the output details.",
+    };
+  }
+  if (status === "failed" || status === "rejected") {
+    const agentUnavailable = /agent_not_available|agent unavailable|not available/i.test(auditText);
+    const approval = /approval/i.test(auditText);
+    const policy = /policy|consent/i.test(auditText);
+    const title = agentUnavailable ? "Agent unavailable" : approval ? "Approval blocked" : policy ? "Policy blocked" : "Run failed";
+    const nextAction = agentUnavailable
+      ? "Register or enable the required application runner, then retry."
+      : approval
+        ? "Resolve the approval request and retry the capability."
+        : policy
+          ? "Grant wrapper policy consent from the Run control and retry."
+          : "Open the invocation and review the audit summary before retrying.";
+    return {
+      title,
+      detail: run.audit?.errorSummary ?? run.invocation.result?.summary ?? run.invocation.explanation?.summary ?? "No failure summary recorded.",
+      tone: "danger",
+      nextAction,
+    };
+  }
+  return {
+    title: readableStatus(status),
+    detail: run.invocation.explanation?.summary ?? run.audit?.errorSummary ?? "Run is still in progress or awaiting dispatch.",
+    tone: status === "queued" || status === "running" ? "warning" : "neutral",
+    nextAction: run.invocation.explanation?.nextAction ?? "Wait for the run to finish, then inspect the result.",
+  };
+}
+
+function timestampValue(value?: string | null): number {
+  const timestamp = Date.parse(value ?? "");
+  return Number.isNaN(timestamp) ? 0 : timestamp;
 }
 
 interface PendingConfirm {
@@ -300,11 +634,32 @@ function ApplicationDescriptorEditor({ application }: { application: Application
             { term: "MCP descriptor", value: application.mcpAgent ? application.mcpAgent.agentId ?? "registered" : "Not configured" },
             { term: "npm wrapper", value: application.source.type === "npm" ? `${application.wrapper?.mode ?? "metadata-only"} · ${application.wrapper?.commands?.length ?? 0} command(s)` : "Not an npm Application" },
             { term: "Wrapper install", value: application.source.type === "npm" ? application.wrapper?.installState ?? "not_installed" : "Not an npm Application" },
+            { term: "Wrapper readiness", value: application.source.type === "npm" ? application.wrapper?.readiness?.state ?? "Not checked" : "Not an npm Application" },
+            { term: "Wrapper checked", value: application.source.type === "npm" ? shortTime(application.wrapper?.readiness?.checkedAt) : "Not an npm Application" },
             { term: "Capabilities version", value: application.capabilitiesVersion ?? "Not recorded" },
             { term: "Last descriptor edit", value: application.lifecycle?.lastOperation === "update_descriptors" ? shortTime(application.lifecycle.lastOperationAt) : "Not recorded" },
             { term: "Manual manifest", value: application.source.type === "manual" ? "Editable" : "Not a manual Application" },
           ]}
         />
+        {application.wrapper?.readiness ? (
+          <div className="space-y-2 rounded-md border border-border bg-muted/20 p-3 text-xs">
+            <div className="flex flex-wrap items-center gap-2">
+              <Badge tone={readinessTone(application.wrapper.readiness.state)}>
+                {application.wrapper.readiness.reason ?? application.wrapper.readiness.state}
+              </Badge>
+              <span className="text-muted-foreground">
+                {application.wrapper.readiness.readyCommandIds?.length ?? 0} ready · {application.wrapper.readiness.blockedCommandIds?.length ?? 0} blocked
+              </span>
+            </div>
+            {application.wrapper.readiness.blockedCommandIds?.length ? (
+              <div className="flex flex-wrap gap-1.5">
+                {application.wrapper.readiness.blockedCommandIds.map((commandId) => (
+                  <Badge key={commandId} tone="warning">{commandId}</Badge>
+                ))}
+              </div>
+            ) : null}
+          </div>
+        ) : null}
         <Button size="sm" variant="secondary" onClick={() => setOpen(true)}>
           <Pencil />
           Edit descriptors
@@ -604,6 +959,470 @@ export function latestRoutineInvocation(invocations: InvocationSnapshot[], appli
       && metadata.applicationId === applicationId
       && metadata.routineId === routineId;
   }) ?? null;
+}
+
+function WrapperCapabilityRunForm({
+  capability,
+  onViewInvocation,
+}: {
+  capability: ApplicationCapability;
+  onViewInvocation: (invocationId: string) => void;
+}) {
+  const argInputs = capability.metadata?.wrapper?.argInputs ?? [];
+  const readiness = capability.metadata?.readiness;
+  const applicationId = capability.provider?.id;
+  const commandId = capability.metadata?.wrapper?.commandId;
+  const [values, setValues] = useState<Record<string, string | boolean>>({});
+  const [approvalRequestId, setApprovalRequestId] = useState("");
+  const [result, setResult] = useState<Record<string, unknown> | null>(null);
+  const { execute, pending, error } = useAsyncAction();
+  const policyConsentRequired = capability.metadata?.wrapper?.policySupported === false;
+  const disabled = pending || readiness?.state === "needs_setup" || (capability.status === "disabled" && !policyConsentRequired);
+
+  function updateValue(input: NpmWrapperArgInputSnapshot, value: string | boolean) {
+    setValues((current) => ({ ...current, [input.key]: value }));
+  }
+
+  function inputPayload() {
+    const payload = wrapperArgInputPayload(argInputs, values);
+    if (approvalRequestId.trim()) payload.approvalRequestId = approvalRequestId.trim();
+    return payload;
+  }
+
+  async function runCapability() {
+    const ok = await execute(async () => {
+      if (policyConsentRequired && applicationId && commandId) {
+        const consent = await runWithApplicationApproval((consentApprovalRequestId) =>
+          api.grantApplicationWrapperPolicyConsent(applicationId, commandId, {
+            ...(consentApprovalRequestId ? { approvalRequestId: consentApprovalRequestId } : {}),
+            reason: `Allow wrapper command ${commandId} policy for ${capability.name}.`,
+          }),
+        );
+        setResult(consent);
+      }
+      const payload = inputPayload();
+      const response = approvalRequestId.trim()
+        ? await api.createCapabilityInvocation(capability.name, payload)
+        : await runWithApplicationApproval((runApprovalRequestId) =>
+          api.createCapabilityInvocation(capability.name, {
+            ...payload,
+            ...(runApprovalRequestId ? { approvalRequestId: runApprovalRequestId } : {}),
+          }),
+        );
+      setResult(response);
+      const invocationId = typeof response.invocationId === "string" ? response.invocationId : null;
+      if (invocationId) onViewInvocation(invocationId);
+    });
+    if (!ok) setResult(null);
+  }
+
+  return (
+    <div className="mt-2 space-y-2 rounded-md border border-border bg-muted/20 p-3">
+      {argInputs.length ? (
+        <div className="grid gap-2 sm:grid-cols-2">
+          {argInputs.map((input) => (
+            <Field key={input.key} label={input.key}>
+              <WrapperArgInputControl
+                input={input}
+                value={values[input.key]}
+                disabled={pending}
+                label={input.flag ?? input.key}
+                onChange={(value) => updateValue(input, value)}
+              />
+            </Field>
+          ))}
+        </div>
+      ) : (
+        <p className="text-xs text-muted-foreground">No runtime inputs declared for this wrapper command.</p>
+      )}
+      {capability.requiresApproval ? (
+        <Field label="Approval request">
+          <Input
+            value={approvalRequestId}
+            onChange={(event) => setApprovalRequestId(event.target.value)}
+            placeholder="approvalRequestId"
+            disabled={pending}
+          />
+        </Field>
+      ) : null}
+      <div className="flex flex-wrap items-center gap-2">
+        <Button size="sm" onClick={runCapability} disabled={disabled}>
+          <Play />
+          Run
+        </Button>
+        {readiness?.state === "needs_setup" ? (
+          <span className="text-xs text-warning">{readiness.reason ?? "Wrapper setup required."}</span>
+        ) : null}
+        {policyConsentRequired ? (
+          <span className="text-xs text-warning">Policy consent required.</span>
+        ) : null}
+      </div>
+      {capabilityResultMessage(result) ? (
+        <p className="text-xs text-muted-foreground">{capabilityResultMessage(result)}</p>
+      ) : null}
+      {error ? <p className="text-xs text-destructive">{error}</p> : null}
+    </div>
+  );
+}
+
+function WrapperArgInputControl({
+  input,
+  value,
+  disabled,
+  label,
+  onChange,
+}: {
+  input: NpmWrapperArgInputSnapshot;
+  value: string | boolean | undefined;
+  disabled?: boolean;
+  label?: string;
+  onChange: (value: string | boolean) => void;
+}) {
+  if (input.type === "boolean-flag") {
+    return (
+      <label className="flex h-9 items-center gap-2 rounded-md border border-border bg-input/40 px-3 text-sm">
+        <input
+          type="checkbox"
+          checked={value === true}
+          disabled={disabled}
+          onChange={(event) => onChange(event.target.checked)}
+        />
+        <span>{label ?? input.flag ?? input.key}</span>
+      </label>
+    );
+  }
+  if (input.type === "enum") {
+    return (
+      <Select
+        value={formStringValue(value)}
+        disabled={disabled}
+        onChange={(event) => onChange(event.target.value)}
+      >
+        <option value="">Select</option>
+        {(input.values ?? []).map((option) => (
+          <option key={option} value={option}>{option}</option>
+        ))}
+      </Select>
+    );
+  }
+  return (
+    <Input
+      type={input.type === "date" ? "date" : "text"}
+      value={formStringValue(value)}
+      disabled={disabled}
+      placeholder={input.flag ?? input.key}
+      onChange={(event) => onChange(event.target.value)}
+    />
+  );
+}
+
+function CapabilityAutomationPanel({
+  application,
+  capability,
+  automations,
+  runs,
+  focusedAutomationId,
+  onViewInvocation,
+}: {
+  application: ApplicationSnapshot;
+  capability: ApplicationCapability;
+  automations: AutomationSnapshot[];
+  runs: ApplicationRunRecord[];
+  focusedAutomationId?: string | null;
+  onViewInvocation: (invocationId: string) => void;
+}) {
+  const { execute, pending, error } = useAsyncAction();
+  const argInputs = capability.metadata?.wrapper?.argInputs ?? [];
+  const [scheduleKind, setScheduleKind] = useState<"interval" | "daily" | "weekdays">("daily");
+  const [time, setTime] = useState("09:00");
+  const [everyMinutes, setEveryMinutes] = useState("60");
+  const [inputValues, setInputValues] = useState<Record<string, string | boolean>>({});
+  const [result, setResult] = useState<string | null>(null);
+  const disabled = pending || application.status !== "active" || !application.projectId || capability.status === "disabled";
+
+  function schedulePayload() {
+    if (scheduleKind === "interval") {
+      return { kind: "interval", everyMinutes: Math.max(1, Number(everyMinutes) || 60) };
+    }
+    return { kind: scheduleKind, time };
+  }
+
+  function updateInputValue(input: NpmWrapperArgInputSnapshot, value: string | boolean) {
+    setInputValues((current) => ({ ...current, [input.key]: value }));
+  }
+
+  async function createSchedule() {
+    const ok = await execute(async () => {
+      const response = await api.createAutomation({
+        kind: "application_capability",
+        name: `${application.name} · ${capability.displayName ?? shortCapabilityName(capability.name)}`,
+        projectId: application.projectId,
+        enabled: true,
+        schedule: schedulePayload(),
+        target: {
+          type: "application_capability",
+          applicationId: application.id,
+          capabilityName: capability.name,
+          input: wrapperArgInputPayload(argInputs, inputValues),
+        },
+      }) as { automation?: AutomationSnapshot };
+      setResult(response.automation?.nextRunAt ? `Scheduled ${shortTime(response.automation.nextRunAt)}.` : "Scheduled.");
+    });
+    if (!ok) setResult(null);
+  }
+
+  async function runNow(automation: AutomationSnapshot) {
+    const ok = await execute(async () => {
+      const response = await api.runAutomation(automation.id) as { invocationId?: string; invocation?: { id?: string }; status?: string };
+      const invocationId = response.invocationId ?? response.invocation?.id ?? null;
+      setResult(invocationId ? `Queued ${invocationId}.` : `Run requested${response.status ? `: ${response.status}` : ""}.`);
+      if (invocationId) onViewInvocation(invocationId);
+    });
+    if (!ok) setResult(null);
+  }
+
+  async function toggleAutomation(automation: AutomationSnapshot) {
+    const ok = await execute(async () => {
+      await api.updateAutomation(automation.id, { enabled: !automation.enabled });
+      setResult(automation.enabled ? "Schedule paused." : "Schedule resumed.");
+    });
+    if (!ok) setResult(null);
+  }
+
+  async function deleteAutomation(automation: AutomationSnapshot) {
+    const ok = await execute(async () => {
+      await api.deleteAutomation(automation.id);
+      setResult("Schedule deleted.");
+    });
+    if (!ok) setResult(null);
+  }
+
+  return (
+    <div className="mt-2 space-y-3 rounded-md border border-border bg-muted/20 p-3">
+      <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto]">
+        <Field label="Schedule">
+          <Select value={scheduleKind} disabled={pending} onChange={(event) => setScheduleKind(event.target.value as typeof scheduleKind)}>
+            <option value="daily">Daily</option>
+            <option value="weekdays">Weekdays</option>
+            <option value="interval">Interval</option>
+          </Select>
+        </Field>
+        {scheduleKind === "interval" ? (
+          <Field label="Minutes">
+            <Input
+              type="number"
+              min="1"
+              value={everyMinutes}
+              disabled={pending}
+              onChange={(event) => setEveryMinutes(event.target.value)}
+            />
+          </Field>
+        ) : (
+          <Field label="Time">
+            <Input type="time" value={time} disabled={pending} onChange={(event) => setTime(event.target.value)} />
+          </Field>
+        )}
+        <div className="flex items-end">
+          <Button size="sm" disabled={disabled} onClick={createSchedule}>
+            <CalendarClock />
+            Schedule
+          </Button>
+        </div>
+      </div>
+      {argInputs.length ? (
+        <div className="space-y-2">
+          <p className="text-xs font-medium text-muted-foreground">Scheduled inputs</p>
+          <div className="grid gap-2 sm:grid-cols-2">
+            {argInputs.map((input) => (
+              <Field key={input.key} label={`Schedule ${input.key}`}>
+                <WrapperArgInputControl
+                  input={input}
+                  value={inputValues[input.key]}
+                  disabled={pending}
+                  label={`Schedule ${input.flag ?? input.key}`}
+                  onChange={(value) => updateInputValue(input, value)}
+                />
+              </Field>
+            ))}
+          </div>
+        </div>
+      ) : null}
+      {application.status !== "active" ? <p className="text-xs text-muted-foreground">Bring the application online before scheduling this capability.</p> : null}
+      {!application.projectId ? <p className="text-xs text-warning">Scheduling needs an application project.</p> : null}
+      {automations.length ? (
+        <div className="space-y-2">
+          {automations.map((automation) => {
+            const scheduledRuns = automationRuns(runs, automation);
+            const diagnostics = automationDiagnostics(automation, scheduledRuns, capability);
+            const focused = automation.id === focusedAutomationId;
+            return (
+              <div
+                key={automation.id}
+                data-application-automation-id={automation.id}
+                className={cn(
+                  "rounded-md border border-border bg-background p-2 text-xs",
+                  focused && "border-primary/60 bg-primary/5 ring-2 ring-primary/30",
+                )}
+              >
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="min-w-0 space-y-1">
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      {focused ? <Badge tone="running">focused</Badge> : null}
+                      <Badge tone={automation.enabled ? "success" : "neutral"}>{automation.enabled ? "enabled" : "paused"}</Badge>
+                      <Badge tone={diagnostics.tone}>{diagnostics.title}</Badge>
+                      <span className="[overflow-wrap:anywhere] font-medium">{automation.name}</span>
+                    </div>
+                    <p className="text-muted-foreground">
+                      {automation.schedule?.label ?? "Schedule"} · Next {automation.nextRunAt ? shortTime(automation.nextRunAt) : "paused"} · Runs {automation.runCount ?? 0}
+                    </p>
+                    <p className="[overflow-wrap:anywhere] text-muted-foreground">{wrapperInputSummary(automation.target?.input)}</p>
+                    <p className="[overflow-wrap:anywhere] text-muted-foreground">{diagnostics.detail}</p>
+                    {automationNeedsAttention(automation) || diagnostics.consecutiveFailures ? (
+                      <p className="[overflow-wrap:anywhere] text-warning">Next: {diagnostics.nextAction}</p>
+                    ) : null}
+                  </div>
+                  <div className="flex flex-wrap gap-1.5">
+                    <Button size="icon" variant="secondary" title="Run now" aria-label="Run automation now" disabled={pending} onClick={() => void runNow(automation)}>
+                      <Play />
+                    </Button>
+                    <Button size="icon" variant="secondary" title={automation.enabled ? "Pause" : "Resume"} aria-label={automation.enabled ? "Pause automation" : "Resume automation"} disabled={pending} onClick={() => void toggleAutomation(automation)}>
+                      {automation.enabled ? <Pause /> : <Play />}
+                    </Button>
+                    {latestAutomationInvocationId(automation) ? (
+                      <Button size="icon" variant="ghost" title="Open last invocation" aria-label="Open last invocation" onClick={() => onViewInvocation(latestAutomationInvocationId(automation)!)}>
+                        <ExternalLink />
+                      </Button>
+                    ) : null}
+                    <Button size="icon" variant="ghost" title="Delete schedule" aria-label="Delete schedule" disabled={pending} onClick={() => void deleteAutomation(automation)}>
+                      <Trash2 />
+                    </Button>
+                  </div>
+                  {automationNeedsAttention(automation) || diagnostics.consecutiveFailures ? (
+                    <div className="flex w-full flex-wrap gap-2 border-t border-border pt-2">
+                      <Button size="sm" variant="secondary" disabled={pending} onClick={() => void toggleAutomation(automation)}>
+                        {automation.enabled ? <Pause /> : <Play />}
+                        {automation.enabled ? "Pause schedule" : "Resume schedule"}
+                      </Button>
+                      <Button size="sm" disabled={pending} onClick={() => void runNow(automation)}>
+                        <Play />
+                        Run now
+                      </Button>
+                      {latestAutomationInvocationId(automation) ? (
+                        <Button size="sm" variant="secondary" onClick={() => onViewInvocation(latestAutomationInvocationId(automation)!)}>
+                          <ExternalLink />
+                          {focusedAutomationActionLabel(automation)}
+                        </Button>
+                      ) : null}
+                    </div>
+                  ) : null}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      ) : null}
+      {result ? <p className="text-xs text-muted-foreground">{result}</p> : null}
+      {error ? <p className="text-xs text-destructive">{error}</p> : null}
+    </div>
+  );
+}
+
+function ApplicationLatestActivity({
+  runs,
+  onViewInvocation,
+}: {
+  runs: ApplicationRunRecord[];
+  onViewInvocation: (invocationId: string) => void;
+}) {
+  const latest = runs[0] ?? null;
+  if (!latest) return null;
+  const diagnostics = runDiagnostics(latest);
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Latest activity</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        <div className="flex flex-wrap items-center gap-2">
+          <Badge tone={statusTone(latest.invocation.status ?? "unknown")}>{readableStatus(latest.invocation.status ?? "unknown")}</Badge>
+          <Badge tone="neutral">{latest.kind}</Badge>
+          {latest.capability ? <Badge tone="neutral">{shortCapabilityName(latest.capability)}</Badge> : null}
+          <span className="text-xs text-muted-foreground">{shortTime(latest.invocation.createdAt)}</span>
+        </div>
+        <RunDiagnosticsSummary diagnostics={diagnostics} />
+        <Button size="sm" variant="secondary" onClick={() => onViewInvocation(latest.invocation.id)}>
+          <ExternalLink />
+          Open latest
+        </Button>
+      </CardContent>
+    </Card>
+  );
+}
+
+function CapabilityRunHistory({
+  runs,
+  capability,
+  onViewInvocation,
+}: {
+  runs: ApplicationRunRecord[];
+  capability: ApplicationCapability;
+  onViewInvocation: (invocationId: string) => void;
+}) {
+  if (!runs.length) {
+    return <p className="text-xs text-muted-foreground">No recent runs for this capability.</p>;
+  }
+  return (
+    <div className="space-y-2">
+      <p className="text-xs font-medium text-muted-foreground">Recent runs</p>
+      <ul className="space-y-2">
+        {runs.map((run) => {
+          const diagnostics = runDiagnostics(run, capability);
+          return (
+            <li key={run.invocation.id} className="rounded-md border border-border bg-background p-2">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex flex-wrap items-center gap-2">
+                  <Badge tone={statusTone(run.invocation.status ?? "unknown")}>{readableStatus(run.invocation.status ?? "unknown")}</Badge>
+                  <span className="font-mono text-xs">{run.invocation.id}</span>
+                  <span className="text-xs text-muted-foreground">{shortTime(run.invocation.createdAt)}</span>
+                </div>
+                <Button size="sm" variant="ghost" className="h-7 px-2 text-xs" onClick={() => onViewInvocation(run.invocation.id)}>
+                  <ExternalLink />
+                  View
+                </Button>
+              </div>
+              <RunDiagnosticsSummary diagnostics={diagnostics} compact />
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
+}
+
+function RunDiagnosticsSummary({
+  diagnostics,
+  compact = false,
+}: {
+  diagnostics: { title: string; detail: string; tone: "neutral" | "success" | "warning" | "danger"; nextAction: string };
+  compact?: boolean;
+}) {
+  return (
+    <div className={compact ? "mt-2 space-y-1 text-xs" : "space-y-2 rounded-md border border-border bg-muted/20 p-3 text-xs"}>
+      <div className="flex flex-wrap items-center gap-2">
+        <Badge tone={diagnostics.tone}>{diagnostics.title}</Badge>
+        <span className="[overflow-wrap:anywhere] text-muted-foreground">{diagnostics.detail}</span>
+      </div>
+      <p className="[overflow-wrap:anywhere] text-muted-foreground">
+        Next: {diagnostics.nextAction}
+      </p>
+    </div>
+  );
+}
+
+function shortCapabilityName(value: string) {
+  const parts = value.split(".").filter(Boolean);
+  if (value.includes(".wrapper.")) return `wrapper.${parts.at(-1)}`;
+  return parts.slice(-2).join(".") || value;
 }
 
 function OrchestrationDrafts({
@@ -1467,17 +2286,31 @@ function applicationEventDataSummary(event: ApplicationEventSnapshot): string | 
   return parts.length ? parts.join(" · ") : null;
 }
 
+function eventMatchesCapability(event: ApplicationEventSnapshot, capabilityName: string): boolean {
+  const data = event.data ?? {};
+  if (data.capability === capabilityName) return true;
+  const result = data.applicationResult && typeof data.applicationResult === "object" && !Array.isArray(data.applicationResult)
+    ? data.applicationResult as { capability?: unknown; applicationAction?: unknown }
+    : null;
+  if (result?.capability === capabilityName || result?.applicationAction === capabilityName) return true;
+  if (typeof data.commandId === "string" && capabilityName.endsWith(`.wrapper.${data.commandId}`)) return true;
+  return false;
+}
+
 function ApplicationEventTimeline({
   events,
+  capabilities,
   loading,
   error,
 }: {
   events: ApplicationEventSnapshot[];
+  capabilities: ApplicationCapability[];
   loading: boolean;
   error: boolean;
 }) {
   const levelFilter = useUiStore((s) => s.selectedApplicationEventLevel);
   const setLevelFilter = useUiStore((s) => s.setSelectedApplicationEventLevel);
+  const [capabilityFilter, setCapabilityFilter] = useState("all");
   const counts = useMemo(() => {
     const next = { error: 0, warning: 0, info: 0, other: 0 };
     for (const event of events) {
@@ -1487,8 +2320,10 @@ function ApplicationEventTimeline({
     return next;
   }, [events]);
   const filteredEvents = useMemo(
-    () => events.filter((event) => levelFilter === "all" || normalizedApplicationEventLevel(event.level) === levelFilter),
-    [events, levelFilter],
+    () => events.filter((event) =>
+      (levelFilter === "all" || normalizedApplicationEventLevel(event.level) === levelFilter)
+      && (capabilityFilter === "all" || eventMatchesCapability(event, capabilityFilter))),
+    [events, levelFilter, capabilityFilter],
   );
   const latestProblem = events.find((event) => {
     const level = normalizedApplicationEventLevel(event.level);
@@ -1546,6 +2381,24 @@ function ApplicationEventTimeline({
                 </Button>
               ))}
             </div>
+            {capabilities.length ? (
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-xs text-muted-foreground">Capability</span>
+                <Select
+                  className="h-8 max-w-full text-xs sm:max-w-80"
+                  value={capabilityFilter}
+                  aria-label="Application event capability filter"
+                  onChange={(event) => setCapabilityFilter(event.target.value)}
+                >
+                  <option value="all">All capabilities</option>
+                  {capabilities.map((capability) => (
+                    <option key={capability.name} value={capability.name}>
+                      {capability.displayName ?? shortCapabilityName(capability.name)}
+                    </option>
+                  ))}
+                </Select>
+              </div>
+            ) : null}
             {!filteredEvents.length ? (
               <p className="text-sm text-muted-foreground">No events match this level.</p>
             ) : (
@@ -1579,9 +2432,11 @@ function ApplicationEventTimeline({
 export function ApplicationsInspector() {
   const { data: state } = useConsoleState();
   const selectedApplicationId = useUiStore((s) => s.selectedApplicationId);
+  const selectedApplicationAutomationId = useUiStore((s) => s.selectedApplicationAutomationId);
   const setSelectedInvocationId = useUiStore((s) => s.setSelectedInvocationId);
   const setSection = useUiStore((s) => s.setSection);
   const application = (state?.applications ?? []).find((app) => app.id === selectedApplicationId);
+  const automations = state?.automations ?? [];
 
   const { data: capabilityData } = useQuery({
     queryKey: ["application-capabilities", application?.id],
@@ -1595,6 +2450,13 @@ export function ApplicationsInspector() {
     enabled: Boolean(application?.id),
     refetchInterval: 3000,
   });
+  const capabilities = capabilityData?.capabilities ?? [];
+
+  useEffect(() => {
+    if (!application?.id || !selectedApplicationAutomationId) return;
+    const frame = window.requestAnimationFrame(() => scrollAutomationIntoView(selectedApplicationAutomationId));
+    return () => window.cancelAnimationFrame(frame);
+  }, [application?.id, selectedApplicationAutomationId, capabilities.length, automations.length]);
 
   if (!application) {
     return (
@@ -1611,10 +2473,11 @@ export function ApplicationsInspector() {
     );
   }
 
-  const capabilities = capabilityData?.capabilities ?? [];
   const probe = application.probe;
   const orchestrations = application.orchestrations ?? [];
   const invocations = state?.invocations ?? [];
+  const auditSummaries = state?.auditSummaries ?? [];
+  const runs = applicationRuns(application, invocations, auditSummaries);
 
   function viewInvocation(invocationId: string) {
     setSelectedInvocationId(invocationId);
@@ -1643,8 +2506,10 @@ export function ApplicationsInspector() {
       </Card>
 
       <ApplicationActions application={application} />
+      <ApplicationLatestActivity runs={runs} onViewInvocation={viewInvocation} />
       <ApplicationEventTimeline
         events={eventData?.events ?? []}
+        capabilities={capabilities}
         loading={eventsLoading}
         error={Boolean(eventsError)}
       />
@@ -1661,25 +2526,43 @@ export function ApplicationsInspector() {
             <p className="text-sm text-muted-foreground">No capabilities projected.</p>
           ) : (
             capabilities.map((capability) => (
-              <div key={capability.name} className="flex items-start justify-between gap-2 text-sm">
-                <span className="[overflow-wrap:anywhere]">
-                  {capability.displayName ?? capability.name}
-                  {capability.requiresApproval ? <span className="text-warning"> ⚠</span> : null}
-                </span>
-                <div className="flex shrink-0 flex-wrap justify-end gap-1.5">
-                  <Badge tone={riskTone(capability.riskLevel)}>{capability.riskLevel ?? "—"}</Badge>
-                  <Badge tone={capability.status === "disabled" ? "danger" : "success"}>
-                    {capability.status ?? "—"}
-                  </Badge>
-                  {capability.metadata?.readiness?.state ? (
-                    <Badge tone={readinessTone(capability.metadata.readiness.state)}>
-                      {capability.metadata.readiness.state}
+              <div key={capability.name} className="space-y-2 rounded-md border border-border p-3 text-sm">
+                <div className="flex items-start justify-between gap-2">
+                  <span className="[overflow-wrap:anywhere]">
+                    {capability.displayName ?? capability.name}
+                    {capability.requiresApproval ? <span className="text-warning"> ⚠</span> : null}
+                  </span>
+                  <div className="flex shrink-0 flex-wrap justify-end gap-1.5">
+                    <Badge tone={riskTone(capability.riskLevel)}>{capability.riskLevel ?? "—"}</Badge>
+                    <Badge tone={capability.status === "disabled" ? "danger" : "success"}>
+                      {capability.status ?? "—"}
                     </Badge>
-                  ) : null}
-                  {capability.metadata?.resultPath?.outputCollection ? (
-                    <Badge tone="neutral">{capability.metadata.resultPath.outputCollection}</Badge>
-                  ) : null}
+                    {capability.metadata?.readiness?.state ? (
+                      <Badge tone={readinessTone(capability.metadata.readiness.state)}>
+                        {capability.metadata.readiness.state}
+                      </Badge>
+                    ) : null}
+                    {capability.metadata?.resultPath?.outputCollection ? (
+                      <Badge tone="neutral">{capability.metadata.resultPath.outputCollection}</Badge>
+                    ) : null}
+                  </div>
                 </div>
+                {isWrapperCapability(capability) ? (
+                  <WrapperCapabilityRunForm capability={capability} onViewInvocation={viewInvocation} />
+                ) : null}
+                <CapabilityAutomationPanel
+                  application={application}
+                  capability={capability}
+                  automations={capabilityAutomations(automations, application, capability)}
+                  runs={runs}
+                  focusedAutomationId={selectedApplicationAutomationId}
+                  onViewInvocation={viewInvocation}
+                />
+                <CapabilityRunHistory
+                  runs={capabilityRuns(runs, capability.name)}
+                  capability={capability}
+                  onViewInvocation={viewInvocation}
+                />
               </div>
             ))
           )}
@@ -1694,6 +2577,26 @@ export function ApplicationsInspector() {
           </CardHeader>
           <CardContent className="space-y-2">
             {probe.summary ? <p className="text-sm text-muted-foreground">{probe.summary}</p> : null}
+            {probeDiffGroups(probe.diff).length ? (
+              <div className="space-y-2 rounded-md border border-border bg-muted/20 p-3">
+                <div className="flex flex-wrap items-center gap-2">
+                  <Badge tone="warning">changes</Badge>
+                  <span className="text-xs text-muted-foreground">
+                    Compared with the previous probe{probe.diff?.previousCheckedAt ? ` at ${shortTime(probe.diff.previousCheckedAt)}` : ""}.
+                  </span>
+                </div>
+                {probeDiffGroups(probe.diff).map((group) => (
+                  <div key={group.label} className="space-y-1">
+                    <p className="text-xs font-medium text-muted-foreground">{group.label}</p>
+                    <div className="flex flex-wrap gap-1.5">
+                      {group.values.map((value) => (
+                        <Badge key={value} tone={group.tone}>{shortProbeDiffName(value)}</Badge>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : null}
             {probe.capabilities?.length ? (
               <div className="flex flex-wrap gap-1.5">
                 {probe.capabilities.map((capability) => (

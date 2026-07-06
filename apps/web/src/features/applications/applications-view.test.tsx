@@ -26,6 +26,7 @@ beforeEach(() => {
     selectedApplicationId: null,
     selectedApplicationRun: null,
     selectedApplicationEventLevel: "all",
+    selectedApplicationAutomationId: null,
   });
 });
 
@@ -37,6 +38,7 @@ afterEach(() => {
     selectedApplicationId: null,
     selectedApplicationRun: null,
     selectedApplicationEventLevel: "all",
+    selectedApplicationAutomationId: null,
   });
 });
 
@@ -73,6 +75,23 @@ describe("ApplicationsView recovery summary", () => {
       invocationId: "inv_failed",
     });
     expect(useUiStore.getState().selectedApplicationEventLevel).toBe("all");
+  });
+});
+
+describe("ApplicationsView automation schedule attention", () => {
+  it("shows application schedule health and opens the selected application schedules", async () => {
+    renderWithClient(createElement(ApplicationsView));
+
+    expect(await screen.findByText("1 failing schedule")).toBeTruthy();
+    expect(screen.getByText("2 attention")).toBeTruthy();
+    expect(screen.getByText("Wrapper command exited 1.")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: /Inspect failing schedule/i }));
+
+    expect(useUiStore.getState().selectedApplicationId).toBe("app_ready");
+    expect(useUiStore.getState().selectedApplicationRun).toBeNull();
+    expect(useUiStore.getState().selectedApplicationEventLevel).toBe("all");
+    expect(useUiStore.getState().selectedApplicationAutomationId).toBe("atm_ready_daily");
   });
 });
 
@@ -152,6 +171,21 @@ function consoleState(): ConsoleSnapshot {
       status: "active",
       probe: { capabilities: [] },
       orchestrationIds: ["routine"],
+      healthSummary: {
+        applicationId: "app_ready",
+        eventCounts: { error: 0, warning: 0, info: 0, other: 0 },
+        eventCount: 0,
+        automationCounts: { failing: 1, waitingForApproval: 0, paused: 0, attention: 1 },
+        latestAutomationAttention: {
+          automationId: "atm_ready_daily",
+          name: "Docs daily",
+          status: "failing",
+          failureStreak: 1,
+          latestInvocationId: "inv_ready_daily",
+          lastErrorSummary: "Wrapper command exited 1.",
+          nextAction: "Open the latest invocation and review the audit summary before retrying.",
+        },
+      },
       createdAt: "2026-07-06T00:00:00.000Z",
       updatedAt: "2026-07-06T02:00:00.000Z",
     }],

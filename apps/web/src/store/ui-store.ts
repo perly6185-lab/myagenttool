@@ -40,6 +40,7 @@ interface UiState {
   selectedApplicationId: string | null;
   selectedApplicationRun: ApplicationRunSelection | null;
   selectedApplicationEventLevel: ApplicationEventLevelSelection;
+  selectedApplicationAutomationId: string | null;
   selectedEvidenceId: string | null;
   /** Transient: the invocation whose Codex session the composer will continue on next send (#163). */
   resumeFromInvocationId: string | null;
@@ -54,6 +55,7 @@ interface UiState {
   setSelectedApplicationId: (id: string | null) => void;
   setSelectedApplicationRun: (selection: ApplicationRunSelection | null) => void;
   setSelectedApplicationEventLevel: (level: ApplicationEventLevelSelection) => void;
+  setSelectedApplicationAutomationId: (id: string | null) => void;
   setSelectedEvidenceId: (id: string | null) => void;
   setResumeFromInvocationId: (id: string | null) => void;
 }
@@ -84,10 +86,11 @@ export interface UrlNavigationState {
   selectedApplicationId?: string | null;
   selectedApplicationRun?: ApplicationRunSelection | null;
   selectedApplicationEventLevel?: ApplicationEventLevelSelection;
+  selectedApplicationAutomationId?: string | null;
   selectedEvidenceId?: string | null;
 }
 
-const NAVIGATION_SEARCH_KEYS = ["section", "invocation", "application", "routine", "run", "eventLevel", "evidence"] as const;
+const NAVIGATION_SEARCH_KEYS = ["section", "invocation", "application", "routine", "run", "eventLevel", "automation", "evidence"] as const;
 
 function stringParam(params: URLSearchParams, key: string): string | null {
   const value = params.get(key)?.trim();
@@ -114,6 +117,7 @@ export function navigationFromSearch(search: string): UrlNavigationState {
   const routineId = stringParam(params, "routine");
   const runInvocationId = stringParam(params, "run");
   const eventLevel = applicationEventLevelParam(params);
+  const automationId = stringParam(params, "automation");
   const evidenceId = stringParam(params, "evidence");
   const navigation: UrlNavigationState = {};
   if (section) navigation.section = section;
@@ -123,6 +127,7 @@ export function navigationFromSearch(search: string): UrlNavigationState {
     ? { applicationId, routineId, invocationId: runInvocationId }
     : null;
   navigation.selectedApplicationEventLevel = eventLevel ?? "all";
+  navigation.selectedApplicationAutomationId = automationId;
   navigation.selectedEvidenceId = evidenceId;
   return navigation;
 }
@@ -137,6 +142,7 @@ function applyUrlNavigation<T extends Partial<UiState>>(state: T, navigation: Ur
   if (navigation.selectedApplicationId !== undefined) state.selectedApplicationId = navigation.selectedApplicationId;
   if (navigation.selectedApplicationRun !== undefined) state.selectedApplicationRun = navigation.selectedApplicationRun;
   if (navigation.selectedApplicationEventLevel !== undefined) state.selectedApplicationEventLevel = navigation.selectedApplicationEventLevel;
+  if (navigation.selectedApplicationAutomationId !== undefined) state.selectedApplicationAutomationId = navigation.selectedApplicationAutomationId;
   if (navigation.selectedEvidenceId !== undefined) state.selectedEvidenceId = navigation.selectedEvidenceId;
   return state;
 }
@@ -151,6 +157,7 @@ export function searchFromNavigationState(search: string, state: Pick<UiState,
   | "selectedApplicationId"
   | "selectedApplicationRun"
   | "selectedApplicationEventLevel"
+  | "selectedApplicationAutomationId"
   | "selectedEvidenceId"
 >): string {
   const params = new URLSearchParams(search);
@@ -165,6 +172,9 @@ export function searchFromNavigationState(search: string, state: Pick<UiState,
   }
   if (state.section === "applications" && state.selectedApplicationEventLevel !== "all") {
     params.set("eventLevel", state.selectedApplicationEventLevel);
+  }
+  if (state.section === "applications" && state.selectedApplicationAutomationId) {
+    params.set("automation", state.selectedApplicationAutomationId);
   }
   if (state.selectedEvidenceId) params.set("evidence", state.selectedEvidenceId);
   const next = params.toString();
@@ -193,6 +203,7 @@ export const useUiStore = create<UiState>()(
         selectedApplicationId: initialNavigation.selectedApplicationId ?? null,
         selectedApplicationRun: initialNavigation.selectedApplicationRun ?? null,
         selectedApplicationEventLevel: initialNavigation.selectedApplicationEventLevel ?? "all",
+        selectedApplicationAutomationId: initialNavigation.selectedApplicationAutomationId ?? null,
         selectedEvidenceId: initialNavigation.selectedEvidenceId ?? null,
         resumeFromInvocationId: null,
         setSection: (section) => set({ section }),
@@ -206,6 +217,7 @@ export const useUiStore = create<UiState>()(
         setSelectedApplicationId: (selectedApplicationId) => set({ selectedApplicationId }),
         setSelectedApplicationRun: (selectedApplicationRun) => set({ selectedApplicationRun }),
         setSelectedApplicationEventLevel: (selectedApplicationEventLevel) => set({ selectedApplicationEventLevel }),
+        setSelectedApplicationAutomationId: (selectedApplicationAutomationId) => set({ selectedApplicationAutomationId }),
         setSelectedEvidenceId: (selectedEvidenceId) => set({ selectedEvidenceId }),
         setResumeFromInvocationId: (resumeFromInvocationId) => set({ resumeFromInvocationId }),
       };
@@ -227,6 +239,7 @@ export const useUiStore = create<UiState>()(
         selectedApplicationId: state.selectedApplicationId,
         selectedApplicationRun: state.selectedApplicationRun,
         selectedApplicationEventLevel: state.selectedApplicationEventLevel,
+        selectedApplicationAutomationId: state.selectedApplicationAutomationId,
         selectedEvidenceId: state.selectedEvidenceId,
       }),
       merge: (persisted, current) => {

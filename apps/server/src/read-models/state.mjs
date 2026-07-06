@@ -147,6 +147,10 @@ export function buildPublicState({
       troubleshootingReportsByInvocationId,
     }),
   }));
+  const automations = byProject(state.automations).map((automation) => ({
+    ...automation,
+    healthSummary: automationHealthSummary(automation, invocations, auditSummaries),
+  }));
 
   return {
     namespace,
@@ -160,7 +164,7 @@ export function buildPublicState({
     teams: state.teams ?? [],
     projects,
     applications: applications.map((application) => publicApplicationSnapshot(application, {
-      healthSummary: applicationHealthSummary(application.id, visibleEvents, applicationRecoveryActions),
+      healthSummary: applicationHealthSummary(application.id, visibleEvents, applicationRecoveryActions, automations),
     })),
     applicationRecoveryActions,
     projectTargets: byProject(state.projectTargets),
@@ -210,7 +214,7 @@ export function buildPublicState({
     teamBudgetStatuses: (typeof teamBudgetStatuses === "function" ? teamBudgetStatuses() : []).filter(
       (row) => teamId == null || row.teamId === teamId,
     ),
-    automations: byProject(state.automations),
+    automations,
     agentSkills: state.agentSkills ?? [],
     privateDeploymentConfig: state.privateDeploymentConfig,
     auditExportRequests: state.auditExportRequests,
@@ -260,7 +264,70 @@ function groupRecoveryEventsByRequestId(events) {
   return grouped;
 }
 
-function applicationHealthSummary(applicationId, events, recoveryActions) {
+function automationHealthSummary(automation, invocations, auditSummaries) {
+  const runs = (invocations ?? [])
+    .filter((invocation) => invocation?.options?.metadata?.automationId === automation?.id)
+    .sort((left, right) => timestampValue(right.createdAt) - timestampValue(left.createdAt));
+  const latest = runs[0] ?? null;
+  const auditsByInvocation = new Map((auditSummaries ?? []).map((audit) => [audit.invocationId, audit]));
+  const latestAudit = latest ? auditsByInvocation.get(latest.id) ?? null : null;
+  const failureStreak = consecutiveFailureCount(runs);
+  const approvalPending = latest && (latest.approvalRequestId || latest.explanation?.approval?.requestId);
+  const inFlight = latest && ["queued", "dispatching", "running", "waiting_for_local_approval", "cancelling"].includes(latest.status);
+  const status = !automation?.enabled
+    ? "paused"
+    : approvalPending
+      ? "waiting_for_approval"
+      : failureStreak > 0
+        ? "failing"
+        : latest?.status === "succeeded"
+          ? "healthy"
+          : inFlight
+            ? "running"
+            : "scheduled";
+  const lastErrorSummary = failureStreak > 0
+    ? latestAudit?.errorSummary ?? latest?.result?.summary ?? latest?.explanation?.summary ?? null
+    : null;
+  return {
+    automationId: automation?.id ?? null,
+    status,
+    failureStreak,
+    runCount: runs.length,
+    latestRun: latest ? {
+      invocationId: latest.id,
+      status: latest.status ?? null,
+      scheduled: Boolean(latest.options?.metadata?.scheduled),
+      createdAt: latest.createdAt ?? null,
+      completedAt: latest.completedAt ?? null,
+      resultSummary: latest.result?.summary ?? latest.explanation?.summary ?? null,
+      errorSummary: latestAudit?.errorSummary ?? null,
+    } : null,
+    lastErrorSummary,
+    nextAction: automationNextAction(status, failureStreak),
+    updatedAt: latest?.updatedAt ?? latest?.createdAt ?? automation?.updatedAt ?? automation?.createdAt ?? null,
+  };
+}
+
+function consecutiveFailureCount(runs) {
+  let count = 0;
+  for (const run of runs ?? []) {
+    if (!["failed", "rejected"].includes(run?.status ?? "")) break;
+    count += 1;
+  }
+  return count;
+}
+
+function automationNextAction(status, failureStreak) {
+  if (status === "paused") return "Resume the schedule when it should run again.";
+  if (status === "waiting_for_approval") return "Resolve the linked approval request before the automation can continue.";
+  if (status === "failing" && failureStreak > 1) return "Pause the schedule if it is noisy, then inspect the latest invocation before retrying.";
+  if (status === "failing") return "Open the latest invocation and review the audit summary before retrying.";
+  if (status === "running") return "Wait for the current run to finish or open the invocation for live details.";
+  if (status === "healthy") return "No action needed; inspect the latest run if you need output details.";
+  return "Wait for the next scheduled run or use Run now.";
+}
+
+function applicationHealthSummary(applicationId, events, recoveryActions, automations = []) {
   const applicationEvents = (events ?? [])
     .filter((event) => event?.data?.applicationId === applicationId)
     .sort((left, right) => timestampValue(right.createdAt) - timestampValue(left.createdAt));
@@ -275,6 +342,23 @@ function applicationHealthSummary(applicationId, events, recoveryActions) {
   const latestRecoveryAction = (recoveryActions ?? [])
     .filter((request) => request?.applicationId === applicationId)
     .sort((left, right) => timestampValue(right.updatedAt ?? right.createdAt) - timestampValue(left.updatedAt ?? left.createdAt))[0] ?? null;
+  const applicationAutomations = (automations ?? [])
+    .filter((automation) =>
+      automation?.kind === "application_capability"
+      && automation?.target?.type === "application_capability"
+      && automation.target.applicationId === applicationId
+    );
+  const automationCounts = { failing: 0, waitingForApproval: 0, paused: 0, attention: 0 };
+  for (const automation of applicationAutomations) {
+    const status = automation?.healthSummary?.status ?? (!automation?.enabled ? "paused" : "scheduled");
+    if (status === "failing") automationCounts.failing += 1;
+    if (status === "waiting_for_approval") automationCounts.waitingForApproval += 1;
+    if (status === "paused") automationCounts.paused += 1;
+  }
+  automationCounts.attention = automationCounts.failing + automationCounts.waitingForApproval;
+  const latestAutomationAttention = applicationAutomations
+    .filter((automation) => ["failing", "waiting_for_approval", "paused"].includes(automation?.healthSummary?.status ?? (!automation?.enabled ? "paused" : "scheduled")))
+    .sort(compareApplicationAutomationAttention)[0] ?? null;
 
   return {
     applicationId,
@@ -283,6 +367,36 @@ function applicationHealthSummary(applicationId, events, recoveryActions) {
     lastEventAt: applicationEvents[0]?.createdAt ?? null,
     latestAttentionEvent: latestAttentionEvent ? publicApplicationEvent(latestAttentionEvent) : null,
     latestRecoveryAction,
+    automationCounts,
+    latestAutomationAttention: latestAutomationAttention ? publicApplicationAutomationAttention(latestAutomationAttention) : null,
+  };
+}
+
+function compareApplicationAutomationAttention(left, right) {
+  const priorityDelta = applicationAutomationAttentionPriority(left) - applicationAutomationAttentionPriority(right);
+  if (priorityDelta !== 0) return priorityDelta;
+  return timestampValue(right?.healthSummary?.updatedAt ?? right?.updatedAt ?? right?.createdAt)
+    - timestampValue(left?.healthSummary?.updatedAt ?? left?.updatedAt ?? left?.createdAt);
+}
+
+function applicationAutomationAttentionPriority(automation) {
+  const status = automation?.healthSummary?.status ?? (!automation?.enabled ? "paused" : "scheduled");
+  if (status === "failing") return 0;
+  if (status === "waiting_for_approval") return 1;
+  if (status === "paused") return 2;
+  return 3;
+}
+
+function publicApplicationAutomationAttention(automation) {
+  const health = automation?.healthSummary ?? {};
+  return {
+    automationId: automation?.id ?? null,
+    name: automation?.name ?? null,
+    status: health.status ?? (!automation?.enabled ? "paused" : "scheduled"),
+    failureStreak: health.failureStreak ?? 0,
+    latestInvocationId: health.latestRun?.invocationId ?? automation?.lastInvocationId ?? null,
+    lastErrorSummary: health.lastErrorSummary ?? health.latestRun?.errorSummary ?? null,
+    nextAction: health.nextAction ?? null,
   };
 }
 

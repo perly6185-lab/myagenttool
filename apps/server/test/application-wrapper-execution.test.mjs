@@ -9,7 +9,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { spawn } from "node:child_process";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { join, resolve } from "node:path";
@@ -107,6 +107,76 @@ test("execution plan returns a copy of args (no aliasing into the registry)", ()
   const plan = applicationWrapperExecutionPlan(app, "daily");
   plan.args.push("--mutated");
   assert.deepEqual(applicationWrapperExecutionPlan(app, "daily").args, ["daily", "--json", "--offline"]);
+});
+
+test("probe records static npm wrapper readiness per command", () => {
+  const installPath = mkdtempSync(join(tmpdir(), "myagenttool-wrapper-readiness-"));
+  writeFileSync(join(installPath, "package.json"), JSON.stringify({
+    name: "wrapper-readiness-fixture",
+    scripts: { lint: "eslint ." },
+  }), "utf8");
+  try {
+    const events = [];
+    const state = { applications: [] };
+    const svc = createApplicationService({
+      state,
+      now: () => "2026-07-03T00:00:00.000Z",
+      nextId: (p) => `${p}_x`,
+      appendEvent: (event) => events.push(event),
+      persistStateSoon: () => {},
+      addProject: () => null,
+      cloneProject: () => null,
+      defaultProjectPath: "/tmp/repo",
+    });
+    const app = svc.registerApplication({
+      id: "app_wrapper_readiness",
+      name: "Wrapper Readiness",
+      source: {
+        type: "npm",
+        package: "wrapper-readiness-fixture",
+        wrapper: {
+          mode: "installed-wrapper",
+          installState: "installed",
+          packageManager: "npm",
+          installPath,
+          commands: [{
+            id: "lint",
+            commandType: "npm_script",
+            command: "lint",
+            status: "approved",
+            argInputs: [{ key: "since", flag: "--since", type: "date" }],
+          }, {
+            id: "test",
+            commandType: "npm_script",
+            command: "test",
+            status: "approved",
+          }],
+        },
+      },
+    });
+
+    const probed = svc.probeApplication(app.id);
+    assert.equal(probed.source.wrapper.readiness.state, "needs_setup");
+    assert.deepEqual(probed.source.wrapper.readiness.readyCommandIds, ["lint"]);
+    assert.deepEqual(probed.source.wrapper.readiness.blockedCommandIds, ["test"]);
+
+    const lint = svc.listApplicationCapabilities(app.id).find((capability) => capability.name.endsWith(".wrapper.lint"));
+    assert.equal(lint.metadata.readiness.state, "ready");
+    assert.equal(lint.metadata.readiness.reason, "wrapper_installed");
+    assert.equal(lint.metadata.wrapper.commandReadiness.reason, "npm_script_found");
+    assert.deepEqual(lint.metadata.wrapper.argInputs, [{ key: "since", flag: "--since", type: "date", values: [] }]);
+    assert.deepEqual(probed.source.wrapper.commands[0].argInputs, [{ key: "since", flag: "--since", type: "date", values: [] }]);
+
+    const testCapability = svc.listApplicationCapabilities(app.id).find((capability) => capability.name.endsWith(".wrapper.test"));
+    assert.equal(testCapability.metadata.readiness.state, "needs_setup");
+    assert.equal(testCapability.metadata.readiness.reason, "npm_script_not_found");
+
+    const event = events.find((item) => item.type === "application_probed");
+    assert.equal(event.data.wrapperReadiness.state, "needs_setup");
+    assert.deepEqual(event.data.wrapperReadiness.blockedCommandIds, ["test"]);
+  } finally {
+    rmSync(installPath, { recursive: true, force: true });
+  }
 });
 
 test("runner spawns exactly the command it is handed and emits a structured RESULT", async () => {

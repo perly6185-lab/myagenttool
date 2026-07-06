@@ -53,6 +53,7 @@ export function InvocationsView() {
   const setSection = useUiStore((s) => s.setSection);
   const setSelectedApplicationId = useUiStore((s) => s.setSelectedApplicationId);
   const setSelectedApplicationRun = useUiStore((s) => s.setSelectedApplicationRun);
+  const setSelectedApplicationAutomationId = useUiStore((s) => s.setSelectedApplicationAutomationId);
 
   const invocations = state?.invocations ?? [];
   const selected = resolveInvocation(state, selectedInvocationId);
@@ -73,6 +74,7 @@ export function InvocationsView() {
   function viewApplicationRun(applicationId: string, routineId: string, invocationId: string) {
     setSelectedApplicationId(applicationId);
     setSelectedApplicationRun({ applicationId, routineId, invocationId });
+    setSelectedApplicationAutomationId(null);
     setSection("applications");
   }
 
@@ -84,6 +86,16 @@ export function InvocationsView() {
         navigation.selectedApplicationRun.routineId,
         navigation.selectedApplicationRun.invocationId,
       );
+      if (navigation.selectedApplicationAutomationId !== undefined) {
+        setSelectedApplicationAutomationId(navigation.selectedApplicationAutomationId);
+      }
+      return;
+    }
+    if (navigation.selectedApplicationId) {
+      setSelectedApplicationId(navigation.selectedApplicationId);
+      setSelectedApplicationRun(null);
+      setSelectedApplicationAutomationId(navigation.selectedApplicationAutomationId ?? null);
+      setSection(navigation.section ?? "applications");
       return;
     }
     if (navigation.selectedInvocationId) {

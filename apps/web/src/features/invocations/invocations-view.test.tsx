@@ -28,6 +28,7 @@ afterEach(() => {
     selectedInvocationId: null,
     selectedApplicationId: null,
     selectedApplicationRun: null,
+    selectedApplicationAutomationId: null,
   });
 });
 
@@ -133,6 +134,7 @@ describe("InvocationsView operator explanation", () => {
       routineId: "routine_docs_smoke",
       invocationId: "inv_failed",
     });
+    expect(useUiStore.getState().selectedApplicationAutomationId).toBe("atm_docs_daily");
 
     useUiStore.setState({ section: "invocations", selectedInvocationId: "inv_report" });
     await waitFor(() => expect(screen.getByText("Troubleshooting report links")).toBeTruthy());
@@ -146,6 +148,7 @@ describe("InvocationsView operator explanation", () => {
     expect(copied.searchParams.get("application")).toBe("app_docs");
     expect(copied.searchParams.get("routine")).toBe("routine_docs_smoke");
     expect(copied.searchParams.get("run")).toBe("inv_failed");
+    expect(copied.searchParams.get("automation")).toBe("atm_docs_daily");
   });
 
   it("copies a shareable invocation deep link from the operator explanation", async () => {
@@ -447,12 +450,13 @@ function actionExplanationState(): ConsoleSnapshot {
         },
         applicationRun: {
           label: "Open application run",
-          query: "?section=applications&application=app_docs&routine=routine_docs_smoke&run=inv_failed",
+          query: "?section=applications&application=app_docs&routine=routine_docs_smoke&run=inv_failed&automation=atm_docs_daily",
           target: {
             section: "applications",
             application: "app_docs",
             routine: "routine_docs_smoke",
             run: "inv_failed",
+            automation: "atm_docs_daily",
           },
         },
       },
