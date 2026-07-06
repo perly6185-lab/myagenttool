@@ -59,8 +59,9 @@ function makeAutoRun({
   fetchPrChecks = undefined,
   budgetStatusFor = undefined,
   findInvocation = undefined,
+  autoApproveInvocation = undefined,
 } = {}) {
-  const calls = { createInvocation: [], startInvocationIfAllowed: [], commit: [], publish: [], pr: [], verify: [], status: [], report: [], merge: [] };
+  const calls = { createInvocation: [], startInvocationIfAllowed: [], commit: [], publish: [], pr: [], verify: [], status: [], report: [], merge: [], autoApprove: [] };
   let counter = 0;
   const svc = createAutoRunService({
     state,
@@ -118,6 +119,9 @@ function makeAutoRun({
     fetchPrChecks,
     budgetStatusFor,
     findInvocation,
+    autoApproveInvocation: autoApproveInvocation
+      ? (args) => { calls.autoApprove.push(args); return autoApproveInvocation(args); }
+      : undefined,
   });
   return { svc, calls };
 }
@@ -1007,4 +1011,39 @@ test("O1 reaper: a recent active run is left alone", async () => {
   const { reaped } = await svc.reapStuckAutoRuns();
   assert.equal(reaped, 0);
   assert.equal(run.status, "running");
+});
+
+test("O2: a non-code path (design) is auto-approved when the operator opts in", async () => {
+  const { svc, calls } = makeAutoRun({
+    invocationStatus: "waiting_for_local_approval",
+    decideIssuePath: async () => ({ path: "design", confidence: 0.9, rationale: "open" }),
+    autoApproveInvocation: () => true,
+  });
+  state.autoRunSettings = { autoApproveNonCodePaths: true };
+  await svc.startAutoRun({ projectId: sourceProjectId, link: { type: "issue", number: 40, title: "Rework", url: null, state: "open" }, agentId: "agt_1", name: "issue-40" });
+  assert.equal(calls.autoApprove.length, 1, "design run auto-approved by policy");
+});
+
+test("O2: develop is NEVER auto-approved (edits code — always human)", async () => {
+  const { svc, calls } = makeAutoRun({
+    invocationStatus: "waiting_for_local_approval",
+    decideIssuePath: async () => ({ path: "develop", confidence: 0.9, rationale: "change" }),
+    autoApproveInvocation: () => true,
+  });
+  state.autoRunSettings = { autoApproveNonCodePaths: true };
+  const { autoRun } = await svc.startAutoRun({ projectId: sourceProjectId, link: { type: "issue", number: 41, title: "Fix", url: null, state: "open" }, agentId: "agt_1", name: "issue-41" });
+  assert.equal(calls.autoApprove.length, 0, "develop is never auto-approved");
+  assert.equal(autoRun.status, "awaiting_approval", "develop stays parked for a human");
+});
+
+test("O2: with the setting off, a non-code path stays human-gated", async () => {
+  const { svc, calls } = makeAutoRun({
+    invocationStatus: "waiting_for_local_approval",
+    decideIssuePath: async () => ({ path: "clarify", confidence: 0.9, rationale: "q" }),
+    autoApproveInvocation: () => true,
+  });
+  state.autoRunSettings = {};
+  const { autoRun } = await svc.startAutoRun({ projectId: sourceProjectId, link: { type: "issue", number: 42, title: "Q?", url: null, state: "open" }, agentId: "agt_1", name: "issue-42" });
+  assert.equal(calls.autoApprove.length, 0, "off by default");
+  assert.equal(autoRun.status, "awaiting_approval");
 });
