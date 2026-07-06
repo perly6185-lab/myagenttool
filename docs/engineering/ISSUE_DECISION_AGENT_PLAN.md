@@ -198,13 +198,30 @@ Each slice lands independently, tests-first, through the normal governance flow
 - **Acceptance**: met — a broken/hung/junk decider degrades to the heuristic
   without failing the run; agent decisions carry `decidedBy: "agent"` + latency.
 
-### Slice 4 — governed child issues + human gate + stage chaining
+### Slice 4 — governed child issues + human gate — landed
 
-- Design/prototype outputs → pending-decision child issues via the issue-tree
-  validation path; parent ↔ child linkage on the autoRun; caps + depth-1.
-- Human labels `auto` → the child enters as `develop` with the design attached.
-- **Acceptance**: a design run yields a governed child issue and a parked
-  parent; only after human labelling does any implementation run start.
+- A design/prototype run's deliverable becomes a **pending-decision child
+  issue** (`MYAGENTTOOL_AUTORUN_SPAWN_ISSUES`, **off by default**): the child
+  inherits the parent's `## Project Fields` verbatim with Status forced back to
+  backlog (no parent fields → a triage note instead of fabricated fields),
+  carries the design + acceptance section and a depth-1 marker, and is **never
+  labelled `auto` at creation**. Parent ↔ child linkage lives on the autoRun
+  (`childIssues`) plus an `auto_run_child_spawned` event.
+- Guards: issue links only; depth-1 (a run on a spawned child never spawns
+  grandchildren — detected from the body marker); one child per parent issue
+  (dedup across all runs); spawn failure is best-effort (`spawnError` recorded,
+  the run still parks as `report_posted`).
+- **The human gate closes with zero new machinery**: a human reviews the design
+  and labels the child `auto` → the existing auto-trigger picks it up, its
+  change-shaped title routes `develop`, and the design + acceptance in its body
+  reach the agent through the slice-2 role prompt.
+- **Design note**: one child per design run (not N) until the agent emits
+  structured multi-option output; the ≤3 cap from the design holds trivially.
+  The `ai:issue-tree` validation path was not imported across packages — the
+  child body enforces the same invariants (fields, acceptance, human approval
+  before implementation) directly.
+- **Acceptance**: met — a design run yields a governed child issue and a parked
+  parent; implementation starts only after human labelling.
 
 ### Slice 5 — routing evaluation
 
