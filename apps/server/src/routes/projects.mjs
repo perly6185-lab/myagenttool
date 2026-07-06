@@ -195,7 +195,24 @@ export async function handleProjectRoutes({
       }
     }
     const autoRuns = state.autoRuns ?? [];
-    sendJson(res, 200, { autoRuns, summary: summarizeAutoRuns(autoRuns) });
+    // Surface the pending local-approval on awaiting_approval runs so the human
+    // can Approve/Deny directly on the auto-run card (informed by the decision
+    // already shown), instead of hunting for it in the Invocations view.
+    const pendingByInvocation = new Map(
+      (state.approvalRequests ?? [])
+        .filter((a) => a.status === "pending" && a.invocationId)
+        .map((a) => [a.invocationId, a]),
+    );
+    const enriched = autoRuns.map((run) => {
+      if (run.status !== "awaiting_approval" || !run.invocationId) return run;
+      const approval = pendingByInvocation.get(run.invocationId);
+      if (!approval) return run;
+      return {
+        ...run,
+        pendingApproval: { id: approval.id, riskLevel: approval.riskLevel ?? null, riskTags: approval.riskTags ?? [], summary: approval.summary ?? null },
+      };
+    });
+    sendJson(res, 200, { autoRuns: enriched, summary: summarizeAutoRuns(autoRuns) });
     return true;
   }
 
