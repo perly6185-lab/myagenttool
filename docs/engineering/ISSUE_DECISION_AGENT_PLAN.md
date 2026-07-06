@@ -179,13 +179,24 @@ Each slice lands independently, tests-first, through the normal governance flow
   design-decided run gets the design instructions and, with no diff, settles as
   `report_posted`; a failing body fetch degrades to a title-only prompt.
 
-### Slice 3 — decision agent (LLM) + hybrid fast path
+### Slice 3 — decision agent (LLM) + hybrid fast path — landed
 
-- Default `decideIssuePath` implementation: one-shot cheap-model platform/direct
-  invocation emitting the JSON contract; parse-or-fallback; timeout-or-fallback.
-- Hybrid fast path config; per-decision cost/latency recorded for evaluation.
-- **Acceptance**: agent unavailable/misbehaving degrades to the heuristic
-  without failing the run; decisions carry `decidedBy: "agent"` evidence.
+- Default `decideIssuePath`: an **operator-configured one-shot command**
+  (`MYAGENTTOOL_AUTORUN_DECIDER_COMMAND_JSON`, array argv, no shell, never
+  agent-proposed — the same trust-boundary pattern as the gh/verify commands).
+  It receives the issue context as JSON on stdin and must print the decision
+  contract as JSON on stdout (prose-wrapped JSON is tolerated); any LLM CLI or
+  script plugs in. Timeout (`MYAGENTTOOL_AUTORUN_DECIDER_TIMEOUT_MS`, 30s),
+  non-zero exit, junk output, and missing binary all yield null → heuristic
+  fallback; the run never fails on the decider.
+- **Hybrid fast path** (`MYAGENTTOOL_AUTORUN_DECIDER_FAST_PATH`, on by
+  default): question/investigation titles are strong lexical signals the
+  heuristic reads reliably, so they skip the decider hop; only the weak
+  "change-shaped" default — where the ambiguity actually lives — pays it.
+- Decisions record `via` (heuristic | fast-path | agent | fallback) and
+  `latencyMs` for the slice-5 evaluation; metrics aggregate `byVia`.
+- **Acceptance**: met — a broken/hung/junk decider degrades to the heuristic
+  without failing the run; agent decisions carry `decidedBy: "agent"` + latency.
 
 ### Slice 4 — governed child issues + human gate + stage chaining
 

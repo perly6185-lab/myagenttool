@@ -24,7 +24,12 @@ const PATH_TO_INTENT = { develop: "change", design: "investigation", prototype: 
 
 export function decisionConfig(env = process.env) {
   const raw = Number(env.MYAGENTTOOL_AUTORUN_DECISION_MIN_CONFIDENCE);
-  return { minConfidence: Number.isFinite(raw) && raw >= 0 && raw <= 1 ? raw : 0.6 };
+  return {
+    minConfidence: Number.isFinite(raw) && raw >= 0 && raw <= 1 ? raw : 0.6,
+    // Hybrid fast path (on by default): strong lexical signals skip the decider;
+    // only ambiguous "change-shaped" titles pay the LLM hop.
+    fastPath: env.MYAGENTTOOL_AUTORUN_DECIDER_FAST_PATH !== "0",
+  };
 }
 
 export function intentForPath(path) {
@@ -41,6 +46,7 @@ export function heuristicDecision(link) {
     rationale: `Title heuristic classified this as "${intent}".`,
     clarifyingQuestions: [],
     decidedBy: "heuristic",
+    via: "heuristic",
   };
 }
 
@@ -69,15 +75,35 @@ export function normalizeDecision(raw) {
  * is exactly today's behavior), so gating it would change behavior when no
  * agent is configured.
  */
-export async function resolveDecision({ link, issueBody = null, decideIssuePath, minConfidence = decisionConfig().minConfidence } = {}) {
+export async function resolveDecision({
+  link,
+  issueBody = null,
+  decideIssuePath,
+  minConfidence = decisionConfig().minConfidence,
+  fastPath = decisionConfig().fastPath,
+} = {}) {
   if (typeof decideIssuePath !== "function") return heuristicDecision(link);
+
+  // Hybrid fast path: question/investigation titles are strong lexical signals
+  // the heuristic reads reliably — skip the decider hop. The weak default
+  // ("looks like a change") is exactly where ambiguity lives, so those pay it.
+  if (fastPath) {
+    const quick = heuristicDecision(link);
+    if (quick.path !== "develop") {
+      return { ...quick, via: "fast-path", rationale: `${quick.rationale} (Fast path: strong lexical signal, decider skipped.)` };
+    }
+  }
+
+  const startedAt = Date.now();
   let decision = null;
   try {
     decision = normalizeDecision(await decideIssuePath({ link, issueBody }));
   } catch {
     decision = null;
   }
-  if (!decision) return heuristicDecision(link);
+  const latencyMs = Date.now() - startedAt;
+  if (!decision) return { ...heuristicDecision(link), via: "fallback", latencyMs };
+  decision = { ...decision, via: "agent", latencyMs };
   if (decision.confidence < minConfidence && (HEAVY_PATHS.has(decision.path) || decision.spawnChildIssues)) {
     return {
       ...decision,

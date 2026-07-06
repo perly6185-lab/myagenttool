@@ -68,6 +68,17 @@ test("routing decisions are aggregated by path and decider", () => {
   assert.deepEqual(s.decisions.byDecidedBy, { agent: 2, heuristic: 1 });
 });
 
+test("decision via (heuristic / fast-path / agent / fallback) is aggregated", () => {
+  const s = summarizeAutoRuns([
+    { status: "running", decision: { path: "develop", decidedBy: "heuristic", via: "heuristic" } },
+    { status: "running", decision: { path: "clarify", decidedBy: "heuristic", via: "fast-path" } },
+    { status: "running", decision: { path: "design", decidedBy: "agent", via: "agent" } },
+    { status: "running", decision: { path: "develop", decidedBy: "heuristic", via: "fallback" } },
+    { status: "running", decision: { path: "develop", decidedBy: "heuristic" } }, // legacy: no via
+  ]);
+  assert.deepEqual(s.decisions.byVia, { heuristic: 2, "fast-path": 1, agent: 1, fallback: 1 });
+});
+
 test("non-diff outcomes (report_posted/needs_input) are counted apart from the change rate", () => {
   const s = summarizeAutoRuns([
     { status: "pr_open" },
