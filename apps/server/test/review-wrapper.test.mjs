@@ -86,6 +86,39 @@ test("codex wrapper accepts an --instruction value beginning with --", () => {
   assert.match(captured.prompt, /Additional reviewer instruction: --focus on the auth path/);
 });
 
+test("codex wrapper resolves Windows npm cmd shims from PATH", { skip: process.platform !== "win32" }, () => {
+  const capture = join(workdir, "cmd-shim-capture.json");
+  const shimDir = join(workdir, "shim-bin");
+  const targetDir = join(shimDir, "node_modules", "@fake", "codex", "bin");
+  mkdirSync(targetDir, { recursive: true });
+  const target = join(targetDir, "codex.js");
+  writeFileSync(target, [
+    "const { writeFileSync } = require('node:fs');",
+    "const args = process.argv.slice(2);",
+    "writeFileSync(process.env.STUB_CAPTURE, JSON.stringify({ cwd: process.cwd(), args, argv0: process.argv[0] }));",
+    "console.log(JSON.stringify({ summary: 'shim ok', findings: [{ severity: 'high', file: 'shim.ts', line: 4, message: 'm' }] }));",
+  ].join("\n"));
+  writeFileSync(join(shimDir, "codex.cmd"), [
+    "@ECHO off",
+    "SET dp0=%~dp0",
+    `node "%dp0%\\node_modules\\@fake\\codex\\bin\\codex.js" %*`,
+  ].join("\r\n"));
+
+  const res = runWrapper(codexWrapper, [
+    "--mode", "diff-review", "--cwd", workdir,
+  ], {
+    MYAGENTTOOL_CODEX_COMMAND: "codex",
+    PATH: `${shimDir};${process.env.PATH ?? ""}`,
+    STUB_CAPTURE: capture,
+  });
+  assert.equal(res.status, 0, res.stderr || res.stdout);
+  assert.equal(resultPayload(res.stdout).output.findings[0].file, "shim.ts");
+  const captured = JSON.parse(readFileSync(capture, "utf8"));
+  assert.equal(captured.cwd, workdir);
+  assert.match(captured.argv0, /node(?:\.exe)?$/i);
+  assert.deepEqual(captured.args.slice(0, 2), ["exec", "--json"]);
+});
+
 // --- Parse + normalization branches (previously only hit by one happy path) ---
 
 test("codex wrapper normalizes findings and filters malformed ones", () => {

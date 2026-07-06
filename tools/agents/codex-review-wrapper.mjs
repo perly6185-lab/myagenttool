@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
-import { isAbsolute } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
+import { delimiter, dirname, extname, isAbsolute, join } from "node:path";
 
 const options = parseArgs(process.argv.slice(2));
 if (options.mode !== "diff-review") fail(`Unsupported Codex review mode: ${options.mode}`);
@@ -117,9 +117,44 @@ function buildPrompt(value) {
 
 function codexCommandPlan(command, args) {
   const text = String(command ?? "").trim();
-  return /\.(mjs|cjs|js)$/i.test(text)
+  const scriptPlan = /\.(mjs|cjs|js)$/i.test(text)
     ? { command: process.execPath, args: [text, ...args] }
     : { command: text, args };
+  return resolveWindowsNpmShim(scriptPlan.command, scriptPlan.args);
+}
+
+function resolveWindowsNpmShim(command, args) {
+  if (process.platform !== "win32") return { command, args };
+  const shim = findWindowsNpmCmdShim(command);
+  if (!shim) return { command, args };
+  const target = npmCmdShimTarget(shim);
+  return target ? { command: process.execPath, args: [target, ...args] } : { command, args };
+}
+
+function findWindowsNpmCmdShim(command) {
+  const text = String(command ?? "").trim();
+  if (!text || extname(text)) return null;
+  const hasDirectory = /[\\/]/.test(text);
+  const candidates = hasDirectory
+    ? [`${text}.cmd`]
+    : (process.env.PATH ?? "")
+      .split(delimiter)
+      .filter(Boolean)
+      .map((dir) => join(dir, `${text}.cmd`));
+  return candidates.find((candidate) => existsSync(candidate)) ?? null;
+}
+
+function npmCmdShimTarget(shimPath) {
+  let text = "";
+  try {
+    text = readFileSync(shimPath, "utf8");
+  } catch {
+    return null;
+  }
+  const match = text.match(/"%dp0%\\([^"]+?\.js)"/i);
+  if (!match) return null;
+  const target = join(dirname(shimPath), match[1]);
+  return existsSync(target) ? target : null;
 }
 
 function run(command, args, options) {
