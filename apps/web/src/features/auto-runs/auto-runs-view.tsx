@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { Bot, RefreshCw, GitPullRequest, GitBranch, ShieldCheck, ExternalLink, CircleAlert } from "lucide-react";
+import { Bot, RefreshCw, GitPullRequest, GitMerge, GitBranch, ShieldCheck, ExternalLink, CircleAlert } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -256,6 +256,21 @@ export function AutoRunsView() {
                     ) : null}
                     {run.prState === "MERGED" ? <Badge tone="success">merged</Badge> : null}
                     {run.prState === "CLOSED" ? <Badge tone="warning">closed</Badge> : null}
+                    {run.prNumber && run.status === "pr_open" && run.prState !== "MERGED" && run.prState !== "CLOSED" ? (
+                      <Button
+                        variant="primary"
+                        size="sm"
+                        className="h-6 px-2 text-xs"
+                        title="Merge this PR — the human merge step (runs gh pr merge)"
+                        onClick={() => {
+                          // The merge stays human: a person confirms, in-tool, before we merge.
+                          if (!window.confirm(`Merge PR #${run.prNumber}? This is the human merge step.`)) return;
+                          void api.mergeAutoRunPr(run.id).then(() => load()).catch(() => load());
+                        }}
+                      >
+                        <GitMerge className="mr-1 size-3" /> Merge
+                      </Button>
+                    ) : null}
                     {(run.childIssues ?? []).map((child) =>
                       child.url ? (
                         <a key={child.number} href={child.url} target="_blank" rel="noreferrer" className="text-xs text-primary hover:underline" title="Pending-decision child issue">
