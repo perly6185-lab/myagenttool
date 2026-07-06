@@ -3,6 +3,7 @@ import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, writeFile
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { denyForeignProject } from "../runtime/auth.mjs";
 import { summarizeAutoRuns } from "../services/auto-run-metrics.mjs";
+import { readEvalTrend, summarizeEvalTrend } from "../services/eval-trend.mjs";
 
 export async function handleProjectRoutes({
   req,
@@ -180,6 +181,15 @@ export async function handleProjectRoutes({
     }
     const autoRuns = state.autoRuns ?? [];
     sendJson(res, 200, { autoRuns, summary: summarizeAutoRuns(autoRuns) });
+    return true;
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/eval-trend") {
+    // Results-side view of the scheduled real-agent evals (#248). Read-only,
+    // best-effort: the eval scheduler is a separate LaunchAgent, this just
+    // surfaces its local trend.jsonl so capability regressions are visible.
+    const records = readEvalTrend();
+    sendJson(res, 200, { records, summary: summarizeEvalTrend(records) });
     return true;
   }
 
