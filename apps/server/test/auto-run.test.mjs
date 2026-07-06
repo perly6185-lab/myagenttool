@@ -56,6 +56,7 @@ function makeAutoRun({
   judgeAcceptance = undefined,
   // Injected PR merge runner. Default: a successful merge.
   mergePr = async ({ prNumber }) => ({ ok: true, prNumber, method: "squash" }),
+  fetchPrChecks = undefined,
 } = {}) {
   const calls = { createInvocation: [], startInvocationIfAllowed: [], commit: [], publish: [], pr: [], verify: [], status: [], report: [], merge: [] };
   let counter = 0;
@@ -112,6 +113,7 @@ function makeAutoRun({
       calls.merge.push(args);
       return mergePr(args);
     },
+    fetchPrChecks,
   });
   return { svc, calls };
 }
@@ -927,4 +929,13 @@ test("mergeAutoRunPr: require-green-checks setting allows merge when checks gree
   assert.equal(result.ok, true);
   assert.equal(run.prState, "MERGED");
   assert.equal(calls.merge.length, 1);
+});
+
+test("mergeAutoRunPr: require-green re-fetches FRESH checks — stale-green blocked when now red", async () => {
+  const { svc, calls } = makeAutoRun({ fetchPrChecks: async () => ({ state: "FAILURE" }) });
+  state.autoRunSettings = { requireChecksGreenToMerge: true };
+  // record has STALE green; fresh fetch returns FAILURE → must block
+  state.autoRuns.push({ id: "aur_fresh1", status: "pr_open", projectId: sourceProjectId, prNumber: 11, prState: "OPEN", prChecks: { state: "SUCCESS" } });
+  await assert.rejects(() => svc.mergeAutoRunPr("aur_fresh1"), /green PR checks/);
+  assert.equal(calls.merge.length, 0, "no gh merge on stale-green-now-red");
 });

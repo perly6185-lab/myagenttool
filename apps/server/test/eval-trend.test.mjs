@@ -128,3 +128,15 @@ test("readEvalTrend: missing file → [], garbage lines skipped", () => {
   assert.equal(records.length, 1, "the one valid line parses; blank + garbage dropped");
   assert.equal(records[0].subcap.passRate, 1);
 });
+
+test("a COMPLETED infra failure (real low subcap number) is excluded from the series/regression", () => {
+  const s = summarizeEvalTrend([
+    subcapWithKinds("2026-07-02T00:00:00Z", { "issue-gate": { total: 6, resolved: 6 }, "pm-brief": { total: 6, resolved: 6 }, "review": { total: 3, resolved: 3 } }),
+    // provider outage: issue-gate passes, provider kinds wiped to 0 → real 0.4 passRate + infraFailure
+    { startedAt: "2026-07-03T00:00:00Z", infraFailure: true, subcap: { passRate: 0.4, resolved: 6, total: 15, byKind: { "issue-gate": { total: 6, resolved: 6 }, "pm-brief": { total: 6, resolved: 0 }, "review": { total: 3, resolved: 0 } } } },
+  ]);
+  assert.equal(s.subcap.realRuns, 1, "the outage row is NOT counted as a real run");
+  assert.equal(s.subcap.latest.passRate, 1, "latest is the real run, not the outage");
+  assert.equal(s.subcap.regressed, false, "an outage is never a capability regression");
+  assert.equal(s.infraFailures, 1, "still counted in the separate infra tally");
+});

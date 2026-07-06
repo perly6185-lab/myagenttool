@@ -390,6 +390,8 @@ export function createServerRuntimeServices({
     // Human-triggered PR merge from the console (merge stays human — only fired
     // by a person clicking Merge on a pr_open run, never automatically).
     mergePr: ({ prNumber, repoPath }) => runPrMerge({ cwd: repoPath, prNumber }),
+    // Fresh PR-checks fetch for the require-green-checks merge gate (no stale poll).
+    fetchPrChecks: ({ prNumber, repoPath }) => runPrChecks({ cwd: repoPath, prNumber }),
   });
   // Now that the reaction exists, let completion drive it.
   advanceAutoRunHook = advanceAutoRunForInvocation;
