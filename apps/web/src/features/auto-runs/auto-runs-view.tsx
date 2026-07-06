@@ -30,6 +30,7 @@ interface AutoRunRecord {
   report?: string | null;
   prState?: string | null;
   prChecks?: { total: number; passed: number; failed: number; pending: number; state: "NONE" | "SUCCESS" | "FAILURE" | "PENDING" } | null;
+  pendingApproval?: { id: string; riskLevel: string | null; riskTags: string[]; summary: string | null } | null;
   error?: string | null;
   createdAt?: string;
   updatedAt?: string;
@@ -371,6 +372,41 @@ export function AutoRunsView() {
                     </Button>
                   </div>
                 ) : null}
+                {run.status === "awaiting_approval" && run.pendingApproval ? (() => {
+                  const appr = run.pendingApproval;
+                  return (
+                    <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-amber-500/40 bg-amber-500/5 px-3 py-2">
+                      <span className="text-xs text-muted-foreground">
+                        Needs your approval to run the agent
+                        {appr.riskLevel ? ` · risk: ${appr.riskLevel}` : ""}
+                        {(appr.riskTags ?? []).length ? ` (${appr.riskTags.join(", ")})` : ""}. The {run.decision?.path ?? "develop"} agent will edit code for this issue.
+                      </span>
+                      <div className="flex shrink-0 gap-2">
+                        <Button
+                          size="sm"
+                          variant="primary"
+                          className="h-6 px-2 text-xs"
+                          onClick={() => void api.approveApproval(appr.id).then(() => load()).catch(() => load())}
+                          title="Approve — release the agent to run"
+                        >
+                          Approve
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="secondary"
+                          className="h-6 px-2 text-xs"
+                          onClick={() => {
+                            if (!window.confirm("Deny this run? The agent will be blocked.")) return;
+                            void api.denyApproval(appr.id).then(() => load()).catch(() => load());
+                          }}
+                          title="Deny — block this run"
+                        >
+                          Deny
+                        </Button>
+                      </div>
+                    </div>
+                  );
+                })() : null}
                 {run.report && (run.status === "report_posted" || run.status === "needs_input") ? (
                   <p className="line-clamp-3 whitespace-pre-wrap rounded bg-muted/50 px-2 py-1 text-xs text-muted-foreground">{run.report}</p>
                 ) : null}
