@@ -170,12 +170,13 @@ conservative title heuristic; an LLM classifier can be injected to override it.
 The metrics separate these non-diff outcomes from the change-shaped success rate,
 and the console renders them distinctly.
 
-**Still open (next slice):** feed the issue body + acceptance criteria into the
-prompt (the agent currently sees only title + url), and add an LLM-judge that
-checks the diff against the acceptance criteria — so verification proves "solved
-the right problem," not just "the build still passes." Track per-issue PR
-outcomes (merged as-is / reworked / rejected) as a held-out eval to quantify
-which issue types are safe to run unattended.
+**Direction:** the heuristic classifier is the fallback for a proper **issue
+decision agent** that triages each issue into prototype / detailed design /
+direct development, spawns governed pending-decision child issues for the heavy
+paths, and hands the issue to a role-specialized run. Design and development
+plan: [ISSUE_DECISION_AGENT_PLAN.md](ISSUE_DECISION_AGENT_PLAN.md). Feeding the
+issue body + acceptance criteria into the prompt and the per-path outcome eval
+are folded into that plan (slices 2 and 5).
 
 ## Cross-cutting dependencies
 
