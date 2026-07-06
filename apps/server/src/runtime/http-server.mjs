@@ -326,6 +326,7 @@ export function createHttpServer({
         url,
         sendJson,
         readJson,
+        actor,
         state,
         now,
         appendEvent,

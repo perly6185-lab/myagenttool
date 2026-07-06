@@ -12,7 +12,7 @@ import {
   CLAUDE_REVIEW_TOOL_CONTRACT,
   isGovernedClaudeReviewAgent,
 } from "./claude-agent.mjs";
-import { teamOf } from "../runtime/auth.mjs";
+import { agentVisibleToActor, teamOf } from "../runtime/auth.mjs";
 
 const CCUSAGE_APPROVAL_REQUIRED_REPORTS = new Set(["session"]);
 const MCP_TOOL_CONTROL_FIELDS = new Set([
@@ -171,7 +171,7 @@ export function createToolService({
     if (!worktree) {
       return { status: 404, body: { error: "worktree_not_found" } };
     }
-    const agent = selectAgent();
+    const agent = selectAgent(actor);
     if (!agent) {
       return { status: 409, body: { error: "agent_not_available", message: `No governed ${agentLabel} diff review agent is available.` } };
     }
@@ -315,9 +315,9 @@ export function createToolService({
   function discoverTools(actor = null) {
     const ccusageApp = resolveCcusageApp();
     const ccusageAvailable = ccusageApp && ["registered", "active"].includes(ccusageApp.status);
-    const codexReviewAgents = (state.agents ?? []).filter(isGovernedCodexReviewAgent);
-    const claudeReviewAgents = (state.agents ?? []).filter(isGovernedClaudeReviewAgent);
-    const mcpAgents = (state.agents ?? []).filter((agent) => agentVisibleToActor(agent, actor));
+    const codexReviewAgents = (state.agents ?? []).filter((agent) => isGovernedCodexReviewAgent(agent) && agentVisibleToActor(state, agent, actor));
+    const claudeReviewAgents = (state.agents ?? []).filter((agent) => isGovernedClaudeReviewAgent(agent) && agentVisibleToActor(state, agent, actor));
+    const mcpAgents = (state.agents ?? []).filter((agent) => agentVisibleToActor(state, agent, actor));
     const builtinNames = new Set([
       ...(ccusageAvailable ? [CCUSAGE_TOOL_CONTRACT.name] : []),
       ...(codexReviewAgents.length ? [CODEX_REVIEW_TOOL_CONTRACT.name] : []),
@@ -332,7 +332,7 @@ export function createToolService({
   }
 
   function findMcpToolDescriptor(name, actor = null) {
-    const mcpAgents = (state.agents ?? []).filter((agent) => agentVisibleToActor(agent, actor));
+    const mcpAgents = (state.agents ?? []).filter((agent) => agentVisibleToActor(state, agent, actor));
     return buildMcpToolDescriptors({ agents: mcpAgents, usedNames: new Set([
       CCUSAGE_TOOL_CONTRACT.name,
       CODEX_REVIEW_TOOL_CONTRACT.name,
@@ -340,12 +340,12 @@ export function createToolService({
     ]) }).find((tool) => tool.name === name) ?? null;
   }
 
-  function selectCodexReviewAgent() {
-    return (state.agents ?? []).find(isGovernedCodexReviewAgent) ?? null;
+  function selectCodexReviewAgent(actor = null) {
+    return (state.agents ?? []).find((agent) => isGovernedCodexReviewAgent(agent) && agentVisibleToActor(state, agent, actor)) ?? null;
   }
 
-  function selectClaudeReviewAgent() {
-    return (state.agents ?? []).find(isGovernedClaudeReviewAgent) ?? null;
+  function selectClaudeReviewAgent(actor = null) {
+    return (state.agents ?? []).find((agent) => isGovernedClaudeReviewAgent(agent) && agentVisibleToActor(state, agent, actor)) ?? null;
   }
 
   function resolveToolProjectId(projectId, actor) {
@@ -376,21 +376,6 @@ export function createToolService({
     return worktree.projectId === projectId || worktree.workspaceProjectId === projectId
       ? worktree
       : null;
-  }
-
-  function agentVisibleToActor(agent, actor = null) {
-    return applicationVisibleToActor(agent?.sourceApplicationId ?? null, actor);
-  }
-
-  function applicationVisibleToActor(applicationId, actor = null) {
-    if (!applicationId || !actor?.teamId) return true;
-    const application = (state.applications ?? []).find((item) => item.id === applicationId);
-    if (!application) return false;
-    if (application.projectId) {
-      const project = (state.projects ?? []).find((item) => item.id === application.projectId);
-      return Boolean(project && teamOf(project) === actor.teamId);
-    }
-    return (application.ownerTeamId ?? "team_local") === actor.teamId;
   }
 
   return {

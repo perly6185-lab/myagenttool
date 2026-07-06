@@ -1,5 +1,6 @@
 import { normalizeMcpAdapterConfig } from "@myagenttool/adapters/mcp";
 
+import { agentVisibleToActor } from "../runtime/auth.mjs";
 import { isClaudeCliCommand, isCodexCliCommand } from "../services/agents.mjs";
 import { publicDeviceView } from "../runtime/bridge-auth.mjs";
 
@@ -147,6 +148,10 @@ export async function handleAgentRoutes({
   if (req.method === "POST" && actionMatch) {
     const agent = findAgent(decodeURIComponent(actionMatch[1]));
     if (!agent) {
+      sendJson(res, 404, { error: "agent_not_found" });
+      return true;
+    }
+    if (!agentVisibleToActor(state, agent, actor)) {
       sendJson(res, 404, { error: "agent_not_found" });
       return true;
     }

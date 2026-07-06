@@ -1,4 +1,4 @@
-import { LOCAL_TEAM_ID, teamOf } from "../runtime/auth.mjs";
+import { LOCAL_TEAM_ID, agentVisibleToActor, teamOf } from "../runtime/auth.mjs";
 import { publicDeviceView } from "../runtime/bridge-auth.mjs";
 import { publicApplicationSnapshot } from "../services/applications.mjs";
 
@@ -165,7 +165,7 @@ export function buildPublicState({
     loopRoutines: loopRoutineReadModel(),
     worktrees: byProject(state.worktrees),
     agent: defaultAgent(),
-    agents: state.agents,
+    agents: (state.agents ?? []).filter((agent) => agentVisibleToActor(state, agent, actor)),
     invocations,
     compareRuns,
     events: visibleEvents,

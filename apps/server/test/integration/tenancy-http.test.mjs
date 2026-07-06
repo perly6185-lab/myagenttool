@@ -33,6 +33,7 @@ before(async () => {
   const { createServerState } = await import("../../src/runtime/state-factory.mjs");
   const { createServerRuntimeServices } = await import("../../src/runtime/service-composer.mjs");
   const { createHttpServer } = await import("../../src/runtime/http-server.mjs");
+  const { createCodexReviewAgentRegistration } = await import("../../src/services/codex-agent.mjs");
 
   const { defaultProject, state } = createServerState({ defaultProjectPath: "/tmp", now });
 
@@ -161,6 +162,7 @@ before(async () => {
     data: { targetId: "ssh_a", host: "team-a.internal", user: "deployer" },
     createdAt: now(),
   });
+  state.agents.push(agentFromRegistration(createCodexReviewAgentRegistration(), { ownerUserId: "usr_a", ownerTeamId: TEAM_A }));
 
   const { httpDependencies } = createServerRuntimeServices({
     namespace: "test",
@@ -381,10 +383,77 @@ test("SSH target creation ignores caller-supplied ownership", async () => {
   assert.equal(created.body.target.createdByUserId, "usr_b");
 });
 
+test("service registration discovery is scoped to the owning confirmed team", async () => {
+  const teamBState = await call("/api/state", { token: "tok_b" });
+  assert.equal(teamBState.status, 200);
+  assert.ok(!teamBState.body.agents.some((agent) => agent.id === "agt_codex_review_diff"), "foreign team must not see team-owned registered agent");
+
+  const teamBTools = await call("/api/tools", { token: "tok_b" });
+  assert.equal(teamBTools.status, 200);
+  assert.ok(!teamBTools.body.tools.some((tool) => tool.name === "codex.review.diff"), "foreign team must not discover team-owned tool facade");
+
+  const teamBCapabilities = await call("/api/capabilities", { token: "tok_b" });
+  assert.equal(teamBCapabilities.status, 200);
+  assert.ok(!teamBCapabilities.body.capabilities.some((capability) => capability.name === "codex.review.diff"), "foreign team must not discover team-owned capability");
+
+  const foreignHealth = await call("/api/agents/agt_codex_review_diff/health-check", { token: "tok_b", method: "POST" });
+  assert.equal(foreignHealth.status, 404);
+  assert.equal(foreignHealth.body.error, "agent_not_found");
+
+  const foreignInvocation = await call("/api/invocations", {
+    token: "tok_b",
+    method: "POST",
+    body: { task: "try foreign agent", agentId: "agt_codex_review_diff", projectId: "projB" },
+  });
+  assert.equal(foreignInvocation.status, 404);
+  assert.equal(foreignInvocation.body.error, "agent_not_found");
+
+  const teamAState = await call("/api/state", { token: "tok_a" });
+  assert.ok(teamAState.body.agents.some((agent) => agent.id === "agt_codex_review_diff"), "owning team should see registered agent");
+  const teamATools = await call("/api/tools", { token: "tok_a" });
+  assert.ok(teamATools.body.tools.some((tool) => tool.name === "codex.review.diff"), "owning team should discover tool facade");
+});
+
 test("write guard: team B cannot resolve team A's codex approval request (404)", async () => {
   const r = await call("/api/codex/approval-broker/cdx_appr_a/approve", { token: "tok_b", method: "POST" });
   assert.equal(r.status, 404);
 });
+
+function agentFromRegistration(registration, { ownerUserId, ownerTeamId }) {
+  return {
+    id: registration.id,
+    name: registration.name,
+    description: registration.description,
+    ownerUserId,
+    ownerTeamId,
+    location: { type: "local_device", deviceId: "dev_local_001" },
+    adapter: {
+      type: "cli",
+      command: registration.command,
+      args: registration.args,
+      outputFormat: registration.outputFormat,
+      cancellation: "supported",
+    },
+    lifecycle: { state: "enabled", installState: "installed", version: "0.0.0", managedBy: "bridge" },
+    economics: {
+      model: registration.economicModel,
+      pricingDimensions: registration.pricingDimensions,
+      currency: registration.currency,
+      costOwner: registration.costOwner,
+      budgetPoolId: null,
+      unknownCostPolicy: registration.unknownCostPolicy,
+    },
+    capabilities: [{
+      name: registration.capabilityName,
+      description: registration.capabilityDescription,
+      riskLevel: registration.riskLevel,
+      riskTags: registration.riskTags ?? [],
+    }],
+    toolContract: registration.toolContract,
+    status: "available",
+    health: { status: "healthy", checkedAt: now(), message: "ok", nextAction: null },
+  };
+}
 
 test("an unknown projectId is rejected too (not silently accepted)", async () => {
   const r = await call("/api/m3/ai-usage", {

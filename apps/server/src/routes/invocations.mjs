@@ -1,4 +1,4 @@
-import { denyForeignProject } from "../runtime/auth.mjs";
+import { agentVisibleToActor, denyForeignProject } from "../runtime/auth.mjs";
 
 export async function handleInvocationRoutes({
   req,
@@ -61,6 +61,10 @@ export async function handleInvocationRoutes({
       sendJson(res, 404, { error: "agent_not_found" });
       return true;
     }
+    if (!agentVisibleToActor(state, agent, actor)) {
+      sendJson(res, 404, { error: "agent_not_found" });
+      return true;
+    }
     if (agent.status === "disabled") {
       sendJson(res, 409, { error: "agent_disabled" });
       return true;
@@ -109,6 +113,10 @@ export async function handleInvocationRoutes({
     }
     const agents = agentIds.map((id) => findAgent(id));
     if (agents.some((agent) => !agent)) {
+      sendJson(res, 404, { error: "agent_not_found" });
+      return true;
+    }
+    if (agents.some((agent) => !agentVisibleToActor(state, agent, actor))) {
       sendJson(res, 404, { error: "agent_not_found" });
       return true;
     }

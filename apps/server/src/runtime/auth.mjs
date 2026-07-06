@@ -130,3 +130,19 @@ export function denyForeignProject({
   }
   return false;
 }
+
+export function agentVisibleToActor(state, agent, actor = null) {
+  if (!actor?.teamId) return true;
+  if (!agent) return false;
+  if (agent.sourceApplicationId) {
+    const application = (state.applications ?? []).find((item) => item.id === agent.sourceApplicationId);
+    if (!application) return false;
+    if (application.projectId) {
+      const project = (state.projects ?? []).find((item) => item.id === application.projectId);
+      return Boolean(project && teamOf(project) === actor.teamId);
+    }
+    return (application.ownerTeamId ?? LOCAL_TEAM_ID) === actor.teamId;
+  }
+  if (agent.ownerTeamId) return agent.ownerTeamId === actor.teamId;
+  return true;
+}

@@ -22,6 +22,7 @@ export function createAgentService({ state, now, nextId, appendEvent, persistSta
 
     const agent = factory(body);
     if (actor?.userId) agent.ownerUserId = actor.userId; // register under the acting user
+    if (actor?.teamId) agent.ownerTeamId = actor.teamId;
     const existingIndex = state.agents.findIndex((item) => item.id === agent.id);
     if (existingIndex >= 0) {
       const existing = state.agents[existingIndex];
