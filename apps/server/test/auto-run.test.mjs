@@ -58,6 +58,7 @@ function makeAutoRun({
   mergePr = async ({ prNumber }) => ({ ok: true, prNumber, method: "squash" }),
   fetchPrChecks = undefined,
   budgetStatusFor = undefined,
+  findInvocation = undefined,
 } = {}) {
   const calls = { createInvocation: [], startInvocationIfAllowed: [], commit: [], publish: [], pr: [], verify: [], status: [], report: [], merge: [] };
   let counter = 0;
@@ -116,6 +117,7 @@ function makeAutoRun({
     },
     fetchPrChecks,
     budgetStatusFor,
+    findInvocation,
   });
   return { svc, calls };
 }
@@ -967,4 +969,42 @@ test("O0 budget gate: under-budget run proceeds normally", async () => {
   const { autoRun } = await svc.startAutoRun({ projectId: sourceProjectId, link: { type: "issue", number: 3, title: "z", url: null, state: "open" }, agentId: "agt_1", name: "issue-3-z" });
   assert.equal(autoRun.status, "running", "proceeds when under budget");
   assert.equal(calls.createInvocation.length, 1);
+});
+
+test("O1 reaper: an orphaned active run (invocation gone) is failed", async () => {
+  const { svc } = makeAutoRun({ findInvocation: () => null });
+  const run = { id: "aur_r1", status: "running", projectId: sourceProjectId, invocationId: "inv_missing", updatedAt: new Date().toISOString() };
+  state.autoRuns.push(run);
+  const { reaped } = await svc.reapStuckAutoRuns();
+  assert.equal(reaped, 1);
+  assert.equal(run.status, "failed");
+  assert.match(run.error, /no longer exists/);
+});
+
+test("O1 reaper: awaiting_approval is NEVER reaped (waits for a human)", async () => {
+  const { svc } = makeAutoRun({ findInvocation: () => null });
+  const run = { id: "aur_r2", status: "awaiting_approval", projectId: sourceProjectId, invocationId: "inv_x", updatedAt: "2020-01-01T00:00:00Z" };
+  state.autoRuns.push(run);
+  const { reaped } = await svc.reapStuckAutoRuns();
+  assert.equal(reaped, 0);
+  assert.equal(run.status, "awaiting_approval");
+});
+
+test("O1 reaper: a stuck active run (live invocation, no progress past deadline) is failed", async () => {
+  const { svc } = makeAutoRun({ findInvocation: () => ({ id: "inv_live", status: "running" }) });
+  const run = { id: "aur_r3", status: "running", projectId: sourceProjectId, agentId: "agt_1", invocationId: "inv_live", updatedAt: "2020-01-01T00:00:00Z" };
+  state.autoRuns.push(run);
+  const { reaped } = await svc.reapStuckAutoRuns();
+  assert.equal(reaped, 1);
+  assert.equal(run.status, "failed");
+  assert.match(run.error, /no progress/);
+});
+
+test("O1 reaper: a recent active run is left alone", async () => {
+  const { svc } = makeAutoRun({ findInvocation: () => ({ id: "inv_live", status: "running" }) });
+  const run = { id: "aur_r4", status: "running", projectId: sourceProjectId, agentId: "agt_1", invocationId: "inv_live", updatedAt: new Date().toISOString() };
+  state.autoRuns.push(run);
+  const { reaped } = await svc.reapStuckAutoRuns();
+  assert.equal(reaped, 0);
+  assert.equal(run.status, "running");
 });

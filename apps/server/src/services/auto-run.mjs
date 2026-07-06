@@ -1,5 +1,6 @@
 import { roleAutoRunPrompt } from "@myagenttool/protocol/issue-prompt";
 
+import { isTerminal } from "./invocations.mjs";
 import { normalizeWorktreeLink } from "./projects.mjs";
 import { intentForPath, resolveDecision } from "./auto-run-decision.mjs";
 import { isSpawnedChildBody } from "./auto-run-spawn.mjs";
@@ -41,6 +42,7 @@ export function createAutoRunService({
   defaultAgent,
   budgetStatusFor,
   createInvocation,
+  findInvocation,
   startInvocationIfAllowed,
   commitWorktreeChanges,
   publishWorktreeBranch,
@@ -537,5 +539,50 @@ export function createAutoRunService({
     return { ok: true, prNumber: autoRun.prNumber, prState: "MERGED" };
   }
 
-  return { startAutoRun, advanceAutoRunForInvocation, syncAutoRunOnApproval, retryAutoRun, mergeAutoRunPr };
+  // O1 reliability: reap runs stuck in an active state so nothing lingers
+  // forever (leaking its worktree, showing as active). Runs on boot (crash
+  // reconcile) and on a periodic tick. awaiting_approval is NEVER reaped — it
+  // legitimately waits for a human indefinitely.
+  const REAPABLE = new Set(["materializing", "running", "verifying", "publishing"]);
+  const REAP_MARGIN_MS = 5 * 60 * 1000; // grace past the agent's own timeout
+  const DEFAULT_MAX_IDLE_MS = 30 * 60 * 1000; // floor for states with no agent timeout
+
+  async function reapStuckAutoRuns({ maxIdleMs = DEFAULT_MAX_IDLE_MS } = {}) {
+    const nowMs = Date.parse(now());
+    let reaped = 0;
+    let readvanced = 0;
+    for (const run of [...(state.autoRuns ?? [])]) {
+      if (!REAPABLE.has(run.status)) continue;
+      const inv = run.invocationId && typeof findInvocation === "function" ? findInvocation(run.invocationId) : null;
+      // Crash between completion and reaction: the invocation is terminal but the
+      // run is still active — re-drive the normal reaction so no work is lost.
+      if (inv && isTerminal(inv.status)) {
+        try {
+          await advanceAutoRunForInvocation(inv);
+          readvanced += 1;
+        } catch {
+          /* leave it; the stuck-deadline check will catch a truly wedged run */
+        }
+        continue;
+      }
+      // Orphaned by a restart: the invocation record is gone.
+      if (run.invocationId && !inv) {
+        setAutoRunStatus(run, "failed", { error: "Run reaped: its invocation no longer exists (server restart)." });
+        reaped += 1;
+        continue;
+      }
+      // Stuck: no progress past the deadline (agent timeout + margin, or the floor).
+      const idleMs = nowMs - Date.parse(run.updatedAt ?? run.createdAt ?? now());
+      const agent = run.agentId ? findAgent(run.agentId) : null;
+      const deadlineMs = Math.max(maxIdleMs, Number(agent?.adapter?.timeoutSeconds ?? 0) * 1000 + REAP_MARGIN_MS);
+      if (Number.isFinite(idleMs) && idleMs > deadlineMs) {
+        setAutoRunStatus(run, "failed", { error: `Run reaped: no progress for ${Math.round(idleMs / 1000)}s (stuck).` });
+        reaped += 1;
+      }
+    }
+    if (reaped > 0) persistStateSoon();
+    return { reaped, readvanced };
+  }
+
+  return { startAutoRun, advanceAutoRunForInvocation, syncAutoRunOnApproval, retryAutoRun, mergeAutoRunPr, reapStuckAutoRuns };
 }
