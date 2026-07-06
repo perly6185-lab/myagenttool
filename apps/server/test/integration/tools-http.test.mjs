@@ -3,6 +3,7 @@ process.env.MYAGENTTOOL_STATE_DISABLED = "1";
 
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { createServer } from "node:http";
 import { after, before, test } from "node:test";
 
 const TEAM_A = "team_a";
@@ -167,6 +168,61 @@ async function approveApplicationRequest(response, token = "tok_a") {
   assert.equal(approved.status, 200);
   assert.equal(approved.body.approval.status, "approved");
   return response.body.approvalRequestId;
+}
+
+async function startHttpMcpFixtureForTest(tools = [{ name: "render_markdown" }]) {
+  const sessionId = "sess-tools-http-mcp";
+  const requests = [];
+  const fixture = createServer((req, res) => {
+    if (req.method !== "POST") {
+      res.writeHead(404).end();
+      return;
+    }
+    let body = "";
+    req.on("data", (chunk) => {
+      body += chunk;
+    });
+    req.on("end", () => {
+      const message = JSON.parse(body);
+      requests.push({ url: req.url, method: message.method, sessionId: req.headers["mcp-session-id"] ?? null });
+      const json = (payload, headers = {}) => {
+        res.writeHead(200, { "content-type": "application/json", ...headers });
+        res.end(JSON.stringify(payload));
+      };
+      if (message.method === "initialize") {
+        json({
+          jsonrpc: "2.0",
+          id: message.id,
+          result: {
+            protocolVersion: message.params?.protocolVersion,
+            capabilities: { tools: {} },
+            serverInfo: { name: "tools-http-mcp-fixture", version: "0.0.0" },
+          },
+        }, { "mcp-session-id": sessionId });
+        return;
+      }
+      if (req.headers["mcp-session-id"] !== sessionId) {
+        res.writeHead(400, { "content-type": "application/json" });
+        res.end(JSON.stringify({ jsonrpc: "2.0", id: message.id ?? null, error: { message: "missing session id" } }));
+        return;
+      }
+      if (message.id === undefined) {
+        res.writeHead(202).end();
+        return;
+      }
+      if (message.method === "tools/list") {
+        json({ jsonrpc: "2.0", id: message.id, result: { tools } });
+        return;
+      }
+      json({ jsonrpc: "2.0", id: message.id, error: { message: `unknown method ${message.method}` } });
+    });
+  });
+  await new Promise((resolve) => fixture.listen(0, "127.0.0.1", resolve));
+  return {
+    requests,
+    url: `http://127.0.0.1:${fixture.address().port}/rpc?token=secret`,
+    close: () => new Promise((resolve) => fixture.close(resolve)),
+  };
 }
 
 async function generateApplicationOrchestrationForTest(applicationId = "app_team_a", token = "tok_a") {
@@ -728,6 +784,9 @@ test("POST /api/applications/:id/mcp-candidates/:candidateId/confirm requires in
   assert.equal(remote?.review?.endpointOrigin, "https://mcp.example.test");
   assert.equal(remote?.review?.endpointHost, "mcp.example.test");
   assert.equal(remote?.review?.networkPolicy, "restricted");
+  assert.equal(remote?.review?.liveProbe?.state, "not_run");
+  assert.equal(remote?.review?.liveProbe?.requiredBeforeExecution, true);
+  assert.equal(remote?.review?.liveProbe?.endpointOrigin, "https://mcp.example.test");
   assert.equal(JSON.stringify(probed.body).includes("secret"), false);
   assert.equal(probed.body.application.mcpAgent, null);
 
@@ -766,6 +825,82 @@ test("POST /api/applications/:id/mcp-candidates/:candidateId/confirm requires in
   const tools = await call("/api/tools", { token: "tok_a" });
   assert.equal(tools.status, 200);
   assert.ok(tools.body.tools.some((tool) => tool.name === "doocs_md_manual.render_markdown" && tool.source === "mcp_agent"));
+});
+
+test("POST /api/applications/:id/mcp-candidates/:candidateId/probe records HTTP MCP evidence before confirmation", async () => {
+  const fixture = await startHttpMcpFixtureForTest([
+    { name: "render_markdown", description: "Render Markdown.", inputSchema: { type: "object" } },
+    { name: "list_themes", description: "List themes.", inputSchema: { type: "object" } },
+  ]);
+  const root = "/tmp/doocs-http-live-mcp";
+  mkdirSync(`${root}/.vscode`, { recursive: true });
+  writeFileSync(`${root}/package.json`, JSON.stringify({ name: "md-http-live", version: "2.1.0" }, null, 2), "utf8");
+  writeFileSync(`${root}/.vscode/mcp.json`, JSON.stringify({
+    servers: {
+      remote: {
+        type: "http",
+        url: fixture.url,
+        allowedTools: ["render_markdown"],
+      },
+    },
+  }, null, 2), "utf8");
+  try {
+    const registered = await call("/api/applications/register", {
+      method: "POST",
+      body: {
+        id: "app_doocs_http_live_mcp_http",
+        name: "doocs/md http live",
+        projectId: "projA",
+        source: { type: "local", path: root },
+      },
+      token: "tok_a",
+    });
+    assert.equal(registered.status, 201);
+
+    const probed = await call(`/api/applications/${registered.body.application.id}/probe`, {
+      method: "POST",
+      body: {},
+      token: "tok_a",
+    });
+    assert.equal(probed.status, 200);
+    assert.equal(probed.body.application.probe.mcpServers[0].review.liveProbe.state, "not_run");
+    assert.equal(JSON.stringify(probed.body).includes("secret"), false);
+
+    const live = await call(`/api/applications/${registered.body.application.id}/mcp-candidates/mcp.remote/probe`, {
+      method: "POST",
+      body: { timeoutMs: 5_000 },
+      token: "tok_a",
+    });
+    assert.equal(live.status, 200);
+    assert.equal(live.body.liveProbe.state, "succeeded");
+    assert.equal(live.body.liveProbe.evidence, "json_rpc_initialize_tools_list");
+    assert.deepEqual(live.body.liveProbe.matchedAllowedTools, ["render_markdown"]);
+    assert.deepEqual(live.body.liveProbe.missingAllowedTools, []);
+    assert.equal(live.body.candidate.review.liveProbe.state, "succeeded");
+    assert.equal(live.body.application.probe.mcpServers[0].review.liveProbe.state, "succeeded");
+    assert.equal(JSON.stringify(live.body).includes("secret"), false);
+    assert.equal(fixture.requests.some((request) => request.method === "tools/list" && request.sessionId), true);
+
+    const approvalRequired = await call(`/api/applications/${registered.body.application.id}/mcp-candidates/mcp.remote/confirm`, {
+      method: "POST",
+      body: {},
+      token: "tok_a",
+    });
+    const approvalRequestId = await approveApplicationRequest(approvalRequired);
+
+    const confirmed = await call(`/api/applications/${registered.body.application.id}/mcp-candidates/mcp.remote/confirm`, {
+      method: "POST",
+      body: { approvalRequestId },
+      token: "tok_a",
+    });
+    assert.equal(confirmed.status, 200);
+    assert.equal(confirmed.body.application.mcpAgent.discovery.manualConfirmed, true);
+    assert.deepEqual(confirmed.body.application.mcpAgent.sharedToolNames, ["doocs_md_http_live.render_markdown"]);
+    assert.equal(confirmed.body.application.mcpAgent.adapter, undefined);
+    assert.equal(JSON.stringify(confirmed.body).includes("secret"), false);
+  } finally {
+    await fixture.close();
+  }
 });
 
 test("POST /api/applications/:id/probe infers npm metadata from registration manifest only", async () => {

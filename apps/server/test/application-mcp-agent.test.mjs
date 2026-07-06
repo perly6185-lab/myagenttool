@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -165,6 +166,61 @@ async function removeTreeEventually(path) {
     }
   }
   rmSync(path, { recursive: true, force: true });
+}
+
+async function startHttpMcpFixture(tools = [{ name: "render_markdown" }]) {
+  const sessionId = "sess-application-http-mcp";
+  const requests = [];
+  const server = createServer((req, res) => {
+    if (req.method !== "POST") {
+      res.writeHead(404).end();
+      return;
+    }
+    let body = "";
+    req.on("data", (chunk) => {
+      body += chunk;
+    });
+    req.on("end", () => {
+      const message = JSON.parse(body);
+      requests.push({ url: req.url, method: message.method, sessionId: req.headers["mcp-session-id"] ?? null });
+      const json = (payload, headers = {}) => {
+        res.writeHead(200, { "content-type": "application/json", ...headers });
+        res.end(JSON.stringify(payload));
+      };
+      if (message.method === "initialize") {
+        json({
+          jsonrpc: "2.0",
+          id: message.id,
+          result: {
+            protocolVersion: message.params?.protocolVersion,
+            capabilities: { tools: {} },
+            serverInfo: { name: "application-http-fixture", version: "0.0.0" },
+          },
+        }, { "mcp-session-id": sessionId });
+        return;
+      }
+      if (req.headers["mcp-session-id"] !== sessionId) {
+        res.writeHead(400, { "content-type": "application/json" });
+        res.end(JSON.stringify({ jsonrpc: "2.0", id: message.id ?? null, error: { message: "missing session id" } }));
+        return;
+      }
+      if (message.id === undefined) {
+        res.writeHead(202).end();
+        return;
+      }
+      if (message.method === "tools/list") {
+        json({ jsonrpc: "2.0", id: message.id, result: { tools } });
+        return;
+      }
+      json({ jsonrpc: "2.0", id: message.id, error: { message: `unknown method ${message.method}` } });
+    });
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  return {
+    requests,
+    url: `http://127.0.0.1:${server.address().port}/mcp?token=secret`,
+    close: () => new Promise((resolve) => server.close(resolve)),
+  };
 }
 
 test("application mcpAgent registers a recoverable MCP agent and shared tools", () => {
@@ -372,6 +428,9 @@ test("application MCP probe keeps manual-confirm candidates while auto-registeri
     assert.equal(remote?.review?.networkPolicy, "restricted");
     assert.equal(remote?.review?.allowedToolCount, 1);
     assert.equal(remote?.review?.requiresManualConfirmation, true);
+    assert.equal(remote?.review?.liveProbe?.state, "not_run");
+    assert.equal(remote?.review?.liveProbe?.requiredBeforeExecution, true);
+    assert.equal(remote?.review?.liveProbe?.endpointOrigin, "https://example.test");
     assert.equal(JSON.stringify(remote).includes("secret"), false);
     assert.equal(probed.probe.autoRegisteredMcpAgentId, "agt_app_doocs_md_candidates_mcp");
     assert.deepEqual(probed.mcpAgent.sharedToolNames, ["doocs_md.render_markdown"]);
@@ -437,6 +496,113 @@ test("application MCP candidate manual confirmation registers shared tools", () 
       true,
     );
   } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("application HTTP MCP candidate requires live-probe evidence before confirmation", () => {
+  const root = mkdtempSync(join(tmpdir(), "myagenttool-app-mcp-http-confirm-"));
+  const projectPath = join(root, "doocs-md");
+  mkdirSync(join(projectPath, ".vscode"), { recursive: true });
+  writeFileSync(join(projectPath, ".vscode", "mcp.json"), JSON.stringify({
+    servers: {
+      remote: {
+        type: "http",
+        url: "https://example.test/mcp?token=secret",
+        allowedTools: ["render_markdown"],
+      },
+    },
+  }, null, 2), "utf8");
+  try {
+    const { api } = runtime({ projectPath });
+    const actor = { userId: "usr_a", teamId: "team_local" };
+    const app = api.registerApplication({
+      id: "app_doocs_md_http_manual",
+      name: "doocs/md",
+      source: { type: "local", path: projectPath },
+    }, actor);
+    const probed = api.probeApplication(app.id, actor);
+    const candidate = probed.probe.mcpServers.find((server) => server.id === "mcp.remote");
+    assert.equal(candidate?.review?.liveProbe?.state, "not_run");
+    assert.equal(candidate?.review?.liveProbe?.requiredBeforeExecution, true);
+
+    const requested = api.confirmApplicationMcpCandidate(app.id, "mcp.remote", {}, actor);
+    assert.equal(requested.status, 202);
+    const approval = api.findApprovalRequest(requested.body.approvalRequestId);
+    const approvalInvocation = api.findInvocation(approval.invocationId);
+    api.approveInvocation(approval, approvalInvocation, actor);
+
+    const confirmed = api.confirmApplicationMcpCandidate(app.id, "mcp.remote", { approvalRequestId: requested.body.approvalRequestId }, actor);
+    assert.equal(confirmed.status, 409);
+    assert.equal(confirmed.body.error, "mcp_http_live_probe_required");
+    assert.equal(confirmed.body.liveProbe.state, "not_run");
+    assert.equal(confirmed.body.candidate.review.liveProbe.endpointOrigin, "https://example.test");
+    assert.equal(JSON.stringify(confirmed.body).includes("secret"), false);
+    assert.equal(api.findApplication(app.id).mcpAgent, null);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("application HTTP MCP candidate live probe records evidence and enables confirmation", async () => {
+  const root = mkdtempSync(join(tmpdir(), "myagenttool-app-mcp-http-live-"));
+  const projectPath = join(root, "doocs-md");
+  const fixture = await startHttpMcpFixture([
+    { name: "render_markdown", description: "Render Markdown.", inputSchema: { type: "object" } },
+    { name: "list_themes", description: "List themes.", inputSchema: { type: "object" } },
+  ]);
+  mkdirSync(join(projectPath, ".vscode"), { recursive: true });
+  writeFileSync(join(projectPath, ".vscode", "mcp.json"), JSON.stringify({
+    servers: {
+      remote: {
+        type: "http",
+        url: fixture.url,
+        allowedTools: ["render_markdown"],
+      },
+    },
+  }, null, 2), "utf8");
+  try {
+    const { api } = runtime({ projectPath });
+    const actor = { userId: "usr_a", teamId: "team_local" };
+    const app = api.registerApplication({
+      id: "app_doocs_md_http_live",
+      name: "doocs/md",
+      source: { type: "local", path: projectPath },
+    }, actor);
+    const probed = api.probeApplication(app.id, actor);
+    assert.equal(probed.probe.mcpServers[0].review.liveProbe.state, "not_run");
+
+    const live = await api.probeApplicationMcpCandidate(app.id, "mcp.remote", { timeoutMs: 5_000 }, actor);
+    assert.equal(live.status, 200);
+    assert.equal(live.liveProbe.state, "succeeded");
+    assert.equal(live.liveProbe.evidence, "json_rpc_initialize_tools_list");
+    assert.equal(live.liveProbe.toolCount, 2);
+    assert.deepEqual(live.liveProbe.matchedAllowedTools, ["render_markdown"]);
+    assert.deepEqual(live.liveProbe.missingAllowedTools, []);
+    assert.equal(live.candidate.review.liveProbe.state, "succeeded");
+    assert.equal(live.candidate.adapterPreview.url.startsWith("http://127.0.0.1:"), true);
+    assert.equal(JSON.stringify(live).includes("secret"), false);
+    assert.equal(fixture.requests.some((request) => request.method === "tools/list" && request.sessionId), true);
+
+    const recorded = api.findApplication(app.id).probe.mcpServers.find((server) => server.id === "mcp.remote");
+    assert.equal(recorded.review.liveProbe.state, "succeeded");
+    const reprobed = api.probeApplication(app.id, actor);
+    assert.equal(reprobed.probe.mcpServers.find((server) => server.id === "mcp.remote").review.liveProbe.state, "succeeded");
+
+    const requested = api.confirmApplicationMcpCandidate(app.id, "mcp.remote", {}, actor);
+    assert.equal(requested.status, 202);
+    const approval = api.findApprovalRequest(requested.body.approvalRequestId);
+    const approvalInvocation = api.findInvocation(approval.invocationId);
+    api.approveInvocation(approval, approvalInvocation, actor);
+
+    const confirmed = api.confirmApplicationMcpCandidate(app.id, "mcp.remote", { approvalRequestId: requested.body.approvalRequestId }, actor);
+    assert.equal(confirmed.status, 200);
+    assert.equal(confirmed.application.mcpAgent.discovery.manualConfirmed, true);
+    assert.deepEqual(confirmed.application.mcpAgent.sharedToolNames, ["doocs_md.render_markdown"]);
+    assert.equal(api.getTool("doocs_md.render_markdown", actor)?.mcp?.agentId, "agt_app_doocs_md_http_live_mcp");
+    assert.equal(JSON.stringify(confirmed.candidate).includes("secret"), false);
+  } finally {
+    await fixture.close();
     rmSync(root, { recursive: true, force: true });
   }
 });

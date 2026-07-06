@@ -133,6 +133,7 @@ export function createServerRuntimeServices({
     listApplications,
     planApplicationWrapperInvocation,
     probeApplication: probeApplicationBase,
+    probeApplicationMcpCandidate: probeApplicationMcpCandidateBase,
     registerApplication: registerApplicationBase,
     transitionApplication,
     updateApplicationDescriptors: updateApplicationDescriptorsBase,
@@ -236,6 +237,10 @@ export function createServerRuntimeServices({
       reconcileApplicationMcpAgent(result.application, actor);
     }
     return result;
+  }
+
+  async function probeApplicationMcpCandidate(applicationId, candidateId, input = {}, actor = null) {
+    return probeApplicationMcpCandidateBase(applicationId, candidateId, input, actor);
   }
 
   for (const application of state.applications ?? []) {
@@ -2001,6 +2006,7 @@ export function createServerRuntimeServices({
     listApplicationOrchestrationRunEvents,
     listApplicationOrchestrationRuns,
     probeApplication,
+    probeApplicationMcpCandidate,
     registerApplication,
     requestApplicationOrchestrationRecoveryAction,
     runApplicationOrchestration,
@@ -2123,6 +2129,7 @@ export function createServerRuntimeServices({
     listApplicationOrchestrationRunEvents,
     listApplicationOrchestrationRuns,
     probeApplication,
+    probeApplicationMcpCandidate,
     registerApplication,
     requestApplicationOrchestrationRecoveryAction,
     runApplicationOrchestration,

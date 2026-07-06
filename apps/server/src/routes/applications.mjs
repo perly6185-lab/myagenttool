@@ -19,6 +19,7 @@ export async function handleApplicationRoutes({
   listApplications,
   listApplicationOrchestrationRunEvents,
   probeApplication,
+  probeApplicationMcpCandidate,
   registerApplication,
   requestApplicationOrchestrationRecoveryAction,
   transitionApplication,
@@ -59,6 +60,23 @@ export async function handleApplicationRoutes({
         ...(validationErrors ? { validation: { errors: validationErrors } } : {}),
       });
     }
+    return true;
+  }
+
+  const mcpCandidateProbeMatch = url.pathname.match(/^\/api\/applications\/([^/]+)\/mcp-candidates\/([^/]+)\/probe$/);
+  if (mcpCandidateProbeMatch && req.method === "POST") {
+    const applicationId = decodeURIComponent(mcpCandidateProbeMatch[1]);
+    const candidateId = decodeURIComponent(mcpCandidateProbeMatch[2]);
+    if (denyForeignApplication({ res, sendJson, state, actor, applicationId, findApplication })) return true;
+    const result = await probeApplicationMcpCandidate(applicationId, candidateId, await readJson(req), actor);
+    sendJson(res, result.status, result.ok
+      ? {
+          application: publicApplicationSnapshot(result.application),
+          candidate: result.candidate,
+          liveProbe: result.liveProbe,
+          capabilities: listApplicationCapabilities(applicationId) ?? [],
+        }
+      : result.body);
     return true;
   }
 

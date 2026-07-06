@@ -56,6 +56,8 @@ POST /api/applications/register
 GET  /api/applications
 GET  /api/applications/:id
 POST /api/applications/:id/probe
+POST /api/applications/:id/mcp-candidates/:candidateId/probe
+POST /api/applications/:id/mcp-candidates/:candidateId/confirm
 POST /api/applications/:id/online
 POST /api/applications/:id/offline
 POST /api/applications/:id/archive
@@ -172,6 +174,17 @@ as manual-confirm evidence; the Applications inspector can now confirm a ready
 manual candidate through an explicit intent action that persists the MCP
 descriptor and projects shared tool names.
 
+HTTP MCP candidates publish a redacted endpoint review and a `liveProbe`
+evidence slot. Until a successful live probe is recorded, HTTP MCP confirmation
+is blocked with `mcp_http_live_probe_required`; this keeps remote MCP endpoints
+discoverable for review without turning them into executable shared tools based
+on static config alone. `POST
+/api/applications/:id/mcp-candidates/:candidateId/probe` performs a JSON-RPC
+`initialize` plus `tools/list` check against the HTTP endpoint, records
+`json_rpc_initialize_tools_list` evidence, verifies that every allowed tool is
+exposed, and stores only redacted endpoint metadata on the public Application
+probe.
+
 Application-scoped MCP tools are exposed as governed tool/capability names such
 as `doocs_md.render_markdown` without exposing adapter command, argv, or local
 paths to callers. The Desktop Bridge re-checks MCP stdio execution before spawn
@@ -255,11 +268,13 @@ this application do?" without seeing wrapper internals.
   list/detail/register/probe/confirm responses that expose only redacted
   Application snapshots rather than raw MCP adapter command/args/url. MCP
   candidates also publish structured review fields for manual confirmation:
-  data boundary, file/network policy, allowed tool count, and redacted HTTP
-  endpoint origin/host/protocol. Restart coverage now also proves generic NPM
-  wrapper descriptors, approved wrapper capability projection, readiness
-  metadata, result-path metadata, declared arg inputs, and execution plans are
-  rebuilt from persisted Application state.
+  data boundary, file/network policy, allowed tool count, redacted HTTP endpoint
+  origin/host/protocol, and HTTP live-probe evidence. HTTP candidates are
+  blocked from confirmation until a successful `initialize` plus `tools/list`
+  probe records the expected allowed tools. Restart coverage now also proves
+  generic NPM wrapper descriptors, approved wrapper capability projection,
+  readiness metadata, result-path metadata, declared arg inputs, and execution
+  plans are rebuilt from persisted Application state.
 
 ### 2. Access
 
@@ -322,9 +337,8 @@ path, result refs link back to invocation/Application/audit/Evidence Center,
 and Web shows MCP tools plus the View invocation path.
 
 The remaining acceptance work is to define the consent model that can safely
-promote write-capable or networked wrappers from `needs_consent` to executable,
-and to add deeper HTTP MCP live-probe/review evidence before HTTP MCP candidates
-become executable shared Application tools. The measured ccusage and
-doocs/md-style paths now have restart/read-model coverage for result links,
-descriptor recovery, capability projection, and conservative wrapper policy
-gating.
+promote write-capable or networked wrappers from `needs_consent` to executable.
+The measured ccusage and doocs/md-style paths now have restart/read-model
+coverage for result links, descriptor recovery, capability projection,
+conservative wrapper policy gating, HTTP MCP live-probe gating, and HTTP MCP
+live-probe promotion to confirmed shared tools.

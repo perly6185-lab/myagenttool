@@ -1,6 +1,8 @@
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { normalizeMcpAdapterConfig } from "@myagenttool/adapters/mcp";
+import { probeMcpServer } from "../../../desktop/src/mcp-client.mjs";
 import { normalizeLoopRoutine, validateLoopRoutine } from "../../../../tools/ai/src/loop/routine.mjs";
 import { teamOf } from "../runtime/auth.mjs";
 import { sanitizeAgentId } from "./agents.mjs";
@@ -281,6 +283,7 @@ export function createApplicationService({
     if (!app) return null;
     const probedAt = now();
     const probe = buildApplicationProbe(app);
+    probe.mcpServers = mergeStoredMcpLiveProbeEvidence(app, probe.mcpServers);
     const autoRegisteredMcp = app.mcpAgent
       ? null
       : adoptProbeMcpAgent(app, probe.mcpServers, probedAt);
@@ -470,13 +473,27 @@ export function createApplicationService({
 
     const confirmedAt = now();
     const warnings = [];
-    const candidates = inferApplicationMcpServers(app, warnings);
+    const candidates = mergeStoredMcpLiveProbeEvidence(app, inferApplicationMcpServers(app, warnings));
     const candidate = candidates.find((item) => item.id === String(candidateId ?? "").trim());
     if (!candidate?.mcpAgent) {
       return { ok: false, status: 404, body: { error: "mcp_candidate_not_found", applicationId, candidateId } };
     }
     if (candidate.allowedTools.length === 0) {
       return { ok: false, status: 422, body: { error: "mcp_candidate_not_ready", applicationId, candidateId } };
+    }
+    if (candidate.transport === "http" && !mcpHttpLiveProbeSatisfied(candidate)) {
+      return {
+        ok: false,
+        status: 409,
+        body: {
+          error: "mcp_http_live_probe_required",
+          reason: "HTTP MCP candidates require successful live-probe evidence before shared tools can be confirmed.",
+          applicationId,
+          candidateId,
+          liveProbe: candidate.review?.liveProbe ?? null,
+          candidate: publicProbeMcpServer(candidate),
+        },
+      };
     }
 
     const mcpAgent = normalizeApplicationMcpAgent(candidate.mcpAgent, {
@@ -529,6 +546,100 @@ export function createApplicationService({
     return { ok: true, status: 200, application: app, candidate: publicProbeMcpServer(candidate) };
   }
 
+  async function probeApplicationMcpCandidate(applicationId, candidateId, input = {}, actor = null) {
+    const app = findApplication(applicationId);
+    if (!app) {
+      return { ok: false, status: 404, body: { error: "application_not_found" } };
+    }
+    if (app.status === "archived") {
+      return { ok: false, status: 409, body: { error: "application_archived", applicationId } };
+    }
+    const warnings = [];
+    const candidates = mergeStoredMcpLiveProbeEvidence(app, inferApplicationMcpServers(app, warnings));
+    const candidate = candidates.find((item) => item.id === String(candidateId ?? "").trim());
+    if (!candidate?.mcpAgent) {
+      return { ok: false, status: 404, body: { error: "mcp_candidate_not_found", applicationId, candidateId } };
+    }
+    if (candidate.transport !== "http") {
+      return {
+        ok: false,
+        status: 422,
+        body: {
+          error: "mcp_http_live_probe_not_supported",
+          reason: "Only HTTP MCP candidates need a live endpoint probe before confirmation.",
+          applicationId,
+          candidateId,
+          candidate: publicProbeMcpServer(candidate),
+        },
+      };
+    }
+    if (candidate.allowedTools.length === 0) {
+      return { ok: false, status: 422, body: { error: "mcp_candidate_not_ready", applicationId, candidateId } };
+    }
+
+    const checkedAt = now();
+    const mcpAgent = normalizeApplicationMcpAgent(candidate.mcpAgent, {
+      applicationId: app.id,
+      applicationName: app.name,
+      applicationPath: app.path ?? app.source?.path ?? null,
+    });
+    const probeResult = await probeMcpServer({
+      ...mcpAgent.adapter,
+      timeoutMs: normalizePositiveInteger(input.timeoutMs, mcpAgent.adapter.timeoutMs),
+      startupTimeoutMs: normalizePositiveInteger(input.startupTimeoutMs, mcpAgent.adapter.startupTimeoutMs),
+    });
+    const liveProbe = mcpHttpLiveProbeFromResult(candidate, probeResult, checkedAt);
+    candidate.review = {
+      ...(candidate.review ?? {}),
+      liveProbe,
+    };
+    app.mcpCandidateLiveProbes = {
+      ...(app.mcpCandidateLiveProbes ?? {}),
+      [candidate.id]: {
+        cacheKey: mcpHttpLiveProbeCacheKey(candidate),
+        liveProbe,
+        updatedAt: checkedAt,
+      },
+    };
+    app.probe = {
+      ...(app.probe ?? {}),
+      status: "completed",
+      checkedAt: app.probe?.checkedAt ?? checkedAt,
+      mcpServers: candidates.map(publicProbeMcpServer),
+      mcpLiveProbeCheckedAt: checkedAt,
+      warnings: uniqueStringList([...(app.probe?.warnings ?? []), ...warnings]),
+    };
+    app.lifecycle = {
+      ...app.lifecycle,
+      lastOperation: "probe_mcp_candidate",
+      lastOperationAt: checkedAt,
+      lastActorId: actor?.userId ?? null,
+    };
+    app.updatedAt = checkedAt;
+    appendEvent({
+      invocationId: null,
+      type: "application_mcp_candidate_live_probed",
+      level: liveProbe.state === "succeeded" ? "info" : "warn",
+      message: `${app.name} MCP candidate ${candidate.id} live probe ${liveProbe.state}.`,
+      data: {
+        applicationId: app.id,
+        candidateId: candidate.id,
+        state: liveProbe.state,
+        toolCount: liveProbe.toolCount,
+        matchedAllowedTools: liveProbe.matchedAllowedTools,
+        missingAllowedTools: liveProbe.missingAllowedTools,
+      },
+    });
+    persistStateSoon();
+    return {
+      ok: true,
+      status: 200,
+      application: app,
+      candidate: publicProbeMcpServer(candidate),
+      liveProbe,
+    };
+  }
+
   return {
     findApplication,
     confirmApplicationMcpCandidate,
@@ -538,6 +649,7 @@ export function createApplicationService({
     listApplications,
     planApplicationWrapperInvocation,
     probeApplication,
+    probeApplicationMcpCandidate,
     registerApplication,
     transitionApplication,
     updateApplicationDescriptors,
@@ -1729,6 +1841,7 @@ function mcpServerCandidateFromConfig({
       adapter: {
         transport: "http",
         url,
+        headers: server.headers && typeof server.headers === "object" && !Array.isArray(server.headers) ? server.headers : {},
         allowedTools,
         filePolicy: stringOrNull(server.filePolicy) ?? "read_only",
         networkPolicy: stringOrNull(server.networkPolicy) ?? "restricted",
@@ -1873,7 +1986,7 @@ function buildProbeMcpServer({
       transport: adapter.transport,
       ...(adapter.transport === "stdio"
         ? { command: adapter.command, args: adapter.args ?? [], cwd: adapter.cwd ?? cwd ?? null }
-        : { url: adapter.url }),
+        : { url: adapter.url, headers: adapter.headers ?? {} }),
       allowedTools: normalizedAllowedTools,
       filePolicy,
       networkPolicy,
@@ -1896,6 +2009,7 @@ function mcpCandidateReview({ adapter, filePolicy, networkPolicy, normalizedAllo
   return {
     ...base,
     ...mcpHttpEndpointReview(adapter.url),
+    liveProbe: mcpHttpLiveProbeReview(adapter.url, networkPolicy),
   };
 }
 
@@ -1914,6 +2028,84 @@ function mcpHttpEndpointReview(url) {
       endpointProtocol: null,
     };
   }
+}
+
+function mcpHttpLiveProbeReview(url, networkPolicy) {
+  const endpoint = mcpHttpEndpointReview(url);
+  return {
+    state: "not_run",
+    requiredBeforeExecution: true,
+    checkedAt: null,
+    evidence: "not_recorded",
+    endpointUrl: redactUrl(url),
+    endpointOrigin: endpoint.endpointOrigin,
+    endpointHost: endpoint.endpointHost,
+    endpointProtocol: endpoint.endpointProtocol,
+    networkPolicy,
+  };
+}
+
+function mcpHttpLiveProbeSatisfied(candidate) {
+  const liveProbe = candidate?.review?.liveProbe;
+  return liveProbe?.state === "succeeded"
+    && liveProbe.evidence === "json_rpc_initialize_tools_list"
+    && liveProbe.endpointUrl === redactUrl(candidate?.mcpAgent?.url)
+    && (liveProbe.missingAllowedTools ?? []).length === 0;
+}
+
+function mcpHttpLiveProbeFromResult(candidate, result, checkedAt) {
+  const template = mcpHttpLiveProbeReview(candidate.mcpAgent?.url, candidate.review?.networkPolicy ?? "restricted");
+  const exposedTools = Array.isArray(result?.tools) ? uniqueStringList(result.tools).slice(0, 50) : [];
+  const matchedAllowedTools = candidate.allowedTools.filter((toolName) => exposedTools.includes(toolName));
+  const missingAllowedTools = candidate.allowedTools.filter((toolName) => !exposedTools.includes(toolName));
+  const succeeded = Boolean(result?.ok) && missingAllowedTools.length === 0;
+  return {
+    ...template,
+    state: succeeded ? "succeeded" : "failed",
+    checkedAt,
+    evidence: "json_rpc_initialize_tools_list",
+    toolCount: exposedTools.length,
+    exposedTools,
+    matchedAllowedTools,
+    missingAllowedTools,
+    message: result?.message ?? null,
+    nextAction: succeeded
+      ? "HTTP MCP endpoint can be confirmed after the required Application approval."
+      : result?.nextAction ?? "Check that the endpoint is reachable and exposes every allowed tool.",
+  };
+}
+
+function mergeStoredMcpLiveProbeEvidence(application, candidates) {
+  return candidates.map((candidate) => {
+    const stored = application?.mcpCandidateLiveProbes?.[candidate.id];
+    const storedLiveProbe = stored?.liveProbe;
+    const currentLiveProbe = candidate.review?.liveProbe;
+    if (!storedLiveProbe || !currentLiveProbe || stored.cacheKey !== mcpHttpLiveProbeCacheKey(candidate)) {
+      return candidate;
+    }
+    return {
+      ...candidate,
+      review: {
+        ...(candidate.review ?? {}),
+        liveProbe: {
+          ...currentLiveProbe,
+          ...storedLiveProbe,
+          requiredBeforeExecution: true,
+        },
+      },
+    };
+  });
+}
+
+function mcpHttpLiveProbeCacheKey(candidate) {
+  return createHash("sha256")
+    .update(`${candidate?.id ?? ""}\0${candidate?.mcpAgent?.url ?? ""}`)
+    .digest("hex");
+}
+
+function normalizePositiveInteger(value, fallback) {
+  const number = Number(value);
+  return Number.isFinite(number) && number > 0 ? Math.floor(number) : fallback;
 }
 
 function mcpAutoRegistrationAssessment(adapter, application, allowedTools) {

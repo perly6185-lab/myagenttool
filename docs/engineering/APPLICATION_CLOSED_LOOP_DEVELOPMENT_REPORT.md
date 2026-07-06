@@ -100,10 +100,19 @@ View invocation navigation.
   remain discoverable for review, but their capabilities are marked `disabled`
   with readiness `needs_consent`, and invocation is blocked with
   `application_wrapper_policy_not_supported` before approval or bridge dispatch.
+- Added an HTTP MCP live-probe gate. HTTP MCP candidates now publish redacted
+  endpoint review plus `liveProbe` state, and confirmation is blocked with
+  `mcp_http_live_probe_required` until successful probe evidence exists.
+- Implemented the HTTP MCP live-probe runner and API endpoint. `POST
+  /api/applications/:id/mcp-candidates/:candidateId/probe` performs JSON-RPC
+  `initialize` and `tools/list`, records `json_rpc_initialize_tools_list`
+  evidence on the Application probe, verifies that allowed tools are exposed,
+  and then permits the approved confirm path to register shared MCP tools.
 - Re-ran focused Application verification:
-  `pnpm --filter @myagenttool/server exec node --test --test-name-pattern
-  "Application (result links|descriptors and wrapper projection)"
-  test/persistence.test.mjs`.
+  `pnpm --filter @myagenttool/server exec node --test
+  test/application-mcp-agent.test.mjs`, targeted
+  `test/integration/tools-http.test.mjs`, `pnpm smoke:applications`, and
+  `pnpm docs:check`.
 
 Remaining design work is now concentrated on two expansion gates:
 
@@ -111,5 +120,5 @@ Remaining design work is now concentrated on two expansion gates:
   networked Application wrappers from `needs_consent` to executable, including
   per-run data boundaries, destination disclosure, bridge/device binding, and
   revocation/audit behavior.
-- Deepen HTTP MCP review and live-probe evidence before treating HTTP MCP
-  candidates as executable shared Application tools.
+- Extend HTTP MCP operator UX around live-probe retries, endpoint diffs, and
+  failure recovery now that the server-side promotion path is wired.
