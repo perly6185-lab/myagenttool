@@ -76,6 +76,9 @@ export function normalizeAutoRunSettings(patch = {}, prev = {}) {
     deciderFastPath: keep("deciderFastPath", asBool),
     deciderTimeoutMs: keep("deciderTimeoutMs", (v) => clampInt(v, 1000, 300_000)),
     judgeTimeoutMs: keep("judgeTimeoutMs", (v) => clampInt(v, 1000, 300_000)),
+    // UI-only guard (no env twin): block the in-tool merge unless PR checks are
+    // green. Null/false = allow the informed-but-unblocked human merge.
+    requireChecksGreenToMerge: keep("requireChecksGreenToMerge", asBool),
   };
 }
 
@@ -126,6 +129,8 @@ export function resolveAutoRunConfig(state = {}, baseEnv = process.env) {
     decision,
     deciderTimeoutMs: deciderTimeoutMs(env),
     judgeTimeoutMs: judgeTimeoutMs(env),
+    // UI-only guard (not env-backed): require green PR checks before an in-tool merge.
+    requireChecksGreenToMerge: Boolean(settings.requireChecksGreenToMerge),
     // Command knobs are env-only; expose only whether each is configured.
     commands: {
       verify: Boolean(resolveAutoRunVerifyCommand()),

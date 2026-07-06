@@ -13,6 +13,7 @@ interface AutoRunConfig {
   decision: { minConfidence: number; fastPath: boolean };
   deciderTimeoutMs: number;
   judgeTimeoutMs: number;
+  requireChecksGreenToMerge: boolean;
   commands: { verify: boolean; decider: boolean; judge: boolean };
   settings: Record<string, unknown>;
 }
@@ -29,6 +30,7 @@ interface Draft {
   deciderFastPath: boolean;
   deciderTimeoutMs: number;
   judgeTimeoutMs: number;
+  requireChecksGreenToMerge: boolean;
 }
 
 function toDraft(c: AutoRunConfig): Draft {
@@ -43,6 +45,7 @@ function toDraft(c: AutoRunConfig): Draft {
     deciderFastPath: c.decision.fastPath,
     deciderTimeoutMs: c.deciderTimeoutMs,
     judgeTimeoutMs: c.judgeTimeoutMs,
+    requireChecksGreenToMerge: c.requireChecksGreenToMerge,
   };
 }
 
@@ -157,6 +160,7 @@ export function AutoRunConfigCard() {
             <Toggle label="Status writeback" hint="Move the linked issue's status label as the run advances." checked={draft.statusWriteback} onChange={(v) => set("statusWriteback", v)} />
             <Toggle label="Spawn child issues" hint="A design decision spawns a governed child issue." checked={draft.spawnIssues} onChange={(v) => set("spawnIssues", v)} />
             <Toggle label="Decider fast path" hint="Strong lexical signals skip the LLM decider hop." checked={draft.deciderFastPath} onChange={(v) => set("deciderFastPath", v)} />
+            <Toggle label="Require green PR checks to merge" hint="Block the in-tool Merge unless the PR's checks are green (applies immediately)." checked={draft.requireChecksGreenToMerge} onChange={(v) => set("requireChecksGreenToMerge", v)} />
           </div>
 
           <div className="grid gap-2 md:grid-cols-2">

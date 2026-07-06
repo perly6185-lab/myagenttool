@@ -482,6 +482,13 @@ export function createAutoRunService({
     if (autoRun.status !== "pr_open" || !autoRun.prNumber) {
       throw new Error("Only an auto-run with an open PR can be merged.");
     }
+    // Opt-in hard gate: when the operator requires green checks, refuse a merge
+    // unless the last-seen PR checks are all green (unknown/failing/pending all
+    // block). Refresh the PR dispositions to update prChecks, or disable it.
+    if (state.autoRunSettings?.requireChecksGreenToMerge && autoRun.prChecks?.state !== "SUCCESS") {
+      const posture = autoRun.prChecks?.state ? autoRun.prChecks.state.toLowerCase() : "unknown (not fetched)";
+      throw new Error(`Merge blocked: setting requires green PR checks, but checks are ${posture}. Refresh the PR checks or disable "require green checks to merge".`);
+    }
     if (typeof mergePr !== "function") throw new Error("PR merge is not available on this server.");
     const project = state.projects.find((item) => item.id === autoRun.projectId) ?? null;
     const repoPath = project?.path;
