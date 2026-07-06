@@ -23,6 +23,7 @@ import { createProjectService, sameProjectPath } from "../services/projects.mjs"
 import { createAutoRunService } from "../services/auto-run.mjs";
 import { resolveAutoRunVerifyCommand, runWorktreeVerification } from "../services/worktree-verify.mjs";
 import { resolveStatusWritebackConfig, runIssueBodyFetch, runIssueComment, runIssueStatusTransition } from "../services/issue-status.mjs";
+import { resolveDeciderCommand, runDeciderCommand } from "../services/decision-command.mjs";
 import { createTerminalService } from "../services/terminal.mjs";
 import { createToolService } from "../services/tools.mjs";
 
@@ -332,10 +333,16 @@ export function createServerRuntimeServices({
     postIssueReport: resolveStatusWritebackConfig().enabled
       ? async ({ issueNumber, repoPath, body }) => runIssueComment({ cwd: repoPath, issueNumber, body })
       : undefined,
-    // Decision step (ISSUE_DECISION_AGENT_PLAN.md): the LLM decision agent will
-    // be wired here (slice 3). Undefined -> the heuristic floor decides, which
-    // is byte-compatible with the previous intent routing.
-    decideIssuePath: undefined,
+    // Decision step (ISSUE_DECISION_AGENT_PLAN.md slice 3): an operator-configured
+    // one-shot command (any LLM CLI/script; issue context JSON on stdin, decision
+    // JSON on stdout). Unconfigured -> undefined -> the heuristic floor decides,
+    // byte-compatible with the previous intent routing.
+    decideIssuePath: (() => {
+      const command = resolveDeciderCommand();
+      return command
+        ? async ({ link, issueBody }) => runDeciderCommand({ command, input: { link, issueBody } })
+        : undefined;
+    })(),
     // Read-only issue body fetch: context for the decision and the role prompt.
     fetchIssueBody: async ({ issueNumber, repoPath }) => runIssueBodyFetch({ cwd: repoPath, issueNumber }),
   });

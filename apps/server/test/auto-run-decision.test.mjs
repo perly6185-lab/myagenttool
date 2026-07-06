@@ -77,4 +77,53 @@ test("decisionConfig reads the env threshold and defaults to 0.6", () => {
   assert.equal(decisionConfig({}).minConfidence, 0.6);
   assert.equal(decisionConfig({ MYAGENTTOOL_AUTORUN_DECISION_MIN_CONFIDENCE: "0.8" }).minConfidence, 0.8);
   assert.equal(decisionConfig({ MYAGENTTOOL_AUTORUN_DECISION_MIN_CONFIDENCE: "junk" }).minConfidence, 0.6);
+  assert.equal(decisionConfig({}).fastPath, true, "fast path defaults on");
+  assert.equal(decisionConfig({ MYAGENTTOOL_AUTORUN_DECIDER_FAST_PATH: "0" }).fastPath, false);
+});
+
+test("fast path: a strong lexical signal skips the decider entirely", async () => {
+  let called = 0;
+  const decideIssuePath = async () => {
+    called += 1;
+    return { path: "develop", confidence: 0.9, rationale: "r" };
+  };
+  const q = await resolveDecision({ link: { title: "Should we adopt Postgres?" }, decideIssuePath, fastPath: true });
+  assert.equal(q.path, "clarify");
+  assert.equal(q.via, "fast-path");
+  assert.equal(called, 0, "question title never pays the decider hop");
+
+  const inv = await resolveDecision({ link: { title: "Investigate flaky CI" }, decideIssuePath, fastPath: true });
+  assert.equal(inv.path, "design");
+  assert.equal(inv.via, "fast-path");
+  assert.equal(called, 0);
+
+  // The weak "change" default is exactly where ambiguity lives — decider runs.
+  const change = await resolveDecision({ link: { title: "Add caching" }, decideIssuePath, fastPath: true });
+  assert.equal(called, 1, "ambiguous title pays the hop");
+  assert.equal(change.via, "agent");
+  assert.equal(typeof change.latencyMs, "number", "agent decisions carry latency");
+});
+
+test("fast path off: even strong signals go to the decider", async () => {
+  let called = 0;
+  const decideIssuePath = async () => {
+    called += 1;
+    return { path: "design", confidence: 0.9, rationale: "r" };
+  };
+  const d = await resolveDecision({ link: { title: "Should we adopt Postgres?" }, decideIssuePath, fastPath: false });
+  assert.equal(called, 1);
+  assert.equal(d.via, "agent");
+});
+
+test("a failed decider records via=fallback with the heuristic result", async () => {
+  const d = await resolveDecision({
+    link: { title: "Add caching" },
+    decideIssuePath: async () => {
+      throw new Error("boom");
+    },
+    fastPath: false,
+  });
+  assert.equal(d.decidedBy, "heuristic");
+  assert.equal(d.via, "fallback");
+  assert.equal(typeof d.latencyMs, "number");
 });

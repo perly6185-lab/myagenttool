@@ -43,7 +43,13 @@ export function summarizeAutoRuns(autoRuns = []) {
   const blockedReasonCounts = {};
   const timeToPrSeconds = [];
   // Routing decisions (slice 5 will evaluate them against outcomes).
-  const decisions = { byPath: { develop: 0, design: 0, prototype: 0, clarify: 0 }, byDecidedBy: { agent: 0, heuristic: 0 } };
+  const decisions = {
+    byPath: { develop: 0, design: 0, prototype: 0, clarify: 0 },
+    byDecidedBy: { agent: 0, heuristic: 0 },
+    // How the decision was reached: heuristic (no decider), fast-path (lexical
+    // signal skipped the decider), agent, or fallback (decider failed).
+    byVia: { heuristic: 0, "fast-path": 0, agent: 0, fallback: 0 },
+  };
 
   for (const run of autoRuns) {
     byStatus[run.status] = (byStatus[run.status] ?? 0) + 1;
@@ -53,6 +59,8 @@ export function summarizeAutoRuns(autoRuns = []) {
       decisions.byPath[run.decision.path] = (decisions.byPath[run.decision.path] ?? 0) + 1;
       const by = run.decision.decidedBy === "agent" ? "agent" : "heuristic";
       decisions.byDecidedBy[by] += 1;
+      const via = ["heuristic", "fast-path", "agent", "fallback"].includes(run.decision.via) ? run.decision.via : "heuristic";
+      decisions.byVia[via] += 1;
     }
 
     if (run.verification) {
