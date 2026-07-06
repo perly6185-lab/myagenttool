@@ -89,24 +89,32 @@ test("reserved control-plane input keys cannot become wrapper argv", () => {
     cloneProject: () => null,
     defaultProjectPath: "/tmp/repo",
   });
-  assert.throws(() => svc.registerApplication({
-    id: "app_bad",
-    name: "bad",
-    autoOnline: false,
-    source: {
-      type: "npm",
-      package: "bad",
-      version: "1.0.0",
-      wrapper: {
-        mode: "installed-wrapper",
-        commands: [{
-          id: "run",
-          command: "bad",
-          args: ["run"],
-          status: "approved",
-          argInputs: [{ key: "approvalToken", flag: "--token", type: "token" }],
-        }],
+  let caught = null;
+  try {
+    svc.registerApplication({
+      id: "app_bad",
+      name: "bad",
+      autoOnline: false,
+      source: {
+        type: "npm",
+        package: "bad",
+        version: "1.0.0",
+        wrapper: {
+          mode: "installed-wrapper",
+          commands: [{
+            id: "run",
+            command: "bad",
+            args: ["run"],
+            status: "approved",
+            argInputs: [{ key: "approvalToken", flag: "--token", type: "token" }],
+          }],
+        },
       },
-    },
-  }), /reserved control-plane key/);
+    });
+  } catch (error) {
+    caught = error;
+  }
+  assert.equal(caught?.name, "ApplicationDescriptorValidationError");
+  assert.ok(caught.validationErrors.some((item) => item.code === "reserved_arg_input_key"));
+  assert.equal(state.applications.length, 0);
 });
