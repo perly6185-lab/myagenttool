@@ -461,6 +461,10 @@ export const api = {
   // Scheduled real-agent eval trend (#248): read-only view of the local
   // trend.jsonl so capability regressions surface in the console, not just cron.log.
   listEvalTrend: () => request("GET", "/api/eval-trend"),
+  // Auto-run effective configuration (safe knobs overlaid on env + per-command
+  // configured flags; never the argv). Edits apply on the next server start.
+  getAutoRunConfig: () => request("GET", "/api/auto-run-config"),
+  updateAutoRunSettings: (patch: Record<string, unknown>) => request("PUT", "/api/auto-run-settings", patch),
   listBranches: (projectId: string) =>
     request("GET", `/api/projects/${encodeURIComponent(projectId)}/branches`),
   gitSummary: (projectId: string) =>

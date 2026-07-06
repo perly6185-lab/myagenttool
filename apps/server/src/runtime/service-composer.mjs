@@ -36,10 +36,12 @@ import { createProjectService, sameProjectPath } from "../services/projects.mjs"
 import { createAutoRunService } from "../services/auto-run.mjs";
 import { resolveAutoRunVerifyCommand, runWorktreeVerification } from "../services/worktree-verify.mjs";
 import { resolveStatusWritebackConfig, runIssueBodyFetch, runIssueComment, runIssueStatusTransition, runPrStateFetch } from "../services/issue-status.mjs";
-import { resolveDeciderCommand, runDeciderCommand } from "../services/decision-command.mjs";
+import { deciderTimeoutMs, resolveDeciderCommand, runDeciderCommand } from "../services/decision-command.mjs";
 import { childIssueBody, childIssueTitle, extractProjectFieldsBlock, runChildIssueCreate, spawnIssuesConfig } from "../services/auto-run-spawn.mjs";
 import { refreshPrDispositions } from "../services/auto-run-eval.mjs";
-import { resolveJudgeCommand, runAcceptanceJudge } from "../services/auto-run-judge.mjs";
+import { judgeTimeoutMs, resolveJudgeCommand, runAcceptanceJudge } from "../services/auto-run-judge.mjs";
+import { decisionConfig } from "../services/auto-run-decision.mjs";
+import { autoRunSettingsEnvOverlay } from "../services/auto-run-config.mjs";
 import { createTerminalService } from "../services/terminal.mjs";
 import { createToolService } from "../services/tools.mjs";
 
@@ -484,6 +486,11 @@ export function createServerRuntimeServices({
     startInvocationIfAllowed,
   } = invocationService;
 
+  // Persisted safe-knob overrides (state.autoRunSettings) overlaid on the env
+  // defaults. Empty settings => the env values unchanged. Applied here at
+  // composer time, so console edits take effect on the next server start.
+  const autoRunEnv = autoRunSettingsEnvOverlay(state.autoRunSettings);
+
   const { startAutoRun, advanceAutoRunForInvocation, syncAutoRunOnApproval, retryAutoRun } = createAutoRunService({
     state,
     now,
@@ -510,12 +517,12 @@ export function createServerRuntimeServices({
     },
     // Issue status writeback (ready -> in-progress -> review). Undefined when
     // disabled so the orchestrator skips it entirely — no GitHub writes by default.
-    writeIssueStatus: resolveStatusWritebackConfig().enabled
+    writeIssueStatus: resolveStatusWritebackConfig(autoRunEnv).enabled
       ? async ({ issueNumber, repoPath, to }) => runIssueStatusTransition({ cwd: repoPath, issueNumber, to })
       : undefined,
     // Post an investigation auto-run's findings back to the issue. Gated by the
     // same GitHub-write opt-in; undefined (off) still sets report_posted locally.
-    postIssueReport: resolveStatusWritebackConfig().enabled
+    postIssueReport: resolveStatusWritebackConfig(autoRunEnv).enabled
       ? async ({ issueNumber, repoPath, body }) => runIssueComment({ cwd: repoPath, issueNumber, body })
       : undefined,
     // Decision step (ISSUE_DECISION_AGENT_PLAN.md slice 3): an operator-configured
@@ -523,17 +530,20 @@ export function createServerRuntimeServices({
     // JSON on stdout). Unconfigured -> undefined -> the heuristic floor decides,
     // byte-compatible with the previous intent routing.
     decideIssuePath: (() => {
-      const command = resolveDeciderCommand();
+      const command = resolveDeciderCommand(autoRunEnv);
       return command
-        ? async ({ link, issueBody }) => runDeciderCommand({ command, input: { link, issueBody } })
+        ? async ({ link, issueBody }) => runDeciderCommand({ command, input: { link, issueBody }, timeoutMs: deciderTimeoutMs(autoRunEnv) })
         : undefined;
     })(),
+    // Decision confidence gate + fast-path (settings overlaid on env); passed so
+    // startAutoRun's resolveDecision honors the console-saved thresholds.
+    decisionSettings: decisionConfig(autoRunEnv),
     // Read-only issue body fetch: context for the decision and the role prompt.
     fetchIssueBody: async ({ issueNumber, repoPath }) => runIssueBodyFetch({ cwd: repoPath, issueNumber }),
     // Governed child-issue spawning (slice 4): a design deliverable becomes a
     // pending-decision child issue (parent fields inherited, never auto-labelled,
     // depth-1 marked). Off by default; undefined -> the orchestrator skips it.
-    spawnChildIssue: spawnIssuesConfig().enabled
+    spawnChildIssue: spawnIssuesConfig(autoRunEnv).enabled
       ? async ({ parentLink, design, repoPath }) => {
           const parentBody = await runIssueBodyFetch({ cwd: repoPath, issueNumber: parentLink.number });
           return runChildIssueCreate({
@@ -546,14 +556,14 @@ export function createServerRuntimeServices({
     // Acceptance judge (Phase B): operator-configured one-shot command judging
     // "does this diff solve this issue?". Unconfigured -> undefined -> skipped.
     judgeAcceptance: (() => {
-      const command = resolveJudgeCommand();
+      const command = resolveJudgeCommand(autoRunEnv);
       return command
         ? async ({ worktree, autoRun }) => {
             const diff = worktreeDiff(worktree)?.diff ?? "";
             const issueBody = autoRun.link?.type === "issue" && worktree?.repoPath
               ? await runIssueBodyFetch({ cwd: worktree.repoPath, issueNumber: autoRun.link.number })
               : null;
-            return runAcceptanceJudge({ command, link: autoRun.link, issueBody, diff });
+            return runAcceptanceJudge({ command, link: autoRun.link, issueBody, diff, timeoutMs: judgeTimeoutMs(autoRunEnv) });
           }
         : undefined;
     })(),

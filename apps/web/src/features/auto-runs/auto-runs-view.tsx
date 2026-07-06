@@ -7,6 +7,7 @@ import { EmptyState } from "@/components/common/empty-state";
 import { api } from "@/data/use-console-actions";
 import { cn } from "@/lib/cn";
 import type { Tone } from "@/lib/readable-labels";
+import { AutoRunConfigCard } from "./auto-run-config-card";
 
 interface AutoRunLink {
   type: "issue" | "pr";
@@ -171,6 +172,8 @@ export function AutoRunsView() {
           <RefreshCw className={cn("mr-1 size-3.5", loading && "animate-spin")} /> Refresh
         </Button>
       </div>
+
+      <AutoRunConfigCard />
 
       {summary ? (
         <>

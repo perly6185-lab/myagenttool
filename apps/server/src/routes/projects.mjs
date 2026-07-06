@@ -4,6 +4,7 @@ import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { denyForeignProject } from "../runtime/auth.mjs";
 import { summarizeAutoRuns } from "../services/auto-run-metrics.mjs";
 import { readEvalTrend, summarizeEvalTrend } from "../services/eval-trend.mjs";
+import { normalizeAutoRunSettings, resolveAutoRunConfig } from "../services/auto-run-config.mjs";
 
 export async function handleProjectRoutes({
   req,
@@ -13,6 +14,7 @@ export async function handleProjectRoutes({
   readJson,
   state,
   actor,
+  persistStateSoon,
   currentProject,
   addProject,
   cloneProject,
@@ -190,6 +192,24 @@ export async function handleProjectRoutes({
     // surfaces its local trend.jsonl so capability regressions are visible.
     const records = readEvalTrend();
     sendJson(res, 200, { records, summary: summarizeEvalTrend(records) });
+    return true;
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/auto-run-config") {
+    // Effective auto-run config for the console panel: resolved values (saved
+    // settings overlaid on env) + a `configured` flag per command knob. Never
+    // returns command argv — those stay server-side (trust boundary).
+    sendJson(res, 200, { config: resolveAutoRunConfig(state) });
+    return true;
+  }
+
+  if (req.method === "PUT" && url.pathname === "/api/auto-run-settings") {
+    // Edit the SAFE knobs only; command argv is never accepted here. A field set
+    // to null clears the override (back to env). Applied on the next server start.
+    const body = await readJson(req);
+    state.autoRunSettings = normalizeAutoRunSettings(body ?? {}, state.autoRunSettings ?? {});
+    persistStateSoon?.();
+    sendJson(res, 200, { config: resolveAutoRunConfig(state) });
     return true;
   }
 

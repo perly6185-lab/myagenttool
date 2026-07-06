@@ -70,6 +70,7 @@ const persistedArrayKeys = [
   "budgets",
   "automations",
   "agentSkills",
+  "autoRunSettings",
   "auditExportRequests",
   "approvalRequests",
   "policyDecisionRecords",

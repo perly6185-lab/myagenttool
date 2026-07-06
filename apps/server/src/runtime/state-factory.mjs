@@ -73,6 +73,10 @@ export function createServerState({ defaultProjectPath, now }) {
     budgets: [],
     automations: createDefaultAutomations(defaultProject.id, now),
     agentSkills: createDefaultAgentSkills(now),
+    // Auto-run config overrides (services/auto-run-config.mjs). Empty = every
+    // knob inherits its env default (today's behavior). Operators edit the safe
+    // knobs via the console; applied at server start.
+    autoRunSettings: {},
     privateDeploymentConfig: createDefaultPrivateDeploymentConfig(now),
     auditExportRequests: [],
     retentionSettings: createDefaultRetentionSettings(now),

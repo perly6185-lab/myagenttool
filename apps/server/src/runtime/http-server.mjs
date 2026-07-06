@@ -235,6 +235,7 @@ export function createHttpServer({
         readJson,
         state,
         actor,
+        persistStateSoon,
         currentProject,
         addProject,
         cloneProject,
