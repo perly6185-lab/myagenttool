@@ -166,7 +166,7 @@ export function ApplicationsView() {
         <div className="grid gap-4 xl:grid-cols-2">
           {applications.map((app) => {
             const nextStep = applicationNextStep(app);
-            const latestRecoveryAction = latestApplicationRecoveryAction(app.id, recoveryActions);
+            const latestRecoveryAction = app.healthSummary?.latestRecoveryAction ?? latestApplicationRecoveryAction(app.id, recoveryActions);
             const triageBucket = applicationTriageBucket(app);
             const attentionEventLevel: ApplicationEventLevelSelection | null = triageBucket === "attention"
               ? "error"

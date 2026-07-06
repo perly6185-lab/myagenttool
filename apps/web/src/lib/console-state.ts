@@ -1096,6 +1096,20 @@ export interface ApplicationRecoveryInvocationBrief {
   completedAt?: string | null;
 }
 
+export interface ApplicationHealthSummary {
+  applicationId: string;
+  eventCounts: {
+    error: number;
+    warning: number;
+    info: number;
+    other: number;
+  };
+  eventCount: number;
+  lastEventAt?: string | null;
+  latestAttentionEvent?: ApplicationEventSnapshot | null;
+  latestRecoveryAction?: ApplicationRecoveryActionRequest | null;
+}
+
 export interface ApplicationSnapshot {
   id: string;
   name: string;
@@ -1113,6 +1127,7 @@ export interface ApplicationSnapshot {
   orchestrations?: ApplicationOrchestration[];
   orchestrationIds?: string[];
   latestResult?: ApplicationResultRef | null;
+  healthSummary?: ApplicationHealthSummary | null;
   createdAt?: string;
   updatedAt?: string;
 }

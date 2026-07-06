@@ -808,6 +808,99 @@ test("GET /api/applications/:id/events returns scoped application timeline", asy
   assert.equal(foreign.status, 404);
 });
 
+test("GET /api/state includes application health summaries from scoped events and recovery actions", async () => {
+  ctx.state.applications.push({
+    id: "app_health_summary",
+    name: "Health Summary App",
+    kind: "repository",
+    source: { type: "local", path: "/tmp/a" },
+    status: "active",
+    lifecycle: { state: "registered" },
+    projectId: "projA",
+    path: "/tmp/a",
+    ownerTeamId: TEAM_A,
+    capabilitiesVersion: 1,
+    orchestrationIds: ["routine_health"],
+    createdAt: "2099-01-02T00:00:00.000Z",
+    updatedAt: "2099-01-02T00:00:00.000Z",
+  });
+  ctx.state.invocations.push({
+    id: "inv_health_failed",
+    status: "failed",
+    projectId: "projA",
+    createdAt: "2099-01-02T00:00:03.000Z",
+    updatedAt: "2099-01-02T00:00:04.000Z",
+    options: {
+      metadata: {
+        source: "application_orchestration",
+        applicationId: "app_health_summary",
+        routineId: "routine_health",
+      },
+    },
+  });
+  ctx.state.events.push({
+    id: "evt_health_info",
+    invocationId: null,
+    type: "application_registered",
+    level: "info",
+    message: "Health app registered.",
+    data: { applicationId: "app_health_summary" },
+    createdAt: "2099-01-02T00:00:01.000Z",
+  }, {
+    id: "evt_health_warning",
+    invocationId: null,
+    type: "application_probe_warning",
+    level: "warn",
+    message: "Health app probe warning.",
+    data: { applicationId: "app_health_summary" },
+    createdAt: "2099-01-02T00:00:02.000Z",
+  });
+  ctx.state.applicationRecoveryActions.push({
+    id: "rec_health_pending",
+    applicationId: "app_health_summary",
+    routineId: "routine_health",
+    invocationId: "inv_health_failed",
+    actionType: "regenerate_orchestration",
+    status: "approval_pending",
+    recoveryCategory: "validation_failed",
+    reason: "Routine validation failed.",
+    requiresApproval: true,
+    approvalRequestId: "appr_health",
+    outcome: {
+      state: "pending",
+      reason: "approval_pending",
+      severity: "info",
+      summary: "Recovery is pending approval.",
+      nextStep: "Resolve the linked approval request.",
+    },
+    explanation: {
+      selectedAction: "regenerate_orchestration",
+      state: "approval_pending",
+      reason: "approval_pending",
+      nextStep: "Resolve the linked approval request.",
+    },
+    createdAt: "2099-01-02T00:00:03.000Z",
+    updatedAt: "2099-01-02T00:00:04.000Z",
+  });
+
+  const state = await call("/api/state", { token: "tok_a" });
+  assert.equal(state.status, 200);
+  const app = state.body.applications.find((item) => item.id === "app_health_summary");
+  assert.ok(app);
+  assert.equal(app.healthSummary.applicationId, "app_health_summary");
+  assert.equal(app.healthSummary.eventCounts.info, 1);
+  assert.equal(app.healthSummary.eventCounts.warning, 1);
+  assert.equal(app.healthSummary.eventCount, 2);
+  assert.equal(app.healthSummary.lastEventAt, "2099-01-02T00:00:02.000Z");
+  assert.equal(app.healthSummary.latestAttentionEvent.id, "evt_health_warning");
+  assert.equal(app.healthSummary.latestRecoveryAction.id, "rec_health_pending");
+  assert.equal(app.healthSummary.latestRecoveryAction.sourceInvocation.id, "inv_health_failed");
+
+  const foreign = await call("/api/state", { token: "tok_b" });
+  assert.equal(foreign.status, 200);
+  assert.equal(foreign.body.applications.some((item) => item.id === "app_health_summary"), false);
+});
+
 test("POST /api/applications/:id/probe infers local package metadata without executable scripts", async () => {
   const res = await call("/api/applications/app_team_a/probe", {
     method: "POST",

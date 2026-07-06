@@ -1,6 +1,6 @@
 import { LOCAL_TEAM_ID, agentVisibleToActor, teamOf } from "../runtime/auth.mjs";
 import { publicDeviceView } from "../runtime/bridge-auth.mjs";
-import { publicApplicationSnapshot } from "../services/applications.mjs";
+import { publicApplicationEvent, publicApplicationSnapshot } from "../services/applications.mjs";
 
 export function buildPublicState({
   namespace,
@@ -159,7 +159,9 @@ export function buildPublicState({
     users: (state.users ?? []).map(({ passwordHash, ...user }) => user),
     teams: state.teams ?? [],
     projects,
-    applications: applications.map(publicApplicationSnapshot),
+    applications: applications.map((application) => publicApplicationSnapshot(application, {
+      healthSummary: applicationHealthSummary(application.id, visibleEvents, applicationRecoveryActions),
+    })),
     applicationRecoveryActions,
     projectTargets: byProject(state.projectTargets),
     currentProjectId: state.currentProjectId,
@@ -256,6 +258,44 @@ function groupRecoveryEventsByRequestId(events) {
     grouped.set(requestId, items);
   }
   return grouped;
+}
+
+function applicationHealthSummary(applicationId, events, recoveryActions) {
+  const applicationEvents = (events ?? [])
+    .filter((event) => event?.data?.applicationId === applicationId)
+    .sort((left, right) => timestampValue(right.createdAt) - timestampValue(left.createdAt));
+  const eventCounts = { error: 0, warning: 0, info: 0, other: 0 };
+  for (const event of applicationEvents) {
+    eventCounts[normalizedApplicationEventLevel(event.level)] += 1;
+  }
+  const latestAttentionEvent = applicationEvents.find((event) => {
+    const level = normalizedApplicationEventLevel(event.level);
+    return level === "error" || level === "warning";
+  }) ?? null;
+  const latestRecoveryAction = (recoveryActions ?? [])
+    .filter((request) => request?.applicationId === applicationId)
+    .sort((left, right) => timestampValue(right.updatedAt ?? right.createdAt) - timestampValue(left.updatedAt ?? left.createdAt))[0] ?? null;
+
+  return {
+    applicationId,
+    eventCounts,
+    eventCount: applicationEvents.length,
+    lastEventAt: applicationEvents[0]?.createdAt ?? null,
+    latestAttentionEvent: latestAttentionEvent ? publicApplicationEvent(latestAttentionEvent) : null,
+    latestRecoveryAction,
+  };
+}
+
+function normalizedApplicationEventLevel(level) {
+  if (level === "error") return "error";
+  if (level === "warn" || level === "warning") return "warning";
+  if (level === "info") return "info";
+  return "other";
+}
+
+function timestampValue(value) {
+  const timestamp = Date.parse(value ?? "");
+  return Number.isNaN(timestamp) ? 0 : timestamp;
 }
 
 function groupRowsByKey(rows, keyFor) {

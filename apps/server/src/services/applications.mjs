@@ -773,7 +773,7 @@ function clampEventLimit(value) {
   return Math.max(1, Math.min(100, Math.floor(number)));
 }
 
-function publicApplicationEvent(event) {
+export function publicApplicationEvent(event) {
   return {
     id: event.id,
     invocationId: event.invocationId ?? null,
@@ -1517,7 +1517,7 @@ function upsertOrchestration(orchestrations = [], draft) {
   return [draft, ...existing];
 }
 
-export function publicApplicationSnapshot(application) {
+export function publicApplicationSnapshot(application, options = {}) {
   const source = publicApplicationSourceSnapshot(application.source);
   return {
     id: application.id,
@@ -1537,6 +1537,7 @@ export function publicApplicationSnapshot(application) {
     orchestrationIds: application.orchestrationIds ?? [],
     orchestrations: application.orchestrations ?? [],
     latestResult: application.latestResult ?? null,
+    healthSummary: options.healthSummary ?? null,
     createdAt: application.createdAt,
     updatedAt: application.updatedAt,
   };
