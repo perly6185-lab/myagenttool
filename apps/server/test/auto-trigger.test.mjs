@@ -72,7 +72,7 @@ test("selectAutoTriggerCandidates never re-triggers an issue with a settled (e.g
 function makeState() {
   return {
     projects: [
-      { id: "prj_repo", source: "user" },
+      { id: "prj_repo", source: "user", defaultAgentId: "agt_claude" },
       { id: "prj_wt", source: "worktree" },
       { id: "prj_norepo", source: "user" },
     ],
@@ -117,6 +117,7 @@ test("scanOnce starts auto-runs only for ready repo-backed projects, with issue-
   assert.equal(started[0].projectId, "prj_repo");
   assert.equal(started[0].link.number, 42);
   assert.equal(started[0].name, "issue-42-add-the-widget", "branch name from the shared helper");
+  assert.equal(started[0].agentId, "agt_claude", "the project's configured agent is used, not the demo default");
 });
 
 test("scanOnce keeps going when one project's issue list or a startAutoRun throws", async () => {
