@@ -36,6 +36,8 @@ function isGitTracked(root, relPath) {
 }
 
 export const AGENT_SKILL_TARGETS = ["claude", "codex"];
+// Auto-run decision roles a skill can restrict itself to (see AgentSkill.paths).
+export const AGENT_SKILL_PATHS = ["develop", "design", "prototype", "clarify"];
 
 const SKILL_BLOCK_START = "<!-- myagent:skills:start -->";
 const SKILL_BLOCK_END = "<!-- myagent:skills:end -->";
@@ -52,6 +54,25 @@ function slugify(value) {
 export function normalizeAgentSkillTargets(value, fallback = []) {
   if (!Array.isArray(value)) return fallback;
   return AGENT_SKILL_TARGETS.filter((t) => value.includes(t));
+}
+
+// A skill's optional auto-run role restriction. Undefined stays undefined
+// (renders for every run — the backward-compatible default); an array is
+// filtered to the known roles (empty array also means "every run").
+export function normalizeAgentSkillPaths(value, fallback = undefined) {
+  if (value === undefined) return fallback;
+  if (!Array.isArray(value)) return undefined;
+  return AGENT_SKILL_PATHS.filter((p) => value.includes(p));
+}
+
+// Does this skill apply to a run decided as `role`? A skill with no path
+// restriction applies to every run. A restricted skill applies only when the
+// run carries a matching role; a run with no role (manual invocation) gets
+// only the unrestricted skills.
+export function skillMatchesRole(skill, role) {
+  const paths = skill?.paths;
+  if (!Array.isArray(paths) || paths.length === 0) return true;
+  return typeof role === "string" && paths.includes(role);
 }
 
 export function normalizeAgentSkillTool(value) {
@@ -119,12 +140,16 @@ function gitExclude(wtPath, entries) {
  * Render the skills that apply to `agent` into worktree `wtPath`, in the agent's
  * native format. Best-effort: any failure is logged and skipped rather than
  * blocking the invocation. `skills` is the current skill set (state.agentSkills).
+ * `options.role` (an auto-run decided path) restricts to skills that either
+ * carry no path restriction or list this role — so a design run renders design
+ * skills and not coding ones. Omitting it (manual runs) renders only the
+ * unrestricted skills.
  */
-export function renderAgentSkillsIntoWorktree(agent, wtPath, skills = []) {
+export function renderAgentSkillsIntoWorktree(agent, wtPath, skills = [], { role } = {}) {
   const kind = agentKind(agent);
   if (!kind || !wtPath) return;
   const applicable = skills.filter(
-    (s) => s.enabled && Array.isArray(s.targets) && s.targets.includes(kind),
+    (s) => s.enabled && Array.isArray(s.targets) && s.targets.includes(kind) && skillMatchesRole(s, role),
   );
   if (!applicable.length) return;
   const root = resolve(wtPath);
@@ -209,6 +234,7 @@ export function createAgentSkillService({ state, now, nextId, persistStateSoon }
       description: String(body.description ?? "").trim(),
       body: String(body.body ?? ""),
       targets: normalizeAgentSkillTargets(body.targets, ["claude"]),
+      paths: normalizeAgentSkillPaths(body.paths),
       tool: normalizeAgentSkillTool(body.tool),
       enabled: body.enabled === undefined ? true : Boolean(body.enabled),
       createdAt,
@@ -227,6 +253,7 @@ export function createAgentSkillService({ state, now, nextId, persistStateSoon }
     if (patch.description !== undefined) skill.description = String(patch.description).trim();
     if (patch.body !== undefined) skill.body = String(patch.body);
     if (patch.targets !== undefined) skill.targets = normalizeAgentSkillTargets(patch.targets, skill.targets);
+    if (patch.paths !== undefined) skill.paths = normalizeAgentSkillPaths(patch.paths, skill.paths);
     if (patch.tool !== undefined) skill.tool = normalizeAgentSkillTool(patch.tool);
     if (patch.enabled !== undefined) skill.enabled = Boolean(patch.enabled);
     skill.updatedAt = now();

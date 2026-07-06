@@ -9,7 +9,9 @@ import { tmpdir } from "node:os";
 import {
   agentKind,
   createAgentSkillService,
+  normalizeAgentSkillPaths,
   renderAgentSkillsIntoWorktree,
+  skillMatchesRole,
 } from "../../apps/server/src/services/agent-skills.mjs";
 
 let passed = 0;
@@ -35,6 +37,9 @@ const ok = (msg) => {
   const u = svc.updateAgentSkill(s.id, { enabled: false, targets: ["claude", "codex"] });
   assert.equal(u.enabled, false);
   assert.deepEqual(u.targets, ["claude", "codex"]);
+  assert.equal(u.paths, undefined, "no path restriction by default (renders for every run)");
+  const roled = svc.updateAgentSkill(s.id, { paths: ["design", "bogus", "prototype"] });
+  assert.deepEqual(roled.paths, ["design", "prototype"], "paths normalized to known roles");
   svc.deleteAgentSkill(s.id);
   assert.equal(state.agentSkills.length, 0);
   assert.throws(() => svc.deleteAgentSkill("nope"), /not found/);
@@ -125,6 +130,48 @@ const skills = [
   assert.equal(readFileSync(join(repo, "AGENTS.md"), "utf8"), userContent,
     "tracked AGENTS.md left byte-for-byte unchanged (no skill injection)");
   ok("render codex: git-tracked AGENTS.md is not mutated");
+}
+
+// --- role-keyed selection: normalize + match + per-run render ---
+{
+  assert.equal(normalizeAgentSkillPaths(undefined), undefined, "undefined stays undefined (every run)");
+  assert.deepEqual(normalizeAgentSkillPaths(["design", "nope"]), ["design"], "unknown role dropped");
+  assert.deepEqual(normalizeAgentSkillPaths("design"), undefined, "non-array → undefined");
+
+  const unrestricted = { paths: undefined };
+  const designOnly = { paths: ["design"] };
+  assert.equal(skillMatchesRole(unrestricted, "develop"), true, "no restriction → any role");
+  assert.equal(skillMatchesRole(unrestricted, undefined), true, "no restriction → manual run too");
+  assert.equal(skillMatchesRole(designOnly, "design"), true, "restricted → matching role renders");
+  assert.equal(skillMatchesRole(designOnly, "develop"), false, "restricted → other role skipped");
+  assert.equal(skillMatchesRole(designOnly, undefined), false, "restricted → manual run skipped");
+  assert.equal(skillMatchesRole({ paths: [] }, undefined), true, "empty array = every run");
+  ok("role selection: normalize + skillMatchesRole semantics");
+}
+
+// --- render respects role: a design-only skill renders only for a design run ---
+{
+  const roleSkills = [
+    { id: "g", name: "General", slug: "general", description: "always", body: "g", targets: ["codex"], enabled: true },
+    { id: "d", name: "Design Kit", slug: "design-kit", description: "design", body: "d", targets: ["codex"], enabled: true, paths: ["design"] },
+  ];
+  const agent = { id: "a", adapter: { type: "cli", command: "codex" } };
+
+  const dDesign = join(wt, "role-design"); mkdirSync(dDesign, { recursive: true });
+  renderAgentSkillsIntoWorktree(agent, dDesign, roleSkills, { role: "design" });
+  let md = readFileSync(join(dDesign, "AGENTS.md"), "utf8");
+  assert.ok(md.includes("## General") && md.includes("## Design Kit"), "design run: both general + design-only render");
+
+  const dDev = join(wt, "role-develop"); mkdirSync(dDev, { recursive: true });
+  renderAgentSkillsIntoWorktree(agent, dDev, roleSkills, { role: "develop" });
+  md = readFileSync(join(dDev, "AGENTS.md"), "utf8");
+  assert.ok(md.includes("## General") && !md.includes("## Design Kit"), "develop run: design-only skill excluded");
+
+  const dManual = join(wt, "role-manual"); mkdirSync(dManual, { recursive: true });
+  renderAgentSkillsIntoWorktree(agent, dManual, roleSkills); // no role
+  md = readFileSync(join(dManual, "AGENTS.md"), "utf8");
+  assert.ok(md.includes("## General") && !md.includes("## Design Kit"), "manual run: only unrestricted skills render");
+  ok("render: role-restricted skill renders only for its role");
 }
 
 rmSync(wt, { recursive: true, force: true });
