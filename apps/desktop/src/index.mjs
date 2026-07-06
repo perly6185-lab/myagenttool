@@ -289,10 +289,27 @@ process.on("unhandledRejection", (reason) => {
 });
 
 await waitForServer();
-const registration = await request("POST", "/api/bridge/register", {
-  bridgeVersion: "0.0.0",
-  capabilities: ["demo_cli_agent", "managed_terminal_pty", "remote_ssh_relay"]
-});
+let registration;
+try {
+  registration = await request("POST", "/api/bridge/register", {
+    bridgeVersion: "0.0.0",
+    capabilities: ["demo_cli_agent", "managed_terminal_pty", "remote_ssh_relay"]
+  });
+} catch (error) {
+  const message = error instanceof Error ? error.message : String(error);
+  // A credential rejection at register is a pairing problem, not a bug — tell
+  // the operator how to recover instead of dying with a raw stack. (Field-pilot
+  // finding: this lockout happens when the server keeps a paired credential
+  // hash but the bridge's saved token was lost.)
+  if (/invalid_bridge_credentials|device_credentials_revoked/.test(message)) {
+    console.error(`[desktop] bridge registration was refused by ${serverUrl}: the server holds a paired credential this bridge cannot present.`);
+    console.error(`[desktop] recover: (1) restore the original token file at ${bridgeTokenPath}, OR`);
+    console.error("[desktop]          (2) stop the server, clear device.bridgeCredential in its state file, restart both.");
+    console.error("[desktop] see docs/engineering/AUTORUN_PILOT_RUNBOOK.md (operational cautions).");
+    process.exit(1);
+  }
+  throw error;
+}
 if (registration?.bridgeToken) {
   bridgeToken = registration.bridgeToken;
   saveBridgeToken(bridgeToken, registration.bridgeCredential);
