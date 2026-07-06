@@ -13,7 +13,7 @@ import { sameProjectPath } from "../src/services/projects.mjs";
 
 const now = () => "2026-07-05T00:00:00.000Z";
 
-function runtime({ projectPath, stateStorePath = join(projectPath, ".state.json"), persistenceEnabled = false }) {
+function runtime({ projectPath, stateStorePath = join(projectPath, ".state.json"), persistenceEnabled = false, applicationMcpProbeServer = null }) {
   const { defaultProject, state } = createServerState({ defaultProjectPath: projectPath, now });
   return {
     defaultProject,
@@ -29,6 +29,7 @@ function runtime({ projectPath, stateStorePath = join(projectPath, ".state.json"
       stateSchemaVersion: 1,
       dispatchLeaseMs: 30_000,
       now,
+      ...(applicationMcpProbeServer ? { applicationMcpProbeServer } : {}),
     }).httpDependencies,
   };
 }
@@ -547,22 +548,29 @@ test("application HTTP MCP candidate requires live-probe evidence before confirm
 test("application HTTP MCP candidate live probe records evidence and enables confirmation", async () => {
   const root = mkdtempSync(join(tmpdir(), "myagenttool-app-mcp-http-live-"));
   const projectPath = join(root, "doocs-md");
-  const fixture = await startHttpMcpFixture([
-    { name: "render_markdown", description: "Render Markdown.", inputSchema: { type: "object" } },
-    { name: "list_themes", description: "List themes.", inputSchema: { type: "object" } },
-  ]);
+  const probeCalls = [];
   mkdirSync(join(projectPath, ".vscode"), { recursive: true });
   writeFileSync(join(projectPath, ".vscode", "mcp.json"), JSON.stringify({
     servers: {
       remote: {
         type: "http",
-        url: fixture.url,
+        url: "https://93.184.216.34/mcp?token=secret",
         allowedTools: ["render_markdown"],
       },
     },
   }, null, 2), "utf8");
   try {
-    const { api } = runtime({ projectPath });
+    const { api } = runtime({
+      projectPath,
+      applicationMcpProbeServer: async (adapter) => {
+        probeCalls.push(adapter);
+        return {
+          ok: true,
+          message: "MCP server is reachable and exposes 2 tool(s): render_markdown, list_themes.",
+          tools: ["render_markdown", "list_themes"],
+        };
+      },
+    });
     const actor = { userId: "usr_a", teamId: "team_local" };
     const app = api.registerApplication({
       id: "app_doocs_md_http_live",
@@ -580,9 +588,9 @@ test("application HTTP MCP candidate live probe records evidence and enables con
     assert.deepEqual(live.liveProbe.matchedAllowedTools, ["render_markdown"]);
     assert.deepEqual(live.liveProbe.missingAllowedTools, []);
     assert.equal(live.candidate.review.liveProbe.state, "succeeded");
-    assert.equal(live.candidate.adapterPreview.url.startsWith("http://127.0.0.1:"), true);
+    assert.equal(live.candidate.adapterPreview.url, "https://93.184.216.34/mcp");
     assert.equal(JSON.stringify(live).includes("secret"), false);
-    assert.equal(fixture.requests.some((request) => request.method === "tools/list" && request.sessionId), true);
+    assert.equal(probeCalls.length, 1);
 
     const recorded = api.findApplication(app.id).probe.mcpServers.find((server) => server.id === "mcp.remote");
     assert.equal(recorded.review.liveProbe.state, "succeeded");
@@ -602,7 +610,88 @@ test("application HTTP MCP candidate live probe records evidence and enables con
     assert.equal(api.getTool("doocs_md.render_markdown", actor)?.mcp?.agentId, "agt_app_doocs_md_http_live_mcp");
     assert.equal(JSON.stringify(confirmed.candidate).includes("secret"), false);
   } finally {
-    await fixture.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("application HTTP MCP live probe blocks localhost endpoints before network access", async () => {
+  const root = mkdtempSync(join(tmpdir(), "myagenttool-app-mcp-http-ssrf-"));
+  const projectPath = join(root, "doocs-md");
+  const probeCalls = [];
+  mkdirSync(join(projectPath, ".vscode"), { recursive: true });
+  writeFileSync(join(projectPath, ".vscode", "mcp.json"), JSON.stringify({
+    servers: {
+      remote: {
+        type: "http",
+        url: "http://127.0.0.1:9876/mcp?token=secret",
+        allowedTools: ["render_markdown"],
+      },
+    },
+  }, null, 2), "utf8");
+  try {
+    const { api } = runtime({
+      projectPath,
+      applicationMcpProbeServer: async (adapter) => {
+        probeCalls.push(adapter);
+        throw new Error("blocked probe should not execute");
+      },
+    });
+    const actor = { userId: "usr_a", teamId: "team_local" };
+    const app = api.registerApplication({
+      id: "app_doocs_md_http_ssrf",
+      name: "doocs/md",
+      source: { type: "local", path: projectPath },
+    }, actor);
+    api.probeApplication(app.id, actor);
+
+    const live = await api.probeApplicationMcpCandidate(app.id, "mcp.remote", { timeoutMs: 5_000 }, actor);
+    assert.equal(live.status, 422);
+    assert.equal(live.body.error, "mcp_http_live_probe_network_blocked");
+    assert.equal(live.body.endpoint.endpointHost, "127.0.0.1:9876");
+    assert.equal(JSON.stringify(live.body).includes("secret"), false);
+    assert.equal(probeCalls.length, 0);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("application HTTP MCP live probe blocks IPv4-mapped localhost endpoints before network access", async () => {
+  const root = mkdtempSync(join(tmpdir(), "myagenttool-app-mcp-http-mapped-"));
+  const projectPath = join(root, "doocs-md");
+  const probeCalls = [];
+  mkdirSync(join(projectPath, ".vscode"), { recursive: true });
+  writeFileSync(join(projectPath, ".vscode", "mcp.json"), JSON.stringify({
+    servers: {
+      remote: {
+        type: "http",
+        url: "http://[::ffff:127.0.0.1]:9876/mcp?token=secret",
+        allowedTools: ["render_markdown"],
+      },
+    },
+  }, null, 2), "utf8");
+  try {
+    const { api } = runtime({
+      projectPath,
+      applicationMcpProbeServer: async (adapter) => {
+        probeCalls.push(adapter);
+        throw new Error("blocked probe should not execute");
+      },
+    });
+    const actor = { userId: "usr_a", teamId: "team_local" };
+    const app = api.registerApplication({
+      id: "app_doocs_md_http_mapped",
+      name: "doocs/md",
+      source: { type: "local", path: projectPath },
+    }, actor);
+    api.probeApplication(app.id, actor);
+
+    const live = await api.probeApplicationMcpCandidate(app.id, "mcp.remote", { timeoutMs: 5_000 }, actor);
+    assert.equal(live.status, 422);
+    assert.equal(live.body.error, "mcp_http_live_probe_network_blocked");
+    assert.equal(live.body.endpoint.endpointHost, "[::ffff:7f00:1]:9876");
+    assert.equal(JSON.stringify(live.body).includes("secret"), false);
+    assert.equal(probeCalls.length, 0);
+  } finally {
     rmSync(root, { recursive: true, force: true });
   }
 });

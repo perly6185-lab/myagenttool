@@ -199,3 +199,68 @@ test("write or network wrapper policies require explicit consent before approval
   assert.equal(wrapper.filePolicy, "workspace_write");
   assert.equal(wrapper.networkPolicy, "network");
 });
+
+test("wrapper policy consent is invalidated when the approved command descriptor changes", () => {
+  const { appSvc, capSvc, created } = harness({
+    registration: {
+      id: "app_policy_fingerprint",
+      name: "Policy Fingerprint Fixture",
+      source: {
+        type: "npm",
+        package: "@scope/policy-fingerprint",
+        wrapper: {
+          mode: "installed-wrapper",
+          installState: "installed",
+          packageManager: "npm",
+          commands: [{
+            id: "deploy",
+            commandType: "npm_script",
+            command: "deploy",
+            status: "approved",
+            riskLevel: "high",
+            requiresApproval: false,
+            filePolicy: "workspace_write",
+            networkPolicy: "network",
+          }],
+        },
+      },
+    },
+  });
+
+  const consent = appSvc.grantApplicationWrapperPolicyConsent("app_policy_fingerprint", "deploy", {
+    approvalRequestId: "apr_policy_fingerprint",
+    __verifiedApplicationApproval: true,
+    reason: "Allow the original deploy descriptor.",
+  }, { userId: "usr_a", teamId: "team_local" });
+  assert.equal(consent.status, 200);
+  assert.equal(capSvc.getCapability("app.app_policy_fingerprint.wrapper.deploy").metadata.readiness.state, "ready");
+
+  appSvc.updateApplicationDescriptors("app_policy_fingerprint", {
+    npmWrapper: {
+      mode: "installed-wrapper",
+      installState: "installed",
+      packageManager: "npm",
+      commands: [{
+        id: "deploy",
+        commandType: "npm_script",
+        command: "deploy:prod",
+        status: "approved",
+        riskLevel: "high",
+        requiresApproval: false,
+        filePolicy: "workspace_write",
+        networkPolicy: "network",
+      }],
+    },
+  });
+
+  const stale = capSvc.getCapability("app.app_policy_fingerprint.wrapper.deploy");
+  assert.equal(stale.status, "disabled");
+  assert.equal(stale.metadata.readiness.state, "needs_consent");
+  assert.equal(stale.metadata.readiness.reason, "wrapper_policy_requires_explicit_consent");
+  assert.equal(stale.metadata.wrapper.policySupported, false);
+
+  const refused = capSvc.createCapabilityInvocation("app.app_policy_fingerprint.wrapper.deploy", {});
+  assert.equal(refused.status, 409);
+  assert.equal(refused.body.error, "application_wrapper_policy_consent_required");
+  assert.equal(created.length, 0);
+});

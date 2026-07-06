@@ -47,6 +47,7 @@ export function createServerRuntimeServices({
   stateSchemaVersion,
   dispatchLeaseMs,
   now,
+  applicationMcpProbeServer,
 }) {
   let idCounter = 1;
   let invocationService = null;
@@ -147,6 +148,7 @@ export function createServerRuntimeServices({
     addProject,
     cloneProject,
     defaultProjectPath,
+    ...(applicationMcpProbeServer ? { probeMcpServerFn: applicationMcpProbeServer } : {}),
   });
 
   function reconcileApplicationMcpAgent(application, actor = null, { startup = false } = {}) {

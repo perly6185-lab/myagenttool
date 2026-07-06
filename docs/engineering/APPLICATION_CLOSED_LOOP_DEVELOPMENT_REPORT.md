@@ -103,10 +103,12 @@ View invocation navigation.
 - Implemented explicit Application wrapper policy consent. `POST
   /api/applications/:id/wrapper-commands/:commandId/policy-consent` uses the
   normal local approval flow to persist a command-scoped consent grant for the
-  declared file/network policy. After consent, the wrapper capability projects
-  as ready, elevated policies still require per-run approval, and the Desktop
-  Bridge allowlist accepts the elevated wrapper only when command, argv,
-  capability, cwd, and policy metadata match the server-resolved plan.
+  declared file/network policy and command fingerprint. Descriptor edits with
+  the same command id invalidate the old consent, so the wrapper capability
+  returns to `needs_consent`. After consent, the wrapper capability projects as
+  ready, elevated policies still require per-run approval, and the Desktop Bridge
+  allowlist accepts the elevated wrapper only when command, argv, capability,
+  cwd, and policy metadata match the server-resolved plan.
 - Added an HTTP MCP live-probe gate. HTTP MCP candidates now publish redacted
   endpoint review plus `liveProbe` state, and confirmation is blocked with
   `mcp_http_live_probe_required` until successful probe evidence exists.
@@ -114,7 +116,9 @@ View invocation navigation.
   /api/applications/:id/mcp-candidates/:candidateId/probe` performs JSON-RPC
   `initialize` and `tools/list`, records `json_rpc_initialize_tools_list`
   evidence on the Application probe, verifies that allowed tools are exposed,
-  and then permits the approved confirm path to register shared MCP tools.
+  rejects localhost/private/link-local/multicast/non-public endpoint addresses
+  before network access, and then permits the approved confirm path to register
+  shared MCP tools.
 - Re-ran focused Application verification:
   `pnpm --filter @myagenttool/server exec node --test
   test/application-mcp-agent.test.mjs`, targeted

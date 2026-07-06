@@ -3,7 +3,6 @@ process.env.MYAGENTTOOL_STATE_DISABLED = "1";
 
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { createServer } from "node:http";
 import { after, before, test } from "node:test";
 
 const TEAM_A = "team_a";
@@ -13,6 +12,7 @@ const now = () => new Date().toISOString();
 let server;
 let base;
 let ctx;
+let applicationMcpProbeCalls = [];
 
 before(async () => {
   const { createServerState } = await import("../../src/runtime/state-factory.mjs");
@@ -122,6 +122,14 @@ before(async () => {
     stateSchemaVersion: 1,
     dispatchLeaseMs: 30_000,
     now,
+    applicationMcpProbeServer: async (adapter) => {
+      applicationMcpProbeCalls.push(adapter);
+      return {
+        ok: true,
+        message: "MCP server is reachable and exposes 2 tool(s): render_markdown, list_themes.",
+        tools: ["render_markdown", "list_themes"],
+      };
+    },
   });
 
   server = createHttpServer({ host: "127.0.0.1", port: 0, namespace: "test", protocolVersion: "0.0.0", ...httpDependencies });
@@ -175,61 +183,6 @@ async function approveApplicationRequest(response, token = "tok_a") {
   assert.equal(approved.status, 200, JSON.stringify(approved.body));
   assert.equal(approved.body.approval.status, "approved");
   return response.body.approvalRequestId;
-}
-
-async function startHttpMcpFixtureForTest(tools = [{ name: "render_markdown" }]) {
-  const sessionId = "sess-tools-http-mcp";
-  const requests = [];
-  const fixture = createServer((req, res) => {
-    if (req.method !== "POST") {
-      res.writeHead(404).end();
-      return;
-    }
-    let body = "";
-    req.on("data", (chunk) => {
-      body += chunk;
-    });
-    req.on("end", () => {
-      const message = JSON.parse(body);
-      requests.push({ url: req.url, method: message.method, sessionId: req.headers["mcp-session-id"] ?? null });
-      const json = (payload, headers = {}) => {
-        res.writeHead(200, { "content-type": "application/json", ...headers });
-        res.end(JSON.stringify(payload));
-      };
-      if (message.method === "initialize") {
-        json({
-          jsonrpc: "2.0",
-          id: message.id,
-          result: {
-            protocolVersion: message.params?.protocolVersion,
-            capabilities: { tools: {} },
-            serverInfo: { name: "tools-http-mcp-fixture", version: "0.0.0" },
-          },
-        }, { "mcp-session-id": sessionId });
-        return;
-      }
-      if (req.headers["mcp-session-id"] !== sessionId) {
-        res.writeHead(400, { "content-type": "application/json" });
-        res.end(JSON.stringify({ jsonrpc: "2.0", id: message.id ?? null, error: { message: "missing session id" } }));
-        return;
-      }
-      if (message.id === undefined) {
-        res.writeHead(202).end();
-        return;
-      }
-      if (message.method === "tools/list") {
-        json({ jsonrpc: "2.0", id: message.id, result: { tools } });
-        return;
-      }
-      json({ jsonrpc: "2.0", id: message.id, error: { message: `unknown method ${message.method}` } });
-    });
-  });
-  await new Promise((resolve) => fixture.listen(0, "127.0.0.1", resolve));
-  return {
-    requests,
-    url: `http://127.0.0.1:${fixture.address().port}/rpc?token=secret`,
-    close: () => new Promise((resolve) => fixture.close(resolve)),
-  };
 }
 
 async function generateApplicationOrchestrationForTest(applicationId = "app_team_a", token = "tok_a") {
@@ -835,10 +788,7 @@ test("POST /api/applications/:id/mcp-candidates/:candidateId/confirm requires in
 });
 
 test("POST /api/applications/:id/mcp-candidates/:candidateId/probe records HTTP MCP evidence before confirmation", async () => {
-  const fixture = await startHttpMcpFixtureForTest([
-    { name: "render_markdown", description: "Render Markdown.", inputSchema: { type: "object" } },
-    { name: "list_themes", description: "List themes.", inputSchema: { type: "object" } },
-  ]);
+  applicationMcpProbeCalls = [];
   const root = "/tmp/doocs-http-live-mcp";
   mkdirSync(`${root}/.vscode`, { recursive: true });
   writeFileSync(`${root}/package.json`, JSON.stringify({ name: "md-http-live", version: "2.1.0" }, null, 2), "utf8");
@@ -846,7 +796,7 @@ test("POST /api/applications/:id/mcp-candidates/:candidateId/probe records HTTP 
     servers: {
       remote: {
         type: "http",
-        url: fixture.url,
+        url: "https://93.184.216.34/rpc?token=secret",
         allowedTools: ["render_markdown"],
       },
     },
@@ -886,7 +836,8 @@ test("POST /api/applications/:id/mcp-candidates/:candidateId/probe records HTTP 
     assert.equal(live.body.candidate.review.liveProbe.state, "succeeded");
     assert.equal(live.body.application.probe.mcpServers[0].review.liveProbe.state, "succeeded");
     assert.equal(JSON.stringify(live.body).includes("secret"), false);
-    assert.equal(fixture.requests.some((request) => request.method === "tools/list" && request.sessionId), true);
+    assert.equal(applicationMcpProbeCalls.length, 1);
+    assert.equal(applicationMcpProbeCalls[0].url, "https://93.184.216.34/rpc?token=secret");
 
     const approvalRequired = await call(`/api/applications/${registered.body.application.id}/mcp-candidates/mcp.remote/confirm`, {
       method: "POST",
@@ -906,7 +857,7 @@ test("POST /api/applications/:id/mcp-candidates/:candidateId/probe records HTTP 
     assert.equal(confirmed.body.application.mcpAgent.adapter, undefined);
     assert.equal(JSON.stringify(confirmed.body).includes("secret"), false);
   } finally {
-    await fixture.close();
+    applicationMcpProbeCalls = [];
   }
 });
 
@@ -1181,6 +1132,13 @@ test("application register rejects invalid npm wrapper descriptors before persis
             commandType: "custom",
             command: "node && rm -rf .",
             status: "approved",
+          }, {
+            id: "bad_policies",
+            commandType: "npm_script",
+            command: "build",
+            status: "approved",
+            filePolicy: "network",
+            networkPolicy: "workspace_write",
           }],
         },
       },
@@ -1193,6 +1151,8 @@ test("application register rejects invalid npm wrapper descriptors before persis
   assert.ok(invalid.body.validation.errors.some((item) => item.code === "unsafe_lifecycle_script"));
   assert.ok(invalid.body.validation.errors.some((item) => item.code === "duplicate_id"));
   assert.ok(invalid.body.validation.errors.some((item) => item.code === "shell_syntax_forbidden"));
+  assert.ok(invalid.body.validation.errors.some((item) => item.path === "npmWrapper.commands[2].filePolicy" && item.code === "invalid_file_policy"));
+  assert.ok(invalid.body.validation.errors.some((item) => item.path === "npmWrapper.commands[2].networkPolicy" && item.code === "invalid_network_policy"));
 
   const list = await call("/api/applications", { token: "tok_a" });
   assert.ok(!list.body.applications.some((item) => item.id === "app_npm_invalid_wrapper_registration"));

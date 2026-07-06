@@ -1,5 +1,7 @@
 import { createHash } from "node:crypto";
+import { lookup } from "node:dns/promises";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { isIP } from "node:net";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { normalizeMcpAdapterConfig } from "@myagenttool/adapters/mcp";
 import { probeMcpServer } from "../../../desktop/src/mcp-client.mjs";
@@ -10,6 +12,8 @@ import { sanitizeAgentId } from "./agents.mjs";
 const APPLICATION_SOURCE_TYPES = new Set(["git", "local", "npm", "manual"]);
 const APPLICATION_STATUSES = new Set(["draft", "probing", "registered", "active", "offline", "archived", "failed"]);
 const NPM_WRAPPER_MODES = new Set(["metadata-only", "installed-wrapper"]);
+const WRAPPER_FILE_POLICIES = new Set(["forbidden", "read_only", "workspace_write"]);
+const WRAPPER_NETWORK_POLICIES = new Set(["forbidden", "restricted", "network"]);
 const APPLICATION_ROUTINE_REQUIRED_APPROVALS = ["apply", "push", "pr-create", "pr-merge"];
 const APPLICATION_ROUTINE_RISK_LEVELS = ["low", "medium", "high", "critical"];
 const MCP_CONFIG_FILES = [
@@ -27,6 +31,7 @@ export function createApplicationService({
   addProject,
   cloneProject,
   defaultProjectPath = process.cwd(),
+  probeMcpServerFn = probeMcpServer,
 }) {
   function listApplications() {
     return state.applications ?? [];
@@ -211,6 +216,7 @@ export function createApplicationService({
       }
       assertValidNpmWrapperDescriptor(body.npmWrapper, app);
       app.source.wrapper = normalizeNpmWrapper(body.npmWrapper);
+      pruneApplicationWrapperPolicyConsents(app);
       changed = true;
     }
     if (Object.hasOwn(body, "manualManifest")) {
@@ -582,7 +588,22 @@ export function createApplicationService({
       applicationName: app.name,
       applicationPath: app.path ?? app.source?.path ?? null,
     });
-    const probeResult = await probeMcpServer({
+    const networkReview = await mcpHttpProbeNetworkReview(mcpAgent.adapter.url);
+    if (!networkReview.allowed) {
+      return {
+        ok: false,
+        status: 422,
+        body: {
+          error: "mcp_http_live_probe_network_blocked",
+          reason: networkReview.reason,
+          applicationId,
+          candidateId,
+          endpoint: networkReview.endpoint,
+          candidate: publicProbeMcpServer(candidate),
+        },
+      };
+    }
+    const probeResult = await probeMcpServerFn({
       ...mcpAgent.adapter,
       timeoutMs: normalizePositiveInteger(input.timeoutMs, mcpAgent.adapter.timeoutMs),
       startupTimeoutMs: normalizePositiveInteger(input.startupTimeoutMs, mcpAgent.adapter.startupTimeoutMs),
@@ -683,6 +704,7 @@ export function createApplicationService({
       commandId: command.id,
       filePolicy: command.filePolicy,
       networkPolicy: command.networkPolicy,
+      commandFingerprint: applicationWrapperCommandFingerprint(app, command),
       requiresPerRunApproval: true,
       grantedAt,
       grantedBy: actor?.userId ?? null,
@@ -2219,6 +2241,88 @@ function normalizePositiveInteger(value, fallback) {
   return Number.isFinite(number) && number > 0 ? Math.floor(number) : fallback;
 }
 
+async function mcpHttpProbeNetworkReview(url) {
+  const endpoint = mcpHttpEndpointReview(url);
+  let parsed;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return { allowed: false, reason: "HTTP MCP probe endpoint URL is invalid.", endpoint };
+  }
+  if (!["http:", "https:"].includes(parsed.protocol)) {
+    return { allowed: false, reason: "HTTP MCP probe endpoint must use http or https.", endpoint };
+  }
+  const hostname = parsed.hostname.replace(/^\[|\]$/g, "");
+  const literalFamily = isIP(hostname);
+  const addresses = literalFamily
+    ? [{ address: hostname, family: literalFamily }]
+    : await lookup(hostname, { all: true, verbatim: true }).catch(() => []);
+  if (addresses.length === 0) {
+    return { allowed: false, reason: "HTTP MCP probe endpoint hostname could not be resolved.", endpoint };
+  }
+  const blocked = addresses.find((entry) => !isPublicMcpProbeAddress(entry.address));
+  if (blocked) {
+    return {
+      allowed: false,
+      reason: "HTTP MCP live probes from the server cannot target localhost, private, link-local, multicast, or otherwise non-public addresses.",
+      endpoint,
+    };
+  }
+  return { allowed: true, reason: null, endpoint };
+}
+
+function isPublicMcpProbeAddress(address) {
+  const family = isIP(address);
+  if (family === 4) return isPublicIpv4Address(address);
+  if (family === 6) return isPublicIpv6Address(address);
+  return false;
+}
+
+function isPublicIpv4Address(address) {
+  const parts = address.split(".").map((part) => Number(part));
+  if (parts.length !== 4 || parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) return false;
+  const [a, b, c] = parts;
+  if (a === 0 || a === 10 || a === 127 || a >= 224) return false;
+  if (a === 100 && b >= 64 && b <= 127) return false;
+  if (a === 169 && b === 254) return false;
+  if (a === 172 && b >= 16 && b <= 31) return false;
+  if (a === 192 && b === 0 && c === 0) return false;
+  if (a === 192 && b === 0 && c === 2) return false;
+  if (a === 192 && b === 168) return false;
+  if (a === 198 && (b === 18 || b === 19)) return false;
+  if (a === 198 && b === 51 && c === 100) return false;
+  if (a === 203 && b === 0 && c === 113) return false;
+  return true;
+}
+
+function isPublicIpv6Address(address) {
+  const text = address.toLowerCase();
+  const mappedIpv4 = mappedIpv4FromIpv6(text);
+  if (mappedIpv4) return isPublicIpv4Address(mappedIpv4);
+  if (text === "::1" || text === "::") return false;
+  if (/^fe[89ab][0-9a-f]:/i.test(text)) return false;
+  if (/^f[cd][0-9a-f]{2}:/i.test(text)) return false;
+  if (text.startsWith("2001:db8:")) return false;
+  if (text.startsWith("ff")) return false;
+  return true;
+}
+
+function mappedIpv4FromIpv6(text) {
+  const dotted = text.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/);
+  if (dotted) return dotted[1];
+  const hex = text.match(/^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/i);
+  if (!hex) return null;
+  const high = Number.parseInt(hex[1], 16);
+  const low = Number.parseInt(hex[2], 16);
+  if (!Number.isInteger(high) || !Number.isInteger(low)) return null;
+  return [
+    (high >> 8) & 255,
+    high & 255,
+    (low >> 8) & 255,
+    low & 255,
+  ].join(".");
+}
+
 function mcpAutoRegistrationAssessment(adapter, application, allowedTools) {
   if ((allowedTools ?? []).length === 0) {
     return { autoRegister: false, confidence: "low", reason: "allowed_tools_missing" };
@@ -2688,11 +2792,45 @@ function applicationWrapperPolicyConsentFor(application, command) {
   if (!consent || consent.state !== "granted") return null;
   if (consent.commandId !== command.id) return null;
   if (consent.filePolicy !== command.filePolicy || consent.networkPolicy !== command.networkPolicy) return null;
+  if (consent.commandFingerprint !== applicationWrapperCommandFingerprint(application, command)) return null;
   return consent;
 }
 
 function applicationWrapperInvocationRequiresApproval(command, policySupport) {
   return Boolean(command?.requiresApproval || policySupport?.consentRequired);
+}
+
+function applicationWrapperCommandFingerprint(application, command) {
+  return createHash("sha256")
+    .update(JSON.stringify({
+      commandId: command?.id ?? null,
+      commandType: command?.commandType ?? null,
+      command: command?.command ?? null,
+      args: command?.args ?? [],
+      argInputs: command?.argInputs ?? [],
+      cwd: command?.cwd ?? ".",
+      packageManager: application?.source?.wrapper?.packageManager ?? "npm",
+      installPath: application?.source?.wrapper?.installPath ?? null,
+      filePolicy: command?.filePolicy ?? "read_only",
+      networkPolicy: command?.networkPolicy ?? "forbidden",
+    }))
+    .digest("hex");
+}
+
+function pruneApplicationWrapperPolicyConsents(application) {
+  if (!application?.wrapperPolicyConsents || typeof application.wrapperPolicyConsents !== "object" || Array.isArray(application.wrapperPolicyConsents)) return;
+  const commands = new Map((application.source?.wrapper?.commands ?? []).map((command) => [command.id, command]));
+  const next = {};
+  for (const [commandId, consent] of Object.entries(application.wrapperPolicyConsents)) {
+    const command = commands.get(commandId);
+    if (!command || command.status !== "approved") continue;
+    if (consent?.state !== "granted") continue;
+    if (consent.commandId !== command.id) continue;
+    if (consent.filePolicy !== command.filePolicy || consent.networkPolicy !== command.networkPolicy) continue;
+    if (consent.commandFingerprint !== applicationWrapperCommandFingerprint(application, command)) continue;
+    next[commandId] = consent;
+  }
+  application.wrapperPolicyConsents = next;
 }
 
 function normalizeNpmWrapper(wrapper = {}) {
@@ -2749,8 +2887,8 @@ function normalizeWrapperCommand(command, index) {
     timeoutSeconds: normalizeTimeoutSeconds(command.timeoutSeconds),
     cancellation: normalizeCancellation(command.cancellation),
     envPolicy: normalizeEnvPolicy(command.envPolicy),
-    filePolicy: normalizeAccessPolicy(command.filePolicy, "read_only"),
-    networkPolicy: normalizeAccessPolicy(command.networkPolicy, "forbidden"),
+    filePolicy: normalizeFilePolicy(command.filePolicy, "read_only"),
+    networkPolicy: normalizeNetworkPolicy(command.networkPolicy, "forbidden"),
     compatibilityFacade: normalizeWrapperCompatibilityFacade(command.compatibilityFacade),
     outputCollection: stringOrNull(command.outputCollection),
     billing: normalizeWrapperBilling(command.billing),
@@ -2837,11 +2975,11 @@ function validateNpmWrapperCommandDescriptor(command, index, { errors, ids, base
   if (command.status !== undefined && !["draft", "approved", "disabled"].includes(String(command.status).trim())) {
     errors.push(descriptorError(`${path}.status`, "invalid_status", "status must be draft, approved, or disabled."));
   }
-  if (command.filePolicy !== undefined && !["forbidden", "read_only", "workspace_write", "network"].includes(String(command.filePolicy).trim())) {
-    errors.push(descriptorError(`${path}.filePolicy`, "invalid_file_policy", "filePolicy must be forbidden, read_only, workspace_write, or network."));
+  if (command.filePolicy !== undefined && !WRAPPER_FILE_POLICIES.has(String(command.filePolicy).trim())) {
+    errors.push(descriptorError(`${path}.filePolicy`, "invalid_file_policy", `filePolicy must be ${[...WRAPPER_FILE_POLICIES].join(", ")}.`));
   }
-  if (command.networkPolicy !== undefined && !["forbidden", "read_only", "workspace_write", "network"].includes(String(command.networkPolicy).trim())) {
-    errors.push(descriptorError(`${path}.networkPolicy`, "invalid_network_policy", "networkPolicy must be forbidden, read_only, workspace_write, or network."));
+  if (command.networkPolicy !== undefined && !WRAPPER_NETWORK_POLICIES.has(String(command.networkPolicy).trim())) {
+    errors.push(descriptorError(`${path}.networkPolicy`, "invalid_network_policy", `networkPolicy must be ${[...WRAPPER_NETWORK_POLICIES].join(", ")}.`));
   }
 }
 
@@ -2995,9 +3133,14 @@ function normalizeWrapperResultImport(value) {
   };
 }
 
-function normalizeAccessPolicy(value, fallback) {
+function normalizeFilePolicy(value, fallback) {
   const text = String(value ?? "").trim();
-  return ["forbidden", "read_only", "workspace_write", "network"].includes(text) ? text : fallback;
+  return WRAPPER_FILE_POLICIES.has(text) ? text : fallback;
+}
+
+function normalizeNetworkPolicy(value, fallback) {
+  const text = String(value ?? "").trim();
+  return WRAPPER_NETWORK_POLICIES.has(text) ? text : fallback;
 }
 
 function statusForLifecycleAction(action) {

@@ -160,11 +160,13 @@ policy consent through `POST
 /api/applications/:id/wrapper-commands/:commandId/policy-consent`.
 
 Policy consent is persisted on the Application with the command id, file policy,
-network policy, grant time, grant actor, and consent model version. The grant
-itself requires the normal local approval flow. Once granted, the capability
-projects as `available`/`ready` with `wrapper_policy_consent_granted`, but
-elevated wrapper commands still force per-run approval even if the descriptor
-sets `requiresApproval: false`. The Desktop Bridge also keeps an independent
+network policy, command fingerprint, grant time, grant actor, and consent model
+version. The grant itself requires the normal local approval flow; if the
+approved command descriptor changes, the fingerprint no longer matches and the
+capability returns to `needs_consent`. Once granted, the capability projects as
+`available`/`ready` with `wrapper_policy_consent_granted`, but elevated wrapper
+commands still force per-run approval even if the descriptor sets
+`requiresApproval: false`. The Desktop Bridge also keeps an independent
 allowlist: the child wrapper argv, capability name, cwd, file policy, and network
 policy must exactly match the server-resolved `applicationWrapper` metadata
 before the fixed wrapper runner is spawned.
@@ -192,7 +194,9 @@ on static config alone. `POST
 `initialize` plus `tools/list` check against the HTTP endpoint, records
 `json_rpc_initialize_tools_list` evidence, verifies that every allowed tool is
 exposed, and stores only redacted endpoint metadata on the public Application
-probe.
+probe. Because this probe runs server-side, it refuses localhost, private,
+link-local, multicast, and otherwise non-public endpoint addresses before
+opening a network connection.
 
 Application-scoped MCP tools are exposed as governed tool/capability names such
 as `doocs_md.render_markdown` without exposing adapter command, argv, or local
