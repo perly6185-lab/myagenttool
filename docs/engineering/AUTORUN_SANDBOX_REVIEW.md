@@ -1,9 +1,20 @@
 # B1b — Execution sandbox / permission scoping (review doc)
 
-Status: **for joint review — no code change yet.** This is the analysis to
-decide B1b together (AUTORUN_OPERATIONS_PLAN O4). It maps the coding agent's
-current execution privileges, the threat model for unattended runs, and tiered
-hardening options with the trade-offs and the decisions needed before building.
+Status: **reviewed 2026-07-07 → Tier 1 IMPLEMENTED (opt-in).** This is the
+analysis that decided B1b (AUTORUN_OPERATIONS_PLAN O4). It maps the coding
+agent's current execution privileges, the threat model for unattended runs, and
+tiered hardening options with the trade-offs and the decisions.
+
+**Review outcome (joint, 2026-07-07):** verified against code — the coding agent
+does inherit the bridge's full env (`buildEnv` `inherit_safe`); the MCP path was
+already minimized (`buildMcpChildEnv` + `SAFE_MCP_ENV_KEYS`), so **Tier 1 mirrors
+that proven pattern**. Confirmed both claude and codex authenticate via the LOCAL
+machine login state (keychain / ~/.claude / ~/.codex via HOME), NOT env secrets,
+so env minimization does not break auth. **Tier 1 landed opt-in** (policy
+`agent_minimal`, flag `MYAGENTTOOL_BRIDGE_MINIMIZE_AGENT_ENV`, default OFF; to be
+soak-validated before the default flips). **Tier 2** (FS confinement, macOS
+seatbelt first, per-project opt-in), **Tier 3** (egress) and run-as-restricted-user
+remain follow-ups.
 
 ## Current posture (what the coding agent can actually do today)
 
