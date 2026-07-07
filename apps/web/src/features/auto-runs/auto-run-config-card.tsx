@@ -20,7 +20,9 @@ interface AutoRunConfig {
   globalMaxConcurrent: number;
   breakerFailureThreshold: number;
   breakerCooldownMinutes: number;
-  commands: { verify: boolean; decider: boolean; judge: boolean };
+  autoMergeLowRisk: boolean;
+  autoMergeMaxDiffLines: number;
+  commands: { verify: boolean; decider: boolean; judge: boolean; review: boolean };
   verifyCommandNames: string[];
   settings: Record<string, unknown>;
 }
@@ -44,6 +46,8 @@ interface Draft {
   globalMaxConcurrent: number;
   breakerFailureThreshold: number;
   breakerCooldownMinutes: number;
+  autoMergeLowRisk: boolean;
+  autoMergeMaxDiffLines: number;
   sloTargets: { prSuccessRate: number; failureRate: number; attentionRate: number; timeToPrMedianSeconds: number };
 }
 
@@ -68,6 +72,8 @@ function toDraft(c: AutoRunConfig): Draft {
     globalMaxConcurrent: c.globalMaxConcurrent,
     breakerFailureThreshold: c.breakerFailureThreshold,
     breakerCooldownMinutes: c.breakerCooldownMinutes,
+    autoMergeLowRisk: c.autoMergeLowRisk,
+    autoMergeMaxDiffLines: c.autoMergeMaxDiffLines,
     sloTargets: { ...SLO_DEFAULTS, ...((c.settings?.sloTargets as Partial<typeof SLO_DEFAULTS>) ?? {}) },
   };
 }
@@ -103,6 +109,8 @@ const RECOMMENDED_SAFE_DEFAULTS = {
   spawnIssues: false,
   deciderFastPath: true,
   autonomyKillSwitch: false,
+  autoMergeLowRisk: false,
+  autoMergeMaxDiffLines: 400,
   autoTriggerMaxConcurrent: 1,
   globalMaxConcurrent: 3,
   breakerFailureThreshold: 3,
@@ -251,11 +259,26 @@ export function AutoRunConfigCard() {
               <Toggle label="Status writeback" hint="Move the linked issue's status label as the run advances." checked={draft.statusWriteback} onChange={(v) => set("statusWriteback", v)} />
               <Toggle label="Spawn child issues" hint="A design decision spawns a governed child issue." checked={draft.spawnIssues} onChange={(v) => set("spawnIssues", v)} />
             </div>
+            <div className="grid gap-2 md:grid-cols-2">
+              <Toggle
+                label="Auto-merge low-risk PRs"
+                hint="Automatically merge a PR only when it is LOW risk — verify passed, judge solved, checks green, no injection, AI review passed, diff under the cap. Medium/high always stay human. Audited + alerted; kill switch + breaker halt it."
+                checked={draft.autoMergeLowRisk}
+                onChange={(v) => set("autoMergeLowRisk", v)}
+              />
+              <NumberField label="Auto-merge max diff lines" hint="A PR whose diff exceeds this is never auto-merged (falls to a human)." value={draft.autoMergeMaxDiffLines} min={1} max={100000} step={50} onChange={(v) => set("autoMergeMaxDiffLines", v)} />
+            </div>
+            {draft.autoMergeLowRisk && !config.commands.review ? (
+              <p className="rounded-md border border-amber-500/40 bg-amber-500/5 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
+                Auto-merge is on but no AI review command is configured — the strict bar is never met, so nothing will auto-merge until a review command is set (env).
+              </p>
+            ) : null}
             <div className="flex flex-wrap items-center gap-3 rounded-lg border border-border px-3 py-2 text-sm">
               <span className="text-muted-foreground">Commands (env-only):</span>
               <span className="flex items-center gap-1.5">verify {cmdBadge(config.commands.verify)}</span>
               <span className="flex items-center gap-1.5">decider {cmdBadge(config.commands.decider)}</span>
               <span className="flex items-center gap-1.5">judge {cmdBadge(config.commands.judge)}</span>
+              <span className="flex items-center gap-1.5">review {cmdBadge(config.commands.review)}</span>
             </div>
             {config.verifyCommandNames.length > 0 ? (
               <p className="text-xs text-muted-foreground">
