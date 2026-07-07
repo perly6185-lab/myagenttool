@@ -545,6 +545,7 @@ export interface ProjectSnapshot {
   ownerTeamId: string;
   budgetPoolId: string | null;
   defaultAgentId: string | null;
+  verifyCommandName?: string | null;
   status: "active" | "archived";
   isolation: "shared" | "worktree";
   createdAt: string;
