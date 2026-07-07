@@ -693,6 +693,10 @@ test("application HTTP MCP live probe blocks localhost endpoints before network 
     assert.equal(live.status, 422);
     assert.equal(live.body.error, "mcp_http_live_probe_network_blocked");
     assert.equal(live.body.endpoint.endpointHost, "127.0.0.1:9876");
+    assert.equal(live.body.liveProbe.state, "blocked");
+    assert.equal(live.body.liveProbe.evidence, "server_network_policy_check");
+    assert.equal(live.body.candidate.review.liveProbe.state, "blocked");
+    assert.equal(api.findApplication(app.id).probe.mcpServers[0].review.liveProbe.state, "blocked");
     assert.equal(JSON.stringify(live.body).includes("secret"), false);
     assert.equal(probeCalls.length, 0);
   } finally {
@@ -734,6 +738,8 @@ test("application HTTP MCP live probe blocks IPv4-mapped localhost endpoints bef
     assert.equal(live.status, 422);
     assert.equal(live.body.error, "mcp_http_live_probe_network_blocked");
     assert.equal(live.body.endpoint.endpointHost, "[::ffff:7f00:1]:9876");
+    assert.equal(live.body.liveProbe.state, "blocked");
+    assert.equal(live.body.candidate.review.liveProbe.state, "blocked");
     assert.equal(JSON.stringify(live.body).includes("secret"), false);
     assert.equal(probeCalls.length, 0);
   } finally {

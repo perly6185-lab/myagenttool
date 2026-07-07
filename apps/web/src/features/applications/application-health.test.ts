@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   applicationMatchesSearch,
   applicationNextStep,
+  applicationOperationIssues,
   applicationTriageBucket,
   applicationTriageCounts,
   latestApplicationRecoveryAction,
@@ -100,6 +101,182 @@ describe("applicationNextStep", () => {
       probe: { capabilities: [] },
       orchestrationIds: ["routine"],
     })).title).toBe("Ready");
+  });
+});
+
+describe("applicationOperationIssues", () => {
+  it("surfaces paused schedules as resumable operator work", () => {
+    const issues = applicationOperationIssues(application({
+      status: "active",
+      probe: { capabilities: [] },
+      orchestrationIds: ["routine"],
+      healthSummary: {
+        applicationId: "app_docs",
+        eventCounts: { error: 0, warning: 0, info: 0, other: 0 },
+        eventCount: 0,
+        automationCounts: { failing: 0, waitingForApproval: 0, paused: 1, attention: 1 },
+        latestAutomationAttention: {
+          automationId: "atm_docs",
+          name: "Docs daily",
+          status: "paused",
+          nextAction: "Resume the schedule when it should run again.",
+        },
+      },
+    }));
+
+    expect(issues[0]).toMatchObject({
+      id: "automation_paused",
+      title: "Schedule paused",
+      action: "automation",
+      actionLabel: "Resume schedule",
+      automationId: "atm_docs",
+    });
+  });
+
+  it("surfaces manual MCP candidates that are ready for review", () => {
+    const issues = applicationOperationIssues(application({
+      status: "active",
+      orchestrationIds: ["routine"],
+      probe: {
+        capabilities: [],
+        mcpServers: [{
+          id: "mcp.shell",
+          serverName: "shell",
+          transport: "stdio",
+          status: "ready",
+          autoRegister: false,
+        }],
+      },
+      mcpAgent: null,
+    }));
+
+    expect(issues[0]).toMatchObject({
+      id: "mcp_manual_confirm",
+      title: "MCP review needed",
+      action: "mcp",
+      actionLabel: "Review MCP",
+    });
+  });
+
+  it("surfaces HTTP MCP candidates that need live endpoint probe evidence", () => {
+    const issues = applicationOperationIssues(application({
+      status: "active",
+      orchestrationIds: ["routine"],
+      probe: {
+        capabilities: [],
+        mcpServers: [{
+          id: "mcp.remote",
+          serverName: "remote",
+          transport: "http",
+          status: "ready",
+          autoRegister: false,
+          review: {
+            liveProbe: {
+              state: "not_run",
+              requiredBeforeExecution: true,
+              nextAction: "Probe the endpoint before confirming shared tools.",
+            },
+          },
+        }],
+      },
+      mcpAgent: null,
+    }));
+
+    expect(issues[0]).toMatchObject({
+      id: "mcp_http_probe_mcp.remote",
+      title: "HTTP MCP probe needed",
+      action: "mcp_probe",
+      actionLabel: "Probe endpoint",
+      mcpCandidateId: "mcp.remote",
+    });
+  });
+
+  it("keeps HTTP MCP confirmation guidance after live probe evidence succeeds", () => {
+    const issues = applicationOperationIssues(application({
+      status: "active",
+      orchestrationIds: ["routine"],
+      probe: {
+        capabilities: [],
+        mcpServers: [{
+          id: "mcp.remote",
+          serverName: "remote",
+          transport: "http",
+          status: "ready",
+          autoRegister: false,
+          review: {
+            liveProbe: {
+              state: "succeeded",
+              requiredBeforeExecution: true,
+              evidence: "json_rpc_initialize_tools_list",
+            },
+          },
+        }],
+      },
+      mcpAgent: null,
+    }));
+
+    expect(issues[0]).toMatchObject({
+      id: "mcp_manual_confirm",
+      title: "MCP review needed",
+      action: "mcp",
+      actionLabel: "Review MCP",
+    });
+  });
+
+  it("surfaces the latest timeline attention event with the right filter action", () => {
+    const issues = applicationOperationIssues(application({
+      status: "active",
+      probe: { capabilities: [] },
+      orchestrationIds: ["routine"],
+      healthSummary: {
+        applicationId: "app_docs",
+        eventCounts: { error: 1, warning: 0, info: 0, other: 0 },
+        eventCount: 1,
+        latestAttentionEvent: {
+          id: "evt_failed",
+          type: "application_probe_failed",
+          level: "error",
+          message: "Probe command failed.",
+          data: {},
+          createdAt: "2026-07-06T01:00:00.000Z",
+        },
+      },
+    }));
+
+    expect(issues[0]).toMatchObject({
+      id: "event_evt_failed",
+      title: "Timeline error",
+      action: "timeline",
+      actionLabel: "View errors",
+      eventLevel: "error",
+    });
+  });
+
+  it("treats pending recovery approvals as open recovery work", () => {
+    const issues = applicationOperationIssues(
+      application({
+        status: "active",
+        probe: { capabilities: [] },
+        orchestrationIds: ["routine"],
+      }),
+      [recoveryAction({
+        id: "rec_pending",
+        status: "approval_pending",
+        explanation: {
+          state: "approval_pending",
+          nextStep: "Resolve the linked approval request before this recovery can execute.",
+        },
+      })],
+    );
+
+    expect(issues[0]).toMatchObject({
+      id: "recovery_rec_pending",
+      title: "Recovery action open",
+      action: "recovery",
+      actionLabel: "View recovery",
+      routineId: "routine_docs",
+      invocationId: "inv_docs",
+    });
   });
 });
 

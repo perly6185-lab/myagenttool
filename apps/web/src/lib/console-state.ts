@@ -922,7 +922,26 @@ export interface ApplicationProbeMcpServer {
     endpointOrigin?: string | null;
     endpointHost?: string | null;
     endpointProtocol?: string | null;
+    liveProbe?: ApplicationMcpLiveProbeSnapshot | null;
   };
+}
+
+export interface ApplicationMcpLiveProbeSnapshot {
+  state?: "not_run" | "succeeded" | "failed" | "blocked" | string;
+  requiredBeforeExecution?: boolean;
+  checkedAt?: string | null;
+  evidence?: string | null;
+  endpointUrl?: string | null;
+  endpointOrigin?: string | null;
+  endpointHost?: string | null;
+  endpointProtocol?: string | null;
+  networkPolicy?: string | null;
+  toolCount?: number;
+  exposedTools?: string[];
+  matchedAllowedTools?: string[];
+  missingAllowedTools?: string[];
+  message?: string | null;
+  nextAction?: string | null;
 }
 
 export interface ApplicationProbeDiff {
@@ -1254,9 +1273,9 @@ export interface ApplicationDescriptorSnapshot {
 
 export interface ApplicationDescriptorUpdateRequest {
   name?: string;
-  mcpAgent?: Record<string, unknown>;
-  npmWrapper?: Record<string, unknown>;
-  manualManifest?: Record<string, unknown>;
+  mcpAgent?: Record<string, unknown> | null;
+  npmWrapper?: Record<string, unknown> | null;
+  manualManifest?: Record<string, unknown> | null;
 }
 
 export interface ApplicationCapability {
@@ -1270,6 +1289,7 @@ export interface ApplicationCapability {
   riskLevel?: string;
   riskTags?: string[];
   requiresApproval?: boolean;
+  inputSchema?: Record<string, unknown>;
   invocationMode?: string;
   status?: string;
   metadata?: {
@@ -1288,6 +1308,14 @@ export interface ApplicationCapability {
       networkPolicy?: string;
       policySupported?: boolean;
       policyUnsupportedReason?: string | null;
+      policyConsent?: {
+        state?: string;
+        grantedAt?: string | null;
+        grantedBy?: string | null;
+        expiresAt?: string | null;
+        revokedAt?: string | null;
+        reason?: string | null;
+      } | null;
       [key: string]: unknown;
     };
     resultPath?: {

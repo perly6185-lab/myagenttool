@@ -21,6 +21,7 @@ const apiMock = vi.hoisted(() => ({
   listApplicationCapabilities: vi.fn(),
   createCapabilityInvocation: vi.fn(),
   grantApplicationWrapperPolicyConsent: vi.fn(),
+  revokeApplicationWrapperPolicyConsent: vi.fn(),
   listApplicationEvents: vi.fn(),
   listApplicationOrchestrationRuns: vi.fn(),
   getApplicationOrchestrationRun: vi.fn(),
@@ -29,6 +30,8 @@ const apiMock = vi.hoisted(() => ({
   listApplicationOrchestrationRecoveryAgentCandidates: vi.fn(),
   requestApplicationOrchestrationRecoveryAction: vi.fn(),
   confirmApplicationMcpCandidate: vi.fn(),
+  probeApplicationMcpCandidate: vi.fn(),
+  applicationLifecycle: vi.fn(),
   approveApproval: vi.fn(),
   createAutomation: vi.fn(),
   runAutomation: vi.fn(),
@@ -45,6 +48,7 @@ vi.mock("@/lib/api-client", async () => ({
     listApplicationCapabilities: apiMock.listApplicationCapabilities,
     createCapabilityInvocation: apiMock.createCapabilityInvocation,
     grantApplicationWrapperPolicyConsent: apiMock.grantApplicationWrapperPolicyConsent,
+    revokeApplicationWrapperPolicyConsent: apiMock.revokeApplicationWrapperPolicyConsent,
     listApplicationEvents: apiMock.listApplicationEvents,
     listApplicationOrchestrationRuns: apiMock.listApplicationOrchestrationRuns,
     getApplicationOrchestrationRun: apiMock.getApplicationOrchestrationRun,
@@ -53,6 +57,8 @@ vi.mock("@/lib/api-client", async () => ({
     listApplicationOrchestrationRecoveryAgentCandidates: apiMock.listApplicationOrchestrationRecoveryAgentCandidates,
     requestApplicationOrchestrationRecoveryAction: apiMock.requestApplicationOrchestrationRecoveryAction,
     confirmApplicationMcpCandidate: apiMock.confirmApplicationMcpCandidate,
+    probeApplicationMcpCandidate: apiMock.probeApplicationMcpCandidate,
+    applicationLifecycle: apiMock.applicationLifecycle,
     approveApproval: apiMock.approveApproval,
     createAutomation: apiMock.createAutomation,
     runAutomation: apiMock.runAutomation,
@@ -68,6 +74,9 @@ beforeEach(() => {
   apiMock.listApplicationEvents.mockResolvedValue({ applicationId: "app", events: [] });
   apiMock.createCapabilityInvocation.mockResolvedValue({ invocationId: "inv_wrapper_run", status: "queued" });
   apiMock.grantApplicationWrapperPolicyConsent.mockResolvedValue({ consent: { state: "granted" } });
+  apiMock.revokeApplicationWrapperPolicyConsent.mockResolvedValue({ consent: { state: "revoked" } });
+  apiMock.applicationLifecycle.mockResolvedValue({ application: { id: "app_ccusage" } });
+  apiMock.probeApplicationMcpCandidate.mockResolvedValue({ liveProbe: { state: "succeeded" } });
   apiMock.createAutomation.mockResolvedValue({ automation: { id: "atm_app_daily", nextRunAt: "2026-07-05T09:00:00.000Z" } });
   apiMock.runAutomation.mockResolvedValue({ invocationId: "inv_auto_run", status: "queued" });
   apiMock.updateAutomation.mockResolvedValue({ automation: { id: "atm_app_daily" } });
@@ -195,6 +204,100 @@ describe("ApplicationsInspector recovery guidance", () => {
 
     expect(useUiStore.getState().section).toBe("invocations");
     expect(useUiStore.getState().selectedInvocationId).toBe("inv_app_ccusage");
+  });
+
+  it("surfaces timeline and probe actions in the operator action panel", async () => {
+    const state = closedLoopConsoleState();
+    state.applications![0].probe = null;
+    state.applications![0].orchestrationIds = ["routine_ccusage"];
+    state.applications![0].healthSummary = {
+      applicationId: "app_ccusage",
+      eventCounts: { error: 1, warning: 0, info: 0, other: 0 },
+      eventCount: 1,
+      latestAttentionEvent: {
+        id: "evt_probe_failed",
+        type: "application_probe_failed",
+        level: "error",
+        message: "Probe command failed.",
+        data: {},
+        createdAt: "2026-07-04T03:08:00.000Z",
+      },
+    };
+    apiMock.fetchState.mockResolvedValue(state);
+    apiMock.listApplicationCapabilities.mockResolvedValue({ applicationId: "app_ccusage", capabilities: [] });
+    apiMock.listApplicationEvents.mockResolvedValue({
+      applicationId: "app_ccusage",
+      events: [state.applications![0].healthSummary.latestAttentionEvent!],
+    });
+
+    useUiStore.setState({ selectedApplicationId: "app_ccusage" });
+    renderWithClient(createElement(ApplicationsInspector));
+
+    expect(await screen.findByText("Action required")).toBeTruthy();
+    expect(screen.getByText("Timeline error")).toBeTruthy();
+    expect(screen.getByText("Probe recommended")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: /View errors/i }));
+    expect(useUiStore.getState().selectedApplicationEventLevel).toBe("error");
+    expect(HTMLElement.prototype.scrollIntoView).toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: /Run probe/i }));
+    await waitFor(() => expect(apiMock.applicationLifecycle).toHaveBeenCalledWith("app_ccusage", "probe"));
+  });
+
+  it("opens automation failures and recovery actions from the operator action panel", async () => {
+    const state = closedLoopConsoleState();
+    state.applications![0].probe = { capabilities: [] };
+    state.applications![0].orchestrationIds = ["routine_ccusage"];
+    state.applications![0].healthSummary = {
+      applicationId: "app_ccusage",
+      eventCounts: { error: 0, warning: 0, info: 0, other: 0 },
+      eventCount: 0,
+      automationCounts: { failing: 1, waitingForApproval: 0, paused: 0, attention: 1 },
+      latestAutomationAttention: {
+        automationId: "atm_ccusage_daily",
+        name: "ccusage daily",
+        status: "failing",
+        latestInvocationId: "inv_auto_failed",
+        lastErrorSummary: "Wrapper command exited 1.",
+      },
+    };
+    state.applicationRecoveryActions = [{
+      id: "rec_ccusage_pending",
+      applicationId: "app_ccusage",
+      routineId: "routine_ccusage",
+      invocationId: "inv_auto_failed",
+      actionType: "rerun",
+      status: "approval_pending",
+      reason: "Retry the failed scheduled run.",
+      requiresApproval: true,
+      approvalRequestId: "apr_rec",
+      explanation: {
+        state: "approval_pending",
+        nextStep: "Resolve the linked approval request before this recovery can execute.",
+      },
+      createdAt: "2026-07-04T03:09:00.000Z",
+      updatedAt: "2026-07-04T03:10:00.000Z",
+    }];
+    apiMock.fetchState.mockResolvedValue(state);
+    apiMock.listApplicationCapabilities.mockResolvedValue({ applicationId: "app_ccusage", capabilities: [] });
+
+    useUiStore.setState({ selectedApplicationId: "app_ccusage" });
+    renderWithClient(createElement(ApplicationsInspector));
+
+    expect(await screen.findByText("Recovery action open")).toBeTruthy();
+    expect(screen.getByText("Schedule failing")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: /View recovery/i }));
+    expect(useUiStore.getState().selectedApplicationRun).toEqual({
+      applicationId: "app_ccusage",
+      routineId: "routine_ccusage",
+      invocationId: "inv_auto_failed",
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: /Open failing run/i }));
+    expect(useUiStore.getState().section).toBe("invocations");
+    expect(useUiStore.getState().selectedInvocationId).toBe("inv_auto_failed");
   });
 
   it("renders probe diff groups in the probe card", async () => {
@@ -681,6 +784,51 @@ describe("ApplicationsInspector recovery guidance", () => {
     expect(useUiStore.getState().selectedInvocationId).toBe("inv_policy_run");
   });
 
+  it("revokes granted wrapper policy consent from a wrapper capability", async () => {
+    apiMock.fetchState.mockResolvedValue(closedLoopConsoleState());
+    apiMock.revokeApplicationWrapperPolicyConsent.mockResolvedValue({ consent: { state: "revoked" } });
+    apiMock.listApplicationCapabilities.mockResolvedValue({
+      applicationId: "app_ccusage",
+      capabilities: [{
+        name: "app.app_ccusage.wrapper.deploy",
+        displayName: "Deploy",
+        provider: { type: "application", id: "app_ccusage" },
+        kind: "npm_wrapper",
+        riskLevel: "high",
+        status: "available",
+        requiresApproval: true,
+        metadata: {
+          readiness: { state: "ready", reason: "wrapper_policy_consent_granted", executionMode: "bridge_wrapper" },
+          wrapper: {
+            commandId: "deploy",
+            policySupported: true,
+            filePolicy: "workspace_write",
+            networkPolicy: "network",
+            policyConsent: {
+              state: "granted",
+              grantedAt: "2026-07-04T03:00:00.000Z",
+              expiresAt: "2026-08-04T03:00:00.000Z",
+              reason: "Allow deploy.",
+            },
+            argInputs: [],
+          },
+        },
+      }],
+    });
+
+    useUiStore.setState({ selectedApplicationId: "app_ccusage" });
+    renderWithClient(createElement(ApplicationsInspector));
+
+    fireEvent.click(await screen.findByRole("button", { name: /Revoke consent/i }));
+
+    await waitFor(() => expect(apiMock.revokeApplicationWrapperPolicyConsent).toHaveBeenCalledWith(
+      "app_ccusage",
+      "deploy",
+      { reason: "Revoke wrapper command deploy policy for app.app_ccusage.wrapper.deploy." },
+    ));
+    expect(await screen.findByText("Policy consent revoked.")).toBeTruthy();
+  });
+
   it("summarizes and filters application timeline events by level", async () => {
     apiMock.fetchState.mockResolvedValue(closedLoopConsoleState());
     apiMock.listApplicationCapabilities.mockResolvedValue({
@@ -910,6 +1058,47 @@ describe("ApplicationsInspector recovery guidance", () => {
     });
   });
 
+  it("clears an existing MCP descriptor from the inspector", async () => {
+    apiMock.fetchState.mockResolvedValue(mcpConsoleState());
+    apiMock.listApplicationCapabilities.mockResolvedValue({
+      applicationId: "app_doocs_md",
+      capabilities: [],
+    });
+    apiMock.getApplicationDescriptors.mockResolvedValue({
+      applicationId: "app_doocs_md",
+      descriptors: {
+        mcpAgent: {
+          transport: "stdio",
+          command: "node",
+          args: ["server.mjs"],
+          allowedTools: ["render_markdown"],
+        },
+        npmWrapper: null,
+        manualManifest: null,
+      },
+    });
+    apiMock.updateApplicationDescriptors.mockResolvedValue({
+      application: { id: "app_doocs_md", name: "doocs/md" },
+      capabilities: [],
+      descriptors: null,
+    });
+
+    useUiStore.setState({ selectedApplicationId: "app_doocs_md" });
+    renderWithClient(createElement(ApplicationsInspector));
+
+    expect(await screen.findByText("Descriptors")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: /Edit descriptors/i }));
+    await screen.findByLabelText("MCP descriptor JSON");
+    fireEvent.click(screen.getByRole("button", { name: /Remove MCP descriptor/i }));
+    fireEvent.click(screen.getByRole("button", { name: /Save descriptors/i }));
+
+    await waitFor(() => {
+      expect(apiMock.updateApplicationDescriptors).toHaveBeenCalledWith("app_doocs_md", {
+        mcpAgent: null,
+      });
+    });
+  });
+
   it("renders descriptor validation feedback from the inspector", async () => {
     apiMock.fetchState.mockResolvedValue(closedLoopConsoleState());
     apiMock.listApplicationCapabilities.mockResolvedValue({
@@ -1035,7 +1224,7 @@ describe("ApplicationsInspector recovery guidance", () => {
     expect(screen.getByText("local_stdio_process")).toBeTruthy();
     expect(screen.getByText("read_only files / forbidden network")).toBeTruthy();
 
-    fireEvent.click(screen.getByRole("button", { name: /Review MCP/i }));
+    fireEvent.click(screen.getAllByRole("button", { name: /Review MCP/i })[1]);
 
     expect(await screen.findByRole("dialog", { name: /Review shell/i })).toBeTruthy();
     expect(screen.getByText("Confirm this MCP candidate before it is registered as shared Application tools.")).toBeTruthy();
@@ -1052,6 +1241,36 @@ describe("ApplicationsInspector recovery guidance", () => {
         "mcp.shell",
         { approvalRequestId: "apr_mcp_confirm" },
       );
+    });
+  });
+
+  it("guides HTTP MCP candidates through live endpoint probe before confirmation", async () => {
+    apiMock.fetchState.mockResolvedValue(httpMcpCandidateConsoleState());
+    apiMock.listApplicationCapabilities.mockResolvedValue({
+      applicationId: "app_doocs_md_http",
+      capabilities: [],
+    });
+    apiMock.probeApplicationMcpCandidate.mockResolvedValue({
+      liveProbe: {
+        state: "succeeded",
+        evidence: "json_rpc_initialize_tools_list",
+        matchedAllowedTools: ["render_markdown"],
+        missingAllowedTools: [],
+      },
+    });
+
+    useUiStore.setState({ selectedApplicationId: "app_doocs_md_http" });
+    renderWithClient(createElement(ApplicationsInspector));
+
+    expect(await screen.findByText("HTTP MCP probe needed")).toBeTruthy();
+    expect(screen.getAllByText("live probe needed").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Probe the endpoint before confirming shared tools.").length).toBeGreaterThan(0);
+    expect((screen.getByRole("button", { name: /Review MCP/i }) as HTMLButtonElement).disabled).toBe(true);
+
+    fireEvent.click(screen.getAllByRole("button", { name: /Probe endpoint/i })[0]);
+
+    await waitFor(() => {
+      expect(apiMock.probeApplicationMcpCandidate).toHaveBeenCalledWith("app_doocs_md_http", "mcp.remote");
     });
   });
 
@@ -1633,6 +1852,79 @@ function manualMcpCandidateConsoleState(): ConsoleSnapshot {
       mcpAgent: null,
       createdAt: "2026-07-05T05:00:00.000Z",
       updatedAt: "2026-07-05T05:00:00.000Z",
+    }],
+    applicationRecoveryActions: [],
+  };
+}
+
+function httpMcpCandidateConsoleState(): ConsoleSnapshot {
+  return {
+    device: {
+      id: "dev_local",
+      name: "Local Workstation",
+      status: "online",
+      platform: "win32",
+      architecture: "x64",
+      lastSeenAt: "2026-07-05T05:30:00.000Z",
+    },
+    agent: null,
+    agents: [],
+    invocations: [],
+    events: [],
+    auditSummaries: [],
+    applications: [{
+      id: "app_doocs_md_http",
+      name: "doocs/md HTTP",
+      kind: "repository",
+      status: "active",
+      source: { type: "local", path: "C:\\apps\\doocs-md" },
+      probe: {
+        status: "completed",
+        checkedAt: "2026-07-05T05:30:00.000Z",
+        summary: "Local application path C:\\apps\\doocs-md probed.",
+        capabilities: [],
+        mcpServers: [{
+          id: "mcp.remote",
+          serverName: "remote",
+          source: "mcp_config",
+          sourcePath: ".mcp.json",
+          transport: "http",
+          toolNamespace: "doocs_md",
+          allowedTools: ["render_markdown"],
+          sharedToolNames: ["doocs_md.render_markdown"],
+          status: "ready",
+          confidence: "medium",
+          autoRegister: false,
+          autoRegisterReason: "http_transport_requires_live_probe",
+          adapterPreview: { url: "https://mcp.example.test/rpc" },
+          review: {
+            dataBoundary: "bridge_to_http_endpoint",
+            requiresManualConfirmation: true,
+            manualConfirmationReason: "http_transport_requires_live_probe",
+            filePolicy: "read_only",
+            networkPolicy: "restricted",
+            allowedToolCount: 1,
+            endpointOrigin: "https://mcp.example.test",
+            endpointHost: "mcp.example.test",
+            endpointProtocol: "https",
+            liveProbe: {
+              state: "not_run",
+              requiredBeforeExecution: true,
+              checkedAt: null,
+              evidence: "not_recorded",
+              endpointUrl: "https://mcp.example.test/rpc",
+              endpointOrigin: "https://mcp.example.test",
+              endpointHost: "mcp.example.test",
+              endpointProtocol: "https",
+              networkPolicy: "restricted",
+              nextAction: "Probe the endpoint before confirming shared tools.",
+            },
+          },
+        }],
+      },
+      mcpAgent: null,
+      createdAt: "2026-07-05T05:30:00.000Z",
+      updatedAt: "2026-07-05T05:30:00.000Z",
     }],
     applicationRecoveryActions: [],
   };

@@ -39,12 +39,23 @@ export function prettyJson(value: unknown): string {
 }
 
 export function parseOptionalJsonObject(text: string, label: string): JsonObjectParseResult {
+  return parseOptionalJsonObjectCore(text, label, false);
+}
+
+export function parseOptionalJsonObjectAllowNull(text: string, label: string): JsonObjectParseResult {
+  return parseOptionalJsonObjectCore(text, label, true);
+}
+
+function parseOptionalJsonObjectCore(text: string, label: string, allowNull: boolean): JsonObjectParseResult {
   const trimmed = text.trim();
   if (!trimmed) return { value: null, error: null };
   try {
     const value = JSON.parse(trimmed) as unknown;
+    if (value === null && allowNull) {
+      return { value: null, error: null };
+    }
     if (!value || typeof value !== "object" || Array.isArray(value)) {
-      return { value: null, error: `${label} must be a JSON object.` };
+      return { value: null, error: `${label} must be a JSON object${allowNull ? " or null" : ""}.` };
     }
     return { value: value as Record<string, unknown>, error: null };
   } catch (caught) {

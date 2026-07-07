@@ -83,7 +83,7 @@ describe("ApplicationsView automation schedule attention", () => {
     renderWithClient(createElement(ApplicationsView));
 
     expect(await screen.findByText("1 failing schedule")).toBeTruthy();
-    expect(screen.getByText("2 attention")).toBeTruthy();
+    expect(screen.getByText("3 attention")).toBeTruthy();
     expect(screen.getByText("Wrapper command exited 1.")).toBeTruthy();
 
     fireEvent.click(screen.getByRole("button", { name: /Inspect failing schedule/i }));
@@ -92,6 +92,41 @@ describe("ApplicationsView automation schedule attention", () => {
     expect(useUiStore.getState().selectedApplicationRun).toBeNull();
     expect(useUiStore.getState().selectedApplicationEventLevel).toBe("all");
     expect(useUiStore.getState().selectedApplicationAutomationId).toBe("atm_ready_daily");
+  });
+});
+
+describe("ApplicationsView mixed fleet search", () => {
+  it("matches HTTP MCP live-probe recovery issues from the application list", async () => {
+    renderWithClient(createElement(ApplicationsView));
+
+    fireEvent.change(await screen.findByPlaceholderText("Name, id, source, path"), {
+      target: { value: "probe blocked" },
+    });
+
+    expect(await screen.findByText("HTTP MCP Blocked")).toBeTruthy();
+    expect(screen.getByText("HTTP MCP probe blocked")).toBeTruthy();
+    expect(screen.queryByText("Docs Ready")).toBeNull();
+  });
+
+  it("clears stale run, event, and automation selections when switching applications", async () => {
+    useUiStore.setState({
+      selectedApplicationId: "app_ready",
+      selectedApplicationRun: {
+        applicationId: "app_ready",
+        routineId: "routine_ready",
+        invocationId: "inv_ready_daily",
+      },
+      selectedApplicationEventLevel: "error",
+      selectedApplicationAutomationId: "atm_ready_daily",
+    });
+    renderWithClient(createElement(ApplicationsView));
+
+    fireEvent.click(await screen.findByText("HTTP MCP Blocked"));
+
+    expect(useUiStore.getState().selectedApplicationId).toBe("app_http_blocked");
+    expect(useUiStore.getState().selectedApplicationRun).toBeNull();
+    expect(useUiStore.getState().selectedApplicationEventLevel).toBe("all");
+    expect(useUiStore.getState().selectedApplicationAutomationId).toBeNull();
   });
 });
 
@@ -188,6 +223,38 @@ function consoleState(): ConsoleSnapshot {
       },
       createdAt: "2026-07-06T00:00:00.000Z",
       updatedAt: "2026-07-06T02:00:00.000Z",
+    }, {
+      id: "app_http_blocked",
+      name: "HTTP MCP Blocked",
+      kind: "repository",
+      source: { type: "local", path: "/apps/http-blocked" },
+      status: "active",
+      probe: {
+        capabilities: [],
+        mcpServers: [{
+          id: "mcp.remote",
+          serverName: "remote",
+          transport: "http",
+          status: "ready",
+          autoRegister: false,
+          review: {
+            liveProbe: {
+              state: "blocked",
+              requiredBeforeExecution: true,
+              evidence: "server_network_policy_check",
+              nextAction: "Use a public HTTP(S) endpoint for server-side live probe evidence.",
+            },
+          },
+        }],
+      },
+      orchestrationIds: ["routine"],
+      healthSummary: {
+        applicationId: "app_http_blocked",
+        eventCounts: { error: 0, warning: 0, info: 0, other: 0 },
+        eventCount: 0,
+      },
+      createdAt: "2026-07-06T00:00:00.000Z",
+      updatedAt: "2026-07-06T01:00:00.000Z",
     }],
     applicationRecoveryActions: [],
   };

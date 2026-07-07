@@ -310,10 +310,20 @@ export const api = {
   grantApplicationWrapperPolicyConsent: (
     id: string,
     commandId: string,
-    body: { approvalRequestId?: string; reason?: string | null } = {},
+    body: { approvalRequestId?: string; reason?: string | null; expiresAt?: string | null } = {},
   ) =>
     request<Record<string, unknown>>(
       "POST",
+      `/api/applications/${encodeURIComponent(id)}/wrapper-commands/${encodeURIComponent(commandId)}/policy-consent`,
+      body,
+    ),
+  revokeApplicationWrapperPolicyConsent: (
+    id: string,
+    commandId: string,
+    body: { reason?: string | null } = {},
+  ) =>
+    request<Record<string, unknown>>(
+      "DELETE",
       `/api/applications/${encodeURIComponent(id)}/wrapper-commands/${encodeURIComponent(commandId)}/policy-consent`,
       body,
     ),
@@ -354,6 +364,12 @@ export const api = {
     request(
       "POST",
       `/api/applications/${encodeURIComponent(id)}/mcp-candidates/${encodeURIComponent(candidateId)}/confirm`,
+      body,
+    ),
+  probeApplicationMcpCandidate: (id: string, candidateId: string, body: { timeoutMs?: number; startupTimeoutMs?: number } = {}) =>
+    request(
+      "POST",
+      `/api/applications/${encodeURIComponent(id)}/mcp-candidates/${encodeURIComponent(candidateId)}/probe`,
       body,
     ),
   runApplicationOrchestration: (

@@ -147,6 +147,7 @@ export function createServerRuntimeServices({
     probeApplication: probeApplicationBase,
     probeApplicationMcpCandidate: probeApplicationMcpCandidateBase,
     registerApplication: registerApplicationBase,
+    revokeApplicationWrapperPolicyConsent,
     transitionApplication,
     updateApplicationDescriptors: updateApplicationDescriptorsBase,
   } = createApplicationService({
@@ -2132,6 +2133,7 @@ export function createServerRuntimeServices({
     confirmApplicationMcpCandidate,
     getApplicationDescriptors,
     grantApplicationWrapperPolicyConsent,
+    revokeApplicationWrapperPolicyConsent,
     getApplicationOrchestrationRunRecovery,
     listApplicationOrchestrationRecoveryAgentCandidates,
     getApplicationOrchestrationRun,
@@ -2260,6 +2262,7 @@ export function createServerRuntimeServices({
     confirmApplicationMcpCandidate,
     getApplicationDescriptors,
     grantApplicationWrapperPolicyConsent,
+    revokeApplicationWrapperPolicyConsent,
     getApplicationOrchestrationRunRecovery,
     listApplicationOrchestrationRecoveryAgentCandidates,
     getApplicationOrchestrationRun,

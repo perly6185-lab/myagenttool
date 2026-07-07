@@ -99,6 +99,31 @@ test("a read-only report command (requiresApproval:false) dispatches without app
   assert.equal(created.length, 1);
 });
 
+test("application capability input schema rejects undeclared managed input", () => {
+  const { capSvc, created } = harness();
+  const res = capSvc.createCapabilityInvocation("app.app_ccusage.search", { query: "usage", extra: true });
+  assert.equal(res.status, 422);
+  assert.equal(res.body.error, "invalid_capability_input");
+  assert.equal(res.body.validation.errors[0].path, "extra");
+  assert.equal(created.length, 0);
+});
+
+test("wrapper argInputs are part of the effective invocation schema", () => {
+  const { capSvc, created } = harness();
+  const ok = capSvc.createCapabilityInvocation(CAP, { since: "2026-07-01", timezone: "Asia/Shanghai" });
+  assert.equal(ok.status, 202);
+  assert.deepEqual(
+    created[0].options.metadata.applicationWrapper.execArgs,
+    ["daily", "--json", "--offline", "--since", "2026-07-01", "--timezone", "Asia/Shanghai"],
+  );
+
+  const rejected = capSvc.createCapabilityInvocation(CAP, { since: "not-a-date" });
+  assert.equal(rejected.status, 422);
+  assert.equal(rejected.body.error, "invalid_capability_input");
+  assert.equal(rejected.body.validation.errors[0].path, "since");
+  assert.equal(created.length, 1);
+});
+
 test("when the wrapper agent is not registered, returns agent_not_available", () => {
   const { capSvc, created } = harness({ agentAvailable: false });
   const res = capSvc.createCapabilityInvocation(CAP, {});
@@ -263,4 +288,52 @@ test("wrapper policy consent is invalidated when the approved command descriptor
   assert.equal(refused.status, 409);
   assert.equal(refused.body.error, "application_wrapper_policy_consent_required");
   assert.equal(created.length, 0);
+});
+
+test("wrapper policy consent can expire or be revoked", () => {
+  const { appSvc, capSvc } = harness({
+    registration: {
+      id: "app_policy_lifecycle",
+      name: "Policy Lifecycle Fixture",
+      source: {
+        type: "npm",
+        package: "@scope/policy-lifecycle",
+        wrapper: {
+          mode: "installed-wrapper",
+          installState: "installed",
+          commands: [{
+            id: "deploy",
+            commandType: "custom",
+            command: "node",
+            status: "approved",
+            riskLevel: "high",
+            requiresApproval: false,
+            filePolicy: "workspace_write",
+            networkPolicy: "network",
+          }],
+        },
+      },
+    },
+  });
+
+  const expired = appSvc.grantApplicationWrapperPolicyConsent("app_policy_lifecycle", "deploy", {
+    __verifiedApplicationApproval: true,
+    expiresAt: "2000-01-01T00:00:00.000Z",
+  });
+  assert.equal(expired.status, 200);
+  assert.equal(capSvc.getCapability("app.app_policy_lifecycle.wrapper.deploy").metadata.readiness.state, "needs_consent");
+
+  const granted = appSvc.grantApplicationWrapperPolicyConsent("app_policy_lifecycle", "deploy", {
+    __verifiedApplicationApproval: true,
+    expiresAt: "2999-01-01T00:00:00.000Z",
+  });
+  assert.equal(granted.status, 200);
+  assert.equal(capSvc.getCapability("app.app_policy_lifecycle.wrapper.deploy").metadata.readiness.state, "ready");
+
+  const revoked = appSvc.revokeApplicationWrapperPolicyConsent("app_policy_lifecycle", "deploy", {
+    reason: "No longer needed.",
+  });
+  assert.equal(revoked.status, 200);
+  assert.equal(revoked.consent.state, "revoked");
+  assert.equal(capSvc.getCapability("app.app_policy_lifecycle.wrapper.deploy").metadata.readiness.state, "needs_consent");
 });

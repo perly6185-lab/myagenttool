@@ -200,22 +200,31 @@ export function createApplicationService({
       changed = true;
     }
     if (Object.hasOwn(body, "mcpAgent")) {
-      if (!body.mcpAgent || typeof body.mcpAgent !== "object" || Array.isArray(body.mcpAgent)) {
-        throw new Error("Application mcpAgent descriptor must be a JSON object.");
+      if (body.mcpAgent === null || body.mcpAgent === false) {
+        app.mcpAgent = null;
+        changed = true;
+      } else {
+        if (!body.mcpAgent || typeof body.mcpAgent !== "object" || Array.isArray(body.mcpAgent)) {
+          throw new Error("Application mcpAgent descriptor must be a JSON object.");
+        }
+        app.mcpAgent = normalizeApplicationMcpAgent(body.mcpAgent, {
+          applicationId: app.id,
+          applicationName: app.name,
+          applicationPath: app.path ?? app.source?.path ?? null,
+        });
+        changed = true;
       }
-      app.mcpAgent = normalizeApplicationMcpAgent(body.mcpAgent, {
-        applicationId: app.id,
-        applicationName: app.name,
-        applicationPath: app.path ?? app.source?.path ?? null,
-      });
-      changed = true;
     }
     if (Object.hasOwn(body, "npmWrapper")) {
       if (app.source?.type !== "npm") {
         throw new Error("NPM wrapper descriptor can only be edited on npm applications.");
       }
-      assertValidNpmWrapperDescriptor(body.npmWrapper, app);
-      app.source.wrapper = normalizeNpmWrapper(body.npmWrapper);
+      if (body.npmWrapper === null || body.npmWrapper === false) {
+        app.source.wrapper = normalizeNpmWrapper(null);
+      } else {
+        assertValidNpmWrapperDescriptor(body.npmWrapper, app);
+        app.source.wrapper = normalizeNpmWrapper(body.npmWrapper);
+      }
       pruneApplicationWrapperPolicyConsents(app);
       changed = true;
     }
@@ -223,11 +232,16 @@ export function createApplicationService({
       if (app.source?.type !== "manual") {
         throw new Error("Manual manifest can only be edited on manual applications.");
       }
-      if (!body.manualManifest || typeof body.manualManifest !== "object" || Array.isArray(body.manualManifest)) {
-        throw new Error("Manual manifest must be a JSON object.");
+      if (body.manualManifest === null || body.manualManifest === false) {
+        app.source.manifest = {};
+        changed = true;
+      } else {
+        if (!body.manualManifest || typeof body.manualManifest !== "object" || Array.isArray(body.manualManifest)) {
+          throw new Error("Manual manifest must be a JSON object.");
+        }
+        app.source.manifest = body.manualManifest;
+        changed = true;
       }
-      app.source.manifest = body.manualManifest;
-      changed = true;
     }
     if (changed) {
       app.capabilitiesVersion = Math.max(1, Number(app.capabilitiesVersion ?? 1) + 1);
@@ -611,6 +625,47 @@ export function createApplicationService({
     });
     const networkReview = await mcpHttpProbeNetworkReview(mcpAgent.adapter.url);
     if (!networkReview.allowed) {
+      const liveProbe = mcpHttpLiveProbeFromNetworkBlock(candidate, networkReview, checkedAt);
+      candidate.review = {
+        ...(candidate.review ?? {}),
+        liveProbe,
+      };
+      app.mcpCandidateLiveProbes = {
+        ...(app.mcpCandidateLiveProbes ?? {}),
+        [candidate.id]: {
+          cacheKey: mcpHttpLiveProbeCacheKey(candidate),
+          liveProbe,
+          updatedAt: checkedAt,
+        },
+      };
+      app.probe = {
+        ...(app.probe ?? {}),
+        status: "completed",
+        checkedAt: app.probe?.checkedAt ?? checkedAt,
+        mcpServers: candidates.map(publicProbeMcpServer),
+        mcpLiveProbeCheckedAt: checkedAt,
+        warnings: uniqueStringList([...(app.probe?.warnings ?? []), ...warnings]),
+      };
+      app.lifecycle = {
+        ...app.lifecycle,
+        lastOperation: "probe_mcp_candidate",
+        lastOperationAt: checkedAt,
+        lastActorId: actor?.userId ?? null,
+      };
+      app.updatedAt = checkedAt;
+      appendEvent({
+        invocationId: null,
+        type: "application_mcp_candidate_live_probed",
+        level: "warn",
+        message: `${app.name} MCP candidate ${candidate.id} live probe blocked.`,
+        data: {
+          applicationId: app.id,
+          candidateId: candidate.id,
+          state: liveProbe.state,
+          reason: networkReview.reason,
+        },
+      });
+      persistStateSoon();
       return {
         ok: false,
         status: 422,
@@ -621,6 +676,7 @@ export function createApplicationService({
           candidateId,
           endpoint: networkReview.endpoint,
           candidate: publicProbeMcpServer(candidate),
+          liveProbe,
         },
       };
     }
@@ -718,6 +774,19 @@ export function createApplicationService({
       };
     }
     const grantedAt = now();
+    const expiresAt = normalizeConsentExpiresAt(input.expiresAt);
+    if (expiresAt?.error) {
+      return {
+        ok: false,
+        status: 422,
+        body: {
+          error: "invalid_wrapper_policy_consent",
+          reason: expiresAt.error,
+          applicationId,
+          commandId,
+        },
+      };
+    }
     const consent = {
       state: "granted",
       modelVersion: 1,
@@ -729,6 +798,9 @@ export function createApplicationService({
       requiresPerRunApproval: true,
       grantedAt,
       grantedBy: actor?.userId ?? null,
+      expiresAt: expiresAt.value,
+      revokedAt: null,
+      revokedBy: null,
       reason: stringOrNull(input.reason),
     };
     app.wrapperPolicyConsents = {
@@ -759,6 +831,52 @@ export function createApplicationService({
     return { ok: true, status: 200, application: app, commandId: command.id, consent: publicApplicationWrapperPolicyConsent(consent) };
   }
 
+  function revokeApplicationWrapperPolicyConsent(applicationId, commandId, input = {}, actor = null) {
+    const app = findApplication(applicationId);
+    if (!app) {
+      return { ok: false, status: 404, body: { error: "application_not_found" } };
+    }
+    const command = findNpmWrapperCommand(app, commandId);
+    if (!command) {
+      return { ok: false, status: 404, body: { error: "wrapper_command_not_found", applicationId, commandId } };
+    }
+    const consent = app.wrapperPolicyConsents?.[command.id];
+    if (!consent || consent.state !== "granted") {
+      return { ok: false, status: 404, body: { error: "wrapper_policy_consent_not_found", applicationId, commandId } };
+    }
+    const revokedAt = now();
+    app.wrapperPolicyConsents = {
+      ...(app.wrapperPolicyConsents ?? {}),
+      [command.id]: {
+        ...consent,
+        state: "revoked",
+        revokedAt,
+        revokedBy: actor?.userId ?? null,
+        revokeReason: stringOrNull(input.reason),
+      },
+    };
+    app.lifecycle = {
+      ...app.lifecycle,
+      lastOperation: "revoke_wrapper_policy_consent",
+      lastOperationAt: revokedAt,
+      lastActorId: actor?.userId ?? null,
+    };
+    app.updatedAt = revokedAt;
+    appendEvent({
+      invocationId: null,
+      type: "application_wrapper_policy_consent_revoked",
+      level: "warn",
+      message: `${app.name} wrapper command ${command.id} policy consent revoked.`,
+      data: {
+        applicationId: app.id,
+        commandId: command.id,
+        revokedBy: actor?.userId ?? null,
+      },
+    });
+    persistStateSoon();
+    return { ok: true, status: 200, application: app, commandId: command.id, consent: publicApplicationWrapperPolicyConsent(app.wrapperPolicyConsents[command.id]) };
+  }
+
   return {
     findApplication,
     confirmApplicationMcpCandidate,
@@ -772,6 +890,7 @@ export function createApplicationService({
     probeApplication,
     probeApplicationMcpCandidate,
     registerApplication,
+    revokeApplicationWrapperPolicyConsent,
     transitionApplication,
     updateApplicationDescriptors,
   };
@@ -1021,7 +1140,7 @@ function projectNpmWrapperCapabilities(app, prefix, disabled) {
         [...new Set(["local_execution", "npm_wrapper", ...command.riskTags])],
         applicationWrapperInvocationRequiresApproval(command, policySupport),
         disabled,
-        command.inputSchema,
+        wrapperCommandInputSchema(command),
         {
           capabilityStatus: policySupport.supported ? undefined : "disabled",
           wrapper: {
@@ -1052,6 +1171,33 @@ function projectNpmWrapperCapabilities(app, prefix, disabled) {
         },
       );
     });
+}
+
+function wrapperCommandInputSchema(command) {
+  const base = command.inputSchema && typeof command.inputSchema === "object" && !Array.isArray(command.inputSchema)
+    ? command.inputSchema
+    : emptyInputSchema();
+  const properties = {
+    ...(base.properties && typeof base.properties === "object" && !Array.isArray(base.properties) ? base.properties : {}),
+  };
+  for (const input of command.argInputs ?? []) {
+    if (!input?.key || properties[input.key]) continue;
+    properties[input.key] = wrapperArgInputSchema(input);
+  }
+  return {
+    ...base,
+    type: "object",
+    additionalProperties: base.additionalProperties ?? false,
+    properties,
+  };
+}
+
+function wrapperArgInputSchema(input) {
+  if (input.type === "boolean-flag") return { type: "boolean" };
+  if (input.type === "enum") return { enum: input.values ?? [] };
+  if (input.type === "date") return { type: "string", pattern: "^\\d{4}-\\d{2}-\\d{2}$" };
+  if (input.type === "string") return { type: "string", maxLength: 200 };
+  return { type: "string", maxLength: 64 };
 }
 
 function capabilityReadiness(app, { disabled, kind, metadata }) {
@@ -1970,7 +2116,7 @@ function publicApplicationWrapperPolicyConsents(application) {
     : {};
   return Object.fromEntries(
     Object.entries(consents)
-      .filter(([, consent]) => consent?.state === "granted")
+      .filter(([, consent]) => isApplicationWrapperPolicyConsentActive(consent))
       .map(([commandId, consent]) => [commandId, publicApplicationWrapperPolicyConsent(consent)]),
   );
 }
@@ -1987,6 +2133,9 @@ function publicApplicationWrapperPolicyConsent(consent) {
     requiresPerRunApproval: consent.requiresPerRunApproval !== false,
     grantedAt: consent.grantedAt ?? null,
     grantedBy: consent.grantedBy ?? null,
+    expiresAt: consent.expiresAt ?? null,
+    revokedAt: consent.revokedAt ?? null,
+    revokedBy: consent.revokedBy ?? null,
     reason: consent.reason ?? null,
   };
 }
@@ -2495,6 +2644,22 @@ function mcpHttpLiveProbeFromResult(candidate, result, checkedAt) {
     nextAction: succeeded
       ? "HTTP MCP endpoint can be confirmed after the required Application approval."
       : result?.nextAction ?? "Check that the endpoint is reachable and exposes every allowed tool.",
+  };
+}
+
+function mcpHttpLiveProbeFromNetworkBlock(candidate, networkReview, checkedAt) {
+  const template = mcpHttpLiveProbeReview(candidate.mcpAgent?.url, candidate.review?.networkPolicy ?? "restricted");
+  return {
+    ...template,
+    state: "blocked",
+    checkedAt,
+    evidence: "server_network_policy_check",
+    toolCount: 0,
+    exposedTools: [],
+    matchedAllowedTools: [],
+    missingAllowedTools: candidate.allowedTools ?? [],
+    message: networkReview.reason ?? "HTTP MCP live probe was blocked before network access.",
+    nextAction: "Use a public HTTP(S) endpoint for server-side live probe evidence, or keep this candidate unconfirmed.",
   };
 }
 
@@ -3079,11 +3244,29 @@ function applicationWrapperPolicyBaselineSupported(command) {
 
 function applicationWrapperPolicyConsentFor(application, command) {
   const consent = application?.wrapperPolicyConsents?.[command?.id];
-  if (!consent || consent.state !== "granted") return null;
+  if (!isApplicationWrapperPolicyConsentActive(consent)) return null;
   if (consent.commandId !== command.id) return null;
   if (consent.filePolicy !== command.filePolicy || consent.networkPolicy !== command.networkPolicy) return null;
   if (consent.commandFingerprint !== applicationWrapperCommandFingerprint(application, command)) return null;
   return consent;
+}
+
+function isApplicationWrapperPolicyConsentActive(consent, nowMs = Date.now()) {
+  if (!consent || consent.state !== "granted") return false;
+  if (consent.revokedAt) return false;
+  if (!consent.expiresAt) return true;
+  const expiresAtMs = Date.parse(consent.expiresAt);
+  return Number.isFinite(expiresAtMs) && expiresAtMs > nowMs;
+}
+
+function normalizeConsentExpiresAt(value) {
+  const text = stringOrNull(value);
+  if (!text) return { value: null };
+  const timestamp = Date.parse(text);
+  if (!Number.isFinite(timestamp)) {
+    return { error: "Application wrapper policy consent expiresAt must be an ISO timestamp." };
+  }
+  return { value: new Date(timestamp).toISOString() };
 }
 
 function applicationWrapperInvocationRequiresApproval(command, policySupport) {
@@ -3114,7 +3297,7 @@ function pruneApplicationWrapperPolicyConsents(application) {
   for (const [commandId, consent] of Object.entries(application.wrapperPolicyConsents)) {
     const command = commands.get(commandId);
     if (!command || command.status !== "approved") continue;
-    if (consent?.state !== "granted") continue;
+    if (!isApplicationWrapperPolicyConsentActive(consent)) continue;
     if (consent.commandId !== command.id) continue;
     if (consent.filePolicy !== command.filePolicy || consent.networkPolicy !== command.networkPolicy) continue;
     if (consent.commandFingerprint !== applicationWrapperCommandFingerprint(application, command)) continue;

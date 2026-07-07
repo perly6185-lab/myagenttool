@@ -15,9 +15,9 @@ import { useAsyncAction, api } from "@/data/use-console-actions";
 import { useUiStore } from "@/store/ui-store";
 import { cn } from "@/lib/cn";
 import { DescriptorFeedbackList, WrapperCapabilityImpactPanel } from "@/features/applications/descriptor-feedback";
-import { parseOptionalJsonObject, prettyJson, wrapperCapabilityImpact } from "@/features/applications/descriptor-utils";
+import { parseOptionalJsonObjectAllowNull, prettyJson, wrapperCapabilityImpact } from "@/features/applications/descriptor-utils";
 import { NpmWrapperCommandBuilder } from "@/features/applications/wrapper-command-builder";
-import { sourceSummary } from "@/features/applications/application-health";
+import { applicationOperationIssues, sourceSummary, type ApplicationOperationIssue } from "@/features/applications/application-health";
 import { Transcript } from "@/features/invocations/transcript";
 import {
   isExecutableRecoveryAction,
@@ -85,6 +85,48 @@ function confidenceTone(confidence?: string): "neutral" | "success" | "warning" 
   return "neutral";
 }
 
+function mcpLiveProbeTone(state?: string | null): "neutral" | "success" | "warning" | "danger" {
+  if (state === "succeeded") return "success";
+  if (state === "failed" || state === "blocked") return "danger";
+  if (state === "not_run") return "warning";
+  return "neutral";
+}
+
+function mcpLiveProbeLabel(state?: string | null): string {
+  if (state === "succeeded") return "live probe passed";
+  if (state === "failed") return "live probe failed";
+  if (state === "blocked") return "live probe blocked";
+  if (state === "not_run") return "live probe needed";
+  return state ? `live probe ${state}` : "live probe unknown";
+}
+
+function mcpHttpLiveProbeRequired(candidate: ApplicationProbeMcpServer): boolean {
+  return candidate.transport === "http" && candidate.review?.liveProbe?.requiredBeforeExecution === true;
+}
+
+function mcpCandidateReadyToConfirm(candidate: ApplicationProbeMcpServer): boolean {
+  return !mcpHttpLiveProbeRequired(candidate) || candidate.review?.liveProbe?.state === "succeeded";
+}
+
+function mcpProbeActionLabel(candidate: ApplicationProbeMcpServer): string {
+  return candidate.review?.liveProbe?.state === "failed" || candidate.review?.liveProbe?.state === "blocked"
+    ? "Retry endpoint probe"
+    : "Probe endpoint";
+}
+
+function mcpLiveProbeFacts(candidate: ApplicationProbeMcpServer) {
+  const liveProbe = candidate.review?.liveProbe;
+  if (!liveProbe) return [];
+  return [
+    { term: "Live probe", value: mcpLiveProbeLabel(liveProbe.state) },
+    { term: "Probe checked", value: liveProbe.checkedAt ? shortTime(liveProbe.checkedAt) : "Not run" },
+    { term: "Probe evidence", value: liveProbe.evidence ?? "—" },
+    { term: "Probe endpoint", value: liveProbe.endpointUrl ?? liveProbe.endpointOrigin ?? "—" },
+    { term: "Matched tools", value: (liveProbe.matchedAllowedTools ?? []).join(", ") || "—" },
+    { term: "Missing tools", value: (liveProbe.missingAllowedTools ?? []).join(", ") || "None" },
+  ];
+}
+
 function probeDiffGroups(diff?: ApplicationProbeDiff | null) {
   if (!diff) return [];
   return [
@@ -146,6 +188,7 @@ function capabilityResultMessage(result: Record<string, unknown> | null): string
   const consent = result.consent && typeof result.consent === "object" ? result.consent as { state?: unknown } : null;
   if (invocationId) return `Queued ${invocationId}.`;
   if (consent?.state === "granted") return "Policy consent granted.";
+  if (consent?.state === "revoked") return "Policy consent revoked.";
   if (approvalRequestId) return `Approval requested: ${approvalRequestId}.`;
   if (consentEndpoint) return `Policy consent required before this command can run.`;
   if (error || reason) return [error, reason].filter(Boolean).join(": ");
@@ -338,6 +381,13 @@ function scrollAutomationIntoView(automationId: string) {
   const element = Array.from(document.querySelectorAll<HTMLElement>("[data-application-automation-id]"))
     .find((item) => item.dataset.applicationAutomationId === automationId);
   element?.scrollIntoView({ block: "center", behavior: "smooth" });
+}
+
+function scrollApplicationPanel(panel: string) {
+  document.querySelector<HTMLElement>(`[data-application-panel="${panel}"]`)?.scrollIntoView({
+    block: "center",
+    behavior: "smooth",
+  });
 }
 
 function runDiagnostics(
@@ -548,6 +598,104 @@ function ApplicationActions({ application }: { application: ApplicationSnapshot 
   );
 }
 
+function ApplicationActionRequired({
+  application,
+  recoveryActions,
+  onViewInvocation,
+}: {
+  application: ApplicationSnapshot;
+  recoveryActions: ApplicationRecoveryActionRequest[];
+  onViewInvocation: (invocationId: string) => void;
+}) {
+  const { execute, pending, error } = useAsyncAction();
+  const setSelectedApplicationRun = useUiStore((s) => s.setSelectedApplicationRun);
+  const setSelectedApplicationEventLevel = useUiStore((s) => s.setSelectedApplicationEventLevel);
+  const setSelectedApplicationAutomationId = useUiStore((s) => s.setSelectedApplicationAutomationId);
+  const issues = applicationOperationIssues(application, recoveryActions).slice(0, 4);
+  if (!issues.length) return null;
+
+  function runIssueAction(issue: ApplicationOperationIssue) {
+    if (issue.action === "probe") {
+      void execute(() => api.applicationLifecycle(application.id, "probe"));
+      return;
+    }
+    if (issue.action === "online") {
+      void execute(() => runWithApplicationApproval((approvalRequestId) =>
+        api.applicationLifecycle(application.id, "online", approvalRequestId ? { approvalRequestId } : {})));
+      return;
+    }
+    if (issue.action === "timeline") {
+      setSelectedApplicationEventLevel(issue.eventLevel ?? "all");
+      scrollApplicationPanel("timeline");
+      return;
+    }
+    if (issue.action === "automation") {
+      if (issue.invocationId) {
+        onViewInvocation(issue.invocationId);
+        return;
+      }
+      setSelectedApplicationAutomationId(issue.automationId ?? null);
+      if (issue.automationId) scrollAutomationIntoView(issue.automationId);
+      return;
+    }
+    if (issue.action === "recovery" && issue.routineId && issue.invocationId) {
+      setSelectedApplicationRun({ applicationId: application.id, routineId: issue.routineId, invocationId: issue.invocationId });
+      scrollApplicationPanel("orchestrations");
+      return;
+    }
+    if (issue.action === "descriptors") {
+      scrollApplicationPanel("descriptors");
+      return;
+    }
+    if (issue.action === "mcp_probe") {
+      if (issue.mcpCandidateId) {
+        void execute(() => api.probeApplicationMcpCandidate(application.id, issue.mcpCandidateId!));
+        return;
+      }
+      scrollApplicationPanel("mcp");
+      return;
+    }
+    if (issue.action === "mcp") {
+      scrollApplicationPanel("mcp");
+      return;
+    }
+    if (issue.action === "orchestration") {
+      scrollApplicationPanel("lifecycle");
+      return;
+    }
+    if (issue.action === "inspect") {
+      scrollApplicationPanel("summary");
+    }
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Action required</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-2">
+        {issues.map((issue) => (
+          <div key={issue.id} className="rounded-md border border-border bg-muted/20 p-3 text-sm">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div className="min-w-0 space-y-1">
+                <div className="flex flex-wrap items-center gap-2">
+                  <Badge tone={issue.tone}>{issue.title}</Badge>
+                  <span className="[overflow-wrap:anywhere] text-xs text-muted-foreground">{issue.detail}</span>
+                </div>
+              </div>
+              <Button size="sm" variant="secondary" disabled={pending} onClick={() => runIssueAction(issue)}>
+                {issue.action === "probe" || issue.action === "online" || issue.action === "automation" || issue.action === "recovery" || issue.action === "mcp_probe" ? <Play /> : <Search />}
+                {issue.actionLabel}
+              </Button>
+            </div>
+          </div>
+        ))}
+        {error ? <p className="text-xs text-destructive">{error}</p> : null}
+      </CardContent>
+    </Card>
+  );
+}
+
 function ApplicationDescriptorEditor({ application }: { application: ApplicationSnapshot }) {
   const { execute, pending, error, errorDetail } = useAsyncAction();
   const [open, setOpen] = useState(false);
@@ -593,29 +741,35 @@ function ApplicationDescriptorEditor({ application }: { application: Application
     const update: Record<string, unknown> = {};
     if (name.trim() && name.trim() !== application.name) update.name = name.trim();
 
-    const mcp = parseOptionalJsonObject(mcpDescriptor, "MCP descriptor");
+    const mcpCleared = mcpDescriptor.trim() === "null";
+    const mcp = parseOptionalJsonObjectAllowNull(mcpDescriptor, "MCP descriptor");
     if (mcp.error) {
       setFormError(mcp.error);
       return;
     }
-    if (mcp.value) update.mcpAgent = mcp.value;
+    if (mcpCleared) update.mcpAgent = null;
+    else if (mcp.value) update.mcpAgent = mcp.value;
 
     if (application.source.type === "npm") {
-      const wrapper = parseOptionalJsonObject(wrapperDescriptor, "npm wrapper descriptor");
+      const wrapperCleared = wrapperDescriptor.trim() === "null";
+      const wrapper = parseOptionalJsonObjectAllowNull(wrapperDescriptor, "npm wrapper descriptor");
       if (wrapper.error) {
         setFormError(wrapper.error);
         return;
       }
-      if (wrapper.value) update.npmWrapper = wrapper.value;
+      if (wrapperCleared) update.npmWrapper = null;
+      else if (wrapper.value) update.npmWrapper = wrapper.value;
     }
 
     if (application.source.type === "manual") {
-      const manifest = parseOptionalJsonObject(manualManifest, "Manual manifest");
+      const manifestCleared = manualManifest.trim() === "null";
+      const manifest = parseOptionalJsonObjectAllowNull(manualManifest, "Manual manifest");
       if (manifest.error) {
         setFormError(manifest.error);
         return;
       }
-      if (manifest.value) update.manualManifest = manifest.value;
+      if (manifestCleared) update.manualManifest = null;
+      else if (manifest.value) update.manualManifest = manifest.value;
     }
 
     void execute(() => api.updateApplicationDescriptors(application.id, update)).then((ok) => {
@@ -624,7 +778,7 @@ function ApplicationDescriptorEditor({ application }: { application: Application
   }
 
   return (
-    <Card>
+    <Card data-application-panel="descriptors">
       <CardHeader>
         <CardTitle>Descriptors</CardTitle>
       </CardHeader>
@@ -677,6 +831,11 @@ function ApplicationDescriptorEditor({ application }: { application: Application
                 placeholder='{"transport":"stdio","command":"node","args":["server.mjs"],"allowedTools":["render"]}'
               />
             </Field>
+            {application.mcpAgent ? (
+              <Button type="button" size="sm" variant="secondary" onClick={() => setMcpDescriptor("null")}>
+                Remove MCP descriptor
+              </Button>
+            ) : null}
             {application.source.type === "npm" ? (
               <>
                 <NpmWrapperCommandBuilder
@@ -691,17 +850,27 @@ function ApplicationDescriptorEditor({ application }: { application: Application
                     placeholder='{"mode":"installed-wrapper","installState":"installed","packageManager":"npm","commands":[{"id":"lint","commandType":"npm_script","command":"lint","status":"approved"}]}'
                   />
                 </Field>
+                {application.wrapper ? (
+                  <Button type="button" size="sm" variant="secondary" onClick={() => setWrapperDescriptor("null")}>
+                    Clear npm wrapper
+                  </Button>
+                ) : null}
               </>
             ) : null}
             {application.source.type === "manual" ? (
-              <Field label="Manual manifest JSON">
-                <Textarea
-                  rows={6}
-                  value={manualManifest}
-                  onChange={(event) => setManualManifest(event.target.value)}
-                  placeholder='{"capabilities":[]}'
-                />
-              </Field>
+              <>
+                <Field label="Manual manifest JSON">
+                  <Textarea
+                    rows={6}
+                    value={manualManifest}
+                    onChange={(event) => setManualManifest(event.target.value)}
+                    placeholder='{"capabilities":[]}'
+                  />
+                </Field>
+                <Button type="button" size="sm" variant="secondary" onClick={() => setManualManifest("null")}>
+                  Reset manual manifest
+                </Button>
+              </>
             ) : null}
             {descriptorsQuery.isLoading ? <p className="text-xs text-muted-foreground">Loading descriptors...</p> : null}
             {descriptorsQuery.isError ? <p className="text-xs text-destructive">Could not load descriptors.</p> : null}
@@ -788,8 +957,12 @@ function ApplicationMcpSummary({ application }: { application: ApplicationSnapsh
     });
   }
 
+  function probeHttpCandidate(candidate: ApplicationProbeMcpServer) {
+    void execute(() => api.probeApplicationMcpCandidate(application.id, candidate.id));
+  }
+
   return (
-    <Card>
+    <Card data-application-panel="mcp">
       <CardHeader>
         <CardTitle>MCP tools</CardTitle>
       </CardHeader>
@@ -827,6 +1000,11 @@ function ApplicationMcpSummary({ application }: { application: ApplicationSnapsh
                     {server.transport ? <Badge tone="neutral">{server.transport}</Badge> : null}
                     {server.confidence ? <Badge tone={confidenceTone(server.confidence)}>{server.confidence} confidence</Badge> : null}
                     {server.autoRegister ? <Badge tone="success">auto register</Badge> : <Badge tone="warning">manual confirm</Badge>}
+                    {server.review?.liveProbe ? (
+                      <Badge tone={mcpLiveProbeTone(server.review.liveProbe.state)}>
+                        {mcpLiveProbeLabel(server.review.liveProbe.state)}
+                      </Badge>
+                    ) : null}
                   </div>
                 </div>
                 <FactList
@@ -838,14 +1016,26 @@ function ApplicationMcpSummary({ application }: { application: ApplicationSnapsh
                     { term: "Policies", value: server.review ? `${server.review.filePolicy ?? "—"} files / ${server.review.networkPolicy ?? "—"} network` : "—" },
                     { term: "Endpoint", value: server.review?.endpointOrigin ?? "—" },
                     { term: "Tools", value: (server.allowedTools ?? []).join(", ") || "—" },
+                    ...mcpLiveProbeFacts(server),
                   ]}
                 />
+                {server.review?.liveProbe?.nextAction || server.review?.liveProbe?.message ? (
+                  <p className="[overflow-wrap:anywhere] rounded-md bg-muted px-3 py-2 text-xs text-muted-foreground">
+                    {server.review.liveProbe.nextAction ?? server.review.liveProbe.message}
+                  </p>
+                ) : null}
                 {!mcpAgent && !server.autoRegister && server.status === "ready" ? (
-                  <div className="flex justify-end">
+                  <div className="flex flex-wrap justify-end gap-2">
+                    {mcpHttpLiveProbeRequired(server) && server.review?.liveProbe?.state !== "succeeded" ? (
+                      <Button size="sm" variant="secondary" disabled={pending} onClick={() => probeHttpCandidate(server)}>
+                        <Search />
+                        {mcpProbeActionLabel(server)}
+                      </Button>
+                    ) : null}
                     <Button
                       size="sm"
                       variant="secondary"
-                      disabled={pending}
+                      disabled={pending || !mcpCandidateReadyToConfirm(server)}
                       onClick={() => {
                         setConfirmCandidate(server);
                         setAcknowledged(false);
@@ -900,6 +1090,7 @@ function ManualMcpConfirmModal({
   const preview = candidate.adapterPreview?.command
     ? `${candidate.adapterPreview.command} · ${candidate.adapterPreview.argCount ?? 0} args`
     : candidate.adapterPreview?.url ?? "—";
+  const canConfirm = mcpCandidateReadyToConfirm(candidate);
   return (
     <Modal
       open={open}
@@ -914,6 +1105,11 @@ function ManualMcpConfirmModal({
           {candidate.transport ? <Badge tone="neutral">{candidate.transport}</Badge> : null}
           {candidate.confidence ? <Badge tone={confidenceTone(candidate.confidence)}>{candidate.confidence} confidence</Badge> : null}
           <Badge tone="warning">manual confirm</Badge>
+          {candidate.review?.liveProbe ? (
+            <Badge tone={mcpLiveProbeTone(candidate.review.liveProbe.state)}>
+              {mcpLiveProbeLabel(candidate.review.liveProbe.state)}
+            </Badge>
+          ) : null}
         </div>
         <FactList
           facts={[
@@ -924,8 +1120,14 @@ function ManualMcpConfirmModal({
             { term: "Policies", value: candidate.review ? `${candidate.review.filePolicy ?? "—"} files / ${candidate.review.networkPolicy ?? "—"} network` : "—" },
             { term: "Endpoint", value: candidate.review?.endpointOrigin ?? "—" },
             { term: "Tools", value: (candidate.allowedTools ?? []).join(", ") || "—" },
+            ...mcpLiveProbeFacts(candidate),
           ]}
         />
+        {!canConfirm ? (
+          <p className="[overflow-wrap:anywhere] rounded-md bg-warning/10 px-3 py-2 text-xs text-warning">
+            Run a successful HTTP MCP live probe before confirming this candidate.
+          </p>
+        ) : null}
         <label className="flex items-start gap-2 rounded-md border border-border bg-background p-3 text-xs">
           <input
             type="checkbox"
@@ -943,7 +1145,7 @@ function ManualMcpConfirmModal({
           <Button type="button" variant="secondary" size="sm" disabled={pending} onClick={onClose}>
             Cancel
           </Button>
-          <Button type="button" size="sm" disabled={pending || !acknowledged} onClick={onConfirm}>
+          <Button type="button" size="sm" disabled={pending || !acknowledged || !canConfirm} onClick={onConfirm}>
             {pending ? "Confirming..." : "Confirm MCP"}
           </Button>
         </div>
@@ -977,6 +1179,7 @@ function WrapperCapabilityRunForm({
   const [result, setResult] = useState<Record<string, unknown> | null>(null);
   const { execute, pending, error } = useAsyncAction();
   const policyConsentRequired = capability.metadata?.wrapper?.policySupported === false;
+  const policyConsent = capability.metadata?.wrapper?.policyConsent;
   const disabled = pending || readiness?.state === "needs_setup" || (capability.status === "disabled" && !policyConsentRequired);
 
   function updateValue(input: NpmWrapperArgInputSnapshot, value: string | boolean) {
@@ -1016,8 +1219,36 @@ function WrapperCapabilityRunForm({
     if (!ok) setResult(null);
   }
 
+  async function revokePolicyConsent() {
+    if (!applicationId || !commandId) return;
+    const ok = await execute(async () => {
+      const response = await api.revokeApplicationWrapperPolicyConsent(applicationId, commandId, {
+        reason: `Revoke wrapper command ${commandId} policy for ${capability.name}.`,
+      });
+      setResult(response);
+      return response;
+    });
+    if (!ok) setResult(null);
+  }
+
   return (
     <div className="mt-2 space-y-2 rounded-md border border-border bg-muted/20 p-3">
+      {policyConsent?.state === "granted" ? (
+        <div className="space-y-2 rounded-md border border-border bg-background p-2 text-xs">
+          <div className="flex flex-wrap items-center gap-2">
+            <Badge tone="success">Policy consent granted</Badge>
+            {policyConsent.grantedAt ? <span className="text-muted-foreground">{shortTime(policyConsent.grantedAt)}</span> : null}
+            {policyConsent.expiresAt ? <span className="text-muted-foreground">Expires {shortTime(policyConsent.expiresAt)}</span> : null}
+          </div>
+          {policyConsent.reason ? (
+            <p className="[overflow-wrap:anywhere] text-muted-foreground">{policyConsent.reason}</p>
+          ) : null}
+          <Button size="sm" variant="secondary" disabled={pending} onClick={revokePolicyConsent}>
+            <Trash2 />
+            Revoke consent
+          </Button>
+        </div>
+      ) : null}
       {argInputs.length ? (
         <div className="grid gap-2 sm:grid-cols-2">
           {argInputs.map((input) => (
@@ -1338,7 +1569,7 @@ function ApplicationLatestActivity({
   if (!latest) return null;
   const diagnostics = runDiagnostics(latest);
   return (
-    <Card>
+    <Card data-application-panel="orchestrations">
       <CardHeader>
         <CardTitle>Latest activity</CardTitle>
       </CardHeader>
@@ -2337,7 +2568,7 @@ function ApplicationEventTimeline({
   ];
 
   return (
-    <Card>
+    <Card data-application-panel="timeline">
       <CardHeader>
         <CardTitle>Application timeline</CardTitle>
       </CardHeader>
@@ -2460,7 +2691,7 @@ export function ApplicationsInspector() {
 
   if (!application) {
     return (
-      <Card>
+      <Card data-application-panel="summary">
         <CardHeader>
           <CardTitle>Application details</CardTitle>
         </CardHeader>
@@ -2505,6 +2736,11 @@ export function ApplicationsInspector() {
         </CardContent>
       </Card>
 
+      <ApplicationActionRequired
+        application={application}
+        recoveryActions={state?.applicationRecoveryActions ?? []}
+        onViewInvocation={viewInvocation}
+      />
       <ApplicationActions application={application} />
       <ApplicationLatestActivity runs={runs} onViewInvocation={viewInvocation} />
       <ApplicationEventTimeline

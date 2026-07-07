@@ -46,6 +46,18 @@ export function createCapabilityService({
       return { status: 404, body: { error: "capability_not_found" } };
     }
     if (capability.provider?.type === "application") {
+      const inputValidation = validateCapabilityInput(capability, input);
+      if (!inputValidation.ok) {
+        return {
+          status: 422,
+          body: {
+            error: "invalid_capability_input",
+            message: "Application capability input failed validation.",
+            capability: name,
+            validation: { errors: inputValidation.errors },
+          },
+        };
+      }
       // Wrapper capabilities execute a real command on the local machine, so they
       // run through the bridge (async), not the synchronous Application Control
       // agent. Everything else (inspect/search/lifecycle/orchestration) stays
@@ -232,6 +244,143 @@ export function createCapabilityService({
     getCapability,
     listCapabilities,
   };
+}
+
+function validateCapabilityInput(capability, input) {
+  const errors = [];
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    return {
+      ok: false,
+      errors: [capabilityInputError("", "invalid_type", "Input must be a JSON object.")],
+    };
+  }
+  const publicInput = {};
+  for (const [key, value] of Object.entries(input)) {
+    if (key === "approvalRequestId" || key === "__verifiedApplicationApproval") continue;
+    publicInput[key] = value;
+  }
+  validateObjectSchema(publicInput, publicCapabilityInputSchema(capability), "", errors);
+  return { ok: errors.length === 0, errors };
+}
+
+function publicCapabilityInputSchema(capability) {
+  const schema = effectiveCapabilityInputSchema(capability);
+  const properties = schema.properties && typeof schema.properties === "object" && !Array.isArray(schema.properties)
+    ? Object.fromEntries(Object.entries(schema.properties).filter(([key]) => !APPLICATION_CONTROL_INPUT_KEYS.has(key)))
+    : {};
+  const required = Array.isArray(schema.required)
+    ? schema.required.filter((key) => !APPLICATION_CONTROL_INPUT_KEYS.has(key))
+    : undefined;
+  return {
+    ...schema,
+    properties,
+    ...(required ? { required } : {}),
+  };
+}
+
+const APPLICATION_CONTROL_INPUT_KEYS = new Set(["approvalRequestId", "__verifiedApplicationApproval"]);
+
+function effectiveCapabilityInputSchema(capability) {
+  const base = capability?.inputSchema && typeof capability.inputSchema === "object" && !Array.isArray(capability.inputSchema)
+    ? capability.inputSchema
+    : { type: "object", additionalProperties: false, properties: {} };
+  const wrapperInputs = capability?.metadata?.wrapper?.argInputs;
+  if (!Array.isArray(wrapperInputs) || wrapperInputs.length === 0) return base;
+  const properties = {
+    ...(base.properties && typeof base.properties === "object" && !Array.isArray(base.properties) ? base.properties : {}),
+  };
+  for (const input of wrapperInputs) {
+    if (!input?.key || properties[input.key]) continue;
+    properties[input.key] = schemaForWrapperArgInput(input);
+  }
+  return {
+    ...base,
+    type: "object",
+    additionalProperties: base.additionalProperties ?? false,
+    properties,
+  };
+}
+
+function schemaForWrapperArgInput(input) {
+  if (input.type === "boolean-flag") return { type: "boolean" };
+  if (input.type === "enum") return { enum: Array.isArray(input.values) ? input.values : [] };
+  if (input.type === "date") return { type: "string", pattern: "^\\d{4}-\\d{2}-\\d{2}$" };
+  if (input.type === "string") return { type: "string", maxLength: 200 };
+  return { type: "string", maxLength: 64 };
+}
+
+function validateObjectSchema(value, schema, path, errors) {
+  const expectedType = schema?.type ?? "object";
+  if (expectedType !== "object") return;
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    errors.push(capabilityInputError(path, "invalid_type", "Expected object."));
+    return;
+  }
+  const properties = schema.properties && typeof schema.properties === "object" && !Array.isArray(schema.properties)
+    ? schema.properties
+    : {};
+  for (const required of Array.isArray(schema.required) ? schema.required : []) {
+    if (!Object.hasOwn(value, required)) {
+      errors.push(capabilityInputError(joinInputPath(path, required), "required", "Required property is missing."));
+    }
+  }
+  if (schema.additionalProperties === false) {
+    for (const key of Object.keys(value)) {
+      if (!Object.hasOwn(properties, key)) {
+        errors.push(capabilityInputError(joinInputPath(path, key), "additional_property", "Additional property is not allowed."));
+      }
+    }
+  }
+  for (const [key, propertySchema] of Object.entries(properties)) {
+    if (!Object.hasOwn(value, key)) continue;
+    validatePropertySchema(value[key], propertySchema, joinInputPath(path, key), errors);
+  }
+}
+
+function validatePropertySchema(value, schema, path, errors) {
+  if (!schema || typeof schema !== "object" || Array.isArray(schema)) return;
+  if (Object.hasOwn(schema, "const") && value !== schema.const) {
+    errors.push(capabilityInputError(path, "invalid_const", `Expected ${JSON.stringify(schema.const)}.`));
+    return;
+  }
+  if (Array.isArray(schema.enum) && !schema.enum.includes(value)) {
+    errors.push(capabilityInputError(path, "invalid_enum", `Expected one of: ${schema.enum.join(", ")}.`));
+    return;
+  }
+  if (schema.type && !jsonTypeMatches(value, schema.type)) {
+    errors.push(capabilityInputError(path, "invalid_type", `Expected ${schema.type}.`));
+    return;
+  }
+  if (typeof value === "string") {
+    if (Number.isFinite(schema.minLength) && value.length < schema.minLength) {
+      errors.push(capabilityInputError(path, "too_short", `Must be at least ${schema.minLength} characters.`));
+    }
+    if (Number.isFinite(schema.maxLength) && value.length > schema.maxLength) {
+      errors.push(capabilityInputError(path, "too_long", `Must be at most ${schema.maxLength} characters.`));
+    }
+    if (schema.pattern) {
+      const regex = new RegExp(String(schema.pattern));
+      if (!regex.test(value)) errors.push(capabilityInputError(path, "pattern", "Value does not match the required pattern."));
+    }
+  }
+}
+
+function jsonTypeMatches(value, type) {
+  if (Array.isArray(type)) return type.some((item) => jsonTypeMatches(value, item));
+  if (type === "array") return Array.isArray(value);
+  if (type === "object") return Boolean(value && typeof value === "object" && !Array.isArray(value));
+  if (type === "integer") return Number.isInteger(value);
+  if (type === "number") return typeof value === "number" && Number.isFinite(value);
+  if (type === "null") return value === null;
+  return typeof value === type;
+}
+
+function joinInputPath(base, key) {
+  return base ? `${base}.${key}` : key;
+}
+
+function capabilityInputError(path, code, message) {
+  return { path, code, message };
 }
 
 function automationMetadata(automation = null) {

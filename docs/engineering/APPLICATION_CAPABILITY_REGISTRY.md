@@ -59,6 +59,7 @@ POST /api/applications/:id/probe
 POST /api/applications/:id/mcp-candidates/:candidateId/probe
 POST /api/applications/:id/mcp-candidates/:candidateId/confirm
 POST /api/applications/:id/wrapper-commands/:commandId/policy-consent
+DELETE /api/applications/:id/wrapper-commands/:commandId/policy-consent
 POST /api/applications/:id/online
 POST /api/applications/:id/offline
 POST /api/applications/:id/archive
@@ -160,7 +161,8 @@ policy consent through `POST
 /api/applications/:id/wrapper-commands/:commandId/policy-consent`.
 
 Policy consent is persisted on the Application with the command id, file policy,
-network policy, command fingerprint, grant time, grant actor, and consent model
+network policy, command fingerprint, grant time, optional expiry, grant actor,
+revocation evidence, and consent model
 version. The grant itself requires the normal local approval flow; if the
 approved command descriptor changes, the fingerprint no longer matches and the
 capability returns to `needs_consent`. Once granted, the capability projects as
@@ -170,6 +172,14 @@ commands still force per-run approval even if the descriptor sets
 allowlist: the child wrapper argv, capability name, cwd, file policy, and network
 policy must exactly match the server-resolved `applicationWrapper` metadata
 before the fixed wrapper runner is spawned.
+
+Wrapper invocation input now accepts only descriptor-declared `argInputs`.
+The server strips approval-control fields, validates the remaining keys against
+the projected capability input schema, rejects unknown or malformed values, and
+then builds argv from the reviewed descriptor rather than caller-supplied free
+form arguments. Operators can also clear persisted MCP, wrapper, or manual
+manifest descriptors by saving `null`, which forces the read model and projected
+capabilities to rebuild from the remaining reviewed Application state.
 
 ## Application MCP
 
@@ -196,7 +206,10 @@ on static config alone. `POST
 exposed, and stores only redacted endpoint metadata on the public Application
 probe. Because this probe runs server-side, it refuses localhost, private,
 link-local, multicast, and otherwise non-public endpoint addresses before
-opening a network connection.
+opening a network connection. Those refusals are recorded as blocked live-probe
+evidence (`server_network_policy_check`) so the Applications inspector can keep
+showing the recovery path after refresh rather than losing context in a
+one-shot error.
 
 Application-scoped MCP tools are exposed as governed tool/capability names such
 as `doocs_md.render_markdown` without exposing adapter command, argv, or local
@@ -306,6 +319,9 @@ without being able to execute it.
 - Keep local execution policy independent of server approval: command id, cwd,
   args, env, file policy, and network policy must still pass the bridge-side
   allowlist before spawn.
+- Let operators revoke elevated wrapper policy consent from the Applications UI;
+  expired, revoked, or fingerprint-mismatched consent returns the command to
+  `needs_consent`.
 
 ### 3. Execute
 
@@ -333,6 +349,13 @@ outcome without reading raw diagnostics.
 - Render result links and next steps in Applications and Invocations, including
   approval pending, policy refusal, executed result, and recovery/view-result
   states.
+- Render the Applications inspector operator action panel from the read model's
+  health signals so timeline errors, paused/failing schedules, open recovery
+  approvals, descriptor setup, MCP review, missing probes, and orchestration
+  generation each expose the exact next action and jump target.
+- For HTTP MCP candidates, show live-probe state, endpoint evidence, matched and
+  missing tools, policy-blocked endpoint evidence, and Probe/Retry endpoint
+  actions before manual confirmation is enabled.
 - Keep restart tests proving that Application records, descriptors, approval
   requests, invocation result refs, imported evidence, audit refs, and projected
   capability result paths remain explainable.
@@ -349,9 +372,14 @@ stdio is auto-registered, `render_markdown` executes through the MCP bridge
 path, result refs link back to invocation/Application/audit/Evidence Center,
 and Web shows MCP tools plus the View invocation path.
 
-The remaining acceptance work is to add revocation/expiry UX for elevated
-wrapper policy consent and richer HTTP MCP operator recovery. The measured
-ccusage and doocs/md-style paths now have restart/read-model coverage for result
-links, descriptor recovery, capability projection, explicit wrapper policy
-consent, HTTP MCP live-probe gating, and HTTP MCP live-probe promotion to
-confirmed shared tools.
+The remaining acceptance work is broader real end-to-end coverage for mixed
+Application fleets, including Desktop Bridge execution inside the mixed-fleet
+scenario.
+The measured ccusage and doocs/md-style paths now have restart/read-model
+coverage for result links, descriptor recovery and clearing, capability
+projection, schema-validated wrapper inputs, explicit wrapper policy consent
+grant/revoke/expiry, HTTP MCP live-probe gating, blocked endpoint evidence, HTTP
+MCP live-probe promotion to confirmed shared tools, operator next-action
+guidance in the Web inspector, and a deterministic mixed-fleet smoke covering
+npm wrapper, stdio MCP, HTTP MCP success/blocked, manual manifest, and
+automation attention read-model and restart signals.

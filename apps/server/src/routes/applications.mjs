@@ -24,6 +24,7 @@ export async function handleApplicationRoutes({
   probeApplicationMcpCandidate,
   registerApplication,
   requestApplicationOrchestrationRecoveryAction,
+  revokeApplicationWrapperPolicyConsent,
   transitionApplication,
   updateApplicationDescriptors,
   createCapabilityInvocation,
@@ -99,11 +100,13 @@ export async function handleApplicationRoutes({
   }
 
   const wrapperPolicyConsentMatch = url.pathname.match(/^\/api\/applications\/([^/]+)\/wrapper-commands\/([^/]+)\/policy-consent$/);
-  if (wrapperPolicyConsentMatch && req.method === "POST") {
+  if (wrapperPolicyConsentMatch && (req.method === "POST" || req.method === "DELETE")) {
     const applicationId = decodeURIComponent(wrapperPolicyConsentMatch[1]);
     const commandId = decodeURIComponent(wrapperPolicyConsentMatch[2]);
     if (denyForeignApplication({ res, sendJson, state, actor, applicationId, findApplication })) return true;
-    const result = grantApplicationWrapperPolicyConsent(applicationId, commandId, await readJson(req), actor);
+    const result = req.method === "DELETE"
+      ? revokeApplicationWrapperPolicyConsent(applicationId, commandId, await readJson(req), actor)
+      : grantApplicationWrapperPolicyConsent(applicationId, commandId, await readJson(req), actor);
     sendJson(res, result.status, result.ok
       ? {
           application: publicApplicationSnapshot(result.application),

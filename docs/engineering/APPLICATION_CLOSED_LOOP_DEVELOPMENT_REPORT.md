@@ -131,3 +131,29 @@ Remaining design work is now concentrated on two expansion gates:
   consent, including destination disclosure and bridge/device binding cues.
 - Extend HTTP MCP operator UX around live-probe retries, endpoint diffs, and
   failure recovery now that the server-side promotion path is wired.
+
+## 2026-07-07 Follow-up
+
+- Added operator next-action guidance for Applications. The shared health model
+  now surfaces timeline errors, missing probes, wrapper setup, MCP review,
+  HTTP MCP live-probe needed/failed/blocked, automation attention, and open
+  recovery actions as explicit issues with action labels and UI targets.
+- Added Web inspector recovery actions for those issues, including direct
+  Probe/Retry endpoint actions for HTTP MCP candidates before manual
+  confirmation is enabled.
+- Persisted HTTP MCP network-policy refusals as blocked live-probe evidence
+  (`server_network_policy_check`) so the Applications inspector keeps the
+  recovery path after refresh.
+- Added `smoke:application-fleet`, a mixed-fleet read-model and restart smoke
+  that registers npm wrapper, stdio MCP, successful HTTP MCP, blocked HTTP MCP,
+  and manual manifest Applications, verifies public state health, MCP,
+  automation, and declared-capability evidence, then rebuilds the runtime from
+  the persisted state file and verifies the same capability/MCP/live-probe
+  health signals still explain correctly.
+- Added Web list coverage proving mixed-fleet search can find HTTP MCP
+  live-probe recovery issues from the Applications list, and that switching
+  between Application cards clears stale run/event/automation selections.
+
+Current remaining expansion work is broader real end-to-end coverage for mixed
+fleets that includes Desktop Bridge execution inside the mixed fleet, rather
+than only the current deterministic server/read-model/restart smoke.

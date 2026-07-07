@@ -131,6 +131,7 @@
     "smoke:loop-routine-fanout-worker": "node tools/dev/loop-routine-fanout-worker-smoke.mjs",
     "smoke:local": "node tools/dev/local-smoke.mjs",
     "smoke:applications": "node tools/dev/application-registry-smoke.mjs",
+    "smoke:application-fleet": "node tools/dev/application-fleet-smoke.mjs",
     "smoke:application-wrapper": "node tools/dev/application-wrapper-smoke.mjs",
     "smoke:agent-skills": "node tools/dev/agent-skills-smoke.mjs",
     "smoke:dispatch-concurrency": "node tools/dev/dispatch-concurrency-smoke.mjs",
