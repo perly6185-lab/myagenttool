@@ -284,3 +284,31 @@ apply.
 Treat this as a proposal until reviewed. When adopted, this document becomes the
 source of truth for what each maturity level *means*, and
 `FULL_FLOW_AI_DELIVERY.md` links here for its bars.
+
+## #250 — Gate-line derivation (subcap), 2026-07-07
+
+The provisional floors are now being replaced by lines derived from real
+scheduled `eval:real` runs, per #250. **Subcap has reached the ≥3-real-runs bar.**
+
+**Clean real subcap runs** (the 2026-07-02 40% run is a provider outage —
+`looksLikeInfraFailure` fingerprint: issue-gate 6/6 but pm-brief 0/6, review 0/3
+— and is excluded):
+
+| Run (UTC) | subcap | issue-gate | pm-brief | review |
+|-----------|--------|-----------|----------|--------|
+| 2026-07-06 06:34 | 100% (15/15) | 6/6 | 6/6 | 3/3 |
+| 2026-07-06 18:30 | 93% (14/15) | 6/6 | 5/6 | 3/3 |
+| 2026-07-07 03:08 | 100% (15/15) | 6/6 | 6/6 | 3/3 |
+
+**Observed floor = 0.93.** Derived line = floor − margin.
+
+| Line | Value | Basis |
+|------|-------|-------|
+| **subcap min-pass-rate** | **0.80** | floor 0.93 − 0.13 margin; enforced (eval-signals `PROVISIONAL_FLOORS.subcap`), so a scheduled run < 80% exits non-zero + alerts |
+| issue-gate (per-kind) | 1.00 | product apply-gate; already enforced via the `issue-gate-regression` feedback event |
+| pm-brief (per-kind) | ≥ 0.83 floor (5/6) | observed floor; documented, not separately gated (rolled into the 0.80 aggregate) |
+| review (per-kind) | 1.00 | 3/3 in all runs |
+
+**Status: subcap line DERIVED + ENFORCED at n=3 (the minimum bar).** Revisit /
+tighten at n=5 as more nightly runs accrue. **Held-out has n=0 real runs**, so
+its floor stays provisional (0.6) until the held-out set accrues ≥3 real points.
