@@ -65,6 +65,7 @@ export function createAutoRunService({
   judgeAcceptance,
   reviewDiff,
   listWorktreeChangedFiles,
+  spawnChildIssueDirect,
   mergePr,
   fetchPrChecks,
 }) {
@@ -672,6 +673,82 @@ export function createAutoRunService({
     return { ok: true, prNumber: autoRun.prNumber, prState: "MERGED" };
   }
 
+  // D4 (issue→UI-design plan): the human design gate. Approving a posted design
+  // spawns the implementation child issue carrying the brief + artifact list —
+  // the explicit click IS the authorization (works even when automatic spawning
+  // is off). Rejecting records feedback back onto the issue. Both audited.
+  async function approveDesign(autoRunId, { actor } = {}) {
+    const autoRun = state.autoRuns.find((item) => item.id === autoRunId);
+    if (!autoRun) throw new Error("Auto-run not found.");
+    if ((autoRun.decision?.path ?? null) !== "design") throw new Error("Only a design run's report can be approved.");
+    if (autoRun.status !== "report_posted") throw new Error("Only a posted design report can be approved.");
+    const by = actor?.userId ?? "usr_local";
+    if (autoRun.designApproval?.status === "approved") {
+      return { ok: true, alreadyApproved: true, childIssues: autoRun.childIssues ?? [] };
+    }
+    if (Array.isArray(autoRun.childIssues) && autoRun.childIssues.length > 0) {
+      // The implementation issue already exists (auto-spawned at report time);
+      // the approval is the human sign-off on record.
+      autoRun.designApproval = { status: "approved", by, at: now() };
+      appendEvent({
+        invocationId: autoRun.invocationId,
+        type: "auto_run_design_approved",
+        level: "info",
+        message: `Auto-run ${autoRun.id} design approved by ${by} (implementation issue already spawned).`,
+        data: { autoRunId: autoRun.id, childIssues: autoRun.childIssues },
+      });
+      persistStateSoon();
+      return { ok: true, childIssues: autoRun.childIssues };
+    }
+    if (autoRun.link?.type !== "issue" || !Number.isFinite(autoRun.link?.number)) {
+      throw new Error("The design run has no linked issue to spawn an implementation issue from.");
+    }
+    const worktree = state.worktrees.find((item) => item.id === autoRun.worktreeId) ?? null;
+    const repoPath = worktree?.repoPath ?? null;
+    if (!repoPath) throw new Error("The design run's repository is unavailable.");
+    if (typeof spawnChildIssueDirect !== "function") throw new Error("Child-issue creation is not available on this server.");
+    const design = [
+      autoRun.report || "Design approved.",
+      ...(Array.isArray(autoRun.designArtifacts) && autoRun.designArtifacts.length
+        ? ["", "Design artifacts (in the design worktree):", ...autoRun.designArtifacts.map((a) => `- ${a}`)]
+        : []),
+    ].join("\n");
+    const child = await spawnChildIssueDirect({ parentLink: autoRun.link, design, repoPath });
+    if (!child || !Number.isFinite(child.number)) throw new Error("Child issue creation failed.");
+    autoRun.childIssues = [{ number: child.number, url: child.url ?? null }];
+    autoRun.designApproval = { status: "approved", by, at: now() };
+    appendEvent({
+      invocationId: autoRun.invocationId,
+      type: "auto_run_design_approved",
+      level: "info",
+      message: `Auto-run ${autoRun.id} design approved by ${by}; implementation issue #${child.number} spawned.`,
+      data: { autoRunId: autoRun.id, childIssue: child.number, url: child.url ?? null },
+    });
+    persistStateSoon();
+    return { ok: true, childIssues: autoRun.childIssues };
+  }
+
+  async function rejectDesign(autoRunId, { actor, feedback } = {}) {
+    const autoRun = state.autoRuns.find((item) => item.id === autoRunId);
+    if (!autoRun) throw new Error("Auto-run not found.");
+    if ((autoRun.decision?.path ?? null) !== "design") throw new Error("Only a design run's report can be rejected.");
+    if (autoRun.status !== "report_posted") throw new Error("Only a posted design report can be rejected.");
+    const by = actor?.userId ?? "usr_local";
+    const note = String(feedback ?? "").trim().slice(0, 2000);
+    autoRun.designApproval = { status: "rejected", by, at: now(), feedback: note || null };
+    const worktree = state.worktrees.find((item) => item.id === autoRun.worktreeId) ?? null;
+    maybePostIssueReport(autoRun, worktree, `Design not approved by ${by}.${note ? `\n\nRequested changes:\n${note}` : ""}`);
+    appendEvent({
+      invocationId: autoRun.invocationId,
+      type: "auto_run_design_rejected",
+      level: "info",
+      message: `Auto-run ${autoRun.id} design rejected by ${by}.`,
+      data: { autoRunId: autoRun.id, feedback: note || null },
+    });
+    persistStateSoon();
+    return { ok: true };
+  }
+
   // Risk-based merge (opt-in, default off): auto-merge low-risk PRs on the same
   // periodic tick as the reaper. STRICT bar — a PR is auto-merged only when the
   // standard signals are green (computeMergeRisk === "low") AND the AI diff
@@ -804,5 +881,5 @@ export function createAutoRunService({
     return { reaped, readvanced };
   }
 
-  return { startAutoRun, advanceAutoRunForInvocation, syncAutoRunOnApproval, retryAutoRun, mergeAutoRunPr, reapStuckAutoRuns, autoMergeSweep };
+  return { startAutoRun, advanceAutoRunForInvocation, syncAutoRunOnApproval, retryAutoRun, mergeAutoRunPr, reapStuckAutoRuns, autoMergeSweep, approveDesign, rejectDesign };
 }
