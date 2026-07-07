@@ -6,6 +6,7 @@ import { summarizeAutoRuns } from "../services/auto-run-metrics.mjs";
 import { readEvalTrend, summarizeEvalTrend } from "../services/eval-trend.mjs";
 import { normalizeAutoRunSettings, resolveAutoRunConfig } from "../services/auto-run-config.mjs";
 import { computeAutoRunReadiness } from "../services/auto-run-readiness.mjs";
+import { computeMergeRisk } from "../services/auto-run-risk.mjs";
 import { resolveAutoRunVerifyCommandFor } from "../services/worktree-verify.mjs";
 
 export async function handleProjectRoutes({
@@ -207,13 +208,19 @@ export async function handleProjectRoutes({
         .map((a) => [a.invocationId, a]),
     );
     const enriched = autoRuns.map((run) => {
-      if (run.status !== "awaiting_approval" || !run.invocationId) return run;
-      const approval = pendingByInvocation.get(run.invocationId);
-      if (!approval) return run;
-      return {
-        ...run,
-        pendingApproval: { id: approval.id, riskLevel: approval.riskLevel ?? null, riskTags: approval.riskTags ?? [], summary: approval.summary ?? null },
-      };
+      let out = run;
+      // Merge-risk badge for open PRs (the risk-based merge policy's read model).
+      if (run.status === "pr_open") out = { ...out, mergeRisk: computeMergeRisk(run) };
+      if (run.status === "awaiting_approval" && run.invocationId) {
+        const approval = pendingByInvocation.get(run.invocationId);
+        if (approval) {
+          out = {
+            ...out,
+            pendingApproval: { id: approval.id, riskLevel: approval.riskLevel ?? null, riskTags: approval.riskTags ?? [], summary: approval.summary ?? null },
+          };
+        }
+      }
+      return out;
     });
     sendJson(res, 200, { autoRuns: enriched, summary: summarizeAutoRuns(autoRuns, { sloTargets: state.autoRunSettings?.sloTargets ?? null }) });
     return true;

@@ -27,6 +27,7 @@ export interface AutoRunRecord {
   decision?: { path: string; decidedBy: string; confidence: number; rationale?: string | null } | null;
   branchName?: string | null;
   worktreeId?: string | null;
+  mergeRisk?: { level: "low" | "medium" | "high"; reasons: string[] } | null;
   prNumber?: number | null;
   prUrl?: string | null;
   verification?: { passed: boolean; verified: boolean; summary?: string | null } | null;
@@ -113,6 +114,16 @@ function StatTile({ label, value, hint }: { label: string; value: string; hint?:
       <p className="mt-0.5 text-2xl font-semibold tabular-nums">{value}</p>
       {hint ? <p className="mt-0.5 text-xs text-muted-foreground">{hint}</p> : null}
     </div>
+  );
+}
+
+const RISK_TONE: Record<"low" | "medium" | "high", Tone> = { low: "success", medium: "warning", high: "danger" };
+
+function RiskBadge({ level, reasons }: { level: "low" | "medium" | "high"; reasons?: string[] }) {
+  return (
+    <Badge tone={RISK_TONE[level]} title={reasons && reasons.length ? reasons.join("; ") : `merge risk: ${level}`}>
+      risk: {level}
+    </Badge>
   );
 }
 
@@ -224,7 +235,10 @@ function MergeControl({ run, onDone }: { run: AutoRunRecord; onDone: (refresh?: 
   const [diffState, setDiffState] = useState<"idle" | "loading" | "error" | "done">("idle");
   const { execute, pending, error, reset } = useAsyncAction();
   const chip = checksChip(run.prChecks);
-  const risk = mergeRisk(run);
+  // The server computes the authoritative risk level; fall back to the local
+  // heuristic only if the field is absent (older payloads).
+  const level = run.mergeRisk?.level ?? (mergeRisk(run).warn ? "medium" : "low");
+  const risk = { warn: level !== "low" };
 
   const openDialog = async () => {
     // Fresh dialog each open: drop a stale merge error + a stale/expanded diff so
@@ -275,6 +289,7 @@ function MergeControl({ run, onDone }: { run: AutoRunRecord; onDone: (refresh?: 
 
   return (
     <>
+      {run.mergeRisk ? <RiskBadge level={run.mergeRisk.level} reasons={run.mergeRisk.reasons} /> : null}
       <Badge tone={chip.tone} title="PR CI checks — open Merge to refresh">{chip.label}</Badge>
       <Button
         variant={primaryVariant}
@@ -299,6 +314,12 @@ function MergeControl({ run, onDone }: { run: AutoRunRecord; onDone: (refresh?: 
               <span className="flex shrink-0 items-center gap-1"><Loader2 className="size-3 animate-spin" /> refreshing checks…</span>
             ) : null}
           </div>
+          {run.mergeRisk ? (
+            <div className="flex items-center gap-2 text-xs">
+              <RiskBadge level={run.mergeRisk.level} reasons={run.mergeRisk.reasons} />
+              {run.mergeRisk.reasons.length ? <span className="truncate text-muted-foreground">{run.mergeRisk.reasons.join("; ")}</span> : null}
+            </div>
+          ) : null}
           <ul className="flex flex-col gap-1.5">
             {postureRows(run).map((r) => (
               <li key={r.key} className="flex items-center justify-between rounded-md border border-border px-3 py-1.5 text-sm">
