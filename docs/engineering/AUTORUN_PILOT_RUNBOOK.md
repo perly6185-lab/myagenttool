@@ -160,6 +160,46 @@ process.stdin.on("end", () => {
 
 Wire it with `MYAGENTTOOL_AUTORUN_JUDGE_COMMAND_JSON='["node","/path/to/judge.mjs"]'`.
 
+## AI diff review (risk-based auto-merge) — blast-radius-aware sample
+
+The risk-based merge policy auto-merges a PR only when it is LOW risk, and the
+STRICT bar requires an AI diff review to **pass**. This review is the smart
+half of the size gate: rather than a raw line count, it judges **blast radius**
+— what the change touches, reversibility, and whether it is safe to merge with
+no human. A `fail` never blocks the PR; it just routes the PR to a human merge.
+(The mechanical `autoMergeMaxDiffLines` cap + the sensitive-path guard are cheap
+backstops under it.)
+
+```js
+// review.mjs — blast-radius-aware auto-merge review (claude haiku)
+import { execFileSync } from "node:child_process";
+let raw = "";
+process.stdin.on("data", (c) => (raw += c));
+process.stdin.on("end", () => {
+  const { link, issueBody, diff } = JSON.parse(raw);
+  const prompt = [
+    "You decide whether this diff is SAFE TO MERGE WITH NO HUMAN REVIEW.",
+    "Judge blast radius, not size: reversibility, what subsystems it touches, whether it",
+    "could break auth/data/CI/deploys, and whether it stays within the issue's scope.",
+    "Answer risk:low ONLY if a competent reviewer would rubber-stamp it. When unsure, say medium/high.",
+    "",
+    `Issue #${link.number}: ${link.title}`,
+    issueBody ? `\nDescription:\n${String(issueBody).slice(0, 4000)}` : "",
+    "\nThe diff:\n```diff",
+    diff || "(empty diff)",
+    "```",
+    "",
+    'Respond with ONLY a JSON object, no prose, no code fences:',
+    '{"risk":"low|medium|high","approve":boolean,"summary":"one sentence","issues":["concrete risks; empty when low"]}',
+  ].join("\n");
+  process.stdout.write(execFileSync("claude", ["-p", prompt, "--model", "haiku"], { encoding: "utf8", timeout: 110_000, maxBuffer: 1024 * 1024 }));
+});
+```
+
+Wire it with `MYAGENTTOOL_AUTORUN_REVIEW_COMMAND_JSON='["node","/path/to/review.mjs"]'`.
+Then enable **Auto-merge low-risk PRs** in the console (Configuration → Quality &
+merge) and, optionally, tune the **Sensitive paths** list + **max diff lines**.
+
 Correction to an earlier caution: bridge polling errors are NOT silent — they
 are logged throttled (one line per 5s). The pilot's "silent stall" was the
 stale-unhealthy health verdict (fixed: re-probe on registration). The one real
