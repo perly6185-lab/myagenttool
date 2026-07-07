@@ -456,7 +456,15 @@ export function createProjectService({ state, now, nextId, appendEvent, persistS
       stdout = result.stdout;
     } catch (error) {
       const detail = String(error?.stderr ?? error?.stdout ?? error?.message ?? "").trim();
-      throw new Error(`gh pr create failed: ${detail || `exit ${error?.code ?? 1}`}`);
+      // Idempotent: if a PR for this branch already exists (a re-published run or
+      // a retry), gh prints the existing PR URL in the error. Treat that as
+      // success — the desired PR IS open — instead of false-failing the run.
+      const existing = detail.match(/https?:\/\/\S+\/pull\/\d+/);
+      if (/already exists/i.test(detail) && existing) {
+        stdout = existing[0];
+      } else {
+        throw new Error(`gh pr create failed: ${detail || `exit ${error?.code ?? 1}`}`);
+      }
     }
 
     const parsed = parseGhPrCreateOutput(stdout);
@@ -1013,23 +1021,26 @@ function worktreeDiff(worktree, { projectTargets = [] } = {}) {
     return null;
   };
   let base = "HEAD";
-  try {
-    const upstream = git(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"]).trim();
-    base = git(["merge-base", upstream, "HEAD"]).trim() || "HEAD";
-  } catch {
-    const target = projectTargets.find((t) => t.id === worktree.targetId);
-    // Fall back to the target's default branch, or discover the repo's own.
-    // Without this, a worktree whose branch has no upstream and whose target
-    // carries no defaultBranch resolves base to "HEAD" — and once the agent
-    // COMMITS its work, `git diff HEAD` on the now-clean tree is empty, so the
-    // acceptance judge sees no diff and wrongly blocks the PR (C1 pilot finding).
-    const def = target?.defaultBranch || repoDefaultBranch();
-    if (def) {
-      try {
-        base = git(["merge-base", def, "HEAD"]).trim() || "HEAD";
-      } catch {
-        base = "HEAD";
-      }
+  const target = projectTargets.find((t) => t.id === worktree.targetId);
+  const def = target?.defaultBranch || repoDefaultBranch();
+  if (def) {
+    // Diff against the branch this worktree merges INTO (its base branch) — the
+    // PR diff. Preferring @{u} instead breaks once the branch is PUSHED: its
+    // upstream becomes its OWN remote ref, so merge-base(@{u},HEAD)=HEAD => an
+    // EMPTY diff, and any post-publish consumer (the auto-merge AI review, a
+    // re-run judge) then sees no changes. Also handles a committed-but-unpushed
+    // branch (the earlier C1 pilot finding). @{u} is only a last resort below.
+    try {
+      base = git(["merge-base", def, "HEAD"]).trim() || "HEAD";
+    } catch {
+      base = "HEAD";
+    }
+  } else {
+    try {
+      const upstream = git(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"]).trim();
+      base = git(["merge-base", upstream, "HEAD"]).trim() || "HEAD";
+    } catch {
+      /* no default branch and no upstream → leave HEAD */
     }
   }
   result.base = base;

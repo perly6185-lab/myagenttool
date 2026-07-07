@@ -145,6 +145,44 @@ test("createWorktreePr publishes if needed, calls gh with base/head, and closes 
   assert.ok(originBranches(repoDir).includes("issue-9-feature-y"), "PR flow published the head branch");
 });
 
+test("createWorktreePr is idempotent — an 'already exists' PR is treated as success", async () => {
+  const { worktree } = svc.createWorktree({
+    projectId: state.currentProjectId,
+    name: "feature-dup",
+    branchName: "issue-3-feature-dup",
+    link: { type: "issue", number: 3, title: "Dup", url: "https://github.com/o/r/issues/3", state: "open" },
+  });
+  writeFileSync(join(worktree.worktreePath, "d.txt"), "d\n");
+  git(worktree.worktreePath, "add", ".");
+  git(worktree.worktreePath, "commit", "-m", "d");
+
+  // A gh whose `pr create` fails with the "already exists" URL (a re-published
+  // run, or a retry). createWorktreePr should parse the URL and succeed, not fail.
+  const conflictGh = join(root, "fake-gh-conflict.mjs");
+  writeFileSync(
+    conflictGh,
+    [
+      "const argv = process.argv.slice(2);",
+      "if (argv[0] === 'pr' && argv[1] === 'create') {",
+      "  process.stderr.write('a pull request for branch \"x\" into branch \"main\" already exists:\\nhttps://github.com/o/r/pull/77\\n');",
+      "  process.exit(1);",
+      "}",
+      "process.stdout.write('https://github.com/o/r/pull/1\\n');",
+      "",
+    ].join("\n"),
+  );
+  const saved = process.env.MYAGENTTOOL_GH_COMMAND_JSON;
+  process.env.MYAGENTTOOL_GH_COMMAND_JSON = JSON.stringify(["node", conflictGh]);
+  try {
+    const result = await svc.createWorktreePr(worktree.id, {});
+    assert.equal(result.ok, true, "an already-existing PR is not a failure");
+    assert.equal(result.number, 77, "the existing PR number is parsed from the error");
+    assert.equal(result.url, "https://github.com/o/r/pull/77");
+  } finally {
+    process.env.MYAGENTTOOL_GH_COMMAND_JSON = saved;
+  }
+});
+
 test("publishWorktreeBranch surfaces an error instead of silently skipping when there is no origin", async () => {
   // A separate repo with no 'origin' remote.
   const noRemoteRepo = join(root, "no-remote");
