@@ -127,3 +127,9 @@ test("A3 knobs: clamped in normalize + exposed", () => {
   assert.equal(cfg.globalMaxConcurrent, 3);
   assert.equal(cfg.breakerCooldownMinutes, 15, "default cooldown");
 });
+
+test("A4: verifyCommandNames exposes the allowlist keys (never argv)", () => {
+  const cfg = resolveAutoRunConfig({}, { MYAGENTTOOL_AUTORUN_VERIFY_COMMANDS_JSON: JSON.stringify({ maven: ["mvn", "test"], npm: ["npm", "test"] }) });
+  assert.deepEqual(cfg.verifyCommandNames.sort(), ["maven", "npm"]);
+  assert.equal(resolveAutoRunConfig({}, {}).verifyCommandNames.length, 0);
+});

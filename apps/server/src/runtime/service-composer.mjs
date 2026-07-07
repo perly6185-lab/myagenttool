@@ -21,7 +21,7 @@ import { createInvocationService } from "../services/invocations.mjs";
 import { createM3Service } from "../services/m3.mjs";
 import { createProjectService, sameProjectPath } from "../services/projects.mjs";
 import { createAutoRunService } from "../services/auto-run.mjs";
-import { resolveAutoRunVerifyCommand, runWorktreeVerification } from "../services/worktree-verify.mjs";
+import { resolveAutoRunVerifyCommand, resolveAutoRunVerifyCommandFor, runWorktreeVerification } from "../services/worktree-verify.mjs";
 import { resolveStatusWritebackConfig, runIssueBodyFetch, runIssueComment, runIssueStatusTransition, runPrChecks, runPrMerge, runPrStateFetch } from "../services/issue-status.mjs";
 import { deciderTimeoutMs, resolveDeciderCommand, runDeciderCommand } from "../services/decision-command.mjs";
 import { childIssueBody, childIssueTitle, extractProjectFieldsBlock, runChildIssueCreate, spawnIssuesConfig } from "../services/auto-run-spawn.mjs";
@@ -350,7 +350,12 @@ export function createServerRuntimeServices({
     // No command configured -> unverified pass-through (PR labeled unverified);
     // a configured command that fails blocks the PR.
     verifyWorktree: async ({ worktree }) => {
-      const command = resolveAutoRunVerifyCommand();
+      // A4: resolve the project's chosen allowlisted verify command by NAME
+      // (operator-set argv), falling back to the global command.
+      const project = (state.projects ?? []).find(
+        (p) => p.id === (worktree?.workspaceProjectId ?? worktree?.sourceProjectId ?? worktree?.projectId),
+      ) ?? null;
+      const command = resolveAutoRunVerifyCommandFor({ verifyCommandName: project?.verifyCommandName ?? null });
       if (!command || !worktree?.path) {
         return { passed: true, verified: false, summary: "No verification command configured — PR opened unverified." };
       }

@@ -305,6 +305,12 @@ export function createProjectService({ state, now, nextId, appendEvent, persistS
     if (body.isolation !== undefined) project.isolation = body.isolation === "worktree" ? "worktree" : "shared";
     if (body.defaultAgentId !== undefined) project.defaultAgentId = body.defaultAgentId ? String(body.defaultAgentId) : null;
     if (body.budgetPoolId !== undefined) project.budgetPoolId = body.budgetPoolId ? String(body.budgetPoolId) : null;
+    // A4: the project's chosen verify command NAME (a key into the operator's
+    // env allowlist — never a command). Unknown names harmlessly fall back at
+    // resolution time; blank clears the selection.
+    if (body.verifyCommandName !== undefined) {
+      project.verifyCommandName = body.verifyCommandName ? String(body.verifyCommandName).trim() || null : null;
+    }
     project.updatedAt = now();
     ensureProjectTarget(project);
     persistStateSoon();

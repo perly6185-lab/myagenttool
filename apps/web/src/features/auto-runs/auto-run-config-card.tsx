@@ -21,6 +21,7 @@ interface AutoRunConfig {
   breakerFailureThreshold: number;
   breakerCooldownMinutes: number;
   commands: { verify: boolean; decider: boolean; judge: boolean };
+  verifyCommandNames: string[];
   settings: Record<string, unknown>;
 }
 
@@ -216,6 +217,11 @@ export function AutoRunConfigCard() {
             <span className="flex items-center gap-1.5">decider {cmdBadge(config.commands.decider)}</span>
             <span className="flex items-center gap-1.5">judge {cmdBadge(config.commands.judge)}</span>
           </div>
+          {config.verifyCommandNames.length > 0 ? (
+            <p className="text-xs text-muted-foreground">
+              Per-project verify commands available (select by name via project settings): {config.verifyCommandNames.join(", ")}.
+            </p>
+          ) : null}
 
           {error ? <p className="text-sm text-red-600 dark:text-red-400">{error}</p> : null}
 
