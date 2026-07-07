@@ -20,7 +20,7 @@ import { resolveAutoTriggerConfig } from "./auto-trigger.mjs";
 import { deciderTimeoutMs, resolveDeciderCommand } from "./decision-command.mjs";
 import { judgeTimeoutMs, resolveJudgeCommand } from "./auto-run-judge.mjs";
 import { resolveStatusWritebackConfig } from "./issue-status.mjs";
-import { resolveAutoRunVerifyCommand } from "./worktree-verify.mjs";
+import { resolveAutoRunVerifyCommand, resolveVerifyCommandAllowlist } from "./worktree-verify.mjs";
 import { decisionConfig } from "./auto-run-decision.mjs";
 import { spawnIssuesConfig } from "./auto-run-spawn.mjs";
 import { normalizeAlertWebhookUrl } from "./auto-run-alerts.mjs";
@@ -162,6 +162,9 @@ export function resolveAutoRunConfig(state = {}, baseEnv = process.env) {
       decider: Boolean(resolveDeciderCommand(env)),
       judge: Boolean(resolveJudgeCommand(env)),
     },
+    // A4: named verify-command allowlist (keys only — never argv). A project
+    // selects one of these by name; empty = only the global verify command (if any).
+    verifyCommandNames: Object.keys(resolveVerifyCommandAllowlist(env)),
     // The raw saved overrides, so the edit form can show what's explicitly set
     // (null field = inheriting the env default).
     settings,
