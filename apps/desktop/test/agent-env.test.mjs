@@ -14,6 +14,8 @@ test("agentMinimalBaseEnv: keeps the safe base, drops a bridge secret, merges op
   const source = {
     PATH: "/usr/bin",
     HOME: "/Users/me",
+    USER: "me",
+    LOGNAME: "me",
     LANG: "en_US.UTF-8",
     MYAGENT_BRIDGE_SECRET: "super-secret-token",
     AWS_SECRET_ACCESS_KEY: "leak-me",
@@ -22,6 +24,8 @@ test("agentMinimalBaseEnv: keeps the safe base, drops a bridge secret, merges op
 
   assert.equal(env.PATH, "/usr/bin", "PATH (allowlisted) kept");
   assert.equal(env.HOME, "/Users/me", "HOME kept — local login state is reached through it");
+  assert.equal(env.USER, "me", "USER kept — claude's keychain login lookup needs it (soak finding)");
+  assert.equal(env.LOGNAME, "me");
   assert.equal(env.LANG, "en_US.UTF-8");
   assert.equal(env.MYAGENT_BRIDGE_SECRET, undefined, "a bridge-only secret is NOT forwarded");
   assert.equal(env.AWS_SECRET_ACCESS_KEY, undefined, "an ambient cloud secret is NOT forwarded");

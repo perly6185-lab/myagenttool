@@ -28,6 +28,11 @@ export const SAFE_MCP_ENV_KEYS = [
   "PATH",
   "HOME",
   "USERPROFILE",
+  // Unix identity vars (non-secret). USER is required for the claude CLI's
+  // keychain-backed login lookup — without it a child spawn reports "Not logged
+  // in" even though the machine's login state is intact (B1b Tier 1 soak finding).
+  "USER",
+  "LOGNAME",
   "LANG",
   "LC_ALL",
   "LC_CTYPE",
