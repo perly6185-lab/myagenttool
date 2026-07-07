@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useState } from "react";
-import { Bot, RefreshCw, GitPullRequest, GitMerge, GitBranch, ShieldCheck, ExternalLink, CircleAlert } from "lucide-react";
+import { Bot, RefreshCw, GitPullRequest, GitMerge, GitBranch, ShieldCheck, ExternalLink, CircleAlert, Check, X, Minus, Loader2 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Modal } from "@/components/ui/modal";
 import { EmptyState } from "@/components/common/empty-state";
-import { api } from "@/data/use-console-actions";
+import { api, useAsyncAction } from "@/data/use-console-actions";
 import { cn } from "@/lib/cn";
 import type { Tone } from "@/lib/readable-labels";
 import { AutoRunConfigCard } from "./auto-run-config-card";
@@ -18,13 +19,14 @@ interface AutoRunLink {
   title: string;
   url: string | null;
 }
-interface AutoRunRecord {
+export interface AutoRunRecord {
   id: string;
   status: string;
   link?: AutoRunLink | null;
   intent?: string | null;
   decision?: { path: string; decidedBy: string; confidence: number; rationale?: string | null } | null;
   branchName?: string | null;
+  worktreeId?: string | null;
   prNumber?: number | null;
   prUrl?: string | null;
   verification?: { passed: boolean; verified: boolean; summary?: string | null } | null;
@@ -121,26 +123,241 @@ function checksChip(pc: AutoRunRecord["prChecks"]): { label: string; tone: Tone 
   return { label: `checks ${pc.passed}✓`, tone: "success" };
 }
 
-// Is merging this run risky (unverified / unjudged / checks not green)? Returns
-// the reasons + a confirm message so the human merges INFORMED, not blind — the
-// gap the live demo exposed (a zero-check unverified PR merged with a blank
-// prompt). Merge stays a human decision; this just shows what they're deciding.
-function mergeRisk(run: AutoRunRecord): { warn: boolean; confirmMsg: string } {
-  const reasons: string[] = [];
-  if (!run.verification?.verified) reasons.push("verification not run");
-  else if (!run.verification.passed) reasons.push("verification FAILED");
-  if (!run.judgment || run.judgment.solved !== true) reasons.push("acceptance judge did not confirm");
+// Is merging this run risky (unverified / unjudged / checks not green)? The merge
+// dialog shows the full posture (see postureRows); this drives the button's
+// warn styling + the "Merge anyway" wording. Merge stays a human decision.
+export function mergeRisk(run: AutoRunRecord): { warn: boolean } {
+  if (run.verification && run.verification.verified && !run.verification.passed) return { warn: true };
+  if (!run.verification?.verified) return { warn: true };
+  if (!run.judgment || run.judgment.solved !== true) return { warn: true };
   const pc = run.prChecks;
-  if (!pc || pc.total === 0) reasons.push("no PR checks");
-  else if (pc.state === "FAILURE") reasons.push(`${pc.failed} PR check(s) failing`);
-  else if (pc.state === "PENDING") reasons.push(`${pc.pending} PR check(s) still running`);
-  if (reasons.length === 0) {
-    return { warn: false, confirmMsg: `Merge PR #${run.prNumber}? Verified and checks are green.` };
-  }
-  return {
-    warn: true,
-    confirmMsg: `⚠ Merge PR #${run.prNumber} WITHOUT full verification?\n\n- ${reasons.join("\n- ")}\n\nThis is the human merge gate — merge anyway?`,
+  if (!pc || pc.total === 0 || pc.state === "FAILURE" || pc.state === "PENDING") return { warn: true };
+  return { warn: false };
+}
+
+type PostureState = "ok" | "warn" | "bad" | "muted";
+
+// The three signals a human weighs before merging, each as a row for the dialog.
+export function postureRows(run: AutoRunRecord): { key: string; label: string; state: PostureState; detail: string }[] {
+  const rows: { key: string; label: string; state: PostureState; detail: string }[] = [];
+  if (!run.verification?.verified) rows.push({ key: "verify", label: "Verification", state: "muted", detail: "not run" });
+  else if (run.verification.passed) rows.push({ key: "verify", label: "Verification", state: "ok", detail: "passed" });
+  else rows.push({ key: "verify", label: "Verification", state: "bad", detail: "FAILED" });
+
+  if (!run.judgment) rows.push({ key: "judge", label: "Acceptance judge", state: "muted", detail: "not run" });
+  else if (run.judgment.solved === true) {
+    const c = run.judgment.confidence;
+    rows.push({ key: "judge", label: "Acceptance judge", state: "ok", detail: `solved${c != null ? ` (${Math.round(c * 100)}%)` : ""}` });
+  } else if (run.judgment.solved === false) rows.push({ key: "judge", label: "Acceptance judge", state: "bad", detail: "did not confirm" });
+  else rows.push({ key: "judge", label: "Acceptance judge", state: "warn", detail: "errored — no verdict" });
+
+  const pc = run.prChecks;
+  if (!pc || pc.total === 0) rows.push({ key: "checks", label: "PR checks", state: "muted", detail: "none" });
+  else if (pc.state === "FAILURE") rows.push({ key: "checks", label: "PR checks", state: "bad", detail: `${pc.failed} failing` });
+  else if (pc.state === "PENDING") rows.push({ key: "checks", label: "PR checks", state: "warn", detail: `${pc.pending} pending` });
+  else rows.push({ key: "checks", label: "PR checks", state: "ok", detail: `${pc.passed} green` });
+  return rows;
+}
+
+function PostureIcon({ state }: { state: PostureState }) {
+  if (state === "ok") return <Check className="size-3.5" />;
+  if (state === "bad") return <X className="size-3.5" />;
+  if (state === "warn") return <CircleAlert className="size-3.5" />;
+  return <Minus className="size-3.5" />;
+}
+
+interface WorktreeDiff {
+  files: { path: string; untracked?: boolean }[];
+  base: string;
+  diff: string;
+  truncated: boolean;
+}
+
+// A diff can be up to the server's ~1MB cap (tens of thousands of lines). Render
+// at most DIFF_MAX_LINES DOM nodes — without a cap a big diff mounts 20k+ divs
+// synchronously and freezes the tab the moment a human clicks "Show changes".
+const DIFF_MAX_LINES = 800;
+
+// Unified diff with minimal +/- colouring, scrollable so a big diff never blows
+// out the dialog. Gives the human the actual change to review without leaving
+// for GitHub.
+function DiffLines({ diff }: { diff: string }) {
+  const lines = diff.split("\n");
+  const shown = lines.slice(0, DIFF_MAX_LINES);
+  const hidden = lines.length - shown.length;
+  return (
+    <div className="flex flex-col gap-1">
+      <pre className="max-h-72 overflow-auto rounded-md border border-border bg-muted/30 p-2 text-[11px] leading-relaxed">
+        {shown.map((ln, i) => (
+          <div
+            key={i}
+            className={cn(
+              "whitespace-pre",
+              ln.startsWith("+") && !ln.startsWith("+++") && "text-emerald-600 dark:text-emerald-400",
+              ln.startsWith("-") && !ln.startsWith("---") && "text-red-600 dark:text-red-400",
+              (ln.startsWith("@@") || ln.startsWith("diff ") || ln.startsWith("index ")) && "text-muted-foreground",
+            )}
+          >
+            {ln || " "}
+          </div>
+        ))}
+      </pre>
+      {hidden > 0 ? (
+        <span className="text-xs text-muted-foreground">
+          {hidden.toLocaleString()} more line{hidden === 1 ? "" : "s"} not shown — open the PR to see the full diff.
+        </span>
+      ) : null}
+    </div>
+  );
+}
+
+// The merge moment — the one human decision in the autonomous loop. Replaces the
+// blank window.confirm with an informed dialog: refreshes PR checks on open (so
+// the shown posture matches the server's require-green gate), lets the human peek
+// the diff, disables while the merge runs, and surfaces the REAL failure reason
+// instead of swallowing it. Merge stays a human click.
+function MergeControl({ run, onDone }: { run: AutoRunRecord; onDone: (refresh?: boolean) => Promise<void> | void }) {
+  const [open, setOpen] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+  const [showDiff, setShowDiff] = useState(false);
+  const [diff, setDiff] = useState<WorktreeDiff | null>(null);
+  const [diffState, setDiffState] = useState<"idle" | "loading" | "error" | "done">("idle");
+  const { execute, pending, error, reset } = useAsyncAction();
+  const chip = checksChip(run.prChecks);
+  const risk = mergeRisk(run);
+
+  const openDialog = async () => {
+    // Fresh dialog each open: drop a stale merge error + a stale/expanded diff so
+    // a reopen never shows last time's failure banner or an out-of-date diff.
+    reset();
+    setShowDiff(false);
+    setDiff(null);
+    setDiffState("idle");
+    setOpen(true);
+    setRefreshing(true);
+    try {
+      await onDone(true); // pull fresh checks so the posture matches the server gate
+    } finally {
+      setRefreshing(false);
+    }
   };
+  const toggleDiff = async () => {
+    const next = !showDiff;
+    setShowDiff(next);
+    // Fetch on first expand, and allow a retry after a failed fetch.
+    if (next && (diffState === "idle" || diffState === "error") && run.worktreeId) {
+      setDiffState("loading");
+      try {
+        setDiff((await api.worktreeDiff(run.worktreeId)) as WorktreeDiff);
+        setDiffState("done");
+      } catch {
+        setDiffState("error");
+      }
+    }
+  };
+  const doMerge = async () => {
+    const ok = await execute(() => api.mergeAutoRunPr(run.id));
+    if (ok) {
+      setOpen(false);
+      void onDone();
+    }
+  };
+
+  const primaryVariant = risk.warn ? "secondary" : "primary";
+  const colorFor = (s: PostureState) =>
+    cn(
+      "flex items-center gap-1 text-xs font-medium",
+      s === "ok" && "text-emerald-600 dark:text-emerald-400",
+      s === "bad" && "text-red-600 dark:text-red-400",
+      s === "warn" && "text-amber-600 dark:text-amber-400",
+      s === "muted" && "text-muted-foreground",
+    );
+
+  return (
+    <>
+      <Badge tone={chip.tone} title="PR CI checks — open Merge to refresh">{chip.label}</Badge>
+      <Button
+        variant={primaryVariant}
+        size="sm"
+        className="h-6 px-2 text-xs"
+        title={risk.warn ? "Merge — this run is not fully verified (review in the dialog)" : "Merge this PR — verified and checks green"}
+        onClick={() => void openDialog()}
+      >
+        <GitMerge className={cn("mr-1 size-3", risk.warn && "text-amber-600 dark:text-amber-400")} /> Merge
+      </Button>
+      <Modal
+        open={open}
+        onClose={() => setOpen(false)}
+        title={`Merge PR #${run.prNumber}`}
+        description="The human merge gate — review the run's posture, then merge in-tool (squash)."
+        closeDisabled={pending}
+      >
+        <div className="flex flex-col gap-3">
+          <div className="flex items-center justify-between text-xs text-muted-foreground">
+            <span className="truncate">{run.link ? `#${run.link.number} ${run.link.title}` : ""}</span>
+            {refreshing ? (
+              <span className="flex shrink-0 items-center gap-1"><Loader2 className="size-3 animate-spin" /> refreshing checks…</span>
+            ) : null}
+          </div>
+          <ul className="flex flex-col gap-1.5">
+            {postureRows(run).map((r) => (
+              <li key={r.key} className="flex items-center justify-between rounded-md border border-border px-3 py-1.5 text-sm">
+                <span>{r.label}</span>
+                <span className={colorFor(r.state)}><PostureIcon state={r.state} /> {r.detail}</span>
+              </li>
+            ))}
+          </ul>
+          {run.worktreeId ? (
+            <div className="flex flex-col gap-1.5">
+              <button
+                type="button"
+                onClick={() => void toggleDiff()}
+                className="flex items-center gap-1 self-start text-xs text-muted-foreground hover:text-foreground"
+              >
+                <GitBranch className="size-3" /> {showDiff ? "Hide changes" : "Show changes"}
+                {diff ? ` (${diff.files.length} file${diff.files.length === 1 ? "" : "s"}${diff.truncated ? ", truncated" : ""})` : ""}
+              </button>
+              {showDiff ? (
+                diffState === "loading" ? (
+                  <span className="flex items-center gap-1 text-xs text-muted-foreground"><Loader2 className="size-3 animate-spin" /> loading diff…</span>
+                ) : diffState === "error" ? (
+                  <span className="text-xs text-red-600 dark:text-red-400">Diff unavailable — hide and show again to retry, or the worktree may have been torn down.</span>
+                ) : diff && diff.diff ? (
+                  <DiffLines diff={diff.diff} />
+                ) : (
+                  <span className="text-xs text-muted-foreground">No changes in the worktree.</span>
+                )
+              ) : null}
+            </div>
+          ) : null}
+          {risk.warn ? (
+            <p className="rounded-md border border-amber-500/40 bg-amber-500/5 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
+              This PR is not fully verified — merging is still your call.
+            </p>
+          ) : (
+            <p className="rounded-md border border-emerald-500/40 bg-emerald-500/5 px-3 py-2 text-xs text-emerald-700 dark:text-emerald-400">
+              Verified and checks are green.
+            </p>
+          )}
+          {error ? (
+            <p className="rounded-md border border-red-500/40 bg-red-500/5 px-3 py-2 text-xs text-red-600 dark:text-red-400">
+              Merge failed: {error}
+            </p>
+          ) : null}
+          <div className="flex justify-end gap-2 pt-1">
+            <Button variant="ghost" size="sm" onClick={() => setOpen(false)} disabled={pending}>Cancel</Button>
+            <Button variant={primaryVariant} size="sm" onClick={() => void doMerge()} disabled={pending || refreshing}>
+              {pending ? (
+                <><Loader2 className="mr-1 size-3.5 animate-spin" /> Merging…</>
+              ) : (
+                <><GitMerge className="mr-1 size-3.5" /> {risk.warn ? "Merge anyway (squash)" : "Merge (squash)"}</>
+              )}
+            </Button>
+          </div>
+        </div>
+      </Modal>
+    </>
+  );
 }
 
 function Stepper({ status }: { status: string }) {
@@ -326,29 +543,7 @@ export function AutoRunsView() {
                     {run.prState === "MERGED" ? <Badge tone="success">merged</Badge> : null}
                     {run.prState === "CLOSED" ? <Badge tone="warning">closed</Badge> : null}
                     {run.prNumber && run.status === "pr_open" && run.prState !== "MERGED" && run.prState !== "CLOSED" ? (
-                      (() => {
-                        const chip = checksChip(run.prChecks);
-                        const risk = mergeRisk(run);
-                        return (
-                          <>
-                            <Badge tone={chip.tone} title="PR CI checks — refresh to update">{chip.label}</Badge>
-                            <Button
-                              variant={risk.warn ? "secondary" : "primary"}
-                              size="sm"
-                              className="h-6 px-2 text-xs"
-                              title={risk.warn ? "Merge — but this run is not fully verified (see confirm)" : "Merge this PR — verified and checks green"}
-                              onClick={() => {
-                                // The merge stays human: a person confirms, in-tool, informed by
-                                // the run's verification posture, before we merge.
-                                if (!window.confirm(risk.confirmMsg)) return;
-                                void api.mergeAutoRunPr(run.id).then(() => load()).catch(() => load());
-                              }}
-                            >
-                              <GitMerge className={cn("mr-1 size-3", risk.warn && "text-amber-600 dark:text-amber-400")} /> Merge
-                            </Button>
-                          </>
-                        );
-                      })()
+                      <MergeControl run={run} onDone={load} />
                     ) : null}
                     {(run.childIssues ?? []).map((child) =>
                       child.url ? (
