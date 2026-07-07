@@ -107,3 +107,12 @@ test("time-to-PR: median and p90 over pr_open runs", () => {
   assert.equal(s.timeToPr.medianSeconds, 20);
   assert.equal(s.timeToPr.p90Seconds, 60);
 });
+
+test("summarizeAutoRuns applies operator SLO target overrides", () => {
+  const runs = [{ status: "pr_open", createdAt: "2026-07-01T00:00:00Z", updatedAt: "2026-07-01T00:05:00Z" }, { status: "failed" }];
+  const def = summarizeAutoRuns(runs).slo.slos.find((s) => s.key === "prSuccessRate");
+  assert.equal(def.target, 0.7, "default target");
+  const tuned = summarizeAutoRuns(runs, { sloTargets: { prSuccessRate: 0.4 } }).slo.slos.find((s) => s.key === "prSuccessRate");
+  assert.equal(tuned.target, 0.4, "overridden target");
+  assert.equal(tuned.meets, true, "0.5 >= 0.4 now meets");
+});

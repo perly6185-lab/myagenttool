@@ -49,6 +49,20 @@ const clampNum = (v, lo, hi) => {
   return Number.isFinite(n) ? Math.min(hi, Math.max(lo, n)) : null;
 };
 
+// Validate operator SLO-target overrides: rates in [0,1], time in positive
+// seconds. Unknown/invalid keys are dropped; empty → null (use all defaults).
+function normalizeSloTargets(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const out = {};
+  const rate = (v) => { const n = Number(v); return Number.isFinite(n) && n >= 0 && n <= 1 ? n : undefined; };
+  const posInt = (v) => { const n = Math.round(Number(v)); return Number.isFinite(n) && n > 0 ? n : undefined; };
+  const pr = rate(value.prSuccessRate); if (pr !== undefined) out.prSuccessRate = pr;
+  const fr = rate(value.failureRate); if (fr !== undefined) out.failureRate = fr;
+  const ar = rate(value.attentionRate); if (ar !== undefined) out.attentionRate = ar;
+  const tt = posInt(value.timeToPrMedianSeconds); if (tt !== undefined) out.timeToPrMedianSeconds = tt;
+  return Object.keys(out).length ? out : null;
+}
+
 /**
  * Validate a settings patch into a clean flat object, carrying prior values for
  * fields not present in the patch. A field explicitly set to null clears the
@@ -89,6 +103,9 @@ export function normalizeAutoRunSettings(patch = {}, prev = {}) {
     // A1 alerting (UI-only): operator webhook for real-time operational alerts.
     // Validated http(s); a typo/blank clears it (alerting disabled).
     alertWebhookUrl: keep("alertWebhookUrl", (v) => normalizeAlertWebhookUrl(v)),
+    // Tail: operator-tunable SLO targets (partial object; unset keys keep the
+    // defaults). Each value validated to its range; empty → null (all defaults).
+    sloTargets: keep("sloTargets", (v) => normalizeSloTargets(v)),
     // A3 reliability (UI-only). globalMaxConcurrent 0 = unlimited. Breaker
     // threshold 0 = disabled; cooldown in minutes.
     globalMaxConcurrent: keep("globalMaxConcurrent", (v) => clampInt(v, 0, 100)),

@@ -212,7 +212,7 @@ export async function handleProjectRoutes({
         pendingApproval: { id: approval.id, riskLevel: approval.riskLevel ?? null, riskTags: approval.riskTags ?? [], summary: approval.summary ?? null },
       };
     });
-    sendJson(res, 200, { autoRuns: enriched, summary: summarizeAutoRuns(autoRuns) });
+    sendJson(res, 200, { autoRuns: enriched, summary: summarizeAutoRuns(autoRuns, { sloTargets: state.autoRunSettings?.sloTargets ?? null }) });
     return true;
   }
 
