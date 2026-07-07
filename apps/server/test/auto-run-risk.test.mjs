@@ -1,0 +1,54 @@
+/*
+ * The merge-risk model — drives the risk badge and (slice 3) the auto-merge
+ * policy. A regression that rates a failing/unverified run "low" would let the
+ * loop auto-merge a bad PR, so the level boundaries are the safety line.
+ */
+
+import assert from "node:assert/strict";
+import { test } from "node:test";
+
+import { computeMergeRisk } from "../src/services/auto-run-risk.mjs";
+
+const green = {
+  verification: { verified: true, passed: true },
+  judgment: { solved: true, confidence: 0.95 },
+  prChecks: { total: 3, passed: 3, failed: 0, pending: 0, state: "SUCCESS" },
+  promptInjection: null,
+};
+
+test("all signals green => low", () => {
+  const r = computeMergeRisk(green);
+  assert.equal(r.level, "low");
+});
+
+test("a hard-negative signal => high (each one)", () => {
+  assert.equal(computeMergeRisk({ ...green, verification: { verified: true, passed: false } }).level, "high");
+  assert.equal(computeMergeRisk({ ...green, judgment: { solved: false, confidence: 0.9 } }).level, "high");
+  assert.equal(computeMergeRisk({ ...green, prChecks: { total: 2, passed: 1, failed: 1, pending: 0, state: "FAILURE" } }).level, "high");
+  assert.equal(computeMergeRisk({ ...green, promptInjection: { suspicious: true, markers: ["x"] } }).level, "high");
+});
+
+test("missing/unsettled signal (no failure) => medium", () => {
+  assert.equal(computeMergeRisk({ ...green, verification: { verified: false, passed: true } }).level, "medium", "no verify command");
+  assert.equal(computeMergeRisk({ ...green, judgment: null }).level, "medium", "judge not run");
+  assert.equal(computeMergeRisk({ ...green, prChecks: { total: 0, passed: 0, failed: 0, pending: 0, state: "NONE" } }).level, "medium", "no checks");
+  assert.equal(computeMergeRisk({ ...green, prChecks: { total: 2, passed: 1, failed: 0, pending: 1, state: "PENDING" } }).level, "medium", "checks pending");
+});
+
+test("judge solved but low confidence => not low (medium)", () => {
+  assert.equal(computeMergeRisk({ ...green, judgment: { solved: true, confidence: 0.4 } }).level, "medium");
+});
+
+test("high level reports the hard reasons, not the soft ones", () => {
+  const r = computeMergeRisk({ ...green, prChecks: { total: 2, passed: 1, failed: 1, pending: 0, state: "FAILURE" } });
+  assert.equal(r.level, "high");
+  assert.ok(r.reasons.some((x) => /failing/.test(x)));
+});
+
+test("extra AI-review + diff-size signals (slice 2/3)", () => {
+  assert.equal(computeMergeRisk(green, { extra: { review: { status: "fail", summary: "unsafe" } } }).level, "high");
+  assert.equal(computeMergeRisk(green, { extra: { review: { status: "pass" } } }).level, "low", "review pass keeps it low");
+  assert.equal(computeMergeRisk(green, { extra: { review: null } }).level, "low", "no review configured doesn't downgrade on its own");
+  assert.equal(computeMergeRisk(green, { extra: { diffTooLarge: true } }).level, "medium", "oversized diff blocks low");
+  assert.equal(computeMergeRisk(green, { extra: { review: { status: "unknown" } } }).level, "medium", "review requested but not run => not low");
+});
