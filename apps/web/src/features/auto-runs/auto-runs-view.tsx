@@ -31,6 +31,7 @@ interface AutoRunRecord {
   prState?: string | null;
   prChecks?: { total: number; passed: number; failed: number; pending: number; state: "NONE" | "SUCCESS" | "FAILURE" | "PENDING" } | null;
   pendingApproval?: { id: string; riskLevel: string | null; riskTags: string[]; summary: string | null } | null;
+  promptInjection?: { suspicious: boolean; markers: string[] } | null;
   error?: string | null;
   createdAt?: string;
   updatedAt?: string;
@@ -299,6 +300,9 @@ export function AutoRunsView() {
                 <div className="flex items-center justify-between gap-3">
                   <div className="flex min-w-0 items-center gap-2">
                     <Badge tone={statusTone(run.status)}>{STATUS_LABEL[run.status] ?? run.status}</Badge>
+                    {run.promptInjection?.suspicious ? (
+                      <Badge tone="danger" title={`Possible prompt injection in the issue body: ${run.promptInjection.markers.join(", ")}. Human review required.`}>⚠ injection?</Badge>
+                    ) : null}
                     {run.link ? (
                       <span className="truncate text-sm font-medium">
                         {run.link.type === "pr" ? "PR" : "Issue"} #{run.link.number}: {run.link.title}

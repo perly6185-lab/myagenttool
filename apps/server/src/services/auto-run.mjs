@@ -1,4 +1,4 @@
-import { roleAutoRunPrompt } from "@myagenttool/protocol/issue-prompt";
+import { detectPromptInjection, roleAutoRunPrompt } from "@myagenttool/protocol/issue-prompt";
 
 import { isTerminal } from "./invocations.mjs";
 import { normalizeWorktreeLink } from "./projects.mjs";
@@ -270,6 +270,19 @@ export function createAutoRunService({
     // issue into a path BEFORE any execution. The decision is data, not action.
     // Both the decider and the role prompt get the issue body when it's readable.
     const issueBody = await maybeFetchIssueBody(normalizedLink, projectId ?? state.currentProjectId);
+    // B1a: scan the untrusted issue body for prompt-injection markers. A hit
+    // never blocks the run (avoids weaponizing false positives into a DoS), but
+    // it is recorded, alerted, and — crucially — makes the run ineligible for
+    // O2 auto-approval, so a human always reviews a suspicious body.
+    const injection = detectPromptInjection(issueBody);
+    if (injection.suspicious) {
+      void sendAlert?.({
+        kind: "prompt_injection_suspected",
+        severity: "high",
+        message: `Auto-run on ${normalizedLink.type} #${normalizedLink.number}: possible prompt injection in the body (${injection.markers.join(", ")}). Human review required.`,
+        data: { link: normalizedLink, markers: injection.markers },
+      });
+    }
     const decision = await resolveDecision({
       link: normalizedLink,
       issueBody,
@@ -303,6 +316,8 @@ export function createAutoRunService({
       decision,
       // Legacy field, derived from the decision path for record continuity.
       intent: intentForPath(decision.path),
+      // B1a: prompt-injection flag (null when clean) — surfaced + blocks O2 auto-approval.
+      promptInjection: injection.suspicious ? { suspicious: true, markers: injection.markers } : null,
       // Depth-1 guard: a spawned child issue may never spawn grandchildren.
       isChildIssue: isSpawnedChildBody(issueBody),
       branchName: worktree.branchName ?? worktree.branch ?? null,
@@ -363,6 +378,7 @@ export function createAutoRunService({
       autoRun.status === "awaiting_approval" &&
       state.autoRunSettings?.autoApproveNonCodePaths &&
       AUTO_APPROVABLE_PATHS.has(decision.path) &&
+      !injection.suspicious && // B1a: a suspicious body always needs a human
       typeof autoApproveInvocation === "function"
     ) {
       const approved = autoApproveInvocation({ invocationId: invocation.id, actor: { userId: "usr_autorun_policy" } });
