@@ -20,8 +20,47 @@ const ghChecks = (rollup) => async (args) => {
   return { stdout: JSON.stringify({ statusCheckRollup: rollup }) };
 };
 
-test("runPrChecks: no checks → state NONE", async () => {
-  assert.deepEqual(await runPrChecks({ cwd: "/r", prNumber: 7, gh: ghChecks([]) }), { total: 0, passed: 0, failed: 0, pending: 0, state: "NONE" });
+// Route gh calls by a substring of the joined args — exercises the Actions
+// fallback (statusCheckRollup empty/forbidden → read Actions runs by head SHA).
+const ghRoute = (routes) => async (args) => {
+  const key = args.join(" ");
+  for (const [pat, resp] of routes) {
+    if (key.includes(pat)) {
+      if (resp instanceof Error) throw resp;
+      return { stdout: resp };
+    }
+  }
+  throw new Error(`unexpected gh call: ${key}`);
+};
+
+test("runPrChecks: rollup empty + no Actions runs → NONE", async () => {
+  const gh = ghRoute([
+    ["statusCheckRollup", JSON.stringify({ statusCheckRollup: [] })],
+    ["nameWithOwner", JSON.stringify({ nameWithOwner: "o/r" })],
+    ["headRefOid", JSON.stringify({ headRefOid: "sha1" })],
+    ["actions/runs", JSON.stringify({ workflow_runs: [] })],
+  ]);
+  assert.deepEqual(await runPrChecks({ cwd: "/r", prNumber: 7, gh }), { total: 0, passed: 0, failed: 0, pending: 0, state: "NONE" });
+});
+
+test("runPrChecks: statusCheckRollup forbidden → Actions fallback (success + in-progress → PENDING)", async () => {
+  const gh = ghRoute([
+    ["statusCheckRollup", new Error("GraphQL: Resource not accessible by personal access token")],
+    ["nameWithOwner", JSON.stringify({ nameWithOwner: "o/r" })],
+    ["headRefOid", JSON.stringify({ headRefOid: "sha1" })],
+    ["actions/runs", JSON.stringify({ workflow_runs: [{ status: "completed", conclusion: "success" }, { status: "in_progress", conclusion: null }] })],
+  ]);
+  assert.deepEqual(await runPrChecks({ cwd: "/r", prNumber: 7, gh }), { total: 2, passed: 1, failed: 0, pending: 1, state: "PENDING" });
+});
+
+test("runPrChecks: Actions fallback with a failed run → FAILURE", async () => {
+  const gh = ghRoute([
+    ["statusCheckRollup", new Error("forbidden")],
+    ["nameWithOwner", JSON.stringify({ nameWithOwner: "o/r" })],
+    ["headRefOid", JSON.stringify({ headRefOid: "s" })],
+    ["actions/runs", JSON.stringify({ workflow_runs: [{ status: "completed", conclusion: "failure" }, { status: "completed", conclusion: "success" }] })],
+  ]);
+  assert.equal((await runPrChecks({ cwd: "/r", prNumber: 7, gh })).state, "FAILURE");
 });
 
 test("runPrChecks: all green → SUCCESS", async () => {

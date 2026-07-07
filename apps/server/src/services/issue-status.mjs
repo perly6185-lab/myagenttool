@@ -66,26 +66,57 @@ export async function runPrStateFetch({ cwd, prNumber, gh = defaultGh }) {
   }
 }
 
-// Summarize a PR's CI checks (statusCheckRollup) so the console can show the
-// human the check posture BEFORE they merge — a merge decision shouldn't be
-// blind. Never throws; null on failure. state: NONE (no checks) | SUCCESS |
-// FAILURE (any failed) | PENDING (some still running, none failed).
+function tallyChecks(items, classify) {
+  let passed = 0;
+  let failed = 0;
+  let pending = 0;
+  for (const it of items) {
+    const kind = classify(it);
+    if (kind === "pass") passed += 1;
+    else if (kind === "fail") failed += 1;
+    else pending += 1;
+  }
+  const total = items.length;
+  const state = total === 0 ? "NONE" : failed > 0 ? "FAILURE" : pending > 0 ? "PENDING" : "SUCCESS";
+  return { total, passed, failed, pending, state };
+}
+
+// Summarize a PR's CI checks so the console (and the auto-merge gate) can see the
+// check posture. Primary path = statusCheckRollup (needs the token's Checks:read).
+// FALLBACK = GitHub Actions runs by the PR's head SHA — works when the token can
+// read Actions but not the Checks API (a fine-grained PAT without Checks:read, or
+// a private repo), so the auto-merge gate isn't permanently blind on such tokens.
+// Never throws; null on total failure. state: NONE | SUCCESS | FAILURE | PENDING.
 export async function runPrChecks({ cwd, prNumber, gh = defaultGh }) {
   try {
     const result = await gh(["pr", "view", String(prNumber), "--json", "statusCheckRollup"], cwd);
     const rollup = JSON.parse(result?.stdout ?? "{}")?.statusCheckRollup ?? [];
-    let passed = 0;
-    let failed = 0;
-    let pending = 0;
-    for (const check of rollup) {
-      const s = String(check?.conclusion || check?.state || check?.status || "").toUpperCase();
-      if (["SUCCESS", "NEUTRAL", "SKIPPED"].includes(s)) passed += 1;
-      else if (["FAILURE", "ERROR", "CANCELLED", "TIMED_OUT", "ACTION_REQUIRED", "STARTUP_FAILURE"].includes(s)) failed += 1;
-      else pending += 1; // IN_PROGRESS / QUEUED / PENDING / EXPECTED / ""
+    if (rollup.length > 0) {
+      return tallyChecks(rollup, (check) => {
+        const s = String(check?.conclusion || check?.state || check?.status || "").toUpperCase();
+        if (["SUCCESS", "NEUTRAL", "SKIPPED"].includes(s)) return "pass";
+        if (["FAILURE", "ERROR", "CANCELLED", "TIMED_OUT", "ACTION_REQUIRED", "STARTUP_FAILURE"].includes(s)) return "fail";
+        return "pending"; // IN_PROGRESS / QUEUED / PENDING / EXPECTED / ""
+      });
     }
-    const total = rollup.length;
-    const state = total === 0 ? "NONE" : failed > 0 ? "FAILURE" : pending > 0 ? "PENDING" : "SUCCESS";
-    return { total, passed, failed, pending, state };
+    // Empty rollup: could be genuinely no checks, or the token couldn't read them.
+    // Confirm via the Actions fallback before reporting NONE.
+  } catch {
+    /* rollup forbidden / gh error → try the Actions fallback */
+  }
+  try {
+    const repoMeta = JSON.parse((await gh(["repo", "view", "--json", "nameWithOwner"], cwd))?.stdout ?? "{}");
+    const nameWithOwner = repoMeta?.nameWithOwner;
+    const sha = JSON.parse((await gh(["pr", "view", String(prNumber), "--json", "headRefOid"], cwd))?.stdout ?? "{}")?.headRefOid;
+    if (!nameWithOwner || !sha) return null;
+    const runs = JSON.parse((await gh(["api", `repos/${nameWithOwner}/actions/runs?head_sha=${sha}&per_page=100`], cwd))?.stdout ?? "{}")?.workflow_runs ?? [];
+    return tallyChecks(runs, (r) => {
+      if (r?.status !== "completed") return "pending"; // queued / in_progress
+      const c = String(r?.conclusion || "").toLowerCase();
+      if (["success", "neutral", "skipped"].includes(c)) return "pass";
+      if (["failure", "cancelled", "timed_out", "action_required", "startup_failure"].includes(c)) return "fail";
+      return "pending";
+    });
   } catch {
     return null;
   }
