@@ -133,3 +133,10 @@ test("A4: verifyCommandNames exposes the allowlist keys (never argv)", () => {
   assert.deepEqual(cfg.verifyCommandNames.sort(), ["maven", "npm"]);
   assert.equal(resolveAutoRunConfig({}, {}).verifyCommandNames.length, 0);
 });
+
+test("tunable SLO targets: normalize validates + drops out-of-range; empty → null", () => {
+  const s = normalizeAutoRunSettings({ sloTargets: { prSuccessRate: 0.9, failureRate: 5, timeToPrMedianSeconds: 600, junk: 1 } });
+  assert.deepEqual(s.sloTargets, { prSuccessRate: 0.9, timeToPrMedianSeconds: 600 }, "failureRate 5 dropped, junk dropped");
+  assert.equal(normalizeAutoRunSettings({ sloTargets: {} }).sloTargets, null);
+  assert.equal(normalizeAutoRunSettings({ sloTargets: "x" }).sloTargets, null);
+});

@@ -44,7 +44,10 @@ interface Draft {
   globalMaxConcurrent: number;
   breakerFailureThreshold: number;
   breakerCooldownMinutes: number;
+  sloTargets: { prSuccessRate: number; failureRate: number; attentionRate: number; timeToPrMedianSeconds: number };
 }
+
+const SLO_DEFAULTS = { prSuccessRate: 0.7, failureRate: 0.2, attentionRate: 0.5, timeToPrMedianSeconds: 1800 };
 
 function toDraft(c: AutoRunConfig): Draft {
   return {
@@ -65,6 +68,7 @@ function toDraft(c: AutoRunConfig): Draft {
     globalMaxConcurrent: c.globalMaxConcurrent,
     breakerFailureThreshold: c.breakerFailureThreshold,
     breakerCooldownMinutes: c.breakerCooldownMinutes,
+    sloTargets: { ...SLO_DEFAULTS, ...((c.settings?.sloTargets as Partial<typeof SLO_DEFAULTS>) ?? {}) },
   };
 }
 
@@ -209,6 +213,10 @@ export function AutoRunConfigCard() {
             <NumberField label="Global max concurrent" hint="System-wide in-flight cap (0 = unlimited)." value={draft.globalMaxConcurrent} min={0} max={100} onChange={(v) => set("globalMaxConcurrent", v)} />
             <NumberField label="Breaker failure threshold" hint="Open the circuit breaker after N consecutive failures (0 = off)." value={draft.breakerFailureThreshold} min={0} max={50} onChange={(v) => set("breakerFailureThreshold", v)} />
             <NumberField label="Breaker cooldown (min)" hint="How long the breaker stays open before auto-resuming." value={draft.breakerCooldownMinutes} min={1} max={1440} onChange={(v) => set("breakerCooldownMinutes", v)} />
+            <NumberField label="SLO: PR success rate ≥" hint="0–1 target line." value={draft.sloTargets.prSuccessRate} step={0.05} min={0} max={1} onChange={(v) => set("sloTargets", { ...draft.sloTargets, prSuccessRate: v })} />
+            <NumberField label="SLO: failure rate ≤" hint="0–1 target line." value={draft.sloTargets.failureRate} step={0.05} min={0} max={1} onChange={(v) => set("sloTargets", { ...draft.sloTargets, failureRate: v })} />
+            <NumberField label="SLO: human-attention rate ≤" hint="0–1 target line." value={draft.sloTargets.attentionRate} step={0.05} min={0} max={1} onChange={(v) => set("sloTargets", { ...draft.sloTargets, attentionRate: v })} />
+            <NumberField label="SLO: time to PR ≤ (s)" hint="Median seconds target line." value={draft.sloTargets.timeToPrMedianSeconds} step={60} min={1} onChange={(v) => set("sloTargets", { ...draft.sloTargets, timeToPrMedianSeconds: v })} />
           </div>
 
           <div className="flex flex-wrap items-center gap-3 rounded-lg border border-border px-3 py-2 text-sm">

@@ -1,6 +1,6 @@
 import { autoRunStates } from "./auto-run.mjs";
 import { routingEvaluation } from "./auto-run-eval.mjs";
-import { summarizeAutoRunSlos } from "./auto-run-slo.mjs";
+import { DEFAULT_SLO_TARGETS, summarizeAutoRunSlos } from "./auto-run-slo.mjs";
 
 // Observability + evaluation for the autonomous auto-run loop. A pure summary of
 // the auto-run records so the console can render live progress and a tracking
@@ -36,7 +36,7 @@ function topReasons(counts, limit = 5) {
  *   no changes).
  * - timeToPr: seconds from start to pr_open (count, median, p90).
  */
-export function summarizeAutoRuns(autoRuns = []) {
+export function summarizeAutoRuns(autoRuns = [], { sloTargets = null } = {}) {
   const byStatus = {};
   for (const status of autoRunStates) byStatus[status] = 0;
 
@@ -119,6 +119,7 @@ export function summarizeAutoRuns(autoRuns = []) {
       p90Seconds: percentile(timeToPrSeconds, 0.9),
     },
     // A2: service-level objectives with target lines + meets/below verdicts.
-    slo: summarizeAutoRunSlos(autoRuns),
+    // Operator-tunable targets (settings.sloTargets) override the defaults.
+    slo: summarizeAutoRunSlos(autoRuns, sloTargets ? { ...DEFAULT_SLO_TARGETS, ...sloTargets } : DEFAULT_SLO_TARGETS),
   };
 }
