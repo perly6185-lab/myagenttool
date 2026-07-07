@@ -52,13 +52,34 @@ beforeEach(() => {
   execFileSync("git", ["-C", worktree.path, "clean", "-fdx"], { encoding: "utf8" });
 });
 
-test("clean worktree: no files, empty diff, base falls back to HEAD", () => {
+test("clean worktree: no files, empty diff, base resolves to the repo default branch", () => {
   const result = svc.worktreeDiff(worktree);
   assert.deepEqual(result.files, []);
   assert.equal(result.diff, "");
   assert.equal(result.truncated, false);
-  // No upstream and no registered project target => the documented HEAD fallback.
-  assert.equal(result.base, "HEAD");
+  // No upstream and no target defaultBranch => discover the repo's own default
+  // branch (local `main`) and take the merge-base, not the literal "HEAD".
+  assert.notEqual(result.base, "HEAD", "base is a resolved commit, not the HEAD fallback");
+  assert.equal(result.base, git(repoDir, "rev-parse", "main"), "base is the merge-base with main");
+});
+
+test("committed change with no upstream: diff is visible (not empty) — C1 pilot regression", () => {
+  // Reproduces the judge false-block: the agent commits its work, the branch has
+  // no upstream, the target has no defaultBranch. `git diff HEAD` on the clean
+  // tree would be empty; base must fall back to the repo default branch so the
+  // committed change is still rendered for the acceptance judge.
+  writeFileSync(join(worktree.path, "README.md"), "hello\ncommitted line\n");
+  git(worktree.path, "add", ".");
+  git(worktree.path, "commit", "-m", "committed work");
+
+  const result = svc.worktreeDiff(worktree);
+
+  assert.notEqual(result.base, "HEAD", "base is the merge-base with main, not HEAD");
+  assert.match(result.diff, /README\.md/, "committed change is in the diff");
+  assert.match(result.diff, /^\+committed line$/m, "the committed line is visible to the judge");
+
+  // reset the worktree branch so later scenarios start pristine
+  git(worktree.path, "reset", "--hard", "HEAD~1");
 });
 
 test("tracked modification: listed in files and rendered in the unified diff", () => {

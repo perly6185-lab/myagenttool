@@ -992,13 +992,38 @@ function worktreeDiff(worktree, { projectTargets = [] } = {}) {
   } catch {
     /* leave empty */
   }
+  // The repo's own default branch, used for base resolution when a worktree
+  // branch has no upstream: origin/HEAD if set, else a local main/master. Null
+  // when none can be found.
+  const repoDefaultBranch = () => {
+    try {
+      const ref = git(["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"]).trim();
+      if (ref) return ref.replace(/^refs\/remotes\//, "");
+    } catch {
+      /* origin/HEAD not set */
+    }
+    for (const cand of ["main", "master"]) {
+      try {
+        git(["rev-parse", "--verify", "--quiet", `refs/heads/${cand}`]);
+        return cand;
+      } catch {
+        /* candidate not present */
+      }
+    }
+    return null;
+  };
   let base = "HEAD";
   try {
     const upstream = git(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"]).trim();
     base = git(["merge-base", upstream, "HEAD"]).trim() || "HEAD";
   } catch {
     const target = projectTargets.find((t) => t.id === worktree.targetId);
-    const def = target?.defaultBranch;
+    // Fall back to the target's default branch, or discover the repo's own.
+    // Without this, a worktree whose branch has no upstream and whose target
+    // carries no defaultBranch resolves base to "HEAD" — and once the agent
+    // COMMITS its work, `git diff HEAD` on the now-clean tree is empty, so the
+    // acceptance judge sees no diff and wrongly blocks the PR (C1 pilot finding).
+    const def = target?.defaultBranch || repoDefaultBranch();
     if (def) {
       try {
         base = git(["merge-base", def, "HEAD"]).trim() || "HEAD";
