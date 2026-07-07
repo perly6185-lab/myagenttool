@@ -89,6 +89,11 @@ export function normalizeAutoRunSettings(patch = {}, prev = {}) {
     // A1 alerting (UI-only): operator webhook for real-time operational alerts.
     // Validated http(s); a typo/blank clears it (alerting disabled).
     alertWebhookUrl: keep("alertWebhookUrl", (v) => normalizeAlertWebhookUrl(v)),
+    // A3 reliability (UI-only). globalMaxConcurrent 0 = unlimited. Breaker
+    // threshold 0 = disabled; cooldown in minutes.
+    globalMaxConcurrent: keep("globalMaxConcurrent", (v) => clampInt(v, 0, 100)),
+    breakerFailureThreshold: keep("breakerFailureThreshold", (v) => clampInt(v, 0, 50)),
+    breakerCooldownMinutes: keep("breakerCooldownMinutes", (v) => clampInt(v, 1, 1440)),
   };
 }
 
@@ -147,6 +152,10 @@ export function resolveAutoRunConfig(state = {}, baseEnv = process.env) {
     autoApproveNonCodePaths: Boolean(settings.autoApproveNonCodePaths),
     // A1 alerting: whether an operational-alert webhook is configured.
     alertWebhookConfigured: Boolean(settings.alertWebhookUrl),
+    // A3 reliability knobs (effective values; 0 = off).
+    globalMaxConcurrent: Number(settings.globalMaxConcurrent ?? 0) || 0,
+    breakerFailureThreshold: Number(settings.breakerFailureThreshold ?? 0) || 0,
+    breakerCooldownMinutes: Number(settings.breakerCooldownMinutes ?? 15) || 15,
     // Command knobs are env-only; expose only whether each is configured.
     commands: {
       verify: Boolean(resolveAutoRunVerifyCommand()),

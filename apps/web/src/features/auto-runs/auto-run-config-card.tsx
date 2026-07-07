@@ -17,6 +17,9 @@ interface AutoRunConfig {
   requireChecksGreenToMerge: boolean;
   autonomyKillSwitch: boolean;
   autoApproveNonCodePaths: boolean;
+  globalMaxConcurrent: number;
+  breakerFailureThreshold: number;
+  breakerCooldownMinutes: number;
   commands: { verify: boolean; decider: boolean; judge: boolean };
   settings: Record<string, unknown>;
 }
@@ -37,6 +40,9 @@ interface Draft {
   autonomyKillSwitch: boolean;
   autoApproveNonCodePaths: boolean;
   alertWebhookUrl: string;
+  globalMaxConcurrent: number;
+  breakerFailureThreshold: number;
+  breakerCooldownMinutes: number;
 }
 
 function toDraft(c: AutoRunConfig): Draft {
@@ -55,6 +61,9 @@ function toDraft(c: AutoRunConfig): Draft {
     autonomyKillSwitch: c.autonomyKillSwitch,
     autoApproveNonCodePaths: c.autoApproveNonCodePaths,
     alertWebhookUrl: (c.settings?.alertWebhookUrl as string) ?? "",
+    globalMaxConcurrent: c.globalMaxConcurrent,
+    breakerFailureThreshold: c.breakerFailureThreshold,
+    breakerCooldownMinutes: c.breakerCooldownMinutes,
   };
 }
 
@@ -196,6 +205,9 @@ export function AutoRunConfigCard() {
             <NumberField label="Decision min confidence" hint="0–1; low-confidence heavy paths degrade to clarify." value={draft.decisionMinConfidence} step={0.05} min={0} max={1} onChange={(v) => set("decisionMinConfidence", v)} />
             <NumberField label="Decider timeout (ms)" value={draft.deciderTimeoutMs} step={1000} min={1000} max={300000} onChange={(v) => set("deciderTimeoutMs", v)} />
             <NumberField label="Judge timeout (ms)" value={draft.judgeTimeoutMs} step={1000} min={1000} max={300000} onChange={(v) => set("judgeTimeoutMs", v)} />
+            <NumberField label="Global max concurrent" hint="System-wide in-flight cap (0 = unlimited)." value={draft.globalMaxConcurrent} min={0} max={100} onChange={(v) => set("globalMaxConcurrent", v)} />
+            <NumberField label="Breaker failure threshold" hint="Open the circuit breaker after N consecutive failures (0 = off)." value={draft.breakerFailureThreshold} min={0} max={50} onChange={(v) => set("breakerFailureThreshold", v)} />
+            <NumberField label="Breaker cooldown (min)" hint="How long the breaker stays open before auto-resuming." value={draft.breakerCooldownMinutes} min={1} max={1440} onChange={(v) => set("breakerCooldownMinutes", v)} />
           </div>
 
           <div className="flex flex-wrap items-center gap-3 rounded-lg border border-border px-3 py-2 text-sm">

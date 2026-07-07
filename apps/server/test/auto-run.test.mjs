@@ -60,6 +60,7 @@ function makeAutoRun({
   budgetStatusFor = undefined,
   findInvocation = undefined,
   autoApproveInvocation = undefined,
+  sendAlert = undefined,
 } = {}) {
   const calls = { createInvocation: [], startInvocationIfAllowed: [], commit: [], publish: [], pr: [], verify: [], status: [], report: [], merge: [], autoApprove: [] };
   let counter = 0;
@@ -118,6 +119,7 @@ function makeAutoRun({
     },
     fetchPrChecks,
     budgetStatusFor,
+    sendAlert,
     findInvocation,
     autoApproveInvocation: autoApproveInvocation
       ? (args) => { calls.autoApprove.push(args); return autoApproveInvocation(args); }
@@ -1046,4 +1048,41 @@ test("O2: with the setting off, a non-code path stays human-gated", async () => 
   const { autoRun } = await svc.startAutoRun({ projectId: sourceProjectId, link: { type: "issue", number: 42, title: "Q?", url: null, state: "open" }, agentId: "agt_1", name: "issue-42" });
   assert.equal(calls.autoApprove.length, 0, "off by default");
   assert.equal(autoRun.status, "awaiting_approval");
+});
+
+test("A3 global cap: startAutoRun refuses at capacity", async () => {
+  const { svc } = makeAutoRun();
+  state.autoRunSettings = { globalMaxConcurrent: 1 };
+  state.autoRuns.push({ id: "aur_active", status: "running", projectId: sourceProjectId });
+  await assert.rejects(
+    () => svc.startAutoRun({ projectId: sourceProjectId, link: { type: "issue", number: 1, title: "x", url: null, state: "open" }, agentId: "agt_1" }),
+    /At capacity/,
+  );
+});
+
+test("A3 breaker: opens after N consecutive failures (alerted), then refuses starts", async () => {
+  const alerts = [];
+  const { svc } = makeAutoRun({ createInvocationThrows: true, sendAlert: (a) => alerts.push(a) });
+  state.autoRunSettings = { breakerFailureThreshold: 2, breakerCooldownMinutes: 30 };
+  // two failing starts (createInvocation throws → setAutoRunStatus(failed) → breaker++)
+  for (const n of [1, 2]) {
+    await assert.rejects(() => svc.startAutoRun({ projectId: sourceProjectId, link: { type: "issue", number: n, title: "x", url: null, state: "open" }, agentId: "agt_1", name: `i-${n}` }));
+  }
+  assert.equal(state.autoRunBreaker.consecutiveFailures, 2);
+  assert.ok(state.autoRunBreaker.openUntil, "breaker opened");
+  assert.ok(alerts.some((a) => a.kind === "circuit_breaker_open"), "breaker alert fired");
+  // a subsequent start is refused by the open breaker
+  await assert.rejects(
+    () => svc.startAutoRun({ projectId: sourceProjectId, link: { type: "issue", number: 3, title: "x", url: null, state: "open" }, agentId: "agt_1", name: "i-3" }),
+    /Circuit breaker open/,
+  );
+});
+
+test("A3 breaker: a successful terminal resets the failure count", async () => {
+  const { svc } = makeAutoRun();
+  state.autoRunBreaker = { consecutiveFailures: 3, openUntil: null };
+  const { autoRun, invocation } = await svc.startAutoRun({ projectId: sourceProjectId, link: { type: "issue", number: 9, title: "z", url: null, state: "open" }, agentId: "agt_1", name: "i-9" });
+  await svc.advanceAutoRunForInvocation({ ...invocation, status: "succeeded" });
+  assert.equal(autoRun.status, "pr_open");
+  assert.equal(state.autoRunBreaker.consecutiveFailures, 0, "success resets the breaker");
 });

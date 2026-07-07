@@ -117,3 +117,13 @@ test("alertWebhookUrl: validated http(s) in normalize; exposed as configured boo
   assert.equal(resolveAutoRunConfig({ autoRunSettings: { alertWebhookUrl: "https://h.co/x" } }, {}).alertWebhookConfigured, true);
   assert.equal(resolveAutoRunConfig({}, {}).alertWebhookConfigured, false);
 });
+
+test("A3 knobs: clamped in normalize + exposed", () => {
+  const s = normalizeAutoRunSettings({ globalMaxConcurrent: 999, breakerFailureThreshold: -1, breakerCooldownMinutes: 5 });
+  assert.equal(s.globalMaxConcurrent, 100, "clamped to max");
+  assert.equal(s.breakerFailureThreshold, 0, "clamped to floor 0");
+  assert.equal(s.breakerCooldownMinutes, 5);
+  const cfg = resolveAutoRunConfig({ autoRunSettings: { globalMaxConcurrent: 3 } }, {});
+  assert.equal(cfg.globalMaxConcurrent, 3);
+  assert.equal(cfg.breakerCooldownMinutes, 15, "default cooldown");
+});

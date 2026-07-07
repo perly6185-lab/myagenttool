@@ -169,10 +169,36 @@ export function createAutoRunService({
     return "running";
   }
 
+  // A3 circuit breaker bookkeeping on terminal transitions. A `failed` run
+  // increments the consecutive-failure count and opens the breaker at the
+  // operator threshold; a successful terminal resets it. `blocked`/`needs_input`
+  // are deliberate gate outcomes, not execution failures — they're neutral.
+  function updateBreakerForTerminal(status) {
+    const breaker = (state.autoRunBreaker ??= { consecutiveFailures: 0, openUntil: null });
+    if (status === "failed") {
+      breaker.consecutiveFailures += 1;
+      const threshold = Number(state.autoRunSettings?.breakerFailureThreshold ?? 0);
+      if (threshold > 0 && breaker.consecutiveFailures >= threshold && !breaker.openUntil) {
+        const cooldownMin = Number(state.autoRunSettings?.breakerCooldownMinutes ?? 15) || 15;
+        breaker.openUntil = new Date(Date.parse(now()) + cooldownMin * 60_000).toISOString();
+        void sendAlert?.({
+          kind: "circuit_breaker_open",
+          severity: "high",
+          message: `Auto-run circuit breaker opened after ${breaker.consecutiveFailures} consecutive failures; paused until ${breaker.openUntil}.`,
+          data: { consecutiveFailures: breaker.consecutiveFailures, openUntil: breaker.openUntil },
+        });
+      }
+    } else if (status === "pr_open" || status === "report_posted" || status === "done") {
+      breaker.consecutiveFailures = 0;
+      breaker.openUntil = null;
+    }
+  }
+
   function setAutoRunStatus(autoRun, status, extra) {
     autoRun.status = status;
     autoRun.updatedAt = now();
     if (extra) Object.assign(autoRun, extra);
+    updateBreakerForTerminal(status);
     appendEvent({
       invocationId: autoRun.invocationId,
       type: "auto_run_status_changed",
@@ -218,6 +244,22 @@ export function createAutoRunService({
           data: { projectId, spentUsd: budget.spentUsd, limitUsd: budget.limitUsd, link: normalizedLink },
         });
         throw new Error(`Budget exceeded for this project (spent $${budget.spentUsd} of $${budget.limitUsd}). Raise the budget or reset spend before starting more runs.`);
+      }
+    }
+    // A3 circuit breaker: too many consecutive failures pauses starts (an outage
+    // or rate-limit storm shouldn't keep burning attempts). Auto-closes after the
+    // cooldown; alerted when it opened (in setAutoRunStatus).
+    const breaker = state.autoRunBreaker;
+    if (breaker?.openUntil && Date.parse(now()) < Date.parse(breaker.openUntil)) {
+      throw new Error(`Circuit breaker open after ${breaker.consecutiveFailures} consecutive failures; auto-runs paused until ${breaker.openUntil}.`);
+    }
+    // A3 global concurrency cap (0 = unlimited): system-wide backpressure on top
+    // of the per-project cap. Auto-trigger simply retries next scan (soft queue).
+    const globalMax = Number(state.autoRunSettings?.globalMaxConcurrent ?? 0);
+    if (globalMax > 0) {
+      const active = (state.autoRuns ?? []).filter((r) => !settledStatuses.has(r.status)).length;
+      if (active >= globalMax) {
+        throw new Error(`At capacity: ${active}/${globalMax} auto-runs active. Auto-trigger will retry when one frees up.`);
       }
     }
 
