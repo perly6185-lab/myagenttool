@@ -45,6 +45,15 @@ interface AutoRunSummary {
   routing?: { alignmentRate: number | null; conclusive: number } | null;
   blockedReasons: { reason: string; count: number }[];
   timeToPr: { count: number; medianSeconds: number | null; p90Seconds: number | null };
+  slo?: {
+    slos: { key: string; label: string; value: number | null; target: number; direction: "gte" | "lte"; unit: "ratio" | "seconds"; meets: boolean | null }[];
+    anyBelow: boolean;
+  } | null;
+}
+
+function fmtSloValue(v: number | null, unit: "ratio" | "seconds"): string {
+  if (v == null) return "—";
+  return unit === "ratio" ? `${Math.round(v * 100)}%` : fmtDuration(v);
 }
 
 const STATUS_LABEL: Record<string, string> = {
@@ -235,6 +244,25 @@ export function AutoRunsView() {
             <p className="text-xs text-muted-foreground">
               Non-diff outcomes: {summary.outcomes.reportPosted} investigation report(s), {summary.outcomes.needsInput} needing input.
             </p>
+          ) : null}
+          {summary.slo ? (
+            <div className="flex flex-col gap-1.5">
+              <div className="flex items-center gap-2 text-xs font-medium text-muted-foreground">
+                SLOs
+                {summary.slo.anyBelow ? <Badge tone="danger">below target</Badge> : <Badge tone="success">on target</Badge>}
+              </div>
+              <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
+                {summary.slo.slos.map((s) => (
+                  <div key={s.key} className={cn("rounded-lg border px-3 py-2", s.meets === false ? "border-red-500/40 bg-red-500/5" : "border-border")}>
+                    <p className="text-xs text-muted-foreground">{s.label}</p>
+                    <p className={cn("mt-0.5 text-lg font-semibold tabular-nums", s.meets === false && "text-red-600 dark:text-red-400")}>{fmtSloValue(s.value, s.unit)}</p>
+                    <p className="text-[10px] text-muted-foreground">
+                      {s.meets == null ? "no data" : s.meets ? "meets" : "below"} · target {s.direction === "gte" ? "≥" : "≤"} {fmtSloValue(s.target, s.unit)}
+                    </p>
+                  </div>
+                ))}
+              </div>
+            </div>
           ) : null}
           {summary.blockedReasons.length > 0 ? (
             <Card>

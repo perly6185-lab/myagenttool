@@ -1,5 +1,6 @@
 import { autoRunStates } from "./auto-run.mjs";
 import { routingEvaluation } from "./auto-run-eval.mjs";
+import { summarizeAutoRunSlos } from "./auto-run-slo.mjs";
 
 // Observability + evaluation for the autonomous auto-run loop. A pure summary of
 // the auto-run records so the console can render live progress and a tracking
@@ -117,5 +118,7 @@ export function summarizeAutoRuns(autoRuns = []) {
       medianSeconds: percentile(timeToPrSeconds, 0.5),
       p90Seconds: percentile(timeToPrSeconds, 0.9),
     },
+    // A2: service-level objectives with target lines + meets/below verdicts.
+    slo: summarizeAutoRunSlos(autoRuns),
   };
 }
