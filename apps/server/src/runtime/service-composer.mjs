@@ -317,7 +317,7 @@ export function createServerRuntimeServices({
   // applies without a restart. No-op when unconfigured; never throws.
   const autoRunAlerts = createAlertDispatcher({ getWebhookUrl: () => state.autoRunSettings?.alertWebhookUrl ?? null });
 
-  const { startAutoRun, advanceAutoRunForInvocation, syncAutoRunOnApproval, retryAutoRun, mergeAutoRunPr, reapStuckAutoRuns, autoMergeSweep } = createAutoRunService({
+  const { startAutoRun, advanceAutoRunForInvocation, syncAutoRunOnApproval, retryAutoRun, mergeAutoRunPr, reapStuckAutoRuns, autoMergeSweep, approveDesign, rejectDesign } = createAutoRunService({
     state,
     now,
     nextId,
@@ -390,6 +390,16 @@ export function createServerRuntimeServices({
     // Governed child-issue spawning (slice 4): a design deliverable becomes a
     // pending-decision child issue (parent fields inherited, never auto-labelled,
     // depth-1 marked). Off by default; undefined -> the orchestrator skips it.
+    // D4: ungated spawn used ONLY by the explicit human Approve-design action —
+    // the click is the authorization, independent of the automatic spawn config.
+    spawnChildIssueDirect: async ({ parentLink, design, repoPath }) => {
+      const parentBody = await runIssueBodyFetch({ cwd: repoPath, issueNumber: parentLink.number });
+      return runChildIssueCreate({
+        cwd: repoPath,
+        title: childIssueTitle(parentLink),
+        body: childIssueBody({ parentLink, design, projectFieldsBlock: extractProjectFieldsBlock(parentBody) }),
+      });
+    },
     spawnChildIssue: spawnIssuesConfig(autoRunEnv).enabled
       ? async ({ parentLink, design, repoPath }) => {
           const parentBody = await runIssueBodyFetch({ cwd: repoPath, issueNumber: parentLink.number });
@@ -2018,6 +2028,8 @@ export function createServerRuntimeServices({
     retryAutoRun,
     reapStuckAutoRuns,
     autoMergeSweep,
+    approveDesign,
+    rejectDesign,
     mergeAutoRunPr,
     refreshAutoRunPrDispositions,
     selectProject,

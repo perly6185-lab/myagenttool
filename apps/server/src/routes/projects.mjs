@@ -28,6 +28,8 @@ export async function handleProjectRoutes({
   startAutoRun,
   retryAutoRun,
   mergeAutoRunPr,
+  approveDesign,
+  rejectDesign,
   budgetStatusFor,
   refreshAutoRunPrDispositions,
   selectProject,
@@ -171,6 +173,23 @@ export async function handleProjectRoutes({
       sendJson(res, 200, result);
     } catch (error) {
       sendJson(res, 400, { error: "auto_run_retry_failed", message: errorMessage(error) });
+    }
+    return true;
+  }
+
+  // D4: the human design gate — approve spawns the implementation child issue
+  // (the click is the authorization); reject records feedback to the issue.
+  const designApprovalMatch = url.pathname.match(/^\/api\/auto-runs\/([^\/]+)\/design-approval$/);
+  if (designApprovalMatch && req.method === "POST") {
+    try {
+      const body = await readJson(req);
+      const id = decodeURIComponent(designApprovalMatch[1]);
+      const result = body?.action === "reject"
+        ? await rejectDesign(id, { actor, feedback: body?.feedback })
+        : await approveDesign(id, { actor });
+      sendJson(res, 200, result);
+    } catch (error) {
+      sendJson(res, 400, { error: "design_approval_failed", message: errorMessage(error) });
     }
     return true;
   }

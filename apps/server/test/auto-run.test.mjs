@@ -56,6 +56,8 @@ function makeAutoRun({
   judgeAcceptance = undefined,
   // Injected changed-files lister (D3 design artifacts). Default undefined.
   listWorktreeChangedFiles = undefined,
+  // Injected direct child-issue spawner (D4 approve-design). Default undefined.
+  spawnChildIssueDirect = undefined,
   // Injected PR merge runner. Default: a successful merge.
   mergePr = async ({ prNumber }) => ({ ok: true, prNumber, method: "squash" }),
   fetchPrChecks = undefined,
@@ -116,6 +118,7 @@ function makeAutoRun({
     spawnChildIssue,
     judgeAcceptance,
     listWorktreeChangedFiles,
+    spawnChildIssueDirect,
     mergePr: async (args) => {
       calls.merge.push(args);
       return mergePr(args);
@@ -1189,4 +1192,75 @@ test("D3: develop runs are untouched by the knob", async () => {
   await svc.advanceAutoRunForInvocation({ ...invocation, status: "succeeded" });
   assert.equal(autoRun.status, "pr_open");
   assert.equal(calls.pr.length, 1);
+});
+
+// --- D4 design approval: the human gate that spawns the implementation issue ---
+
+test("D4: approve on a posted design spawns the child issue with brief + artifacts embedded", async () => {
+  const spawned = [];
+  const { svc } = makeAutoRun({
+    decideIssuePath: designDecision,
+    commit: { committed: true, hasCommits: true },
+    listWorktreeChangedFiles: async () => ["design/mockup.html"],
+    spawnChildIssueDirect: async ({ parentLink, design }) => {
+      spawned.push({ parentLink, design });
+      return { number: 321, url: "https://github.com/o/r/issues/321" };
+    },
+  });
+  state.autoRunSettings = { designArtifacts: true };
+  const { autoRun, invocation } = await svc.startAutoRun({
+    projectId: sourceProjectId,
+    link: { type: "issue", number: 95, title: "Design the tasks screen", url: null, state: "open" },
+    agentId: "agt_1",
+    name: "issue-95-approve",
+  });
+  await svc.advanceAutoRunForInvocation({ ...invocation, status: "succeeded", result: "Brief with wireframes." });
+  assert.equal(autoRun.status, "report_posted");
+
+  const result = await svc.approveDesign(autoRun.id, { actor: { userId: "usr_designer" } });
+  assert.equal(result.ok, true);
+  assert.deepEqual(autoRun.childIssues, [{ number: 321, url: "https://github.com/o/r/issues/321" }]);
+  assert.equal(autoRun.designApproval.status, "approved");
+  assert.equal(autoRun.designApproval.by, "usr_designer");
+  assert.equal(spawned.length, 1);
+  assert.match(spawned[0].design, /Brief with wireframes\./);
+  assert.match(spawned[0].design, /design\/mockup\.html/, "artifact list rides into the child issue");
+  // idempotent: a second approve is a no-op
+  const again = await svc.approveDesign(autoRun.id, { actor: { userId: "usr_designer" } });
+  assert.equal(again.alreadyApproved, true);
+  assert.equal(spawned.length, 1);
+});
+
+test("D4: approve refuses non-design or non-posted runs", async () => {
+  const { svc } = makeAutoRun({ commit: { committed: true, hasCommits: true } });
+  const { autoRun, invocation } = await svc.startAutoRun({
+    projectId: sourceProjectId,
+    link: { type: "issue", number: 96, title: "Add the cache layer", url: null, state: "open" },
+    agentId: "agt_1",
+    name: "issue-96-develop",
+  });
+  await svc.advanceAutoRunForInvocation({ ...invocation, status: "succeeded" });
+  await assert.rejects(() => svc.approveDesign(autoRun.id, {}), /Only a design run/);
+});
+
+test("D4: reject records feedback and posts it back to the issue", async () => {
+  const { svc, calls } = makeAutoRun({
+    decideIssuePath: designDecision,
+    commit: { committed: false, hasCommits: false },
+  });
+  const { autoRun, invocation } = await svc.startAutoRun({
+    projectId: sourceProjectId,
+    link: { type: "issue", number: 97, title: "Design the tasks screen", url: null, state: "open" },
+    agentId: "agt_1",
+    name: "issue-97-reject",
+  });
+  await svc.advanceAutoRunForInvocation({ ...invocation, status: "succeeded", result: "A weak brief." });
+  assert.equal(autoRun.status, "report_posted");
+  const before = calls.report.length;
+
+  const result = await svc.rejectDesign(autoRun.id, { actor: { userId: "usr_reviewer" }, feedback: "Wireframe the empty state too." });
+  assert.equal(result.ok, true);
+  assert.equal(autoRun.designApproval.status, "rejected");
+  assert.equal(autoRun.designApproval.feedback, "Wireframe the empty state too.");
+  assert.equal(calls.report.length, before + 1, "feedback posts to the issue");
 });
