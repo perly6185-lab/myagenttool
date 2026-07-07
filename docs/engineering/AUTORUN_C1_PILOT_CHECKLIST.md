@@ -45,7 +45,7 @@ the three decisions in §6 are made.
 ### Sandbox posture (§6 decision A must be resolved first)
 - [ ] The B1b env gap is acknowledged: the coding agent inherits the bridge's full
       env, egress is unrestricted, cwd is not confinement → unattended ≈ bridge-user
-      privileges. See [AUTORUN_SANDBOX_REVIEW.md](AUTORUN_SANDBOX_REVIEW.md).
+      privileges. See the B1b sandbox review (PR #535, pending joint review).
 - [ ] Chosen mitigation is in place (one of: live supervision / Tier-1 env
       minimization / isolated sandbox host).
 
