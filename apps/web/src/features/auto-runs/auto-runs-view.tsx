@@ -173,26 +173,41 @@ interface WorktreeDiff {
   truncated: boolean;
 }
 
+// A diff can be up to the server's ~1MB cap (tens of thousands of lines). Render
+// at most DIFF_MAX_LINES DOM nodes — without a cap a big diff mounts 20k+ divs
+// synchronously and freezes the tab the moment a human clicks "Show changes".
+const DIFF_MAX_LINES = 800;
+
 // Unified diff with minimal +/- colouring, scrollable so a big diff never blows
 // out the dialog. Gives the human the actual change to review without leaving
 // for GitHub.
 function DiffLines({ diff }: { diff: string }) {
+  const lines = diff.split("\n");
+  const shown = lines.slice(0, DIFF_MAX_LINES);
+  const hidden = lines.length - shown.length;
   return (
-    <pre className="max-h-72 overflow-auto rounded-md border border-border bg-muted/30 p-2 text-[11px] leading-relaxed">
-      {diff.split("\n").map((ln, i) => (
-        <div
-          key={i}
-          className={cn(
-            "whitespace-pre",
-            ln.startsWith("+") && !ln.startsWith("+++") && "text-emerald-600 dark:text-emerald-400",
-            ln.startsWith("-") && !ln.startsWith("---") && "text-red-600 dark:text-red-400",
-            (ln.startsWith("@@") || ln.startsWith("diff ") || ln.startsWith("index ")) && "text-muted-foreground",
-          )}
-        >
-          {ln || " "}
-        </div>
-      ))}
-    </pre>
+    <div className="flex flex-col gap-1">
+      <pre className="max-h-72 overflow-auto rounded-md border border-border bg-muted/30 p-2 text-[11px] leading-relaxed">
+        {shown.map((ln, i) => (
+          <div
+            key={i}
+            className={cn(
+              "whitespace-pre",
+              ln.startsWith("+") && !ln.startsWith("+++") && "text-emerald-600 dark:text-emerald-400",
+              ln.startsWith("-") && !ln.startsWith("---") && "text-red-600 dark:text-red-400",
+              (ln.startsWith("@@") || ln.startsWith("diff ") || ln.startsWith("index ")) && "text-muted-foreground",
+            )}
+          >
+            {ln || " "}
+          </div>
+        ))}
+      </pre>
+      {hidden > 0 ? (
+        <span className="text-xs text-muted-foreground">
+          {hidden.toLocaleString()} more line{hidden === 1 ? "" : "s"} not shown — open the PR to see the full diff.
+        </span>
+      ) : null}
+    </div>
   );
 }
 
@@ -207,11 +222,17 @@ function MergeControl({ run, onDone }: { run: AutoRunRecord; onDone: (refresh?: 
   const [showDiff, setShowDiff] = useState(false);
   const [diff, setDiff] = useState<WorktreeDiff | null>(null);
   const [diffState, setDiffState] = useState<"idle" | "loading" | "error" | "done">("idle");
-  const { execute, pending, error } = useAsyncAction();
+  const { execute, pending, error, reset } = useAsyncAction();
   const chip = checksChip(run.prChecks);
   const risk = mergeRisk(run);
 
   const openDialog = async () => {
+    // Fresh dialog each open: drop a stale merge error + a stale/expanded diff so
+    // a reopen never shows last time's failure banner or an out-of-date diff.
+    reset();
+    setShowDiff(false);
+    setDiff(null);
+    setDiffState("idle");
     setOpen(true);
     setRefreshing(true);
     try {
@@ -223,7 +244,8 @@ function MergeControl({ run, onDone }: { run: AutoRunRecord; onDone: (refresh?: 
   const toggleDiff = async () => {
     const next = !showDiff;
     setShowDiff(next);
-    if (next && diffState === "idle" && run.worktreeId) {
+    // Fetch on first expand, and allow a retry after a failed fetch.
+    if (next && (diffState === "idle" || diffState === "error") && run.worktreeId) {
       setDiffState("loading");
       try {
         setDiff((await api.worktreeDiff(run.worktreeId)) as WorktreeDiff);
@@ -299,7 +321,7 @@ function MergeControl({ run, onDone }: { run: AutoRunRecord; onDone: (refresh?: 
                 diffState === "loading" ? (
                   <span className="flex items-center gap-1 text-xs text-muted-foreground"><Loader2 className="size-3 animate-spin" /> loading diff…</span>
                 ) : diffState === "error" ? (
-                  <span className="text-xs text-red-600 dark:text-red-400">Diff unavailable — the worktree may have been torn down.</span>
+                  <span className="text-xs text-red-600 dark:text-red-400">Diff unavailable — hide and show again to retry, or the worktree may have been torn down.</span>
                 ) : diff && diff.diff ? (
                   <DiffLines diff={diff.diff} />
                 ) : (
