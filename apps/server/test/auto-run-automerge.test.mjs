@@ -54,7 +54,7 @@ function makeSweep({ settings = {}, run = greenRun(), reviewDiff, fetchPrChecks,
 }
 
 const ON = { autoMergeLowRisk: true, autoMergeMaxDiffLines: 400 };
-const passReview = async () => ({ review: { status: "pass", risk: "low", summary: "", issues: [] }, diffLines: 10 });
+const passReview = async () => ({ review: { status: "pass", risk: "low", summary: "", issues: [] }, diffLines: 10, files: ["src/Hello.java"] });
 
 test("default OFF: a perfectly green run is NOT auto-merged", async () => {
   const { svc, merges } = makeSweep({ settings: {}, reviewDiff: passReview });
@@ -104,6 +104,15 @@ test("ON + fresh checks come back FAILING => NOT merged (never trusts stale gree
   });
   await svc.autoMergeSweep();
   assert.deepEqual(merges, []);
+});
+
+test("ON + diff touches a sensitive path => NOT merged (guard)", async () => {
+  const { svc, merges } = makeSweep({
+    settings: { ...ON, autoMergeSensitivePaths: [".github/workflows/**"] },
+    reviewDiff: async () => ({ review: { status: "pass", risk: "low", summary: "", issues: [] }, diffLines: 10, files: [".github/workflows/ci.yml"] }),
+  });
+  await svc.autoMergeSweep();
+  assert.deepEqual(merges, [], "a change to a sensitive path is never auto-merged");
 });
 
 test("kill switch halts the sweep", async () => {

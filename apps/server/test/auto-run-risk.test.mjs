@@ -7,7 +7,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { computeMergeRisk } from "../src/services/auto-run-risk.mjs";
+import { computeMergeRisk, matchesGlob, sensitivePathHit, DEFAULT_SENSITIVE_PATHS } from "../src/services/auto-run-risk.mjs";
 
 const green = {
   verification: { verified: true, passed: true },
@@ -51,4 +51,28 @@ test("extra AI-review + diff-size signals (slice 2/3)", () => {
   assert.equal(computeMergeRisk(green, { extra: { review: null } }).level, "low", "no review configured doesn't downgrade on its own");
   assert.equal(computeMergeRisk(green, { extra: { diffTooLarge: true } }).level, "medium", "oversized diff blocks low");
   assert.equal(computeMergeRisk(green, { extra: { review: { status: "unknown" } } }).level, "medium", "review requested but not run => not low");
+});
+
+test("sensitive-path signal downgrades an otherwise-green run", () => {
+  const hit = { path: ".github/workflows/ci.yml", pattern: ".github/workflows/**" };
+  const r = computeMergeRisk(green, { extra: { review: { status: "pass" }, sensitivePath: hit } });
+  assert.equal(r.level, "medium");
+  assert.ok(r.reasons.some((x) => /sensitive path/.test(x)));
+});
+
+test("matchesGlob: ** / *, segment boundaries", () => {
+  assert.equal(matchesGlob(".github/workflows/ci.yml", ".github/workflows/**"), true);
+  assert.equal(matchesGlob("a/b/migrations/x.sql", "**/migrations/**"), true);
+  assert.equal(matchesGlob("migrations/x.sql", "**/migrations/**"), true, "**/ matches zero dirs");
+  assert.equal(matchesGlob("apps/web/package.json", "**/package.json"), true);
+  assert.equal(matchesGlob("src/main/Hello.java", "**/auth/**"), false);
+  assert.equal(matchesGlob("src/x.tsx", "*.tsx"), false, "* does not cross a separator");
+  assert.equal(matchesGlob("x.tsx", "*.tsx"), true);
+});
+
+test("sensitivePathHit: first match across path-strings or {path} objects", () => {
+  assert.equal(sensitivePathHit(["src/Hello.java", "README.md"], DEFAULT_SENSITIVE_PATHS), null);
+  const hit = sensitivePathHit([{ path: "src/Hello.java" }, { path: ".github/workflows/ci.yml" }], DEFAULT_SENSITIVE_PATHS);
+  assert.equal(hit.path, ".github/workflows/ci.yml");
+  assert.equal(sensitivePathHit(["anything"], []), null, "empty pattern list never hits");
 });

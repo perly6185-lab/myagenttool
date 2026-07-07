@@ -422,14 +422,16 @@ export function createServerRuntimeServices({
       if (!command) return undefined;
       return async ({ autoRun }) => {
         const worktree = state.worktrees.find((w) => w.id === autoRun.worktreeId) ?? null;
-        if (!worktree) return { review: null, diffLines: 0 };
-        const diff = worktreeDiff(worktree)?.diff ?? "";
+        if (!worktree) return { review: null, diffLines: 0, files: [] };
+        const wd = worktreeDiff(worktree) ?? {};
+        const diff = wd.diff ?? "";
         const diffLines = diff ? diff.split("\n").length : 0;
+        const files = Array.isArray(wd.files) ? wd.files.map((f) => f.path).filter(Boolean) : [];
         const issueBody = autoRun.link?.type === "issue" && worktree?.repoPath
           ? await runIssueBodyFetch({ cwd: worktree.repoPath, issueNumber: autoRun.link.number })
           : null;
         const review = await runDiffReview({ command, link: autoRun.link, issueBody, diff, timeoutMs: reviewTimeoutMs(autoRunEnv) });
-        return { review, diffLines };
+        return { review, diffLines, files };
       };
     })(),
     // Human-triggered PR merge from the console (merge stays human — only fired

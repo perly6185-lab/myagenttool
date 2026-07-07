@@ -20,6 +20,7 @@ import { resolveAutoTriggerConfig } from "./auto-trigger.mjs";
 import { deciderTimeoutMs, resolveDeciderCommand } from "./decision-command.mjs";
 import { judgeTimeoutMs, resolveJudgeCommand } from "./auto-run-judge.mjs";
 import { resolveReviewCommand } from "./auto-run-review.mjs";
+import { DEFAULT_SENSITIVE_PATHS } from "./auto-run-risk.mjs";
 import { resolveStatusWritebackConfig } from "./issue-status.mjs";
 import { resolveAutoRunVerifyCommand, resolveVerifyCommandAllowlist } from "./worktree-verify.mjs";
 import { decisionConfig } from "./auto-run-decision.mjs";
@@ -116,7 +117,16 @@ export function normalizeAutoRunSettings(patch = {}, prev = {}) {
     // line cap above which a PR is never auto-merged (falls to a human merge).
     autoMergeLowRisk: keep("autoMergeLowRisk", asBool),
     autoMergeMaxDiffLines: keep("autoMergeMaxDiffLines", (v) => clampInt(v, 1, 100_000)),
+    // Sensitive-path guard: glob list; a diff touching any is never auto-merged.
+    // Null = use the conservative DEFAULT_SENSITIVE_PATHS.
+    autoMergeSensitivePaths: keep("autoMergeSensitivePaths", (v) => normalizeGlobList(v)),
   };
+}
+
+function normalizeGlobList(v) {
+  if (!Array.isArray(v)) return null;
+  const list = v.map((s) => String(s).trim()).filter(Boolean).slice(0, 100);
+  return list.length ? list : null;
 }
 
 /**
@@ -181,6 +191,10 @@ export function resolveAutoRunConfig(state = {}, baseEnv = process.env) {
     // Risk-based merge: opt-in auto-merge of low-risk PRs + the diff-size cap.
     autoMergeLowRisk: Boolean(settings.autoMergeLowRisk),
     autoMergeMaxDiffLines: Number(settings.autoMergeMaxDiffLines ?? 400) || 400,
+    autoMergeSensitivePaths:
+      Array.isArray(settings.autoMergeSensitivePaths) && settings.autoMergeSensitivePaths.length
+        ? settings.autoMergeSensitivePaths
+        : DEFAULT_SENSITIVE_PATHS,
     // Command knobs are env-only; expose only whether each is configured.
     commands: {
       verify: Boolean(resolveAutoRunVerifyCommand()),

@@ -5,7 +5,7 @@ import { normalizeWorktreeLink } from "./projects.mjs";
 import { intentForPath, resolveDecision } from "./auto-run-decision.mjs";
 import { isSpawnedChildBody } from "./auto-run-spawn.mjs";
 import { judgmentEvidence } from "./auto-run-judge.mjs";
-import { computeMergeRisk } from "./auto-run-risk.mjs";
+import { computeMergeRisk, sensitivePathHit, DEFAULT_SENSITIVE_PATHS } from "./auto-run-risk.mjs";
 
 // One-click "Auto" orchestrator. It closes the seam the console never had:
 // turning a linked GitHub issue into a worktree AND a started agent run seeded
@@ -672,21 +672,28 @@ export function createAutoRunService({
       }
       // Standard signals must be green before we spend a review call.
       if (computeMergeRisk(autoRun).level !== "low") continue;
-      // AI diff review + diff size (the strict bar). Run the review once, lazily.
+      // AI diff review + diff size + changed files (the strict bar). Run the
+      // review once, lazily; it also returns the changed-file list for the
+      // sensitive-path guard.
       if (typeof reviewDiff === "function" && !autoRun.review) {
         try {
           const r = await reviewDiff({ autoRun });
           if (r) {
             if (r.review) autoRun.review = r.review;
             if (Number.isFinite(r.diffLines)) autoRun.diffLines = r.diffLines;
+            if (Array.isArray(r.files)) autoRun.diffFiles = r.files;
           }
         } catch {
           /* review best-effort; a missing review keeps it out of "low" below */
         }
       }
+      const sensitivePaths = Array.isArray(settings.autoMergeSensitivePaths) && settings.autoMergeSensitivePaths.length
+        ? settings.autoMergeSensitivePaths
+        : DEFAULT_SENSITIVE_PATHS;
       const extra = {
         review: autoRun.review ?? { status: "missing" },
         diffTooLarge: Number.isFinite(autoRun.diffLines) && autoRun.diffLines > maxDiffLines,
+        sensitivePath: sensitivePathHit(autoRun.diffFiles ?? [], sensitivePaths),
       };
       if (computeMergeRisk(autoRun, { extra }).level !== "low") continue;
       try {

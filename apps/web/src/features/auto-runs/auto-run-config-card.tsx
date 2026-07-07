@@ -22,6 +22,7 @@ interface AutoRunConfig {
   breakerCooldownMinutes: number;
   autoMergeLowRisk: boolean;
   autoMergeMaxDiffLines: number;
+  autoMergeSensitivePaths: string[];
   commands: { verify: boolean; decider: boolean; judge: boolean; review: boolean };
   verifyCommandNames: string[];
   settings: Record<string, unknown>;
@@ -48,6 +49,7 @@ interface Draft {
   breakerCooldownMinutes: number;
   autoMergeLowRisk: boolean;
   autoMergeMaxDiffLines: number;
+  autoMergeSensitivePaths: string; // newline-separated globs; empty = use the default set
   sloTargets: { prSuccessRate: number; failureRate: number; attentionRate: number; timeToPrMedianSeconds: number };
 }
 
@@ -74,6 +76,7 @@ function toDraft(c: AutoRunConfig): Draft {
     breakerCooldownMinutes: c.breakerCooldownMinutes,
     autoMergeLowRisk: c.autoMergeLowRisk,
     autoMergeMaxDiffLines: c.autoMergeMaxDiffLines,
+    autoMergeSensitivePaths: ((c.settings?.autoMergeSensitivePaths as string[] | undefined) ?? []).join("\n"),
     sloTargets: { ...SLO_DEFAULTS, ...((c.settings?.sloTargets as Partial<typeof SLO_DEFAULTS>) ?? {}) },
   };
 }
@@ -178,7 +181,10 @@ export function AutoRunConfigCard() {
     if (!draft) return;
     setSaving(true);
     try {
-      const data = (await api.updateAutoRunSettings(draft as unknown as Record<string, unknown>)) as { config?: AutoRunConfig };
+      // The sensitive-path list edits as newline text; send it as a glob array
+      // (empty = clear the override → the server's default set).
+      const payload = { ...draft, autoMergeSensitivePaths: draft.autoMergeSensitivePaths.split("\n").map((s) => s.trim()).filter(Boolean) };
+      const data = (await api.updateAutoRunSettings(payload as unknown as Record<string, unknown>)) as { config?: AutoRunConfig };
       if (data.config) {
         setConfig(data.config);
         setDraft(toDraft(data.config));
@@ -273,6 +279,21 @@ export function AutoRunConfigCard() {
                 Auto-merge is on but no AI review command is configured — the strict bar is never met, so nothing will auto-merge until a review command is set (env).
               </p>
             ) : null}
+            <label className="flex flex-col gap-1">
+              <span className="text-sm font-medium">Sensitive paths (never auto-merged)</span>
+              <span className="text-xs text-muted-foreground">One glob per line; a diff touching any is never auto-merged (falls to a human), whatever its size. Empty = the default set below.</span>
+              <textarea
+                value={draft.autoMergeSensitivePaths}
+                onChange={(e) => set("autoMergeSensitivePaths", e.target.value)}
+                rows={4}
+                spellCheck={false}
+                placeholder={".github/workflows/**\n**/migrations/**\n**/auth/**"}
+                className="mt-0.5 rounded-md border border-border bg-background px-2 py-1.5 font-mono text-xs"
+              />
+              {draft.autoMergeSensitivePaths.trim() === "" ? (
+                <span className="text-xs text-muted-foreground">Using the default set: {config.autoMergeSensitivePaths.join(", ")}.</span>
+              ) : null}
+            </label>
             <div className="flex flex-wrap items-center gap-3 rounded-lg border border-border px-3 py-2 text-sm">
               <span className="text-muted-foreground">Commands (env-only):</span>
               <span className="flex items-center gap-1.5">verify {cmdBadge(config.commands.verify)}</span>
