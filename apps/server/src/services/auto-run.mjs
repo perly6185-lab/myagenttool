@@ -46,6 +46,7 @@ export function createAutoRunService({
   findAgent,
   defaultAgent,
   budgetStatusFor,
+  sendAlert,
   createInvocation,
   findInvocation,
   autoApproveInvocation,
@@ -210,6 +211,12 @@ export function createAutoRunService({
     if (typeof budgetStatusFor === "function" && projectId) {
       const budget = budgetStatusFor(projectId);
       if (budget?.over) {
+        void sendAlert?.({
+          kind: "budget_exceeded",
+          severity: "high",
+          message: `Auto-run blocked: project over budget ($${budget.spentUsd} of $${budget.limitUsd}).`,
+          data: { projectId, spentUsd: budget.spentUsd, limitUsd: budget.limitUsd, link: normalizedLink },
+        });
         throw new Error(`Budget exceeded for this project (spent $${budget.spentUsd} of $${budget.limitUsd}). Raise the budget or reset spend before starting more runs.`);
       }
     }
@@ -597,6 +604,7 @@ export function createAutoRunService({
       // Orphaned by a restart: the invocation record is gone.
       if (run.invocationId && !inv) {
         setAutoRunStatus(run, "failed", { error: "Run reaped: its invocation no longer exists (server restart)." });
+        void sendAlert?.({ kind: "run_reaped", severity: "medium", message: `Auto-run ${run.id} reaped (orphaned invocation).`, data: { autoRunId: run.id, reason: "orphaned", link: run.link } });
         reaped += 1;
         continue;
       }
@@ -606,6 +614,7 @@ export function createAutoRunService({
       const deadlineMs = Math.max(maxIdleMs, Number(agent?.adapter?.timeoutSeconds ?? 0) * 1000 + REAP_MARGIN_MS);
       if (Number.isFinite(idleMs) && idleMs > deadlineMs) {
         setAutoRunStatus(run, "failed", { error: `Run reaped: no progress for ${Math.round(idleMs / 1000)}s (stuck).` });
+        void sendAlert?.({ kind: "run_reaped", severity: "medium", message: `Auto-run ${run.id} reaped (stuck ${Math.round(idleMs / 1000)}s).`, data: { autoRunId: run.id, reason: "stuck", idleSeconds: Math.round(idleMs / 1000), link: run.link } });
         reaped += 1;
       }
     }

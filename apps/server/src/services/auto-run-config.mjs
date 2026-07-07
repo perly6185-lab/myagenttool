@@ -23,6 +23,7 @@ import { resolveStatusWritebackConfig } from "./issue-status.mjs";
 import { resolveAutoRunVerifyCommand } from "./worktree-verify.mjs";
 import { decisionConfig } from "./auto-run-decision.mjs";
 import { spawnIssuesConfig } from "./auto-run-spawn.mjs";
+import { normalizeAlertWebhookUrl } from "./auto-run-alerts.mjs";
 
 // The env key each safe setting maps onto, so the overlay and the panel agree.
 const SETTING_ENV = {
@@ -85,6 +86,9 @@ export function normalizeAutoRunSettings(patch = {}, prev = {}) {
     // O2 graduated approval (UI-only): auto-approve NON-CODE paths (design/
     // clarify/prototype). develop and merge always stay human. Default off.
     autoApproveNonCodePaths: keep("autoApproveNonCodePaths", asBool),
+    // A1 alerting (UI-only): operator webhook for real-time operational alerts.
+    // Validated http(s); a typo/blank clears it (alerting disabled).
+    alertWebhookUrl: keep("alertWebhookUrl", (v) => normalizeAlertWebhookUrl(v)),
   };
 }
 
@@ -141,6 +145,8 @@ export function resolveAutoRunConfig(state = {}, baseEnv = process.env) {
     autonomyKillSwitch: Boolean(settings.autonomyKillSwitch),
     // O2 graduated approval (not env-backed): auto-approve non-code paths.
     autoApproveNonCodePaths: Boolean(settings.autoApproveNonCodePaths),
+    // A1 alerting: whether an operational-alert webhook is configured.
+    alertWebhookConfigured: Boolean(settings.alertWebhookUrl),
     // Command knobs are env-only; expose only whether each is configured.
     commands: {
       verify: Boolean(resolveAutoRunVerifyCommand()),
