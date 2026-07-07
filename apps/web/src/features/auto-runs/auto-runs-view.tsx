@@ -11,6 +11,7 @@ import type { Tone } from "@/lib/readable-labels";
 import { AutoRunConfigCard } from "./auto-run-config-card";
 import { AutoRunReadinessCard } from "./auto-run-readiness-card";
 import { AutoRunOnboardingCard } from "./auto-run-onboarding-card";
+import { ReportView } from "./report-view";
 import { useConsoleState } from "@/data/use-console-state";
 
 interface AutoRunLink {
@@ -662,7 +663,7 @@ export function AutoRunsView() {
                   );
                 })() : null}
                 {run.report && (run.status === "report_posted" || run.status === "needs_input") ? (
-                  <p className="line-clamp-3 whitespace-pre-wrap rounded bg-muted/50 px-2 py-1 text-xs text-muted-foreground">{run.report}</p>
+                  <ReportView report={run.report} />
                 ) : null}
                 {run.error ? <p className="text-xs text-amber-600 dark:text-amber-400">{run.error}</p> : null}
               </CardContent>
