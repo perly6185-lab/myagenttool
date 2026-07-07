@@ -5,6 +5,7 @@ import { normalizeWorktreeLink } from "./projects.mjs";
 import { intentForPath, resolveDecision } from "./auto-run-decision.mjs";
 import { isSpawnedChildBody } from "./auto-run-spawn.mjs";
 import { judgmentEvidence } from "./auto-run-judge.mjs";
+import { computeMergeRisk } from "./auto-run-risk.mjs";
 
 // One-click "Auto" orchestrator. It closes the seam the console never had:
 // turning a linked GitHub issue into a worktree AND a started agent run seeded
@@ -62,6 +63,7 @@ export function createAutoRunService({
   postIssueReport,
   spawnChildIssue,
   judgeAcceptance,
+  reviewDiff,
   mergePr,
   fetchPrChecks,
 }) {
@@ -633,6 +635,84 @@ export function createAutoRunService({
     return { ok: true, prNumber: autoRun.prNumber, prState: "MERGED" };
   }
 
+  // Risk-based merge (opt-in, default off): auto-merge low-risk PRs on the same
+  // periodic tick as the reaper. STRICT bar — a PR is auto-merged only when the
+  // standard signals are green (computeMergeRisk === "low") AND the AI diff
+  // review passed AND the diff is under the size cap. No review configured =>
+  // review "missing" => never auto-merges (falls to the human merge dialog).
+  // Respects the kill switch + circuit breaker; every auto-merge is audited +
+  // alerted. Merge itself still goes through mergeAutoRunPr (re-fetches checks).
+  async function autoMergeSweep() {
+    const settings = state.autoRunSettings ?? {};
+    if (!settings.autoMergeLowRisk) return { merged: [], evaluated: 0 };
+    if (settings.autonomyKillSwitch) return { merged: [], evaluated: 0, halted: "kill-switch" };
+    const breaker = state.autoRunBreaker;
+    if (breaker?.openUntil && Date.parse(breaker.openUntil) > Date.parse(now())) {
+      return { merged: [], evaluated: 0, halted: "breaker-open" };
+    }
+    const maxDiffLines = Number(settings.autoMergeMaxDiffLines) || 400;
+    const open = (state.autoRuns ?? []).filter(
+      (r) => r.status === "pr_open" && r.prState !== "MERGED" && r.prState !== "CLOSED" && r.prNumber,
+    );
+    const merged = [];
+    for (const autoRun of open) {
+      // Fresh checks — never auto-merge on the throttled poll's possibly-stale state.
+      const project = state.projects.find((p) => p.id === autoRun.projectId) ?? null;
+      const repoPath = project?.path;
+      if (repoPath && typeof fetchPrChecks === "function") {
+        try {
+          const fresh = await fetchPrChecks({ prNumber: autoRun.prNumber, repoPath });
+          if (fresh) {
+            autoRun.prChecks = fresh;
+            autoRun.prStateCheckedAt = now();
+          }
+        } catch {
+          /* leave as-is → still gated below */
+        }
+      }
+      // Standard signals must be green before we spend a review call.
+      if (computeMergeRisk(autoRun).level !== "low") continue;
+      // AI diff review + diff size (the strict bar). Run the review once, lazily.
+      if (typeof reviewDiff === "function" && !autoRun.review) {
+        try {
+          const r = await reviewDiff({ autoRun });
+          if (r) {
+            if (r.review) autoRun.review = r.review;
+            if (Number.isFinite(r.diffLines)) autoRun.diffLines = r.diffLines;
+          }
+        } catch {
+          /* review best-effort; a missing review keeps it out of "low" below */
+        }
+      }
+      const extra = {
+        review: autoRun.review ?? { status: "missing" },
+        diffTooLarge: Number.isFinite(autoRun.diffLines) && autoRun.diffLines > maxDiffLines,
+      };
+      if (computeMergeRisk(autoRun, { extra }).level !== "low") continue;
+      try {
+        await mergeAutoRunPr(autoRun.id, { actor: { userId: "usr_autorun_automerge" } });
+        merged.push(autoRun.id);
+        appendEvent({
+          invocationId: autoRun.invocationId,
+          type: "auto_run_auto_merged",
+          level: "info",
+          message: `Auto-run ${autoRun.id} PR #${autoRun.prNumber} AUTO-merged (low risk).`,
+          data: { autoRunId: autoRun.id, prNumber: autoRun.prNumber, diffLines: autoRun.diffLines ?? null, link: autoRun.link },
+        });
+        void sendAlert?.({
+          kind: "auto_merged",
+          severity: "medium",
+          message: `Auto-run ${autoRun.id} PR #${autoRun.prNumber} auto-merged (low risk).`,
+          data: { autoRunId: autoRun.id, prNumber: autoRun.prNumber, link: autoRun.link },
+        });
+      } catch {
+        /* merge refused (checks flipped, conflict, gate) → leave for a human */
+      }
+    }
+    if (merged.length) persistStateSoon();
+    return { merged, evaluated: open.length };
+  }
+
   // O1 reliability: reap runs stuck in an active state so nothing lingers
   // forever (leaking its worktree, showing as active). Runs on boot (crash
   // reconcile) and on a periodic tick. awaiting_approval is NEVER reaped — it
@@ -680,5 +760,5 @@ export function createAutoRunService({
     return { reaped, readvanced };
   }
 
-  return { startAutoRun, advanceAutoRunForInvocation, syncAutoRunOnApproval, retryAutoRun, mergeAutoRunPr, reapStuckAutoRuns };
+  return { startAutoRun, advanceAutoRunForInvocation, syncAutoRunOnApproval, retryAutoRun, mergeAutoRunPr, reapStuckAutoRuns, autoMergeSweep };
 }

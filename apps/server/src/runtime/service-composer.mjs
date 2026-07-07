@@ -27,6 +27,7 @@ import { deciderTimeoutMs, resolveDeciderCommand, runDeciderCommand } from "../s
 import { childIssueBody, childIssueTitle, extractProjectFieldsBlock, runChildIssueCreate, spawnIssuesConfig } from "../services/auto-run-spawn.mjs";
 import { refreshPrDispositions } from "../services/auto-run-eval.mjs";
 import { judgeTimeoutMs, resolveJudgeCommand, runAcceptanceJudge } from "../services/auto-run-judge.mjs";
+import { resolveReviewCommand, reviewTimeoutMs, runDiffReview } from "../services/auto-run-review.mjs";
 import { decisionConfig } from "../services/auto-run-decision.mjs";
 import { autoRunSettingsEnvOverlay } from "../services/auto-run-config.mjs";
 import { createAlertDispatcher } from "../services/auto-run-alerts.mjs";
@@ -316,7 +317,7 @@ export function createServerRuntimeServices({
   // applies without a restart. No-op when unconfigured; never throws.
   const autoRunAlerts = createAlertDispatcher({ getWebhookUrl: () => state.autoRunSettings?.alertWebhookUrl ?? null });
 
-  const { startAutoRun, advanceAutoRunForInvocation, syncAutoRunOnApproval, retryAutoRun, mergeAutoRunPr, reapStuckAutoRuns } = createAutoRunService({
+  const { startAutoRun, advanceAutoRunForInvocation, syncAutoRunOnApproval, retryAutoRun, mergeAutoRunPr, reapStuckAutoRuns, autoMergeSweep } = createAutoRunService({
     state,
     now,
     nextId,
@@ -412,6 +413,24 @@ export function createServerRuntimeServices({
             return runAcceptanceJudge({ command, link: autoRun.link, issueBody, diff, timeoutMs: judgeTimeoutMs(autoRunEnv) });
           }
         : undefined;
+    })(),
+    // Risk-based merge: the AI diff-review step (slice 2). Computes the worktree
+    // diff + line count and runs the operator's review command; the result feeds
+    // the merge-risk model in the auto-merge sweep. Undefined when no command.
+    reviewDiff: (() => {
+      const command = resolveReviewCommand(autoRunEnv);
+      if (!command) return undefined;
+      return async ({ autoRun }) => {
+        const worktree = state.worktrees.find((w) => w.id === autoRun.worktreeId) ?? null;
+        if (!worktree) return { review: null, diffLines: 0 };
+        const diff = worktreeDiff(worktree)?.diff ?? "";
+        const diffLines = diff ? diff.split("\n").length : 0;
+        const issueBody = autoRun.link?.type === "issue" && worktree?.repoPath
+          ? await runIssueBodyFetch({ cwd: worktree.repoPath, issueNumber: autoRun.link.number })
+          : null;
+        const review = await runDiffReview({ command, link: autoRun.link, issueBody, diff, timeoutMs: reviewTimeoutMs(autoRunEnv) });
+        return { review, diffLines };
+      };
     })(),
     // Human-triggered PR merge from the console (merge stays human — only fired
     // by a person clicking Merge on a pr_open run, never automatically).
@@ -1985,6 +2004,7 @@ export function createServerRuntimeServices({
     startAutoRun,
     retryAutoRun,
     reapStuckAutoRuns,
+    autoMergeSweep,
     mergeAutoRunPr,
     refreshAutoRunPrDispositions,
     selectProject,
