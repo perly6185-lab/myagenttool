@@ -26,6 +26,7 @@ export interface AutoRunRecord {
   intent?: string | null;
   decision?: { path: string; decidedBy: string; confidence: number; rationale?: string | null } | null;
   branchName?: string | null;
+  worktreeId?: string | null;
   prNumber?: number | null;
   prUrl?: string | null;
   verification?: { passed: boolean; verified: boolean; summary?: string | null } | null;
@@ -165,14 +166,47 @@ function PostureIcon({ state }: { state: PostureState }) {
   return <Minus className="size-3.5" />;
 }
 
+interface WorktreeDiff {
+  files: { path: string; untracked?: boolean }[];
+  base: string;
+  diff: string;
+  truncated: boolean;
+}
+
+// Unified diff with minimal +/- colouring, scrollable so a big diff never blows
+// out the dialog. Gives the human the actual change to review without leaving
+// for GitHub.
+function DiffLines({ diff }: { diff: string }) {
+  return (
+    <pre className="max-h-72 overflow-auto rounded-md border border-border bg-muted/30 p-2 text-[11px] leading-relaxed">
+      {diff.split("\n").map((ln, i) => (
+        <div
+          key={i}
+          className={cn(
+            "whitespace-pre",
+            ln.startsWith("+") && !ln.startsWith("+++") && "text-emerald-600 dark:text-emerald-400",
+            ln.startsWith("-") && !ln.startsWith("---") && "text-red-600 dark:text-red-400",
+            (ln.startsWith("@@") || ln.startsWith("diff ") || ln.startsWith("index ")) && "text-muted-foreground",
+          )}
+        >
+          {ln || " "}
+        </div>
+      ))}
+    </pre>
+  );
+}
+
 // The merge moment — the one human decision in the autonomous loop. Replaces the
 // blank window.confirm with an informed dialog: refreshes PR checks on open (so
-// the shown posture matches the server's require-green gate), disables while the
-// merge runs, and surfaces the REAL failure reason instead of swallowing it.
-// Merge stays a human click.
+// the shown posture matches the server's require-green gate), lets the human peek
+// the diff, disables while the merge runs, and surfaces the REAL failure reason
+// instead of swallowing it. Merge stays a human click.
 function MergeControl({ run, onDone }: { run: AutoRunRecord; onDone: (refresh?: boolean) => Promise<void> | void }) {
   const [open, setOpen] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  const [showDiff, setShowDiff] = useState(false);
+  const [diff, setDiff] = useState<WorktreeDiff | null>(null);
+  const [diffState, setDiffState] = useState<"idle" | "loading" | "error" | "done">("idle");
   const { execute, pending, error } = useAsyncAction();
   const chip = checksChip(run.prChecks);
   const risk = mergeRisk(run);
@@ -184,6 +218,19 @@ function MergeControl({ run, onDone }: { run: AutoRunRecord; onDone: (refresh?: 
       await onDone(true); // pull fresh checks so the posture matches the server gate
     } finally {
       setRefreshing(false);
+    }
+  };
+  const toggleDiff = async () => {
+    const next = !showDiff;
+    setShowDiff(next);
+    if (next && diffState === "idle" && run.worktreeId) {
+      setDiffState("loading");
+      try {
+        setDiff((await api.worktreeDiff(run.worktreeId)) as WorktreeDiff);
+        setDiffState("done");
+      } catch {
+        setDiffState("error");
+      }
     }
   };
   const doMerge = async () => {
@@ -238,6 +285,29 @@ function MergeControl({ run, onDone }: { run: AutoRunRecord; onDone: (refresh?: 
               </li>
             ))}
           </ul>
+          {run.worktreeId ? (
+            <div className="flex flex-col gap-1.5">
+              <button
+                type="button"
+                onClick={() => void toggleDiff()}
+                className="flex items-center gap-1 self-start text-xs text-muted-foreground hover:text-foreground"
+              >
+                <GitBranch className="size-3" /> {showDiff ? "Hide changes" : "Show changes"}
+                {diff ? ` (${diff.files.length} file${diff.files.length === 1 ? "" : "s"}${diff.truncated ? ", truncated" : ""})` : ""}
+              </button>
+              {showDiff ? (
+                diffState === "loading" ? (
+                  <span className="flex items-center gap-1 text-xs text-muted-foreground"><Loader2 className="size-3 animate-spin" /> loading diff…</span>
+                ) : diffState === "error" ? (
+                  <span className="text-xs text-red-600 dark:text-red-400">Diff unavailable — the worktree may have been torn down.</span>
+                ) : diff && diff.diff ? (
+                  <DiffLines diff={diff.diff} />
+                ) : (
+                  <span className="text-xs text-muted-foreground">No changes in the worktree.</span>
+                )
+              ) : null}
+            </div>
+          ) : null}
           {risk.warn ? (
             <p className="rounded-md border border-amber-500/40 bg-amber-500/5 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
               This PR is not fully verified — merging is still your call.
