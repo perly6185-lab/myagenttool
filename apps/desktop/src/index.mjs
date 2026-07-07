@@ -5,6 +5,7 @@ import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { delimiter } from "node:path";
 import * as pty from "node-pty";
 import { callMcpTool, probeMcpServer } from "./mcp-client.mjs";
+import { agentMinimalBaseEnv, minimizeAgentEnvEnabled, shouldMinimizeAgentEnv } from "./agent-env.mjs";
 import { callA2aAgent, probeA2aAgent } from "./a2a-client.mjs";
 import { probeContainerRuntime, runContainerAgent } from "./container-client.mjs";
 import { codexResumeArgs } from "./codex-resume.mjs";
@@ -1413,7 +1414,7 @@ function createCliSpawnPlan(adapter, payload) {
       : isCodexCliCommand(adapter.command)
         ? codexCommandPlan(adapter, renderedArgs, payload.task).args
         : renderedArgs;
-  const env = buildEnv(adapter);
+  const env = buildEnv(withMinimizedAgentEnv(adapter));
   const cwd = adapter.workingDirectoryPolicy === "explicit" && adapter.workingDirectory
     ? String(adapter.workingDirectory)
     : projectCwd(payload);
@@ -1611,7 +1612,7 @@ function executionPreview(adapter, spawnPlan, task) {
     taskSummary: summarizeTask(task),
     sessionMode: spawnPlan.sessionMode,
     workspace: workspacePreview(adapter, spawnPlan),
-    environmentPolicy: adapter.environmentPolicy ?? "inherit_safe",
+    environmentPolicy: withMinimizedAgentEnv(adapter).environmentPolicy ?? "inherit_safe",
     envVisible: false,
     attachments: spawnPlan.attachments?.map((attachment) => ({
       name: attachment.name,
@@ -1805,6 +1806,16 @@ function extensionForMime(mimeType) {
   return map[String(mimeType ?? "").toLowerCase()] ?? ".img";
 }
 
+// B1b Tier 1 opt-in: when enabled, real CLI coding agents run under the minimized
+// env (agent_minimal). The gate + allowlist live in agent-env.mjs (pure/tested);
+// an adapter with an explicit/stricter policy is respected as-is. Default OFF —
+// env inheritance is byte-for-byte unchanged until the operator opts in.
+function withMinimizedAgentEnv(adapter) {
+  return shouldMinimizeAgentEnv(adapter, { enabled: minimizeAgentEnvEnabled() })
+    ? { ...adapter, environmentPolicy: "agent_minimal" }
+    : adapter;
+}
+
 function buildEnv(adapter) {
   if (adapter.environmentPolicy === "none") {
     return {};
@@ -1812,6 +1823,15 @@ function buildEnv(adapter) {
   const explicitEnv = normalizeEnv(adapter.env);
   if (adapter.environmentPolicy === "explicit_only") {
     return isCodexCliCommand(adapter.command) ? sanitizeCodexChildEnv(withCodexUserDefaults({ ...explicitEnv, ...codexLocalEnv(explicitEnv) })) : explicitEnv;
+  }
+  if (adapter.environmentPolicy === "agent_minimal") {
+    // B1b Tier 1: curated non-secret base + operator env only (agentMinimalBaseEnv).
+    // Coding agents authenticate via the LOCAL login state (keychain / ~/.claude /
+    // ~/.codex via HOME), not env secrets — so this closes T1 without breaking auth.
+    const merged = agentMinimalBaseEnv(process.env, explicitEnv);
+    return isCodexCliCommand(adapter.command)
+      ? sanitizeCodexChildEnv(withCodexUserDefaults({ ...merged, ...codexLocalEnv(merged) }))
+      : merged;
   }
   const baseEnv = { ...process.env, ...explicitEnv };
   const inheritedEnv = { ...baseEnv, ...codexLocalEnv(baseEnv), ...explicitEnv };
