@@ -5,6 +5,8 @@ import { denyForeignProject } from "../runtime/auth.mjs";
 import { summarizeAutoRuns } from "../services/auto-run-metrics.mjs";
 import { readEvalTrend, summarizeEvalTrend } from "../services/eval-trend.mjs";
 import { normalizeAutoRunSettings, resolveAutoRunConfig } from "../services/auto-run-config.mjs";
+import { computeAutoRunReadiness } from "../services/auto-run-readiness.mjs";
+import { resolveAutoRunVerifyCommandFor } from "../services/worktree-verify.mjs";
 
 export async function handleProjectRoutes({
   req,
@@ -25,6 +27,7 @@ export async function handleProjectRoutes({
   startAutoRun,
   retryAutoRun,
   mergeAutoRunPr,
+  budgetStatusFor,
   refreshAutoRunPrDispositions,
   selectProject,
   removeProject,
@@ -222,6 +225,27 @@ export async function handleProjectRoutes({
     // surfaces its local trend.jsonl so capability regressions are visible.
     const records = readEvalTrend();
     sendJson(res, 200, { records, summary: summarizeEvalTrend(records) });
+    return true;
+  }
+
+  const readinessMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/auto-run-readiness$/);
+  if (readinessMatch && req.method === "GET") {
+    // U1 preflight: can this project run an auto-run, and what's missing?
+    const projectId = decodeURIComponent(readinessMatch[1]);
+    const project = (state.projects ?? []).find((p) => p.id === projectId) ?? null;
+    const agent = project?.defaultAgentId ? (state.agents ?? []).find((a) => a.id === project.defaultAgentId) ?? null : null;
+    const settledSet = new Set(["pr_open", "report_posted", "needs_input", "blocked", "done", "failed"]);
+    const readiness = computeAutoRunReadiness({
+      project,
+      agent,
+      deviceLinked: state.device?.unlinkState === "linked" || (state.devices ?? []).length > 0,
+      budget: typeof budgetStatusFor === "function" && project ? budgetStatusFor(project.id) : null,
+      verifyCommand: resolveAutoRunVerifyCommandFor({ verifyCommandName: project?.verifyCommandName ?? null }),
+      settings: state.autoRunSettings ?? {},
+      breaker: state.autoRunBreaker ?? null,
+      activeCount: (state.autoRuns ?? []).filter((r) => !settledSet.has(r.status)).length,
+    });
+    sendJson(res, 200, { readiness });
     return true;
   }
 

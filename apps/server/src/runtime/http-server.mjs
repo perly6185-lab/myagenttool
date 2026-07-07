@@ -241,6 +241,7 @@ export function createHttpServer({
         startAutoRun,
         retryAutoRun,
         mergeAutoRunPr,
+        budgetStatusFor,
         refreshAutoRunPrDispositions,
         selectProject,
         removeProject,

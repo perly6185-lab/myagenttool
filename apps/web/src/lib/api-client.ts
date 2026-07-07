@@ -423,6 +423,8 @@ export const api = {
   // Auto-run observability: the records plus an evaluation summary. refresh=true
   // also refreshes PR dispositions (bounded gh reads) for the routing evaluation.
   listAutoRuns: (refresh = false) => request("GET", `/api/auto-runs${refresh ? "?refresh=1" : ""}`),
+  // U1: can this project run an auto-run, and what's missing?
+  autoRunReadiness: (projectId: string) => request("GET", `/api/projects/${encodeURIComponent(projectId)}/auto-run-readiness`),
   // Retry a failed/blocked auto-run on its existing worktree.
   retryAutoRun: (id: string) => request("POST", `/api/auto-runs/${encodeURIComponent(id)}/retry`),
   // Human-triggered PR merge for a pr_open auto-run (merge stays human — a person

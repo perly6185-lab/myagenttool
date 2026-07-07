@@ -8,6 +8,9 @@ import { api } from "@/data/use-console-actions";
 import { cn } from "@/lib/cn";
 import type { Tone } from "@/lib/readable-labels";
 import { AutoRunConfigCard } from "./auto-run-config-card";
+import { AutoRunReadinessCard } from "./auto-run-readiness-card";
+import { AutoRunOnboardingCard } from "./auto-run-onboarding-card";
+import { useConsoleState } from "@/data/use-console-state";
 
 interface AutoRunLink {
   type: "issue" | "pr";
@@ -170,6 +173,7 @@ function Stepper({ status }: { status: string }) {
 }
 
 export function AutoRunsView() {
+  const { data: consoleState } = useConsoleState();
   const [runs, setRuns] = useState<AutoRunRecord[]>([]);
   const [summary, setSummary] = useState<AutoRunSummary | null>(null);
   const [loading, setLoading] = useState(true);
@@ -214,6 +218,8 @@ export function AutoRunsView() {
         </Button>
       </div>
 
+      <AutoRunOnboardingCard projectId={consoleState?.currentProjectId ?? null} />
+      <AutoRunReadinessCard projectId={consoleState?.currentProjectId ?? null} />
       <AutoRunConfigCard />
 
       {summary ? (
