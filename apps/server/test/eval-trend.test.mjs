@@ -112,9 +112,9 @@ test("byKind breakdown is carried onto the latest metric point", () => {
   assert.equal(s.subcap.latest.byKind["issue-gate"].total, 6);
 });
 
-test("provisional floors are the shared eval-signals source (0.6), labelled provisional", () => {
-  assert.equal(PROVISIONAL_FLOORS.subcap, 0.6);
-  assert.equal(PROVISIONAL_FLOORS.heldout, 0.6);
+test("floors are the shared eval-signals source (subcap 0.80 derived, heldout 0.6 provisional)", () => {
+  assert.equal(PROVISIONAL_FLOORS.subcap, 0.8, "#250: derived from 3 clean real runs (2026-07-07)");
+  assert.equal(PROVISIONAL_FLOORS.heldout, 0.6, "still provisional — no real held-out data yet");
   const s = summarizeEvalTrend([subcap("2026-07-06T06:34:00Z", 1, 15, 15)]);
   assert.equal(s.subcap.floor, PROVISIONAL_FLOORS.subcap, "panel floor == shared runner floor");
 });

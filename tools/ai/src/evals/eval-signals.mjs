@@ -4,13 +4,15 @@
 // hermetically. tools/dev/eval-real-run.mjs supplies the run record + prior
 // trend and turns the returned events into inbox lines.
 
-// Provisional regression floors — the SINGLE source of truth shared by the
-// scheduled runner (exit-non-zero on breach) and the server observability panel
-// (below-floor badge). #250 replaces these with lines derived from >=3 real
-// runs (docs/engineering/MATURITY_CALIBRATION.md); until then a breach is
-// flagged but the number is explicitly provisional. held-out 0.6 mirrors the
-// existing --min-pass-rate; subcap 0.6 is a conservative placeholder.
-export const PROVISIONAL_FLOORS = { subcap: 0.6, heldout: 0.6 };
+// Regression floors — the SINGLE source of truth shared by the scheduled runner
+// (exit-non-zero on breach) and the server observability panel (below-floor
+// badge). #250: derive from >=3 real runs (docs/engineering/MATURITY_CALIBRATION.md).
+//   subcap 0.80 — DERIVED 2026-07-07 from 3 clean real runs (100%, 93%, 100%;
+//     observed floor 0.93 − 0.13 margin). Revisit/tighten at n=5. The 07-02 40%
+//     run is a provider outage (looksLikeInfraFailure), excluded.
+//   heldout 0.6 — still PROVISIONAL (n=0 real runs); mirrors the existing
+//     --min-pass-rate until the held-out set accrues >=3 real points.
+export const PROVISIONAL_FLOORS = { subcap: 0.8, heldout: 0.6 };
 
 // Which real capability metrics fell below their floor line. Pure. Infra/auth
 // rows carry no real passRate, so they can never register a breach here.
