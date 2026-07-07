@@ -42,6 +42,8 @@ export function createServerState({ defaultProjectPath, now }) {
     projectTargets: [createProjectTargetRecord(defaultProject, now)],
     worktrees: [],
     autoRuns: [],
+    // A3 circuit breaker: consecutive auto-run failures open it (pause starts).
+    autoRunBreaker: { consecutiveFailures: 0, openUntil: null },
     agents: createDefaultAgents(now),
     invocations: [],
     compareRuns: [],
