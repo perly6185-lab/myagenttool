@@ -426,7 +426,10 @@ export function createServerRuntimeServices({
         const wd = worktreeDiff(worktree) ?? {};
         const diff = wd.diff ?? "";
         const diffLines = diff ? diff.split("\n").length : 0;
-        const files = Array.isArray(wd.files) ? wd.files.map((f) => f.path).filter(Boolean) : [];
+        // changedPaths, NOT wd.files: porcelain (working tree) goes empty once
+        // the agent commits, which silently blinded the sensitive-path guard at
+        // sweep time (the sweep runs post-commit/post-publish).
+        const files = Array.isArray(wd.changedPaths) ? wd.changedPaths.filter(Boolean) : [];
         const issueBody = autoRun.link?.type === "issue" && worktree?.repoPath
           ? await runIssueBodyFetch({ cwd: worktree.repoPath, issueNumber: autoRun.link.number })
           : null;
@@ -434,6 +437,14 @@ export function createServerRuntimeServices({
         return { review, diffLines, files };
       };
     })(),
+    // D3 (issue→UI-design plan): what did this branch change vs its base —
+    // committed work included. Drives design-artifact detection in the reaction.
+    listWorktreeChangedFiles: (worktreeId) => {
+      const worktree = state.worktrees.find((w) => w.id === worktreeId) ?? null;
+      if (!worktree) return [];
+      const wd = worktreeDiff(worktree) ?? {};
+      return Array.isArray(wd.changedPaths) ? wd.changedPaths.filter(Boolean) : [];
+    },
     // Human-triggered PR merge from the console (merge stays human — only fired
     // by a person clicking Merge on a pr_open run, never automatically).
     mergePr: ({ prNumber, repoPath }) => runPrMerge({ cwd: repoPath, prNumber }),

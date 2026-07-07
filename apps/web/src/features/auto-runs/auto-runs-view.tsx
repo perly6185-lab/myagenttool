@@ -12,6 +12,7 @@ import { AutoRunConfigCard } from "./auto-run-config-card";
 import { AutoRunReadinessCard } from "./auto-run-readiness-card";
 import { AutoRunOnboardingCard } from "./auto-run-onboarding-card";
 import { ReportView } from "./report-view";
+import { DesignPanel } from "./design-panel";
 import { useConsoleState } from "@/data/use-console-state";
 
 interface AutoRunLink {
@@ -35,6 +36,7 @@ export interface AutoRunRecord {
   childIssues?: { number: number; url: string | null }[] | null;
   judgment?: { solved: boolean | null; confidence: number | null; summary?: string | null; gaps?: string[] } | null;
   report?: string | null;
+  designArtifacts?: string[] | null;
   prState?: string | null;
   prChecks?: { total: number; passed: number; failed: number; pending: number; state: "NONE" | "SUCCESS" | "FAILURE" | "PENDING" } | null;
   pendingApproval?: { id: string; riskLevel: string | null; riskTags: string[]; summary: string | null } | null;
@@ -664,6 +666,9 @@ export function AutoRunsView() {
                 })() : null}
                 {run.report && (run.status === "report_posted" || run.status === "needs_input") ? (
                   <ReportView report={run.report} />
+                ) : null}
+                {run.designArtifacts?.length && run.worktreeId ? (
+                  <DesignPanel worktreeId={run.worktreeId} artifacts={run.designArtifacts} />
                 ) : null}
                 {run.error ? <p className="text-xs text-amber-600 dark:text-amber-400">{run.error}</p> : null}
               </CardContent>
