@@ -82,6 +82,21 @@ test("committed change with no upstream: diff is visible (not empty) — C1 pilo
   git(worktree.path, "reset", "--hard", "HEAD~1");
 });
 
+test("changedPaths: committed + working-tree changes both listed (porcelain alone goes blind post-commit)", () => {
+  writeFileSync(join(worktree.path, "README.md"), "hello\ncommitted line\n");
+  git(worktree.path, "add", ".");
+  git(worktree.path, "commit", "-m", "committed work");
+  writeFileSync(join(worktree.path, "loose.txt"), "uncommitted\n");
+
+  const result = svc.worktreeDiff(worktree);
+
+  assert.ok(result.changedPaths.includes("README.md"), "COMMITTED change is in changedPaths");
+  assert.ok(result.changedPaths.includes("loose.txt"), "working-tree file is in changedPaths");
+  assert.equal(result.files.some((f) => f.path === "README.md"), false, "porcelain no longer sees the committed file — why changedPaths exists");
+
+  git(worktree.path, "reset", "--hard", "HEAD~1");
+});
+
 test("tracked modification: listed in files and rendered in the unified diff", () => {
   writeFileSync(join(worktree.path, "README.md"), "hello\nworld\n");
 

@@ -54,6 +54,8 @@ function makeAutoRun({
   spawnChildIssue = undefined,
   // Injected acceptance judge (Phase B). Default undefined -> step skipped.
   judgeAcceptance = undefined,
+  // Injected changed-files lister (D3 design artifacts). Default undefined.
+  listWorktreeChangedFiles = undefined,
   // Injected PR merge runner. Default: a successful merge.
   mergePr = async ({ prNumber }) => ({ ok: true, prNumber, method: "squash" }),
   fetchPrChecks = undefined,
@@ -113,6 +115,7 @@ function makeAutoRun({
     fetchIssueBody,
     spawnChildIssue,
     judgeAcceptance,
+    listWorktreeChangedFiles,
     mergePr: async (args) => {
       calls.merge.push(args);
       return mergePr(args);
@@ -1106,4 +1109,84 @@ test("B1a: a clean body carries no injection flag", async () => {
   const { svc } = makeAutoRun({ fetchIssueBody: async () => "Add an optional name param to /hello" });
   const { autoRun } = await svc.startAutoRun({ projectId: sourceProjectId, link: { type: "issue", number: 78, title: "x", url: null, state: "open" }, agentId: "agt_1", name: "i-78" });
   assert.equal(autoRun.promptInjection, null);
+});
+
+// --- D3 design artifacts: design/-only changes deliver as mockups, not a PR ---
+
+const designDecision = async () => ({ path: "design", spawnChildIssues: false, confidence: 0.9, rationale: "UI design first." });
+
+test("D3: design run with design/-only changes (knob on) => report_posted + designArtifacts, no PR", async () => {
+  const { svc, calls } = makeAutoRun({
+    decideIssuePath: designDecision,
+    commit: { committed: true, hasCommits: true },
+    listWorktreeChangedFiles: async () => ["design/mockup-list.html", "design/notes.md"],
+  });
+  state.autoRunSettings = { designArtifacts: true };
+  const { autoRun, invocation } = await svc.startAutoRun({
+    projectId: sourceProjectId,
+    link: { type: "issue", number: 90, title: "Design the tasks screen", url: null, state: "open" },
+    agentId: "agt_1",
+    name: "issue-90-design-ui",
+  });
+  await svc.advanceAutoRunForInvocation({ ...invocation, status: "succeeded", result: "Two mockups attached." });
+  assert.equal(autoRun.status, "report_posted");
+  assert.deepEqual(autoRun.designArtifacts, ["design/mockup-list.html", "design/notes.md"]);
+  assert.equal(autoRun.report, "Two mockups attached.");
+  assert.equal(calls.publish.length, 0, "mockup delivery opens no branch publish");
+  assert.equal(calls.pr.length, 0, "mockup delivery opens no PR");
+  assert.equal(calls.report.length, 1, "the report still posts to the issue");
+});
+
+test("D3: knob OFF => design-with-diff keeps today's diverted path (PR opens)", async () => {
+  const { svc, calls } = makeAutoRun({
+    decideIssuePath: designDecision,
+    commit: { committed: true, hasCommits: true },
+    listWorktreeChangedFiles: async () => ["design/mockup.html"],
+  });
+  state.autoRunSettings = {};
+  const { autoRun, invocation } = await svc.startAutoRun({
+    projectId: sourceProjectId,
+    link: { type: "issue", number: 91, title: "Design the tasks screen", url: null, state: "open" },
+    agentId: "agt_1",
+    name: "issue-91-knob-off",
+  });
+  await svc.advanceAutoRunForInvocation({ ...invocation, status: "succeeded" });
+  assert.equal(autoRun.status, "pr_open", "without the opt-in the legacy publish path runs");
+  assert.equal(autoRun.designArtifacts, undefined);
+  assert.equal(calls.pr.length, 1);
+});
+
+test("D3: a change OUTSIDE design/ falls through to the PR path even with the knob on", async () => {
+  const { svc, calls } = makeAutoRun({
+    decideIssuePath: designDecision,
+    commit: { committed: true, hasCommits: true },
+    listWorktreeChangedFiles: async () => ["design/mockup.html", "src/App.tsx"],
+  });
+  state.autoRunSettings = { designArtifacts: true };
+  const { autoRun, invocation } = await svc.startAutoRun({
+    projectId: sourceProjectId,
+    link: { type: "issue", number: 92, title: "Design the tasks screen", url: null, state: "open" },
+    agentId: "agt_1",
+    name: "issue-92-mixed",
+  });
+  await svc.advanceAutoRunForInvocation({ ...invocation, status: "succeeded" });
+  assert.equal(autoRun.status, "pr_open", "product-code changes keep the reviewable PR path");
+  assert.equal(calls.pr.length, 1);
+});
+
+test("D3: develop runs are untouched by the knob", async () => {
+  const { svc, calls } = makeAutoRun({
+    commit: { committed: true, hasCommits: true },
+    listWorktreeChangedFiles: async () => ["design/mockup.html"],
+  });
+  state.autoRunSettings = { designArtifacts: true };
+  const { autoRun, invocation } = await svc.startAutoRun({
+    projectId: sourceProjectId,
+    link: { type: "issue", number: 93, title: "Add the cache layer", url: null, state: "open" },
+    agentId: "agt_1",
+    name: "issue-93-develop",
+  });
+  await svc.advanceAutoRunForInvocation({ ...invocation, status: "succeeded" });
+  assert.equal(autoRun.status, "pr_open");
+  assert.equal(calls.pr.length, 1);
 });

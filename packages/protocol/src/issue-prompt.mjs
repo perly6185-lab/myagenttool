@@ -55,7 +55,9 @@ const ROLE_INSTRUCTIONS = {
     "Do NOT implement a fix or feature. Explore the codebase and produce a detailed design as " +
     "your final summary: the problem, two or three viable options with trade-offs, a recommended " +
     "option with rationale, and concrete acceptance criteria for implementing it. Do not modify " +
-    "product code.",
+    "product code. If the design is visual (a user interface), you MAY additionally create " +
+    "self-contained HTML mockups under a top-level design/ directory (inline CSS only — no " +
+    "scripts, no external resources); design/ artifacts are not product code.",
   prototype:
     "Build a small, time-boxed, runnable prototype in this worktree to reduce the uncertainty in " +
     "this issue. Prototype code is throwaway — do not polish it or wire it into production paths. " +

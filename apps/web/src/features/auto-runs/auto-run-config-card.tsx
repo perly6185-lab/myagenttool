@@ -20,6 +20,7 @@ interface AutoRunConfig {
   globalMaxConcurrent: number;
   breakerFailureThreshold: number;
   breakerCooldownMinutes: number;
+  designArtifacts: boolean;
   autoMergeLowRisk: boolean;
   autoMergeMaxDiffLines: number;
   autoMergeSensitivePaths: string[];
@@ -47,6 +48,7 @@ interface Draft {
   globalMaxConcurrent: number;
   breakerFailureThreshold: number;
   breakerCooldownMinutes: number;
+  designArtifacts: boolean;
   autoMergeLowRisk: boolean;
   autoMergeMaxDiffLines: number;
   autoMergeSensitivePaths: string; // newline-separated globs; empty = use the default set
@@ -74,6 +76,7 @@ function toDraft(c: AutoRunConfig): Draft {
     globalMaxConcurrent: c.globalMaxConcurrent,
     breakerFailureThreshold: c.breakerFailureThreshold,
     breakerCooldownMinutes: c.breakerCooldownMinutes,
+    designArtifacts: c.designArtifacts,
     autoMergeLowRisk: c.autoMergeLowRisk,
     autoMergeMaxDiffLines: c.autoMergeMaxDiffLines,
     autoMergeSensitivePaths: ((c.settings?.autoMergeSensitivePaths as string[] | undefined) ?? []).join("\n"),
@@ -112,6 +115,7 @@ const RECOMMENDED_SAFE_DEFAULTS = {
   spawnIssues: false,
   deciderFastPath: true,
   autonomyKillSwitch: false,
+  designArtifacts: false,
   autoMergeLowRisk: false,
   autoMergeMaxDiffLines: 400,
   autoTriggerMaxConcurrent: 1,
@@ -266,6 +270,12 @@ export function AutoRunConfigCard() {
               <Toggle label="Spawn child issues" hint="A design decision spawns a governed child issue." checked={draft.spawnIssues} onChange={(v) => set("spawnIssues", v)} />
             </div>
             <div className="grid gap-2 md:grid-cols-2">
+              <Toggle
+                label="Design mockup artifacts"
+                hint="A design run whose only changes are design/ mockups delivers them as an in-console preview (report_posted) instead of a PR."
+                checked={draft.designArtifacts}
+                onChange={(v) => set("designArtifacts", v)}
+              />
               <Toggle
                 label="Auto-merge low-risk PRs"
                 hint="Automatically merge a PR only when it is LOW risk — verify passed, judge solved, checks green, no injection, AI review passed, diff under the cap. Medium/high always stay human. Audited + alerted; kill switch + breaker halt it."

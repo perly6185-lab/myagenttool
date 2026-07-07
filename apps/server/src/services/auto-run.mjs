@@ -64,6 +64,7 @@ export function createAutoRunService({
   spawnChildIssue,
   judgeAcceptance,
   reviewDiff,
+  listWorktreeChangedFiles,
   mergePr,
   fetchPrChecks,
 }) {
@@ -463,6 +464,42 @@ export function createAutoRunService({
             }
             persistStateSoon();
             return autoRun;
+          }
+
+          // D3 design artifacts (opt-in designArtifacts setting): a design run
+          // whose ONLY changes are visual mockups under design/ delivers them as
+          // report + in-console preview — not a PR. Any product-code change
+          // keeps today's behavior (verify → publish → PR, the "diverted" path).
+          const decidedPath = autoRun.decision?.path
+            ?? ({ investigation: "design", question: "clarify" }[autoRun.intent] ?? "develop");
+          if (
+            commitResult.hasCommits &&
+            decidedPath === "design" &&
+            state.autoRunSettings?.designArtifacts &&
+            typeof listWorktreeChangedFiles === "function"
+          ) {
+            let changed = [];
+            try {
+              changed = (await listWorktreeChangedFiles(autoRun.worktreeId)) ?? [];
+            } catch {
+              changed = [];
+            }
+            const designOnly = changed.length > 0 && changed.every((p) => String(p).startsWith("design/"));
+            if (designOnly) {
+              const summary = extractRunSummary(invocation) ?? "Design delivered as visual mockups (see the design artifacts).";
+              maybePostIssueReport(autoRun, worktree, summary);
+              const spawn = await maybeSpawnChildIssue(autoRun, worktree, summary);
+              setAutoRunStatus(autoRun, "report_posted", {
+                report: summary,
+                designArtifacts: changed,
+                error: null,
+                ...(spawn?.child ? { childIssues: [spawn.child] } : {}),
+                ...(spawn?.error ? { spawnError: spawn.error } : {}),
+              });
+              maybeWriteIssueStatus(autoRun, worktree, "review");
+              persistStateSoon();
+              return autoRun;
+            }
           }
         }
 

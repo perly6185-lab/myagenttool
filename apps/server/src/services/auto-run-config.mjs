@@ -113,6 +113,9 @@ export function normalizeAutoRunSettings(patch = {}, prev = {}) {
     globalMaxConcurrent: keep("globalMaxConcurrent", (v) => clampInt(v, 0, 100)),
     breakerFailureThreshold: keep("breakerFailureThreshold", (v) => clampInt(v, 0, 50)),
     breakerCooldownMinutes: keep("breakerCooldownMinutes", (v) => clampInt(v, 1, 1440)),
+    // D3 (UI-only, default off): a design run whose only changes live under
+    // design/ delivers them as report + in-console mockup preview, not a PR.
+    designArtifacts: keep("designArtifacts", asBool),
     // Risk-based merge (UI-only, default off): auto-merge low-risk PRs; the diff
     // line cap above which a PR is never auto-merged (falls to a human merge).
     autoMergeLowRisk: keep("autoMergeLowRisk", asBool),
@@ -188,6 +191,8 @@ export function resolveAutoRunConfig(state = {}, baseEnv = process.env) {
     globalMaxConcurrent: Number(settings.globalMaxConcurrent ?? 0) || 0,
     breakerFailureThreshold: Number(settings.breakerFailureThreshold ?? 0) || 0,
     breakerCooldownMinutes: Number(settings.breakerCooldownMinutes ?? 15) || 15,
+    // D3: design runs deliver design/-only changes as in-console mockups.
+    designArtifacts: Boolean(settings.designArtifacts),
     // Risk-based merge: opt-in auto-merge of low-risk PRs + the diff-size cap.
     autoMergeLowRisk: Boolean(settings.autoMergeLowRisk),
     autoMergeMaxDiffLines: Number(settings.autoMergeMaxDiffLines ?? 400) || 400,

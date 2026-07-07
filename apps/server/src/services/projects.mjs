@@ -1050,6 +1050,16 @@ function worktreeDiff(worktree, { projectTargets = [] } = {}) {
   } catch {
     /* no commits yet, or bad base */
   }
+  // Changed paths vs base — COMMITTED work included. `result.files` is porcelain
+  // (working tree only), so once an agent commits, it goes empty; any consumer
+  // that needs "what did this branch change" (the auto-merge sensitive-path
+  // guard, design-artifact detection) must use changedPaths instead.
+  try {
+    const committed = git(["diff", "--name-only", base, "--"]).split("\n").filter(Boolean);
+    result.changedPaths = [...new Set([...committed, ...result.files.map((f) => f.path)])];
+  } catch {
+    result.changedPaths = result.files.map((f) => f.path);
+  }
   const MAX_UNTRACKED = 200;
   let untrackedSeen = 0;
   const emptyDir = mkdtempSync(join(tmpdir(), "myagenttool-empty-diff-"));
