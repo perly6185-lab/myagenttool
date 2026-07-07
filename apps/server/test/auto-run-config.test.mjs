@@ -110,3 +110,10 @@ test("autoApproveNonCodePaths: normalized bool + exposed", () => {
   assert.equal(resolveAutoRunConfig({ autoRunSettings: { autoApproveNonCodePaths: true } }, {}).autoApproveNonCodePaths, true);
   assert.equal(resolveAutoRunConfig({}, {}).autoApproveNonCodePaths, false, "default off");
 });
+
+test("alertWebhookUrl: validated http(s) in normalize; exposed as configured boolean", () => {
+  assert.equal(normalizeAutoRunSettings({ alertWebhookUrl: "https://h.co/x" }).alertWebhookUrl, "https://h.co/x");
+  assert.equal(normalizeAutoRunSettings({ alertWebhookUrl: "nope" }).alertWebhookUrl, null);
+  assert.equal(resolveAutoRunConfig({ autoRunSettings: { alertWebhookUrl: "https://h.co/x" } }, {}).alertWebhookConfigured, true);
+  assert.equal(resolveAutoRunConfig({}, {}).alertWebhookConfigured, false);
+});

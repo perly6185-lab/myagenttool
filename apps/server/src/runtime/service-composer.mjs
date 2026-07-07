@@ -29,6 +29,7 @@ import { refreshPrDispositions } from "../services/auto-run-eval.mjs";
 import { judgeTimeoutMs, resolveJudgeCommand, runAcceptanceJudge } from "../services/auto-run-judge.mjs";
 import { decisionConfig } from "../services/auto-run-decision.mjs";
 import { autoRunSettingsEnvOverlay } from "../services/auto-run-config.mjs";
+import { createAlertDispatcher } from "../services/auto-run-alerts.mjs";
 import { createTerminalService } from "../services/terminal.mjs";
 import { createToolService } from "../services/tools.mjs";
 
@@ -311,12 +312,18 @@ export function createServerRuntimeServices({
   // composer time, so console edits take effect on the next server start.
   const autoRunEnv = autoRunSettingsEnvOverlay(state.autoRunSettings);
 
+  // A1 real-time alerting: best-effort webhook, URL read live so a console edit
+  // applies without a restart. No-op when unconfigured; never throws.
+  const autoRunAlerts = createAlertDispatcher({ getWebhookUrl: () => state.autoRunSettings?.alertWebhookUrl ?? null });
+
   const { startAutoRun, advanceAutoRunForInvocation, syncAutoRunOnApproval, retryAutoRun, mergeAutoRunPr, reapStuckAutoRuns } = createAutoRunService({
     state,
     now,
     nextId,
     // O0 cost brake: refuse to start a run when the project is over budget.
     budgetStatusFor,
+    // A1 alerting: best-effort operational webhook (budget breach, stuck reap).
+    sendAlert: (alert) => autoRunAlerts.dispatch(alert),
     // O1 reliability: find a run's invocation for stuck/crash reconcile.
     findInvocation,
     // O2 graduated approval: apply a human-equivalent approval by policy (used

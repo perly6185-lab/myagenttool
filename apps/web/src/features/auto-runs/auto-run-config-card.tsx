@@ -36,6 +36,7 @@ interface Draft {
   requireChecksGreenToMerge: boolean;
   autonomyKillSwitch: boolean;
   autoApproveNonCodePaths: boolean;
+  alertWebhookUrl: string;
 }
 
 function toDraft(c: AutoRunConfig): Draft {
@@ -53,6 +54,7 @@ function toDraft(c: AutoRunConfig): Draft {
     requireChecksGreenToMerge: c.requireChecksGreenToMerge,
     autonomyKillSwitch: c.autonomyKillSwitch,
     autoApproveNonCodePaths: c.autoApproveNonCodePaths,
+    alertWebhookUrl: (c.settings?.alertWebhookUrl as string) ?? "",
   };
 }
 
@@ -184,6 +186,11 @@ export function AutoRunConfigCard() {
               <span className="text-sm font-medium">Auto-trigger label</span>
               <span className="text-xs text-muted-foreground">Issue label that opts a run in.</span>
               <Input value={draft.autoTriggerLabel} onChange={(e) => set("autoTriggerLabel", e.target.value)} className="mt-0.5 h-8" />
+            </label>
+            <label className="flex flex-col gap-1 rounded-lg border border-border px-3 py-2 md:col-span-2">
+              <span className="text-sm font-medium">Alert webhook URL</span>
+              <span className="text-xs text-muted-foreground">Real-time operational alerts (budget breach, stuck-run reap) POST here. http(s) only; blank disables. Applies immediately.</span>
+              <Input value={draft.alertWebhookUrl} onChange={(e) => set("alertWebhookUrl", e.target.value)} placeholder="https://hooks.example.com/..." className="mt-0.5 h-8" />
             </label>
             <NumberField label="Max concurrent / project" value={draft.autoTriggerMaxConcurrent} min={1} max={10} onChange={(v) => set("autoTriggerMaxConcurrent", v)} />
             <NumberField label="Decision min confidence" hint="0–1; low-confidence heavy paths degrade to clarify." value={draft.decisionMinConfidence} step={0.05} min={0} max={1} onChange={(v) => set("decisionMinConfidence", v)} />
