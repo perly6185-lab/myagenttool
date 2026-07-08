@@ -355,17 +355,21 @@ export function createProjectService({ state, now, nextId, appendEvent, persistS
   // the PR — publish only ships commits. No-op (committed:false) when the tree is
   // already clean. hasCommits reports whether the branch has any commit ahead of
   // its base, so the caller can avoid opening an empty PR.
-  async function commitWorktreeChanges(worktreeId, { message } = {}) {
+  async function commitWorktreeChanges(worktreeId, { message, pathspec = null } = {}) {
     const worktree = worktreeRecord(worktreeId);
     if (!worktree) throw new Error("Worktree not found.");
     const cwd = worktree.path ?? worktree.worktreePath;
     if (!cwd || !existsSync(cwd)) throw new Error("Worktree working directory is missing.");
 
-    const status = await runGitCapture(cwd, ["status", "--porcelain"], { timeout: 10_000 });
+    // An optional pathspec scopes the commit (e.g. Layer B's render commit stages
+    // only `design/`, so a stray file from the operator's renderer can't ride the
+    // push). Default: the whole tree (`-A`), the develop path's behavior.
+    const scope = Array.isArray(pathspec) && pathspec.length ? ["--", ...pathspec] : [];
+    const status = await runGitCapture(cwd, ["status", "--porcelain", ...scope], { timeout: 10_000 });
     if (!status.ok) throw new Error(`git status failed: ${status.stderr || `exit ${status.code}`}`);
     let committed = false;
     if (status.stdout.trim()) {
-      const add = await runGitCapture(cwd, ["add", "-A"], { timeout: 20_000 });
+      const add = await runGitCapture(cwd, scope.length ? ["add", ...scope] : ["add", "-A"], { timeout: 20_000 });
       if (!add.ok) throw new Error(`git add failed: ${add.stderr || `exit ${add.code}`}`);
       const commit = await runGitCapture(cwd, ["commit", "-m", message || "Auto-run changes"], { timeout: 20_000 });
       if (!commit.ok) throw new Error(`git commit failed: ${commit.stderr || commit.stdout || `exit ${commit.code}`}`);
