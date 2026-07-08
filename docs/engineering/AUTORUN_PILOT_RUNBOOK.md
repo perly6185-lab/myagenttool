@@ -280,3 +280,15 @@ the console:
   Inline previews need a PUBLIC repo (a private repo's raw URL won't render without
   a token). Everything is best-effort: no render command / push failure / private
   repo just falls back to Layer A's text index — the report still posts.
+
+  > **Security — the renderer runs AGENT-authored HTML.** The `design/*.html`
+  > mockup is written by the coding agent (steered by an untrusted issue body).
+  > The "inline CSS only, no scripts, no external resources" rule in the design
+  > prompt is GUIDANCE, not enforced. A browser-based renderer pointed at that HTML
+  > will execute any `<script>` and fetch any external/`file://` resource it
+  > contains — i.e. arbitrary JS + SSRF / local-file read on the render host. Use a
+  > renderer that disables JavaScript and network (e.g. Chrome `--headless` with a
+  > blocked-network profile, or a sandboxed/ephemeral render host), or accept that
+  > risk. The product keeps the render argv operator-set (never agent-chosen), but
+  > it cannot police what your renderer does with the HTML.
+

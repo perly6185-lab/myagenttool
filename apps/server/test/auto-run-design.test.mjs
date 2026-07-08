@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { composeDesignIssueComment, designArtifactIndex, githubSlugFromRemote, rawGithubUrl, buildDesignImageUrls } from "../src/services/auto-run-design.mjs";
-import { resolveDesignRenderCommand, designRenderTimeoutMs } from "../src/services/design-render.mjs";
+import { resolveDesignRenderCommand, designRenderTimeoutMs, runDesignRender } from "../src/services/design-render.mjs";
 
 test("designArtifactIndex splits html vs images and ignores non-design paths", () => {
   const idx = designArtifactIndex(["design/a.html", "design/b.png", "design/notes.md", "src/App.tsx"]);
@@ -54,20 +54,43 @@ test("githubSlugFromRemote parses https/ssh/.git forms; null on non-github", () 
   assert.equal(githubSlugFromRemote(""), null);
 });
 
-test("rawGithubUrl encodes path segments; buildDesignImageUrls maps only images", () => {
+test("rawGithubUrl keeps a slashed branch resolvable (literal slash, not %2F) but encodes path spaces", () => {
+  // raw.githubusercontent resolves the ref greedily — a slashed branch MUST keep
+  // its literal slashes, or the URL 404s. The default worktree branch is
+  // `myagenttool/...` (slashed), so this is the common case, not an edge.
   assert.equal(
-    rawGithubUrl("o/r", "feat/x", "design/a b.png"),
-    "https://raw.githubusercontent.com/o/r/feat%2Fx/design/a%20b.png",
+    rawGithubUrl("o/r", "myagenttool/foo", "design/a b.png"),
+    "https://raw.githubusercontent.com/o/r/myagenttool/foo/design/a%20b.png",
   );
+  assert.equal(
+    rawGithubUrl("o/r", "feat/x", "design/home.png"),
+    "https://raw.githubusercontent.com/o/r/feat/x/design/home.png",
+  );
+});
+
+test("buildDesignImageUrls maps only design images; slashed branch stays literal", () => {
   const urls = buildDesignImageUrls({
     remoteUrl: "git@github.com:o/r.git",
-    branch: "auto/i-1",
+    branch: "myagenttool/i-1",
     images: ["design/home.png", "design/spec.html", "src/x.png"],
   });
   assert.deepEqual(Object.keys(urls), ["design/home.png"], "only design/ images");
-  assert.equal(urls["design/home.png"], "https://raw.githubusercontent.com/o/r/auto%2Fi-1/design/home.png");
+  assert.equal(urls["design/home.png"], "https://raw.githubusercontent.com/o/r/myagenttool/i-1/design/home.png");
   // Non-GitHub remote → no URLs (private/other host won't inline anyway).
   assert.deepEqual(buildDesignImageUrls({ remoteUrl: "https://gitlab.com/o/r", branch: "b", images: ["design/x.png"] }), {});
+});
+
+test("composeDesignIssueComment neutralizes markdown-hostile agent filenames (no comment injection)", () => {
+  const body = composeDesignIssueComment({
+    // an image name crafted to break the alt syntax + autolink a phishing domain
+    imageUrls: { "design/x] www.evil.example [.png": "https://raw.githubusercontent.com/o/r/b/design/x.png" },
+    // an index filename with a backtick (would break the code span) + brackets
+    artifacts: ["design/we`ird[a](b).html"],
+  });
+  assert.ok(!/\]\s*www\.evil\.example/.test(body.replace(/​/g, "")), "no bare autolink escapes the alt text");
+  assert.ok(!body.includes("www.evil.example"), "the www. autolink is neutralized (zero-width break)");
+  assert.ok(!body.includes("we`ird"), "backtick stripped so the code span can't break");
+  assert.ok(!/\]\(b\)/.test(body), "parens/brackets stripped from the label");
 });
 
 test("resolveDesignRenderCommand: valid argv only; timeout clamps", () => {
@@ -77,4 +100,19 @@ test("resolveDesignRenderCommand: valid argv only; timeout clamps", () => {
   assert.equal(designRenderTimeoutMs({}), 120_000);
   assert.equal(designRenderTimeoutMs({ MYAGENTTOOL_AUTORUN_DESIGN_RENDER_TIMEOUT_MS: "5000" }), 5000);
   assert.equal(designRenderTimeoutMs({ MYAGENTTOOL_AUTORUN_DESIGN_RENDER_TIMEOUT_MS: "999" }), 120_000);
+});
+
+test("runDesignRender: runs argv in the worktree, never throws, reports outcome", async () => {
+  // unconfigured / missing path -> no-op, no throw
+  assert.deepEqual(await runDesignRender({ worktreePath: "/tmp", command: null }), { rendered: false, reason: "not configured" });
+  assert.deepEqual(await runDesignRender({ worktreePath: "", command: ["node", "-e", ""] }), { rendered: false, reason: "not configured" });
+  // a clean argv -> rendered:true
+  assert.deepEqual(await runDesignRender({ worktreePath: process.cwd(), command: ["node", "-e", "0"] }), { rendered: true });
+  // a failing argv -> rendered:false with a reason, but NEVER throws
+  const bad = await runDesignRender({ worktreePath: process.cwd(), command: ["node", "-e", "process.exit(3)"] });
+  assert.equal(bad.rendered, false);
+  assert.ok(typeof bad.reason === "string" && bad.reason.length > 0, "failure carries a reason, no throw");
+  // a nonexistent binary -> caught, no throw
+  const missing = await runDesignRender({ worktreePath: process.cwd(), command: ["definitely-not-a-real-binary-xyz"] });
+  assert.equal(missing.rendered, false);
 });

@@ -147,10 +147,11 @@ export function createAutoRunService({
       if (typeof renderDesignImages === "function") {
         await renderDesignImages(autoRun.worktreeId);
       }
-      // Commit anything the renderer wrote (git push only ships committed files),
-      // then re-list so newly rendered design/*.png are included.
+      // Commit what the renderer wrote (git push only ships committed files),
+      // SCOPED to design/ so a stray file the operator's renderer drops elsewhere
+      // (a cache dir, a root screenshot) never rides the push. Re-list after.
       if (typeof commitWorktreeChanges === "function") {
-        try { await commitWorktreeChanges(autoRun.worktreeId, { message: "chore(design): render mockup previews" }); } catch { /* nothing to commit */ }
+        try { await commitWorktreeChanges(autoRun.worktreeId, { message: "chore(design): render mockup previews", pathspec: ["design"] }); } catch { /* nothing to commit */ }
       }
       let files = [];
       if (typeof listWorktreeChangedFiles === "function") {
@@ -506,12 +507,15 @@ export function createAutoRunService({
           // whose ONLY changes are visual mockups under design/ delivers them as
           // report + in-console preview — not a PR. Any product-code change
           // keeps today's behavior (verify → publish → PR, the "diverted" path).
+          // designImagesToIssue (Layer B) IMPLIES this path — otherwise turning on
+          // only the "embed previews" toggle would silently open a PR and never
+          // render/embed anything (review finding: the two toggles were uncoupled).
           const decidedPath = autoRun.decision?.path
             ?? ({ investigation: "design", question: "clarify" }[autoRun.intent] ?? "develop");
           if (
             commitResult.hasCommits &&
             decidedPath === "design" &&
-            state.autoRunSettings?.designArtifacts &&
+            (state.autoRunSettings?.designArtifacts || state.autoRunSettings?.designImagesToIssue) &&
             typeof listWorktreeChangedFiles === "function"
           ) {
             let changed = [];

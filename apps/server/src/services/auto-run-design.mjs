@@ -47,7 +47,7 @@ export function composeDesignIssueComment({ brief, artifacts, imageUrls } = {}) 
   // Inline pixel previews (Layer B).
   if (hosted.length) {
     parts.push(
-      ["", "---", "", "### Mockup preview", ...hosted.map((p) => `![${stripPrefix(p)}](${urls[p]})`)].join("\n"),
+      ["", "---", "", "### Mockup preview", ...hosted.map((p) => `![${mdSafe(stripPrefix(p))}](${urls[p]})`)].join("\n"),
     );
   }
 
@@ -57,7 +57,7 @@ export function composeDesignIssueComment({ brief, artifacts, imageUrls } = {}) 
   const indexed = [...html, ...images].filter((p) => !hosted.includes(p));
   if (indexed.length) {
     parts.push(
-      ["", "---", "", "Design mockups produced (open in the console's design panel):", ...indexed.map((p) => `- \`${p}\``)].join("\n"),
+      ["", "---", "", "Design mockups produced (open in the console's design panel):", ...indexed.map((p) => `- \`${mdSafe(p)}\``)].join("\n"),
     );
   }
 
@@ -66,6 +66,19 @@ export function composeDesignIssueComment({ brief, artifacts, imageUrls } = {}) 
 
 function stripPrefix(path) {
   return path.replace(/^design\//, "");
+}
+
+// Neutralize markdown/autolink metacharacters in an AGENT-authored filename before
+// it goes into the (trusted-bot-posted) issue comment, so a crafted name can't
+// break the image/code-span syntax or smuggle a clickable phishing autolink (`www.`
+// / email) under the bot's identity. Cosmetic-only: the real path still drives the
+// URL, which is percent-encoded separately. (review finding: comment injection)
+function mdSafe(text) {
+  const ZWSP = "\u200b"; // zero-width space breaks GFM autolinks without visibly changing the name
+  return String(text ?? "")
+    .replace(/[`[\]()<>|]/g, "")
+    .replace(/(www\.)/gi, `$1${ZWSP}`)
+    .replace(/@/g, `@${ZWSP}`);
 }
 
 // --- Layer B: host pushed PNG previews so they render on the issue -----------
@@ -91,8 +104,11 @@ export function githubSlugFromRemote(remoteUrl) {
 /** raw.githubusercontent URL for a file on a branch. Encodes each path segment. */
 export function rawGithubUrl(slug, branch, filePath) {
   if (!slug || !branch || !filePath) return null;
-  const encPath = String(filePath).split("/").map(encodeURIComponent).join("/");
-  return `https://raw.githubusercontent.com/${slug}/${encodeURIComponent(branch)}/${encPath}`;
+  // raw.githubusercontent resolves the ref with LITERAL slashes — a branch like
+  // `myagenttool/foo` (the default worktree naming) must stay `.../myagenttool/foo/...`,
+  // NOT `%2F`, or the URL 404s. Encode each segment, keep the slashes. Same for path.
+  const encSegments = (s) => String(s).split("/").map(encodeURIComponent).join("/");
+  return `https://raw.githubusercontent.com/${slug}/${encSegments(branch)}/${encSegments(filePath)}`;
 }
 
 /**

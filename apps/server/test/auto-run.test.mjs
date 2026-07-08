@@ -1359,14 +1359,20 @@ test("D5: a develop run whose change includes screenshots surfaces them on the p
   assert.deepEqual(autoRun.screenshots, ["screenshots/home-desktop.png", "screenshots/home-mobile.png"], "image files surfaced, non-images excluded");
 });
 
-test("Layer B: design run with designImagesToIssue on renders, pushes, and embeds the preview on the issue", async () => {
+test("Layer B: renders BEFORE the re-list, commits design/ only, pushes, and embeds the preview (slashed branch stays literal)", async () => {
+  // The PNG must be PRODUCED by render then SEEN by the re-list — not fabricated in
+  // a constant list. This mock only surfaces home.png AFTER render runs, so a
+  // wiring regression (re-list before render, or render not wired) drops the image.
+  let rendered = false;
   const { svc, calls } = makeAutoRun({
     commit: { committed: true, hasCommits: true },
     decideIssuePath: async () => ({ path: "design", confidence: 0.9, rationale: "visual" }),
-    listWorktreeChangedFiles: async () => ["design/BRIEF.md", "design/home.html", "design/home.png"],
+    listWorktreeChangedFiles: async () => (rendered
+      ? ["design/BRIEF.md", "design/home.html", "design/home.png"]
+      : ["design/BRIEF.md", "design/home.html"]),
     readWorktreeTextFile: () => "## Home\n```\n[ header ]\n```",
-    renderDesignImages: async () => ({ rendered: true }),
-    publishResult: { ok: true, branch: "auto/i-130", remoteUrl: "git@github.com:o/r.git" },
+    renderDesignImages: async () => { rendered = true; return { rendered: true }; },
+    publishResult: { ok: true, branch: "myagenttool/i-130", remoteUrl: "git@github.com:o/r.git" },
   });
   state.autoRunSettings = { designArtifacts: true, designImagesToIssue: true };
   const { autoRun, invocation } = await svc.startAutoRun({
@@ -1376,10 +1382,74 @@ test("Layer B: design run with designImagesToIssue on renders, pushes, and embed
 
   assert.equal(autoRun.status, "report_posted");
   assert.equal(calls.render.length, 1, "render command ran");
+  const renderCommit = calls.commit.find((c) => Array.isArray(c.opts?.pathspec) && c.opts.pathspec.includes("design"));
+  assert.ok(renderCommit, "the render commit is SCOPED to design/ (a stray file can't ride the push)");
   assert.ok(calls.publish.length >= 1, "the design branch was pushed to host the images");
-  assert.deepEqual(autoRun.designImageUrls, { "design/home.png": "https://raw.githubusercontent.com/o/r/auto%2Fi-130/design/home.png" });
+  // slashed branch stays literal (not %2F), or raw.githubusercontent 404s
+  assert.deepEqual(autoRun.designImageUrls, { "design/home.png": "https://raw.githubusercontent.com/o/r/myagenttool/i-130/design/home.png" });
   const comment = calls.report.at(-1)?.body ?? "";
-  assert.match(comment, /!\[home\.png\]\(https:\/\/raw\.githubusercontent\.com\/o\/r\/auto%2Fi-130\/design\/home\.png\)/, "preview embedded inline on the issue");
+  assert.match(comment, /!\[home\.png\]\(https:\/\/raw\.githubusercontent\.com\/o\/r\/myagenttool\/i-130\/design\/home\.png\)/, "preview embedded inline on the issue");
+});
+
+test("Layer B: designImagesToIssue alone (designArtifacts off) still takes the design path, not a PR", async () => {
+  let rendered = false;
+  const { svc, calls } = makeAutoRun({
+    commit: { committed: true, hasCommits: true },
+    decideIssuePath: async () => ({ path: "design", confidence: 0.9, rationale: "visual" }),
+    listWorktreeChangedFiles: async () => (rendered ? ["design/home.html", "design/home.png"] : ["design/home.html"]),
+    renderDesignImages: async () => { rendered = true; return { rendered: true }; },
+    publishResult: { ok: true, branch: "issue-140-x", remoteUrl: "git@github.com:o/r.git" },
+  });
+  state.autoRunSettings = { designArtifacts: false, designImagesToIssue: true }; // only the embed toggle
+  const { autoRun, invocation } = await svc.startAutoRun({
+    projectId: sourceProjectId, link: { type: "issue", number: 140, title: "Design the home page", url: null, state: "open" }, agentId: "agt_1", name: "i-140",
+  });
+  await svc.advanceAutoRunForInvocation({ ...invocation, status: "succeeded", result: "done" });
+
+  assert.equal(autoRun.status, "report_posted", "design path taken — NOT verify→publish→PR");
+  assert.equal(calls.pr.length, 0, "no PR opened for a design-only run");
+  assert.equal(calls.render.length, 1, "render ran even though designArtifacts is off");
+  assert.ok(autoRun.designImageUrls?.["design/home.png"], "preview hosted");
+});
+
+test("Layer B: a push failure falls back to Layer A (report still posts, no crash)", async () => {
+  const { svc, calls } = makeAutoRun({
+    commit: { committed: true, hasCommits: true },
+    decideIssuePath: async () => ({ path: "design", confidence: 0.9, rationale: "visual" }),
+    listWorktreeChangedFiles: async () => ["design/BRIEF.md", "design/home.html", "design/home.png"],
+    renderDesignImages: async () => ({ rendered: true }),
+    publishThrows: true, // publishWorktreeBranch throws (no origin / rejected push)
+  });
+  state.autoRunSettings = { designArtifacts: true, designImagesToIssue: true };
+  const { autoRun, invocation } = await svc.startAutoRun({
+    projectId: sourceProjectId, link: { type: "issue", number: 141, title: "Design the settings page", url: null, state: "open" }, agentId: "agt_1", name: "i-141",
+  });
+  await svc.advanceAutoRunForInvocation({ ...invocation, status: "succeeded", result: "done" });
+
+  assert.equal(autoRun.status, "report_posted", "push failure is best-effort — the run is NOT failed");
+  assert.equal(autoRun.designImageUrls, undefined, "no URLs when the push failed");
+  const comment = calls.report.at(-1)?.body ?? "";
+  assert.match(comment, /open in the console's design panel/, "Layer A index still posted");
+  assert.ok(!comment.includes("!["), "no broken embed");
+});
+
+test("Layer B: flag on but the run produced no image → render attempted, NO push (no stray branch)", async () => {
+  const { svc, calls } = makeAutoRun({
+    commit: { committed: true, hasCommits: true },
+    decideIssuePath: async () => ({ path: "design", confidence: 0.9, rationale: "visual" }),
+    listWorktreeChangedFiles: async () => ["design/BRIEF.md", "design/home.html"], // no image, ever
+    renderDesignImages: async () => ({ rendered: false }),
+  });
+  state.autoRunSettings = { designArtifacts: true, designImagesToIssue: true };
+  const { autoRun, invocation } = await svc.startAutoRun({
+    projectId: sourceProjectId, link: { type: "issue", number: 142, title: "Design the empty page", url: null, state: "open" }, agentId: "agt_1", name: "i-142",
+  });
+  await svc.advanceAutoRunForInvocation({ ...invocation, status: "succeeded", result: "done" });
+
+  assert.equal(autoRun.status, "report_posted");
+  assert.equal(calls.render.length, 1, "render was attempted");
+  assert.equal(calls.publish.length, 0, "NO branch pushed when there is nothing to host");
+  assert.equal(autoRun.designImageUrls, undefined);
 });
 
 test("Layer B off: a design run indexes the mockups (Layer A) but never renders or pushes", async () => {
