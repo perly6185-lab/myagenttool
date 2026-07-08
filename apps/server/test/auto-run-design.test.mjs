@@ -21,19 +21,23 @@ test("Layer A: brief is primary; html mockups are indexed, never embedded", () =
   assert.ok(!body.includes("!["), "no image embed without a hosted URL");
 });
 
-test("Layer B: an image with a hosted URL is embedded inline; one without is only listed", () => {
+test("Layer B: a hosted image is embedded even though it is NOT in the pre-render artifacts (the real flow)", () => {
   const body = composeDesignIssueComment({
     brief: "Brief text",
-    artifacts: ["design/home-desktop.png", "design/home-mobile.png", "design/spec.html"],
-    imageUrls: { "design/home-desktop.png": "https://raw.githubusercontent.com/o/r/b/design/home-desktop.png" },
+    // artifacts = the PRE-render changed list (html mockup + a raw agent-committed
+    // image); the rendered PNG is not here — it only appears after the push.
+    artifacts: ["design/spec.html", "design/logo.png"],
+    // imageUrls = the POST-render hosted preview, keyed by a file NOT in artifacts.
+    imageUrls: { "design/about.png": "https://raw.githubusercontent.com/o/r/b/design/about.png" },
   });
   assert.ok(body.includes("### Mockup preview"), "preview section present");
   assert.ok(
-    body.includes("![home-desktop.png](https://raw.githubusercontent.com/o/r/b/design/home-desktop.png)"),
-    "hosted image embedded by raw URL, prefix stripped from alt",
+    body.includes("![about.png](https://raw.githubusercontent.com/o/r/b/design/about.png)"),
+    "hosted image embedded by raw URL even though it isn't in artifacts (regression: the live run embedded nothing)",
   );
-  assert.ok(body.includes("`design/home-mobile.png`"), "un-hosted image falls back to the index list");
-  assert.ok(body.includes("`design/spec.html`"), "html still only listed");
+  assert.ok(body.includes("`design/spec.html`"), "html mockup still listed");
+  assert.ok(body.includes("`design/logo.png`"), "un-hosted artifact image falls to the index list");
+  assert.ok(!body.includes("`design/about.png`"), "the embedded image is not also listed in the index");
 });
 
 test("empty brief + no artifacts yields an empty string (nothing posted)", () => {
