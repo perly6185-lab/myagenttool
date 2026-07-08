@@ -28,6 +28,7 @@ interface AutoRunLink {
 export interface AutoRunRecord {
   id: string;
   status: string;
+  projectId?: string | null;
   link?: AutoRunLink | null;
   intent?: string | null;
   decision?: { path: string; decidedBy: string; confidence: number; rationale?: string | null } | null;
@@ -698,7 +699,7 @@ export function AutoRunsView() {
                   <DecompositionApproval run={run} onDone={load} />
                 ) : null}
                 {run.status === "decomposed" && run.childIssues?.length ? (
-                  <EpicRollup run={run} />
+                  <EpicRollup run={run} onDone={load} />
                 ) : null}
                 {run.error ? <p className="text-xs text-amber-600 dark:text-amber-400">{run.error}</p> : null}
               </CardContent>

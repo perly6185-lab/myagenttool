@@ -1,8 +1,10 @@
-import { GitFork, GitMerge, CircleDot, CircleDashed, XCircle } from "lucide-react";
+import { GitFork, GitMerge, CircleDot, CircleDashed, XCircle, Play, Loader2 } from "lucide-react";
+import { api, useAsyncAction } from "@/data/use-console-actions";
 import type { AutoRunRecord } from "./auto-runs-view";
 
 // Epic S4: live rollup of a decomposed epic's children. Each child rolls up from its
 // own auto-run once a human labels the child `auto`; until then it is "not started".
+// S5.1: a redundant tag marks a child the judge blocked as already-covered.
 const STATUS_ICON: Record<string, typeof CircleDot> = {
   merged: GitMerge,
   prOpen: CircleDot,
@@ -20,10 +22,24 @@ function childState(item: { status?: string | null; prState?: string | null; iss
   return "notStarted";
 }
 
-export function EpicRollup({ run }: { run: AutoRunRecord }) {
+export function EpicRollup({ run, onDone }: { run: AutoRunRecord; onDone?: () => Promise<void> | void }) {
+  const { execute, pending } = useAsyncAction();
   const rollup = run.childRollup;
   const children = run.childIssues ?? [];
   if (!children.length) return null;
+
+  // One-click start of a not-started child (S5.1 op optimization): reuses the
+  // normal auto-run pipeline (its own approval gate + all brakes). The human picks
+  // WHICH and WHEN — children are dependency-ordered, so a blanket "run all" would
+  // conflict; this runs exactly the one you choose. Spends agent quota.
+  const runChild = async (item: { number: number; title?: string | null }) => {
+    if (!run.projectId) return;
+    const ok = await execute(() => api.startAutoRun(run.projectId as string, {
+      link: { type: "issue", number: item.number, title: item.title ?? `issue #${item.number}`, url: null, state: "open" },
+      name: `child-${item.number}`,
+    }));
+    if (ok) void onDone?.();
+  };
   const total = rollup?.total ?? children.length;
   const done = rollup?.done ?? rollup?.merged ?? 0;
   const started = rollup?.started ?? 0;
@@ -49,7 +65,19 @@ export function EpicRollup({ run }: { run: AutoRunRecord }) {
               <span className="shrink-0">#{item.number}</span>
               <span className="truncate" title={item.title ?? undefined}>{item.title ?? ""}</span>
               {item.redundant ? <span className="shrink-0 rounded bg-amber-500/15 px-1 text-[10px] text-amber-700 dark:text-amber-300" title="the run was judge-blocked as already covered by another child (confirmed overlap)">redundant</span> : null}
-              <span className="ml-auto shrink-0 text-muted-foreground">{item.done || item.issueState === "CLOSED" || item.prState === "MERGED" ? "done" : item.status ?? "not started"}</span>
+              {kind === "notStarted" && run.projectId ? (
+                <button
+                  type="button"
+                  disabled={pending}
+                  onClick={() => void runChild(item)}
+                  title="Start this child's auto-run (spends agent quota). Run children in dependency order."
+                  className="ml-auto flex shrink-0 items-center gap-0.5 rounded border border-border px-1 text-[10px] text-foreground/70 hover:text-foreground disabled:opacity-50"
+                >
+                  {pending ? <Loader2 className="size-2.5 animate-spin" /> : <Play className="size-2.5" />} Run
+                </button>
+              ) : (
+                <span className="ml-auto shrink-0 text-muted-foreground">{item.done || item.issueState === "CLOSED" || item.prState === "MERGED" ? "done" : item.status ?? "not started"}</span>
+              )}
             </li>
           );
         })}
