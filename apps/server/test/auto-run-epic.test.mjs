@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { summarizeEpicChildren, refreshEpicChildStates, scoreDecompositionOverlap } from "../src/services/auto-run-epic.mjs";
+import { summarizeEpicChildren, refreshEpicChildStates, scoreDecompositionOverlap, isRedundancyBlock } from "../src/services/auto-run-epic.mjs";
 
 const epic = {
   id: "aur_epic", projectId: "prj_1",
@@ -22,7 +22,7 @@ test("summarizeEpicChildren rolls up children from their own auto-runs (same pro
   assert.equal(r.notStarted, 1);
   assert.equal(r.merged, 1, "#10 merged");
   assert.equal(r.inProgress, 1, "#11 running");
-  assert.deepEqual(r.items.find((i) => i.number === 12), { number: 12, title: "C", status: null, prState: null, issueState: null, done: false });
+  assert.deepEqual(r.items.find((i) => i.number === 12), { number: 12, title: "C", status: null, prState: null, issueState: null, done: false, redundant: false });
   assert.equal(r.items.find((i) => i.number === 10).prState, "MERGED");
 });
 
@@ -39,7 +39,7 @@ test("summarizeEpicChildren takes the latest run per child (retries) and ignores
 
 test("summarizeEpicChildren on an epic with no children is empty", () => {
   assert.deepEqual(summarizeEpicChildren({ id: "e", childIssues: [] }, []), {
-    total: 0, started: 0, notStarted: 0, done: 0, merged: 0, prOpen: 0, failed: 0, inProgress: 0, items: [],
+    total: 0, started: 0, notStarted: 0, done: 0, merged: 0, prOpen: 0, failed: 0, inProgress: 0, redundant: 0, items: [],
   });
 });
 
@@ -103,4 +103,30 @@ test("scoreDecompositionOverlap ignores governance boilerplate (identical scaffo
   ]};
   const r = scoreDecompositionOverlap(tree);
   assert.ok(r.maxOverlap < 0.5, "shared boilerplate (task/add/implement) is not counted as overlap");
+});
+
+test("isRedundancyBlock detects a judge block that means 'already covered', spares genuine failures", () => {
+  // the real devdemo #28 verdict
+  assert.equal(isRedundancyBlock({ solved: false, summary: "omits the implementation", gaps: ["diff only adds documentation and tests, not the behavior they test"] }), true);
+  assert.equal(isRedundancyBlock({ solved: false, summary: "the behavior already exists in GreetingService" }), true);
+  assert.equal(isRedundancyBlock({ solved: false, summary: "no new implementation; duplicate of the feature child" }), true);
+  // a genuine failure is NOT redundancy
+  assert.equal(isRedundancyBlock({ solved: false, summary: "the endpoint returns 500; the null check is wrong" }), false);
+  // a solved run is never redundant; missing judgment is safe
+  assert.equal(isRedundancyBlock({ solved: true, summary: "diff only adds tests" }), false);
+  assert.equal(isRedundancyBlock(null), false);
+});
+
+test("summarizeEpicChildren counts children whose run was judge-blocked as redundant (S5.1)", () => {
+  const e = { id: "aur_epic", projectId: "prj_1", childIssues: [{ number: 10, title: "feature" }, { number: 11, title: "overlap" }, { number: 12, title: "real fail" }] };
+  const autoRuns = [
+    { id: "a", projectId: "prj_1", link: { type: "issue", number: 10 }, status: "pr_open", prState: "MERGED" },
+    { id: "b", projectId: "prj_1", link: { type: "issue", number: 11 }, status: "blocked", judgment: { solved: false, summary: "diff only adds documentation and tests" } },
+    { id: "c", projectId: "prj_1", link: { type: "issue", number: 12 }, status: "blocked", judgment: { solved: false, summary: "the endpoint crashes" } },
+  ];
+  const r = summarizeEpicChildren(e, autoRuns);
+  assert.equal(r.redundant, 1, "only the already-covered child counts redundant");
+  assert.equal(r.items.find((i) => i.number === 11).redundant, true);
+  assert.equal(r.items.find((i) => i.number === 12).redundant, false, "a genuine failure is not redundancy");
+  assert.equal(r.items.find((i) => i.number === 10).redundant, false, "a merged child is not redundant");
 });

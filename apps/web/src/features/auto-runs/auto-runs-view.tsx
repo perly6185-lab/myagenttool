@@ -47,7 +47,7 @@ export interface AutoRunRecord {
   // Epic decomposition (S2/S3): the proposed plan + the human approval outcome.
   decompositionPlan?: { tree?: { issues?: { title: string }[] } | null; failures?: string[]; approvalReasons?: string[]; overlap?: { flagged?: { a: number; b: number; aTitle?: string | null; bTitle?: string | null; score: number }[]; maxOverlap?: number } | null; truncated?: boolean; proposedCount?: number; parseError?: string | null } | null;
   decompositionApproval?: { status: "approving" | "approved" | "rejected"; by?: string | null; at?: string | null; created?: number; feedback?: string | null } | null;
-  childRollup?: { total: number; started: number; notStarted: number; done: number; merged: number; prOpen: number; failed: number; inProgress: number; items: { number: number; title?: string | null; status?: string | null; prState?: string | null; issueState?: string | null; done?: boolean }[] } | null;
+  childRollup?: { total: number; started: number; notStarted: number; done: number; merged: number; prOpen: number; failed: number; inProgress: number; redundant: number; items: { number: number; title?: string | null; status?: string | null; prState?: string | null; issueState?: string | null; done?: boolean; redundant?: boolean }[] } | null;
   prState?: string | null;
   prChecks?: { total: number; passed: number; failed: number; pending: number; state: "NONE" | "SUCCESS" | "FAILURE" | "PENDING" } | null;
   pendingApproval?: { id: string; riskLevel: string | null; riskTags: string[]; summary: string | null } | null;
