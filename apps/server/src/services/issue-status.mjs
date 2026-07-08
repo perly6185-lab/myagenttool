@@ -66,6 +66,19 @@ export async function runPrStateFetch({ cwd, prNumber, gh = defaultGh }) {
   }
 }
 
+// Read-only issue state (Epic S4 reconcile): a decomposed epic rolls up its children
+// as "done" when their ISSUE is closed — true however the child merged (its own
+// auto-run OR a human-override PR outside the loop). null on failure.
+export async function runIssueStateFetch({ cwd, issueNumber, gh = defaultGh }) {
+  try {
+    const result = await gh(["issue", "view", String(issueNumber), "--json", "state", "--jq", ".state"], cwd);
+    const state = String(result?.stdout ?? "").trim().toUpperCase();
+    return ["OPEN", "CLOSED"].includes(state) ? state : null;
+  } catch {
+    return null;
+  }
+}
+
 function tallyChecks(items, classify) {
   let passed = 0;
   let failed = 0;

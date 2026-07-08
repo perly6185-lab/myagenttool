@@ -23,10 +23,11 @@ import { createM3Service } from "../services/m3.mjs";
 import { createProjectService, sameProjectPath } from "../services/projects.mjs";
 import { createAutoRunService } from "../services/auto-run.mjs";
 import { resolveAutoRunVerifyCommand, resolveAutoRunVerifyCommandFor, runWorktreeVerification } from "../services/worktree-verify.mjs";
-import { resolveStatusWritebackConfig, runIssueBodyFetch, runIssueComment, runIssueStatusTransition, runPrChecks, runPrMerge, runPrStateFetch } from "../services/issue-status.mjs";
+import { resolveStatusWritebackConfig, runIssueBodyFetch, runIssueComment, runIssueStatusTransition, runPrChecks, runPrMerge, runPrStateFetch, runIssueStateFetch } from "../services/issue-status.mjs";
 import { deciderTimeoutMs, resolveDeciderCommand, runDeciderCommand } from "../services/decision-command.mjs";
 import { childIssueBody, childIssueTitle, extractProjectFieldsBlock, runChildIssueCreate, spawnIssuesConfig } from "../services/auto-run-spawn.mjs";
 import { refreshPrDispositions } from "../services/auto-run-eval.mjs";
+import { refreshEpicChildStates } from "../services/auto-run-epic.mjs";
 import { judgeTimeoutMs, resolveJudgeCommand, runAcceptanceJudge } from "../services/auto-run-judge.mjs";
 import { resolveReviewCommand, reviewTimeoutMs, runDiffReview, scanDiffForInjection } from "../services/auto-run-review.mjs";
 import { resolveDesignRenderCommand, designRenderTimeoutMs, runDesignRender } from "../services/design-render.mjs";
@@ -527,6 +528,15 @@ export function createServerRuntimeServices({
     // A run's prChecks can change even when prState didn't, so persist whenever
     // any run was refreshed, not only on a state transition.
     if (result.checked > 0) persistStateSoon();
+    // Epic S4 reconcile: mark a decomposed epic's children done when their ISSUE
+    // closes (however it merged — incl. a human-override PR outside the loop).
+    const epic = await refreshEpicChildStates({
+      state,
+      now,
+      fetchIssueState: ({ issueNumber, repoPath }) => runIssueStateFetch({ cwd: repoPath, issueNumber }),
+      projectPathFor: (projectId) => (state.projects ?? []).find((p) => p.id === projectId)?.path ?? null,
+    });
+    if (epic.changed) persistStateSoon();
     return result;
   }
 
