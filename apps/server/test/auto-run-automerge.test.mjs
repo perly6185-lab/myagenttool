@@ -25,7 +25,7 @@ const greenRun = () => ({
   promptInjection: null,
 });
 
-function makeSweep({ settings = {}, run = greenRun(), reviewDiff, fetchPrChecks, breaker = null } = {}) {
+function makeSweep({ settings = {}, run = greenRun(), reviewDiff, fetchPrChecks, breaker = null, budgetStatusFor, worktreeHeadSha } = {}) {
   const alerts = [];
   const events = [];
   const merges = [];
@@ -44,6 +44,8 @@ function makeSweep({ settings = {}, run = greenRun(), reviewDiff, fetchPrChecks,
     persistStateSoon: () => {},
     sendAlert: (a) => alerts.push(a),
     reviewDiff,
+    budgetStatusFor,
+    worktreeHeadSha,
     fetchPrChecks: fetchPrChecks ?? (async () => run.prChecks),
     mergePr: async ({ prNumber }) => {
       merges.push(prNumber);
@@ -137,4 +139,36 @@ test("normalizeReview maps approve/risk to pass/fail", () => {
   assert.equal(normalizeReview({ risk: "medium" }).status, "fail");
   assert.equal(normalizeReview({ summary: "no verdict" }), null, "unusable => null");
   assert.equal(normalizeReview(null), null);
+});
+
+test("fail-closed: an UNCONFIRMED fresh check fetch (null) never auto-merges over stale green", async () => {
+  const { svc, merges } = makeSweep({ settings: ON, reviewDiff: passReview, fetchPrChecks: async () => null });
+  await svc.autoMergeSweep();
+  assert.deepEqual(merges, [], "stale cached SUCCESS is not trusted when the fresh fetch can't confirm");
+});
+
+test("budget brake: an over-budget project is not auto-merged (or reviewed)", async () => {
+  let reviewed = 0;
+  const { svc, merges } = makeSweep({
+    settings: ON,
+    reviewDiff: async () => { reviewed += 1; return { review: { status: "pass" }, diffLines: 5, files: ["src/x.js"] }; },
+    budgetStatusFor: () => ({ over: true }),
+  });
+  await svc.autoMergeSweep();
+  assert.deepEqual(merges, []);
+  assert.equal(reviewed, 0, "no review spend on an over-budget project");
+});
+
+test("review invalidation: a changed PR head re-runs the review", async () => {
+  let calls = 0;
+  const run = { ...greenRun(), review: { status: "pass" }, diffFiles: ["src/x.js"], diffLines: 5, reviewedHeadSha: "OLD", worktreeId: "w1" };
+  const { svc, merges } = makeSweep({
+    settings: ON,
+    run,
+    worktreeHeadSha: async () => "NEW",
+    reviewDiff: async () => { calls += 1; return { review: { status: "pass" }, diffLines: 5, files: ["src/x.js"] }; },
+  });
+  await svc.autoMergeSweep();
+  assert.equal(calls, 1, "head moved OLD→NEW → cached review invalidated + re-run");
+  assert.deepEqual(merges, [5]);
 });

@@ -936,8 +936,8 @@ test("mergeAutoRunPr: require-green-checks setting blocks merge when checks not 
   await assert.rejects(() => svc.mergeAutoRunPr("aur_g2"), /green PR checks/);
 });
 
-test("mergeAutoRunPr: require-green-checks setting allows merge when checks green", async () => {
-  const { svc, calls } = makeAutoRun();
+test("mergeAutoRunPr: require-green-checks setting allows merge when a FRESH fetch confirms green", async () => {
+  const { svc, calls } = makeAutoRun({ fetchPrChecks: async () => ({ state: "SUCCESS" }) });
   state.autoRunSettings = { requireChecksGreenToMerge: true };
   const run = { id: "aur_g3", status: "pr_open", projectId: sourceProjectId, prNumber: 8, prState: "OPEN", prChecks: { state: "SUCCESS" } };
   state.autoRuns.push(run);
@@ -945,6 +945,13 @@ test("mergeAutoRunPr: require-green-checks setting allows merge when checks gree
   assert.equal(result.ok, true);
   assert.equal(run.prState, "MERGED");
   assert.equal(calls.merge.length, 1);
+});
+
+test("mergeAutoRunPr: require-green FAILS CLOSED when the fresh fetch is unconfirmed (null)", async () => {
+  const { svc } = makeAutoRun({ fetchPrChecks: async () => null });
+  state.autoRunSettings = { requireChecksGreenToMerge: true };
+  state.autoRuns.push({ id: "aur_unconf", status: "pr_open", projectId: sourceProjectId, prNumber: 12, prState: "OPEN", prChecks: { state: "SUCCESS" } });
+  await assert.rejects(() => svc.mergeAutoRunPr("aur_unconf"), /unconfirmed|green PR checks/);
 });
 
 test("mergeAutoRunPr: require-green re-fetches FRESH checks — stale-green blocked when now red", async () => {

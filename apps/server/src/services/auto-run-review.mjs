@@ -58,13 +58,3 @@ export async function runDiffReview({ command, link, issueBody, diff, timeoutMs 
   });
   return normalizeReview(raw);
 }
-
-/** PR-body evidence line for the AI review. */
-export function reviewEvidence(review) {
-  if (review === undefined) return "- AI diff review: not run (no review command configured)";
-  if (review === null) return "- AI diff review: errored — no verdict (does not block)";
-  const head = `- AI diff review: ${review.status === "pass" ? "pass" : "FLAGGED"}${review.risk ? ` (risk ${review.risk})` : ""}`;
-  const summary = review.summary ? `\n  - ${review.summary}` : "";
-  const issues = review.issues.length ? `\n${review.issues.map((i) => `  - ${i}`).join("\n")}` : "";
-  return `${head}${summary}${issues}`;
-}

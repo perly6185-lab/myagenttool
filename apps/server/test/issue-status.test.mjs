@@ -53,6 +53,33 @@ test("runPrChecks: statusCheckRollup forbidden → Actions fallback (success + i
   assert.deepEqual(await runPrChecks({ cwd: "/r", prNumber: 7, gh }), { total: 2, passed: 1, failed: 0, pending: 1, state: "PENDING" });
 });
 
+test("runPrChecks: Actions fallback dedups re-runs — failed-then-rerun-green → SUCCESS (audit)", async () => {
+  const gh = ghRoute([
+    ["statusCheckRollup", new Error("forbidden")],
+    ["nameWithOwner", JSON.stringify({ nameWithOwner: "o/r" })],
+    ["headRefOid", JSON.stringify({ headRefOid: "s" })],
+    ["actions/runs", JSON.stringify({ workflow_runs: [
+      { workflow_id: 1, event: "pull_request", run_number: 1, status: "completed", conclusion: "failure" },
+      { workflow_id: 1, event: "pull_request", run_number: 2, status: "completed", conclusion: "success" },
+    ] })],
+    ["/status", JSON.stringify({ state: "success", total_count: 0 })],
+  ]);
+  const r = await runPrChecks({ cwd: "/r", prNumber: 7, gh });
+  assert.equal(r.state, "SUCCESS", "only the latest run per workflow counts");
+});
+
+test("runPrChecks: Actions fallback folds in a red external commit-status → FAILURE (audit)", async () => {
+  const gh = ghRoute([
+    ["statusCheckRollup", new Error("forbidden")],
+    ["nameWithOwner", JSON.stringify({ nameWithOwner: "o/r" })],
+    ["headRefOid", JSON.stringify({ headRefOid: "s" })],
+    ["actions/runs", JSON.stringify({ workflow_runs: [{ workflow_id: 1, run_number: 1, status: "completed", conclusion: "success" }] })],
+    ["/status", JSON.stringify({ state: "failure", total_count: 1 })],
+  ]);
+  const r = await runPrChecks({ cwd: "/r", prNumber: 7, gh });
+  assert.equal(r.state, "FAILURE", "a red external status downgrades an Actions-only SUCCESS");
+});
+
 test("runPrChecks: Actions fallback with a failed run → FAILURE", async () => {
   const gh = ghRoute([
     ["statusCheckRollup", new Error("forbidden")],

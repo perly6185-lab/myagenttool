@@ -8,6 +8,7 @@ import {
   normalizeStringArray,
 } from "../services/agents.mjs";
 import { existsSync, readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { dirname, resolve, sep } from "node:path";
 import { createAgentSkillService } from "../services/agent-skills.mjs";
 import { createApplicationService, validateApplicationRoutineDraft } from "../services/applications.mjs";
@@ -447,6 +448,17 @@ export function createServerRuntimeServices({
         return { review, diffLines, files };
       };
     })(),
+    // Cheap current worktree HEAD sha — lets the auto-merge sweep invalidate a
+    // cached review/diff when the PR head moved. (audit finding)
+    worktreeHeadSha: (worktreeId) => {
+      const worktree = state.worktrees.find((w) => w.id === worktreeId) ?? null;
+      if (!worktree?.path) return null;
+      try {
+        return execFileSync("git", ["-C", worktree.path, "rev-parse", "HEAD"], { encoding: "utf8", timeout: 5000 }).trim() || null;
+      } catch {
+        return null;
+      }
+    },
     // D3 (issue→UI-design plan): what did this branch change vs its base —
     // committed work included. Drives design-artifact detection in the reaction.
     listWorktreeChangedFiles: (worktreeId) => {

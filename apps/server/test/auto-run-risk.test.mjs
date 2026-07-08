@@ -76,3 +76,17 @@ test("sensitivePathHit: first match across path-strings or {path} objects", () =
   assert.equal(hit.path, ".github/workflows/ci.yml");
   assert.equal(sensitivePathHit(["anything"], []), null, "empty pattern list never hits");
 });
+
+test("DEFAULT_SENSITIVE_PATHS catches single-file + case + variant evasions (audit)", () => {
+  for (const p of ["src/auth.ts", "lib/authMiddleware.js", "bun.lockb", "terraform.tfvars", "services/api/infra/deploy.yaml", ".ENV", "Containerfile", "src/session.key", "config/secret.json", ".github/dependabot.yml"]) {
+    assert.ok(sensitivePathHit([p], DEFAULT_SENSITIVE_PATHS), `${p} must be sensitive`);
+  }
+  for (const p of ["README.md", "src/main/Hello.java", "docs/guide.md", "src/components/Button.tsx"]) {
+    assert.equal(sensitivePathHit([p], DEFAULT_SENSITIVE_PATHS), null, `${p} must be normal`);
+  }
+});
+
+test("matchesGlob is case-insensitive", () => {
+  assert.equal(matchesGlob(".ENV.local", "**/.env*"), true);
+  assert.equal(matchesGlob("Dockerfile", "**/*dockerfile*"), true);
+});

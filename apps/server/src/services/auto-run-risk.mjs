@@ -19,19 +19,22 @@ const JUDGE_MIN_CONFIDENCE = 0.6;
 // size — a 5-line auth/CI/migration/dependency change outweighs a 500-line docs
 // change. Operators can override the list in settings.
 export const DEFAULT_SENSITIVE_PATHS = [
-  ".github/workflows/**",
+  ".github/**",
   "**/migrations/**",
   "**/package.json",
   "package.json",
-  "**/package-lock.json",
-  "**/pnpm-lock.yaml",
-  "**/yarn.lock",
-  "**/*.lock",
+  "**/*lock*",
+  "**/auth*",
   "**/auth/**",
-  "**/*.tf",
+  "**/*secret*",
+  "**/*.tf*",
+  "**/infra/**",
   "infra/**",
-  "**/Dockerfile",
+  "**/*Dockerfile*",
+  "**/Containerfile",
   "**/.env*",
+  "**/*.pem",
+  "**/*.key",
 ];
 
 // Minimal glob matcher, single pass: `**/` = zero-or-more directories, `**` =
@@ -58,7 +61,9 @@ export function matchesGlob(path, pattern) {
     }
   }
   try {
-    return new RegExp(`^${body}$`).test(path);
+    // Case-insensitive: `.ENV`, `Containerfile`, `Auth.ts` must not evade the
+    // deterministic guard on a case-only difference. (audit finding)
+    return new RegExp(`^${body}$`, "i").test(path);
   } catch {
     return false;
   }

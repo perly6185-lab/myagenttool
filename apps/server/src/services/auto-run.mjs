@@ -65,6 +65,7 @@ export function createAutoRunService({
   judgeAcceptance,
   reviewDiff,
   listWorktreeChangedFiles,
+  worktreeHeadSha,
   spawnChildIssueDirect,
   mergePr,
   fetchPrChecks,
@@ -643,15 +644,20 @@ export function createAutoRunService({
     // FRESH here — trusting the throttled poll's prChecks would let a since-gone-red
     // PR through on stale-green. A fetch failure leaves prChecks as-is → still gated.
     if (state.autoRunSettings?.requireChecksGreenToMerge) {
+      // FAIL CLOSED: runPrChecks returns null on a gh failure (not throw), so a
+      // stale cached SUCCESS must not satisfy the gate — require a CONFIRMED
+      // fresh green this call. (audit finding)
+      let confirmed = false;
       if (typeof fetchPrChecks === "function") {
         const fresh = await fetchPrChecks({ prNumber: autoRun.prNumber, repoPath });
         if (fresh) {
           autoRun.prChecks = fresh;
           autoRun.prStateCheckedAt = now();
+          confirmed = true;
         }
       }
-      if (autoRun.prChecks?.state !== "SUCCESS") {
-        const posture = autoRun.prChecks?.state ? autoRun.prChecks.state.toLowerCase() : "unknown (not fetched)";
+      if (!confirmed || autoRun.prChecks?.state !== "SUCCESS") {
+        const posture = !confirmed ? "unconfirmed (fresh fetch failed)" : autoRun.prChecks.state.toLowerCase();
         throw new Error(`Merge blocked: setting requires green PR checks, but checks are ${posture}. Fix the checks or disable "require green checks to merge".`);
       }
     }
@@ -683,7 +689,10 @@ export function createAutoRunService({
     if ((autoRun.decision?.path ?? null) !== "design") throw new Error("Only a design run's report can be approved.");
     if (autoRun.status !== "report_posted") throw new Error("Only a posted design report can be approved.");
     const by = actor?.userId ?? "usr_local";
-    if (autoRun.designApproval?.status === "approved") {
+    if (autoRun.designApproval?.status === "approved" || autoRun.designApproval?.status === "approving") {
+      // Already approved, or a near-simultaneous approve is mid-flight — short
+      // circuit so two POSTs (double-click / CSRF burst) don't spawn two child
+      // issues. (audit finding: approveDesign TOCTOU)
       return { ok: true, alreadyApproved: true, childIssues: autoRun.childIssues ?? [] };
     }
     if (Array.isArray(autoRun.childIssues) && autoRun.childIssues.length > 0) {
@@ -707,6 +716,7 @@ export function createAutoRunService({
     const repoPath = worktree?.repoPath ?? null;
     if (!repoPath) throw new Error("The design run's repository is unavailable.");
     if (typeof spawnChildIssueDirect !== "function") throw new Error("Child-issue creation is not available on this server.");
+    autoRun.designApproval = { status: "approving", by, at: now() }; // claim before the await
     const design = [
       autoRun.report || "Design approved.",
       ...(Array.isArray(autoRun.designArtifacts) && autoRun.designArtifacts.length
@@ -756,39 +766,63 @@ export function createAutoRunService({
   // review "missing" => never auto-merges (falls to the human merge dialog).
   // Respects the kill switch + circuit breaker; every auto-merge is audited +
   // alerted. Merge itself still goes through mergeAutoRunPr (re-fetches checks).
+  const breakerOpen = () => {
+    const b = state.autoRunBreaker;
+    return Boolean(b?.openUntil && Date.parse(b.openUntil) > Date.parse(now()));
+  };
+
   async function autoMergeSweep() {
     const settings = state.autoRunSettings ?? {};
     if (!settings.autoMergeLowRisk) return { merged: [], evaluated: 0 };
     if (settings.autonomyKillSwitch) return { merged: [], evaluated: 0, halted: "kill-switch" };
-    const breaker = state.autoRunBreaker;
-    if (breaker?.openUntil && Date.parse(breaker.openUntil) > Date.parse(now())) {
-      return { merged: [], evaluated: 0, halted: "breaker-open" };
-    }
+    if (breakerOpen()) return { merged: [], evaluated: 0, halted: "breaker-open" };
     const maxDiffLines = Number(settings.autoMergeMaxDiffLines) || 400;
     const open = (state.autoRuns ?? []).filter(
       (r) => r.status === "pr_open" && r.prState !== "MERGED" && r.prState !== "CLOSED" && r.prNumber,
     );
     const merged = [];
     for (const autoRun of open) {
-      // Fresh checks — never auto-merge on the throttled poll's possibly-stale state.
+      // Re-check the emergency brakes EACH iteration — a sweep can run for minutes
+      // (per-PR gh + LLM calls), so an operator flipping the kill switch (or the
+      // breaker opening) mid-sweep must stop the rest. (audit finding)
+      if ((state.autoRunSettings ?? {}).autonomyKillSwitch || breakerOpen()) break;
+      // Budget brake: an over-budget project must not auto-merge OR spend a review
+      // call — mirror startAutoRun (budget is per-project, checked in the loop).
+      if (typeof budgetStatusFor === "function" && budgetStatusFor(autoRun.projectId)?.over) continue;
+
       const project = state.projects.find((p) => p.id === autoRun.projectId) ?? null;
       const repoPath = project?.path;
+      // Fresh checks — FAIL CLOSED. runPrChecks returns null (not throw) on a gh
+      // failure, so only trust the check state when we CONFIRMED it this sweep;
+      // otherwise a stale cached SUCCESS could auto-merge a since-red PR. (audit)
+      let checksConfirmed = false;
       if (repoPath && typeof fetchPrChecks === "function") {
         try {
           const fresh = await fetchPrChecks({ prNumber: autoRun.prNumber, repoPath });
           if (fresh) {
             autoRun.prChecks = fresh;
             autoRun.prStateCheckedAt = now();
+            checksConfirmed = true;
           }
         } catch {
-          /* leave as-is → still gated below */
+          /* unconfirmed */
         }
       }
+      if (!checksConfirmed) continue; // could not confirm checks → never auto-merge
       // Standard signals must be green before we spend a review call.
       if (computeMergeRisk(autoRun).level !== "low") continue;
-      // AI diff review + diff size + changed files (the strict bar). Run the
-      // review once, lazily; it also returns the changed-file list for the
-      // sensitive-path guard.
+      // Invalidate a cached review/diff when the PR head moved since the verdict
+      // was taken — the guard is only as fresh as the diff it reviewed. (audit)
+      let headSha = null;
+      if (typeof worktreeHeadSha === "function") {
+        try { headSha = await worktreeHeadSha(autoRun.worktreeId); } catch { headSha = null; }
+      }
+      if (headSha && autoRun.reviewedHeadSha && headSha !== autoRun.reviewedHeadSha) {
+        autoRun.review = undefined;
+        autoRun.diffFiles = undefined;
+        autoRun.diffLines = undefined;
+      }
+      // AI diff review + diff size + changed files (the strict bar), lazily.
       if (typeof reviewDiff === "function" && !autoRun.review) {
         try {
           const r = await reviewDiff({ autoRun });
@@ -796,6 +830,7 @@ export function createAutoRunService({
             if (r.review) autoRun.review = r.review;
             if (Number.isFinite(r.diffLines)) autoRun.diffLines = r.diffLines;
             if (Array.isArray(r.files)) autoRun.diffFiles = r.files;
+            autoRun.reviewedHeadSha = headSha;
           }
         } catch {
           /* review best-effort; a missing review keeps it out of "low" below */

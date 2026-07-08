@@ -66,12 +66,16 @@ export function DesignPanel({ worktreeId, artifacts }: { worktreeId: string; art
       ) : file ? (
         <>
           {isHtml ? (
-            // sandbox="" = maximum lockdown: no scripts, no same-origin, no
-            // navigation, no forms. The mockup is inert pixels.
+            // sandbox="" blocks scripts / same-origin / forms / navigation, but
+            // does NOT stop passive subresource loads (<img>, <link>, @font-face)
+            // — an agent-authored mockup could beacon a secret to an external
+            // host. Prepend a locked CSP (matches the prompt's "inline CSS only,
+            // no external resources" contract) so the iframe is truly inert. We
+            // inject it ourselves — never trust the agent to include it. (audit)
             <iframe
               title={file.path}
               sandbox=""
-              srcDoc={file.content}
+              srcDoc={`<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:">${file.content}`}
               className="h-96 w-full rounded-md border border-border bg-white"
             />
           ) : (
