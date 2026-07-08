@@ -39,6 +39,7 @@ export interface AutoRunRecord {
   judgment?: { solved: boolean | null; confidence: number | null; summary?: string | null; gaps?: string[] } | null;
   report?: string | null;
   designArtifacts?: string[] | null;
+  screenshots?: string[] | null;
   designApproval?: { status: "approved" | "rejected"; by?: string | null; at?: string | null; feedback?: string | null } | null;
   clarifyAnswer?: { by?: string | null; at?: string | null; text?: string | null } | null;
   prState?: string | null;
@@ -677,6 +678,9 @@ export function AutoRunsView() {
                 ) : null}
                 {run.designArtifacts?.length && run.worktreeId ? (
                   <DesignPanel worktreeId={run.worktreeId} artifacts={run.designArtifacts} />
+                ) : null}
+                {run.screenshots?.length && run.worktreeId ? (
+                  <DesignPanel worktreeId={run.worktreeId} artifacts={run.screenshots} title="Screenshots (visual acceptance)" />
                 ) : null}
                 {run.status === "report_posted" && run.decision?.path === "design" ? (
                   <DesignApproval run={run} onDone={load} />

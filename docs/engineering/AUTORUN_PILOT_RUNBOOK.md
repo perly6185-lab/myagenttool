@@ -205,3 +205,36 @@ are logged throttled (one line per 5s). The pilot's "silent stall" was the
 stale-unhealthy health verdict (fixed: re-probe on registration). The one real
 credential UX gap — a raw-stack crash when registration is refused — now prints
 the recovery steps instead.
+
+
+## Visual acceptance (D5) — operator screenshot command
+
+The product does NOT bundle a browser. Visual acceptance is an operator-provided
+verify (or extra) command that writes screenshots into the worktree; the console
+then renders any image files a run changed (on the pr_open card, "Screenshots
+(visual acceptance)") and design runs render `design/*.png` in the design panel.
+Same trust boundary as verify/review — env-configured argv, no shell.
+
+Wire a playwright capture as (part of) the verify command, e.g.:
+
+```js
+// shots.mjs — capture screenshots into ./screenshots (run by the verify command)
+import { chromium } from "playwright";           // operator dependency, not the product's
+import { mkdirSync } from "node:fs";
+mkdirSync("screenshots", { recursive: true });
+const browser = await chromium.launch();
+for (const [name, width] of [["desktop", 1280], ["mobile", 390]]) {
+  const page = await browser.newPage({ viewport: { width, height: 900 } });
+  await page.goto(process.env.APP_URL ?? "http://127.0.0.1:3000");  // your dev server
+  await page.screenshot({ path: `screenshots/home-${name}.png`, fullPage: true });
+  await page.close();
+}
+await browser.close();
+```
+
+Then make the project's verify command run the app's real tests AND the capture,
+e.g. `MYAGENTTOOL_AUTORUN_VERIFY_COMMAND_JSON='["sh","-c","npm test && node shots.mjs"]'`
+(only when the toolchain + a reachable dev server exist; otherwise omit it and the
+PR opens without shots). The images land in the worktree, get committed with the
+change, and surface in the console for a human to eyeball before merging. A design
+run can likewise drop mockup renders into `design/*.png`.

@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
-import { basename, dirname, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, extname, join, relative, resolve, sep } from "node:path";
 import { denyForeignProject } from "../runtime/auth.mjs";
 import { summarizeAutoRuns } from "../services/auto-run-metrics.mjs";
 import { readEvalTrend, summarizeEvalTrend } from "../services/eval-trend.mjs";
@@ -8,6 +8,16 @@ import { normalizeAutoRunSettings, resolveAutoRunConfig } from "../services/auto
 import { computeAutoRunReadiness } from "../services/auto-run-readiness.mjs";
 import { computeMergeRisk, sensitivePathHit, DEFAULT_SENSITIVE_PATHS } from "../services/auto-run-risk.mjs";
 import { resolveAutoRunVerifyCommandFor } from "../services/worktree-verify.mjs";
+
+const IMAGE_MIME = {
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".gif": "image/gif",
+  ".webp": "image/webp",
+  ".svg": "image/svg+xml",
+  ".avif": "image/avif",
+};
 
 export async function handleProjectRoutes({
   req,
@@ -536,12 +546,19 @@ export async function handleProjectRoutes({
     if (action === "file" && req.method === "GET") {
       try {
         const file = safeProjectFile(worktreeView, url.searchParams.get("path") ?? "");
-        const stats = existsSync(file) ? readFileSync(file) : Buffer.alloc(0);
-        const maxBytes = 512 * 1024;
+        const buf = existsSync(file) ? readFileSync(file) : Buffer.alloc(0);
+        const maxBytes = 2 * 1024 * 1024; // images run larger than text
+        const clipped = buf.subarray(0, maxBytes);
+        // D5 (visual acceptance): images (screenshots / mockup renders) are
+        // returned base64 so the console can render them inline; everything else
+        // stays utf8 text as before.
+        const mime = IMAGE_MIME[extname(file).toLowerCase()] ?? null;
         sendJson(res, 200, {
           path: relative(worktreeView.path, file).replaceAll("\\", "/"),
-          content: stats.subarray(0, maxBytes).toString("utf8"),
-          truncated: stats.length > maxBytes,
+          ...(mime
+            ? { encoding: "base64", mime, content: clipped.toString("base64") }
+            : { encoding: "utf8", content: clipped.toString("utf8") }),
+          truncated: buf.length > maxBytes,
         });
       } catch (error) {
         sendJson(res, 400, { error: "worktree_file_unavailable", message: errorMessage(error) });

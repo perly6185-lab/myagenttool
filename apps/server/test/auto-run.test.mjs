@@ -1340,3 +1340,14 @@ test("E3: answerClarify refuses non-clarify / non-needs_input runs + empty answe
   await svc2.advanceAutoRunForInvocation({ ...r2.invocation, status: "succeeded" });
   await assert.rejects(() => svc2.answerClarify(r2.autoRun.id, { answers: "x" }), /Only a clarify run/);
 });
+
+test("D5: a develop run whose change includes screenshots surfaces them on the pr_open card", async () => {
+  const { svc } = makeAutoRun({
+    commit: { committed: true, hasCommits: true },
+    listWorktreeChangedFiles: async () => ["src/App.tsx", "screenshots/home-desktop.png", "screenshots/home-mobile.png", "README.md"],
+  });
+  const { autoRun, invocation } = await svc.startAutoRun({ projectId: sourceProjectId, link: { type: "issue", number: 120, title: "Add the home page", url: null, state: "open" }, agentId: "agt_1", name: "i-120" });
+  await svc.advanceAutoRunForInvocation({ ...invocation, status: "succeeded", result: "done" });
+  assert.equal(autoRun.status, "pr_open");
+  assert.deepEqual(autoRun.screenshots, ["screenshots/home-desktop.png", "screenshots/home-mobile.png"], "image files surfaced, non-images excluded");
+});
