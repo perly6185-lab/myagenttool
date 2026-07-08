@@ -318,7 +318,7 @@ export function createServerRuntimeServices({
   // applies without a restart. No-op when unconfigured; never throws.
   const autoRunAlerts = createAlertDispatcher({ getWebhookUrl: () => state.autoRunSettings?.alertWebhookUrl ?? null });
 
-  const { startAutoRun, advanceAutoRunForInvocation, syncAutoRunOnApproval, retryAutoRun, mergeAutoRunPr, reapStuckAutoRuns, autoMergeSweep, approveDesign, rejectDesign } = createAutoRunService({
+  const { startAutoRun, advanceAutoRunForInvocation, syncAutoRunOnApproval, retryAutoRun, mergeAutoRunPr, reapStuckAutoRuns, autoMergeSweep, approveDesign, rejectDesign, answerClarify } = createAutoRunService({
     state,
     now,
     nextId,
@@ -453,6 +453,21 @@ export function createServerRuntimeServices({
         return { review, diffLines, files };
       };
     })(),
+    // Read a small text file from a worktree (e.g. design/BRIEF.md) — used to
+    // surface the FULL design/prototype brief in the report, not just the thin
+    // terminal summary. Null if absent/oversized.
+    readWorktreeTextFile: (worktreeId, relPath) => {
+      const worktree = state.worktrees.find((w) => w.id === worktreeId) ?? null;
+      if (!worktree?.path || typeof relPath !== "string") return null;
+      try {
+        const resolved = resolve(worktree.path, relPath);
+        if (!resolved.startsWith(resolve(worktree.path))) return null; // no escape
+        if (!existsSync(resolved)) return null;
+        return readFileSync(resolved, "utf8").slice(0, 16_000);
+      } catch {
+        return null;
+      }
+    },
     // Cheap current worktree HEAD sha — lets the auto-merge sweep invalidate a
     // cached review/diff when the PR head moved. (audit finding)
     worktreeHeadSha: (worktreeId) => {
@@ -2047,6 +2062,7 @@ export function createServerRuntimeServices({
     autoMergeSweep,
     approveDesign,
     rejectDesign,
+    answerClarify,
     mergeAutoRunPr,
     refreshAutoRunPrDispositions,
     selectProject,
