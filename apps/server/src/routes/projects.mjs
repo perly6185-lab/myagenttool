@@ -464,9 +464,14 @@ export async function handleProjectRoutes({
       sendJson(res, 200, { removed, worktrees: state.worktrees });
       return true;
     }
+    // Read file/tree from the WORKTREE's own directory, not the parent project
+    // clone — otherwise a worktree's changes (e.g. a design run's design/*.html
+    // artifacts) are invisible and the browser shows the parent's files instead.
+    const worktreeDir = worktree.path ?? worktree.worktreePath ?? null;
+    const worktreeView = worktreeDir ? { ...project, path: worktreeDir } : project;
     if (action === "files" && req.method === "GET") {
       try {
-        const tree = readProjectTree(project, { relativePath: url.searchParams.get("path") ?? "" });
+        const tree = readProjectTree(worktreeView, { relativePath: url.searchParams.get("path") ?? "" });
         sendJson(res, 200, { tree: treeEntriesToNodes(tree.entries ?? []) });
       } catch (error) {
         sendJson(res, 400, { error: "worktree_files_unavailable", message: errorMessage(error) });
@@ -478,10 +483,10 @@ export async function handleProjectRoutes({
       const mode = url.searchParams.get("mode") ?? "name";
       try {
         if (mode === "content") {
-          const result = searchProjectContent(project, { query });
+          const result = searchProjectContent(worktreeView, { query });
           sendJson(res, 200, { matches: (result.results ?? []).map((item) => ({ path: item.path, line: item.line, text: item.preview })) });
         } else {
-          const tree = readProjectTree(project, { search: query });
+          const tree = readProjectTree(worktreeView, { search: query });
           sendJson(res, 200, { matches: (tree.entries ?? []).map((item) => ({ path: item.path, text: item.name })) });
         }
       } catch (error) {
@@ -491,11 +496,11 @@ export async function handleProjectRoutes({
     }
     if (action === "file" && req.method === "GET") {
       try {
-        const file = safeProjectFile(project, url.searchParams.get("path") ?? "");
+        const file = safeProjectFile(worktreeView, url.searchParams.get("path") ?? "");
         const stats = existsSync(file) ? readFileSync(file) : Buffer.alloc(0);
         const maxBytes = 512 * 1024;
         sendJson(res, 200, {
-          path: relative(project.path, file).replaceAll("\\", "/"),
+          path: relative(worktreeView.path, file).replaceAll("\\", "/"),
           content: stats.subarray(0, maxBytes).toString("utf8"),
           truncated: stats.length > maxBytes,
         });
