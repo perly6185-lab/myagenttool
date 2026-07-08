@@ -29,6 +29,7 @@ export function DecompositionApproval({ run, onDone }: { run: AutoRunRecord; onD
   const plan = run.decompositionPlan;
   const children = plan?.tree?.issues ?? [];
   const blocking = plan?.failures ?? [];
+  const overlaps = plan?.overlap?.flagged ?? [];
 
   const act = async (action: "approve" | "reject") => {
     const ok = await execute(() => api.decompositionApproval(run.id, action, action === "reject" ? feedback : undefined));
@@ -57,6 +58,16 @@ export function DecompositionApproval({ run, onDone }: { run: AutoRunRecord; onD
         <p className="rounded-md border border-amber-500/40 bg-amber-500/5 px-2 py-1 text-[11px] text-amber-700 dark:text-amber-300">
           {blocking.length} governance issue(s) must be fixed before spawning.
         </p>
+      ) : null}
+      {overlaps.length ? (
+        <div className="rounded-md border border-amber-500/40 bg-amber-500/5 px-2 py-1 text-[11px] text-amber-700 dark:text-amber-300">
+          <span className="font-medium">Possible overlap</span> — children may cover the same scope; review before spawning:
+          <ul className="ml-3 list-disc">
+            {overlaps.slice(0, 3).map((p, i) => (
+              <li key={i}>#{p.a + 1} ↔ #{p.b + 1} ({Math.round(p.score * 100)}%)</li>
+            ))}
+          </ul>
+        </div>
       ) : null}
       <div className="flex flex-wrap items-center gap-1.5">
         <Button

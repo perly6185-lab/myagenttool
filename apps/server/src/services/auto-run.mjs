@@ -8,6 +8,7 @@ import { judgmentEvidence } from "./auto-run-judge.mjs";
 import { computeMergeRisk, sensitivePathHit, DEFAULT_SENSITIVE_PATHS } from "./auto-run-risk.mjs";
 import { composeDesignIssueComment, designArtifactIndex, buildDesignImageUrls } from "./auto-run-design.mjs";
 import { decompositionTree, issueTreeApplyFailures, humanApprovalRequiredReasons } from "../../../../tools/ai/src/issue-tree-core.mjs";
+import { scoreDecompositionOverlap } from "./auto-run-epic.mjs";
 
 // One-click "Auto" orchestrator. It closes the seam the console never had:
 // turning a linked GitHub issue into a worktree AND a started agent run seeded
@@ -195,6 +196,9 @@ export function createAutoRunService({
     // human gate satisfies at spawn time — is NOT reported as a defect to fix here.
     const failures = issueTreeApplyFailures(tree, "proposed");
     const approvalReasons = humanApprovalRequiredReasons(tree);
+    // S5: score how much the proposed children overlap — a high-overlap pair often
+    // means one child's scope is already covered by another (the live run's #28).
+    const overlap = scoreDecompositionOverlap(tree);
     const summary = extractRunSummary(invocation) ?? "";
     const lines = [
       summary ? `${summary}\n` : "",
@@ -202,13 +206,14 @@ export function createAutoRunService({
       ...tree.issues.map((c, i) => `${i + 1}. ${c.title}${c.acceptanceCriteria?.length ? ` — ${c.acceptanceCriteria.length} acceptance criteria` : ""}`),
       truncated ? `\n_(capped at ${cap}; the agent proposed ${children.length})_` : "",
       failures.length ? `\n⚠️ ${failures.length} governance issue(s) to resolve before spawning:\n${failures.map((f) => `- ${f}`).join("\n")}` : "\n✅ All proposed children pass structural governance validation.",
+      overlap.flagged.length ? `\n⚠️ Possible overlap (children may cover the same scope — review before spawning):\n${overlap.flagged.map((p) => `- #${p.a + 1} “${p.a != null ? tree.issues[p.a].title : ""}” ↔ #${p.b + 1} “${tree.issues[p.b].title}” (${Math.round(p.score * 100)}%)`).join("\n")}` : "",
       approvalReasons.length ? `\nℹ️ Approving the plan is the required human sign-off for: ${approvalReasons.join(", ")}.` : "",
       parseError ? `\n⚠️ decomposition/PLAN.json did not parse: ${parseError}` : "",
     ].filter(Boolean);
     return {
       status: {
         report: summary || null,
-        decompositionPlan: { tree, failures, approvalReasons, truncated, proposedCount: children.length, parseError },
+        decompositionPlan: { tree, failures, approvalReasons, overlap, truncated, proposedCount: children.length, parseError },
         error: failures.length || parseError || !tree.issues.length ? "The proposed plan needs attention before it can be approved." : null,
       },
       comment: lines.join("\n"),

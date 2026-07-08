@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { summarizeEpicChildren, refreshEpicChildStates } from "../src/services/auto-run-epic.mjs";
+import { summarizeEpicChildren, refreshEpicChildStates, scoreDecompositionOverlap } from "../src/services/auto-run-epic.mjs";
 
 const epic = {
   id: "aur_epic", projectId: "prj_1",
@@ -72,4 +72,35 @@ test("refreshEpicChildStates fetches OPEN children, marks CLOSED (terminal), thr
   assert.equal(seen.length, 0, "throttled within the window");
   const bad = await refreshEpicChildStates({ state: { projects: [{ id: "prj_1", path: "/r" }], autoRuns: [{ id: "e2", status: "decomposed", projectId: "prj_1", childIssues: [{ number: 5 }] }] }, now: () => "2026-07-09T00:00:00.000Z", fetchIssueState: async () => { throw new Error("gh down"); }, projectPathFor });
   assert.ok(bad, "a throwing fetch never propagates");
+});
+
+test("scoreDecompositionOverlap flags children that cover the same scope, spares distinct ones", () => {
+  const tree = { issues: [
+    { title: "Add language selection to the greeting service", problem: "greeting supports english and spanish", acceptanceCriteria: ["greeting accepts a language", "unsupported language falls back to english"] },
+    { title: "Harden greeting input handling", problem: "greeting handles blank name and unsupported language", acceptanceCriteria: ["blank name returns a default greeting", "unsupported language falls back to english"] },
+    { title: "Add a database migration for the audit log", problem: "persist audit events in postgres", acceptanceCriteria: ["migration creates the audit table"] },
+  ]};
+  const r = scoreDecompositionOverlap(tree);
+  // #1 and #2 share the language-fallback scope -> flagged; #3 (db migration) distinct
+  assert.ok(r.flagged.some((p) => (p.a === 0 && p.b === 1)), "the two greeting children are flagged as overlapping");
+  assert.ok(r.flagged.every((p) => !(p.a === 2 || p.b === 2)), "the unrelated migration child is never flagged");
+  assert.ok(r.maxOverlap >= 0.5);
+  assert.equal(r.perChild.length, 3);
+  assert.ok(r.perChild[2] < 0.5, "the distinct child has low overlap");
+});
+
+test("scoreDecompositionOverlap: a single child or empty tree has no overlap", () => {
+  assert.deepEqual(scoreDecompositionOverlap({ issues: [] }).flagged, []);
+  assert.deepEqual(scoreDecompositionOverlap({ issues: [{ title: "Only child", acceptanceCriteria: ["x"] }] }).flagged, []);
+  assert.equal(scoreDecompositionOverlap({ issues: [] }).maxOverlap, 0);
+});
+
+test("scoreDecompositionOverlap ignores governance boilerplate (identical scaffolding is not overlap)", () => {
+  // two children with identical Project-Fields-style boilerplate words but different domains
+  const tree = { issues: [
+    { title: "[Task]: Add the login page", problem: "implement the login page", acceptanceCriteria: ["login works"] },
+    { title: "[Task]: Add the metrics exporter", problem: "implement the metrics exporter", acceptanceCriteria: ["metrics exported"] },
+  ]};
+  const r = scoreDecompositionOverlap(tree);
+  assert.ok(r.maxOverlap < 0.5, "shared boilerplate (task/add/implement) is not counted as overlap");
 });

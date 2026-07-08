@@ -62,6 +62,69 @@ export function summarizeEpicChildren(epicRun, autoRuns = []) {
   };
 }
 
+// Decomposition-quality: score how much the proposed children OVERLAP (S5). The
+// live epic run showed the decompose agent can create a child whose scope another
+// child already covers (a later child then becomes docs/tests-only and the judge
+// blocks it). We surface that at PROPOSAL time so a human can reject/merge children
+// before spawning. Deterministic + advisory (never a gate).
+
+// Generic + governance boilerplate — dropped so the score reflects DOMAIN overlap
+// (greet, language, fallback…), not shared scaffolding (task, add, implement…).
+const OVERLAP_STOPWORDS = new Set([
+  "the", "and", "for", "with", "that", "this", "its", "into", "from", "when", "your", "you",
+  "add", "adds", "added", "adding", "implement", "implements", "implementation", "introduce",
+  "support", "supports", "create", "creates", "update", "updates", "change", "changes",
+  "task", "issue", "issues", "feature", "work", "acceptance", "criteria", "project", "fields",
+  "milestone", "area", "type", "risk", "platform", "priority", "backlog", "defined", "all", "none",
+  "todo", "should", "must", "will", "can", "new", "existing", "use", "uses", "using", "via",
+]);
+
+function stemToken(word) {
+  return word.length > 4 ? word.replace(/(ings|ing|ed|es|s)$/, "") : word;
+}
+
+function specTokens(spec) {
+  const text = [spec?.title, spec?.problem, spec?.userStory, ...(spec?.acceptanceCriteria ?? [])]
+    .filter(Boolean).join(" ").toLowerCase();
+  const set = new Set();
+  for (const raw of text.match(/[a-z0-9]+/g) ?? []) {
+    if (raw.length < 3 || OVERLAP_STOPWORDS.has(raw)) continue;
+    set.add(stemToken(raw));
+  }
+  return set;
+}
+
+// Overlap coefficient (|A∩B| / min(|A|,|B|)) — more sensitive than Jaccard when one
+// child's scope is a SUBSET of another's, which is exactly the redundant-child case.
+function overlapCoefficient(a, b) {
+  if (!a.size || !b.size) return 0;
+  let inter = 0;
+  for (const x of a) if (b.has(x)) inter += 1;
+  return inter / Math.min(a.size, b.size);
+}
+
+const round2 = (n) => Math.round(n * 100) / 100;
+
+/**
+ * @param {object} tree - a decomposition tree (issues[]).
+ * @param {{threshold?: number}} opts - flag pairs at/above this overlap (default 0.5).
+ * @returns {{pairs, flagged, maxOverlap, perChild, threshold}}
+ */
+export function scoreDecompositionOverlap(tree, { threshold = 0.5 } = {}) {
+  const issues = Array.isArray(tree?.issues) ? tree.issues : [];
+  const tokens = issues.map(specTokens);
+  const pairs = [];
+  for (let i = 0; i < issues.length; i += 1) {
+    for (let j = i + 1; j < issues.length; j += 1) {
+      pairs.push({ a: i, b: j, aTitle: issues[i]?.title ?? null, bTitle: issues[j]?.title ?? null, score: round2(overlapCoefficient(tokens[i], tokens[j])) });
+    }
+  }
+  const flagged = pairs.filter((p) => p.score >= threshold).sort((x, y) => y.score - x.score);
+  const maxOverlap = pairs.reduce((m, p) => Math.max(m, p.score), 0);
+  const perChild = issues.map((_, i) => round2(Math.max(0, ...pairs.filter((p) => p.a === i || p.b === i).map((p) => p.score))));
+  return { pairs, flagged, maxOverlap, perChild, threshold };
+}
+
 /**
  * Reconcile a decomposed epic's rollup with GitHub: fetch each OPEN child issue's
  * state and mark it CLOSED when it merged (through its auto-run OR a human-override
