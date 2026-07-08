@@ -28,7 +28,7 @@ import { deciderTimeoutMs, resolveDeciderCommand, runDeciderCommand } from "../s
 import { childIssueBody, childIssueTitle, extractProjectFieldsBlock, runChildIssueCreate, spawnIssuesConfig } from "../services/auto-run-spawn.mjs";
 import { refreshPrDispositions } from "../services/auto-run-eval.mjs";
 import { judgeTimeoutMs, resolveJudgeCommand, runAcceptanceJudge } from "../services/auto-run-judge.mjs";
-import { resolveReviewCommand, reviewTimeoutMs, runDiffReview } from "../services/auto-run-review.mjs";
+import { resolveReviewCommand, reviewTimeoutMs, runDiffReview, scanDiffForInjection } from "../services/auto-run-review.mjs";
 import { decisionConfig } from "../services/auto-run-decision.mjs";
 import { autoRunSettingsEnvOverlay } from "../services/auto-run-config.mjs";
 import { createAlertDispatcher } from "../services/auto-run-alerts.mjs";
@@ -444,7 +444,12 @@ export function createServerRuntimeServices({
         const issueBody = autoRun.link?.type === "issue" && worktree?.repoPath
           ? await runIssueBodyFetch({ cwd: worktree.repoPath, issueNumber: autoRun.link.number })
           : null;
-        const review = await runDiffReview({ command, link: autoRun.link, issueBody, diff, timeoutMs: reviewTimeoutMs(autoRunEnv) });
+        // Scan the diff itself for injection markers — an injection embedded in
+        // the agent's OWN diff (not just the issue body) could coax the review
+        // command into {"approve":true}. A hit forces fail (never trust an
+        // LLM verdict on a poisoned diff). (audit finding)
+        const injectionReview = scanDiffForInjection(diff);
+        const review = injectionReview ?? await runDiffReview({ command, link: autoRun.link, issueBody, diff, timeoutMs: reviewTimeoutMs(autoRunEnv) });
         return { review, diffLines, files };
       };
     })(),

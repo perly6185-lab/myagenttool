@@ -23,6 +23,7 @@ function git(cwd, ...args) {
 let repoDir;
 let svc;
 let worktree;
+let baselineSha;
 
 before(() => {
   repoDir = mkdtempSync(join(tmpdir(), "wt-diff-"));
@@ -44,11 +45,15 @@ before(() => {
   });
   const source = svc.addProject({ name: "Repo", path: repoDir, ownerTeamId: "team_a" });
   ({ worktree } = svc.createWorktree({ projectId: source.id, name: "diff", branchName: "myagent/diff" }));
+  baselineSha = git(worktree.path, "rev-parse", "HEAD");
 });
 
 // Each scenario starts from a pristine worktree so file-list assertions are exact.
 beforeEach(() => {
-  git(worktree.path, "checkout", "--", ".");
+  // Hard-reset history + tree so a prior test's committed change can't bleed into
+  // the next (previously each committing test self-reset at its END, which leaked
+  // if it threw first). (audit: intra-file order coupling)
+  git(worktree.path, "reset", "--hard", baselineSha);
   execFileSync("git", ["-C", worktree.path, "clean", "-fdx"], { encoding: "utf8" });
 });
 
@@ -78,8 +83,6 @@ test("committed change with no upstream: diff is visible (not empty) — C1 pilo
   assert.match(result.diff, /README\.md/, "committed change is in the diff");
   assert.match(result.diff, /^\+committed line$/m, "the committed line is visible to the judge");
 
-  // reset the worktree branch so later scenarios start pristine
-  git(worktree.path, "reset", "--hard", "HEAD~1");
 });
 
 test("changedPaths: committed + working-tree changes both listed (porcelain alone goes blind post-commit)", () => {
@@ -94,7 +97,6 @@ test("changedPaths: committed + working-tree changes both listed (porcelain alon
   assert.ok(result.changedPaths.includes("loose.txt"), "working-tree file is in changedPaths");
   assert.equal(result.files.some((f) => f.path === "README.md"), false, "porcelain no longer sees the committed file — why changedPaths exists");
 
-  git(worktree.path, "reset", "--hard", "HEAD~1");
 });
 
 test("tracked modification: listed in files and rendered in the unified diff", () => {
