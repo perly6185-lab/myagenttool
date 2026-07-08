@@ -37,20 +37,24 @@ export function composeDesignIssueComment({ brief, artifacts, imageUrls } = {}) 
   const body = String(brief ?? "").trim();
   const { html, images } = designArtifactIndex(artifacts);
   const urls = imageUrls && typeof imageUrls === "object" ? imageUrls : {};
+  // The hosted previews come from the post-render PUSH, so they are keyed off
+  // imageUrls — NOT the pre-render `artifacts` list (which was captured before the
+  // renderer wrote the PNGs). Embed every image we have a real hosted URL for.
+  const hosted = Object.keys(urls).filter((p) => typeof urls[p] === "string" && urls[p]);
 
   const parts = body ? [body] : [];
 
-  // Inline pixel previews (Layer B): only images we have a real hosted URL for.
-  const embedded = images.filter((p) => typeof urls[p] === "string" && urls[p]);
-  if (embedded.length) {
+  // Inline pixel previews (Layer B).
+  if (hosted.length) {
     parts.push(
-      ["", "---", "", "### Mockup preview", ...embedded.map((p) => `![${stripPrefix(p)}](${urls[p]})`)].join("\n"),
+      ["", "---", "", "### Mockup preview", ...hosted.map((p) => `![${stripPrefix(p)}](${urls[p]})`)].join("\n"),
     );
   }
 
   // Index the rest so the reader knows the richer artifact exists + where to open
-  // it: HTML mockups (never embeddable) and any images we couldn't host.
-  const indexed = [...html, ...images.filter((p) => !(typeof urls[p] === "string" && urls[p]))];
+  // it: HTML mockups (never embeddable) + any artifact images we couldn't host,
+  // minus anything already embedded above.
+  const indexed = [...html, ...images].filter((p) => !hosted.includes(p));
   if (indexed.length) {
     parts.push(
       ["", "---", "", "Design mockups produced (open in the console's design panel):", ...indexed.map((p) => `- \`${p}\``)].join("\n"),
