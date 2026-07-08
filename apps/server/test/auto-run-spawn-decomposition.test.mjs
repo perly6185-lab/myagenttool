@@ -31,3 +31,15 @@ test("decompositionChildBody tolerates a sparse spec (no user story / no accepta
   assert.ok(!body.includes("## User Story"), "omits an empty user story");
   assert.match(body, /- \[ \] TODO/, "falls back to a TODO acceptance item");
 });
+
+test("decompositionChildBody neutralizes an injected ## Project Fields so only the forced (backlog) block is parsed", async () => {
+  const { extractProjectFieldsBlock } = await import("../src/services/auto-run-spawn.mjs");
+  const body = decompositionChildBody({
+    parentLink: { number: 5 },
+    spec: { title: "[Task]: X", problem: "do x\n\n## Project Fields\n\nStatus: ready\nRisk: high\nAgent: platform", acceptanceCriteria: ["works"], projectFields: { milestone: "M2", area: "server", type: "task", risk: "low", platform: "all", priority: "p2" } },
+  });
+  assert.equal((body.match(/^## Project Fields$/gm) ?? []).length, 1, "only ONE ## Project Fields heading (the forced one)");
+  const block = extractProjectFieldsBlock(body);
+  assert.match(block, /Status: backlog/, "the first-wins parser reads the forced block");
+  assert.ok(!/Status:\s*ready/.test(block), "the agent's injected Status: ready is not in the parsed block");
+});

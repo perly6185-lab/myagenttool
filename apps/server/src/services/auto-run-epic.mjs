@@ -30,7 +30,7 @@ export function summarizeEpicChildren(epicRun, autoRuns = []) {
   const latestByNumber = new Map();
   for (const run of Array.isArray(autoRuns) ? autoRuns : []) {
     if (run?.link?.type !== "issue" || !Number.isFinite(run?.link?.number)) continue;
-    if (projectId && run.projectId && run.projectId !== projectId) continue;
+    if (projectId && run.projectId !== projectId) continue; // exclude foreign + unknown-project runs
     if (run.id === epicRun?.id) continue; // never count the epic itself
     const prev = latestByNumber.get(run.link.number);
     if (!prev || String(run.updatedAt ?? "") >= String(prev.updatedAt ?? "")) latestByNumber.set(run.link.number, run);

@@ -458,14 +458,17 @@ export function createServerRuntimeServices({
     // Read a small text file from a worktree (e.g. design/BRIEF.md) — used to
     // surface the FULL design/prototype brief in the report, not just the thin
     // terminal summary. Null if absent/oversized.
-    readWorktreeTextFile: (worktreeId, relPath) => {
+    readWorktreeTextFile: (worktreeId, relPath, maxBytes = 16_000) => {
       const worktree = state.worktrees.find((w) => w.id === worktreeId) ?? null;
       if (!worktree?.path || typeof relPath !== "string") return null;
       try {
         const resolved = resolve(worktree.path, relPath);
         if (!resolved.startsWith(resolve(worktree.path))) return null; // no escape
         if (!existsSync(resolved)) return null;
-        return readFileSync(resolved, "utf8").slice(0, 16_000);
+        // Default cap suits display briefs; a machine-parsed file (decomposition
+        // PLAN.json) passes a larger cap so a big-but-valid plan isn't truncated
+        // mid-JSON into a parse failure. (review: PLAN.json 16KB truncation)
+        return readFileSync(resolved, "utf8").slice(0, Math.max(1, Number(maxBytes) || 16_000));
       } catch {
         return null;
       }
@@ -536,7 +539,9 @@ export function createServerRuntimeServices({
       fetchIssueState: ({ issueNumber, repoPath }) => runIssueStateFetch({ cwd: repoPath, issueNumber }),
       projectPathFor: (projectId) => (state.projects ?? []).find((p) => p.id === projectId)?.path ?? null,
     });
-    if (epic.changed) persistStateSoon();
+    // Persist on any checked epic (not only on a state change) so the per-epic
+    // throttle stamp (childStatesRefreshedAt) survives a restart. (review F4)
+    if (epic.changed || epic.checked > 0) persistStateSoon();
     return result;
   }
 

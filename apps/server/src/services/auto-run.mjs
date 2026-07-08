@@ -178,7 +178,9 @@ export function createAutoRunService({
   // the tree is a PROPOSAL a human approves in Slice 3. Pure/read-only; never throws.
   function buildDecompositionProposal(autoRun, worktree, invocation) {
     const cap = Number(state.autoRunSettings?.epicMaxChildren) > 0 ? Math.min(Number(state.autoRunSettings.epicMaxChildren), 20) : 8;
-    const raw = typeof readWorktreeTextFile === "function" ? readWorktreeTextFile(autoRun.worktreeId, "decomposition/PLAN.json") : null;
+    // Read PLAN.json with a generous cap (it is JSON.parse'd, so mid-file
+    // truncation would fail to parse; a 20-child plan is ~40KB). (review fix)
+    const raw = typeof readWorktreeTextFile === "function" ? readWorktreeTextFile(autoRun.worktreeId, "decomposition/PLAN.json", 500_000) : null;
     let children = [];
     let parseError = null;
     if (raw) {
@@ -933,36 +935,51 @@ export function createAutoRunService({
     if (!repoPath) throw new Error("The epic run's repository is unavailable.");
     if (typeof createDecompositionChild !== "function") throw new Error("Child-issue creation is not available on this server.");
     autoRun.decompositionApproval = { status: "approving", by, at: now() }; // claim before the awaits
-    const created = [];
+    // Carry forward children a PRIOR (partial) approve already created, and skip
+    // their specs — a retry never double-creates the same child. (review F1/F2:
+    // partial/total failure must stay recoverable, and a crash-then-reapprove must
+    // not duplicate issues on GitHub.)
+    const already = new Set((autoRun.childIssues ?? []).map((c) => c.title));
+    const created = [...(autoRun.childIssues ?? [])];
     const errors = [];
     for (const spec of specs) {
+      if (already.has(spec.title)) continue;
       try {
         const child = await createDecompositionChild({ repoPath, title: spec.title, body: decompositionChildBody({ parentLink: autoRun.link, spec }) });
-        if (child && Number.isFinite(child.number)) created.push({ number: child.number, url: child.url ?? null, title: spec.title });
+        if (child && Number.isFinite(child.number)) { created.push({ number: child.number, url: child.url ?? null, title: spec.title }); already.add(spec.title); }
         else errors.push(`${spec.title}: no issue number returned`);
       } catch (error) {
         errors.push(`${spec.title}: ${String(error?.message ?? error).slice(0, 200)}`);
       }
     }
     autoRun.childIssues = created;
-    autoRun.decompositionApproval = { status: "approved", by, at: now(), created: created.length, errors };
-    setAutoRunStatus(autoRun, "decomposed", { error: errors.length ? `${errors.length} child issue(s) failed to create.` : null });
+    // Only a FULLY-created plan settles as `decomposed`. On any failure the run
+    // stays `plan_proposed` with a retryable `partial` approval so a re-approve
+    // creates the rest — the idempotency guard above lets `partial` through.
+    const complete = errors.length === 0 && created.length === specs.length;
+    if (complete) {
+      autoRun.decompositionApproval = { status: "approved", by, at: now(), created: created.length, errors: [] };
+      setAutoRunStatus(autoRun, "decomposed", { error: null });
+    } else {
+      autoRun.decompositionApproval = { status: "partial", by, at: now(), created: created.length, errors };
+      setAutoRunStatus(autoRun, "plan_proposed", { error: `${errors.length} of ${specs.length} child issue(s) failed to create — approve again to retry the rest.` });
+    }
     maybePostIssueReport(autoRun, worktree, [
-      `Decomposition approved by ${by} — created ${created.length} child issue(s):`,
+      `Decomposition approved by ${by} — created ${created.length}/${specs.length} child issue(s):`,
       ...created.map((c) => `- #${c.number} ${c.title}`),
-      ...(errors.length ? ["", "Failed to create:", ...errors.map((e) => `- ${e}`)] : []),
+      ...(errors.length ? ["", "Failed to create (approve again to retry):", ...errors.map((e) => `- ${e}`)] : []),
       "",
       "Label a child `auto` to start it (or run it manually) — children are never implemented automatically.",
     ].join("\n"));
     appendEvent({
       invocationId: autoRun.invocationId,
-      type: "auto_run_decomposition_approved",
-      level: "info",
-      message: `Auto-run ${autoRun.id} decomposition approved by ${by}: ${created.length} child issue(s) created.`,
+      type: complete ? "auto_run_decomposition_approved" : "auto_run_decomposition_partial",
+      level: complete ? "info" : "warn",
+      message: `Auto-run ${autoRun.id} decomposition approved by ${by}: ${created.length}/${specs.length} child issue(s) created${errors.length ? `, ${errors.length} failed` : ""}.`,
       data: { autoRunId: autoRun.id, childIssues: created, errors },
     });
     persistStateSoon();
-    return { ok: true, childIssues: created, errors };
+    return { ok: true, childIssues: created, errors, complete };
   }
 
   async function rejectDecomposition(autoRunId, { actor, feedback } = {}) {

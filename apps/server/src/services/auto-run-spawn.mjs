@@ -78,6 +78,14 @@ export function projectFieldsBlockFromFields(fields = {}) {
   return `## Project Fields\n\n${rows.map(([key, value]) => `${key}: ${value}`).join("\n")}`;
 }
 
+// Strip markdown heading markers from AGENT-authored text so it cannot inject a
+// second `## Project Fields` block (a first-block-wins reader — sync-project's
+// label apply — would otherwise pick the agent's Status/Risk over the forced
+// backlog block appended below). (review: child-body field injection)
+function stripHeadings(text) {
+  return String(text ?? "").replace(/^(\s{0,3})#{1,6}[ \t]+/gm, "$1");
+}
+
 /**
  * The governed body of ONE decomposition child, from its issue spec: the depth-1
  * marker (no grandchildren), the problem/story, its own acceptance criteria, and a
@@ -86,13 +94,13 @@ export function projectFieldsBlockFromFields(fields = {}) {
  */
 export function decompositionChildBody({ parentLink, spec }) {
   const parentRef = Number.isFinite(parentLink?.number) ? `#${parentLink.number}` : "its epic";
-  const accept = (spec?.acceptanceCriteria ?? []).filter(Boolean);
+  const accept = (spec?.acceptanceCriteria ?? []).filter(Boolean).map((a) => stripHeadings(a).replace(/\r?\n/g, " ").trim());
   return (
     `Spawned from epic ${parentRef} by an approved decomposition. **A human must label this issue \`auto\`** ` +
     "(or start it manually) to begin implementation — it is never implemented automatically without that.\n\n" +
     `${CHILD_MARKER_PREFIX}${parentLink?.number ?? 0} -->\n\n` +
-    `## Problem\n\n${String(spec?.problem ?? "").trim() || String(spec?.title ?? "").trim()}\n\n` +
-    (spec?.userStory && spec.userStory !== "TODO" ? `## User Story\n\n${spec.userStory}\n\n` : "") +
+    `## Problem\n\n${stripHeadings(spec?.problem).trim() || String(spec?.title ?? "").trim()}\n\n` +
+    (spec?.userStory && spec.userStory !== "TODO" ? `## User Story\n\n${stripHeadings(spec.userStory).trim()}\n\n` : "") +
     `## Acceptance\n\n${accept.length ? accept.map((a) => `- [ ] ${a}`).join("\n") : "- [ ] TODO"}\n\n` +
     projectFieldsBlockFromFields(spec?.projectFields)
   );
