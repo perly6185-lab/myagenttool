@@ -5,10 +5,22 @@
 // latest same-project auto-run and aggregates. A child with no auto-run yet is
 // "not started" (waiting on the human to label it).
 
+// Outcome-based overlap (S5.1): a child that RAN and the acceptance judge blocked as
+// "the behavior already exists / the diff only adds docs+tests" is a CONFIRMED
+// overlap — the ground truth for the S5 proposal-time overlap PREDICTION. Detected
+// from the judge's verdict text (matches the real devdemo #28 block).
+const REDUNDANCY_MARKERS = /already (implemented|exists|present|handled|covered|done)|no (new )?(implementation|impl|code)\b|diff only adds|only adds?\b.{0,40}(documentation|docs|tests?)|duplicate|redundant|nothing (new )?to (implement|change)|no (code|behaviou?r) change/i;
+
+export function isRedundancyBlock(judgment) {
+  if (!judgment || judgment.solved !== false) return false;
+  const text = [judgment.summary, ...(Array.isArray(judgment.gaps) ? judgment.gaps : [])].filter(Boolean).join(" ");
+  return REDUNDANCY_MARKERS.test(text);
+}
+
 /**
  * @param {object} epicRun - a decomposed epic auto-run (carries childIssues[]).
  * @param {object[]} autoRuns - all auto-runs (state.autoRuns).
- * @returns {{total,started,notStarted,merged,prOpen,failed,inProgress,items}}
+ * @returns {{total,started,notStarted,done,merged,prOpen,failed,inProgress,redundant,items}}
  */
 export function summarizeEpicChildren(epicRun, autoRuns = []) {
   const children = Array.isArray(epicRun?.childIssues) ? epicRun.childIssues : [];
@@ -30,6 +42,7 @@ export function summarizeEpicChildren(epicRun, autoRuns = []) {
   let prOpen = 0;
   let failed = 0;
   let inProgress = 0;
+  let redundant = 0;
   const items = children.map((child) => {
     const run = latestByNumber.get(child.number) ?? null;
     const status = run?.status ?? null;
@@ -38,7 +51,10 @@ export function summarizeEpicChildren(epicRun, autoRuns = []) {
     // auto-run OR a human-override PR outside the loop). issueState is populated by
     // the reconcile refresh; absent (older records) we fall back to prState.
     const isDone = child.issueState === "CLOSED" || prState === "MERGED";
+    // Confirmed overlap: the run was judge-blocked as already-covered (S5.1).
+    const isRedundant = Boolean(run) && isRedundancyBlock(run.judgment);
     if (isDone) done += 1;
+    if (isRedundant) redundant += 1;
     if (run) {
       started += 1;
       if (prState === "MERGED") merged += 1;
@@ -46,7 +62,7 @@ export function summarizeEpicChildren(epicRun, autoRuns = []) {
       else if (status === "failed" || status === "blocked") failed += 1;
       else inProgress += 1;
     }
-    return { number: child.number, title: child.title ?? null, status, prState, issueState: child.issueState ?? null, done: isDone };
+    return { number: child.number, title: child.title ?? null, status, prState, issueState: child.issueState ?? null, done: isDone, redundant: isRedundant };
   });
 
   return {
@@ -58,6 +74,7 @@ export function summarizeEpicChildren(epicRun, autoRuns = []) {
     prOpen,
     failed,
     inProgress,
+    redundant,
     items,
   };
 }
