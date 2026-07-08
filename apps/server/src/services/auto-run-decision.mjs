@@ -11,16 +11,41 @@ import { classifyIntentFromText } from "./auto-run-intent.mjs";
 //   design    — open solution space: the deliverable is a design, not a diff.
 //   prototype — deep uncertainty: a runnable spike is worth more than analysis.
 //   clarify   — under-specified: ask specific questions instead of guessing.
+//   decompose — an epic/initiative: break it into governed child issues (a plan,
+//               not a diff). Opt-in (epicDecomposition); EPIC_DECOMPOSITION_PLAN.md.
 
-export const AUTO_RUN_PATHS = ["develop", "design", "prototype", "clarify"];
+export const AUTO_RUN_PATHS = ["develop", "design", "prototype", "clarify", "decompose"];
 
 // Paths whose output is not a product diff. A low-confidence agent decision may
 // not send work down these (or spawn issues) — it degrades to clarify instead.
-const HEAVY_PATHS = new Set(["design", "prototype"]);
+const HEAVY_PATHS = new Set(["design", "prototype", "decompose"]);
 
 const INTENT_TO_PATH = { change: "develop", investigation: "design", question: "clarify" };
 // Legacy `intent` field kept on records for continuity with pre-decision runs.
-const PATH_TO_INTENT = { develop: "change", design: "investigation", prototype: "investigation", clarify: "question" };
+const PATH_TO_INTENT = { develop: "change", design: "investigation", prototype: "investigation", clarify: "question", decompose: "investigation" };
+
+/**
+ * Deterministic epic/initiative detector. An epic is a PARENT of work, not a work
+ * item — its title is `[Epic]`/`[Initiative]` or its Project Fields say so. Used
+ * (only when epicDecomposition is on) to route to the decompose path regardless of
+ * what the develop-shaped title heuristic would otherwise say.
+ */
+export function isEpicIssue({ link, issueBody } = {}) {
+  if (/^\s*\[(epic|initiative)\]/i.test(String(link?.title ?? ""))) return true;
+  return /(^|\n)\s*type:\s*(epic|initiative)\b/i.test(String(issueBody ?? ""));
+}
+
+export function epicDecision() {
+  return {
+    path: "decompose",
+    spawnChildIssues: true,
+    confidence: 0.95,
+    rationale: "Epic/Initiative detected — decompose into governed child issues.",
+    clarifyingQuestions: [],
+    decidedBy: "heuristic",
+    via: "epic-detector",
+  };
+}
 
 export function decisionConfig(env = process.env) {
   const raw = Number(env.MYAGENTTOOL_AUTORUN_DECISION_MIN_CONFIDENCE);
@@ -81,7 +106,11 @@ export async function resolveDecision({
   decideIssuePath,
   minConfidence = decisionConfig().minConfidence,
   fastPath = decisionConfig().fastPath,
+  epicDecomposition = false,
 } = {}) {
+  // Opt-in epic decomposition wins over every other route: an epic is never a
+  // single develop/design run. Deterministic — no decider hop, no LLM variance.
+  if (epicDecomposition && isEpicIssue({ link, issueBody })) return epicDecision();
   if (typeof decideIssuePath !== "function") return heuristicDecision(link);
 
   // Hybrid fast path: question/investigation titles are strong lexical signals

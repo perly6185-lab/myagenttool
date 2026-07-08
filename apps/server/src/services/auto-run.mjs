@@ -7,6 +7,7 @@ import { isSpawnedChildBody } from "./auto-run-spawn.mjs";
 import { judgmentEvidence } from "./auto-run-judge.mjs";
 import { computeMergeRisk, sensitivePathHit, DEFAULT_SENSITIVE_PATHS } from "./auto-run-risk.mjs";
 import { composeDesignIssueComment, designArtifactIndex, buildDesignImageUrls } from "./auto-run-design.mjs";
+import { decompositionTree, issueTreeApplyFailures, humanApprovalRequiredReasons } from "../../../../tools/ai/src/issue-tree-core.mjs";
 
 // One-click "Auto" orchestrator. It closes the seam the console never had:
 // turning a linked GitHub issue into a worktree AND a started agent run seeded
@@ -22,7 +23,7 @@ import { composeDesignIssueComment, designArtifactIndex, buildDesignImageUrls } 
 // O2: decision paths whose runs may be auto-approved by operator policy — the
 // non-code paths (a design brief / a clarify question / a throwaway spike),
 // never `develop` (which edits product code and opens a PR).
-const AUTO_APPROVABLE_PATHS = new Set(["design", "clarify", "prototype"]);
+const AUTO_APPROVABLE_PATHS = new Set(["design", "clarify", "prototype", "decompose"]);
 
 export const autoRunStates = [
   "materializing",
@@ -33,6 +34,7 @@ export const autoRunStates = [
   "pr_open",
   "report_posted",
   "needs_input",
+  "plan_proposed",
   "blocked",
   "done",
   "failed",
@@ -167,6 +169,50 @@ export function createAutoRunService({
     }
   }
 
+  // Epic decomposition (Slice 2): read the agent's proposed plan from the worktree
+  // (decomposition/PLAN.json — a JSON array of child briefs, or {children:[...]}),
+  // build the governed tree (capped), and validate it. NOTHING is spawned here —
+  // the tree is a PROPOSAL a human approves in Slice 3. Pure/read-only; never throws.
+  function buildDecompositionProposal(autoRun, worktree, invocation) {
+    const cap = Number(state.autoRunSettings?.epicMaxChildren) > 0 ? Math.min(Number(state.autoRunSettings.epicMaxChildren), 20) : 8;
+    const raw = typeof readWorktreeTextFile === "function" ? readWorktreeTextFile(autoRun.worktreeId, "decomposition/PLAN.json") : null;
+    let children = [];
+    let parseError = null;
+    if (raw) {
+      try {
+        const parsed = JSON.parse(raw);
+        children = Array.isArray(parsed) ? parsed : Array.isArray(parsed?.children) ? parsed.children : [];
+      } catch (error) {
+        parseError = String(error?.message ?? error).slice(0, 200);
+      }
+    }
+    const truncated = children.length > cap;
+    const tree = decompositionTree({ parentLink: autoRun.link, children: children.slice(0, cap) });
+    // STRUCTURAL defects only (title/milestone/acceptance/labels/product-flow). We
+    // pass a sentinel approval so the "human approval required" line — which the S3
+    // human gate satisfies at spawn time — is NOT reported as a defect to fix here.
+    const failures = issueTreeApplyFailures(tree, "proposed");
+    const approvalReasons = humanApprovalRequiredReasons(tree);
+    const summary = extractRunSummary(invocation) ?? "";
+    const lines = [
+      summary ? `${summary}\n` : "",
+      `**Proposed decomposition — ${tree.issues.length} child issue(s)** (nothing created yet; awaiting approval):`,
+      ...tree.issues.map((c, i) => `${i + 1}. ${c.title}${c.acceptanceCriteria?.length ? ` — ${c.acceptanceCriteria.length} acceptance criteria` : ""}`),
+      truncated ? `\n_(capped at ${cap}; the agent proposed ${children.length})_` : "",
+      failures.length ? `\n⚠️ ${failures.length} governance issue(s) to resolve before spawning:\n${failures.map((f) => `- ${f}`).join("\n")}` : "\n✅ All proposed children pass structural governance validation.",
+      approvalReasons.length ? `\nℹ️ Approving the plan is the required human sign-off for: ${approvalReasons.join(", ")}.` : "",
+      parseError ? `\n⚠️ decomposition/PLAN.json did not parse: ${parseError}` : "",
+    ].filter(Boolean);
+    return {
+      status: {
+        report: summary || null,
+        decompositionPlan: { tree, failures, approvalReasons, truncated, proposedCount: children.length, parseError },
+        error: failures.length || parseError || !tree.issues.length ? "The proposed plan needs attention before it can be approved." : null,
+      },
+      comment: lines.join("\n"),
+    };
+  }
+
   // Best-effort: post the investigation summary back to the issue (opt-in, gated
   // by the same GitHub-write config as status writeback). Fire-and-forget.
   function maybePostIssueReport(autoRun, worktree, body) {
@@ -194,7 +240,7 @@ export function createAutoRunService({
   }
   // Reaction states already handled — advancing past them would re-open a PR.
   // `blocked` (verification failed) is terminal here; a human retries/fixes.
-  const settledStatuses = new Set(["pr_open", "report_posted", "needs_input", "blocked", "done", "failed"]);
+  const settledStatuses = new Set(["pr_open", "report_posted", "needs_input", "plan_proposed", "blocked", "done", "failed"]);
 
   // The PR body an auto-run opens with, carrying the verification evidence so the
   // pull request is honest about whether checks ran and passed.
@@ -331,6 +377,8 @@ export function createAutoRunService({
       // defaults inside resolveDecision (decisionConfig()).
       minConfidence: decisionSettings?.minConfidence,
       fastPath: decisionSettings?.fastPath,
+      // Opt-in: an epic/initiative routes to decompose (a plan, not a diff).
+      epicDecomposition: state.autoRunSettings?.epicDecomposition === true,
     });
 
     // 1. Materialize the worktree from the issue.
@@ -451,6 +499,19 @@ export function createAutoRunService({
 
       if (invocation.status === "succeeded") {
         const worktree = state.worktrees.find((item) => item.id === autoRun.worktreeId) ?? null;
+
+        // Epic decomposition (opt-in): the deliverable is a PROPOSED plan of child
+        // issues, not a diff. Read the agent's decomposition/PLAN.json, build +
+        // validate the governed tree, and park at plan_proposed for a human to
+        // approve (Slice 3 does the fan-out). No commit, no verify, no PR.
+        if (autoRun.decision?.path === "decompose") {
+          const proposal = buildDecompositionProposal(autoRun, worktree, invocation);
+          maybePostIssueReport(autoRun, worktree, proposal.comment);
+          setAutoRunStatus(autoRun, "plan_proposed", proposal.status);
+          maybeWriteIssueStatus(autoRun, worktree, "review");
+          persistStateSoon();
+          return autoRun;
+        }
 
         // Commit the agent's edits so they actually reach the PR (publish only
         // ships commits), and stop early if the run produced nothing to open a PR

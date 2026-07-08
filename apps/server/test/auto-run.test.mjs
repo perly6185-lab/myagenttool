@@ -1474,3 +1474,44 @@ test("Layer B off: a design run indexes the mockups (Layer A) but never renders 
   assert.match(comment, /open in the console's design panel/, "Layer A still indexes the mockups");
   assert.ok(!comment.includes("!["), "no inline image without Layer B");
 });
+
+test("Epic S2: an epic run reads decomposition/PLAN.json and parks at plan_proposed (no PR, no spawn)", async () => {
+  const plan = [
+    { issueTitle: "[Task]: Part A", problem: "A", acceptanceCriteria: ["A works", "A tested"], riskFlags: ["No notable risk."], projectFields: { milestone: "M2", area: "server", type: "task", risk: "low", platform: "all", priority: "p2" } },
+    { issueTitle: "[Task]: Part B", problem: "B", acceptanceCriteria: ["B works", "B tested"], riskFlags: ["No notable risk."], projectFields: { milestone: "M2", area: "server", type: "task", risk: "low", platform: "all", priority: "p2" } },
+  ];
+  const { svc, calls } = makeAutoRun({
+    readWorktreeTextFile: (_wt, relPath) => (relPath === "decomposition/PLAN.json" ? JSON.stringify(plan) : null),
+  });
+  state.autoRunSettings = { epicDecomposition: true };
+  const { autoRun, invocation } = await svc.startAutoRun({
+    projectId: sourceProjectId, link: { type: "issue", number: 200, title: "[Epic]: Ship the console", url: null, state: "open" }, agentId: "agt_1", name: "i-200-epic",
+  });
+  assert.equal(autoRun.decision.path, "decompose", "epic routed to decompose");
+
+  await svc.advanceAutoRunForInvocation({ ...invocation, status: "succeeded", result: "broke it into 2 parts" });
+
+  assert.equal(autoRun.status, "plan_proposed");
+  assert.equal(autoRun.decompositionPlan.tree.issues.length, 2, "2 governed children proposed");
+  assert.deepEqual(autoRun.decompositionPlan.failures, [], "clean plan passes governance validation");
+  assert.equal(autoRun.decompositionPlan.tree.parent.number, 200, "tree tagged with the epic");
+  assert.equal(calls.pr.length, 0, "NO PR for an epic decomposition");
+  assert.equal(calls.commit.length, 0, "no commit — the deliverable is a plan, not a diff");
+  assert.equal(calls.report.length, 1, "the proposed plan is posted to the epic");
+  assert.match(calls.report[0].body, /Proposed decomposition — 2 child issue/);
+});
+
+test("Epic S2: a malformed PLAN.json parks at plan_proposed with an error, not a crash", async () => {
+  const { svc } = makeAutoRun({
+    readWorktreeTextFile: (_wt, relPath) => (relPath === "decomposition/PLAN.json" ? "{ not json" : null),
+  });
+  state.autoRunSettings = { epicDecomposition: true };
+  const { autoRun, invocation } = await svc.startAutoRun({
+    projectId: sourceProjectId, link: { type: "issue", number: 201, title: "[Epic]: Broken plan", url: null, state: "open" }, agentId: "agt_1", name: "i-201",
+  });
+  await svc.advanceAutoRunForInvocation({ ...invocation, status: "succeeded", result: "x" });
+  assert.equal(autoRun.status, "plan_proposed");
+  assert.equal(autoRun.decompositionPlan.tree.issues.length, 0);
+  assert.ok(autoRun.decompositionPlan.parseError, "parse error surfaced");
+  assert.ok(autoRun.error, "flagged as needing attention");
+});

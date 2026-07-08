@@ -13,6 +13,7 @@ import {
   intentForPath,
   normalizeDecision,
   resolveDecision,
+  isEpicIssue,
 } from "../src/services/auto-run-decision.mjs";
 
 test("heuristicDecision maps today's intents onto the contract", () => {
@@ -126,4 +127,32 @@ test("a failed decider records via=fallback with the heuristic result", async ()
   assert.equal(d.decidedBy, "heuristic");
   assert.equal(d.via, "fallback");
   assert.equal(typeof d.latencyMs, "number");
+});
+
+test("isEpicIssue detects epics by title prefix or Project-Fields type", () => {
+  assert.equal(isEpicIssue({ link: { title: "[Epic]: Ship the console" } }), true);
+  assert.equal(isEpicIssue({ link: { title: "[Initiative]: Payments" } }), true);
+  assert.equal(isEpicIssue({ link: { title: "Add a widget" }, issueBody: "## Project Fields\nType: epic\n" }), true);
+  assert.equal(isEpicIssue({ link: { title: "Add a widget" }, issueBody: "Type: initiative" }), true);
+  assert.equal(isEpicIssue({ link: { title: "Fix the crash" }, issueBody: "Type: task" }), false);
+  assert.equal(isEpicIssue({ link: { title: "Fix the crash" } }), false);
+});
+
+test("resolveDecision routes an epic to decompose ONLY when epicDecomposition is on", async () => {
+  const link = { title: "[Epic]: Ship the console", number: 5 };
+  // off (default): epics are not special — a develop-shaped epic routes as before
+  const off = await resolveDecision({ link, decideIssuePath: undefined });
+  assert.notEqual(off.path, "decompose");
+  // on: deterministic decompose, no decider hop
+  const on = await resolveDecision({ link, decideIssuePath: async () => ({ path: "develop", confidence: 0.9 }), epicDecomposition: true });
+  assert.equal(on.path, "decompose");
+  assert.equal(on.via, "epic-detector");
+  assert.equal(on.spawnChildIssues, true);
+  // a non-epic issue is unaffected even when the flag is on
+  const normal = await resolveDecision({ link: { title: "Fix the crash", number: 6 }, decideIssuePath: undefined, epicDecomposition: true });
+  assert.notEqual(normal.path, "decompose");
+});
+
+test("normalizeDecision accepts an agent-returned decompose path", () => {
+  assert.equal(normalizeDecision({ path: "decompose", confidence: 0.9 })?.path, "decompose");
 });
