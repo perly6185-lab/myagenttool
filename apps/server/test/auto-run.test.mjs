@@ -64,6 +64,8 @@ function makeAutoRun({
   readWorktreeTextFile = undefined,
   // Injected direct child-issue spawner (D4 approve-design). Default undefined.
   spawnChildIssueDirect = undefined,
+  // Injected decomposition child creator (Epic S3). Default undefined.
+  createDecompositionChild = undefined,
   // Injected PR merge runner. Default: a successful merge.
   mergePr = async ({ prNumber }) => ({ ok: true, prNumber, method: "squash" }),
   fetchPrChecks = undefined,
@@ -72,7 +74,7 @@ function makeAutoRun({
   autoApproveInvocation = undefined,
   sendAlert = undefined,
 } = {}) {
-  const calls = { createInvocation: [], startInvocationIfAllowed: [], commit: [], publish: [], pr: [], verify: [], status: [], report: [], merge: [], autoApprove: [], render: [] };
+  const calls = { createInvocation: [], startInvocationIfAllowed: [], commit: [], publish: [], pr: [], verify: [], status: [], report: [], merge: [], autoApprove: [], render: [], childCreate: [] };
   let counter = 0;
   const svc = createAutoRunService({
     state,
@@ -129,6 +131,9 @@ function makeAutoRun({
       : undefined,
     readWorktreeTextFile,
     spawnChildIssueDirect,
+    createDecompositionChild: createDecompositionChild
+      ? async (args) => { calls.childCreate.push(args); return createDecompositionChild(args); }
+      : undefined,
     mergePr: async (args) => {
       calls.merge.push(args);
       return mergePr(args);
@@ -1514,4 +1519,78 @@ test("Epic S2: a malformed PLAN.json parks at plan_proposed with an error, not a
   assert.equal(autoRun.decompositionPlan.tree.issues.length, 0);
   assert.ok(autoRun.decompositionPlan.parseError, "parse error surfaced");
   assert.ok(autoRun.error, "flagged as needing attention");
+});
+
+// --- Epic S3: human approval → governed fan-out ---
+function cleanChild(title) {
+  return { issueTitle: title, problem: `${title} problem`, acceptanceCriteria: [`${title} works`, `${title} tested`], riskFlags: ["No notable risk."], projectFields: { milestone: "M2", area: "server", type: "task", risk: "low", platform: "all", priority: "p2" } };
+}
+async function proposedEpicRun(svc, calls, plan, { number = 300 } = {}) {
+  state.autoRunSettings = { ...(state.autoRunSettings ?? {}), epicDecomposition: true };
+  const { autoRun, invocation } = await svc.startAutoRun({
+    projectId: sourceProjectId, link: { type: "issue", number, title: "[Epic]: Ship it", url: null, state: "open" }, agentId: "agt_1", name: `i-${number}`,
+  });
+  await svc.advanceAutoRunForInvocation({ ...invocation, status: "succeeded", result: "planned" });
+  return autoRun;
+}
+
+test("Epic S3: approveDecomposition spawns one governed child per spec, records them, moves to decomposed", async () => {
+  let n = 500;
+  const { svc, calls } = makeAutoRun({
+    readWorktreeTextFile: (_wt, p) => (p === "decomposition/PLAN.json" ? JSON.stringify([cleanChild("[Task]: A"), cleanChild("[Task]: B")]) : null),
+    createDecompositionChild: async ({ title, body }) => ({ number: ++n, url: `https://github.com/o/r/issues/${n}`, title, body }),
+  });
+  const autoRun = await proposedEpicRun(svc, calls, null, { number: 300 });
+  assert.equal(autoRun.status, "plan_proposed");
+
+  const result = await svc.approveDecomposition(autoRun.id, { actor: { userId: "usr_x" } });
+  assert.equal(result.ok, true);
+  assert.equal(calls.childCreate.length, 2, "one gh issue create per child spec");
+  assert.equal(autoRun.status, "decomposed");
+  assert.deepEqual(autoRun.childIssues.map((c) => c.number), [501, 502]);
+  assert.equal(autoRun.decompositionApproval.status, "approved");
+  // the child body carries the depth-1 marker + a Project Fields block (governance)
+  assert.match(calls.childCreate[0].body, /myagent:autorun:child-of:#300/);
+  assert.match(calls.childCreate[0].body, /## Project Fields/);
+  // the approval is posted back to the epic
+  assert.ok(calls.report.some((r) => /Decomposition approved by usr_x/.test(r.body)));
+});
+
+test("Epic S3: approveDecomposition is idempotent (a second call never double-spawns)", async () => {
+  let n = 600;
+  const { svc, calls } = makeAutoRun({
+    readWorktreeTextFile: (_wt, p) => (p === "decomposition/PLAN.json" ? JSON.stringify([cleanChild("[Task]: A")]) : null),
+    createDecompositionChild: async ({ title }) => ({ number: ++n, url: null, title }),
+  });
+  const autoRun = await proposedEpicRun(svc, calls, null, { number: 301 });
+  await svc.approveDecomposition(autoRun.id, { actor: { userId: "usr_x" } });
+  const again = await svc.approveDecomposition(autoRun.id, { actor: { userId: "usr_x" } });
+  assert.equal(again.alreadyApproved, true);
+  assert.equal(calls.childCreate.length, 1, "second approve does not spawn again");
+});
+
+test("Epic S3: a structurally-broken plan is refused, not spawned", async () => {
+  const { svc, calls } = makeAutoRun({
+    // a child with no acceptance criteria fails validation
+    readWorktreeTextFile: (_wt, p) => (p === "decomposition/PLAN.json" ? JSON.stringify([{ issueTitle: "[Task]: Bad", problem: "x", acceptanceCriteria: [], riskFlags: ["No notable risk."], projectFields: { milestone: "M2", area: "server", type: "task", risk: "low", platform: "all", priority: "p2" } }]) : null),
+    createDecompositionChild: async () => ({ number: 1, url: null }),
+  });
+  const autoRun = await proposedEpicRun(svc, calls, null, { number: 302 });
+  await assert.rejects(() => svc.approveDecomposition(autoRun.id, { actor: { userId: "usr_x" } }), /not safe to spawn/);
+  assert.equal(calls.childCreate.length, 0, "nothing spawned for a broken plan");
+  assert.equal(autoRun.status, "plan_proposed", "still awaiting a fixed plan");
+});
+
+test("Epic S3: rejectDecomposition records feedback and posts it to the epic (no spawn)", async () => {
+  const { svc, calls } = makeAutoRun({
+    readWorktreeTextFile: (_wt, p) => (p === "decomposition/PLAN.json" ? JSON.stringify([cleanChild("[Task]: A")]) : null),
+    createDecompositionChild: async () => ({ number: 1 }),
+  });
+  const autoRun = await proposedEpicRun(svc, calls, null, { number: 303 });
+  const result = await svc.rejectDecomposition(autoRun.id, { actor: { userId: "usr_x" }, feedback: "split A further" });
+  assert.equal(result.ok, true);
+  assert.equal(autoRun.decompositionApproval.status, "rejected");
+  assert.equal(autoRun.decompositionApproval.feedback, "split A further");
+  assert.equal(calls.childCreate.length, 0);
+  assert.ok(calls.report.some((r) => /not approved by usr_x/.test(r.body) && /split A further/.test(r.body)));
 });

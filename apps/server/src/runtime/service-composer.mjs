@@ -319,7 +319,7 @@ export function createServerRuntimeServices({
   // applies without a restart. No-op when unconfigured; never throws.
   const autoRunAlerts = createAlertDispatcher({ getWebhookUrl: () => state.autoRunSettings?.alertWebhookUrl ?? null });
 
-  const { startAutoRun, advanceAutoRunForInvocation, syncAutoRunOnApproval, retryAutoRun, mergeAutoRunPr, reapStuckAutoRuns, autoMergeSweep, approveDesign, rejectDesign, answerClarify } = createAutoRunService({
+  const { startAutoRun, advanceAutoRunForInvocation, syncAutoRunOnApproval, retryAutoRun, mergeAutoRunPr, reapStuckAutoRuns, autoMergeSweep, approveDesign, rejectDesign, answerClarify, approveDecomposition, rejectDecomposition } = createAutoRunService({
     state,
     now,
     nextId,
@@ -496,6 +496,10 @@ export function createServerRuntimeServices({
     // Layer B: rasterize a design run's HTML mockups to design/*.png via the
     // operator's render command (argv from env, no shell — same trust boundary as
     // verify). Best-effort; unconfigured -> undefined -> no inline previews.
+    // Epic S3: create ONE governed decomposition child issue (ungated — the human
+    // approval of the plan is the authorization, like spawnChildIssueDirect). The
+    // service loops this over the approved tree's specs.
+    createDecompositionChild: async ({ repoPath, title, body }) => runChildIssueCreate({ cwd: repoPath, title, body }),
     renderDesignImages: (() => {
       const command = resolveDesignRenderCommand(autoRunEnv);
       if (!command) return undefined;
@@ -2076,6 +2080,8 @@ export function createServerRuntimeServices({
     approveDesign,
     rejectDesign,
     answerClarify,
+    approveDecomposition,
+    rejectDecomposition,
     mergeAutoRunPr,
     refreshAutoRunPrDispositions,
     selectProject,

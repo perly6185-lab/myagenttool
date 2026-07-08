@@ -58,6 +58,46 @@ export function childIssueBody({ parentLink, design, projectFieldsBlock = null }
   );
 }
 
+// Render a `## Project Fields` block from a normalized issue spec's projectFields
+// so a spawned decomposition child is governance-ready (auto-trigger requires the
+// block; a human/sync applies the matching labels). Status is forced to backlog —
+// the child is unstarted work.
+export function projectFieldsBlockFromFields(fields = {}) {
+  const rows = [
+    ["Milestone", fields.milestone],
+    ["Area", fields.area],
+    ["Type", fields.type],
+    ["Status", "backlog"],
+    ["Risk", fields.risk],
+    ["Acceptance", fields.acceptance],
+    ["Platform", fields.platform],
+    ["Agent", fields.agentTarget],
+    ["Priority", fields.priority],
+    ["Source Doc", fields.sourceDoc],
+  ].filter(([, value]) => value != null && String(value).trim());
+  return `## Project Fields\n\n${rows.map(([key, value]) => `${key}: ${value}`).join("\n")}`;
+}
+
+/**
+ * The governed body of ONE decomposition child, from its issue spec: the depth-1
+ * marker (no grandchildren), the problem/story, its own acceptance criteria, and a
+ * Project Fields block. A human still labels it `auto` — decomposition proposes and
+ * spawns the plan; it never auto-implements the children.
+ */
+export function decompositionChildBody({ parentLink, spec }) {
+  const parentRef = Number.isFinite(parentLink?.number) ? `#${parentLink.number}` : "its epic";
+  const accept = (spec?.acceptanceCriteria ?? []).filter(Boolean);
+  return (
+    `Spawned from epic ${parentRef} by an approved decomposition. **A human must label this issue \`auto\`** ` +
+    "(or start it manually) to begin implementation — it is never implemented automatically without that.\n\n" +
+    `${CHILD_MARKER_PREFIX}${parentLink?.number ?? 0} -->\n\n` +
+    `## Problem\n\n${String(spec?.problem ?? "").trim() || String(spec?.title ?? "").trim()}\n\n` +
+    (spec?.userStory && spec.userStory !== "TODO" ? `## User Story\n\n${spec.userStory}\n\n` : "") +
+    `## Acceptance\n\n${accept.length ? accept.map((a) => `- [ ] ${a}`).join("\n") : "- [ ] TODO"}\n\n` +
+    projectFieldsBlockFromFields(spec?.projectFields)
+  );
+}
+
 /** `gh issue create` in the repo; returns {number, url} or throws. */
 export async function runChildIssueCreate({ cwd, title, body, gh = defaultGh }) {
   const result = await gh(["issue", "create", "--title", title, "--body", body], cwd);

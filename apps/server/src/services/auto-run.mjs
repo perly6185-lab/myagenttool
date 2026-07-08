@@ -3,7 +3,7 @@ import { detectPromptInjection, roleAutoRunPrompt } from "@myagenttool/protocol/
 import { isTerminal } from "./invocations.mjs";
 import { normalizeWorktreeLink } from "./projects.mjs";
 import { intentForPath, resolveDecision } from "./auto-run-decision.mjs";
-import { isSpawnedChildBody } from "./auto-run-spawn.mjs";
+import { isSpawnedChildBody, decompositionChildBody } from "./auto-run-spawn.mjs";
 import { judgmentEvidence } from "./auto-run-judge.mjs";
 import { computeMergeRisk, sensitivePathHit, DEFAULT_SENSITIVE_PATHS } from "./auto-run-risk.mjs";
 import { composeDesignIssueComment, designArtifactIndex, buildDesignImageUrls } from "./auto-run-design.mjs";
@@ -35,6 +35,7 @@ export const autoRunStates = [
   "report_posted",
   "needs_input",
   "plan_proposed",
+  "decomposed",
   "blocked",
   "done",
   "failed",
@@ -74,6 +75,7 @@ export function createAutoRunService({
   mergePr,
   fetchPrChecks,
   renderDesignImages,
+  createDecompositionChild,
 }) {
   // Best-effort issue body fetch (issue links only): richer context for both the
   // decision and the role prompt. Null on any failure — the run proceeds on the
@@ -240,7 +242,7 @@ export function createAutoRunService({
   }
   // Reaction states already handled — advancing past them would re-open a PR.
   // `blocked` (verification failed) is terminal here; a human retries/fixes.
-  const settledStatuses = new Set(["pr_open", "report_posted", "needs_input", "plan_proposed", "blocked", "done", "failed"]);
+  const settledStatuses = new Set(["pr_open", "report_posted", "needs_input", "plan_proposed", "decomposed", "blocked", "done", "failed"]);
 
   // The PR body an auto-run opens with, carrying the verification evidence so the
   // pull request is honest about whether checks ran and passed.
@@ -899,6 +901,86 @@ export function createAutoRunService({
     return { ok: true };
   }
 
+  // Epic decomposition (Slice 3): the human approves a proposed plan → spawn the N
+  // governed child issues. The click IS the authorization (ungated by the
+  // spawn-issues env flag, like design approval). Re-validates the tree WITH the
+  // approval as evidence so a structurally-broken plan is never spawned. Idempotent
+  // (a second approve returns the already-created children, never double-spawns).
+  async function approveDecomposition(autoRunId, { actor } = {}) {
+    const autoRun = state.autoRuns.find((item) => item.id === autoRunId);
+    if (!autoRun) throw new Error("Auto-run not found.");
+    if ((autoRun.decision?.path ?? null) !== "decompose") throw new Error("Only a decomposition run's plan can be approved.");
+    // Idempotency BEFORE the status guard: a second approve (status now decomposed,
+    // or a near-simultaneous approving) short-circuits instead of erroring — two
+    // POSTs (double-click / CSRF burst) must never double-spawn. (mirrors approveDesign)
+    if (autoRun.decompositionApproval?.status === "approved" || autoRun.decompositionApproval?.status === "approving") {
+      return { ok: true, alreadyApproved: true, childIssues: autoRun.childIssues ?? [] };
+    }
+    if (autoRun.status !== "plan_proposed") throw new Error("Only a proposed plan can be approved.");
+    const by = actor?.userId ?? "usr_local";
+    const specs = autoRun.decompositionPlan?.tree?.issues ?? [];
+    if (!specs.length) throw new Error("The proposed plan has no child issues to create.");
+    const failures = issueTreeApplyFailures(autoRun.decompositionPlan.tree, `approved by ${by}`);
+    if (failures.length) throw new Error(`The plan is not safe to spawn:\n${failures.map((f) => `- ${f}`).join("\n")}`);
+    if (autoRun.link?.type !== "issue" || !Number.isFinite(autoRun.link?.number)) throw new Error("The epic has no linked issue to spawn children from.");
+    const worktree = state.worktrees.find((item) => item.id === autoRun.worktreeId) ?? null;
+    const repoPath = worktree?.repoPath ?? null;
+    if (!repoPath) throw new Error("The epic run's repository is unavailable.");
+    if (typeof createDecompositionChild !== "function") throw new Error("Child-issue creation is not available on this server.");
+    autoRun.decompositionApproval = { status: "approving", by, at: now() }; // claim before the awaits
+    const created = [];
+    const errors = [];
+    for (const spec of specs) {
+      try {
+        const child = await createDecompositionChild({ repoPath, title: spec.title, body: decompositionChildBody({ parentLink: autoRun.link, spec }) });
+        if (child && Number.isFinite(child.number)) created.push({ number: child.number, url: child.url ?? null, title: spec.title });
+        else errors.push(`${spec.title}: no issue number returned`);
+      } catch (error) {
+        errors.push(`${spec.title}: ${String(error?.message ?? error).slice(0, 200)}`);
+      }
+    }
+    autoRun.childIssues = created;
+    autoRun.decompositionApproval = { status: "approved", by, at: now(), created: created.length, errors };
+    setAutoRunStatus(autoRun, "decomposed", { error: errors.length ? `${errors.length} child issue(s) failed to create.` : null });
+    maybePostIssueReport(autoRun, worktree, [
+      `Decomposition approved by ${by} — created ${created.length} child issue(s):`,
+      ...created.map((c) => `- #${c.number} ${c.title}`),
+      ...(errors.length ? ["", "Failed to create:", ...errors.map((e) => `- ${e}`)] : []),
+      "",
+      "Label a child `auto` to start it (or run it manually) — children are never implemented automatically.",
+    ].join("\n"));
+    appendEvent({
+      invocationId: autoRun.invocationId,
+      type: "auto_run_decomposition_approved",
+      level: "info",
+      message: `Auto-run ${autoRun.id} decomposition approved by ${by}: ${created.length} child issue(s) created.`,
+      data: { autoRunId: autoRun.id, childIssues: created, errors },
+    });
+    persistStateSoon();
+    return { ok: true, childIssues: created, errors };
+  }
+
+  async function rejectDecomposition(autoRunId, { actor, feedback } = {}) {
+    const autoRun = state.autoRuns.find((item) => item.id === autoRunId);
+    if (!autoRun) throw new Error("Auto-run not found.");
+    if ((autoRun.decision?.path ?? null) !== "decompose") throw new Error("Only a decomposition run's plan can be rejected.");
+    if (autoRun.status !== "plan_proposed") throw new Error("Only a proposed plan can be rejected.");
+    const by = actor?.userId ?? "usr_local";
+    const note = String(feedback ?? "").trim().slice(0, 2000);
+    autoRun.decompositionApproval = { status: "rejected", by, at: now(), feedback: note || null };
+    const worktree = state.worktrees.find((item) => item.id === autoRun.worktreeId) ?? null;
+    maybePostIssueReport(autoRun, worktree, `Decomposition plan not approved by ${by}.${note ? `\n\nRequested changes:\n${note}` : ""}`);
+    appendEvent({
+      invocationId: autoRun.invocationId,
+      type: "auto_run_decomposition_rejected",
+      level: "info",
+      message: `Auto-run ${autoRun.id} decomposition rejected by ${by}.`,
+      data: { autoRunId: autoRun.id, feedback: note || null },
+    });
+    persistStateSoon();
+    return { ok: true };
+  }
+
   // Risk-based merge (opt-in, default off): auto-merge low-risk PRs on the same
   // periodic tick as the reaper. STRICT bar — a PR is auto-merged only when the
   // standard signals are green (computeMergeRisk === "low") AND the AI diff
@@ -1090,5 +1172,5 @@ export function createAutoRunService({
     return { reaped, readvanced };
   }
 
-  return { startAutoRun, advanceAutoRunForInvocation, syncAutoRunOnApproval, retryAutoRun, mergeAutoRunPr, reapStuckAutoRuns, autoMergeSweep, approveDesign, rejectDesign, answerClarify };
+  return { startAutoRun, advanceAutoRunForInvocation, syncAutoRunOnApproval, retryAutoRun, mergeAutoRunPr, reapStuckAutoRuns, autoMergeSweep, approveDesign, rejectDesign, answerClarify, approveDecomposition, rejectDecomposition };
 }
