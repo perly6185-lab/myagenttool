@@ -6,6 +6,7 @@
 // model, so a flagged diff falls to a human merge instead of auto-merging.
 
 import { runDeciderCommand } from "./decision-command.mjs";
+import { detectPromptInjection } from "@myagenttool/protocol/issue-prompt";
 
 export function resolveReviewCommand(env = process.env) {
   const raw = env.MYAGENTTOOL_AUTORUN_REVIEW_COMMAND_JSON;
@@ -57,4 +58,14 @@ export async function runDiffReview({ command, link, issueBody, diff, timeoutMs 
     timeoutMs,
   });
   return normalizeReview(raw);
+}
+
+// A diff can itself carry an injection (not just the issue body) that tries to
+// coax the review command into {"approve":true}. Scan it; a hit forces a fail
+// verdict — never trust an LLM review on a poisoned diff. Returns the synthetic
+// fail-review, or null when the diff is clean. (audit finding)
+export function scanDiffForInjection(diff) {
+  const hit = detectPromptInjection(typeof diff === "string" ? diff : "");
+  if (!hit.suspicious) return null;
+  return { status: "fail", risk: "high", summary: "Diff flagged for possible prompt injection — routed to a human.", issues: hit.markers ?? [] };
 }

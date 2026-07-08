@@ -1022,20 +1022,28 @@ function worktreeDiff(worktree, { projectTargets = [] } = {}) {
   };
   let base = "HEAD";
   const target = projectTargets.find((t) => t.id === worktree.targetId);
-  const def = target?.defaultBranch || repoDefaultBranch();
-  if (def) {
-    // Diff against the branch this worktree merges INTO (its base branch) — the
-    // PR diff. Preferring @{u} instead breaks once the branch is PUSHED: its
-    // upstream becomes its OWN remote ref, so merge-base(@{u},HEAD)=HEAD => an
-    // EMPTY diff, and any post-publish consumer (the auto-merge AI review, a
-    // re-run judge) then sees no changes. Also handles a committed-but-unpushed
-    // branch (the earlier C1 pilot finding). @{u} is only a last resort below.
+  // Diff against the branch this worktree merges INTO (its base branch) — the PR
+  // diff. Prefer the worktree's OWN recorded base first, so a worktree cut from a
+  // non-default branch doesn't over-report every default-branch commit not in its
+  // base (audit finding); then the target/repo default. @{u} is only a last
+  // resort — once the branch is PUSHED its upstream is its OWN remote ref, so
+  // merge-base(@{u},HEAD)=HEAD => an EMPTY diff that blinds every post-publish
+  // consumer (the auto-merge review, a re-run judge). (C1 pilot finding).
+  const baseCandidates = [
+    worktree.baseBranch && worktree.baseBranch !== "HEAD" ? worktree.baseBranch : null,
+    target?.defaultBranch,
+    repoDefaultBranch(),
+  ].filter(Boolean);
+  let resolved = false;
+  for (const cand of baseCandidates) {
     try {
-      base = git(["merge-base", def, "HEAD"]).trim() || "HEAD";
+      const mb = git(["merge-base", cand, "HEAD"]).trim();
+      if (mb) { base = mb; resolved = true; break; }
     } catch {
-      base = "HEAD";
+      /* try the next candidate */
     }
-  } else {
+  }
+  if (!resolved) {
     try {
       const upstream = git(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"]).trim();
       base = git(["merge-base", upstream, "HEAD"]).trim() || "HEAD";
