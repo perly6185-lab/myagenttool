@@ -5,13 +5,16 @@ a validated tree of scoped child issues → (human-approved) fan-out → coordin
 child runs → rollup**. This is the next autonomy frontier: the decision agent
 already triages a *single* issue; decomposition triages a *body of work*.
 
-**Status (2026-07-08): S1–S4 COMPLETE.** S1 shared engine (#593), S2 propose
-(#595), S3 approve → fan-out (#597), S4 rollup (this PR). The capability runs
-end-to-end: epic → decompose → plan_proposed → human Approve → N governed child
-issues → each child runs through the EXISTING pipeline once a human labels it
-`auto` → the epic rolls up its children's status live. S5 (evaluation) is the only
-remaining slice and is stretch. Live operation (running real epics, labelling
-children) is intentionally manual.
+**Status (2026-07-08): S1–S5 COMPLETE + live-validated.** S1 shared engine (#593),
+S2 propose (#595), S3 approve → fan-out (#597), S4 rollup (#599) + S4.1 issue-state
+reconcile (#601), S5 overlap scoring (this PR). The capability runs end-to-end: epic
+→ decompose → plan_proposed → human Approve → N governed child issues → each child
+runs through the EXISTING pipeline once a human labels it `auto` → the epic rolls up
+its children's status live. **Live-validated** on devdemo #25 → 5 children proposed →
+4 merged (a feature shipped); the run surfaced two real fixes now landed (S4.1
+reconcile; S5 overlap score — which flags the exact #language↔#hardening overlap that
+made a child judge-block). Live operation (running real epics, labelling children) is
+intentionally manual.
 
 ## Current state — most of the engine already exists (wire, don't rebuild)
 
