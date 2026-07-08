@@ -63,3 +63,45 @@ export function composeDesignIssueComment({ brief, artifacts, imageUrls } = {}) 
 function stripPrefix(path) {
   return path.replace(/^design\//, "");
 }
+
+// --- Layer B: host pushed PNG previews so they render on the issue -----------
+//
+// GitHub renders `![](https://raw.githubusercontent.com/<owner>/<repo>/<branch>/<path>)`
+// for a PUBLIC repo (a private repo's raw URL needs a token and won't inline).
+// We build these URLs from the branch we pushed + the origin remote's slug.
+
+/** Parse `owner/repo` from an origin remote URL (https or ssh forms). null if unparseable. */
+export function githubSlugFromRemote(remoteUrl) {
+  const url = String(remoteUrl ?? "").trim();
+  if (!url) return null;
+  // git@github.com:owner/repo(.git)  |  ssh://git@github.com/owner/repo(.git)
+  // https://github.com/owner/repo(.git)  |  https://x@github.com/owner/repo
+  const m = url.match(/github\.com[:/]+([^/]+)\/([^/]+?)(?:\.git)?\/?$/i);
+  if (!m) return null;
+  const owner = m[1];
+  const repo = m[2];
+  if (!owner || !repo) return null;
+  return `${owner}/${repo}`;
+}
+
+/** raw.githubusercontent URL for a file on a branch. Encodes each path segment. */
+export function rawGithubUrl(slug, branch, filePath) {
+  if (!slug || !branch || !filePath) return null;
+  const encPath = String(filePath).split("/").map(encodeURIComponent).join("/");
+  return `https://raw.githubusercontent.com/${slug}/${encodeURIComponent(branch)}/${encPath}`;
+}
+
+/**
+ * Map each design image to its raw URL on the pushed branch.
+ * @returns {Record<string,string>} filename → URL (empty if the remote isn't GitHub).
+ */
+export function buildDesignImageUrls({ remoteUrl, branch, images } = {}) {
+  const slug = githubSlugFromRemote(remoteUrl);
+  if (!slug || !branch) return {};
+  const out = {};
+  for (const p of designArtifactIndex(images).images) {
+    const url = rawGithubUrl(slug, branch, p);
+    if (url) out[p] = url;
+  }
+  return out;
+}

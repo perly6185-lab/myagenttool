@@ -29,6 +29,7 @@ import { childIssueBody, childIssueTitle, extractProjectFieldsBlock, runChildIss
 import { refreshPrDispositions } from "../services/auto-run-eval.mjs";
 import { judgeTimeoutMs, resolveJudgeCommand, runAcceptanceJudge } from "../services/auto-run-judge.mjs";
 import { resolveReviewCommand, reviewTimeoutMs, runDiffReview, scanDiffForInjection } from "../services/auto-run-review.mjs";
+import { resolveDesignRenderCommand, designRenderTimeoutMs, runDesignRender } from "../services/design-render.mjs";
 import { decisionConfig } from "../services/auto-run-decision.mjs";
 import { autoRunSettingsEnvOverlay } from "../services/auto-run-config.mjs";
 import { createAlertDispatcher } from "../services/auto-run-alerts.mjs";
@@ -492,6 +493,18 @@ export function createServerRuntimeServices({
     mergePr: ({ prNumber, repoPath }) => runPrMerge({ cwd: repoPath, prNumber }),
     // Fresh PR-checks fetch for the require-green-checks merge gate (no stale poll).
     fetchPrChecks: ({ prNumber, repoPath }) => runPrChecks({ cwd: repoPath, prNumber }),
+    // Layer B: rasterize a design run's HTML mockups to design/*.png via the
+    // operator's render command (argv from env, no shell — same trust boundary as
+    // verify). Best-effort; unconfigured -> undefined -> no inline previews.
+    renderDesignImages: (() => {
+      const command = resolveDesignRenderCommand(autoRunEnv);
+      if (!command) return undefined;
+      return async (worktreeId) => {
+        const worktree = state.worktrees.find((w) => w.id === worktreeId) ?? null;
+        if (!worktree?.path) return { rendered: false, reason: "no worktree" };
+        return runDesignRender({ worktreePath: worktree.path, command, timeoutMs: designRenderTimeoutMs(autoRunEnv) });
+      };
+    })(),
   });
   // Now that the reaction exists, let completion drive it.
   advanceAutoRunHook = advanceAutoRunForInvocation;

@@ -6,7 +6,7 @@ import { intentForPath, resolveDecision } from "./auto-run-decision.mjs";
 import { isSpawnedChildBody } from "./auto-run-spawn.mjs";
 import { judgmentEvidence } from "./auto-run-judge.mjs";
 import { computeMergeRisk, sensitivePathHit, DEFAULT_SENSITIVE_PATHS } from "./auto-run-risk.mjs";
-import { composeDesignIssueComment } from "./auto-run-design.mjs";
+import { composeDesignIssueComment, designArtifactIndex, buildDesignImageUrls } from "./auto-run-design.mjs";
 
 // One-click "Auto" orchestrator. It closes the seam the console never had:
 // turning a linked GitHub issue into a worktree AND a started agent run seeded
@@ -71,6 +71,7 @@ export function createAutoRunService({
   spawnChildIssueDirect,
   mergePr,
   fetchPrChecks,
+  renderDesignImages,
 }) {
   // Best-effort issue body fetch (issue links only): richer context for both the
   // decision and the role prompt. Null on any failure — the run proceeds on the
@@ -131,6 +132,37 @@ export function createAutoRunService({
       return { child: { number: child.number, url: child.url ?? null } };
     } catch (error) {
       return { error: `Child issue spawn failed: ${String(error?.message ?? error)}` };
+    }
+  }
+
+  // Layer B (opt-in designImagesToIssue, default off): rasterize the design/*.html
+  // mockups to PNGs (operator render command), commit + push the design branch,
+  // and return raw image URLs so the previews render INLINE on the issue. Pushing
+  // a branch is the one outward step here — it happens only behind the opt-in flag
+  // and only when there are images to host. Best-effort throughout: any failure
+  // returns {} and Layer A's text index still posts (never blocks the report).
+  async function maybeHostDesignImages(autoRun, worktree) {
+    if (!state.autoRunSettings?.designImagesToIssue) return {};
+    try {
+      if (typeof renderDesignImages === "function") {
+        await renderDesignImages(autoRun.worktreeId);
+      }
+      // Commit anything the renderer wrote (git push only ships committed files),
+      // then re-list so newly rendered design/*.png are included.
+      if (typeof commitWorktreeChanges === "function") {
+        try { await commitWorktreeChanges(autoRun.worktreeId, { message: "chore(design): render mockup previews" }); } catch { /* nothing to commit */ }
+      }
+      let files = [];
+      if (typeof listWorktreeChangedFiles === "function") {
+        try { files = (await listWorktreeChangedFiles(autoRun.worktreeId)) ?? []; } catch { files = []; }
+      }
+      const images = designArtifactIndex(files).images;
+      if (!images.length || typeof publishWorktreeBranch !== "function") return {};
+      const pub = await publishWorktreeBranch(autoRun.worktreeId);
+      if (!pub?.ok) return {};
+      return buildDesignImageUrls({ remoteUrl: pub.remoteUrl, branch: pub.branch, images });
+    } catch {
+      return {};
     }
   }
 
@@ -494,14 +526,18 @@ export function createAutoRunService({
               // terminal summary — the agent puts the depth in the file.
               const brief = typeof readWorktreeTextFile === "function" ? readWorktreeTextFile(autoRun.worktreeId, "design/BRIEF.md") : null;
               const summary = brief || extractRunSummary(invocation) || "Design delivered as visual mockups (see the design artifacts).";
+              // Layer B (opt-in): render + push the mockups so real pixels render
+              // inline on the issue; {} when off/unavailable.
+              const imageUrls = await maybeHostDesignImages(autoRun, worktree);
               // Layer A: the brief IS what a human sees on the issue; index the
               // mockups beneath it so the reader knows a richer visual exists and
-              // where to open it. (Layer B embeds pushed PNG previews inline.)
-              maybePostIssueReport(autoRun, worktree, composeDesignIssueComment({ brief: summary, artifacts: changed }));
+              // where to open it. Layer B's URLs embed the previews inline.
+              maybePostIssueReport(autoRun, worktree, composeDesignIssueComment({ brief: summary, artifacts: changed, imageUrls }));
               const spawn = await maybeSpawnChildIssue(autoRun, worktree, summary);
               setAutoRunStatus(autoRun, "report_posted", {
                 report: summary,
                 designArtifacts: changed,
+                ...(Object.keys(imageUrls).length ? { designImageUrls: imageUrls } : {}),
                 error: null,
                 ...(spawn?.child ? { childIssues: [spawn.child] } : {}),
                 ...(spawn?.error ? { spawnError: spawn.error } : {}),

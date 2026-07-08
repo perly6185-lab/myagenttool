@@ -238,3 +238,45 @@ e.g. `MYAGENTTOOL_AUTORUN_VERIFY_COMMAND_JSON='["sh","-c","npm test && node shot
 PR opens without shots). The images land in the worktree, get committed with the
 change, and surface in the console for a human to eyeball before merging. A design
 run can likewise drop mockup renders into `design/*.png`.
+
+
+## Design effect on the issue (Layer A always / Layer B opt-in)
+
+A design run's deliverable is now visible on the GitHub issue itself, not only in
+the console:
+
+- **Layer A (always, no deps):** the design role must put an ASCII wireframe +
+  component hierarchy in `design/BRIEF.md`; that brief is posted as the issue
+  comment (GitHub renders the fenced blocks), with the produced mockups indexed
+  beneath it ("open in the console design panel"). HTML mockups are listed, never
+  embedded — a comment can't render a worktree HTML file.
+
+- **Layer B (opt-in `designImagesToIssue`, default off):** render the mockups to
+  PNGs, push the design branch, and embed the previews inline on the issue. Turn
+  on the "Embed mockup previews on the issue" toggle AND wire an operator render
+  command (product bundles no browser — same trust boundary as verify):
+
+  ```
+  MYAGENTTOOL_AUTORUN_DESIGN_RENDER_COMMAND_JSON='["node","render-mockups.mjs"]'
+  ```
+
+  ```js
+  // render-mockups.mjs — rasterize design/*.html -> design/*.png (operator dep)
+  import { chromium } from "playwright";
+  import { readdirSync } from "node:fs";
+  import { resolve } from "node:path";
+  const browser = await chromium.launch();
+  for (const f of readdirSync("design").filter((f) => /\.html?$/.test(f))) {
+    const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+    await page.goto("file://" + resolve("design", f));
+    await page.screenshot({ path: resolve("design", f.replace(/\.html?$/, ".png")), fullPage: true });
+    await page.close();
+  }
+  await browser.close();
+  ```
+
+  The run commits the PNGs, pushes the design branch (NO PR), and the issue
+  comment embeds `![](https://raw.githubusercontent.com/<owner>/<repo>/<branch>/design/x.png)`.
+  Inline previews need a PUBLIC repo (a private repo's raw URL won't render without
+  a token). Everything is best-effort: no render command / push failure / private
+  repo just falls back to Layer A's text index — the report still posts.
