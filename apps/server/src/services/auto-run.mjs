@@ -567,11 +567,23 @@ export function createAutoRunService({
             return autoRun;
           }
         }
+        // D5 (visual acceptance): surface any image files the change produced
+        // (e.g. an operator's playwright verify command writing screenshots into
+        // the worktree) so a human sees the visual before merging.
+        let screenshots = [];
+        if (typeof listWorktreeChangedFiles === "function") {
+          try {
+            const changed = (await listWorktreeChangedFiles(autoRun.worktreeId)) ?? [];
+            screenshots = changed.filter((f) => /\.(png|jpe?g|gif|webp|avif|svg)$/i.test(String(f))).slice(0, 20);
+          } catch {
+            screenshots = [];
+          }
+        }
         setAutoRunStatus(autoRun, "publishing");
         try {
           await publishWorktreeBranch(autoRun.worktreeId);
           const pr = await createWorktreePr(autoRun.worktreeId, { body: verificationEvidenceBody(verification, judgment) });
-          setAutoRunStatus(autoRun, "pr_open", { prNumber: pr?.number ?? null, prUrl: pr?.url ?? null, error: null });
+          setAutoRunStatus(autoRun, "pr_open", { prNumber: pr?.number ?? null, prUrl: pr?.url ?? null, error: null, ...(screenshots.length ? { screenshots } : {}) });
           maybeWriteIssueStatus(autoRun, worktree, "review");
         } catch (error) {
           setAutoRunStatus(autoRun, "failed", { error: String(error?.message ?? error) });

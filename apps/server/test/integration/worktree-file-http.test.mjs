@@ -26,6 +26,8 @@ before(async () => {
   mkdirSync(join(worktreeDir, "design"), { recursive: true });
   // Exists ONLY in the worktree, not the parent clone.
   writeFileSync(join(worktreeDir, "design", "mockup.html"), "<!DOCTYPE html><title>Mockup</title>");
+  // a 1x1 PNG (base64) for the image-serving test
+  writeFileSync(join(worktreeDir, "design", "shot.png"), Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==", "base64"));
   // A secret OUTSIDE the worktree + an in-tree symlink pointing at it (the audit
   // read-scope-escape scenario).
   const secretDir = mkdtempSync(join(tmpdir(), "wt-secret-"));
@@ -82,4 +84,13 @@ test("GET /api/worktrees/:id/file rejects an in-tree symlink pointing outside th
   assert.notEqual(res.status, 200, "a symlink to a host secret must be rejected, not read");
   const body = await res.json();
   assert.ok(!String(body.content ?? "").includes("TOP-SECRET"), "the secret must never be returned");
+});
+
+test("GET /api/worktrees/:id/file returns an image as base64 with a mime type (D5)", async () => {
+  const res = await fetch(`${base}/api/worktrees/wt1/file?path=design/shot.png`);
+  assert.equal(res.status, 200);
+  const body = await res.json();
+  assert.equal(body.encoding, "base64");
+  assert.equal(body.mime, "image/png");
+  assert.ok(body.content.length > 0, "base64 image bytes returned");
 });

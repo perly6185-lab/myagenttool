@@ -13,10 +13,12 @@ interface FileResponse {
   path: string;
   content: string;
   truncated: boolean;
+  encoding?: "utf8" | "base64";
+  mime?: string;
 }
 
-export function DesignPanel({ worktreeId, artifacts }: { worktreeId: string; artifacts: string[] }) {
-  const [selected, setSelected] = useState(() => artifacts.find((p) => p.endsWith(".html")) ?? artifacts[0]);
+export function DesignPanel({ worktreeId, artifacts, title = "Design artifacts" }: { worktreeId: string; artifacts: string[]; title?: string }) {
+  const [selected, setSelected] = useState(() => artifacts.find((p) => /\.html?$/i.test(p)) ?? artifacts.find((p) => /\.(png|jpe?g|gif|webp|avif|svg)$/i.test(p)) ?? artifacts[0]);
   const [file, setFile] = useState<FileResponse | null>(null);
   const [state, setState] = useState<"loading" | "error" | "done">("loading");
 
@@ -37,12 +39,13 @@ export function DesignPanel({ worktreeId, artifacts }: { worktreeId: string; art
 
   if (!artifacts.length) return null;
   const isHtml = Boolean(selected && /\.html?$/i.test(selected));
+  const isImage = file?.encoding === "base64" && Boolean(file?.mime?.startsWith("image/"));
 
   return (
     <div className="flex flex-col gap-1.5 rounded-lg border border-border bg-muted/30 p-2">
       <div className="flex flex-wrap items-center gap-1.5">
         <span className="flex items-center gap-1 text-xs font-medium text-foreground/80">
-          <LayoutTemplate className="size-3.5" /> Design artifacts
+          <LayoutTemplate className="size-3.5" /> {title}
         </span>
         {artifacts.map((p) => (
           <button
@@ -65,7 +68,15 @@ export function DesignPanel({ worktreeId, artifacts }: { worktreeId: string; art
         <span className="px-1 py-2 text-xs text-red-600 dark:text-red-400">Artifact unavailable — the worktree may have been torn down.</span>
       ) : file ? (
         <>
-          {isHtml ? (
+          {isImage ? (
+            // D5 (visual acceptance): screenshots / rendered mockups. Base64 data
+            // URI — no network, no script; the console just paints the pixels.
+            <img
+              alt={file.path}
+              src={`data:${file.mime};base64,${file.content}`}
+              className="max-h-96 w-full rounded-md border border-border bg-white object-contain"
+            />
+          ) : isHtml ? (
             // sandbox="" blocks scripts / same-origin / forms / navigation, but
             // does NOT stop passive subresource loads (<img>, <link>, @font-face)
             // — an agent-authored mockup could beacon a secret to an external
