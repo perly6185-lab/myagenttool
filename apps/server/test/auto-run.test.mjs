@@ -56,6 +56,10 @@ function makeAutoRun({
   judgeAcceptance = undefined,
   // Injected changed-files lister (D3 design artifacts). Default undefined.
   listWorktreeChangedFiles = undefined,
+  // Injected mockup renderer (Layer B). Default undefined -> no rendering.
+  renderDesignImages = undefined,
+  // Publish result shape (Layer B needs branch + remoteUrl to build raw URLs).
+  publishResult = { ok: true },
   // Injected brief-file reader (E1 thick report). Default undefined.
   readWorktreeTextFile = undefined,
   // Injected direct child-issue spawner (D4 approve-design). Default undefined.
@@ -68,7 +72,7 @@ function makeAutoRun({
   autoApproveInvocation = undefined,
   sendAlert = undefined,
 } = {}) {
-  const calls = { createInvocation: [], startInvocationIfAllowed: [], commit: [], publish: [], pr: [], verify: [], status: [], report: [], merge: [], autoApprove: [] };
+  const calls = { createInvocation: [], startInvocationIfAllowed: [], commit: [], publish: [], pr: [], verify: [], status: [], report: [], merge: [], autoApprove: [], render: [] };
   let counter = 0;
   const svc = createAutoRunService({
     state,
@@ -99,7 +103,7 @@ function makeAutoRun({
     publishWorktreeBranch: async (worktreeId) => {
       calls.publish.push(worktreeId);
       if (publishThrows) throw new Error("no origin remote");
-      return { ok: true };
+      return publishResult;
     },
     createWorktreePr: async (worktreeId, payload) => {
       calls.pr.push({ worktreeId, payload });
@@ -120,6 +124,9 @@ function makeAutoRun({
     spawnChildIssue,
     judgeAcceptance,
     listWorktreeChangedFiles,
+    renderDesignImages: renderDesignImages
+      ? async (worktreeId) => { calls.render.push(worktreeId); return renderDesignImages(worktreeId); }
+      : undefined,
     readWorktreeTextFile,
     spawnChildIssueDirect,
     mergePr: async (args) => {
@@ -1350,4 +1357,50 @@ test("D5: a develop run whose change includes screenshots surfaces them on the p
   await svc.advanceAutoRunForInvocation({ ...invocation, status: "succeeded", result: "done" });
   assert.equal(autoRun.status, "pr_open");
   assert.deepEqual(autoRun.screenshots, ["screenshots/home-desktop.png", "screenshots/home-mobile.png"], "image files surfaced, non-images excluded");
+});
+
+test("Layer B: design run with designImagesToIssue on renders, pushes, and embeds the preview on the issue", async () => {
+  const { svc, calls } = makeAutoRun({
+    commit: { committed: true, hasCommits: true },
+    decideIssuePath: async () => ({ path: "design", confidence: 0.9, rationale: "visual" }),
+    listWorktreeChangedFiles: async () => ["design/BRIEF.md", "design/home.html", "design/home.png"],
+    readWorktreeTextFile: () => "## Home\n```\n[ header ]\n```",
+    renderDesignImages: async () => ({ rendered: true }),
+    publishResult: { ok: true, branch: "auto/i-130", remoteUrl: "git@github.com:o/r.git" },
+  });
+  state.autoRunSettings = { designArtifacts: true, designImagesToIssue: true };
+  const { autoRun, invocation } = await svc.startAutoRun({
+    projectId: sourceProjectId, link: { type: "issue", number: 130, title: "Design the home page", url: null, state: "open" }, agentId: "agt_1", name: "i-130",
+  });
+  await svc.advanceAutoRunForInvocation({ ...invocation, status: "succeeded", result: "done" });
+
+  assert.equal(autoRun.status, "report_posted");
+  assert.equal(calls.render.length, 1, "render command ran");
+  assert.ok(calls.publish.length >= 1, "the design branch was pushed to host the images");
+  assert.deepEqual(autoRun.designImageUrls, { "design/home.png": "https://raw.githubusercontent.com/o/r/auto%2Fi-130/design/home.png" });
+  const comment = calls.report.at(-1)?.body ?? "";
+  assert.match(comment, /!\[home\.png\]\(https:\/\/raw\.githubusercontent\.com\/o\/r\/auto%2Fi-130\/design\/home\.png\)/, "preview embedded inline on the issue");
+});
+
+test("Layer B off: a design run indexes the mockups (Layer A) but never renders or pushes", async () => {
+  const { svc, calls } = makeAutoRun({
+    commit: { committed: true, hasCommits: true },
+    decideIssuePath: async () => ({ path: "design", confidence: 0.9, rationale: "visual" }),
+    listWorktreeChangedFiles: async () => ["design/BRIEF.md", "design/home.html"],
+    readWorktreeTextFile: () => "Brief body",
+    renderDesignImages: async () => ({ rendered: true }),
+  });
+  state.autoRunSettings = { designArtifacts: true, designImagesToIssue: false };
+  const { autoRun, invocation } = await svc.startAutoRun({
+    projectId: sourceProjectId, link: { type: "issue", number: 131, title: "Design the nav", url: null, state: "open" }, agentId: "agt_1", name: "i-131",
+  });
+  await svc.advanceAutoRunForInvocation({ ...invocation, status: "succeeded", result: "done" });
+
+  assert.equal(autoRun.status, "report_posted");
+  assert.equal(calls.render.length, 0, "no render when the flag is off");
+  assert.equal(calls.publish.length, 0, "no push when the flag is off");
+  assert.equal(autoRun.designImageUrls, undefined);
+  const comment = calls.report.at(-1)?.body ?? "";
+  assert.match(comment, /open in the console's design panel/, "Layer A still indexes the mockups");
+  assert.ok(!comment.includes("!["), "no inline image without Layer B");
 });

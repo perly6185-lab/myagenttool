@@ -57,8 +57,12 @@ const ROLE_INSTRUCTIONS = {
     "rationale, and concrete acceptance criteria for implementing it. Write the FULL brief to " +
     "design/BRIEF.md (markdown) so it is preserved in full, and repeat a short version as your " +
     "final summary. Do not modify product code. If the design is visual (a user interface), " +
-    "you MAY also create self-contained HTML mockups under the design/ directory (inline CSS " +
-    "only — no scripts, no external resources); design/ artifacts are not product code.",
+    "design/BRIEF.md MUST ALSO contain, as fenced ``` code blocks, an ASCII wireframe for each " +
+    "screen/state plus a component hierarchy — this text brief is what gets posted onto the " +
+    "issue, so it is the primary deliverable and must stand on its own. You MAY ADDITIONALLY " +
+    "create self-contained HTML mockups under design/ (inline CSS only — no scripts, no external " +
+    "resources) for a richer preview, but an HTML mockup NEVER replaces the ASCII wireframe in " +
+    "BRIEF.md. design/ artifacts are not product code.",
   prototype:
     "Build a small, time-boxed, runnable prototype (a SPIKE) to reduce the uncertainty in this " +
     "issue. Spike code is throwaway — do not polish it or wire it into production paths. Write " +

@@ -20,6 +20,7 @@ import { resolveAutoTriggerConfig } from "./auto-trigger.mjs";
 import { deciderTimeoutMs, resolveDeciderCommand } from "./decision-command.mjs";
 import { judgeTimeoutMs, resolveJudgeCommand } from "./auto-run-judge.mjs";
 import { resolveReviewCommand } from "./auto-run-review.mjs";
+import { resolveDesignRenderCommand } from "./design-render.mjs";
 import { DEFAULT_SENSITIVE_PATHS } from "./auto-run-risk.mjs";
 import { resolveStatusWritebackConfig } from "./issue-status.mjs";
 import { resolveAutoRunVerifyCommand, resolveVerifyCommandAllowlist } from "./worktree-verify.mjs";
@@ -116,6 +117,9 @@ export function normalizeAutoRunSettings(patch = {}, prev = {}) {
     // D3 (UI-only, default off): a design run whose only changes live under
     // design/ delivers them as report + in-console mockup preview, not a PR.
     designArtifacts: keep("designArtifacts", asBool),
+    // Layer B (UI-only, default off): render the design mockups to PNGs, push the
+    // design branch, and embed the previews inline on the issue. Pushes a branch.
+    designImagesToIssue: keep("designImagesToIssue", asBool),
     // Risk-based merge (UI-only, default off): auto-merge low-risk PRs; the diff
     // line cap above which a PR is never auto-merged (falls to a human merge).
     autoMergeLowRisk: keep("autoMergeLowRisk", asBool),
@@ -193,6 +197,8 @@ export function resolveAutoRunConfig(state = {}, baseEnv = process.env) {
     breakerCooldownMinutes: Number(settings.breakerCooldownMinutes ?? 15) || 15,
     // D3: design runs deliver design/-only changes as in-console mockups.
     designArtifacts: Boolean(settings.designArtifacts),
+    // Layer B: embed rendered mockup previews inline on the issue (pushes a branch).
+    designImagesToIssue: Boolean(settings.designImagesToIssue),
     // Risk-based merge: opt-in auto-merge of low-risk PRs + the diff-size cap.
     autoMergeLowRisk: Boolean(settings.autoMergeLowRisk),
     autoMergeMaxDiffLines: Number(settings.autoMergeMaxDiffLines ?? 400) || 400,
@@ -206,6 +212,7 @@ export function resolveAutoRunConfig(state = {}, baseEnv = process.env) {
       decider: Boolean(resolveDeciderCommand(env)),
       judge: Boolean(resolveJudgeCommand(env)),
       review: Boolean(resolveReviewCommand(env)),
+      designRender: Boolean(resolveDesignRenderCommand(env)),
     },
     // A4: named verify-command allowlist (keys only — never argv). A project
     // selects one of these by name; empty = only the global verify command (if any).

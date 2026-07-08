@@ -21,10 +21,11 @@ interface AutoRunConfig {
   breakerFailureThreshold: number;
   breakerCooldownMinutes: number;
   designArtifacts: boolean;
+  designImagesToIssue: boolean;
   autoMergeLowRisk: boolean;
   autoMergeMaxDiffLines: number;
   autoMergeSensitivePaths: string[];
-  commands: { verify: boolean; decider: boolean; judge: boolean; review: boolean };
+  commands: { verify: boolean; decider: boolean; judge: boolean; review: boolean; designRender: boolean };
   verifyCommandNames: string[];
   settings: Record<string, unknown>;
 }
@@ -49,6 +50,7 @@ interface Draft {
   breakerFailureThreshold: number;
   breakerCooldownMinutes: number;
   designArtifacts: boolean;
+  designImagesToIssue: boolean;
   autoMergeLowRisk: boolean;
   autoMergeMaxDiffLines: number;
   autoMergeSensitivePaths: string; // newline-separated globs; empty = use the default set
@@ -77,6 +79,7 @@ function toDraft(c: AutoRunConfig): Draft {
     breakerFailureThreshold: c.breakerFailureThreshold,
     breakerCooldownMinutes: c.breakerCooldownMinutes,
     designArtifacts: c.designArtifacts,
+    designImagesToIssue: c.designImagesToIssue,
     autoMergeLowRisk: c.autoMergeLowRisk,
     autoMergeMaxDiffLines: c.autoMergeMaxDiffLines,
     autoMergeSensitivePaths: ((c.settings?.autoMergeSensitivePaths as string[] | undefined) ?? []).join("\n"),
@@ -116,6 +119,7 @@ const RECOMMENDED_SAFE_DEFAULTS = {
   deciderFastPath: true,
   autonomyKillSwitch: false,
   designArtifacts: false,
+  designImagesToIssue: false,
   autoMergeLowRisk: false,
   autoMergeMaxDiffLines: 400,
   autoTriggerMaxConcurrent: 1,
@@ -277,6 +281,12 @@ export function AutoRunConfigCard() {
                 onChange={(v) => set("designArtifacts", v)}
               />
               <Toggle
+                label="Embed mockup previews on the issue"
+                hint="Render the design mockups to PNGs (operator render command) and embed them inline on the GitHub issue. Pushes the design branch to host the images (public repo)."
+                checked={draft.designImagesToIssue}
+                onChange={(v) => set("designImagesToIssue", v)}
+              />
+              <Toggle
                 label="Auto-merge low-risk PRs"
                 hint="Automatically merge a PR only when it is LOW risk — verify passed, judge solved, checks green, no injection, AI review passed, diff under the cap. Medium/high always stay human. Audited + alerted; kill switch + breaker halt it."
                 checked={draft.autoMergeLowRisk}
@@ -287,6 +297,11 @@ export function AutoRunConfigCard() {
             {draft.autoMergeLowRisk && !config.commands.review ? (
               <p className="rounded-md border border-amber-500/40 bg-amber-500/5 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
                 Auto-merge is on but no AI review command is configured — the strict bar is never met, so nothing will auto-merge until a review command is set (env).
+              </p>
+            ) : null}
+            {draft.designImagesToIssue && !config.commands.designRender ? (
+              <p className="rounded-md border border-amber-500/40 bg-amber-500/5 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
+                Inline mockup previews are on but no design-render command is configured — only images the agent itself commits will be embedded (HTML mockups won't be rasterized). Set MYAGENTTOOL_AUTORUN_DESIGN_RENDER_COMMAND_JSON (env) to render them.
               </p>
             ) : null}
             <label className="flex flex-col gap-1">
