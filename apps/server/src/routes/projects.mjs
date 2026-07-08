@@ -41,6 +41,8 @@ export async function handleProjectRoutes({
   approveDesign,
   rejectDesign,
   answerClarify,
+  approveDecomposition,
+  rejectDecomposition,
   budgetStatusFor,
   refreshAutoRunPrDispositions,
   selectProject,
@@ -212,6 +214,24 @@ export async function handleProjectRoutes({
       sendJson(res, 200, result);
     } catch (error) {
       sendJson(res, 400, { error: "design_approval_failed", message: errorMessage(error) });
+    }
+    return true;
+  }
+
+  // Epic S3: the human decomposition gate — approve spawns the N governed child
+  // issues (the click is the authorization); reject records feedback to the epic.
+  const decompositionApprovalMatch = url.pathname.match(/^\/api\/auto-runs\/([^\/]+)\/decomposition-approval$/);
+  if (decompositionApprovalMatch && req.method === "POST") {
+    if (denyForeignAutoRun(decodeURIComponent(decompositionApprovalMatch[1]))) return true;
+    try {
+      const body = await readJson(req);
+      const id = decodeURIComponent(decompositionApprovalMatch[1]);
+      const result = body?.action === "reject"
+        ? await rejectDecomposition(id, { actor, feedback: body?.feedback })
+        : await approveDecomposition(id, { actor });
+      sendJson(res, 200, result);
+    } catch (error) {
+      sendJson(res, 400, { error: "decomposition_approval_failed", message: errorMessage(error) });
     }
     return true;
   }

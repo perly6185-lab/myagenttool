@@ -436,6 +436,9 @@ export const api = {
   // E3: answer a clarify run's questions (posted back to the issue).
   answerClarify: (id: string, answers: string) =>
     request("POST", `/api/auto-runs/${encodeURIComponent(id)}/clarify-answer`, { answers }),
+  // Epic S3: the human decomposition gate — approve spawns the N governed child issues.
+  decompositionApproval: (id: string, action: "approve" | "reject", feedback?: string) =>
+    request("POST", `/api/auto-runs/${encodeURIComponent(id)}/decomposition-approval`, { action, feedback }),
   // Scheduled real-agent eval trend (#248): read-only view of the local
   // trend.jsonl so capability regressions surface in the console, not just cron.log.
   listEvalTrend: () => request("GET", "/api/eval-trend"),
