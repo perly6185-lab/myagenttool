@@ -6,7 +6,7 @@ process.env.MYAGENTTOOL_STATE_DISABLED = "1";
 // Regression for the D3 demo finding.
 
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
@@ -26,6 +26,11 @@ before(async () => {
   mkdirSync(join(worktreeDir, "design"), { recursive: true });
   // Exists ONLY in the worktree, not the parent clone.
   writeFileSync(join(worktreeDir, "design", "mockup.html"), "<!DOCTYPE html><title>Mockup</title>");
+  // A secret OUTSIDE the worktree + an in-tree symlink pointing at it (the audit
+  // read-scope-escape scenario).
+  const secretDir = mkdtempSync(join(tmpdir(), "wt-secret-"));
+  writeFileSync(join(secretDir, "creds"), "TOP-SECRET");
+  try { symlinkSync(join(secretDir, "creds"), join(worktreeDir, "design", "leak.html")); } catch { /* symlink perms */ }
 
   const { defaultProject, state } = createServerState({ defaultProjectPath: projectDir, now });
   state.worktrees.push({
@@ -70,4 +75,11 @@ test("GET /api/worktrees/:id/files lists the worktree's own tree", async () => {
   assert.equal(res.status, 200);
   const body = await res.json();
   assert.ok((body.tree ?? []).some((n) => n.name === "mockup.html"), "the worktree-only design/ dir is browsable");
+});
+
+test("GET /api/worktrees/:id/file rejects an in-tree symlink pointing outside the worktree", async () => {
+  const res = await fetch(`${base}/api/worktrees/wt1/file?path=design/leak.html`);
+  assert.notEqual(res.status, 200, "a symlink to a host secret must be rejected, not read");
+  const body = await res.json();
+  assert.ok(!String(body.content ?? "").includes("TOP-SECRET"), "the secret must never be returned");
 });

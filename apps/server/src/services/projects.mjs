@@ -1055,7 +1055,7 @@ function worktreeDiff(worktree, { projectTargets = [] } = {}) {
   // that needs "what did this branch change" (the auto-merge sensitive-path
   // guard, design-artifact detection) must use changedPaths instead.
   try {
-    const committed = git(["diff", "--name-only", base, "--"]).split("\n").filter(Boolean);
+    const committed = git(["-c", "core.quotepath=false", "diff", "--name-only", base, "--"]).split("\n").filter(Boolean);
     result.changedPaths = [...new Set([...committed, ...result.files.map((f) => f.path)])];
   } catch {
     result.changedPaths = result.files.map((f) => f.path);

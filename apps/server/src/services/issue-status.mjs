@@ -110,13 +110,42 @@ export async function runPrChecks({ cwd, prNumber, gh = defaultGh }) {
     const sha = JSON.parse((await gh(["pr", "view", String(prNumber), "--json", "headRefOid"], cwd))?.stdout ?? "{}")?.headRefOid;
     if (!nameWithOwner || !sha) return null;
     const runs = JSON.parse((await gh(["api", `repos/${nameWithOwner}/actions/runs?head_sha=${sha}&per_page=100`], cwd))?.stdout ?? "{}")?.workflow_runs ?? [];
-    return tallyChecks(runs, (r) => {
+    // Dedup: the Actions API returns EVERY run for a SHA (re-runs, per-event), so
+    // a failed-then-rerun-green workflow yields both records and would tally
+    // FAILURE. Keep only the latest run per workflow (by run_number). (audit)
+    const latest = new Map();
+    runs.forEach((r, i) => {
+      // Dedup only runs that share a real workflow identity; runs with no
+      // workflow_id are kept distinct (never collapse unrelated checks).
+      const key = r?.workflow_id != null ? `wf:${r.workflow_id}:${r?.event ?? ""}` : `run:${r?.id ?? i}`;
+      const prev = latest.get(key);
+      if (!prev || Number(r?.run_number ?? 0) >= Number(prev?.run_number ?? 0)) latest.set(key, r);
+    });
+    const actions = tallyChecks([...latest.values()], (r) => {
       if (r?.status !== "completed") return "pending"; // queued / in_progress
       const c = String(r?.conclusion || "").toLowerCase();
       if (["success", "neutral", "skipped"].includes(c)) return "pass";
       if (["failure", "cancelled", "timed_out", "action_required", "startup_failure"].includes(c)) return "fail";
       return "pending";
     });
+    // The Actions API is blind to external/commit-status checks — an affirmative
+    // SUCCESS from Actions alone could hide a red third-party check. Fold in the
+    // commit statuses (readable with this token shape) so an external failure/
+    // pending downgrades the verdict. (audit)
+    let status = { state: null, total: 0 };
+    try {
+      status = JSON.parse((await gh(["api", `repos/${nameWithOwner}/commits/${sha}/status`], cwd))?.stdout ?? "{}");
+    } catch {
+      /* statuses unreadable → rely on Actions alone */
+    }
+    const stState = String(status?.state ?? "").toLowerCase();
+    if (stState === "failure" || stState === "error") {
+      return { total: actions.total + (status.total_count ?? 1), passed: actions.passed, failed: actions.failed + 1, pending: actions.pending, state: "FAILURE" };
+    }
+    if (stState === "pending" && Number(status?.total_count ?? 0) > 0 && actions.state !== "FAILURE") {
+      return { total: actions.total + status.total_count, passed: actions.passed, failed: actions.failed, pending: actions.pending + status.total_count, state: "PENDING" };
+    }
+    return actions;
   } catch {
     return null;
   }

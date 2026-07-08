@@ -146,6 +146,7 @@ export function mergeRisk(run: AutoRunRecord): { warn: boolean } {
   if (run.verification && run.verification.verified && !run.verification.passed) return { warn: true };
   if (!run.verification?.verified) return { warn: true };
   if (!run.judgment || run.judgment.solved !== true) return { warn: true };
+  if (run.judgment.confidence != null && run.judgment.confidence < 0.6) return { warn: true };
   const pc = run.prChecks;
   if (!pc || pc.total === 0 || pc.state === "FAILURE" || pc.state === "PENDING") return { warn: true };
   return { warn: false };
@@ -163,7 +164,10 @@ export function postureRows(run: AutoRunRecord): { key: string; label: string; s
   if (!run.judgment) rows.push({ key: "judge", label: "Acceptance judge", state: "muted", detail: "not run" });
   else if (run.judgment.solved === true) {
     const c = run.judgment.confidence;
-    rows.push({ key: "judge", label: "Acceptance judge", state: "ok", detail: `solved${c != null ? ` (${Math.round(c * 100)}%)` : ""}` });
+    // Mirror the server's 0.6 confidence floor — a solved-but-low-confidence
+    // verdict is not "green" (else the row contradicts the medium badge). (audit)
+    const lowConf = c != null && c < 0.6;
+    rows.push({ key: "judge", label: "Acceptance judge", state: lowConf ? "warn" : "ok", detail: `solved${c != null ? ` (${Math.round(c * 100)}%)` : ""}${lowConf ? " — below 60%" : ""}` });
   } else if (run.judgment.solved === false) rows.push({ key: "judge", label: "Acceptance judge", state: "bad", detail: "did not confirm" });
   else rows.push({ key: "judge", label: "Acceptance judge", state: "warn", detail: "errored — no verdict" });
 

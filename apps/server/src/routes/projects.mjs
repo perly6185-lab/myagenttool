@@ -6,7 +6,7 @@ import { summarizeAutoRuns } from "../services/auto-run-metrics.mjs";
 import { readEvalTrend, summarizeEvalTrend } from "../services/eval-trend.mjs";
 import { normalizeAutoRunSettings, resolveAutoRunConfig } from "../services/auto-run-config.mjs";
 import { computeAutoRunReadiness } from "../services/auto-run-readiness.mjs";
-import { computeMergeRisk } from "../services/auto-run-risk.mjs";
+import { computeMergeRisk, sensitivePathHit, DEFAULT_SENSITIVE_PATHS } from "../services/auto-run-risk.mjs";
 import { resolveAutoRunVerifyCommandFor } from "../services/worktree-verify.mjs";
 
 export async function handleProjectRoutes({
@@ -166,8 +166,18 @@ export async function handleProjectRoutes({
     return true;
   }
 
+  // Tenancy guard for auto-run-id routes: resolve the run's project and deny a
+  // foreign actor (these routes take a global run id, not a project id). (audit)
+  const denyForeignAutoRun = (autoRunId) => {
+    const run = (state.autoRuns ?? []).find((r) => r.id === autoRunId);
+    const projectId = run?.projectId ?? null;
+    if (!projectId) return false; // unknown run → let the service return not-found
+    return denyForeignProject({ res, sendJson, state, actor, projectId, notFound: { error: "auto_run_not_found" } });
+  };
+
   const autoRunRetryMatch = url.pathname.match(/^\/api\/auto-runs\/([^\/]+)\/retry$/);
   if (autoRunRetryMatch && req.method === "POST") {
+    if (denyForeignAutoRun(decodeURIComponent(autoRunRetryMatch[1]))) return true;
     try {
       const result = await retryAutoRun(decodeURIComponent(autoRunRetryMatch[1]), { actor });
       sendJson(res, 200, result);
@@ -181,6 +191,7 @@ export async function handleProjectRoutes({
   // (the click is the authorization); reject records feedback to the issue.
   const designApprovalMatch = url.pathname.match(/^\/api\/auto-runs\/([^\/]+)\/design-approval$/);
   if (designApprovalMatch && req.method === "POST") {
+    if (denyForeignAutoRun(decodeURIComponent(designApprovalMatch[1]))) return true;
     try {
       const body = await readJson(req);
       const id = decodeURIComponent(designApprovalMatch[1]);
@@ -196,6 +207,7 @@ export async function handleProjectRoutes({
 
   const autoRunMergeMatch = url.pathname.match(/^\/api\/auto-runs\/([^\/]+)\/merge$/);
   if (autoRunMergeMatch && req.method === "POST") {
+    if (denyForeignAutoRun(decodeURIComponent(autoRunMergeMatch[1]))) return true;
     // Human-triggered PR merge (merge stays human — a person clicking Merge).
     try {
       const result = await mergeAutoRunPr(decodeURIComponent(autoRunMergeMatch[1]), { actor });
@@ -229,7 +241,19 @@ export async function handleProjectRoutes({
     const enriched = autoRuns.map((run) => {
       let out = run;
       // Merge-risk badge for open PRs (the risk-based merge policy's read model).
-      if (run.status === "pr_open") out = { ...out, mergeRisk: computeMergeRisk(run) };
+      if (run.status === "pr_open") {
+        // Fold in the STORED review / diff-size / sensitive-path signals when a
+        // sweep already computed them, so the badge doesn't show "low" while the
+        // stricter stored signals say otherwise (misleads a manual merger). (audit)
+        const extra = run.review || run.diffFiles || run.diffLines != null
+          ? {
+              review: run.review ?? null,
+              diffTooLarge: Number.isFinite(run.diffLines) && run.diffLines > (Number(state.autoRunSettings?.autoMergeMaxDiffLines) || 400),
+              sensitivePath: sensitivePathHit(run.diffFiles ?? [], Array.isArray(state.autoRunSettings?.autoMergeSensitivePaths) && state.autoRunSettings.autoMergeSensitivePaths.length ? state.autoRunSettings.autoMergeSensitivePaths : DEFAULT_SENSITIVE_PATHS),
+            }
+          : null;
+        out = { ...out, mergeRisk: computeMergeRisk(run, extra ? { extra } : {}) };
+      }
       if (run.status === "awaiting_approval" && run.invocationId) {
         const approval = pendingByInvocation.get(run.invocationId);
         if (approval) {
@@ -602,7 +626,18 @@ function safeProjectFile(project, relativePath) {
   if (!existsSync(target)) {
     throw new Error("Requested file does not exist.");
   }
-  return target;
+  // Symlinks escape the string-path check: an in-tree symlink can point at a
+  // host secret (~/.ssh, ~/.claude/.credentials.json). realpath the target and
+  // the root and re-verify containment (mirrors the write path's saveAttachments
+  // hardening, which the read path was missing). (audit finding)
+  const realRoot = realpathSync(root);
+  const realTarget = realpathSync(target);
+  const realRel = relative(realRoot, realTarget);
+  if (realRel === ".." || realRel.startsWith(`..${sep}`)) {
+    throw new Error("Requested file escapes the worktree root (symlink).");
+  }
+  return target; // validated via realpath; return the original path so the
+  // caller's relative(root, file) stays correct (readFileSync follows the link).
 }
 
 function gitSummaryForWorktree(summary) {
