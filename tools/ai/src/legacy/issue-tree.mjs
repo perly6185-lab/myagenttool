@@ -1,12 +1,23 @@
 import { PM_BRIEF_SCHEMA } from "./config.mjs";
 import {
-  normalizeProductFlow,
-  stringArrayOr,
-} from "./formatters.mjs";
-import {
-  labelsFromProjectFields,
-  normalizeLabelValue,
-} from "./pm-helpers.mjs";
+  issueTreeApplyFailures,
+  issueTreeFromBrief,
+  issueTreeWithHumanApproval,
+  humanApprovalRequiredReasons,
+  normalizePmBrief,
+} from "../issue-tree-core.mjs";
+
+// The pure generation + governance engine moved to ../issue-tree-core.mjs so the
+// server can import it (EPIC_DECOMPOSITION_PLAN.md). This CLI shim keeps the I/O
+// bits (brief loading) and the throwing validate wrapper, and re-exports the pure
+// surface for existing callers.
+export {
+  issueTreeApplyFailures,
+  issueTreeFromBrief,
+  issueTreeWithHumanApproval,
+  humanApprovalRequiredReasons,
+  normalizePmBrief,
+};
 
 const issueTreeContext = {};
 
@@ -54,33 +65,13 @@ export async function loadPmBriefForIssueTree(args) {
   return normalizePmBrief(brief);
 }
 
-export function normalizePmBrief(brief) {
-  const projectFields = brief.projectFields ?? {};
-  return {
-    outcome: brief.outcome ?? "TODO",
-    primaryUser: brief.primaryUser ?? "Non-professional user first.",
-    problem: brief.problem ?? "TODO",
-    userStory: brief.userStory ?? "TODO",
-    nonGoals: stringArrayOr(brief.nonGoals, ["No hidden local command execution.", "No production release without approval."]),
-    acceptanceCriteria: stringArrayOr(brief.acceptanceCriteria, []),
-    riskFlags: stringArrayOr(brief.riskFlags, ["Review security, data, cost, local execution, and release impact manually."]),
-    issueTitle: brief.issueTitle ?? "[Task]: TODO",
-    suggestedLabels: stringArrayOr(brief.suggestedLabels, []),
-    openQuestions: stringArrayOr(brief.openQuestions, []),
-    productFlow: normalizeProductFlow(brief.productFlow),
-    projectFields: {
-      milestone: projectFields.milestone ?? "M0",
-      area: projectFields.area ?? "cross-cutting",
-      type: projectFields.type ?? "task",
-      status: "backlog",
-      risk: projectFields.risk ?? "medium",
-      acceptance: projectFields.acceptance ?? "defined",
-      platform: projectFields.platform ?? "all",
-      agentTarget: projectFields.agentTarget ?? "platform",
-      priority: projectFields.priority ?? "p1",
-      sourceDoc: projectFields.sourceDoc ?? "docs/engineering/FULL_FLOW_AI_DELIVERY.md",
-    },
-  };
+// Throwing wrapper over the pure issueTreeApplyFailures (which the server uses
+// directly). The CLI wants a hard fail; the server wants the failure list.
+export function validateIssueTreeForApply(tree, humanApproval = "") {
+  const failures = issueTreeApplyFailures(tree, humanApproval);
+  if (failures.length > 0) {
+    dep("fail")(`Issue tree is not safe to apply:\n${failures.map((failure) => `  - ${failure}`).join("\n")}`);
+  }
 }
 
 function parsePmBriefMarkdown(content) {
@@ -98,175 +89,6 @@ function parsePmBriefMarkdown(content) {
     productFlow: parseProductFlowFromText(content),
     projectFields: parseProjectFieldsFromText(content),
   };
-}
-
-export function issueTreeFromBrief(brief) {
-  const normalized = normalizePmBrief(brief);
-  const labels = mergeGovernanceLabels(normalized.suggestedLabels, normalized.projectFields);
-  const rootIssue = {
-    role: "root",
-    title: normalizeIssueTitle(normalized.issueTitle, normalized.projectFields.type),
-    outcome: normalized.outcome,
-    primaryUser: normalized.primaryUser,
-    problem: normalized.problem,
-    userStory: normalized.userStory,
-    nonGoals: normalized.nonGoals,
-    acceptanceCriteria: normalized.acceptanceCriteria,
-    riskFlags: normalized.riskFlags,
-    openQuestions: normalized.openQuestions,
-    productFlow: normalized.productFlow,
-    labels,
-    milestone: normalized.projectFields.milestone,
-    projectFields: normalized.projectFields,
-    sourceDoc: normalized.projectFields.sourceDoc,
-  };
-  return {
-    version: "2026-06-19",
-    mode: "dry-run",
-    source: "pm-brief",
-    issues: [rootIssue],
-    governance: {
-      dryRunDefault: true,
-      applyRequiresExplicitFlag: true,
-      humanApprovalProvided: false,
-      humanApprovalEvidence: "",
-      humanApprovalRequiredFor: ["roadmap-changing work", "security", "billing", "local execution", "release"],
-      followUp: ["Run pnpm github:check:issues.", "Run sync-project-fields dry-run before moving issues to ready."],
-    },
-  };
-}
-
-export function issueTreeWithHumanApproval(tree, humanApproval) {
-  const evidence = String(humanApproval ?? "").trim();
-  if (!evidence) return tree;
-  return {
-    ...tree,
-    governance: {
-      ...tree.governance,
-      humanApprovalProvided: true,
-      humanApprovalEvidence: evidence,
-    },
-    issues: tree.issues.map((issueSpec) => ({
-      ...issueSpec,
-      humanApproval: evidence,
-    })),
-  };
-}
-
-function mergeGovernanceLabels(labels, fields) {
-  const governancePrefixes = ["type/", "status/", "area/", "risk/", "acceptance/", "platform/", "agent/", "priority/"];
-  const customLabels = labels.filter((label) => !governancePrefixes.some((prefix) => label.startsWith(prefix)));
-  return [...labelsFromProjectFields(fields), ...customLabels];
-}
-
-export function validateIssueTreeForApply(tree, humanApproval = "") {
-  const failures = issueTreeApplyFailures(tree, humanApproval);
-  if (failures.length > 0) {
-    dep("fail")(`Issue tree is not safe to apply:\n${failures.map((failure) => `  - ${failure}`).join("\n")}`);
-  }
-}
-
-export function issueTreeApplyFailures(tree, humanApproval = "") {
-  const failures = [];
-  const approvalReasons = humanApprovalRequiredReasons(tree);
-  const approvalEvidence = String(humanApproval || tree.governance?.humanApprovalEvidence || "").trim();
-  for (const issueSpec of tree.issues) {
-    if (!issueSpec.title || issueSpec.title.includes("TODO")) failures.push(`${issueSpec.title || "(untitled)"}: title is missing or TODO`);
-    if (!issueSpec.milestone) failures.push(`${issueSpec.title}: milestone is missing`);
-    if (!issueSpec.acceptanceCriteria.length) failures.push(`${issueSpec.title}: acceptance criteria are missing`);
-    if (requiresConcreteProductFlowForIssue(issueSpec) && !hasConcreteProductFlow(issueSpec.productFlow)) {
-      failures.push(`${issueSpec.title}: UI/workflow issue requires concrete Product Flow from docs/design/PRODUCT_FLOWS.md`);
-    }
-    for (const group of ["type/", "status/", "area/", "risk/", "acceptance/", "platform/", "agent/"]) {
-      if (!issueSpec.labels.some((label) => label.startsWith(group))) {
-        failures.push(`${issueSpec.title}: missing ${group} label`);
-      }
-    }
-  }
-  if (approvalReasons.length > 0 && !approvalEvidence) {
-    failures.push(`human approval is required for ${approvalReasons.join(", ")}; pass --human-approved "approval reason" or set MYAGENTTOOL_HUMAN_APPROVED`);
-  }
-  return failures;
-}
-
-export function humanApprovalRequiredReasons(tree) {
-  const reasons = new Set();
-  for (const issueSpec of tree.issues ?? []) {
-    const labels = issueSpec.labels ?? [];
-    const fields = issueSpec.projectFields ?? {};
-    const text = [
-      issueSpec.title,
-      issueSpec.outcome,
-      issueSpec.problem,
-      issueSpec.userStory,
-      ...(issueSpec.riskFlags ?? []),
-      ...(issueSpec.nonGoals ?? []),
-      fields.area,
-      fields.type,
-      fields.risk,
-      fields.sourceDoc,
-      ...labels,
-    ]
-      .filter(Boolean)
-      .join("\n")
-      .toLowerCase();
-
-    if (labels.some((label) => ["risk/high", "risk/critical"].includes(label)) || ["high", "critical"].includes(normalizeLabelValue(fields.risk))) {
-      reasons.add("high-risk work");
-    }
-    if (/security|auth|credential|secret|permission|privacy|data retention|data-retention/.test(text)) reasons.add("security or data/privacy impact");
-    if (/billing|cost|quota|settlement|chargeback|payment/.test(text)) reasons.add("billing or cost impact");
-    if (/local execution|local-execution|desktop|process execution|child process|subprocess|shell|command execution|cancellation/.test(text)) reasons.add("local execution impact");
-    if (/release|deploy|deployment|rollback|production/.test(text)) reasons.add("release or deploy impact");
-    if (/roadmap|initiative|milestone|lifecycle|distribution/.test(text)) reasons.add("roadmap-changing work");
-  }
-  return [...reasons];
-}
-
-function normalizeIssueTitle(title, type) {
-  if (!title || title === "TODO") {
-    const prefix = type === "risk" ? "[Risk]" : type === "adr" ? "[ADR]" : type === "epic" ? "[Epic]" : "[Task]";
-    return `${prefix}: TODO`;
-  }
-  return title;
-}
-
-function requiresConcreteProductFlowForIssue(issueSpec) {
-  const fields = issueSpec.projectFields ?? {};
-  const text = [
-    issueSpec.title,
-    issueSpec.outcome,
-    issueSpec.problem,
-    issueSpec.userStory,
-    fields.area,
-    fields.platform,
-    fields.sourceDoc,
-    ...(issueSpec.labels ?? []),
-  ]
-    .filter(Boolean)
-    .join("\n")
-    .toLowerCase();
-  return /\b(web|ui|ux|workflow|user-facing|console|homepage|visual|design)\b/.test(text)
-    || String(fields.sourceDoc ?? "").startsWith("docs/design/")
-    || ["web"].includes(normalizeLabelValue(fields.area))
-    || ["web"].includes(normalizeLabelValue(fields.platform));
-}
-
-function hasConcreteProductFlow(productFlow) {
-  const flow = normalizeProductFlow(productFlow);
-  return [
-    flow.roleFlow,
-    flow.scenario,
-    flow.frequency,
-    flow.ownerSurface,
-    flow.usabilityTask,
-    flow.whatNotToShow,
-    flow.partialAcceptanceOrFollowUp,
-  ].every((value) => !isPlaceholderProductFlowValue(value));
-}
-
-function isPlaceholderProductFlowValue(value) {
-  return /not applicable|requires product-flow triage|update if|must cite docs\/design\/product_flows|todo|n\/a/i.test(String(value ?? ""));
 }
 
 function markdownSection(content, heading) {
