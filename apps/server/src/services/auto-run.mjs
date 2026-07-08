@@ -6,6 +6,7 @@ import { intentForPath, resolveDecision } from "./auto-run-decision.mjs";
 import { isSpawnedChildBody } from "./auto-run-spawn.mjs";
 import { judgmentEvidence } from "./auto-run-judge.mjs";
 import { computeMergeRisk, sensitivePathHit, DEFAULT_SENSITIVE_PATHS } from "./auto-run-risk.mjs";
+import { composeDesignIssueComment } from "./auto-run-design.mjs";
 
 // One-click "Auto" orchestrator. It closes the seam the console never had:
 // turning a linked GitHub issue into a worktree AND a started agent run seeded
@@ -493,7 +494,10 @@ export function createAutoRunService({
               // terminal summary — the agent puts the depth in the file.
               const brief = typeof readWorktreeTextFile === "function" ? readWorktreeTextFile(autoRun.worktreeId, "design/BRIEF.md") : null;
               const summary = brief || extractRunSummary(invocation) || "Design delivered as visual mockups (see the design artifacts).";
-              maybePostIssueReport(autoRun, worktree, summary);
+              // Layer A: the brief IS what a human sees on the issue; index the
+              // mockups beneath it so the reader knows a richer visual exists and
+              // where to open it. (Layer B embeds pushed PNG previews inline.)
+              maybePostIssueReport(autoRun, worktree, composeDesignIssueComment({ brief: summary, artifacts: changed }));
               const spawn = await maybeSpawnChildIssue(autoRun, worktree, summary);
               setAutoRunStatus(autoRun, "report_posted", {
                 report: summary,

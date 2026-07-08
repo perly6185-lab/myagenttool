@@ -54,7 +54,8 @@ test("roleAutoRunPrompt includes the issue body and the develop role instruction
 test("roleAutoRunPrompt role variants: design and clarify forbid changes; prototype spikes", () => {
   const base = { type: "issue", number: 6, title: "Rework the queue", url: null };
   assert.match(roleAutoRunPrompt(base, { path: "design" }), /Do NOT implement/);
-  assert.match(roleAutoRunPrompt(base, { path: "design" }), /design\/ directory/, "design role may write design/ mockups (D3)");
+  assert.match(roleAutoRunPrompt(base, { path: "design" }), /HTML mockups under design\//, "design role may ADDITIONALLY write design/ mockups (D3)");
+  assert.match(roleAutoRunPrompt(base, { path: "design" }), /ASCII wireframe.*component hierarchy/s, "design brief MUST carry the wireframe + hierarchy (Layer A: it's what reaches the issue)");
   assert.match(roleAutoRunPrompt(base, { path: "clarify" }), /Do NOT change anything/);
   assert.match(roleAutoRunPrompt(base, { path: "prototype" }), /time-boxed, runnable prototype/);
 });
