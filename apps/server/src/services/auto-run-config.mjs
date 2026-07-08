@@ -120,6 +120,11 @@ export function normalizeAutoRunSettings(patch = {}, prev = {}) {
     // Layer B (UI-only, default off): render the design mockups to PNGs, push the
     // design branch, and embed the previews inline on the issue. Pushes a branch.
     designImagesToIssue: keep("designImagesToIssue", asBool),
+    // Epic decomposition (UI-only, default off): an epic/initiative routes to the
+    // decompose path (a proposed plan of child issues, not a diff). epicMaxChildren
+    // caps the fan-out. EPIC_DECOMPOSITION_PLAN.md.
+    epicDecomposition: keep("epicDecomposition", asBool),
+    epicMaxChildren: keep("epicMaxChildren", (v) => clampInt(v, 1, 20)),
     // Risk-based merge (UI-only, default off): auto-merge low-risk PRs; the diff
     // line cap above which a PR is never auto-merged (falls to a human merge).
     autoMergeLowRisk: keep("autoMergeLowRisk", asBool),
@@ -199,6 +204,9 @@ export function resolveAutoRunConfig(state = {}, baseEnv = process.env) {
     designArtifacts: Boolean(settings.designArtifacts),
     // Layer B: embed rendered mockup previews inline on the issue (pushes a branch).
     designImagesToIssue: Boolean(settings.designImagesToIssue),
+    // Epic decomposition: route epics to a proposed child-issue plan; fan-out cap.
+    epicDecomposition: Boolean(settings.epicDecomposition),
+    epicMaxChildren: Number(settings.epicMaxChildren ?? 8) || 8,
     // Risk-based merge: opt-in auto-merge of low-risk PRs + the diff-size cap.
     autoMergeLowRisk: Boolean(settings.autoMergeLowRisk),
     autoMergeMaxDiffLines: Number(settings.autoMergeMaxDiffLines ?? 400) || 400,

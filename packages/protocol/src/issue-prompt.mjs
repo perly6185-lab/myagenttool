@@ -73,6 +73,16 @@ const ROLE_INSTRUCTIONS = {
     "Do NOT change anything. Analyze the issue against the codebase and produce, as your final " +
     "summary, the specific questions that must be answered before work can start — each with the " +
     "context a human needs to answer it, and your best-guess answer.",
+
+  decompose:
+    "This is an EPIC/INITIATIVE, not a single change. Do NOT implement anything and do NOT change " +
+    "product code. Analyze the epic against the codebase and break it into 3-8 small, independently " +
+    "shippable child issues. Write the plan to decomposition/PLAN.json as a JSON array; each element " +
+    "is a child brief with these fields: issueTitle (e.g. \"[Task]: ...\"), problem, userStory, " +
+    "acceptanceCriteria (array of strings), riskFlags (array), and projectFields " +
+    "{ milestone, area, type, risk, platform, priority }. Keep each child scoped to one PR's worth of " +
+    "work with concrete acceptance criteria. Also repeat a short summary of the breakdown as your " +
+    "final message. Nothing is created from this yet — a human approves the plan first.",
 };
 
 /**
