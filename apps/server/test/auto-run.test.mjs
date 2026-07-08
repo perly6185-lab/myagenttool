@@ -1594,3 +1594,51 @@ test("Epic S3: rejectDecomposition records feedback and posts it to the epic (no
   assert.equal(calls.childCreate.length, 0);
   assert.ok(calls.report.some((r) => /not approved by usr_x/.test(r.body) && /split A further/.test(r.body)));
 });
+
+test("Epic S3: a partial child-creation failure stays RETRYABLE (no lost child, no double-create)", async () => {
+  let attempt = 0;
+  const { svc, calls } = makeAutoRun({
+    readWorktreeTextFile: (_wt, p) => (p === "decomposition/PLAN.json" ? JSON.stringify([cleanChild("[Task]: A"), cleanChild("[Task]: B")]) : null),
+    createDecompositionChild: async ({ title }) => {
+      if (title === "[Task]: B" && attempt === 0) throw new Error("gh timeout");
+      return { number: title === "[Task]: A" ? 501 : 502, url: null, title };
+    },
+  });
+  const autoRun = await proposedEpicRun(svc, calls, null, { number: 310 });
+  attempt = 0;
+  const r1 = await svc.approveDecomposition(autoRun.id, { actor: { userId: "u" } });
+  assert.equal(r1.complete, false);
+  assert.equal(autoRun.status, "plan_proposed", "stays retryable — NOT decomposed");
+  assert.equal(autoRun.decompositionApproval.status, "partial");
+  assert.deepEqual(autoRun.childIssues.map((c) => c.number), [501], "A recorded; B not lost");
+  assert.ok(autoRun.error, "the partial failure is surfaced");
+  attempt = 1;
+  const before = calls.childCreate.length;
+  const r2 = await svc.approveDecomposition(autoRun.id, { actor: { userId: "u" } });
+  assert.equal(r2.complete, true);
+  assert.equal(autoRun.status, "decomposed");
+  assert.deepEqual(autoRun.childIssues.map((c) => c.number), [501, 502]);
+  assert.equal(calls.childCreate.length - before, 1, "only the failed child B is retried; A is not double-created");
+});
+
+test("Epic S3: TOTAL child-creation failure does not look done (stays plan_proposed, recoverable)", async () => {
+  const { svc, calls } = makeAutoRun({
+    readWorktreeTextFile: (_wt, p) => (p === "decomposition/PLAN.json" ? JSON.stringify([cleanChild("[Task]: A")]) : null),
+    createDecompositionChild: async () => { throw new Error("gh down"); },
+  });
+  const autoRun = await proposedEpicRun(svc, calls, null, { number: 311 });
+  const r = await svc.approveDecomposition(autoRun.id, { actor: { userId: "u" } });
+  assert.equal(r.complete, false);
+  assert.equal(autoRun.status, "plan_proposed", "a total failure is NOT marked decomposed");
+  assert.equal(autoRun.childIssues.length, 0);
+  assert.equal(autoRun.decompositionApproval.status, "partial", "recoverable via re-approve");
+});
+
+test("Epic S2: PLAN.json is read with a LARGE cap, not the 16KB brief cap (avoids mid-JSON truncation)", async () => {
+  let capUsed = null;
+  const { svc, calls } = makeAutoRun({
+    readWorktreeTextFile: (_wt, p, maxBytes) => { if (p === "decomposition/PLAN.json") { capUsed = maxBytes; return JSON.stringify([cleanChild("[Task]: A")]); } return null; },
+  });
+  await proposedEpicRun(svc, calls, null, { number: 312 });
+  assert.ok(capUsed >= 100_000, `PLAN.json read cap should be large; got ${capUsed}`);
+});

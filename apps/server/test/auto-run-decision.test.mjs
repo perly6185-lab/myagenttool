@@ -156,3 +156,12 @@ test("resolveDecision routes an epic to decompose ONLY when epicDecomposition is
 test("normalizeDecision accepts an agent-returned decompose path", () => {
   assert.equal(normalizeDecision({ path: "decompose", confidence: 0.9 })?.path, "decompose");
 });
+
+test("resolveDecision does NOT re-decompose a spawned child even with an [Epic] title (depth-1 gate)", async () => {
+  const childBody = "Spawned from epic #5.\n<!-- myagent:autorun:child-of:#5 -->\n## Problem\nx";
+  const d = await resolveDecision({ link: { title: "[Epic]: Phase 2", number: 9 }, issueBody: childBody, decideIssuePath: undefined, epicDecomposition: true });
+  assert.notEqual(d.path, "decompose", "a depth-1 child never re-decomposes into grandchildren");
+  // a NON-child [Epic] with the flag on still decomposes
+  const e = await resolveDecision({ link: { title: "[Epic]: Real", number: 10 }, issueBody: "## Project Fields\nType: epic", decideIssuePath: undefined, epicDecomposition: true });
+  assert.equal(e.path, "decompose");
+});

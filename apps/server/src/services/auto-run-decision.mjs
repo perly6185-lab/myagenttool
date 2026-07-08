@@ -1,4 +1,5 @@
 import { classifyIntentFromText } from "./auto-run-intent.mjs";
+import { isSpawnedChildBody } from "./auto-run-spawn.mjs";
 
 // The issue decision step (ISSUE_DECISION_AGENT_PLAN.md slice 1). An injectable
 // decider (later: the LLM decision agent) proposes a structured decision; this
@@ -110,7 +111,9 @@ export async function resolveDecision({
 } = {}) {
   // Opt-in epic decomposition wins over every other route: an epic is never a
   // single develop/design run. Deterministic — no decider hop, no LLM variance.
-  if (epicDecomposition && isEpicIssue({ link, issueBody })) return epicDecision();
+  // GATED on a NON-child body: a spawned child (depth-1 marker) with an [Epic]-
+  // shaped title must NOT re-decompose into grandchildren. (review: depth-1 gate)
+  if (epicDecomposition && !isSpawnedChildBody(issueBody) && isEpicIssue({ link, issueBody })) return epicDecision();
   if (typeof decideIssuePath !== "function") return heuristicDecision(link);
 
   // Hybrid fast path: question/investigation titles are strong lexical signals

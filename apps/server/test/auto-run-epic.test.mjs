@@ -130,3 +130,12 @@ test("summarizeEpicChildren counts children whose run was judge-blocked as redun
   assert.equal(r.items.find((i) => i.number === 12).redundant, false, "a genuine failure is not redundancy");
   assert.equal(r.items.find((i) => i.number === 10).redundant, false, "a merged child is not redundant");
 });
+
+test("summarizeEpicChildren excludes an unknown-project run with a colliding issue number (review F3)", () => {
+  const e = { id: "ep", projectId: "prj_1", childIssues: [{ number: 10, title: "A" }] };
+  // a run with null projectId + the same issue number must NOT be attributed to this epic
+  const autoRuns = [{ id: "x", projectId: null, link: { type: "issue", number: 10 }, status: "pr_open", prState: "MERGED" }];
+  const r = summarizeEpicChildren(e, autoRuns);
+  assert.equal(r.started, 0, "a null-project run never matches a project-scoped epic");
+  assert.equal(r.merged, 0);
+});
