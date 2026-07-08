@@ -16,6 +16,7 @@ import { DesignPanel } from "./design-panel";
 import { DesignApproval } from "./design-approval";
 import { ClarifyAnswer } from "./clarify-answer";
 import { DecompositionApproval } from "./decomposition-approval";
+import { EpicRollup } from "./epic-rollup";
 import { useConsoleState } from "@/data/use-console-state";
 
 interface AutoRunLink {
@@ -46,6 +47,7 @@ export interface AutoRunRecord {
   // Epic decomposition (S2/S3): the proposed plan + the human approval outcome.
   decompositionPlan?: { tree?: { issues?: { title: string }[] } | null; failures?: string[]; approvalReasons?: string[]; truncated?: boolean; proposedCount?: number; parseError?: string | null } | null;
   decompositionApproval?: { status: "approving" | "approved" | "rejected"; by?: string | null; at?: string | null; created?: number; feedback?: string | null } | null;
+  childRollup?: { total: number; started: number; notStarted: number; merged: number; prOpen: number; failed: number; inProgress: number; items: { number: number; title?: string | null; status?: string | null; prState?: string | null }[] } | null;
   prState?: string | null;
   prChecks?: { total: number; passed: number; failed: number; pending: number; state: "NONE" | "SUCCESS" | "FAILURE" | "PENDING" } | null;
   pendingApproval?: { id: string; riskLevel: string | null; riskTags: string[]; summary: string | null } | null;
@@ -696,9 +698,7 @@ export function AutoRunsView() {
                   <DecompositionApproval run={run} onDone={load} />
                 ) : null}
                 {run.status === "decomposed" && run.childIssues?.length ? (
-                  <p className="text-[11px] text-muted-foreground">
-                    Created {run.childIssues.length} child issue(s): {run.childIssues.map((c) => `#${c.number}`).join(", ")}
-                  </p>
+                  <EpicRollup run={run} />
                 ) : null}
                 {run.error ? <p className="text-xs text-amber-600 dark:text-amber-400">{run.error}</p> : null}
               </CardContent>

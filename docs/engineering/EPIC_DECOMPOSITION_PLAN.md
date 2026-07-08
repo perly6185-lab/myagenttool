@@ -5,6 +5,14 @@ a validated tree of scoped child issues → (human-approved) fan-out → coordin
 child runs → rollup**. This is the next autonomy frontier: the decision agent
 already triages a *single* issue; decomposition triages a *body of work*.
 
+**Status (2026-07-08): S1–S4 COMPLETE.** S1 shared engine (#593), S2 propose
+(#595), S3 approve → fan-out (#597), S4 rollup (this PR). The capability runs
+end-to-end: epic → decompose → plan_proposed → human Approve → N governed child
+issues → each child runs through the EXISTING pipeline once a human labels it
+`auto` → the epic rolls up its children's status live. S5 (evaluation) is the only
+remaining slice and is stretch. Live operation (running real epics, labelling
+children) is intentionally manual.
+
 ## Current state — most of the engine already exists (wire, don't rebuild)
 
 - **`tools/ai/src/legacy/issue-tree.mjs` (335 lines)** — the decomposition engine,

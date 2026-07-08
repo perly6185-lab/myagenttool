@@ -7,6 +7,7 @@ import { readEvalTrend, summarizeEvalTrend } from "../services/eval-trend.mjs";
 import { normalizeAutoRunSettings, resolveAutoRunConfig } from "../services/auto-run-config.mjs";
 import { computeAutoRunReadiness } from "../services/auto-run-readiness.mjs";
 import { computeMergeRisk, sensitivePathHit, DEFAULT_SENSITIVE_PATHS } from "../services/auto-run-risk.mjs";
+import { summarizeEpicChildren } from "../services/auto-run-epic.mjs";
 import { resolveAutoRunVerifyCommandFor } from "../services/worktree-verify.mjs";
 
 const IMAGE_MIME = {
@@ -307,6 +308,11 @@ export async function handleProjectRoutes({
             pendingApproval: { id: approval.id, riskLevel: approval.riskLevel ?? null, riskTags: approval.riskTags ?? [], summary: approval.summary ?? null },
           };
         }
+      }
+      // Epic S4: live rollup of a decomposed epic's children (in-memory — each child
+      // rolls up from its own auto-run once a human labels it `auto`).
+      if (run.status === "decomposed") {
+        out = { ...out, childRollup: summarizeEpicChildren(run, autoRuns) };
       }
       return out;
     });
