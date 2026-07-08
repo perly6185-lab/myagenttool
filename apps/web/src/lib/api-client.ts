@@ -433,6 +433,9 @@ export const api = {
   // D4: the human design gate — approve spawns the implementation child issue.
   designApproval: (id: string, action: "approve" | "reject", feedback?: string) =>
     request("POST", `/api/auto-runs/${encodeURIComponent(id)}/design-approval`, { action, feedback }),
+  // E3: answer a clarify run's questions (posted back to the issue).
+  answerClarify: (id: string, answers: string) =>
+    request("POST", `/api/auto-runs/${encodeURIComponent(id)}/clarify-answer`, { answers }),
   // Scheduled real-agent eval trend (#248): read-only view of the local
   // trend.jsonl so capability regressions surface in the console, not just cron.log.
   listEvalTrend: () => request("GET", "/api/eval-trend"),

@@ -66,6 +66,7 @@ export function createAutoRunService({
   reviewDiff,
   listWorktreeChangedFiles,
   worktreeHeadSha,
+  readWorktreeTextFile,
   spawnChildIssueDirect,
   mergePr,
   fetchPrChecks,
@@ -488,7 +489,10 @@ export function createAutoRunService({
             }
             const designOnly = changed.length > 0 && changed.every((p) => String(p).startsWith("design/"));
             if (designOnly) {
-              const summary = extractRunSummary(invocation) ?? "Design delivered as visual mockups (see the design artifacts).";
+              // E1: prefer the FULL written brief (design/BRIEF.md) over the thin
+              // terminal summary — the agent puts the depth in the file.
+              const brief = typeof readWorktreeTextFile === "function" ? readWorktreeTextFile(autoRun.worktreeId, "design/BRIEF.md") : null;
+              const summary = brief || extractRunSummary(invocation) || "Design delivered as visual mockups (see the design artifacts).";
               maybePostIssueReport(autoRun, worktree, summary);
               const spawn = await maybeSpawnChildIssue(autoRun, worktree, summary);
               setAutoRunStatus(autoRun, "report_posted", {
@@ -502,6 +506,25 @@ export function createAutoRunService({
               persistStateSoon();
               return autoRun;
             }
+          }
+
+          // E2: a prototype run's committed changes are a THROWAWAY spike — deliver
+          // the findings (report_posted, spike stays browsable in the worktree),
+          // never verify→publish→PR (which could auto-merge a spike).
+          if (commitResult.hasCommits && decidedPath === "prototype") {
+            const brief = typeof readWorktreeTextFile === "function" ? readWorktreeTextFile(autoRun.worktreeId, "prototype/FINDINGS.md") : null;
+            const summary = brief || extractRunSummary(invocation) || "Prototype spike complete — see the findings.";
+            maybePostIssueReport(autoRun, worktree, summary);
+            const spawn = await maybeSpawnChildIssue(autoRun, worktree, summary);
+            setAutoRunStatus(autoRun, "report_posted", {
+              report: summary,
+              error: null,
+              ...(spawn?.child ? { childIssues: [spawn.child] } : {}),
+              ...(spawn?.error ? { spawnError: spawn.error } : {}),
+            });
+            maybeWriteIssueStatus(autoRun, worktree, "review");
+            persistStateSoon();
+            return autoRun;
           }
         }
 
@@ -766,6 +789,40 @@ export function createAutoRunService({
   // review "missing" => never auto-merges (falls to the human merge dialog).
   // Respects the kill switch + circuit breaker; every auto-merge is audited +
   // alerted. Merge itself still goes through mergeAutoRunPr (re-fetches checks).
+  // E3 (decision-path expansion): a human answers a clarify run's questions. The
+  // answers are posted back to the issue (so a re-triggered run has the context)
+  // and recorded; the human then re-labels the issue `auto` (or starts it) to
+  // proceed with the answers in the issue body. Human-only, audited.
+  async function answerClarify(autoRunId, { actor, answers } = {}) {
+    const autoRun = state.autoRuns.find((item) => item.id === autoRunId);
+    if (!autoRun) throw new Error("Auto-run not found.");
+    if ((autoRun.decision?.path ?? null) !== "clarify") throw new Error("Only a clarify run's questions can be answered.");
+    if (autoRun.status !== "needs_input") throw new Error("Only a run awaiting input can be answered.");
+    const text = String(answers ?? "").trim();
+    if (!text) throw new Error("An answer is required.");
+    const by = actor?.userId ?? "usr_local";
+    const worktree = state.worktrees.find((item) => item.id === autoRun.worktreeId) ?? null;
+    const questions = autoRun.decision?.clarifyingQuestions ?? [];
+    const body = [
+      `Clarifications from ${by}:`,
+      "",
+      ...(questions.length ? questions.map((q, i) => `> ${q}`) : []),
+      questions.length ? "" : null,
+      text,
+    ].filter((l) => l !== null).join("\n");
+    maybePostIssueReport(autoRun, worktree, body);
+    autoRun.clarifyAnswer = { by, at: now(), text: text.slice(0, 4000) };
+    appendEvent({
+      invocationId: autoRun.invocationId,
+      type: "auto_run_clarify_answered",
+      level: "info",
+      message: `Auto-run ${autoRun.id} clarify questions answered by ${by}.`,
+      data: { autoRunId: autoRun.id, issue: autoRun.link?.number ?? null },
+    });
+    persistStateSoon();
+    return { ok: true };
+  }
+
   const breakerOpen = () => {
     const b = state.autoRunBreaker;
     return Boolean(b?.openUntil && Date.parse(b.openUntil) > Date.parse(now()));
@@ -916,5 +973,5 @@ export function createAutoRunService({
     return { reaped, readvanced };
   }
 
-  return { startAutoRun, advanceAutoRunForInvocation, syncAutoRunOnApproval, retryAutoRun, mergeAutoRunPr, reapStuckAutoRuns, autoMergeSweep, approveDesign, rejectDesign };
+  return { startAutoRun, advanceAutoRunForInvocation, syncAutoRunOnApproval, retryAutoRun, mergeAutoRunPr, reapStuckAutoRuns, autoMergeSweep, approveDesign, rejectDesign, answerClarify };
 }

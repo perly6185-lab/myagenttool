@@ -14,6 +14,7 @@ import { AutoRunOnboardingCard } from "./auto-run-onboarding-card";
 import { ReportView } from "./report-view";
 import { DesignPanel } from "./design-panel";
 import { DesignApproval } from "./design-approval";
+import { ClarifyAnswer } from "./clarify-answer";
 import { useConsoleState } from "@/data/use-console-state";
 
 interface AutoRunLink {
@@ -39,6 +40,7 @@ export interface AutoRunRecord {
   report?: string | null;
   designArtifacts?: string[] | null;
   designApproval?: { status: "approved" | "rejected"; by?: string | null; at?: string | null; feedback?: string | null } | null;
+  clarifyAnswer?: { by?: string | null; at?: string | null; text?: string | null } | null;
   prState?: string | null;
   prChecks?: { total: number; passed: number; failed: number; pending: number; state: "NONE" | "SUCCESS" | "FAILURE" | "PENDING" } | null;
   pendingApproval?: { id: string; riskLevel: string | null; riskTags: string[]; summary: string | null } | null;
@@ -678,6 +680,9 @@ export function AutoRunsView() {
                 ) : null}
                 {run.status === "report_posted" && run.decision?.path === "design" ? (
                   <DesignApproval run={run} onDone={load} />
+                ) : null}
+                {run.status === "needs_input" && run.decision?.path === "clarify" ? (
+                  <ClarifyAnswer run={run} onDone={load} />
                 ) : null}
                 {run.error ? <p className="text-xs text-amber-600 dark:text-amber-400">{run.error}</p> : null}
               </CardContent>

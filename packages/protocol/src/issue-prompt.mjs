@@ -52,16 +52,19 @@ const ROLE_INSTRUCTIONS = {
     "update tests where the change warrants them. Commit your work with a clear message, " +
     "then summarize what changed and how you verified it.",
   design:
-    "Do NOT implement a fix or feature. Explore the codebase and produce a detailed design as " +
-    "your final summary: the problem, two or three viable options with trade-offs, a recommended " +
-    "option with rationale, and concrete acceptance criteria for implementing it. Do not modify " +
-    "product code. If the design is visual (a user interface), you MAY additionally create " +
-    "self-contained HTML mockups under a top-level design/ directory (inline CSS only — no " +
-    "scripts, no external resources); design/ artifacts are not product code.",
+    "Do NOT implement a fix or feature. Explore the codebase and produce a detailed design: " +
+    "the problem, two or three viable options with trade-offs, a recommended option with " +
+    "rationale, and concrete acceptance criteria for implementing it. Write the FULL brief to " +
+    "design/BRIEF.md (markdown) so it is preserved in full, and repeat a short version as your " +
+    "final summary. Do not modify product code. If the design is visual (a user interface), " +
+    "you MAY also create self-contained HTML mockups under the design/ directory (inline CSS " +
+    "only — no scripts, no external resources); design/ artifacts are not product code.",
   prototype:
-    "Build a small, time-boxed, runnable prototype in this worktree to reduce the uncertainty in " +
-    "this issue. Prototype code is throwaway — do not polish it or wire it into production paths. " +
-    "Finish with a summary of what the spike demonstrated, what you learned, and a recommendation.",
+    "Build a small, time-boxed, runnable prototype (a SPIKE) to reduce the uncertainty in this " +
+    "issue. Spike code is throwaway — do not polish it or wire it into production paths. Write " +
+    "what the spike demonstrated, what you learned, and a recommendation to prototype/FINDINGS.md, " +
+    "and repeat a short version as your final summary.",
+
   clarify:
     "Do NOT change anything. Analyze the issue against the codebase and produce, as your final " +
     "summary, the specific questions that must be answered before work can start — each with the " +

@@ -56,6 +56,8 @@ function makeAutoRun({
   judgeAcceptance = undefined,
   // Injected changed-files lister (D3 design artifacts). Default undefined.
   listWorktreeChangedFiles = undefined,
+  // Injected brief-file reader (E1 thick report). Default undefined.
+  readWorktreeTextFile = undefined,
   // Injected direct child-issue spawner (D4 approve-design). Default undefined.
   spawnChildIssueDirect = undefined,
   // Injected PR merge runner. Default: a successful merge.
@@ -118,6 +120,7 @@ function makeAutoRun({
     spawnChildIssue,
     judgeAcceptance,
     listWorktreeChangedFiles,
+    readWorktreeTextFile,
     spawnChildIssueDirect,
     mergePr: async (args) => {
       calls.merge.push(args);
@@ -1270,4 +1273,70 @@ test("D4: reject records feedback and posts it back to the issue", async () => {
   assert.equal(autoRun.designApproval.status, "rejected");
   assert.equal(autoRun.designApproval.feedback, "Wireframe the empty state too.");
   assert.equal(calls.report.length, before + 1, "feedback posts to the issue");
+});
+
+const protoDecision = async () => ({ path: "prototype", spawnChildIssues: false, confidence: 0.8, rationale: "Deep uncertainty — spike it." });
+
+test("E1: a design-only run's report is the FULL design/BRIEF.md, not the thin summary", async () => {
+  const { svc } = makeAutoRun({
+    decideIssuePath: designDecision,
+    commit: { committed: true, hasCommits: true },
+    listWorktreeChangedFiles: async () => ["design/BRIEF.md", "design/mockup.html"],
+    readWorktreeTextFile: () => "# Full Design Brief\n\nProblem...\nOption A...\nRecommendation...",
+  });
+  state.autoRunSettings = { designArtifacts: true };
+  const { autoRun, invocation } = await svc.startAutoRun({ projectId: sourceProjectId, link: { type: "issue", number: 100, title: "Design X", url: null, state: "open" }, agentId: "agt_1", name: "i-100" });
+  await svc.advanceAutoRunForInvocation({ ...invocation, status: "succeeded", result: "done" });
+  assert.equal(autoRun.status, "report_posted");
+  assert.match(autoRun.report, /Full Design Brief/, "the report is the written brief file");
+  assert.match(autoRun.report, /Recommendation/);
+});
+
+test("E2: a prototype run with committed spike code delivers findings (report_posted), no PR", async () => {
+  const { svc, calls } = makeAutoRun({
+    decideIssuePath: protoDecision,
+    commit: { committed: true, hasCommits: true },
+    readWorktreeTextFile: () => "# Spike findings\n\nLearned that approach B works.",
+  });
+  const { autoRun, invocation } = await svc.startAutoRun({ projectId: sourceProjectId, link: { type: "issue", number: 101, title: "Add the cache layer", url: null, state: "open" }, agentId: "agt_1", name: "i-101" });
+  await svc.advanceAutoRunForInvocation({ ...invocation, status: "succeeded", result: "done" });
+  assert.equal(autoRun.status, "report_posted", "a throwaway spike is not published as a PR");
+  assert.match(autoRun.report, /Spike findings/);
+  assert.equal(calls.pr.length, 0, "prototype opens no PR");
+  assert.equal(calls.verify.length, 0, "prototype does not run the verify gate");
+});
+
+test("E2: a develop run with commits still goes to a PR (prototype routing is path-scoped)", async () => {
+  const { svc, calls } = makeAutoRun({ commit: { committed: true, hasCommits: true } });
+  const { autoRun, invocation } = await svc.startAutoRun({ projectId: sourceProjectId, link: { type: "issue", number: 102, title: "Add the cache layer", url: null, state: "open" }, agentId: "agt_1", name: "i-102" });
+  await svc.advanceAutoRunForInvocation({ ...invocation, status: "succeeded", result: "done" });
+  assert.equal(autoRun.status, "pr_open");
+  assert.equal(calls.pr.length, 1);
+});
+
+const clarifyDecision = async () => ({ path: "clarify", spawnChildIssues: false, confidence: 0.9, rationale: "Under-specified.", clarifyingQuestions: ["Which cache backend?", "TTL policy?"] });
+
+test("E3: answerClarify on a needs_input clarify run posts answers to the issue + records them", async () => {
+  const { svc, calls } = makeAutoRun({ decideIssuePath: clarifyDecision, commit: { committed: false, hasCommits: false } });
+  const { autoRun, invocation } = await svc.startAutoRun({ projectId: sourceProjectId, link: { type: "issue", number: 110, title: "Add the cache layer", url: null, state: "open" }, agentId: "agt_1", name: "i-110" });
+  await svc.advanceAutoRunForInvocation({ ...invocation, status: "succeeded", result: "questions" });
+  assert.equal(autoRun.status, "needs_input");
+  const before = calls.report.length;
+
+  const result = await svc.answerClarify(autoRun.id, { actor: { userId: "usr_pm" }, answers: "Use Redis, TTL 5 min." });
+  assert.equal(result.ok, true);
+  assert.equal(autoRun.clarifyAnswer.by, "usr_pm");
+  assert.match(autoRun.clarifyAnswer.text, /Redis/);
+  assert.equal(calls.report.length, before + 1, "answers posted to the issue");
+});
+
+test("E3: answerClarify refuses non-clarify / non-needs_input runs + empty answers", async () => {
+  const { svc } = makeAutoRun({ decideIssuePath: clarifyDecision, commit: { committed: false, hasCommits: false } });
+  const { autoRun, invocation } = await svc.startAutoRun({ projectId: sourceProjectId, link: { type: "issue", number: 111, title: "Add the cache layer", url: null, state: "open" }, agentId: "agt_1", name: "i-111" });
+  await svc.advanceAutoRunForInvocation({ ...invocation, status: "succeeded" });
+  await assert.rejects(() => svc.answerClarify(autoRun.id, { answers: "  " }), /answer is required/);
+  const { svc: svc2 } = makeAutoRun({ commit: { committed: true, hasCommits: true } });
+  const r2 = await svc2.startAutoRun({ projectId: sourceProjectId, link: { type: "issue", number: 112, title: "Add the cache layer", url: null, state: "open" }, agentId: "agt_1", name: "i-112" });
+  await svc2.advanceAutoRunForInvocation({ ...r2.invocation, status: "succeeded" });
+  await assert.rejects(() => svc2.answerClarify(r2.autoRun.id, { answers: "x" }), /Only a clarify run/);
 });

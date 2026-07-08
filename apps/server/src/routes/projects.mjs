@@ -30,6 +30,7 @@ export async function handleProjectRoutes({
   mergeAutoRunPr,
   approveDesign,
   rejectDesign,
+  answerClarify,
   budgetStatusFor,
   refreshAutoRunPrDispositions,
   selectProject,
@@ -201,6 +202,20 @@ export async function handleProjectRoutes({
       sendJson(res, 200, result);
     } catch (error) {
       sendJson(res, 400, { error: "design_approval_failed", message: errorMessage(error) });
+    }
+    return true;
+  }
+
+  // E3: a human answers a clarify run's questions (posted back to the issue).
+  const clarifyAnswerMatch = url.pathname.match(/^\/api\/auto-runs\/([^\/]+)\/clarify-answer$/);
+  if (clarifyAnswerMatch && req.method === "POST") {
+    if (denyForeignAutoRun(decodeURIComponent(clarifyAnswerMatch[1]))) return true;
+    try {
+      const body = await readJson(req);
+      const result = await answerClarify(decodeURIComponent(clarifyAnswerMatch[1]), { actor, answers: body?.answers });
+      sendJson(res, 200, result);
+    } catch (error) {
+      sendJson(res, 400, { error: "clarify_answer_failed", message: errorMessage(error) });
     }
     return true;
   }
