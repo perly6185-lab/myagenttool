@@ -333,8 +333,14 @@ export const api = {
   cancelInvocation: (id: string) =>
     request("POST", `/api/invocations/${encodeURIComponent(id)}/cancel`),
   // #128 Phase 4: run one task on 2+ agents and compare (server fans out + tracks).
-  startCompareRun: (task: string, agentIds: string[], options?: Record<string, unknown>) =>
-    request("POST", "/api/compare-runs", { task, agentIds, options }),
+  // projectId isolates each agent in its own worktree (P4.2) so diffs can be compared.
+  startCompareRun: (task: string, agentIds: string[], projectId?: string | null) =>
+    request("POST", "/api/compare-runs", { task, agentIds, projectId: projectId ?? null }),
+  // P4.2c: pick the winner, then promote its worktree to a PR.
+  setCompareRunPreferred: (id: string, invocationId: string) =>
+    request("POST", `/api/compare-runs/${encodeURIComponent(id)}/prefer`, { invocationId }),
+  promoteCompareRun: (id: string) =>
+    request("POST", `/api/compare-runs/${encodeURIComponent(id)}/promote`),
   troubleshoot: (id: string) =>
     request("POST", `/api/invocations/${encodeURIComponent(id)}/troubleshoot`),
 

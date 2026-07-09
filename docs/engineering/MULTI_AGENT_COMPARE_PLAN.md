@@ -13,17 +13,19 @@ signature capability, on the Agent Workspace.
 - **Gap:** no api-client method, no UI (only a "Compare run" label in invocations).
 
 ## Slices
-- **P4.1 (this) — Compare UI.** api-client `startCompareRun`; a `compare` section:
+- **P4.1 (DONE, #621) — Compare UI.** api-client `startCompareRun`; a `compare` section:
   a composer (task + multi-select ≥2 agents) → start → side-by-side panels, one per
   child invocation, each showing the agent, status, and its transcript (events
   filtered by invocation id), with the preferred child highlighted. Reads
   compareRuns + invocations + events from state. Composition over the existing
   server + Transcript component.
-- **P4.2 — isolated worktrees + diff compare + promote.** Each agent runs in its OWN
-  worktree so code-editing tasks don't collide; compare their diffs; a human sets the
-  preferred and promotes it (open its PR). (createCompareRun today shares context —
-  fine for read-only/answer tasks; edit-compare needs per-agent worktrees.)
+- **P4.2 (DONE, #625) — isolated worktrees + diff compare + pick/promote.** `createCompareRun`
+  materializes one worktree per agent when a `projectId` is given (`isolated`), so
+  code-editing agents don't collide; each panel shows that agent's worktree diff
+  (lazy, colorized). `setCompareRunPreferred` lets a human pick the winner; `promoteCompareRun`
+  opens the winner's worktree PR (idempotent; refuses shared/answer compares). Routes
+  `/api/compare-runs/:id/prefer` + `/promote`, tenancy-guarded. No project → shared
+  context (answer compares), unchanged.
 
-## Non-goals (P4.1)
-- Per-agent worktree isolation (P4.2) — P4.1 targets read-only/answer compares.
-- Human-set preferred + promote (P4.2).
+## Non-goals (now, post-P4.2)
+- Diff annotation / inline review (Phase 5).

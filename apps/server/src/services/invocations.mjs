@@ -26,6 +26,7 @@ export function createInvocationService({
   currentProject,
   worktreeForProject,
   createWorktree,
+  createWorktreePr,
   uniqueStrings,
   normalizeCodexApprovalMode,
   normalizeCodexSessionMode,
@@ -128,7 +129,7 @@ export function createInvocationService({
     findAgent,
     completeInvocation,
   });
-  const { createCompareRun } = createInvocationCompareRuntime({
+  const { createCompareRun, setCompareRunPreferred, promoteCompareRun } = createInvocationCompareRuntime({
     state,
     now,
     nextId,
@@ -136,6 +137,8 @@ export function createInvocationService({
     startInvocationIfAllowed,
     updateCompareRun,
     createWorktree,
+    createWorktreePr,
+    findInvocation,
   });
   const { createTroubleshootingReport } = createInvocationTroubleshootingRuntime({
     state,
@@ -181,6 +184,8 @@ export function createInvocationService({
     completeInvocation,
     createAuditSummary,
     createCompareRun,
+    setCompareRunPreferred,
+    promoteCompareRun,
     createInvocation,
     createTroubleshootingReport,
     defaultAgent,

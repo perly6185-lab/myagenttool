@@ -18,6 +18,8 @@ export async function handleInvocationRoutes({
   startInvocationIfAllowed,
   normalizeStringArray,
   createCompareRun,
+  setCompareRunPreferred,
+  promoteCompareRun,
   cancelInvocation,
   createTroubleshootingReport,
 }) {
@@ -146,6 +148,39 @@ export async function handleInvocationRoutes({
       compareRun,
       invocations: compareRun.childInvocationIds.map((id) => findInvocation(id)).filter(Boolean),
     });
+    return true;
+  }
+
+  // P4.2c: a human picks the winning agent for a compare run.
+  const preferMatch = url.pathname.match(/^\/api\/compare-runs\/([^/]+)\/prefer$/);
+  if (preferMatch && req.method === "POST") {
+    const compareRunId = decodeURIComponent(preferMatch[1]);
+    const compareRun = state.compareRuns.find((c) => c.id === compareRunId);
+    if (!compareRun) { sendJson(res, 404, { error: "compare_run_not_found" }); return true; }
+    if (compareRun.projectId && denyForeignProject({ res, sendJson, state, actor, projectId: compareRun.projectId, notFound: { error: "compare_run_not_found" } })) return true;
+    try {
+      const body = await readJson(req);
+      const result = setCompareRunPreferred(compareRunId, String(body.invocationId ?? ""), { actor });
+      sendJson(res, 200, { compareRun: result });
+    } catch (error) {
+      sendJson(res, 400, { error: "prefer_failed", message: error instanceof Error ? error.message : String(error) });
+    }
+    return true;
+  }
+
+  // P4.2c: promote the preferred agent's worktree — open its PR.
+  const promoteMatch = url.pathname.match(/^\/api\/compare-runs\/([^/]+)\/promote$/);
+  if (promoteMatch && req.method === "POST") {
+    const compareRunId = decodeURIComponent(promoteMatch[1]);
+    const compareRun = state.compareRuns.find((c) => c.id === compareRunId);
+    if (!compareRun) { sendJson(res, 404, { error: "compare_run_not_found" }); return true; }
+    if (compareRun.projectId && denyForeignProject({ res, sendJson, state, actor, projectId: compareRun.projectId, notFound: { error: "compare_run_not_found" } })) return true;
+    try {
+      const result = await promoteCompareRun(compareRunId, { actor });
+      sendJson(res, 200, { compareRun: result });
+    } catch (error) {
+      sendJson(res, 400, { error: "promote_failed", message: error instanceof Error ? error.message : String(error) });
+    }
     return true;
   }
 

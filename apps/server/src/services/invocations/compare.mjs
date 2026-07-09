@@ -6,6 +6,8 @@ export function createInvocationCompareRuntime({
   startInvocationIfAllowed,
   updateCompareRun,
   createWorktree,
+  createWorktreePr,
+  findInvocation,
 }) {
   function createCompareRun(task, agents, options = {}) {
     const createdAt = now();
@@ -58,7 +60,51 @@ export function createInvocationCompareRuntime({
     return compareRun;
   }
 
+  // P4.2c: a human picks the winner (overrides the auto-picked first-success).
+  function setCompareRunPreferred(compareRunId, invocationId, { actor } = {}) {
+    const compareRun = state.compareRuns.find((c) => c.id === compareRunId);
+    if (!compareRun) throw new Error("Compare run not found.");
+    if (!compareRun.childInvocationIds.includes(invocationId)) {
+      throw new Error("That invocation is not part of this compare run.");
+    }
+    compareRun.preferredInvocationId = invocationId;
+    compareRun.preferredBy = actor?.userId ?? "usr_local";
+    compareRun.updatedAt = now();
+    return compareRun;
+  }
+
+  // P4.2c: promote the preferred agent's worktree — open its PR (reuse the worktree
+  // publish/PR path). Only meaningful for an isolated (code-editing) compare; a
+  // shared/answer compare has no worktree to promote.
+  async function promoteCompareRun(compareRunId, { actor } = {}) {
+    const compareRun = state.compareRuns.find((c) => c.id === compareRunId);
+    if (!compareRun) throw new Error("Compare run not found.");
+    const invocationId = compareRun.preferredInvocationId;
+    if (!invocationId) throw new Error("Set a preferred agent before promoting.");
+    if (compareRun.promotion?.prNumber) {
+      return compareRun; // idempotent: already promoted
+    }
+    const child = compareRun.children?.find((c) => c.invocationId === invocationId) ?? null;
+    const worktreeId = child?.worktreeId ?? (typeof findInvocation === "function" ? findInvocation(invocationId)?.worktreeId : null);
+    if (!worktreeId) throw new Error("The preferred run has no worktree to promote (a shared/answer compare cannot be promoted).");
+    if (typeof createWorktreePr !== "function") throw new Error("Pull-request creation is not available on this server.");
+    const pr = await createWorktreePr(worktreeId, { body: `Promoted from compare run ${compareRun.id}.\n\nTask: ${compareRun.task}` });
+    compareRun.promotion = {
+      invocationId,
+      worktreeId,
+      prNumber: pr?.number ?? null,
+      prUrl: pr?.url ?? null,
+      by: actor?.userId ?? "usr_local",
+      at: now(),
+    };
+    compareRun.status = "promoted";
+    compareRun.updatedAt = now();
+    return compareRun;
+  }
+
   return {
     createCompareRun,
+    setCompareRunPreferred,
+    promoteCompareRun,
   };
 }

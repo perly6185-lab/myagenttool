@@ -150,6 +150,8 @@ export function createHttpServer({
   createInvocation,
   startInvocationIfAllowed,
   createCompareRun,
+  setCompareRunPreferred,
+  promoteCompareRun,
   cancelInvocation,
   createTroubleshootingReport,
   createToolInvocation,
@@ -521,6 +523,8 @@ export function createHttpServer({
         startInvocationIfAllowed,
         normalizeStringArray,
         createCompareRun,
+        setCompareRunPreferred,
+        promoteCompareRun,
         cancelInvocation,
         createTroubleshootingReport,
       })) {
