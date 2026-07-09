@@ -87,3 +87,20 @@ test("re-registering an existing path refreshes its git facts + selects it (last
   assert.ok(again.git.remoteUrl, "git facts refreshed on re-register");
   assert.ok(again.lastOpenedAt >= openedAt);
 });
+
+test("gitStatusMap marks .gitignore'd entries as 'ignored' (#161 badge)", async () => {
+  const { gitStatusMap } = await import("../src/services/projects.mjs");
+  const dir = mkdtempSync(join(tmpdir(), "prj-ign-"));
+  execFileSync("git", ["init", "-b", "main", dir], { encoding: "utf8" });
+  git(dir, "config", "user.email", "t@example.com");
+  git(dir, "config", "user.name", "T");
+  writeFileSync(join(dir, ".gitignore"), "junk.log\n");
+  writeFileSync(join(dir, "junk.log"), "noise\n");
+  writeFileSync(join(dir, "keep.txt"), "kept\n");
+  git(dir, "add", ".gitignore", "keep.txt");
+  git(dir, "commit", "-m", "init");
+  writeFileSync(join(dir, "keep.txt"), "changed\n");
+  const map = gitStatusMap(dir);
+  assert.equal(map.get("junk.log"), "ignored", "the ignored file carries the ignored status");
+  assert.equal(map.get("keep.txt"), "modified", "a tracked change is still classified");
+});

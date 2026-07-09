@@ -384,6 +384,12 @@ export const api = {
     const suffix = query.toString() ? `?${query}` : "";
     return request<ProjectTreeResponse>("GET", `/api/projects/${encodeURIComponent(id)}/tree${suffix}`);
   },
+  // Content search within a registered project root (Agent Workspace #161).
+  projectSearch: (id: string, q: string) =>
+    request<{ results: { path: string; line: number; preview: string }[] }>(
+      "GET",
+      `/api/projects/${encodeURIComponent(id)}/search?q=${encodeURIComponent(q)}`,
+    ),
   createWorktree: (
     projectId: string,
     payload: {

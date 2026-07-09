@@ -33,6 +33,7 @@ export function ProjectTree() {
   const queryClient = useQueryClient();
   const projectId = state?.currentProjectId ?? null;
   const [search, setSearch] = useState("");
+  const [mode, setMode] = useState<"name" | "content">("name");
 
   if (!projectId) {
     return (
@@ -61,17 +62,62 @@ export function ProjectTree() {
             <RefreshCw />
           </Button>
         </div>
-        <Input
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          placeholder="Search this folder…"
-          className="mt-1 h-8"
-        />
+        <div className="mt-1 flex items-center gap-1">
+          <Input
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder={mode === "content" ? "Search file contents…" : "Search file names…"}
+            className="h-8"
+          />
+          <div className="flex shrink-0 overflow-hidden rounded-md border border-border text-[11px]">
+            {(["name", "content"] as const).map((m) => (
+              <button
+                key={m}
+                type="button"
+                onClick={() => setMode(m)}
+                className={cn("px-2 py-1", mode === m ? "bg-primary/10 font-medium text-foreground" : "text-muted-foreground hover:text-foreground")}
+                title={m === "content" ? "Search inside files" : "Search file/folder names"}
+              >
+                {m}
+              </button>
+            ))}
+          </div>
+        </div>
       </CardHeader>
       <CardContent>
-        <TreeLevel projectId={projectId} path="" search={search.trim()} depth={0} />
+        {mode === "content" ? (
+          <ContentSearch projectId={projectId} query={search.trim()} />
+        ) : (
+          <TreeLevel projectId={projectId} path="" search={search.trim()} depth={0} />
+        )}
       </CardContent>
     </Card>
+  );
+}
+
+// Content search within the registered root (#161): a flat list of file+line
+// matches. Read-only; needs ≥2 chars (the server's minimum).
+function ContentSearch({ projectId, query }: { projectId: string; query: string }) {
+  const enabled = query.length >= 2;
+  const { data, isLoading, error } = useQuery({
+    queryKey: ["project-search", projectId, query],
+    queryFn: () => api.projectSearch(projectId, query),
+    enabled,
+  });
+  if (!enabled) return <p className="px-1 py-0.5 text-xs text-muted-foreground">Type at least 2 characters to search file contents.</p>;
+  if (isLoading) return <p className="px-1 py-0.5 text-xs text-muted-foreground">Searching…</p>;
+  if (error) return <p className="px-1 py-0.5 text-xs text-destructive">{error instanceof Error ? error.message : "Search failed."}</p>;
+  const results = data?.results ?? [];
+  if (!results.length) return <p className="px-1 py-0.5 text-xs text-muted-foreground">No content matches.</p>;
+  return (
+    <ul className="space-y-1">
+      {results.map((r, i) => (
+        <li key={`${r.path}:${r.line}:${i}`} className="text-xs">
+          <span className="font-mono text-muted-foreground/70">{r.path}:{r.line}</span>
+          <div className="truncate pl-2 font-mono text-[11px] text-foreground/80" title={r.preview}>{r.preview}</div>
+        </li>
+      ))}
+    </ul>
   );
 }
 
