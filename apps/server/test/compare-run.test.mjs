@@ -53,3 +53,52 @@ test("createCompareRun degrades gracefully if a worktree fails for one agent", (
   assert.equal(created.worktrees.length, 1, "only agt_a got a worktree");
   assert.equal(cr.children.filter((c) => c.worktreeId).length, 1, "one isolated, one fell back to shared");
 });
+
+function promoteHarness() {
+  const state = { compareRuns: [] };
+  let n = 0;
+  const prCalls = [];
+  const rt = createInvocationCompareRuntime({
+    state,
+    now: () => "2026-07-09T00:00:00.000Z",
+    nextId: (p) => `${p}_${++n}`,
+    createInvocation: (task, agent, options) => ({ id: `inv_${++n}`, agentId: agent.id, options, worktreeId: options.metadata?.worktreeId ?? null }),
+    startInvocationIfAllowed: () => {},
+    updateCompareRun: () => {},
+    createWorktree: ({ agentId }) => ({ worktree: { id: `wtr_${agentId}` } }),
+    createWorktreePr: async (worktreeId) => { prCalls.push(worktreeId); return { number: 42, url: `https://github.com/o/r/pull/42` }; },
+    findInvocation: (id) => state.compareRuns.flatMap((c) => c.childInvocationIds).includes(id) ? { id, worktreeId: null } : null,
+  });
+  return { rt, state, prCalls };
+}
+
+test("setCompareRunPreferred sets the winner; rejects a non-child invocation", () => {
+  const { rt } = promoteHarness();
+  const cr = rt.createCompareRun("x", AGENTS, { projectId: "prj_1" });
+  const winner = cr.childInvocationIds[1];
+  const updated = rt.setCompareRunPreferred(cr.id, winner, { actor: { userId: "u" } });
+  assert.equal(updated.preferredInvocationId, winner);
+  assert.equal(updated.preferredBy, "u");
+  assert.throws(() => rt.setCompareRunPreferred(cr.id, "inv_bogus"), /not part of this compare run/);
+});
+
+test("promoteCompareRun opens a PR for the preferred agent's worktree (idempotent)", async () => {
+  const { rt, prCalls } = promoteHarness();
+  const cr = rt.createCompareRun("x", AGENTS, { projectId: "prj_1" });
+  await assert.rejects(() => rt.promoteCompareRun(cr.id), /Set a preferred agent/);
+  rt.setCompareRunPreferred(cr.id, cr.childInvocationIds[0]);
+  const promoted = await rt.promoteCompareRun(cr.id, { actor: { userId: "u" } });
+  assert.equal(promoted.status, "promoted");
+  assert.equal(promoted.promotion.prNumber, 42);
+  assert.equal(prCalls.length, 1, "one PR opened for the winner's worktree");
+  // idempotent: a second promote does not open another PR
+  await rt.promoteCompareRun(cr.id);
+  assert.equal(prCalls.length, 1, "promote is idempotent");
+});
+
+test("promoteCompareRun refuses a shared (no-worktree) compare", async () => {
+  const { rt } = promoteHarness();
+  const cr = rt.createCompareRun("answer this", AGENTS, {}); // no projectId -> shared, no worktrees
+  rt.setCompareRunPreferred(cr.id, cr.childInvocationIds[0]);
+  await assert.rejects(() => rt.promoteCompareRun(cr.id), /no worktree to promote/);
+});

@@ -78,8 +78,13 @@ export interface CompareRunSnapshot {
   id: string;
   task: string;
   status: string;
+  projectId?: string | null;
+  isolated?: boolean;
   childInvocationIds: string[];
+  children?: { invocationId: string; agentId?: string; worktreeId?: string | null }[];
   preferredInvocationId?: string | null;
+  preferredBy?: string | null;
+  promotion?: { invocationId: string; worktreeId?: string | null; prNumber?: number | null; prUrl?: string | null } | null;
   summary?: string;
   createdAt?: string;
   updatedAt?: string;

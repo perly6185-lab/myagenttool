@@ -32,12 +32,23 @@ export function CompareView() {
 
   const start = async () => {
     if (!task.trim() || selected.length < 2) return;
-    const ok = await execute(() => api.startCompareRun(task.trim(), selected));
+    // Pass the current project so each agent runs in its OWN worktree (P4.2) — this
+    // is what lets the diffs be compared + a winner promoted. No project => shared.
+    const ok = await execute(() => api.startCompareRun(task.trim(), selected, state?.currentProjectId ?? null));
     if (ok) {
       setActiveId(null); // fall back to the newest compare run (server unshifts it)
       setTask("");
       void refresh();
     }
+  };
+
+  const prefer = async (invocationId: string) => {
+    if (!active) return;
+    if (await execute(() => api.setCompareRunPreferred(active.id, invocationId))) void refresh();
+  };
+  const promote = async () => {
+    if (!active) return;
+    if (await execute(() => api.promoteCompareRun(active.id))) void refresh();
   };
 
   const children = active
@@ -95,29 +106,123 @@ export function CompareView() {
       ) : null}
 
       {active ? (
-        <div className="grid min-h-0 flex-1 gap-3" style={{ gridTemplateColumns: `repeat(${Math.max(1, children.length)}, minmax(0, 1fr))` }}>
-          {children.map((inv) => {
-            const invEvents = events.filter((e) => e.invocationId === inv.id);
-            const preferred = active.preferredInvocationId === inv.id;
-            return (
-              <Card key={inv.id} className={cn("flex min-h-0 flex-col", preferred && "ring-1 ring-primary")}>
-                <CardHeader className="flex-row items-center justify-between gap-2 py-2">
-                  <CardTitle className="truncate text-sm">{agentName(inv.agentId)}</CardTitle>
-                  <div className="flex shrink-0 items-center gap-1.5">
-                    {preferred ? <Badge tone="success"><Trophy className="mr-1 size-3" />preferred</Badge> : null}
-                    <span className="text-xs text-muted-foreground">{inv.status}</span>
-                  </div>
-                </CardHeader>
-                <CardContent className="min-h-0 flex-1 overflow-y-auto">
-                  <Transcript events={invEvents} summary={inv.result?.summary ? { text: inv.result.summary, status: inv.status } : undefined} />
-                </CardContent>
-              </Card>
-            );
-          })}
+        <div className="flex min-h-0 flex-1 flex-col gap-2">
+          {active.preferredInvocationId ? (
+            <div className="flex flex-wrap items-center gap-2 rounded-md border border-border bg-muted/30 px-2 py-1.5 text-xs">
+              <Trophy className="size-3.5 text-success" />
+              <span>Preferred: <b>{agentName(children.find((c) => c.id === active.preferredInvocationId)?.agentId)}</b></span>
+              {active.promotion?.prNumber ? (
+                <a className="text-primary underline" href={active.promotion.prUrl ?? "#"} target="_blank" rel="noreferrer">promoted → PR #{active.promotion.prNumber}</a>
+              ) : active.isolated ? (
+                <Button variant="primary" size="sm" className="h-6 px-2 text-xs" disabled={pending} onClick={() => void promote()}>
+                  {pending ? <Loader2 className="mr-1 size-3 animate-spin" /> : <Trophy className="mr-1 size-3" />} Promote winner → PR
+                </Button>
+              ) : <span className="text-muted-foreground">(shared compare — nothing to promote)</span>}
+            </div>
+          ) : null}
+          <div className="grid min-h-0 flex-1 gap-3" style={{ gridTemplateColumns: `repeat(${Math.max(1, children.length)}, minmax(0, 1fr))` }}>
+            {children.map((inv) => {
+              const invEvents = events.filter((e) => e.invocationId === inv.id);
+              const preferred = active.preferredInvocationId === inv.id;
+              return (
+                <Card key={inv.id} className={cn("flex min-h-0 flex-col", preferred && "ring-1 ring-primary")}>
+                  <CardHeader className="flex-row items-center justify-between gap-2 py-2">
+                    <CardTitle className="truncate text-sm">{agentName(inv.agentId)}</CardTitle>
+                    <div className="flex shrink-0 items-center gap-1.5">
+                      {preferred ? <Badge tone="success"><Trophy className="mr-1 size-3" />preferred</Badge> : (
+                        <Button variant="ghost" size="sm" className="h-6 px-1.5 text-[11px]" disabled={pending} onClick={() => void prefer(inv.id)}>prefer</Button>
+                      )}
+                      <span className="text-xs text-muted-foreground">{inv.status}</span>
+                    </div>
+                  </CardHeader>
+                  <CardContent className="min-h-0 flex-1 space-y-2 overflow-y-auto">
+                    <Transcript events={invEvents} summary={inv.result?.summary ? { text: inv.result.summary, status: inv.status } : undefined} />
+                    {inv.worktreeId ? <CompareDiff worktreeId={inv.worktreeId} /> : null}
+                  </CardContent>
+                </Card>
+              );
+            })}
+          </div>
         </div>
       ) : (
         <EmptyState title="No comparison yet" hint="Enter a task, pick 2+ agents, and Compare to run them side by side." />
       )}
     </div>
   );
+}
+
+type CompareDiffData = { files: { path: string }[]; base: string; diff: string; truncated: boolean };
+
+// Lazily fetch and render one child worktree's unified diff so the two agents'
+// code changes can be compared side by side (P4.2). Collapsed by default — a
+// compare run can fan out several agents and each diff can be large.
+function CompareDiff({ worktreeId }: { worktreeId: string }) {
+  const [open, setOpen] = useState(false);
+  const [diff, setDiff] = useState<CompareDiffData | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  const toggle = async () => {
+    const next = !open;
+    setOpen(next);
+    if (next && !diff && !loading) {
+      setLoading(true);
+      try {
+        setDiff((await api.worktreeDiff(worktreeId)) as CompareDiffData);
+      } catch {
+        setDiff(null);
+      } finally {
+        setLoading(false);
+      }
+    }
+  };
+
+  const lines = diff ? diff.diff.split("\n").slice(0, 600) : [];
+  const clipped = diff ? diff.diff.split("\n").length - lines.length : 0;
+
+  return (
+    <div className="rounded-md border border-border">
+      <button
+        type="button"
+        onClick={() => void toggle()}
+        className="flex w-full items-center justify-between px-2 py-1 text-xs text-muted-foreground hover:text-foreground"
+      >
+        <span>{open ? "Hide" : "Show"} diff{diff ? ` · ${diff.files.length} file(s)` : ""}</span>
+        {loading ? <Loader2 className="size-3 animate-spin" /> : null}
+      </button>
+      {open && diff ? (
+        diff.diff.trim() ? (
+          <pre className="max-h-72 overflow-auto border-t border-border px-2 py-1 font-mono text-[11px] leading-tight">
+            {lines.map((line, i) => (
+              <div key={i} className={cn("whitespace-pre-wrap", diffLineClass(line))}>{line || " "}</div>
+            ))}
+            {clipped > 0 || diff.truncated ? (
+              <div className="text-muted-foreground">… {clipped > 0 ? `${clipped} more line(s)` : "diff truncated"}</div>
+            ) : null}
+          </pre>
+        ) : (
+          <div className="border-t border-border px-2 py-1 text-[11px] text-muted-foreground">No changes on this branch.</div>
+        )
+      ) : null}
+    </div>
+  );
+}
+
+// Colorize one unified-diff line (mirrors the worktree Changes view).
+function diffLineClass(line: string): string {
+  if (line.startsWith("@@")) return "text-sky-500 bg-muted/50";
+  if (
+    line.startsWith("+++") ||
+    line.startsWith("---") ||
+    line.startsWith("diff --git") ||
+    line.startsWith("index ") ||
+    line.startsWith("new file") ||
+    line.startsWith("deleted file") ||
+    line.startsWith("rename ") ||
+    line.startsWith("similarity ")
+  ) {
+    return "text-muted-foreground";
+  }
+  if (line[0] === "+") return "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400";
+  if (line[0] === "-") return "bg-destructive/10 text-destructive";
+  return "text-muted-foreground";
 }
