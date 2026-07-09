@@ -906,9 +906,12 @@ async function assertDirectHttpCancellation({
     const invocation = createInvocation("self-check direct HTTP cancellation", directHttpAgent, { timeoutSeconds: 30 });
     assert(invocation.status === "running", "direct HTTP invocation should start in running state");
     startInvocationIfAllowed(invocation, findAgent(directHttpAgent.id));
-    await withTimeout(requestStarted, 2000, "direct HTTP cancellation fixture should receive request");
+    // Generous bounds (10s): these gate a real localhost socket, so a loaded CI
+    // machine can be slow to schedule — a tight 2s bound was the one residual
+    // flake vector. The happy path returns in milliseconds regardless.
+    await withTimeout(requestStarted, 10_000, "direct HTTP cancellation fixture should receive request");
     cancelInvocation(invocation);
-    await waitFor(() => invocation.status === "cancelled", 2000, "direct HTTP cancellation should complete as cancelled");
+    await waitFor(() => invocation.status === "cancelled", 10_000, "direct HTTP cancellation should complete as cancelled");
     const events = state.events.filter((item) => item.invocationId === invocation.id);
     assert(events.some((item) => item.type === "cancel_dispatched"), "direct HTTP cancellation should dispatch abort");
     assert(events.some((item) => item.type === "cancel_applied"), "direct HTTP cancellation should complete through invocation completion");

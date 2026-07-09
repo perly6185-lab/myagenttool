@@ -377,6 +377,14 @@ export function createProjectService({ state, now, nextId, appendEvent, persistS
       }
       state.projectTargets = state.projectTargets.filter((item) => item.projectId !== project.id);
     }
+    // Removal is intentionally NON-destructive on disk (files + the git worktree
+    // registration are kept — see the worktree-lifecycle test and the Line A
+    // design note), but the review rows that pointed at this worktree must not
+    // dangle in state after it's gone from the registry.
+    if (Array.isArray(state.worktreeReviews)) {
+      state.worktreeReviews = state.worktreeReviews.filter((review) => review.worktreeId !== removed.id);
+    }
+
     appendEvent({
       invocationId: null,
       type: "worktree_removed",
