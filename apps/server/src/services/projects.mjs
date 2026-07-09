@@ -936,7 +936,31 @@ export function safeProjectPath(project, relativePath = "") {
   return target;
 }
 
-export function gitStatusMap(root) {
+// A per-root, short-TTL cache: `readProjectTree` calls gitStatusMap ONCE PER
+// directory-level read, so expanding N levels of a tree ran N full-repo `git status`
+// scans. A browse-burst (or a search + tree render) happens well inside the TTL, so
+// this collapses it to one scan while staying fresh enough to reflect a run's changes
+// on the next poll. (review follow-up: repo-wide git status per read)
+const GIT_STATUS_TTL_MS = 2_000;
+const _gitStatusCache = new Map(); // root -> { at, map }
+
+export function gitStatusMap(root, { fresh = false } = {}) {
+  const nowMs = Date.now();
+  if (!fresh) {
+    const hit = _gitStatusCache.get(root);
+    if (hit && nowMs - hit.at < GIT_STATUS_TTL_MS) return hit.map;
+  }
+  const map = computeGitStatusMap(root);
+  _gitStatusCache.set(root, { at: nowMs, map });
+  if (_gitStatusCache.size > 64) {
+    for (const [k, v] of _gitStatusCache) {
+      if (nowMs - v.at >= GIT_STATUS_TTL_MS) _gitStatusCache.delete(k);
+    }
+  }
+  return map;
+}
+
+function computeGitStatusMap(root) {
   const statuses = new Map();
   try {
     // --ignored lists ignored paths as `!!` (directories collapsed), so the file
