@@ -122,14 +122,23 @@ export async function handleInvocationRoutes({
     if (denyForeignInvocationScope({ res, sendJson, state, actor, metadata: compareMetadata })) {
       return true;
     }
+    // P4.2: an optional projectId isolates each agent in its own worktree. Guard it
+    // like any project-scoped action so a foreign actor can't spawn worktrees in
+    // another team's project.
+    const compareProjectId = typeof body.projectId === "string" && body.projectId ? body.projectId : null;
+    if (compareProjectId && denyForeignProject({ res, sendJson, state, actor, projectId: compareProjectId, notFound: { error: "project_not_found" } })) {
+      return true;
+    }
     const {
       actor: _clientActor,
       idempotencyKey: _clientIdempotencyKey,
       requestedBy: _clientRequestedBy,
+      projectId: _clientProjectId,
       ...safeCompareOptions
     } = compareOptions;
     const compareRun = createCompareRun(task, agents, {
       ...safeCompareOptions,
+      projectId: compareProjectId,
       metadata: compareMetadata,
       actor,
     });

@@ -281,6 +281,7 @@ export function createServerRuntimeServices({
     recordClaudeReviewFindings,
     currentProject,
     worktreeForProject,
+    createWorktree,
     uniqueStrings,
     normalizeCodexApprovalMode,
     normalizeCodexSessionMode,
