@@ -526,6 +526,50 @@ export function createProjectService({ state, now, nextId, appendEvent, persistS
     return { ok: true, worktreeId: worktree.id, branch, base: baseBranch, number: parsed.number, url: parsed.url, state: parsed.state };
   }
 
+  // Phase 5: a human review of a worktree's diff — an overall verdict (approve /
+  // request changes) + optional comments — recorded so a promote/merge can be
+  // GATED on it. The diff is a flat patch (no per-line ids), so comments anchor at
+  // the file level; a null path is a general comment on the whole change.
+  function submitWorktreeReview({ worktreeId, verdict, comments, summary, actor } = {}) {
+    const worktree = worktreeRecord(worktreeId);
+    if (!worktree) throw new Error("Worktree not found.");
+    const normalizedVerdict = verdict === "approved" ? "approved" : verdict === "changes_requested" ? "changes_requested" : null;
+    if (!normalizedVerdict) throw new Error("Review verdict must be 'approved' or 'changes_requested'.");
+    const cleanComments = Array.isArray(comments)
+      ? comments
+          .filter((c) => c && typeof c === "object")
+          .map((c) => ({ path: c.path ? String(c.path).slice(0, 400) : null, body: String(c.body ?? "").slice(0, 2000) }))
+          .filter((c) => c.body.trim())
+          .slice(0, 100)
+      : [];
+    const review = {
+      id: nextId("wrv_demo"),
+      worktreeId: worktree.id,
+      projectId: worktree.workspaceProjectId ?? worktree.projectId ?? null,
+      verdict: normalizedVerdict,
+      summary: String(summary ?? "").slice(0, 2000) || null,
+      comments: cleanComments,
+      reviewedBy: actor?.userId ?? "usr_local",
+      createdAt: now(),
+    };
+    state.worktreeReviews.unshift(review);
+    state.worktreeReviews = state.worktreeReviews.slice(0, 500);
+    appendEvent({
+      invocationId: null,
+      type: "worktree_reviewed",
+      level: normalizedVerdict === "approved" ? "info" : "warning",
+      message: `Worktree ${worktree.branchName ?? worktree.branch ?? worktree.id}: ${normalizedVerdict === "approved" ? "approved" : "changes requested"}.`,
+      data: { worktreeId: worktree.id, verdict: normalizedVerdict, reviewedBy: review.reviewedBy },
+    });
+    persistStateSoon();
+    return review;
+  }
+
+  // The latest review for a worktree (state.worktreeReviews is newest-first).
+  function latestWorktreeReview(worktreeId) {
+    return (state.worktreeReviews ?? []).find((r) => r.worktreeId === worktreeId) ?? null;
+  }
+
   return {
     addProject,
     cloneProject,
@@ -533,6 +577,8 @@ export function createProjectService({ state, now, nextId, appendEvent, persistS
     commitWorktreeChanges,
     createWorktree,
     createWorktreePr,
+    submitWorktreeReview,
+    latestWorktreeReview,
     currentProject,
     gitProjectSummary,
     projectBranches,

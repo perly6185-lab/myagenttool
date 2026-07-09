@@ -55,6 +55,7 @@ export async function handleProjectRoutes({
   gitProjectSummary,
   projectBranches,
   worktreeDiff,
+  submitWorktreeReview,
   projectGithubItems,
 }) {
   if (req.method === "GET" && url.pathname === "/api/projects") {
@@ -604,6 +605,22 @@ export async function handleProjectRoutes({
         sendJson(res, 200, worktreeDiff(worktree));
       } catch (error) {
         sendJson(res, 400, { error: "worktree_diff_unavailable", message: errorMessage(error) });
+      }
+      return true;
+    }
+    if (action === "review" && req.method === "POST") {
+      try {
+        const body = await readJson(req);
+        const review = submitWorktreeReview({
+          worktreeId: worktree.id,
+          verdict: body.verdict,
+          comments: body.comments,
+          summary: body.summary,
+          actor,
+        });
+        sendJson(res, 201, { review });
+      } catch (error) {
+        sendJson(res, 400, { error: "worktree_review_failed", message: errorMessage(error) });
       }
       return true;
     }

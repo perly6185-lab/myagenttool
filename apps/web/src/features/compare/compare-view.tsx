@@ -8,6 +8,7 @@ import { cn } from "@/lib/cn";
 import { useConsoleState, useRefreshConsoleState } from "@/data/use-console-state";
 import { api, useAsyncAction } from "@/data/use-console-actions";
 import { Transcript } from "@/features/invocations/transcript";
+import type { WorktreeReview } from "@/lib/console-state";
 
 // #128 Phase 4: run ONE task on 2+ agents and compare their transcripts side by side.
 // The server (createCompareRun / POST /api/compare-runs) already fans out, tracks the
@@ -50,6 +51,13 @@ export function CompareView() {
     if (!active) return;
     if (await execute(() => api.promoteCompareRun(active.id))) void refresh();
   };
+  const review = async (worktreeId: string, verdict: "approved" | "changes_requested") => {
+    if (await execute(() => api.reviewWorktree(worktreeId, { verdict }))) void refresh();
+  };
+
+  // Latest review per worktree (server list is newest-first → keep the first seen).
+  const reviewByWorktree = new Map<string, WorktreeReview>();
+  for (const r of state?.worktreeReviews ?? []) if (!reviewByWorktree.has(r.worktreeId)) reviewByWorktree.set(r.worktreeId, r);
 
   const children = active
     ? active.childInvocationIds.map((id) => invocations.find((i) => i.id === id)).filter((x): x is NonNullable<typeof x> => Boolean(x))
@@ -107,19 +115,29 @@ export function CompareView() {
 
       {active ? (
         <div className="flex min-h-0 flex-1 flex-col gap-2">
-          {active.preferredInvocationId ? (
-            <div className="flex flex-wrap items-center gap-2 rounded-md border border-border bg-muted/30 px-2 py-1.5 text-xs">
-              <Trophy className="size-3.5 text-success" />
-              <span>Preferred: <b>{agentName(children.find((c) => c.id === active.preferredInvocationId)?.agentId)}</b></span>
-              {active.promotion?.prNumber ? (
-                <a className="text-primary underline" href={active.promotion.prUrl ?? "#"} target="_blank" rel="noreferrer">promoted → PR #{active.promotion.prNumber}</a>
-              ) : active.isolated ? (
-                <Button variant="primary" size="sm" className="h-6 px-2 text-xs" disabled={pending} onClick={() => void promote()}>
-                  {pending ? <Loader2 className="mr-1 size-3 animate-spin" /> : <Trophy className="mr-1 size-3" />} Promote winner → PR
-                </Button>
-              ) : <span className="text-muted-foreground">(shared compare — nothing to promote)</span>}
-            </div>
-          ) : null}
+          {active.preferredInvocationId ? (() => {
+            const preferredChild = children.find((c) => c.id === active.preferredInvocationId);
+            const preferredReview = preferredChild?.worktreeId ? reviewByWorktree.get(preferredChild.worktreeId) : undefined;
+            const approved = preferredReview?.verdict === "approved";
+            return (
+              <div className="flex flex-wrap items-center gap-2 rounded-md border border-border bg-muted/30 px-2 py-1.5 text-xs">
+                <Trophy className="size-3.5 text-success" />
+                <span>Preferred: <b>{agentName(preferredChild?.agentId)}</b></span>
+                {active.promotion?.prNumber ? (
+                  <a className="text-primary underline" href={active.promotion.prUrl ?? "#"} target="_blank" rel="noreferrer">promoted → PR #{active.promotion.prNumber}</a>
+                ) : active.isolated ? (
+                  <>
+                    <Button variant="primary" size="sm" className="h-6 px-2 text-xs" disabled={pending || !approved} onClick={() => void promote()}>
+                      {pending ? <Loader2 className="mr-1 size-3 animate-spin" /> : <Trophy className="mr-1 size-3" />} Promote winner → PR
+                    </Button>
+                    {!approved ? (
+                      <span className="text-warning">{preferredReview?.verdict === "changes_requested" ? "changes requested — re-approve to promote" : "approve the winner's diff to promote"}</span>
+                    ) : null}
+                  </>
+                ) : <span className="text-muted-foreground">(shared compare — nothing to promote)</span>}
+              </div>
+            );
+          })() : null}
           <div className="grid min-h-0 flex-1 gap-3" style={{ gridTemplateColumns: `repeat(${Math.max(1, children.length)}, minmax(0, 1fr))` }}>
             {children.map((inv) => {
               const invEvents = events.filter((e) => e.invocationId === inv.id);
@@ -137,6 +155,14 @@ export function CompareView() {
                   </CardHeader>
                   <CardContent className="min-h-0 flex-1 space-y-2 overflow-y-auto">
                     <Transcript events={invEvents} summary={inv.result?.summary ? { text: inv.result.summary, status: inv.status } : undefined} />
+                    {inv.worktreeId ? (
+                      <div className="flex flex-wrap items-center gap-1.5 rounded-md border border-border px-2 py-1 text-xs">
+                        <span className="text-muted-foreground">Review:</span>
+                        {(() => { const rv = reviewByWorktree.get(inv.worktreeId); return rv ? <Badge tone={rv.verdict === "approved" ? "success" : "warning"}>{rv.verdict === "approved" ? "approved" : "changes requested"}</Badge> : <span className="text-muted-foreground">none</span>; })()}
+                        <Button variant="ghost" size="sm" className="ml-auto h-6 px-1.5 text-[11px]" disabled={pending} onClick={() => void review(inv.worktreeId!, "approved")}>Approve</Button>
+                        <Button variant="ghost" size="sm" className="h-6 px-1.5 text-[11px]" disabled={pending} onClick={() => void review(inv.worktreeId!, "changes_requested")}>Request changes</Button>
+                      </div>
+                    ) : null}
                     {inv.worktreeId ? <CompareDiff worktreeId={inv.worktreeId} /> : null}
                   </CardContent>
                 </Card>

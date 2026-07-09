@@ -47,6 +47,7 @@ export function createServerState({ defaultProjectPath, now }) {
     agents: createDefaultAgents(now),
     invocations: [],
     compareRuns: [],
+    worktreeReviews: [],
     events: [],
     traces: [],
     spans: [],
@@ -139,6 +140,7 @@ export function resetStateForSelfCheck({ state, now }) {
     claudeAgent.updatedAt = now();
   }
   state.invocations = [];
+  state.worktreeReviews = [];
   state.applications = [];
   state.applicationRecoveryActions = [];
   state.events = [];

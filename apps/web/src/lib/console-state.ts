@@ -74,6 +74,18 @@ export interface AgentSnapshot {
   discovery?: { runId?: string };
 }
 
+/** A human review of a worktree's diff (Phase 5). Its latest verdict gates promotion. */
+export interface WorktreeReview {
+  id: string;
+  worktreeId: string;
+  projectId?: string | null;
+  verdict: "approved" | "changes_requested";
+  summary?: string | null;
+  comments: { path: string | null; body: string }[];
+  reviewedBy?: string;
+  createdAt?: string;
+}
+
 /** One per-run trust rollup in the Evidence Center (server read-model `evidenceLedger`). */
 export interface EvidenceLedgerRow {
   invocationId: string;
@@ -783,6 +795,7 @@ export interface ConsoleSnapshot {
   currentProjectId?: string | null;
   projectTargets?: ProjectTargetSnapshot[];
   worktrees?: WorktreeSnapshot[];
+  worktreeReviews?: WorktreeReview[];
   agent: AgentSnapshot | null;
   agents: AgentSnapshot[];
   invocations: InvocationSnapshot[];

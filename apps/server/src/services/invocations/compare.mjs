@@ -7,6 +7,7 @@ export function createInvocationCompareRuntime({
   updateCompareRun,
   createWorktree,
   createWorktreePr,
+  latestWorktreeReview,
   findInvocation,
 }) {
   function createCompareRun(task, agents, options = {}) {
@@ -87,6 +88,19 @@ export function createInvocationCompareRuntime({
     const child = compareRun.children?.find((c) => c.invocationId === invocationId) ?? null;
     const worktreeId = child?.worktreeId ?? (typeof findInvocation === "function" ? findInvocation(invocationId)?.worktreeId : null);
     if (!worktreeId) throw new Error("The preferred run has no worktree to promote (a shared/answer compare cannot be promoted).");
+    // Phase 5: review-before-ship. A human must approve the preferred worktree's
+    // diff before it can be promoted to a PR. `changes_requested` or no review yet
+    // both block; the reviewer just submits an approval to unblock.
+    if (typeof latestWorktreeReview === "function") {
+      const review = latestWorktreeReview(worktreeId);
+      if (review?.verdict !== "approved") {
+        throw new Error(
+          review?.verdict === "changes_requested"
+            ? "The preferred worktree has changes requested — resolve them and re-approve before promoting."
+            : "The preferred worktree has not been reviewed yet — approve its diff before promoting.",
+        );
+      }
+    }
     if (typeof createWorktreePr !== "function") throw new Error("Pull-request creation is not available on this server.");
     const pr = await createWorktreePr(worktreeId, { body: `Promoted from compare run ${compareRun.id}.\n\nTask: ${compareRun.task}` });
     compareRun.promotion = {
