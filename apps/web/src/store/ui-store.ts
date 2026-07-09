@@ -4,6 +4,7 @@ import { createJSONStorage, persist } from "zustand/middleware";
 export type SectionKey =
   | "dashboard"
   | "workspace"
+  | "compare"
   | "projects"
   | "task"
   | "autoRuns"
@@ -58,6 +59,7 @@ interface UiState {
 export const SECTION_KEYS: SectionKey[] = [
   "dashboard",
   "workspace",
+  "compare",
   "projects",
   "task",
   "autoRuns",

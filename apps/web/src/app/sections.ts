@@ -4,6 +4,7 @@ import {
   Boxes,
   FolderKanban,
   Gauge,
+  GitCompare,
   LayoutDashboard,
   ListChecks,
   ListTodo,
@@ -32,6 +33,7 @@ export interface SectionDef {
 export const SECTIONS: SectionDef[] = [
   { key: "dashboard", label: "Overview", icon: LayoutDashboard, blurb: "Start a task and watch it run" },
   { key: "workspace", label: "Workspace", icon: PanelsTopLeft, blurb: "Project files, transcript, and history in one place" },
+  { key: "compare", label: "Compare", icon: GitCompare, blurb: "Run one task on 2+ agents side by side" },
   { key: "projects", label: "Projects", icon: FolderKanban, blurb: "Group work and own budgets" },
   { key: "task", label: "Task", icon: ListTodo, blurb: "GitHub issues and PRs as work items" },
   { key: "autoRuns", label: "Auto-runs", icon: Bot, blurb: "Autonomous issue → worktree → PR runs" },

@@ -74,6 +74,17 @@ export interface AgentSnapshot {
   discovery?: { runId?: string };
 }
 
+export interface CompareRunSnapshot {
+  id: string;
+  task: string;
+  status: string;
+  childInvocationIds: string[];
+  preferredInvocationId?: string | null;
+  summary?: string;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
 export interface InvocationSnapshot {
   id: string;
   status?: string;
@@ -721,6 +732,7 @@ export interface ConsoleSnapshot {
   agent: AgentSnapshot | null;
   agents: AgentSnapshot[];
   invocations: InvocationSnapshot[];
+  compareRuns?: CompareRunSnapshot[];
   events: InvocationEventSnapshot[];
   auditSummaries: AuditSnapshot[];
   healthChecks?: LifecycleAuditSnapshot[];
