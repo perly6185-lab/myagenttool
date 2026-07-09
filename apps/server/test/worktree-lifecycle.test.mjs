@@ -32,7 +32,7 @@ before(() => {
   git(repoDir, "commit", "-m", "init");
 
   let counter = 0;
-  state = { projects: [], worktrees: [], projectTargets: [], currentProjectId: null };
+  state = { projects: [], worktrees: [], worktreeReviews: [], projectTargets: [], currentProjectId: null };
   svc = createProjectService({
     state,
     now: () => new Date().toISOString(),
@@ -99,4 +99,17 @@ test("removeWorktree: registry + derived project cleaned, files kept (non-destru
   assert.equal(state.currentProjectId, worktree.sourceProjectId, "selection falls back to the source project");
   assert.ok(existsSync(removed.worktreePath), "teardown is non-destructive — files stay on disk");
   assert.equal(svc.removeWorktree("wtr_nope"), null, "unknown id is a null no-op");
+});
+
+test("removeWorktree purges the removed worktree's dangling reviews, keeps others", () => {
+  const source = state.projects.find((p) => p.source !== "worktree");
+  const { worktree } = svc.createWorktree({ projectId: source.id, name: "to review", branchName: "myagent/to-review" });
+  svc.submitWorktreeReview({ worktreeId: worktree.id, verdict: "approved" });
+  state.worktreeReviews.unshift({ id: "wrv_other", worktreeId: "wt_other", verdict: "approved" });
+  assert.ok(state.worktreeReviews.some((r) => r.worktreeId === worktree.id), "review recorded");
+
+  svc.removeWorktree(worktree.id);
+
+  assert.ok(!state.worktreeReviews.some((r) => r.worktreeId === worktree.id), "the removed worktree's review is purged");
+  assert.ok(state.worktreeReviews.some((r) => r.worktreeId === "wt_other"), "unrelated reviews survive");
 });
