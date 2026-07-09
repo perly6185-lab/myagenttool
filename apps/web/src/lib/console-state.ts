@@ -74,6 +74,39 @@ export interface AgentSnapshot {
   discovery?: { runId?: string };
 }
 
+/** One row in the consolidated Approvals queue (server read-model `pendingDecisions`). */
+export type PendingDecisionKind =
+  | "invocation_approval"
+  | "decomposition"
+  | "design"
+  | "clarify"
+  | "merge"
+  | "compare_promote"
+  | "codex_broker";
+
+export interface PendingDecision {
+  id: string;
+  kind: PendingDecisionKind;
+  title: string;
+  subtitle?: string;
+  projectId?: string | null;
+  createdAt?: string | null;
+  /** Native section to deep-link to for the full context. */
+  section: string;
+  targetId?: string | null;
+  /** Ids the inline actions need (approvalId / autoRunId / compareRunId / requestId / invocationId …). */
+  ref?: {
+    approvalId?: string;
+    invocationId?: string | null;
+    autoRunId?: string;
+    prNumber?: number | null;
+    prUrl?: string | null;
+    mergeRisk?: string | null;
+    compareRunId?: string;
+    requestId?: string;
+  };
+}
+
 export interface CompareRunSnapshot {
   id: string;
   task: string;
@@ -738,6 +771,7 @@ export interface ConsoleSnapshot {
   agents: AgentSnapshot[];
   invocations: InvocationSnapshot[];
   compareRuns?: CompareRunSnapshot[];
+  pendingDecisions?: PendingDecision[];
   events: InvocationEventSnapshot[];
   auditSummaries: AuditSnapshot[];
   healthChecks?: LifecycleAuditSnapshot[];

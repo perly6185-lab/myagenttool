@@ -6,6 +6,7 @@ import { CompareView } from "@/features/compare/compare-view";
 import { ProjectsView } from "@/features/projects/projects-view";
 import { TaskView } from "@/features/tasks/task-view";
 import { AutoRunsView } from "@/features/auto-runs/auto-runs-view";
+import { ApprovalsView } from "@/features/approvals/approvals-view";
 import { EvalTrendView } from "@/features/eval-trend/eval-trend-view";
 import { AutomationView } from "@/features/automation/automation-view";
 import { AgentSkillsView } from "@/features/agent-skills/agent-skills-view";
@@ -28,6 +29,7 @@ export const SECTION_VIEWS: Record<SectionKey, ComponentType> = {
   projects: ProjectsView,
   task: TaskView,
   autoRuns: AutoRunsView,
+  approvals: ApprovalsView,
   evalTrend: EvalTrendView,
   automation: AutomationView,
   agentSkills: AgentSkillsView,

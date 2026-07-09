@@ -16,6 +16,8 @@ import type { ProjectSnapshot } from "@/lib/console-state";
 export function NavRail() {
   const section = useUiStore((s) => s.section);
   const setSection = useUiStore((s) => s.setSection);
+  const { data: state } = useConsoleState();
+  const pendingCount = state?.pendingDecisions?.length ?? 0;
   const [showRegister, setShowRegister] = useState(false);
 
   return (
@@ -56,6 +58,17 @@ export function NavRail() {
                 >
                   <Icon className="size-4 shrink-0" />
                   {item.label}
+                  {item.key === "approvals" && pendingCount > 0 ? (
+                    <span
+                      aria-label={`${pendingCount} pending`}
+                      className={cn(
+                        "ml-auto min-w-5 rounded-full px-1.5 py-0.5 text-center text-[10px] font-semibold",
+                        active ? "bg-sidebar-foreground/15 text-sidebar-accent-foreground" : "bg-primary text-primary-foreground",
+                      )}
+                    >
+                      {pendingCount}
+                    </span>
+                  ) : null}
                 </button>
                 {isProjects ? (
                   <button

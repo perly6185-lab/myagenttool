@@ -8,6 +8,7 @@ export type SectionKey =
   | "projects"
   | "task"
   | "autoRuns"
+  | "approvals"
   | "evalTrend"
   | "automation"
   | "agentSkills"
@@ -63,6 +64,7 @@ export const SECTION_KEYS: SectionKey[] = [
   "projects",
   "task",
   "autoRuns",
+  "approvals",
   "evalTrend",
   "automation",
   "agentSkills",
