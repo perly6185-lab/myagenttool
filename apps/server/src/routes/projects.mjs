@@ -1,10 +1,24 @@
 import { randomBytes } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
-import { basename, dirname, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, extname, join, relative, resolve, sep } from "node:path";
 import { denyForeignProject } from "../runtime/auth.mjs";
 import { summarizeAutoRuns } from "../services/auto-run-metrics.mjs";
 import { readEvalTrend, summarizeEvalTrend } from "../services/eval-trend.mjs";
 import { normalizeAutoRunSettings, resolveAutoRunConfig } from "../services/auto-run-config.mjs";
+import { computeAutoRunReadiness } from "../services/auto-run-readiness.mjs";
+import { computeMergeRisk, sensitivePathHit, DEFAULT_SENSITIVE_PATHS } from "../services/auto-run-risk.mjs";
+import { summarizeEpicChildren } from "../services/auto-run-epic.mjs";
+import { resolveAutoRunVerifyCommandFor } from "../services/worktree-verify.mjs";
+
+const IMAGE_MIME = {
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".gif": "image/gif",
+  ".webp": "image/webp",
+  ".svg": "image/svg+xml",
+  ".avif": "image/avif",
+};
 
 export async function handleProjectRoutes({
   req,
@@ -25,6 +39,12 @@ export async function handleProjectRoutes({
   startAutoRun,
   retryAutoRun,
   mergeAutoRunPr,
+  approveDesign,
+  rejectDesign,
+  answerClarify,
+  approveDecomposition,
+  rejectDecomposition,
+  budgetStatusFor,
   refreshAutoRunPrDispositions,
   selectProject,
   removeProject,
@@ -160,8 +180,18 @@ export async function handleProjectRoutes({
     return true;
   }
 
+  // Tenancy guard for auto-run-id routes: resolve the run's project and deny a
+  // foreign actor (these routes take a global run id, not a project id). (audit)
+  const denyForeignAutoRun = (autoRunId) => {
+    const run = (state.autoRuns ?? []).find((r) => r.id === autoRunId);
+    const projectId = run?.projectId ?? null;
+    if (!projectId) return false; // unknown run → let the service return not-found
+    return denyForeignProject({ res, sendJson, state, actor, projectId, notFound: { error: "auto_run_not_found" } });
+  };
+
   const autoRunRetryMatch = url.pathname.match(/^\/api\/auto-runs\/([^\/]+)\/retry$/);
   if (autoRunRetryMatch && req.method === "POST") {
+    if (denyForeignAutoRun(decodeURIComponent(autoRunRetryMatch[1]))) return true;
     try {
       const result = await retryAutoRun(decodeURIComponent(autoRunRetryMatch[1]), { actor });
       sendJson(res, 200, result);
@@ -171,8 +201,59 @@ export async function handleProjectRoutes({
     return true;
   }
 
+  // D4: the human design gate — approve spawns the implementation child issue
+  // (the click is the authorization); reject records feedback to the issue.
+  const designApprovalMatch = url.pathname.match(/^\/api\/auto-runs\/([^\/]+)\/design-approval$/);
+  if (designApprovalMatch && req.method === "POST") {
+    if (denyForeignAutoRun(decodeURIComponent(designApprovalMatch[1]))) return true;
+    try {
+      const body = await readJson(req);
+      const id = decodeURIComponent(designApprovalMatch[1]);
+      const result = body?.action === "reject"
+        ? await rejectDesign(id, { actor, feedback: body?.feedback })
+        : await approveDesign(id, { actor });
+      sendJson(res, 200, result);
+    } catch (error) {
+      sendJson(res, 400, { error: "design_approval_failed", message: errorMessage(error) });
+    }
+    return true;
+  }
+
+  // Epic S3: the human decomposition gate — approve spawns the N governed child
+  // issues (the click is the authorization); reject records feedback to the epic.
+  const decompositionApprovalMatch = url.pathname.match(/^\/api\/auto-runs\/([^\/]+)\/decomposition-approval$/);
+  if (decompositionApprovalMatch && req.method === "POST") {
+    if (denyForeignAutoRun(decodeURIComponent(decompositionApprovalMatch[1]))) return true;
+    try {
+      const body = await readJson(req);
+      const id = decodeURIComponent(decompositionApprovalMatch[1]);
+      const result = body?.action === "reject"
+        ? await rejectDecomposition(id, { actor, feedback: body?.feedback })
+        : await approveDecomposition(id, { actor });
+      sendJson(res, 200, result);
+    } catch (error) {
+      sendJson(res, 400, { error: "decomposition_approval_failed", message: errorMessage(error) });
+    }
+    return true;
+  }
+
+  // E3: a human answers a clarify run's questions (posted back to the issue).
+  const clarifyAnswerMatch = url.pathname.match(/^\/api\/auto-runs\/([^\/]+)\/clarify-answer$/);
+  if (clarifyAnswerMatch && req.method === "POST") {
+    if (denyForeignAutoRun(decodeURIComponent(clarifyAnswerMatch[1]))) return true;
+    try {
+      const body = await readJson(req);
+      const result = await answerClarify(decodeURIComponent(clarifyAnswerMatch[1]), { actor, answers: body?.answers });
+      sendJson(res, 200, result);
+    } catch (error) {
+      sendJson(res, 400, { error: "clarify_answer_failed", message: errorMessage(error) });
+    }
+    return true;
+  }
+
   const autoRunMergeMatch = url.pathname.match(/^\/api\/auto-runs\/([^\/]+)\/merge$/);
   if (autoRunMergeMatch && req.method === "POST") {
+    if (denyForeignAutoRun(decodeURIComponent(autoRunMergeMatch[1]))) return true;
     // Human-triggered PR merge (merge stays human — a person clicking Merge).
     try {
       const result = await mergeAutoRunPr(decodeURIComponent(autoRunMergeMatch[1]), { actor });
@@ -195,7 +276,47 @@ export async function handleProjectRoutes({
       }
     }
     const autoRuns = state.autoRuns ?? [];
-    sendJson(res, 200, { autoRuns, summary: summarizeAutoRuns(autoRuns) });
+    // Surface the pending local-approval on awaiting_approval runs so the human
+    // can Approve/Deny directly on the auto-run card (informed by the decision
+    // already shown), instead of hunting for it in the Invocations view.
+    const pendingByInvocation = new Map(
+      (state.approvalRequests ?? [])
+        .filter((a) => a.status === "pending" && a.invocationId)
+        .map((a) => [a.invocationId, a]),
+    );
+    const enriched = autoRuns.map((run) => {
+      let out = run;
+      // Merge-risk badge for open PRs (the risk-based merge policy's read model).
+      if (run.status === "pr_open") {
+        // Fold in the STORED review / diff-size / sensitive-path signals when a
+        // sweep already computed them, so the badge doesn't show "low" while the
+        // stricter stored signals say otherwise (misleads a manual merger). (audit)
+        const extra = run.review || run.diffFiles || run.diffLines != null
+          ? {
+              review: run.review ?? null,
+              diffTooLarge: Number.isFinite(run.diffLines) && run.diffLines > (Number(state.autoRunSettings?.autoMergeMaxDiffLines) || 400),
+              sensitivePath: sensitivePathHit(run.diffFiles ?? [], Array.isArray(state.autoRunSettings?.autoMergeSensitivePaths) && state.autoRunSettings.autoMergeSensitivePaths.length ? state.autoRunSettings.autoMergeSensitivePaths : DEFAULT_SENSITIVE_PATHS),
+            }
+          : null;
+        out = { ...out, mergeRisk: computeMergeRisk(run, extra ? { extra } : {}) };
+      }
+      if (run.status === "awaiting_approval" && run.invocationId) {
+        const approval = pendingByInvocation.get(run.invocationId);
+        if (approval) {
+          out = {
+            ...out,
+            pendingApproval: { id: approval.id, riskLevel: approval.riskLevel ?? null, riskTags: approval.riskTags ?? [], summary: approval.summary ?? null },
+          };
+        }
+      }
+      // Epic S4: live rollup of a decomposed epic's children (in-memory — each child
+      // rolls up from its own auto-run once a human labels it `auto`).
+      if (run.status === "decomposed") {
+        out = { ...out, childRollup: summarizeEpicChildren(run, autoRuns) };
+      }
+      return out;
+    });
+    sendJson(res, 200, { autoRuns: enriched, summary: summarizeAutoRuns(autoRuns, { sloTargets: state.autoRunSettings?.sloTargets ?? null }) });
     return true;
   }
 
@@ -205,6 +326,27 @@ export async function handleProjectRoutes({
     // surfaces its local trend.jsonl so capability regressions are visible.
     const records = readEvalTrend();
     sendJson(res, 200, { records, summary: summarizeEvalTrend(records) });
+    return true;
+  }
+
+  const readinessMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/auto-run-readiness$/);
+  if (readinessMatch && req.method === "GET") {
+    // U1 preflight: can this project run an auto-run, and what's missing?
+    const projectId = decodeURIComponent(readinessMatch[1]);
+    const project = (state.projects ?? []).find((p) => p.id === projectId) ?? null;
+    const agent = project?.defaultAgentId ? (state.agents ?? []).find((a) => a.id === project.defaultAgentId) ?? null : null;
+    const settledSet = new Set(["pr_open", "report_posted", "needs_input", "blocked", "done", "failed"]);
+    const readiness = computeAutoRunReadiness({
+      project,
+      agent,
+      deviceLinked: state.device?.unlinkState === "linked" || (state.devices ?? []).length > 0,
+      budget: typeof budgetStatusFor === "function" && project ? budgetStatusFor(project.id) : null,
+      verifyCommand: resolveAutoRunVerifyCommandFor({ verifyCommandName: project?.verifyCommandName ?? null }),
+      settings: state.autoRunSettings ?? {},
+      breaker: state.autoRunBreaker ?? null,
+      activeCount: (state.autoRuns ?? []).filter((r) => !settledSet.has(r.status)).length,
+    });
+    sendJson(res, 200, { readiness });
     return true;
   }
 
@@ -397,9 +539,14 @@ export async function handleProjectRoutes({
       sendJson(res, 200, { removed, worktrees: state.worktrees });
       return true;
     }
+    // Read file/tree from the WORKTREE's own directory, not the parent project
+    // clone — otherwise a worktree's changes (e.g. a design run's design/*.html
+    // artifacts) are invisible and the browser shows the parent's files instead.
+    const worktreeDir = worktree.path ?? worktree.worktreePath ?? null;
+    const worktreeView = worktreeDir ? { ...project, path: worktreeDir } : project;
     if (action === "files" && req.method === "GET") {
       try {
-        const tree = readProjectTree(project, { relativePath: url.searchParams.get("path") ?? "" });
+        const tree = readProjectTree(worktreeView, { relativePath: url.searchParams.get("path") ?? "" });
         sendJson(res, 200, { tree: treeEntriesToNodes(tree.entries ?? []) });
       } catch (error) {
         sendJson(res, 400, { error: "worktree_files_unavailable", message: errorMessage(error) });
@@ -411,10 +558,10 @@ export async function handleProjectRoutes({
       const mode = url.searchParams.get("mode") ?? "name";
       try {
         if (mode === "content") {
-          const result = searchProjectContent(project, { query });
+          const result = searchProjectContent(worktreeView, { query });
           sendJson(res, 200, { matches: (result.results ?? []).map((item) => ({ path: item.path, line: item.line, text: item.preview })) });
         } else {
-          const tree = readProjectTree(project, { search: query });
+          const tree = readProjectTree(worktreeView, { search: query });
           sendJson(res, 200, { matches: (tree.entries ?? []).map((item) => ({ path: item.path, text: item.name })) });
         }
       } catch (error) {
@@ -424,13 +571,20 @@ export async function handleProjectRoutes({
     }
     if (action === "file" && req.method === "GET") {
       try {
-        const file = safeProjectFile(project, url.searchParams.get("path") ?? "");
-        const stats = existsSync(file) ? readFileSync(file) : Buffer.alloc(0);
-        const maxBytes = 512 * 1024;
+        const file = safeProjectFile(worktreeView, url.searchParams.get("path") ?? "");
+        const buf = existsSync(file) ? readFileSync(file) : Buffer.alloc(0);
+        const maxBytes = 2 * 1024 * 1024; // images run larger than text
+        const clipped = buf.subarray(0, maxBytes);
+        // D5 (visual acceptance): images (screenshots / mockup renders) are
+        // returned base64 so the console can render them inline; everything else
+        // stays utf8 text as before.
+        const mime = IMAGE_MIME[extname(file).toLowerCase()] ?? null;
         sendJson(res, 200, {
-          path: relative(project.path, file).replaceAll("\\", "/"),
-          content: stats.subarray(0, maxBytes).toString("utf8"),
-          truncated: stats.length > maxBytes,
+          path: relative(worktreeView.path, file).replaceAll("\\", "/"),
+          ...(mime
+            ? { encoding: "base64", mime, content: clipped.toString("base64") }
+            : { encoding: "utf8", content: clipped.toString("utf8") }),
+          truncated: buf.length > maxBytes,
         });
       } catch (error) {
         sendJson(res, 400, { error: "worktree_file_unavailable", message: errorMessage(error) });
@@ -530,7 +684,18 @@ function safeProjectFile(project, relativePath) {
   if (!existsSync(target)) {
     throw new Error("Requested file does not exist.");
   }
-  return target;
+  // Symlinks escape the string-path check: an in-tree symlink can point at a
+  // host secret (~/.ssh, ~/.claude/.credentials.json). realpath the target and
+  // the root and re-verify containment (mirrors the write path's saveAttachments
+  // hardening, which the read path was missing). (audit finding)
+  const realRoot = realpathSync(root);
+  const realTarget = realpathSync(target);
+  const realRel = relative(realRoot, realTarget);
+  if (realRel === ".." || realRel.startsWith(`..${sep}`)) {
+    throw new Error("Requested file escapes the worktree root (symlink).");
+  }
+  return target; // validated via realpath; return the original path so the
+  // caller's relative(root, file) stays correct (readFileSync follows the link).
 }
 
 function gitSummaryForWorktree(summary) {

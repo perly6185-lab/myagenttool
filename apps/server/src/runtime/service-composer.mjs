@@ -8,6 +8,7 @@ import {
   normalizeStringArray,
 } from "../services/agents.mjs";
 import { existsSync, readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { dirname, resolve, sep } from "node:path";
 import { createAgentSkillService } from "../services/agent-skills.mjs";
 import {
@@ -34,14 +35,18 @@ import { createInvocationService } from "../services/invocations.mjs";
 import { createM3Service } from "../services/m3.mjs";
 import { createProjectService, sameProjectPath } from "../services/projects.mjs";
 import { createAutoRunService } from "../services/auto-run.mjs";
-import { resolveAutoRunVerifyCommand, runWorktreeVerification } from "../services/worktree-verify.mjs";
-import { resolveStatusWritebackConfig, runIssueBodyFetch, runIssueComment, runIssueStatusTransition, runPrMerge, runPrStateFetch } from "../services/issue-status.mjs";
+import { resolveAutoRunVerifyCommand, resolveAutoRunVerifyCommandFor, runWorktreeVerification } from "../services/worktree-verify.mjs";
+import { resolveStatusWritebackConfig, runIssueBodyFetch, runIssueComment, runIssueStatusTransition, runPrChecks, runPrMerge, runPrStateFetch, runIssueStateFetch } from "../services/issue-status.mjs";
 import { deciderTimeoutMs, resolveDeciderCommand, runDeciderCommand } from "../services/decision-command.mjs";
 import { childIssueBody, childIssueTitle, extractProjectFieldsBlock, runChildIssueCreate, spawnIssuesConfig } from "../services/auto-run-spawn.mjs";
 import { refreshPrDispositions } from "../services/auto-run-eval.mjs";
+import { refreshEpicChildStates } from "../services/auto-run-epic.mjs";
 import { judgeTimeoutMs, resolveJudgeCommand, runAcceptanceJudge } from "../services/auto-run-judge.mjs";
+import { resolveReviewCommand, reviewTimeoutMs, runDiffReview, scanDiffForInjection } from "../services/auto-run-review.mjs";
+import { resolveDesignRenderCommand, designRenderTimeoutMs, runDesignRender } from "../services/design-render.mjs";
 import { decisionConfig } from "../services/auto-run-decision.mjs";
 import { autoRunSettingsEnvOverlay } from "../services/auto-run-config.mjs";
+import { createAlertDispatcher } from "../services/auto-run-alerts.mjs";
 import { createTerminalService } from "../services/terminal.mjs";
 import { createToolService } from "../services/tools.mjs";
 
@@ -492,10 +497,30 @@ export function createServerRuntimeServices({
   // composer time, so console edits take effect on the next server start.
   const autoRunEnv = autoRunSettingsEnvOverlay(state.autoRunSettings);
 
-  const { startAutoRun, advanceAutoRunForInvocation, syncAutoRunOnApproval, retryAutoRun, mergeAutoRunPr } = createAutoRunService({
+  // A1 real-time alerting: best-effort webhook, URL read live so a console edit
+  // applies without a restart. No-op when unconfigured; never throws.
+  const autoRunAlerts = createAlertDispatcher({ getWebhookUrl: () => state.autoRunSettings?.alertWebhookUrl ?? null });
+
+  const { startAutoRun, advanceAutoRunForInvocation, syncAutoRunOnApproval, retryAutoRun, mergeAutoRunPr, reapStuckAutoRuns, autoMergeSweep, approveDesign, rejectDesign, answerClarify, approveDecomposition, rejectDecomposition } = createAutoRunService({
     state,
     now,
     nextId,
+    // O0 cost brake: refuse to start a run when the project is over budget.
+    budgetStatusFor,
+    // A1 alerting: best-effort operational webhook (budget breach, stuck reap).
+    sendAlert: (alert) => autoRunAlerts.dispatch(alert),
+    // O1 reliability: find a run's invocation for stuck/crash reconcile.
+    findInvocation,
+    // O2 graduated approval: apply a human-equivalent approval by policy (used
+    // only for operator-opted-in non-code paths). Reuses the existing approve
+    // path — no change to the security policy that decides who needs approval.
+    autoApproveInvocation: ({ invocationId, actor }) => {
+      const approval = (state.approvalRequests ?? []).find((item) => item.invocationId === invocationId && item.status === "pending");
+      const invocation = findInvocation(invocationId);
+      if (!approval || !invocation) return false;
+      approveInvocation(approval, invocation, actor ?? null);
+      return true;
+    },
     appendEvent,
     persistStateSoon,
     createWorktree,
@@ -510,7 +535,12 @@ export function createServerRuntimeServices({
     // No command configured -> unverified pass-through (PR labeled unverified);
     // a configured command that fails blocks the PR.
     verifyWorktree: async ({ worktree }) => {
-      const command = resolveAutoRunVerifyCommand();
+      // A4: resolve the project's chosen allowlisted verify command by NAME
+      // (operator-set argv), falling back to the global command.
+      const project = (state.projects ?? []).find(
+        (p) => p.id === (worktree?.workspaceProjectId ?? worktree?.sourceProjectId ?? worktree?.projectId),
+      ) ?? null;
+      const command = resolveAutoRunVerifyCommandFor({ verifyCommandName: project?.verifyCommandName ?? null });
       if (!command || !worktree?.path) {
         return { passed: true, verified: false, summary: "No verification command configured — PR opened unverified." };
       }
@@ -544,6 +574,16 @@ export function createServerRuntimeServices({
     // Governed child-issue spawning (slice 4): a design deliverable becomes a
     // pending-decision child issue (parent fields inherited, never auto-labelled,
     // depth-1 marked). Off by default; undefined -> the orchestrator skips it.
+    // D4: ungated spawn used ONLY by the explicit human Approve-design action —
+    // the click is the authorization, independent of the automatic spawn config.
+    spawnChildIssueDirect: async ({ parentLink, design, repoPath }) => {
+      const parentBody = await runIssueBodyFetch({ cwd: repoPath, issueNumber: parentLink.number });
+      return runChildIssueCreate({
+        cwd: repoPath,
+        title: childIssueTitle(parentLink),
+        body: childIssueBody({ parentLink, design, projectFieldsBlock: extractProjectFieldsBlock(parentBody) }),
+      });
+    },
     spawnChildIssue: spawnIssuesConfig(autoRunEnv).enabled
       ? async ({ parentLink, design, repoPath }) => {
           const parentBody = await runIssueBodyFetch({ cwd: repoPath, issueNumber: parentLink.number });
@@ -568,9 +608,92 @@ export function createServerRuntimeServices({
           }
         : undefined;
     })(),
+    // Risk-based merge: the AI diff-review step (slice 2). Computes the worktree
+    // diff + line count and runs the operator's review command; the result feeds
+    // the merge-risk model in the auto-merge sweep. Undefined when no command.
+    reviewDiff: (() => {
+      const command = resolveReviewCommand(autoRunEnv);
+      if (!command) return undefined;
+      return async ({ autoRun }) => {
+        const worktree = state.worktrees.find((w) => w.id === autoRun.worktreeId) ?? null;
+        if (!worktree) return { review: null, diffLines: 0, files: [] };
+        const wd = worktreeDiff(worktree) ?? {};
+        const diff = wd.diff ?? "";
+        const diffLines = diff ? diff.split("\n").length : 0;
+        // changedPaths, NOT wd.files: porcelain (working tree) goes empty once
+        // the agent commits, which silently blinded the sensitive-path guard at
+        // sweep time (the sweep runs post-commit/post-publish).
+        const files = Array.isArray(wd.changedPaths) ? wd.changedPaths.filter(Boolean) : [];
+        const issueBody = autoRun.link?.type === "issue" && worktree?.repoPath
+          ? await runIssueBodyFetch({ cwd: worktree.repoPath, issueNumber: autoRun.link.number })
+          : null;
+        // Scan the diff itself for injection markers — an injection embedded in
+        // the agent's OWN diff (not just the issue body) could coax the review
+        // command into {"approve":true}. A hit forces fail (never trust an
+        // LLM verdict on a poisoned diff). (audit finding)
+        const injectionReview = scanDiffForInjection(diff);
+        const review = injectionReview ?? await runDiffReview({ command, link: autoRun.link, issueBody, diff, timeoutMs: reviewTimeoutMs(autoRunEnv) });
+        return { review, diffLines, files };
+      };
+    })(),
+    // Read a small text file from a worktree (e.g. design/BRIEF.md) — used to
+    // surface the FULL design/prototype brief in the report, not just the thin
+    // terminal summary. Null if absent/oversized.
+    readWorktreeTextFile: (worktreeId, relPath, maxBytes = 16_000) => {
+      const worktree = state.worktrees.find((w) => w.id === worktreeId) ?? null;
+      if (!worktree?.path || typeof relPath !== "string") return null;
+      try {
+        const resolved = resolve(worktree.path, relPath);
+        if (!resolved.startsWith(resolve(worktree.path))) return null; // no escape
+        if (!existsSync(resolved)) return null;
+        // Default cap suits display briefs; a machine-parsed file (decomposition
+        // PLAN.json) passes a larger cap so a big-but-valid plan isn't truncated
+        // mid-JSON into a parse failure. (review: PLAN.json 16KB truncation)
+        return readFileSync(resolved, "utf8").slice(0, Math.max(1, Number(maxBytes) || 16_000));
+      } catch {
+        return null;
+      }
+    },
+    // Cheap current worktree HEAD sha — lets the auto-merge sweep invalidate a
+    // cached review/diff when the PR head moved. (audit finding)
+    worktreeHeadSha: (worktreeId) => {
+      const worktree = state.worktrees.find((w) => w.id === worktreeId) ?? null;
+      if (!worktree?.path) return null;
+      try {
+        return execFileSync("git", ["-C", worktree.path, "rev-parse", "HEAD"], { encoding: "utf8", timeout: 5000 }).trim() || null;
+      } catch {
+        return null;
+      }
+    },
+    // D3 (issue→UI-design plan): what did this branch change vs its base —
+    // committed work included. Drives design-artifact detection in the reaction.
+    listWorktreeChangedFiles: (worktreeId) => {
+      const worktree = state.worktrees.find((w) => w.id === worktreeId) ?? null;
+      if (!worktree) return [];
+      const wd = worktreeDiff(worktree) ?? {};
+      return Array.isArray(wd.changedPaths) ? wd.changedPaths.filter(Boolean) : [];
+    },
     // Human-triggered PR merge from the console (merge stays human — only fired
     // by a person clicking Merge on a pr_open run, never automatically).
     mergePr: ({ prNumber, repoPath }) => runPrMerge({ cwd: repoPath, prNumber }),
+    // Fresh PR-checks fetch for the require-green-checks merge gate (no stale poll).
+    fetchPrChecks: ({ prNumber, repoPath }) => runPrChecks({ cwd: repoPath, prNumber }),
+    // Layer B: rasterize a design run's HTML mockups to design/*.png via the
+    // operator's render command (argv from env, no shell — same trust boundary as
+    // verify). Best-effort; unconfigured -> undefined -> no inline previews.
+    // Epic S3: create ONE governed decomposition child issue (ungated — the human
+    // approval of the plan is the authorization, like spawnChildIssueDirect). The
+    // service loops this over the approved tree's specs.
+    createDecompositionChild: async ({ repoPath, title, body }) => runChildIssueCreate({ cwd: repoPath, title, body }),
+    renderDesignImages: (() => {
+      const command = resolveDesignRenderCommand(autoRunEnv);
+      if (!command) return undefined;
+      return async (worktreeId) => {
+        const worktree = state.worktrees.find((w) => w.id === worktreeId) ?? null;
+        if (!worktree?.path) return { rendered: false, reason: "no worktree" };
+        return runDesignRender({ worktreePath: worktree.path, command, timeoutMs: designRenderTimeoutMs(autoRunEnv) });
+      };
+    })(),
   });
   // Now that the reaction exists, let completion drive it.
   advanceAutoRunHook = advanceAutoRunForInvocation;
@@ -583,8 +706,23 @@ export function createServerRuntimeServices({
       state,
       now,
       fetchPrState: ({ prNumber, repoPath }) => runPrStateFetch({ cwd: repoPath, prNumber }),
+      // CI check posture for the merge decision (read-only gh; shown on the card).
+      fetchPrChecks: ({ prNumber, repoPath }) => runPrChecks({ cwd: repoPath, prNumber }),
     });
-    if (result.updated > 0) persistStateSoon();
+    // A run's prChecks can change even when prState didn't, so persist whenever
+    // any run was refreshed, not only on a state transition.
+    if (result.checked > 0) persistStateSoon();
+    // Epic S4 reconcile: mark a decomposed epic's children done when their ISSUE
+    // closes (however it merged — incl. a human-override PR outside the loop).
+    const epic = await refreshEpicChildStates({
+      state,
+      now,
+      fetchIssueState: ({ issueNumber, repoPath }) => runIssueStateFetch({ cwd: repoPath, issueNumber }),
+      projectPathFor: (projectId) => (state.projects ?? []).find((p) => p.id === projectId)?.path ?? null,
+    });
+    // Persist on any checked epic (not only on a state change) so the per-epic
+    // throttle stamp (childStatesRefreshedAt) survives a restart. (review F4)
+    if (epic.changed || epic.checked > 0) persistStateSoon();
     return result;
   }
 
@@ -2242,6 +2380,13 @@ export function createServerRuntimeServices({
     publishWorktreeBranch,
     startAutoRun,
     retryAutoRun,
+    reapStuckAutoRuns,
+    autoMergeSweep,
+    approveDesign,
+    rejectDesign,
+    answerClarify,
+    approveDecomposition,
+    rejectDecomposition,
     mergeAutoRunPr,
     refreshAutoRunPrDispositions,
     selectProject,

@@ -528,11 +528,22 @@ export const api = {
   // Auto-run observability: the records plus an evaluation summary. refresh=true
   // also refreshes PR dispositions (bounded gh reads) for the routing evaluation.
   listAutoRuns: (refresh = false) => request("GET", `/api/auto-runs${refresh ? "?refresh=1" : ""}`),
+  // U1: can this project run an auto-run, and what's missing?
+  autoRunReadiness: (projectId: string) => request("GET", `/api/projects/${encodeURIComponent(projectId)}/auto-run-readiness`),
   // Retry a failed/blocked auto-run on its existing worktree.
   retryAutoRun: (id: string) => request("POST", `/api/auto-runs/${encodeURIComponent(id)}/retry`),
   // Human-triggered PR merge for a pr_open auto-run (merge stays human — a person
   // clicks Merge in the console; runs `gh pr merge` server-side).
   mergeAutoRunPr: (id: string) => request("POST", `/api/auto-runs/${encodeURIComponent(id)}/merge`),
+  // D4: the human design gate — approve spawns the implementation child issue.
+  designApproval: (id: string, action: "approve" | "reject", feedback?: string) =>
+    request("POST", `/api/auto-runs/${encodeURIComponent(id)}/design-approval`, { action, feedback }),
+  // E3: answer a clarify run's questions (posted back to the issue).
+  answerClarify: (id: string, answers: string) =>
+    request("POST", `/api/auto-runs/${encodeURIComponent(id)}/clarify-answer`, { answers }),
+  // Epic S3: the human decomposition gate — approve spawns the N governed child issues.
+  decompositionApproval: (id: string, action: "approve" | "reject", feedback?: string) =>
+    request("POST", `/api/auto-runs/${encodeURIComponent(id)}/decomposition-approval`, { action, feedback }),
   // Scheduled real-agent eval trend (#248): read-only view of the local
   // trend.jsonl so capability regressions surface in the console, not just cron.log.
   listEvalTrend: () => request("GET", "/api/eval-trend"),

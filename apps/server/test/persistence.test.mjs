@@ -1604,3 +1604,31 @@ test("completeLifecycleAction records structured refusal evidence (WS3)", () => 
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("persistence restores the auto-run brakes across restart (kill switch + open breaker survive)", () => {
+  const root = join(tmpdir(), `myagenttool-persist-brakes-${Date.now()}`);
+  const projectPath = join(root, "project");
+  const stateStorePath = join(root, "state", "snapshot.json");
+  mkdirSync(projectPath, { recursive: true });
+  try {
+    const first = createServerState({ defaultProjectPath: projectPath, now });
+    // Operator engages the emergency brakes + saves a knob.
+    first.state.autoRunSettings = { autonomyKillSwitch: true, requireChecksGreenToMerge: true, autoMergeMaxDiffLines: 250 };
+    first.state.autoRunBreaker = { consecutiveFailures: 3, openUntil: "2999-01-01T00:00:00.000Z" };
+    createPersistenceRuntime({ state: first.state, enabled: true, stateStorePath, schemaVersion: 1, now, defaultProject: first.defaultProject, sameProjectPath }).savePersistentState();
+
+    const second = createServerState({ defaultProjectPath: projectPath, now });
+    createPersistenceRuntime({ state: second.state, enabled: true, stateStorePath, schemaVersion: 1, now, defaultProject: second.defaultProject, sameProjectPath }).restorePersistentState();
+
+    // Regression for the audit HIGH: these OBJECTS were in persistedArrayKeys, so
+    // restore's Array.isArray guard silently dropped them → every brake un-armed
+    // on restart.
+    assert.equal(second.state.autoRunSettings.autonomyKillSwitch, true, "kill switch survives restart");
+    assert.equal(second.state.autoRunSettings.requireChecksGreenToMerge, true, "require-green survives");
+    assert.equal(second.state.autoRunSettings.autoMergeMaxDiffLines, 250, "saved knob survives");
+    assert.equal(second.state.autoRunBreaker.openUntil, "2999-01-01T00:00:00.000Z", "open breaker survives restart");
+    assert.equal(second.state.autoRunBreaker.consecutiveFailures, 3);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

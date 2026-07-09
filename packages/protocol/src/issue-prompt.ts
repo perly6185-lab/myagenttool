@@ -33,3 +33,12 @@ export declare function roleAutoRunPrompt(
   item: WorktreeLinkItem,
   options?: { path?: "develop" | "design" | "prototype" | "clarify"; issueBody?: string | null },
 ): string;
+
+/** B1a: wrap an untrusted issue body as delimited data (not instructions). */
+export declare function untrustedBodyBlock(label: string, body: string): string;
+
+/** B1a: high-signal prompt-injection detector over untrusted text. */
+export declare function detectPromptInjection(text: string | null | undefined): {
+  suspicious: boolean;
+  markers: string[];
+};

@@ -19,10 +19,14 @@
 import { resolveAutoTriggerConfig } from "./auto-trigger.mjs";
 import { deciderTimeoutMs, resolveDeciderCommand } from "./decision-command.mjs";
 import { judgeTimeoutMs, resolveJudgeCommand } from "./auto-run-judge.mjs";
+import { resolveReviewCommand } from "./auto-run-review.mjs";
+import { resolveDesignRenderCommand } from "./design-render.mjs";
+import { DEFAULT_SENSITIVE_PATHS } from "./auto-run-risk.mjs";
 import { resolveStatusWritebackConfig } from "./issue-status.mjs";
-import { resolveAutoRunVerifyCommand } from "./worktree-verify.mjs";
+import { resolveAutoRunVerifyCommand, resolveVerifyCommandAllowlist } from "./worktree-verify.mjs";
 import { decisionConfig } from "./auto-run-decision.mjs";
 import { spawnIssuesConfig } from "./auto-run-spawn.mjs";
+import { normalizeAlertWebhookUrl } from "./auto-run-alerts.mjs";
 
 // The env key each safe setting maps onto, so the overlay and the panel agree.
 const SETTING_ENV = {
@@ -47,6 +51,20 @@ const clampNum = (v, lo, hi) => {
   const n = Number(v);
   return Number.isFinite(n) ? Math.min(hi, Math.max(lo, n)) : null;
 };
+
+// Validate operator SLO-target overrides: rates in [0,1], time in positive
+// seconds. Unknown/invalid keys are dropped; empty → null (use all defaults).
+function normalizeSloTargets(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const out = {};
+  const rate = (v) => { const n = Number(v); return Number.isFinite(n) && n >= 0 && n <= 1 ? n : undefined; };
+  const posInt = (v) => { const n = Math.round(Number(v)); return Number.isFinite(n) && n > 0 ? n : undefined; };
+  const pr = rate(value.prSuccessRate); if (pr !== undefined) out.prSuccessRate = pr;
+  const fr = rate(value.failureRate); if (fr !== undefined) out.failureRate = fr;
+  const ar = rate(value.attentionRate); if (ar !== undefined) out.attentionRate = ar;
+  const tt = posInt(value.timeToPrMedianSeconds); if (tt !== undefined) out.timeToPrMedianSeconds = tt;
+  return Object.keys(out).length ? out : null;
+}
 
 /**
  * Validate a settings patch into a clean flat object, carrying prior values for
@@ -76,7 +94,51 @@ export function normalizeAutoRunSettings(patch = {}, prev = {}) {
     deciderFastPath: keep("deciderFastPath", asBool),
     deciderTimeoutMs: keep("deciderTimeoutMs", (v) => clampInt(v, 1000, 300_000)),
     judgeTimeoutMs: keep("judgeTimeoutMs", (v) => clampInt(v, 1000, 300_000)),
+    // UI-only guard (no env twin): block the in-tool merge unless PR checks are
+    // green. Null/false = allow the informed-but-unblocked human merge.
+    requireChecksGreenToMerge: keep("requireChecksGreenToMerge", asBool),
+    // O0 kill switch (UI-only): when true, halt ALL autonomous runs (auto-trigger
+    // stops scanning and startAutoRun refuses). The global emergency brake.
+    autonomyKillSwitch: keep("autonomyKillSwitch", asBool),
+    // O2 graduated approval (UI-only): auto-approve NON-CODE paths (design/
+    // clarify/prototype). develop and merge always stay human. Default off.
+    autoApproveNonCodePaths: keep("autoApproveNonCodePaths", asBool),
+    // A1 alerting (UI-only): operator webhook for real-time operational alerts.
+    // Validated http(s); a typo/blank clears it (alerting disabled).
+    alertWebhookUrl: keep("alertWebhookUrl", (v) => normalizeAlertWebhookUrl(v)),
+    // Tail: operator-tunable SLO targets (partial object; unset keys keep the
+    // defaults). Each value validated to its range; empty → null (all defaults).
+    sloTargets: keep("sloTargets", (v) => normalizeSloTargets(v)),
+    // A3 reliability (UI-only). globalMaxConcurrent 0 = unlimited. Breaker
+    // threshold 0 = disabled; cooldown in minutes.
+    globalMaxConcurrent: keep("globalMaxConcurrent", (v) => clampInt(v, 0, 100)),
+    breakerFailureThreshold: keep("breakerFailureThreshold", (v) => clampInt(v, 0, 50)),
+    breakerCooldownMinutes: keep("breakerCooldownMinutes", (v) => clampInt(v, 1, 1440)),
+    // D3 (UI-only, default off): a design run whose only changes live under
+    // design/ delivers them as report + in-console mockup preview, not a PR.
+    designArtifacts: keep("designArtifacts", asBool),
+    // Layer B (UI-only, default off): render the design mockups to PNGs, push the
+    // design branch, and embed the previews inline on the issue. Pushes a branch.
+    designImagesToIssue: keep("designImagesToIssue", asBool),
+    // Epic decomposition (UI-only, default off): an epic/initiative routes to the
+    // decompose path (a proposed plan of child issues, not a diff). epicMaxChildren
+    // caps the fan-out. EPIC_DECOMPOSITION_PLAN.md.
+    epicDecomposition: keep("epicDecomposition", asBool),
+    epicMaxChildren: keep("epicMaxChildren", (v) => clampInt(v, 1, 20)),
+    // Risk-based merge (UI-only, default off): auto-merge low-risk PRs; the diff
+    // line cap above which a PR is never auto-merged (falls to a human merge).
+    autoMergeLowRisk: keep("autoMergeLowRisk", asBool),
+    autoMergeMaxDiffLines: keep("autoMergeMaxDiffLines", (v) => clampInt(v, 1, 100_000)),
+    // Sensitive-path guard: glob list; a diff touching any is never auto-merged.
+    // Null = use the conservative DEFAULT_SENSITIVE_PATHS.
+    autoMergeSensitivePaths: keep("autoMergeSensitivePaths", (v) => normalizeGlobList(v)),
   };
+}
+
+function normalizeGlobList(v) {
+  if (!Array.isArray(v)) return null;
+  const list = v.map((s) => String(s).trim()).filter(Boolean).slice(0, 100);
+  return list.length ? list : null;
 }
 
 /**
@@ -126,12 +188,43 @@ export function resolveAutoRunConfig(state = {}, baseEnv = process.env) {
     decision,
     deciderTimeoutMs: deciderTimeoutMs(env),
     judgeTimeoutMs: judgeTimeoutMs(env),
+    // UI-only guard (not env-backed): require green PR checks before an in-tool merge.
+    requireChecksGreenToMerge: Boolean(settings.requireChecksGreenToMerge),
+    // O0 global kill switch (not env-backed): halts all autonomous runs.
+    autonomyKillSwitch: Boolean(settings.autonomyKillSwitch),
+    // O2 graduated approval (not env-backed): auto-approve non-code paths.
+    autoApproveNonCodePaths: Boolean(settings.autoApproveNonCodePaths),
+    // A1 alerting: whether an operational-alert webhook is configured.
+    alertWebhookConfigured: Boolean(settings.alertWebhookUrl),
+    // A3 reliability knobs (effective values; 0 = off).
+    globalMaxConcurrent: Number(settings.globalMaxConcurrent ?? 0) || 0,
+    breakerFailureThreshold: Number(settings.breakerFailureThreshold ?? 0) || 0,
+    breakerCooldownMinutes: Number(settings.breakerCooldownMinutes ?? 15) || 15,
+    // D3: design runs deliver design/-only changes as in-console mockups.
+    designArtifacts: Boolean(settings.designArtifacts),
+    // Layer B: embed rendered mockup previews inline on the issue (pushes a branch).
+    designImagesToIssue: Boolean(settings.designImagesToIssue),
+    // Epic decomposition: route epics to a proposed child-issue plan; fan-out cap.
+    epicDecomposition: Boolean(settings.epicDecomposition),
+    epicMaxChildren: Number(settings.epicMaxChildren ?? 8) || 8,
+    // Risk-based merge: opt-in auto-merge of low-risk PRs + the diff-size cap.
+    autoMergeLowRisk: Boolean(settings.autoMergeLowRisk),
+    autoMergeMaxDiffLines: Number(settings.autoMergeMaxDiffLines ?? 400) || 400,
+    autoMergeSensitivePaths:
+      Array.isArray(settings.autoMergeSensitivePaths) && settings.autoMergeSensitivePaths.length
+        ? settings.autoMergeSensitivePaths
+        : DEFAULT_SENSITIVE_PATHS,
     // Command knobs are env-only; expose only whether each is configured.
     commands: {
       verify: Boolean(resolveAutoRunVerifyCommand()),
       decider: Boolean(resolveDeciderCommand(env)),
       judge: Boolean(resolveJudgeCommand(env)),
+      review: Boolean(resolveReviewCommand(env)),
+      designRender: Boolean(resolveDesignRenderCommand(env)),
     },
+    // A4: named verify-command allowlist (keys only — never argv). A project
+    // selects one of these by name; empty = only the global verify command (if any).
+    verifyCommandNames: Object.keys(resolveVerifyCommandAllowlist(env)),
     // The raw saved overrides, so the edit form can show what's explicitly set
     // (null field = inheriting the env default).
     settings,

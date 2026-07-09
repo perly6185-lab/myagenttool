@@ -13,7 +13,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { PROVISIONAL_FLOORS } from "../../../../tools/ai/src/evals/eval-signals.mjs";
+import { PROVISIONAL_FLOORS, looksLikeInfraFailure } from "../../../../tools/ai/src/evals/eval-signals.mjs";
 
 // Same anchor eval-real-run.mjs uses so the two always agree on the path.
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../../..");
@@ -48,7 +48,12 @@ function metricPoint(record, key) {
 
 /** Per-metric summary: chronological series + latest, delta, floor, regression. */
 function summarizeMetric(records, key) {
-  const series = records.map((r) => metricPoint(r, key)).filter(Boolean);
+  // Exclude infra/auth outages FIRST: a completed provider outage carries a real
+  // (low) passRate, so it would otherwise be counted as a capability regression
+  // and toward #250's real-run gate. This mirrors eval-signals.runRegressed /
+  // lastCapabilityRecord so the panel badge and the red cron log agree.
+  const real = records.filter((r) => !isInfraFailure(r) && !looksLikeInfraFailure(r?.subcap));
+  const series = real.map((r) => metricPoint(r, key)).filter(Boolean);
   const latest = series.length ? series[series.length - 1] : null;
   const previous = series.length > 1 ? series[series.length - 2] : null;
   const floor = PROVISIONAL_FLOORS[key] ?? null;
@@ -60,8 +65,7 @@ function summarizeMetric(records, key) {
     realRuns: series.length,
     floor,
     floorProvisional: true,
-    // Only a REAL low score is a regression; an infra/auth failure never counts
-    // (those records produce no metric point, so they're already excluded).
+    // Only a REAL low score is a regression; infra/auth rows are filtered above.
     regressed: latest && floor != null ? latest.passRate < floor : false,
     // #250 can't set a real line until this clears.
     enoughForLines: series.length >= MIN_RUNS_FOR_LINES,

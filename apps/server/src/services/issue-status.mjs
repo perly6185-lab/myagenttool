@@ -66,6 +66,104 @@ export async function runPrStateFetch({ cwd, prNumber, gh = defaultGh }) {
   }
 }
 
+// Read-only issue state (Epic S4 reconcile): a decomposed epic rolls up its children
+// as "done" when their ISSUE is closed — true however the child merged (its own
+// auto-run OR a human-override PR outside the loop). null on failure.
+export async function runIssueStateFetch({ cwd, issueNumber, gh = defaultGh }) {
+  try {
+    const result = await gh(["issue", "view", String(issueNumber), "--json", "state", "--jq", ".state"], cwd);
+    const state = String(result?.stdout ?? "").trim().toUpperCase();
+    return ["OPEN", "CLOSED"].includes(state) ? state : null;
+  } catch {
+    return null;
+  }
+}
+
+function tallyChecks(items, classify) {
+  let passed = 0;
+  let failed = 0;
+  let pending = 0;
+  for (const it of items) {
+    const kind = classify(it);
+    if (kind === "pass") passed += 1;
+    else if (kind === "fail") failed += 1;
+    else pending += 1;
+  }
+  const total = items.length;
+  const state = total === 0 ? "NONE" : failed > 0 ? "FAILURE" : pending > 0 ? "PENDING" : "SUCCESS";
+  return { total, passed, failed, pending, state };
+}
+
+// Summarize a PR's CI checks so the console (and the auto-merge gate) can see the
+// check posture. Primary path = statusCheckRollup (needs the token's Checks:read).
+// FALLBACK = GitHub Actions runs by the PR's head SHA — works when the token can
+// read Actions but not the Checks API (a fine-grained PAT without Checks:read, or
+// a private repo), so the auto-merge gate isn't permanently blind on such tokens.
+// Never throws; null on total failure. state: NONE | SUCCESS | FAILURE | PENDING.
+export async function runPrChecks({ cwd, prNumber, gh = defaultGh }) {
+  try {
+    const result = await gh(["pr", "view", String(prNumber), "--json", "statusCheckRollup"], cwd);
+    const rollup = JSON.parse(result?.stdout ?? "{}")?.statusCheckRollup ?? [];
+    if (rollup.length > 0) {
+      return tallyChecks(rollup, (check) => {
+        const s = String(check?.conclusion || check?.state || check?.status || "").toUpperCase();
+        if (["SUCCESS", "NEUTRAL", "SKIPPED"].includes(s)) return "pass";
+        if (["FAILURE", "ERROR", "CANCELLED", "TIMED_OUT", "ACTION_REQUIRED", "STARTUP_FAILURE"].includes(s)) return "fail";
+        return "pending"; // IN_PROGRESS / QUEUED / PENDING / EXPECTED / ""
+      });
+    }
+    // Empty rollup: could be genuinely no checks, or the token couldn't read them.
+    // Confirm via the Actions fallback before reporting NONE.
+  } catch {
+    /* rollup forbidden / gh error → try the Actions fallback */
+  }
+  try {
+    const repoMeta = JSON.parse((await gh(["repo", "view", "--json", "nameWithOwner"], cwd))?.stdout ?? "{}");
+    const nameWithOwner = repoMeta?.nameWithOwner;
+    const sha = JSON.parse((await gh(["pr", "view", String(prNumber), "--json", "headRefOid"], cwd))?.stdout ?? "{}")?.headRefOid;
+    if (!nameWithOwner || !sha) return null;
+    const runs = JSON.parse((await gh(["api", `repos/${nameWithOwner}/actions/runs?head_sha=${sha}&per_page=100`], cwd))?.stdout ?? "{}")?.workflow_runs ?? [];
+    // Dedup: the Actions API returns EVERY run for a SHA (re-runs, per-event), so
+    // a failed-then-rerun-green workflow yields both records and would tally
+    // FAILURE. Keep only the latest run per workflow (by run_number). (audit)
+    const latest = new Map();
+    runs.forEach((r, i) => {
+      // Dedup only runs that share a real workflow identity; runs with no
+      // workflow_id are kept distinct (never collapse unrelated checks).
+      const key = r?.workflow_id != null ? `wf:${r.workflow_id}:${r?.event ?? ""}` : `run:${r?.id ?? i}`;
+      const prev = latest.get(key);
+      if (!prev || Number(r?.run_number ?? 0) >= Number(prev?.run_number ?? 0)) latest.set(key, r);
+    });
+    const actions = tallyChecks([...latest.values()], (r) => {
+      if (r?.status !== "completed") return "pending"; // queued / in_progress
+      const c = String(r?.conclusion || "").toLowerCase();
+      if (["success", "neutral", "skipped"].includes(c)) return "pass";
+      if (["failure", "cancelled", "timed_out", "action_required", "startup_failure"].includes(c)) return "fail";
+      return "pending";
+    });
+    // The Actions API is blind to external/commit-status checks — an affirmative
+    // SUCCESS from Actions alone could hide a red third-party check. Fold in the
+    // commit statuses (readable with this token shape) so an external failure/
+    // pending downgrades the verdict. (audit)
+    let status = { state: null, total: 0 };
+    try {
+      status = JSON.parse((await gh(["api", `repos/${nameWithOwner}/commits/${sha}/status`], cwd))?.stdout ?? "{}");
+    } catch {
+      /* statuses unreadable → rely on Actions alone */
+    }
+    const stState = String(status?.state ?? "").toLowerCase();
+    if (stState === "failure" || stState === "error") {
+      return { total: actions.total + (status.total_count ?? 1), passed: actions.passed, failed: actions.failed + 1, pending: actions.pending, state: "FAILURE" };
+    }
+    if (stState === "pending" && Number(status?.total_count ?? 0) > 0 && actions.state !== "FAILURE") {
+      return { total: actions.total + status.total_count, passed: actions.passed, failed: actions.failed, pending: actions.pending + status.total_count, state: "PENDING" };
+    }
+    return actions;
+  } catch {
+    return null;
+  }
+}
+
 // Human-triggered PR merge from the console (the merge stays human — this is a
 // person clicking Merge in the tool, never an automatic step). Runs
 // `gh pr merge <n> --<method>` in the project repo. Never throws; returns a

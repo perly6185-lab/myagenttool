@@ -42,6 +42,8 @@ export function createServerState({ defaultProjectPath, now }) {
     projectTargets: [createProjectTargetRecord(defaultProject, now)],
     worktrees: [],
     autoRuns: [],
+    // A3 circuit breaker: consecutive auto-run failures open it (pause starts).
+    autoRunBreaker: { consecutiveFailures: 0, openUntil: null },
     agents: createDefaultAgents(now),
     invocations: [],
     compareRuns: [],
@@ -344,6 +346,38 @@ function createDefaultAgentSkills(now) {
       createdAt,
       updatedAt: createdAt,
     },
+    {
+      // D2 (issue→UI-design plan): when a design run concerns a user interface,
+      // the brief must be VISUAL — ASCII wireframes the console renders in
+      // monospace (D1), plus component structure and interaction notes. Pure
+      // prompt: no engine change, composes with skl_design_brief.
+      id: "skl_ui_design",
+      name: "UI Design Wireframes",
+      slug: "ui-design-wireframes",
+      description: "On a design run that touches UI, include ASCII wireframes, component hierarchy, and interaction notes in the brief.",
+      body: [
+        "If this issue involves a user interface (screens, pages, components,",
+        "layout, navigation, forms, visual output), your design brief MUST be",
+        "visual, not prose-only. Include:",
+        "",
+        "1. ASCII wireframes — one per affected screen/state, inside fenced",
+        "   ``` code blocks (they render as aligned monospace in the console).",
+        "   Box the layout regions; label every interactive element.",
+        "2. A component hierarchy (tree) naming each new/changed component.",
+        "3. Interaction notes — what each control does, empty/loading/error",
+        "   states, and where data comes from.",
+        "4. If several layouts are viable, wireframe the top two and recommend.",
+        "",
+        "Keep each wireframe under ~40 columns x 25 rows so it stays readable.",
+        "If the issue involves NO user interface, say so in one line and skip",
+        "the wireframes. Do NOT edit product code.",
+      ].join("\n"),
+      targets: ["claude", "codex"],
+      paths: ["design"],
+      enabled: true,
+      createdAt,
+      updatedAt: createdAt,
+    },
   ];
 }
 
@@ -413,7 +447,7 @@ function createDefaultAgents(now) {
         args: codexCliArgs(),
         workingDirectoryPolicy: "bridge_default",
         environmentPolicy: "inherit_safe",
-        timeoutSeconds: 120,
+        timeoutSeconds: 600,
         cancellation: "supported",
         outputFormat: "codex_jsonl",
         sandbox: null
@@ -466,7 +500,7 @@ function createDefaultAgents(now) {
         args: claudeCliArgs("acceptEdits"),
         workingDirectoryPolicy: "bridge_default",
         environmentPolicy: "inherit_safe",
-        timeoutSeconds: 180,
+        timeoutSeconds: 600,
         cancellation: "supported",
         outputFormat: "claude_jsonl",
         sandbox: null,

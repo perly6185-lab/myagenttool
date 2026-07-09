@@ -60,6 +60,20 @@ startAutomationScheduler({ now, ...httpDependencies });
 // MYAGENTTOOL_AUTOTRIGGER_ENABLED is set — returns null (no timer) otherwise.
 startAutoTriggerScheduler({ state, ...httpDependencies });
 
+// O1 reliability: reconcile stuck/orphaned auto-runs once on boot (recover from
+// a crash), then sweep on a slow tick so nothing lingers active forever.
+if (typeof httpDependencies.reapStuckAutoRuns === "function") {
+  httpDependencies.reapStuckAutoRuns().catch(() => {});
+  setInterval(() => httpDependencies.reapStuckAutoRuns().catch(() => {}), 60_000).unref?.();
+}
+
+// Risk-based merge (opt-in): sweep open PRs on a slow tick and auto-merge the
+// low-risk ones. No-op unless the operator enabled autoMergeLowRisk; respects
+// the kill switch + breaker internally.
+if (typeof httpDependencies.autoMergeSweep === "function") {
+  setInterval(() => httpDependencies.autoMergeSweep().catch(() => {}), 60_000).unref?.();
+}
+
 process.on("SIGINT", () => {
   savePersistentState();
   process.exit(0);

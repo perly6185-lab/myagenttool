@@ -112,9 +112,9 @@ test("byKind breakdown is carried onto the latest metric point", () => {
   assert.equal(s.subcap.latest.byKind["issue-gate"].total, 6);
 });
 
-test("provisional floors are the shared eval-signals source (0.6), labelled provisional", () => {
-  assert.equal(PROVISIONAL_FLOORS.subcap, 0.6);
-  assert.equal(PROVISIONAL_FLOORS.heldout, 0.6);
+test("floors are the shared eval-signals source (subcap 0.80 derived, heldout 0.6 provisional)", () => {
+  assert.equal(PROVISIONAL_FLOORS.subcap, 0.8, "#250: derived from 3 clean real runs (2026-07-07)");
+  assert.equal(PROVISIONAL_FLOORS.heldout, 0.6, "still provisional — no real held-out data yet");
   const s = summarizeEvalTrend([subcap("2026-07-06T06:34:00Z", 1, 15, 15)]);
   assert.equal(s.subcap.floor, PROVISIONAL_FLOORS.subcap, "panel floor == shared runner floor");
 });
@@ -127,4 +127,16 @@ test("readEvalTrend: missing file → [], garbage lines skipped", () => {
   const records = readEvalTrend({ trendFile: file });
   assert.equal(records.length, 1, "the one valid line parses; blank + garbage dropped");
   assert.equal(records[0].subcap.passRate, 1);
+});
+
+test("a COMPLETED infra failure (real low subcap number) is excluded from the series/regression", () => {
+  const s = summarizeEvalTrend([
+    subcapWithKinds("2026-07-02T00:00:00Z", { "issue-gate": { total: 6, resolved: 6 }, "pm-brief": { total: 6, resolved: 6 }, "review": { total: 3, resolved: 3 } }),
+    // provider outage: issue-gate passes, provider kinds wiped to 0 → real 0.4 passRate + infraFailure
+    { startedAt: "2026-07-03T00:00:00Z", infraFailure: true, subcap: { passRate: 0.4, resolved: 6, total: 15, byKind: { "issue-gate": { total: 6, resolved: 6 }, "pm-brief": { total: 6, resolved: 0 }, "review": { total: 3, resolved: 0 } } } },
+  ]);
+  assert.equal(s.subcap.realRuns, 1, "the outage row is NOT counted as a real run");
+  assert.equal(s.subcap.latest.passRate, 1, "latest is the real run, not the outage");
+  assert.equal(s.subcap.regressed, false, "an outage is never a capability regression");
+  assert.equal(s.infraFailures, 1, "still counted in the separate infra tally");
 });

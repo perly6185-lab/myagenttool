@@ -23,6 +23,7 @@ function git(cwd, ...args) {
 let repoDir;
 let svc;
 let worktree;
+let baselineSha;
 
 before(() => {
   repoDir = mkdtempSync(join(tmpdir(), "wt-diff-"));
@@ -44,21 +45,58 @@ before(() => {
   });
   const source = svc.addProject({ name: "Repo", path: repoDir, ownerTeamId: "team_a" });
   ({ worktree } = svc.createWorktree({ projectId: source.id, name: "diff", branchName: "myagent/diff" }));
+  baselineSha = git(worktree.path, "rev-parse", "HEAD");
 });
 
 // Each scenario starts from a pristine worktree so file-list assertions are exact.
 beforeEach(() => {
-  git(worktree.path, "checkout", "--", ".");
+  // Hard-reset history + tree so a prior test's committed change can't bleed into
+  // the next (previously each committing test self-reset at its END, which leaked
+  // if it threw first). (audit: intra-file order coupling)
+  git(worktree.path, "reset", "--hard", baselineSha);
   execFileSync("git", ["-C", worktree.path, "clean", "-fdx"], { encoding: "utf8" });
 });
 
-test("clean worktree: no files, empty diff, base falls back to HEAD", () => {
+test("clean worktree: no files, empty diff, base resolves to the repo default branch", () => {
   const result = svc.worktreeDiff(worktree);
   assert.deepEqual(result.files, []);
   assert.equal(result.diff, "");
   assert.equal(result.truncated, false);
-  // No upstream and no registered project target => the documented HEAD fallback.
-  assert.equal(result.base, "HEAD");
+  // No upstream and no target defaultBranch => discover the repo's own default
+  // branch (local `main`) and take the merge-base, not the literal "HEAD".
+  assert.notEqual(result.base, "HEAD", "base is a resolved commit, not the HEAD fallback");
+  assert.equal(result.base, git(repoDir, "rev-parse", "main"), "base is the merge-base with main");
+});
+
+test("committed change with no upstream: diff is visible (not empty) — C1 pilot regression", () => {
+  // Reproduces the judge false-block: the agent commits its work, the branch has
+  // no upstream, the target has no defaultBranch. `git diff HEAD` on the clean
+  // tree would be empty; base must fall back to the repo default branch so the
+  // committed change is still rendered for the acceptance judge.
+  writeFileSync(join(worktree.path, "README.md"), "hello\ncommitted line\n");
+  git(worktree.path, "add", ".");
+  git(worktree.path, "commit", "-m", "committed work");
+
+  const result = svc.worktreeDiff(worktree);
+
+  assert.notEqual(result.base, "HEAD", "base is the merge-base with main, not HEAD");
+  assert.match(result.diff, /README\.md/, "committed change is in the diff");
+  assert.match(result.diff, /^\+committed line$/m, "the committed line is visible to the judge");
+
+});
+
+test("changedPaths: committed + working-tree changes both listed (porcelain alone goes blind post-commit)", () => {
+  writeFileSync(join(worktree.path, "README.md"), "hello\ncommitted line\n");
+  git(worktree.path, "add", ".");
+  git(worktree.path, "commit", "-m", "committed work");
+  writeFileSync(join(worktree.path, "loose.txt"), "uncommitted\n");
+
+  const result = svc.worktreeDiff(worktree);
+
+  assert.ok(result.changedPaths.includes("README.md"), "COMMITTED change is in changedPaths");
+  assert.ok(result.changedPaths.includes("loose.txt"), "working-tree file is in changedPaths");
+  assert.equal(result.files.some((f) => f.path === "README.md"), false, "porcelain no longer sees the committed file — why changedPaths exists");
+
 });
 
 test("tracked modification: listed in files and rendered in the unified diff", () => {

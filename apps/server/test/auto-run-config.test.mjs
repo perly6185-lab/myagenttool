@@ -90,3 +90,53 @@ test("resolveAutoRunConfig with empty state reflects env defaults", () => {
   assert.equal(cfg.autoTrigger.label, "auto", "env/default label");
   assert.equal(cfg.commands.verify, false);
 });
+
+test("requireChecksGreenToMerge: normalized bool + exposed in effective config", () => {
+  const s = normalizeAutoRunSettings({ requireChecksGreenToMerge: "1" });
+  assert.equal(s.requireChecksGreenToMerge, true);
+  const cfg = resolveAutoRunConfig({ autoRunSettings: { requireChecksGreenToMerge: true } }, {});
+  assert.equal(cfg.requireChecksGreenToMerge, true);
+  assert.equal(resolveAutoRunConfig({}, {}).requireChecksGreenToMerge, false, "default off");
+});
+
+test("autonomyKillSwitch: normalized bool + exposed in effective config", () => {
+  assert.equal(normalizeAutoRunSettings({ autonomyKillSwitch: "1" }).autonomyKillSwitch, true);
+  assert.equal(resolveAutoRunConfig({ autoRunSettings: { autonomyKillSwitch: true } }, {}).autonomyKillSwitch, true);
+  assert.equal(resolveAutoRunConfig({}, {}).autonomyKillSwitch, false, "default off");
+});
+
+test("autoApproveNonCodePaths: normalized bool + exposed", () => {
+  assert.equal(normalizeAutoRunSettings({ autoApproveNonCodePaths: "1" }).autoApproveNonCodePaths, true);
+  assert.equal(resolveAutoRunConfig({ autoRunSettings: { autoApproveNonCodePaths: true } }, {}).autoApproveNonCodePaths, true);
+  assert.equal(resolveAutoRunConfig({}, {}).autoApproveNonCodePaths, false, "default off");
+});
+
+test("alertWebhookUrl: validated http(s) in normalize; exposed as configured boolean", () => {
+  assert.equal(normalizeAutoRunSettings({ alertWebhookUrl: "https://h.co/x" }).alertWebhookUrl, "https://h.co/x");
+  assert.equal(normalizeAutoRunSettings({ alertWebhookUrl: "nope" }).alertWebhookUrl, null);
+  assert.equal(resolveAutoRunConfig({ autoRunSettings: { alertWebhookUrl: "https://h.co/x" } }, {}).alertWebhookConfigured, true);
+  assert.equal(resolveAutoRunConfig({}, {}).alertWebhookConfigured, false);
+});
+
+test("A3 knobs: clamped in normalize + exposed", () => {
+  const s = normalizeAutoRunSettings({ globalMaxConcurrent: 999, breakerFailureThreshold: -1, breakerCooldownMinutes: 5 });
+  assert.equal(s.globalMaxConcurrent, 100, "clamped to max");
+  assert.equal(s.breakerFailureThreshold, 0, "clamped to floor 0");
+  assert.equal(s.breakerCooldownMinutes, 5);
+  const cfg = resolveAutoRunConfig({ autoRunSettings: { globalMaxConcurrent: 3 } }, {});
+  assert.equal(cfg.globalMaxConcurrent, 3);
+  assert.equal(cfg.breakerCooldownMinutes, 15, "default cooldown");
+});
+
+test("A4: verifyCommandNames exposes the allowlist keys (never argv)", () => {
+  const cfg = resolveAutoRunConfig({}, { MYAGENTTOOL_AUTORUN_VERIFY_COMMANDS_JSON: JSON.stringify({ maven: ["mvn", "test"], npm: ["npm", "test"] }) });
+  assert.deepEqual(cfg.verifyCommandNames.sort(), ["maven", "npm"]);
+  assert.equal(resolveAutoRunConfig({}, {}).verifyCommandNames.length, 0);
+});
+
+test("tunable SLO targets: normalize validates + drops out-of-range; empty → null", () => {
+  const s = normalizeAutoRunSettings({ sloTargets: { prSuccessRate: 0.9, failureRate: 5, timeToPrMedianSeconds: 600, junk: 1 } });
+  assert.deepEqual(s.sloTargets, { prSuccessRate: 0.9, timeToPrMedianSeconds: 600 }, "failureRate 5 dropped, junk dropped");
+  assert.equal(normalizeAutoRunSettings({ sloTargets: {} }).sloTargets, null);
+  assert.equal(normalizeAutoRunSettings({ sloTargets: "x" }).sloTargets, null);
+});

@@ -160,8 +160,135 @@ process.stdin.on("end", () => {
 
 Wire it with `MYAGENTTOOL_AUTORUN_JUDGE_COMMAND_JSON='["node","/path/to/judge.mjs"]'`.
 
+## AI diff review (risk-based auto-merge) — blast-radius-aware sample
+
+The risk-based merge policy auto-merges a PR only when it is LOW risk, and the
+STRICT bar requires an AI diff review to **pass**. This review is the smart
+half of the size gate: rather than a raw line count, it judges **blast radius**
+— what the change touches, reversibility, and whether it is safe to merge with
+no human. A `fail` never blocks the PR; it just routes the PR to a human merge.
+(The mechanical `autoMergeMaxDiffLines` cap + the sensitive-path guard are cheap
+backstops under it.)
+
+```js
+// review.mjs — blast-radius-aware auto-merge review (claude haiku)
+import { execFileSync } from "node:child_process";
+let raw = "";
+process.stdin.on("data", (c) => (raw += c));
+process.stdin.on("end", () => {
+  const { link, issueBody, diff } = JSON.parse(raw);
+  const prompt = [
+    "You decide whether this diff is SAFE TO MERGE WITH NO HUMAN REVIEW.",
+    "Judge blast radius, not size: reversibility, what subsystems it touches, whether it",
+    "could break auth/data/CI/deploys, and whether it stays within the issue's scope.",
+    "Answer risk:low ONLY if a competent reviewer would rubber-stamp it. When unsure, say medium/high.",
+    "",
+    `Issue #${link.number}: ${link.title}`,
+    issueBody ? `\nDescription:\n${String(issueBody).slice(0, 4000)}` : "",
+    "\nThe diff:\n```diff",
+    diff || "(empty diff)",
+    "```",
+    "",
+    'Respond with ONLY a JSON object, no prose, no code fences:',
+    '{"risk":"low|medium|high","approve":boolean,"summary":"one sentence","issues":["concrete risks; empty when low"]}',
+  ].join("\n");
+  process.stdout.write(execFileSync("claude", ["-p", prompt, "--model", "haiku"], { encoding: "utf8", timeout: 110_000, maxBuffer: 1024 * 1024 }));
+});
+```
+
+Wire it with `MYAGENTTOOL_AUTORUN_REVIEW_COMMAND_JSON='["node","/path/to/review.mjs"]'`.
+Then enable **Auto-merge low-risk PRs** in the console (Configuration → Quality &
+merge) and, optionally, tune the **Sensitive paths** list + **max diff lines**.
+
 Correction to an earlier caution: bridge polling errors are NOT silent — they
 are logged throttled (one line per 5s). The pilot's "silent stall" was the
 stale-unhealthy health verdict (fixed: re-probe on registration). The one real
 credential UX gap — a raw-stack crash when registration is refused — now prints
 the recovery steps instead.
+
+
+## Visual acceptance (D5) — operator screenshot command
+
+The product does NOT bundle a browser. Visual acceptance is an operator-provided
+verify (or extra) command that writes screenshots into the worktree; the console
+then renders any image files a run changed (on the pr_open card, "Screenshots
+(visual acceptance)") and design runs render `design/*.png` in the design panel.
+Same trust boundary as verify/review — env-configured argv, no shell.
+
+Wire a playwright capture as (part of) the verify command, e.g.:
+
+```js
+// shots.mjs — capture screenshots into ./screenshots (run by the verify command)
+import { chromium } from "playwright";           // operator dependency, not the product's
+import { mkdirSync } from "node:fs";
+mkdirSync("screenshots", { recursive: true });
+const browser = await chromium.launch();
+for (const [name, width] of [["desktop", 1280], ["mobile", 390]]) {
+  const page = await browser.newPage({ viewport: { width, height: 900 } });
+  await page.goto(process.env.APP_URL ?? "http://127.0.0.1:3000");  // your dev server
+  await page.screenshot({ path: `screenshots/home-${name}.png`, fullPage: true });
+  await page.close();
+}
+await browser.close();
+```
+
+Then make the project's verify command run the app's real tests AND the capture,
+e.g. `MYAGENTTOOL_AUTORUN_VERIFY_COMMAND_JSON='["sh","-c","npm test && node shots.mjs"]'`
+(only when the toolchain + a reachable dev server exist; otherwise omit it and the
+PR opens without shots). The images land in the worktree, get committed with the
+change, and surface in the console for a human to eyeball before merging. A design
+run can likewise drop mockup renders into `design/*.png`.
+
+
+## Design effect on the issue (Layer A always / Layer B opt-in)
+
+A design run's deliverable is now visible on the GitHub issue itself, not only in
+the console:
+
+- **Layer A (always, no deps):** the design role must put an ASCII wireframe +
+  component hierarchy in `design/BRIEF.md`; that brief is posted as the issue
+  comment (GitHub renders the fenced blocks), with the produced mockups indexed
+  beneath it ("open in the console design panel"). HTML mockups are listed, never
+  embedded — a comment can't render a worktree HTML file.
+
+- **Layer B (opt-in `designImagesToIssue`, default off):** render the mockups to
+  PNGs, push the design branch, and embed the previews inline on the issue. Turn
+  on the "Embed mockup previews on the issue" toggle AND wire an operator render
+  command (product bundles no browser — same trust boundary as verify):
+
+  ```
+  MYAGENTTOOL_AUTORUN_DESIGN_RENDER_COMMAND_JSON='["node","render-mockups.mjs"]'
+  ```
+
+  ```js
+  // render-mockups.mjs — rasterize design/*.html -> design/*.png (operator dep)
+  import { chromium } from "playwright";
+  import { readdirSync } from "node:fs";
+  import { resolve } from "node:path";
+  const browser = await chromium.launch();
+  for (const f of readdirSync("design").filter((f) => /\.html?$/.test(f))) {
+    const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+    await page.goto("file://" + resolve("design", f));
+    await page.screenshot({ path: resolve("design", f.replace(/\.html?$/, ".png")), fullPage: true });
+    await page.close();
+  }
+  await browser.close();
+  ```
+
+  The run commits the PNGs, pushes the design branch (NO PR), and the issue
+  comment embeds `![](https://raw.githubusercontent.com/<owner>/<repo>/<branch>/design/x.png)`.
+  Inline previews need a PUBLIC repo (a private repo's raw URL won't render without
+  a token). Everything is best-effort: no render command / push failure / private
+  repo just falls back to Layer A's text index — the report still posts.
+
+  > **Security — the renderer runs AGENT-authored HTML.** The `design/*.html`
+  > mockup is written by the coding agent (steered by an untrusted issue body).
+  > The "inline CSS only, no scripts, no external resources" rule in the design
+  > prompt is GUIDANCE, not enforced. A browser-based renderer pointed at that HTML
+  > will execute any `<script>` and fetch any external/`file://` resource it
+  > contains — i.e. arbitrary JS + SSRF / local-file read on the render host. Use a
+  > renderer that disables JavaScript and network (e.g. Chrome `--headless` with a
+  > blocked-network profile, or a sandboxed/ephemeral render host), or accept that
+  > risk. The product keeps the render argv operator-set (never agent-chosen), but
+  > it cannot police what your renderer does with the HTML.
+

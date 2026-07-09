@@ -45,7 +45,12 @@ export function useAsyncAction() {
     [run],
   );
 
-  return { execute, pending, error, errorDetail };
+  const reset = useCallback(() => {
+    setError(null);
+    setErrorDetail(null);
+  }, []);
+
+  return { execute, pending, error, errorDetail, reset };
 }
 
 export { api };

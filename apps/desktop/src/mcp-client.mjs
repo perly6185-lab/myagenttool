@@ -24,10 +24,15 @@ const CANCEL_GRACE_MS = 500;
 // process to untrusted code. Pass only a curated, non-secret base (enough for a
 // node/npx-based server to run) plus any env the operator explicitly configured
 // on the registration.
-const SAFE_MCP_ENV_KEYS = [
+export const SAFE_MCP_ENV_KEYS = [
   "PATH",
   "HOME",
   "USERPROFILE",
+  // Unix identity vars (non-secret). USER is required for the claude CLI's
+  // keychain-backed login lookup — without it a child spawn reports "Not logged
+  // in" even though the machine's login state is intact (B1b Tier 1 soak finding).
+  "USER",
+  "LOGNAME",
   "LANG",
   "LC_ALL",
   "LC_CTYPE",

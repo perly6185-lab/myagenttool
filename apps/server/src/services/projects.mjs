@@ -46,12 +46,45 @@ export function createProjectRecord(
       defaultBranch: null,
       currentBranch: null,
     },
+    // The worktree/checkout the workspace is currently scoped to (null = the
+    // registered root itself, for shared-isolation projects). Set as worktrees
+    // are created/selected (Agent Workspace #160).
+    activeCheckoutId: null,
     source,
     worktree,
     createdAt,
     updatedAt: createdAt,
     lastOpenedAt: createdAt,
   };
+}
+
+// Best-effort git facts for a registered project root (Agent Workspace #160):
+// remote URL, default branch, current branch. Sync (matches the file's other git
+// probes) and never throws — a non-repo folder yields isRepo:false + null fields
+// so metadata is "captured when available and gracefully omitted otherwise".
+export function readGitFacts(cwd) {
+  const g = (args) => {
+    try {
+      return execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8", timeout: 5_000, stdio: ["ignore", "pipe", "ignore"] }).trim();
+    } catch {
+      return "";
+    }
+  };
+  if (!cwd || g(["rev-parse", "--is-inside-work-tree"]) !== "true") {
+    return { repoPath: cwd ?? null, remoteUrl: null, defaultBranch: null, currentBranch: null, isRepo: false };
+  }
+  const remoteUrl = g(["remote", "get-url", "origin"]) || null;
+  const currentBranch = g(["rev-parse", "--abbrev-ref", "HEAD"]) || null;
+  let defaultBranch = null;
+  const originHead = g(["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"]);
+  if (originHead) {
+    defaultBranch = originHead.replace(/^refs\/remotes\/origin\//, "");
+  } else {
+    for (const cand of ["main", "master"]) {
+      if (g(["rev-parse", "--verify", "--quiet", `refs/heads/${cand}`])) { defaultBranch = cand; break; }
+    }
+  }
+  return { repoPath: cwd, remoteUrl, defaultBranch, currentBranch, isRepo: true };
 }
 
 export function createProjectService({ state, now, nextId, appendEvent, persistStateSoon }) {
@@ -68,10 +101,13 @@ export function createProjectService({ state, now, nextId, appendEvent, persistS
       status: body.status,
       isolation: body.isolation,
     }, { nextId, now });
+    // Capture git facts (remote/default/current branch) from the real root — #160.
+    project.git = readGitFacts(project.path);
     const existing = state.projects.find((item) => sameProjectPath(item.path, project.path));
     if (existing) {
       existing.name = project.name || existing.name;
       existing.host = project.host;
+      existing.git = project.git;
       existing.color = project.color ?? existing.color;
       existing.ownerTeamId = project.ownerTeamId ?? existing.ownerTeamId;
       existing.budgetPoolId = project.budgetPoolId ?? existing.budgetPoolId ?? null;
@@ -305,6 +341,12 @@ export function createProjectService({ state, now, nextId, appendEvent, persistS
     if (body.isolation !== undefined) project.isolation = body.isolation === "worktree" ? "worktree" : "shared";
     if (body.defaultAgentId !== undefined) project.defaultAgentId = body.defaultAgentId ? String(body.defaultAgentId) : null;
     if (body.budgetPoolId !== undefined) project.budgetPoolId = body.budgetPoolId ? String(body.budgetPoolId) : null;
+    // A4: the project's chosen verify command NAME (a key into the operator's
+    // env allowlist — never a command). Unknown names harmlessly fall back at
+    // resolution time; blank clears the selection.
+    if (body.verifyCommandName !== undefined) {
+      project.verifyCommandName = body.verifyCommandName ? String(body.verifyCommandName).trim() || null : null;
+    }
     project.updatedAt = now();
     ensureProjectTarget(project);
     persistStateSoon();
@@ -349,17 +391,21 @@ export function createProjectService({ state, now, nextId, appendEvent, persistS
   // the PR — publish only ships commits. No-op (committed:false) when the tree is
   // already clean. hasCommits reports whether the branch has any commit ahead of
   // its base, so the caller can avoid opening an empty PR.
-  async function commitWorktreeChanges(worktreeId, { message } = {}) {
+  async function commitWorktreeChanges(worktreeId, { message, pathspec = null } = {}) {
     const worktree = worktreeRecord(worktreeId);
     if (!worktree) throw new Error("Worktree not found.");
     const cwd = worktree.path ?? worktree.worktreePath;
     if (!cwd || !existsSync(cwd)) throw new Error("Worktree working directory is missing.");
 
-    const status = await runGitCapture(cwd, ["status", "--porcelain"], { timeout: 10_000 });
+    // An optional pathspec scopes the commit (e.g. Layer B's render commit stages
+    // only `design/`, so a stray file from the operator's renderer can't ride the
+    // push). Default: the whole tree (`-A`), the develop path's behavior.
+    const scope = Array.isArray(pathspec) && pathspec.length ? ["--", ...pathspec] : [];
+    const status = await runGitCapture(cwd, ["status", "--porcelain", ...scope], { timeout: 10_000 });
     if (!status.ok) throw new Error(`git status failed: ${status.stderr || `exit ${status.code}`}`);
     let committed = false;
     if (status.stdout.trim()) {
-      const add = await runGitCapture(cwd, ["add", "-A"], { timeout: 20_000 });
+      const add = await runGitCapture(cwd, scope.length ? ["add", ...scope] : ["add", "-A"], { timeout: 20_000 });
       if (!add.ok) throw new Error(`git add failed: ${add.stderr || `exit ${add.code}`}`);
       const commit = await runGitCapture(cwd, ["commit", "-m", message || "Auto-run changes"], { timeout: 20_000 });
       if (!commit.ok) throw new Error(`git commit failed: ${commit.stderr || commit.stdout || `exit ${commit.code}`}`);
@@ -450,7 +496,15 @@ export function createProjectService({ state, now, nextId, appendEvent, persistS
       stdout = result.stdout;
     } catch (error) {
       const detail = String(error?.stderr ?? error?.stdout ?? error?.message ?? "").trim();
-      throw new Error(`gh pr create failed: ${detail || `exit ${error?.code ?? 1}`}`);
+      // Idempotent: if a PR for this branch already exists (a re-published run or
+      // a retry), gh prints the existing PR URL in the error. Treat that as
+      // success — the desired PR IS open — instead of false-failing the run.
+      const existing = detail.match(/https?:\/\/\S+\/pull\/\d+/);
+      if (/already exists/i.test(detail) && existing) {
+        stdout = existing[0];
+      } else {
+        throw new Error(`gh pr create failed: ${detail || `exit ${error?.code ?? 1}`}`);
+      }
     }
 
     const parsed = parseGhPrCreateOutput(stdout);
@@ -986,19 +1040,55 @@ function worktreeDiff(worktree, { projectTargets = [] } = {}) {
   } catch {
     /* leave empty */
   }
-  let base = "HEAD";
-  try {
-    const upstream = git(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"]).trim();
-    base = git(["merge-base", upstream, "HEAD"]).trim() || "HEAD";
-  } catch {
-    const target = projectTargets.find((t) => t.id === worktree.targetId);
-    const def = target?.defaultBranch;
-    if (def) {
+  // The repo's own default branch, used for base resolution when a worktree
+  // branch has no upstream: origin/HEAD if set, else a local main/master. Null
+  // when none can be found.
+  const repoDefaultBranch = () => {
+    try {
+      const ref = git(["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"]).trim();
+      if (ref) return ref.replace(/^refs\/remotes\//, "");
+    } catch {
+      /* origin/HEAD not set */
+    }
+    for (const cand of ["main", "master"]) {
       try {
-        base = git(["merge-base", def, "HEAD"]).trim() || "HEAD";
+        git(["rev-parse", "--verify", "--quiet", `refs/heads/${cand}`]);
+        return cand;
       } catch {
-        base = "HEAD";
+        /* candidate not present */
       }
+    }
+    return null;
+  };
+  let base = "HEAD";
+  const target = projectTargets.find((t) => t.id === worktree.targetId);
+  // Diff against the branch this worktree merges INTO (its base branch) — the PR
+  // diff. Prefer the worktree's OWN recorded base first, so a worktree cut from a
+  // non-default branch doesn't over-report every default-branch commit not in its
+  // base (audit finding); then the target/repo default. @{u} is only a last
+  // resort — once the branch is PUSHED its upstream is its OWN remote ref, so
+  // merge-base(@{u},HEAD)=HEAD => an EMPTY diff that blinds every post-publish
+  // consumer (the auto-merge review, a re-run judge). (C1 pilot finding).
+  const baseCandidates = [
+    worktree.baseBranch && worktree.baseBranch !== "HEAD" ? worktree.baseBranch : null,
+    target?.defaultBranch,
+    repoDefaultBranch(),
+  ].filter(Boolean);
+  let resolved = false;
+  for (const cand of baseCandidates) {
+    try {
+      const mb = git(["merge-base", cand, "HEAD"]).trim();
+      if (mb) { base = mb; resolved = true; break; }
+    } catch {
+      /* try the next candidate */
+    }
+  }
+  if (!resolved) {
+    try {
+      const upstream = git(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"]).trim();
+      base = git(["merge-base", upstream, "HEAD"]).trim() || "HEAD";
+    } catch {
+      /* no default branch and no upstream → leave HEAD */
     }
   }
   result.base = base;
@@ -1007,6 +1097,16 @@ function worktreeDiff(worktree, { projectTargets = [] } = {}) {
     diff = git(["diff", "--no-color", base, "--"]);
   } catch {
     /* no commits yet, or bad base */
+  }
+  // Changed paths vs base — COMMITTED work included. `result.files` is porcelain
+  // (working tree only), so once an agent commits, it goes empty; any consumer
+  // that needs "what did this branch change" (the auto-merge sensitive-path
+  // guard, design-artifact detection) must use changedPaths instead.
+  try {
+    const committed = git(["-c", "core.quotepath=false", "diff", "--name-only", base, "--"]).split("\n").filter(Boolean);
+    result.changedPaths = [...new Set([...committed, ...result.files.map((f) => f.path)])];
+  } catch {
+    result.changedPaths = result.files.map((f) => f.path);
   }
   const MAX_UNTRACKED = 200;
   let untrackedSeen = 0;

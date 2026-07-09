@@ -174,5 +174,21 @@ const skills = [
   ok("render: role-restricted skill renders only for its role");
 }
 
+// --- seeded design-role skills (fresh state): brief + UI wireframes (D2) ---
+{
+  const { createServerState } = await import("../../apps/server/src/runtime/state-factory.mjs");
+  const { state } = createServerState({ defaultProjectPath: tmpdir(), now: () => new Date("2026-01-01T00:00:00Z").toISOString() });
+  const byId = Object.fromEntries((state.agentSkills ?? []).map((s) => [s.id, s]));
+  assert.ok(byId.skl_design_brief, "design-brief skill seeded");
+  const ui = byId.skl_ui_design;
+  assert.ok(ui, "UI-design wireframes skill seeded (D2)");
+  assert.deepEqual(ui.paths, ["design"], "UI-design skill is design-role scoped");
+  assert.equal(ui.enabled, true, "UI-design skill enabled by default");
+  assert.match(ui.body, /ASCII wireframes/, "brief must demand ASCII wireframes");
+  assert.match(ui.body, /component hierarchy/i, "brief must demand a component hierarchy");
+  assert.match(ui.body, /Do NOT edit product code/, "design rule preserved");
+  ok("seed: skl_ui_design present, design-scoped, wireframe requirements in body");
+}
+
 rmSync(wt, { recursive: true, force: true });
 console.log(`\nagent-skills-smoke: ${passed} checks passed`);

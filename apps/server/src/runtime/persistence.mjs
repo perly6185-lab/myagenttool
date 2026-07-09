@@ -70,7 +70,6 @@ const persistedArrayKeys = [
   "budgets",
   "automations",
   "agentSkills",
-  "autoRunSettings",
   "auditExportRequests",
   "approvalRequests",
   "policyDecisionRecords",
@@ -92,6 +91,12 @@ const persistedArrayKeys = [
 
 const persistedObjectKeys = [
   "device",
+  // Auto-run config overrides + the circuit-breaker are OBJECTS — they must be
+  // in the object list, not persistedArrayKeys, or restore's Array.isArray guard
+  // silently drops them and every armed brake (kill switch, breaker, saved
+  // knobs) un-arms itself on restart.
+  "autoRunSettings",
+  "autoRunBreaker",
   "privateDeploymentConfig",
   "retentionSettings",
   "terminalRuntimeCapability",
