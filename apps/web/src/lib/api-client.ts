@@ -332,6 +332,9 @@ export const api = {
     request("POST", `/api/worktrees/${encodeURIComponent(id)}/attachments`, { files }),
   cancelInvocation: (id: string) =>
     request("POST", `/api/invocations/${encodeURIComponent(id)}/cancel`),
+  // #128 Phase 4: run one task on 2+ agents and compare (server fans out + tracks).
+  startCompareRun: (task: string, agentIds: string[], options?: Record<string, unknown>) =>
+    request("POST", "/api/compare-runs", { task, agentIds, options }),
   troubleshoot: (id: string) =>
     request("POST", `/api/invocations/${encodeURIComponent(id)}/troubleshoot`),
 
