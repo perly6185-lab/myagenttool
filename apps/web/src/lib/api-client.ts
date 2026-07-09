@@ -430,6 +430,8 @@ export const api = {
     request("GET", `/api/worktrees/${encodeURIComponent(id)}/file?path=${encodeURIComponent(filePath)}`),
   worktreeGit: (id: string) => request("GET", `/api/worktrees/${encodeURIComponent(id)}/git`),
   worktreeDiff: (id: string) => request("GET", `/api/worktrees/${encodeURIComponent(id)}/diff`),
+  reviewWorktree: (id: string, payload: { verdict: "approved" | "changes_requested"; summary?: string; comments?: { path: string | null; body: string }[] }) =>
+    request("POST", `/api/worktrees/${encodeURIComponent(id)}/review`, payload),
   publishWorktreeBranch: (id: string) => request("POST", `/api/worktrees/${encodeURIComponent(id)}/push`),
   createWorktreePr: (id: string, payload: { title: string; body: string }) =>
     request("POST", `/api/worktrees/${encodeURIComponent(id)}/pr`, payload),

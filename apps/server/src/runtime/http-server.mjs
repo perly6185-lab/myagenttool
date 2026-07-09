@@ -50,6 +50,7 @@ export function createHttpServer({
   gitProjectSummary,
   projectBranches,
   worktreeDiff,
+  submitWorktreeReview,
   projectGithubItems,
   createAgentSkill,
   updateAgentSkill,
@@ -264,6 +265,7 @@ export function createHttpServer({
         gitProjectSummary,
         projectBranches,
         worktreeDiff,
+        submitWorktreeReview,
         projectGithubItems,
       })) {
         return;
