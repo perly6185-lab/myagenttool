@@ -18,6 +18,7 @@ export function NavRail() {
   const setSection = useUiStore((s) => s.setSection);
   const { data: state } = useConsoleState();
   const pendingCount = state?.pendingDecisions?.length ?? 0;
+  const attentionCount = state?.evidenceLedger?.filter((r) => r.attention).length ?? 0;
   const [showRegister, setShowRegister] = useState(false);
 
   return (
@@ -67,6 +68,17 @@ export function NavRail() {
                       )}
                     >
                       {pendingCount}
+                    </span>
+                  ) : null}
+                  {item.key === "evidence" && attentionCount > 0 ? (
+                    <span
+                      aria-label={`${attentionCount} need attention`}
+                      className={cn(
+                        "ml-auto min-w-5 rounded-full px-1.5 py-0.5 text-center text-[10px] font-semibold",
+                        active ? "bg-sidebar-foreground/15 text-sidebar-accent-foreground" : "bg-warning text-warning-foreground",
+                      )}
+                    >
+                      {attentionCount}
                     </span>
                   ) : null}
                 </button>
