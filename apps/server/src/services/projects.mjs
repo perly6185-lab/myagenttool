@@ -46,12 +46,45 @@ export function createProjectRecord(
       defaultBranch: null,
       currentBranch: null,
     },
+    // The worktree/checkout the workspace is currently scoped to (null = the
+    // registered root itself, for shared-isolation projects). Set as worktrees
+    // are created/selected (Agent Workspace #160).
+    activeCheckoutId: null,
     source,
     worktree,
     createdAt,
     updatedAt: createdAt,
     lastOpenedAt: createdAt,
   };
+}
+
+// Best-effort git facts for a registered project root (Agent Workspace #160):
+// remote URL, default branch, current branch. Sync (matches the file's other git
+// probes) and never throws — a non-repo folder yields isRepo:false + null fields
+// so metadata is "captured when available and gracefully omitted otherwise".
+export function readGitFacts(cwd) {
+  const g = (args) => {
+    try {
+      return execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8", timeout: 5_000, stdio: ["ignore", "pipe", "ignore"] }).trim();
+    } catch {
+      return "";
+    }
+  };
+  if (!cwd || g(["rev-parse", "--is-inside-work-tree"]) !== "true") {
+    return { repoPath: cwd ?? null, remoteUrl: null, defaultBranch: null, currentBranch: null, isRepo: false };
+  }
+  const remoteUrl = g(["remote", "get-url", "origin"]) || null;
+  const currentBranch = g(["rev-parse", "--abbrev-ref", "HEAD"]) || null;
+  let defaultBranch = null;
+  const originHead = g(["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"]);
+  if (originHead) {
+    defaultBranch = originHead.replace(/^refs\/remotes\/origin\//, "");
+  } else {
+    for (const cand of ["main", "master"]) {
+      if (g(["rev-parse", "--verify", "--quiet", `refs/heads/${cand}`])) { defaultBranch = cand; break; }
+    }
+  }
+  return { repoPath: cwd, remoteUrl, defaultBranch, currentBranch, isRepo: true };
 }
 
 export function createProjectService({ state, now, nextId, appendEvent, persistStateSoon }) {
@@ -68,10 +101,13 @@ export function createProjectService({ state, now, nextId, appendEvent, persistS
       status: body.status,
       isolation: body.isolation,
     }, { nextId, now });
+    // Capture git facts (remote/default/current branch) from the real root — #160.
+    project.git = readGitFacts(project.path);
     const existing = state.projects.find((item) => sameProjectPath(item.path, project.path));
     if (existing) {
       existing.name = project.name || existing.name;
       existing.host = project.host;
+      existing.git = project.git;
       existing.color = project.color ?? existing.color;
       existing.ownerTeamId = project.ownerTeamId ?? existing.ownerTeamId;
       existing.budgetPoolId = project.budgetPoolId ?? existing.budgetPoolId ?? null;
