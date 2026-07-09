@@ -1,6 +1,7 @@
 import type { ComponentType } from "react";
 import type { SectionKey } from "@/store/ui-store";
 import { DashboardView } from "@/features/dashboard/dashboard-view";
+import { WorkspaceView } from "@/features/workspace/workspace-view";
 import { ProjectsView } from "@/features/projects/projects-view";
 import { TaskView } from "@/features/tasks/task-view";
 import { AutoRunsView } from "@/features/auto-runs/auto-runs-view";
@@ -21,6 +22,7 @@ import { AuditView } from "@/features/audit/audit-view";
 /** Section → screen map. The lightweight URL sync lives above this table. */
 export const SECTION_VIEWS: Record<SectionKey, ComponentType> = {
   dashboard: DashboardView,
+  workspace: WorkspaceView,
   projects: ProjectsView,
   task: TaskView,
   autoRuns: AutoRunsView,
