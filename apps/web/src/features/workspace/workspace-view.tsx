@@ -22,7 +22,8 @@ interface GitFacts {
 }
 
 export function shortRemote(url: string): string {
-  const m = url.match(/github\.com[:/]+([^/]+)\/([^/.]+)/i);
+  // Strip only a trailing `.git` — a dotted repo name (foo.js, o.github.io) must survive.
+  const m = url.match(/github\.com[:/]+([^/]+)\/([^/]+?)(?:\.git)?\/?$/i);
   return m ? `${m[1]}/${m[2]}` : url.replace(/^https?:\/\//, "").replace(/\.git$/, "").slice(0, 40);
 }
 
@@ -36,8 +37,8 @@ export function WorkspaceView() {
   const git = current?.git;
 
   // Empty-browser state (#158): guide the add-project step instead of showing an
-  // inert three-pane shell with nothing to browse or run.
-  if (projects.length === 0) {
+  // inert shell. Gate on state being LOADED so it doesn't flash on the first poll.
+  if (state && projects.length === 0) {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-3 text-center">
         <PanelsTopLeft className="size-8 text-muted-foreground" />
@@ -75,16 +76,16 @@ export function WorkspaceView() {
             ))}
           </select>
         </label>
-        {current ? (
+        {!current ? (
+          <span className="text-xs text-muted-foreground">Register or select a project to start.</span>
+        ) : (git?.isRepo === false || git?.currentBranch || git?.defaultBranch || git?.remoteUrl) ? (
           <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
             <FolderGit2 className="size-3.5" />
-            {git?.isRepo
-              ? <>{git.currentBranch ?? git.defaultBranch ?? "?"}{git.remoteUrl ? <> · {shortRemote(git.remoteUrl)}</> : <> · no remote</>}</>
-              : "not a git repository"}
+            {git?.isRepo === false
+              ? "not a git repository"
+              : <>{git?.currentBranch ?? git?.defaultBranch ?? ""}{git?.remoteUrl ? <> · {shortRemote(git.remoteUrl)}</> : null}</>}
           </span>
-        ) : (
-          <span className="text-xs text-muted-foreground">Register or select a project to start.</span>
-        )}
+        ) : null}
       </header>
 
       <div className="grid min-h-0 flex-1 grid-cols-1 gap-3 lg:grid-cols-[minmax(200px,260px)_minmax(0,1fr)_minmax(220px,300px)]">

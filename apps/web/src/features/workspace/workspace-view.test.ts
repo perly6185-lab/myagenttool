@@ -7,6 +7,11 @@ describe("shortRemote (Agent Workspace header)", () => {
     expect(shortRemote("git@github.com:o/r.git")).toBe("o/r");
     expect(shortRemote("https://github.com/o/r")).toBe("o/r");
   });
+  it("keeps dotted repo names (strips only a trailing .git) (review C)", () => {
+    expect(shortRemote("https://github.com/o/bar.js.git")).toBe("o/bar.js");
+    expect(shortRemote("https://github.com/o/o.github.io")).toBe("o/o.github.io");
+    expect(shortRemote("git@github.com:acme/docs.example.com.git")).toBe("acme/docs.example.com");
+  });
   it("falls back to a trimmed host/path for non-github remotes", () => {
     expect(shortRemote("https://gitlab.com/o/r.git")).toBe("gitlab.com/o/r");
   });

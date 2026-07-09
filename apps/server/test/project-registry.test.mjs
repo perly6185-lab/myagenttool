@@ -5,11 +5,11 @@
  */
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { before, test } from "node:test";
-import { createProjectService, readGitFacts } from "../src/services/projects.mjs";
+import { createProjectService, readGitFacts, readProjectTree } from "../src/services/projects.mjs";
 
 function git(cwd, ...args) {
   return execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8" }).trim();
@@ -103,4 +103,61 @@ test("gitStatusMap marks .gitignore'd entries as 'ignored' (#161 badge)", async 
   const map = gitStatusMap(dir);
   assert.equal(map.get("junk.log"), "ignored", "the ignored file carries the ignored status");
   assert.equal(map.get("keep.txt"), "modified", "a tracked change is still classified");
+});
+
+test("safeProjectPath rejects an in-tree symlink that escapes the registered root (review: symlink escape)", async () => {
+  const { safeProjectPath } = await import("../src/services/projects.mjs");
+  const { symlinkSync, mkdirSync: mkdir } = await import("node:fs");
+  const outside = mkdtempSync(join(tmpdir(), "prj-secret-"));
+  const root = mkdtempSync(join(tmpdir(), "prj-root-"));
+  mkdir(join(root, "sub"));
+  try { symlinkSync(outside, join(root, "escape"), "dir"); } catch { return; } // skip if symlinks unsupported
+  // a normal in-root path is fine
+  assert.ok(safeProjectPath({ path: root }, "sub"));
+  // the symlink-to-outside is rejected by realpath containment
+  assert.throws(() => safeProjectPath({ path: root }, "escape"), /escapes the registered project root/);
+});
+
+test("searchProjectContent does NOT return contents of .gitignore'd or secret files (review: secret leak)", async () => {
+  const { searchProjectContent } = await import("../src/services/projects.mjs");
+  const dir = mkdtempSync(join(tmpdir(), "prj-search-"));
+  execFileSync("git", ["init", "-b", "main", dir], { encoding: "utf8" });
+  git(dir, "config", "user.email", "t@example.com");
+  git(dir, "config", "user.name", "T");
+  writeFileSync(join(dir, ".gitignore"), ".env\nsecrets/\n");
+  writeFileSync(join(dir, ".env"), "API_KEY=SUPERSECRET\n");
+  writeFileSync(join(dir, "app.js"), "const k = 'SUPERSECRET-in-code';\n");
+  git(dir, "add", ".gitignore", "app.js");
+  git(dir, "commit", "-m", "init");
+  const out = searchProjectContent({ id: "p", path: dir }, { query: "SUPERSECRET" });
+  const paths = out.results.map((r) => r.path);
+  assert.ok(paths.includes("app.js"), "a tracked source match is returned");
+  assert.ok(!paths.includes(".env"), "the .gitignore'd .env is NOT searched/returned");
+});
+
+test("readGitFacts reports null (not 'HEAD') for a detached HEAD (review F)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "prj-detached-"));
+  execFileSync("git", ["init", "-b", "main", dir], { encoding: "utf8" });
+  git(dir, "config", "user.email", "t@example.com");
+  git(dir, "config", "user.name", "T");
+  writeFileSync(join(dir, "a.txt"), "1\n");
+  git(dir, "add", "."); git(dir, "commit", "-m", "c1");
+  const sha = git(dir, "rev-parse", "HEAD");
+  git(dir, "checkout", "--detach", sha);
+  const facts = readGitFacts(dir);
+  assert.equal(facts.isRepo, true);
+  assert.equal(facts.currentBranch, null, "detached HEAD is not surfaced as a branch named HEAD");
+});
+
+test("readProjectTree marks a child inside an ignored directory as ignored (review G)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "prj-igntree-"));
+  execFileSync("git", ["init", "-b", "main", dir], { encoding: "utf8" });
+  git(dir, "config", "user.email", "t@example.com");
+  git(dir, "config", "user.name", "T");
+  writeFileSync(join(dir, ".gitignore"), "build/\n");
+  mkdirSync(join(dir, "build"));
+  writeFileSync(join(dir, "build", "out.js"), "x\n");
+  git(dir, "add", ".gitignore"); git(dir, "commit", "-m", "init");
+  const child = readProjectTree({ id: "p", path: dir }, { relativePath: "build" });
+  assert.equal((child.entries ?? []).find((e) => e.name === "out.js")?.gitStatus, "ignored", "child inherits ignored");
 });
