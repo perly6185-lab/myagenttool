@@ -893,10 +893,13 @@ function safeProjectPath(project, relativePath = "") {
   return target;
 }
 
-function gitStatusMap(root) {
+export function gitStatusMap(root) {
   const statuses = new Map();
   try {
-    const output = execFileSync("git", ["-C", root, "status", "--porcelain"], {
+    // --ignored lists ignored paths as `!!` (directories collapsed), so the file
+    // browser can badge them (#161: modified/added/deleted/ignored). Bounded by the
+    // 3s timeout; on a huge tree it degrades to no badges (graceful).
+    const output = execFileSync("git", ["-C", root, "status", "--porcelain", "--ignored"], {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"],
       timeout: 3_000,
@@ -904,8 +907,11 @@ function gitStatusMap(root) {
     for (const line of output.split(/\r?\n/)) {
       if (!line.trim()) continue;
       const code = line.slice(0, 2);
-      const filePath = normalizeRelativePath(line.slice(3).replace(/^"|"$/g, ""));
-      const status = code.includes("D") ? "deleted" : code.includes("A") || code.includes("?") ? "added" : "modified";
+      const filePath = normalizeRelativePath(line.slice(3).replace(/^"|"$/g, "").replace(/\/$/, ""));
+      const status = code === "!!" ? "ignored"
+        : code.includes("D") ? "deleted"
+        : code.includes("A") || code.includes("?") ? "added"
+        : "modified";
       statuses.set(filePath, status);
     }
   } catch {
