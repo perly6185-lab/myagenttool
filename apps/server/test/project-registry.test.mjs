@@ -161,3 +161,22 @@ test("readProjectTree marks a child inside an ignored directory as ignored (revi
   const child = readProjectTree({ id: "p", path: dir }, { relativePath: "build" });
   assert.equal((child.entries ?? []).find((e) => e.name === "out.js")?.gitStatus, "ignored", "child inherits ignored");
 });
+
+test("gitStatusMap caches per root within the TTL; fresh:true recomputes (perf refactor)", async () => {
+  const { gitStatusMap } = await import("../src/services/projects.mjs");
+  const dir = mkdtempSync(join(tmpdir(), "prj-cache-"));
+  execFileSync("git", ["init", "-b", "main", dir], { encoding: "utf8" });
+  git(dir, "config", "user.email", "t@example.com");
+  git(dir, "config", "user.name", "T");
+  writeFileSync(join(dir, "a.txt"), "1\n");
+  git(dir, "add", "."); git(dir, "commit", "-m", "c1");
+  const a = gitStatusMap(dir);
+  assert.strictEqual(gitStatusMap(dir), a, "a second call within the TTL is served from cache (same object)");
+  // a change is not reflected within the TTL...
+  writeFileSync(join(dir, "b.txt"), "2\n");
+  assert.strictEqual(gitStatusMap(dir), a, "still cached within the window");
+  // ...but fresh:true recomputes and sees it
+  const c = gitStatusMap(dir, { fresh: true });
+  assert.notStrictEqual(c, a, "fresh recomputes a new map");
+  assert.equal(c.get("b.txt"), "added", "the fresh map reflects the new untracked file");
+});
