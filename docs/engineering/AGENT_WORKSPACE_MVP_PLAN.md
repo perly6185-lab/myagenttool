@@ -11,6 +11,15 @@ merge, design, epic decomposition) is done. Per #151 the problem is that these
 capabilities currently **compete across separate sections** — the MVP is to compose
 them into ONE project-scoped workspace.
 
+**Status (2026-07-09): MVP loop COMPLETE.** W1 git-metadata capture (#609), W2
+three-pane shell (#611), W3 ignored badges + content search (#613), and this
+finalize (empty-state CTA). **W4 (#162 interactive transcript) and W5 (#164 restart
+recovery) were already satisfied by the reused pieces** — `DashboardView` clears the
+composer + shows a user bubble + handles transcript scroll, and `ui-store` persists
+the section (localStorage) while the server persists/restores `currentProjectId` — so
+they needed no new slices, only verification. Remaining: a live browser visual check
+(needs a running console).
+
 ## Current state — the pieces EXIST, scattered (compose, don't rebuild)
 
 Recon found most primitives already built (mostly by the autonomous-line work):

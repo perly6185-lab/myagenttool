@@ -1,5 +1,7 @@
-import { FolderGit2, PanelsTopLeft } from "lucide-react";
+import { FolderGit2, FolderPlus, PanelsTopLeft } from "lucide-react";
 import { useConsoleState, useRefreshConsoleState } from "@/data/use-console-state";
+import { useUiStore } from "@/store/ui-store";
+import { Button } from "@/components/ui/button";
 import { api } from "@/data/use-console-actions";
 import { ProjectTree } from "@/features/projects/project-tree";
 import { DashboardView } from "@/features/dashboard/dashboard-view";
@@ -27,10 +29,28 @@ export function shortRemote(url: string): string {
 export function WorkspaceView() {
   const { data: state } = useConsoleState();
   const refresh = useRefreshConsoleState();
+  const setSection = useUiStore((s) => s.setSection);
   const projects = (state?.projects ?? []) as Array<{ id: string; name: string; git?: GitFacts }>;
   const currentId = state?.currentProjectId ?? null;
   const current = projects.find((p) => p.id === currentId) ?? null;
   const git = current?.git;
+
+  // Empty-browser state (#158): guide the add-project step instead of showing an
+  // inert three-pane shell with nothing to browse or run.
+  if (projects.length === 0) {
+    return (
+      <div className="flex h-full flex-col items-center justify-center gap-3 text-center">
+        <PanelsTopLeft className="size-8 text-muted-foreground" />
+        <div>
+          <p className="font-medium">No projects yet</p>
+          <p className="text-sm text-muted-foreground">Register a local project to browse its files and run tasks against it.</p>
+        </div>
+        <Button variant="primary" onClick={() => setSection("projects")}>
+          <FolderPlus className="mr-1.5 size-4" /> Register a project
+        </Button>
+      </div>
+    );
+  }
 
   const onSwitch = async (id: string) => {
     if (!id || id === currentId) return;
