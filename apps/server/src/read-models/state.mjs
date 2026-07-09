@@ -1,5 +1,6 @@
 import { LOCAL_TEAM_ID, teamOf } from "../runtime/auth.mjs";
 import { publicDeviceView } from "../runtime/bridge-auth.mjs";
+import { pendingDecisions } from "./pending-decisions.mjs";
 
 export function buildPublicState({
   namespace,
@@ -145,6 +146,18 @@ export function buildPublicState({
     }),
   }));
 
+  // Consolidated pending-decision queue (the Approvals section). Built from the
+  // already team-scoped locals so it inherits tenancy; this also surfaces the
+  // auto-run lifecycle gates in /api/state for the first time.
+  const codexApprovalBrokerRequests = byInvocation(state.codexApprovalBrokerRequests);
+  const pendingDecisionQueue = pendingDecisions({
+    approvalRequests,
+    autoRuns,
+    compareRuns,
+    codexApprovalBrokerRequests,
+    invocationsById: visibleInvocationsById,
+  });
+
   return {
     namespace,
     protocolVersion,
@@ -228,7 +241,8 @@ export function buildPublicState({
           ? visibleTerminalEvidenceIds.has(r.id)
           : invVisible(r?.invocationId),
     ),
-    codexApprovalBrokerRequests: byInvocation(state.codexApprovalBrokerRequests),
+    codexApprovalBrokerRequests,
+    pendingDecisions: pendingDecisionQueue,
     codexImportedEvidenceRecords: visibleImported,
     terminalRuntimeCapability: state.terminalRuntimeCapability,
     terminalSessions,
