@@ -1,6 +1,7 @@
 import { LOCAL_TEAM_ID, teamOf } from "../runtime/auth.mjs";
 import { publicDeviceView } from "../runtime/bridge-auth.mjs";
 import { pendingDecisions } from "./pending-decisions.mjs";
+import { evidenceLedger } from "./evidence-ledger.mjs";
 
 export function buildPublicState({
   namespace,
@@ -158,6 +159,23 @@ export function buildPublicState({
     invocationsById: visibleInvocationsById,
   });
 
+  // Per-run trust ledger (the Evidence section). Scope the Codex/terminal evidence
+  // aggregate ONCE and reuse it for both the ledger and the snapshot emit below.
+  const evidenceCenterVisible = evidenceCenterRecords().filter((r) =>
+    r?.type === "imported_evidence"
+      ? visibleImportedIds.has(r.id)
+      : r?.source === "managed_terminal_runtime"
+        ? visibleTerminalEvidenceIds.has(r.id)
+        : invVisible(r?.invocationId),
+  );
+  const evidenceLedgerRows = evidenceLedger({
+    invocations: visibleInvocations,
+    reviewFindings,
+    auditSummaries,
+    troubleshootingReports,
+    evidenceCenterRecords: evidenceCenterVisible,
+  });
+
   return {
     namespace,
     protocolVersion,
@@ -234,13 +252,8 @@ export function buildPublicState({
     // The evidence center aggregates raw codex/terminal state, so re-apply
     // scoping here: invocation-linked rows by invVisible, imported rows by
     // owning team, and terminal rows by their owning terminal session.
-    evidenceCenterRecords: evidenceCenterRecords().filter((r) =>
-      r?.type === "imported_evidence"
-        ? visibleImportedIds.has(r.id)
-        : r?.source === "managed_terminal_runtime"
-          ? visibleTerminalEvidenceIds.has(r.id)
-          : invVisible(r?.invocationId),
-    ),
+    evidenceCenterRecords: evidenceCenterVisible,
+    evidenceLedger: evidenceLedgerRows,
     codexApprovalBrokerRequests,
     pendingDecisions: pendingDecisionQueue,
     codexImportedEvidenceRecords: visibleImported,

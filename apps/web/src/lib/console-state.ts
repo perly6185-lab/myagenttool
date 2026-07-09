@@ -74,6 +74,22 @@ export interface AgentSnapshot {
   discovery?: { runId?: string };
 }
 
+/** One per-run trust rollup in the Evidence Center (server read-model `evidenceLedger`). */
+export interface EvidenceLedgerRow {
+  invocationId: string;
+  task?: string;
+  agentId?: string | null;
+  projectId?: string | null;
+  status?: string | null;
+  createdAt?: string | null;
+  review: { total: number; high: number; medium: number; low: number };
+  audit?: { permissionDecision?: string | null; status?: string | null } | null;
+  troubleshooting: { present: boolean; fixes: number };
+  runtimeEvidence: number;
+  attention: boolean;
+  attentionReasons: string[];
+}
+
 /** One row in the consolidated Approvals queue (server read-model `pendingDecisions`). */
 export type PendingDecisionKind =
   | "invocation_approval"
@@ -772,6 +788,7 @@ export interface ConsoleSnapshot {
   invocations: InvocationSnapshot[];
   compareRuns?: CompareRunSnapshot[];
   pendingDecisions?: PendingDecision[];
+  evidenceLedger?: EvidenceLedgerRow[];
   events: InvocationEventSnapshot[];
   auditSummaries: AuditSnapshot[];
   healthChecks?: LifecycleAuditSnapshot[];
