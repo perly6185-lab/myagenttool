@@ -8,6 +8,7 @@ import {
   ListChecks,
   ListTodo,
   MonitorSmartphone,
+  PanelsTopLeft,
   Puzzle,
   Radar,
   Receipt,
@@ -30,6 +31,7 @@ export interface SectionDef {
 /** Top-level control-plane domains shown in the nav rail, in order. */
 export const SECTIONS: SectionDef[] = [
   { key: "dashboard", label: "Overview", icon: LayoutDashboard, blurb: "Start a task and watch it run" },
+  { key: "workspace", label: "Workspace", icon: PanelsTopLeft, blurb: "Project files, transcript, and history in one place" },
   { key: "projects", label: "Projects", icon: FolderKanban, blurb: "Group work and own budgets" },
   { key: "task", label: "Task", icon: ListTodo, blurb: "GitHub issues and PRs as work items" },
   { key: "autoRuns", label: "Auto-runs", icon: Bot, blurb: "Autonomous issue → worktree → PR runs" },

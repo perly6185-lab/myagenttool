@@ -1,0 +1,83 @@
+import { FolderGit2, PanelsTopLeft } from "lucide-react";
+import { useConsoleState, useRefreshConsoleState } from "@/data/use-console-state";
+import { api } from "@/data/use-console-actions";
+import { ProjectTree } from "@/features/projects/project-tree";
+import { DashboardView } from "@/features/dashboard/dashboard-view";
+import { SessionHistory } from "@/features/invocations/session-history";
+
+// Agent Workspace MVP (#158): the interactive, project-scoped surface. Instead of
+// the file browser, transcript, and history competing across separate sections
+// (#151), this composes them into ONE three-pane workspace bound to the selected
+// project: LEFT project files · CENTER task transcript + composer · RIGHT history.
+// The panes reuse the existing, already project-scoped components — this slice is
+// composition + a project switcher, not new machinery.
+
+interface GitFacts {
+  isRepo?: boolean;
+  remoteUrl?: string | null;
+  defaultBranch?: string | null;
+  currentBranch?: string | null;
+}
+
+export function shortRemote(url: string): string {
+  const m = url.match(/github\.com[:/]+([^/]+)\/([^/.]+)/i);
+  return m ? `${m[1]}/${m[2]}` : url.replace(/^https?:\/\//, "").replace(/\.git$/, "").slice(0, 40);
+}
+
+export function WorkspaceView() {
+  const { data: state } = useConsoleState();
+  const refresh = useRefreshConsoleState();
+  const projects = (state?.projects ?? []) as Array<{ id: string; name: string; git?: GitFacts }>;
+  const currentId = state?.currentProjectId ?? null;
+  const current = projects.find((p) => p.id === currentId) ?? null;
+  const git = current?.git;
+
+  const onSwitch = async (id: string) => {
+    if (!id || id === currentId) return;
+    await api.selectProject(id);
+    await refresh();
+  };
+
+  return (
+    <div className="flex h-full flex-col gap-3">
+      <header className="flex flex-wrap items-center gap-3 rounded-lg border border-border bg-muted/30 px-3 py-2">
+        <PanelsTopLeft className="size-4 shrink-0 text-muted-foreground" />
+        <label className="flex items-center gap-2 text-sm">
+          <span className="text-muted-foreground">Project</span>
+          <select
+            value={currentId ?? ""}
+            onChange={(e) => void onSwitch(e.target.value)}
+            className="rounded-md border border-border bg-background px-2 py-1 text-sm"
+          >
+            {projects.length === 0 ? <option value="">No projects registered</option> : <option value="" disabled>Select a project…</option>}
+            {projects.map((p) => (
+              <option key={p.id} value={p.id}>{p.name}</option>
+            ))}
+          </select>
+        </label>
+        {current ? (
+          <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
+            <FolderGit2 className="size-3.5" />
+            {git?.isRepo
+              ? <>{git.currentBranch ?? git.defaultBranch ?? "?"}{git.remoteUrl ? <> · {shortRemote(git.remoteUrl)}</> : <> · no remote</>}</>
+              : "not a git repository"}
+          </span>
+        ) : (
+          <span className="text-xs text-muted-foreground">Register or select a project to start.</span>
+        )}
+      </header>
+
+      <div className="grid min-h-0 flex-1 grid-cols-1 gap-3 lg:grid-cols-[minmax(200px,260px)_minmax(0,1fr)_minmax(220px,300px)]">
+        <aside className="hidden min-h-0 overflow-y-auto rounded-lg border border-border bg-card p-2 lg:block" aria-label="Project files">
+          <ProjectTree />
+        </aside>
+        <main className="min-h-0 overflow-hidden" aria-label="Agent transcript">
+          <DashboardView />
+        </main>
+        <aside className="hidden min-h-0 overflow-y-auto rounded-lg border border-border bg-card p-2 lg:block" aria-label="Session history">
+          <SessionHistory />
+        </aside>
+      </div>
+    </div>
+  );
+}
