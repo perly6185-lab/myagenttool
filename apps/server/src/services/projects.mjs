@@ -1,7 +1,7 @@
 import { execFile, execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
@@ -74,7 +74,8 @@ export function readGitFacts(cwd) {
     return { repoPath: cwd ?? null, remoteUrl: null, defaultBranch: null, currentBranch: null, isRepo: false };
   }
   const remoteUrl = g(["remote", "get-url", "origin"]) || null;
-  const currentBranch = g(["rev-parse", "--abbrev-ref", "HEAD"]) || null;
+  const headRef = g(["rev-parse", "--abbrev-ref", "HEAD"]);
+  const currentBranch = headRef && headRef !== "HEAD" ? headRef : null; // "HEAD" = detached
   let defaultBranch = null;
   const originHead = g(["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"]);
   if (originHead) {
@@ -311,6 +312,10 @@ export function createProjectService({ state, now, nextId, appendEvent, persistS
         baseBranch: worktree.baseBranch,
       },
     }, { nextId, now });
+    // Capture git facts for the worktree checkout too, so the workspace header shows
+    // its branch/remote instead of "not a git repository". (review D)
+    project.git = readGitFacts(project.path);
+    project.activeCheckoutId = worktree.id;
     worktree.workspaceProjectId = project.id;
     state.worktrees.unshift(worktree);
     state.projects.unshift(project);
@@ -752,7 +757,7 @@ export function slugify(value) {
     .slice(0, 48) || "worktree";
 }
 
-function readProjectTree(project, { relativePath = "", search = "" } = {}) {
+export function readProjectTree(project, { relativePath = "", search = "" } = {}) {
   const root = resolve(project.path);
   const target = safeProjectPath(project, relativePath);
   const stats = statSync(target);
@@ -761,6 +766,18 @@ function readProjectTree(project, { relativePath = "", search = "" } = {}) {
   }
 
   const gitStatus = gitStatusMap(root);
+  // `git status --ignored` collapses an ignored directory to one entry, so a child
+  // browsed inside it isn't in the map. Inherit `ignored` from any ancestor so the
+  // whole subtree badges consistently. (review: child of ignored dir showed clean)
+  const statusFor = (relPath) => {
+    const own = gitStatus.get(relPath);
+    if (own) return own;
+    const parts = relPath.split("/");
+    for (let i = 1; i < parts.length; i += 1) {
+      if (gitStatus.get(parts.slice(0, i).join("/")) === "ignored") return "ignored";
+    }
+    return "clean";
+  };
   const searchText = String(search ?? "").trim().toLowerCase();
   const entries = readdirSync(target, { withFileTypes: true })
     .filter((entry) => ![".git", "node_modules"].includes(entry.name))
@@ -772,7 +789,7 @@ function readProjectTree(project, { relativePath = "", search = "" } = {}) {
         name: entry.name,
         path: relPath,
         kind,
-        gitStatus: gitStatus.get(relPath) ?? "clean",
+        gitStatus: statusFor(relPath),
       };
     })
     .filter((entry) => !searchText || entry.name.toLowerCase().includes(searchText) || entry.path.toLowerCase().includes(searchText))
@@ -793,7 +810,7 @@ function readProjectTree(project, { relativePath = "", search = "" } = {}) {
   };
 }
 
-function searchProjectContent(project, { query = "", include = "", exclude = "" } = {}) {
+export function searchProjectContent(project, { query = "", include = "", exclude = "" } = {}) {
   const root = resolve(project.path);
   const needle = String(query ?? "").trim().toLowerCase();
   if (!needle) {
@@ -805,11 +822,28 @@ function searchProjectContent(project, { query = "", include = "", exclude = "" 
   const includePatterns = splitGlobInput(include);
   const excludePatterns = splitGlobInput(exclude);
   const results = [];
-  const stats = { scannedFiles: 0, skippedFiles: 0 };
+  const stats = { scannedFiles: 0, skippedFiles: 0, visitedFiles: 0 };
+  // A read-only content search must NOT return the contents of secret files. Skip
+  // anything git ignores (reusing the --ignored classification), plus a floor of
+  // credential-ish names for non-git folders. (review: content search leaked .env)
+  const ignoredSet = new Set([...gitStatusMap(root)].filter(([, s]) => s === "ignored").map(([p]) => p));
+  const isIgnored = (relPath) => {
+    const parts = relPath.split("/");
+    for (let i = 1; i <= parts.length; i += 1) {
+      if (ignoredSet.has(parts.slice(0, i).join("/"))) return true;
+    }
+    return false;
+  };
+  const SECRET_FILE = /(^|\/)\.env(\.[^/]*)?$|(^|\/)\.npmrc$|(^|\/)\.git-credentials$|\.pem$|\.key$|(^|\/)id_(rsa|dsa|ed25519|ecdsa)$/i;
   walkProjectFiles(root, root, (fullPath, relPath) => {
-    if (results.length >= 80 || stats.scannedFiles >= 600) return false;
+    if (results.length >= 80 || stats.scannedFiles >= 600 || stats.visitedFiles >= 5000) return false;
+    stats.visitedFiles += 1; // bound total work even when most files are skipped
     if (includePatterns.length && !matchesAnyGlob(relPath, includePatterns)) return true;
     if (excludePatterns.length && matchesAnyGlob(relPath, excludePatterns)) return true;
+    if (isIgnored(relPath) || SECRET_FILE.test(relPath)) {
+      stats.skippedFiles += 1;
+      return true;
+    }
     const fileStat = statSync(fullPath);
     if (fileStat.size > 512_000 || isProbablyBinary(fullPath)) {
       stats.skippedFiles += 1;
@@ -880,7 +914,7 @@ function isProbablyBinary(path) {
   return /\.(png|jpe?g|gif|webp|ico|pdf|zip|gz|tar|7z|exe|dll|pdb|woff2?|ttf|otf)$/i.test(path);
 }
 
-function safeProjectPath(project, relativePath = "") {
+export function safeProjectPath(project, relativePath = "") {
   const root = resolve(project.path);
   const target = resolve(root, String(relativePath ?? ""));
   const rel = relative(root, target);
@@ -889,6 +923,15 @@ function safeProjectPath(project, relativePath = "") {
   }
   if (!existsSync(target)) {
     throw new Error("Project tree path does not exist.");
+  }
+  // Realpath containment: an in-tree symlink-to-a-directory must not let the
+  // listing/tree escape the registered root (the read FILE path was hardened; this
+  // LISTING path was left with string-only containment). (review: symlink escape)
+  const realRoot = realpathSync(root);
+  const realTarget = realpathSync(target);
+  const realRel = relative(realRoot, realTarget);
+  if (realRel === ".." || realRel.startsWith(`..${sep}`) || isAbsolute(realRel)) {
+    throw new Error("Project tree path escapes the registered project root (symlink).");
   }
   return target;
 }

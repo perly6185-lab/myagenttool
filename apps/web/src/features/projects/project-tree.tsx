@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ChevronDown, ChevronRight, File, Folder, RefreshCw } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -33,7 +33,14 @@ export function ProjectTree() {
   const queryClient = useQueryClient();
   const projectId = state?.currentProjectId ?? null;
   const [search, setSearch] = useState("");
+  const [debounced, setDebounced] = useState("");
   const [mode, setMode] = useState<"name" | "content">("name");
+  // Debounce so a keystroke doesn't fire a full-repo `git status` (name) or a
+  // synchronous full-tree content walk (content) per character. (review: perf/DoS)
+  useEffect(() => {
+    const t = setTimeout(() => setDebounced(search.trim()), 250);
+    return () => clearTimeout(t);
+  }, [search]);
 
   if (!projectId) {
     return (
@@ -86,9 +93,9 @@ export function ProjectTree() {
       </CardHeader>
       <CardContent>
         {mode === "content" ? (
-          <ContentSearch projectId={projectId} query={search.trim()} />
+          <ContentSearch projectId={projectId} query={debounced} />
         ) : (
-          <TreeLevel projectId={projectId} path="" search={search.trim()} depth={0} />
+          <TreeLevel projectId={projectId} path="" search={debounced} depth={0} />
         )}
       </CardContent>
     </Card>
