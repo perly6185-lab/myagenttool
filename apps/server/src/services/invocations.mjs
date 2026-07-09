@@ -25,6 +25,7 @@ export function createInvocationService({
   recordClaudeReviewFindings,
   currentProject,
   worktreeForProject,
+  createWorktree,
   uniqueStrings,
   normalizeCodexApprovalMode,
   normalizeCodexSessionMode,
@@ -134,6 +135,7 @@ export function createInvocationService({
     createInvocation,
     startInvocationIfAllowed,
     updateCompareRun,
+    createWorktree,
   });
   const { createTroubleshootingReport } = createInvocationTroubleshootingRuntime({
     state,
