@@ -86,6 +86,17 @@ export interface WorktreeReview {
   createdAt?: string;
 }
 
+/** One post-merge deploy attempt (server `deployments`; the deploy stage). */
+export interface DeploymentSnapshot {
+  id: string;
+  autoRunId: string;
+  projectId?: string | null;
+  prNumber?: number | null;
+  status: "deployed" | "failed";
+  summary?: string | null;
+  at?: string;
+}
+
 /** One per-run trust rollup in the Evidence Center (server read-model `evidenceLedger`). */
 export interface EvidenceLedgerRow {
   invocationId: string;
@@ -801,6 +812,7 @@ export interface ConsoleSnapshot {
   projectTargets?: ProjectTargetSnapshot[];
   worktrees?: WorktreeSnapshot[];
   worktreeReviews?: WorktreeReview[];
+  deployments?: DeploymentSnapshot[];
   agent: AgentSnapshot | null;
   agents: AgentSnapshot[];
   invocations: InvocationSnapshot[];

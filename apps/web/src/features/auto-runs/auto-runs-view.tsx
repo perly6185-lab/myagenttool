@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { Bot, RefreshCw, GitPullRequest, GitMerge, GitBranch, ShieldCheck, ExternalLink, CircleAlert, Check, X, Minus, Loader2 } from "lucide-react";
+import { Bot, RefreshCw, GitPullRequest, GitMerge, GitBranch, ShieldCheck, ExternalLink, CircleAlert, Check, X, Minus, Loader2, Rocket } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -53,9 +53,21 @@ export interface AutoRunRecord {
   prChecks?: { total: number; passed: number; failed: number; pending: number; state: "NONE" | "SUCCESS" | "FAILURE" | "PENDING" } | null;
   pendingApproval?: { id: string; riskLevel: string | null; riskTags: string[]; summary: string | null } | null;
   promptInjection?: { suspicious: boolean; markers: string[] } | null;
+  // D1 deploy stage: outcome of the post-merge deploy, when the deploy stage ran.
+  deployment?: { status: "deployed" | "failed"; at?: string; summary?: string | null; prNumber?: number | null } | null;
   error?: string | null;
   createdAt?: string;
   updatedAt?: string;
+}
+/** D2 deploy metrics served alongside the auto-runs summary. */
+interface DeploymentSummary {
+  total: number;
+  deployed: number;
+  failed: number;
+  changeFailureRate: number | null;
+  recoveryHours: { median: number | null; count: number };
+  deployFrequencyPerWeek: number | null;
+  lastDeployAt: string | null;
 }
 interface AutoRunSummary {
   total: number;
@@ -433,6 +445,7 @@ export function AutoRunsView() {
   const { data: consoleState } = useConsoleState();
   const [runs, setRuns] = useState<AutoRunRecord[]>([]);
   const [summary, setSummary] = useState<AutoRunSummary | null>(null);
+  const [deployments, setDeployments] = useState<DeploymentSummary | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -441,9 +454,10 @@ export function AutoRunsView() {
     try {
       // Manual refresh also refreshes PR dispositions (bounded gh reads); the
       // 10s poll never does, so it stays cheap.
-      const data = (await api.listAutoRuns(refresh)) as { autoRuns?: AutoRunRecord[]; summary?: AutoRunSummary };
+      const data = (await api.listAutoRuns(refresh)) as { autoRuns?: AutoRunRecord[]; summary?: AutoRunSummary; deployments?: DeploymentSummary };
       setRuns(data.autoRuns ?? []);
       setSummary(data.summary ?? null);
+      setDeployments(data.deployments ?? null);
       setError(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -504,6 +518,33 @@ export function AutoRunsView() {
               hint={`over ${summary.routing?.conclusive ?? 0} conclusive run(s)`}
             />
           </div>
+          {deployments && deployments.total > 0 ? (
+            <div className="rounded-lg border p-3">
+              <div className="mb-2 flex items-center gap-2 text-sm font-medium">
+                <Rocket className="size-4" /> Deploys
+                <span className="text-xs font-normal text-muted-foreground">
+                  delivery past merge — {deployments.deployed} shipped · {deployments.failed} failed
+                </span>
+              </div>
+              <div className="grid grid-cols-2 gap-3 md:grid-cols-3">
+                <StatTile
+                  label="Deploy frequency"
+                  value={deployments.deployFrequencyPerWeek == null ? "—" : `${deployments.deployFrequencyPerWeek}/wk`}
+                  hint={`${deployments.total} total deploy(s)`}
+                />
+                <StatTile
+                  label="Change-failure rate"
+                  value={deployments.changeFailureRate == null ? "—" : `${Math.round(deployments.changeFailureRate * 100)}%`}
+                  hint="failed / all deploys (DORA)"
+                />
+                <StatTile
+                  label="Recovery (median)"
+                  value={deployments.recoveryHours.median == null ? "—" : `${deployments.recoveryHours.median}h`}
+                  hint={`over ${deployments.recoveryHours.count} recovery(ies)`}
+                />
+              </div>
+            </div>
+          ) : null}
           {summary.outcomes.reportPosted + summary.outcomes.needsInput > 0 ? (
             <p className="text-xs text-muted-foreground">
               Non-diff outcomes: {summary.outcomes.reportPosted} investigation report(s), {summary.outcomes.needsInput} needing input.
@@ -581,6 +622,11 @@ export function AutoRunsView() {
                       </a>
                     ) : null}
                     {run.prState === "MERGED" ? <Badge tone="success">merged</Badge> : null}
+                    {run.deployment ? (
+                      <Badge tone={run.deployment.status === "deployed" ? "success" : "danger"}>
+                        {run.deployment.status === "deployed" ? "deployed" : "deploy failed"}
+                      </Badge>
+                    ) : null}
                     {run.prState === "CLOSED" ? <Badge tone="warning">closed</Badge> : null}
                     {run.prNumber && run.status === "pr_open" && run.prState !== "MERGED" && run.prState !== "CLOSED" ? (
                       <MergeControl run={run} onDone={load} />
