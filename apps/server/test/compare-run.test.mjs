@@ -124,3 +124,27 @@ test("promoteCompareRun refuses a shared (no-worktree) compare", async () => {
   rt.setCompareRunPreferred(cr.id, cr.childInvocationIds[0]);
   await assert.rejects(() => rt.promoteCompareRun(cr.id), /no worktree to promote/);
 });
+
+test("promoteCompareRun never promotes an invocation's INHERITED worktree (review-sweep P1)", async () => {
+  // A shared compare's children have child.worktreeId=null, but createInvocation
+  // makes invocation.worktreeId inherit the globally-current project's worktree.
+  // Promote must ignore that (else it could ship an unrelated, even foreign, branch).
+  const state = { compareRuns: [] };
+  let n = 0;
+  const prCalls = [];
+  const rt = createInvocationCompareRuntime({
+    state,
+    now: () => "2026-07-10T00:00:00.000Z",
+    nextId: (p) => `${p}_${++n}`,
+    createInvocation: (task, agent, options) => ({ id: `inv_${++n}`, agentId: agent.id, options }),
+    startInvocationIfAllowed: () => {},
+    updateCompareRun: () => {},
+    createWorktreePr: async (id) => { prCalls.push(id); return { number: 1, url: "u" }; },
+    latestWorktreeReview: () => ({ verdict: "approved" }), // the inherited worktree is even approved
+    findInvocation: () => ({ worktreeId: "wt_foreign_approved" }), // the inherited (unrelated) worktree
+  });
+  const cr = rt.createCompareRun("answer", AGENTS, {}); // shared → child.worktreeId null
+  rt.setCompareRunPreferred(cr.id, cr.childInvocationIds[0]);
+  await assert.rejects(() => rt.promoteCompareRun(cr.id), /no worktree to promote/);
+  assert.equal(prCalls.length, 0, "must not open a PR on the inherited foreign worktree");
+});

@@ -12,6 +12,11 @@
 // right inline action, and deep-link to the native surface for the rich cases
 // (plan/design/clarify review). The heavy payloads stay in their own sections.
 
+// A decompose plan is no longer "awaiting approval" once it's in-flight, done, or
+// declined. (approveDecomposition leaves status "partial" on a retryable partial
+// failure — that one SHOULD stay visible, so it's deliberately absent here.)
+const DECOMPOSE_SETTLED = new Set(["approving", "approved", "rejected"]);
+
 function truncate(text, max = 80) {
   const s = String(text ?? "").replace(/\s+/g, " ").trim();
   return s.length > max ? `${s.slice(0, max - 1)}…` : s;
@@ -65,13 +70,19 @@ export function pendingDecisions({
   for (const r of autoRuns) {
     const path = r?.decision?.path ?? null;
     const common = { projectId: r?.projectId ?? null, createdAt: autoRunStamp(r), section: "autoRuns", targetId: r?.id ?? null };
-    if (r?.status === "plan_proposed" && path === "decompose" && r?.decompositionApproval?.status !== "approving") {
+    // These gates settle by setting a sub-field (decompositionApproval / clarifyAnswer /
+    // prState) while the run STATUS stays parked — so each predicate must also exclude
+    // its own settled state, not just show on status.
+    if (r?.status === "plan_proposed" && path === "decompose" && !DECOMPOSE_SETTLED.has(r?.decompositionApproval?.status)) {
+      // Hidden while approving/approved and — critically — after a REJECT (reject
+      // leaves status plan_proposed; re-showing it could re-spawn declined work).
       out.push({ id: `decompose:${r.id}`, kind: "decomposition", title: "Decomposition plan awaiting approval", subtitle: autoRunContext(r), ref: { autoRunId: r.id }, ...common });
     } else if (r?.status === "report_posted" && path === "design" && r?.designApproval == null) {
       out.push({ id: `design:${r.id}`, kind: "design", title: "Design report awaiting approval", subtitle: autoRunContext(r), ref: { autoRunId: r.id }, ...common });
-    } else if (r?.status === "needs_input" && path === "clarify") {
+    } else if (r?.status === "needs_input" && path === "clarify" && !r?.clarifyAnswer) {
+      // clarifyAnswer set → the human already answered (status stays needs_input).
       out.push({ id: `clarify:${r.id}`, kind: "clarify", title: "Agent needs an answer", subtitle: autoRunContext(r), ref: { autoRunId: r.id }, ...common });
-    } else if (r?.status === "pr_open" && r?.prNumber && r?.prState !== "MERGED") {
+    } else if (r?.status === "pr_open" && r?.prNumber && r?.prState !== "MERGED" && r?.prState !== "CLOSED") {
       out.push({
         id: `merge:${r.id}`,
         kind: "merge",

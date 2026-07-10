@@ -58,6 +58,28 @@ test("auto-run gates exclude settled / in-flight / wrong-path states", () => {
   assert.deepEqual(rows, []);
 });
 
+test("settled auto-run gates that leave STATUS parked are excluded (review-sweep regressions)", () => {
+  const rows = pendingDecisions({
+    autoRuns: [
+      // rejectDecomposition sets decompositionApproval=rejected but leaves status plan_proposed.
+      { id: "ar_rej", status: "plan_proposed", decision: { path: "decompose" }, decompositionApproval: { status: "rejected" } },
+      // answerClarify sets clarifyAnswer but leaves status needs_input.
+      { id: "ar_ans", status: "needs_input", decision: { path: "clarify" }, clarifyAnswer: { text: "yes" } },
+      // a PR closed without merging: prState CLOSED but status still pr_open.
+      { id: "ar_closed", status: "pr_open", prNumber: 9, prState: "CLOSED", decision: { path: "develop" } },
+    ],
+  });
+  assert.deepEqual(rows, [], "rejected plan / answered clarify / closed PR must NOT re-appear as pending");
+});
+
+test("a partially-created decomposition stays visible (retryable) — not over-filtered", () => {
+  const rows = pendingDecisions({
+    autoRuns: [{ id: "ar_partial", status: "plan_proposed", decision: { path: "decompose" }, link: { number: 5 }, decompositionApproval: { status: "partial" } }],
+  });
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].kind, "decomposition");
+});
+
 test("compare promotions: isolated + preferred + not-yet-promoted only", () => {
   const rows = pendingDecisions({
     compareRuns: [
