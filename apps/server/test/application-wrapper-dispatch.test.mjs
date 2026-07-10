@@ -6,13 +6,62 @@
  */
 
 import assert from "node:assert/strict";
+import { isAbsolute } from "node:path";
 import { test } from "node:test";
 
-import { createApplicationService } from "../src/services/applications.mjs";
+import { createApplicationService, createApplicationWrapperAgentRegistration, publicApplicationSnapshot } from "../src/services/applications.mjs";
 import { createCapabilityService } from "../src/services/capabilities.mjs";
 import { createCcusageApplicationRegistration } from "../src/services/ccusage-application.mjs";
 
 const CAP = "app.app_ccusage.wrapper.daily";
+
+test("application wrapper agent registration resolves the wrapper script path", () => {
+  const registration = createApplicationWrapperAgentRegistration();
+  assert.equal(registration.args.length, 1);
+  assert.equal(isAbsolute(registration.args[0]), true);
+  assert.match(registration.args[0], /tools[\\/]+agents[\\/]+application-wrapper\.mjs$/);
+});
+
+test("application registration persists a structured integration brief", () => {
+  const state = { applications: [], projects: [] };
+  const appSvc = createApplicationService({
+    state,
+    now: () => "2026-07-08T00:00:00.000Z",
+    nextId: (p) => `${p}_brief`,
+    appendEvent: () => {},
+    persistStateSoon: () => {},
+    addProject: () => null,
+    cloneProject: () => null,
+    defaultProjectPath: "/tmp/repo",
+  });
+
+  const app = appSvc.registerApplication({
+    name: "Briefed Tool",
+    source: { type: "manual", uri: "manual://briefed-tool" },
+    integrationBrief: {
+      intent: "Render markdown previews through a reviewed local MCP server.",
+      sourceType: "mcp",
+      discoverableCapabilities: ["render markdown", "list themes"],
+      invokableCapabilities: ["render markdown"],
+      dataBoundary: "Read markdown input and write imported preview evidence only.",
+      fixedCommands: ["render_markdown", "list_themes"],
+      userInputs: "markdown text and theme id",
+      resultImport: "preview evidence record",
+      approvalsAndRecovery: "manual confirmation before shared tool projection",
+      smokeTests: ["register", "probe", "invoke", "restart"],
+    },
+  });
+
+  assert.equal(app.integrationBrief.version, "application-intake.v1");
+  assert.equal(app.integrationBrief.status, "draft");
+  assert.equal(app.integrationBrief.sourceType, "mcp");
+  assert.deepEqual(app.integrationBrief.discoverableCapabilities, ["render markdown", "list themes"]);
+  assert.deepEqual(app.integrationBrief.aiAssistance.nextDrafts.slice(0, 3), ["descriptor", "wrapper_or_mcp_adapter", "safe_probe"]);
+
+  const snapshot = publicApplicationSnapshot(app);
+  assert.equal(snapshot.integrationBrief.intent, "Render markdown previews through a reviewed local MCP server.");
+  assert.deepEqual(snapshot.integrationBrief.smokeTests, ["register", "probe", "invoke", "restart"]);
+});
 
 function harness({ agentAvailable = true, registration = createCcusageApplicationRegistration() } = {}) {
   const state = { applications: [], projects: [] };
@@ -110,12 +159,13 @@ test("application capability input schema rejects undeclared managed input", () 
 
 test("wrapper argInputs are part of the effective invocation schema", () => {
   const { capSvc, created } = harness();
-  const ok = capSvc.createCapabilityInvocation(CAP, { since: "2026-07-01", timezone: "Asia/Shanghai" });
+  const ok = capSvc.createCapabilityInvocation(CAP, { since: "2026-07-01", timezone: "Asia/Shanghai", projectId: "projA" });
   assert.equal(ok.status, 202);
   assert.deepEqual(
     created[0].options.metadata.applicationWrapper.execArgs,
     ["daily", "--json", "--offline", "--since", "2026-07-01", "--timezone", "Asia/Shanghai"],
   );
+  assert.equal(created[0].options.metadata.projectId, "projA");
 
   const rejected = capSvc.createCapabilityInvocation(CAP, { since: "not-a-date" });
   assert.equal(rejected.status, 422);

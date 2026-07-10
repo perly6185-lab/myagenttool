@@ -177,6 +177,20 @@ try {
   assert(finalProposal.raw === undefined, "public state should strip raw proposal payloads");
   ok("public state exposes proposal metadata, preview, and hash without raw payloads");
 
+  const reviewed = await request("POST", `/api/tools/codex.propose.patch/proposals/${encodeURIComponent(finalProposal.id)}/review`, {
+    action: "approve",
+  });
+  assert(reviewed.proposal?.id === finalProposal.id, "review route should return the reviewed proposal");
+  assert(reviewed.proposal?.reviewState === "approved", "review route should approve the generated proposal");
+  const reviewedState = await request("GET", "/api/state");
+  const reviewedProposal = reviewedState.codexPatchProposals.find((item) => item.id === finalProposal.id);
+  assert(reviewedProposal?.reviewState === "approved", "public state should expose the approved proposal state");
+  assert(
+    reviewedState.events.some((item) => item.type === "codex_patch_proposal_reviewed" && item.data?.proposalId === finalProposal.id),
+    "proposal review should record audit evidence",
+  );
+  ok("proposal review route approves the generated artifact and records evidence");
+
   const capture = await waitFor(() => readJsonFile(codexCapturePath), "fake Codex capture");
   assert(resolve(capture.cwd) === resolve(worktreeCreated.worktree.worktreePath), "wrapper should run Codex in the selected worktree");
   assert(capture.args.includes("--sandbox") && capture.args[capture.args.indexOf("--sandbox") + 1] === "read-only", "wrapper should force read-only sandbox");

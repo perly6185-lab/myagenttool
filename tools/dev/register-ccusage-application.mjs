@@ -6,7 +6,7 @@
 // registering it is what makes the ccusage tool available (the retired
 // `ccusage:register` per-agent helper is gone).
 //
-//   node tools/dev/register-ccusage-application.mjs [--version 20.0.14] [--online]
+//   node tools/dev/register-ccusage-application.mjs [--version 20.0.16] [--online]
 
 import { createCcusageApplicationRegistration } from "../../apps/server/src/services/ccusage-application.mjs";
 

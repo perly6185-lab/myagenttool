@@ -224,7 +224,7 @@ not invocation.
 For local development and early use:
 
 ```text
-npm install -g ccusage@20.0.14
+npm install -g ccusage@20.0.16
 ```
 
 Then register fixed report agents through `POST /api/agents`.
@@ -250,16 +250,16 @@ Add a lifecycle recipe for pinned `ccusage` installation:
   "agentId": "agt_ccusage_daily",
   "action": "install",
   "packageName": "ccusage",
-  "version": "20.0.14",
+  "version": "20.0.16",
   "source": {
     "type": "npm",
     "registry": "https://registry.npmjs.org/",
     "package": "ccusage",
-    "version": "20.0.14"
+    "version": "20.0.16"
   },
   "expectedBinary": "ccusage",
   "installCommandId": "npm_global_install_pinned",
-  "installArgs": ["ccusage@20.0.14"],
+  "installArgs": ["ccusage@20.0.16"],
   "healthCheck": {
     "commandId": "ccusage_version",
     "expectedPattern": "ccusage"
@@ -423,7 +423,7 @@ Acceptance:
 
 ### Phase 3: Lifecycle Recipe MVP
 
-- Add a pinned install recipe for `ccusage@20.0.14`.
+- Add a pinned install recipe for `ccusage@20.0.16`.
 - Add Desktop Bridge lifecycle command ids for pinned npm install, uninstall,
   version check, and report probe:
   `npm_global_install_pinned`, `npm_global_uninstall_package`,

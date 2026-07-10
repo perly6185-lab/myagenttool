@@ -3,6 +3,8 @@ import { normalizeContainerAdapterConfig } from "@myagenttool/adapters/container
 import { normalizeMcpAdapterConfig } from "@myagenttool/adapters/mcp";
 
 import { capLifecycleAuditRecords } from "./retention.mjs";
+import { normalizeMcpResultImporters } from "./mcp-result-importers.mjs";
+import { normalizeMcpToolSchemas } from "./mcp-tool-schemas.mjs";
 
 export function createAgentService({ state, now, nextId, appendEvent, persistStateSoon = () => {} }) {
   const AGENT_FACTORIES = {
@@ -157,6 +159,14 @@ export function createAgentService({ state, now, nextId, appendEvent, persistSta
     if (toolNamespace) agent.toolNamespace = toolNamespace;
     const sourceApplicationId = String(body.sourceApplicationId ?? body.applicationId ?? "").trim();
     if (sourceApplicationId) agent.sourceApplicationId = sourceApplicationId;
+    agent.resultImporters = normalizeMcpResultImporters(
+      body.resultImporters ?? body.adapter?.resultImporters ?? body.resultImports ?? body.adapter?.resultImports,
+      { allowedTools: config.allowedTools },
+    );
+    agent.toolSchemas = normalizeMcpToolSchemas(
+      body.toolSchemas ?? body.adapter?.toolSchemas ?? body.toolInputSchemas ?? body.adapter?.toolInputSchemas,
+      { allowedTools: config.allowedTools },
+    );
     return agent;
   }
 

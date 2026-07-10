@@ -11,6 +11,7 @@ export async function handleToolRoutes({
   listTools,
   getTool,
   createToolInvocation,
+  reviewCodexPatchProposal,
 }) {
   if (req.method === "GET" && url.pathname === "/api/tools") {
     sendJson(res, 200, { tools: listTools(actor) });
@@ -36,6 +37,14 @@ export async function handleToolRoutes({
       return true;
     }
     const result = createToolInvocation(decodeURIComponent(invokeMatch[1]), body, actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  const proposalReviewMatch = url.pathname.match(/^\/api\/tools\/codex\.propose\.patch\/proposals\/([^/]+)\/review$/);
+  if (req.method === "POST" && proposalReviewMatch) {
+    const body = await readJson(req);
+    const result = reviewCodexPatchProposal(decodeURIComponent(proposalReviewMatch[1]), body, actor);
     sendJson(res, result.status, result.body);
     return true;
   }

@@ -146,6 +146,28 @@ try {
   assert(probed.application.probe.package?.name === "smoke-app", "probe should summarize package metadata");
   assert(probed.application.probe.readme?.heading === "Smoke App", "probe should summarize README metadata");
 
+  const smokeEvidence = await request("POST", `/api/applications/${registered.application.id}/smoke-evidence`, {
+    descriptorOperationAt: probed.application.lifecycle?.lastOperationAt ?? null,
+    steps: [
+      { index: 1, step: "register", completed: true, note: "Registered through application-registry-smoke." },
+      { index: 2, step: "probe", completed: true, note: "Probe completed and projected managed capabilities." },
+      { index: 3, step: "inspect", completed: false, note: null },
+    ],
+  });
+  assert(smokeEvidence.evidence?.id, "application smoke evidence endpoint should return a durable evidence id");
+  const evidenceState = await request("GET", "/api/state");
+  assert(
+    evidenceState.applicationSmokeEvidenceRecords?.some((record) => record.id === smokeEvidence.evidence.id),
+    "public state should expose saved application smoke evidence",
+  );
+  assert(
+    evidenceState.evidenceCenterRecords?.some((record) =>
+      record.id === smokeEvidence.evidence.id
+      && record.source === "application_smoke_evidence"
+      && record.detail.includes("completed=2/3")),
+    "Evidence Center should include saved application smoke evidence with checklist summary",
+  );
+
   const offlineApprovalRequestId = await approveApplicationRequest(offlineNoToken.data);
   const offline = await request("POST", `/api/applications/${registered.application.id}/offline`, { approvalRequestId: offlineApprovalRequestId });
   assert(offline.invocation.result.output.status === "offline", "offline action should update status");

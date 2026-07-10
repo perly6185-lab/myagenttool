@@ -142,17 +142,17 @@ Acceptance evidence:
 
 ## Lifecycle Execution Sample (pinned ccusage)
 
-The single allowlisted end-to-end lifecycle sample. `ccusage@20.0.14` is pinned
+The single allowlisted end-to-end lifecycle sample. `ccusage@20.0.16` is pinned
 (`CCUSAGE_VERSION`); `npm_global_install_pinned` → `npm install -g
-ccusage@20.0.14` (an unpinned `ccusage@latest` is rejected). Path:
+ccusage@20.0.16` (an unpinned `ccusage@latest` is rejected). Path:
 
-1. `POST /api/m3/lifecycle-recipes` (ccusage source, pinned `20.0.14`).
+1. `POST /api/m3/lifecycle-recipes` (ccusage source, pinned `20.0.16`).
 2. `/review` → `/approve`.
 3. `/policy` → `/local-approval` (`/lifecycle-approvals/:id/approve`).
 4. `/queue` → `executionEnabled:true`, `command.commandId =
    npm_global_install_pinned` (args confirmed pinned).
 5. Bridge polls `GET /api/bridge/lifecycle-next` → `runLifecycleAction` →
-   `spawnSync("npm", ["install","-g","ccusage@20.0.14"])` → posts result →
+   `spawnSync("npm", ["install","-g","ccusage@20.0.16"])` → posts result →
    `completeLifecycleAction` (rollback request created on failure).
 
 Proven by `tools/dev/ccusage-agent-smoke.mjs` and the desktop self-check.

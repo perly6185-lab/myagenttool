@@ -44,6 +44,22 @@ function doocsRegistration(projectPath) {
       command: "node",
       args: ["packages/mcp-server/run.mjs"],
       allowedTools: ["render_markdown", "list_themes"],
+      toolSchemas: {
+        render_markdown: {
+          type: "object",
+          additionalProperties: false,
+          required: ["markdown"],
+          properties: {
+            markdown: { type: "string" },
+            theme: { type: "string", enum: ["default", "github"] },
+          },
+        },
+        list_themes: {
+          type: "object",
+          additionalProperties: false,
+          properties: {},
+        },
+      },
       riskTags: ["local_execution", "mcp", "markdown_rendering"],
     },
   };
@@ -241,17 +257,30 @@ test("application mcpAgent registers a recoverable MCP agent and shared tools", 
     assert.equal(agent?.sourceApplicationId, app.id);
     assert.equal(agent?.toolNamespace, "doocs_md");
     assert.deepEqual(agent?.adapter.allowedTools, ["render_markdown", "list_themes"]);
+    assert.deepEqual(agent?.toolSchemas.render_markdown.required, ["markdown"]);
 
     const tool = api.getTool("doocs_md.render_markdown");
     assert.equal(tool?.source, "mcp_agent");
     assert.equal(tool?.application?.id, app.id);
     assert.equal(tool?.mcp?.agentId, agent.id);
     assert.equal(tool?.mcp?.toolName, "render_markdown");
+    assert.equal(tool?.outputCollection, "applicationRenderResults");
+    assert.equal(tool?.metadata?.resultPath?.resultImport?.importer, "application_render_html");
+    assert.deepEqual(tool?.metadata?.mcp?.inputSchema?.required, ["markdown"]);
+    const listThemesTool = api.getTool("doocs_md.list_themes");
+    assert.equal(listThemesTool?.outputCollection, "applicationResultArtifacts");
+    assert.equal(listThemesTool?.metadata?.resultPath?.resultImport?.importer, "application_option_catalog");
 
     const capability = api.getCapability("doocs_md.render_markdown", { userId: "usr_a", teamId: "team_local" });
     assert.equal(capability?.provider?.type, "tool");
     assert.equal(capability?.source, "mcp_agent");
+    assert.deepEqual(capability?.metadata?.mcp?.inputSchema?.required, ["markdown"]);
     assert.equal(JSON.stringify(capability).includes("packages/mcp-server/run.mjs"), false);
+
+    const appCapabilities = api.listApplicationCapabilities(app.id);
+    const appMcpCapability = appCapabilities.find((item) => item.name === "doocs_md.render_markdown");
+    assert.equal(appMcpCapability?.kind, "mcp_tool");
+    assert.deepEqual(appMcpCapability?.inputSchema?.required, ["markdown"]);
 
     assert.equal(api.getTool("doocs_md.render_markdown", { userId: "usr_b", teamId: "team_other" }), null);
     assert.equal(api.getCapability("doocs_md.render_markdown", { userId: "usr_b", teamId: "team_other" }), null);
@@ -304,6 +333,7 @@ test("application probe autodetects a doocs/md MCP server and registers shared t
     assert.equal(tool?.source, "mcp_agent");
     assert.equal(tool?.mcp?.agentId, "agt_app_doocs_md_auto_mcp");
     assert.equal(tool?.mcp?.toolName, "render_markdown");
+    assert.equal(tool?.metadata?.resultPath?.outputCollection, "applicationRenderResults");
     assert.equal(JSON.stringify(tool).includes("run.mjs"), false);
     assert.equal(
       api.state.events.some((event) =>
@@ -399,22 +429,284 @@ test("application MCP tool calls doocs/md render_markdown and records result evi
     assert.equal(invocation.status, "succeeded");
     assert.equal(invocation.options.metadata.applicationId, app.id);
     assert.equal(invocation.options.metadata.mcpToolName, "render_markdown");
+    assert.equal(invocation.options.metadata.resultImporter.importer, "application_render_html");
+    assert.equal(invocation.options.metadata.outputCollection, "applicationRenderResults");
     assert.equal(invocation.result.applicationResult.applicationId, app.id);
     assert.equal(invocation.result.applicationResult.capability, "doocs_md.render_markdown");
     assert.equal(invocation.result.applicationResult.mcpToolName, "render_markdown");
+    assert.equal(invocation.result.renderMarkdown.theme, "github");
+    assert.equal(invocation.result.renderMarkdown.markdownHash.length, 64);
+    assert.equal(invocation.result.renderMarkdown.resultRef.type, "application_render_result");
+    assert.equal(JSON.stringify(invocation.result).includes("<h1>Hello</h1>"), false);
 
     const recordedApp = api.findApplication(app.id);
     assert.equal(recordedApp.latestResult.invocationId, invocation.id);
-    assert.equal(recordedApp.latestResult.outputCollection, "invocations");
+    assert.equal(recordedApp.latestResult.outputCollection, "applicationRenderResults");
+    assert.equal(recordedApp.latestResult.importedRecordCount, 1);
+    assert.equal(recordedApp.latestResult.resultRef.type, "application_render_result");
+    assert.equal(recordedApp.mcpAgent.recovery.reason, "latest_mcp_invocation_succeeded");
+    const renderRecord = api.state.applicationRenderResults.find((item) => item.invocationId === invocation.id);
+    assert(renderRecord, "render artifact should be stored privately");
+    assert.match(renderRecord.html, /<h1>Hello<\/h1>/);
 
     const audit = api.state.auditSummaries.find((item) => item.invocationId === invocation.id);
     assert.equal(audit?.applicationResult?.mcpToolName, "render_markdown");
     const publicState = api.publicState(actor);
+    const publicRenderRecord = publicState.applicationRenderResults.find((item) => item.id === renderRecord.id);
+    assert.equal(publicRenderRecord.html, undefined);
+    assert.match(publicRenderRecord.htmlSummary, /Hello/);
+    const listedResults = api.listApplicationRenderResults(app.id, { toolName: "render_markdown", limit: "5" });
+    assert.equal(listedResults.length, 1);
+    assert.equal(listedResults[0].id, renderRecord.id);
+    assert.equal(api.listApplicationRenderResults(app.id, { status: "failed" }).length, 0);
     const evidence = publicState.evidenceCenterRecords.find((item) => item.id === `${invocation.id}:application_result`);
     assert.equal(evidence?.source, "application_capability_result");
     assert.match(evidence?.summary ?? "", /doocs_md\.render_markdown/);
+    const renderEvidence = publicState.evidenceCenterRecords.find((item) => item.id === renderRecord.id);
+    assert.equal(renderEvidence?.source, "application_render_result");
+    assert.equal(renderEvidence?.type, "rendered_markdown");
   } finally {
     await removeTreeEventually(root);
+  }
+});
+
+test("application MCP result importer descriptor imports non-render_markdown HTML results", async () => {
+  const root = mkdtempSync(join(tmpdir(), "myagenttool-app-mcp-importer-"));
+  const projectPath = join(root, "html-exporter");
+  mkdirSync(projectPath, { recursive: true });
+  writeFileSync(join(projectPath, "server.mjs"), "process.stdin.resume();\n", "utf8");
+  try {
+    const { api } = runtime({ projectPath });
+    const actor = { userId: "usr_a", teamId: "team_local" };
+    const app = api.registerApplication({
+      id: "app_html_exporter",
+      name: "HTML exporter",
+      source: { type: "local", path: projectPath },
+      mcpAgent: {
+        transport: "stdio",
+        command: "node",
+        args: [join(projectPath, "server.mjs")],
+        toolNamespace: "reporter",
+        allowedTools: ["export_html"],
+        resultImporters: {
+          export_html: {
+            importer: "application_render_html",
+            artifactType: "html",
+            evidenceType: "rendered_report",
+            largeArtifactPolicy: "private_result_ref",
+          },
+        },
+      },
+    }, actor);
+
+    const tool = api.getTool("reporter.export_html", actor);
+    assert.equal(tool?.outputCollection, "applicationRenderResults");
+    assert.equal(tool?.metadata?.resultPath?.resultImport?.toolName, "export_html");
+    assert.equal(tool?.metadata?.resultPath?.resultImport?.evidenceType, "rendered_report");
+
+    const created = api.createCapabilityInvocation("reporter.export_html", {
+      projectId: app.projectId,
+      title: "Quarterly report",
+    }, actor);
+    assert.equal(created.status, 201);
+    const invocation = api.findInvocation(created.body.invocationId);
+    assert.equal(invocation.options.metadata.resultImporter.toolName, "export_html");
+    assert.equal(invocation.options.metadata.resultImporter.importer, "application_render_html");
+
+    api.completeInvocation(invocation, {
+      status: "succeeded",
+      summary: "HTML export completed.",
+      result: {
+        toolName: "export_html",
+        output: JSON.stringify({
+          html: "<article><h1>Quarterly report</h1></article>",
+          generatedAt: "2026-07-08T02:00:00.000Z",
+          metadata: { format: "report" },
+        }),
+      },
+    });
+
+    assert.equal(invocation.options.metadata.outputCollection, "applicationRenderResults");
+    assert.equal(invocation.result.renderMarkdown.importer.toolName, "export_html");
+    assert.equal(invocation.result.renderMarkdown.evidenceType, "rendered_report");
+    assert.equal(JSON.stringify(invocation.result).includes("<article>"), false);
+    const renderRecord = api.state.applicationRenderResults.find((item) => item.invocationId === invocation.id);
+    assert.match(renderRecord.html, /Quarterly report/);
+    assert.equal(renderRecord.evidenceType, "rendered_report");
+    const publicState = api.publicState(actor);
+    const evidence = publicState.evidenceCenterRecords.find((item) => item.id === renderRecord.id);
+    assert.equal(evidence?.type, "rendered_report");
+    assert.equal(api.findApplication(app.id).latestResult.resultRef.id, renderRecord.id);
+  } finally {
+    await removeTreeEventually(root);
+  }
+});
+
+test("application MCP completion automatically applies enabled result retention", () => {
+  const root = mkdtempSync(join(tmpdir(), "myagenttool-app-mcp-retention-"));
+  const projectPath = join(root, "doocs-md");
+  mkdirSync(projectPath, { recursive: true });
+  writeFileSync(join(projectPath, "server.mjs"), "process.stdin.resume();\n", "utf8");
+  try {
+    const { api } = runtime({ projectPath });
+    const actor = { userId: "usr_a", teamId: "team_local" };
+    const app = api.registerApplication({
+      id: "app_doocs_md_retention",
+      name: "doocs/md",
+      source: { type: "local", path: projectPath },
+      mcpAgent: {
+        transport: "stdio",
+        command: "node",
+        args: [join(projectPath, "server.mjs")],
+        toolNamespace: "doocs_md",
+        allowedTools: ["render_markdown"],
+      },
+    }, actor);
+    api.updateApplicationResultRetention(app.id, { enabled: true, keepLatest: 1 }, actor);
+
+    const firstCreated = api.createCapabilityInvocation("doocs_md.render_markdown", { markdown: "# Old" }, actor);
+    const firstInvocation = api.findInvocation(firstCreated.body.invocationId);
+    api.completeInvocation(firstInvocation, {
+      status: "succeeded",
+      summary: "First render completed.",
+      result: {
+        toolName: "render_markdown",
+        output: JSON.stringify({
+          html: "<h1>Old</h1>",
+          generatedAt: "2026-07-05T00:00:01.000Z",
+        }),
+      },
+    });
+
+    const secondCreated = api.createCapabilityInvocation("doocs_md.render_markdown", { markdown: "# New" }, actor);
+    const secondInvocation = api.findInvocation(secondCreated.body.invocationId);
+    api.completeInvocation(secondInvocation, {
+      status: "succeeded",
+      summary: "Second render completed.",
+      result: {
+        toolName: "render_markdown",
+        output: JSON.stringify({
+          html: "<h1>New</h1>",
+          generatedAt: "2026-07-05T00:00:02.000Z",
+        }),
+      },
+    });
+
+    const firstRecord = api.state.applicationRenderResults.find((item) => item.invocationId === firstInvocation.id);
+    const secondRecord = api.state.applicationRenderResults.find((item) => item.invocationId === secondInvocation.id);
+    assert.equal(firstRecord.governance.archived, true);
+    assert.equal(firstRecord.governance.retentionPolicy, "auto_archive");
+    assert.equal(secondRecord.governance.archived, false);
+    assert.equal(api.findApplication(app.id).resultRetention.lastSummary.reason, "invocation_completed");
+    assert.equal(api.findApplication(app.id).resultRetention.lastSummary.archivedCount, 1);
+    assert.equal(api.findApplication(app.id).latestResult.resultRef.id, secondRecord.id);
+    assert.ok(api.state.events.some((event) =>
+      event.type === "application_result_retention_executed"
+      && event.invocationId === secondInvocation.id
+      && event.data?.archivedResultIds?.includes(firstRecord.id)));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("application MCP default result importers record option catalog and JSON artifacts", () => {
+  const root = mkdtempSync(join(tmpdir(), "myagenttool-app-mcp-artifacts-"));
+  const projectPath = join(root, "doocs-md");
+  mkdirSync(projectPath, { recursive: true });
+  writeFileSync(join(projectPath, "server.mjs"), "process.stdin.resume();\n", "utf8");
+  try {
+    const { api } = runtime({ projectPath });
+    const actor = { userId: "usr_a", teamId: "team_local" };
+    const app = api.registerApplication({
+      id: "app_doocs_md_artifacts",
+      name: "doocs/md",
+      source: { type: "local", path: projectPath },
+      mcpAgent: {
+        transport: "stdio",
+        command: "node",
+        args: [join(projectPath, "server.mjs")],
+        toolNamespace: "doocs_md",
+        allowedTools: ["list_themes", "get_renderer_options"],
+        toolSchemas: {
+          list_themes: { type: "object", additionalProperties: false, properties: {} },
+          get_renderer_options: { type: "object", additionalProperties: false, properties: {} },
+        },
+      },
+    }, actor);
+
+    const listThemesTool = api.getTool("doocs_md.list_themes", actor);
+    assert.equal(listThemesTool?.outputCollection, "applicationResultArtifacts");
+    assert.equal(listThemesTool?.metadata?.resultPath?.resultImport?.importer, "application_option_catalog");
+    assert.equal(listThemesTool?.metadata?.resultPath?.resultImport?.artifactType, "option_catalog");
+    const optionsTool = api.getTool("doocs_md.get_renderer_options", actor);
+    assert.equal(optionsTool?.outputCollection, "applicationResultArtifacts");
+    assert.equal(optionsTool?.metadata?.resultPath?.resultImport?.importer, "application_json_summary");
+    assert.equal(optionsTool?.metadata?.resultPath?.resultImport?.artifactType, "json_summary");
+
+    const themesCreated = api.createCapabilityInvocation("doocs_md.list_themes", { projectId: app.projectId }, actor);
+    assert.equal(themesCreated.status, 201);
+    const themesInvocation = api.findInvocation(themesCreated.body.invocationId);
+    api.completeInvocation(themesInvocation, {
+      status: "succeeded",
+      summary: "Themes listed.",
+      result: {
+        toolName: "list_themes",
+        output: JSON.stringify({
+          themes: [
+            { value: "default", label: "Default" },
+            { value: "simple", label: "Simple" },
+          ],
+          generatedAt: "2026-07-05T00:00:01.000Z",
+        }),
+      },
+    });
+
+    assert.equal(themesInvocation.options.metadata.outputCollection, "applicationResultArtifacts");
+    assert.equal(themesInvocation.options.metadata.resultImporter.importer, "application_option_catalog");
+    assert.equal(themesInvocation.result.applicationArtifact.resultRef.type, "application_result_artifact");
+    assert.equal(themesInvocation.result.applicationArtifact.dataShape.catalogKey, "themes");
+    assert.equal(themesInvocation.result.applicationResult.artifactResult.id, themesInvocation.result.applicationArtifact.id);
+    const themeArtifact = api.state.applicationResultArtifacts.find((item) => item.invocationId === themesInvocation.id);
+    assert.equal(themeArtifact.artifactType, "option_catalog");
+    assert.equal(themeArtifact.evidenceType, "mcp_option_catalog");
+    assert.equal(themeArtifact.payload.themes.length, 2);
+    assert.equal(themeArtifact.dataHash.length, 64);
+
+    const optionsCreated = api.createCapabilityInvocation("doocs_md.get_renderer_options", { projectId: app.projectId }, actor);
+    assert.equal(optionsCreated.status, 201);
+    const optionsInvocation = api.findInvocation(optionsCreated.body.invocationId);
+    api.completeInvocation(optionsInvocation, {
+      status: "succeeded",
+      summary: "Renderer options listed.",
+      result: {
+        toolName: "get_renderer_options",
+        output: JSON.stringify({
+          options: [
+            { name: "theme", type: "enum", default: "default" },
+            { name: "fontSize", type: "string", default: "16px" },
+          ],
+          generatedAt: "2026-07-05T00:00:02.000Z",
+        }),
+      },
+    });
+
+    assert.equal(optionsInvocation.options.metadata.outputCollection, "applicationResultArtifacts");
+    assert.equal(optionsInvocation.options.metadata.resultImporter.importer, "application_json_summary");
+    assert.equal(optionsInvocation.result.applicationArtifact.artifactType, "json_summary");
+    assert.equal(optionsInvocation.result.applicationArtifact.dataShape.catalogKey, "options");
+    assert.equal(api.findApplication(app.id).latestResult.resultRef.id, optionsInvocation.result.applicationArtifact.id);
+
+    const publicState = api.publicState(actor);
+    const publicArtifact = publicState.applicationResultArtifacts.find((item) => item.id === themeArtifact.id);
+    assert(publicArtifact, "public state should include artifact summary");
+    assert.equal(publicArtifact.payload, undefined);
+    assert.equal(publicArtifact.dataShape.catalogKey, "themes");
+    const artifactEvidence = publicState.evidenceCenterRecords.find((item) => item.id === themeArtifact.id);
+    assert.equal(artifactEvidence?.source, "application_result_artifact");
+    assert.equal(artifactEvidence?.type, "mcp_option_catalog");
+    assert.equal(api.listApplicationResultArtifacts(app.id, { toolName: "list_themes", limit: "5" })[0].id, themeArtifact.id);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
   }
 });
 

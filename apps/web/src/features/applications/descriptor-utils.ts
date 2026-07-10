@@ -1,4 +1,4 @@
-import type { NpmWrapperSnapshot } from "@/lib/console-state";
+import type { ApplicationSnapshot, NpmWrapperSnapshot } from "@/lib/console-state";
 
 export interface JsonObjectParseResult {
   value: Record<string, unknown> | null;
@@ -31,6 +31,28 @@ export interface NpmWrapperCommandDraft {
 export interface DescriptorTextResult {
   text: string | null;
   error: string | null;
+}
+
+export interface DescriptorRiskPreviewItem {
+  id: string;
+  label: string;
+  surface: "mcp" | "npm_wrapper" | "manual_manifest";
+  status: string;
+  riskLevel: string;
+  requiresApproval: boolean;
+  needsPolicyConsent: boolean;
+  projectedCapability: boolean;
+  filePolicy?: string | null;
+  networkPolicy?: string | null;
+}
+
+export interface DescriptorRiskPreview {
+  items: DescriptorRiskPreviewItem[];
+  projectedCount: number;
+  draftCount: number;
+  approvalCount: number;
+  policyConsentCount: number;
+  highRiskCount: number;
 }
 
 export function prettyJson(value: unknown): string {
@@ -139,6 +161,127 @@ export function wrapperCapabilityImpact(
   const removed = [...currentNames].filter((name) => !nextNames.has(name)).sort();
   const unchanged = [...nextNames].filter((name) => currentNames.has(name)).sort();
   return { added, removed, unchanged };
+}
+
+export function descriptorRiskPreview(
+  application: ApplicationSnapshot,
+  descriptors: {
+    mcpDescriptor?: string;
+    wrapperDescriptor?: string;
+    manualManifest?: string;
+  },
+): DescriptorRiskPreview {
+  const items = [
+    ...mcpPreviewItems(descriptors.mcpDescriptor),
+    ...(application.source.type === "npm" ? npmWrapperPreviewItems(descriptors.wrapperDescriptor) : []),
+    ...(application.source.type === "manual" ? manualManifestPreviewItems(descriptors.manualManifest) : []),
+  ];
+  return {
+    items,
+    projectedCount: items.filter((item) => item.projectedCapability).length,
+    draftCount: items.filter((item) => item.status === "draft" || item.status === "candidate").length,
+    approvalCount: items.filter((item) => item.requiresApproval || item.needsPolicyConsent).length,
+    policyConsentCount: items.filter((item) => item.needsPolicyConsent).length,
+    highRiskCount: items.filter((item) => item.riskLevel === "high" || item.riskLevel === "critical").length,
+  };
+}
+
+function mcpPreviewItems(descriptorText?: string): DescriptorRiskPreviewItem[] {
+  const descriptor = parseDescriptorObject(descriptorText);
+  if (!descriptor) return [];
+  const allowedTools = Array.isArray(descriptor.allowedTools) ? descriptor.allowedTools : [];
+  const filePolicy = textOrNull(descriptor.filePolicy) ?? "read_only";
+  const networkPolicy = textOrNull(descriptor.networkPolicy) ?? (descriptor.transport === "http" ? "restricted" : "forbidden");
+  const riskLevel = normalizeRisk(textOrNull(descriptor.riskLevel), networkPolicy !== "forbidden" ? "high" : "medium");
+  return allowedTools.length
+    ? allowedTools.map((tool, index) => ({
+        id: `mcp:${String(tool ?? index)}`,
+        label: String(tool ?? `tool_${index + 1}`),
+        surface: "mcp",
+        status: "shared_tool",
+        riskLevel,
+        requiresApproval: true,
+        needsPolicyConsent: false,
+        projectedCapability: true,
+        filePolicy,
+        networkPolicy,
+      }))
+    : [{
+        id: "mcp:descriptor",
+        label: textOrNull(descriptor.name) ?? "MCP descriptor",
+        surface: "mcp",
+        status: "descriptor",
+        riskLevel,
+        requiresApproval: true,
+        needsPolicyConsent: false,
+        projectedCapability: false,
+        filePolicy,
+        networkPolicy,
+      }];
+}
+
+function npmWrapperPreviewItems(descriptorText?: string): DescriptorRiskPreviewItem[] {
+  const descriptor = parseDescriptorObject(descriptorText);
+  if (!descriptor || String(descriptor.mode ?? "metadata-only") !== "installed-wrapper" || !Array.isArray(descriptor.commands)) return [];
+  return descriptor.commands
+    .filter((item): item is Record<string, unknown> => Boolean(item && typeof item === "object" && !Array.isArray(item)))
+    .map((command, index) => {
+      const status = textOrNull(command.status) ?? "draft";
+      const filePolicy = textOrNull(command.filePolicy) ?? "read_only";
+      const networkPolicy = textOrNull(command.networkPolicy) ?? "forbidden";
+      const needsPolicyConsent = filePolicy !== "read_only" || networkPolicy !== "forbidden";
+      return {
+        id: `wrapper:${textOrNull(command.id) ?? index}`,
+        label: textOrNull(command.displayName ?? command.id ?? command.command) ?? `Wrapper command ${index + 1}`,
+        surface: "npm_wrapper",
+        status,
+        riskLevel: normalizeRisk(textOrNull(command.riskLevel), needsPolicyConsent ? "high" : "medium"),
+        requiresApproval: command.requiresApproval !== false,
+        needsPolicyConsent,
+        projectedCapability: status === "approved",
+        filePolicy,
+        networkPolicy,
+      };
+    });
+}
+
+function manualManifestPreviewItems(descriptorText?: string): DescriptorRiskPreviewItem[] {
+  const manifest = parseDescriptorObject(descriptorText);
+  const capabilities = Array.isArray(manifest?.capabilities) ? manifest.capabilities : [];
+  return capabilities
+    .filter((item): item is Record<string, unknown> => Boolean(item && typeof item === "object" && !Array.isArray(item)))
+    .map((capability, index) => ({
+      id: `manual:${textOrNull(capability.id) ?? index}`,
+      label: textOrNull(capability.displayName ?? capability.name ?? capability.id) ?? `Declared capability ${index + 1}`,
+      surface: "manual_manifest",
+      status: "candidate",
+      riskLevel: normalizeRisk(textOrNull(capability.riskLevel), "medium"),
+      requiresApproval: capability.requiresApproval === true,
+      needsPolicyConsent: false,
+      projectedCapability: false,
+      filePolicy: null,
+      networkPolicy: null,
+    }));
+}
+
+function parseDescriptorObject(text?: string): Record<string, unknown> | null {
+  const trimmed = String(text ?? "").trim();
+  if (!trimmed || trimmed === "null") return null;
+  try {
+    const parsed = JSON.parse(trimmed) as unknown;
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, unknown> : null;
+  } catch {
+    return null;
+  }
+}
+
+function normalizeRisk(value: string | null, fallback: "low" | "medium" | "high"): string {
+  return value && ["low", "medium", "high", "critical"].includes(value) ? value : fallback;
+}
+
+function textOrNull(value: unknown): string | null {
+  const text = String(value ?? "").trim();
+  return text ? text : null;
 }
 
 export function descriptorFeedbackIssues(message: string | null | undefined): DescriptorFeedbackIssue[] {

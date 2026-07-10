@@ -481,13 +481,14 @@ test("POST /api/capabilities proxies governed tools and executes application cap
   assert.equal(mcp.status, 201);
   assert.equal(mcp.body.tool, "doocs_md.render_markdown");
   assert.equal(mcp.body.agentId, "agt_doocs_md_mcp");
-  assert.equal(mcp.body.outputCollection, "invocations");
+  assert.equal(mcp.body.outputCollection, "applicationRenderResults");
   const invocation = ctx.state.invocations.find((item) => item.id === mcp.body.invocationId);
   assert.equal(invocation?.status, "queued");
   assert.equal(invocation?.options?.toolName, "render_markdown");
   assert.deepEqual(invocation?.options?.toolArguments, { markdown: "# Shared", theme: "default" });
   assert.equal(invocation?.options?.metadata?.providerType, "mcp");
   assert.equal(invocation?.options?.metadata?.tool, "doocs_md.render_markdown");
+  assert.equal(invocation?.options?.metadata?.resultImporter?.importer, "application_render_html");
   assert.ok(!JSON.stringify(mcp.body).includes("doocs-md-mcp.cmd"), "MCP capability invocation response must not expose adapter command");
   assert.ok(!JSON.stringify(mcp.body).includes("--private"), "MCP capability invocation response must not expose adapter args");
 
@@ -806,6 +807,400 @@ test("GET /api/applications/:id/events returns scoped application timeline", asy
 
   const foreign = await call("/api/applications/app_team_a/events", { token: "tok_b" });
   assert.equal(foreign.status, 404);
+});
+
+test("POST /api/applications/:id/web-editor/results preserves editor handoff metadata", async () => {
+  const registered = await call("/api/applications/register", {
+    method: "POST",
+    body: {
+      id: "app_editor_handoff_http",
+      name: "Editor Handoff HTTP",
+      source: { type: "npm", package: "@scope/editor-handoff-http" },
+    },
+    token: "tok_a",
+  });
+  assert.equal(registered.status, 201);
+
+  const markdown = "# Editor handoff\n\nBody";
+  const html = "<article><h1>Editor handoff</h1><p>Body</p></article>";
+  const editorUrl = "http://localhost:5173/md/?myagenttoolApplicationId=app_editor_handoff_http";
+  const imported = await call("/api/applications/app_editor_handoff_http/web-editor/results", {
+    method: "POST",
+    token: "tok_a",
+    body: {
+      markdown,
+      html,
+      theme: "grace",
+      title: "Editor handoff title",
+      sourceUrl: editorUrl,
+      metadata: {
+        source: "doocs-md-web-editor",
+        customFlag: "kept",
+      },
+    },
+  });
+  assert.equal(imported.status, 201);
+  assert.equal(imported.body.result.resultRef.type, "application_render_result");
+  assert.equal(imported.body.latestResult.resultRef.id, imported.body.result.id);
+
+  const detail = await call(`/api/applications/app_editor_handoff_http/results/${imported.body.result.id}`, { token: "tok_a" });
+  assert.equal(detail.status, 200);
+  assert.equal(detail.body.result.metadata.source, "application_web_editor");
+  assert.equal(detail.body.result.metadata.customFlag, "kept");
+  assert.equal(detail.body.result.metadata.postTitle, "Editor handoff title");
+  assert.equal(detail.body.result.metadata.title, "Editor handoff title");
+  assert.equal(detail.body.result.metadata.theme, "grace");
+  assert.equal(detail.body.result.metadata.editorUrl, editorUrl);
+  assert.equal(detail.body.result.metadata.markdownLength, markdown.length);
+  assert.equal(detail.body.result.metadata.htmlByteLength, Buffer.byteLength(html, "utf8"));
+});
+
+test("bridge application editor completion exposes failed startup logs on the public snapshot", async () => {
+  const fixtureRoot = "/tmp/doocs-editor-bridge-logs";
+  mkdirSync(fixtureRoot, { recursive: true });
+  writeFileSync(`${fixtureRoot}/package.json`, JSON.stringify({
+    name: "md",
+    version: "2.1.0",
+    repository: "https://github.com/doocs/md",
+    scripts: { start: "pnpm web dev" },
+  }, null, 2), "utf8");
+
+  const bridgeToken = "bridge-editor-logs-test-token";
+  const previousStatus = ctx.state.device.status;
+  const previousUnlinkState = ctx.state.device.unlinkState;
+  const previousBridgeCredential = ctx.state.device.bridgeCredential;
+  ctx.state.device.status = "online";
+  ctx.state.device.unlinkState = "linked";
+  ctx.state.device.bridgeCredential = {
+    id: "brg_cred_editor_logs_test",
+    deviceId: ctx.state.device.id,
+    tokenHash: createHash("sha256").update(bridgeToken, "utf8").digest("hex"),
+    tokenPrefix: bridgeToken.slice(0, 8),
+    issuedAt: now(),
+    lastSeenAt: now(),
+    revokedAt: null,
+  };
+  try {
+    const registered = await call("/api/applications/register", {
+      method: "POST",
+      body: {
+        id: "app_editor_bridge_logs_http",
+        name: "doocs/md bridge logs",
+        source: { type: "local", path: fixtureRoot },
+      },
+      token: "tok_a",
+    });
+    assert.equal(registered.status, 201, JSON.stringify(registered.body));
+
+    const started = await call("/api/applications/app_editor_bridge_logs_http/web-editor/start", {
+      method: "POST",
+      body: {},
+      token: "tok_a",
+    });
+    assert.equal(started.status, 202, JSON.stringify(started.body));
+    assert.equal(started.body.editor.status, "starting");
+
+    const next = await call("/api/bridge/application-editor-next", { token: bridgeToken });
+    assert.equal(next.status, 200, JSON.stringify(next.body));
+    assert.equal(next.body.applicationId, "app_editor_bridge_logs_http");
+    assert.equal(next.body.action, "start");
+
+    const completed = await call("/api/bridge/application-editor-complete", {
+      method: "POST",
+      token: bridgeToken,
+      body: {
+        editorActionId: next.body.editorActionId,
+        status: "failed",
+        summary: "Application editor URL did not become reachable: http://localhost:5173/md/.",
+        error: "application_editor_url_unreachable",
+        logs: [
+          "stdout: Local: http://localhost:5173/md/",
+          "stderr: WARN Unsupported engine: wanted node >=22.22.2",
+        ],
+      },
+    });
+    assert.equal(completed.status, 200, JSON.stringify(completed.body));
+
+    const detail = await call("/api/applications/app_editor_bridge_logs_http", { token: "tok_a" });
+    assert.equal(detail.status, 200, JSON.stringify(detail.body));
+    assert.equal(detail.body.application.webEditor.status, "failed");
+    assert.equal(detail.body.application.webEditor.lastError, "application_editor_url_unreachable");
+    assert.deepEqual(detail.body.application.webEditor.lastLogs, [
+      "stdout: Local: http://localhost:5173/md/",
+      "stderr: WARN Unsupported engine: wanted node >=22.22.2",
+    ]);
+  } finally {
+    ctx.state.device.status = previousStatus;
+    ctx.state.device.unlinkState = previousUnlinkState;
+    ctx.state.device.bridgeCredential = previousBridgeCredential;
+  }
+});
+
+test("GET /api/applications/:id/results lists scoped render summaries without HTML", async () => {
+  ctx.state.applicationRenderResults.push({
+    id: "app_render_http_old",
+    applicationId: "app_team_a",
+    invocationId: "inv_render_http_old",
+    agentId: "agt_doocs_md_mcp",
+    capability: "doocs_md.render_markdown",
+    mcpToolName: "render_markdown",
+    importer: { importer: "application_render_html", outputCollection: "applicationRenderResults" },
+    artifactType: "html",
+    evidenceType: "rendered_markdown",
+    theme: "default",
+    markdownHash: "a".repeat(64),
+    htmlHash: "b".repeat(64),
+    htmlByteLength: 18,
+    htmlSummary: "Old render summary.",
+    metadata: { theme: "default" },
+    html: "<h1>Old render</h1>",
+    resultRef: { type: "application_render_result", id: "app_render_http_old", href: "/api/applications/app_team_a/results/app_render_http_old" },
+    generatedAt: "2099-01-03T00:00:01.000Z",
+    createdAt: "2099-01-03T00:00:01.000Z",
+    updatedAt: "2099-01-03T00:00:01.000Z",
+  }, {
+    id: "app_render_http_new",
+    applicationId: "app_team_a",
+    invocationId: "inv_render_http_new",
+    agentId: "agt_doocs_md_mcp",
+    capability: "doocs_md.render_markdown",
+    mcpToolName: "render_markdown",
+    importer: { importer: "application_render_html", outputCollection: "applicationRenderResults" },
+    artifactType: "html",
+    evidenceType: "rendered_markdown",
+    theme: "github",
+    markdownHash: "c".repeat(64),
+    htmlHash: "d".repeat(64),
+    htmlByteLength: 18,
+    htmlSummary: "New render summary.",
+    metadata: { source: "application_web_editor", theme: "github", postTitle: "Editor filtered render" },
+    html: "<h1>New render</h1>",
+    resultRef: { type: "application_render_result", id: "app_render_http_new", href: "/api/applications/app_team_a/results/app_render_http_new" },
+    generatedAt: "2099-01-03T00:00:02.000Z",
+    createdAt: "2099-01-03T00:00:02.000Z",
+    updatedAt: "2099-01-03T00:00:02.000Z",
+  }, {
+    id: "app_render_http_foreign",
+    applicationId: "app_foreign",
+    invocationId: "inv_render_http_foreign",
+    mcpToolName: "render_markdown",
+    artifactType: "html",
+    evidenceType: "rendered_markdown",
+    html: "<h1>Foreign</h1>",
+    resultRef: { type: "application_render_result", id: "app_render_http_foreign" },
+    createdAt: "2099-01-03T00:00:03.000Z",
+  });
+  ctx.state.applicationResultArtifacts.push({
+    id: "app_artifact_http_themes",
+    applicationId: "app_team_a",
+    invocationId: "inv_artifact_http_themes",
+    agentId: "agt_doocs_md_mcp",
+    capability: "doocs_md.list_themes",
+    mcpToolName: "list_themes",
+    importer: { toolName: "list_themes", importer: "application_option_catalog", outputCollection: "applicationResultArtifacts" },
+    outputCollection: "applicationResultArtifacts",
+    artifactType: "option_catalog",
+    evidenceType: "mcp_option_catalog",
+    summary: "themes catalog from list_themes with 2 item(s).",
+    dataShape: { type: "object", keys: ["themes"], catalogKey: "themes", itemCount: 2 },
+    dataHash: "e".repeat(64),
+    byteLength: 88,
+    metadata: {},
+    payload: { themes: [{ value: "default" }, { value: "simple" }] },
+    preview: { themes: [{ value: "default" }, { value: "simple" }] },
+    resultRef: { type: "application_result_artifact", id: "app_artifact_http_themes", href: "/api/applications/app_team_a/results/app_artifact_http_themes" },
+    generatedAt: "2099-01-03T00:00:04.000Z",
+    createdAt: "2099-01-03T00:00:04.000Z",
+    updatedAt: "2099-01-03T00:00:04.000Z",
+  });
+
+  const listed = await call("/api/applications/app_team_a/results?toolName=render_markdown&limit=1", { token: "tok_a" });
+  assert.equal(listed.status, 200);
+  assert.equal(listed.body.applicationId, "app_team_a");
+  assert.deepEqual(listed.body.results.map((result) => result.id), ["app_render_http_new"]);
+  assert.equal(listed.body.results[0].html, undefined);
+  assert.equal(listed.body.results[0].htmlSummary, "New render summary.");
+  assert.equal(listed.body.results[0].lineage.invocationId, "inv_render_http_new");
+  assert.equal(listed.body.results[0].lineage.outputCollection, "applicationRenderResults");
+
+  const detail = await call("/api/applications/app_team_a/results/app_render_http_new", { token: "tok_a" });
+  assert.equal(detail.status, 200);
+  assert.equal(detail.body.result.html, "<h1>New render</h1>");
+
+  const renderOnly = await call("/api/applications/app_team_a/results?resultType=render&limit=5", { token: "tok_a" });
+  assert.equal(renderOnly.status, 200);
+  assert.deepEqual(renderOnly.body.results.map((result) => result.resultRef.type), ["application_render_result", "application_render_result"]);
+
+  const editorOnly = await call("/api/applications/app_team_a/results?source=application_web_editor&limit=5", { token: "tok_a" });
+  assert.equal(editorOnly.status, 200);
+  assert.deepEqual(editorOnly.body.results.map((result) => result.id), ["app_render_http_new"]);
+
+  const searchedArtifacts = await call("/api/applications/app_team_a/results?q=themes&resultType=artifact&limit=5", { token: "tok_a" });
+  assert.equal(searchedArtifacts.status, 200);
+  assert.deepEqual(searchedArtifacts.body.results.map((result) => result.id), ["app_artifact_http_themes"]);
+  assert.equal(searchedArtifacts.body.results[0].payload, undefined);
+  assert.equal(searchedArtifacts.body.results[0].lineage.mcpToolName, "list_themes");
+
+  const artifacts = await call("/api/applications/app_team_a/results?toolName=list_themes&limit=1", { token: "tok_a" });
+  assert.equal(artifacts.status, 200);
+  assert.deepEqual(artifacts.body.results.map((result) => result.id), ["app_artifact_http_themes"]);
+  assert.equal(artifacts.body.results[0].payload, undefined);
+  assert.equal(artifacts.body.results[0].resultRef.type, "application_result_artifact");
+
+  const artifactDetail = await call("/api/applications/app_team_a/results/app_artifact_http_themes", { token: "tok_a" });
+  assert.equal(artifactDetail.status, 200);
+  assert.equal(artifactDetail.body.result.payload.themes.length, 2);
+
+  const latest = await call("/api/applications/app_team_a/results/latest", { token: "tok_a" });
+  assert.equal(latest.status, 200);
+  assert.equal(latest.body.result.id, "app_artifact_http_themes");
+
+  const pinned = await call("/api/applications/app_team_a/results/app_render_http_new", {
+    method: "PATCH",
+    body: { pinned: true, retentionPolicy: "keep", note: "Golden render" },
+    token: "tok_a",
+  });
+  assert.equal(pinned.status, 200);
+  assert.equal(pinned.body.result.governance.pinned, true);
+  assert.equal(pinned.body.result.governance.retentionPolicy, "keep");
+  assert.equal(pinned.body.result.governance.note, "Golden render");
+  const pinnedList = await call("/api/applications/app_team_a/results?pinned=true&includeArchived=true", { token: "tok_a" });
+  assert.equal(pinnedList.status, 200);
+  assert.deepEqual(pinnedList.body.results.map((result) => result.id), ["app_render_http_new"]);
+
+  const archived = await call("/api/applications/app_team_a/results/app_artifact_http_themes", {
+    method: "PATCH",
+    body: { archived: true, note: "Superseded catalog" },
+    token: "tok_a",
+  });
+  assert.equal(archived.status, 200);
+  assert.equal(archived.body.result.governance.archived, true);
+  assert.equal(archived.body.result.governance.note, "Superseded catalog");
+  const activeArtifacts = await call("/api/applications/app_team_a/results?resultType=artifact&limit=5", { token: "tok_a" });
+  assert.equal(activeArtifacts.status, 200);
+  assert.deepEqual(activeArtifacts.body.results, []);
+  const archivedArtifacts = await call("/api/applications/app_team_a/results?archived=true&limit=5", { token: "tok_a" });
+  assert.equal(archivedArtifacts.status, 200);
+  assert.deepEqual(archivedArtifacts.body.results.map((result) => result.id), ["app_artifact_http_themes"]);
+  assert.ok(ctx.state.events.some((event) => event.type === "application_result_governance_updated"));
+
+  const filtered = await call("/api/applications/app_team_a/results?status=failed", { token: "tok_a" });
+  assert.equal(filtered.status, 200);
+  assert.deepEqual(filtered.body.results, []);
+
+  const foreign = await call("/api/applications/app_team_a/results", { token: "tok_b" });
+  assert.equal(foreign.status, 404);
+});
+
+test("application result retention policy archives older unpinned results", async () => {
+  ctx.state.applications.push({
+    id: "app_retention_http",
+    name: "Retention HTTP App",
+    kind: "repository",
+    source: { type: "local", path: "/tmp/a" },
+    status: "active",
+    lifecycle: { state: "registered" },
+    projectId: "projA",
+    path: "/tmp/a",
+    ownerTeamId: TEAM_A,
+    capabilitiesVersion: 1,
+    orchestrationIds: [],
+    createdAt: "2099-01-04T00:00:00.000Z",
+    updatedAt: "2099-01-04T00:00:00.000Z",
+  });
+  ctx.state.applicationRenderResults.push({
+    id: "app_retention_old_pinned",
+    applicationId: "app_retention_http",
+    invocationId: "inv_retention_old_pinned",
+    mcpToolName: "render_markdown",
+    artifactType: "html",
+    evidenceType: "rendered_markdown",
+    htmlSummary: "Pinned old render.",
+    html: "<h1>Pinned</h1>",
+    resultRef: { type: "application_render_result", id: "app_retention_old_pinned" },
+    governance: { pinned: true, archived: false, retentionPolicy: "keep", pinnedAt: "2099-01-04T00:00:01.000Z" },
+    createdAt: "2099-01-04T00:00:01.000Z",
+    updatedAt: "2099-01-04T00:00:01.000Z",
+  }, {
+    id: "app_retention_old_render",
+    applicationId: "app_retention_http",
+    invocationId: "inv_retention_old_render",
+    mcpToolName: "render_markdown",
+    artifactType: "html",
+    evidenceType: "rendered_markdown",
+    htmlSummary: "Old render.",
+    html: "<h1>Old</h1>",
+    resultRef: { type: "application_render_result", id: "app_retention_old_render" },
+    createdAt: "2099-01-04T00:00:02.000Z",
+    updatedAt: "2099-01-04T00:00:02.000Z",
+  }, {
+    id: "app_retention_new_render",
+    applicationId: "app_retention_http",
+    invocationId: "inv_retention_new_render",
+    mcpToolName: "render_markdown",
+    artifactType: "html",
+    evidenceType: "rendered_markdown",
+    htmlSummary: "Newest render.",
+    html: "<h1>New</h1>",
+    resultRef: { type: "application_render_result", id: "app_retention_new_render" },
+    createdAt: "2099-01-04T00:00:04.000Z",
+    updatedAt: "2099-01-04T00:00:04.000Z",
+  });
+  ctx.state.applicationResultArtifacts.push({
+    id: "app_retention_mid_artifact",
+    applicationId: "app_retention_http",
+    invocationId: "inv_retention_mid_artifact",
+    mcpToolName: "list_themes",
+    outputCollection: "applicationResultArtifacts",
+    artifactType: "option_catalog",
+    evidenceType: "mcp_option_catalog",
+    summary: "Mid artifact.",
+    dataShape: { type: "object", keys: ["themes"], itemCount: 1 },
+    dataHash: "f".repeat(64),
+    byteLength: 24,
+    payload: { themes: [{ value: "default" }] },
+    resultRef: { type: "application_result_artifact", id: "app_retention_mid_artifact" },
+    createdAt: "2099-01-04T00:00:03.000Z",
+    updatedAt: "2099-01-04T00:00:03.000Z",
+  });
+
+  const updated = await call("/api/applications/app_retention_http/result-retention", {
+    method: "PATCH",
+    body: { enabled: true, keepLatest: 1, archiveAfterDays: null },
+    token: "tok_a",
+  });
+  assert.equal(updated.status, 200);
+  assert.equal(updated.body.retention.enabled, true);
+  assert.equal(updated.body.retention.keepLatest, 1);
+
+  const executed = await call("/api/applications/app_retention_http/results/retention/run", {
+    method: "POST",
+    body: {},
+    token: "tok_a",
+  });
+  assert.equal(executed.status, 200);
+  assert.equal(executed.body.summary.archivedCount, 2);
+  assert.deepEqual(new Set(executed.body.summary.archivedResultIds), new Set([
+    "app_retention_mid_artifact",
+    "app_retention_old_render",
+  ]));
+  assert.equal(executed.body.summary.skippedPinnedCount, 1);
+
+  const active = await call("/api/applications/app_retention_http/results?includeArchived=false&limit=10", { token: "tok_a" });
+  assert.equal(active.status, 200);
+  assert.deepEqual(active.body.results.map((result) => result.id), [
+    "app_retention_new_render",
+    "app_retention_old_pinned",
+  ]);
+
+  const archived = await call("/api/applications/app_retention_http/results?archived=true&limit=10", { token: "tok_a" });
+  assert.equal(archived.status, 200);
+  assert.deepEqual(archived.body.results.map((result) => result.id), [
+    "app_retention_mid_artifact",
+    "app_retention_old_render",
+  ]);
+  assert.equal(archived.body.results[0].governance.retentionPolicy, "auto_archive");
+  assert.ok(ctx.state.events.some((event) => event.type === "application_result_retention_executed" && event.data?.applicationId === "app_retention_http"));
 });
 
 test("GET /api/state includes application health summaries from scoped events and recovery actions", async () => {
@@ -2501,6 +2896,93 @@ test("POST /api/tools/codex.apply.patch/invocations requires approval then creat
   assert.equal(invocation?.options?.metadata?.patchSha256, patchSha256);
   assert.equal(invocation?.options?.metadata?.approvalRequestId, approvalRequestId);
   assert.ok(existsSync(invocation?.options?.metadata?.patchFilePath), "apply invocation should receive a server-created temp patch file");
+});
+
+test("POST /api/tools/codex.propose.patch/proposals/:id/review approves a generated proposal for apply", async () => {
+  const diff = "diff --git a/README.md b/README.md\n--- a/README.md\n+++ b/README.md\n@@ -1 +1 @@\n-old\n+new";
+  const patchSha256 = sha256(diff);
+  ctx.state.codexPatchProposals.unshift({
+    id: "cpp_http_review",
+    source: "codex",
+    proposalInvocationId: "inv_patch_review_base",
+    invocationId: "inv_patch_review_base",
+    projectId: "projA",
+    worktreeId: "wtA",
+    requestedBy: "usr_a",
+    agentId: "agt_codex_propose_patch",
+    proposalAgentName: "Codex Patch Proposal",
+    tool: "codex.propose.patch",
+    mode: "patch-proposal",
+    basePlanId: null,
+    goal: "Review patch.",
+    constraints: null,
+    maxFiles: 1,
+    summary: "Patch awaiting review.",
+    files: [{ path: "README.md", changeType: "modify", risk: "medium" }],
+    diffPreview: diff,
+    patchSha256,
+    verification: [],
+    immutable: true,
+    reviewState: "generated",
+    authoritative: false,
+    raw: { diff },
+    createdAt: now(),
+  });
+  ctx.state.invocations.unshift({
+    id: "inv_patch_review_base",
+    projectId: "projA",
+    worktreeId: "wtA",
+    requestedBy: "usr_a",
+    agentId: "agt_codex_propose_patch",
+    status: "succeeded",
+    options: { metadata: { tool: "codex.propose.patch", projectId: "projA", worktreeId: "wtA" } },
+    createdAt: now(),
+  });
+
+  const blocked = await call("/api/tools/codex.apply.patch/invocations", {
+    method: "POST",
+    body: {
+      projectId: "projA",
+      worktreeId: "wtA",
+      proposalId: "cpp_http_review",
+      patchSha256,
+    },
+  });
+  assert.equal(blocked.status, 409);
+  assert.equal(blocked.body.error, "proposal_not_approved");
+
+  const foreign = await call("/api/tools/codex.propose.patch/proposals/cpp_http_review/review", {
+    token: "tok_b",
+    method: "POST",
+    body: { action: "approve" },
+  });
+  assert.equal(foreign.status, 404);
+  assert.equal(foreign.body.error, "proposal_not_found");
+
+  const reviewed = await call("/api/tools/codex.propose.patch/proposals/cpp_http_review/review", {
+    method: "POST",
+    body: { action: "approve" },
+  });
+  assert.equal(reviewed.status, 200);
+  assert.equal(reviewed.body.proposal.reviewState, "approved");
+  assert.equal(ctx.state.codexPatchProposals.find((item) => item.id === "cpp_http_review")?.reviewedBy, "usr_a");
+
+  const stateRes = await call("/api/state");
+  assert.equal(stateRes.status, 200);
+  assert.equal(stateRes.body.codexPatchProposals.find((item) => item.id === "cpp_http_review")?.reviewState, "approved");
+
+  const approvalRequired = await call("/api/tools/codex.apply.patch/invocations", {
+    method: "POST",
+    body: {
+      projectId: "projA",
+      worktreeId: "wtA",
+      proposalId: "cpp_http_review",
+      patchSha256,
+    },
+  });
+  assert.equal(approvalRequired.status, 202);
+  assert.equal(approvalRequired.body.error, undefined);
+  assert.equal(approvalRequired.body.approvalRequestRequired, true);
 });
 
 test("POST /api/tools/claude.review.diff/invocations creates a governed invocation", async () => {

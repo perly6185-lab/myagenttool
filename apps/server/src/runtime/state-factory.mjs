@@ -37,6 +37,7 @@ export function createServerState({ defaultProjectPath, now }) {
     tokens: [],
     projects: [defaultProject],
     applications: [],
+    applicationEditorActions: [],
     applicationRecoveryActions: [],
     currentProjectId: defaultProject.id,
     projectTargets: [createProjectTargetRecord(defaultProject, now)],
@@ -68,6 +69,9 @@ export function createServerState({ defaultProjectPath, now }) {
     aiUsageRecords: [],
     ledgerEntries: [],
     importedUsageEstimates: [],
+    applicationRenderResults: [],
+    applicationResultArtifacts: [],
+    applicationSmokeEvidenceRecords: [],
     codexReviewFindings: [],
     codexChangePlans: [],
     codexPatchProposals: [],
@@ -142,6 +146,7 @@ export function resetStateForSelfCheck({ state, now }) {
   }
   state.invocations = [];
   state.applications = [];
+  state.applicationEditorActions = [];
   state.applicationRecoveryActions = [];
   state.events = [];
   state.traces = [];
@@ -164,6 +169,9 @@ export function resetStateForSelfCheck({ state, now }) {
   state.aiUsageRecords = [];
   state.ledgerEntries = [];
   state.importedUsageEstimates = [];
+  state.applicationRenderResults = [];
+  state.applicationResultArtifacts = [];
+  state.applicationSmokeEvidenceRecords = [];
   state.codexReviewFindings = [];
   state.codexChangePlans = [];
   state.codexPatchProposals = [];

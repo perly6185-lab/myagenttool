@@ -216,6 +216,18 @@ product-quality focus:
   `render_markdown` through the MCP bridge path; result links the rendered
   output across invocation/Application/audit/Evidence Center; and Web shows MCP
   tools, probe confidence, latest result, and View invocation.
+- Status: the real doocs/md rehearsal now runs through `pnpm
+  smoke:doocs-md-application`, including Desktop Bridge MCP process execution,
+  rendered-result import, option-catalog artifacts, governed smoke evidence,
+  retention, and restart recovery for probe/MCP/tools/latest-result/imported
+  artifacts/evidence.
+- Status: mixed-fleet bridge coverage now has a live `pnpm
+  smoke:application-wrapper` path for both reviewed npm-wrapper execution and
+  stdio MCP execution, with the MCP render result imported back into the
+  Application result read model.
+- Status: the Web Application Result Center now has URL-backed result
+  selection via `applicationResult=<resultId>`, so a restored Applications deep
+  link can reopen the result modal directly.
 - Status: live manual-confirm UX now exists for ready MCP candidates. The Web
   Applications inspector can confirm a manual candidate through explicit intent,
   and the server persists the descriptor, registers the Agent, and projects
@@ -229,9 +241,42 @@ product-quality focus:
   endpoint origin/host/protocol. The Applications inspector renders these
   fields, while query tokens, headers, full argv, and raw adapter config remain
   server-internal.
-- Next focus: keep restart/read-model evidence green while broadening beyond
-  ccusage and doocs/md, add real approval issuance/verification, and avoid
-  auto-registering anything riskier than rooted `node` stdio.
+- Status: M4.1 readiness closeout is recorded in
+  [APPLICATION_M4_READINESS_CLOSEOUT.md](APPLICATION_M4_READINESS_CLOSEOUT.md).
+  The new `pnpm smoke:application-m4-readiness` gate reuses focused tests and
+  smokes to verify ccusage pin freshness, Application registration/result
+  evidence, doocs/md MCP rehearsal, Evidence Center navigation, governed Codex
+  tool flows, typechecks, and docs links before the next productization slice.
+- Status: M4.2 guided-intake first slice is recorded in
+  [APPLICATION_M4_ONBOARDING_GUIDE_CLOSEOUT.md](APPLICATION_M4_ONBOARDING_GUIDE_CLOSEOUT.md).
+  Register Application now shows a live onboarding guide for source readiness,
+  integration brief capture, descriptor draft review, and smoke-path planning.
+  The same flow can apply generated MCP, npm wrapper, or manual manifest drafts
+  into advanced descriptor JSON before registration, with generated npm wrapper
+  commands kept draft and approval-required. Registration policy preview now
+  covers MCP, npm wrapper, and manual manifest JSON before submit. Application
+  detail now carries the guide forward as `Onboarding continuity`, tying source,
+  brief, descriptor, and smoke readiness to descriptor drafts and post-save next
+  actions. The M4 readiness gate includes descriptor-utils, draft-generator,
+  onboarding-guide, register-modal, and inspector continuity regressions.
+- Status: M4.3-M4.4 operations closeout is recorded in
+  [APPLICATION_M4_OPERATIONS_CLOSEOUT.md](APPLICATION_M4_OPERATIONS_CLOSEOUT.md).
+  Result Center now has a `Result operations` summary, recovery actions have a
+  top-level `Recovery operations` approval/routing panel, the readiness gate
+  includes `smoke:application-fleet` for HTTP MCP/manual-manifest coverage, and
+  approval issuance/verification is covered across recovery, wrapper consent,
+  and HTTP MCP confirmation.
+- Status: M5 productization closeout is recorded in
+  [APPLICATION_M5_PRODUCTIZATION_CLOSEOUT.md](APPLICATION_M5_PRODUCTIZATION_CLOSEOUT.md).
+  Recovery requests now have `recovery=` deep links and focused recovery
+  history expansion; Result Center operations have a focused split regression;
+  Applications has an operational fleet overview for npm wrapper, stdio MCP,
+  HTTP MCP, manual manifest, blocked-probe, ready-MCP, and automation-attention
+  cohorts; Application detail has a scoped approval queue; and
+  `pnpm smoke:application-m5-productization` gates the M5 surface.
+- Next focus: keep restart/read-model evidence green while broadening approval
+  ownership fields if the server read model grows beyond invocation metadata
+  and recovery approval ids.
 - **Discover:** make Application capability descriptors complete enough for
   external and Web callers to choose a capability without adapter knowledge:
   readiness, risk, approval, schema, output collection, and result-import

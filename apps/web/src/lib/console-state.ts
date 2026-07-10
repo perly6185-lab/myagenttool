@@ -90,7 +90,9 @@ export interface InvocationSnapshot {
   result?: { summary?: string; touchedUserFiles?: boolean };
   explanation?: InvocationExplanation | null;
   createdAt?: string;
+  updatedAt?: string;
   options?: {
+    toolArguments?: Record<string, unknown>;
     metadata?: {
       automationId?: string;
       automationName?: string;
@@ -363,6 +365,30 @@ export interface EvidenceCenterRecord {
   createdAt?: string | null;
 }
 
+export interface ApplicationSmokeEvidenceRecord {
+  id: string;
+  applicationId: string;
+  applicationName?: string | null;
+  projectId?: string | null;
+  repoPath?: string | null;
+  type: "application_smoke_evidence";
+  source: "application_smoke_evidence";
+  status: string;
+  redactionState?: string | null;
+  summary: string;
+  descriptorOperationAt?: string | null;
+  completedCount: number;
+  stepCount: number;
+  steps: Array<{
+    index?: number | null;
+    step: string;
+    completed: boolean;
+    note?: string | null;
+  }>;
+  createdAt: string;
+  updatedAt?: string | null;
+}
+
 export interface CodexReviewFinding {
   id: string;
   source: "codex" | string;
@@ -528,6 +554,14 @@ export interface ToolDescriptor {
   approvalPolicy?: Record<string, unknown>;
   authoritativeBilling?: boolean;
   outputCollection?: string;
+  source?: string;
+  metadata?: Record<string, unknown>;
+  mcp?: {
+    agentId?: string | null;
+    toolName?: string | null;
+    transport?: string | null;
+  } | null;
+  application?: { id?: string | null } | null;
 }
 
 export interface ToolInvocationRequest {
@@ -555,6 +589,8 @@ export interface ToolInvocationResponse {
   invocationId: string;
   agentId: string;
   status: string;
+  approvalRequestId?: string | null;
+  approvalRequestRequired?: boolean;
   outputCollection?: string;
   invocation?: InvocationSnapshot;
 }
@@ -841,6 +877,9 @@ export interface ConsoleSnapshot {
   retentionSettings?: RetentionSettings;
   ledgerEntries?: LedgerEntry[];
   importedUsageEstimates?: ImportedUsageEstimate[];
+  applicationRenderResults?: ApplicationRenderResultSummary[];
+  applicationResultArtifacts?: ApplicationResultArtifactSummary[];
+  applicationSmokeEvidenceRecords?: ApplicationSmokeEvidenceRecord[];
   evidenceCenterRecords?: EvidenceCenterRecord[];
   codexReviewFindings?: CodexReviewFinding[];
   codexChangePlans?: CodexChangePlan[];
@@ -866,7 +905,20 @@ export interface NpmWrapperSnapshot {
   installState?: string;
   packageManager?: string;
   readiness?: NpmWrapperReadinessSnapshot | null;
-  commands?: { id: string; commandType?: string; command?: string; status?: string; riskLevel?: string; argInputs?: NpmWrapperArgInputSnapshot[] }[];
+  commands?: {
+    id: string;
+    displayName?: string;
+    commandType?: string;
+    command?: string;
+    status?: string;
+    riskLevel?: string;
+    riskTags?: string[];
+    requiresApproval?: boolean;
+    argInputs?: NpmWrapperArgInputSnapshot[];
+    filePolicy?: string;
+    networkPolicy?: string;
+    outputCollection?: string | null;
+  }[];
 }
 
 export interface NpmWrapperReadinessSnapshot {
@@ -904,6 +956,7 @@ export interface ApplicationProbeMcpServer {
   toolNamespace?: string;
   allowedTools?: string[];
   sharedToolNames?: string[];
+  toolSchemas?: Record<string, Record<string, unknown>>;
   status?: string;
   confidence?: "low" | "medium" | "high" | string;
   autoRegister?: boolean;
@@ -977,12 +1030,23 @@ export interface ApplicationMcpAgentSnapshot {
   allowedTools?: string[];
   toolNamespace?: string;
   sharedToolNames?: string[];
+  toolSchemas?: Record<string, Record<string, unknown>>;
   agentStatus?: string;
+  resultImporters?: Record<string, ApplicationMcpResultImporter>;
   lastRecoveredAt?: string | null;
   recovery?: {
     state?: string;
     reason?: string;
     nextAction?: string;
+    lastInvocationId?: string | null;
+    lastFailure?: {
+      invocationId?: string | null;
+      status?: string | null;
+      reason?: string | null;
+      summary?: string | null;
+      completedAt?: string | null;
+    } | null;
+    updatedAt?: string | null;
   };
   discovery?: {
     source?: string;
@@ -993,6 +1057,15 @@ export interface ApplicationMcpAgentSnapshot {
     manualConfirmed?: boolean;
     confirmedBy?: string | null;
   };
+}
+
+export interface ApplicationMcpResultImporter {
+  toolName?: string | null;
+  importer?: string | null;
+  outputCollection?: string | null;
+  artifactType?: string | null;
+  evidenceType?: string | null;
+  largeArtifactPolicy?: string | null;
 }
 
 export interface ApplicationEventSnapshot {
@@ -1206,6 +1279,25 @@ export interface ApplicationHealthSummary {
   } | null;
 }
 
+export interface ApplicationIntegrationBrief {
+  version?: string;
+  status?: string;
+  intent?: string | null;
+  sourceType?: "git" | "local" | "npm" | "mcp" | "manual" | "mixed" | "unknown" | string | null;
+  discoverableCapabilities?: string[];
+  invokableCapabilities?: string[];
+  dataBoundary?: string | null;
+  fixedCommands?: string[];
+  userInputs?: string | null;
+  resultImport?: string | null;
+  approvalsAndRecovery?: string | null;
+  smokeTests?: string[];
+  aiAssistance?: {
+    requested?: boolean;
+    nextDrafts?: string[];
+  };
+}
+
 export interface ApplicationSnapshot {
   id: string;
   name: string;
@@ -1217,15 +1309,68 @@ export interface ApplicationSnapshot {
   path?: string | null;
   ownerTeamId?: string | null;
   capabilitiesVersion?: number;
+  integrationBrief?: ApplicationIntegrationBrief | null;
   probe?: ApplicationProbe | null;
   mcpAgent?: ApplicationMcpAgentSnapshot | null;
   wrapper?: NpmWrapperSnapshot | null;
   orchestrations?: ApplicationOrchestration[];
   orchestrationIds?: string[];
   latestResult?: ApplicationResultRef | null;
+  resultRetention?: ApplicationResultRetention | null;
+  webEditor?: ApplicationWebEditorSnapshot | null;
   healthSummary?: ApplicationHealthSummary | null;
   createdAt?: string;
   updatedAt?: string;
+}
+
+export interface ApplicationWebEditorSnapshot {
+  available?: boolean;
+  status?: "unsupported" | "not_running" | "starting" | "ready" | "stopping" | "failed" | string;
+  reason?: string | null;
+  commandLabel?: string | null;
+  url?: string | null;
+  port?: number | null;
+  pid?: number | null;
+  actionId?: string | null;
+  stopActionId?: string | null;
+  summary?: string | null;
+  lastError?: string | null;
+  lastLogs?: string[];
+  lastStartedAt?: string | null;
+  lastStoppedAt?: string | null;
+  updatedAt?: string | null;
+}
+
+export interface ApplicationResultRetentionSummary {
+  applicationId?: string | null;
+  status?: string | null;
+  reason?: string | null;
+  invocationId?: string | null;
+  enabled?: boolean;
+  keepLatest?: number;
+  archiveAfterDays?: number | null;
+  archivedCount?: number;
+  archivedResultIds?: string[];
+  archivedResults?: {
+    id?: string | null;
+    resultType?: string | null;
+    collection?: string | null;
+    reason?: string | null;
+    createdAt?: string | null;
+  }[];
+  skippedPinnedCount?: number;
+  executedAt?: string | null;
+}
+
+export interface ApplicationResultRetention {
+  enabled: boolean;
+  keepLatest: number;
+  archiveAfterDays?: number | null;
+  updatedAt?: string | null;
+  updatedBy?: string | null;
+  lastRunAt?: string | null;
+  lastArchivedCount?: number;
+  lastSummary?: ApplicationResultRetentionSummary | null;
 }
 
 export interface ApplicationResultRef {
@@ -1237,10 +1382,105 @@ export interface ApplicationResultRef {
   mcpToolName?: string | null;
   importedRecordIds?: string[];
   importedRecordCount?: number;
+  resultRef?: ApplicationResultReference | null;
+  renderResult?: ApplicationRenderResultSummary | null;
+  artifactResult?: ApplicationResultArtifactSummary | null;
   invocationId?: string | null;
   status?: string | null;
   completedAt?: string | null;
 }
+
+export interface ApplicationResultReference {
+  type: string;
+  id: string;
+  href?: string | null;
+}
+
+export interface ApplicationResultLineage {
+  source?: string | null;
+  applicationId?: string | null;
+  invocationId?: string | null;
+  agentId?: string | null;
+  capability?: string | null;
+  mcpToolName?: string | null;
+  outputCollection?: string | null;
+  resultRef?: ApplicationResultReference | null;
+  generatedAt?: string | null;
+}
+
+export interface ApplicationResultGovernance {
+  pinned?: boolean;
+  archived?: boolean;
+  retentionPolicy?: string | null;
+  note?: string | null;
+  pinnedAt?: string | null;
+  archivedAt?: string | null;
+  updatedAt?: string | null;
+  updatedBy?: string | null;
+}
+
+export interface ApplicationRenderResultSummary {
+  id: string;
+  applicationId: string;
+  invocationId?: string | null;
+  agentId?: string | null;
+  capability?: string | null;
+  mcpToolName?: string | null;
+  importer?: ApplicationMcpResultImporter | null;
+  outputCollection?: string | null;
+  artifactType?: string | null;
+  evidenceType?: string | null;
+  theme?: string | null;
+  markdownHash?: string | null;
+  htmlHash?: string | null;
+  htmlByteLength?: number | null;
+  htmlSummary?: string | null;
+  metadata?: Record<string, unknown>;
+  resultRef?: ApplicationResultReference | null;
+  lineage?: ApplicationResultLineage | null;
+  governance?: ApplicationResultGovernance | null;
+  generatedAt?: string | null;
+  createdAt?: string | null;
+  updatedAt?: string | null;
+}
+
+export interface ApplicationRenderResult extends ApplicationRenderResultSummary {
+  html: string;
+}
+
+export interface ApplicationResultArtifactSummary {
+  id: string;
+  applicationId: string;
+  invocationId?: string | null;
+  agentId?: string | null;
+  capability?: string | null;
+  mcpToolName?: string | null;
+  importer?: ApplicationMcpResultImporter | null;
+  outputCollection?: string | null;
+  artifactType?: string | null;
+  evidenceType?: string | null;
+  summary?: string | null;
+  htmlSummary?: string | null;
+  dataShape?: Record<string, unknown> | null;
+  dataHash?: string | null;
+  byteLength?: number | null;
+  metadata?: Record<string, unknown>;
+  preview?: unknown;
+  resultRef?: ApplicationResultReference | null;
+  lineage?: ApplicationResultLineage | null;
+  governance?: ApplicationResultGovernance | null;
+  generatedAt?: string | null;
+  createdAt?: string | null;
+  updatedAt?: string | null;
+}
+
+export interface ApplicationResultArtifact extends ApplicationResultArtifactSummary {
+  payload?: unknown;
+  text?: string | null;
+}
+
+export type ApplicationResultSummaryItem = ApplicationRenderResultSummary | ApplicationResultArtifactSummary;
+export type ApplicationResultDetail = ApplicationRenderResult | ApplicationResultArtifact;
 
 export interface ProjectTreeEntry {
   name: string;
@@ -1260,10 +1500,13 @@ export interface ProjectTreeResponse {
 }
 
 export interface ApplicationRegisterRequest {
+  id?: string;
   name?: string;
   projectId?: string | null;
+  autoOnline?: boolean;
   source: ApplicationSource;
   mcpAgent?: Record<string, unknown> | null;
+  integrationBrief?: ApplicationIntegrationBrief | null;
 }
 
 export interface ApplicationDescriptorSnapshot {

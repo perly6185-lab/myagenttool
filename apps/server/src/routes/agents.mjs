@@ -14,6 +14,7 @@ export async function handleAgentRoutes({
   state,
   now,
   appendEvent,
+  reconcileApplicationWebEditorsOnBridgeRegister,
   isAgentDisabled,
   redeliverExpiredDispatches,
   registerAgent,
@@ -49,6 +50,7 @@ export async function handleAgentRoutes({
     state.device.bridgeVersion = String(body.bridgeVersion ?? "0.0.0");
     state.device.registeredCapabilities = Array.isArray(body.capabilities) ? body.capabilities.map(String) : [];
     state.device.updatedAt = now();
+    reconcileApplicationWebEditorsOnBridgeRegister?.(actor);
     for (const agent of state.agents.filter((item) => item.location.type === "local_device")) {
       if (isAgentDisabled(agent)) {
         agent.updatedAt = now();

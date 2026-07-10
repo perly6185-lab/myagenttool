@@ -7,7 +7,7 @@
 // Application capability path.
 
 export const CCUSAGE_APPLICATION_ID = "app_ccusage";
-export const CCUSAGE_DEFAULT_VERSION = "20.0.14";
+export const CCUSAGE_DEFAULT_VERSION = "20.0.16";
 
 // One wrapper command per report, mirroring the governed ccusage agents
 // (daily/weekly/monthly/session/codex_daily/claude_daily). All read-only and

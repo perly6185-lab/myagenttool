@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { createElement, type ReactElement } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApplicationsView } from "@/features/applications/applications-view";
@@ -9,6 +9,7 @@ import type { ConsoleSnapshot } from "@/lib/console-state";
 const apiMock = vi.hoisted(() => ({
   fetchState: vi.fn(),
   registerApplication: vi.fn(),
+  applicationLifecycle: vi.fn(),
 }));
 
 vi.mock("@/lib/api-client", async () => ({
@@ -16,15 +17,18 @@ vi.mock("@/lib/api-client", async () => ({
   fetchState: apiMock.fetchState,
   api: {
     registerApplication: apiMock.registerApplication,
+    applicationLifecycle: apiMock.applicationLifecycle,
   },
 }));
 
 beforeEach(() => {
   apiMock.fetchState.mockResolvedValue(consoleState());
+  apiMock.applicationLifecycle.mockResolvedValue({ application: { id: "app_doocs_md" } });
   useUiStore.setState({
     section: "applications",
     selectedApplicationId: null,
     selectedApplicationRun: null,
+    selectedApplicationRecoveryId: null,
     selectedApplicationEventLevel: "all",
     selectedApplicationAutomationId: null,
   });
@@ -33,16 +37,29 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
+  window.history.replaceState(null, "", "/");
   useUiStore.setState({
     section: "dashboard",
     selectedApplicationId: null,
     selectedApplicationRun: null,
+    selectedApplicationRecoveryId: null,
     selectedApplicationEventLevel: "all",
     selectedApplicationAutomationId: null,
   });
 });
 
 describe("ApplicationsView timeline routing", () => {
+  it("restores selected application from the URL after applications load", async () => {
+    window.history.replaceState(null, "", "/?section=applications&application=app_ready");
+
+    renderWithClient(createElement(ApplicationsView));
+
+    await screen.findByText("Docs Ready");
+    await waitFor(() => {
+      expect(useUiStore.getState().selectedApplicationId).toBe("app_ready");
+    });
+  });
+
   it("selects an application timeline level from attention shortcuts", async () => {
     renderWithClient(createElement(ApplicationsView));
 
@@ -55,6 +72,139 @@ describe("ApplicationsView timeline routing", () => {
 
     expect(useUiStore.getState().selectedApplicationId).toBe("app_ready");
     expect(useUiStore.getState().selectedApplicationEventLevel).toBe("all");
+  });
+});
+
+describe("ApplicationsView ccusage registration", () => {
+  it("shows built-in and custom integration entry points", async () => {
+    renderWithClient(createElement(ApplicationsView));
+
+    expect(await screen.findByText("Built-in Applications")).toBeTruthy();
+    expect(screen.getByText("Reviewed first")).toBeTruthy();
+    expect(screen.getByText("doocs/md MCP")).toBeTruthy();
+    expect(screen.getByText("Custom integration")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Start advanced registration" }));
+
+    expect(screen.getByText("Source type")).toBeTruthy();
+    expect(screen.getByText("Advanced descriptors")).toBeTruthy();
+  });
+
+  it("registers the canonical ccusage application from the built-in applications section", async () => {
+    apiMock.registerApplication.mockResolvedValue({
+      application: { id: "app_ccusage" },
+      capabilities: [],
+    });
+    renderWithClient(createElement(ApplicationsView));
+
+    fireEvent.click(await screen.findByRole("button", { name: "Register built-in ccusage" }));
+
+    await waitFor(() => expect(apiMock.registerApplication).toHaveBeenCalledWith(expect.objectContaining({
+      id: "app_ccusage",
+      name: "ccusage",
+      autoOnline: false,
+      source: expect.objectContaining({
+        type: "npm",
+        package: "ccusage",
+        version: "20.0.16",
+        wrapper: expect.objectContaining({
+          mode: "installed-wrapper",
+          packageManager: "npm",
+          commands: expect.arrayContaining([
+            expect.objectContaining({
+              id: "daily",
+              command: "ccusage",
+              args: ["daily", "--json", "--offline"],
+              compatibilityFacade: expect.objectContaining({ name: "ccusage.report" }),
+              outputCollection: "importedUsageEstimates",
+            }),
+            expect.objectContaining({
+              id: "session",
+              requiresApproval: true,
+            }),
+          ]),
+        }),
+      }),
+    })));
+    expect(useUiStore.getState().selectedApplicationId).toBe("app_ccusage");
+  });
+
+  it("registers and probes the canonical doocs/md application from the built-in applications section", async () => {
+    apiMock.registerApplication.mockResolvedValue({
+      application: { id: "app_doocs_md" },
+      capabilities: [],
+    });
+    renderWithClient(createElement(ApplicationsView));
+
+    fireEvent.click(await screen.findByRole("button", { name: "Register doocs/md" }));
+
+    await waitFor(() => expect(apiMock.registerApplication).toHaveBeenCalledWith(expect.objectContaining({
+      id: "app_doocs_md",
+      name: "doocs/md",
+      source: {
+        type: "local",
+        path: "doocs-md",
+      },
+      integrationBrief: expect.objectContaining({
+        intent: expect.stringContaining("doocs/md MCP"),
+        sourceType: "local",
+        fixedCommands: expect.arrayContaining(["render_markdown", "list_themes", "pnpm run start"]),
+        smokeTests: expect.arrayContaining(["pnpm smoke:doocs-md-editor"]),
+      }),
+    })));
+    await waitFor(() => {
+      expect(apiMock.applicationLifecycle).toHaveBeenCalledWith("app_doocs_md", "probe");
+    });
+    expect(useUiStore.getState().selectedApplicationId).toBe("app_doocs_md");
+  });
+
+  it("opens ccusage when it is already registered", async () => {
+    apiMock.fetchState.mockResolvedValue({
+      ...consoleState(),
+      applications: [
+        ...consoleState().applications!,
+        {
+          id: "app_ccusage",
+          name: "ccusage",
+          kind: "npm_package",
+          source: { type: "npm", package: "ccusage", version: "20.0.16" },
+          status: "registered",
+          createdAt: "2026-07-06T00:00:00.000Z",
+          updatedAt: "2026-07-06T00:00:00.000Z",
+        },
+      ],
+    });
+    renderWithClient(createElement(ApplicationsView));
+
+    fireEvent.click(await screen.findByRole("button", { name: "Open ccusage" }));
+
+    expect(apiMock.registerApplication).not.toHaveBeenCalled();
+    expect(useUiStore.getState().selectedApplicationId).toBe("app_ccusage");
+  });
+
+  it("opens doocs/md when it is already registered", async () => {
+    apiMock.fetchState.mockResolvedValue({
+      ...consoleState(),
+      applications: [
+        ...consoleState().applications!,
+        {
+          id: "app_doocs_md",
+          name: "doocs/md",
+          kind: "repository",
+          source: { type: "local", path: "D:\\github\\perly6185-lab\\myagenttool\\doocs-md" },
+          status: "active",
+          createdAt: "2026-07-06T00:00:00.000Z",
+          updatedAt: "2026-07-06T00:00:00.000Z",
+        },
+      ],
+    });
+    renderWithClient(createElement(ApplicationsView));
+
+    fireEvent.click(await screen.findByRole("button", { name: "Open doocs/md" }));
+
+    expect(apiMock.registerApplication).not.toHaveBeenCalled();
+    expect(apiMock.applicationLifecycle).not.toHaveBeenCalled();
+    expect(useUiStore.getState().selectedApplicationId).toBe("app_doocs_md");
   });
 });
 
@@ -96,6 +246,25 @@ describe("ApplicationsView automation schedule attention", () => {
 });
 
 describe("ApplicationsView mixed fleet search", () => {
+  it("summarizes and filters the Application fleet by source, MCP transport, and probe state", async () => {
+    apiMock.fetchState.mockResolvedValue(fleetConsoleState());
+    renderWithClient(createElement(ApplicationsView));
+
+    expect(await screen.findByText("Fleet overview")).toBeTruthy();
+    expect(await screen.findByText("npm Wrapper")).toBeTruthy();
+    expect(screen.getByRole("button", { name: /npm wrappers 1/i })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /stdio MCP 1/i })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /HTTP MCP 1/i })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /Manual manifests 1/i })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /Blocked probes 1/i })).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: /Blocked probes 1/i }));
+
+    expect(await screen.findByText("HTTP MCP Blocked")).toBeTruthy();
+    expect(screen.queryByText("Docs Ready")).toBeNull();
+    expect(screen.queryByText("npm Wrapper")).toBeNull();
+  });
+
   it("matches HTTP MCP live-probe recovery issues from the application list", async () => {
     renderWithClient(createElement(ApplicationsView));
 
@@ -125,6 +294,7 @@ describe("ApplicationsView mixed fleet search", () => {
 
     expect(useUiStore.getState().selectedApplicationId).toBe("app_http_blocked");
     expect(useUiStore.getState().selectedApplicationRun).toBeNull();
+    expect(useUiStore.getState().selectedApplicationRecoveryId).toBeNull();
     expect(useUiStore.getState().selectedApplicationEventLevel).toBe("all");
     expect(useUiStore.getState().selectedApplicationAutomationId).toBeNull();
   });
@@ -138,6 +308,51 @@ function renderWithClient(ui: ReactElement) {
     },
   });
   return render(createElement(QueryClientProvider, { client }, ui));
+}
+
+function fleetConsoleState(): ConsoleSnapshot {
+  const state = consoleState();
+  return {
+    ...state,
+    applications: [
+      ...(state.applications ?? []),
+      {
+        id: "app_npm_wrapper",
+        name: "npm Wrapper",
+        kind: "tool",
+        source: { type: "npm", package: "demo-wrapper", version: "1.0.0" },
+        status: "active",
+        createdAt: "2026-07-06T00:00:00.000Z",
+        updatedAt: "2026-07-06T04:00:00.000Z",
+      },
+      {
+        id: "app_stdio_mcp",
+        name: "stdio MCP",
+        kind: "repository",
+        source: { type: "local", path: "/apps/stdio-mcp" },
+        status: "active",
+        probe: {
+          mcpServers: [{
+            id: "mcp.stdio",
+            serverName: "stdio",
+            transport: "stdio",
+            status: "ready",
+          }],
+        },
+        createdAt: "2026-07-06T00:00:00.000Z",
+        updatedAt: "2026-07-06T04:00:00.000Z",
+      },
+      {
+        id: "app_manual",
+        name: "Manual Manifest",
+        kind: "manual",
+        source: { type: "manual", uri: "manual://demo", manifest: { name: "demo" } },
+        status: "registered",
+        createdAt: "2026-07-06T00:00:00.000Z",
+        updatedAt: "2026-07-06T04:00:00.000Z",
+      },
+    ],
+  };
 }
 
 function consoleState(): ConsoleSnapshot {

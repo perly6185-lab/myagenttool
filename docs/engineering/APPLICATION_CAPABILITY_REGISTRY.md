@@ -35,6 +35,129 @@ Git and local sources may also create or reuse project records. NPM and manual
 sources are registered as application assets first; execution and installation
 remain separate lifecycle capabilities.
 
+## Product Onboarding Stance
+
+The current product stance is reviewed built-in Applications first, not an open
+application marketplace. Built-ins are shipped only after their source metadata,
+wrapper or MCP descriptor, probe behavior, consent model, result imports,
+operator recovery path, and restart coverage are known.
+
+`ccusage` is the first fully implemented built-in Application. A doocs/md-style
+MCP Application is the reference template for local MCP onboarding and shared
+tool projection. Other user-defined integrations should still enter through the
+advanced registration flow until the AI-assisted onboarding flow is ready.
+
+The target custom integration flow uses the tool's coding ability as the
+operator accelerator:
+
+```text
+describe application intent
+  -> detect source type and runtime surface
+  -> draft wrapper / MCP / manual descriptor
+  -> generate local smoke tests and review notes
+  -> run safe probes
+  -> present capability projection and consent plan
+  -> register only after operator approval
+```
+
+The assistant may draft descriptors, wrapper runners, fixtures, and tests, but
+it must not turn arbitrary user text into executable Application capabilities
+without reviewable policy metadata and an explicit approval boundary.
+
+## Application Intake Discussion
+
+Before adding a new built-in Application or assisting a user-defined
+integration, capture the same short discussion:
+
+```text
+1. What job should this Application do for the operator?
+2. What is the source type: git, local, npm, MCP, manual, or mixed?
+3. Which capabilities should be discoverable, and which should be invokable?
+4. What data can it read, write, or send over the network?
+5. Which commands, tools, or endpoints are fixed and reviewable?
+6. What arguments are user-controlled, and how are they schema-validated?
+7. What result should be imported back into myagenttool?
+8. What approvals, policy consent, and recovery actions are required?
+9. Which smoke tests prove registration, probe, invocation, result import, and restart recovery?
+```
+
+This discussion is intentionally small enough for a user to answer in normal
+language and structured enough for Codex to turn into descriptor drafts and
+implementation tasks.
+
+The registration API now accepts this discussion as `integrationBrief` and
+persists it on the Application snapshot as an `application-intake.v1` draft. It
+does not create executable capabilities by itself. Its purpose is to give Codex
+and operators a stable handoff object for later descriptor generation:
+
+```text
+intent
+sourceType
+discoverableCapabilities
+invokableCapabilities
+dataBoundary
+fixedCommands
+userInputs
+resultImport
+approvalsAndRecovery
+smokeTests
+aiAssistance.nextDrafts
+```
+
+The Web inspector now provides a first deterministic draft generator for this
+brief. It can prefill MCP descriptors, npm wrapper descriptors, and manual
+manifest capability declarations in the descriptor editor. This is intentionally
+not an execution shortcut:
+
+```text
+integrationBrief -> review-only draft JSON -> operator edits -> Save descriptors -> probe/project capabilities
+```
+
+Generated npm wrapper commands start as `status: draft` and
+`requiresApproval: true`. Generated MCP descriptors use placeholder stdio
+execution (`node server.mjs`) until the operator replaces it with a reviewed
+adapter. Generated manual manifests declare candidate capabilities only.
+
+The same generator also emits a review checklist and smoke test plan in the
+descriptor editor. The checklist covers placeholder replacement, file/network
+policy, schema or `argInputs`, result import, and approval/recovery decisions.
+The smoke plan is either copied from the user's brief or defaults to
+registration, descriptor save, probe, capability inspection, one approved run,
+result refs, timeline, and restart recovery.
+
+Before saving descriptor edits, the Web inspector also renders a descriptor risk
+preview. It summarizes projected capabilities, draft/candidate entries,
+approval requirements, explicit wrapper policy consent, and high-risk commands
+from the current editor JSON. This preview is an operator aid only; server-side
+descriptor validation, approval checks, policy consent, bridge allowlists, and
+probe evidence remain the source of truth.
+
+After descriptors are saved, the inspector can show descriptor next actions from
+the Application read model. The current guidance covers stale or missing probes,
+wrapper commands that need explicit policy consent, orchestration generation
+after probe evidence exists, and the smoke path captured in the integration
+brief. These actions are prompts into the existing governed controls; they do
+not bypass approvals or execute unreviewed descriptors.
+
+The smoke path is rendered as a manual checklist in the same next-actions panel.
+Operators can mark steps complete during the current UI session, but checking a
+step does not call APIs, run commands, grant consent, or modify Application
+state. Automated smoke execution should be added only after each step can map to
+a governed capability, approval boundary, and result record.
+
+Each manual smoke step can also carry an evidence note in the UI session.
+Operators may keep the checklist local while working, or explicitly save it as
+governed Application smoke evidence.
+
+The UI can summarize the current smoke checklist into an
+`application_smoke_evidence_draft` preview. This preview includes the
+Application id/name, descriptor operation timestamp, completed step count, and
+per-step notes. Copying the draft remains local-only. `Save evidence` posts the
+reviewed checklist to `POST /api/applications/:id/smoke-evidence`, records a
+durable `applicationSmokeEvidenceRecords` row, publishes an
+`application_smoke_evidence` Evidence Center record, and emits an
+`application_smoke_evidence_recorded` Application event.
+
 ## Lifecycle
 
 Application status values:
@@ -265,6 +388,10 @@ offline report capabilities, executes through the Application-backed wrapper
 path, imports usage estimates, and keeps the stable `ccusage.report` facade
 compatible.
 
+For a reader-facing walkthrough of the scenario, public API shape, operator
+flow, and system capabilities proven by ccusage, see
+[ccusage Application Use Case](CCUSAGE_APPLICATION_USE_CASE.md).
+
 ## Current Runtime Path
 
 The measured Application runtime loop is:
@@ -372,9 +499,10 @@ stdio is auto-registered, `render_markdown` executes through the MCP bridge
 path, result refs link back to invocation/Application/audit/Evidence Center,
 and Web shows MCP tools plus the View invocation path.
 
-The remaining acceptance work is broader real end-to-end coverage for mixed
-Application fleets, including Desktop Bridge execution inside the mixed-fleet
-scenario.
+The mixed-fleet acceptance path now has first live Desktop Bridge coverage for
+both reviewed npm-wrapper execution and stdio MCP execution. Remaining
+expansion work is to fold more fleet shapes into that live path, especially HTTP
+MCP recovery and manual-manifest-only Applications.
 The measured ccusage and doocs/md-style paths now have restart/read-model
 coverage for result links, descriptor recovery and clearing, capability
 projection, schema-validated wrapper inputs, explicit wrapper policy consent
@@ -383,3 +511,34 @@ MCP live-probe promotion to confirmed shared tools, operator next-action
 guidance in the Web inspector, and a deterministic mixed-fleet smoke covering
 npm wrapper, stdio MCP, HTTP MCP success/blocked, manual manifest, and
 automation attention read-model and restart signals.
+
+The real local doocs/md rehearsal is captured by
+`pnpm smoke:doocs-md-application`. It registers the checked-out `doocs-md/`
+Application with an integration brief, probes `.vscode/mcp.json`, detects the
+stdio MCP tools, auto-registers the rooted node entrypoint as
+`doocs_md.*` shared tools, creates a governed `render_markdown` invocation
+record, executes the MCP server through the Desktop Bridge, imports the rendered
+article result, records option-catalog artifacts such as `list_themes`, verifies
+undeclared tool refusal, checks public read-model redaction of adapter
+command/argv/cwd details, saves governed smoke evidence, applies result
+retention, and proves restart recovery of the Application probe, MCP tools,
+latest result, imported artifacts, and saved evidence.
+
+The Web Application Result Center is also navigation-backed: selecting a result
+writes `applicationResult=<resultId>` into the Applications deep link, the
+inspector can reopen the result modal from restored URL/store state, and the
+result modal can copy a stable result link for handoff. The same shared action
+bar now powers both the history list and result modal for pin/archive governance,
+export JSON, Evidence Center save, View invocation, and rerun actions, while the
+modal also shows the current retention mode.
+
+The doocs/md Web editor handoff is documented in
+[DOOCS_MD_WEB_EDITOR_HANDOFF.md](./DOOCS_MD_WEB_EDITOR_HANDOFF.md). Its focused
+acceptance path is `pnpm smoke:doocs-md-editor`: the smoke starts an isolated
+server and Desktop Bridge, launches the real doocs/md Vite editor through the
+Application web-editor action, verifies handoff query decoration, posts a
+rendered editor result into the Application Result Center, confirms metadata
+such as `source=application_web_editor` and post title, and stops the editor.
+The Web Result Center can distinguish these records with the `Web editor`
+source badge and the `Result source` filter, while failed editor starts surface
+operator-readable status, last error, and next step diagnostics.

@@ -37,8 +37,11 @@ interface UiState {
   selectedWorktreeId: string | null;
   selectedAgentSkillId: string | null;
   selectedToolName: string | null;
+  selectedToolFocus: string | null;
   selectedApplicationId: string | null;
   selectedApplicationRun: ApplicationRunSelection | null;
+  selectedApplicationResultId: string | null;
+  selectedApplicationRecoveryId: string | null;
   selectedApplicationEventLevel: ApplicationEventLevelSelection;
   selectedApplicationAutomationId: string | null;
   selectedEvidenceId: string | null;
@@ -52,8 +55,11 @@ interface UiState {
   setSelectedWorktreeId: (id: string | null) => void;
   setSelectedAgentSkillId: (id: string | null) => void;
   setSelectedToolName: (name: string | null) => void;
+  setSelectedToolFocus: (focus: string | null) => void;
   setSelectedApplicationId: (id: string | null) => void;
   setSelectedApplicationRun: (selection: ApplicationRunSelection | null) => void;
+  setSelectedApplicationResultId: (id: string | null) => void;
+  setSelectedApplicationRecoveryId: (id: string | null) => void;
   setSelectedApplicationEventLevel: (level: ApplicationEventLevelSelection) => void;
   setSelectedApplicationAutomationId: (id: string | null) => void;
   setSelectedEvidenceId: (id: string | null) => void;
@@ -84,13 +90,17 @@ export interface UrlNavigationState {
   section?: SectionKey;
   selectedInvocationId?: string | null;
   selectedApplicationId?: string | null;
+  selectedToolName?: string | null;
+  selectedToolFocus?: string | null;
   selectedApplicationRun?: ApplicationRunSelection | null;
+  selectedApplicationResultId?: string | null;
+  selectedApplicationRecoveryId?: string | null;
   selectedApplicationEventLevel?: ApplicationEventLevelSelection;
   selectedApplicationAutomationId?: string | null;
   selectedEvidenceId?: string | null;
 }
 
-const NAVIGATION_SEARCH_KEYS = ["section", "invocation", "application", "routine", "run", "eventLevel", "automation", "evidence"] as const;
+const NAVIGATION_SEARCH_KEYS = ["section", "invocation", "tool", "focus", "application", "routine", "run", "applicationResult", "recovery", "eventLevel", "automation", "evidence"] as const;
 
 function stringParam(params: URLSearchParams, key: string): string | null {
   const value = params.get(key)?.trim();
@@ -113,19 +123,27 @@ export function navigationFromSearch(search: string): UrlNavigationState {
   if (!hasNavigationParams) return {};
   const section = sectionParam(params);
   const invocationId = stringParam(params, "invocation");
+  const toolName = stringParam(params, "tool");
+  const toolFocus = stringParam(params, "focus");
   const applicationId = stringParam(params, "application");
   const routineId = stringParam(params, "routine");
   const runInvocationId = stringParam(params, "run");
+  const applicationResultId = stringParam(params, "applicationResult");
+  const applicationRecoveryId = stringParam(params, "recovery");
   const eventLevel = applicationEventLevelParam(params);
   const automationId = stringParam(params, "automation");
   const evidenceId = stringParam(params, "evidence");
   const navigation: UrlNavigationState = {};
   if (section) navigation.section = section;
   navigation.selectedInvocationId = invocationId;
+  navigation.selectedToolName = toolName;
+  navigation.selectedToolFocus = toolFocus;
   navigation.selectedApplicationId = applicationId;
   navigation.selectedApplicationRun = applicationId && routineId && runInvocationId
     ? { applicationId, routineId, invocationId: runInvocationId }
     : null;
+  navigation.selectedApplicationResultId = applicationId ? applicationResultId : null;
+  navigation.selectedApplicationRecoveryId = applicationId ? applicationRecoveryId : null;
   navigation.selectedApplicationEventLevel = eventLevel ?? "all";
   navigation.selectedApplicationAutomationId = automationId;
   navigation.selectedEvidenceId = evidenceId;
@@ -139,8 +157,12 @@ function navigationFromCurrentUrl(): UrlNavigationState {
 function applyUrlNavigation<T extends Partial<UiState>>(state: T, navigation: UrlNavigationState): T {
   if (navigation.section) state.section = navigation.section;
   if (navigation.selectedInvocationId !== undefined) state.selectedInvocationId = navigation.selectedInvocationId;
+  if (navigation.selectedToolName !== undefined) state.selectedToolName = navigation.selectedToolName;
+  if (navigation.selectedToolFocus !== undefined) state.selectedToolFocus = navigation.selectedToolFocus;
   if (navigation.selectedApplicationId !== undefined) state.selectedApplicationId = navigation.selectedApplicationId;
   if (navigation.selectedApplicationRun !== undefined) state.selectedApplicationRun = navigation.selectedApplicationRun;
+  if (navigation.selectedApplicationResultId !== undefined) state.selectedApplicationResultId = navigation.selectedApplicationResultId;
+  if (navigation.selectedApplicationRecoveryId !== undefined) state.selectedApplicationRecoveryId = navigation.selectedApplicationRecoveryId;
   if (navigation.selectedApplicationEventLevel !== undefined) state.selectedApplicationEventLevel = navigation.selectedApplicationEventLevel;
   if (navigation.selectedApplicationAutomationId !== undefined) state.selectedApplicationAutomationId = navigation.selectedApplicationAutomationId;
   if (navigation.selectedEvidenceId !== undefined) state.selectedEvidenceId = navigation.selectedEvidenceId;
@@ -155,7 +177,11 @@ export function searchFromNavigationState(search: string, state: Pick<UiState,
   "section"
   | "selectedInvocationId"
   | "selectedApplicationId"
+  | "selectedToolName"
+  | "selectedToolFocus"
   | "selectedApplicationRun"
+  | "selectedApplicationResultId"
+  | "selectedApplicationRecoveryId"
   | "selectedApplicationEventLevel"
   | "selectedApplicationAutomationId"
   | "selectedEvidenceId"
@@ -164,11 +190,19 @@ export function searchFromNavigationState(search: string, state: Pick<UiState,
   for (const key of NAVIGATION_SEARCH_KEYS) params.delete(key);
   params.set("section", state.section);
   if (state.selectedInvocationId) params.set("invocation", state.selectedInvocationId);
+  if (state.section === "tools" && state.selectedToolName) params.set("tool", state.selectedToolName);
+  if (state.section === "tools" && state.selectedToolFocus) params.set("focus", state.selectedToolFocus);
   const applicationId = state.selectedApplicationRun?.applicationId ?? state.selectedApplicationId;
   if (applicationId) params.set("application", applicationId);
   if (state.selectedApplicationRun) {
     params.set("routine", state.selectedApplicationRun.routineId);
     params.set("run", state.selectedApplicationRun.invocationId);
+  }
+  if (state.section === "applications" && applicationId && state.selectedApplicationResultId) {
+    params.set("applicationResult", state.selectedApplicationResultId);
+  }
+  if (state.section === "applications" && applicationId && state.selectedApplicationRecoveryId) {
+    params.set("recovery", state.selectedApplicationRecoveryId);
   }
   if (state.section === "applications" && state.selectedApplicationEventLevel !== "all") {
     params.set("eventLevel", state.selectedApplicationEventLevel);
@@ -199,9 +233,12 @@ export const useUiStore = create<UiState>()(
         selectedProjectId: null,
         selectedWorktreeId: null,
         selectedAgentSkillId: null,
-        selectedToolName: null,
+        selectedToolName: initialNavigation.selectedToolName ?? null,
+        selectedToolFocus: initialNavigation.selectedToolFocus ?? null,
         selectedApplicationId: initialNavigation.selectedApplicationId ?? null,
         selectedApplicationRun: initialNavigation.selectedApplicationRun ?? null,
+        selectedApplicationResultId: initialNavigation.selectedApplicationResultId ?? null,
+        selectedApplicationRecoveryId: initialNavigation.selectedApplicationRecoveryId ?? null,
         selectedApplicationEventLevel: initialNavigation.selectedApplicationEventLevel ?? "all",
         selectedApplicationAutomationId: initialNavigation.selectedApplicationAutomationId ?? null,
         selectedEvidenceId: initialNavigation.selectedEvidenceId ?? null,
@@ -214,8 +251,19 @@ export const useUiStore = create<UiState>()(
         setSelectedWorktreeId: (selectedWorktreeId) => set({ selectedWorktreeId }),
         setSelectedAgentSkillId: (selectedAgentSkillId) => set({ selectedAgentSkillId }),
         setSelectedToolName: (selectedToolName) => set({ selectedToolName }),
-        setSelectedApplicationId: (selectedApplicationId) => set({ selectedApplicationId }),
+        setSelectedToolFocus: (selectedToolFocus) => set({ selectedToolFocus }),
+        setSelectedApplicationId: (selectedApplicationId) => set((state) => ({
+          selectedApplicationId,
+          selectedApplicationResultId: state.selectedApplicationId === selectedApplicationId
+            ? state.selectedApplicationResultId
+            : null,
+          selectedApplicationRecoveryId: state.selectedApplicationId === selectedApplicationId
+            ? state.selectedApplicationRecoveryId
+            : null,
+        })),
         setSelectedApplicationRun: (selectedApplicationRun) => set({ selectedApplicationRun }),
+        setSelectedApplicationResultId: (selectedApplicationResultId) => set({ selectedApplicationResultId }),
+        setSelectedApplicationRecoveryId: (selectedApplicationRecoveryId) => set({ selectedApplicationRecoveryId }),
         setSelectedApplicationEventLevel: (selectedApplicationEventLevel) => set({ selectedApplicationEventLevel }),
         setSelectedApplicationAutomationId: (selectedApplicationAutomationId) => set({ selectedApplicationAutomationId }),
         setSelectedEvidenceId: (selectedEvidenceId) => set({ selectedEvidenceId }),
@@ -236,8 +284,11 @@ export const useUiStore = create<UiState>()(
         selectedWorktreeId: state.selectedWorktreeId,
         selectedAgentSkillId: state.selectedAgentSkillId,
         selectedToolName: state.selectedToolName,
+        selectedToolFocus: state.selectedToolFocus,
         selectedApplicationId: state.selectedApplicationId,
         selectedApplicationRun: state.selectedApplicationRun,
+        selectedApplicationResultId: state.selectedApplicationResultId,
+        selectedApplicationRecoveryId: state.selectedApplicationRecoveryId,
         selectedApplicationEventLevel: state.selectedApplicationEventLevel,
         selectedApplicationAutomationId: state.selectedApplicationAutomationId,
         selectedEvidenceId: state.selectedEvidenceId,

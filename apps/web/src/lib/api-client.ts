@@ -9,12 +9,17 @@ import type {
   ApplicationDescriptorSnapshot,
   ApplicationDescriptorUpdateRequest,
   ApplicationEventSnapshot,
+  ApplicationResultDetail,
+  ApplicationResultRetentionSummary,
+  ApplicationResultSummaryItem,
+  ApplicationRenderResultSummary,
   ApplicationOrchestrationRecovery,
   ApplicationOrchestrationRecoveryAgentCandidate,
   ApplicationOrchestrationRun,
   ApplicationOrchestrationRunDetail,
   ApplicationRegisterRequest,
   ApplicationSnapshot,
+  CodexPatchProposal,
   ConsoleSnapshot,
   InvocationEventSnapshot,
   ProjectTreeResponse,
@@ -282,6 +287,12 @@ export const api = {
       `/api/tools/${encodeURIComponent(name)}/invocations`,
       input,
     ),
+  reviewCodexPatchProposal: (proposalId: string, input: { action: "approve" | "reject"; reason?: string | null }) =>
+    request<{ proposal: CodexPatchProposal }>(
+      "POST",
+      `/api/tools/codex.propose.patch/proposals/${encodeURIComponent(proposalId)}/review`,
+      input,
+    ),
   listReviewFindings: (filters: {
     projectId?: string;
     worktreeId?: string;
@@ -358,6 +369,24 @@ export const api = {
     action: "probe" | "online" | "offline" | "archive" | "refresh",
     body: { approvalRequestId?: string } = {},
   ) => request("POST", `/api/applications/${encodeURIComponent(id)}/${action}`, body),
+  applicationWebEditor: (id: string, action: "start" | "stop") =>
+    request<{ application: ApplicationSnapshot; editor: ApplicationSnapshot["webEditor"]; action?: Record<string, unknown> | null }>(
+      "POST",
+      `/api/applications/${encodeURIComponent(id)}/web-editor/${action}`,
+      {},
+    ),
+  importApplicationEditorResult: (id: string, body: {
+    markdown?: string | null;
+    html: string;
+    theme?: string | null;
+    sourceUrl?: string | null;
+    note?: string | null;
+  }) =>
+    request<{ application: ApplicationSnapshot; result: ApplicationRenderResultSummary; latestResult: ApplicationSnapshot["latestResult"] }>(
+      "POST",
+      `/api/applications/${encodeURIComponent(id)}/web-editor/results`,
+      body,
+    ),
   generateApplicationOrchestration: (id: string, body: { approvalRequestId?: string } = {}) =>
     request("POST", `/api/applications/${encodeURIComponent(id)}/orchestrations/generate`, body),
   confirmApplicationMcpCandidate: (id: string, candidateId: string, body: { approvalRequestId?: string } = {}) =>
@@ -370,6 +399,85 @@ export const api = {
     request(
       "POST",
       `/api/applications/${encodeURIComponent(id)}/mcp-candidates/${encodeURIComponent(candidateId)}/probe`,
+      body,
+    ),
+  getApplicationResult: (id: string, resultId: string) =>
+    request<{ applicationId: string; result: ApplicationResultDetail }>(
+      "GET",
+      `/api/applications/${encodeURIComponent(id)}/results/${encodeURIComponent(resultId)}`,
+    ),
+  listApplicationResults: (id: string, filters: {
+    limit?: number;
+    q?: string;
+    resultType?: "all" | "render" | "artifact" | string;
+    toolName?: string;
+    artifactType?: string;
+    evidenceType?: string;
+    source?: string;
+    status?: string;
+    pinned?: boolean;
+    archived?: boolean;
+    includeArchived?: boolean;
+    from?: string;
+    to?: string;
+  } = {}) => {
+    const query = new URLSearchParams();
+    for (const [key, value] of Object.entries(filters)) {
+      if (value != null && value !== "") query.set(key, String(value));
+    }
+    const suffix = query.toString() ? `?${query}` : "";
+    return request<{ applicationId: string; results: ApplicationResultSummaryItem[]; count: number }>(
+      "GET",
+      `/api/applications/${encodeURIComponent(id)}/results${suffix}`,
+    );
+  },
+  getLatestApplicationResult: (id: string) =>
+    request<{ applicationId: string; result: ApplicationResultDetail }>(
+      "GET",
+      `/api/applications/${encodeURIComponent(id)}/results/latest`,
+    ),
+  updateApplicationResult: (id: string, resultId: string, body: {
+    pinned?: boolean;
+    archived?: boolean;
+    retentionPolicy?: string | null;
+    note?: string | null;
+  }) =>
+    request<{ applicationId: string; result: ApplicationResultDetail }>(
+      "PATCH",
+      `/api/applications/${encodeURIComponent(id)}/results/${encodeURIComponent(resultId)}`,
+      body,
+    ),
+  updateApplicationResultRetention: (id: string, body: {
+    enabled?: boolean;
+    keepLatest?: number;
+    archiveAfterDays?: number | null;
+  }) =>
+    request<{ application: ApplicationSnapshot; retention: ApplicationSnapshot["resultRetention"] }>(
+      "PATCH",
+      `/api/applications/${encodeURIComponent(id)}/result-retention`,
+      body,
+    ),
+  runApplicationResultRetention: (id: string) =>
+    request<{
+      application: ApplicationSnapshot;
+      retention: ApplicationSnapshot["resultRetention"];
+      summary: ApplicationResultRetentionSummary;
+    }>(
+      "POST",
+      `/api/applications/${encodeURIComponent(id)}/results/retention/run`,
+      {},
+    ),
+  saveImportedEvidence: (body: { source?: string; summary: string; repoPath?: string | null }) =>
+    request<{ importedEvidence: Record<string, unknown> }>("POST", "/api/codex/imported-evidence", body),
+  saveApplicationSmokeEvidence: (id: string, body: {
+    summary?: string;
+    repoPath?: string | null;
+    descriptorOperationAt?: string | null;
+    steps: Array<{ index?: number | null; step: string; completed: boolean; note?: string | null }>;
+  }) =>
+    request<{ application: ApplicationSnapshot; evidence: Record<string, unknown> }>(
+      "POST",
+      `/api/applications/${encodeURIComponent(id)}/smoke-evidence`,
       body,
     ),
   runApplicationOrchestration: (

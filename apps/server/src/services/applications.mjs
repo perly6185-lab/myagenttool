@@ -8,6 +8,9 @@ import { probeMcpServer } from "../../../desktop/src/mcp-client.mjs";
 import { normalizeLoopRoutine, validateLoopRoutine } from "../../../../tools/ai/src/loop/routine.mjs";
 import { teamOf } from "../runtime/auth.mjs";
 import { sanitizeAgentId } from "./agents.mjs";
+import { publicApplicationResultRetention } from "./application-result-retention.mjs";
+import { mcpResultImporterForTool, mcpResultPathForImporter, normalizeMcpResultImporters, publicMcpResultImporter } from "./mcp-result-importers.mjs";
+import { mcpToolNamesFromTools, mcpToolSchemaForTool, mcpToolSchemasFromTools, normalizeMcpToolSchemas, publicMcpToolSchemas } from "./mcp-tool-schemas.mjs";
 
 const APPLICATION_SOURCE_TYPES = new Set(["git", "local", "npm", "manual"]);
 const APPLICATION_STATUSES = new Set(["draft", "probing", "registered", "active", "offline", "archived", "failed"]);
@@ -47,6 +50,8 @@ export function createApplicationService({
     const source = normalizeApplicationSource(rawSource);
     const name = normalizeApplicationName(body.name ?? nameFromSource(source));
     const requestedId = body.id == null ? null : sanitizeApplicationId(body.id);
+    const hasIntegrationBriefPatch = Object.hasOwn(body, "integrationBrief") || Object.hasOwn(body, "intake");
+    const integrationBrief = hasIntegrationBriefPatch ? normalizeApplicationIntegrationBrief(body.integrationBrief ?? body.intake) : null;
     const hasMcpAgentPatch =
       Object.hasOwn(body, "mcpAgent") ||
       Object.hasOwn(body, "mcp") ||
@@ -74,6 +79,9 @@ export function createApplicationService({
       existing.updatedAt = now();
       if (body.autoOnline !== false && existing.status === "registered") {
         existing.status = "active";
+      }
+      if (hasIntegrationBriefPatch) {
+        existing.integrationBrief = integrationBrief;
       }
       persistStateSoon();
       return existing;
@@ -119,6 +127,7 @@ export function createApplicationService({
       path: project?.path ?? source.path ?? null,
       ownerTeamId: ownerTeamId ?? project?.ownerTeamId ?? "team_local",
       capabilitiesVersion: 1,
+      integrationBrief,
       mcpAgent: normalizeApplicationMcpAgent(mcpAgentInput, {
         applicationId,
         applicationName: name,
@@ -369,6 +378,372 @@ export function createApplicationService({
       .sort((left, right) => Date.parse(right.createdAt ?? "") - Date.parse(left.createdAt ?? ""))
       .slice(0, limit)
       .map(publicApplicationEvent);
+  }
+
+  function recordApplicationSmokeEvidence(applicationId, body = {}, actor = null) {
+    const app = findApplication(applicationId);
+    if (!app || !actorCanAccessApplication(state, actor, app)) {
+      return { ok: false, status: 404, body: { error: "application_not_found" } };
+    }
+    const draft = normalizeApplicationSmokeEvidence(body, app);
+    if (!draft.ok) return { ok: false, status: 400, body: draft.body };
+    const createdAt = now();
+    const record = {
+      id: nextId("app_smoke"),
+      applicationId: app.id,
+      applicationName: app.name,
+      projectId: app.projectId ?? null,
+      userId: actor?.userId ?? "usr_local",
+      teamId: actor?.teamId ?? app.ownerTeamId ?? "team_local",
+      repoPath: stringOrNull(body.repoPath) ?? app.path ?? null,
+      type: "application_smoke_evidence",
+      source: "application_smoke_evidence",
+      status: "recorded",
+      redactionState: "summary_with_checklist",
+      summary: draft.summary,
+      descriptorOperationAt: draft.descriptorOperationAt,
+      completedCount: draft.completedCount,
+      stepCount: draft.stepCount,
+      steps: draft.steps,
+      createdAt,
+      updatedAt: createdAt,
+    };
+    if (!Array.isArray(state.applicationSmokeEvidenceRecords)) state.applicationSmokeEvidenceRecords = [];
+    state.applicationSmokeEvidenceRecords.unshift(record);
+    appendEvent({
+      invocationId: null,
+      type: "application_smoke_evidence_recorded",
+      level: "info",
+      message: `Application smoke evidence recorded for ${app.name}.`,
+      data: {
+        applicationId: app.id,
+        evidenceId: record.id,
+        completedCount: record.completedCount,
+        stepCount: record.stepCount,
+      },
+    });
+    persistStateSoon();
+    return { ok: true, status: 201, application: app, evidence: publicApplicationSmokeEvidence(record) };
+  }
+
+  function requestApplicationWebEditorStart(applicationId, actor = null) {
+    const app = findApplication(applicationId);
+    if (!app || !actorCanAccessApplication(state, actor, app)) {
+      return { ok: false, status: 404, body: { error: "application_not_found" } };
+    }
+    if (app.status === "archived") {
+      return { ok: false, status: 409, body: { error: "application_archived", applicationId } };
+    }
+    if (app.status === "offline") {
+      return { ok: false, status: 409, body: { error: "application_offline", applicationId } };
+    }
+    if (state.device?.unlinkState !== "linked" || state.device?.status !== "online") {
+      return {
+        ok: false,
+        status: 409,
+        body: {
+          error: "desktop_bridge_unavailable",
+          reason: "Start Desktop Bridge before launching the Application web editor.",
+          applicationId,
+        },
+      };
+    }
+    const descriptor = applicationWebEditorDescriptor(app);
+    if (!descriptor.available) {
+      return {
+        ok: false,
+        status: 409,
+        body: {
+          error: "application_web_editor_not_available",
+          reason: descriptor.reason,
+          applicationId,
+        },
+      };
+    }
+    const runtime = normalizeApplicationWebEditorRuntime(app.webEditor);
+    if (["starting", "ready"].includes(runtime.status)) {
+      return { ok: true, status: 200, application: app, action: null, editor: publicApplicationWebEditorSnapshot(app) };
+    }
+
+    const requestedAt = now();
+    const action = {
+      id: nextId("app_editor"),
+      applicationId: app.id,
+      applicationName: app.name,
+      action: "start",
+      status: "queued",
+      deviceId: state.device.id,
+      command: descriptor.command,
+      expected: descriptor.expected,
+      timeoutMs: 45_000,
+      summary: `Start ${app.name} web editor.`,
+      createdAt: requestedAt,
+      updatedAt: requestedAt,
+      requestedBy: actor?.userId ?? null,
+    };
+    state.applicationEditorActions = [action, ...(state.applicationEditorActions ?? [])].slice(0, 100);
+    app.webEditor = {
+      ...runtime,
+      available: true,
+      status: "starting",
+      reason: "start_queued",
+      actionId: action.id,
+      commandLabel: descriptor.commandLabel,
+      updatedAt: requestedAt,
+      requestedBy: actor?.userId ?? null,
+      lastError: null,
+      summary: action.summary,
+    };
+    app.lifecycle = {
+      ...app.lifecycle,
+      lastOperation: "web_editor_start",
+      lastOperationAt: requestedAt,
+      lastActorId: actor?.userId ?? null,
+    };
+    app.updatedAt = requestedAt;
+    appendEvent({
+      invocationId: null,
+      type: "application_web_editor_start_queued",
+      level: "info",
+      message: `${app.name} web editor start queued for Desktop Bridge.`,
+      data: { applicationId: app.id, editorActionId: action.id, commandId: descriptor.command.commandId },
+    });
+    persistStateSoon();
+    return { ok: true, status: 202, application: app, action, editor: publicApplicationWebEditorSnapshot(app) };
+  }
+
+  function requestApplicationWebEditorStop(applicationId, actor = null) {
+    const app = findApplication(applicationId);
+    if (!app || !actorCanAccessApplication(state, actor, app)) {
+      return { ok: false, status: 404, body: { error: "application_not_found" } };
+    }
+    if (state.device?.unlinkState !== "linked" || state.device?.status !== "online") {
+      return {
+        ok: false,
+        status: 409,
+        body: {
+          error: "desktop_bridge_unavailable",
+          reason: "Start Desktop Bridge before stopping the Application web editor.",
+          applicationId,
+        },
+      };
+    }
+    const runtime = normalizeApplicationWebEditorRuntime(app.webEditor);
+    if (!["starting", "ready", "failed"].includes(runtime.status) && !runtime.pid && !runtime.actionId) {
+      app.webEditor = {
+        ...runtime,
+        status: "not_running",
+        reason: "already_stopped",
+        updatedAt: now(),
+      };
+      persistStateSoon();
+      return { ok: true, status: 200, application: app, action: null, editor: publicApplicationWebEditorSnapshot(app) };
+    }
+
+    const requestedAt = now();
+    const action = {
+      id: nextId("app_editor"),
+      applicationId: app.id,
+      applicationName: app.name,
+      action: "stop",
+      status: "queued",
+      deviceId: state.device.id,
+      targetActionId: runtime.actionId ?? null,
+      pid: runtime.pid ?? null,
+      url: runtime.url ?? null,
+      summary: `Stop ${app.name} web editor.`,
+      createdAt: requestedAt,
+      updatedAt: requestedAt,
+      requestedBy: actor?.userId ?? null,
+    };
+    state.applicationEditorActions = [action, ...(state.applicationEditorActions ?? [])].slice(0, 100);
+    app.webEditor = {
+      ...runtime,
+      status: "stopping",
+      reason: "stop_queued",
+      stopActionId: action.id,
+      updatedAt: requestedAt,
+      requestedBy: actor?.userId ?? null,
+      summary: action.summary,
+    };
+    app.lifecycle = {
+      ...app.lifecycle,
+      lastOperation: "web_editor_stop",
+      lastOperationAt: requestedAt,
+      lastActorId: actor?.userId ?? null,
+    };
+    app.updatedAt = requestedAt;
+    appendEvent({
+      invocationId: null,
+      type: "application_web_editor_stop_queued",
+      level: "info",
+      message: `${app.name} web editor stop queued for Desktop Bridge.`,
+      data: { applicationId: app.id, editorActionId: action.id, targetActionId: action.targetActionId, pid: action.pid },
+    });
+    persistStateSoon();
+    return { ok: true, status: 202, application: app, action, editor: publicApplicationWebEditorSnapshot(app) };
+  }
+
+  function findApplicationEditorAction(actionId) {
+    return (state.applicationEditorActions ?? []).find((action) => action.id === actionId) ?? null;
+  }
+
+  function nextBridgeApplicationEditorAction() {
+    return (state.applicationEditorActions ?? []).find((action) =>
+      action.status === "queued" && action.deviceId === state.device.id) ?? null;
+  }
+
+  function markApplicationEditorActionStarted(action) {
+    if (!action) return null;
+    const startedAt = now();
+    action.status = "running";
+    action.startedAt = startedAt;
+    action.updatedAt = startedAt;
+    persistStateSoon();
+    return action;
+  }
+
+  function completeApplicationEditorAction(action, body = {}) {
+    if (!action || action.status !== "running") {
+      throw new Error("Application editor action is not running.");
+    }
+    const completedAt = now();
+    const status = String(body.status ?? "").trim();
+    const succeeded = ["succeeded", "ready", "stopped"].includes(status);
+    action.status = succeeded ? "succeeded" : "failed";
+    action.completedAt = completedAt;
+    action.updatedAt = completedAt;
+    action.result = {
+      status,
+      url: stringOrNull(body.url),
+      port: finiteNumberOrNull(body.port),
+      pid: finiteNumberOrNull(body.pid),
+      summary: stringOrNull(body.summary),
+      error: stringOrNull(body.error),
+      logs: boundedStringList(body.logs, 20, 240),
+    };
+
+    const app = findApplication(action.applicationId);
+    if (app) {
+      const runtime = normalizeApplicationWebEditorRuntime(app.webEditor);
+      const descriptor = applicationWebEditorDescriptor(app);
+      const summary = stringOrNull(body.summary) ?? (succeeded
+        ? `${app.name} web editor ${action.action === "stop" ? "stopped" : "started"}.`
+        : `${app.name} web editor ${action.action === "stop" ? "stop" : "start"} failed.`);
+      if (action.action === "start") {
+        app.webEditor = {
+          ...runtime,
+          available: descriptor.available,
+          status: succeeded ? "ready" : "failed",
+          reason: succeeded ? "bridge_started" : "bridge_start_failed",
+          actionId: succeeded ? action.id : runtime.actionId ?? action.id,
+          commandLabel: descriptor.commandLabel ?? runtime.commandLabel ?? null,
+          url: safeHttpUrl(body.url) ?? runtime.url ?? null,
+          port: finiteNumberOrNull(body.port),
+          pid: finiteNumberOrNull(body.pid),
+          lastStartedAt: succeeded ? completedAt : runtime.lastStartedAt ?? null,
+          lastError: succeeded ? null : stringOrNull(body.error) ?? summary,
+          lastLogs: boundedStringList(body.logs, 8, 240),
+          summary,
+          updatedAt: completedAt,
+        };
+      } else {
+        app.webEditor = {
+          ...runtime,
+          available: descriptor.available || runtime.available === true,
+          status: succeeded ? "not_running" : "failed",
+          reason: succeeded ? "bridge_stopped" : "bridge_stop_failed",
+          actionId: succeeded ? null : runtime.actionId ?? null,
+          stopActionId: null,
+          commandLabel: descriptor.commandLabel ?? runtime.commandLabel ?? null,
+          pid: succeeded ? null : runtime.pid ?? null,
+          port: succeeded ? null : runtime.port ?? null,
+          lastStoppedAt: succeeded ? completedAt : runtime.lastStoppedAt ?? null,
+          lastError: succeeded ? null : stringOrNull(body.error) ?? summary,
+          lastLogs: boundedStringList(body.logs, 8, 240),
+          summary,
+          updatedAt: completedAt,
+        };
+      }
+      app.lifecycle = {
+        ...app.lifecycle,
+        lastOperation: action.action === "stop" ? "web_editor_stop_completed" : "web_editor_start_completed",
+        lastOperationAt: completedAt,
+      };
+      app.updatedAt = completedAt;
+      appendEvent({
+        invocationId: null,
+        type: succeeded
+          ? `application_web_editor_${action.action}_completed`
+          : `application_web_editor_${action.action}_failed`,
+        level: succeeded ? "info" : "warn",
+        message: summary,
+        data: {
+          applicationId: app.id,
+          editorActionId: action.id,
+          status: action.status,
+          url: app.webEditor.url ?? null,
+          pid: app.webEditor.pid ?? null,
+          error: action.result.error,
+        },
+      });
+    }
+    persistStateSoon();
+    return action;
+  }
+
+  function reconcileApplicationWebEditorsOnBridgeRegister(actor = null) {
+    const reconnectedAt = now();
+    let changed = false;
+    const volatileStatuses = new Set(["ready", "starting", "stopping"]);
+    for (const app of state.applications ?? []) {
+      const runtime = normalizeApplicationWebEditorRuntime(app.webEditor);
+      if (!volatileStatuses.has(runtime.status ?? "")) continue;
+      const descriptor = applicationWebEditorDescriptor(app);
+      app.webEditor = {
+        ...runtime,
+        available: descriptor.available || runtime.available === true,
+        status: "not_running",
+        reason: "bridge_reconnected_process_unverified",
+        actionId: null,
+        stopActionId: null,
+        commandLabel: descriptor.commandLabel ?? runtime.commandLabel ?? null,
+        url: null,
+        port: null,
+        pid: null,
+        summary: "Desktop Bridge reconnected; previous editor process ownership was reset.",
+        lastError: null,
+        updatedAt: reconnectedAt,
+      };
+      app.updatedAt = reconnectedAt;
+      changed = true;
+      appendEvent({
+        invocationId: null,
+        type: "application_web_editor_reconciled",
+        level: "info",
+        message: `${app.name} web editor state reset after Desktop Bridge registration.`,
+        data: {
+          applicationId: app.id,
+          previousStatus: runtime.status,
+          previousActionId: runtime.actionId,
+          actorId: actor?.userId ?? null,
+        },
+      });
+    }
+    for (const action of state.applicationEditorActions ?? []) {
+      if (action.deviceId !== state.device?.id || !["queued", "running"].includes(action.status)) continue;
+      action.status = "failed";
+      action.completedAt = reconnectedAt;
+      action.updatedAt = reconnectedAt;
+      action.result = {
+        status: "failed",
+        summary: "Desktop Bridge reconnected before this editor action completed.",
+        error: "bridge_reconnected_action_reset",
+      };
+      changed = true;
+    }
+    if (changed) persistStateSoon();
+    return changed;
   }
 
   function invokeApplicationCapability(capabilityName, input = {}, actor = null, options = {}) {
@@ -686,6 +1061,16 @@ export function createApplicationService({
       startupTimeoutMs: normalizePositiveInteger(input.startupTimeoutMs, mcpAgent.adapter.startupTimeoutMs),
     });
     const liveProbe = mcpHttpLiveProbeFromResult(candidate, probeResult, checkedAt);
+    const toolSchemas = mcpToolSchemasFromTools(probeResult?.tools);
+    if (Object.keys(toolSchemas).length > 0) {
+      candidate.mcpAgent = {
+        ...(candidate.mcpAgent ?? {}),
+        toolSchemas: {
+          ...(candidate.mcpAgent?.toolSchemas ?? {}),
+          ...toolSchemas,
+        },
+      };
+    }
     candidate.review = {
       ...(candidate.review ?? {}),
       liveProbe,
@@ -695,6 +1080,7 @@ export function createApplicationService({
       [candidate.id]: {
         cacheKey: mcpHttpLiveProbeCacheKey(candidate),
         liveProbe,
+        toolSchemas,
         updatedAt: checkedAt,
       },
     };
@@ -878,7 +1264,9 @@ export function createApplicationService({
   }
 
   return {
+    completeApplicationEditorAction,
     findApplication,
+    findApplicationEditorAction,
     confirmApplicationMcpCandidate,
     getApplicationDescriptors,
     grantApplicationWrapperPolicyConsent,
@@ -886,10 +1274,16 @@ export function createApplicationService({
     listApplicationCapabilities,
     listApplicationEvents,
     listApplications,
+    markApplicationEditorActionStarted,
+    nextBridgeApplicationEditorAction,
     planApplicationWrapperInvocation,
     probeApplication,
     probeApplicationMcpCandidate,
+    recordApplicationSmokeEvidence,
+    reconcileApplicationWebEditorsOnBridgeRegister,
     registerApplication,
+    requestApplicationWebEditorStart,
+    requestApplicationWebEditorStop,
     revokeApplicationWrapperPolicyConsent,
     transitionApplication,
     updateApplicationDescriptors,
@@ -914,6 +1308,78 @@ export function publicApplicationEvent(event) {
   };
 }
 
+export function publicApplicationSmokeEvidence(record) {
+  if (!record) return null;
+  return {
+    id: record.id,
+    applicationId: record.applicationId,
+    applicationName: record.applicationName,
+    projectId: record.projectId ?? null,
+    repoPath: record.repoPath ?? null,
+    type: "application_smoke_evidence",
+    source: "application_smoke_evidence",
+    status: record.status ?? "recorded",
+    redactionState: record.redactionState ?? "summary_with_checklist",
+    summary: record.summary,
+    descriptorOperationAt: record.descriptorOperationAt ?? null,
+    completedCount: record.completedCount ?? 0,
+    stepCount: record.stepCount ?? 0,
+    steps: Array.isArray(record.steps) ? record.steps.map(publicApplicationSmokeEvidenceStep) : [],
+    createdAt: record.createdAt,
+    updatedAt: record.updatedAt ?? record.createdAt,
+  };
+}
+
+function publicApplicationSmokeEvidenceStep(step) {
+  return {
+    index: Number.isFinite(Number(step?.index)) ? Number(step.index) : null,
+    step: String(step?.step ?? ""),
+    completed: Boolean(step?.completed),
+    note: stringOrNull(step?.note),
+  };
+}
+
+function normalizeApplicationSmokeEvidence(body, application) {
+  const value = body && typeof body === "object" && !Array.isArray(body) ? body : null;
+  if (!value) {
+    return { ok: false, body: { error: "invalid_application_smoke_evidence", message: "Request body must be an object." } };
+  }
+  const rawSteps = Array.isArray(value.steps) ? value.steps : null;
+  if (!rawSteps || rawSteps.length === 0) {
+    return { ok: false, body: { error: "invalid_application_smoke_evidence", message: "steps must be a non-empty array." } };
+  }
+  const steps = rawSteps.slice(0, 30).map((step, index) => normalizeApplicationSmokeEvidenceStep(step, index));
+  const completedCount = steps.filter((step) => step.completed).length;
+  const stepCount = steps.length;
+  const explicitSummary = stringOrNull(value.summary);
+  const completedNames = steps.filter((step) => step.completed).map((step) => step.step).join(", ");
+  const summary = explicitSummary ?? [
+    `Application smoke evidence for ${application.name}`,
+    `${completedCount}/${stepCount} checks complete`,
+    completedNames,
+  ].filter(Boolean).join(" · ");
+  return {
+    ok: true,
+    summary: summary.length <= 500 ? summary : `${summary.slice(0, 497)}...`,
+    descriptorOperationAt: stringOrNull(value.descriptorOperationAt),
+    completedCount,
+    stepCount,
+    steps,
+  };
+}
+
+function normalizeApplicationSmokeEvidenceStep(step, index) {
+  const value = step && typeof step === "object" && !Array.isArray(step) ? step : {};
+  const label = stringOrNull(value.step) ?? `step-${index + 1}`;
+  const note = stringOrNull(value.note);
+  return {
+    index: Number.isFinite(Number(value.index)) ? Number(value.index) : index + 1,
+    step: label.length <= 160 ? label : `${label.slice(0, 157)}...`,
+    completed: Boolean(value.completed),
+    note: note ? (note.length <= 500 ? note : `${note.slice(0, 497)}...`) : null,
+  };
+}
+
 // The platform-owned bridge agent that executes governed application npm-wrapper
 // commands. A fixed cli agent (node application-wrapper.mjs) — the server injects
 // the resolved, approved command via allowlisted metadata; the agent command
@@ -925,13 +1391,14 @@ export function createApplicationWrapperAgentRegistration({
 } = {}) {
   const scriptPath = String(wrapperScriptPath ?? "").trim();
   if (!scriptPath) throw new Error("application wrapper scriptPath is required.");
+  const resolvedScriptPath = isAbsolute(scriptPath) ? scriptPath : resolve(scriptPath);
   return {
     id: "agt_platform_application_wrapper",
     type: "cli",
     name: "Application Wrapper Runner",
     description: "Platform bridge agent that runs governed, approved application npm-wrapper commands.",
     command: "node",
-    args: [scriptPath],
+    args: [resolvedScriptPath],
     timeoutSeconds: 120,
     outputFormat: "plain_result",
     capabilityName: "application_wrapper_execution",
@@ -966,6 +1433,8 @@ export function applicationMcpAgentRegistration(application) {
     riskTags: mcp.riskTags ?? ["local_execution", "mcp", "application_asset"],
     toolNamespace: mcp.toolNamespace ?? mcpToolSegment(application.name),
     sourceApplicationId: application.id,
+    resultImporters: mcp.resultImporters ?? {},
+    toolSchemas: mcp.toolSchemas ?? {},
   };
 }
 
@@ -1089,6 +1558,7 @@ export function projectApplicationCapabilities(app) {
     managedCapability(app, `${prefix}.archive`, "Archive application", "lifecycle", "high", ["lifecycle", "write_control"], true, app.status === "archived", approvalInputSchema()),
     managedCapability(app, `${prefix}.generate_orchestration`, "Generate application orchestration", "orchestration", "medium", ["generated_artifact", "orchestration"], true, disabled, emptyInputSchema()),
     ...projectNpmWrapperCapabilities(app, prefix, disabled),
+    ...projectMcpToolCapabilities(app, disabled),
   ];
 }
 
@@ -1123,6 +1593,57 @@ function managedCapability(app, name, displayName, kind, riskLevel, riskTags, re
       ...capabilityMetadata,
     },
   };
+}
+
+function projectMcpToolCapabilities(app, disabled) {
+  const mcp = app.mcpAgent;
+  if (!mcp?.allowedTools?.length) return [];
+  const namespace = mcp.toolNamespace ?? mcpToolSegment(app.name ?? app.id);
+  const agentLike = {
+    adapter: { allowedTools: mcp.allowedTools, toolSchemas: mcp.toolSchemas ?? {} },
+    resultImporters: mcp.resultImporters ?? {},
+    toolSchemas: mcp.toolSchemas ?? {},
+  };
+  return normalizeStringList(mcp.allowedTools).map((toolName) => {
+    const resultImporter = publicMcpResultImporter(mcpResultImporterForTool(agentLike, toolName));
+    const resultPath = mcpResultPathForImporter(resultImporter);
+    const inputSchema = mcpToolSchemaForTool(agentLike, toolName);
+    const sharedName = `${namespace}.${mcpToolSegment(toolName)}`;
+    return {
+      name: sharedName,
+      version: "1",
+      displayName: toolName,
+      description: `Call MCP tool ${toolName} exposed by ${app.name}.`,
+      provider: {
+        type: "mcp_agent",
+        id: mcp.agentId,
+      },
+      kind: "mcp_tool",
+      source: "mcp_agent",
+      riskLevel: mcp.riskLevel ?? "medium",
+      riskTags: [...new Set(["mcp", ...(mcp.riskTags ?? [])])],
+      requiresApproval: false,
+      invocationMode: "tool_facade",
+      status: disabled || mcp.agentStatus === "disabled" ? "disabled" : "available",
+      inputSchema,
+      outputSchema: { structuredResult: true, provider: "mcp" },
+      metadata: {
+        readiness: {
+          state: disabled || mcp.agentStatus === "disabled" ? "disabled" : "ready",
+          reason: "mcp_agent_registered",
+          applicationStatus: app.status,
+          executionMode: mcp.adapter?.transport === "http" ? "mcp_http" : "mcp_stdio",
+        },
+        resultPath,
+        mcp: {
+          agentId: mcp.agentId,
+          toolName,
+          sharedToolName: sharedName,
+          inputSchema,
+        },
+      },
+    };
+  });
 }
 
 function projectNpmWrapperCapabilities(app, prefix, disabled) {
@@ -1691,6 +2212,68 @@ function upsertOrchestration(orchestrations = [], draft) {
   return [draft, ...existing];
 }
 
+function normalizeApplicationIntegrationBrief(value) {
+  if (value == null || value === false) return null;
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("Application integrationBrief must be a JSON object.");
+  }
+  const brief = {
+    version: "application-intake.v1",
+    status: "draft",
+    intent: boundedString(value.intent ?? value.job, 800),
+    sourceType: normalizeIntegrationBriefSourceType(value.sourceType),
+    discoverableCapabilities: boundedStringList(value.discoverableCapabilities ?? value.capabilities, 20, 80),
+    invokableCapabilities: boundedStringList(value.invokableCapabilities, 20, 80),
+    dataBoundary: boundedString(value.dataBoundary ?? value.dataPolicy, 800),
+    fixedCommands: boundedStringList(value.fixedCommands ?? value.commands, 20, 160),
+    userInputs: boundedString(value.userInputs, 800),
+    resultImport: boundedString(value.resultImport, 800),
+    approvalsAndRecovery: boundedString(value.approvalsAndRecovery ?? value.approvals, 800),
+    smokeTests: boundedStringList(value.smokeTests, 20, 160),
+    aiAssistance: normalizeIntegrationBriefAiAssistance(value.aiAssistance),
+  };
+  const hasContent = Object.entries(brief)
+    .filter(([key]) => !["version", "status", "aiAssistance"].includes(key))
+    .some(([, item]) => Array.isArray(item) ? item.length > 0 : Boolean(item));
+  return hasContent ? brief : null;
+}
+
+function publicApplicationIntegrationBrief(brief) {
+  return brief ? cloneJson(brief) : null;
+}
+
+function normalizeIntegrationBriefSourceType(value) {
+  const text = stringOrNull(value);
+  return ["git", "local", "npm", "mcp", "manual", "mixed", "unknown"].includes(text) ? text : text ? "unknown" : null;
+}
+
+function normalizeIntegrationBriefAiAssistance(value) {
+  const item = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  return {
+    requested: item.requested !== false,
+    nextDrafts: boundedStringList(item.nextDrafts ?? [
+      "descriptor",
+      "wrapper_or_mcp_adapter",
+      "safe_probe",
+      "smoke_tests",
+      "review_notes",
+    ], 10, 80),
+  };
+}
+
+function boundedString(value, maxLength) {
+  const text = stringOrNull(value);
+  return text ? text.slice(0, maxLength) : null;
+}
+
+function boundedStringList(values, maxItems, maxLength) {
+  const list = Array.isArray(values) ? values : typeof values === "string" ? values.split(/\r?\n|,/) : [];
+  return list
+    .map((item) => boundedString(item, maxLength))
+    .filter(Boolean)
+    .slice(0, maxItems);
+}
+
 export function publicApplicationSnapshot(application, options = {}) {
   const source = publicApplicationSourceSnapshot(application.source);
   return {
@@ -1704,6 +2287,7 @@ export function publicApplicationSnapshot(application, options = {}) {
     path: application.path,
     ownerTeamId: application.ownerTeamId ?? null,
     capabilitiesVersion: application.capabilitiesVersion,
+    integrationBrief: publicApplicationIntegrationBrief(application.integrationBrief),
     probe: application.probe ?? null,
     mcpAgent: publicApplicationMcpAgentSnapshot(application.mcpAgent),
     wrapper: application.source?.wrapper ? publicNpmWrapperSnapshot(application.source.wrapper) : null,
@@ -1711,10 +2295,117 @@ export function publicApplicationSnapshot(application, options = {}) {
     orchestrationIds: application.orchestrationIds ?? [],
     orchestrations: application.orchestrations ?? [],
     latestResult: application.latestResult ?? null,
+    resultRetention: publicApplicationResultRetention(application.resultRetention),
+    webEditor: publicApplicationWebEditorSnapshot(application),
     healthSummary: options.healthSummary ?? null,
     createdAt: application.createdAt,
     updatedAt: application.updatedAt,
   };
+}
+
+function publicApplicationWebEditorSnapshot(application) {
+  const descriptor = applicationWebEditorDescriptor(application);
+  const runtime = normalizeApplicationWebEditorRuntime(application.webEditor);
+  if (!descriptor.available && !runtime.available && !runtime.status) return null;
+  return {
+    available: descriptor.available || runtime.available === true,
+    status: runtime.status ?? (descriptor.available ? "not_running" : "unsupported"),
+    reason: runtime.reason ?? descriptor.reason ?? null,
+    commandLabel: runtime.commandLabel ?? descriptor.commandLabel ?? null,
+    url: runtime.url ?? descriptor.url ?? null,
+    port: finiteNumberOrNull(runtime.port),
+    pid: finiteNumberOrNull(runtime.pid),
+    actionId: runtime.actionId ?? null,
+    stopActionId: runtime.stopActionId ?? null,
+    summary: runtime.summary ?? null,
+    lastError: runtime.lastError ?? null,
+    lastLogs: runtime.lastLogs ?? [],
+    lastStartedAt: runtime.lastStartedAt ?? null,
+    lastStoppedAt: runtime.lastStoppedAt ?? null,
+    updatedAt: runtime.updatedAt ?? null,
+  };
+}
+
+function normalizeApplicationWebEditorRuntime(value) {
+  const runtime = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  return {
+    available: runtime.available === true,
+    status: stringOrNull(runtime.status),
+    reason: stringOrNull(runtime.reason),
+    commandLabel: stringOrNull(runtime.commandLabel),
+    url: safeHttpUrl(runtime.url),
+    port: finiteNumberOrNull(runtime.port),
+    pid: finiteNumberOrNull(runtime.pid),
+    actionId: stringOrNull(runtime.actionId),
+    stopActionId: stringOrNull(runtime.stopActionId),
+    summary: stringOrNull(runtime.summary),
+    lastError: stringOrNull(runtime.lastError),
+    lastLogs: boundedStringList(runtime.lastLogs, 8, 240),
+    lastStartedAt: stringOrNull(runtime.lastStartedAt),
+    lastStoppedAt: stringOrNull(runtime.lastStoppedAt),
+    updatedAt: stringOrNull(runtime.updatedAt),
+    requestedBy: stringOrNull(runtime.requestedBy),
+  };
+}
+
+function applicationWebEditorDescriptor(application) {
+  if (!["git", "local"].includes(application.source?.type) && application.kind !== "repository") {
+    return { available: false, reason: "unsupported_source_type" };
+  }
+  const root = application.path ? resolve(application.path) : application.source?.path ? resolve(application.source.path) : null;
+  if (!root || !existsSync(root)) return { available: false, reason: "application_path_not_found" };
+  const packageJson = readPackageJson(root, []);
+  if (!packageJson) return { available: false, reason: "package_json_not_found" };
+  if (!isDoocsMdPackage(packageJson)) return { available: false, reason: "unsupported_package" };
+  if (packageJson.scripts?.start !== "pnpm web dev") {
+    return { available: false, reason: "doocs_md_start_script_not_supported" };
+  }
+  return {
+    available: true,
+    reason: "doocs_md_start_script_detected",
+    commandLabel: "pnpm run start",
+    url: null,
+    command: {
+      commandId: "doocs_md_web_editor_start",
+      executable: "pnpm",
+      args: ["run", "start"],
+      cwd: root,
+      shell: false,
+      packageManager: "pnpm",
+      script: "start",
+    },
+    expected: {
+      packageName: "md",
+      repository: "doocs/md",
+      startScript: "pnpm web dev",
+    },
+  };
+}
+
+function isDoocsMdPackage(packageJson) {
+  if (packageJson?.name !== "md") return false;
+  const repository = typeof packageJson.repository === "string"
+    ? packageJson.repository
+    : packageJson.repository?.url;
+  return String(repository ?? "").toLowerCase().includes("doocs/md");
+}
+
+function safeHttpUrl(value) {
+  const text = stringOrNull(value);
+  if (!text) return null;
+  try {
+    const url = new URL(text);
+    if (!["http:", "https:"].includes(url.protocol)) return null;
+    return url.toString();
+  } catch {
+    return null;
+  }
+}
+
+function finiteNumberOrNull(value) {
+  if (value === null || value === undefined || value === "") return null;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
 }
 
 function applicationEditableDescriptors(application) {
@@ -1746,6 +2437,8 @@ function editableApplicationMcpAgentDescriptor(mcpAgent) {
     startupTimeoutMs: adapter.startupTimeoutMs,
     filePolicy: adapter.filePolicy,
     networkPolicy: adapter.networkPolicy,
+    resultImporters: publicMcpResultImporters(mcpAgent.resultImporters),
+    toolSchemas: publicMcpToolSchemas(mcpAgent.toolSchemas, { allowedTools: mcpAgent.allowedTools ?? [] }),
   };
   if (adapter.transport === "stdio") {
     descriptor.command = adapter.command;
@@ -1782,9 +2475,20 @@ function publicApplicationMcpAgentSnapshot(mcpAgent) {
     lastRecoveredAt: mcpAgent.lastRecoveredAt ?? null,
     riskLevel: mcpAgent.riskLevel,
     riskTags: mcpAgent.riskTags ?? [],
+    resultImporters: publicMcpResultImporters(mcpAgent.resultImporters),
+    toolSchemas: publicMcpToolSchemas(mcpAgent.toolSchemas, { allowedTools: mcpAgent.allowedTools ?? [] }),
     recovery: mcpAgent.recovery ?? null,
     discovery: mcpAgent.discovery ?? null,
   };
+}
+
+function publicMcpResultImporters(resultImporters) {
+  const object = resultImporters && typeof resultImporters === "object" && !Array.isArray(resultImporters)
+    ? resultImporters
+    : {};
+  return Object.fromEntries(Object.entries(object)
+    .map(([toolName, importer]) => [toolName, publicMcpResultImporter(importer)])
+    .filter(([, importer]) => importer));
 }
 
 function highestCapabilityRiskLevel(capabilities) {
@@ -2517,6 +3221,7 @@ function buildProbeMcpServer({
   }
   const toolNamespace = mcpToolSegment(application.name ?? application.id ?? serverName);
   const normalizedAllowedTools = normalizeStringList(allowedTools);
+  const toolSchemas = normalizeMcpToolSchemas(adapter.toolSchemas ?? adapter.toolInputSchemas, { allowedTools: normalizedAllowedTools });
   const sharedToolNames = normalizedAllowedTools.map((toolName) => `${toolNamespace}.${mcpToolSegment(toolName)}`);
   const candidateId = `mcp.${slugify(serverName || sourcePath || "server")}`;
   const registration = mcpAutoRegistrationAssessment(adapter, application, normalizedAllowedTools);
@@ -2560,6 +3265,8 @@ function buildProbeMcpServer({
         ? { command: adapter.command, args: adapter.args ?? [], cwd: adapter.cwd ?? cwd ?? null }
         : { url: adapter.url, headers: adapter.headers ?? {} }),
       allowedTools: normalizedAllowedTools,
+      resultImporters: normalizeMcpResultImporters(adapter.resultImporters ?? adapter.resultImports, { allowedTools: normalizedAllowedTools }),
+      toolSchemas,
       filePolicy,
       networkPolicy,
       applicationPath: adapter.applicationPath ?? application.path ?? null,
@@ -2627,7 +3334,7 @@ function mcpHttpLiveProbeSatisfied(candidate) {
 
 function mcpHttpLiveProbeFromResult(candidate, result, checkedAt) {
   const template = mcpHttpLiveProbeReview(candidate.mcpAgent?.url, candidate.review?.networkPolicy ?? "restricted");
-  const exposedTools = Array.isArray(result?.tools) ? uniqueStringList(result.tools).slice(0, 50) : [];
+  const exposedTools = mcpToolNamesFromTools(result?.tools).slice(0, 50);
   const matchedAllowedTools = candidate.allowedTools.filter((toolName) => exposedTools.includes(toolName));
   const missingAllowedTools = candidate.allowedTools.filter((toolName) => !exposedTools.includes(toolName));
   const succeeded = Boolean(result?.ok) && missingAllowedTools.length === 0;
@@ -2671,8 +3378,13 @@ function mergeStoredMcpLiveProbeEvidence(application, candidates) {
     if (!storedLiveProbe || !currentLiveProbe || stored.cacheKey !== mcpHttpLiveProbeCacheKey(candidate)) {
       return candidate;
     }
+    const toolSchemas = normalizeMcpToolSchemas(stored.toolSchemas, { allowedTools: candidate.allowedTools ?? [] });
     return {
       ...candidate,
+      mcpAgent: {
+        ...(candidate.mcpAgent ?? {}),
+        ...(Object.keys(toolSchemas).length ? { toolSchemas } : {}),
+      },
       review: {
         ...(candidate.review ?? {}),
         liveProbe: {
@@ -2844,6 +3556,7 @@ function publicProbeMcpServer(candidate) {
     toolNamespace: candidate.toolNamespace,
     allowedTools: candidate.allowedTools,
     sharedToolNames: candidate.sharedToolNames,
+    toolSchemas: publicMcpToolSchemas(candidate.mcpAgent?.toolSchemas, { allowedTools: candidate.allowedTools ?? [] }),
     status: candidate.status,
     confidence: candidate.confidence,
     autoRegister: candidate.autoRegister,
@@ -3135,12 +3848,22 @@ function normalizeApplicationMcpAgent(value, { applicationId, applicationName, a
   const config = normalizeMcpAdapterConfig(normalizeApplicationMcpAdapterInput(adapterInput, applicationPath));
   const toolNamespace = mcpToolSegment(value.toolNamespace ?? value.capabilityPrefix ?? applicationName ?? applicationId ?? "mcp");
   const riskTags = normalizeStringList(value.riskTags ?? value.capabilityRiskTags);
+  const resultImporters = normalizeMcpResultImporters(
+    value.resultImporters ?? value.resultImports ?? value.toolResultImporters ?? config.resultImporters,
+    { allowedTools: config.allowedTools },
+  );
+  const toolSchemas = normalizeMcpToolSchemas(
+    value.toolSchemas ?? value.toolInputSchemas ?? config.toolSchemas,
+    { allowedTools: config.allowedTools },
+  );
   return {
     agentId: sanitizeAgentId(value.agentId ?? value.id ?? `${applicationId ?? toolNamespace}_mcp`),
     name: stringOrNull(value.name) ?? `${applicationName ?? "Application"} MCP`,
     description: stringOrNull(value.description) ?? `MCP server registered with ${applicationName ?? "this application"}.`,
     adapter: { type: "mcp", ...config },
     allowedTools: config.allowedTools,
+    resultImporters,
+    toolSchemas,
     toolNamespace,
     capabilityName: stringOrNull(value.capabilityName) ?? `${toolNamespace}_mcp_tool_call`,
     capabilityDescription: stringOrNull(value.capabilityDescription) ?? "Calls a tool exposed by the application's MCP server.",

@@ -4,7 +4,8 @@ import { fileURLToPath } from "node:url";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { delimiter } from "node:path";
 import * as pty from "node-pty";
-import { callMcpTool, probeMcpServer } from "./mcp-client.mjs";
+import { probeMcpServer } from "./mcp-client.mjs";
+import { runMcpInvocation as runMcpBridgeInvocation } from "./mcp-invocation-runner.mjs";
 import { agentMinimalBaseEnv, minimizeAgentEnvEnabled, shouldMinimizeAgentEnv } from "./agent-env.mjs";
 import { callA2aAgent, probeA2aAgent } from "./a2a-client.mjs";
 import { probeContainerRuntime, runContainerAgent } from "./container-client.mjs";
@@ -14,7 +15,6 @@ import {
   createLocalExecutionPolicyManifest,
   localExecutionGate,
   localPolicyForAdapter,
-  mcpLocalExecutionGate,
 } from "./local-execution-policy.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -51,11 +51,11 @@ if (process.argv.includes("--check")) {
   const ccusageInstallPlan = lifecycleCommandPlan({
     commandId: "npm_global_install_pinned",
     executable: "npm",
-    args: ["install", "-g", "ccusage@20.0.14"],
+    args: ["install", "-g", "ccusage@20.0.16"],
     shell: false,
     packageManager: null
   });
-  if (!ccusageInstallPlan || !ccusageInstallPlan.args.includes("ccusage@20.0.14")) {
+  if (!ccusageInstallPlan || !ccusageInstallPlan.args.includes("ccusage@20.0.16")) {
     throw new Error("ccusage pinned lifecycle install is not mapped to an allowlisted command.");
   }
   const blockedLifecyclePlan = lifecycleCommandPlan({ commandId: "not_allowlisted", executable: "demo-agent", args: [], shell: false });
@@ -395,6 +395,7 @@ let busy = false;
 let terminalBusy = false;
 let stopped = false;
 const terminalSessions = new Map();
+const applicationEditorProcesses = new Map();
 
 process.on("SIGINT", stop);
 process.on("SIGTERM", stop);
@@ -511,6 +512,17 @@ async function poll() {
     } finally {
       busy = false;
     }
+    return;
+  }
+
+  const editorWork = await request("GET", "/api/bridge/application-editor-next");
+  if (editorWork) {
+    busy = true;
+    try {
+      await runApplicationEditorAction(editorWork);
+    } finally {
+      busy = false;
+    }
   }
 
 }
@@ -598,9 +610,9 @@ function lifecycleCommandPlan(command) {
   if (commandId === "npm_global_install_pinned") {
     return lifecycleExactPlan(command, {
       executable: "npm",
-      args: ["install", "-g", "ccusage@20.0.14"],
+      args: ["install", "-g", "ccusage@20.0.16"],
       command: process.platform === "win32" ? "npm.cmd" : "npm",
-      planArgs: ["install", "-g", "ccusage@20.0.14"],
+      planArgs: ["install", "-g", "ccusage@20.0.16"],
     });
   }
   if (commandId === "npm_global_uninstall_package") {
@@ -659,6 +671,336 @@ function lifecycleExactPlan(command, expected) {
 
 async function postLifecycleResult(payload) {
   await request("POST", "/api/bridge/lifecycle-complete", payload);
+}
+
+async function runApplicationEditorAction(work) {
+  if (!work?.editorActionId) {
+    throw new Error("Application editor work item is missing editorActionId.");
+  }
+  if (work.action === "stop") {
+    await stopApplicationEditor(work);
+    return;
+  }
+  if (work.action !== "start") {
+    await postApplicationEditorResult({
+      editorActionId: work.editorActionId,
+      status: "failed",
+      summary: "Application editor action is not supported by this Desktop Bridge build.",
+      error: "unsupported_application_editor_action",
+      logs: [],
+    });
+    return;
+  }
+  await startApplicationEditor(work);
+}
+
+async function startApplicationEditor(work) {
+  const plan = applicationEditorStartPlan(work);
+  const logs = [];
+  if (!plan) {
+    await postApplicationEditorResult({
+      editorActionId: work.editorActionId,
+      status: "failed",
+      summary: "Application editor start command is not allowlisted for this Desktop Bridge build.",
+      error: "application_editor_allowlist_refused",
+      logs,
+    });
+    return;
+  }
+
+  const reusedUrl = await reusableApplicationEditorUrl(work);
+  if (reusedUrl) {
+    const editorUrl = applicationEditorHandoffUrl(reusedUrl, work);
+    await postApplicationEditorResult({
+      editorActionId: work.editorActionId,
+      status: "succeeded",
+      summary: `Application editor is already reachable at ${editorUrl}.`,
+      url: editorUrl,
+      port: urlPort(editorUrl),
+      pid: null,
+      logs: ["reuse: existing doocs/md editor URL responded before spawn"],
+    });
+    return;
+  }
+
+  console.log(`[desktop] application editor ${work.editorActionId}: ${work.applicationName ?? work.applicationId}`);
+  let child;
+  try {
+    child = spawn(plan.command, plan.args, {
+      cwd: plan.cwd,
+      env: buildEnv({ command: "application-web-editor", environmentPolicy: "inherit_safe" }),
+      detached: process.platform !== "win32",
+      windowsHide: true,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+  } catch (error) {
+    await postApplicationEditorResult({
+      editorActionId: work.editorActionId,
+      status: "failed",
+      summary: `Application editor could not start: ${error instanceof Error ? error.message : String(error)}.`,
+      error: error instanceof Error ? error.message : String(error),
+      logs,
+    });
+    return;
+  }
+
+  const ready = await waitForApplicationEditorReady(child, {
+    timeoutMs: Number(work.timeoutMs ?? 45_000),
+    logs,
+  });
+  if (!ready.ok) {
+    await terminateProcessTree(child);
+    await postApplicationEditorResult({
+      editorActionId: work.editorActionId,
+      status: "failed",
+      summary: ready.summary,
+      error: ready.error,
+      logs,
+    });
+    return;
+  }
+
+  const editorUrl = applicationEditorHandoffUrl(ready.url, work);
+  applicationEditorProcesses.set(work.editorActionId, {
+    actionId: work.editorActionId,
+    applicationId: work.applicationId,
+    child,
+    pid: child.pid,
+    url: editorUrl,
+  });
+  child.once("close", () => {
+    applicationEditorProcesses.delete(work.editorActionId);
+  });
+  await postApplicationEditorResult({
+    editorActionId: work.editorActionId,
+    status: "succeeded",
+    summary: `Application editor is ready at ${editorUrl}.`,
+    url: editorUrl,
+    port: urlPort(editorUrl),
+    pid: child.pid,
+    logs,
+  });
+}
+
+async function stopApplicationEditor(work) {
+  const record = applicationEditorProcessFor(work);
+  if (!record?.child) {
+    await postApplicationEditorResult({
+      editorActionId: work.editorActionId,
+      status: "failed",
+      summary: "Application editor is not running in this Desktop Bridge session.",
+      error: "application_editor_process_not_found",
+      pid: work.pid ?? null,
+      logs: [],
+    });
+    return;
+  }
+  const result = await terminateProcessTree(record.child);
+  if (result.ok) {
+    applicationEditorProcesses.delete(record.actionId);
+  }
+  await postApplicationEditorResult({
+    editorActionId: work.editorActionId,
+    status: result.ok ? "succeeded" : "failed",
+    summary: result.ok ? "Application editor stopped." : result.message,
+    error: result.ok ? null : result.message,
+    pid: record.pid,
+    url: record.url,
+    logs: [],
+  });
+}
+
+function applicationEditorProcessFor(work) {
+  if (work.targetActionId && applicationEditorProcesses.has(work.targetActionId)) {
+    return applicationEditorProcesses.get(work.targetActionId);
+  }
+  const pid = Number(work.pid);
+  if (Number.isFinite(pid)) {
+    for (const record of applicationEditorProcesses.values()) {
+      if (record.pid === pid && record.applicationId === work.applicationId) return record;
+    }
+  }
+  return null;
+}
+
+function applicationEditorStartPlan(work) {
+  const command = work?.command ?? {};
+  const args = Array.isArray(command.args) ? command.args.map(String) : [];
+  if (
+    command.commandId !== "doocs_md_web_editor_start" ||
+    command.executable !== "pnpm" ||
+    command.shell !== false ||
+    args.length !== 2 ||
+    args[0] !== "run" ||
+    args[1] !== "start"
+  ) {
+    return null;
+  }
+  const cwd = command.cwd ? resolve(String(command.cwd)) : null;
+  if (!cwd || !existsSync(cwd) || !isAllowedDoocsMdEditorRoot(cwd, work.expected)) {
+    return null;
+  }
+  if (process.platform === "win32") {
+    return {
+      command: process.env.ComSpec || "cmd.exe",
+      args: ["/d", "/s", "/c", "pnpm.cmd", ...args],
+      cwd,
+    };
+  }
+  return {
+    command: "pnpm",
+    args,
+    cwd,
+  };
+}
+
+async function reusableApplicationEditorUrl(work) {
+  if (work?.expected?.repository !== "doocs/md") return null;
+  const candidates = [
+    "http://localhost:5173/md/",
+    "http://127.0.0.1:5173/md/",
+  ];
+  for (const url of candidates) {
+    if (await isHttpReachable(url, 1_000)) return url;
+  }
+  return null;
+}
+
+function isAllowedDoocsMdEditorRoot(cwd, expected = {}) {
+  const packagePath = resolve(cwd, "package.json");
+  if (!existsSync(packagePath)) return false;
+  try {
+    const parsed = JSON.parse(readFileSync(packagePath, "utf8"));
+    const repository = typeof parsed.repository === "string" ? parsed.repository : parsed.repository?.url;
+    return parsed?.name === (expected.packageName ?? "md") &&
+      String(repository ?? "").toLowerCase().includes(expected.repository ?? "doocs/md") &&
+      parsed?.scripts?.start === (expected.startScript ?? "pnpm web dev");
+  } catch {
+    return false;
+  }
+}
+
+function waitForApplicationEditorReady(child, { timeoutMs, logs }) {
+  let detectedUrl = null;
+  let readyCheckStarted = false;
+  return new Promise((resolveReady) => {
+    let settled = false;
+    const timeoutBudgetMs = Math.max(1_000, Number(timeoutMs) || 45_000);
+    const deadline = Date.now() + timeoutBudgetMs;
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      child.off("error", onError);
+      child.off("close", onClose);
+      resolveReady(result);
+    };
+    const inspectOutput = (source, chunk) => {
+      const text = chunk.toString("utf8");
+      pushApplicationEditorLogs(logs, source, text);
+      detectedUrl = detectedUrl ?? parseLocalEditorUrl(text);
+      if (detectedUrl && !readyCheckStarted) {
+        readyCheckStarted = true;
+        const readyTimeoutMs = Math.max(5_000, Math.min(30_000, deadline - Date.now()));
+        waitForHttpReady(detectedUrl, readyTimeoutMs).then((ok) => {
+          finish(ok
+            ? { ok: true, url: detectedUrl }
+            : { ok: false, summary: `Application editor URL did not become reachable: ${detectedUrl}.`, error: "application_editor_url_unreachable" });
+        });
+      }
+    };
+    const onError = (error) => {
+      finish({
+        ok: false,
+        summary: `Application editor failed to start: ${error instanceof Error ? error.message : String(error)}.`,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    };
+    const onClose = (code, signal) => {
+      finish({
+        ok: false,
+        summary: `Application editor exited before becoming ready (${signal ?? code ?? "unknown"}).`,
+        error: "application_editor_exited_before_ready",
+      });
+    };
+    const timeout = setTimeout(() => {
+      finish({
+        ok: false,
+        summary: "Application editor did not print a local URL before the startup timeout.",
+        error: "application_editor_start_timeout",
+      });
+    }, timeoutBudgetMs);
+    child.stdout.on("data", (chunk) => inspectOutput("stdout", chunk));
+    child.stderr.on("data", (chunk) => inspectOutput("stderr", chunk));
+    child.once("error", onError);
+    child.once("close", onClose);
+  });
+}
+
+async function waitForHttpReady(url, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (await isHttpReachable(url, 1_000)) return true;
+    await sleep(150);
+  }
+  return false;
+}
+
+async function isHttpReachable(url, timeoutMs) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, { method: "GET", signal: controller.signal });
+    return response.status < 500;
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function pushApplicationEditorLogs(logs, source, text) {
+  const clean = stripAnsi(text);
+  for (const line of clean.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    logs.push(`${source}: ${trimmed.slice(0, 220)}`);
+  }
+  while (logs.length > 20) logs.shift();
+}
+
+function parseLocalEditorUrl(text) {
+  const clean = stripAnsi(text);
+  const match = clean.match(/https?:\/\/(?:localhost|127\.0\.0\.1|\[::1\])(?::\d+)?\/[^\s]*/i);
+  return match ? match[0].replace(/[),.;]+$/, "") : null;
+}
+
+function applicationEditorHandoffUrl(url, work) {
+  try {
+    const parsed = new URL(url);
+    parsed.searchParams.set("myagenttoolApplicationId", String(work.applicationId ?? ""));
+    parsed.searchParams.set("myagenttoolApi", serverUrl);
+    return parsed.toString();
+  } catch {
+    return url;
+  }
+}
+
+function stripAnsi(text) {
+  return String(text ?? "").replace(/\u001B\[[0-?]*[ -/]*[@-~]/g, "");
+}
+
+function urlPort(value) {
+  try {
+    const parsed = new URL(value);
+    return parsed.port ? Number(parsed.port) : parsed.protocol === "https:" ? 443 : 80;
+  } catch {
+    return null;
+  }
+}
+
+async function postApplicationEditorResult(payload) {
+  await request("POST", "/api/bridge/application-editor-complete", payload);
 }
 
 async function pollTerminal() {
@@ -873,7 +1215,10 @@ async function runInvocation(work) {
   let spawnError = null;
 
   if (adapter?.type === "mcp") {
-    await runMcpInvocation(work);
+    await runMcpBridgeInvocation(work, {
+      request,
+      manifest: localExecutionPolicyManifest,
+    });
     return;
   }
   if (adapter?.type === "a2a") {
@@ -1152,35 +1497,10 @@ async function runInvocation(work) {
   });
 }
 
-// Protocol-client dispatch: the transports live in {mcp,a2a,container}-client
+// Protocol-client dispatch: the transports live in {a2a,container}-client
 // modules; this shared glue polls cancel-status, forwards client events to the
 // server, and completes the invocation with the client's terminal outcome. The
 // ack already happened in runInvocation before dispatching here.
-async function runMcpInvocation(work) {
-  const gate = mcpLocalExecutionGate(work, work.adapter, { manifest: localExecutionPolicyManifest });
-  if (!gate.allowed) {
-    await request("POST", "/api/bridge/events", {
-      invocationId: work.invocationId,
-      type: "local_execution_refused",
-      level: "error",
-      message: gate.reason,
-      data: gate.evidence
-    });
-    await request("POST", "/api/bridge/complete", {
-      invocationId: work.invocationId,
-      status: "failed",
-      summary: gate.reason,
-      result: {
-        touchedUserFiles: false,
-        policyDecision: "local_execution_refused",
-        localExecutionGate: gate.evidence
-      }
-    });
-    return;
-  }
-  await runClientInvocation(work, callMcpTool, "MCP server");
-}
-
 async function runA2aInvocation(work) {
   await runClientInvocation(work, callA2aAgent, "A2A agent");
 }
@@ -2770,5 +3090,12 @@ function stop() {
   stopped = true;
   clearInterval(timer);
   clearInterval(terminalTimer);
+  for (const record of applicationEditorProcesses.values()) {
+    try {
+      record.child?.kill?.();
+    } catch {
+      // Best-effort shutdown; explicit Stop in the UI uses the full process-tree terminator.
+    }
+  }
   process.exit(0);
 }

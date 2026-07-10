@@ -17,12 +17,12 @@ export function App() {
   const View = SECTION_VIEWS[section];
 
   return (
-    <div className="flex h-full overflow-hidden">
+    <div className="flex h-full max-w-full overflow-hidden">
       <NavRail />
       <div className="flex min-w-0 flex-1 flex-col">
         <Topbar />
         <div className="flex min-h-0 flex-1">
-          <main className="min-w-0 flex-1 overflow-y-auto px-6 py-6">
+          <main className="min-w-0 max-w-full flex-1 overflow-x-hidden overflow-y-auto px-4 py-4 sm:px-6 sm:py-6">
             <ErrorBoundary resetKey={section}>
               <View />
             </ErrorBoundary>

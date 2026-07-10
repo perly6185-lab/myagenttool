@@ -256,7 +256,7 @@ function validateCapabilityInput(capability, input) {
   }
   const publicInput = {};
   for (const [key, value] of Object.entries(input)) {
-    if (key === "approvalRequestId" || key === "__verifiedApplicationApproval") continue;
+    if (APPLICATION_CONTROL_INPUT_KEYS.has(key)) continue;
     publicInput[key] = value;
   }
   validateObjectSchema(publicInput, publicCapabilityInputSchema(capability), "", errors);
@@ -278,7 +278,7 @@ function publicCapabilityInputSchema(capability) {
   };
 }
 
-const APPLICATION_CONTROL_INPUT_KEYS = new Set(["approvalRequestId", "__verifiedApplicationApproval"]);
+const APPLICATION_CONTROL_INPUT_KEYS = new Set(["approvalRequestId", "__verifiedApplicationApproval", "projectId"]);
 
 function effectiveCapabilityInputSchema(capability) {
   const base = capability?.inputSchema && typeof capability.inputSchema === "object" && !Array.isArray(capability.inputSchema)

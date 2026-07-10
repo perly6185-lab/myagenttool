@@ -154,6 +154,129 @@ Remaining design work is now concentrated on two expansion gates:
   live-probe recovery issues from the Applications list, and that switching
   between Application cards clears stale run/event/automation selections.
 
-Current remaining expansion work is broader real end-to-end coverage for mixed
-fleets that includes Desktop Bridge execution inside the mixed fleet, rather
-than only the current deterministic server/read-model/restart smoke.
+## 2026-07-09 Follow-up
+
+- `pnpm smoke:doocs-md-application` now proves the real local doocs/md MCP
+  closeout end to end: probe discovers the stdio MCP server, the rooted node
+  entrypoint is auto-registered, `render_markdown` executes through the Desktop
+  Bridge, rendered output and option-catalog artifacts are imported, governed
+  smoke evidence is saved, result retention archives superseded results, and
+  restart restores probe/MCP/tool/latest-result/imported-artifact/evidence
+  state.
+- `pnpm smoke:application-wrapper` now includes live Desktop Bridge execution
+  for both a reviewed npm-wrapper Application and a stdio MCP Application in the
+  same mixed smoke, including imported render-result coverage for the MCP path.
+- The Web Application Result Center can now be reopened from navigation state:
+  result selection is persisted in the Applications deep link with
+  `applicationResult=<resultId>`, the inspector opens the result modal from
+  restored URL/store state, and operators can copy the stable result link from
+  the result modal. The modal and history list share the same result action bar
+  for pin/archive, export, Evidence Center save, View invocation, and rerun, and
+  the modal surfaces the current retention mode beside result governance state.
+- The doocs/md Web editor handoff is captured in
+  [DOOCS_MD_WEB_EDITOR_HANDOFF.md](./DOOCS_MD_WEB_EDITOR_HANDOFF.md). The path
+  is accepted by `pnpm smoke:doocs-md-editor`, which starts an isolated server,
+  Desktop Bridge, and Vite editor, verifies the handoff query parameters,
+  imports a rendered editor result, reads it from the Application Result Center,
+  and stops the editor. The Web inspector now also exposes failed-editor
+  diagnostics and a `Result source` filter for Web editor handoff records.
+
+Current remaining expansion work is productizing the Result Center and recovery
+path rather than proving the basic closeout again: broaden the live mixed-fleet
+smoke to cover HTTP MCP recovery/manual-manifest edge cases, keep governance
+evidence visible, and make result comparison/export/replay flows feel durable.
+
+## 2026-07-10 M4.1 Readiness Follow-up
+
+- Added the M4.1 readiness closeout in
+  [APPLICATION_M4_READINESS_CLOSEOUT.md](./APPLICATION_M4_READINESS_CLOSEOUT.md).
+  The scope is deliberately a reviewable baseline, not a new product surface:
+  prove that current Application integrations can be integrated, used,
+  operated, and verified again before starting the guided intake flow.
+- Added `pnpm smoke:application-m4-readiness`, an aggregate acceptance gate for
+  the Application product line. The gate checks the current published ccusage
+  version against the pinned `20.0.16` baseline, then runs focused server,
+  desktop, and web regressions plus Application, doocs/md, ccusage, governed
+  Codex, and docs smokes.
+- The Evidence Center operator loop is now part of the M4.1 baseline:
+  Application smoke checklist evidence saves through the Application API,
+  projects as `application_smoke_evidence`, appears in the Audit view Evidence
+  Center panel, and can be opened from the Applications inspector with the
+  saved evidence selected.
+
+Next expansion should start at M4.2: turn the existing integration brief,
+descriptor draft, policy preview, and smoke checklist pieces into a guided
+Application intake flow.
+
+## 2026-07-10 M4.2 Onboarding Guide Follow-up
+
+- Added the first guided-intake slice in
+  [APPLICATION_M4_ONBOARDING_GUIDE_CLOSEOUT.md](./APPLICATION_M4_ONBOARDING_GUIDE_CLOSEOUT.md).
+  The Register Application modal now shows an `Onboarding guide` panel that
+  tracks source readiness, Codex integration brief capture, descriptor draft
+  attachment, and smoke-path planning.
+- Added a reusable `applicationOnboardingGuide` model so the same intake state
+  is carried into the Application detail page after registration.
+- Registration now reuses the descriptor draft generator before an Application
+  exists: operators can apply generated MCP, npm wrapper, or manual manifest
+  drafts into advanced descriptor JSON from the onboarding guide. Generated npm
+  wrapper commands stay `draft` and approval-required.
+- Registration policy preview now uses the same descriptor risk model for MCP,
+  npm wrapper, and manual manifest JSON. The modal shows projected, draft,
+  approval, consent, and high-risk counts before submission.
+- Application detail now shows `Onboarding continuity`, keeping source, brief,
+  descriptor, and smoke readiness visible beside generated descriptor drafts
+  and post-save next actions.
+- Expanded `pnpm smoke:application-m4-readiness` to include onboarding-guide,
+  draft-generator, descriptor-utils, register-modal, and inspector continuity
+  regressions. Focused verification:
+
+  ```powershell
+  pnpm --filter @myagenttool/web test -- application-onboarding-guide application-draft-generator descriptor-utils register-application-modal
+  pnpm --filter @myagenttool/web test -- applications-inspector
+  ```
+
+## 2026-07-10 M4.3-M4.4 Operations Follow-up
+
+- Delivered the Application operations closeout in
+  [APPLICATION_M4_OPERATIONS_CLOSEOUT.md](./APPLICATION_M4_OPERATIONS_CLOSEOUT.md).
+- Result Center now shows a `Result operations` summary for visible/total
+  results, active/pinned/archived counts, evidence-ready records, render versus
+  artifact mix, rerunnable results, exportable results, and latest import
+  status.
+- Recovery actions now surface through a top-level `Recovery operations` panel
+  with pending approval, executed, recovered, and attention counts; latest
+  guidance; direct approval; recovery-run routing; and result-invocation
+  routing.
+- `pnpm smoke:application-m4-readiness` now includes
+  `pnpm smoke:application-fleet`, so the aggregate gate covers npm wrapper,
+  stdio MCP, successful HTTP MCP live probe/confirmation, blocked HTTP MCP
+  evidence, manual manifest declared capabilities, public read-model health,
+  and restart recovery.
+- Approval issuance and verification are now explicitly covered by Web recovery
+  approval, wrapper policy consent, HTTP MCP approval retry, and the aggregate
+  readiness gate.
+
+Remaining M4 follow-up is incremental: add recovery-action-id deep links if
+operators need per-request URLs, and split the long doocs/md Result Center test
+if that coverage grows again.
+
+## M5 Productization Closeout - Recovery Links, Fleet Ops, Scoped Approvals
+
+- Delivered the productization closeout in
+  [APPLICATION_M5_PRODUCTIZATION_CLOSEOUT.md](./APPLICATION_M5_PRODUCTIZATION_CLOSEOUT.md).
+- Recovery action requests now have first-class `recovery=` navigation state,
+  copied recovery links, focused recovery history expansion, and run diagnostics
+  that preserve both the parent run and the selected recovery request.
+- Result Center now has a focused operations regression for metrics, retention,
+  filters, export, evidence save, and governance actions, so the long doocs/md
+  scenario no longer carries that coverage alone.
+- Applications now expose a fleet overview for npm wrappers, stdio MCP, HTTP
+  MCP, manual manifests, blocked live probes, ready MCP signals, and automation
+  attention, with metric-level filtering.
+- Application detail now includes a scoped approval queue that links approvals
+  by Application invocation metadata and recovery approval ids, surfaces risk,
+  target, duplicate guard, result links, and keeps approval as an explicit
+  operator action.
+- Added `pnpm smoke:application-m5-productization` as the focused gate for the
+  M5 productization surface.

@@ -22,6 +22,10 @@ export async function handleBridgeRoutes({
   findDiscoveryRun,
   completeDiscoveryRun,
   nextBridgeProbeRun,
+  findApplicationEditorAction,
+  markApplicationEditorActionStarted,
+  completeApplicationEditorAction,
+  nextBridgeApplicationEditorAction,
   markLifecycleActionStarted,
   completeLifecycleAction,
   nextBridgeLifecycleAction,
@@ -318,6 +322,61 @@ export async function handleBridgeRoutes({
       command: lifecycleAction.command,
       summary: lifecycleAction.summary,
     });
+    return true;
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/bridge/application-editor-next") {
+    state.device.lastSeenAt = now();
+    if (state.device.unlinkState !== "linked") {
+      sendJson(res, 204, null);
+      return true;
+    }
+
+    const editorAction = nextBridgeApplicationEditorAction();
+    if (!editorAction) {
+      sendJson(res, 204, null);
+      return true;
+    }
+    markApplicationEditorActionStarted(editorAction);
+
+    sendJson(res, 200, {
+      namespace,
+      protocolVersion,
+      editorActionId: editorAction.id,
+      applicationId: editorAction.applicationId,
+      applicationName: editorAction.applicationName,
+      deviceId: editorAction.deviceId,
+      action: editorAction.action,
+      command: editorAction.command,
+      expected: editorAction.expected,
+      targetActionId: editorAction.targetActionId ?? null,
+      pid: editorAction.pid ?? null,
+      url: editorAction.url ?? null,
+      timeoutMs: editorAction.timeoutMs ?? null,
+      summary: editorAction.summary,
+    });
+    return true;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/bridge/application-editor-complete") {
+    const body = await readJson(req);
+    const editorAction = findApplicationEditorAction(body.editorActionId);
+    const gate = bridgeOperationGate(editorAction, "application_editor", { deviceId: editorAction?.deviceId ?? null });
+    if (!gate.allowed) {
+      sendJson(res, gate.status, gate.body);
+      return true;
+    }
+
+    try {
+      completeApplicationEditorAction(editorAction, body);
+    } catch (error) {
+      sendJson(res, 409, {
+        error: "application_editor_action_not_completable",
+        message: error instanceof Error ? error.message : String(error),
+      });
+      return true;
+    }
+    sendJson(res, 200, { ok: true, editorAction });
     return true;
   }
 

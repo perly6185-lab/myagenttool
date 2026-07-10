@@ -11,6 +11,9 @@ export function createInvocationCompletionRuntime({
   isTerminal,
   recordInvocationLedgerEntry,
   recordCcusageImportedEstimates,
+  recordApplicationResultArtifact,
+  recordApplicationRenderResult,
+  runApplicationResultRetentionForInvocation,
   recordCodexReviewFindings,
   recordCodexChangePlan,
   recordCodexPatchProposal,
@@ -56,6 +59,7 @@ export function createInvocationCompletionRuntime({
     const auditSummary = createAuditSummary(invocation, body.summary ?? null);
     state.auditSummaries.push(auditSummary);
     recordAgentUsage(invocation, terminalStatus);
+    let importedApplicationResultCount = 0;
     // Attribute an agent-reported run cost (e.g. Claude's total_cost_usd, which
     // the bridge surfaces under result.cost) to the ledger + budget. No-ops when
     // the agent reported no USD amount.
@@ -70,6 +74,27 @@ export function createInvocationCompletionRuntime({
         agent: findAgent(invocation.agentId),
       });
       attachApplicationResult({ invocation, auditSummary, records, outputCollection: "importedUsageEstimates" });
+    }
+    if (terminalStatus === "succeeded" && typeof recordApplicationRenderResult === "function") {
+      const records = recordApplicationRenderResult({
+        invocation,
+        result: body.result ?? null,
+        agent: findAgent(invocation.agentId),
+      });
+      importedApplicationResultCount += records.length;
+      attachApplicationResult({ invocation, auditSummary, records, outputCollection: records[0]?.outputCollection ?? "applicationRenderResults" });
+    }
+    if (terminalStatus === "succeeded" && typeof recordApplicationResultArtifact === "function") {
+      const records = recordApplicationResultArtifact({
+        invocation,
+        result: body.result ?? null,
+        agent: findAgent(invocation.agentId),
+      });
+      importedApplicationResultCount += records.length;
+      attachApplicationResult({ invocation, auditSummary, records, outputCollection: records[0]?.outputCollection ?? "applicationResultArtifacts" });
+    }
+    if (terminalStatus === "succeeded" && importedApplicationResultCount > 0 && typeof runApplicationResultRetentionForInvocation === "function") {
+      runApplicationResultRetentionForInvocation(invocation, { userId: invocation.requestedBy ?? "system" });
     }
     if (terminalStatus === "succeeded" && typeof recordCodexReviewFindings === "function") {
       const records = recordCodexReviewFindings({
@@ -234,6 +259,13 @@ export function createInvocationCompletionRuntime({
       mcpToolName: metadata.mcpToolName ?? null,
       importedRecordIds: importedRecords.map((record) => record.id),
       importedRecordCount: importedRecords.length,
+      resultRef: importedRecords[0]?.resultRef ?? existing?.resultRef ?? null,
+      renderResult: importedRecords[0]?.resultRef?.type === "application_render_result"
+        ? importedRecords[0]
+        : existing?.renderResult ?? null,
+      artifactResult: importedRecords[0]?.resultRef?.type === "application_result_artifact"
+        ? importedRecords[0]
+        : existing?.artifactResult ?? null,
       invocationId: invocation.id,
       status: invocation.status,
       completedAt: invocation.completedAt ?? now(),
@@ -250,6 +282,9 @@ export function createInvocationCompletionRuntime({
     const application = (state.applications ?? []).find((item) => item.id === metadata.applicationId);
     if (application) {
       application.latestResult = applicationResult;
+      if (metadata.providerType === "mcp" && application.mcpAgent) {
+        application.mcpAgent.recovery = mcpRecoveryState(invocation, auditSummary);
+      }
       application.updatedAt = invocation.completedAt ?? now();
     }
     if (JSON.stringify(applicationResult) !== previous) {
@@ -261,6 +296,51 @@ export function createInvocationCompletionRuntime({
         data: applicationResult,
       });
     }
+  }
+
+  function mcpRecoveryState(invocation, auditSummary) {
+    if (invocation.status === "succeeded") {
+      return {
+        state: "registered",
+        reason: "latest_mcp_invocation_succeeded",
+        nextAction: "Use Run again when you need a fresh result, or re-probe the MCP server after descriptor changes.",
+        lastInvocationId: invocation.id,
+        lastFailure: null,
+        updatedAt: invocation.completedAt ?? now(),
+      };
+    }
+    const reason = mcpFailureReason(invocation, auditSummary);
+    return {
+      state: "needs_attention",
+      reason,
+      nextAction: mcpFailureNextAction(reason),
+      lastInvocationId: invocation.id,
+      lastFailure: {
+        invocationId: invocation.id,
+        status: invocation.status,
+        reason,
+        summary: auditSummary?.errorSummary ?? invocation.result?.summary ?? null,
+        completedAt: invocation.completedAt ?? now(),
+      },
+      updatedAt: invocation.completedAt ?? now(),
+    };
+  }
+
+  function mcpFailureReason(invocation, auditSummary) {
+    const text = `${auditSummary?.errorSummary ?? ""} ${invocation.result?.summary ?? ""}`.toLowerCase();
+    if (text.includes("local execution gate") || text.includes("policy")) return "policy_refused";
+    if (text.includes("could not start") || text.includes("enoent") || text.includes("spawn")) return "mcp_start_failed";
+    if (text.includes("not in the adapter") || text.includes("tool") && text.includes("not")) return "mcp_tool_not_found";
+    if (invocation.status === "timed_out" || text.includes("timed out")) return "mcp_timeout";
+    return "mcp_runtime_failed";
+  }
+
+  function mcpFailureNextAction(reason) {
+    if (reason === "policy_refused") return "Review the Application MCP descriptor and local execution policy before retrying.";
+    if (reason === "mcp_start_failed") return "Re-probe MCP, verify dependencies are installed, and check that the registered adapter still points inside the Application root.";
+    if (reason === "mcp_tool_not_found") return "Re-probe MCP to refresh exposed tools, then retry a currently registered tool.";
+    if (reason === "mcp_timeout") return "Retry with a smaller input or increase the MCP adapter timeout after confirming the server is healthy.";
+    return "Open the invocation timeline, then re-probe MCP or retry with the last input after fixing the runtime error.";
   }
 
   function completeRootSpan(invocation, terminalStatus) {

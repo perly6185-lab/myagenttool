@@ -5,6 +5,8 @@ import {
   useUiStore,
 } from "@/store/ui-store";
 
+const NAVIGATION_SEARCH_KEYS = ["section", "invocation", "tool", "focus", "application", "routine", "run", "applicationResult", "eventLevel", "automation", "evidence"];
+
 function replaceUrlSearch(search: string) {
   const nextUrl = `${window.location.pathname}${search}${window.location.hash}`;
   const currentUrl = `${window.location.pathname}${window.location.search}${window.location.hash}`;
@@ -29,8 +31,12 @@ export function useUrlNavigationSync() {
       replaceUrlSearch(searchFromNavigationState(window.location.search, useUiStore.getState()));
     }
 
+    const initialParams = new URLSearchParams(window.location.search);
+    const hasInitialNavigation = NAVIGATION_SEARCH_KEYS.some((key) => initialParams.has(key));
     applyLocationToStore();
-    writeStoreToLocation();
+    if (!hasInitialNavigation) {
+      writeStoreToLocation();
+    }
 
     const unsubscribe = useUiStore.subscribe((state) => {
       if (applyingUrlRef.current) return;

@@ -386,6 +386,105 @@ test("createToolInvocation for codex.apply.patch requires approved proposal, has
   assert.ok(events.some((event) => event.type === "tool_invocation_created" && event.data?.tool === "codex.apply.patch"));
 });
 
+test("reviewCodexPatchProposal approves or rejects actor-visible proposals only", () => {
+  const state = {
+    projects: [
+      { id: "projA", ownerTeamId: "team_a" },
+      { id: "projB", ownerTeamId: "team_b" },
+    ],
+    codexPatchProposals: [{
+      id: "cpp_review",
+      projectId: "projA",
+      worktreeId: "wtA",
+      reviewState: "generated",
+      invocationId: "inv_review",
+    }, {
+      id: "cpp_foreign",
+      projectId: "projB",
+      worktreeId: "wtB",
+      reviewState: "generated",
+      invocationId: "inv_foreign",
+    }],
+  };
+  const events = [];
+  let persisted = 0;
+  const { reviewCodexPatchProposal } = createToolService({
+    state,
+    now,
+    appendEvent: (event) => events.push(event),
+    createInvocation: () => {
+      throw new Error("review should not create an invocation");
+    },
+    startInvocationIfAllowed: () => {},
+    findApplication: () => null,
+    findAgent: () => null,
+    planApplicationWrapperInvocation: () => ({ ok: false, status: 500, body: { error: "unexpected_plan" } }),
+    persistStateSoon: () => {
+      persisted += 1;
+    },
+  });
+
+  const approved = reviewCodexPatchProposal("cpp_review", { action: "approve", reason: "Looks good" }, { userId: "usr_a", teamId: "team_a" });
+  assert.equal(approved.status, 200);
+  assert.equal(state.codexPatchProposals[0].reviewState, "approved");
+  assert.equal(state.codexPatchProposals[0].reviewedBy, "usr_a");
+  assert.equal(state.codexPatchProposals[0].reviewReason, "Looks good");
+
+  const rejected = reviewCodexPatchProposal("cpp_review", { action: "reject" }, { userId: "usr_a", teamId: "team_a" });
+  assert.equal(rejected.status, 200);
+  assert.equal(state.codexPatchProposals[0].reviewState, "rejected");
+  assert.equal(state.codexPatchProposals[0].reviewReason, null);
+
+  const foreign = reviewCodexPatchProposal("cpp_foreign", { action: "approve" }, { userId: "usr_a", teamId: "team_a" });
+  assert.equal(foreign.status, 404);
+  assert.equal(foreign.body.error, "proposal_not_found");
+  assert.equal(persisted, 2);
+  assert.ok(events.some((event) => event.type === "codex_patch_proposal_reviewed" && event.data?.proposalId === "cpp_review"));
+});
+
+test("reviewCodexPatchProposal rejects invalid transitions and applied proposals", () => {
+  const state = {
+    projects: [{ id: "projA", ownerTeamId: "team_a" }],
+    codexPatchProposals: [{
+      id: "cpp_rejected",
+      projectId: "projA",
+      worktreeId: "wtA",
+      reviewState: "rejected",
+      invocationId: "inv_rejected",
+    }, {
+      id: "cpp_applied",
+      projectId: "projA",
+      worktreeId: "wtA",
+      reviewState: "applied",
+      invocationId: "inv_applied",
+    }],
+  };
+  const { reviewCodexPatchProposal } = createToolService({
+    state,
+    now,
+    appendEvent: () => {},
+    createInvocation: () => {
+      throw new Error("review should not create an invocation");
+    },
+    startInvocationIfAllowed: () => {},
+    findApplication: () => null,
+    findAgent: () => null,
+    planApplicationWrapperInvocation: () => ({ ok: false, status: 500, body: { error: "unexpected_plan" } }),
+  });
+
+  const invalidAction = reviewCodexPatchProposal("cpp_rejected", { action: "review" }, { userId: "usr_a", teamId: "team_a" });
+  assert.equal(invalidAction.status, 400);
+  assert.equal(invalidAction.body.error, "invalid_review_action");
+
+  const invalidTransition = reviewCodexPatchProposal("cpp_rejected", { action: "approve" }, { userId: "usr_a", teamId: "team_a" });
+  assert.equal(invalidTransition.status, 409);
+  assert.equal(invalidTransition.body.error, "invalid_proposal_review_transition");
+
+  const applied = reviewCodexPatchProposal("cpp_applied", { action: "reject" }, { userId: "usr_a", teamId: "team_a" });
+  assert.equal(applied.status, 409);
+  assert.equal(applied.body.error, "proposal_already_applied");
+});
+
 test("MCP allowed tools project as governed tools without exposing adapter argv", () => {
   const state = {
     projects: [{ id: "projA", ownerTeamId: "team_a" }],
@@ -426,7 +525,11 @@ test("MCP allowed tools project as governed tools without exposing adapter argv"
   assert.equal(render?.source, "mcp_agent");
   assert.equal(render?.mcp?.agentId, "agt_doocs_md_mcp");
   assert.equal(render?.mcp?.toolName, "render_markdown");
-  assert.equal(render?.outputCollection, "invocations");
+  assert.equal(render?.outputCollection, "applicationRenderResults");
+  assert.equal(render?.metadata?.resultPath?.resultImport?.importer, "application_render_html");
+  const listThemes = listTools().find((tool) => tool.name === "doocs_md.list_themes");
+  assert.equal(listThemes?.outputCollection, "applicationResultArtifacts");
+  assert.equal(listThemes?.metadata?.resultPath?.resultImport?.importer, "application_option_catalog");
   assert.equal(JSON.stringify(render).includes("doocs-md-mcp.cmd"), false);
   assert.equal(JSON.stringify(render).includes("--private"), false);
 });

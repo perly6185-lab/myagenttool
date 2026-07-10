@@ -1,4 +1,4 @@
-export const CCUSAGE_VERSION = "20.0.14";
+export const CCUSAGE_VERSION = "20.0.16";
 
 export const CCUSAGE_REPORT_SPECS = [
   {

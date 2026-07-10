@@ -1,4 +1,6 @@
 import { denyForeignProject, teamOf } from "../runtime/auth.mjs";
+import { publicApplicationResultArtifact } from "../services/application-result-artifacts.mjs";
+import { publicApplicationRenderResult } from "../services/application-render-results.mjs";
 import { publicApplicationSnapshot } from "../services/applications.mjs";
 
 export async function handleApplicationRoutes({
@@ -12,18 +14,33 @@ export async function handleApplicationRoutes({
   confirmApplicationMcpCandidate,
   findApplication,
   getApplicationDescriptors,
+  getApplicationResultArtifact,
+  getApplicationRenderResult,
+  getApplicationResultRetention,
+  runApplicationResultRetention,
+  updateApplicationResultArtifactGovernance,
+  updateApplicationResultRetention,
+  updateApplicationRenderResultGovernance,
   grantApplicationWrapperPolicyConsent,
   getApplicationOrchestrationRunRecovery,
   listApplicationOrchestrationRecoveryAgentCandidates,
   getApplicationOrchestrationRun,
   listApplicationCapabilities,
   listApplicationEvents,
+  listApplicationResultArtifacts,
+  listApplicationRenderResults,
   listApplications,
   listApplicationOrchestrationRunEvents,
   probeApplication,
   probeApplicationMcpCandidate,
+  recordApplicationSmokeEvidence,
+  latestApplicationResultArtifact,
+  latestApplicationRenderResult,
   registerApplication,
+  recordApplicationEditorRenderResult,
   requestApplicationOrchestrationRecoveryAction,
+  requestApplicationWebEditorStart,
+  requestApplicationWebEditorStop,
   revokeApplicationWrapperPolicyConsent,
   transitionApplication,
   updateApplicationDescriptors,
@@ -113,6 +130,58 @@ export async function handleApplicationRoutes({
           commandId: result.commandId,
           consent: result.consent,
           capabilities: listApplicationCapabilities(applicationId) ?? [],
+        }
+      : result.body);
+    return true;
+  }
+
+  const smokeEvidenceMatch = url.pathname.match(/^\/api\/applications\/([^/]+)\/smoke-evidence$/);
+  if (smokeEvidenceMatch && req.method === "POST") {
+    const applicationId = decodeURIComponent(smokeEvidenceMatch[1]);
+    if (denyForeignApplication({ res, sendJson, state, actor, applicationId, findApplication })) return true;
+    const result = recordApplicationSmokeEvidence(applicationId, await readJson(req), actor);
+    sendJson(res, result.status, result.ok
+      ? {
+          application: publicApplicationSnapshot(result.application),
+          evidence: result.evidence,
+        }
+      : result.body);
+    return true;
+  }
+
+  const webEditorMatch = url.pathname.match(/^\/api\/applications\/([^/]+)\/web-editor\/(start|stop)$/);
+  if (webEditorMatch && req.method === "POST") {
+    const applicationId = decodeURIComponent(webEditorMatch[1]);
+    const action = webEditorMatch[2];
+    if (denyForeignApplication({ res, sendJson, state, actor, applicationId, findApplication })) return true;
+    const result = action === "start"
+      ? requestApplicationWebEditorStart(applicationId, actor)
+      : requestApplicationWebEditorStop(applicationId, actor);
+    sendJson(res, result.status, result.ok
+      ? {
+          application: publicApplicationSnapshot(result.application),
+          editor: result.editor ?? publicApplicationSnapshot(result.application).webEditor,
+          action: result.action ?? null,
+        }
+      : result.body);
+    return true;
+  }
+
+  const webEditorResultMatch = url.pathname.match(/^\/api\/applications\/([^/]+)\/web-editor\/results$/);
+  if (webEditorResultMatch && req.method === "POST") {
+    const applicationId = decodeURIComponent(webEditorResultMatch[1]);
+    if (denyForeignApplication({ res, sendJson, state, actor, applicationId, findApplication })) return true;
+    const application = findApplication(applicationId);
+    const result = recordApplicationEditorRenderResult({
+      application,
+      input: await readJson(req),
+      actor,
+    });
+    sendJson(res, result.status, result.ok
+      ? {
+          application: publicApplicationSnapshot(application),
+          result: publicApplicationRenderResult(result.record),
+          latestResult: application.latestResult ?? null,
         }
       : result.body);
     return true;
@@ -252,6 +321,124 @@ export async function handleApplicationRoutes({
     return true;
   }
 
+  const resultsMatch = url.pathname.match(/^\/api\/applications\/([^/]+)\/results$/);
+  if (resultsMatch && req.method === "GET") {
+    const applicationId = decodeURIComponent(resultsMatch[1]);
+    if (denyForeignApplication({ res, sendJson, state, actor, applicationId, findApplication })) return true;
+    const resultType = applicationResultTypeFilter(url.searchParams);
+    const renderResults = resultType !== "artifact" && typeof listApplicationRenderResults === "function"
+      ? listApplicationRenderResults(applicationId, url.searchParams).map(publicApplicationRenderResult)
+      : [];
+    const artifactResults = resultType !== "render" && typeof listApplicationResultArtifacts === "function"
+      ? listApplicationResultArtifacts(applicationId, url.searchParams).map(publicApplicationResultArtifact)
+      : [];
+    const results = [...renderResults, ...artifactResults]
+      .sort((left, right) => Date.parse(right.createdAt ?? right.generatedAt ?? "") - Date.parse(left.createdAt ?? left.generatedAt ?? ""))
+      .slice(0, applicationResultsLimit(url.searchParams));
+    sendJson(res, 200, {
+      applicationId,
+      results,
+      count: results.length,
+    });
+    return true;
+  }
+
+  const latestResultMatch = url.pathname.match(/^\/api\/applications\/([^/]+)\/results\/latest$/);
+  if (latestResultMatch && req.method === "GET") {
+    const applicationId = decodeURIComponent(latestResultMatch[1]);
+    if (denyForeignApplication({ res, sendJson, state, actor, applicationId, findApplication })) return true;
+    const render = typeof latestApplicationRenderResult === "function" ? latestApplicationRenderResult(applicationId) : null;
+    const artifact = typeof latestApplicationResultArtifact === "function" ? latestApplicationResultArtifact(applicationId) : null;
+    const record = latestApplicationResultRecord(render, artifact);
+    if (!record) {
+      sendJson(res, 404, { error: "application_result_not_found" });
+      return true;
+    }
+    sendJson(res, 200, {
+      applicationId,
+      result: publicApplicationResultDetail(record),
+    });
+    return true;
+  }
+
+  const resultRetentionMatch = url.pathname.match(/^\/api\/applications\/([^/]+)\/result-retention$/);
+  if (resultRetentionMatch && (req.method === "GET" || req.method === "PATCH")) {
+    const applicationId = decodeURIComponent(resultRetentionMatch[1]);
+    if (denyForeignApplication({ res, sendJson, state, actor, applicationId, findApplication })) return true;
+    if (req.method === "GET") {
+      const retention = typeof getApplicationResultRetention === "function" ? getApplicationResultRetention(applicationId) : null;
+      if (!retention) {
+        sendJson(res, 404, { error: "application_not_found" });
+        return true;
+      }
+      sendJson(res, 200, { applicationId, retention });
+      return true;
+    }
+    const application = typeof updateApplicationResultRetention === "function"
+      ? updateApplicationResultRetention(applicationId, await readJson(req), actor)
+      : null;
+    if (!application) {
+      sendJson(res, 404, { error: "application_not_found" });
+      return true;
+    }
+    sendJson(res, 200, {
+      application: publicApplicationSnapshot(application),
+      retention: application.resultRetention ?? null,
+    });
+    return true;
+  }
+
+  const runRetentionMatch = url.pathname.match(/^\/api\/applications\/([^/]+)\/results\/retention\/run$/);
+  if (runRetentionMatch && req.method === "POST") {
+    const applicationId = decodeURIComponent(runRetentionMatch[1]);
+    if (denyForeignApplication({ res, sendJson, state, actor, applicationId, findApplication })) return true;
+    const result = typeof runApplicationResultRetention === "function"
+      ? runApplicationResultRetention(applicationId, actor, { reason: "manual" })
+      : { ok: false, status: 404, body: { error: "application_not_found" } };
+    sendJson(res, result.status, result.ok
+      ? {
+          application: publicApplicationSnapshot(result.body.application),
+          retention: result.body.retention,
+          summary: result.body.summary,
+        }
+      : result.body);
+    return true;
+  }
+
+  const resultMatch = url.pathname.match(/^\/api\/applications\/([^/]+)\/results\/([^/]+)$/);
+  if (resultMatch && (req.method === "GET" || req.method === "PATCH")) {
+    const applicationId = decodeURIComponent(resultMatch[1]);
+    const resultId = decodeURIComponent(resultMatch[2]);
+    if (denyForeignApplication({ res, sendJson, state, actor, applicationId, findApplication })) return true;
+    const renderRecord = typeof getApplicationRenderResult === "function" ? getApplicationRenderResult(applicationId, resultId) : null;
+    const artifactRecord = renderRecord ? null : typeof getApplicationResultArtifact === "function" ? getApplicationResultArtifact(applicationId, resultId) : null;
+    const record = renderRecord ?? artifactRecord;
+    if (!record) {
+      sendJson(res, 404, { error: "application_result_not_found" });
+      return true;
+    }
+    if (req.method === "PATCH") {
+      const body = await readJson(req);
+      const updated = renderRecord
+        ? (typeof updateApplicationRenderResultGovernance === "function"
+            ? updateApplicationRenderResultGovernance(applicationId, resultId, body, actor)
+            : renderRecord)
+        : (typeof updateApplicationResultArtifactGovernance === "function"
+            ? updateApplicationResultArtifactGovernance(applicationId, resultId, body, actor)
+            : artifactRecord);
+      sendJson(res, 200, {
+        applicationId,
+        result: publicApplicationResultDetail(updated),
+      });
+      return true;
+    }
+    sendJson(res, 200, {
+      applicationId,
+      result: publicApplicationResultDetail(record),
+    });
+    return true;
+  }
+
   const descriptorsMatch = url.pathname.match(/^\/api\/applications\/([^/]+)\/descriptors$/);
   if (descriptorsMatch && (req.method === "GET" || req.method === "PATCH")) {
     const applicationId = decodeURIComponent(descriptorsMatch[1]);
@@ -379,4 +566,47 @@ function denyForeignApplication({ res, sendJson, state, actor, applicationId, fi
 function denyForeignProjectFromBody({ res, sendJson, state, actor, body }) {
   const projectId = body && typeof body === "object" && !Array.isArray(body) ? body.projectId : null;
   return denyForeignProject({ res, sendJson, state, actor, projectId, notFound: { error: "project_not_found" } });
+}
+
+function publicApplicationResultDetail(record) {
+  if (!record) return null;
+  if (isApplicationResultArtifact(record)) {
+    return {
+      ...publicApplicationResultArtifact(record),
+      payload: record.payload ?? null,
+      text: record.text ?? null,
+    };
+  }
+  return {
+    ...publicApplicationRenderResult(record),
+    html: record.html ?? "",
+  };
+}
+
+function latestApplicationResultRecord(render, artifact) {
+  if (!render) return artifact ?? null;
+  if (!artifact) return render;
+  const renderTs = Date.parse(render.createdAt ?? render.generatedAt ?? "");
+  const artifactTs = Date.parse(artifact.createdAt ?? artifact.generatedAt ?? "");
+  return artifactTs > renderTs ? artifact : render;
+}
+
+function applicationResultsLimit(searchParams) {
+  const parsed = Number(searchParams?.get?.("limit") ?? 20);
+  return Number.isFinite(parsed) ? Math.min(Math.max(Math.trunc(parsed), 1), 100) : 20;
+}
+
+function applicationResultTypeFilter(searchParams) {
+  const raw = String(searchParams?.get?.("resultType") ?? searchParams?.get?.("type") ?? "").trim().toLowerCase();
+  if (["render", "rendered", "html"].includes(raw)) return "render";
+  if (["artifact", "artifacts", "json"].includes(raw)) return "artifact";
+  return "all";
+}
+
+function isApplicationResultArtifact(record) {
+  return record?.resultRef?.type === "application_result_artifact"
+    || record?.outputCollection === "applicationResultArtifacts"
+    || Object.prototype.hasOwnProperty.call(record ?? {}, "payload")
+    || Object.prototype.hasOwnProperty.call(record ?? {}, "text")
+    || Object.prototype.hasOwnProperty.call(record ?? {}, "dataShape");
 }

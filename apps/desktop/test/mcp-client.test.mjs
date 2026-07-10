@@ -99,6 +99,8 @@ test("probeMcpServer: healthy against the fixture, unhealthy against a bad comma
   const ok = await probeMcpServer(echoAdapter());
   assert.equal(ok.ok, true);
   assert.match(ok.message, /1 tool\(s\): echo/);
+  assert.equal(ok.tools[0].name, "echo");
+  assert.equal(ok.tools[0].inputSchema.type, "object");
 
   const bad = await probeMcpServer(echoAdapter({ command: "/nonexistent/mcp-server-xyz", args: [] }));
   assert.equal(bad.ok, false);
@@ -158,6 +160,8 @@ test("http transport: probe is healthy against the fixture, unhealthy against a 
   const ok = await probeMcpServer(await startHttpFixture());
   assert.equal(ok.ok, true, ok.message);
   assert.match(ok.message, /echo/);
+  assert.equal(ok.tools[0].name, "echo");
+  assert.equal(ok.tools[0].inputSchema.type, "object");
   const bad = await probeMcpServer(normalizeMcpAdapterConfig({ transport: "http", url: "http://127.0.0.1:1/", timeoutMs: 2_000 }));
   assert.equal(bad.ok, false);
 });

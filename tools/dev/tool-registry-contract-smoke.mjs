@@ -23,6 +23,7 @@ assert.deepEqual(fixture.stableEndpoints, [
   "GET /api/tools",
   "GET /api/tools/{toolName}",
   "POST /api/tools/{toolName}/invocations",
+  "POST /api/tools/codex.propose.patch/proposals/{proposalId}/review",
   "GET /api/capabilities",
   "GET /api/capabilities/{capabilityName}",
   "POST /api/capabilities/{capabilityName}/invocations",

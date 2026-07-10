@@ -398,8 +398,9 @@ export async function probeMcpServer(adapter) {
   try {
     await handshake(session, handshakeTimeoutMs);
     const listed = await session.request("tools/list", {}, { timeoutMs: handshakeTimeoutMs }).promise;
-    const tools = Array.isArray(listed?.tools) ? listed.tools.map((t) => t.name) : [];
-    return { ok: true, message: `MCP server is reachable and exposes ${tools.length} tool(s): ${tools.join(", ") || "none"}.`, tools };
+    const tools = Array.isArray(listed?.tools) ? listed.tools.map(publicMcpTool) : [];
+    const toolNames = tools.map((tool) => tool.name).filter(Boolean);
+    return { ok: true, message: `MCP server is reachable and exposes ${toolNames.length} tool(s): ${toolNames.join(", ") || "none"}.`, tools };
   } catch (error) {
     return {
       ok: false,
@@ -411,4 +412,14 @@ export async function probeMcpServer(adapter) {
   } finally {
     session.kill();
   }
+}
+
+function publicMcpTool(tool) {
+  return {
+    name: String(tool?.name ?? ""),
+    ...(typeof tool?.description === "string" ? { description: tool.description } : {}),
+    ...(tool?.inputSchema && typeof tool.inputSchema === "object" && !Array.isArray(tool.inputSchema)
+      ? { inputSchema: tool.inputSchema }
+      : {}),
+  };
 }

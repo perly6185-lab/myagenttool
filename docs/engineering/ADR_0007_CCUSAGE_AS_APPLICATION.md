@@ -83,7 +83,7 @@ the above. The original decision below is kept for history.
 ccusage is today modeled as a **governed tool** (`ccusage.report`) whose
 execution identities are six **bespoke agent records**
 (`agt_ccusage_daily`, `_weekly`, `_monthly`, `_session`, `_codex_daily`,
-`_claude_daily`), with the pinned `ccusage@20.0.14` install handled by a separate
+`_claude_daily`), with the pinned `ccusage@20.0.16` install handled by a separate
 lifecycle recipe. This shape predates the Application Capability Registry.
 
 On the current object model, ccusage is a poor fit for "agent" and a natural fit
@@ -116,7 +116,7 @@ Re-home ccusage onto the Application Capability Registry, **evolutionarily and
 behind the existing tool facade**:
 
 1. Model ccusage as an **Application** with `source.type = "npm"` (pinned
-   `ccusage@20.0.14`) and the standard Application lifecycle
+   `ccusage@20.0.16`) and the standard Application lifecycle
    (draft → registered → active → offline).
 2. Project the six reports as **capabilities** of that application, executed by
    the **platform Application Wrapper Runner**, reusing the Application

@@ -86,6 +86,67 @@ export function buildEvidenceCenterRecords({
       createdAt: usage.createdAt
     });
   }
+  for (const render of state.applicationRenderResults ?? []) {
+    records.push({
+      id: render.id,
+      type: render.evidenceType ?? "rendered_markdown",
+      source: "application_render_result",
+      redactionState: "summary_with_result_ref",
+      invocationId: render.invocationId,
+      codexSessionRegistryId: null,
+      agentId: render.agentId ?? findInvocation(render.invocationId)?.agentId ?? null,
+      repoPath: null,
+      summary: `${render.artifactType === "html" ? "Rendered HTML" : "Rendered artifact"} ${render.theme ? `with ${render.theme}` : "artifact"}: ${render.htmlSummary ?? render.id}`,
+      detail: [
+        render.resultRef?.id ? `resultRef=${render.resultRef.id}` : `resultId=${render.id}`,
+        render.markdownHash ? `markdownHash=${render.markdownHash}` : null,
+        render.htmlHash ? `htmlHash=${render.htmlHash}` : null,
+        Number.isFinite(Number(render.htmlByteLength)) ? `htmlBytes=${render.htmlByteLength}` : null,
+      ].filter(Boolean).join(" · "),
+      marker: "imported",
+      createdAt: render.createdAt,
+    });
+  }
+  for (const artifact of state.applicationResultArtifacts ?? []) {
+    records.push({
+      id: artifact.id,
+      type: artifact.evidenceType ?? "mcp_result",
+      source: "application_result_artifact",
+      redactionState: "summary_with_result_ref",
+      invocationId: artifact.invocationId,
+      codexSessionRegistryId: null,
+      agentId: artifact.agentId ?? findInvocation(artifact.invocationId)?.agentId ?? null,
+      repoPath: null,
+      summary: artifact.summary ?? `${artifact.artifactType ?? "artifact"} result ${artifact.id}`,
+      detail: [
+        artifact.resultRef?.id ? `resultRef=${artifact.resultRef.id}` : `artifactId=${artifact.id}`,
+        artifact.mcpToolName ? `mcpTool=${artifact.mcpToolName}` : null,
+        artifact.dataHash ? `dataHash=${artifact.dataHash}` : null,
+        artifact.dataShape?.type ? `shape=${artifact.dataShape.type}` : null,
+        artifact.dataShape?.catalogKey ? `catalog=${artifact.dataShape.catalogKey}` : null,
+        Number.isFinite(Number(artifact.byteLength)) ? `bytes=${artifact.byteLength}` : null,
+      ].filter(Boolean).join(" · "),
+      marker: "imported",
+      createdAt: artifact.createdAt,
+    });
+  }
+  for (const smoke of state.applicationSmokeEvidenceRecords ?? []) {
+    records.push({
+      id: smoke.id,
+      type: "application_smoke_evidence",
+      source: "application_smoke_evidence",
+      redactionState: "summary_with_checklist",
+      invocationId: null,
+      codexSessionRegistryId: null,
+      agentId: null,
+      repoPath: smoke.repoPath ?? null,
+      applicationId: smoke.applicationId,
+      summary: smoke.summary,
+      detail: applicationSmokeEvidenceDetail(smoke),
+      marker: "managed",
+      createdAt: smoke.createdAt,
+    });
+  }
   for (const audit of state.auditSummaries ?? []) {
     const applicationResult = audit.applicationResult;
     if (!applicationResult?.applicationId || !audit.invocationId) continue;
@@ -169,6 +230,7 @@ function applicationResultDetail(applicationResult, audit) {
     applicationResult.capability ? `capability=${applicationResult.capability}` : null,
     applicationResult.mcpToolName ? `mcpTool=${applicationResult.mcpToolName}` : null,
     applicationResult.outputCollection ? `outputCollection=${applicationResult.outputCollection}` : null,
+    applicationResult.resultRef?.id ? `resultRef=${applicationResult.resultRef.id}` : null,
     Number.isFinite(Number(applicationResult.importedRecordCount)) ? `importedRecordCount=${applicationResult.importedRecordCount}` : null,
     audit.resultSummary ? `summary=${audit.resultSummary}` : null,
     audit.errorSummary ? `error=${audit.errorSummary}` : null,
@@ -197,4 +259,21 @@ function usageEstimateDetail(usage) {
     Number.isFinite(Number(usage.estimatedCostUsd)) ? `estimatedCostUsd=${usage.estimatedCostUsd}` : null,
   ].filter(Boolean);
   return parts.join(" · ") || "Imported ccusage usage estimate.";
+}
+
+function applicationSmokeEvidenceDetail(smoke) {
+  const completed = Number(smoke.completedCount ?? 0);
+  const total = Number(smoke.stepCount ?? 0);
+  const completedSteps = (smoke.steps ?? [])
+    .filter((step) => step?.completed)
+    .map((step) => step.step)
+    .filter(Boolean)
+    .join(", ");
+  const parts = [
+    `applicationId=${smoke.applicationId}`,
+    `completed=${Number.isFinite(completed) ? completed : 0}/${Number.isFinite(total) ? total : 0}`,
+    smoke.descriptorOperationAt ? `descriptorOperationAt=${smoke.descriptorOperationAt}` : null,
+    completedSteps ? `completedSteps=${completedSteps}` : null,
+  ].filter(Boolean);
+  return parts.join(" · ");
 }

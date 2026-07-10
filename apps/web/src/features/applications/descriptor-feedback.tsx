@@ -1,5 +1,5 @@
 import { Badge } from "@/components/ui/badge";
-import { descriptorFeedbackIssues, type WrapperCapabilityImpact } from "@/features/applications/descriptor-utils";
+import { descriptorFeedbackIssues, type DescriptorRiskPreview, type DescriptorRiskPreviewItem, type WrapperCapabilityImpact } from "@/features/applications/descriptor-utils";
 import { isApiError } from "@/lib/api-client";
 
 export function WrapperCapabilityImpactPanel({ impact }: { impact: WrapperCapabilityImpact | null }) {
@@ -21,6 +21,46 @@ export function WrapperCapabilityImpactPanel({ impact }: { impact: WrapperCapabi
       ) : null}
     </div>
   );
+}
+
+export function DescriptorRiskPreviewPanel({ preview }: { preview: DescriptorRiskPreview }) {
+  if (!preview.items.length) return null;
+  return (
+    <div className="rounded-md border border-border/70 p-3 text-xs">
+      <div className="mb-2 font-medium">Descriptor risk preview</div>
+      <div className="flex flex-wrap gap-2">
+        <Badge tone={preview.projectedCount ? "success" : "neutral"}>{preview.projectedCount} projected</Badge>
+        <Badge tone={preview.draftCount ? "warning" : "neutral"}>{preview.draftCount} draft/candidate</Badge>
+        <Badge tone={preview.approvalCount ? "warning" : "neutral"}>{preview.approvalCount} approval</Badge>
+        <Badge tone={preview.policyConsentCount ? "danger" : "neutral"}>{preview.policyConsentCount} consent</Badge>
+        <Badge tone={preview.highRiskCount ? "danger" : "neutral"}>{preview.highRiskCount} high risk</Badge>
+      </div>
+      <ul className="mt-2 space-y-1 text-muted-foreground">
+        {preview.items.slice(0, 8).map((item) => (
+          <li key={item.id} className="[overflow-wrap:anywhere]">
+            <span className="font-medium text-foreground">{item.label}</span>
+            {" · "}
+            {readableSurface(item)}
+            {" · "}
+            {item.status}
+            {" · "}
+            {item.riskLevel}
+            {item.requiresApproval ? " · approval" : ""}
+            {item.needsPolicyConsent ? ` · consent for ${item.filePolicy}/${item.networkPolicy}` : ""}
+          </li>
+        ))}
+      </ul>
+      {preview.items.length > 8 ? (
+        <p className="mt-2 text-muted-foreground">{preview.items.length - 8} more descriptor item(s).</p>
+      ) : null}
+    </div>
+  );
+}
+
+function readableSurface(item: DescriptorRiskPreviewItem): string {
+  if (item.surface === "npm_wrapper") return "npm wrapper";
+  if (item.surface === "manual_manifest") return "manual manifest";
+  return "MCP";
 }
 
 export function DescriptorFeedbackList({ message, error }: { message?: string | null; error?: unknown }) {

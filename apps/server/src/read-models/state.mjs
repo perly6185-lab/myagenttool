@@ -1,6 +1,8 @@
 import { LOCAL_TEAM_ID, agentVisibleToActor, teamOf } from "../runtime/auth.mjs";
+import { publicApplicationResultArtifact } from "../services/application-result-artifacts.mjs";
 import { publicDeviceView } from "../runtime/bridge-auth.mjs";
-import { publicApplicationEvent, publicApplicationSnapshot } from "../services/applications.mjs";
+import { publicApplicationRenderResult } from "../services/application-render-results.mjs";
+import { publicApplicationEvent, publicApplicationSmokeEvidence, publicApplicationSnapshot } from "../services/applications.mjs";
 
 export function buildPublicState({
   namespace,
@@ -57,6 +59,7 @@ export function buildPublicState({
     if (application?.projectId) return projectVisible(application.projectId);
     return teamId == null || (application?.ownerTeamId ?? LOCAL_TEAM_ID) === teamId;
   });
+  const visibleApplicationIds = new Set(applications.map((application) => application.id));
   const importedUsagePublic = (rows) => byInvocation(rows).map(({ raw, ...row }) => row);
   const codexReviewFindings = byInvocation(state.codexReviewFindings).map(({ raw, ...row }) => row);
   const codexChangePlans = byInvocation(state.codexChangePlans).map(({ raw, ...row }) => row);
@@ -69,6 +72,10 @@ export function buildPublicState({
   const importedVisible = (r) => teamId == null || (r?.teamId ?? LOCAL_TEAM_ID) === teamId;
   const visibleImported = (state.codexImportedEvidenceRecords ?? []).filter(importedVisible);
   const visibleImportedIds = new Set(visibleImported.map((r) => r.id));
+  const applicationSmokeEvidenceRecords = (state.applicationSmokeEvidenceRecords ?? [])
+    .filter((record) => visibleApplicationIds.has(record.applicationId))
+    .map(publicApplicationSmokeEvidence);
+  const visibleApplicationSmokeEvidenceIds = new Set(applicationSmokeEvidenceRecords.map((record) => record.id));
   const terminalSessionTeamId = (session) => {
     if (session?.ownerTeamId) return session.ownerTeamId;
     const owner = (state.users ?? []).find((user) => user.id === session?.userId);
@@ -166,6 +173,7 @@ export function buildPublicState({
     applications: applications.map((application) => publicApplicationSnapshot(application, {
       healthSummary: applicationHealthSummary(application.id, visibleEvents, applicationRecoveryActions, automations),
     })),
+    applicationEditorActions: state.applicationEditorActions,
     applicationRecoveryActions,
     projectTargets: byProject(state.projectTargets),
     currentProjectId: state.currentProjectId,
@@ -197,6 +205,13 @@ export function buildPublicState({
     aiUsageRecords: byInvocation(state.aiUsageRecords),
     ledgerEntries: byProject(state.ledgerEntries),
     importedUsageEstimates: importedUsagePublic(state.importedUsageEstimates),
+    applicationRenderResults: (state.applicationRenderResults ?? [])
+      .filter((record) => visibleApplicationIds.has(record.applicationId) && invVisible(record.invocationId))
+      .map(publicApplicationRenderResult),
+    applicationResultArtifacts: (state.applicationResultArtifacts ?? [])
+      .filter((record) => visibleApplicationIds.has(record.applicationId) && invVisible(record.invocationId))
+      .map(publicApplicationResultArtifact),
+    applicationSmokeEvidenceRecords,
     codexReviewFindings,
     codexChangePlans,
     codexPatchProposals,
@@ -237,7 +252,9 @@ export function buildPublicState({
         ? visibleImportedIds.has(r.id)
         : r?.source === "managed_terminal_runtime"
           ? visibleTerminalEvidenceIds.has(r.id)
-          : invVisible(r?.invocationId),
+          : r?.source === "application_smoke_evidence"
+            ? visibleApplicationSmokeEvidenceIds.has(r.id)
+            : invVisible(r?.invocationId),
     ),
     codexApprovalBrokerRequests: byInvocation(state.codexApprovalBrokerRequests),
     codexImportedEvidenceRecords: visibleImported,

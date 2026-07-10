@@ -7,13 +7,17 @@ import {
   type UrlNavigationState,
 } from "@/store/ui-store";
 
-const NAVIGATION_QUERY_KEYS = ["section", "invocation", "application", "routine", "run", "eventLevel", "automation", "evidence"] as const;
+const NAVIGATION_QUERY_KEYS = ["section", "invocation", "tool", "focus", "application", "routine", "run", "applicationResult", "recovery", "eventLevel", "automation", "evidence"] as const;
 
 interface WebNavigationTarget {
   section: SectionKey;
   selectedInvocationId?: string | null;
+  selectedToolName?: string | null;
+  selectedToolFocus?: string | null;
   selectedApplicationId?: string | null;
   selectedApplicationRun?: ApplicationRunSelection | null;
+  selectedApplicationResultId?: string | null;
+  selectedApplicationRecoveryId?: string | null;
   selectedApplicationEventLevel?: ApplicationEventLevelSelection;
   selectedApplicationAutomationId?: string | null;
   selectedEvidenceId?: string | null;
@@ -33,8 +37,12 @@ export function webDeepLink(target: WebNavigationTarget, href = currentHref()): 
   url.search = searchFromNavigationState(url.search, {
     section: target.section,
     selectedInvocationId: target.selectedInvocationId ?? null,
+    selectedToolName: target.selectedToolName ?? null,
+    selectedToolFocus: target.selectedToolFocus ?? null,
     selectedApplicationId: target.selectedApplicationId ?? null,
     selectedApplicationRun: target.selectedApplicationRun ?? null,
+    selectedApplicationResultId: target.selectedApplicationResultId ?? null,
+    selectedApplicationRecoveryId: target.selectedApplicationRecoveryId ?? null,
     selectedApplicationEventLevel: target.selectedApplicationEventLevel ?? "all",
     selectedApplicationAutomationId: target.selectedApplicationAutomationId ?? null,
     selectedEvidenceId: target.selectedEvidenceId ?? null,
@@ -54,6 +62,23 @@ export function applicationRunDeepLink(selection: ApplicationRunSelection, href?
     section: "applications",
     selectedApplicationId: selection.applicationId,
     selectedApplicationRun: selection,
+  }, href);
+}
+
+export function applicationResultDeepLink(applicationId: string, resultId: string, href?: string): string {
+  return webDeepLink({
+    section: "applications",
+    selectedApplicationId: applicationId,
+    selectedApplicationResultId: resultId,
+  }, href);
+}
+
+export function applicationRecoveryDeepLink(selection: ApplicationRunSelection, recoveryId: string, href?: string): string {
+  return webDeepLink({
+    section: "applications",
+    selectedApplicationId: selection.applicationId,
+    selectedApplicationRun: selection,
+    selectedApplicationRecoveryId: recoveryId,
   }, href);
 }
 
@@ -84,9 +109,13 @@ export function webNavigationStateFromLink(link: RelativeWebNavigationLink): Url
   const target = link.target ?? {};
   const section = stringValue(target.section);
   const invocationId = stringValue(target.invocation);
+  const toolName = stringValue(target.tool);
+  const toolFocus = stringValue(target.focus);
   const applicationId = stringValue(target.application);
   const routineId = stringValue(target.routine);
   const runInvocationId = stringValue(target.run);
+  const applicationResultId = stringValue(target.applicationResult);
+  const applicationRecoveryId = stringValue(target.recovery);
   const eventLevel = applicationEventLevelValue(target.eventLevel);
   const automationId = stringValue(target.automation);
   const evidenceId = stringValue(target.evidence);
@@ -98,12 +127,24 @@ export function webNavigationStateFromLink(link: RelativeWebNavigationLink): Url
   if (invocationId) {
     navigation.selectedInvocationId = invocationId;
   }
+  if (toolName) {
+    navigation.selectedToolName = toolName;
+  }
+  if (toolFocus) {
+    navigation.selectedToolFocus = toolFocus;
+  }
   if (applicationId) {
     navigation.selectedApplicationId = applicationId;
   }
   navigation.selectedApplicationRun = applicationId && routineId && runInvocationId
     ? { applicationId, routineId, invocationId: runInvocationId }
     : null;
+  if (applicationId && applicationResultId) {
+    navigation.selectedApplicationResultId = applicationResultId;
+  }
+  if (applicationId && applicationRecoveryId) {
+    navigation.selectedApplicationRecoveryId = applicationRecoveryId;
+  }
   if (eventLevel) {
     navigation.selectedApplicationEventLevel = eventLevel;
   }

@@ -23,6 +23,8 @@ import {
   CLAUDE_REVIEW_TOOL_CONTRACT,
   isGovernedClaudeReviewAgent,
 } from "./claude-agent.mjs";
+import { mcpResultImporterForTool, mcpResultPathForImporter, publicMcpResultImporter } from "./mcp-result-importers.mjs";
+import { mcpToolSchemaForTool } from "./mcp-tool-schemas.mjs";
 import { agentVisibleToActor, teamOf } from "../runtime/auth.mjs";
 
 const CCUSAGE_APPROVAL_REQUIRED_REPORTS = new Set(["session"]);
@@ -46,6 +48,7 @@ export function createToolService({
   findApprovalRequest,
   findInvocation,
   planApplicationWrapperInvocation,
+  persistStateSoon = () => {},
 }) {
   function listTools(actor = null) {
     return discoverTools(actor);
@@ -95,6 +98,48 @@ export function createToolService({
       return createMcpToolInvocation(mcpTool, input, actor);
     }
     return { status: 404, body: { error: "tool_not_found" } };
+  }
+
+  function reviewCodexPatchProposal(proposalId, input = {}, actor = null) {
+    const action = String(input?.action ?? "").trim();
+    if (!["approve", "reject"].includes(action)) {
+      return { status: 400, body: { error: "invalid_review_action", message: "action must be approve or reject." } };
+    }
+    const proposal = findCodexPatchProposal(state, proposalId);
+    if (!proposal || !codexPatchProposalVisibleToActor(proposal, actor)) {
+      return { status: 404, body: { error: "proposal_not_found" } };
+    }
+    if (proposal.reviewState === "applied") {
+      return { status: 409, body: { error: "proposal_already_applied", reviewState: proposal.reviewState } };
+    }
+    const nextState = action === "approve" ? "approved" : "rejected";
+    if (action === "approve" && !["generated", "reviewed"].includes(proposal.reviewState)) {
+      return { status: 409, body: { error: "invalid_proposal_review_transition", reviewState: proposal.reviewState, action } };
+    }
+    if (action === "reject" && !["generated", "reviewed", "approved"].includes(proposal.reviewState)) {
+      return { status: 409, body: { error: "invalid_proposal_review_transition", reviewState: proposal.reviewState, action } };
+    }
+    const reviewedAt = now();
+    proposal.reviewState = nextState;
+    proposal.reviewedAt = reviewedAt;
+    proposal.reviewedBy = actor?.userId ?? proposal.reviewedBy ?? null;
+    proposal.reviewReason = stringOrNull(input?.reason);
+    proposal.updatedAt = reviewedAt;
+    appendEvent({
+      invocationId: proposal.invocationId ?? proposal.proposalInvocationId ?? null,
+      type: "codex_patch_proposal_reviewed",
+      level: "info",
+      message: `Codex patch proposal ${proposal.id} marked ${nextState}.`,
+      data: {
+        proposalId: proposal.id,
+        projectId: proposal.projectId ?? null,
+        worktreeId: proposal.worktreeId ?? null,
+        action,
+        reviewState: nextState,
+      },
+    });
+    persistStateSoon();
+    return { status: 200, body: { proposal } };
   }
 
   function createCcusageToolInvocation(input, actor) {
@@ -637,6 +682,8 @@ export function createToolService({
     }
     const timeoutSeconds = value.timeoutSeconds ?? Math.ceil(Number(agent.adapter?.timeoutMs ?? 60_000) / 1000);
     const application = agent.sourceApplicationId ? findApplication?.(agent.sourceApplicationId) ?? null : null;
+    const resultImporter = publicMcpResultImporter(tool.metadata?.resultPath?.resultImport ?? mcpResultImporterForTool(agent, tool.mcp.toolName));
+    const resultPath = mcpResultPathForImporter(resultImporter);
     const invocation = createInvocation(value.task ?? `Call MCP tool ${tool.mcp.toolName} via ${agent.name}.`, agent, {
       actor,
       requestedBy: actor?.userId,
@@ -649,11 +696,12 @@ export function createToolService({
         providerType: "mcp",
         mcpAgentId: agent.id,
         mcpToolName: tool.mcp.toolName,
+        resultImporter,
         capability: tool.name,
         applicationId: application?.id ?? agent.sourceApplicationId ?? null,
         applicationName: application?.name ?? null,
         applicationAction: "mcp_tool_call",
-        outputCollection: "invocations",
+        outputCollection: resultPath.outputCollection,
         projectId,
       },
     });
@@ -677,7 +725,7 @@ export function createToolService({
         invocationId: invocation.id,
         agentId: agent.id,
         status: invocation.status,
-        outputCollection: "invocations",
+        outputCollection: resultPath.outputCollection,
         invocation,
       },
     };
@@ -779,10 +827,19 @@ export function createToolService({
       : null;
   }
 
+  function codexPatchProposalVisibleToActor(proposal, actor = null) {
+    if (!actor?.teamId) return true;
+    const projectId = proposal.projectId;
+    if (!projectId) return false;
+    const project = (state.projects ?? []).find((item) => item.id === projectId);
+    return Boolean(project && teamOf(project) === actor.teamId);
+  }
+
   return {
     createToolInvocation,
     getTool,
     listTools,
+    reviewCodexPatchProposal,
     validateCodexReviewInput,
     validateCodexPlanInput,
     validateCodexPatchProposalInput,
@@ -814,6 +871,9 @@ function buildMcpToolDescriptor({ name, agent, toolName }) {
     agent.adapter?.transport === "http" ? "mcp_http" : "mcp_stdio",
     ...(agent.capabilities ?? []).flatMap((capability) => capability?.riskTags ?? []),
   ]);
+  const resultImporter = publicMcpResultImporter(mcpResultImporterForTool(agent, toolName));
+  const resultPath = mcpResultPathForImporter(resultImporter);
+  const toolInputSchema = mcpToolSchemaForTool(agent, toolName);
   return {
     name,
     version: "1",
@@ -840,7 +900,7 @@ function buildMcpToolDescriptor({ name, agent, toolName }) {
       unknownTool: "blocked",
     },
     authoritativeBilling: false,
-    outputCollection: "invocations",
+    outputCollection: resultPath.outputCollection,
     source: "mcp_agent",
     metadata: {
       readiness: {
@@ -848,13 +908,12 @@ function buildMcpToolDescriptor({ name, agent, toolName }) {
         reason: "mcp_agent_registered",
         executionMode: agent.adapter?.transport === "http" ? "mcp_http" : "mcp_stdio",
       },
-      resultPath: {
-        outputCollection: "invocations",
-        evidenceCenter: true,
-      },
+      resultPath,
       mcp: {
         agentId: agent.id,
         toolName,
+        inputSchema: toolInputSchema,
+        formSchema: toolInputSchema,
       },
     },
     application: agent.sourceApplicationId ? { id: agent.sourceApplicationId } : null,
