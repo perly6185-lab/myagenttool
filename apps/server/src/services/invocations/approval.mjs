@@ -18,7 +18,11 @@ export function createInvocationApprovalRuntime({
     const riskLevel = highestRiskLevel(capabilities.map((capability) => capability.riskLevel));
     const riskTags = uniqueStrings(capabilities.flatMap((capability) => capability.riskTags ?? []));
     const codexNativeControls = isCodexCliCommand(agent.adapter?.command);
-    const requiresApproval = !codexNativeControls && (Boolean(options.requireLocalApproval) || ["high", "critical"].includes(riskLevel));
+    // `preApproved` is a SERVER-INTERNAL flag: an auto-run self-repair continuation
+    // of an already-human-approved run. It is stripped from client-supplied options
+    // in routes/invocations.mjs, so a client can never set it to skip the gate.
+    const requiresApproval =
+      !codexNativeControls && !options.preApproved && (Boolean(options.requireLocalApproval) || ["high", "critical"].includes(riskLevel));
     return {
       decision: requiresApproval ? "requires_local_approval" : "allowed",
       reason: requiresApproval

@@ -662,6 +662,47 @@ export function createAutoRunService({
         }
         autoRun.verification = { passed: verification.passed, verified: verification.verified, summary: verification.summary ?? null };
         if (verification.verified && !verification.passed) {
+          // Self-repair: feed the failing check back to the agent for another attempt
+          // in the SAME worktree, rather than blocking on the first failure. Bounded
+          // by the attempt cap (+ the existing budget gate / circuit breaker). Only
+          // develop runs repair — design/clarify/etc. produce no code to re-verify.
+          const maxRepairs = state.autoRunSettings?.maxRepairAttempts ?? 2;
+          const attempts = autoRun.repairAttempts ?? 0;
+          if (maxRepairs > 0 && attempts < maxRepairs && (autoRun.decision?.path ?? "develop") === "develop") {
+            const agent = findAgent(autoRun.agentId);
+            if (agent && typeof createInvocation === "function") {
+              autoRun.repairAttempts = attempts + 1;
+              const issueBody = await maybeFetchIssueBody(autoRun.link, autoRun.projectId);
+              const repairTask =
+                `${roleAutoRunPrompt(autoRun.link, { path: "develop", issueBody })}\n\n` +
+                `Your previous attempt is ALREADY in this worktree but FAILED the verification check:\n\n` +
+                `${String(verification.summary ?? "").slice(0, 2000)}\n\n` +
+                `Fix the failing check without expanding scope. This is repair attempt ${autoRun.repairAttempts} of ${maxRepairs}.`;
+              let repair = null;
+              try {
+                repair = createInvocation(repairTask, agent, {
+                  preApproved: true, // continuation of an already human-approved run — no re-gate
+                  metadata: { worktreeId: autoRun.worktreeId, projectId: autoRun.projectId, autoRunId: autoRun.id, role: "develop", repairAttempt: autoRun.repairAttempts },
+                });
+              } catch {
+                repair = null;
+              }
+              if (repair) {
+                autoRun.invocationId = repair.id;
+                setAutoRunStatus(autoRun, autoRunStatusForInvocation(repair), { error: null });
+                appendEvent({
+                  invocationId: repair.id,
+                  type: "auto_run_repair_started",
+                  level: "info",
+                  message: `Auto-run ${autoRun.id} self-repair attempt ${autoRun.repairAttempts}/${maxRepairs} after a failed check.`,
+                  data: { autoRunId: autoRun.id, attempt: autoRun.repairAttempts },
+                });
+                startInvocationIfAllowed(repair, agent);
+                persistStateSoon();
+                return autoRun;
+              }
+            }
+          }
           setAutoRunStatus(autoRun, "blocked", { error: verification.summary ?? "Verification failed." });
           persistStateSoon();
           return autoRun;

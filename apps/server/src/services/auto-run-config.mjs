@@ -103,6 +103,9 @@ export function normalizeAutoRunSettings(patch = {}, prev = {}) {
     // O2 graduated approval (UI-only): auto-approve NON-CODE paths (design/
     // clarify/prototype). develop and merge always stay human. Default off.
     autoApproveNonCodePaths: keep("autoApproveNonCodePaths", asBool),
+    // Self-repair: how many times a develop run may re-attempt after a verify
+    // failure (feeding the failure back to the agent) before it blocks. 0 disables.
+    maxRepairAttempts: keep("maxRepairAttempts", (v) => clampInt(v, 0, 3)),
     // A1 alerting (UI-only): operator webhook for real-time operational alerts.
     // Validated http(s); a typo/blank clears it (alerting disabled).
     alertWebhookUrl: keep("alertWebhookUrl", (v) => normalizeAlertWebhookUrl(v)),
@@ -194,6 +197,8 @@ export function resolveAutoRunConfig(state = {}, baseEnv = process.env) {
     autonomyKillSwitch: Boolean(settings.autonomyKillSwitch),
     // O2 graduated approval (not env-backed): auto-approve non-code paths.
     autoApproveNonCodePaths: Boolean(settings.autoApproveNonCodePaths),
+    // Self-repair attempt cap (not env-backed); default 2, 0 disables the loop.
+    maxRepairAttempts: Number.isInteger(settings.maxRepairAttempts) ? settings.maxRepairAttempts : 2,
     // A1 alerting: whether an operational-alert webhook is configured.
     alertWebhookConfigured: Boolean(settings.alertWebhookUrl),
     // A3 reliability knobs (effective values; 0 = off).
