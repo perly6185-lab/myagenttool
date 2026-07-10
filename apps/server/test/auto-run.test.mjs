@@ -13,7 +13,7 @@ import { join } from "node:path";
 import { before, beforeEach, test } from "node:test";
 
 import { createProjectService } from "../src/services/projects.mjs";
-import { createAutoRunService } from "../src/services/auto-run.mjs";
+import { createAutoRunService, extractChangeFailureRef } from "../src/services/auto-run.mjs";
 
 function git(cwd, ...args) {
   return execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8" }).trim();
@@ -75,6 +75,7 @@ function makeAutoRun({
   sendAlert = undefined,
   runDeploy = undefined,
   runRollback = undefined,
+  fileRemediationIssue = undefined,
 } = {}) {
   const calls = { createInvocation: [], startInvocationIfAllowed: [], commit: [], publish: [], pr: [], verify: [], status: [], report: [], merge: [], autoApprove: [], render: [], childCreate: [] };
   let counter = 0;
@@ -147,6 +148,7 @@ function makeAutoRun({
     findInvocation,
     runDeploy,
     runRollback,
+    fileRemediationIssue,
     autoApproveInvocation: autoApproveInvocation
       ? (args) => { calls.autoApprove.push(args); return autoApproveInvocation(args); }
       : undefined,
@@ -1907,3 +1909,60 @@ function autoRun_deployment_status(s) {
   const run = (s.autoRuns ?? []).find((r) => r.deployment);
   return run?.deployment?.status ?? null;
 }
+
+// ---------------------------------------------------------------------------
+// H2 self-healing: file a remediation issue on deploy failure (fix-forward).
+// ---------------------------------------------------------------------------
+test("H2 remediate: a failed deploy files an auto-labeled remediation issue with the Change-failure marker", async () => {
+  const filed = [];
+  const { svc } = makeAutoRun({
+    runDeploy: async () => ({ deployed: false, summary: "healthcheck failed" }),
+    fileRemediationIssue: async (args) => { filed.push(args); return { number: 321, url: "https://github.com/o/r/issues/321" }; },
+  });
+  state.autoRunSettings = { deployOnMerge: true, remediateOnDeployFailure: true };
+  const run = mergedRun({ prNumber: 7 });
+  run.issueBody = "## Project Fields\nArea: web\nType: feature\n"; // culprit fields to inherit
+  await svc.maybeDeployAfterMerge(run);
+  assert.equal(filed.length, 1, "one remediation issue filed");
+  assert.deepEqual(filed[0].labels, ["auto"], "labeled auto so the loop picks it up");
+  assert.match(filed[0].title, /Fix failed deploy of PR #7/);
+  assert.match(filed[0].body, /Change-failure: #7/, "carries the DORA marker naming the culprit");
+  assert.match(filed[0].body, /Area: web/, "inherits the culprit's Project Fields");
+  assert.equal(run.remediationIssue.number, 321);
+  await svc.maybeDeployAfterMerge(run); // second attempt on the same failed run
+  assert.equal(filed.length, 1, "remediation is filed once per failed deploy (idempotent)");
+});
+
+test("H2 remediate: skipped when off; uses default Project Fields when the culprit has none", async () => {
+  const a = makeAutoRun({ runDeploy: async () => ({ deployed: false }), fileRemediationIssue: async () => ({ number: 1 }) });
+  state.autoRunSettings = { deployOnMerge: true }; // remediate off
+  await a.svc.maybeDeployAfterMerge(mergedRun());
+  assert.ok(!state.autoRuns.some((r) => r.remediationIssue), "off -> no remediation issue");
+
+  const filed = [];
+  const b = makeAutoRun({ runDeploy: async () => ({ deployed: false }), fileRemediationIssue: async (x) => { filed.push(x); return { number: 8 }; } });
+  state.autoRunSettings = { deployOnMerge: true, remediateOnDeployFailure: true };
+  await b.svc.maybeDeployAfterMerge(mergedRun({ id: "aur_rem2", prNumber: 12 })); // no issueBody
+  assert.match(filed[0].body, /## Project Fields/, "default fields when the culprit had none");
+  assert.match(filed[0].body, /Type: bug/);
+});
+
+test("H2 marker: a run remediating a failed deploy propagates Change-failure:#N onto its PR body", async () => {
+  const { svc, calls } = makeAutoRun({});
+  const { autoRun, invocation } = await svc.startAutoRun({
+    projectId: sourceProjectId,
+    link: { type: "issue", number: 260, title: "Fix failed deploy of PR #7", url: null, state: "open" },
+    agentId: "agt_1", name: "rem-marker-260",
+  });
+  autoRun.issueBody = "Remediate the deploy failure.\n\nChange-failure: #7\n";
+  await svc.advanceAutoRunForInvocation({ ...invocation, status: "succeeded" });
+  assert.equal(autoRun.status, "pr_open");
+  assert.match(calls.pr.at(-1).payload.body, /Change-failure: #7/, "the fix PR carries the marker for DORA");
+});
+
+test("extractChangeFailureRef parses the DORA change-failure marker", () => {
+  assert.equal(extractChangeFailureRef("Change-failure: #42"), 42);
+  assert.equal(extractChangeFailureRef("blah\nchange-failure:  #7  more"), 7);
+  assert.equal(extractChangeFailureRef("no marker"), null);
+  assert.equal(extractChangeFailureRef(null), null);
+});

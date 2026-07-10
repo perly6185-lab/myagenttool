@@ -3,7 +3,7 @@ import { detectPromptInjection, roleAutoRunPrompt } from "@myagenttool/protocol/
 import { isTerminal } from "./invocations.mjs";
 import { normalizeWorktreeLink } from "./projects.mjs";
 import { intentForPath, resolveDecision } from "./auto-run-decision.mjs";
-import { isSpawnedChildBody, decompositionChildBody } from "./auto-run-spawn.mjs";
+import { isSpawnedChildBody, decompositionChildBody, extractProjectFieldsBlock } from "./auto-run-spawn.mjs";
 import { judgmentEvidence } from "./auto-run-judge.mjs";
 import { computeMergeRisk, sensitivePathHit, DEFAULT_SENSITIVE_PATHS } from "./auto-run-risk.mjs";
 import { resolveAutoRunVerifyCommandFor } from "./worktree-verify.mjs";
@@ -26,6 +26,16 @@ import { scoreDecompositionOverlap } from "./auto-run-epic.mjs";
 // non-code paths (a design brief / a clarify question / a throwaway spike),
 // never `develop` (which edits product code and opens a PR).
 const AUTO_APPROVABLE_PATHS = new Set(["design", "clarify", "prototype", "decompose"]);
+
+// Fallback Project Fields for a self-healing remediation issue (H2) when the
+// culprit issue carried none — so the fix PR still passes pr-governance.
+const DEFAULT_REMEDIATION_FIELDS = "## Project Fields\nMilestone: M2\nArea: server\nType: bug\nStatus: ready\nRisk: low\nAcceptance: verified\nPlatform: server\nPriority: p1\n";
+
+/** Parse a DORA `Change-failure: #N` marker (the first ref) from a body; null if absent. */
+export function extractChangeFailureRef(body) {
+  const m = /change-failure:\s*#(\d+)/i.exec(String(body ?? ""));
+  return m ? Number(m[1]) : null;
+}
 
 export const autoRunStates = [
   "materializing",
@@ -81,6 +91,7 @@ export function createAutoRunService({
   createDecompositionChild,
   runDeploy,
   runRollback,
+  fileRemediationIssue,
 }) {
   // Best-effort issue body fetch (issue links only): richer context for both the
   // decision and the role prompt. Null on any failure — the run proceeds on the
@@ -781,7 +792,12 @@ export function createAutoRunService({
         setAutoRunStatus(autoRun, "publishing");
         try {
           await publishWorktreeBranch(autoRun.worktreeId);
-          const pr = await createWorktreePr(autoRun.worktreeId, { body: verificationEvidenceBody(verification, judgment) });
+          // H2: if this run remediates a failed deploy, its issue body carries a
+          // `Change-failure: #N` marker — propagate it onto the PR body so DORA's
+          // change-failure rate + recovery see the remediation (fix-forward).
+          const changeFailureRef = extractChangeFailureRef(autoRun.issueBody);
+          const prBody = verificationEvidenceBody(verification, judgment) + (changeFailureRef ? `\n\nChange-failure: #${changeFailureRef}\n` : "");
+          const pr = await createWorktreePr(autoRun.worktreeId, { body: prBody });
           setAutoRunStatus(autoRun, "pr_open", { prNumber: pr?.number ?? null, prUrl: pr?.url ?? null, error: null, ...(screenshots.length ? { screenshots } : {}) });
           maybeWriteIssueStatus(autoRun, worktree, "review");
         } catch (error) {
@@ -1005,10 +1021,49 @@ export function createAutoRunService({
       // as a `rolled_back` deployment that summarizeDeployments counts as the
       // recovery for this failure. Best-effort; a rollback that can't run is left
       // for a human (the deploy_failed alert already fired).
-      await maybeRollbackDeploy(autoRun, project);
+      const rolledBack = await maybeRollbackDeploy(autoRun, project);
+      // Self-healing (H2): file a remediation issue so the loop fixes it FORWARD
+      // (rollback restores service; the remediation fixes the root cause). The fix
+      // PR carries the Change-failure: #N marker (propagated from the issue body).
+      await maybeRemediateDeploy(autoRun, project, { summary: record.summary, rolledBack: Boolean(rolledBack) });
     }
     persistStateSoon();
     return record;
+  }
+
+  // Self-healing (H2): file an auto-labeled remediation issue after a failed deploy
+  // so the existing auto-trigger picks it up → fixes → re-deploys (the fix-forward
+  // recovery). Opt-in + best-effort (a GitHub write; a failure never throws).
+  // Idempotent per merged PR (won't file twice for the same failure).
+  async function maybeRemediateDeploy(autoRun, project, { summary, rolledBack } = {}) {
+    if (!state.autoRunSettings?.remediateOnDeployFailure || typeof fileRemediationIssue !== "function") return null;
+    if (autoRun.remediationIssue) return null;
+    const culprit = autoRun.prNumber;
+    if (!Number.isFinite(culprit)) return null;
+    const title = `Fix failed deploy of PR #${culprit}`;
+    const body =
+      `The deploy of PR #${culprit}${rolledBack ? " was auto-rolled back after it" : ""} failed. Fix the underlying problem so the change can be re-deployed safely. Filed automatically by the self-healing delivery loop.\n\n` +
+      `## Failure\n${String(summary ?? "(no summary)").slice(0, 2000)}\n\n` +
+      // The DORA change-failure marker: this remediation names the culprit PR. It
+      // is propagated onto the fix PR body so github:dora's CFR/recovery sees it.
+      `Change-failure: #${culprit}\n\n` +
+      `${extractProjectFieldsBlock(autoRun.issueBody) || DEFAULT_REMEDIATION_FIELDS}`;
+    let created = null;
+    try {
+      created = await fileRemediationIssue({ repoPath: project?.path ?? null, title, body, labels: ["auto"] });
+    } catch {
+      created = null;
+    }
+    if (!created?.number) return null;
+    autoRun.remediationIssue = { number: created.number, url: created.url ?? null, culpritPr: culprit };
+    appendEvent({
+      invocationId: autoRun.invocationId,
+      type: "auto_run_remediation_filed",
+      level: "warn",
+      message: `Auto-run ${autoRun.id}: filed remediation issue #${created.number} for the failed deploy of PR #${culprit}.`,
+      data: { autoRunId: autoRun.id, prNumber: culprit, remediationIssue: created.number },
+    });
+    return created;
   }
 
   // Self-healing (H1): run the operator rollback command after a failed deploy.

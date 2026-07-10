@@ -144,6 +144,10 @@ export function normalizeAutoRunSettings(patch = {}, prev = {}) {
     // operator's rollback command to restore the last good version (the recovery).
     // Inert unless MYAGENTTOOL_AUTORUN_ROLLBACK_COMMAND_JSON is set.
     rollbackOnDeployFailure: keep("rollbackOnDeployFailure", asBool),
+    // Self-healing (H2, opt-in, default off): on a deploy FAILURE, file a
+    // remediation issue (labeled `auto`, carrying a Change-failure: #N marker) so
+    // the loop fixes it forward and re-deploys. A GitHub write — off by default.
+    remediateOnDeployFailure: keep("remediateOnDeployFailure", asBool),
   };
 }
 
@@ -232,6 +236,8 @@ export function resolveAutoRunConfig(state = {}, baseEnv = process.env) {
     deployOnMerge: Boolean(settings.deployOnMerge),
     // Self-healing: opt-in auto-rollback when a deploy fails.
     rollbackOnDeployFailure: Boolean(settings.rollbackOnDeployFailure),
+    // Self-healing: opt-in auto-remediation issue when a deploy fails.
+    remediateOnDeployFailure: Boolean(settings.remediateOnDeployFailure),
     // Command knobs are env-only; expose only whether each is configured.
     commands: {
       verify: Boolean(resolveAutoRunVerifyCommand()),
