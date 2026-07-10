@@ -143,16 +143,85 @@ function MetricCard({ title, metric, minRuns }: { title: string; metric: MetricS
   );
 }
 
+interface MaturityLevel {
+  level: number;
+  name: string;
+  gate: string;
+  anchor?: string | null;
+  frontier?: string;
+  measured?: string | null;
+  verdict: "met" | "unmet" | "indeterminate";
+  detail?: string;
+}
+interface MaturityScorecard {
+  levels: MaturityLevel[];
+  currentLevel: number;
+  disclaimer: string;
+}
+
+function verdictTone(v: string): "success" | "danger" | "neutral" {
+  if (v === "met") return "success";
+  if (v === "unmet") return "danger";
+  return "neutral";
+}
+
+// The computed L0–L6 scorecard: calibration gates applied to measured evidence,
+// replacing the hand-typed status. Honest — an unmeasurable gate is "indeterminate".
+function MaturityScorecardCard({ scorecard }: { scorecard: MaturityScorecard }) {
+  return (
+    <Card>
+      <CardHeader className="flex-row items-center justify-between gap-2 py-3">
+        <CardTitle className="text-base">Maturity scorecard</CardTitle>
+        <Badge tone={scorecard.currentLevel >= 0 ? "success" : "neutral"}>
+          Current: {scorecard.currentLevel >= 0 ? `L${scorecard.currentLevel}` : "—"}
+        </Badge>
+      </CardHeader>
+      <CardContent className="space-y-2">
+        <p className="text-xs text-muted-foreground">
+          Computed from measured evidence (DORA · held-out eval · backlog · governance) — the current level is the highest reached without a gap. A level still shows its own verdict even when a lower gate blocks contiguity.
+        </p>
+        <div className="overflow-x-auto">
+          <table className="w-full text-xs">
+            <tbody>
+              {scorecard.levels.map((l) => (
+                <tr key={l.level} className="border-b border-border/60 align-top">
+                  <td className="py-1.5 pr-2 font-mono font-semibold">L{l.level}</td>
+                  <td className="py-1.5 pr-2">
+                    <div className="font-medium">{l.name}</div>
+                    <div className="text-muted-foreground">{l.gate}</div>
+                    {l.detail ? <div className="text-[11px] text-warning">{l.detail}</div> : null}
+                  </td>
+                  <td className="py-1.5 pr-2 text-muted-foreground">{l.measured ?? "—"}</td>
+                  <td className="whitespace-nowrap py-1.5 text-right">
+                    <Badge tone={verdictTone(l.verdict)}>{l.verdict}</Badge>
+                    {l.frontier ? <div className="mt-0.5 text-[10px] text-muted-foreground">frontier</div> : null}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <p className="text-[11px] italic text-muted-foreground">{scorecard.disclaimer}</p>
+      </CardContent>
+    </Card>
+  );
+}
+
 export function EvalTrendView() {
   const [summary, setSummary] = useState<EvalTrendSummary | null>(null);
+  const [maturity, setMaturity] = useState<MaturityScorecard | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const data = (await api.listEvalTrend()) as { summary?: EvalTrendSummary };
-      setSummary(data.summary ?? null);
+      const [trend, mat] = await Promise.all([
+        api.listEvalTrend() as Promise<{ summary?: EvalTrendSummary }>,
+        api.maturity() as Promise<MaturityScorecard>,
+      ]);
+      setSummary(trend.summary ?? null);
+      setMaturity(mat ?? null);
       setError(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -187,6 +256,8 @@ export function EvalTrendView() {
       </div>
 
       {error ? <p className="text-sm text-red-600 dark:text-red-400">{error}</p> : null}
+
+      {maturity ? <MaturityScorecardCard scorecard={maturity} /> : null}
 
       {summary && summary.total > 0 ? (
         <>
