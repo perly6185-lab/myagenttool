@@ -137,7 +137,11 @@ export async function resolveDecision({
     decision = null;
   }
   const latencyMs = Date.now() - startedAt;
-  if (!decision) return { ...heuristicDecision(link, issueBody), via: "fallback", latencyMs };
+  // Decider errored: fall back TITLE-ONLY, matching the fast path. Reading the body
+  // here would make the SAME issue route differently on a transient decider hiccup
+  // (develop→PR when it answers, design→no-code when it times out). The body-aware
+  // heuristic is reserved for the no-decider deployment above, where it's stable.
+  if (!decision) return { ...heuristicDecision(link), via: "fallback", latencyMs };
   decision = { ...decision, via: "agent", latencyMs };
   if (decision.confidence < minConfidence && (HEAVY_PATHS.has(decision.path) || decision.spawnChildIssues)) {
     return {

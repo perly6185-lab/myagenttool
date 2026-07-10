@@ -136,6 +136,36 @@ test("destroyWorktree: destructive teardown removes the git worktree AND its bra
   assert.equal(svc.destroyWorktree("wtr_nope"), null, "unknown id is a null no-op (best-effort, never throws)");
 });
 
+test("destroyWorktree never force-drops committed work: the branch and its commits survive", () => {
+  const source = state.projects.find((p) => p.source !== "worktree");
+  const { worktree } = svc.createWorktree({ projectId: source.id, name: "has work", branchName: "myagent/has-work" });
+  // A denied RETRY can reuse a worktree a prior APPROVED run already committed to.
+  writeFileSync(join(worktree.worktreePath, "feature.txt"), "real work\n");
+  git(worktree.worktreePath, "add", ".");
+  git(worktree.worktreePath, "commit", "-m", "agent work");
+  const sha = git(worktree.worktreePath, "rev-parse", "HEAD");
+
+  svc.destroyWorktree(worktree.id);
+
+  assert.ok(git(repoDir, "branch", "--list", "myagent/has-work").includes("myagent/has-work"), "the branch carrying commits survives (git branch -d refuses it, not -D)");
+  assert.equal(git(repoDir, "cat-file", "-t", sha), "commit", "the committed work is still reachable — no data loss on denial");
+  git(repoDir, "branch", "-D", "myagent/has-work"); // tidy for later tests
+});
+
+test("destroyWorktree preserves a worktree with uncommitted changes (git refuses removal)", () => {
+  const source = state.projects.find((p) => p.source !== "worktree");
+  const { worktree } = svc.createWorktree({ projectId: source.id, name: "dirty", branchName: "myagent/dirty" });
+  writeFileSync(join(worktree.worktreePath, "README.md"), "uncommitted edit\n"); // dirty the checkout
+
+  const result = svc.destroyWorktree(worktree.id);
+
+  assert.equal(result, null, "a dirty worktree is not torn down");
+  assert.ok(existsSync(worktree.worktreePath), "the worktree dir (with un-pushed work) is kept");
+  assert.ok(state.worktrees.some((w) => w.id === worktree.id), "the registry row is kept, not orphaned");
+  execFileSync("git", ["-C", repoDir, "worktree", "remove", "--force", worktree.worktreePath]); // tidy
+  svc.removeWorktree(worktree.id);
+});
+
 test("submitWorktreeReview binds the verdict to the worktree's current HEAD commit", () => {
   const source = state.projects.find((p) => p.source !== "worktree");
   const { worktree } = svc.createWorktree({ projectId: source.id, name: "sha bind", branchName: "myagent/sha-bind" });

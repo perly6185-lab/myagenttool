@@ -396,13 +396,20 @@ export function createProjectService({ state, now, nextId, appendEvent, persistS
     return removed;
   }
 
-  // DESTRUCTIVE teardown for an ABANDONED worktree — a denied/rejected auto-run
-  // that never produced work. Unlike removeWorktree (registry-only, deliberately
-  // non-destructive on disk per Line A), this removes the git worktree AND its
-  // branch so a fresh run on the same issue can re-create `issue-N` instead of
-  // failing on "branch already exists". Best-effort: a missing dir/branch must
-  // not throw into the fire-and-forget denial caller. Registry/derived-project/
-  // review cleanup is delegated to removeWorktree.
+  // Teardown for an ABANDONED worktree — a denied/rejected auto-run that never
+  // produced work — so a fresh run on the same issue can re-create `issue-N`
+  // instead of failing on "branch already exists". Unlike removeWorktree
+  // (registry-only, deliberately non-destructive per Line A), this reclaims the
+  // git worktree AND its branch.
+  //
+  // SAFETY (data loss): a denied RETRY can reuse a worktree that a PRIOR approved
+  // run already committed to — that work is local-only until publish. So this must
+  // NEVER discard work. It deliberately uses the SAFE git forms and lets git itself
+  // refuse when there's anything to lose: `git worktree remove` (no --force) refuses
+  // a dirty worktree, and `git branch -d` refuses a branch with commits not merged
+  // into its base. An UNTOUCHED worktree (the common denied-at-the-gate case) is
+  // clean and its branch empty, so both succeed and the re-run is unblocked as
+  // intended. Best-effort; registry cleanup is delegated to removeWorktree.
   function destroyWorktree(worktreeId, { deleteBranch = true } = {}) {
     const worktree = state.worktrees.find((item) => item.id === worktreeId);
     if (!worktree) return null;
@@ -412,19 +419,23 @@ export function createProjectService({ state, now, nextId, appendEvent, persistS
     const runGit = (args) => {
       try {
         execFileSync("git", ["-C", repoRoot, ...args], { timeout: 20_000, stdio: ["ignore", "pipe", "pipe"] });
+        return true;
       } catch {
-        // Best-effort — the caller has already marked the run terminal.
+        return false;
       }
     };
     if (repoRoot && wtPath) {
-      runGit(["worktree", "remove", "--force", wtPath]);
-      // Reconcile the registration if the dir was already gone (remove would 404).
-      runGit(["worktree", "prune"]);
+      const removed = runGit(["worktree", "remove", wtPath]);
+      runGit(["worktree", "prune"]); // reconcile a registration whose dir was already gone
+      // git kept a DIRTY worktree (un-pushed uncommitted work): preserve the whole
+      // record — don't drop the registry row and don't touch its checked-out branch.
+      if (!removed && existsSync(wtPath)) return null;
     }
     // Delete the branch AFTER the worktree is gone (a checked-out branch can't be
-    // deleted). Skip on the main worktree's own branch as a guard.
+    // deleted). `-d` (not `-D`) refuses to drop a branch carrying un-merged commits,
+    // so committed work on a reused worktree is never force-deleted.
     if (repoRoot && deleteBranch && branch && !worktree.isMain) {
-      runGit(["branch", "-D", branch]);
+      runGit(["branch", "-d", branch]);
     }
     return removeWorktree(worktreeId);
   }

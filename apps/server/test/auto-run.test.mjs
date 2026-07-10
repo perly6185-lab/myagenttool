@@ -764,6 +764,75 @@ test("syncAutoRunOnDenial is a guarded no-op: unknown invocation, and a settled 
   assert.ok(state.worktrees.some((w) => w.id === worktreeId), "a settled run keeps its worktree (only an abandoned run is torn down)");
 });
 
+test("self-repair respects the spend gates: the kill switch blocks a repair instead of spending", async () => {
+  const { svc, calls } = makeAutoRun({ verify: () => ({ passed: false, verified: true, summary: "check failed" }) });
+  state.autoRunSettings = { maxRepairAttempts: 2 };
+  const { autoRun, invocation } = await svc.startAutoRun({
+    projectId: sourceProjectId,
+    link: { type: "issue", number: 180, title: "Gated", url: null, state: "open" },
+    agentId: "agt_1", name: "issue-180",
+  });
+  state.autoRunSettings.autonomyKillSwitch = true; // operator hits the emergency stop mid-run
+  const before = calls.createInvocation.length;
+  await svc.advanceAutoRunForInvocation({ ...invocation, status: "succeeded" });
+  assert.equal(autoRun.status, "blocked", "a repair does not run while autonomy is halted");
+  assert.match(autoRun.error, /Self-repair paused: autonomy kill switch/);
+  assert.equal(calls.createInvocation.length, before, "no repair invocation was created (no spend)");
+  assert.equal(autoRun.repairAttempts ?? 0, 0, "a gated repair doesn't consume an attempt");
+});
+
+test("self-repair respects the budget gate: over-budget blocks a repair (the run's own spend tipped it over)", async () => {
+  let over = false;
+  const { svc, calls } = makeAutoRun({
+    verify: () => ({ passed: false, verified: true, summary: "check failed" }),
+    budgetStatusFor: () => ({ over, spentUsd: 12, limitUsd: 5 }),
+  });
+  state.autoRunSettings = { maxRepairAttempts: 2 };
+  const { autoRun, invocation } = await svc.startAutoRun({
+    projectId: sourceProjectId,
+    link: { type: "issue", number: 181, title: "Budget", url: null, state: "open" },
+    agentId: "agt_1", name: "issue-181",
+  });
+  over = true; // the initial run's spend pushed the project over its cap
+  const before = calls.createInvocation.length;
+  await svc.advanceAutoRunForInvocation({ ...invocation, status: "succeeded" });
+  assert.equal(autoRun.status, "blocked");
+  assert.match(autoRun.error, /over budget/i);
+  assert.equal(calls.createInvocation.length, before, "no repair spend while over budget");
+});
+
+test("self-repair uses the body approved at start, never a live re-fetch (TOCTOU)", async () => {
+  let fetches = 0;
+  const { svc, calls } = makeAutoRun({
+    verify: () => ({ passed: false, verified: true, summary: "check failed" }),
+    fetchIssueBody: async () => (fetches++ === 0 ? "APPROVED-BODY-ALPHA" : "EDITED-BODY-BRAVO"),
+  });
+  state.autoRunSettings = { maxRepairAttempts: 2 };
+  const { autoRun, invocation } = await svc.startAutoRun({
+    projectId: sourceProjectId,
+    link: { type: "issue", number: 182, title: "Toctou", url: null, state: "open" },
+    agentId: "agt_1", name: "issue-182",
+  });
+  await svc.advanceAutoRunForInvocation({ ...invocation, status: "succeeded" });
+  const repairTask = calls.createInvocation.at(-1).task;
+  assert.match(repairTask, /APPROVED-BODY-ALPHA/, "the repair reuses the body approved at start");
+  assert.doesNotMatch(repairTask, /EDITED-BODY-BRAVO/, "an issue edited after approval never reaches the preApproved repair");
+  assert.equal(fetches, 1, "the repair does not re-fetch the issue body");
+});
+
+test("retryAutoRun resets repairAttempts so the retry gets a fresh repair budget", async () => {
+  const { svc } = makeAutoRun({});
+  const { autoRun } = await svc.startAutoRun({
+    projectId: sourceProjectId,
+    link: { type: "issue", number: 183, title: "Retry", url: null, state: "open" },
+    agentId: "agt_1", name: "issue-183",
+  });
+  autoRun.status = "blocked";
+  autoRun.repairAttempts = 2; // exhausted before the retry
+  await svc.retryAutoRun(autoRun.id);
+  assert.equal(autoRun.repairAttempts, 0, "the retry restores the self-repair budget");
+});
+
 test("verification gate: an unconfigured gate opens the PR but labels it unverified", async () => {
   const { svc, calls } = makeAutoRun(); // default: verified:false pass-through
   const { autoRun, invocation } = await svc.startAutoRun({
