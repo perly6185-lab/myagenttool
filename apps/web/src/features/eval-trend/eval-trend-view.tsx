@@ -159,6 +159,41 @@ interface MaturityScorecard {
   disclaimer: string;
 }
 
+interface DoraReport {
+  windowDays?: number;
+  mergedPrCount?: number;
+  leadTimeHours?: { median?: number; p90?: number; max?: number } | null;
+  mergesPerWeek?: number;
+  ciChecks?: { greenRate?: number; gateTarget?: number; ciActive?: boolean } | null;
+  changeFailures?: { recorded?: boolean; changeFailureRate?: number; recoveryHours?: { median?: number } } | null;
+}
+
+// DORA Four Keys from the latest github:dora artifact. Deploy frequency is an
+// honest merge-to-main proxy (no deploy pipeline); change-fail reads "not recorded"
+// until the marker convention is used — surfaced as-is, never faked.
+function DoraCard({ dora }: { dora: DoraReport }) {
+  const green = dora.ciChecks?.greenRate;
+  const cf = dora.changeFailures;
+  return (
+    <Card>
+      <CardHeader className="py-3">
+        <CardTitle className="text-base">DORA — Four Keys</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-2">
+        <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+          <StatTile label="Lead time (median)" value={dora.leadTimeHours?.median != null ? `${dora.leadTimeHours.median}h` : "—"} hint={dora.leadTimeHours?.p90 != null ? `p90 ${dora.leadTimeHours.p90}h` : undefined} />
+          <StatTile label="Deploy freq (proxy)" value={dora.mergesPerWeek != null ? `${dora.mergesPerWeek}/wk` : "—"} hint="merges to main" />
+          <StatTile label="CI-green rate" value={pct(green ?? null)} hint={`target ${pct(dora.ciChecks?.gateTarget ?? 0.95)}`} tone={green != null && green < (dora.ciChecks?.gateTarget ?? 0.95) ? "danger" : undefined} />
+          <StatTile label="Change failure" value={cf?.recorded ? pct(cf.changeFailureRate ?? null) : "not recorded"} hint={cf?.recorded ? (cf.recoveryHours?.median != null ? `recovery ${cf.recoveryHours.median}h` : undefined) : "marker unused"} />
+        </div>
+        <p className="text-[11px] text-muted-foreground">
+          {dora.mergedPrCount ?? 0} merged PR(s) over {dora.windowDays ?? "?"}d · deploy frequency is a merge-to-main proxy (no deploy pipeline) · change-failure/recovery await the `Change-failure: #N` marker convention.
+        </p>
+      </CardContent>
+    </Card>
+  );
+}
+
 function verdictTone(v: string): "success" | "danger" | "neutral" {
   if (v === "met") return "success";
   if (v === "unmet") return "danger";
@@ -210,18 +245,21 @@ function MaturityScorecardCard({ scorecard }: { scorecard: MaturityScorecard }) 
 export function EvalTrendView() {
   const [summary, setSummary] = useState<EvalTrendSummary | null>(null);
   const [maturity, setMaturity] = useState<MaturityScorecard | null>(null);
+  const [dora, setDora] = useState<DoraReport | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [trend, mat] = await Promise.all([
+      const [trend, mat, doraResp] = await Promise.all([
         api.listEvalTrend() as Promise<{ summary?: EvalTrendSummary }>,
         api.maturity() as Promise<MaturityScorecard>,
+        api.dora() as Promise<{ dora?: DoraReport | null }>,
       ]);
       setSummary(trend.summary ?? null);
       setMaturity(mat ?? null);
+      setDora(doraResp.dora ?? null);
       setError(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -258,6 +296,8 @@ export function EvalTrendView() {
       {error ? <p className="text-sm text-red-600 dark:text-red-400">{error}</p> : null}
 
       {maturity ? <MaturityScorecardCard scorecard={maturity} /> : null}
+
+      {dora ? <DoraCard dora={dora} /> : null}
 
       {summary && summary.total > 0 ? (
         <>

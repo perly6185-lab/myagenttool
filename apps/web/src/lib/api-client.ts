@@ -460,6 +460,7 @@ export const api = {
   // trend.jsonl so capability regressions surface in the console, not just cron.log.
   listEvalTrend: () => request("GET", "/api/eval-trend"),
   maturity: () => request("GET", "/api/maturity"),
+  dora: () => request("GET", "/api/dora"),
   // Auto-run effective configuration (safe knobs overlaid on env + per-command
   // configured flags; never the argv). Edits apply on the next server start.
   getAutoRunConfig: () => request("GET", "/api/auto-run-config"),

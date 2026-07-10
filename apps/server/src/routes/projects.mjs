@@ -4,7 +4,7 @@ import { basename, dirname, extname, join, relative, resolve, sep } from "node:p
 import { denyForeignProject } from "../runtime/auth.mjs";
 import { summarizeAutoRuns } from "../services/auto-run-metrics.mjs";
 import { readEvalTrend, summarizeEvalTrend } from "../services/eval-trend.mjs";
-import { maturityScorecard } from "../read-models/maturity-scorecard.mjs";
+import { maturityScorecard, latestDora } from "../read-models/maturity-scorecard.mjs";
 import { normalizeAutoRunSettings, resolveAutoRunConfig } from "../services/auto-run-config.mjs";
 import { computeAutoRunReadiness } from "../services/auto-run-readiness.mjs";
 import { computeMergeRisk, sensitivePathHit, DEFAULT_SENSITIVE_PATHS } from "../services/auto-run-risk.mjs";
@@ -337,6 +337,13 @@ export async function handleProjectRoutes({
     // replacing the hand-typed status. Read-only, best-effort; missing artifacts
     // yield indeterminate levels.
     sendJson(res, 200, maturityScorecard());
+    return true;
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/dora") {
+    // DORA Four Keys (lead time, deploy frequency, CI-green, change-fail) — the
+    // latest `github:dora` artifact. Read-only, best-effort (null if never run).
+    sendJson(res, 200, { dora: latestDora() });
     return true;
   }
 

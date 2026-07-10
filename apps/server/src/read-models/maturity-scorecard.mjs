@@ -203,3 +203,8 @@ export function maturityScorecard(opts = {}) {
   const scorecard = computeMaturityScorecard(inputs);
   return { ...scorecard, inputs };
 }
+
+/** The latest DORA report artifact (Four Keys), best-effort — behind GET /api/dora. */
+export function latestDora({ metricsDir = METRICS_DIR } = {}) {
+  return latestArtifact("dora", metricsDir);
+}
