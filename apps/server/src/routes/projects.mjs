@@ -3,6 +3,7 @@ import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, writeFile
 import { basename, dirname, extname, join, relative, resolve, sep } from "node:path";
 import { denyForeignProject } from "../runtime/auth.mjs";
 import { summarizeAutoRuns } from "../services/auto-run-metrics.mjs";
+import { summarizeDeployments } from "../services/auto-run-deploy-metrics.mjs";
 import { readEvalTrend, summarizeEvalTrend } from "../services/eval-trend.mjs";
 import { maturityScorecard, latestDora } from "../read-models/maturity-scorecard.mjs";
 import { normalizeAutoRunSettings, resolveAutoRunConfig } from "../services/auto-run-config.mjs";
@@ -318,7 +319,13 @@ export async function handleProjectRoutes({
       }
       return out;
     });
-    sendJson(res, 200, { autoRuns: enriched, summary: summarizeAutoRuns(autoRuns, { sloTargets: state.autoRunSettings?.sloTargets ?? null }) });
+    sendJson(res, 200, {
+      autoRuns: enriched,
+      summary: summarizeAutoRuns(autoRuns, { sloTargets: state.autoRunSettings?.sloTargets ?? null }),
+      // D2 deploy metrics: change-failure rate + recovery + frequency over the
+      // deploy stage's records (feeds the DORA panel and maturity L5 in D3).
+      deployments: summarizeDeployments(state.deployments ?? []),
+    });
     return true;
   }
 

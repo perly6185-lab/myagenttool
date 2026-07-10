@@ -1,0 +1,60 @@
+// Deploy metrics (D2) — pure summary over the `deployments` collection the deploy
+// stage (D1) records. Feeds the DORA "deploy" keys and the maturity scorecard's
+// L5 recovery gate (which was indeterminate for lack of a deploy target).
+//
+// Change-failure rate = failed / (deploys that ran). Recovery time = for each
+// FAILED deploy, the gap to the FIRST later SUCCESSFUL deploy (the recovery) —
+// median across failures. Deploy frequency = successful deploys per week over the
+// observed span. All null when there's no data (honest, never fabricated).
+
+function median(nums) {
+  if (!nums.length) return null;
+  const s = [...nums].sort((a, b) => a - b);
+  const mid = Math.floor(s.length / 2);
+  return s.length % 2 ? s[mid] : (s[mid - 1] + s[mid]) / 2;
+}
+
+function round(n, dp) {
+  if (n == null || !Number.isFinite(n)) return null;
+  const f = 10 ** dp;
+  return Math.round(n * f) / f;
+}
+
+export function summarizeDeployments(deployments = []) {
+  const rows = (Array.isArray(deployments) ? deployments : []).filter(
+    (d) => d && (d.status === "deployed" || d.status === "failed") && typeof d.at === "string" && Number.isFinite(Date.parse(d.at)),
+  );
+  if (!rows.length) {
+    return { total: 0, deployed: 0, failed: 0, changeFailureRate: null, recoveryHours: { median: null, count: 0 }, deployFrequencyPerWeek: null, lastDeployAt: null };
+  }
+  const sorted = [...rows].sort((a, b) => Date.parse(a.at) - Date.parse(b.at)); // oldest first
+  const deployed = sorted.filter((d) => d.status === "deployed").length;
+  const failed = sorted.filter((d) => d.status === "failed").length;
+  const total = sorted.length;
+
+  // Recovery: each failure is recovered by the FIRST later successful deploy.
+  const recoveries = [];
+  for (let i = 0; i < sorted.length; i += 1) {
+    if (sorted[i].status !== "failed") continue;
+    const failedAt = Date.parse(sorted[i].at);
+    const next = sorted.slice(i + 1).find((d) => d.status === "deployed");
+    if (next) recoveries.push((Date.parse(next.at) - failedAt) / 3_600_000); // hours
+  }
+
+  // Frequency of SUCCESSFUL deploys over the observed span (fallback: the count
+  // when everything landed in one instant, e.g. a single deploy).
+  const firstAt = Date.parse(sorted[0].at);
+  const lastAt = Date.parse(sorted[sorted.length - 1].at);
+  const spanDays = Math.max((lastAt - firstAt) / 86_400_000, 0);
+  const deployFrequencyPerWeek = spanDays > 0 ? round((deployed / spanDays) * 7, 2) : deployed;
+
+  return {
+    total,
+    deployed,
+    failed,
+    changeFailureRate: round(failed / total, 3),
+    recoveryHours: { median: round(median(recoveries), 2), count: recoveries.length },
+    deployFrequencyPerWeek,
+    lastDeployAt: sorted[sorted.length - 1].at,
+  };
+}
