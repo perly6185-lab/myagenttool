@@ -10,6 +10,7 @@ import { ApprovalsView } from "@/features/approvals/approvals-view";
 import { EvidenceView } from "@/features/evidence/evidence-view";
 import { EvalTrendView } from "@/features/eval-trend/eval-trend-view";
 import { AutomationView } from "@/features/automation/automation-view";
+import { RoutinesView } from "@/features/routines/routines-view";
 import { AgentSkillsView } from "@/features/agent-skills/agent-skills-view";
 import { InvocationsView } from "@/features/invocations/invocations-view";
 import { AgentsView } from "@/features/agents/agents-view";
@@ -34,6 +35,7 @@ export const SECTION_VIEWS: Record<SectionKey, ComponentType> = {
   evidence: EvidenceView,
   evalTrend: EvalTrendView,
   automation: AutomationView,
+  routines: RoutinesView,
   agentSkills: AgentSkillsView,
   invocations: InvocationsView,
   agents: AgentsView,
