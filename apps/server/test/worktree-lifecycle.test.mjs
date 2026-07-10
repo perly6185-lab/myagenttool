@@ -113,3 +113,11 @@ test("removeWorktree purges the removed worktree's dangling reviews, keeps other
   assert.ok(!state.worktreeReviews.some((r) => r.worktreeId === worktree.id), "the removed worktree's review is purged");
   assert.ok(state.worktreeReviews.some((r) => r.worktreeId === "wt_other"), "unrelated reviews survive");
 });
+
+test("submitWorktreeReview binds the verdict to the worktree's current HEAD commit", () => {
+  const source = state.projects.find((p) => p.source !== "worktree");
+  const { worktree } = svc.createWorktree({ projectId: source.id, name: "sha bind", branchName: "myagent/sha-bind" });
+  const head = git(worktree.worktreePath, "rev-parse", "HEAD");
+  const review = svc.submitWorktreeReview({ worktreeId: worktree.id, verdict: "approved" });
+  assert.equal(review.reviewedCommit, head, "review captures the real worktree HEAD so a later commit invalidates it");
+});
