@@ -32,6 +32,14 @@ test("a trailing question mark wins over change wording", () => {
   assert.equal(classifyIntentFromText("Add caching?"), "question");
 });
 
+test("design-artifact titles (mockup/wireframe) classify as investigation → design path", () => {
+  // Found by a live run: "Design a … mockup" used to fall through to change→develop.
+  assert.equal(classifyIntentFromText("Design a Contact page mockup for the demo app"), "investigation");
+  assert.equal(classifyIntentFromText("Create wireframes for the settings screen"), "investigation");
+  // bare "design" stays a change — too ambiguous with "implement the design".
+  assert.equal(classifyIntentFromText("Redesign the login button styles"), "change");
+});
+
 test("isAutoRunIntent guards the injected-classifier contract", () => {
   assert.equal(isAutoRunIntent("investigation"), true);
   assert.equal(isAutoRunIntent("nonsense"), false);

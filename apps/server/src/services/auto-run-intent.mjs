@@ -11,8 +11,11 @@ export const AUTO_RUN_INTENTS = ["change", "investigation", "question"];
 
 // A title that reads as a decision to be made, not work to be done.
 const QUESTION_LEAD_RE = /^\s*(should we|shall we|can we|do we|is it worth|worth it to|which\b|what should|how should|when should)\b/i;
-// Words that signal "find out / evaluate", where the deliverable is findings.
-const INVESTIGATION_RE = /\b(investigate|investigation|research|explore|exploration|spike|evaluate|assess|analyze|analyse|audit|survey|figure out|look into|understand|scope out|find out|compare options|prototype)\b/i;
+// Words that signal "find out / evaluate / design", where the deliverable is
+// findings or a design artifact (not shipped code). `mockup`/`wireframe` route a
+// "Design a … mockup" task to the design path (found by a live run — bare "design"
+// is deliberately excluded, it's too ambiguous with "redesign/implement the design").
+const INVESTIGATION_RE = /\b(investigate|investigation|research|explore|exploration|spike|evaluate|assess|analyze|analyse|audit|survey|figure out|look into|understand|scope out|find out|compare options|prototype|mockup|mock-up|wireframe|wireframes)\b/i;
 
 /** Classify an issue's intent from its title (and optionally body). */
 export function classifyIntentFromText(title, body = "") {
