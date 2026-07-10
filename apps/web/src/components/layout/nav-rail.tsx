@@ -54,6 +54,7 @@ export function NavRail() {
                 <button
                   type="button"
                   aria-current={active ? "page" : undefined}
+                  title={item.blurb}
                   onClick={() => setSection(item.key)}
                   className="flex flex-1 items-center gap-3 px-3 py-2 text-left"
                 >

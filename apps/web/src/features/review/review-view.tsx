@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge, StatusBadge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Select } from "@/components/ui/input";
 import { Field } from "@/components/common/field";
 import { EmptyState } from "@/components/common/empty-state";
@@ -87,6 +88,7 @@ export function ReviewView() {
               ? "Loosen the source or severity filter."
               : "Run a governed Codex or Claude review from the Tools panel to populate this list."
           }
+          action={!all.length ? <Button size="sm" onClick={() => setSection("tools")}>Open Tools</Button> : undefined}
         />
       ) : (
         <div className="space-y-3">
