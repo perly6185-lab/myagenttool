@@ -26,6 +26,17 @@ test("invocation approvals: only pending ones become rows, with risk + task subt
   assert.equal(rows[0].section, "invocations");
 });
 
+test("invocation approval with an OBJECT summary renders the risk text, not [object Object]", () => {
+  // Regression from the live run: production approval.summary is an object.
+  const rows = pendingDecisions({
+    approvalRequests: [{ id: "apr_o", invocationId: "inv_1", status: "pending", riskLevel: "high", summary: { risk: "writes outside the worktree", data: "…", cost: "…" } }],
+    invocationsById,
+  });
+  assert.equal(rows.length, 1);
+  assert.doesNotMatch(rows[0].subtitle, /\[object Object\]/);
+  assert.match(rows[0].subtitle, /writes outside the worktree/);
+});
+
 test("auto-run gates: decomposition / design / clarify / merge each map to one row", () => {
   const autoRuns = [
     { id: "ar_dec", status: "plan_proposed", decision: { path: "decompose" }, link: { number: 25, title: "Epic" }, updatedAt: "2026-07-09T01:00:00Z" },
