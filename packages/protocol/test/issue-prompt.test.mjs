@@ -47,8 +47,18 @@ test("roleAutoRunPrompt includes the issue body and the develop role instruction
   );
   assert.match(prompt, /^GitHub Issue #5: Add caching\./);
   assert.match(prompt, /Cache hits are served/, "the issue body reaches the agent");
-  assert.match(prompt, /Implement the change/, "develop role instructions");
+  assert.match(prompt, /orient: locate the files relevant/, "pre-flight orient step");
+  assert.match(prompt, /implement the change/, "develop role instructions");
   assert.match(prompt, /Commit your work/);
+});
+
+test("roleAutoRunPrompt: a develop/prototype run gets the verify command; other paths don't", () => {
+  const dev = roleAutoRunPrompt({ type: "issue", number: 8, title: "X" }, { path: "develop", verifyCommand: "mvn -q test" });
+  assert.match(dev, /verified by running: `mvn -q test`/, "code paths learn how they're checked");
+  const design = roleAutoRunPrompt({ type: "issue", number: 8, title: "X" }, { path: "design", verifyCommand: "mvn -q test" });
+  assert.doesNotMatch(design, /verified by running/, "a design run produces no code to verify");
+  const noCmd = roleAutoRunPrompt({ type: "issue", number: 8, title: "X" }, { path: "develop" });
+  assert.doesNotMatch(noCmd, /verified by running/, "no verify command → no hint");
 });
 
 test("roleAutoRunPrompt role variants: design and clarify forbid changes; prototype spikes", () => {
@@ -62,7 +72,7 @@ test("roleAutoRunPrompt role variants: design and clarify forbid changes; protot
 
 test("roleAutoRunPrompt: unknown path falls back to develop; missing body omits the section", () => {
   const prompt = roleAutoRunPrompt({ type: "issue", number: 7, title: "X", url: null }, { path: "bogus" });
-  assert.match(prompt, /Implement the change/);
+  assert.match(prompt, /implement the change/);
   assert.ok(!prompt.includes("description:"), "no body → no description block");
 });
 

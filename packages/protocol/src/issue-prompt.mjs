@@ -47,10 +47,11 @@ export function worktreeAutoRunPrompt(item) {
 // deliverable is the final summary); prototype builds a throwaway spike.
 const ROLE_INSTRUCTIONS = {
   develop:
-    "Implement the change this issue asks for. Honor the issue's acceptance criteria, " +
-    "keep the scope tied to the issue, follow the repository's existing style, and add or " +
-    "update tests where the change warrants them. Commit your work with a clear message, " +
-    "then summarize what changed and how you verified it.",
+    "First, orient: locate the files relevant to this issue and outline your approach before " +
+    "editing — don't spend the whole run exploring. Then implement the change this issue asks " +
+    "for. Honor the issue's acceptance criteria, keep the scope tied to the issue, follow the " +
+    "repository's existing style, and add or update tests where the change warrants them. Commit " +
+    "your work with a clear message, then summarize what changed and how you verified it.",
   design:
     "Do NOT implement a fix or feature. Explore the codebase and produce a detailed design: " +
     "the problem, two or three viable options with trade-offs, a recommended option with " +
@@ -131,7 +132,7 @@ export function detectPromptInjection(text) {
   return { suspicious: markers.length > 0, markers };
 }
 
-export function roleAutoRunPrompt(item, { path = "develop", issueBody = null } = {}) {
+export function roleAutoRunPrompt(item, { path = "develop", issueBody = null, verifyCommand = null } = {}) {
   const label = githubItemKindLabel(item?.type);
   const number = item?.number;
   const title = String(item?.title ?? "").trim();
@@ -140,5 +141,11 @@ export function roleAutoRunPrompt(item, { path = "develop", issueBody = null } =
     ? `\n\n${untrustedBodyBlock(label, issueBody.trim().slice(0, 6000))}`
     : "";
   const instructions = ROLE_INSTRUCTIONS[path] ?? ROLE_INSTRUCTIONS.develop;
-  return `GitHub ${label} #${number}: ${title}.${urlLine}${body}\n\n${instructions}`;
+  // Tell a code-writing run how it will be judged, so it can make the check pass
+  // before finishing (pre-flight context). Only for paths that produce code.
+  const verifyLine =
+    verifyCommand && (path === "develop" || path === "prototype")
+      ? `\n\nYour change will be verified by running: \`${String(verifyCommand).slice(0, 300)}\`. Make sure it passes before you finish.`
+      : "";
+  return `GitHub ${label} #${number}: ${title}.${urlLine}${body}\n\n${instructions}${verifyLine}`;
 }

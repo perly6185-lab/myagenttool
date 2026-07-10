@@ -31,7 +31,11 @@ export declare function worktreeAutoRunPrompt(item: WorktreeLinkItem): string;
  */
 export declare function roleAutoRunPrompt(
   item: WorktreeLinkItem,
-  options?: { path?: "develop" | "design" | "prototype" | "clarify"; issueBody?: string | null },
+  options?: {
+    path?: "develop" | "design" | "prototype" | "clarify" | "decompose";
+    issueBody?: string | null;
+    verifyCommand?: string | null;
+  },
 ): string;
 
 /** B1a: wrap an untrusted issue body as delimited data (not instructions). */
