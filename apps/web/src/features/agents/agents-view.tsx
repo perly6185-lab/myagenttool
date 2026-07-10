@@ -25,13 +25,20 @@ export function AgentsView() {
   const { data: state } = useConsoleState();
   const selectedAgentId = useUiStore((s) => s.selectedAgentId);
   const setSelectedAgentId = useUiStore((s) => s.setSelectedAgentId);
+  const setSection = useUiStore((s) => s.setSection);
   const { execute, pending } = useAsyncAction();
 
   const { agents, agent } = resolveAgents(state, selectedAgentId);
   const usage = usageFor(state, agent);
 
   if (agents.length === 0) {
-    return <EmptyState title="No agents registered" hint="Register an agent from Discovery or Integrations." />;
+    return (
+      <EmptyState
+        title="No agents registered"
+        hint="An agent executes your tasks. Find local agents automatically, or connect one."
+        action={<Button size="sm" onClick={() => setSection("discovery")}>Discover agents</Button>}
+      />
+    );
   }
 
   return (
