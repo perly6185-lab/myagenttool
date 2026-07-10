@@ -1,8 +1,14 @@
 # Maturity Calibration (Proposal)
 
-Status: proposal / draft. This document calibrates the L0–L6 maturity ladder in
-[FULL_FLOW_AI_DELIVERY.md](FULL_FLOW_AI_DELIVERY.md) against external industry
-references, and attaches quantitative acceptance gates to each level.
+Status: proposal / draft — **now partly implemented.** This document calibrates the
+L0–L6 maturity ladder in [FULL_FLOW_AI_DELIVERY.md](FULL_FLOW_AI_DELIVERY.md) against
+external industry references, and attaches quantitative acceptance gates to each level.
+The "Recalibrated Ladder" gates below are now **computed in code** — see
+`apps/server/src/read-models/maturity-scorecard.mjs` (`computeMaturityScorecard`),
+served at `GET /api/maturity` and rendered in the console's **Capability** section:
+the ladder status is derived from the latest measured evidence (DORA + held-out eval +
+backlog + governance), not hand-typed, and any gate that can't be measured reads
+`indeterminate` rather than a faked pass.
 
 ## Why This Exists
 
@@ -232,7 +238,10 @@ planning refresh:
 
 ## How To Adopt
 
-This proposal is inert until measurement exists. Minimum instrumentation:
+The gate→level binding is now **live** (`maturity-scorecard.mjs`, `GET /api/maturity`,
+Capability section) — it reads whatever measured artifacts exist and computes the
+current level honestly. What remains is to keep feeding it fresher/more-complete
+measurement:
 
 1. **DORA counters** from git/PR/deploy events — feeds L2/L3/L5 gates. A
    minimal slice now exists (`pnpm github:dora`): PR-based lead time and a

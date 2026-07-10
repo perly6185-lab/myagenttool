@@ -4,6 +4,7 @@ import { basename, dirname, extname, join, relative, resolve, sep } from "node:p
 import { denyForeignProject } from "../runtime/auth.mjs";
 import { summarizeAutoRuns } from "../services/auto-run-metrics.mjs";
 import { readEvalTrend, summarizeEvalTrend } from "../services/eval-trend.mjs";
+import { maturityScorecard } from "../read-models/maturity-scorecard.mjs";
 import { normalizeAutoRunSettings, resolveAutoRunConfig } from "../services/auto-run-config.mjs";
 import { computeAutoRunReadiness } from "../services/auto-run-readiness.mjs";
 import { computeMergeRisk, sensitivePathHit, DEFAULT_SENSITIVE_PATHS } from "../services/auto-run-risk.mjs";
@@ -327,6 +328,15 @@ export async function handleProjectRoutes({
     // surfaces its local trend.jsonl so capability regressions are visible.
     const records = readEvalTrend();
     sendJson(res, 200, { records, summary: summarizeEvalTrend(records) });
+    return true;
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/maturity") {
+    // Computed L0–L6 maturity scorecard: the calibration gates applied to the
+    // latest measured evidence (DORA + held-out eval + backlog + governance),
+    // replacing the hand-typed status. Read-only, best-effort; missing artifacts
+    // yield indeterminate levels.
+    sendJson(res, 200, maturityScorecard());
     return true;
   }
 
