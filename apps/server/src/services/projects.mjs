@@ -396,6 +396,39 @@ export function createProjectService({ state, now, nextId, appendEvent, persistS
     return removed;
   }
 
+  // DESTRUCTIVE teardown for an ABANDONED worktree — a denied/rejected auto-run
+  // that never produced work. Unlike removeWorktree (registry-only, deliberately
+  // non-destructive on disk per Line A), this removes the git worktree AND its
+  // branch so a fresh run on the same issue can re-create `issue-N` instead of
+  // failing on "branch already exists". Best-effort: a missing dir/branch must
+  // not throw into the fire-and-forget denial caller. Registry/derived-project/
+  // review cleanup is delegated to removeWorktree.
+  function destroyWorktree(worktreeId, { deleteBranch = true } = {}) {
+    const worktree = state.worktrees.find((item) => item.id === worktreeId);
+    if (!worktree) return null;
+    const repoRoot = worktree.repoPath ?? null;
+    const wtPath = worktree.worktreePath ?? worktree.path ?? null;
+    const branch = worktree.branchName ?? worktree.branch ?? null;
+    const runGit = (args) => {
+      try {
+        execFileSync("git", ["-C", repoRoot, ...args], { timeout: 20_000, stdio: ["ignore", "pipe", "pipe"] });
+      } catch {
+        // Best-effort — the caller has already marked the run terminal.
+      }
+    };
+    if (repoRoot && wtPath) {
+      runGit(["worktree", "remove", "--force", wtPath]);
+      // Reconcile the registration if the dir was already gone (remove would 404).
+      runGit(["worktree", "prune"]);
+    }
+    // Delete the branch AFTER the worktree is gone (a checked-out branch can't be
+    // deleted). Skip on the main worktree's own branch as a guard.
+    if (repoRoot && deleteBranch && branch && !worktree.isMain) {
+      runGit(["branch", "-D", branch]);
+    }
+    return removeWorktree(worktreeId);
+  }
+
   function worktreeRecord(worktreeId) {
     return state.worktrees.find((item) => item.id === worktreeId) ?? null;
   }
@@ -613,6 +646,7 @@ export function createProjectService({ state, now, nextId, appendEvent, persistS
     readProjectTree,
     removeProject,
     removeWorktree,
+    destroyWorktree,
     searchProjectContent,
     selectProject,
     updateProject,

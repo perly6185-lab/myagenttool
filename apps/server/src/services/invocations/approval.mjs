@@ -12,6 +12,7 @@ export function createInvocationApprovalRuntime({
   recordAgentUsage,
   startInvocationIfAllowed,
   onInvocationApproved,
+  onInvocationDenied,
 }) {
   function evaluateInvocationPolicy(agent, options = {}) {
     const capabilities = Array.isArray(agent.capabilities) ? agent.capabilities : [];
@@ -164,6 +165,12 @@ export function createInvocationApprovalRuntime({
       errorSummary: "Local approval denied before execution.",
     });
     recordAgentUsage(invocation, "rejected");
+    // Late-bound reaction hook (mirrors onInvocationApproved): let an auto-run
+    // react to a denial — mark the run terminal and tear down its worktree/branch
+    // so a denied issue doesn't leak an orphaned branch that blocks a re-run.
+    if (typeof onInvocationDenied === "function") {
+      onInvocationDenied(invocation);
+    }
   }
 
   return {
