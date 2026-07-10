@@ -21,30 +21,38 @@ function round(n, dp) {
 }
 
 export function summarizeDeployments(deployments = []) {
+  // `deployed`/`failed` are deploy attempts; `rolled_back` is a self-healing
+  // recovery action (not a deploy) — kept for the recovery calc, excluded from
+  // the deploy counts + change-failure rate.
   const rows = (Array.isArray(deployments) ? deployments : []).filter(
-    (d) => d && (d.status === "deployed" || d.status === "failed") && typeof d.at === "string" && Number.isFinite(Date.parse(d.at)),
+    (d) => d && ["deployed", "failed", "rolled_back"].includes(d.status) && typeof d.at === "string" && Number.isFinite(Date.parse(d.at)),
   );
   if (!rows.length) {
     return { total: 0, deployed: 0, failed: 0, changeFailureRate: null, recoveryHours: { median: null, count: 0 }, deployFrequencyPerWeek: null, lastDeployAt: null };
   }
   const sorted = [...rows].sort((a, b) => Date.parse(a.at) - Date.parse(b.at)); // oldest first
-  const deployed = sorted.filter((d) => d.status === "deployed").length;
-  const failed = sorted.filter((d) => d.status === "failed").length;
-  const total = sorted.length;
+  const attempts = sorted.filter((d) => d.status === "deployed" || d.status === "failed");
+  const deployed = attempts.filter((d) => d.status === "deployed").length;
+  const failed = attempts.filter((d) => d.status === "failed").length;
+  const total = attempts.length;
+  if (!total) {
+    return { total: 0, deployed: 0, failed: 0, changeFailureRate: null, recoveryHours: { median: null, count: 0 }, deployFrequencyPerWeek: null, lastDeployAt: null };
+  }
 
-  // Recovery: each failure is recovered by the FIRST later successful deploy.
+  // Recovery: each failure is recovered by the FIRST later restore — a successful
+  // deploy (fix-forward) OR a rollback (self-healing), whichever comes first.
   const recoveries = [];
   for (let i = 0; i < sorted.length; i += 1) {
     if (sorted[i].status !== "failed") continue;
     const failedAt = Date.parse(sorted[i].at);
-    const next = sorted.slice(i + 1).find((d) => d.status === "deployed");
+    const next = sorted.slice(i + 1).find((d) => d.status === "deployed" || d.status === "rolled_back");
     if (next) recoveries.push((Date.parse(next.at) - failedAt) / 3_600_000); // hours
   }
 
   // Frequency of SUCCESSFUL deploys over the observed span (fallback: the count
   // when everything landed in one instant, e.g. a single deploy).
-  const firstAt = Date.parse(sorted[0].at);
-  const lastAt = Date.parse(sorted[sorted.length - 1].at);
+  const firstAt = Date.parse(attempts[0].at);
+  const lastAt = Date.parse(attempts[attempts.length - 1].at);
   const spanDays = Math.max((lastAt - firstAt) / 86_400_000, 0);
   const deployFrequencyPerWeek = spanDays > 0 ? round((deployed / spanDays) * 7, 2) : deployed;
 
@@ -55,6 +63,6 @@ export function summarizeDeployments(deployments = []) {
     changeFailureRate: round(failed / total, 3),
     recoveryHours: { median: round(median(recoveries), 2), count: recoveries.length },
     deployFrequencyPerWeek,
-    lastDeployAt: sorted[sorted.length - 1].at,
+    lastDeployAt: attempts[attempts.length - 1].at,
   };
 }

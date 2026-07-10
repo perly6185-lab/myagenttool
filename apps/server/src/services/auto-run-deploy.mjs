@@ -34,6 +34,28 @@ export function deployTimeoutMs(env = process.env) {
   return Number.isFinite(raw) && raw >= 1000 && raw <= 1_800_000 ? raw : 300_000;
 }
 
+// Self-healing (H1): the operator's ROLLBACK command — the recovery action run
+// when a deploy fails. Same shape and trust boundary as the deploy command
+// (env argv, no shell, exit code is the success signal); reuses runDeployCommand.
+export function resolveRollbackCommand(env = process.env) {
+  const raw = env.MYAGENTTOOL_AUTORUN_ROLLBACK_COMMAND_JSON;
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed) && parsed.length > 0 && parsed.every((item) => typeof item === "string" && item.length > 0)) {
+      return parsed;
+    }
+  } catch {
+    /* fall through */
+  }
+  return null;
+}
+
+export function rollbackTimeoutMs(env = process.env) {
+  const raw = Number(env.MYAGENTTOOL_AUTORUN_ROLLBACK_TIMEOUT_MS);
+  return Number.isFinite(raw) && raw >= 1000 && raw <= 1_800_000 ? raw : 300_000;
+}
+
 // Shape the command's optional stdout JSON into the outcome contract (or null).
 export function normalizeDeployResult(raw) {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
