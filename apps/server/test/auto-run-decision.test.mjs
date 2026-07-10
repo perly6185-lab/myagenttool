@@ -74,6 +74,48 @@ test("resolveDecision: confidence gate degrades heavy paths, not develop/clarify
   assert.equal(confident.path, "design", "a confident heavy decision passes");
 });
 
+test("resolveDecision: a low-confidence develop with open questions degrades to clarify (#5)", async () => {
+  const withQ = await resolveDecision({
+    link: {},
+    decideIssuePath: async () => ({ path: "develop", confidence: 0.3, rationale: "unsure", clarifyingQuestions: ["Which endpoint?"] }),
+    minConfidence: 0.6,
+  });
+  assert.equal(withQ.path, "clarify", "agent flagged questions + low confidence -> ask first, don't guess");
+  assert.match(withQ.rationale, /develop confidence 0\.30 below 0\.6 with open questions/);
+  assert.deepEqual(withQ.clarifyingQuestions, ["Which endpoint?"], "the questions survive to the clarify run");
+
+  const noQ = await resolveDecision({
+    link: {},
+    decideIssuePath: async () => ({ path: "develop", confidence: 0.3, rationale: "r", clarifyingQuestions: [] }),
+    minConfidence: 0.6,
+  });
+  assert.equal(noQ.path, "develop", "a quiet low-confidence develop still proceeds — a human reviews the diff");
+
+  const confidentQ = await resolveDecision({
+    link: {},
+    decideIssuePath: async () => ({ path: "develop", confidence: 0.9, rationale: "r", clarifyingQuestions: ["a nit?"] }),
+    minConfidence: 0.6,
+  });
+  assert.equal(confidentQ.path, "develop", "a confident develop proceeds even with a stray question");
+});
+
+test("resolveDecision: the heuristic fallback reads the body, guarded against change titles (#4)", async () => {
+  // No decider -> the heuristic floor. A NEUTRAL title + investigation body -> design.
+  const neutral = await resolveDecision({ link: { title: "Queue backend" }, issueBody: "Let's evaluate a few options." });
+  assert.equal(neutral.path, "design");
+  assert.equal(neutral.decidedBy, "heuristic");
+  // A CHANGE-shaped title is never flipped by the body — the false-positive guard.
+  const change = await resolveDecision({ link: { title: "Add a token bucket" }, issueBody: "First analyze traffic, then add it." });
+  assert.equal(change.path, "develop");
+  // The fast path stays title-only: a body-only signal does NOT short-circuit; it
+  // pays the decider (a body mention is weaker than a title signal).
+  let called = 0;
+  const decider = async () => { called += 1; return { path: "develop", confidence: 0.9, rationale: "r" }; };
+  const paid = await resolveDecision({ link: { title: "Queue backend" }, issueBody: "explore options", decideIssuePath: decider, fastPath: true });
+  assert.equal(called, 1, "a body-only signal does not fast-path; the decider runs");
+  assert.equal(paid.via, "agent");
+});
+
 test("decisionConfig reads the env threshold and defaults to 0.6", () => {
   assert.equal(decisionConfig({}).minConfidence, 0.6);
   assert.equal(decisionConfig({ MYAGENTTOOL_AUTORUN_DECISION_MIN_CONFIDENCE: "0.8" }).minConfidence, 0.8);
