@@ -110,6 +110,21 @@ test("codex approval-broker: pending only, project resolved from the invocation"
   assert.equal(rows[0].ref.requestId, "cx_1");
 });
 
+test("lifecycle local approvals join the queue (pending only)", () => {
+  const rows = pendingDecisions({
+    lifecycleLocalApprovals: [
+      { id: "lc_1", status: "pending", riskLevel: "high", summary: "rotate agent credential", agentId: "agt_x", recipeId: "rec_1" },
+      { id: "lc_2", status: "approved", riskLevel: "low", summary: "already decided" },
+    ],
+  });
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].kind, "lifecycle_approval");
+  assert.equal(rows[0].id, "lifecycle:lc_1");
+  assert.equal(rows[0].ref.approvalId, "lc_1");
+  assert.equal(rows[0].ref.recipeId, "rec_1");
+  assert.match(rows[0].subtitle, /rotate agent credential/);
+});
+
 test("everything merges into one queue, sorted oldest-waiting first", () => {
   const rows = pendingDecisions({
     approvalRequests: [{ id: "apr_new", invocationId: "inv_1", status: "pending", createdAt: "2026-07-09T05:00:00Z" }],

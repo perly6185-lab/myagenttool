@@ -43,6 +43,7 @@ export function pendingDecisions({
   autoRuns = [],
   compareRuns = [],
   codexApprovalBrokerRequests = [],
+  lifecycleLocalApprovals = [],
   invocationsById = new Map(),
 } = {}) {
   const out = [];
@@ -125,6 +126,24 @@ export function pendingDecisions({
       section: "invocations",
       targetId: q.invocationId ?? null,
       ref: { requestId: q.id, invocationId: q.invocationId ?? null },
+    });
+  }
+
+  // 5. Lifecycle local approvals — a device/agent lifecycle op (from a governed
+  // recipe) parked for local approve/deny. Global admin-plane, binary, actionable
+  // inline — belongs in the one queue like the invocation approvals.
+  for (const a of lifecycleLocalApprovals) {
+    if (a?.status !== "pending") continue;
+    out.push({
+      id: `lifecycle:${a.id}`,
+      kind: "lifecycle_approval",
+      title: "Lifecycle op needs approval",
+      subtitle: truncate([a.riskLevel ? `${a.riskLevel} risk` : null, a.summary].filter(Boolean).join(" · ") || "Approve or deny an agent/device lifecycle operation"),
+      projectId: null,
+      createdAt: a.createdAt ?? null,
+      section: "agents",
+      targetId: a.agentId ?? null,
+      ref: { approvalId: a.id, recipeId: a.recipeId ?? null, agentId: a.agentId ?? null },
     });
   }
 

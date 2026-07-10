@@ -1,4 +1,4 @@
-import { Bot, ExternalLink, GitMerge, HelpCircle, Inbox, ListChecks, Loader2, ShieldAlert, Sparkles, Trophy, type LucideIcon } from "lucide-react";
+import { Bot, ExternalLink, GitMerge, HelpCircle, Inbox, ListChecks, Loader2, ShieldAlert, Sparkles, Trophy, Wrench, type LucideIcon } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -22,6 +22,7 @@ const KIND_META: Record<PendingDecisionKind, { icon: LucideIcon; label: string }
   merge: { icon: GitMerge, label: "Merge" },
   compare_promote: { icon: Trophy, label: "Promote" },
   codex_broker: { icon: Bot, label: "Codex" },
+  lifecycle_approval: { icon: Wrench, label: "Lifecycle" },
 };
 
 function since(iso?: string | null): string | null {
@@ -143,6 +144,18 @@ function DecisionActions({
             {spin}Approve
           </Button>
           <Button variant="ghost" size="sm" className="h-7 px-2 text-xs" disabled={pending} onClick={() => d.ref?.requestId && act(() => api.denyCodexApproval(d.ref!.requestId!))}>
+            Deny
+          </Button>
+          {openBtn}
+        </>
+      );
+    case "lifecycle_approval":
+      return (
+        <>
+          <Button variant="primary" size="sm" className="h-7 px-2.5 text-xs" disabled={pending} onClick={() => d.ref?.approvalId && act(() => api.approveLifecycleApproval(d.ref!.approvalId!))}>
+            {spin}Approve
+          </Button>
+          <Button variant="ghost" size="sm" className="h-7 px-2 text-xs" disabled={pending} onClick={() => d.ref?.approvalId && act(() => api.denyLifecycleApproval(d.ref!.approvalId!))}>
             Deny
           </Button>
           {openBtn}

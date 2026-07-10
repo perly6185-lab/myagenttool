@@ -156,6 +156,7 @@ export function buildPublicState({
     autoRuns,
     compareRuns,
     codexApprovalBrokerRequests,
+    lifecycleLocalApprovals: state.lifecycleLocalApprovals ?? [],
     invocationsById: visibleInvocationsById,
   });
 
