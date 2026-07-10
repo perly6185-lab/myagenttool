@@ -62,9 +62,9 @@ export function intentForPath(path) {
   return PATH_TO_INTENT[path] ?? "change";
 }
 
-/** Today's title heuristic mapped onto the decision contract. Always available. */
-export function heuristicDecision(link) {
-  const intent = classifyIntentFromText(link?.title ?? "");
+/** Today's title+body heuristic mapped onto the decision contract. Always available. */
+export function heuristicDecision(link, issueBody = null) {
+  const intent = classifyIntentFromText(link?.title ?? "", issueBody ?? "");
   return {
     path: INTENT_TO_PATH[intent] ?? "develop",
     spawnChildIssues: false,
@@ -114,11 +114,14 @@ export async function resolveDecision({
   // GATED on a NON-child body: a spawned child (depth-1 marker) with an [Epic]-
   // shaped title must NOT re-decompose into grandchildren. (review: depth-1 gate)
   if (epicDecomposition && !isSpawnedChildBody(issueBody) && isEpicIssue({ link, issueBody })) return epicDecision();
-  if (typeof decideIssuePath !== "function") return heuristicDecision(link);
+  // The fallback floor reads the body too (best-effort when no agent is
+  // configured); the change-title guard keeps a clear change from being flipped.
+  if (typeof decideIssuePath !== "function") return heuristicDecision(link, issueBody);
 
-  // Hybrid fast path: question/investigation titles are strong lexical signals
-  // the heuristic reads reliably — skip the decider hop. The weak default
-  // ("looks like a change") is exactly where ambiguity lives, so those pay it.
+  // Hybrid fast path: question/investigation TITLES are strong lexical signals
+  // the heuristic reads reliably — skip the decider hop. Deliberately title-only:
+  // a mere body mention is weaker and should pay the decider, not fast-path. The
+  // weak default ("looks like a change") is exactly where ambiguity lives.
   if (fastPath) {
     const quick = heuristicDecision(link);
     if (quick.path !== "develop") {
@@ -134,7 +137,7 @@ export async function resolveDecision({
     decision = null;
   }
   const latencyMs = Date.now() - startedAt;
-  if (!decision) return { ...heuristicDecision(link), via: "fallback", latencyMs };
+  if (!decision) return { ...heuristicDecision(link, issueBody), via: "fallback", latencyMs };
   decision = { ...decision, via: "agent", latencyMs };
   if (decision.confidence < minConfidence && (HEAVY_PATHS.has(decision.path) || decision.spawnChildIssues)) {
     return {
@@ -142,6 +145,20 @@ export async function resolveDecision({
       path: "clarify",
       spawnChildIssues: false,
       rationale: `${decision.rationale ? `${decision.rationale} ` : ""}(Degraded to clarify: confidence ${decision.confidence.toFixed(2)} below ${minConfidence} for a heavy path.)`,
+    };
+  }
+  // A low-confidence DEVELOP decision that the agent ITSELF flagged with open
+  // questions degrades to clarify — cheaper to ask than to burn a run on a guess.
+  // Guarded tightly: a confident develop, or one with no questions, still proceeds
+  // (a human reviews the diff regardless), and the heuristic floor — which never
+  // raises questions — is never gated. Asking needlessly is friction, so we only
+  // ask when the decider explicitly said it lacks what it needs.
+  if (decision.path === "develop" && decision.confidence < minConfidence && decision.clarifyingQuestions.length > 0) {
+    return {
+      ...decision,
+      path: "clarify",
+      spawnChildIssues: false,
+      rationale: `${decision.rationale ? `${decision.rationale} ` : ""}(Degraded to clarify: develop confidence ${decision.confidence.toFixed(2)} below ${minConfidence} with open questions.)`,
     };
   }
   return decision;

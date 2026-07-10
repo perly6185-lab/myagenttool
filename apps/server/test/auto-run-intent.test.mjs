@@ -22,6 +22,20 @@ test("investigation titles are detected", () => {
   assert.equal(classifyIntentFromText("Queue backend", "We should explore a few options and compare."), "investigation");
 });
 
+test("a change-shaped title is NOT flipped to investigation by an incidental body mention", () => {
+  // The false-positive guard: the ask is the change; the analysis is a step of it.
+  assert.equal(
+    classifyIntentFromText("Add a rate limiter to /api", "First analyze current traffic, then add a token bucket."),
+    "change",
+  );
+  assert.equal(
+    classifyIntentFromText("Fix the flaky dispatch test", "We should investigate why it retries, then fix it."),
+    "change",
+  );
+  // But a NEUTRAL title still yields to a body that reads as an investigation.
+  assert.equal(classifyIntentFromText("Queue backend", "Let's evaluate a few options."), "investigation");
+});
+
 test("question titles are detected", () => {
   assert.equal(classifyIntentFromText("Should we adopt Postgres?"), "question");
   assert.equal(classifyIntentFromText("Which queue backend fits best"), "question");
