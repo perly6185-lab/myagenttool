@@ -1,4 +1,4 @@
-import { Bot, ExternalLink, GitMerge, HelpCircle, Inbox, ListChecks, Loader2, ShieldAlert, Sparkles, Trophy, Wrench, type LucideIcon } from "lucide-react";
+import { Bot, ExternalLink, GitMerge, HelpCircle, Inbox, ListChecks, Loader2, RotateCcw, ShieldAlert, Sparkles, Trophy, Wrench, type LucideIcon } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -23,6 +23,7 @@ const KIND_META: Record<PendingDecisionKind, { icon: LucideIcon; label: string }
   compare_promote: { icon: Trophy, label: "Promote" },
   codex_broker: { icon: Bot, label: "Codex" },
   lifecycle_approval: { icon: Wrench, label: "Lifecycle" },
+  lifecycle_rollback: { icon: RotateCcw, label: "Rollback" },
 };
 
 function since(iso?: string | null): string | null {
@@ -157,6 +158,16 @@ function DecisionActions({
           </Button>
           <Button variant="ghost" size="sm" className="h-7 px-2 text-xs" disabled={pending} onClick={() => d.ref?.approvalId && act(() => api.denyLifecycleApproval(d.ref!.approvalId!))}>
             Deny
+          </Button>
+          {openBtn}
+        </>
+      );
+    case "lifecycle_rollback":
+      return (
+        <>
+          <Button variant="primary" size="sm" className="h-7 px-2.5 text-xs" disabled={pending} onClick={() => d.ref?.rollbackRequestId && act(() => api.queueLifecycleRollback(d.ref!.rollbackRequestId!))}>
+            {spin}
+            <RotateCcw className="mr-1 size-3" />Queue rollback
           </Button>
           {openBtn}
         </>

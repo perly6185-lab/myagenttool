@@ -125,6 +125,19 @@ test("lifecycle local approvals join the queue (pending only)", () => {
   assert.match(rows[0].subtitle, /rotate agent credential/);
 });
 
+test("lifecycle rollback requests join the queue only while 'available' (queued excluded)", () => {
+  const rows = pendingDecisions({
+    lifecycleRollbackRequests: [
+      { id: "rb_1", status: "available", summary: "roll back failed credential rotation", agentId: "agt_x", recipeId: "rec_1" },
+      { id: "rb_2", status: "queued", summary: "already queued" },
+    ],
+  });
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].kind, "lifecycle_rollback");
+  assert.equal(rows[0].ref.rollbackRequestId, "rb_1");
+  assert.match(rows[0].subtitle, /roll back failed/);
+});
+
 test("everything merges into one queue, sorted oldest-waiting first", () => {
   const rows = pendingDecisions({
     approvalRequests: [{ id: "apr_new", invocationId: "inv_1", status: "pending", createdAt: "2026-07-09T05:00:00Z" }],

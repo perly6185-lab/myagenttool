@@ -157,6 +157,7 @@ export function buildPublicState({
     compareRuns,
     codexApprovalBrokerRequests,
     lifecycleLocalApprovals: state.lifecycleLocalApprovals ?? [],
+    lifecycleRollbackRequests: state.lifecycleRollbackRequests ?? [],
     invocationsById: visibleInvocationsById,
   });
 
