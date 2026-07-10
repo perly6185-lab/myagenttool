@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { computeMaturityScorecard, HELDOUT_FLOOR } from "../src/read-models/maturity-scorecard.mjs";
+import { computeMaturityScorecard, loadMaturityInputs, HELDOUT_FLOOR } from "../src/read-models/maturity-scorecard.mjs";
 
 const byLevel = (sc) => Object.fromEntries(sc.levels.map((l) => [l.level, l]));
 
@@ -66,9 +66,29 @@ test("L3 governance gate needs 100% coverage AND zero silent bypasses", () => {
 test("L5 stays indeterminate until deploy recovery time is instrumented", () => {
   const sc = computeMaturityScorecard({ dora: { ciChecks: { greenRate: 0.97 }, leadTimeHours: { median: 1 } } });
   assert.equal(byLevel(sc)[5].verdict, "indeterminate");
-  assert.match(byLevel(sc)[5].detail, /not instrumented/);
+  assert.match(byLevel(sc)[5].detail, /enable the deploy stage/);
   const withRecovery = computeMaturityScorecard({ release: { recoveryHours: 0.5 } });
   assert.equal(byLevel(withRecovery)[5].verdict, "met");
+});
+
+test("the deploy stage's recovery time feeds L5 — indeterminate becomes measured (D3)", () => {
+  const base = Date.parse("2026-07-01T00:00:00Z");
+  const t = (ms) => new Date(ms).toISOString();
+  // A failed deploy recovered by a later success (0.5h) — hermetic (no artifacts).
+  const inputs = loadMaturityInputs({
+    metricsDir: "/nonexistent-metrics-xyz",
+    evalTrend: [],
+    deployments: [
+      { status: "failed", at: t(base) },
+      { status: "deployed", at: t(base + 1_800_000) },
+    ],
+  });
+  assert.equal(inputs.release.recoveryHours, 0.5, "release recovery = median failure→success gap");
+  assert.equal(byLevel(computeMaturityScorecard(inputs))[5].verdict, "met", "L5 is measured + under 1h");
+  // No deploy data → no release → L5 stays indeterminate (honest, not faked).
+  const none = loadMaturityInputs({ metricsDir: "/nonexistent-metrics-xyz", evalTrend: [], deployments: [] });
+  assert.equal(none.release, null);
+  assert.equal(byLevel(computeMaturityScorecard(none))[5].verdict, "indeterminate");
 });
 
 test("nextGap points at the first blocker with an actionable message", () => {
