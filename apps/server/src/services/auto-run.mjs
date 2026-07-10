@@ -6,6 +6,7 @@ import { intentForPath, resolveDecision } from "./auto-run-decision.mjs";
 import { isSpawnedChildBody, decompositionChildBody } from "./auto-run-spawn.mjs";
 import { judgmentEvidence } from "./auto-run-judge.mjs";
 import { computeMergeRisk, sensitivePathHit, DEFAULT_SENSITIVE_PATHS } from "./auto-run-risk.mjs";
+import { resolveAutoRunVerifyCommandFor } from "./worktree-verify.mjs";
 import { composeDesignIssueComment, designArtifactIndex, buildDesignImageUrls } from "./auto-run-design.mjs";
 import { decompositionTree, issueTreeApplyFailures, humanApprovalRequiredReasons } from "../../../../tools/ai/src/issue-tree-core.mjs";
 import { scoreDecompositionOverlap } from "./auto-run-epic.mjs";
@@ -442,7 +443,12 @@ export function createAutoRunService({
     // 2. Seed the prompt from the issue, and 3. start the agent run in the worktree.
     let invocation;
     try {
-      const task = roleAutoRunPrompt(normalizedLink, { path: decision.path, issueBody });
+      // Pre-flight context: tell a code-writing run the exact command its output
+      // will be checked by, so it can make the check pass before finishing.
+      const verifyProject = state.projects.find((p) => p.id === (worktree.sourceProjectId ?? worktree.projectId ?? projectId ?? state.currentProjectId)) ?? null;
+      const verifyCmdArr = resolveAutoRunVerifyCommandFor({ verifyCommandName: verifyProject?.verifyCommandName ?? null });
+      const verifyCommand = Array.isArray(verifyCmdArr) && verifyCmdArr.length ? verifyCmdArr.join(" ") : null;
+      const task = roleAutoRunPrompt(normalizedLink, { path: decision.path, issueBody, verifyCommand });
       invocation = createInvocation(task, agent, {
         actor,
         // role carries the decided path so role-restricted agent-skills render

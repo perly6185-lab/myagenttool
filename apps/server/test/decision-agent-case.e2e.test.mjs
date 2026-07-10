@@ -224,7 +224,7 @@ test("[B] the approved child re-enters as develop, with the design reaching the 
   assert.equal(caseB.autoRun.decision.path, "develop");
   assert.equal(caseB.autoRun.isChildIssue, true, "depth-1: the child can never spawn grandchildren");
   assert.match(prompts.at(-1), /Redis Streams/, "the design reaches the implementation prompt");
-  assert.match(prompts.at(-1), /Implement the change/, "develop role instructions");
+  assert.match(prompts.at(-1), /implement the change/, "develop role instructions");
 });
 
 test("[B] the develop run commits, verifies, pushes to origin, and opens the PR", async () => {

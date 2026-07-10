@@ -195,7 +195,7 @@ test("startAutoRun materializes the worktree and starts an issue-seeded invocati
   assert.equal(calls.createInvocation.length, 1);
   const created = calls.createInvocation[0];
   assert.match(created.task, /^GitHub Issue #12: Add the widget\./);
-  assert.match(created.task, /Implement the change/, "develop role instructions seeded");
+  assert.match(created.task, /implement the change/, "develop role instructions seeded");
   assert.equal(created.options.metadata.worktreeId, worktree.id);
   assert.equal(created.options.metadata.role, "develop", "decided path seeded as role for skill selection");
   assert.equal(created.agent.id, "agt_1");
@@ -813,7 +813,7 @@ test("retryAutoRun restarts a failed run on its existing worktree (pilot #9)", a
   assert.equal(autoRun.error, null, "stale error cleared");
   assert.equal(state.worktrees.length, worktreesBefore, "no new worktree — retry reuses the existing one");
   assert.equal(calls.createInvocation.length, 2);
-  assert.match(calls.createInvocation[1].task, /Implement the change/, "role prompt rebuilt from the decision");
+  assert.match(calls.createInvocation[1].task, /implement the change/, "role prompt rebuilt from the decision");
 });
 
 test("retryAutoRun refuses non-settled runs and missing worktrees", async () => {
