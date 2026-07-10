@@ -400,6 +400,20 @@ export function createProjectService({ state, now, nextId, appendEvent, persistS
     return state.worktrees.find((item) => item.id === worktreeId) ?? null;
   }
 
+  // The worktree's current HEAD commit, best-effort (null if unavailable). Used to
+  // bind a review to the exact diff it approved so a later commit can't be promoted
+  // on that stale approval.
+  function worktreeHeadCommit(worktreeId) {
+    const wt = worktreeRecord(worktreeId);
+    const cwd = wt?.worktreePath ?? wt?.path;
+    if (!cwd) return null;
+    try {
+      return execFileSync("git", ["-C", cwd, "rev-parse", "HEAD"], { encoding: "utf8", timeout: 5_000, stdio: ["ignore", "pipe", "ignore"] }).trim() || null;
+    } catch {
+      return null;
+    }
+  }
+
   // Commit whatever the agent left in the worktree so the work actually reaches
   // the PR — publish only ships commits. No-op (committed:false) when the tree is
   // already clean. hasCommits reports whether the branch has any commit ahead of
@@ -558,6 +572,7 @@ export function createProjectService({ state, now, nextId, appendEvent, persistS
       summary: String(summary ?? "").slice(0, 2000) || null,
       comments: cleanComments,
       reviewedBy: actor?.userId ?? "usr_local",
+      reviewedCommit: worktreeHeadCommit(worktree.id), // bind the verdict to this exact diff
       createdAt: now(),
     };
     state.worktreeReviews.unshift(review);
@@ -587,6 +602,7 @@ export function createProjectService({ state, now, nextId, appendEvent, persistS
     createWorktreePr,
     submitWorktreeReview,
     latestWorktreeReview,
+    worktreeHeadCommit,
     currentProject,
     gitProjectSummary,
     projectBranches,

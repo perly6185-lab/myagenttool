@@ -8,6 +8,7 @@ export function createInvocationCompareRuntime({
   createWorktree,
   createWorktreePr,
   latestWorktreeReview,
+  worktreeHeadCommit,
   findInvocation,
 }) {
   function createCompareRun(task, agents, options = {}) {
@@ -104,6 +105,15 @@ export function createInvocationCompareRuntime({
             ? "The preferred worktree has changes requested — resolve them and re-approve before promoting."
             : "The preferred worktree has not been reviewed yet — approve its diff before promoting.",
         );
+      }
+      // The approval is bound to the diff it saw: if the worktree advanced since
+      // (e.g. approved while the agent was still committing), the later commits were
+      // never reviewed — refuse until re-approved on the current HEAD.
+      if (review.reviewedCommit && typeof worktreeHeadCommit === "function") {
+        const head = worktreeHeadCommit(worktreeId);
+        if (head && head !== review.reviewedCommit) {
+          throw new Error("The preferred worktree changed since it was approved — re-review the current diff before promoting.");
+        }
       }
     }
     if (typeof createWorktreePr !== "function") throw new Error("Pull-request creation is not available on this server.");

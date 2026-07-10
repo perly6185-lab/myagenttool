@@ -28,6 +28,7 @@ export function createInvocationService({
   createWorktree,
   createWorktreePr,
   latestWorktreeReview,
+  worktreeHeadCommit,
   uniqueStrings,
   normalizeCodexApprovalMode,
   normalizeCodexSessionMode,
@@ -140,6 +141,7 @@ export function createInvocationService({
     createWorktree,
     createWorktreePr,
     latestWorktreeReview,
+    worktreeHeadCommit,
     findInvocation,
   });
   const { createTroubleshootingReport } = createInvocationTroubleshootingRuntime({

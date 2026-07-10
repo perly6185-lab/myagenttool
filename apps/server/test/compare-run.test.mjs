@@ -125,6 +125,33 @@ test("promoteCompareRun refuses a shared (no-worktree) compare", async () => {
   await assert.rejects(() => rt.promoteCompareRun(cr.id), /no worktree to promote/);
 });
 
+test("promoteCompareRun refuses if the worktree advanced since approval (diff-SHA binding)", async () => {
+  const state = { compareRuns: [] };
+  let n = 0;
+  const prCalls = [];
+  let head = "sha_approved";
+  const rt = createInvocationCompareRuntime({
+    state,
+    now: () => "2026-07-10T00:00:00.000Z",
+    nextId: (p) => `${p}_${++n}`,
+    createInvocation: (task, agent, options) => ({ id: `inv_${++n}`, agentId: agent.id, options }),
+    startInvocationIfAllowed: () => {},
+    updateCompareRun: () => {},
+    createWorktree: ({ agentId }) => ({ worktree: { id: `wtr_${agentId}` } }),
+    createWorktreePr: async (id) => { prCalls.push(id); return { number: 7, url: "u" }; },
+    latestWorktreeReview: () => ({ verdict: "approved", reviewedCommit: "sha_approved" }),
+    worktreeHeadCommit: () => head,
+  });
+  const cr = rt.createCompareRun("x", AGENTS, { projectId: "p1" });
+  rt.setCompareRunPreferred(cr.id, cr.childInvocationIds[0]);
+  head = "sha_moved"; // the agent committed more after the approval
+  await assert.rejects(() => rt.promoteCompareRun(cr.id), /changed since it was approved/);
+  assert.equal(prCalls.length, 0, "stale-approval promote must not open a PR");
+  head = "sha_approved"; // re-approved on the current HEAD
+  const promoted = await rt.promoteCompareRun(cr.id, { actor: { userId: "u" } });
+  assert.equal(promoted.promotion.prNumber, 7);
+});
+
 test("promoteCompareRun never promotes an invocation's INHERITED worktree (review-sweep P1)", async () => {
   // A shared compare's children have child.worktreeId=null, but createInvocation
   // makes invocation.worktreeId inherit the globally-current project's worktree.
