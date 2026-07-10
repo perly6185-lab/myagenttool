@@ -156,6 +156,7 @@ interface MaturityLevel {
 interface MaturityScorecard {
   levels: MaturityLevel[];
   currentLevel: number;
+  nextGap?: { level: number; name: string; verdict: string; gate: string; measured?: string | null; detail?: string; action: string } | null;
   disclaimer: string;
 }
 
@@ -215,6 +216,14 @@ function MaturityScorecardCard({ scorecard }: { scorecard: MaturityScorecard }) 
         <p className="text-xs text-muted-foreground">
           Computed from measured evidence (DORA · held-out eval · backlog · governance) — the current level is the highest reached without a gap. A level still shows its own verdict even when a lower gate blocks contiguity.
         </p>
+        {scorecard.nextGap ? (
+          <div className="rounded-md border border-border bg-muted/30 px-2.5 py-1.5 text-xs">
+            <span className="font-medium">Next: reach L{scorecard.nextGap.level} ({scorecard.nextGap.name})</span>
+            <span className="text-muted-foreground"> — {scorecard.nextGap.action}</span>
+            {scorecard.nextGap.measured ? <span className="text-muted-foreground"> Currently: {scorecard.nextGap.measured}.</span> : null}
+            {scorecard.nextGap.detail ? <div className="mt-0.5 text-[11px] text-warning">{scorecard.nextGap.detail}</div> : null}
+          </div>
+        ) : null}
         <div className="overflow-x-auto">
           <table className="w-full text-xs">
             <tbody>
