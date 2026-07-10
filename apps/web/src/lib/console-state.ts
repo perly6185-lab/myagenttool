@@ -86,13 +86,13 @@ export interface WorktreeReview {
   createdAt?: string;
 }
 
-/** One post-merge deploy attempt (server `deployments`; the deploy stage). */
+/** One post-merge deploy attempt / rollback (server `deployments`; deploy stage + self-healing). */
 export interface DeploymentSnapshot {
   id: string;
   autoRunId: string;
   projectId?: string | null;
   prNumber?: number | null;
-  status: "deployed" | "failed";
+  status: "deployed" | "failed" | "rolled_back";
   summary?: string | null;
   at?: string;
 }

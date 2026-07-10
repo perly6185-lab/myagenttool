@@ -53,8 +53,10 @@ export interface AutoRunRecord {
   prChecks?: { total: number; passed: number; failed: number; pending: number; state: "NONE" | "SUCCESS" | "FAILURE" | "PENDING" } | null;
   pendingApproval?: { id: string; riskLevel: string | null; riskTags: string[]; summary: string | null } | null;
   promptInjection?: { suspicious: boolean; markers: string[] } | null;
-  // D1 deploy stage: outcome of the post-merge deploy, when the deploy stage ran.
-  deployment?: { status: "deployed" | "failed"; at?: string; summary?: string | null; prNumber?: number | null } | null;
+  // D1 deploy stage + H1 self-healing: outcome of the post-merge deploy / rollback.
+  deployment?: { status: "deployed" | "failed" | "rolled_back"; at?: string; summary?: string | null; prNumber?: number | null } | null;
+  // H2 self-healing: the remediation issue filed after a failed deploy (fix-forward).
+  remediationIssue?: { number: number; url?: string | null; culpritPr?: number | null } | null;
   error?: string | null;
   createdAt?: string;
   updatedAt?: string;
@@ -623,8 +625,14 @@ export function AutoRunsView() {
                     ) : null}
                     {run.prState === "MERGED" ? <Badge tone="success">merged</Badge> : null}
                     {run.deployment ? (
-                      <Badge tone={run.deployment.status === "deployed" ? "success" : "danger"}>
-                        {run.deployment.status === "deployed" ? "deployed" : "deploy failed"}
+                      <Badge tone={run.deployment.status === "deployed" ? "success" : run.deployment.status === "rolled_back" ? "warning" : "danger"}>
+                        {run.deployment.status === "deployed" ? "deployed" : run.deployment.status === "rolled_back" ? "rolled back" : "deploy failed"}
+                      </Badge>
+                    ) : null}
+                    {run.remediationIssue ? (
+                      <Badge tone="warning">
+                        <Rocket className="mr-1 size-3" />
+                        remediating #{run.remediationIssue.number}
                       </Badge>
                     ) : null}
                     {run.prState === "CLOSED" ? <Badge tone="warning">closed</Badge> : null}
