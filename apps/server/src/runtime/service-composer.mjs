@@ -31,6 +31,7 @@ import { refreshEpicChildStates } from "../services/auto-run-epic.mjs";
 import { judgeTimeoutMs, resolveJudgeCommand, runAcceptanceJudge } from "../services/auto-run-judge.mjs";
 import { resolveReviewCommand, reviewTimeoutMs, runDiffReview, scanDiffForInjection } from "../services/auto-run-review.mjs";
 import { resolveDesignRenderCommand, designRenderTimeoutMs, runDesignRender } from "../services/design-render.mjs";
+import { resolveDeployCommand, deployTimeoutMs, runDeployCommand } from "../services/auto-run-deploy.mjs";
 import { decisionConfig } from "../services/auto-run-decision.mjs";
 import { autoRunSettingsEnvOverlay } from "../services/auto-run-config.mjs";
 import { createAlertDispatcher } from "../services/auto-run-alerts.mjs";
@@ -527,6 +528,15 @@ export function createServerRuntimeServices({
         if (!worktree?.path) return { rendered: false, reason: "no worktree" };
         return runDesignRender({ worktreePath: worktree.path, command, timeoutMs: designRenderTimeoutMs(autoRunEnv) });
       };
+    })(),
+    // D1 deploy stage: the operator's post-merge deploy command (argv, no shell,
+    // never agent-proposed — same trust boundary as verify/judge). Undefined when
+    // unconfigured, so the deploy step is skipped entirely.
+    runDeploy: (() => {
+      const command = resolveDeployCommand(autoRunEnv);
+      if (!command) return undefined;
+      return async ({ link, prNumber, repoPath }) =>
+        runDeployCommand({ command, input: { link, prNumber, repoPath }, timeoutMs: deployTimeoutMs(autoRunEnv) });
     })(),
   });
   // Now that the reaction exists, let completion drive it.

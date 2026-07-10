@@ -79,6 +79,7 @@ export function createAutoRunService({
   fetchPrChecks,
   renderDesignImages,
   createDecompositionChild,
+  runDeploy,
 }) {
   // Best-effort issue body fetch (issue links only): richer context for both the
   // decision and the role prompt. Null on any failure — the run proceeds on the
@@ -947,7 +948,60 @@ export function createAutoRunService({
       data: { autoRunId: autoRun.id, prNumber: autoRun.prNumber, method: result.method ?? "squash" },
     });
     persistStateSoon();
+    // D1 deploy stage: fire the deploy asynchronously so the merge call returns
+    // promptly; the deployment record + card update land when it finishes.
+    void maybeDeployAfterMerge(autoRun);
     return { ok: true, prNumber: autoRun.prNumber, prState: "MERGED" };
+  }
+
+  // D1 deploy stage: after a PR merges, run the operator's deploy command (opt-in
+  // deployOnMerge + a configured command). Records one `deployments` entry per
+  // attempt and stamps autoRun.deployment. A deploy is a continuation of an already
+  // human-approved+merged run — no new gate — but it still honors the kill switch
+  // (an emergency stop halts delivery too). Best-effort: a deploy that can't RUN
+  // (null) is an infra miss and is NOT recorded as a failure (only a deploy that
+  // ran and reported failure is); never throws. Idempotent per merged PR.
+  async function maybeDeployAfterMerge(autoRun) {
+    if (!autoRun || autoRun.prState !== "MERGED") return null;
+    if (!state.autoRunSettings?.deployOnMerge || typeof runDeploy !== "function") return null;
+    if (state.autoRunSettings?.autonomyKillSwitch) return null;
+    if (autoRun.deployment && autoRun.deployment.prNumber === autoRun.prNumber) return null;
+    const project = state.projects.find((p) => p.id === autoRun.projectId) ?? null;
+    let outcome = null;
+    try {
+      outcome = await runDeploy({ link: autoRun.link, prNumber: autoRun.prNumber, repoPath: project?.path ?? null });
+    } catch {
+      outcome = null;
+    }
+    if (!outcome) return null; // couldn't run → infra miss, not a change-failure
+    const record = {
+      id: nextId("dep_demo"),
+      autoRunId: autoRun.id,
+      projectId: autoRun.projectId ?? null,
+      prNumber: autoRun.prNumber ?? null,
+      status: outcome.deployed ? "deployed" : "failed",
+      summary: outcome.summary || null,
+      at: now(),
+    };
+    state.deployments = [record, ...(state.deployments ?? [])].slice(0, 500);
+    autoRun.deployment = { status: record.status, at: record.at, summary: record.summary, prNumber: record.prNumber };
+    appendEvent({
+      invocationId: autoRun.invocationId,
+      type: outcome.deployed ? "auto_run_deployed" : "auto_run_deploy_failed",
+      level: outcome.deployed ? "info" : "warn",
+      message: `Auto-run ${autoRun.id} deploy of PR #${autoRun.prNumber} ${outcome.deployed ? "succeeded" : "FAILED"}.`,
+      data: { autoRunId: autoRun.id, prNumber: autoRun.prNumber, deployed: outcome.deployed },
+    });
+    if (!outcome.deployed) {
+      void sendAlert?.({
+        kind: "deploy_failed",
+        severity: "high",
+        message: `Auto-run ${autoRun.id}: deploy of PR #${autoRun.prNumber} FAILED. ${record.summary ?? ""}`.trim(),
+        data: { autoRunId: autoRun.id, prNumber: autoRun.prNumber },
+      });
+    }
+    persistStateSoon();
+    return record;
   }
 
   // D4 (issue→UI-design plan): the human design gate. Approving a posted design
@@ -1316,5 +1370,5 @@ export function createAutoRunService({
     return { reaped, readvanced };
   }
 
-  return { startAutoRun, advanceAutoRunForInvocation, syncAutoRunOnApproval, syncAutoRunOnDenial, retryAutoRun, mergeAutoRunPr, reapStuckAutoRuns, autoMergeSweep, approveDesign, rejectDesign, answerClarify, approveDecomposition, rejectDecomposition };
+  return { startAutoRun, advanceAutoRunForInvocation, syncAutoRunOnApproval, syncAutoRunOnDenial, retryAutoRun, mergeAutoRunPr, maybeDeployAfterMerge, reapStuckAutoRuns, autoMergeSweep, approveDesign, rejectDesign, answerClarify, approveDecomposition, rejectDecomposition };
 }
