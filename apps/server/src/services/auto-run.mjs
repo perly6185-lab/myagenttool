@@ -96,6 +96,24 @@ export function createAutoRunService({
     }
   }
 
+  // Shared spend/safety refusal used by BOTH a fresh start and a self-repair
+  // continuation: kill switch, project budget, and the circuit breaker. Returns a
+  // short reason to refuse, or null when it's safe to spend. A repair spawns a NEW
+  // agent run (real spend), so it must clear the same gates a fresh run does — and
+  // the original run's spend makes over-budget likeliest exactly at repair time.
+  function autoRunSpendRefusal(projectId) {
+    if (state.autoRunSettings?.autonomyKillSwitch) return "autonomy kill switch is on";
+    if (typeof budgetStatusFor === "function" && projectId) {
+      const budget = budgetStatusFor(projectId);
+      if (budget?.over) return `project is over budget ($${budget.spentUsd} of $${budget.limitUsd})`;
+    }
+    const breaker = state.autoRunBreaker;
+    if (breaker?.openUntil && Date.parse(now()) < Date.parse(breaker.openUntil)) {
+      return `circuit breaker open until ${breaker.openUntil}`;
+    }
+    return null;
+  }
+
   // The agent's summary from the completed invocation — the deliverable for an
   // investigation (there is no diff to ship).
   function extractRunSummary(invocation) {
@@ -415,6 +433,10 @@ export function createAutoRunService({
       decision,
       // Legacy field, derived from the decision path for record continuity.
       intent: intentForPath(decision.path),
+      // The issue body as fetched at start — the content the approval is granted
+      // against. A self-repair reuses THIS (not a live re-fetch) so a preApproved
+      // continuation can never run content edited after the human approved. Capped.
+      issueBody: typeof issueBody === "string" && issueBody ? issueBody.slice(0, 8000) : null,
       // B1a: prompt-injection flag (null when clean) — surfaced + blocks O2 auto-approval.
       promptInjection: injection.suspicious ? { suspicious: true, markers: injection.markers } : null,
       // Depth-1 guard: a spawned child issue may never spawn grandchildren.
@@ -665,15 +687,25 @@ export function createAutoRunService({
         if (verification.verified && !verification.passed) {
           // Self-repair: feed the failing check back to the agent for another attempt
           // in the SAME worktree, rather than blocking on the first failure. Bounded
-          // by the attempt cap (+ the existing budget gate / circuit breaker). Only
-          // develop runs repair — design/clarify/etc. produce no code to re-verify.
+          // by the attempt cap. Only develop runs repair — design/clarify/etc. produce
+          // no code to re-verify.
           const maxRepairs = state.autoRunSettings?.maxRepairAttempts ?? 2;
           const attempts = autoRun.repairAttempts ?? 0;
-          if (maxRepairs > 0 && attempts < maxRepairs && (autoRun.decision?.path ?? "develop") === "develop") {
+          const repairEligible = maxRepairs > 0 && attempts < maxRepairs && (autoRun.decision?.path ?? "develop") === "develop";
+          // A repair spawns a NEW agent run, so it must clear the same spend/safety
+          // gates a fresh run does — otherwise it spends past the budget, ignores the
+          // kill switch, and defeats the breaker (worst case: the original run's spend
+          // just tipped the project over budget). Only probed when a repair would run.
+          const repairRefusal = repairEligible ? autoRunSpendRefusal(autoRun.projectId) : null;
+          if (repairEligible && !repairRefusal) {
             const agent = findAgent(autoRun.agentId);
             if (agent && typeof createInvocation === "function") {
               autoRun.repairAttempts = attempts + 1;
-              const issueBody = await maybeFetchIssueBody(autoRun.link, autoRun.projectId);
+              // Reuse the issue body APPROVED at start, NOT a live re-fetch: a
+              // preApproved repair must run the exact content the human approved,
+              // else an issue edited after approval would reach the agent unapproved
+              // (a TOCTOU that skips both the gate and the injection scan).
+              const issueBody = autoRun.issueBody ?? null;
               const repairTask =
                 `${roleAutoRunPrompt(autoRun.link, { path: "develop", issueBody })}\n\n` +
                 `Your previous attempt is ALREADY in this worktree but FAILED the verification check:\n\n` +
@@ -682,7 +714,7 @@ export function createAutoRunService({
               let repair = null;
               try {
                 repair = createInvocation(repairTask, agent, {
-                  preApproved: true, // continuation of an already human-approved run — no re-gate
+                  preApproved: true, // continuation of an already human-approved run on unchanged content — no re-gate
                   metadata: { worktreeId: autoRun.worktreeId, projectId: autoRun.projectId, autoRunId: autoRun.id, role: "develop", repairAttempt: autoRun.repairAttempts },
                 });
               } catch {
@@ -704,7 +736,10 @@ export function createAutoRunService({
               }
             }
           }
-          setAutoRunStatus(autoRun, "blocked", { error: verification.summary ?? "Verification failed." });
+          const blockReason = repairRefusal
+            ? `Self-repair paused: ${repairRefusal}. ${verification.summary ?? ""}`.trim()
+            : verification.summary ?? "Verification failed.";
+          setAutoRunStatus(autoRun, "blocked", { error: blockReason });
           persistStateSoon();
           return autoRun;
         }
@@ -772,32 +807,38 @@ export function createAutoRunService({
     return autoRun;
   }
 
-  // Reflect a DENIED approval: the human rejected the run at the gate before the
-  // agent ran, so mark it terminal AND tear down the worktree + branch it created.
-  // Two bugs this closes (both seen live): without the teardown the abandoned
-  // branch blocks a fresh run on the same issue ("branch issue-N already exists");
-  // without this hook the run sat at awaiting_approval forever. The worktree is
-  // empty at denial (the agent never ran), so destroying it loses nothing —
-  // recovery from a denied run is a fresh trigger, not a retry on stale files.
+  // Reflect a DENIED approval: the human rejected the run at the gate, so mark it
+  // terminal AND reclaim the worktree + branch it created. Two bugs this closes
+  // (both seen live): without the teardown an abandoned branch blocks a fresh run
+  // on the same issue ("branch issue-N already exists"); without this hook the run
+  // sat at awaiting_approval forever. destroyWorktree is SAFE — it preserves a
+  // worktree that holds un-pushed work (a denied retry can reuse one a prior
+  // approved run committed to), so an empty run is reclaimed and a work-bearing one
+  // is kept for recovery.
   function syncAutoRunOnDenial(invocation) {
     const autoRun = state.autoRuns.find((item) => item.invocationId === invocation?.id);
     if (!autoRun || settledStatuses.has(autoRun.status)) return null;
     const worktreeId = autoRun.worktreeId ?? null;
-    setAutoRunStatus(autoRun, "failed", { error: "Local approval denied — worktree and branch cleaned up." });
-    appendEvent({
-      invocationId: invocation.id,
-      type: "auto_run_denied",
-      level: "warn",
-      message: `Auto-run ${autoRun.id} was denied at the approval gate; its worktree and branch were torn down.`,
-      data: { autoRunId: autoRun.id, worktreeId },
-    });
     if (worktreeId && typeof destroyWorktree === "function") {
       try {
         destroyWorktree(worktreeId, { deleteBranch: true });
       } catch {
-        // Teardown is best-effort; the run is already marked failed.
+        // Teardown is best-effort; the run is marked failed regardless below.
       }
     }
+    const kept = worktreeId && state.worktrees.some((w) => w.id === worktreeId);
+    setAutoRunStatus(autoRun, "failed", {
+      error: kept
+        ? "Local approval denied. The worktree was kept because it holds un-pushed work."
+        : "Local approval denied — the worktree and branch were reclaimed.",
+    });
+    appendEvent({
+      invocationId: invocation.id,
+      type: "auto_run_denied",
+      level: "warn",
+      message: `Auto-run ${autoRun.id} was denied at the approval gate; worktree ${kept ? "kept (holds un-pushed work)" : "and branch reclaimed"}.`,
+      data: { autoRunId: autoRun.id, worktreeId, worktreeKept: Boolean(kept) },
+    });
     persistStateSoon();
     return autoRun;
   }
@@ -838,6 +879,9 @@ export function createAutoRunService({
       throw error;
     }
     autoRun.invocationId = invocation.id;
+    // Fresh repair budget for the retry — otherwise a run that exhausted its
+    // repairs stays at the cap and the retried attempt gets zero self-repair.
+    autoRun.repairAttempts = 0;
     setAutoRunStatus(autoRun, autoRunStatusForInvocation(invocation), { error: null, prNumber: null, prUrl: null });
     appendEvent({
       invocationId: invocation.id,

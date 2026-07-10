@@ -116,6 +116,23 @@ test("resolveDecision: the heuristic fallback reads the body, guarded against ch
   assert.equal(paid.via, "agent");
 });
 
+test("resolveDecision: a transient decider failure falls back TITLE-ONLY (routing stays deterministic)", async () => {
+  // A noun-phrase change title (not an imperative verb, so CHANGE_LEAD_RE misses)
+  // with an investigation word in the body — the exact shape that used to flip.
+  const link = { title: "Rate limiter for the reports API" };
+  const issueBody = "We should evaluate token-bucket vs sliding-window before we build it.";
+  const ok = await resolveDecision({ link, issueBody, decideIssuePath: async () => ({ path: "develop", confidence: 0.8, rationale: "r" }), fastPath: false });
+  assert.equal(ok.path, "develop", "when the decider answers, it's a develop");
+  // A transient decider failure must NOT change the deliverable type: title-only
+  // fallback -> change -> develop, not body-aware -> design -> no code.
+  const failed = await resolveDecision({ link, issueBody, decideIssuePath: async () => { throw new Error("timeout"); }, fastPath: false });
+  assert.equal(failed.path, "develop", "a decider hiccup doesn't silently turn a change into a no-code design run");
+  assert.equal(failed.via, "fallback");
+  // The no-decider deployment still reads the body (deterministic for that config).
+  const noDecider = await resolveDecision({ link, issueBody });
+  assert.equal(noDecider.path, "design", "with no decider configured, the body-aware heuristic still routes to design");
+});
+
 test("decisionConfig reads the env threshold and defaults to 0.6", () => {
   assert.equal(decisionConfig({}).minConfidence, 0.6);
   assert.equal(decisionConfig({ MYAGENTTOOL_AUTORUN_DECISION_MIN_CONFIDENCE: "0.8" }).minConfidence, 0.8);
