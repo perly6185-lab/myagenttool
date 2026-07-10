@@ -103,7 +103,11 @@ export function InvocationsView() {
         </CardHeader>
         <CardContent>
           {invocations.length === 0 ? (
-            <EmptyState title="No invocations yet" hint="Start a task from Overview to see it here." />
+            <EmptyState
+              title="No invocations yet"
+              hint="Every agent call, its status, and result will show here."
+              action={<Button size="sm" onClick={() => setSection("dashboard")}>Start a task</Button>}
+            />
           ) : (
             <div className="overflow-hidden rounded-lg border border-border">
               <table className="w-full text-sm">
