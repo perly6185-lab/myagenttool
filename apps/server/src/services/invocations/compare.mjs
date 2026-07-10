@@ -86,7 +86,12 @@ export function createInvocationCompareRuntime({
       return compareRun; // idempotent: already promoted
     }
     const child = compareRun.children?.find((c) => c.invocationId === invocationId) ?? null;
-    const worktreeId = child?.worktreeId ?? (typeof findInvocation === "function" ? findInvocation(invocationId)?.worktreeId : null);
+    // ONLY the worktree this compare recorded for the child — never the invocation's
+    // own worktreeId. A shared/answer compare (or a child whose worktree creation
+    // failed) has a null child.worktreeId; but createInvocation falls back to the
+    // globally-current project's worktree (creation.mjs), so trusting the invocation
+    // here could promote an unrelated (even another team's) already-approved branch.
+    const worktreeId = child?.worktreeId ?? null;
     if (!worktreeId) throw new Error("The preferred run has no worktree to promote (a shared/answer compare cannot be promoted).");
     // Phase 5: review-before-ship. A human must approve the preferred worktree's
     // diff before it can be promoted to a PR. `changes_requested` or no review yet

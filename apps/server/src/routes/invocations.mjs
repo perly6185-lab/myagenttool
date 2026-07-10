@@ -157,7 +157,7 @@ export async function handleInvocationRoutes({
     const compareRunId = decodeURIComponent(preferMatch[1]);
     const compareRun = state.compareRuns.find((c) => c.id === compareRunId);
     if (!compareRun) { sendJson(res, 404, { error: "compare_run_not_found" }); return true; }
-    if (compareRun.projectId && denyForeignProject({ res, sendJson, state, actor, projectId: compareRun.projectId, notFound: { error: "compare_run_not_found" } })) return true;
+    if (denyForeignProject({ res, sendJson, state, actor, projectId: compareRunProjectId(compareRun, findInvocation), notFound: { error: "compare_run_not_found" } })) return true;
     try {
       const body = await readJson(req);
       const result = setCompareRunPreferred(compareRunId, String(body.invocationId ?? ""), { actor });
@@ -174,7 +174,7 @@ export async function handleInvocationRoutes({
     const compareRunId = decodeURIComponent(promoteMatch[1]);
     const compareRun = state.compareRuns.find((c) => c.id === compareRunId);
     if (!compareRun) { sendJson(res, 404, { error: "compare_run_not_found" }); return true; }
-    if (compareRun.projectId && denyForeignProject({ res, sendJson, state, actor, projectId: compareRun.projectId, notFound: { error: "compare_run_not_found" } })) return true;
+    if (denyForeignProject({ res, sendJson, state, actor, projectId: compareRunProjectId(compareRun, findInvocation), notFound: { error: "compare_run_not_found" } })) return true;
     try {
       const result = await promoteCompareRun(compareRunId, { actor });
       sendJson(res, 200, { compareRun: result });
@@ -226,6 +226,20 @@ export async function handleInvocationRoutes({
 // top-level (invocation.projectId) and in metadata; fall back through both.
 function invocationProjectId(invocation) {
   return invocation?.projectId ?? invocation?.input?.metadata?.projectId ?? null;
+}
+
+// The project a compare run is anchored to for tenancy — its own projectId, or (for
+// a shared/answer compare that has none) the first child invocation's project.
+// Guarding on compareRun.projectId ALONE skips shared compares, letting a foreign
+// actor prefer/promote them; a shared compare's children still carry the creator's
+// project (createInvocation's currentProject fallback), so anchor on that.
+function compareRunProjectId(compareRun, findInvocation) {
+  if (compareRun?.projectId) return compareRun.projectId;
+  for (const id of compareRun?.childInvocationIds ?? []) {
+    const pid = invocationProjectId(typeof findInvocation === "function" ? findInvocation(id) : null);
+    if (pid) return pid;
+  }
+  return null;
 }
 
 function denyForeignInvocationScope({ res, sendJson, state, actor, metadata }) {
