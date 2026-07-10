@@ -20,6 +20,7 @@ import { resolveAutoTriggerConfig } from "./auto-trigger.mjs";
 import { deciderTimeoutMs, resolveDeciderCommand } from "./decision-command.mjs";
 import { judgeTimeoutMs, resolveJudgeCommand } from "./auto-run-judge.mjs";
 import { resolveReviewCommand } from "./auto-run-review.mjs";
+import { resolveDeployCommand } from "./auto-run-deploy.mjs";
 import { resolveDesignRenderCommand } from "./design-render.mjs";
 import { DEFAULT_SENSITIVE_PATHS } from "./auto-run-risk.mjs";
 import { resolveStatusWritebackConfig } from "./issue-status.mjs";
@@ -135,6 +136,10 @@ export function normalizeAutoRunSettings(patch = {}, prev = {}) {
     // Sensitive-path guard: glob list; a diff touching any is never auto-merged.
     // Null = use the conservative DEFAULT_SENSITIVE_PATHS.
     autoMergeSensitivePaths: keep("autoMergeSensitivePaths", (v) => normalizeGlobList(v)),
+    // Deploy stage (D1, UI-only opt-in, default off): after a PR merges, run the
+    // operator's deploy command. Inert unless MYAGENTTOOL_AUTORUN_DEPLOY_COMMAND_JSON
+    // is also set (a toggle with no command never deploys).
+    deployOnMerge: keep("deployOnMerge", asBool),
   };
 }
 
@@ -219,6 +224,8 @@ export function resolveAutoRunConfig(state = {}, baseEnv = process.env) {
       Array.isArray(settings.autoMergeSensitivePaths) && settings.autoMergeSensitivePaths.length
         ? settings.autoMergeSensitivePaths
         : DEFAULT_SENSITIVE_PATHS,
+    // Deploy stage: opt-in run of the operator deploy command after a merge.
+    deployOnMerge: Boolean(settings.deployOnMerge),
     // Command knobs are env-only; expose only whether each is configured.
     commands: {
       verify: Boolean(resolveAutoRunVerifyCommand()),
@@ -226,6 +233,7 @@ export function resolveAutoRunConfig(state = {}, baseEnv = process.env) {
       judge: Boolean(resolveJudgeCommand(env)),
       review: Boolean(resolveReviewCommand(env)),
       designRender: Boolean(resolveDesignRenderCommand(env)),
+      deploy: Boolean(resolveDeployCommand(env)),
     },
     // A4: named verify-command allowlist (keys only — never argv). A project
     // selects one of these by name; empty = only the global verify command (if any).

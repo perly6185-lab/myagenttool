@@ -73,6 +73,7 @@ function makeAutoRun({
   findInvocation = undefined,
   autoApproveInvocation = undefined,
   sendAlert = undefined,
+  runDeploy = undefined,
 } = {}) {
   const calls = { createInvocation: [], startInvocationIfAllowed: [], commit: [], publish: [], pr: [], verify: [], status: [], report: [], merge: [], autoApprove: [], render: [], childCreate: [] };
   let counter = 0;
@@ -143,6 +144,7 @@ function makeAutoRun({
     budgetStatusFor,
     sendAlert,
     findInvocation,
+    runDeploy,
     autoApproveInvocation: autoApproveInvocation
       ? (args) => { calls.autoApprove.push(args); return autoApproveInvocation(args); }
       : undefined,
@@ -1794,4 +1796,66 @@ test("Epic S2: PLAN.json is read with a LARGE cap, not the 16KB brief cap (avoid
   });
   await proposedEpicRun(svc, calls, null, { number: 312 });
   assert.ok(capUsed >= 100_000, `PLAN.json read cap should be large; got ${capUsed}`);
+});
+
+// ---------------------------------------------------------------------------
+// D1 deploy stage: after a merge, run the operator deploy command and record it.
+// ---------------------------------------------------------------------------
+function mergedRun(overrides = {}) {
+  const run = { id: "aur_dep", projectId: sourceProjectId, link: { type: "issue", number: 1, title: "X" }, invocationId: null, prNumber: 7, prState: "MERGED", ...overrides };
+  state.autoRuns.unshift(run);
+  return run;
+}
+
+test("D1 deploy: deployOnMerge + a deploy command records a deployment on a merged run", async () => {
+  const { svc } = makeAutoRun({ runDeploy: async () => ({ deployed: true, summary: "shipped" }) });
+  state.autoRunSettings = { deployOnMerge: true };
+  const run = mergedRun();
+  const rec = await svc.maybeDeployAfterMerge(run);
+  assert.equal(rec.status, "deployed");
+  assert.equal(rec.prNumber, 7);
+  assert.equal(state.deployments[0].id, rec.id, "recorded in the deployments collection");
+  assert.equal(run.deployment.status, "deployed", "stamped on the run");
+});
+
+test("D1 deploy: skipped when off, when unconfigured, and under the kill switch", async () => {
+  const a = makeAutoRun({ runDeploy: async () => ({ deployed: true }) }); // harness default: deployOnMerge unset
+  assert.equal(await a.svc.maybeDeployAfterMerge(mergedRun()), null, "off -> skip");
+  state.autoRunSettings = { deployOnMerge: true };
+  const b = makeAutoRun({ runDeploy: undefined });
+  assert.equal(await b.svc.maybeDeployAfterMerge(mergedRun({ id: "aur_dep2" })), null, "no command -> skip");
+  state.autoRunSettings = { deployOnMerge: true, autonomyKillSwitch: true };
+  const c = makeAutoRun({ runDeploy: async () => ({ deployed: true }) });
+  assert.equal(await c.svc.maybeDeployAfterMerge(mergedRun({ id: "aur_dep3" })), null, "kill switch halts delivery too");
+  assert.equal((state.deployments ?? []).length, 0, "nothing recorded across all three skips");
+});
+
+test("D1 deploy: idempotent per merged PR (a second call doesn't re-deploy)", async () => {
+  let calls = 0;
+  const { svc } = makeAutoRun({ runDeploy: async () => { calls++; return { deployed: true }; } });
+  state.autoRunSettings = { deployOnMerge: true };
+  const run = mergedRun();
+  await svc.maybeDeployAfterMerge(run);
+  await svc.maybeDeployAfterMerge(run);
+  assert.equal(calls, 1, "the same merged PR deploys once");
+  assert.equal(state.deployments.length, 1);
+});
+
+test("D1 deploy: a failed deploy is recorded as failed; an infra miss (null) records nothing", async () => {
+  const { svc } = makeAutoRun({ runDeploy: async () => ({ deployed: false, summary: "healthcheck failed" }) });
+  state.autoRunSettings = { deployOnMerge: true };
+  const rec = await svc.maybeDeployAfterMerge(mergedRun());
+  assert.equal(rec.status, "failed");
+  assert.equal(state.deployments[0].status, "failed");
+
+  const infra = makeAutoRun({ runDeploy: async () => null });
+  state.autoRunSettings = { deployOnMerge: true };
+  assert.equal(await infra.svc.maybeDeployAfterMerge(mergedRun({ id: "aur_dep_infra", prNumber: 9 })), null);
+  assert.equal(state.deployments.filter((d) => d.prNumber === 9).length, 0, "an infra miss is not a change-failure");
+});
+
+test("D1 deploy: a non-MERGED run is never deployed", async () => {
+  const { svc } = makeAutoRun({ runDeploy: async () => ({ deployed: true }) });
+  state.autoRunSettings = { deployOnMerge: true };
+  assert.equal(await svc.maybeDeployAfterMerge(mergedRun({ prState: "OPEN" })), null);
 });

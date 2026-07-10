@@ -42,6 +42,9 @@ export function createServerState({ defaultProjectPath, now }) {
     projectTargets: [createProjectTargetRecord(defaultProject, now)],
     worktrees: [],
     autoRuns: [],
+    // D1 deploy stage: one record per post-merge deploy attempt (feeds deploy
+    // frequency + change-failure/recovery). Empty until deployOnMerge is used.
+    deployments: [],
     // A3 circuit breaker: consecutive auto-run failures open it (pause starts).
     autoRunBreaker: { consecutiveFailures: 0, openUntil: null },
     agents: createDefaultAgents(now),
@@ -141,6 +144,7 @@ export function resetStateForSelfCheck({ state, now }) {
   }
   state.invocations = [];
   state.worktreeReviews = [];
+  state.deployments = [];
   state.applications = [];
   state.applicationRecoveryActions = [];
   state.events = [];

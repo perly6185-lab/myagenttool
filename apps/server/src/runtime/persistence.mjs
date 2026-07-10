@@ -41,6 +41,7 @@ const persistedArrayKeys = [
   "invocations",
   "worktrees",
   "autoRuns",
+  "deployments",
   "compareRuns",
   "worktreeReviews",
   "events",

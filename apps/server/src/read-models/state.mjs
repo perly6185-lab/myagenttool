@@ -197,6 +197,7 @@ export function buildPublicState({
     loopRoutines: loopRoutineReadModel(),
     worktrees: byProject(state.worktrees),
     worktreeReviews: byProject(state.worktreeReviews),
+    deployments: byProject(state.deployments ?? []),
     agent: defaultAgent(),
     agents: state.agents,
     invocations,
