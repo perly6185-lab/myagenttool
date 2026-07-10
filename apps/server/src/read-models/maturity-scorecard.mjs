@@ -15,6 +15,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { readEvalTrend, summarizeEvalTrend } from "../services/eval-trend.mjs";
+import { summarizeDeployments } from "../services/auto-run-deploy-metrics.mjs";
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../../..");
 const METRICS_DIR = resolve(REPO_ROOT, ".myagenttool/metrics");
@@ -124,9 +125,12 @@ export function computeMaturityScorecard({
     gate: "releases carry rollback notes; deploy recovery time <1h",
     anchor: "DORA recovery time; SLSA/SSDF",
     frontier: "partial",
-    measured: recoveryH == null ? null : `recovery ${recoveryH}h`,
+    measured: recoveryH == null ? null : `deploy recovery ${recoveryH}h`,
     verdict: recoveryH == null ? "indeterminate" : verdict(recoveryH, recoveryH < 1),
-    detail: "deploy recovery time is not instrumented — no deploy target exists yet",
+    detail:
+      recoveryH == null
+        ? "deploy recovery time not yet measured — enable the deploy stage (deployOnMerge + a deploy command) so a failed→recovered deploy is recorded"
+        : undefined,
   });
 
   // L6 — inbound feedback auto-triaged to tracked items (frontier local target).
@@ -204,7 +208,7 @@ function latestArtifact(kind, metricsDir = METRICS_DIR) {
  * that can't be read stays null (→ indeterminate levels). `metricsDir`/`evalTrend`
  * are injectable for tests.
  */
-export function loadMaturityInputs({ metricsDir = METRICS_DIR, evalTrend, repoRoot = REPO_ROOT } = {}) {
+export function loadMaturityInputs({ metricsDir = METRICS_DIR, evalTrend, repoRoot = REPO_ROOT, deployments = null } = {}) {
   const dora = latestArtifact("dora", metricsDir);
   const backlog = latestArtifact("backlog", metricsDir);
   const governance = latestArtifact("governance", metricsDir);
@@ -213,7 +217,12 @@ export function loadMaturityInputs({ metricsDir = METRICS_DIR, evalTrend, repoRo
   // L0 proxy: the ladder's home doc exists on disk. (The full link/docs check is a
   // CI concern; presence is a cheap, honest floor for "docs only".)
   const docsOk = existsSync(resolve(repoRoot, "docs/engineering/FULL_FLOW_AI_DELIVERY.md"));
-  return { docsOk, dora, backlog, governance, evalSummary };
+  // L5 recovery: the deploy stage (D1/D2) instruments deploy recovery time locally,
+  // so the gate that was indeterminate "for lack of a deploy target" can now be
+  // measured. Only a real median (a failure recovered by a later success) feeds it.
+  const deploy = Array.isArray(deployments) && deployments.length ? summarizeDeployments(deployments) : null;
+  const release = deploy && deploy.recoveryHours?.median != null ? { recoveryHours: deploy.recoveryHours.median } : null;
+  return { docsOk, dora, backlog, governance, evalSummary, release, deploy };
 }
 
 /** Load inputs + compute — the read-model behind GET /api/maturity. */
