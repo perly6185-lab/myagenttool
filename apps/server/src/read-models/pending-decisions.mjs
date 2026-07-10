@@ -44,6 +44,7 @@ export function pendingDecisions({
   compareRuns = [],
   codexApprovalBrokerRequests = [],
   lifecycleLocalApprovals = [],
+  lifecycleRollbackRequests = [],
   invocationsById = new Map(),
 } = {}) {
   const out = [];
@@ -144,6 +145,24 @@ export function pendingDecisions({
       section: "agents",
       targetId: a.agentId ?? null,
       ref: { approvalId: a.id, recipeId: a.recipeId ?? null, agentId: a.agentId ?? null },
+    });
+  }
+
+  // 6. Lifecycle rollback requests — a failed lifecycle op with a rollback the human
+  // can queue. Single-action ("queue rollback"), not binary. queueRollbackAction
+  // flips status to "queued", so `available` is the genuinely-pending state.
+  for (const r of lifecycleRollbackRequests) {
+    if (r?.status !== "available") continue;
+    out.push({
+      id: `rollback:${r.id}`,
+      kind: "lifecycle_rollback",
+      title: "Lifecycle rollback available",
+      subtitle: truncate(r.summary ?? "A lifecycle action failed — queue its rollback?"),
+      projectId: null,
+      createdAt: r.createdAt ?? null,
+      section: "agents",
+      targetId: r.agentId ?? null,
+      ref: { rollbackRequestId: r.id, recipeId: r.recipeId ?? null, agentId: r.agentId ?? null },
     });
   }
 

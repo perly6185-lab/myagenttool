@@ -492,6 +492,8 @@ export const api = {
     request("POST", `/api/m3/lifecycle-approvals/${encodeURIComponent(id)}/approve`),
   denyLifecycleApproval: (id: string) =>
     request("POST", `/api/m3/lifecycle-approvals/${encodeURIComponent(id)}/deny`),
+  queueLifecycleRollback: (id: string) =>
+    request("POST", `/api/m3/lifecycle-rollbacks/${encodeURIComponent(id)}/queue`),
   approveCodexApproval: (id: string) =>
     request("POST", `/api/codex/approval-broker/${encodeURIComponent(id)}/approve`),
   denyCodexApproval: (id: string) =>

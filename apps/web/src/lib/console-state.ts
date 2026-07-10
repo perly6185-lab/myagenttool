@@ -111,7 +111,8 @@ export type PendingDecisionKind =
   | "merge"
   | "compare_promote"
   | "codex_broker"
-  | "lifecycle_approval";
+  | "lifecycle_approval"
+  | "lifecycle_rollback";
 
 export interface PendingDecision {
   id: string;
@@ -135,6 +136,7 @@ export interface PendingDecision {
     requestId?: string;
     recipeId?: string | null;
     agentId?: string | null;
+    rollbackRequestId?: string;
   };
 }
 
