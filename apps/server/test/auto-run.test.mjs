@@ -161,7 +161,9 @@ before(() => {
 
 beforeEach(() => {
   let counter = 0;
-  state = { projects: [], worktrees: [], autoRuns: [], projectTargets: [], device: { unlinkState: "linked" }, currentProjectId: null };
+  // Self-repair OFF by default so the existing verify-gate tests still assert the
+  // straight block; the dedicated repair test opts in with maxRepairAttempts.
+  state = { projects: [], worktrees: [], autoRuns: [], projectTargets: [], device: { unlinkState: "linked" }, currentProjectId: null, autoRunSettings: { maxRepairAttempts: 0 } };
   projectSvc = createProjectService({
     state,
     now: () => new Date().toISOString(),
@@ -678,6 +680,48 @@ test("verification gate: a failing check blocks the PR", async () => {
   assert.match(autoRun.error, /failed/);
   assert.equal(calls.publish.length, 0, "a blocked run never publishes");
   assert.equal(calls.pr.length, 0, "a blocked run never opens a PR");
+});
+
+test("self-repair: a failing check re-attempts (preApproved), then blocks after the cap", async () => {
+  const { svc, calls } = makeAutoRun({ verify: () => ({ passed: false, verified: true, summary: "`test` failed (exit 1)." }) });
+  state.autoRunSettings = { maxRepairAttempts: 2 };
+  const { autoRun, invocation } = await svc.startAutoRun({
+    projectId: sourceProjectId,
+    link: { type: "issue", number: 150, title: "Flaky", url: null, state: "open" },
+    agentId: "agt_1", name: "issue-150",
+  });
+  // 1st completion → verify fails → repair attempt 1 (NOT blocked).
+  await svc.advanceAutoRunForInvocation({ ...invocation, status: "succeeded" });
+  assert.notEqual(autoRun.status, "blocked", "first failure repairs, not blocks");
+  assert.equal(autoRun.repairAttempts, 1);
+  const repair = calls.createInvocation.at(-1);
+  assert.equal(repair.options.preApproved, true, "repair skips the human gate (continuation of an approved run)");
+  assert.match(repair.task, /FAILED the verification check/);
+  assert.equal(calls.pr.length, 0);
+  // 2nd → attempt 2; 3rd → cap reached → block.
+  await svc.advanceAutoRunForInvocation({ id: "inv_fake_1", status: "succeeded", worktreeId: autoRun.worktreeId });
+  assert.equal(autoRun.repairAttempts, 2);
+  await svc.advanceAutoRunForInvocation({ id: "inv_fake_1", status: "succeeded", worktreeId: autoRun.worktreeId });
+  assert.equal(autoRun.status, "blocked", "blocks once the repair cap is exhausted");
+  assert.equal(calls.pr.length, 0);
+});
+
+test("self-repair: a fail then a pass reaches pr_open", async () => {
+  let n = 0;
+  const { svc, calls } = makeAutoRun({
+    verify: () => (n++ === 0 ? { passed: false, verified: true, summary: "failed" } : { passed: true, verified: true, summary: "passed" }),
+  });
+  state.autoRunSettings = { maxRepairAttempts: 2 };
+  const { autoRun, invocation } = await svc.startAutoRun({
+    projectId: sourceProjectId,
+    link: { type: "issue", number: 151, title: "Fixable", url: null, state: "open" },
+    agentId: "agt_1", name: "issue-151",
+  });
+  await svc.advanceAutoRunForInvocation({ ...invocation, status: "succeeded" }); // fail → repair
+  assert.equal(autoRun.repairAttempts, 1);
+  await svc.advanceAutoRunForInvocation({ id: "inv_fake_1", status: "succeeded", worktreeId: autoRun.worktreeId }); // repair → pass → PR
+  assert.equal(autoRun.status, "pr_open");
+  assert.equal(calls.pr.length, 1, "opens a PR once the repair passes");
 });
 
 test("verification gate: an unconfigured gate opens the PR but labels it unverified", async () => {

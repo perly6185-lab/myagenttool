@@ -88,6 +88,7 @@ export async function handleInvocationRoutes({
       actor: _clientActor,
       idempotencyKey: _clientIdempotencyKey,
       requestedBy: _clientRequestedBy,
+      preApproved: _clientPreApproved, // server-internal only — a client must never skip the local-approval gate
       ...safeInvocationOptions
     } = invocationOptions;
     const idempotencyKey = String(req.headers["idempotency-key"] ?? body.idempotencyKey ?? "").trim() || undefined;
@@ -136,6 +137,7 @@ export async function handleInvocationRoutes({
       idempotencyKey: _clientIdempotencyKey,
       requestedBy: _clientRequestedBy,
       projectId: _clientProjectId,
+      preApproved: _clientPreApproved, // server-internal only
       ...safeCompareOptions
     } = compareOptions;
     const compareRun = createCompareRun(task, agents, {
