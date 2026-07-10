@@ -83,6 +83,7 @@ function makeAutoRun({
     appendEvent: () => {},
     persistStateSoon: () => {},
     createWorktree: projectSvc.createWorktree,
+    destroyWorktree: projectSvc.destroyWorktree,
     findAgent: (id) => (agent && agent.id === id ? agent : null),
     defaultAgent: () => agent,
     createInvocation: (task, ag, options) => {
@@ -722,6 +723,45 @@ test("self-repair: a fail then a pass reaches pr_open", async () => {
   await svc.advanceAutoRunForInvocation({ id: "inv_fake_1", status: "succeeded", worktreeId: autoRun.worktreeId }); // repair → pass → PR
   assert.equal(autoRun.status, "pr_open");
   assert.equal(calls.pr.length, 1, "opens a PR once the repair passes");
+});
+
+test("a denied approval fails the run AND tears down its worktree+branch (no orphan blocks a re-run)", async () => {
+  const { svc } = makeAutoRun({});
+  const { autoRun, invocation } = await svc.startAutoRun({
+    projectId: sourceProjectId,
+    link: { type: "issue", number: 160, title: "Denied thing", url: null, state: "open" },
+    agentId: "agt_1", name: "issue-160",
+  });
+  const wt = state.worktrees.find((w) => w.id === autoRun.worktreeId);
+  assert.ok(wt, "a worktree was created for the run");
+  const repoRoot = wt.repoPath;
+  const branch = wt.branchName;
+  assert.ok(git(repoRoot, "branch", "--list", branch).includes(branch), "the branch exists before denial");
+
+  // The human denies at the approval gate; the composer routes that to the run.
+  svc.syncAutoRunOnDenial({ id: invocation.id });
+
+  assert.equal(autoRun.status, "failed");
+  assert.match(autoRun.error, /denied/i);
+  assert.ok(!state.worktrees.some((w) => w.id === wt.id), "the worktree registry entry is gone");
+  assert.equal(git(repoRoot, "branch", "--list", branch), "", "the branch is deleted — a fresh run on #160 won't hit 'already exists'");
+});
+
+test("syncAutoRunOnDenial is a guarded no-op: unknown invocation, and a settled run keeps its worktree", async () => {
+  const { svc } = makeAutoRun({});
+  assert.equal(svc.syncAutoRunOnDenial({ id: "inv_nope" }), null, "unknown invocation -> null no-op");
+
+  const { autoRun, invocation } = await svc.startAutoRun({
+    projectId: sourceProjectId,
+    link: { type: "issue", number: 161, title: "Already done", url: null, state: "open" },
+    agentId: "agt_1", name: "issue-161",
+  });
+  const worktreeId = autoRun.worktreeId;
+  autoRun.status = "pr_open"; // a run that already reached a terminal state
+  const result = svc.syncAutoRunOnDenial({ id: invocation.id });
+  assert.equal(result, null, "a settled run is not re-failed by a stray denial");
+  assert.equal(autoRun.status, "pr_open", "status untouched");
+  assert.ok(state.worktrees.some((w) => w.id === worktreeId), "a settled run keeps its worktree (only an abandoned run is torn down)");
 });
 
 test("verification gate: an unconfigured gate opens the PR but labels it unverified", async () => {

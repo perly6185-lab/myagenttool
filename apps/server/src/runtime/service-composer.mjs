@@ -105,6 +105,7 @@ export function createServerRuntimeServices({
     readProjectTree,
     removeProject,
     removeWorktree,
+    destroyWorktree,
     searchProjectContent,
     selectProject,
     updateProject,
@@ -265,6 +266,7 @@ export function createServerRuntimeServices({
   // auto-run service exists; until then completion has nothing to advance.
   let advanceAutoRunHook = null;
   let approvalAutoRunHook = null;
+  let denialAutoRunHook = null;
 
   invocationService = createInvocationService({
     state,
@@ -299,6 +301,7 @@ export function createServerRuntimeServices({
     budgetGateForProject,
     onInvocationCompleted: (invocation) => advanceAutoRunHook?.(invocation),
     onInvocationApproved: (invocation) => approvalAutoRunHook?.(invocation),
+    onInvocationDenied: (invocation) => denialAutoRunHook?.(invocation),
   });
 
   const {
@@ -329,7 +332,7 @@ export function createServerRuntimeServices({
   // applies without a restart. No-op when unconfigured; never throws.
   const autoRunAlerts = createAlertDispatcher({ getWebhookUrl: () => state.autoRunSettings?.alertWebhookUrl ?? null });
 
-  const { startAutoRun, advanceAutoRunForInvocation, syncAutoRunOnApproval, retryAutoRun, mergeAutoRunPr, reapStuckAutoRuns, autoMergeSweep, approveDesign, rejectDesign, answerClarify, approveDecomposition, rejectDecomposition } = createAutoRunService({
+  const { startAutoRun, advanceAutoRunForInvocation, syncAutoRunOnApproval, syncAutoRunOnDenial, retryAutoRun, mergeAutoRunPr, reapStuckAutoRuns, autoMergeSweep, approveDesign, rejectDesign, answerClarify, approveDecomposition, rejectDecomposition } = createAutoRunService({
     state,
     now,
     nextId,
@@ -352,6 +355,9 @@ export function createServerRuntimeServices({
     appendEvent,
     persistStateSoon,
     createWorktree,
+    // Destructive teardown for a denied/abandoned run's worktree+branch (so a
+    // re-run on the same issue isn't blocked by a leftover branch).
+    destroyWorktree,
     findAgent,
     defaultAgent,
     createInvocation,
@@ -526,6 +532,7 @@ export function createServerRuntimeServices({
   // Now that the reaction exists, let completion drive it.
   advanceAutoRunHook = advanceAutoRunForInvocation;
   approvalAutoRunHook = syncAutoRunOnApproval;
+  denialAutoRunHook = syncAutoRunOnDenial;
 
   // Routing-evaluation disposition refresh (slice 5): bounded, throttled,
   // read-only gh; persists only when something changed.

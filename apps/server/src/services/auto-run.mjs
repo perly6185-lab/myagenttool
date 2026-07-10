@@ -50,6 +50,7 @@ export function createAutoRunService({
   appendEvent,
   persistStateSoon,
   createWorktree,
+  destroyWorktree,
   findAgent,
   defaultAgent,
   budgetStatusFor,
@@ -771,6 +772,36 @@ export function createAutoRunService({
     return autoRun;
   }
 
+  // Reflect a DENIED approval: the human rejected the run at the gate before the
+  // agent ran, so mark it terminal AND tear down the worktree + branch it created.
+  // Two bugs this closes (both seen live): without the teardown the abandoned
+  // branch blocks a fresh run on the same issue ("branch issue-N already exists");
+  // without this hook the run sat at awaiting_approval forever. The worktree is
+  // empty at denial (the agent never ran), so destroying it loses nothing —
+  // recovery from a denied run is a fresh trigger, not a retry on stale files.
+  function syncAutoRunOnDenial(invocation) {
+    const autoRun = state.autoRuns.find((item) => item.invocationId === invocation?.id);
+    if (!autoRun || settledStatuses.has(autoRun.status)) return null;
+    const worktreeId = autoRun.worktreeId ?? null;
+    setAutoRunStatus(autoRun, "failed", { error: "Local approval denied — worktree and branch cleaned up." });
+    appendEvent({
+      invocationId: invocation.id,
+      type: "auto_run_denied",
+      level: "warn",
+      message: `Auto-run ${autoRun.id} was denied at the approval gate; its worktree and branch were torn down.`,
+      data: { autoRunId: autoRun.id, worktreeId },
+    });
+    if (worktreeId && typeof destroyWorktree === "function") {
+      try {
+        destroyWorktree(worktreeId, { deleteBranch: true });
+      } catch {
+        // Teardown is best-effort; the run is already marked failed.
+      }
+    }
+    persistStateSoon();
+    return autoRun;
+  }
+
   // Retry a failed/blocked auto-run on its existing worktree: rebuild the role
   // prompt and start a fresh invocation for the same record. Without this a
   // failed run dead-ended — the trigger dedup (correctly) never re-picks an
@@ -1241,5 +1272,5 @@ export function createAutoRunService({
     return { reaped, readvanced };
   }
 
-  return { startAutoRun, advanceAutoRunForInvocation, syncAutoRunOnApproval, retryAutoRun, mergeAutoRunPr, reapStuckAutoRuns, autoMergeSweep, approveDesign, rejectDesign, answerClarify, approveDecomposition, rejectDecomposition };
+  return { startAutoRun, advanceAutoRunForInvocation, syncAutoRunOnApproval, syncAutoRunOnDenial, retryAutoRun, mergeAutoRunPr, reapStuckAutoRuns, autoMergeSweep, approveDesign, rejectDesign, answerClarify, approveDecomposition, rejectDecomposition };
 }

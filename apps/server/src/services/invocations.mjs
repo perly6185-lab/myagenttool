@@ -40,6 +40,7 @@ export function createInvocationService({
   closeCodexSession,
   onInvocationCompleted,
   onInvocationApproved,
+  onInvocationDenied,
 }) {
   const {
     completeInvocation,
@@ -92,6 +93,7 @@ export function createInvocationService({
     recordAgentUsage,
     startInvocationIfAllowed,
     onInvocationApproved,
+    onInvocationDenied,
   });
   const { createInvocation } = createInvocationCreationRuntime({
     state,

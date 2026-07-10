@@ -114,6 +114,28 @@ test("removeWorktree purges the removed worktree's dangling reviews, keeps other
   assert.ok(state.worktreeReviews.some((r) => r.worktreeId === "wt_other"), "unrelated reviews survive");
 });
 
+test("destroyWorktree: destructive teardown removes the git worktree AND its branch, then the name is reusable", () => {
+  const source = state.projects.find((p) => p.source !== "worktree");
+  const { worktree } = svc.createWorktree({ projectId: source.id, name: "to destroy", branchName: "myagent/to-destroy" });
+  assert.ok(existsSync(worktree.worktreePath), "worktree dir exists before teardown");
+  assert.ok(git(repoDir, "branch", "--list", "myagent/to-destroy").includes("myagent/to-destroy"), "branch exists before teardown");
+
+  const removed = svc.destroyWorktree(worktree.id);
+
+  assert.equal(removed.id, worktree.id, "returns the removed record (registry cleanup delegated to removeWorktree)");
+  assert.equal(git(repoDir, "branch", "--list", "myagent/to-destroy"), "", "the branch is DELETED — unlike removeWorktree, which keeps it");
+  assert.ok(!existsSync(worktree.worktreePath), "the worktree directory is gone (destructive on disk)");
+  assert.ok(!state.worktrees.some((w) => w.id === worktree.id), "registry entry gone");
+
+  // The whole point of the fix: the same branch name can be created again — a
+  // denied run no longer orphans `issue-N` and blocks the re-run.
+  const { worktree: recreated } = svc.createWorktree({ projectId: source.id, name: "reused", branchName: "myagent/to-destroy" });
+  assert.equal(recreated.branchName, "myagent/to-destroy", "re-creating the branch now succeeds after teardown");
+  svc.destroyWorktree(recreated.id); // tidy
+
+  assert.equal(svc.destroyWorktree("wtr_nope"), null, "unknown id is a null no-op (best-effort, never throws)");
+});
+
 test("submitWorktreeReview binds the verdict to the worktree's current HEAD commit", () => {
   const source = state.projects.find((p) => p.source !== "worktree");
   const { worktree } = svc.createWorktree({ projectId: source.id, name: "sha bind", branchName: "myagent/sha-bind" });
