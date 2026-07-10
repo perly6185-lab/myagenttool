@@ -107,8 +107,9 @@ export function decompositionChildBody({ parentLink, spec }) {
 }
 
 /** `gh issue create` in the repo; returns {number, url} or throws. */
-export async function runChildIssueCreate({ cwd, title, body, gh = defaultGh }) {
-  const result = await gh(["issue", "create", "--title", title, "--body", body], cwd);
+export async function runChildIssueCreate({ cwd, title, body, labels = [], gh = defaultGh }) {
+  const labelArgs = (Array.isArray(labels) ? labels : []).filter(Boolean).flatMap((l) => ["--label", String(l)]);
+  const result = await gh(["issue", "create", "--title", title, "--body", body, ...labelArgs], cwd);
   const url = String(result?.stdout ?? "").trim().split("\n").at(-1) ?? "";
   const number = Number(url.match(/\/issues\/(\d+)\s*$/)?.[1]);
   if (!Number.isFinite(number)) throw new Error(`gh issue create returned no issue url: ${url || "(empty)"}`);
