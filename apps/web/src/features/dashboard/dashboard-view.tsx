@@ -8,6 +8,7 @@ import { FactList } from "@/components/common/fact-list";
 import { SectionHeading } from "@/components/common/section-heading";
 import { Transcript } from "@/features/invocations/transcript";
 import { DecisionAction } from "@/features/invocations/decision-action";
+import { GettingStartedCard } from "@/features/dashboard/getting-started-card";
 import { useConsoleState } from "@/data/use-console-state";
 import { useAsyncAction, api } from "@/data/use-console-actions";
 import { resolveAgents, resolveInvocation } from "@/features/selection";
@@ -142,6 +143,7 @@ export function DashboardView() {
 
   return (
     <div className="flex h-full flex-col gap-4">
+      <GettingStartedCard />
       {/* Transcript — the scrolling conversation area. */}
       <Card className="flex min-h-0 flex-1 flex-col">
         <CardHeader>
