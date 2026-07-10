@@ -110,7 +110,8 @@ export type PendingDecisionKind =
   | "clarify"
   | "merge"
   | "compare_promote"
-  | "codex_broker";
+  | "codex_broker"
+  | "lifecycle_approval";
 
 export interface PendingDecision {
   id: string;
@@ -132,6 +133,8 @@ export interface PendingDecision {
     mergeRisk?: string | null;
     compareRunId?: string;
     requestId?: string;
+    recipeId?: string | null;
+    agentId?: string | null;
   };
 }
 
