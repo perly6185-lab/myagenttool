@@ -31,7 +31,7 @@ import { refreshEpicChildStates } from "../services/auto-run-epic.mjs";
 import { judgeTimeoutMs, resolveJudgeCommand, runAcceptanceJudge } from "../services/auto-run-judge.mjs";
 import { resolveReviewCommand, reviewTimeoutMs, runDiffReview, scanDiffForInjection } from "../services/auto-run-review.mjs";
 import { resolveDesignRenderCommand, designRenderTimeoutMs, runDesignRender } from "../services/design-render.mjs";
-import { resolveDeployCommand, deployTimeoutMs, runDeployCommand } from "../services/auto-run-deploy.mjs";
+import { resolveDeployCommand, deployTimeoutMs, runDeployCommand, resolveRollbackCommand, rollbackTimeoutMs } from "../services/auto-run-deploy.mjs";
 import { decisionConfig } from "../services/auto-run-decision.mjs";
 import { autoRunSettingsEnvOverlay } from "../services/auto-run-config.mjs";
 import { createAlertDispatcher } from "../services/auto-run-alerts.mjs";
@@ -537,6 +537,13 @@ export function createServerRuntimeServices({
       if (!command) return undefined;
       return async ({ link, prNumber, repoPath }) =>
         runDeployCommand({ command, input: { link, prNumber, repoPath }, timeoutMs: deployTimeoutMs(autoRunEnv) });
+    })(),
+    // Self-healing (H1): the operator's rollback command, run on a failed deploy.
+    runRollback: (() => {
+      const command = resolveRollbackCommand(autoRunEnv);
+      if (!command) return undefined;
+      return async ({ link, prNumber, repoPath }) =>
+        runDeployCommand({ command, input: { link, prNumber, repoPath, action: "rollback" }, timeoutMs: rollbackTimeoutMs(autoRunEnv) });
     })(),
   });
   // Now that the reaction exists, let completion drive it.

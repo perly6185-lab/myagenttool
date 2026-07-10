@@ -20,7 +20,7 @@ import { resolveAutoTriggerConfig } from "./auto-trigger.mjs";
 import { deciderTimeoutMs, resolveDeciderCommand } from "./decision-command.mjs";
 import { judgeTimeoutMs, resolveJudgeCommand } from "./auto-run-judge.mjs";
 import { resolveReviewCommand } from "./auto-run-review.mjs";
-import { resolveDeployCommand } from "./auto-run-deploy.mjs";
+import { resolveDeployCommand, resolveRollbackCommand } from "./auto-run-deploy.mjs";
 import { resolveDesignRenderCommand } from "./design-render.mjs";
 import { DEFAULT_SENSITIVE_PATHS } from "./auto-run-risk.mjs";
 import { resolveStatusWritebackConfig } from "./issue-status.mjs";
@@ -140,6 +140,10 @@ export function normalizeAutoRunSettings(patch = {}, prev = {}) {
     // operator's deploy command. Inert unless MYAGENTTOOL_AUTORUN_DEPLOY_COMMAND_JSON
     // is also set (a toggle with no command never deploys).
     deployOnMerge: keep("deployOnMerge", asBool),
+    // Self-healing (H1, opt-in, default off): on a deploy FAILURE, run the
+    // operator's rollback command to restore the last good version (the recovery).
+    // Inert unless MYAGENTTOOL_AUTORUN_ROLLBACK_COMMAND_JSON is set.
+    rollbackOnDeployFailure: keep("rollbackOnDeployFailure", asBool),
   };
 }
 
@@ -226,6 +230,8 @@ export function resolveAutoRunConfig(state = {}, baseEnv = process.env) {
         : DEFAULT_SENSITIVE_PATHS,
     // Deploy stage: opt-in run of the operator deploy command after a merge.
     deployOnMerge: Boolean(settings.deployOnMerge),
+    // Self-healing: opt-in auto-rollback when a deploy fails.
+    rollbackOnDeployFailure: Boolean(settings.rollbackOnDeployFailure),
     // Command knobs are env-only; expose only whether each is configured.
     commands: {
       verify: Boolean(resolveAutoRunVerifyCommand()),
@@ -234,6 +240,7 @@ export function resolveAutoRunConfig(state = {}, baseEnv = process.env) {
       review: Boolean(resolveReviewCommand(env)),
       designRender: Boolean(resolveDesignRenderCommand(env)),
       deploy: Boolean(resolveDeployCommand(env)),
+      rollback: Boolean(resolveRollbackCommand(env)),
     },
     // A4: named verify-command allowlist (keys only — never argv). A project
     // selects one of these by name; empty = only the global verify command (if any).

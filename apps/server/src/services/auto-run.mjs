@@ -80,6 +80,7 @@ export function createAutoRunService({
   renderDesignImages,
   createDecompositionChild,
   runDeploy,
+  runRollback,
 }) {
   // Best-effort issue body fetch (issue links only): richer context for both the
   // decision and the role prompt. Null on any failure — the run proceeds on the
@@ -999,9 +1000,52 @@ export function createAutoRunService({
         message: `Auto-run ${autoRun.id}: deploy of PR #${autoRun.prNumber} FAILED. ${record.summary ?? ""}`.trim(),
         data: { autoRunId: autoRun.id, prNumber: autoRun.prNumber },
       });
+      // Self-healing (H1): auto-rollback restores the last good version. This IS the
+      // recovery — fast + automatic, so L5's "recovery <1h" becomes real. Recorded
+      // as a `rolled_back` deployment that summarizeDeployments counts as the
+      // recovery for this failure. Best-effort; a rollback that can't run is left
+      // for a human (the deploy_failed alert already fired).
+      await maybeRollbackDeploy(autoRun, project);
     }
     persistStateSoon();
     return record;
+  }
+
+  // Self-healing (H1): run the operator rollback command after a failed deploy.
+  async function maybeRollbackDeploy(autoRun, project) {
+    if (!state.autoRunSettings?.rollbackOnDeployFailure || typeof runRollback !== "function") return null;
+    let rb = null;
+    try {
+      rb = await runRollback({ link: autoRun.link, prNumber: autoRun.prNumber, repoPath: project?.path ?? null });
+    } catch {
+      rb = null;
+    }
+    if (!rb?.deployed) return null; // rollback couldn't run or reported failure → leave for a human
+    const rbRecord = {
+      id: nextId("dep_demo"),
+      autoRunId: autoRun.id,
+      projectId: autoRun.projectId ?? null,
+      prNumber: autoRun.prNumber ?? null,
+      status: "rolled_back",
+      summary: rb.summary || `Rolled back after the failed deploy of PR #${autoRun.prNumber}.`,
+      at: now(),
+    };
+    state.deployments = [rbRecord, ...(state.deployments ?? [])].slice(0, 500);
+    autoRun.deployment = { status: "rolled_back", at: rbRecord.at, summary: rbRecord.summary, prNumber: rbRecord.prNumber };
+    appendEvent({
+      invocationId: autoRun.invocationId,
+      type: "auto_run_rolled_back",
+      level: "warn",
+      message: `Auto-run ${autoRun.id}: auto-rolled back the failed deploy of PR #${autoRun.prNumber}.`,
+      data: { autoRunId: autoRun.id, prNumber: autoRun.prNumber },
+    });
+    void sendAlert?.({
+      kind: "deploy_rolled_back",
+      severity: "high",
+      message: `Auto-run ${autoRun.id}: auto-rolled back the failed deploy of PR #${autoRun.prNumber}.`,
+      data: { autoRunId: autoRun.id, prNumber: autoRun.prNumber },
+    });
+    return rbRecord;
   }
 
   // D4 (issue→UI-design plan): the human design gate. Approving a posted design

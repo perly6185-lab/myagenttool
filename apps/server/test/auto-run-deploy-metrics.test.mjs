@@ -73,3 +73,17 @@ test("summarizeDeployments: frequency = successful deploys/week over the span; a
   assert.equal(s.deployFrequencyPerWeek, 1, "2 successes over 14 days = 1/week");
   assert.equal(summarizeDeployments([{ status: "deployed", at: t(BASE) }]).deployFrequencyPerWeek, 1, "zero span -> count");
 });
+
+test("summarizeDeployments: a rollback recovers a failure and is excluded from deploy counts (H1)", () => {
+  const s = summarizeDeployments([
+    { status: "deployed", at: t(BASE) },
+    { status: "failed", at: t(BASE + H) }, // recovered by the rollback 0.5h later
+    { status: "rolled_back", at: t(BASE + 1.5 * H) },
+  ]);
+  assert.equal(s.total, 2, "a rollback is not a deploy attempt");
+  assert.equal(s.deployed, 1);
+  assert.equal(s.failed, 1);
+  assert.equal(s.changeFailureRate, 0.5);
+  assert.equal(s.recoveryHours.count, 1, "the rollback IS the recovery");
+  assert.equal(s.recoveryHours.median, 0.5);
+});

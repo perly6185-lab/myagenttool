@@ -74,6 +74,7 @@ function makeAutoRun({
   autoApproveInvocation = undefined,
   sendAlert = undefined,
   runDeploy = undefined,
+  runRollback = undefined,
 } = {}) {
   const calls = { createInvocation: [], startInvocationIfAllowed: [], commit: [], publish: [], pr: [], verify: [], status: [], report: [], merge: [], autoApprove: [], render: [], childCreate: [] };
   let counter = 0;
@@ -145,6 +146,7 @@ function makeAutoRun({
     sendAlert,
     findInvocation,
     runDeploy,
+    runRollback,
     autoApproveInvocation: autoApproveInvocation
       ? (args) => { calls.autoApprove.push(args); return autoApproveInvocation(args); }
       : undefined,
@@ -1859,3 +1861,49 @@ test("D1 deploy: a non-MERGED run is never deployed", async () => {
   state.autoRunSettings = { deployOnMerge: true };
   assert.equal(await svc.maybeDeployAfterMerge(mergedRun({ prState: "OPEN" })), null);
 });
+
+// ---------------------------------------------------------------------------
+// H1 self-healing: auto-rollback restores the last good version on a failed deploy.
+// ---------------------------------------------------------------------------
+test("H1 rollback: a failed deploy with rollback opted-in records a rolled_back recovery", async () => {
+  let rolledBack = 0;
+  const { svc } = makeAutoRun({
+    runDeploy: async () => ({ deployed: false, summary: "healthcheck failed" }),
+    runRollback: async () => { rolledBack += 1; return { deployed: true, summary: "restored v1" }; },
+  });
+  state.autoRunSettings = { deployOnMerge: true, rollbackOnDeployFailure: true };
+  const rec = await svc.maybeDeployAfterMerge(mergedRun());
+  assert.equal(rec.status, "failed", "the deploy attempt is still recorded as failed");
+  assert.equal(rolledBack, 1, "the rollback command ran");
+  assert.equal(autoRun_deployment_status(state), "rolled_back", "the run reflects the recovery");
+  assert.ok(state.deployments.some((d) => d.status === "rolled_back"), "a rolled_back recovery is recorded");
+});
+
+test("H1 rollback: skipped when off, and a rollback that can't run leaves the failure for a human", async () => {
+  // off: rollbackOnDeployFailure not set
+  const a = makeAutoRun({ runDeploy: async () => ({ deployed: false }), runRollback: async () => ({ deployed: true }) });
+  state.autoRunSettings = { deployOnMerge: true };
+  await a.svc.maybeDeployAfterMerge(mergedRun());
+  assert.ok(!(state.deployments ?? []).some((d) => d.status === "rolled_back"), "off -> no rollback");
+  // on but the rollback command can't run (null) -> no rolled_back record
+  const b = makeAutoRun({ runDeploy: async () => ({ deployed: false }), runRollback: async () => null });
+  state.autoRunSettings = { deployOnMerge: true, rollbackOnDeployFailure: true };
+  await b.svc.maybeDeployAfterMerge(mergedRun({ id: "aur_rb2", prNumber: 8 }));
+  assert.ok(!state.deployments.some((d) => d.status === "rolled_back" && d.prNumber === 8), "rollback that can't run -> left for a human");
+});
+
+test("H1 rollback: a SUCCESSFUL deploy never rolls back", async () => {
+  let rolledBack = 0;
+  const { svc } = makeAutoRun({
+    runDeploy: async () => ({ deployed: true }),
+    runRollback: async () => { rolledBack += 1; return { deployed: true }; },
+  });
+  state.autoRunSettings = { deployOnMerge: true, rollbackOnDeployFailure: true };
+  await svc.maybeDeployAfterMerge(mergedRun());
+  assert.equal(rolledBack, 0, "no rollback on a successful deploy");
+});
+
+function autoRun_deployment_status(s) {
+  const run = (s.autoRuns ?? []).find((r) => r.deployment);
+  return run?.deployment?.status ?? null;
+}

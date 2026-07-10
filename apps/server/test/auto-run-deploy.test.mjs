@@ -8,7 +8,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { resolveDeployCommand, deployTimeoutMs, normalizeDeployResult, runDeployCommand } from "../src/services/auto-run-deploy.mjs";
+import { resolveDeployCommand, deployTimeoutMs, normalizeDeployResult, runDeployCommand, resolveRollbackCommand, rollbackTimeoutMs } from "../src/services/auto-run-deploy.mjs";
 
 test("resolveDeployCommand parses a valid argv array, rejects junk", () => {
   assert.deepEqual(resolveDeployCommand({ MYAGENTTOOL_AUTORUN_DEPLOY_COMMAND_JSON: '["node","deploy.mjs"]' }), ["node", "deploy.mjs"]);
@@ -55,4 +55,12 @@ test("runDeployCommand: a command that can't run resolves to null (infra miss, n
 test("runDeployCommand: a hung command is killed at the timeout -> null", async () => {
   const hung = await runDeployCommand({ command: ["node", "-e", "setTimeout(()=>{}, 60000)"], timeoutMs: 300 });
   assert.equal(hung, null);
+});
+
+test("resolveRollbackCommand + rollbackTimeoutMs mirror the deploy command (H1)", () => {
+  assert.deepEqual(resolveRollbackCommand({ MYAGENTTOOL_AUTORUN_ROLLBACK_COMMAND_JSON: '["node","rb.mjs"]' }), ["node", "rb.mjs"]);
+  assert.equal(resolveRollbackCommand({}), null);
+  assert.equal(resolveRollbackCommand({ MYAGENTTOOL_AUTORUN_ROLLBACK_COMMAND_JSON: "[]" }), null);
+  assert.equal(rollbackTimeoutMs({}), 300_000);
+  assert.equal(rollbackTimeoutMs({ MYAGENTTOOL_AUTORUN_ROLLBACK_TIMEOUT_MS: "60000" }), 60_000);
 });
