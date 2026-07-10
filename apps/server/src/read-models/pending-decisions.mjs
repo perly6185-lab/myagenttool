@@ -55,11 +55,14 @@ export function pendingDecisions({
   for (const a of approvalRequests) {
     if (a?.status !== "pending") continue;
     const inv = invOf(a.invocationId);
+    // approval.summary is an object ({risk,data,cost,…}) in production, a string in
+    // some tests — use the risk line, never the stringified object ("[object Object]").
+    const summaryText = typeof a.summary === "string" ? a.summary : a.summary?.risk;
     out.push({
       id: `approval:${a.id}`,
       kind: "invocation_approval",
       title: "Invocation needs approval",
-      subtitle: truncate([a.riskLevel ? `${a.riskLevel} risk` : null, a.summary ?? inv?.task].filter(Boolean).join(" · ")),
+      subtitle: truncate([a.riskLevel ? `${a.riskLevel} risk` : null, summaryText ?? inv?.task].filter(Boolean).join(" · ")),
       projectId: inv?.projectId ?? null,
       createdAt: a.createdAt ?? null,
       section: "invocations",
@@ -121,7 +124,7 @@ export function pendingDecisions({
       id: `codex:${q.id}`,
       kind: "codex_broker",
       title: "Codex tool permission",
-      subtitle: truncate(q.summary ?? q.toolName ?? q.command ?? inv?.task ?? "Approve or deny a tool call"),
+      subtitle: truncate((typeof q.summary === "string" ? q.summary : null) ?? q.toolName ?? q.command ?? inv?.task ?? "Approve or deny a tool call"),
       projectId: inv?.projectId ?? null,
       createdAt: q.createdAt ?? null,
       section: "invocations",
