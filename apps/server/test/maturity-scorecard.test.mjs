@@ -71,7 +71,24 @@ test("L5 stays indeterminate until deploy recovery time is instrumented", () => 
   assert.equal(byLevel(withRecovery)[5].verdict, "met");
 });
 
-test("full ladder met → currentLevel 6", () => {
+test("nextGap points at the first blocker with an actionable message", () => {
+  // L2 unmet (CI-green low) is the blocker to advancing from L1.
+  const unmet = computeMaturityScorecard({
+    docsOk: true,
+    backlog: { labelCoverage: { rate: 1 }, milestoneCoverage: { rate: 1 } },
+    dora: { ciChecks: { greenRate: 0.702 }, leadTimeHours: { median: 0.03 } },
+  });
+  assert.equal(unmet.nextGap.level, 2);
+  assert.equal(unmet.nextGap.verdict, "unmet");
+  assert.match(unmet.nextGap.action, /Close the gap/);
+
+  // An indeterminate blocker asks to instrument, not to "close a gap".
+  const indet = computeMaturityScorecard({ docsOk: true });
+  assert.equal(indet.nextGap.level, 1); // L1 has no backlog data → indeterminate
+  assert.match(indet.nextGap.action, /Instrument/);
+});
+
+test("full ladder met → currentLevel 6, nextGap null", () => {
   const sc = computeMaturityScorecard({
     docsOk: true,
     backlog: { labelCoverage: { rate: 1 }, milestoneCoverage: { rate: 1 } },
@@ -83,4 +100,5 @@ test("full ladder met → currentLevel 6", () => {
   });
   assert.equal(sc.currentLevel, 6);
   assert.ok(sc.levels.every((l) => l.verdict === "met"));
+  assert.equal(sc.nextGap, null);
 });

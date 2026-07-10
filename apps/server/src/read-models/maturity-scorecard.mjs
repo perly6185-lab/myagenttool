@@ -152,7 +152,26 @@ export function computeMaturityScorecard({
     else break;
   }
 
-  return { levels, currentLevel, disclaimer: MATURITY_DISCLAIMER };
+  // The blocker to advancing: the first level that isn't met (== currentLevel+1 by
+  // contiguity). Its gate-vs-measured IS the gap; `indeterminate` means "measure
+  // this before you can claim the level" rather than "you fell short".
+  const blocker = levels.find((l) => l.verdict !== "met") ?? null;
+  const nextGap = blocker
+    ? {
+        level: blocker.level,
+        name: blocker.name,
+        verdict: blocker.verdict,
+        gate: blocker.gate,
+        measured: blocker.measured,
+        detail: blocker.detail,
+        action:
+          blocker.verdict === "indeterminate"
+            ? `Instrument the ${blocker.name} gate — it can't be measured yet.`
+            : `Close the gap on the ${blocker.name} gate: ${blocker.gate}.`,
+      }
+    : null;
+
+  return { levels, currentLevel, nextGap, disclaimer: MATURITY_DISCLAIMER };
 }
 
 // --- best-effort artifact loading (missing/garbage → null, never throws) ---
