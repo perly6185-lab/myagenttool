@@ -10,6 +10,7 @@ import { WebNavigationLinkActions } from "@/components/common/web-navigation-lin
 import { invocationDeepLink, webNavigationStateFromLink } from "@/app/deep-links";
 import { EventTimeline } from "@/features/invocations/event-timeline";
 import { DecisionAction } from "@/features/invocations/decision-action";
+import { ImportedUsageTable } from "@/features/economics/imported-usage-table";
 import { useConsoleState } from "@/data/use-console-state";
 import { api } from "@/data/use-console-actions";
 import { resolveInvocation } from "@/features/selection";
@@ -58,6 +59,11 @@ export function InvocationsView() {
   const selected = resolveInvocation(state, selectedInvocationId);
   const events = selected
     ? (state?.events ?? []).filter((e) => e.invocationId === selected.id).slice(0, 40)
+    : [];
+  // The rows THIS run imported (e.g. a ccusage wrapper report) — the timeline
+  // event only says "Imported N row(s)"; the content lives here.
+  const importedRows = selected
+    ? (state?.importedUsageEstimates ?? []).filter((row) => row.invocationId === selected.id)
     : [];
 
   function viewInvocation(invocationId: string) {
@@ -160,6 +166,28 @@ export function InvocationsView() {
           onViewInvocation={viewInvocation}
           onViewWebNavigationLink={viewWebNavigationLink}
         />
+      ) : null}
+
+      {selected && importedRows.length ? (
+        <Card>
+          <CardHeader>
+            <div className="flex items-start justify-between gap-3">
+              <CardTitle>Imported usage · this run</CardTitle>
+              <div className="flex shrink-0 items-center gap-2">
+                <Badge tone="neutral">Non-authoritative</Badge>
+                <Button variant="ghost" size="sm" className="h-7 px-2 text-xs" onClick={() => setSection("economics")}>
+                  View in Economics
+                </Button>
+              </div>
+            </div>
+            <p className="text-sm text-muted-foreground">
+              {importedRows.length} estimate row(s) this run imported — externally billed, never rolled into metered ledger cost.
+            </p>
+          </CardHeader>
+          <CardContent>
+            <ImportedUsageTable rows={importedRows} />
+          </CardContent>
+        </Card>
       ) : null}
 
       <Card>
