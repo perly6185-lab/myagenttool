@@ -122,6 +122,7 @@ export type PendingDecisionKind =
   | "merge"
   | "compare_promote"
   | "codex_broker"
+  | "application_recovery"
   | "lifecycle_approval"
   | "lifecycle_rollback";
 
@@ -148,6 +149,8 @@ export interface PendingDecision {
     recipeId?: string | null;
     agentId?: string | null;
     rollbackRequestId?: string;
+    recoveryActionRequestId?: string | null;
+    applicationId?: string | null;
   };
 }
 
