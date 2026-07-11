@@ -1067,6 +1067,8 @@ export interface ApplicationSnapshot {
   path?: string | null;
   ownerTeamId?: string | null;
   capabilitiesVersion?: number;
+  /** Opt-in orchestration auto-recovery (docs/design/ORCHESTRATION_AUTO_RECOVERY.md). */
+  autoRecovery?: { enabled: boolean; maxAttempts?: number } | null;
   probe?: ApplicationProbe | null;
   orchestrations?: ApplicationOrchestration[];
   orchestrationIds?: string[];

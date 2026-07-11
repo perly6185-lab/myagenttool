@@ -149,6 +149,30 @@ function ApplicationActions({ application }: { application: ApplicationSnapshot 
               Generate orchestration
             </Button>
           ) : null}
+          {status !== "archived" ? (
+            application.autoRecovery?.enabled ? (
+              <Button size="sm" variant="secondary" disabled={pending} onClick={() => setConfirm({
+                title: `Disable auto-recovery for "${application.name}"?`,
+                description: "Failed orchestration runs will wait for a human recovery decision again.",
+                confirmLabel: "Disable auto-recovery",
+                destructive: false,
+                run: () => api.setApplicationAutoRecovery(application.id, { enabled: false, approvalToken: APPROVAL_TOKEN }),
+              })}>
+                Disable auto-recovery
+              </Button>
+            ) : (
+              <Button size="sm" variant="secondary" disabled={pending} onClick={() => setConfirm({
+                title: `Enable auto-recovery for "${application.name}"?`,
+                description: "Failed orchestration runs (runtime error / dispatch timeout) auto-rerun, capped at 2 consecutive attempts per routine. Approval-gated recoveries always wait for a human.",
+                confirmLabel: "Enable auto-recovery",
+                destructive: true,
+                run: () => api.setApplicationAutoRecovery(application.id, { enabled: true, approvalToken: APPROVAL_TOKEN }),
+              })}>
+                Enable auto-recovery
+              </Button>
+            )
+          ) : null}
+          {application.autoRecovery?.enabled ? <Badge tone="warning">auto-recovery on</Badge> : null}
         </div>
         {error && !confirm ? <p className="text-xs text-destructive">{error}</p> : null}
         <ConfirmModal
@@ -698,6 +722,7 @@ function RecoveryLineage({
             <span className="text-xs font-medium">{label}</span>
             <Badge tone="neutral">{readableRecoveryActionType(request.actionType)}</Badge>
             <Badge tone={recoveryActionRequestTone(request.status)}>{readableRecoveryActionRequestStatus(request.status)}</Badge>
+            {request.requestedBy === "system_auto_recovery" ? <Badge tone="warning">auto</Badge> : null}
             {outcome ? <Badge tone={recoveryOutcomeTone(outcome.state)}>{readableRecoveryOutcome(outcome.state)}</Badge> : null}
             {outcome?.reason ? <Badge tone={recoveryOutcomeSeverityTone(outcome.severity)}>{readableRecoveryOutcomeReason(outcome.reason)}</Badge> : null}
             {explanation?.state ? <Badge tone={recoveryExplanationTone(explanation.state)}>{readableRecoveryExplanationState(explanation.state)}</Badge> : null}
