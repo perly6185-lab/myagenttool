@@ -19,6 +19,7 @@ export async function handleApplicationRoutes({
   registerApplication,
   requestApplicationOrchestrationRecoveryAction,
   setApplicationAutoRecovery,
+  setApplicationHealthProbe,
   transitionApplication,
   createCapabilityInvocation,
   listApplicationOrchestrationRuns,
@@ -176,17 +177,22 @@ export async function handleApplicationRoutes({
     return true;
   }
 
-  const autoRecoveryMatch = url.pathname.match(/^\/api\/applications\/([^/]+)\/auto-recovery$/);
-  if (autoRecoveryMatch && req.method === "POST") {
-    const applicationId = decodeURIComponent(autoRecoveryMatch[1]);
+  // Governed per-application config toggles (auto-recovery / health-probe): same
+  // shape — tenancy guard, explicit approvalToken (409 without), 400 on bad input.
+  const configMatch = url.pathname.match(/^\/api\/applications\/([^/]+)\/(auto-recovery|health-probe)$/);
+  if (configMatch && req.method === "POST") {
+    const applicationId = decodeURIComponent(configMatch[1]);
+    const kind = configMatch[2];
     if (denyForeignApplication({ res, sendJson, state, actor, applicationId, findApplication })) return true;
     const body = await readJson(req);
     if (!String(body?.approvalToken ?? "").trim()) {
-      sendJson(res, 409, { error: "approval_required", reason: "auto-recovery configuration requires an explicit approvalToken.", applicationId });
+      sendJson(res, 409, { error: "approval_required", reason: `${kind} configuration requires an explicit approvalToken.`, applicationId });
       return true;
     }
     try {
-      const application = setApplicationAutoRecovery(applicationId, body, actor);
+      const application = kind === "auto-recovery"
+        ? setApplicationAutoRecovery(applicationId, body, actor)
+        : setApplicationHealthProbe(applicationId, body, actor);
       if (!application) {
         sendJson(res, 404, { error: "application_not_found" });
         return true;
@@ -194,7 +200,7 @@ export async function handleApplicationRoutes({
       sendJson(res, 200, { application });
     } catch (error) {
       sendJson(res, 400, {
-        error: "invalid_auto_recovery_config",
+        error: kind === "auto-recovery" ? "invalid_auto_recovery_config" : "invalid_health_probe_config",
         message: error instanceof Error ? error.message : String(error),
       });
     }

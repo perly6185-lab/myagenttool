@@ -1069,6 +1069,10 @@ export interface ApplicationSnapshot {
   capabilitiesVersion?: number;
   /** Opt-in orchestration auto-recovery (docs/design/ORCHESTRATION_AUTO_RECOVERY.md). */
   autoRecovery?: { enabled: boolean; maxAttempts?: number } | null;
+  /** Opt-in periodic source health probe (docs/design/APPLICATION_HEALTH_PROBE.md). */
+  healthProbe?: { enabled: boolean; intervalMinutes?: number; lastCheckedAt?: string | null } | null;
+  /** Latest health check result; auto-degrade only (active→offline), never auto-online. */
+  health?: { status: "healthy" | "unhealthy" | "unsupported" | string; reason?: string | null; checkedAt?: string; consecutiveFailures?: number } | null;
   probe?: ApplicationProbe | null;
   orchestrations?: ApplicationOrchestration[];
   orchestrationIds?: string[];

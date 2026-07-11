@@ -172,8 +172,41 @@ function ApplicationActions({ application }: { application: ApplicationSnapshot 
               </Button>
             )
           ) : null}
+          {status !== "archived" ? (
+            application.healthProbe?.enabled ? (
+              <Button size="sm" variant="secondary" disabled={pending} onClick={() => setConfirm({
+                title: `Disable health probe for "${application.name}"?`,
+                description: "The source will no longer be checked periodically.",
+                confirmLabel: "Disable health probe",
+                destructive: false,
+                run: () => api.setApplicationHealthProbe(application.id, { enabled: false, approvalToken: APPROVAL_TOKEN }),
+              })}>
+                Disable health probe
+              </Button>
+            ) : (
+              <Button size="sm" variant="secondary" disabled={pending} onClick={() => setConfirm({
+                title: `Enable health probe for "${application.name}"?`,
+                description: "Checks source availability every 5 minutes. After 2 consecutive failures an active application is taken offline automatically; bringing it back online always needs a human.",
+                confirmLabel: "Enable health probe",
+                destructive: true,
+                run: () => api.setApplicationHealthProbe(application.id, { enabled: true, approvalToken: APPROVAL_TOKEN }),
+              })}>
+                Enable health probe
+              </Button>
+            )
+          ) : null}
           {application.autoRecovery?.enabled ? <Badge tone="warning">auto-recovery on</Badge> : null}
+          {application.healthProbe?.enabled ? <Badge tone="warning">health probe on</Badge> : null}
         </div>
+        {application.health ? (
+          <p className="text-xs text-muted-foreground">
+            Health:{" "}
+            <Badge tone={application.health.status === "healthy" ? "success" : application.health.status === "unhealthy" ? "danger" : "neutral"}>
+              {application.health.status}
+            </Badge>
+            {application.health.reason ? <span> · {application.health.reason}</span> : null}
+          </p>
+        ) : null}
         {error && !confirm ? <p className="text-xs text-destructive">{error}</p> : null}
         <ConfirmModal
           open={Boolean(confirm)}
