@@ -12,6 +12,13 @@ import { useConsoleState } from "@/data/use-console-state";
 import { useAsyncAction, api } from "@/data/use-console-actions";
 import { useUiStore } from "@/store/ui-store";
 import { sourceSummary } from "@/features/applications/applications-view";
+import {
+  autoRecoveryConfirmCopy,
+  autoRecoveryMaxAttempts,
+  healthProbeConfirmCopy,
+  healthProbeIntervalMinutes,
+} from "@/features/applications/application-ops-ui";
+import { Field } from "@/components/common/field";
 import { Transcript } from "@/features/invocations/transcript";
 import {
   isExecutableRecoveryAction,
@@ -150,54 +157,72 @@ function ApplicationActions({ application }: { application: ApplicationSnapshot 
             </Button>
           ) : null}
           {status !== "archived" ? (
-            application.autoRecovery?.enabled ? (
-              <Button size="sm" variant="secondary" disabled={pending} onClick={() => setConfirm({
-                title: `Disable auto-recovery for "${application.name}"?`,
-                description: "Failed orchestration runs will wait for a human recovery decision again.",
-                confirmLabel: "Disable auto-recovery",
-                destructive: false,
-                run: () => api.setApplicationAutoRecovery(application.id, { enabled: false, approvalToken: APPROVAL_TOKEN }),
-              })}>
-                Disable auto-recovery
-              </Button>
-            ) : (
-              <Button size="sm" variant="secondary" disabled={pending} onClick={() => setConfirm({
-                title: `Enable auto-recovery for "${application.name}"?`,
-                description: "Failed orchestration runs (runtime error / dispatch timeout) auto-rerun, capped at 2 consecutive attempts per routine. Approval-gated recoveries always wait for a human.",
-                confirmLabel: "Enable auto-recovery",
-                destructive: true,
-                run: () => api.setApplicationAutoRecovery(application.id, { enabled: true, approvalToken: APPROVAL_TOKEN }),
-              })}>
-                Enable auto-recovery
-              </Button>
-            )
+            <Button size="sm" variant="secondary" disabled={pending} onClick={() => {
+              const next = { enabled: !application.autoRecovery?.enabled };
+              setConfirm({
+                ...autoRecoveryConfirmCopy(application, next),
+                run: () => api.setApplicationAutoRecovery(application.id, { ...next, approvalToken: APPROVAL_TOKEN }),
+              });
+            }}>
+              {application.autoRecovery?.enabled ? "Disable auto-recovery" : "Enable auto-recovery"}
+            </Button>
           ) : null}
           {status !== "archived" ? (
-            application.healthProbe?.enabled ? (
-              <Button size="sm" variant="secondary" disabled={pending} onClick={() => setConfirm({
-                title: `Disable health probe for "${application.name}"?`,
-                description: "The source will no longer be checked periodically.",
-                confirmLabel: "Disable health probe",
-                destructive: false,
-                run: () => api.setApplicationHealthProbe(application.id, { enabled: false, approvalToken: APPROVAL_TOKEN }),
-              })}>
-                Disable health probe
-              </Button>
-            ) : (
-              <Button size="sm" variant="secondary" disabled={pending} onClick={() => setConfirm({
-                title: `Enable health probe for "${application.name}"?`,
-                description: "Checks source availability every 5 minutes. After 2 consecutive failures an active application is taken offline automatically; bringing it back online always needs a human.",
-                confirmLabel: "Enable health probe",
-                destructive: true,
-                run: () => api.setApplicationHealthProbe(application.id, { enabled: true, approvalToken: APPROVAL_TOKEN }),
-              })}>
-                Enable health probe
-              </Button>
-            )
+            <Button size="sm" variant="secondary" disabled={pending} onClick={() => {
+              const next = { enabled: !application.healthProbe?.enabled };
+              setConfirm({
+                ...healthProbeConfirmCopy(application, next),
+                run: () => api.setApplicationHealthProbe(application.id, { ...next, approvalToken: APPROVAL_TOKEN }),
+              });
+            }}>
+              {application.healthProbe?.enabled ? "Disable health probe" : "Enable health probe"}
+            </Button>
           ) : null}
-          {application.autoRecovery?.enabled ? <Badge tone="warning">auto-recovery on</Badge> : null}
-          {application.healthProbe?.enabled ? <Badge tone="warning">health probe on</Badge> : null}
+          {application.autoRecovery?.enabled ? <Badge tone="warning">auto-recovery on · max {autoRecoveryMaxAttempts(application)}</Badge> : null}
+          {application.healthProbe?.enabled ? <Badge tone="warning">health probe on · every {healthProbeIntervalMinutes(application)}m</Badge> : null}
         </div>
+        {application.autoRecovery?.enabled || application.healthProbe?.enabled ? (
+          <div className="flex flex-wrap items-end gap-3">
+            {application.autoRecovery?.enabled ? (
+              <Field label="Max auto-recovery attempts" className="w-52">
+                <Select
+                  value={String(autoRecoveryMaxAttempts(application))}
+                  disabled={pending}
+                  onChange={(e) => {
+                    const next = { enabled: true, maxAttempts: Number(e.target.value) };
+                    setConfirm({
+                      ...autoRecoveryConfirmCopy(application, next),
+                      run: () => api.setApplicationAutoRecovery(application.id, { ...next, approvalToken: APPROVAL_TOKEN }),
+                    });
+                  }}
+                >
+                  {[1, 2, 3, 4, 5].map((n) => (
+                    <option key={n} value={n}>{n}</option>
+                  ))}
+                </Select>
+              </Field>
+            ) : null}
+            {application.healthProbe?.enabled ? (
+              <Field label="Health probe interval" className="w-52">
+                <Select
+                  value={String(healthProbeIntervalMinutes(application))}
+                  disabled={pending}
+                  onChange={(e) => {
+                    const next = { enabled: true, intervalMinutes: Number(e.target.value) };
+                    setConfirm({
+                      ...healthProbeConfirmCopy(application, next),
+                      run: () => api.setApplicationHealthProbe(application.id, { ...next, approvalToken: APPROVAL_TOKEN }),
+                    });
+                  }}
+                >
+                  {[1, 5, 15, 30, 60].map((n) => (
+                    <option key={n} value={n}>{n} min</option>
+                  ))}
+                </Select>
+              </Field>
+            ) : null}
+          </div>
+        ) : null}
         {application.health ? (
           <p className="text-xs text-muted-foreground">
             Health:{" "}
