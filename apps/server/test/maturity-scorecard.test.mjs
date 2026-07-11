@@ -37,6 +37,31 @@ test("L2 met when CI-green ≥95% and lead time <1 day", () => {
   assert.equal(sc.currentLevel, 2);
 });
 
+test("L2 re-anchor: CI-run green ≥95% MEETS the gate even when all-time is <95% (pre-CI merges are N/A, not failures)", () => {
+  const sc = computeMaturityScorecard({
+    docsOk: true,
+    backlog: { labelCoverage: { rate: 1 }, milestoneCoverage: { rate: 1 } },
+    // all-time 120/171 = 70.2%, but 47 of those merges predate CI (no checks);
+    // over PRs that actually ran CI it is 120/124 = 96.8% ≥ 95%.
+    dora: { ciChecks: { greenRate: 0.702, greenPrs: 120, prsWithChecks: 124, mergedPrCount: 171 }, leadTimeHours: { median: 0.03 } },
+  });
+  const L = byLevel(sc);
+  assert.equal(L[2].verdict, "met", "measured over CI-run PRs, not all-time");
+  assert.match(L[2].measured, /124 CI-run PRs/);
+  assert.match(L[2].measured, /all-time 70%/, "the all-time rate is kept visible as context");
+  assert.match(L[2].measured, /47 pre-CI merges/);
+  assert.equal(sc.currentLevel, 2, "the ladder advances to 2");
+});
+
+test("L2 re-anchor: a genuinely bad CI-run rate is still UNMET (not gamed) — 3 red of 10 checked", () => {
+  const sc = computeMaturityScorecard({
+    docsOk: true,
+    backlog: { labelCoverage: { rate: 1 }, milestoneCoverage: { rate: 1 } },
+    dora: { ciChecks: { greenRate: 0.7, greenPrs: 7, prsWithChecks: 10, mergedPrCount: 12 }, leadTimeHours: { median: 0.03 } },
+  });
+  assert.equal(byLevel(sc)[2].verdict, "unmet", "70% of CI-run PRs green < 95% → honestly unmet");
+});
+
 test("L4 held-out shows its own verdict even when a lower gate blocks contiguity", () => {
   const sc = computeMaturityScorecard({
     docsOk: true,
@@ -61,6 +86,31 @@ test("L3 governance gate needs 100% coverage AND zero silent bypasses", () => {
   assert.equal(byLevel(partial)[3].verdict, "unmet");
   const clean = computeMaturityScorecard({ governance: { coverageRate: 1, directPushCount: 0 } });
   assert.equal(byLevel(clean)[3].verdict, "met");
+});
+
+test("L3 re-anchor: prefers the post-enforcement coverageSince slice over the all-time rate", () => {
+  // all-time 52% coverage + 2 historical bypasses would be UNMET; the enforcement
+  // slice (100% covered, 0 bypasses since the cutoff) MEETS the gate.
+  const sc = computeMaturityScorecard({
+    docsOk: true,
+    backlog: { labelCoverage: { rate: 1 }, milestoneCoverage: { rate: 1 } },
+    dora: { ciChecks: { greenRate: 0.702, greenPrs: 120, prsWithChecks: 124, mergedPrCount: 171 }, leadTimeHours: { median: 0.03 } },
+    governance: {
+      coverageRate: 0.519,
+      directPushCount: 2,
+      coverageSince: { since: "2026-07-04T00:00:00Z", coverageRate: 1, directPushCount: 0, coverageMet: true, bypassMet: true },
+    },
+  });
+  const L = byLevel(sc);
+  assert.equal(L[3].verdict, "met", "measured over the enforcement slice, not all-time");
+  assert.match(L[3].measured, /since 2026-07-04/);
+  assert.match(L[3].measured, /all-time 52%/, "all-time kept as context");
+  assert.equal(sc.currentLevel, 3, "L2+L3 both re-anchored → the ladder advances to 3");
+});
+
+test("L3 re-anchor: falls back to all-time (still UNMET) when no coverageSince slice is present", () => {
+  const sc = computeMaturityScorecard({ governance: { coverageRate: 0.519, directPushCount: 2 } });
+  assert.equal(byLevel(sc)[3].verdict, "unmet", "no slice → the honest all-time reading gates it");
 });
 
 test("L5 stays indeterminate until deploy recovery time is instrumented", () => {
