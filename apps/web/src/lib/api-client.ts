@@ -265,6 +265,9 @@ export const api = {
     action: "probe" | "online" | "offline" | "archive" | "refresh",
     body: { approvalToken?: string } = {},
   ) => request("POST", `/api/applications/${encodeURIComponent(id)}/${action}`, body),
+  /** Mint a single-use, action-scoped approval grant — the real token behind approvalToken (APPROVAL_GRANTS.md). */
+  issueApprovalGrant: (action: string, targetId: string) =>
+    request<{ grantId: string; token: string; expiresAt: string }>("POST", "/api/approvals/grants", { action, targetId }),
   setApplicationAutoRecovery: (id: string, body: { enabled: boolean; maxAttempts?: number; approvalToken?: string }) =>
     request("POST", `/api/applications/${encodeURIComponent(id)}/auto-recovery`, body),
   setApplicationHealthProbe: (id: string, body: { enabled: boolean; intervalMinutes?: number; approvalToken?: string }) =>

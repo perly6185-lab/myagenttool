@@ -37,6 +37,7 @@ const persistedArrayKeys = [
   "agents",
   "applications",
   "applicationRecoveryActions",
+  "approvalGrants",
   "projectTargets",
   "invocations",
   "worktrees",
@@ -97,6 +98,7 @@ const persistedObjectKeys = [
   // knobs) un-arms itself on restart.
   "autoRunSettings",
   "autoRunBreaker",
+  "approvalTokenLegacyUses",
   "privateDeploymentConfig",
   "retentionSettings",
   "terminalRuntimeCapability",

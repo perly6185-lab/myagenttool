@@ -58,9 +58,14 @@ import type {
   InvocationSnapshot,
 } from "@/lib/console-state";
 
-// Explicit-intent confirmation token for governed side-effecting actions. It is
-// an intent marker (tenancy is the real authz), not a cryptographic approval.
-const APPROVAL_TOKEN = "console-operator-confirmed";
+// Governed side-effecting actions run on issued approval grants
+// (docs/design/APPROVAL_GRANTS.md): the confirm-modal click mints a single-use,
+// action-scoped grant and the call consumes it — a recorded decision, not the
+// old hard-coded intent marker.
+async function withApprovalGrant<T>(action: string, targetId: string, run: (token: string) => Promise<T>): Promise<T> {
+  const grant = await api.issueApprovalGrant(action, targetId);
+  return run(grant.token);
+}
 
 function riskTone(risk?: string): "neutral" | "warning" | "danger" {
   if (risk === "high" || risk === "critical") return "danger";
@@ -89,7 +94,8 @@ function ApplicationActions({ application }: { application: ApplicationSnapshot 
   const status = application.status;
 
   const lifecycle = (action: "probe" | "online" | "offline" | "archive" | "refresh") =>
-    api.applicationLifecycle(application.id, action, { approvalToken: APPROVAL_TOKEN });
+    withApprovalGrant(action, application.id, (token) =>
+      api.applicationLifecycle(application.id, action, { approvalToken: token }));
 
   return (
     <Card>
@@ -151,7 +157,7 @@ function ApplicationActions({ application }: { application: ApplicationSnapshot 
               description: "Writes a governed LoopRoutine draft into the managed application directory.",
               confirmLabel: "Generate",
               destructive: false,
-              run: () => api.generateApplicationOrchestration(application.id, { approvalToken: APPROVAL_TOKEN }),
+              run: () => withApprovalGrant("generate_orchestration", application.id, (token) => api.generateApplicationOrchestration(application.id, { approvalToken: token })),
             })}>
               Generate orchestration
             </Button>
@@ -161,7 +167,7 @@ function ApplicationActions({ application }: { application: ApplicationSnapshot 
               const next = { enabled: !application.autoRecovery?.enabled };
               setConfirm({
                 ...autoRecoveryConfirmCopy(application, next),
-                run: () => api.setApplicationAutoRecovery(application.id, { ...next, approvalToken: APPROVAL_TOKEN }),
+                run: () => withApprovalGrant("auto-recovery-config", application.id, (token) => api.setApplicationAutoRecovery(application.id, { ...next, approvalToken: token })),
               });
             }}>
               {application.autoRecovery?.enabled ? "Disable auto-recovery" : "Enable auto-recovery"}
@@ -172,7 +178,7 @@ function ApplicationActions({ application }: { application: ApplicationSnapshot 
               const next = { enabled: !application.healthProbe?.enabled };
               setConfirm({
                 ...healthProbeConfirmCopy(application, next),
-                run: () => api.setApplicationHealthProbe(application.id, { ...next, approvalToken: APPROVAL_TOKEN }),
+                run: () => withApprovalGrant("health-probe-config", application.id, (token) => api.setApplicationHealthProbe(application.id, { ...next, approvalToken: token })),
               });
             }}>
               {application.healthProbe?.enabled ? "Disable health probe" : "Enable health probe"}
@@ -192,7 +198,7 @@ function ApplicationActions({ application }: { application: ApplicationSnapshot 
                     const next = { enabled: true, maxAttempts: Number(e.target.value) };
                     setConfirm({
                       ...autoRecoveryConfirmCopy(application, next),
-                      run: () => api.setApplicationAutoRecovery(application.id, { ...next, approvalToken: APPROVAL_TOKEN }),
+                      run: () => withApprovalGrant("auto-recovery-config", application.id, (token) => api.setApplicationAutoRecovery(application.id, { ...next, approvalToken: token })),
                     });
                   }}
                 >
@@ -211,7 +217,7 @@ function ApplicationActions({ application }: { application: ApplicationSnapshot 
                     const next = { enabled: true, intervalMinutes: Number(e.target.value) };
                     setConfirm({
                       ...healthProbeConfirmCopy(application, next),
-                      run: () => api.setApplicationHealthProbe(application.id, { ...next, approvalToken: APPROVAL_TOKEN }),
+                      run: () => withApprovalGrant("health-probe-config", application.id, (token) => api.setApplicationHealthProbe(application.id, { ...next, approvalToken: token })),
                     });
                   }}
                 >
