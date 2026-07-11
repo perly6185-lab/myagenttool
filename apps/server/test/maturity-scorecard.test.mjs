@@ -91,6 +91,68 @@ test("the deploy stage's recovery time feeds L5 — indeterminate becomes measur
   assert.equal(byLevel(computeMaturityScorecard(none))[5].verdict, "indeterminate");
 });
 
+test("orchestration recovery stands in for L5 when there is no deploy data — labeled as a proxy", () => {
+  const base = Date.parse("2026-07-01T00:00:00Z");
+  const t = (ms) => new Date(base + ms).toISOString();
+  const orchestrationRun = (status, atMs) => ({
+    id: `inv_${atMs}`,
+    status,
+    completedAt: t(atMs),
+    options: { metadata: { source: "application_orchestration", applicationId: "app_1", routineId: "rt_1" } },
+  });
+  const inputs = loadMaturityInputs({
+    metricsDir: "/nonexistent-metrics-xyz",
+    evalTrend: [],
+    deployments: [],
+    invocations: [orchestrationRun("failed", 0), orchestrationRun("succeeded", 1_800_000)],
+  });
+  assert.deepEqual(inputs.release, { recoveryHours: 0.5, source: "orchestration" });
+  const l5 = byLevel(computeMaturityScorecard(inputs))[5];
+  assert.equal(l5.verdict, "met");
+  assert.match(l5.measured, /orchestration proxy/, "the proxy is named, never passed off as a deploy");
+});
+
+test("deploy recovery wins over orchestration when both are measured (the gate's anchor)", () => {
+  const base = Date.parse("2026-07-01T00:00:00Z");
+  const t = (ms) => new Date(base + ms).toISOString();
+  const orchestrationRun = (status, atMs) => ({
+    id: `inv_${atMs}`,
+    status,
+    completedAt: t(atMs),
+    options: { metadata: { source: "application_orchestration", applicationId: "app_1", routineId: "rt_1" } },
+  });
+  const inputs = loadMaturityInputs({
+    metricsDir: "/nonexistent-metrics-xyz",
+    evalTrend: [],
+    deployments: [
+      { status: "failed", at: t(0) },
+      { status: "deployed", at: t(7_200_000) }, // 2h deploy recovery
+    ],
+    invocations: [orchestrationRun("failed", 0), orchestrationRun("succeeded", 1_800_000)], // 0.5h orchestration
+  });
+  assert.deepEqual(inputs.release, { recoveryHours: 2, source: "deploy" });
+  assert.equal(inputs.orchestration.recoveryHours.median, 0.5, "orchestration stays visible in inputs");
+  const l5 = byLevel(computeMaturityScorecard(inputs))[5];
+  assert.match(l5.measured, /deploy recovery 2h/);
+  assert.equal(l5.verdict, "unmet"); // 2h ≥ 1h — the slower deploy signal gates, not the faster proxy
+});
+
+test("an unrecovered orchestration failure alone keeps L5 indeterminate (no fake median)", () => {
+  const inputs = loadMaturityInputs({
+    metricsDir: "/nonexistent-metrics-xyz",
+    evalTrend: [],
+    deployments: [],
+    invocations: [{
+      id: "inv_f",
+      status: "failed",
+      completedAt: "2026-07-01T00:00:00Z",
+      options: { metadata: { source: "application_orchestration", applicationId: "app_1", routineId: "rt_1" } },
+    }],
+  });
+  assert.equal(inputs.release, null);
+  assert.equal(byLevel(computeMaturityScorecard(inputs))[5].verdict, "indeterminate");
+});
+
 test("nextGap points at the first blocker with an actionable message", () => {
   // L2 unmet (CI-green low) is the blocker to advancing from L1.
   const unmet = computeMaturityScorecard({
