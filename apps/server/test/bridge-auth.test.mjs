@@ -569,3 +569,29 @@ test("bridge credential idle-expires past the TTL and reissues on reconnect", as
   assert.equal(typeof reissued.token, "string");
   assert.notEqual(reissued.token, token);
 });
+
+test("POST /api/device/relink re-pairs the device so an expired-credential bridge re-registers fresh", async () => {
+  // Normalize to a paired state from whatever a prior test left (relink re-links
+  // even an unlinked device and clears any stale credential).
+  await call("/api/device/relink", { method: "POST" });
+  const first = await call("/api/bridge/register", { method: "POST", body: { bridgeVersion: "v1" } });
+  assert.equal(first.status, 200);
+  const firstToken = first.body.bridgeToken;
+  assert.equal(state.device.status, "online");
+  assert.equal(typeof state.device.bridgeCredential.tokenHash, "string");
+
+  // The re-pair under test: the operator recovery for an idle-expired / lost-token
+  // credential (register can't rotate an expired token by design). Clears + re-links.
+  const relink = await call("/api/device/relink", { method: "POST" });
+  assert.equal(relink.status, 200);
+  assert.equal(state.device.unlinkState, "linked");
+  assert.equal(state.device.bridgeCredential, null, "credential cleared → next register issues fresh");
+  assert.equal(state.device.status, "offline", "offline until the bridge re-registers");
+
+  // The bridge re-registers with no server-side credential → a FRESH one is issued.
+  const second = await call("/api/bridge/register", { method: "POST", body: { bridgeVersion: "v2" } });
+  assert.equal(second.status, 200);
+  assert.equal(typeof second.body.bridgeToken, "string");
+  assert.notEqual(second.body.bridgeToken, firstToken, "a new token, not the stale one");
+  assert.equal(state.device.status, "online", "device back online after re-pair");
+});

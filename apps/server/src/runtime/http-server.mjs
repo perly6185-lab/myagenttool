@@ -89,6 +89,7 @@ export function createHttpServer({
   enableAgent,
   createAgentHealthCheck,
   unlinkDevice,
+  relinkDevice,
   issueBridgeCredential,
   requireBridgeCredential,
   recordCodexHookEvent,
@@ -361,6 +362,7 @@ export function createHttpServer({
         createAgentDryProbeRun,
         findIntegrationProbeRun,
         unlinkDevice,
+        relinkDevice,
         issueBridgeCredential,
         requireBridgeCredential,
       })) {
