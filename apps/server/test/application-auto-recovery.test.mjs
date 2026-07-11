@@ -205,6 +205,81 @@ test("approval-gated categories are never auto-recovered and nothing is parked i
   assert.ok(skipped.some((e) => e.invocationId === failed && e.data.recommendedAction === "regenerate_orchestration"));
 });
 
+test("a declared errorCode beats misleading runtime-looking text (no auto-rerun of an approval-gated failure)", async () => {
+  // Reset the stream so the crash-loop cap from the previous test can't mask this.
+  await runAndComplete({ status: "succeeded", summary: "healthy again" });
+  const autoBefore = autoRequests().length;
+  // The text screams runtime_error, but the bridge DECLARED validation_failed.
+  const run = await call(`/api/applications/${appId}/orchestrations/${routineId}/run`, { method: "POST", body: {} });
+  const invocationId = run.body.invocation.id;
+  await completeViaBridge(invocationId, { status: "failed", summary: "npm test failed with exit code 1" });
+  // completeViaBridge sends result.summary only — re-complete path can't carry the
+  // code, so drive this one manually with errorCode in the result payload.
+  // (The invocation above is already terminal; make a fresh one carrying the code.)
+  const run2 = await call(`/api/applications/${appId}/orchestrations/${routineId}/run`, { method: "POST", body: {} });
+  const inv2 = run2.body.invocation.id;
+  for (let i = 0; i < 10; i += 1) {
+    const next = await call("/api/bridge/next", { token: bridgeToken });
+    if (next.status === 204 || next.body?.invocationId === inv2) break;
+  }
+  await call("/api/bridge/ack", { method: "POST", body: { invocationId: inv2 }, token: bridgeToken });
+  await call("/api/bridge/complete", {
+    method: "POST",
+    body: { invocationId: inv2, status: "failed", result: { summary: "npm test failed with exit code 1", errorCode: "validation_failed" } },
+    token: bridgeToken,
+  });
+  assert.equal(autoRerunsOf(inv2).length, 0, "declared validation_failed must not auto-rerun");
+  assert.ok(
+    skipEvents("approval_required").some((e) => e.invocationId === inv2 && e.data.category === "validation_failed"),
+    "the declared code classified the failure, not the runtime-looking text",
+  );
+  const recovery = await call(`/api/applications/${appId}/orchestrations/${routineId}/runs/${inv2}/recovery`);
+  assert.equal(recovery.body.recovery.category, "validation_failed");
+  assert.equal(recovery.body.recovery.confidence, 0.95, "structured signal carries higher confidence than haystack inference");
+  // Guard against cross-test bleed: the first (undeclared) failure in this test
+  // may have auto-rerun as runtime_error — only assert the declared one did not.
+  assert.ok(autoRequests().length - autoBefore <= 1);
+});
+
+test("a declared runtime_error beats validation-looking text (the live-drive misclassification regression)", async () => {
+  await runAndComplete({ status: "succeeded", summary: "healthy again" });
+  const run = await call(`/api/applications/${appId}/orchestrations/${routineId}/run`, { method: "POST", body: {} });
+  const invocationId = run.body.invocation.id;
+  for (let i = 0; i < 10; i += 1) {
+    const next = await call("/api/bridge/next", { token: bridgeToken });
+    if (next.status === 204 || next.body?.invocationId === invocationId) break;
+  }
+  await call("/api/bridge/ack", { method: "POST", body: { invocationId }, token: bridgeToken });
+  await call("/api/bridge/complete", {
+    method: "POST",
+    // Without the code, this text would classify as validation_failed (approval-gated).
+    body: { invocationId, status: "failed", result: { summary: "invalid_application_routine validation failed", errorCode: "runtime_error" } },
+    token: bridgeToken,
+  });
+  assert.equal(autoRerunsOf(invocationId).length, 1, "declared runtime_error auto-reruns despite the validation-looking text");
+  const recovery = await call(`/api/applications/${appId}/orchestrations/${routineId}/runs/${invocationId}/recovery`);
+  assert.equal(recovery.body.recovery.category, "runtime_error");
+});
+
+test("an unknown errorCode falls back to haystack inference (never a fabricated category)", async () => {
+  await runAndComplete({ status: "succeeded", summary: "healthy again" });
+  const run = await call(`/api/applications/${appId}/orchestrations/${routineId}/run`, { method: "POST", body: {} });
+  const invocationId = run.body.invocation.id;
+  for (let i = 0; i < 10; i += 1) {
+    const next = await call("/api/bridge/next", { token: bridgeToken });
+    if (next.status === 204 || next.body?.invocationId === invocationId) break;
+  }
+  await call("/api/bridge/ack", { method: "POST", body: { invocationId }, token: bridgeToken });
+  await call("/api/bridge/complete", {
+    method: "POST",
+    body: { invocationId, status: "failed", result: { summary: "invalid_application_routine validation failed", errorCode: "flux_capacitor_burnout" } },
+    token: bridgeToken,
+  });
+  const recovery = await call(`/api/applications/${appId}/orchestrations/${routineId}/runs/${invocationId}/recovery`);
+  assert.equal(recovery.body.recovery.category, "validation_failed", "unknown code → haystack fallback");
+  assert.equal(recovery.body.recovery.confidence, 0.86);
+});
+
 async function call(path, { method = "GET", body, token } = {}) {
   const response = await fetch(`${base}${path}`, {
     method,
