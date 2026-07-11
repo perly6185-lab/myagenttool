@@ -4190,6 +4190,7 @@ function RunDiagnosticsSummary({
 function shortCapabilityName(value: string) {
   const parts = value.split(".").filter(Boolean);
   if (value.includes(".wrapper.")) return `wrapper.${parts.at(-1)}`;
+  if (parts[0] === "app" && parts.length >= 3) return parts.at(-1) ?? value;
   return parts.slice(-2).join(".") || value;
 }
 
@@ -5675,46 +5676,59 @@ export function ApplicationsInspector() {
           {!capabilities.length ? (
             <p className="text-sm text-muted-foreground">No capabilities projected.</p>
           ) : (
-            capabilities.map((capability) => (
-              <div key={capability.name} className="space-y-2 rounded-md border border-border p-3 text-sm">
-                <div className="flex flex-wrap items-start justify-between gap-2">
-                  <span className="min-w-0 [overflow-wrap:anywhere]">
-                    {capability.displayName ?? capability.name}
-                    {capability.requiresApproval ? <span className="text-warning"> ⚠</span> : null}
-                  </span>
-                  <div className="flex min-w-0 flex-wrap gap-1.5 sm:shrink-0 sm:justify-end">
-                    <Badge tone={riskTone(capability.riskLevel)}>{capability.riskLevel ?? "—"}</Badge>
-                    <Badge tone={capability.status === "disabled" ? "danger" : "success"}>
-                      {capability.status ?? "—"}
-                    </Badge>
-                    {capability.metadata?.readiness?.state ? (
-                      <Badge tone={readinessTone(capability.metadata.readiness.state)}>
-                        {capability.metadata.readiness.state}
+            capabilities.map((capability) => {
+              const capabilityLabel = capability.displayName ?? shortCapabilityName(capability.name);
+              const showCapabilityName = capability.name !== capabilityLabel;
+              return (
+                <div key={capability.name} data-capability-row className="space-y-2 rounded-md border border-border p-3 text-sm">
+                  <div className="space-y-2">
+                    <div className="min-w-0">
+                      <p className="[overflow-wrap:anywhere] font-medium leading-5">
+                        {capabilityLabel}
+                        {capability.requiresApproval ? <span className="text-warning"> ⚠</span> : null}
+                      </p>
+                      {showCapabilityName ? (
+                        <p className="mt-1 break-all font-mono text-[11px] leading-4 text-muted-foreground">
+                          {capability.name}
+                        </p>
+                      ) : null}
+                    </div>
+                    <div className="flex min-w-0 max-w-full flex-wrap gap-1.5">
+                      <Badge tone={riskTone(capability.riskLevel)}>{capability.riskLevel ?? "—"}</Badge>
+                      <Badge tone={capability.status === "disabled" ? "danger" : "success"}>
+                        {capability.status ?? "—"}
                       </Badge>
-                    ) : null}
-                    {capability.metadata?.resultPath?.outputCollection ? (
-                      <Badge tone="neutral">{capability.metadata.resultPath.outputCollection}</Badge>
-                    ) : null}
+                      {capability.metadata?.readiness?.state ? (
+                        <Badge tone={readinessTone(capability.metadata.readiness.state)}>
+                          {capability.metadata.readiness.state}
+                        </Badge>
+                      ) : null}
+                      {capability.metadata?.resultPath?.outputCollection ? (
+                        <Badge tone="neutral" className="max-w-full break-all">
+                          {capability.metadata.resultPath.outputCollection}
+                        </Badge>
+                      ) : null}
+                    </div>
                   </div>
+                  {isWrapperCapability(capability) ? (
+                    <WrapperCapabilityRunForm capability={capability} onViewInvocation={viewInvocation} />
+                  ) : null}
+                  <CapabilityAutomationPanel
+                    application={application}
+                    capability={capability}
+                    automations={capabilityAutomations(automations, application, capability)}
+                    runs={runs}
+                    focusedAutomationId={selectedApplicationAutomationId}
+                    onViewInvocation={viewInvocation}
+                  />
+                  <CapabilityRunHistory
+                    runs={capabilityRuns(runs, capability.name)}
+                    capability={capability}
+                    onViewInvocation={viewInvocation}
+                  />
                 </div>
-                {isWrapperCapability(capability) ? (
-                  <WrapperCapabilityRunForm capability={capability} onViewInvocation={viewInvocation} />
-                ) : null}
-                <CapabilityAutomationPanel
-                  application={application}
-                  capability={capability}
-                  automations={capabilityAutomations(automations, application, capability)}
-                  runs={runs}
-                  focusedAutomationId={selectedApplicationAutomationId}
-                  onViewInvocation={viewInvocation}
-                />
-                <CapabilityRunHistory
-                  runs={capabilityRuns(runs, capability.name)}
-                  capability={capability}
-                  onViewInvocation={viewInvocation}
-                />
-              </div>
-            ))
+              );
+            })
           )}
           <p className="text-xs text-muted-foreground">⚠ requires an explicit approval token</p>
         </CardContent>

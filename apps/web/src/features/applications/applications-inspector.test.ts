@@ -321,6 +321,40 @@ describe("ApplicationsInspector recovery guidance", () => {
     expect(useUiStore.getState().selectedInvocationId).toBe("inv_app_ccusage");
   });
 
+  it("keeps long capability names readable beside status badges", async () => {
+    apiMock.fetchState.mockResolvedValue(closedLoopConsoleState());
+    apiMock.listApplicationCapabilities.mockResolvedValue({
+      applicationId: "app_ccusage",
+      capabilities: [{
+        name: "app.app_ccusage.inspect",
+        kind: "read",
+        riskLevel: "low",
+        status: "available",
+        requiresApproval: false,
+        metadata: {
+          readiness: { state: "ready" },
+          resultPath: { outputCollection: "importedUsageEstimates" },
+        },
+      }],
+    });
+
+    useUiStore.setState({ selectedApplicationId: "app_ccusage" });
+    renderWithClient(createElement(ApplicationsInspector));
+
+    await screen.findByText("Capabilities");
+    const row = await waitFor(() => {
+      const capabilityPanel = screen.getByText("Capabilities");
+      const card = capabilityPanel.closest("[data-application-panel='capabilities']");
+      expect(card).toBeTruthy();
+      const capabilityRow = card!.querySelector("[data-capability-row]");
+      expect(capabilityRow).toBeTruthy();
+      return capabilityRow as HTMLElement;
+    });
+    expect(within(row as HTMLElement).getByText("inspect")).toBeTruthy();
+    expect(within(row as HTMLElement).getByText("app.app_ccusage.inspect")).toBeTruthy();
+    expect(row.querySelector(".justify-between")).toBeNull();
+  });
+
   it("surfaces timeline and probe actions in the operator action panel", async () => {
     const state = closedLoopConsoleState();
     state.applications![0].probe = null;
