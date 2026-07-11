@@ -178,6 +178,7 @@ export function buildPublicState({
     auditSummaries,
     troubleshootingReports,
     evidenceCenterRecords: evidenceCenterVisible,
+    applicationRecoveryActions,
   });
 
   return {

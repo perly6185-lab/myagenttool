@@ -1,5 +1,5 @@
 import { useMemo, useState, type ReactNode } from "react";
-import { AlertTriangle, ChevronDown, ChevronRight, ClipboardCheck, FileText, ShieldCheck, Wrench } from "lucide-react";
+import { AlertTriangle, AppWindow, ChevronDown, ChevronRight, ClipboardCheck, FileText, LifeBuoy, ShieldCheck, Wrench } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge, StatusBadge } from "@/components/ui/badge";
 import { Select } from "@/components/ui/input";
@@ -11,6 +11,11 @@ import { useConsoleState } from "@/data/use-console-state";
 import { useUiStore } from "@/store/ui-store";
 import type { EvidenceLedgerRow } from "@/lib/console-state";
 import type { Tone } from "@/lib/readable-labels";
+import {
+  readableRecoveryActionRequestStatus,
+  readableRecoveryActionType,
+  recoveryActionRequestTone,
+} from "@/features/recovery/application-recovery-ui";
 
 // The Evidence Center: a per-run TRUST LEDGER. Each row rolls up the evidence for
 // one agent run — code-review findings, the audit/permission record, a
@@ -148,6 +153,18 @@ function VerdictChips({ row }: { row: EvidenceLedgerRow }) {
       ) : null}
       {row.troubleshooting.present ? <Badge tone="warning">troubleshooting</Badge> : null}
       {row.runtimeEvidence > 0 ? <Badge tone="neutral">{row.runtimeEvidence} evidence</Badge> : null}
+      {row.application?.name || row.application?.id ? (
+        <Badge tone="neutral" className="inline-flex items-center gap-1">
+          <AppWindow className="size-3" />
+          {row.application.name ?? row.application.id}
+        </Badge>
+      ) : null}
+      {row.recovery?.latestStatus ? (
+        <StatusBadge tone={recoveryActionRequestTone(row.recovery.latestStatus)}>
+          recovery {readableRecoveryActionRequestStatus(row.recovery.latestStatus).toLowerCase()}
+        </StatusBadge>
+      ) : null}
+      {row.recoveryResultOf ? <Badge tone="success">recovery result</Badge> : null}
     </>
   );
 }
@@ -163,6 +180,8 @@ function Dossier({ invocationId }: { invocationId: string }) {
   const audit = (state?.auditSummaries ?? []).find((a) => a.invocationId === invocationId) ?? null;
   const troubleshooting = (state?.troubleshootingReports ?? []).find((t) => t.invocationId === invocationId) ?? null;
   const runtime = (state?.evidenceCenterRecords ?? []).filter((e) => e.invocationId === invocationId);
+  const recoveryRequests = (state?.applicationRecoveryActions ?? []).filter((r) => r.invocationId === invocationId);
+  const recoveryProvenance = (state?.applicationRecoveryActions ?? []).find((r) => r.resultInvocationId === invocationId) ?? null;
   const canOpen = (state?.invocations ?? []).some((i) => i.id === invocationId);
 
   return (
@@ -205,6 +224,25 @@ function Dossier({ invocationId }: { invocationId: string }) {
             ) : null}
           </div>
         ) : null}
+      </DossierBlock>
+
+      <DossierBlock icon={LifeBuoy} title={`Recovery (${recoveryRequests.length})`} empty={!recoveryRequests.length && !recoveryProvenance}>
+        <div className="space-y-1">
+          {recoveryProvenance ? (
+            <p className="text-xs text-muted-foreground">
+              Produced by <span className="font-medium text-foreground">{readableRecoveryActionType(recoveryProvenance.actionType)}</span> recovery for{" "}
+              <span className="font-mono">{recoveryProvenance.invocationId}</span>
+            </p>
+          ) : null}
+          {recoveryRequests.map((r) => (
+            <div key={r.id} className="flex flex-wrap items-center gap-2 text-xs">
+              <StatusBadge tone={recoveryActionRequestTone(r.status)}>{readableRecoveryActionRequestStatus(r.status)}</StatusBadge>
+              <span className="font-medium">{readableRecoveryActionType(r.actionType)}</span>
+              {r.reason ? <span className="text-muted-foreground">{r.reason}</span> : null}
+              {r.resultInvocationId ? <span className="font-mono text-muted-foreground">→ {r.resultInvocationId}</span> : null}
+            </div>
+          ))}
+        </div>
       </DossierBlock>
 
       <DossierBlock icon={FileText} title={`Runtime evidence (${runtime.length})`} empty={!runtime.length}>

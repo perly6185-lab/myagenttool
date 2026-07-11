@@ -37,6 +37,7 @@ function countBy(list, pick) {
  * @param {Array<object>} sources.auditSummaries - per-invocation audit records
  * @param {Array<object>} sources.troubleshootingReports
  * @param {Array<object>} sources.evidenceCenterRecords - codex/terminal runtime evidence aggregate
+ * @param {Array<object>} sources.applicationRecoveryActions - application recovery requests (attest both the failed run and its recovery result)
  * @returns {Array<object>} one rollup row per invocation that has substantive evidence, newest first
  */
 export function evidenceLedger({
@@ -45,6 +46,7 @@ export function evidenceLedger({
   auditSummaries = [],
   troubleshootingReports = [],
   evidenceCenterRecords = [],
+  applicationRecoveryActions = [],
 } = {}) {
   // Index every evidence source by the invocation it attests to.
   const findingsByInv = new Map();
@@ -63,6 +65,21 @@ export function evidenceLedger({
     if (e?.invocationId == null) continue;
     runtimeCountByInv.set(e.invocationId, (runtimeCountByInv.get(e.invocationId) ?? 0) + 1);
   }
+  // Recovery requests attest two runs: the failed run they recover (invocationId)
+  // and the run they produced (resultInvocationId — provenance).
+  const recoveryByInv = new Map();
+  const recoveryResultByInv = new Map();
+  for (const r of applicationRecoveryActions) {
+    if (r?.invocationId != null) {
+      const list = recoveryByInv.get(r.invocationId);
+      if (list) list.push(r);
+      else recoveryByInv.set(r.invocationId, [r]);
+    }
+    if (r?.resultInvocationId != null && !recoveryResultByInv.has(r.resultInvocationId)) {
+      recoveryResultByInv.set(r.resultInvocationId, r);
+    }
+  }
+  const stamp = (r) => r?.updatedAt ?? r?.createdAt ?? "";
 
   const rows = [];
   for (const inv of invocations) {
@@ -74,11 +91,28 @@ export function evidenceLedger({
     const runtimeEvidence = runtimeCountByInv.get(id) ?? 0;
     const failed = ATTENTION_STATUSES.has(inv.status);
     const denied = audit?.permissionDecision === "denied";
+    const recoveryRequests = recoveryByInv.get(id) ?? [];
+    const latestRecovery = recoveryRequests.reduce(
+      (latest, r) => (latest == null || stamp(r) > stamp(latest) ? r : latest),
+      null,
+    );
+    const recoveryResultOf = recoveryResultByInv.get(id) ?? null;
+    const metadata = inv.options?.metadata ?? {};
+    const application = metadata.source === "application_orchestration" || metadata.applicationId
+      ? {
+          id: metadata.applicationId ?? null,
+          name: metadata.applicationName ?? null,
+          routineId: metadata.routineId ?? null,
+        }
+      : null;
 
     // A run earns a ledger row only when there's something to evaluate — a plain
     // allowed run with no findings/evidence is not interesting for a trust surface
-    // (and would just duplicate the Invocations list).
-    const hasEvidence = findings.length > 0 || runtimeEvidence > 0 || Boolean(troubleshooting) || denied || failed;
+    // (and would just duplicate the Invocations list). Recovery evidence counts:
+    // a recovered run's resolution story, and a recovery result's provenance, are
+    // exactly what a trust surface is for.
+    const hasEvidence = findings.length > 0 || runtimeEvidence > 0 || Boolean(troubleshooting) || denied || failed
+      || recoveryRequests.length > 0 || Boolean(recoveryResultOf);
     if (!hasEvidence) continue;
 
     const severity = countBy(findings, (f) => f?.severity);
@@ -89,6 +123,10 @@ export function evidenceLedger({
     if (denied) attentionReasons.push("permission denied");
     if (failed) attentionReasons.push(`run ${inv.status}`);
     if (troubleshooting) attentionReasons.push("needs troubleshooting");
+    if (latestRecovery?.status === "approval_pending") attentionReasons.push("recovery awaiting approval");
+    else if (latestRecovery?.status === "failed") attentionReasons.push("recovery failed");
+    else if (latestRecovery?.status === "approval_denied") attentionReasons.push("recovery denied");
+    else if (latestRecovery?.status === "approval_timed_out") attentionReasons.push("recovery approval timed out");
 
     rows.push({
       invocationId: id,
@@ -101,6 +139,22 @@ export function evidenceLedger({
       audit: audit ? { permissionDecision: audit.permissionDecision ?? null, status: audit.status ?? null } : null,
       troubleshooting: { present: Boolean(troubleshooting), fixes: troubleshooting?.suggestedFixes?.length ?? 0 },
       runtimeEvidence,
+      application,
+      recovery: latestRecovery
+        ? {
+            total: recoveryRequests.length,
+            latestStatus: latestRecovery.status ?? null,
+            latestActionType: latestRecovery.actionType ?? null,
+            executed: recoveryRequests.some((r) => r?.status === "executed"),
+          }
+        : null,
+      recoveryResultOf: recoveryResultOf
+        ? {
+            invocationId: recoveryResultOf.invocationId ?? null,
+            actionType: recoveryResultOf.actionType ?? null,
+            recoveryActionRequestId: recoveryResultOf.id ?? null,
+          }
+        : null,
       attention: attentionReasons.length > 0,
       attentionReasons,
     });

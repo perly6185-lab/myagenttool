@@ -73,6 +73,70 @@ test("evidence whose invocation isn't visible never produces a row (tenancy)", (
   assert.deepEqual(rows, []);
 });
 
+test("recovery requests attach to the failed run: latest status, executed flag, application context", () => {
+  const rows = evidenceLedger({
+    invocations: [
+      inv("inv_failed", {
+        status: "failed",
+        options: { metadata: { source: "application_orchestration", applicationId: "app_1", applicationName: "ccusage", routineId: "rt_1" } },
+      }),
+    ],
+    applicationRecoveryActions: [
+      { id: "rec_1", invocationId: "inv_failed", actionType: "rerun", status: "failed", createdAt: "2026-07-11T01:00:00Z", updatedAt: "2026-07-11T01:00:00Z" },
+      { id: "rec_2", invocationId: "inv_failed", actionType: "regenerate_orchestration", status: "executed", createdAt: "2026-07-11T02:00:00Z", updatedAt: "2026-07-11T02:30:00Z" },
+    ],
+  });
+  assert.equal(rows.length, 1);
+  const row = rows[0];
+  assert.deepEqual(row.application, { id: "app_1", name: "ccusage", routineId: "rt_1" });
+  assert.deepEqual(row.recovery, { total: 2, latestStatus: "executed", latestActionType: "regenerate_orchestration", executed: true });
+  // The failed status flags attention; a successfully executed recovery adds no extra reason.
+  assert.deepEqual(row.attentionReasons, ["run failed"]);
+});
+
+test("unresolved recovery states add attention reasons", () => {
+  const at = (id, status) => ({ id, invocationId: `inv_${id}`, actionType: "regenerate_orchestration", status, createdAt: "2026-07-11T01:00:00Z" });
+  const rows = evidenceLedger({
+    invocations: [
+      inv("inv_p", { status: "failed" }), inv("inv_f", { status: "failed" }),
+      inv("inv_d", { status: "failed" }), inv("inv_t", { status: "failed" }),
+    ],
+    applicationRecoveryActions: [
+      { ...at("p", "approval_pending"), invocationId: "inv_p" },
+      { ...at("f", "failed"), invocationId: "inv_f" },
+      { ...at("d", "approval_denied"), invocationId: "inv_d" },
+      { ...at("t", "approval_timed_out"), invocationId: "inv_t" },
+    ],
+  });
+  const byId = Object.fromEntries(rows.map((r) => [r.invocationId, r]));
+  assert.match(byId.inv_p.attentionReasons.join(), /recovery awaiting approval/);
+  assert.match(byId.inv_f.attentionReasons.join(), /recovery failed/);
+  assert.match(byId.inv_d.attentionReasons.join(), /recovery denied/);
+  assert.match(byId.inv_t.attentionReasons.join(), /recovery approval timed out/);
+});
+
+test("a recovery RESULT run earns a row with provenance even when otherwise clean", () => {
+  const rows = evidenceLedger({
+    invocations: [inv("inv_result", { status: "succeeded" })],
+    applicationRecoveryActions: [
+      { id: "rec_9", invocationId: "inv_failed_elsewhere", resultInvocationId: "inv_result", actionType: "rerun", status: "executed" },
+    ],
+  });
+  assert.equal(rows.length, 1);
+  assert.deepEqual(rows[0].recoveryResultOf, { invocationId: "inv_failed_elsewhere", actionType: "rerun", recoveryActionRequestId: "rec_9" });
+  assert.equal(rows[0].recovery, null); // provenance, not an open recovery on this run
+  assert.equal(rows[0].attention, false); // a clean recovery product needs no attention
+});
+
+test("runs without recovery/application context keep null fields (shape regression)", () => {
+  const rows = evidenceLedger({
+    invocations: [inv("inv_plain", { status: "failed" })],
+  });
+  assert.equal(rows[0].application, null);
+  assert.equal(rows[0].recovery, null);
+  assert.equal(rows[0].recoveryResultOf, null);
+});
+
 test("rows are newest-first by createdAt", () => {
   const rows = evidenceLedger({
     invocations: [
