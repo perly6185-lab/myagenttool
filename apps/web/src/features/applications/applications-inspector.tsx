@@ -19,6 +19,14 @@ import {
   healthProbeIntervalMinutes,
 } from "@/features/applications/application-ops-ui";
 import { Field } from "@/components/common/field";
+import {
+  applicationExecutionDigest,
+  applicationInvocations,
+  digestTone,
+  executionKind,
+  formatResultOutput,
+} from "@/features/applications/application-executions";
+import { ImportedUsageTable } from "@/features/economics/imported-usage-table";
 import { Transcript } from "@/features/invocations/transcript";
 import {
   isExecutableRecoveryAction,
@@ -264,12 +272,17 @@ function ApplicationActions({ application }: { application: ApplicationSnapshot 
 function ApplicationResultSummary({
   result,
   onViewInvocation,
+  invocations,
 }: {
   result?: ApplicationResultRef | null;
   onViewInvocation: (invocationId: string) => void;
+  invocations: InvocationSnapshot[];
 }) {
+  const { data: state } = useConsoleState();
   if (!result) return null;
   const importedCount = result.importedRecordCount ?? result.importedRecordIds?.length ?? 0;
+  const resultInvocation = invocations.find((invocation) => invocation.id === result.invocationId) ?? null;
+  const importedRows = (state?.importedUsageEstimates ?? []).filter((row) => row.invocationId === result.invocationId);
   return (
     <Card>
       <CardHeader>
@@ -292,10 +305,89 @@ function ApplicationResultSummary({
             },
           ]}
         />
+        {importedRows.length ? <ImportedUsageTable rows={importedRows} limit={10} /> : null}
+        <ResultOutputBrowser output={resultInvocation?.result?.output} />
         {result.invocationId ? (
           <Button size="sm" variant="secondary" onClick={() => onViewInvocation(result.invocationId!)}>
             <ExternalLink />
             View invocation
+          </Button>
+        ) : null}
+      </CardContent>
+    </Card>
+  );
+}
+
+// The bounded, in-place browser for what a run actually PRODUCED — the timeline
+// only ever said "result recorded"; the payload lives here.
+function ResultOutputBrowser({ output }: { output?: unknown }) {
+  const formatted = formatResultOutput(output);
+  if (!formatted) return null;
+  return (
+    <details className="rounded-md border border-border bg-muted/40 p-2">
+      <summary className="cursor-pointer text-xs font-medium">
+        Result output{formatted.truncated ? " (truncated)" : ""}
+      </summary>
+      <pre className="mt-2 max-h-72 overflow-auto whitespace-pre-wrap break-all text-xs text-muted-foreground">{formatted.text}</pre>
+    </details>
+  );
+}
+
+// Every invocation this application produced — orchestration runs, wrapper
+// commands, lifecycle/generate calls, recovery products — with an honest
+// rollup over what is visible in the current snapshot window.
+function ApplicationExecutions({
+  application,
+  invocations,
+  onViewInvocation,
+}: {
+  application: ApplicationSnapshot;
+  invocations: InvocationSnapshot[];
+  onViewInvocation: (invocationId: string) => void;
+}) {
+  const [showAll, setShowAll] = useState(false);
+  const rows = applicationInvocations(invocations, application.id);
+  if (!rows.length) return null;
+  const digest = applicationExecutionDigest(rows);
+  const visible = showAll ? rows : rows.slice(0, 8);
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex items-start justify-between gap-3">
+          <CardTitle>Executions</CardTitle>
+          <Badge tone={digestTone(digest)}>
+            {digest.successRate == null ? "no finished runs" : `${Math.round(digest.successRate * 100)}% success`}
+          </Badge>
+        </div>
+        <p className="text-xs text-muted-foreground">
+          {digest.total} execution(s) in this window · {digest.succeeded} succeeded · {digest.failed} failed
+          {digest.active ? ` · ${digest.active} active` : ""}
+          {digest.recoveryRuns ? ` · ${digest.recoveryRuns} from recovery` : ""}
+          {digest.lastAt ? ` · last ${shortTime(digest.lastAt)}` : ""}
+        </p>
+      </CardHeader>
+      <CardContent className="space-y-2">
+        {visible.map((invocation) => (
+          <div key={invocation.id} className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-border p-2 text-xs">
+            <div className="min-w-0 space-y-0.5">
+              <div className="flex flex-wrap items-center gap-2">
+                <Badge tone={statusTone(invocation.status ?? "unknown")}>{readableStatus(invocation.status ?? "unknown")}</Badge>
+                <span className="font-medium">{executionKind(invocation)}</span>
+                <span className="text-muted-foreground">{shortTime(invocation.createdAt)}</span>
+              </div>
+              {invocation.result?.summary ? (
+                <p className="[overflow-wrap:anywhere] text-muted-foreground">{invocation.result.summary}</p>
+              ) : null}
+            </div>
+            <Button size="sm" variant="ghost" className="h-7 px-2 text-xs" onClick={() => onViewInvocation(invocation.id)}>
+              <ExternalLink />
+              Open
+            </Button>
+          </div>
+        ))}
+        {rows.length > 8 ? (
+          <Button size="sm" variant="ghost" className="h-7 px-2 text-xs" onClick={() => setShowAll((value) => !value)}>
+            {showAll ? "Show fewer" : `Show all ${rows.length}`}
           </Button>
         ) : null}
       </CardContent>
@@ -631,8 +723,10 @@ function OrchestrationRunDiagnostics({
   }
 
   const retryOfInvocationId = stringValue(run.metadata?.retryOfInvocationId);
+  const runInvocation = (state?.invocations ?? []).find((item) => item.id === invocationId) ?? null;
   return (
     <div className="space-y-2 rounded-md bg-muted p-2">
+      <ResultOutputBrowser output={runInvocation?.result?.output} />
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="min-w-0">
           <p className="text-xs font-medium">Run diagnostics</p>
@@ -1206,7 +1300,8 @@ export function ApplicationsInspector() {
       </Card>
 
       <ApplicationActions application={application} />
-      <ApplicationResultSummary result={application.latestResult} onViewInvocation={viewInvocation} />
+      <ApplicationExecutions application={application} invocations={invocations} onViewInvocation={viewInvocation} />
+      <ApplicationResultSummary result={application.latestResult} invocations={invocations} onViewInvocation={viewInvocation} />
 
       <Card>
         <CardHeader>
