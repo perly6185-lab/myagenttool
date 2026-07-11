@@ -1258,6 +1258,13 @@ test("application orchestration recovery actions are guarded and audited", async
   assert.equal(approvalRequired.body.recoveryActionRequest.actionType, "regenerate_orchestration");
   assert.ok(approvalRequired.body.approvalRequest.id);
   assert.equal(approvalRequired.body.approvalRequest.applicationRecoveryActionRequestId, approvalRequired.body.recoveryActionRequest.id);
+  // A human-scale approval window (24h), not the broker's 5-minute Codex ask-mode
+  // default — a decision that expires before anyone plausibly saw the queue would
+  // train operators to ignore it.
+  const approvalWindowMs = Date.parse(approvalRequired.body.approvalRequest.timeoutAt)
+    - Date.parse(approvalRequired.body.approvalRequest.createdAt);
+  assert.ok(approvalWindowMs >= 23 * 3_600_000, `expected ~24h approval window, got ${Math.round(approvalWindowMs / 60000)}m`);
+  assert.ok(approvalWindowMs <= 25 * 3_600_000, `expected ~24h approval window, got ${Math.round(approvalWindowMs / 60000)}m`);
   assert.ok(ctx.state.events.some((event) => event.invocationId === validation.id
     && event.type === "application_orchestration_recovery_approval_requested"
     && event.data?.recoveryActionRequestId === approvalRequired.body.recoveryActionRequest.id));
