@@ -3,6 +3,11 @@ import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { normalizeLoopRoutine, validateLoopRoutine } from "../../../../tools/ai/src/loop/routine.mjs";
 import { teamOf } from "../runtime/auth.mjs";
 
+// Consecutive failed health checks before an active application is auto-offlined
+// (docs/design/APPLICATION_HEALTH_PROBE.md) — fixed, to avoid flapping on
+// transient filesystem states.
+const HEALTH_FAILURE_THRESHOLD = 2;
+
 const APPLICATION_SOURCE_TYPES = new Set(["git", "local", "npm", "manual"]);
 const APPLICATION_STATUSES = new Set(["draft", "probing", "registered", "active", "offline", "archived", "failed"]);
 const NPM_WRAPPER_MODES = new Set(["metadata-only", "installed-wrapper"]);
@@ -349,7 +354,99 @@ export function createApplicationService({
     return app;
   }
 
+  // Opt-in periodic health probe (docs/design/APPLICATION_HEALTH_PROBE.md).
+  // Same write-control convention as auto-recovery: it enables an autonomous
+  // status transition (active→offline), so it demands the explicit approvalToken.
+  function setApplicationHealthProbe(applicationId, body = {}, actor = null) {
+    const app = findApplication(applicationId);
+    if (!app) return null;
+    if (!hasApprovalToken(body)) {
+      throw new Error("health-probe configuration requires an explicit approvalToken.");
+    }
+    if (typeof body.enabled !== "boolean") {
+      throw new Error("health-probe configuration requires enabled: boolean.");
+    }
+    const intervalMinutes = body.intervalMinutes == null ? 5 : Number(body.intervalMinutes);
+    if (!Number.isInteger(intervalMinutes) || intervalMinutes < 1 || intervalMinutes > 60) {
+      throw new Error("health-probe intervalMinutes must be an integer between 1 and 60.");
+    }
+    app.healthProbe = { enabled: body.enabled, intervalMinutes, lastCheckedAt: app.healthProbe?.lastCheckedAt ?? null };
+    app.updatedAt = now();
+    appendEvent({
+      invocationId: null,
+      type: "application_health_probe_configured",
+      level: "info",
+      message: `Application ${app.name} health probe ${body.enabled ? `enabled (every ${intervalMinutes}m)` : "disabled"}.`,
+      data: { applicationId: app.id, enabled: body.enabled, intervalMinutes, actorId: actor?.userId ?? null },
+    });
+    persistStateSoon();
+    return app;
+  }
+
+  // One health check: source availability. Only local/git sources have a
+  // materialized path to check; npm/manual read `unsupported` — never a
+  // fabricated verdict, never an auto-transition.
+  function checkApplicationHealth(app) {
+    const supported = ["local", "git"].includes(app.source?.type) && typeof app.path === "string" && app.path;
+    if (!supported) {
+      return { status: "unsupported", reason: `source type ${app.source?.type ?? "unknown"} has no local materialization to check` };
+    }
+    return existsSync(app.path)
+      ? { status: "healthy", reason: null }
+      : { status: "unhealthy", reason: `source path ${app.path} does not exist` };
+  }
+
+  // The periodic sweep (driven by index.mjs's slow tick; tests call it directly).
+  // Policy: auto-DEGRADE only — after 2 consecutive failures an active app goes
+  // offline via the ordinary transition path; recovery never auto-onlines.
+  function applicationHealthSweep({ force = false } = {}) {
+    const checkedAt = now();
+    for (const app of listApplications()) {
+      if (!app.healthProbe?.enabled || app.status === "archived") continue;
+      const intervalMs = (app.healthProbe.intervalMinutes ?? 5) * 60_000;
+      const last = app.healthProbe.lastCheckedAt ? Date.parse(app.healthProbe.lastCheckedAt) : 0;
+      if (!force && Date.parse(checkedAt) - last < intervalMs) continue;
+      app.healthProbe.lastCheckedAt = checkedAt;
+
+      const wasUnhealthy = app.health?.status === "unhealthy";
+      const check = checkApplicationHealth(app);
+      const consecutiveFailures = check.status === "unhealthy" ? (app.health?.consecutiveFailures ?? 0) + 1 : 0;
+      app.health = { ...check, checkedAt, consecutiveFailures };
+      app.updatedAt = checkedAt;
+
+      if (check.status === "unhealthy") {
+        appendEvent({
+          invocationId: null,
+          type: "application_health_probe_failed",
+          level: "warn",
+          message: `${app.name} health probe failed (${consecutiveFailures}/${HEALTH_FAILURE_THRESHOLD}): ${check.reason}.`,
+          data: { applicationId: app.id, reason: check.reason, consecutiveFailures, threshold: HEALTH_FAILURE_THRESHOLD },
+        });
+        if (consecutiveFailures >= HEALTH_FAILURE_THRESHOLD && app.status === "active") {
+          transitionApplication(app.id, "offline", { userId: "system_health_probe" });
+          appendEvent({
+            invocationId: null,
+            type: "application_health_auto_offline",
+            level: "warn",
+            message: `${app.name} taken offline after ${consecutiveFailures} failed health checks. Bringing it back online requires a human.`,
+            data: { applicationId: app.id, reason: check.reason, consecutiveFailures },
+          });
+        }
+      } else if (check.status === "healthy" && wasUnhealthy) {
+        appendEvent({
+          invocationId: null,
+          type: "application_health_recovered",
+          level: "info",
+          message: `${app.name} source is reachable again. Review and bring it online when ready — health recovery never auto-onlines.`,
+          data: { applicationId: app.id, status: app.status },
+        });
+      }
+    }
+    persistStateSoon();
+  }
+
   return {
+    applicationHealthSweep,
     findApplication,
     invokeApplicationCapability,
     listApplicationCapabilities,
@@ -358,6 +455,7 @@ export function createApplicationService({
     probeApplication,
     registerApplication,
     setApplicationAutoRecovery,
+    setApplicationHealthProbe,
     transitionApplication,
   };
 }

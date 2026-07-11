@@ -120,6 +120,7 @@ export function createServerRuntimeServices({
   } = createAgentSkillService({ state, now, nextId, persistStateSoon });
 
   const {
+    applicationHealthSweep,
     findApplication,
     invokeApplicationCapability,
     listApplicationCapabilities,
@@ -128,6 +129,7 @@ export function createServerRuntimeServices({
     probeApplication,
     registerApplication,
     setApplicationAutoRecovery,
+    setApplicationHealthProbe,
     transitionApplication,
   } = createApplicationService({
     state,
@@ -2136,6 +2138,8 @@ export function createServerRuntimeServices({
     requestApplicationOrchestrationRecoveryAction,
     runApplicationOrchestration,
     setApplicationAutoRecovery,
+    setApplicationHealthProbe,
+    applicationHealthSweep,
     transitionApplication,
     createCodexChangeReview,
     createCodexImportedEvidenceRecord,
@@ -2269,6 +2273,8 @@ export function createServerRuntimeServices({
     requestApplicationOrchestrationRecoveryAction,
     runApplicationOrchestration,
     setApplicationAutoRecovery,
+    setApplicationHealthProbe,
+    applicationHealthSweep,
     transitionApplication,
     createSshTarget,
     createSshConnectionTest,

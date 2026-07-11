@@ -267,6 +267,8 @@ export const api = {
   ) => request("POST", `/api/applications/${encodeURIComponent(id)}/${action}`, body),
   setApplicationAutoRecovery: (id: string, body: { enabled: boolean; maxAttempts?: number; approvalToken?: string }) =>
     request("POST", `/api/applications/${encodeURIComponent(id)}/auto-recovery`, body),
+  setApplicationHealthProbe: (id: string, body: { enabled: boolean; intervalMinutes?: number; approvalToken?: string }) =>
+    request("POST", `/api/applications/${encodeURIComponent(id)}/health-probe`, body),
   generateApplicationOrchestration: (id: string, body: { approvalToken?: string } = {}) =>
     request("POST", `/api/applications/${encodeURIComponent(id)}/orchestrations/generate`, body),
   runApplicationOrchestration: (

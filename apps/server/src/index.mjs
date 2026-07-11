@@ -74,6 +74,18 @@ if (typeof httpDependencies.autoMergeSweep === "function") {
   setInterval(() => httpDependencies.autoMergeSweep().catch(() => {}), 60_000).unref?.();
 }
 
+// Application health probe (opt-in per app): check source availability on a slow
+// tick; the sweep throttles per application by its own intervalMinutes.
+if (typeof httpDependencies.applicationHealthSweep === "function") {
+  setInterval(() => {
+    try {
+      httpDependencies.applicationHealthSweep();
+    } catch {
+      /* best-effort sweep */
+    }
+  }, 60_000).unref?.();
+}
+
 process.on("SIGINT", () => {
   savePersistentState();
   process.exit(0);
