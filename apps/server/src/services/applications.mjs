@@ -23,6 +23,7 @@ export function createApplicationService({
   addProject,
   cloneProject,
   defaultProjectPath = process.cwd(),
+  sendAlert = null,
 }) {
   function listApplications() {
     return state.applications ?? [];
@@ -431,6 +432,16 @@ export function createApplicationService({
             message: `${app.name} taken offline after ${consecutiveFailures} failed health checks. Bringing it back online requires a human.`,
             data: { applicationId: app.id, reason: check.reason, consecutiveFailures },
           });
+          // An autonomous status change nobody was watching for — push it to the
+          // operator's alert webhook, not just the event stream. Best-effort.
+          if (typeof sendAlert === "function") {
+            sendAlert({
+              kind: "application_health_auto_offline",
+              severity: "warning",
+              message: `${app.name} taken offline after ${consecutiveFailures} failed health checks: ${check.reason}. Bringing it back online requires a human.`,
+              data: { applicationId: app.id, applicationName: app.name, reason: check.reason, consecutiveFailures },
+            });
+          }
         }
       } else if (check.status === "healthy" && wasUnhealthy) {
         appendEvent({
