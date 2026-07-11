@@ -139,6 +139,26 @@ test("phase 1 dual-accept: legacy free-text still passes, stamped and counted", 
   assert.ok(state.events.some((e) => e.type === "approval_token_legacy_used" && e.data?.action === "auto-recovery-config"));
 });
 
+test("phase 2 strict mode: legacy free-text is rejected everywhere; issued grants still pass", async () => {
+  state.autoRunSettings = { ...state.autoRunSettings, requireIssuedApprovals: true };
+  const legacyBefore = legacyCount();
+  const rejected = await call(`/api/applications/${appId}/auto-recovery`, {
+    method: "POST",
+    body: { enabled: false, approvalToken: "operator-approved" },
+  });
+  assert.equal(rejected.status, 400);
+  assert.match(rejected.body.message, /grant_required_strict/);
+  assert.equal(legacyCount(), legacyBefore, "a strict rejection is not counted as a legacy USE");
+
+  const issued = await issueGrant("auto-recovery-config");
+  const accepted = await call(`/api/applications/${appId}/auto-recovery`, {
+    method: "POST",
+    body: { enabled: false, approvalToken: issued.body.token },
+  });
+  assert.equal(accepted.status, 200, "issued grants are unaffected by strict mode");
+  state.autoRunSettings = { ...state.autoRunSettings, requireIssuedApprovals: false };
+});
+
 test("broker approve mints a decision-linked grant that authorizes the execution (no magic string)", async () => {
   const generated = await call(`/api/applications/${appId}/orchestrations/generate`, {
     method: "POST",

@@ -14,12 +14,15 @@ explicit approval policy before any code.
 **Autonomy never crosses an approval gate.** The recovery model already stamps every action
 with `requiresApproval`; auto-recovery inherits that verdict and adds four narrowing rules:
 
-1. **Only the recommended action, and only `rerun`.** The action must be the model's
-   `recommended` one AND `type === "rerun"` AND `requiresApproval === false`.
-   `select_agent` (a judgment call over agent candidates) and everything approval-gated
-   (`regenerate_orchestration`, `relink_device`) are never auto-executed — and never
-   auto-*requested* either: an auto-filed approval request would sit in the 5-minute broker
-   timeout window and expire unseen, training operators to ignore the queue.
+1. **Only the recommended action, and only `rerun`, is auto-EXECUTED.** The action must be
+   the model's `recommended` one AND `type === "rerun"` AND `requiresApproval === false`.
+   `select_agent` (a judgment call over agent candidates) stays fully manual.
+   *(Amended, phase 3)*: approval-gated recommendations (`regenerate_orchestration`,
+   `relink_device`) are now auto-**FILED** as ordinary approval requests — never
+   auto-approved — because the original blocker (the 5-minute broker window that would
+   expire unseen) was fixed to 24h. The human decides in the Approvals Center; approval
+   executes through the decision-grant chain. Auto-filed requests count against the same
+   crash-loop cap as executed reruns, so a nightly-failing routine cannot flood the queue.
 2. **Only failure categories where rerun is the platform's recommendation and no human
    intent is overridden**: `runtime_error` and `dispatch_timeout`. `cancelled` is excluded —
    a human stopped that run; auto-rerunning would override them.
