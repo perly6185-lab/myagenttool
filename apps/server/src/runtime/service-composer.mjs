@@ -12,6 +12,7 @@ import { execFileSync } from "node:child_process";
 import { dirname, resolve, sep } from "node:path";
 import { createAgentSkillService } from "../services/agent-skills.mjs";
 import { createApplicationService, validateApplicationRoutineDraft } from "../services/applications.mjs";
+import { createApprovalGrantService } from "../services/approval-grants.mjs";
 import { createCapabilityService } from "../services/capabilities.mjs";
 import { createCcusageImportService } from "../services/ccusage-imports.mjs";
 import { createClaudeReviewImportService } from "../services/claude-review-imports.mjs";
@@ -119,6 +120,17 @@ export function createServerRuntimeServices({
     deleteAgentSkill,
   } = createAgentSkillService({ state, now, nextId, persistStateSoon });
 
+  // Approval grants (docs/design/APPROVAL_GRANTS.md): the issuance flow behind
+  // every approvalToken field. Composed before the application service so the
+  // validator can be injected into its guards.
+  const { issueApprovalGrant, mintDecisionGrant, validateApprovalToken } = createApprovalGrantService({
+    state,
+    now,
+    nextId,
+    appendEvent,
+    persistStateSoon,
+  });
+
   const {
     applicationHealthSweep,
     findApplication,
@@ -143,6 +155,7 @@ export function createServerRuntimeServices({
     // Lazy: autoRunAlerts is composed further down; the thunk only runs at sweep
     // time (post-composition), so the late binding is safe.
     sendAlert: (alert) => void autoRunAlerts.dispatch(alert),
+    validateApprovalToken,
   });
 
   const {
@@ -1082,7 +1095,7 @@ export function createServerRuntimeServices({
       reason,
       actor,
     });
-    if (selectedAction.requiresApproval && !isApplicationActionApproved(body?.approvalToken)) {
+    if (selectedAction.requiresApproval && !isApplicationRecoveryActionApproved(body?.approvalToken, applicationId, actor)) {
       const approvalRequest = createApplicationRecoveryApprovalRequest(run.invocation, actionRequest, selectedAction, recoveryModel, actor);
       actionRequest.status = approvalRequest.status === "approved" ? "approval_approved" : approvalRequest.status === "denied" ? "approval_denied" : "approval_pending";
       actionRequest.approvalRequestId = approvalRequest.id;
@@ -1574,8 +1587,19 @@ export function createServerRuntimeServices({
         recoveryActionRequestId: actionRequest.id,
       },
     });
+    // The recorded decision (broker approve, or the requester's own validated
+    // token on the direct path) authorizes this execution: mint a grant bound to
+    // it so the audit chain reads decision → grant → execution — the hard-coded
+    // "operator-approved-application-recovery" magic string is gone.
+    const executionToken = mintDecisionGrant({
+      action: "generate_orchestration",
+      targetId: application.id,
+      sourceDecisionId: actionRequest.approvalRequestId ?? actionRequest.id,
+      decidedBy: actor?.userId ?? null,
+      teamId: actor?.teamId ?? null,
+    });
     const result = createCapabilityInvocation(capability.name, {
-      approvalToken: "operator-approved-application-recovery",
+      approvalToken: executionToken,
       recoveryActionRequestId: actionRequest.id,
       recoveryOfInvocationId: actionRequest.invocationId,
       recoveryReason: actionRequest.reason,
@@ -2075,8 +2099,19 @@ export function createServerRuntimeServices({
     });
   }
 
-  function isApplicationActionApproved(token) {
-    return typeof token === "string" && token.startsWith("operator-approved");
+  // The recovery-action bypass gate. Historically this accepted only the
+  // "operator-approved" free-text prefix — dual-accept must not WEAKEN it, so
+  // legacy fallback stays restricted to that prefix while issued grants (action
+  // "recovery_action" on the application) become the proper path.
+  function isApplicationRecoveryActionApproved(token, applicationId, actor = null) {
+    const raw = String(token ?? "").trim();
+    if (!raw) return false;
+    return validateApprovalToken(raw, {
+      action: "recovery_action",
+      targetId: applicationId,
+      actor,
+      allowLegacy: raw.startsWith("operator-approved"),
+    }).approved;
   }
 
   function applicationOrchestrationScope(applicationId, routineId) {
@@ -2174,6 +2209,7 @@ export function createServerRuntimeServices({
     requestApplicationOrchestrationRecoveryAction,
     runApplicationOrchestration,
     setApplicationAutoRecovery,
+    issueApprovalGrant,
     setApplicationHealthProbe,
     applicationHealthSweep,
     transitionApplication,
@@ -2309,6 +2345,7 @@ export function createServerRuntimeServices({
     requestApplicationOrchestrationRecoveryAction,
     runApplicationOrchestration,
     setApplicationAutoRecovery,
+    issueApprovalGrant,
     setApplicationHealthProbe,
     applicationHealthSweep,
     transitionApplication,

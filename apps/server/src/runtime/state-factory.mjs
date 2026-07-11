@@ -38,6 +38,8 @@ export function createServerState({ defaultProjectPath, now }) {
     projects: [defaultProject],
     applications: [],
     applicationRecoveryActions: [],
+    approvalGrants: [],
+    approvalTokenLegacyUses: { count: 0, lastAt: null },
     currentProjectId: defaultProject.id,
     projectTargets: [createProjectTargetRecord(defaultProject, now)],
     worktrees: [],
