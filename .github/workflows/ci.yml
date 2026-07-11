@@ -65,6 +65,13 @@ jobs:
       - name: Test
         run: pnpm test:ci
 
+      # tsc --noEmit and vitest never exercise the production bundler, so a green
+      # PR could still fail `vite build` (bundler-only import/asset/plugin errors)
+      # and break the deploy. Only apps/web has a build today; --if-present keeps
+      # this a no-op for packages without one.
+      - name: Build
+        run: pnpm build
+
   # L4 evaluation gates that are deterministic and free of AI spend: the mock
   # provider exercises the eval plumbing, and the issue-gate cases assert
   # product behavior (the runner exits non-zero if any issue-gate case fails —
