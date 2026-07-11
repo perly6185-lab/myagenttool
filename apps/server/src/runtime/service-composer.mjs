@@ -1833,51 +1833,73 @@ export function createServerRuntimeServices({
     const deliveryState = String(invocation.delivery?.state ?? "").toLowerCase();
     const cancellationState = String(invocation.cancellation?.state ?? "").toLowerCase();
 
+    // One recovery model per category, so the structured path and the haystack
+    // fallback below can never drift apart on actions or approval requirements.
+    const categorized = {
+      cancelled: (confidence) => recovery("cancelled", confidence, true, "The run was cancelled before completion.", [
+        action("rerun", "Re-run orchestration", "Start a new governed run if the cancellation was intentional or transient.", false, { invocationId: invocation.id }),
+        action("view_invocation", "Review cancellation context", "Inspect the invocation timeline before retrying a user-cancelled run.", false, { invocationId: invocation.id }),
+      ], recoveryActions),
+      validation_failed: (confidence) => recovery("validation_failed", confidence, false, "The LoopRoutine draft or policy validation needs correction before retrying.", [
+        action("regenerate_orchestration", "Regenerate orchestration", "Generate a fresh governed routine draft for the application.", true, { applicationId: invocation.options?.metadata?.applicationId ?? null }),
+        action("view_invocation", "Inspect validation evidence", "Review the failing validation message and routine metadata.", false, { invocationId: invocation.id }),
+      ], recoveryActions),
+      agent_unavailable: (confidence) => recovery("agent_unavailable", confidence, true, "The selected agent was unavailable or unhealthy.", [
+        action("select_agent", "Select a healthy agent", "Retry with an available governed agent.", false, { agentId: invocation.agentId ?? null }),
+        action("view_invocation", "Inspect agent state", "Review the failed invocation and agent health context.", false, { invocationId: invocation.id }),
+      ], recoveryActions),
+      device_unlinked: (confidence) => recovery("device_unlinked", confidence, true, "The local device bridge is unlinked or unavailable.", [
+        action("relink_device", "Relink device", "Restore Desktop Bridge credentials before retrying local-device work.", true, { agentId: invocation.agentId ?? null }),
+        action("rerun", "Re-run after relink", "Start a new governed run once the bridge is linked.", false, { invocationId: invocation.id }),
+      ], recoveryActions),
+      dispatch_timeout: (confidence) => recovery("dispatch_timeout", confidence, true, "The run did not reach the bridge cleanly or needed redelivery.", [
+        action("rerun", "Re-run orchestration", "Retry the governed run after confirming the bridge is online.", false, { invocationId: invocation.id }),
+        action("view_invocation", "Inspect delivery attempts", "Check dispatch attempts and bridge cursor details.", false, { invocationId: invocation.id }),
+      ], recoveryActions),
+      policy_blocked: (confidence) => recovery("policy_blocked", confidence, false, "The run appears blocked by policy or approval handling.", [
+        action("view_invocation", "Review policy decision", "Inspect approval and policy events before retrying.", true, { invocationId: invocation.id }),
+      ], recoveryActions),
+      runtime_error: (confidence) => recovery("runtime_error", confidence, true, auditSummary?.errorSummary ?? invocation.result?.summary ?? "The run failed during execution.", [
+        action("rerun", "Re-run orchestration", "Retry if the failure is transient or after applying the indicated fix.", false, { invocationId: invocation.id }),
+        action("view_invocation", "Inspect runtime error", "Review result, audit summary, and timeline details.", false, { invocationId: invocation.id }),
+      ], recoveryActions),
+    };
+
     if (["succeeded", "completed"].includes(invocation.status)) {
       return recovery("none", 0.99, false, "No recovery needed.", [
         action("view_invocation", "Review audit trail", "Open the invocation if you need evidence for the successful run.", false, { invocationId: invocation.id }),
       ], recoveryActions);
     }
     if (invocation.status === "cancelled" || cancellationState === "cancelled" || eventTypes.some((type) => type.includes("cancel"))) {
-      return recovery("cancelled", 0.9, true, "The run was cancelled before completion.", [
-        action("rerun", "Re-run orchestration", "Start a new governed run if the cancellation was intentional or transient.", false, { invocationId: invocation.id }),
-        action("view_invocation", "Review cancellation context", "Inspect the invocation timeline before retrying a user-cancelled run.", false, { invocationId: invocation.id }),
-      ], recoveryActions);
+      return categorized.cancelled(0.9);
+    }
+    // Structured signal first: a bridge that declares the failure class via
+    // result.errorCode (one of the recovery categories) is authoritative — the
+    // free-text haystack below is inference and stays as the fallback for
+    // completions that don't carry a code. This is what keeps auto-recovery from
+    // rerunning a failure that actually needs an approval-gated fix just because
+    // the error text didn't contain the right keyword.
+    const declaredCode = String(invocation.result?.errorCode ?? "").trim().toLowerCase();
+    if (categorized[declaredCode]) {
+      return categorized[declaredCode](0.95);
     }
     if (haystack.includes("invalid_application_routine") || haystack.includes("validation") || haystack.includes("invalid routine")) {
-      return recovery("validation_failed", 0.86, false, "The LoopRoutine draft or policy validation needs correction before retrying.", [
-        action("regenerate_orchestration", "Regenerate orchestration", "Generate a fresh governed routine draft for the application.", true, { applicationId: invocation.options?.metadata?.applicationId ?? null }),
-        action("view_invocation", "Inspect validation evidence", "Review the failing validation message and routine metadata.", false, { invocationId: invocation.id }),
-      ], recoveryActions);
+      return categorized.validation_failed(0.86);
     }
     if (haystack.includes("agent_disabled") || haystack.includes("agent_unhealthy") || haystack.includes("agent_not_found") || haystack.includes("unhealthy") || haystack.includes("disabled")) {
-      return recovery("agent_unavailable", 0.84, true, "The selected agent was unavailable or unhealthy.", [
-        action("select_agent", "Select a healthy agent", "Retry with an available governed agent.", false, { agentId: invocation.agentId ?? null }),
-        action("view_invocation", "Inspect agent state", "Review the failed invocation and agent health context.", false, { invocationId: invocation.id }),
-      ], recoveryActions);
+      return categorized.agent_unavailable(0.84);
     }
     if (haystack.includes("device_unlinked") || haystack.includes("device credentials") || haystack.includes("unlinked")) {
-      return recovery("device_unlinked", 0.88, true, "The local device bridge is unlinked or unavailable.", [
-        action("relink_device", "Relink device", "Restore Desktop Bridge credentials before retrying local-device work.", true, { agentId: invocation.agentId ?? null }),
-        action("rerun", "Re-run after relink", "Start a new governed run once the bridge is linked.", false, { invocationId: invocation.id }),
-      ], recoveryActions);
+      return categorized.device_unlinked(0.88);
     }
     if (deliveryState === "dispatching" || deliveryState === "redelivering" || haystack.includes("dispatch lease expired") || eventTypes.includes("delivery_redelivered")) {
-      return recovery("dispatch_timeout", 0.78, true, "The run did not reach the bridge cleanly or needed redelivery.", [
-        action("rerun", "Re-run orchestration", "Retry the governed run after confirming the bridge is online.", false, { invocationId: invocation.id }),
-        action("view_invocation", "Inspect delivery attempts", "Check dispatch attempts and bridge cursor details.", false, { invocationId: invocation.id }),
-      ], recoveryActions);
+      return categorized.dispatch_timeout(0.78);
     }
     if (haystack.includes("policy_blocked") || haystack.includes("policy denied") || haystack.includes("approval denied") || haystack.includes("requires_local_approval") || eventTypes.includes("invocation_rejected")) {
-      return recovery("policy_blocked", 0.72, false, "The run appears blocked by policy or approval handling.", [
-        action("view_invocation", "Review policy decision", "Inspect approval and policy events before retrying.", true, { invocationId: invocation.id }),
-      ], recoveryActions);
+      return categorized.policy_blocked(0.72);
     }
     if (auditSummary?.errorSummary || invocation.status === "failed" || eventTypes.some((type) => type.endsWith("_failed") || type.includes("failure"))) {
-      return recovery("runtime_error", 0.74, true, auditSummary?.errorSummary ?? "The run failed during execution.", [
-        action("rerun", "Re-run orchestration", "Retry if the failure is transient or after applying the indicated fix.", false, { invocationId: invocation.id }),
-        action("view_invocation", "Inspect runtime error", "Review result, audit summary, and timeline details.", false, { invocationId: invocation.id }),
-      ], recoveryActions);
+      return categorized.runtime_error(0.74);
     }
     return recovery("unknown_failure", 0.35, false, "No specific recovery path could be inferred from the recorded evidence.", [
       action("view_invocation", "Inspect invocation", "Review the full invocation before choosing a recovery action.", false, { invocationId: invocation.id }),
