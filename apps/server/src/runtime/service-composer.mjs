@@ -127,6 +127,7 @@ export function createServerRuntimeServices({
     planApplicationWrapperInvocation,
     probeApplication,
     registerApplication,
+    setApplicationAutoRecovery,
     transitionApplication,
   } = createApplicationService({
     state,
@@ -268,6 +269,10 @@ export function createServerRuntimeServices({
   let advanceAutoRunHook = null;
   let approvalAutoRunHook = null;
   let denialAutoRunHook = null;
+  // Same late-binding for orchestration auto-recovery: it reuses the recovery
+  // action machinery defined further down. Exception-isolated at the call site —
+  // completion never fails because auto-recovery did.
+  let orchestrationAutoRecoveryHook = null;
 
   invocationService = createInvocationService({
     state,
@@ -300,7 +305,14 @@ export function createServerRuntimeServices({
     resolveResumeCodexSessionId,
     closeCodexSession,
     budgetGateForProject,
-    onInvocationCompleted: (invocation) => advanceAutoRunHook?.(invocation),
+    onInvocationCompleted: (invocation) => {
+      advanceAutoRunHook?.(invocation);
+      try {
+        orchestrationAutoRecoveryHook?.(invocation);
+      } catch {
+        /* auto-recovery is best-effort; completion must never fail because of it */
+      }
+    },
     onInvocationApproved: (invocation) => approvalAutoRunHook?.(invocation),
     onInvocationDenied: (invocation) => denialAutoRunHook?.(invocation),
   });
@@ -553,6 +565,7 @@ export function createServerRuntimeServices({
   advanceAutoRunHook = advanceAutoRunForInvocation;
   approvalAutoRunHook = syncAutoRunOnApproval;
   denialAutoRunHook = syncAutoRunOnDenial;
+  orchestrationAutoRecoveryHook = maybeAutoRecoverOrchestrationRun; // hoisted function declaration (defined with the recovery machinery below)
 
   // Routing-evaluation disposition refresh (slice 5): bounded, throttled,
   // read-only gh; persists only when something changed.
@@ -899,6 +912,93 @@ export function createServerRuntimeServices({
         candidates: candidateViews,
       },
     };
+  }
+
+  // Orchestration auto-recovery (docs/design/ORCHESTRATION_AUTO_RECOVERY.md).
+  // Approval policy: autonomy never crosses an approval gate — only the model's
+  // RECOMMENDED action, only `rerun`, only on runtime_error/dispatch_timeout
+  // (cancelled would override human intent), capped per stream, opt-in per app.
+  // Skip decisions are evented only for opted-in applications (quiet by default).
+  const AUTO_RECOVERY_ACTOR_ID = "system_auto_recovery";
+  const AUTO_RECOVERY_CATEGORIES = new Set(["runtime_error", "dispatch_timeout"]);
+
+  function consecutiveAutoRecoveryAttempts(applicationId, routineId) {
+    // Auto attempts on the stream since its last successful run; a success (or a
+    // manual recovery that leads to one) resets the count.
+    const lastSuccessAt = (state.invocations ?? []).reduce((max, inv) => {
+      const meta = inv?.options?.metadata;
+      return meta?.source === "application_orchestration"
+        && meta.applicationId === applicationId
+        && meta.routineId === routineId
+        && inv.status === "succeeded"
+        && typeof inv.completedAt === "string"
+        && inv.completedAt > max
+        ? inv.completedAt
+        : max;
+    }, "");
+    return (state.applicationRecoveryActions ?? []).filter((request) =>
+      request?.applicationId === applicationId
+      && request.routineId === routineId
+      && request.requestedBy === AUTO_RECOVERY_ACTOR_ID
+      && (!lastSuccessAt || (request.createdAt ?? "") > lastSuccessAt),
+    ).length;
+  }
+
+  function appendAutoRecoverySkippedEvent(invocation, meta, reason, data = {}) {
+    appendEvent({
+      invocationId: invocation.id,
+      type: "application_orchestration_auto_recovery_skipped",
+      level: "warn",
+      message: `Auto-recovery skipped for ${meta.routineId}: ${reason}.`,
+      data: { applicationId: meta.applicationId, routineId: meta.routineId, reason, ...data },
+    });
+  }
+
+  function maybeAutoRecoverOrchestrationRun(invocation) {
+    if (invocation?.status !== "failed") return;
+    const meta = invocation?.options?.metadata;
+    if (meta?.source !== "application_orchestration" || !meta.applicationId || !meta.routineId) return;
+    const application = findApplication(meta.applicationId);
+    if (!application?.autoRecovery?.enabled) return;
+
+    const recoveryModel = applicationOrchestrationRecovery(
+      invocation,
+      applicationOrchestrationRunEvents(invocation.id),
+      applicationRecoveryActionsForRun(meta.applicationId, meta.routineId, invocation.id),
+    );
+    const recommended = recoveryModel.actions.find((item) => item.recommended) ?? null;
+    if (!recommended || recommended.requiresApproval) {
+      // Never auto-request an approval either: a parked broker request would sit
+      // in its 5-minute timeout window and expire unseen.
+      appendAutoRecoverySkippedEvent(invocation, meta, "approval_required", {
+        category: recoveryModel.category,
+        recommendedAction: recommended?.type ?? null,
+      });
+      return;
+    }
+    if (!AUTO_RECOVERY_CATEGORIES.has(recoveryModel.category) || recommended.type !== "rerun") {
+      appendAutoRecoverySkippedEvent(invocation, meta, "category_not_eligible", {
+        category: recoveryModel.category,
+        recommendedAction: recommended.type,
+      });
+      return;
+    }
+    const cap = application.autoRecovery.maxAttempts ?? 2;
+    const attempts = consecutiveAutoRecoveryAttempts(meta.applicationId, meta.routineId);
+    if (attempts >= cap) {
+      appendAutoRecoverySkippedEvent(invocation, meta, "attempt_cap", { attempts, maxAttempts: cap });
+      return;
+    }
+    // Reuses every guard in the manual path (scoping, action-suggested check,
+    // duplicate-action block); a non-2xx outcome is recorded by that path's own
+    // rejection events, so no extra handling here.
+    requestApplicationOrchestrationRecoveryAction(
+      meta.applicationId,
+      meta.routineId,
+      invocation.id,
+      { actionType: "rerun", reason: `Auto-recovery attempt ${attempts + 1}/${cap} after ${recoveryModel.category}.` },
+      { userId: AUTO_RECOVERY_ACTOR_ID },
+    );
   }
 
   function requestApplicationOrchestrationRecoveryAction(applicationId, routineId, invocationId, body = {}, actor = null) {
@@ -2035,6 +2135,7 @@ export function createServerRuntimeServices({
     registerApplication,
     requestApplicationOrchestrationRecoveryAction,
     runApplicationOrchestration,
+    setApplicationAutoRecovery,
     transitionApplication,
     createCodexChangeReview,
     createCodexImportedEvidenceRecord,
@@ -2167,6 +2268,7 @@ export function createServerRuntimeServices({
     registerApplication,
     requestApplicationOrchestrationRecoveryAction,
     runApplicationOrchestration,
+    setApplicationAutoRecovery,
     transitionApplication,
     createSshTarget,
     createSshConnectionTest,

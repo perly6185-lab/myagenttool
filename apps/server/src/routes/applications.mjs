@@ -18,6 +18,7 @@ export async function handleApplicationRoutes({
   probeApplication,
   registerApplication,
   requestApplicationOrchestrationRecoveryAction,
+  setApplicationAutoRecovery,
   transitionApplication,
   createCapabilityInvocation,
   listApplicationOrchestrationRuns,
@@ -172,6 +173,31 @@ export async function handleApplicationRoutes({
       return true;
     }
     sendJson(res, 200, { applicationId, capabilities });
+    return true;
+  }
+
+  const autoRecoveryMatch = url.pathname.match(/^\/api\/applications\/([^/]+)\/auto-recovery$/);
+  if (autoRecoveryMatch && req.method === "POST") {
+    const applicationId = decodeURIComponent(autoRecoveryMatch[1]);
+    if (denyForeignApplication({ res, sendJson, state, actor, applicationId, findApplication })) return true;
+    const body = await readJson(req);
+    if (!String(body?.approvalToken ?? "").trim()) {
+      sendJson(res, 409, { error: "approval_required", reason: "auto-recovery configuration requires an explicit approvalToken.", applicationId });
+      return true;
+    }
+    try {
+      const application = setApplicationAutoRecovery(applicationId, body, actor);
+      if (!application) {
+        sendJson(res, 404, { error: "application_not_found" });
+        return true;
+      }
+      sendJson(res, 200, { application });
+    } catch (error) {
+      sendJson(res, 400, {
+        error: "invalid_auto_recovery_config",
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
     return true;
   }
 

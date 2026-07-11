@@ -319,6 +319,36 @@ export function createApplicationService({
     };
   }
 
+  // Opt-in switch for orchestration auto-recovery (docs/design/
+  // ORCHESTRATION_AUTO_RECOVERY.md). A side-effecting, write-control config
+  // change — it enables autonomous execution — so it demands the explicit
+  // approvalToken like every other application mutation.
+  function setApplicationAutoRecovery(applicationId, body = {}, actor = null) {
+    const app = findApplication(applicationId);
+    if (!app) return null;
+    if (!hasApprovalToken(body)) {
+      throw new Error("auto-recovery configuration requires an explicit approvalToken.");
+    }
+    if (typeof body.enabled !== "boolean") {
+      throw new Error("auto-recovery configuration requires enabled: boolean.");
+    }
+    const maxAttempts = body.maxAttempts == null ? 2 : Number(body.maxAttempts);
+    if (!Number.isInteger(maxAttempts) || maxAttempts < 1 || maxAttempts > 5) {
+      throw new Error("auto-recovery maxAttempts must be an integer between 1 and 5.");
+    }
+    app.autoRecovery = { enabled: body.enabled, maxAttempts };
+    app.updatedAt = now();
+    appendEvent({
+      invocationId: null,
+      type: "application_auto_recovery_configured",
+      level: body.enabled ? "warn" : "info",
+      message: `Application ${app.name} auto-recovery ${body.enabled ? `enabled (max ${maxAttempts} attempts)` : "disabled"}.`,
+      data: { applicationId: app.id, enabled: body.enabled, maxAttempts, actorId: actor?.userId ?? null },
+    });
+    persistStateSoon();
+    return app;
+  }
+
   return {
     findApplication,
     invokeApplicationCapability,
@@ -327,6 +357,7 @@ export function createApplicationService({
     planApplicationWrapperInvocation,
     probeApplication,
     registerApplication,
+    setApplicationAutoRecovery,
     transitionApplication,
   };
 }

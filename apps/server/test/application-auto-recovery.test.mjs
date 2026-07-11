@@ -1,0 +1,181 @@
+import assert from "node:assert/strict";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { after, before, test } from "node:test";
+
+// Orchestration auto-recovery (docs/design/ORCHESTRATION_AUTO_RECOVERY.md),
+// driven end-to-end over real HTTP including the bridge protocol: opt-in config,
+// auto-rerun on runtime failure, crash-loop cap, approval gate never crossed.
+
+const now = () => new Date().toISOString();
+
+let server;
+let base;
+let state;
+let bridgeToken;
+let appId;
+let routineId;
+
+before(async () => {
+  const { createServerState } = await import("../src/runtime/state-factory.mjs");
+  const { createServerRuntimeServices } = await import("../src/runtime/service-composer.mjs");
+  const { createHttpServer } = await import("../src/runtime/http-server.mjs");
+
+  const projectDir = mkdtempSync(join(tmpdir(), "auto-recovery-project-"));
+  const appDir = mkdtempSync(join(tmpdir(), "auto-recovery-app-"));
+  writeFileSync(join(appDir, "package.json"), JSON.stringify({ name: "auto-recovery-demo", version: "1.0.0", scripts: { test: "echo ok" } }));
+
+  const created = createServerState({ defaultProjectPath: projectDir, now });
+  state = created.state;
+  const { httpDependencies } = createServerRuntimeServices({
+    namespace: "test",
+    protocolVersion: "0.0.0",
+    state,
+    defaultProject: created.defaultProject,
+    defaultProjectPath: projectDir,
+    persistenceEnabled: false,
+    stateStorePath: "/tmp/unused.json",
+    stateSchemaVersion: 1,
+    dispatchLeaseMs: 30_000,
+    now,
+  });
+  server = createHttpServer({ host: "127.0.0.1", port: 0, namespace: "test", protocolVersion: "0.0.0", ...httpDependencies });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  base = `http://127.0.0.1:${server.address().port}`;
+
+  const registered = await call("/api/applications/register", {
+    method: "POST",
+    body: { source: { type: "local", path: appDir }, name: "auto-recovery-demo" },
+  });
+  assert.equal(registered.status, 201, JSON.stringify(registered.body));
+  appId = registered.body.application.id;
+  routineId = `app-${appId}-maintenance`;
+  const generated = await call(`/api/applications/${appId}/orchestrations/generate`, {
+    method: "POST",
+    body: { approvalToken: "operator-approved" },
+  });
+  assert.equal(generated.status, 201, JSON.stringify(generated.body));
+
+  const bridge = await call("/api/bridge/register", { method: "POST", body: { bridgeVersion: "test" } });
+  assert.equal(bridge.status, 200);
+  bridgeToken = bridge.body.bridgeToken;
+});
+
+after(() => server?.close());
+
+// Run the routine and complete it via the bridge protocol with the given outcome.
+async function runAndComplete({ status, summary }) {
+  const run = await call(`/api/applications/${appId}/orchestrations/${routineId}/run`, { method: "POST", body: {} });
+  assert.equal(run.status, 201, JSON.stringify(run.body));
+  const invocationId = run.body.invocation.id;
+  await completeViaBridge(invocationId, { status, summary });
+  return invocationId;
+}
+
+async function completeViaBridge(invocationId, { status, summary }) {
+  // Drain the dispatch queue until this invocation's delivery is leased.
+  for (let i = 0; i < 10; i += 1) {
+    const next = await call("/api/bridge/next", { token: bridgeToken });
+    if (next.status === 204) break;
+    if (next.body?.invocationId === invocationId) break;
+  }
+  const ack = await call("/api/bridge/ack", { method: "POST", body: { invocationId }, token: bridgeToken });
+  assert.equal(ack.status, 200, `ack ${invocationId}: ${JSON.stringify(ack.body)}`);
+  const complete = await call("/api/bridge/complete", {
+    method: "POST",
+    body: { invocationId, status, result: { summary } },
+    token: bridgeToken,
+  });
+  assert.equal(complete.status, 200, `complete ${invocationId}: ${JSON.stringify(complete.body)}`);
+}
+
+const autoRequests = () => state.applicationRecoveryActions.filter((r) => r.requestedBy === "system_auto_recovery");
+const autoRerunsOf = (invocationId) => state.invocations.filter(
+  (inv) => inv.options?.metadata?.recoveryOfInvocationId === invocationId
+    && inv.options?.metadata?.recoveryActionType === "rerun",
+);
+const skipEvents = (reason) => state.events.filter(
+  (e) => e.type === "application_orchestration_auto_recovery_skipped" && e.data?.reason === reason,
+);
+
+test("auto-recovery config: approvalToken enforced, bounds validated, default off", async () => {
+  const noToken = await call(`/api/applications/${appId}/auto-recovery`, { method: "POST", body: { enabled: true } });
+  assert.equal(noToken.status, 409);
+  assert.equal(noToken.body.error, "approval_required");
+
+  const badCap = await call(`/api/applications/${appId}/auto-recovery`, {
+    method: "POST",
+    body: { enabled: true, maxAttempts: 9, approvalToken: "operator-approved" },
+  });
+  assert.equal(badCap.status, 400);
+  assert.match(badCap.body.message, /between 1 and 5/);
+
+  // Default off: a failed run with no config produces no auto action, silently.
+  const failedWhileOff = await runAndComplete({ status: "failed", summary: "npm test failed with exit code 1" });
+  assert.equal(autoRequests().length, 0);
+  assert.equal(autoRerunsOf(failedWhileOff).length, 0);
+  assert.equal(state.events.filter((e) => e.type === "application_orchestration_auto_recovery_skipped").length, 0, "opted-out apps emit no skip noise");
+
+  const enabled = await call(`/api/applications/${appId}/auto-recovery`, {
+    method: "POST",
+    body: { enabled: true, maxAttempts: 2, approvalToken: "operator-approved" },
+  });
+  assert.equal(enabled.status, 200);
+  assert.deepEqual(enabled.body.application.autoRecovery, { enabled: true, maxAttempts: 2 });
+});
+
+test("a runtime failure auto-reruns, attributed to the system actor; a success resets the cap", async () => {
+  const failed = await runAndComplete({ status: "failed", summary: "npm test failed with exit code 1" });
+  const reruns = autoRerunsOf(failed);
+  assert.equal(reruns.length, 1, "exactly one auto rerun spawned");
+  assert.equal(autoRequests().at(-1).invocationId, failed);
+  assert.equal(autoRequests().at(-1).actionType, "rerun");
+  // The auto rerun succeeds → stream healthy again, attempt counter resets.
+  await completeViaBridge(reruns[0].id, { status: "succeeded", summary: "maintenance findings reported" });
+  assert.equal(autoRequests().length, 1);
+});
+
+test("crash-loop cap: after maxAttempts consecutive auto attempts, it stops with an audit event", async () => {
+  const baseline = autoRequests().length;
+  const failed1 = await runAndComplete({ status: "failed", summary: "npm test failed with exit code 1" });
+  const rerun1 = autoRerunsOf(failed1)[0];
+  assert.ok(rerun1, "attempt 1 spawned");
+  await completeViaBridge(rerun1.id, { status: "failed", summary: "npm test failed with exit code 1" });
+  const rerun2 = autoRerunsOf(rerun1.id)[0];
+  assert.ok(rerun2, "attempt 2 spawned (rerun of the failed rerun)");
+  await completeViaBridge(rerun2.id, { status: "failed", summary: "npm test failed with exit code 1" });
+  assert.equal(autoRerunsOf(rerun2.id).length, 0, "attempt 3 must NOT spawn — cap is 2");
+  assert.equal(autoRequests().length - baseline, 2);
+  assert.equal(skipEvents("attempt_cap").length, 1);
+  assert.equal(skipEvents("attempt_cap")[0].data.maxAttempts, 2);
+});
+
+test("approval-gated categories are never auto-recovered and nothing is parked in the broker", async () => {
+  const brokerBefore = state.codexApprovalBrokerRequests.length;
+  const autoBefore = autoRequests().length;
+  const failed = await runAndComplete({ status: "failed", summary: "invalid_application_routine: validation failed" });
+  assert.equal(autoRerunsOf(failed).length, 0);
+  assert.equal(autoRequests().length, autoBefore, "no auto request for a validation failure");
+  assert.equal(state.codexApprovalBrokerRequests.length, brokerBefore, "no auto-parked approval request");
+  const skipped = skipEvents("approval_required");
+  assert.ok(skipped.some((e) => e.invocationId === failed && e.data.recommendedAction === "regenerate_orchestration"));
+});
+
+async function call(path, { method = "GET", body, token } = {}) {
+  const response = await fetch(`${base}${path}`, {
+    method,
+    headers: {
+      ...(token ? { authorization: `Bearer ${token}` } : {}),
+      ...(body ? { "content-type": "application/json" } : {}),
+    },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  let parsed = null;
+  try {
+    parsed = await response.json();
+  } catch {
+    parsed = null;
+  }
+  return { status: response.status, body: parsed };
+}
