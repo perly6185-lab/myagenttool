@@ -44,6 +44,7 @@ export async function handleAgentRoutes({
       issuedCredential = issueBridgeCredential({ rotate: true });
     }
     state.device.status = "online";
+    state.device.livenessLostAt = null;
     state.device.lastSeenAt = now();
     state.device.bridgeVersion = String(body.bridgeVersion ?? "0.0.0");
     state.device.registeredCapabilities = Array.isArray(body.capabilities) ? body.capabilities.map(String) : [];

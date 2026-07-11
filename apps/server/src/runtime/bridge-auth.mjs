@@ -7,7 +7,7 @@ const TOKEN_BYTES = 32;
 // existing lastSeenAt (updated every request), so there is no extra state churn.
 const DEFAULT_CREDENTIAL_IDLE_TTL_MS = Number(process.env.MYAGENTTOOL_BRIDGE_CREDENTIAL_IDLE_TTL_MS) || 12 * 60 * 60 * 1000;
 
-export function createBridgeCredentialRuntime({ state, now, persistStateSoon, credentialIdleTtlMs = DEFAULT_CREDENTIAL_IDLE_TTL_MS }) {
+export function createBridgeCredentialRuntime({ state, now, persistStateSoon, appendEvent = null, credentialIdleTtlMs = DEFAULT_CREDENTIAL_IDLE_TTL_MS }) {
   function credentialIsIdleExpired(credential, atMs = Date.parse(now())) {
     const lastSeenMs = Date.parse(credential?.lastSeenAt ?? credential?.issuedAt ?? "");
     return Number.isFinite(lastSeenMs) && Number.isFinite(atMs) && atMs - lastSeenMs > credentialIdleTtlMs;
@@ -60,6 +60,22 @@ export function createBridgeCredentialRuntime({ state, now, persistStateSoon, cr
     }
     credential.lastSeenAt = now();
     state.device.lastSeenAt = credential.lastSeenAt;
+    // Liveness restore is symmetric with the staleness sweep that flips the
+    // device offline (BRIDGE_LIVENESS_AND_REFUSAL.md): any authenticated bridge
+    // request proves the bridge is back, immediately.
+    if (state.device.status !== "online") {
+      state.device.status = "online";
+      state.device.livenessLostAt = null;
+      state.device.updatedAt = credential.lastSeenAt;
+      persistStateSoon();
+      appendEvent?.({
+        invocationId: null,
+        type: "bridge_liveness_restored",
+        level: "info",
+        message: "Desktop Bridge is reachable again; device back online.",
+        data: { deviceId: state.device.id },
+      });
+    }
     return credential;
   }
 

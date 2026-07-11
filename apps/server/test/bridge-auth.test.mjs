@@ -86,6 +86,7 @@ const protectedBridgeRoutes = [
   { method: "POST", path: "/api/bridge/ack", body: {} },
   { method: "POST", path: "/api/bridge/events", body: {} },
   { method: "POST", path: "/api/bridge/complete", body: {} },
+  { method: "POST", path: "/api/bridge/refuse", body: {} },
   { method: "GET", path: "/api/bridge/terminal-next" },
   { method: "POST", path: "/api/bridge/terminal-events", body: {} },
 ];

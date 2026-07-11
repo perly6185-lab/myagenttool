@@ -440,5 +440,47 @@ export async function handleBridgeRoutes({
     return true;
   }
 
+  // The refusal verb (docs/design/BRIDGE_LIVENESS_AND_REFUSAL.md): a bridge that
+  // KNOWS it cannot run a leased delivery (agent binary missing, workspace gone,
+  // unsupported adapter) says so honestly instead of failing after ack or letting
+  // the lease lapse into a fake timeout. Pre-ack only — an acked run reports
+  // through complete. Terminal, not requeue: on a single-device queue a bounce
+  // would just loop; the failure + its recovery model is the right lane.
+  if (req.method === "POST" && url.pathname === "/api/bridge/refuse") {
+    const body = await readJson(req);
+    const invocation = findInvocation(body.invocationId);
+    if (!invocation) {
+      sendJson(res, 404, { error: "invocation_not_found" });
+      return true;
+    }
+    const gate = bridgeInvocationGate(invocation, "refuse", {
+      allowedStatuses: ["dispatching"],
+      allowedDeliveryStates: ["dispatching"],
+    });
+    if (!gate.allowed) {
+      sendJson(res, gate.status, gate.body);
+      return true;
+    }
+    const reason = String(body.reason ?? "").trim() || "The bridge refused this delivery.";
+    // errorCode steers recovery classification — only the known category
+    // vocabulary is honored (mirrors the categorized map); unknown codes drop.
+    const knownErrorCodes = ["cancelled", "validation_failed", "agent_unavailable", "device_unlinked", "dispatch_timeout", "policy_blocked", "runtime_error"];
+    const errorCode = knownErrorCodes.includes(String(body.errorCode ?? "").trim()) ? String(body.errorCode).trim() : null;
+    invocation.delivery.state = "refused";
+    appendEvent({
+      invocationId: invocation.id,
+      type: "delivery_refused",
+      level: "warn",
+      message: `Desktop Bridge refused the delivery: ${reason}`,
+      data: { reason, errorCode, dispatchAttempts: invocation.delivery.dispatchAttempts },
+    });
+    completeInvocation(invocation, {
+      status: "failed",
+      result: { summary: reason, ...(errorCode ? { errorCode } : {}) },
+    });
+    sendJson(res, 200, { ok: true, invocation });
+    return true;
+  }
+
   return false;
 }
