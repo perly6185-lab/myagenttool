@@ -1077,12 +1077,39 @@ export function createAutoRunService({
       `Change-failure: #${culprit}\n\n` +
       `${extractProjectFieldsBlock(autoRun.issueBody) || DEFAULT_REMEDIATION_FIELDS}`;
     let created = null;
+    let remediationError = null;
     try {
       created = await fileRemediationIssue({ repoPath: project?.path ?? null, title, body, labels: ["auto"] });
-    } catch {
+    } catch (error) {
+      remediationError = error;
       created = null;
     }
-    if (!created?.number) return null;
+    if (!created?.number) {
+      // Remediation was opted-in but the fix-forward issue couldn't be filed → surface
+      // it so a human files the fix. Otherwise the root cause is silently never
+      // addressed: rollback (if any) only restored the previous version, it did not
+      // fix the bug that failed the deploy.
+      const detail =
+        remediationError instanceof Error
+          ? remediationError.message
+          : remediationError != null
+            ? String(remediationError)
+            : "the issue could not be created";
+      appendEvent({
+        invocationId: autoRun.invocationId,
+        type: "auto_run_remediation_failed",
+        level: "warn",
+        message: `Auto-run ${autoRun.id}: could not file the remediation issue for the failed deploy of PR #${culprit} — file the fix-forward manually (${detail}).`,
+        data: { autoRunId: autoRun.id, prNumber: culprit },
+      });
+      void sendAlert?.({
+        kind: "remediation_failed",
+        severity: "medium",
+        message: `Auto-run ${autoRun.id}: remediation issue for the failed deploy of PR #${culprit} could not be filed (${detail}).`,
+        data: { autoRunId: autoRun.id, prNumber: culprit },
+      });
+      return null;
+    }
     autoRun.remediationIssue = { number: created.number, url: created.url ?? null, culpritPr: culprit };
     appendEvent({
       invocationId: autoRun.invocationId,
@@ -1098,12 +1125,39 @@ export function createAutoRunService({
   async function maybeRollbackDeploy(autoRun, project) {
     if (!state.autoRunSettings?.rollbackOnDeployFailure || typeof runRollback !== "function") return null;
     let rb = null;
+    let rollbackError = null;
     try {
       rb = await runRollback({ link: autoRun.link, prNumber: autoRun.prNumber, repoPath: project?.path ?? null });
-    } catch {
+    } catch (error) {
+      rollbackError = error;
       rb = null;
     }
-    if (!rb?.deployed) return null; // rollback couldn't run or reported failure → leave for a human
+    if (!rb?.deployed) {
+      // Rollback was opted-in but couldn't restore the previous version → the failed
+      // deploy is likely STILL LIVE. That is worse than a plain deploy failure (the
+      // deploy_failed alert already implied "we'll handle it"), so surface it loudly
+      // instead of silently leaving it — an operator has to step in NOW.
+      const detail =
+        rollbackError instanceof Error
+          ? rollbackError.message
+          : rollbackError != null
+            ? String(rollbackError)
+            : "the rollback command reported it did not roll back";
+      appendEvent({
+        invocationId: autoRun.invocationId,
+        type: "auto_run_rollback_failed",
+        level: "error",
+        message: `Auto-run ${autoRun.id}: auto-rollback of the failed deploy of PR #${autoRun.prNumber} did NOT succeed — the bad deploy may still be live (${detail}).`,
+        data: { autoRunId: autoRun.id, prNumber: autoRun.prNumber ?? null },
+      });
+      void sendAlert?.({
+        kind: "rollback_failed",
+        severity: "critical",
+        message: `Auto-run ${autoRun.id}: auto-rollback FAILED for PR #${autoRun.prNumber} — the failed deploy may still be live; manual intervention needed.`,
+        data: { autoRunId: autoRun.id, prNumber: autoRun.prNumber ?? null },
+      });
+      return null; // couldn't run or reported failure → surfaced; left for a human
+    }
     const rbRecord = {
       id: nextId("dep_demo"),
       autoRunId: autoRun.id,

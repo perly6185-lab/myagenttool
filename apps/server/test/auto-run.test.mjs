@@ -78,13 +78,13 @@ function makeAutoRun({
   runRollback = undefined,
   fileRemediationIssue = undefined,
 } = {}) {
-  const calls = { createInvocation: [], startInvocationIfAllowed: [], commit: [], publish: [], pr: [], verify: [], status: [], report: [], merge: [], autoApprove: [], render: [], childCreate: [] };
+  const calls = { createInvocation: [], startInvocationIfAllowed: [], commit: [], publish: [], pr: [], verify: [], status: [], report: [], merge: [], autoApprove: [], render: [], childCreate: [], events: [] };
   let counter = 0;
   const svc = createAutoRunService({
     state,
     now: () => new Date().toISOString(),
     nextId: (p) => `${p}_${++counter}`,
-    appendEvent: () => {},
+    appendEvent: (event) => calls.events.push(event),
     persistStateSoon: () => {},
     createWorktree: projectSvc.createWorktree,
     destroyWorktree: projectSvc.destroyWorktree,
@@ -1988,6 +1988,73 @@ test("H2 remediate: skipped when off; uses default Project Fields when the culpr
   await b.svc.maybeDeployAfterMerge(mergedRun({ id: "aur_rem2", prNumber: 12 })); // no issueBody
   assert.match(filed[0].body, /## Project Fields/, "default fields when the culprit had none");
   assert.match(filed[0].body, /Type: bug/);
+});
+
+// ---------------------------------------------------------------------------
+// Self-healing observability: an opted-in rollback/remediation that CANNOT
+// complete is surfaced (not silently swallowed). A failed rollback is the
+// dangerous case — the bad deploy may still be live, yet only the generic
+// deploy_failed alert would otherwise fire (implying "we handled it").
+// ---------------------------------------------------------------------------
+test("H1 rollback FAILURE is surfaced: an opted-in rollback that can't run emits auto_run_rollback_failed (error)", async () => {
+  // rollback throws → captured + surfaced
+  const a = makeAutoRun({
+    runDeploy: async () => ({ deployed: false, summary: "healthcheck failed" }),
+    runRollback: async () => { throw new Error("rollback script exited 1"); },
+  });
+  state.autoRunSettings = { deployOnMerge: true, rollbackOnDeployFailure: true };
+  await a.svc.maybeDeployAfterMerge(mergedRun({ id: "aur_rbf1", prNumber: 21 }));
+  const ev = a.calls.events.find((e) => e.type === "auto_run_rollback_failed");
+  assert.ok(ev, "a thrown rollback surfaces auto_run_rollback_failed");
+  assert.equal(ev.level, "error", "it is error-level (the bad deploy may still be live)");
+  assert.match(ev.message, /may still be live/);
+  assert.match(ev.message, /rollback script exited 1/, "the underlying error is captured, not swallowed");
+  assert.equal(ev.data.prNumber, 21);
+
+  // rollback reports it did NOT roll back (deployed:false) → also surfaced
+  const b = makeAutoRun({ runDeploy: async () => ({ deployed: false }), runRollback: async () => ({ deployed: false }) });
+  state.autoRunSettings = { deployOnMerge: true, rollbackOnDeployFailure: true };
+  await b.svc.maybeDeployAfterMerge(mergedRun({ id: "aur_rbf2", prNumber: 22 }));
+  assert.ok(b.calls.events.some((e) => e.type === "auto_run_rollback_failed"), "a rollback that reports failure also surfaces");
+
+  // a SUCCESSFUL rollback emits NO failure event
+  const c = makeAutoRun({ runDeploy: async () => ({ deployed: false }), runRollback: async () => ({ deployed: true }) });
+  state.autoRunSettings = { deployOnMerge: true, rollbackOnDeployFailure: true };
+  await c.svc.maybeDeployAfterMerge(mergedRun({ id: "aur_rbf3", prNumber: 23 }));
+  assert.ok(!c.calls.events.some((e) => e.type === "auto_run_rollback_failed"), "a successful rollback emits no failure event");
+
+  // rollback OFF (not configured) is silent — not configured is not a failure
+  const d = makeAutoRun({ runDeploy: async () => ({ deployed: false }), runRollback: async () => ({ deployed: false }) });
+  state.autoRunSettings = { deployOnMerge: true };
+  await d.svc.maybeDeployAfterMerge(mergedRun({ id: "aur_rbf4", prNumber: 24 }));
+  assert.ok(!d.calls.events.some((e) => e.type === "auto_run_rollback_failed"), "rollback off -> no false-alarm failure event");
+});
+
+test("H2 remediation FAILURE is surfaced: an opted-in remediation that can't file emits auto_run_remediation_failed (warn)", async () => {
+  // fileRemediationIssue throws → captured + surfaced
+  const a = makeAutoRun({
+    runDeploy: async () => ({ deployed: false, summary: "healthcheck failed" }),
+    fileRemediationIssue: async () => { throw new Error("gh issue create returned no issue url"); },
+  });
+  state.autoRunSettings = { deployOnMerge: true, remediateOnDeployFailure: true };
+  const runA = mergedRun({ id: "aur_remf1", prNumber: 31 });
+  await a.svc.maybeDeployAfterMerge(runA);
+  const ev = a.calls.events.find((e) => e.type === "auto_run_remediation_failed");
+  assert.ok(ev, "a thrown remediation surfaces auto_run_remediation_failed");
+  assert.equal(ev.level, "warn");
+  assert.match(ev.message, /file the fix-forward manually/);
+  assert.match(ev.message, /gh issue create returned no issue url/, "the underlying error is captured");
+  assert.ok(!runA.remediationIssue, "no remediationIssue is recorded when filing failed");
+
+  // a SUCCESSFUL remediation emits the filed event, not the failure event
+  const b = makeAutoRun({
+    runDeploy: async () => ({ deployed: false }),
+    fileRemediationIssue: async () => ({ number: 99, url: "https://github.com/o/r/issues/99" }),
+  });
+  state.autoRunSettings = { deployOnMerge: true, remediateOnDeployFailure: true };
+  await b.svc.maybeDeployAfterMerge(mergedRun({ id: "aur_remf2", prNumber: 32 }));
+  assert.ok(!b.calls.events.some((e) => e.type === "auto_run_remediation_failed"), "a successful remediation emits no failure event");
+  assert.ok(b.calls.events.some((e) => e.type === "auto_run_remediation_filed"), "...it emits the filed event instead");
 });
 
 test("H2 marker: a run remediating a failed deploy propagates Change-failure:#N onto its PR body", async () => {
