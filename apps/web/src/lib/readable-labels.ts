@@ -236,6 +236,23 @@ export function readableEventType(type: string): string {
     cancel_applied: "Stop completed",
     cancel_failed: "Stop failed",
     cancel_force_killed: "Force-stopped (SIGKILL)",
+    // Auto-run pipeline lifecycle (issue → worktree → agent → verify → judge → PR → merge → deploy → heal).
+    auto_run_decided: "Routed",
+    auto_run_started: "Agent started",
+    auto_run_status_changed: "Stage changed",
+    auto_run_retried: "Retried",
+    auto_run_repair_started: "Self-repair started",
+    auto_run_auto_approved: "Auto-approved",
+    auto_run_denied: "Denied",
+    auto_run_design_approved: "Design approved",
+    auto_run_design_rejected: "Design rejected",
+    auto_run_clarify_answered: "Clarification answered",
+    auto_run_pr_merged: "PR merged",
+    auto_run_auto_merged: "Auto-merged",
+    auto_run_rolled_back: "Deploy rolled back",
+    auto_run_remediation_filed: "Remediation filed",
+    auto_run_child_spawned: "Child issue spawned",
+    auto_run_decomposition_rejected: "Decomposition rejected",
   };
   return map[type] ?? type.replaceAll("_", " ");
 }

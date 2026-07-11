@@ -289,6 +289,10 @@ export interface InvocationEventSnapshot {
     artifactId?: string;
     targetInvocationId?: string;
     reportId?: string;
+    // Auto-run lifecycle events key off autoRunId (not invocationId) so a run's
+    // whole timeline is reconstructable client-side; status carries the stage.
+    autoRunId?: string;
+    status?: string;
     [key: string]: unknown;
   } | null;
 }
