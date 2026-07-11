@@ -250,7 +250,9 @@ export function readableEventType(type: string): string {
     auto_run_pr_merged: "PR merged",
     auto_run_auto_merged: "Auto-merged",
     auto_run_rolled_back: "Deploy rolled back",
+    auto_run_rollback_failed: "Rollback failed",
     auto_run_remediation_filed: "Remediation filed",
+    auto_run_remediation_failed: "Remediation failed",
     auto_run_child_spawned: "Child issue spawned",
     auto_run_decomposition_rejected: "Decomposition rejected",
   };
