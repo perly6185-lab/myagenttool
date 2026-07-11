@@ -451,6 +451,7 @@ export const api = {
   autoRunReadiness: (projectId: string) => request("GET", `/api/projects/${encodeURIComponent(projectId)}/auto-run-readiness`),
   // Retry a failed/blocked auto-run on its existing worktree.
   retryAutoRun: (id: string) => request("POST", `/api/auto-runs/${encodeURIComponent(id)}/retry`),
+  cancelAutoRun: (id: string) => request("POST", `/api/auto-runs/${encodeURIComponent(id)}/cancel`),
   // Human-triggered PR merge for a pr_open auto-run (merge stays human — a person
   // clicks Merge in the console; runs `gh pr merge` server-side).
   mergeAutoRunPr: (id: string) => request("POST", `/api/auto-runs/${encodeURIComponent(id)}/merge`),

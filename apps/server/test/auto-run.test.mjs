@@ -71,6 +71,7 @@ function makeAutoRun({
   fetchPrChecks = undefined,
   budgetStatusFor = undefined,
   findInvocation = undefined,
+  cancelInvocation = undefined,
   autoApproveInvocation = undefined,
   sendAlert = undefined,
   runDeploy = undefined,
@@ -146,6 +147,7 @@ function makeAutoRun({
     budgetStatusFor,
     sendAlert,
     findInvocation,
+    cancelInvocation,
     runDeploy,
     runRollback,
     fileRemediationIssue,
@@ -989,6 +991,47 @@ test("retryAutoRun refuses non-settled runs and missing worktrees", async () => 
   autoRun.status = "failed";
   autoRun.worktreeId = "wtr_gone";
   await assert.rejects(() => svc.retryAutoRun(autoRun.id), /no longer exists/);
+});
+
+test("cancelAutoRun stops an in-flight run: cancels its invocation and settles it as cancelled", async () => {
+  const cancelled = [];
+  const running = { id: "inv_fake_1", status: "running" };
+  const { svc } = makeAutoRun({
+    findInvocation: (id) => (id === "inv_fake_1" ? running : null),
+    cancelInvocation: (inv, actor) => { cancelled.push({ inv, actor }); },
+  });
+  const { autoRun } = await svc.startAutoRun({
+    projectId: sourceProjectId,
+    link: { type: "issue", number: 140, title: "Long run", url: null, state: "open" },
+    agentId: "agt_1",
+    name: "issue-140-cancel",
+  });
+  assert.ok(!["failed", "blocked", "pr_open"].includes(autoRun.status), "run is in-flight before cancel");
+
+  const result = svc.cancelAutoRun(autoRun.id, { actor: { userId: "usr_x" } });
+
+  assert.equal(result.status, "cancelled");
+  assert.equal(autoRun.status, "cancelled", "the run settled as cancelled, not failed");
+  assert.equal(cancelled.length, 1, "the running agent invocation was cancelled");
+  assert.equal(cancelled[0].inv, running);
+});
+
+test("cancelAutoRun is settled (advance skips it) and refuses an already-settled run", async () => {
+  const { svc } = makeAutoRun();
+  const { autoRun, invocation } = await svc.startAutoRun({
+    projectId: sourceProjectId,
+    link: { type: "issue", number: 141, title: "Cancel then race", url: null, state: "open" },
+    agentId: "agt_1",
+    name: "issue-141-settled",
+  });
+  svc.cancelAutoRun(autoRun.id);
+  assert.equal(autoRun.status, "cancelled");
+  // A late invocation-terminal reaction must NOT re-derive a status over a cancelled run.
+  await svc.advanceAutoRunForInvocation({ ...invocation, status: "succeeded" });
+  assert.equal(autoRun.status, "cancelled", "the terminal reaction skips a settled (cancelled) run");
+  // Re-cancelling / cancelling a missing run is refused.
+  assert.throws(() => svc.cancelAutoRun(autoRun.id), /already settled/);
+  assert.throws(() => svc.cancelAutoRun("aur_nope"), /not found/i);
 });
 
 async function judgeRun(svc, number, name) {
