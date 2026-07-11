@@ -95,7 +95,7 @@ export function pendingDecisions({
         id: `merge:${r.id}`,
         kind: "merge",
         title: `PR #${r.prNumber} ready to merge`,
-        subtitle: truncate([autoRunContext(r), r.mergeRisk ? `${r.mergeRisk} risk` : null].filter(Boolean).join(" · ")),
+        subtitle: truncate([autoRunContext(r), r.mergeRisk?.level ? `${r.mergeRisk.level} risk` : null].filter(Boolean).join(" · ")),
         ref: { autoRunId: r.id, prNumber: r.prNumber, prUrl: r.prUrl ?? null, mergeRisk: r.mergeRisk ?? null },
         ...common,
       });
