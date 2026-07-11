@@ -10,6 +10,7 @@ import { useConsoleState } from "@/data/use-console-state";
 import { useUiStore } from "@/store/ui-store";
 import { cn } from "@/lib/cn";
 import { RegisterApplicationModal } from "@/features/applications/register-application-modal";
+import { applicationOpsBadges } from "@/features/applications/application-ops-ui";
 import type { ApplicationSnapshot, ApplicationSource } from "@/lib/console-state";
 import type { Tone } from "@/lib/readable-labels";
 
@@ -142,6 +143,9 @@ export function ApplicationsView() {
                   {app.orchestrationIds?.length ? (
                     <Badge>{app.orchestrationIds.length} orchestration(s)</Badge>
                   ) : null}
+                  {applicationOpsBadges(app).map((badge) => (
+                    <Badge key={badge.label} tone={badge.tone}>{badge.label}</Badge>
+                  ))}
                 </div>
               </CardContent>
             </Card>
