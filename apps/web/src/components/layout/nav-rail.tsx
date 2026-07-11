@@ -37,9 +37,12 @@ export function NavRail() {
       </div>
 
       <ul className="flex flex-1 flex-col gap-0.5 overflow-y-auto px-3 py-2">
-        {SECTION_GROUPS.map((grp) => (
-          <li key={grp.key}>
-            <p className="px-3 pb-1 pt-3 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground/60 first:pt-1">
+        {SECTION_GROUPS.map((grp, gi) => (
+          // Space groups apart from the second onward. (A `first:` variant on the
+          // header <p> can't do this — each <p> is the first child of its own <li>,
+          // so `:first-child` matched every header and the spacing never rendered.)
+          <li key={grp.key} className={cn(gi > 0 && "mt-3")}>
+            <p className="px-3 pb-1 pt-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground/60">
               {grp.label}
             </p>
             <ul className="flex flex-col gap-0.5">

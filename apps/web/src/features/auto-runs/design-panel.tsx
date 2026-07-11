@@ -49,7 +49,10 @@ export function DesignPanel({ worktreeId, artifacts, title = "Design artifacts" 
   if (!artifacts.length) return null;
   const isHtml = Boolean(selected && /\.html?$/i.test(selected));
   const isImage = file?.encoding === "base64" && Boolean(file?.mime?.startsWith("image/"));
-  const frameWidth = VIEWPORTS.find((v) => v.key === viewport)?.width ?? "100%";
+  // The viewport width only means anything for a responsive HTML mockup. A rendered
+  // PNG / text artifact must stay full-width — otherwise a stale "Mobile" selection
+  // (its toggle is hidden for non-HTML) would silently clamp the screenshot to 375px.
+  const frameWidth = isHtml ? (VIEWPORTS.find((v) => v.key === viewport)?.width ?? "100%") : "100%";
 
   return (
     <div className="flex flex-col gap-1.5 rounded-lg border border-border bg-muted/30 p-2">
