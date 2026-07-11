@@ -140,6 +140,10 @@ export function normalizeAutoRunSettings(patch = {}, prev = {}) {
     // operator's deploy command. Inert unless MYAGENTTOOL_AUTORUN_DEPLOY_COMMAND_JSON
     // is also set (a toggle with no command never deploys).
     deployOnMerge: keep("deployOnMerge", asBool),
+    // Approval grants phase 2 (APPROVAL_GRANTS.md, default off): when true,
+    // legacy free-text approvalTokens are rejected — only issued grants pass.
+    // Flip once approvalTokenLegacyUses flatlines.
+    requireIssuedApprovals: keep("requireIssuedApprovals", asBool),
     // Self-healing (H1, opt-in, default off): on a deploy FAILURE, run the
     // operator's rollback command to restore the last good version (the recovery).
     // Inert unless MYAGENTTOOL_AUTORUN_ROLLBACK_COMMAND_JSON is set.

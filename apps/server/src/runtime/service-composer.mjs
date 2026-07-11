@@ -1056,22 +1056,9 @@ export function createServerRuntimeServices({
       applicationRecoveryActionsForRun(meta.applicationId, meta.routineId, invocation.id),
     );
     const recommended = recoveryModel.actions.find((item) => item.recommended) ?? null;
-    if (!recommended || recommended.requiresApproval) {
-      // Never auto-request an approval either: a parked broker request would sit
-      // in its 5-minute timeout window and expire unseen.
-      appendAutoRecoverySkippedEvent(invocation, meta, "approval_required", {
-        category: recoveryModel.category,
-        recommendedAction: recommended?.type ?? null,
-      });
-      return;
-    }
-    if (!AUTO_RECOVERY_CATEGORIES.has(recoveryModel.category) || recommended.type !== "rerun") {
-      appendAutoRecoverySkippedEvent(invocation, meta, "category_not_eligible", {
-        category: recoveryModel.category,
-        recommendedAction: recommended.type,
-      });
-      return;
-    }
+    // The crash-loop cap applies to EVERYTHING auto-initiated — executed reruns
+    // and auto-filed approval requests alike — so a routine failing nightly
+    // cannot flood the Approvals queue any more than it can rerun itself.
     const cap = application.autoRecovery.maxAttempts ?? 2;
     const attempts = consecutiveAutoRecoveryAttempts(meta.applicationId, meta.routineId);
     if (attempts >= cap) {
@@ -1083,6 +1070,43 @@ export function createServerRuntimeServices({
         severity: "warning",
         message: `Auto-recovery for ${meta.routineName ?? meta.routineId} stopped after ${attempts} consecutive attempts; the routine is still failing.`,
         data: { applicationId: meta.applicationId, routineId: meta.routineId, invocationId: invocation.id, attempts, maxAttempts: cap },
+      });
+      return;
+    }
+    if (recommended?.requiresApproval) {
+      // Auto-FILE, never auto-approve: park the recommended action as an
+      // ordinary approval request (24h window since #701 — it no longer expires
+      // before a human plausibly sees the queue). The human decides in the
+      // Approvals Center; approval executes through the decision-grant chain.
+      const filed = requestApplicationOrchestrationRecoveryAction(
+        meta.applicationId,
+        meta.routineId,
+        invocation.id,
+        { actionType: recommended.type, reason: `Auto-filed for approval after ${recoveryModel.category} (attempt ${attempts + 1}/${cap}).` },
+        { userId: AUTO_RECOVERY_ACTOR_ID },
+      );
+      if (filed.status === 202) {
+        appendEvent({
+          invocationId: invocation.id,
+          type: "application_orchestration_auto_recovery_approval_filed",
+          level: "info",
+          message: `Auto-recovery filed ${recommended.type} for human approval (${recoveryModel.category}).`,
+          data: { applicationId: meta.applicationId, routineId: meta.routineId, actionType: recommended.type, category: recoveryModel.category },
+        });
+      } else {
+        appendAutoRecoverySkippedEvent(invocation, meta, "approval_filing_blocked", {
+          category: recoveryModel.category,
+          recommendedAction: recommended.type,
+          status: filed.status,
+          error: filed.body?.error ?? null,
+        });
+      }
+      return;
+    }
+    if (!recommended || !AUTO_RECOVERY_CATEGORIES.has(recoveryModel.category) || recommended.type !== "rerun") {
+      appendAutoRecoverySkippedEvent(invocation, meta, "category_not_eligible", {
+        category: recoveryModel.category,
+        recommendedAction: recommended?.type ?? null,
       });
       return;
     }

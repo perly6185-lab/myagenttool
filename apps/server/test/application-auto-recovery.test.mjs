@@ -194,15 +194,28 @@ test("crash-loop cap: after maxAttempts consecutive auto attempts, it stops with
   assert.match(alert.message, /still failing/);
 });
 
-test("approval-gated categories are never auto-recovered and nothing is parked in the broker", async () => {
+test("approval-gated categories are auto-FILED for human approval, never auto-executed (phase 3)", async () => {
+  // Reset the stream so the crash-loop cap from the previous test can't mask this.
+  await runAndComplete({ status: "succeeded", summary: "healthy again" });
   const brokerBefore = state.codexApprovalBrokerRequests.length;
-  const autoBefore = autoRequests().length;
   const failed = await runAndComplete({ status: "failed", summary: "invalid_application_routine: validation failed" });
-  assert.equal(autoRerunsOf(failed).length, 0);
-  assert.equal(autoRequests().length, autoBefore, "no auto request for a validation failure");
-  assert.equal(state.codexApprovalBrokerRequests.length, brokerBefore, "no auto-parked approval request");
-  const skipped = skipEvents("approval_required");
-  assert.ok(skipped.some((e) => e.invocationId === failed && e.data.recommendedAction === "regenerate_orchestration"));
+
+  assert.equal(autoRerunsOf(failed).length, 0, "nothing auto-EXECUTES for an approval-gated failure");
+  const filedRequest = autoRequests()[0]; // unshift-ordered: newest first
+  assert.equal(filedRequest.invocationId, failed);
+  assert.equal(filedRequest.actionType, "regenerate_orchestration");
+  assert.equal(filedRequest.status, "approval_pending", "the auto-filed action parks for a human");
+  assert.equal(state.codexApprovalBrokerRequests.length, brokerBefore + 1, "one approval request parked in the broker");
+  assert.ok(state.events.some((e) => e.type === "application_orchestration_auto_recovery_approval_filed" && e.invocationId === failed));
+  // The parked decision surfaces in the one queue.
+  const snapshot = await call("/api/state");
+  assert.ok(snapshot.body.pendingDecisions.some((d) => d.kind === "application_recovery" && d.ref?.recoveryActionRequestId === filedRequest.id));
+
+  // A second failure on the SAME run cannot double-file (duplicate guard) —
+  // and the human can still approve the parked one, which executes end-to-end.
+  const approved = await call(`/api/codex/approval-broker/${filedRequest.approvalRequestId}/approve`, { method: "POST", body: {} });
+  assert.equal(approved.status, 200);
+  assert.equal(autoRequests()[0].status, "executed", "human approval executes the auto-filed action");
 });
 
 test("a declared errorCode beats misleading runtime-looking text (no auto-rerun of an approval-gated failure)", async () => {
@@ -230,15 +243,16 @@ test("a declared errorCode beats misleading runtime-looking text (no auto-rerun 
   });
   assert.equal(autoRerunsOf(inv2).length, 0, "declared validation_failed must not auto-rerun");
   assert.ok(
-    skipEvents("approval_required").some((e) => e.invocationId === inv2 && e.data.category === "validation_failed"),
-    "the declared code classified the failure, not the runtime-looking text",
+    state.events.some((e) => e.type === "application_orchestration_auto_recovery_approval_filed"
+      && e.invocationId === inv2 && e.data.category === "validation_failed"),
+    "the declared code classified the failure (auto-filed for approval), not the runtime-looking text",
   );
   const recovery = await call(`/api/applications/${appId}/orchestrations/${routineId}/runs/${inv2}/recovery`);
   assert.equal(recovery.body.recovery.category, "validation_failed");
   assert.equal(recovery.body.recovery.confidence, 0.95, "structured signal carries higher confidence than haystack inference");
-  // Guard against cross-test bleed: the first (undeclared) failure in this test
-  // may have auto-rerun as runtime_error — only assert the declared one did not.
-  assert.ok(autoRequests().length - autoBefore <= 1);
+  // Guard against cross-test bleed: the first (undeclared) failure auto-reran as
+  // runtime_error and the declared one auto-filed — two auto requests at most.
+  assert.ok(autoRequests().length - autoBefore <= 2);
 });
 
 test("a declared runtime_error beats validation-looking text (the live-drive misclassification regression)", async () => {

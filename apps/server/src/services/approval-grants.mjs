@@ -129,6 +129,11 @@ export function createApprovalGrantService({ state, now, nextId, appendEvent, pe
     if (!allowLegacy) {
       return { approved: false, mode: null, reason: "grant_required" };
     }
+    // Phase 2 strict mode (operator-flipped once the legacy counter flatlines):
+    // free text no longer passes anywhere.
+    if (state.autoRunSettings?.requireIssuedApprovals) {
+      return { approved: false, mode: null, reason: "grant_required_strict" };
+    }
     // Phase 1 legacy path: honest about what actually gated the action.
     state.approvalTokenLegacyUses = {
       count: (state.approvalTokenLegacyUses?.count ?? 0) + 1,
