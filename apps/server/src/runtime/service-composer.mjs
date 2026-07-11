@@ -2245,6 +2245,26 @@ export function createServerRuntimeServices({
     });
   }
 
+  // Re-pair recovery (the counterpart to unlinkDevice): clear the stored credential so
+  // the NEXT bridge register issues a fresh one (the hasCredential=false path) and
+  // (re)link the device. This is the clean operator recovery for a credential that
+  // idle-expired (server down past the TTL) or whose bridge token was lost — replacing
+  // the manual "stop server + hand-edit state.device.bridgeCredential" surgery.
+  function relinkDevice() {
+    state.device.status = "offline"; // until the bridge re-registers with the fresh credential
+    state.device.unlinkState = "linked";
+    state.device.credentialRevokedAt = null;
+    state.device.bridgeCredential = null;
+    state.device.livenessLostAt = null;
+    state.device.updatedAt = now();
+    appendEvent({
+      invocationId: null,
+      type: "device_relinked",
+      level: "info",
+      message: "Device re-paired; the Desktop Bridge will re-register with a fresh credential.",
+    });
+  }
+
   const selfCheckDependencies = {
     acknowledgeInvocation,
     appendEvent,
@@ -2352,6 +2372,7 @@ export function createServerRuntimeServices({
     transitionLifecycleRecipe,
     updatePrivateDeploymentConfig,
     unlinkDevice,
+    relinkDevice,
     listTools,
     now,
   };
@@ -2433,6 +2454,7 @@ export function createServerRuntimeServices({
     enableAgent,
     createAgentHealthCheck,
     unlinkDevice,
+    relinkDevice,
     recordCodexHookEvent,
     expireCodexApprovalBrokerRequests,
     resolveCodexApprovalBrokerRequest,

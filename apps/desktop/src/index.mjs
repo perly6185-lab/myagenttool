@@ -337,14 +337,16 @@ try {
   });
 } catch (error) {
   const message = error instanceof Error ? error.message : String(error);
-  // A credential rejection at register is a pairing problem, not a bug — tell
-  // the operator how to recover instead of dying with a raw stack. (Field-pilot
-  // finding: this lockout happens when the server keeps a paired credential
-  // hash but the bridge's saved token was lost.)
-  if (/invalid_bridge_credentials|device_credentials_revoked/.test(message)) {
-    console.error(`[desktop] bridge registration was refused by ${serverUrl}: the server holds a paired credential this bridge cannot present.`);
-    console.error(`[desktop] recover: (1) restore the original token file at ${bridgeTokenPath}, OR`);
-    console.error("[desktop]          (2) stop the server, clear device.bridgeCredential in its state file, restart both.");
+  // A credential rejection at register is a pairing problem, not a bug — tell the
+  // operator how to recover instead of dying with a raw stack. Covers a lost token
+  // (invalid), an operator unlink (revoked), AND an idle-expired credential
+  // (bridge_credentials_expired: the server was unreachable past the ~12h TTL, so
+  // register can no longer rotate the expired token — by design).
+  if (/invalid_bridge_credentials|device_credentials_revoked|bridge_credentials_expired/.test(message)) {
+    const expired = /bridge_credentials_expired/.test(message);
+    console.error(`[desktop] bridge registration was refused by ${serverUrl}: ${expired ? "the paired credential idled out (server unreachable past the TTL)" : "the server holds a paired credential this bridge cannot present"}.`);
+    console.error(`[desktop] recover: re-pair the device — POST ${serverUrl}/api/device/relink (or the console's Re-pair action), then restart this bridge; it will register with a fresh credential.`);
+    console.error(`[desktop] alternative: restore the original token file at ${bridgeTokenPath}.`);
     console.error("[desktop] see docs/engineering/AUTORUN_PILOT_RUNBOOK.md (operational cautions).");
     process.exit(1);
   }
