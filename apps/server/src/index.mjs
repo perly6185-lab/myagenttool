@@ -86,6 +86,19 @@ if (typeof httpDependencies.applicationHealthSweep === "function") {
   }, 60_000).unref?.();
 }
 
+// Bridge liveness: flip a stale device offline (evented + alerted) and reap runs
+// stranded on a provably-gone bridge. Restore is symmetric on any authenticated
+// bridge request.
+if (typeof httpDependencies.bridgeLivenessSweep === "function") {
+  setInterval(() => {
+    try {
+      httpDependencies.bridgeLivenessSweep();
+    } catch {
+      /* best-effort sweep */
+    }
+  }, 60_000).unref?.();
+}
+
 process.on("SIGINT", () => {
   savePersistentState();
   process.exit(0);
