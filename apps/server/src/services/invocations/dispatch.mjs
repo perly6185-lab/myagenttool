@@ -138,6 +138,12 @@ export function createInvocationDispatchRuntime({
     });
   }
 
+  // A bridge that leases but never acks would otherwise ping-pong forever
+  // (expire → requeue → re-lease …). After this many leased-and-lapsed attempts
+  // the delivery is exhausted: an honest terminal failure whose errorCode routes
+  // it to the dispatch_timeout recovery category (rerun recommended).
+  const MAX_DISPATCH_ATTEMPTS = 5;
+
   function redeliverExpiredDispatches() {
     const current = Date.now();
     for (const invocation of state.invocations) {
@@ -145,6 +151,24 @@ export function createInvocationDispatchRuntime({
         continue;
       }
       if (Date.parse(invocation.delivery.leaseExpiresAt) > current) {
+        continue;
+      }
+      if (invocation.delivery.dispatchAttempts >= MAX_DISPATCH_ATTEMPTS && typeof completeInvocation === "function") {
+        invocation.delivery.state = "exhausted";
+        appendEvent({
+          invocationId: invocation.id,
+          type: "delivery_exhausted",
+          level: "warn",
+          message: `Delivery exhausted after ${invocation.delivery.dispatchAttempts} dispatch attempts without acknowledgement.`,
+          data: { dispatchAttempts: invocation.delivery.dispatchAttempts, maxDispatchAttempts: MAX_DISPATCH_ATTEMPTS },
+        });
+        completeInvocation(invocation, {
+          status: "failed",
+          result: {
+            summary: `Delivery exhausted: the bridge leased this run ${invocation.delivery.dispatchAttempts} times without acknowledging it.`,
+            errorCode: "dispatch_timeout",
+          },
+        });
         continue;
       }
       invocation.status = "queued";

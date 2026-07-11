@@ -85,7 +85,7 @@ export function createServerRuntimeServices({
   const {
     issueBridgeCredential,
     requireBridgeCredential,
-  } = createBridgeCredentialRuntime({ state, now, persistStateSoon });
+  } = createBridgeCredentialRuntime({ state, now, persistStateSoon, appendEvent });
 
   const {
     addProject,
@@ -970,6 +970,68 @@ export function createServerRuntimeServices({
       message: `Auto-recovery skipped for ${meta.routineId}: ${reason}.`,
       data: { applicationId: meta.applicationId, routineId: meta.routineId, reason, ...data },
     });
+  }
+
+  // Bridge liveness (docs/design/BRIDGE_LIVENESS_AND_REFUSAL.md): the device's
+  // lastSeenAt is refreshed on every authenticated bridge request but nothing
+  // watched it — a dead bridge stayed "online" forever and runs it had
+  // acknowledged stayed "running" forever. This sweep (index.mjs slow tick)
+  // flips a stale device offline (evented + alerted, restore is symmetric in
+  // requireBridgeCredential) and reaps runs stranded on a provably-gone bridge.
+  // A LIVE bridge enforces its own timeoutSeconds — the server only reaps when
+  // the bridge is offline, so long-running work is never guillotined.
+  const BRIDGE_STALENESS_MS = Number(process.env.MYAGENTTOOL_BRIDGE_STALENESS_MS) || 90_000;
+  function bridgeLivenessSweep() {
+    const device = state.device;
+    if (!device) return;
+    const nowMs = Date.parse(now());
+    if (device.status === "online" && device.unlinkState === "linked") {
+      const lastSeenMs = Date.parse(device.lastSeenAt ?? "");
+      if (Number.isFinite(lastSeenMs) && nowMs - lastSeenMs > BRIDGE_STALENESS_MS) {
+        device.status = "offline";
+        device.livenessLostAt = now();
+        device.updatedAt = device.livenessLostAt;
+        persistStateSoon();
+        appendEvent({
+          invocationId: null,
+          type: "bridge_liveness_lost",
+          level: "warn",
+          message: `Desktop Bridge has not been seen for ${Math.round((nowMs - lastSeenMs) / 1000)}s; device marked offline.`,
+          data: { deviceId: device.id, lastSeenAt: device.lastSeenAt },
+        });
+        void autoRunAlerts.dispatch({
+          kind: "bridge_liveness_lost",
+          severity: "warning",
+          message: "Desktop Bridge stopped responding; the device is offline and queued runs will wait until it returns.",
+          data: { deviceId: device.id, lastSeenAt: device.lastSeenAt },
+        });
+      }
+    }
+    if (device.status !== "offline") return;
+    const lostAtMs = Date.parse(device.livenessLostAt ?? device.lastSeenAt ?? "");
+    if (!Number.isFinite(lostAtMs)) return;
+    for (const invocation of state.invocations) {
+      if (invocation.status !== "running") continue;
+      if ((invocation.delivery?.deviceId ?? null) !== device.id) continue;
+      // Grace: generous vs. the run's own timeout, so a bridge blip never eats a
+      // run the bridge would have completed moments after reconnecting.
+      const graceMs = Math.max(2 * 1000 * Number(invocation.options?.timeoutSeconds ?? 30), 300_000);
+      if (nowMs - lostAtMs < graceMs) continue;
+      appendEvent({
+        invocationId: invocation.id,
+        type: "delivery_reclaimed",
+        level: "warn",
+        message: "Run reclaimed: the bridge that acknowledged it went offline and did not return within the grace window.",
+        data: { deviceId: device.id, livenessLostAt: device.livenessLostAt, graceMs },
+      });
+      completeInvocation(invocation, {
+        status: "timed_out",
+        result: {
+          summary: "The Desktop Bridge went offline mid-run and did not return; the run was reclaimed by the server.",
+          errorCode: "dispatch_timeout",
+        },
+      });
+    }
   }
 
   function maybeAutoRecoverOrchestrationRun(invocation) {
@@ -2210,6 +2272,7 @@ export function createServerRuntimeServices({
     runApplicationOrchestration,
     setApplicationAutoRecovery,
     issueApprovalGrant,
+    bridgeLivenessSweep,
     setApplicationHealthProbe,
     applicationHealthSweep,
     transitionApplication,
@@ -2346,6 +2409,7 @@ export function createServerRuntimeServices({
     runApplicationOrchestration,
     setApplicationAutoRecovery,
     issueApprovalGrant,
+    bridgeLivenessSweep,
     setApplicationHealthProbe,
     applicationHealthSweep,
     transitionApplication,
