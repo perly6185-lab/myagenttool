@@ -16,6 +16,7 @@ import { fileURLToPath } from "node:url";
 
 import { readEvalTrend, summarizeEvalTrend } from "../services/eval-trend.mjs";
 import { summarizeDeployments } from "../services/auto-run-deploy-metrics.mjs";
+import { summarizeOrchestrationRecovery } from "../services/application-recovery-metrics.mjs";
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../../..");
 const METRICS_DIR = resolve(REPO_ROOT, ".myagenttool/metrics");
@@ -117,19 +118,27 @@ export function computeMaturityScorecard({
     detail: realRuns != null && realRuns < 3 ? `only ${realRuns} real held-out run(s) — the floor stays provisional until ≥3` : undefined,
   });
 
-  // L5 — releases have rollback notes; deploy recovery time < 1h.
+  // L5 — releases have rollback notes; deploy recovery time < 1h. With no deploy
+  // data, a measured orchestration failure→success recovery stands in as a
+  // labeled proxy (docs/design/APPLICATION_RECOVERY_CONVERGENCE.md) — the gate
+  // becomes measured, and the measured string names the source honestly.
   const recoveryH = release?.recoveryHours ?? dora?.changeFailures?.recoveryHours?.median ?? null;
+  const recoveryIsProxy = release?.source === "orchestration";
   levels.push({
     level: 5,
     name: "Human-approved merge + release + rollback",
     gate: "releases carry rollback notes; deploy recovery time <1h",
     anchor: "DORA recovery time; SLSA/SSDF",
     frontier: "partial",
-    measured: recoveryH == null ? null : `deploy recovery ${recoveryH}h`,
+    measured: recoveryH == null
+      ? null
+      : recoveryIsProxy
+        ? `orchestration recovery ${recoveryH}h (no deploy data — orchestration proxy)`
+        : `deploy recovery ${recoveryH}h`,
     verdict: recoveryH == null ? "indeterminate" : verdict(recoveryH, recoveryH < 1),
     detail:
       recoveryH == null
-        ? "deploy recovery time not yet measured — enable the deploy stage (deployOnMerge + a deploy command) so a failed→recovered deploy is recorded"
+        ? "recovery time not yet measured — enable the deploy stage (deployOnMerge + a deploy command), or record a failed→recovered orchestration run"
         : undefined,
   });
 
@@ -208,7 +217,7 @@ function latestArtifact(kind, metricsDir = METRICS_DIR) {
  * that can't be read stays null (→ indeterminate levels). `metricsDir`/`evalTrend`
  * are injectable for tests.
  */
-export function loadMaturityInputs({ metricsDir = METRICS_DIR, evalTrend, repoRoot = REPO_ROOT, deployments = null } = {}) {
+export function loadMaturityInputs({ metricsDir = METRICS_DIR, evalTrend, repoRoot = REPO_ROOT, deployments = null, invocations = null } = {}) {
   const dora = latestArtifact("dora", metricsDir);
   const backlog = latestArtifact("backlog", metricsDir);
   const governance = latestArtifact("governance", metricsDir);
@@ -220,9 +229,16 @@ export function loadMaturityInputs({ metricsDir = METRICS_DIR, evalTrend, repoRo
   // L5 recovery: the deploy stage (D1/D2) instruments deploy recovery time locally,
   // so the gate that was indeterminate "for lack of a deploy target" can now be
   // measured. Only a real median (a failure recovered by a later success) feeds it.
+  // With no deploy data, a measured orchestration failure→success recovery stands
+  // in as a labeled proxy — deploy wins when both exist (it is the gate's anchor).
   const deploy = Array.isArray(deployments) && deployments.length ? summarizeDeployments(deployments) : null;
-  const release = deploy && deploy.recoveryHours?.median != null ? { recoveryHours: deploy.recoveryHours.median } : null;
-  return { docsOk, dora, backlog, governance, evalSummary, release, deploy };
+  const orchestration = Array.isArray(invocations) && invocations.length ? summarizeOrchestrationRecovery(invocations) : null;
+  const release = deploy && deploy.recoveryHours?.median != null
+    ? { recoveryHours: deploy.recoveryHours.median, source: "deploy" }
+    : orchestration && orchestration.recoveryHours?.median != null
+      ? { recoveryHours: orchestration.recoveryHours.median, source: "orchestration" }
+      : null;
+  return { docsOk, dora, backlog, governance, evalSummary, release, deploy, orchestration };
 }
 
 /** Load inputs + compute — the read-model behind GET /api/maturity. */

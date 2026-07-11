@@ -341,9 +341,9 @@ export async function handleProjectRoutes({
   if (req.method === "GET" && url.pathname === "/api/maturity") {
     // Computed L0–L6 maturity scorecard: the calibration gates applied to the
     // latest measured evidence (DORA + held-out eval + backlog + governance +
-    // deploy recovery), replacing the hand-typed status. Read-only, best-effort;
-    // missing artifacts yield indeterminate levels.
-    sendJson(res, 200, maturityScorecard({ deployments: state.deployments ?? [] }));
+    // deploy/orchestration recovery), replacing the hand-typed status. Read-only,
+    // best-effort; missing artifacts yield indeterminate levels.
+    sendJson(res, 200, maturityScorecard({ deployments: state.deployments ?? [], invocations: state.invocations ?? [] }));
     return true;
   }
 
