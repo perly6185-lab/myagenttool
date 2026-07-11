@@ -6,7 +6,7 @@ import { delimiter } from "node:path";
 import * as pty from "node-pty";
 import { callMcpTool, probeMcpServer } from "./mcp-client.mjs";
 import { agentMinimalBaseEnv, minimizeAgentEnvEnabled, shouldMinimizeAgentEnv } from "./agent-env.mjs";
-import { runAsUser, shouldRunAsUser, runAsSpawnPlan } from "./agent-runas.mjs";
+import { runAsUser, shouldRunAsUser, runAsSpawnPlan, runAsPreflightPlan, interpretPreflightResult } from "./agent-runas.mjs";
 import { callA2aAgent, probeA2aAgent } from "./a2a-client.mjs";
 import { probeContainerRuntime, runContainerAgent } from "./container-client.mjs";
 import { codexResumeArgs } from "./codex-resume.mjs";
@@ -18,6 +18,44 @@ import {
 } from "./local-execution-policy.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+
+// B1b Tier 2 preflight (memoized across spawns). Before wrapping any real agent in
+// `sudo -n -u <user>`, probe `sudo -n -u <user> /usr/bin/true` ONCE. If it fails
+// (sudoers not configured for this runner), warn and return null so the spawn falls
+// back to today's unsandboxed launch — otherwise every agent run would die with a
+// cryptic "sudo: a password is required". Never a silent false confinement.
+let _runAsProbe = null; // { user, promise<boolean> }
+async function activeRunAsUser() {
+  const user = runAsUser();
+  if (!user) return null;
+  if (!_runAsProbe || _runAsProbe.user !== user) {
+    _runAsProbe = {
+      user,
+      promise: (async () => {
+        const { command, args } = runAsPreflightPlan(user);
+        const result = await new Promise((resolveProbe) => {
+          try {
+            let stderr = "";
+            const probe = spawn(command, args, { stdio: ["ignore", "ignore", "pipe"] });
+            probe.stderr?.on("data", (chunk) => { stderr += String(chunk); });
+            probe.on("error", (error) => resolveProbe({ error }));
+            probe.on("close", (code) => resolveProbe({ code, stderr }));
+          } catch (error) {
+            resolveProbe({ error });
+          }
+        });
+        const verdict = interpretPreflightResult(result);
+        if (verdict.ok) {
+          console.log(`[desktop] Tier 2 sandbox active: coding agents run as '${user}'.`);
+        } else {
+          console.warn(`[desktop] Tier 2 requested (MYAGENTTOOL_BRIDGE_RUN_AS_USER=${user}) but the sudo hop failed: ${verdict.reason}. Falling back to an unsandboxed spawn — configure sudoers per docs/engineering/AUTORUN_SANDBOX_TIER2.md.`);
+        }
+        return verdict.ok;
+      })(),
+    };
+  }
+  return (await _runAsProbe.promise) ? user : null;
+}
 const serverUrl = process.env.BRIDGE_SERVER_URL ?? "http://127.0.0.1:5001";
 const pollIntervalMs = Number(process.env.BRIDGE_POLL_INTERVAL_MS ?? 700);
 const terminalPollIntervalMs = Number(process.env.BRIDGE_TERMINAL_POLL_INTERVAL_MS ?? 40);
@@ -862,8 +900,9 @@ async function runInvocation(work) {
   // B1b Tier 2 (opt-in, default OFF): run the agent as a low-priv user via sudo -n.
   // Applied AFTER the local-execution gate so the gate validated the real agent
   // command; only the exec is wrapped (cwd/env preserved). Falls through unchanged
-  // when the flag is unset or the adapter isn't a real CLI coding agent.
-  const runAsTarget = runAsUser();
+  // when the flag is unset, the adapter isn't a real CLI coding agent, or the
+  // memoized sudo preflight failed (activeRunAsUser → null with a warning).
+  const runAsTarget = await activeRunAsUser();
   const launchPlan = shouldRunAsUser(adapter, { user: runAsTarget }) ? runAsSpawnPlan(spawnPlan, { user: runAsTarget }) : spawnPlan;
   let child;
   try {

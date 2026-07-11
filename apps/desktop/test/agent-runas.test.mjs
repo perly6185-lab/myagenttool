@@ -6,7 +6,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { runAsUser, runAsUserEnabled, shouldRunAsUser, runAsSpawnPlan } from "../src/agent-runas.mjs";
+import { runAsUser, runAsUserEnabled, shouldRunAsUser, runAsSpawnPlan, runAsPreflightPlan, interpretPreflightResult } from "../src/agent-runas.mjs";
 
 test("runAsUser parses a valid username, rejects blank/malformed/flag-like", () => {
   assert.equal(runAsUser({ MYAGENTTOOL_BRIDGE_RUN_AS_USER: "_myagentrunner" }), "_myagentrunner");
@@ -48,4 +48,29 @@ test("runAsSpawnPlan is a no-op without a user or command", () => {
   assert.equal(runAsSpawnPlan(plan, {}), plan);
   const noCmd = { args: [] };
   assert.equal(runAsSpawnPlan(noCmd, { user: "_r" }), noCmd, "no command -> unchanged");
+});
+
+test("runAsPreflightPlan builds a non-interactive sudo probe to absolute /usr/bin/true", () => {
+  assert.deepEqual(runAsPreflightPlan("_myagentrunner"), {
+    command: "sudo",
+    args: ["-n", "-u", "_myagentrunner", "--", "/usr/bin/true"],
+  });
+});
+
+test("interpretPreflightResult: exit 0 is ok; failures carry a one-line reason, never silent", () => {
+  assert.deepEqual(interpretPreflightResult({ code: 0 }), { ok: true }, "sudo hop works -> confinement available");
+  assert.deepEqual(
+    interpretPreflightResult({ code: 1, stderr: "sudo: a password is required\n(more)" }),
+    { ok: false, reason: "sudo: a password is required" },
+    "non-zero -> not ok, FIRST stderr line as the reason",
+  );
+  assert.deepEqual(
+    interpretPreflightResult({ code: 1, stderr: "" }),
+    { ok: false, reason: "sudo preflight exited 1" },
+    "no stderr -> a synthesized reason, never empty",
+  );
+  const enoent = interpretPreflightResult({ error: new Error("spawn sudo ENOENT") });
+  assert.equal(enoent.ok, false, "spawn error (no sudo) -> not ok");
+  assert.match(enoent.reason, /ENOENT/);
+  assert.equal(interpretPreflightResult().ok, false, "total: empty input -> not ok");
 });

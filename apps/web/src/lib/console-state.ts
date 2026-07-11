@@ -189,7 +189,7 @@ export interface InvocationSnapshot {
   policyDecisionId?: string;
   delivery?: { state?: string; dispatchAttempts?: number };
   cancellation?: { state?: string };
-  result?: { summary?: string; touchedUserFiles?: boolean };
+  result?: { summary?: string; touchedUserFiles?: boolean; errorCode?: string | null; output?: unknown };
   explanation?: InvocationExplanation | null;
   createdAt?: string;
   options?: {
