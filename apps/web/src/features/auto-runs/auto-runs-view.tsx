@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useState } from "react";
-import { Bot, RefreshCw, GitPullRequest, GitMerge, GitBranch, ShieldCheck, ExternalLink, CircleAlert, Check, X, Minus, Loader2, Rocket, ScrollText, FolderGit2 } from "lucide-react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { Bot, RefreshCw, GitPullRequest, GitMerge, GitBranch, ShieldCheck, ExternalLink, CircleAlert, Check, X, Minus, Loader2, Rocket, ScrollText, FolderGit2, History, LayoutList, Columns3 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -19,6 +19,8 @@ import { DecompositionApproval } from "./decomposition-approval";
 import { EpicRollup } from "./epic-rollup";
 import { useConsoleState } from "@/data/use-console-state";
 import { useUiStore } from "@/store/ui-store";
+import { EventTimeline } from "@/features/invocations/event-timeline";
+import type { InvocationEventSnapshot } from "@/lib/console-state";
 
 interface AutoRunLink {
   type: "issue" | "pr";
@@ -356,6 +358,104 @@ function RunTraceLinks({ run }: { run: AutoRunRecord }) {
   );
 }
 
+// Per-run lifecycle TIMELINE (execution 过程). The server records every pipeline
+// transition as an `auto_run_*` event keyed by data.autoRunId; the client already
+// receives them in the state snapshot, so we filter + order them here (oldest→newest)
+// and reuse the invocations EventTimeline. Hidden when a run has no events (evicted
+// from the bounded ring buffer, or none yet).
+function RunTimeline({ runId, events }: { runId: string; events: InvocationEventSnapshot[] }) {
+  const [open, setOpen] = useState(false);
+  const runEvents = useMemo(
+    () =>
+      events
+        .filter((e) => e.data?.autoRunId === runId)
+        .slice()
+        .sort((a, b) => (a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : 0)),
+    [events, runId],
+  );
+  if (runEvents.length === 0) return null;
+  return (
+    <div className="flex w-full flex-col gap-1.5">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        className="flex items-center gap-1 self-start text-xs text-muted-foreground hover:text-foreground"
+      >
+        <History className="size-3" /> {open ? "Hide timeline" : `Timeline (${runEvents.length})`}
+      </button>
+      {open ? (
+        <div className="rounded-md border border-border bg-muted/20 p-3">
+          <EventTimeline events={runEvents} />
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+// Stage BOARD (执行看板): group in-flight runs into pipeline lanes so a supervisor
+// sees the loop's shape at a glance, not a flat scroll. Lane order puts the two
+// human-relevant lanes (Attention, Needs you) first.
+type LaneKey = "attention" | "needs_you" | "running" | "pr_open" | "done";
+const LANES: { key: LaneKey; label: string }[] = [
+  { key: "attention", label: "Attention" },
+  { key: "needs_you", label: "Needs you" },
+  { key: "running", label: "Running" },
+  { key: "pr_open", label: "PR open" },
+  { key: "done", label: "Done" },
+];
+export function runLane(run: AutoRunRecord): LaneKey {
+  if (run.status === "failed" || run.status === "blocked" || run.deployment?.status === "failed" || run.deployment?.status === "rolled_back") return "attention";
+  if (run.status === "awaiting_approval" || run.status === "needs_input" || run.status === "report_posted" || run.status === "plan_proposed") return "needs_you";
+  if (run.deployment?.status === "deployed" || run.prState === "MERGED" || run.prState === "CLOSED" || run.status === "decomposed") return "done";
+  if (run.status === "pr_open") return "pr_open";
+  return "running"; // materializing / running / verifying / publishing + any other in-flight
+}
+function RunChip({ run }: { run: AutoRunRecord }) {
+  const label = run.link ? `#${run.link.number} ${run.link.title}` : run.id;
+  return (
+    <div className="flex flex-col gap-1 rounded-md border border-border bg-card p-2 text-xs">
+      <div className="flex items-center gap-1.5">
+        <Badge tone={statusTone(run.status)}>{STATUS_LABEL[run.status] ?? run.status}</Badge>
+        {run.prUrl ? (
+          <a href={run.prUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-0.5 text-primary hover:underline">
+            <GitPullRequest className="size-3" />#{run.prNumber}
+          </a>
+        ) : null}
+        {run.deployment ? (
+          <span className={run.deployment.status === "deployed" ? "text-emerald-600 dark:text-emerald-400" : "text-amber-600 dark:text-amber-400"} title={run.deployment.summary ?? undefined}>
+            <Rocket className="inline size-3" />
+          </span>
+        ) : null}
+      </div>
+      <span className="truncate font-medium text-foreground" title={label}>{label}</span>
+      {run.decision ? <span className="text-muted-foreground">{run.decision.path}</span> : null}
+    </div>
+  );
+}
+function RunBoard({ runs }: { runs: AutoRunRecord[] }) {
+  const byLane = useMemo(() => {
+    const m: Record<LaneKey, AutoRunRecord[]> = { attention: [], needs_you: [], running: [], pr_open: [], done: [] };
+    for (const run of runs) m[runLane(run)].push(run);
+    return m;
+  }, [runs]);
+  return (
+    <div className="grid grid-cols-2 gap-3 md:grid-cols-3 lg:grid-cols-5">
+      {LANES.map((lane) => (
+        <div key={lane.key} className="flex flex-col gap-2 rounded-lg border border-border bg-muted/20 p-2">
+          <div className="flex items-center justify-between px-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground/70">
+            <span>{lane.label}</span>
+            <span className="rounded bg-muted px-1.5 tabular-nums">{byLane[lane.key].length}</span>
+          </div>
+          <div className="flex flex-col gap-1.5">
+            {byLane[lane.key].map((run) => <RunChip key={run.id} run={run} />)}
+            {byLane[lane.key].length === 0 ? <span className="px-1 py-2 text-[11px] text-muted-foreground/40">—</span> : null}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 // The merge moment — the one human decision in the autonomous loop. Replaces the
 // blank window.confirm with an informed dialog: refreshes PR checks on open (so
 // the shown posture matches the server's require-green gate), lets the human peek
@@ -551,6 +651,7 @@ export function AutoRunsView() {
   const [deployments, setDeployments] = useState<DeploymentSummary | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [viewMode, setViewMode] = useState<"list" | "board">("list");
 
   const load = useCallback(async (refresh = false) => {
     setLoading(true);
@@ -587,9 +688,31 @@ export function AutoRunsView() {
           </h1>
           <p className="text-sm text-muted-foreground">Autonomous issue → worktree → agent → PR runs, and how the loop is performing.</p>
         </div>
-        <Button variant="secondary" size="sm" onClick={() => void load(true)} disabled={loading}>
-          <RefreshCw className={cn("mr-1 size-3.5", loading && "animate-spin")} /> Refresh
-        </Button>
+        <div className="flex items-center gap-2">
+          <div className="flex items-center gap-0.5 rounded-md border border-border p-0.5" role="group" aria-label="Auto-runs view">
+            <button
+              type="button"
+              aria-pressed={viewMode === "list"}
+              onClick={() => setViewMode("list")}
+              title="List — full detail per run"
+              className={cn("flex items-center gap-1 rounded px-2 py-1 text-xs", viewMode === "list" ? "bg-muted font-medium text-foreground" : "text-muted-foreground hover:text-foreground")}
+            >
+              <LayoutList className="size-3.5" /> List
+            </button>
+            <button
+              type="button"
+              aria-pressed={viewMode === "board"}
+              onClick={() => setViewMode("board")}
+              title="Board — runs grouped by pipeline stage"
+              className={cn("flex items-center gap-1 rounded px-2 py-1 text-xs", viewMode === "board" ? "bg-muted font-medium text-foreground" : "text-muted-foreground hover:text-foreground")}
+            >
+              <Columns3 className="size-3.5" /> Board
+            </button>
+          </div>
+          <Button variant="secondary" size="sm" onClick={() => void load(true)} disabled={loading}>
+            <RefreshCw className={cn("mr-1 size-3.5", loading && "animate-spin")} /> Refresh
+          </Button>
+        </div>
       </div>
 
       <AutoRunOnboardingCard projectId={consoleState?.currentProjectId ?? null} />
@@ -699,6 +822,8 @@ export function AutoRunsView() {
           title="No auto-runs yet"
           hint="Click Auto on a Task issue, or enable label-based auto-triggering, to start an autonomous run."
         />
+      ) : viewMode === "board" ? (
+        <RunBoard runs={runs} />
       ) : (
         <div className="flex flex-col gap-2">
           {runs.map((run) => (
@@ -805,6 +930,7 @@ export function AutoRunsView() {
                   <RunTraceLinks run={run} />
                 </div>
                 {run.worktreeId ? <WorktreeDiffPeek worktreeId={run.worktreeId} /> : null}
+                <RunTimeline runId={run.id} events={consoleState?.events ?? []} />
                 {run.status === "failed" || run.status === "blocked" ? (
                   <div>
                     <Button
