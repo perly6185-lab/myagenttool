@@ -402,13 +402,32 @@ export function createApplicationService({
   // offline via the ordinary transition path; recovery never auto-onlines.
   function applicationHealthSweep({ force = false } = {}) {
     const checkedAt = now();
+    // Observability for the sweep ITSELF: the self-healing machinery needs its
+    // own health signal, or a wedged sweep is indistinguishable from "all
+    // sources healthy". index.mjs's tick swallows exceptions by design; this
+    // records the last run + last error where /api/state can expose them.
+    let checkedCount = 0;
+    let lastError = null;
     for (const app of listApplications()) {
-      if (!app.healthProbe?.enabled || app.status === "archived") continue;
-      const intervalMs = (app.healthProbe.intervalMinutes ?? 5) * 60_000;
-      const last = app.healthProbe.lastCheckedAt ? Date.parse(app.healthProbe.lastCheckedAt) : 0;
-      if (!force && Date.parse(checkedAt) - last < intervalMs) continue;
-      app.healthProbe.lastCheckedAt = checkedAt;
+      try {
+        if (!app.healthProbe?.enabled || app.status === "archived") continue;
+        const intervalMs = (app.healthProbe.intervalMinutes ?? 5) * 60_000;
+        const last = app.healthProbe.lastCheckedAt ? Date.parse(app.healthProbe.lastCheckedAt) : 0;
+        if (!force && Date.parse(checkedAt) - last < intervalMs) continue;
+        app.healthProbe.lastCheckedAt = checkedAt;
+        checkedCount += 1;
+        checkApplicationHealthAndReact(app, checkedAt);
+      } catch (error) {
+        // One application's failure must not starve the rest of the sweep.
+        lastError = `${app?.id ?? "unknown"}: ${error?.message ?? error}`;
+      }
+    }
+    state.applicationHealthSweepStatus = { lastSweepAt: checkedAt, checkedCount, lastError };
+    persistStateSoon();
+  }
 
+  function checkApplicationHealthAndReact(app, checkedAt) {
+    {
       const wasUnhealthy = app.health?.status === "unhealthy";
       const check = checkApplicationHealth(app);
       const consecutiveFailures = check.status === "unhealthy" ? (app.health?.consecutiveFailures ?? 0) + 1 : 0;
@@ -453,7 +472,6 @@ export function createApplicationService({
         });
       }
     }
-    persistStateSoon();
   }
 
   return {

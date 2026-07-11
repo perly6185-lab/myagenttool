@@ -176,6 +176,16 @@ test("source recovers: health goes healthy with an event, but status STAYS offli
   assert.equal(app().status, "active");
 });
 
+test("the sweep records its own health signal, visible in /api/state", async () => {
+  sweep({ force: true });
+  assert.ok(state.applicationHealthSweepStatus, "sweep status recorded");
+  assert.ok(state.applicationHealthSweepStatus.lastSweepAt);
+  assert.equal(state.applicationHealthSweepStatus.lastError, null);
+  assert.ok(state.applicationHealthSweepStatus.checkedCount >= 1);
+  const snapshot = await call("/api/state");
+  assert.deepEqual(snapshot.body.applicationHealthSweepStatus, state.applicationHealthSweepStatus);
+});
+
 test("npm/manual sources read `unsupported` and are never auto-transitioned", async () => {
   const registered = await call("/api/applications/register", {
     method: "POST",
