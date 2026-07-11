@@ -45,10 +45,13 @@ export function pendingDecisions({
   codexApprovalBrokerRequests = [],
   lifecycleLocalApprovals = [],
   lifecycleRollbackRequests = [],
+  applicationRecoveryActions = [],
+  applicationsById = new Map(),
   invocationsById = new Map(),
 } = {}) {
   const out = [];
   const invOf = (id) => (id != null ? invocationsById.get(id) ?? null : null);
+  const recoveryActionsById = new Map(applicationRecoveryActions.map((request) => [request?.id, request]));
 
   // 1. Invocation approvals — a high/critical-risk (or explicitly gated) run parked
   // for approve/deny. Binary; actionable inline.
@@ -117,9 +120,41 @@ export function pendingDecisions({
   }
 
   // 4. Codex approval-broker — a managed Codex "ask"-mode tool-permission request.
+  // Application recovery approvals ride this same store (source
+  // "application_recovery_action") but are a different human decision: they gate an
+  // application-domain recovery action, and their native surface is the Applications
+  // inspector — so they get their own kind, context, and deep link, not the generic
+  // "Codex tool permission" row.
   for (const q of codexApprovalBrokerRequests) {
     if (q?.status !== "pending") continue;
     const inv = invOf(q.invocationId);
+    if (q.source === "application_recovery_action") {
+      const action = recoveryActionsById.get(q.applicationRecoveryActionRequestId) ?? null;
+      const app = action?.applicationId ? applicationsById.get(action.applicationId) ?? null : null;
+      out.push({
+        id: `apprecovery:${q.id}`,
+        kind: "application_recovery",
+        title: "Application recovery needs approval",
+        subtitle: truncate(
+          [
+            app?.name ?? action?.applicationId,
+            action?.actionType ? String(action.actionType).replaceAll("_", " ") : null,
+            typeof q.summary === "string" ? q.summary : null,
+          ].filter(Boolean).join(" · ") || "Approve or deny an application recovery action",
+        ),
+        projectId: app?.projectId ?? inv?.projectId ?? null,
+        createdAt: q.createdAt ?? null,
+        section: "applications",
+        targetId: action?.applicationId ?? null,
+        ref: {
+          requestId: q.id,
+          recoveryActionRequestId: q.applicationRecoveryActionRequestId ?? null,
+          applicationId: action?.applicationId ?? null,
+          invocationId: q.invocationId ?? null,
+        },
+      });
+      continue;
+    }
     out.push({
       id: `codex:${q.id}`,
       kind: "codex_broker",
