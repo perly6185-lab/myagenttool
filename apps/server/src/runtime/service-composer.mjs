@@ -1457,7 +1457,10 @@ export function createServerRuntimeServices({
       summary: summarizeText(actionRequest.reason || action.description || recoveryModel.summary, 240),
       riskLevel: "high",
       status: "pending",
-      timeoutAt: new Date(Date.now() + 5 * 60 * 1000).toISOString(),
+      // 24h, not the broker's 5-minute Codex ask-mode default: this request waits
+      // for a HUMAN in the Approvals queue, and a human-scale decision that expires
+      // before anyone plausibly saw it trains operators to ignore the queue.
+      timeoutAt: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
       decision: null,
       decidedAt: null,
       notificationState: "queued",
