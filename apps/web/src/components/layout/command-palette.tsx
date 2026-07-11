@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Search, CornerDownLeft } from "lucide-react";
 import { SECTIONS, SECTION_GROUPS } from "@/app/sections";
@@ -15,11 +15,38 @@ export function CommandPalette() {
   const setSection = useUiStore((s) => s.setSection);
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
+  const restoreFocusRef = useRef<HTMLElement | null>(null);
+  const pointerRef = useRef({ x: -1, y: -1 });
 
-  // Global toggle shortcut — works whether the palette is open or closed.
+  const results = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return SECTIONS;
+    return SECTIONS.filter((s) => s.label.toLowerCase().includes(q) || s.blurb.toLowerCase().includes(q) || s.group.includes(q));
+  }, [query]);
+
+  // Mirror results/active into refs so the window key handler can read the
+  // latest without re-subscribing on every keystroke.
+  const resultsRef = useRef(results);
+  resultsRef.current = results;
+  const activeRef = useRef(active);
+  activeRef.current = active;
+
+  const selectAt = useCallback(
+    (i: number) => {
+      const item = resultsRef.current[i];
+      if (!item) return;
+      setSection(item.key);
+      setOpen(false);
+    },
+    [setSection],
+  );
+
+  // Global toggle — Cmd/Ctrl-K only. Exclude Shift/Alt chords (e.g. Ctrl+Shift+K
+  // is the Firefox console) and ignore auto-repeat so holding the combo doesn't
+  // flicker the palette open/closed.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+      if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && !e.repeat && e.key.toLowerCase() === "k") {
         e.preventDefault();
         setOpen((o) => !o);
       }
@@ -28,53 +55,57 @@ export function CommandPalette() {
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
+  // While open, drive navigation from a window listener so the keys work no
+  // matter what inside the dialog holds focus (a result row, the input, the
+  // backdrop) — binding only to the input left Esc/arrows dead after one Tab.
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        setActive((a) => Math.min(a + 1, resultsRef.current.length - 1));
+      } else if (e.key === "ArrowUp") {
+        e.preventDefault();
+        setActive((a) => Math.max(a - 1, 0));
+      } else if (e.key === "Enter") {
+        e.preventDefault();
+        selectAt(activeRef.current);
+      } else if (e.key === "Escape") {
+        e.preventDefault();
+        setOpen(false);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open, selectAt]);
+
+  // Focus the input on open; restore focus to the pre-open element on close so a
+  // keyboard user isn't dumped back on <body>.
   useEffect(() => {
     if (open) {
+      restoreFocusRef.current = (document.activeElement as HTMLElement | null) ?? null;
       setQuery("");
       setActive(0);
-      // focus after the portal mounts
       const t = setTimeout(() => inputRef.current?.focus(), 0);
       return () => clearTimeout(t);
     }
+    restoreFocusRef.current?.focus?.();
   }, [open]);
 
-  const results = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    if (!q) return SECTIONS;
-    return SECTIONS.filter((s) => s.label.toLowerCase().includes(q) || s.blurb.toLowerCase().includes(q) || s.group.includes(q));
+  // A fresh query means a fresh result set — highlight its top match. Without
+  // this, prior arrow-nav "sticks" and Enter opens a stale mid-list row.
+  useEffect(() => {
+    setActive(0);
   }, [query]);
 
-  // Keep the active index in range as results narrow, and scroll it into view.
-  useEffect(() => {
-    setActive((a) => Math.min(a, Math.max(0, results.length - 1)));
-  }, [results.length]);
+  // Scroll the active row into view as arrow keys move it.
   useEffect(() => {
     listRef.current?.querySelector<HTMLElement>('[data-active="true"]')?.scrollIntoView({ block: "nearest" });
   }, [active]);
 
-  function select(i: number) {
-    const item = results[i];
-    if (!item) return;
-    setSection(item.key);
-    setOpen(false);
-  }
-
-  function onKeyDown(e: React.KeyboardEvent) {
-    if (e.key === "ArrowDown") {
-      e.preventDefault();
-      setActive((a) => Math.min(a + 1, results.length - 1));
-    } else if (e.key === "ArrowUp") {
-      e.preventDefault();
-      setActive((a) => Math.max(a - 1, 0));
-    } else if (e.key === "Enter") {
-      e.preventDefault();
-      select(active);
-    } else if (e.key === "Escape") {
-      setOpen(false);
-    }
-  }
-
   if (!open) return null;
+
+  const activeId = results[active] ? `cmdk-opt-${results[active].key}` : undefined;
 
   return createPortal(
     <div className="fixed inset-0 z-50 flex items-start justify-center p-4 pt-[12vh]">
@@ -91,14 +122,17 @@ export function CommandPalette() {
             ref={inputRef}
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            onKeyDown={onKeyDown}
             placeholder="Jump to a section…"
             aria-label="Search sections"
+            role="combobox"
+            aria-expanded
+            aria-controls="cmdk-list"
+            aria-activedescendant={activeId}
             className="w-full bg-transparent py-3 text-sm outline-none placeholder:text-muted-foreground"
           />
           <kbd className="shrink-0 rounded border border-border px-1.5 py-0.5 text-[10px] text-muted-foreground">esc</kbd>
         </div>
-        <div ref={listRef} className="max-h-[52vh] overflow-y-auto p-1.5">
+        <div id="cmdk-list" ref={listRef} role="listbox" aria-label="Sections" className="max-h-[52vh] overflow-y-auto p-1.5">
           {results.length === 0 ? (
             <p className="px-3 py-6 text-center text-sm text-muted-foreground">No section matches “{query}”.</p>
           ) : (
@@ -115,10 +149,22 @@ export function CommandPalette() {
                     return (
                       <button
                         key={item.key}
+                        id={`cmdk-opt-${item.key}`}
                         type="button"
+                        role="option"
+                        aria-selected={on}
+                        tabIndex={-1}
                         data-active={on || undefined}
-                        onMouseMove={() => setActive(idx)}
-                        onClick={() => select(idx)}
+                        onMouseMove={(e) => {
+                          // Only react to a real pointer move. scrollIntoView (arrow-key
+                          // nav) fires a synthetic mousemove at the SAME coordinates over
+                          // whatever row slid under a resting cursor — honoring it would
+                          // yank the highlight away from the keyboard.
+                          if (e.clientX === pointerRef.current.x && e.clientY === pointerRef.current.y) return;
+                          pointerRef.current = { x: e.clientX, y: e.clientY };
+                          setActive(idx);
+                        }}
+                        onClick={() => selectAt(idx)}
                         className={cn(
                           "flex w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-left text-sm",
                           on ? "bg-primary/10 text-foreground" : "text-muted-foreground hover:bg-muted/60 hover:text-foreground",
