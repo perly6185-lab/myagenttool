@@ -17,6 +17,8 @@ import {
   autoRecoveryMaxAttempts,
   healthProbeConfirmCopy,
   healthProbeIntervalMinutes,
+  routineOverrideBody,
+  routineOverrideValue,
 } from "@/features/applications/application-ops-ui";
 import { Field } from "@/components/common/field";
 import {
@@ -522,6 +524,30 @@ function OrchestrationDrafts({
                 ) : null}
                 {copiedRoutineId === orchestration.routineId ? (
                   <span className="text-xs text-success">Copied.</span>
+                ) : null}
+                {application.autoRecovery ? (
+                  <label className="ml-auto flex items-center gap-1 text-xs text-muted-foreground">
+                    Auto-recovery
+                    <Select
+                      className="h-7 w-28 text-xs"
+                      value={routineOverrideValue(application, orchestration.routineId)}
+                      disabled={pending}
+                      onChange={(e) => {
+                        const parsed = routineOverrideBody(e.target.value);
+                        void execute(() => withApprovalGrant("auto-recovery-config", application.id, (token) =>
+                          api.setApplicationAutoRecovery(application.id, parsed
+                            ? { ...parsed, routineId: orchestration.routineId, approvalToken: token }
+                            : { routineId: orchestration.routineId, clearOverride: true, approvalToken: token }),
+                        ));
+                      }}
+                    >
+                      <option value="default">App default</option>
+                      <option value="off">Off</option>
+                      {[1, 2, 3, 4, 5].map((n) => (
+                        <option key={n} value={n}>On · cap {n}</option>
+                      ))}
+                    </Select>
+                  </label>
                 ) : null}
               </div>
               <OrchestrationRunHistory application={application} orchestration={orchestration} onView={viewInvocation} />

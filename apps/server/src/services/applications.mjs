@@ -357,6 +357,26 @@ export function createApplicationService({
         ? "auto-recovery configuration requires an explicit approvalToken."
         : `approvalToken rejected: ${approval.reason}.`);
     }
+    const routineId = typeof body.routineId === "string" && body.routineId.trim() ? body.routineId.trim() : null;
+    // Per-routine override management (capability review item ④, 局部管控): a
+    // flaky routine can run a tighter (or zero) cap than its siblings without
+    // touching the application-level policy. clearOverride returns the routine
+    // to the app default.
+    if (routineId && body.clearOverride === true) {
+      const overrides = { ...(app.autoRecovery?.routineOverrides ?? {}) };
+      delete overrides[routineId];
+      app.autoRecovery = { ...(app.autoRecovery ?? { enabled: false, maxAttempts: 2 }), routineOverrides: overrides };
+      app.updatedAt = now();
+      appendEvent({
+        invocationId: null,
+        type: "application_auto_recovery_configured",
+        level: "info",
+        message: `Application ${app.name} auto-recovery override for ${routineId} cleared (back to app default).`,
+        data: { applicationId: app.id, routineId, cleared: true, actorId: actor?.userId ?? null },
+      });
+      persistStateSoon();
+      return app;
+    }
     if (typeof body.enabled !== "boolean") {
       throw new Error("auto-recovery configuration requires enabled: boolean.");
     }
@@ -364,14 +384,26 @@ export function createApplicationService({
     if (!Number.isInteger(maxAttempts) || maxAttempts < 1 || maxAttempts > 5) {
       throw new Error("auto-recovery maxAttempts must be an integer between 1 and 5.");
     }
-    app.autoRecovery = { enabled: body.enabled, maxAttempts };
+    if (routineId) {
+      app.autoRecovery = {
+        ...(app.autoRecovery ?? { enabled: false, maxAttempts: 2 }),
+        routineOverrides: {
+          ...(app.autoRecovery?.routineOverrides ?? {}),
+          [routineId]: { enabled: body.enabled, maxAttempts },
+        },
+      };
+    } else {
+      app.autoRecovery = { ...(app.autoRecovery ?? {}), enabled: body.enabled, maxAttempts };
+    }
     app.updatedAt = now();
     appendEvent({
       invocationId: null,
       type: "application_auto_recovery_configured",
       level: body.enabled ? "warn" : "info",
-      message: `Application ${app.name} auto-recovery ${body.enabled ? `enabled (max ${maxAttempts} attempts)` : "disabled"}.`,
-      data: { applicationId: app.id, enabled: body.enabled, maxAttempts, actorId: actor?.userId ?? null },
+      message: routineId
+        ? `Application ${app.name} auto-recovery override for ${routineId}: ${body.enabled ? `enabled (max ${maxAttempts} attempts)` : "disabled"}.`
+        : `Application ${app.name} auto-recovery ${body.enabled ? `enabled (max ${maxAttempts} attempts)` : "disabled"}.`,
+      data: { applicationId: app.id, routineId, enabled: body.enabled, maxAttempts, actorId: actor?.userId ?? null },
     });
     persistStateSoon();
     return app;

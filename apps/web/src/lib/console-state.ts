@@ -1089,7 +1089,12 @@ export interface ApplicationSnapshot {
   ownerTeamId?: string | null;
   capabilitiesVersion?: number;
   /** Opt-in orchestration auto-recovery (docs/design/ORCHESTRATION_AUTO_RECOVERY.md). */
-  autoRecovery?: { enabled: boolean; maxAttempts?: number } | null;
+  autoRecovery?: {
+    enabled: boolean;
+    maxAttempts?: number;
+    /** Per-routine overrides — win over the app-level switch and cap. */
+    routineOverrides?: Record<string, { enabled?: boolean; maxAttempts?: number }> | null;
+  } | null;
   /** Opt-in periodic source health probe (docs/design/APPLICATION_HEALTH_PROBE.md). */
   healthProbe?: { enabled: boolean; intervalMinutes?: number; lastCheckedAt?: string | null } | null;
   /** Latest health check result; auto-degrade only (active→offline), never auto-online. */

@@ -1055,7 +1055,11 @@ export function createServerRuntimeServices({
     const meta = invocation?.options?.metadata;
     if (meta?.source !== "application_orchestration" || !meta.applicationId || !meta.routineId) return;
     const application = findApplication(meta.applicationId);
-    if (!application?.autoRecovery?.enabled) return;
+    // Effective config: a per-routine override (局部管控) wins over the
+    // application-level policy for both the switch and the cap.
+    const autoRecoveryConfig = application?.autoRecovery ?? null;
+    const routineOverride = autoRecoveryConfig?.routineOverrides?.[meta.routineId] ?? null;
+    if (!(routineOverride?.enabled ?? autoRecoveryConfig?.enabled)) return;
 
     const recoveryModel = applicationOrchestrationRecovery(
       invocation,
@@ -1066,7 +1070,7 @@ export function createServerRuntimeServices({
     // The crash-loop cap applies to EVERYTHING auto-initiated — executed reruns
     // and auto-filed approval requests alike — so a routine failing nightly
     // cannot flood the Approvals queue any more than it can rerun itself.
-    const cap = application.autoRecovery.maxAttempts ?? 2;
+    const cap = routineOverride?.maxAttempts ?? autoRecoveryConfig?.maxAttempts ?? 2;
     const attempts = consecutiveAutoRecoveryAttempts(meta.applicationId, meta.routineId);
     if (attempts >= cap) {
       appendAutoRecoverySkippedEvent(invocation, meta, "attempt_cap", { attempts, maxAttempts: cap });

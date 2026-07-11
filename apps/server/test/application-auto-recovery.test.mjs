@@ -294,6 +294,47 @@ test("an unknown errorCode falls back to haystack inference (never a fabricated 
   assert.equal(recovery.body.recovery.confidence, 0.86);
 });
 
+test("routine-level overrides win over the app policy: off silences, cap tightens, clear restores", async () => {
+  // Override OFF for this routine while the app stays enabled → silent no-op.
+  await runAndComplete({ status: "succeeded", summary: "healthy again" });
+  const offSet = await call(`/api/applications/${appId}/auto-recovery`, {
+    method: "POST",
+    body: { enabled: false, routineId, approvalToken: "operator-approved" },
+  });
+  assert.equal(offSet.status, 200);
+  assert.deepEqual(offSet.body.application.autoRecovery.routineOverrides[routineId], { enabled: false, maxAttempts: 2 });
+  const autoBefore = autoRequests().length;
+  const silentFail = await runAndComplete({ status: "failed", summary: "npm test failed with exit code 1" });
+  assert.equal(autoRerunsOf(silentFail).length, 0, "override off → no auto action");
+  assert.equal(autoRequests().length, autoBefore);
+
+  // Override ON with a tighter cap (1) → one attempt, then the cap event.
+  await call(`/api/applications/${appId}/auto-recovery`, {
+    method: "POST",
+    body: { enabled: true, maxAttempts: 1, routineId, approvalToken: "operator-approved" },
+  });
+  await runAndComplete({ status: "succeeded", summary: "reset the stream" });
+  const capBefore = skipEvents("attempt_cap").length;
+  const failed = await runAndComplete({ status: "failed", summary: "npm test failed with exit code 1" });
+  const rerun = autoRerunsOf(failed)[0];
+  assert.ok(rerun, "attempt 1 spawned under the override");
+  await completeViaBridge(rerun.id, { status: "failed", summary: "npm test failed with exit code 1" });
+  assert.equal(autoRerunsOf(rerun.id).length, 0, "override cap 1 blocks attempt 2 (app cap is 2)");
+  assert.equal(skipEvents("attempt_cap").length, capBefore + 1);
+  assert.equal(skipEvents("attempt_cap")[0].data.maxAttempts, 1, "the override's cap, not the app's (events are unshift-ordered)");
+
+  // Clear the override → the app-level policy (cap 2) applies again.
+  const cleared = await call(`/api/applications/${appId}/auto-recovery`, {
+    method: "POST",
+    body: { routineId, clearOverride: true, approvalToken: "operator-approved" },
+  });
+  assert.equal(cleared.status, 200);
+  assert.equal(cleared.body.application.autoRecovery.routineOverrides[routineId], undefined);
+  await runAndComplete({ status: "succeeded", summary: "reset the stream" });
+  const failedAgain = await runAndComplete({ status: "failed", summary: "npm test failed with exit code 1" });
+  assert.equal(autoRerunsOf(failedAgain).length, 1, "app-level policy active again");
+});
+
 async function call(path, { method = "GET", body, token } = {}) {
   const response = await fetch(`${base}${path}`, {
     method,

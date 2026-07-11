@@ -3,6 +3,8 @@ import {
   applicationOpsBadges,
   autoRecoveryConfirmCopy,
   healthProbeConfirmCopy,
+  routineOverrideBody,
+  routineOverrideValue,
 } from "@/features/applications/application-ops-ui";
 import type { ApplicationSnapshot } from "@/lib/console-state";
 
@@ -41,6 +43,18 @@ describe("confirm copy derives from the application's actual config", () => {
   it("disable copy never mentions numbers that no longer apply", () => {
     expect(autoRecoveryConfirmCopy(app({ autoRecovery: { enabled: true, maxAttempts: 4 } }), { enabled: false }).description).not.toMatch(/4/);
     expect(healthProbeConfirmCopy(app({ healthProbe: { enabled: true, intervalMinutes: 30 } }), { enabled: false }).description).not.toMatch(/30/);
+  });
+});
+
+describe("routine override select round-trip", () => {
+  it("value derives from the stored override; body parses back", () => {
+    expect(routineOverrideValue(app(), "rt_1")).toBe("default");
+    expect(routineOverrideValue(app({ autoRecovery: { enabled: true, routineOverrides: { rt_1: { enabled: false } } } }), "rt_1")).toBe("off");
+    expect(routineOverrideValue(app({ autoRecovery: { enabled: false, routineOverrides: { rt_1: { enabled: true, maxAttempts: 4 } } } }), "rt_1")).toBe("4");
+
+    expect(routineOverrideBody("default")).toBeNull();
+    expect(routineOverrideBody("off")).toEqual({ enabled: false });
+    expect(routineOverrideBody("3")).toEqual({ enabled: true, maxAttempts: 3 });
   });
 });
 

@@ -60,6 +60,20 @@ export function healthProbeConfirmCopy(app: ApplicationSnapshot, next: { enabled
   };
 }
 
+/** The routine's effective auto-recovery setting as a compact select value. */
+export function routineOverrideValue(app: ApplicationSnapshot, routineId: string): string {
+  const override = app.autoRecovery?.routineOverrides?.[routineId];
+  if (!override) return "default";
+  return override.enabled ? String(override.maxAttempts ?? AUTO_RECOVERY_DEFAULT_MAX_ATTEMPTS) : "off";
+}
+
+/** Parse a select value back into the config call body (null → clear override). */
+export function routineOverrideBody(value: string): { enabled: boolean; maxAttempts?: number } | null {
+  if (value === "default") return null;
+  if (value === "off") return { enabled: false };
+  return { enabled: true, maxAttempts: Number(value) };
+}
+
 /** Ops badges for the list card: health verdict + which autonomy is on. */
 export function applicationOpsBadges(app: ApplicationSnapshot): { label: string; tone: Tone }[] {
   const badges: { label: string; tone: Tone }[] = [];
