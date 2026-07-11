@@ -7,7 +7,7 @@ import { Modal } from "@/components/ui/modal";
 import { EmptyState } from "@/components/common/empty-state";
 import { api, useAsyncAction } from "@/data/use-console-actions";
 import { cn } from "@/lib/cn";
-import type { Tone } from "@/lib/readable-labels";
+import { shortTime, type Tone } from "@/lib/readable-labels";
 import { AutoRunConfigCard } from "./auto-run-config-card";
 import { AutoRunReadinessCard } from "./auto-run-readiness-card";
 import { AutoRunOnboardingCard } from "./auto-run-onboarding-card";
@@ -20,7 +20,7 @@ import { EpicRollup } from "./epic-rollup";
 import { useConsoleState } from "@/data/use-console-state";
 import { useUiStore } from "@/store/ui-store";
 import { EventTimeline } from "@/features/invocations/event-timeline";
-import type { InvocationEventSnapshot } from "@/lib/console-state";
+import type { InvocationEventSnapshot, DeploymentSnapshot } from "@/lib/console-state";
 
 interface AutoRunLink {
   type: "issue" | "pr";
@@ -456,6 +456,65 @@ function RunBoard({ runs }: { runs: AutoRunRecord[] }) {
   );
 }
 
+// Deploy LOG (可追溯性): render the raw deployment records — which reach the client
+// in the state snapshot but were previously shown NOWHERE (only the aggregate DORA
+// tiles were) — each as a deploy → PR → issue breadcrumb by joining autoRunId to the
+// run. Closes the audit's worst traceability break ("from a deploy you reach nothing").
+function DeployList({ deployments, runs }: { deployments: DeploymentSnapshot[]; runs: AutoRunRecord[] }) {
+  const [open, setOpen] = useState(false);
+  const runsById = useMemo(() => new Map(runs.map((r) => [r.id, r])), [runs]);
+  const sorted = useMemo(
+    () => deployments.slice().sort((a, b) => ((a.at ?? "") < (b.at ?? "") ? 1 : (a.at ?? "") > (b.at ?? "") ? -1 : 0)),
+    [deployments],
+  );
+  if (sorted.length === 0) return null;
+  return (
+    <div className="mt-3 flex flex-col gap-1.5">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        className="flex items-center gap-1 self-start text-xs text-muted-foreground hover:text-foreground"
+      >
+        <History className="size-3" /> {open ? "Hide deploy log" : `Deploy log (${sorted.length})`}
+      </button>
+      {open ? (
+        <ul className="flex flex-col gap-1">
+          {sorted.map((d) => {
+            const run = d.autoRunId ? runsById.get(d.autoRunId) : undefined;
+            const tone = d.status === "deployed" ? "success" : d.status === "rolled_back" ? "warning" : "danger";
+            const label = d.status === "deployed" ? "deployed" : d.status === "rolled_back" ? "rolled back" : "deploy failed";
+            return (
+              <li key={d.id} className="flex flex-wrap items-center gap-x-2 gap-y-0.5 rounded-md border border-border px-2.5 py-1.5 text-xs">
+                <Badge tone={tone}>{label}</Badge>
+                {d.at ? <span className="tabular-nums text-muted-foreground">{shortTime(d.at)}</span> : null}
+                {d.prNumber ? (
+                  run?.prUrl ? (
+                    <a href={run.prUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-0.5 text-primary hover:underline">
+                      <GitPullRequest className="size-3" />#{d.prNumber}
+                    </a>
+                  ) : (
+                    <span className="inline-flex items-center gap-0.5 text-muted-foreground"><GitPullRequest className="size-3" />#{d.prNumber}</span>
+                  )
+                ) : null}
+                {run?.link ? (
+                  run.link.url ? (
+                    <a href={run.link.url} target="_blank" rel="noreferrer" className="text-primary hover:underline">→ issue #{run.link.number}</a>
+                  ) : (
+                    <span className="text-muted-foreground">→ issue #{run.link.number}</span>
+                  )
+                ) : null}
+                {d.summary ? (
+                  <span className="w-full truncate text-muted-foreground [overflow-wrap:anywhere]" title={d.summary}>{d.summary}</span>
+                ) : null}
+              </li>
+            );
+          })}
+        </ul>
+      ) : null}
+    </div>
+  );
+}
+
 // The merge moment — the one human decision in the autonomous loop. Replaces the
 // blank window.confirm with an informed dialog: refreshes PR checks on open (so
 // the shown posture matches the server's require-green gate), lets the human peek
@@ -769,6 +828,7 @@ export function AutoRunsView() {
                   hint={`over ${deployments.recoveryHours.count} recovery(ies)`}
                 />
               </div>
+              <DeployList deployments={consoleState?.deployments ?? []} runs={runs} />
             </div>
           ) : null}
           {summary.outcomes.reportPosted + summary.outcomes.needsInput > 0 ? (
