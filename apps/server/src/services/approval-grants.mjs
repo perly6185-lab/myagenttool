@@ -19,13 +19,19 @@ function isSystemActor(actor) {
   return typeof actor?.userId === "string" && actor.userId.startsWith("system");
 }
 
-export function createApprovalGrantService({ state, now, nextId, appendEvent, persistStateSoon }) {
+export function createApprovalGrantService({ state, now, nextId, appendEvent, persistStateSoon, archiveEvicted = null }) {
   function pruneGrants(reference) {
-    // Keep consumed + unexpired history bounded; expired-unconsumed grants are
-    // dead weight the moment they lapse.
-    state.approvalGrants = (state.approvalGrants ?? [])
-      .filter((grant) => grant.consumedAt || Date.parse(grant.expiresAt) > reference)
-      .slice(0, MAX_GRANTS);
+    // Consumed grants are audit records and expired ones prove an approval was
+    // once minted — neither may vanish silently. Everything the in-memory cap
+    // drops goes to the on-disk archive first.
+    const kept = [];
+    const evicted = [];
+    for (const grant of state.approvalGrants ?? []) {
+      (grant.consumedAt || Date.parse(grant.expiresAt) > reference ? kept : evicted).push(grant);
+    }
+    evicted.push(...kept.slice(MAX_GRANTS));
+    if (evicted.length) archiveEvicted?.("approvalGrants", evicted);
+    state.approvalGrants = kept.slice(0, MAX_GRANTS);
   }
 
   /**

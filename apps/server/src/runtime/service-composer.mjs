@@ -13,6 +13,7 @@ import { dirname, resolve, sep } from "node:path";
 import { createAgentSkillService } from "../services/agent-skills.mjs";
 import { createApplicationService, validateApplicationRoutineDraft } from "../services/applications.mjs";
 import { createApprovalGrantService } from "../services/approval-grants.mjs";
+import { createRetentionArchive } from "../services/retention-archive.mjs";
 import { createCapabilityService } from "../services/capabilities.mjs";
 import { createCcusageImportService } from "../services/ccusage-imports.mjs";
 import { createClaudeReviewImportService } from "../services/claude-review-imports.mjs";
@@ -123,12 +124,17 @@ export function createServerRuntimeServices({
   // Approval grants (docs/design/APPROVAL_GRANTS.md): the issuance flow behind
   // every approvalToken field. Composed before the application service so the
   // validator can be injected into its guards.
+  // Cap-evicted audit rows land in an on-disk JSONL archive instead of
+  // vanishing (docs: retention-archive.mjs). Disabled with persistence (tests).
+  const retentionArchive = createRetentionArchive({ stateStorePath, enabled: persistenceEnabled, now });
+
   const { issueApprovalGrant, mintDecisionGrant, validateApprovalToken } = createApprovalGrantService({
     state,
     now,
     nextId,
     appendEvent,
     persistStateSoon,
+    archiveEvicted: retentionArchive.archiveEvicted,
   });
 
   const {
@@ -1518,7 +1524,7 @@ export function createServerRuntimeServices({
       updatedAt: createdAt,
     };
     state.applicationRecoveryActions.unshift(request);
-    state.applicationRecoveryActions = state.applicationRecoveryActions.slice(0, 200);
+    state.applicationRecoveryActions = retentionArchive.capWithArchive(state.applicationRecoveryActions, 200, "applicationRecoveryActions");
     persistStateSoon();
     return request;
   }
@@ -1548,7 +1554,7 @@ export function createServerRuntimeServices({
       applicationRecoveryActionRequestId: actionRequest.id,
     };
     state.codexApprovalBrokerRequests.unshift(request);
-    state.codexApprovalBrokerRequests = state.codexApprovalBrokerRequests.slice(0, 200);
+    state.codexApprovalBrokerRequests = retentionArchive.capWithArchive(state.codexApprovalBrokerRequests, 200, "codexApprovalBrokerRequests");
     persistStateSoon();
     appendEvent({
       invocationId: invocation.id,
