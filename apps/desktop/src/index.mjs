@@ -6,6 +6,7 @@ import { delimiter } from "node:path";
 import * as pty from "node-pty";
 import { callMcpTool, probeMcpServer } from "./mcp-client.mjs";
 import { agentMinimalBaseEnv, minimizeAgentEnvEnabled, shouldMinimizeAgentEnv } from "./agent-env.mjs";
+import { runAsUser, shouldRunAsUser, runAsSpawnPlan } from "./agent-runas.mjs";
 import { callA2aAgent, probeA2aAgent } from "./a2a-client.mjs";
 import { probeContainerRuntime, runContainerAgent } from "./container-client.mjs";
 import { codexResumeArgs } from "./codex-resume.mjs";
@@ -858,11 +859,17 @@ async function runInvocation(work) {
     return;
   }
 
+  // B1b Tier 2 (opt-in, default OFF): run the agent as a low-priv user via sudo -n.
+  // Applied AFTER the local-execution gate so the gate validated the real agent
+  // command; only the exec is wrapped (cwd/env preserved). Falls through unchanged
+  // when the flag is unset or the adapter isn't a real CLI coding agent.
+  const runAsTarget = runAsUser();
+  const launchPlan = shouldRunAsUser(adapter, { user: runAsTarget }) ? runAsSpawnPlan(spawnPlan, { user: runAsTarget }) : spawnPlan;
   let child;
   try {
-    child = spawn(spawnPlan.command, spawnPlan.args, {
-      cwd: spawnPlan.cwd,
-      env: spawnPlan.env,
+    child = spawn(launchPlan.command, launchPlan.args, {
+      cwd: launchPlan.cwd,
+      env: launchPlan.env,
       detached: process.platform !== "win32",
       windowsHide: true,
       stdio: ["ignore", "pipe", "pipe"]
