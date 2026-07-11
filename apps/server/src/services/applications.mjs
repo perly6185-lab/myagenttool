@@ -24,7 +24,20 @@ export function createApplicationService({
   cloneProject,
   defaultProjectPath = process.cwd(),
   sendAlert = null,
+  validateApprovalToken = null,
 }) {
+  // Approval check behind every `approvalToken` field (docs/design/
+  // APPROVAL_GRANTS.md): issued grants are validated + consumed; in phase 1 a
+  // legacy free-text token still passes (stamped + counted by the validator).
+  // Presence stays a hard requirement either way. A null validator (direct
+  // service construction in unit tests) degrades to the presence check.
+  function approvalCheck(input, action, targetId, actor = null) {
+    const token = input && typeof input === "object" && !Array.isArray(input) ? input.approvalToken : null;
+    if (!String(token ?? "").trim()) return { approved: false, reason: "missing_token" };
+    if (typeof validateApprovalToken !== "function") return { approved: true, mode: "presence" };
+    return validateApprovalToken(token, { action, targetId, actor });
+  }
+
   function listApplications() {
     return state.applications ?? [];
   }
@@ -243,21 +256,24 @@ export function createApplicationService({
       return { ok: false, status: 409, body: { error: "application_offline", applicationId: application.id } };
     }
     // Every side-effecting action — status changes, the orchestration-draft
-    // write, and wrapper commands — requires an explicit approvalToken.
-    // NOTE: in this slice the token is an explicit-intent confirmation on an
-    // owner-scoped resource (tenancy is the real authorization boundary), not a
-    // cryptographic approval; a real approval-issuance flow is follow-up.
-    if ((["archive", "offline", "online", "refresh", "generate_orchestration"].includes(action) || action.startsWith("wrapper:")) && !hasApprovalToken(input)) {
-      return {
-        ok: false,
-        status: 409,
-        body: {
-          error: "approval_required",
-          reason: `${action} requires an explicit approvalToken.`,
-          applicationId: application.id,
-          action,
-        },
-      };
+    // write, and wrapper commands — requires an approval: an issued grant for
+    // (action, application), or in phase 1 a legacy token (stamped + counted).
+    if (["archive", "offline", "online", "refresh", "generate_orchestration"].includes(action) || action.startsWith("wrapper:")) {
+      const approval = approvalCheck(input, action, application.id, actor);
+      if (!approval.approved) {
+        return {
+          ok: false,
+          status: 409,
+          body: {
+            error: "approval_required",
+            reason: approval.reason === "missing_token"
+              ? `${action} requires an explicit approvalToken.`
+              : `approvalToken rejected: ${approval.reason}.`,
+            applicationId: application.id,
+            action,
+          },
+        };
+      }
     }
 
     const result = executeApplicationAction({ application, action, input, actor, defaultProjectPath, now });
@@ -299,8 +315,11 @@ export function createApplicationService({
     // Approval is required only for commands that declare it. A read-only report
     // command can set requiresApproval:false — preserving, e.g., the ccusage
     // tool's offline reports that never needed an approval token.
-    if (command.requiresApproval && !hasApprovalToken(input)) {
-      return { ok: false, status: 409, body: { error: "approval_required", reason: "This wrapper command requires an explicit approvalToken.", applicationId } };
+    if (command.requiresApproval) {
+      const approval = approvalCheck(input, `wrapper:${commandId}`, applicationId, actor);
+      if (!approval.approved) {
+        return { ok: false, status: 409, body: { error: "approval_required", reason: approval.reason === "missing_token" ? "This wrapper command requires an explicit approvalToken." : `approvalToken rejected: ${approval.reason}.`, applicationId } };
+      }
     }
     const plan = applicationWrapperExecutionPlan(application, commandId, input);
     if (!plan) {
@@ -332,8 +351,11 @@ export function createApplicationService({
   function setApplicationAutoRecovery(applicationId, body = {}, actor = null) {
     const app = findApplication(applicationId);
     if (!app) return null;
-    if (!hasApprovalToken(body)) {
-      throw new Error("auto-recovery configuration requires an explicit approvalToken.");
+    const approval = approvalCheck(body, "auto-recovery-config", app.id, actor);
+    if (!approval.approved) {
+      throw new Error(approval.reason === "missing_token"
+        ? "auto-recovery configuration requires an explicit approvalToken."
+        : `approvalToken rejected: ${approval.reason}.`);
     }
     if (typeof body.enabled !== "boolean") {
       throw new Error("auto-recovery configuration requires enabled: boolean.");
@@ -361,8 +383,11 @@ export function createApplicationService({
   function setApplicationHealthProbe(applicationId, body = {}, actor = null) {
     const app = findApplication(applicationId);
     if (!app) return null;
-    if (!hasApprovalToken(body)) {
-      throw new Error("health-probe configuration requires an explicit approvalToken.");
+    const approval = approvalCheck(body, "health-probe-config", app.id, actor);
+    if (!approval.approved) {
+      throw new Error(approval.reason === "missing_token"
+        ? "health-probe configuration requires an explicit approvalToken."
+        : `approvalToken rejected: ${approval.reason}.`);
     }
     if (typeof body.enabled !== "boolean") {
       throw new Error("health-probe configuration requires enabled: boolean.");
@@ -769,10 +794,6 @@ function actionFromCapabilityName(capabilityName) {
 function wrapperActionFromCapabilityName(capabilityName) {
   const match = String(capabilityName ?? "").match(/\.wrapper\.([a-z0-9._-]+)$/);
   return match ? `wrapper:${match[1]}` : null;
-}
-
-function hasApprovalToken(input) {
-  return Boolean(input && typeof input === "object" && !Array.isArray(input) && String(input.approvalToken ?? "").trim());
 }
 
 function executeApplicationAction({ application, action, input, actor, defaultProjectPath, now = () => new Date().toISOString() }) {

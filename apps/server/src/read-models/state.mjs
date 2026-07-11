@@ -197,6 +197,10 @@ export function buildPublicState({
     // Sweep self-observability (admin-plane, like healthChecks): when the probe
     // last ran, how many apps it checked, and the last per-app error it swallowed.
     applicationHealthSweepStatus: state.applicationHealthSweepStatus ?? null,
+    // Legacy-approvalToken usage counter (APPROVAL_GRANTS.md phase 1): the
+    // migration gauge — phase 2 flips strict once this stops moving. Grants
+    // themselves are never exposed (server-side hashes only).
+    approvalTokenLegacyUses: state.approvalTokenLegacyUses ?? null,
     projectTargets: byProject(state.projectTargets),
     currentProjectId: state.currentProjectId,
     currentProject: currentProject(),

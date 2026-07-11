@@ -3,6 +3,7 @@ import { REQUIRE_AUTH, resolveActor } from "./auth.mjs";
 import { handleAgentRoutes } from "../routes/agents.mjs";
 import { handleAgentSkillRoutes } from "../routes/agent-skills.mjs";
 import { handleApplicationRoutes } from "../routes/applications.mjs";
+import { handleApprovalGrantRoutes } from "../routes/approval-grants.mjs";
 import { handleBridgeRoutes } from "../routes/bridge.mjs";
 import { handleCapabilityRoutes } from "../routes/capabilities.mjs";
 import { handleCodexRoutes } from "../routes/codex.mjs";
@@ -67,6 +68,7 @@ export function createHttpServer({
   registerApplication,
   requestApplicationOrchestrationRecoveryAction,
   runApplicationOrchestration,
+  issueApprovalGrant,
   setApplicationAutoRecovery,
   setApplicationHealthProbe,
   transitionApplication,
@@ -284,6 +286,10 @@ export function createHttpServer({
         updateAgentSkill,
         deleteAgentSkill,
       })) {
+        return;
+      }
+
+      if (await handleApprovalGrantRoutes({ req, res, url, sendJson, readJson, actor, issueApprovalGrant })) {
         return;
       }
 
