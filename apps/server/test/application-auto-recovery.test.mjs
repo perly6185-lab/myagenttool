@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync } from "node:fs";
+import { createServer as createHttpReceiver } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
@@ -60,9 +61,45 @@ before(async () => {
   const bridge = await call("/api/bridge/register", { method: "POST", body: { bridgeVersion: "test" } });
   assert.equal(bridge.status, 200);
   bridgeToken = bridge.body.bridgeToken;
+
+  // Local webhook receiver so the crash-loop alert is observable.
+  hookServer = createHttpReceiver((req, res) => {
+    let body = "";
+    req.on("data", (chunk) => (body += chunk));
+    req.on("end", () => {
+      try {
+        receivedAlerts.push(JSON.parse(body));
+      } catch {
+        /* non-JSON post — ignore */
+      }
+      res.writeHead(200);
+      res.end();
+    });
+  });
+  await new Promise((resolve) => hookServer.listen(0, "127.0.0.1", resolve));
+  state.autoRunSettings = {
+    ...state.autoRunSettings,
+    alertWebhookUrl: `http://127.0.0.1:${hookServer.address().port}/hook`,
+  };
 });
 
-after(() => server?.close());
+after(() => {
+  server?.close();
+  hookServer?.close();
+});
+
+let hookServer;
+const receivedAlerts = [];
+
+async function waitForAlert(kind, timeoutMs = 2000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const hit = receivedAlerts.find((alert) => alert.kind === kind);
+    if (hit) return hit;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  return null;
+}
 
 // Run the routine and complete it via the bridge protocol with the given outcome.
 async function runAndComplete({ status, summary }) {
@@ -149,6 +186,12 @@ test("crash-loop cap: after maxAttempts consecutive auto attempts, it stops with
   assert.equal(autoRequests().length - baseline, 2);
   assert.equal(skipEvents("attempt_cap").length, 1);
   assert.equal(skipEvents("attempt_cap")[0].data.maxAttempts, 2);
+  // The crash-loop is the one auto-recovery outcome a human must hear about.
+  const alert = await waitForAlert("application_auto_recovery_capped");
+  assert.ok(alert, "webhook received the crash-loop alert");
+  assert.equal(alert.severity, "warning");
+  assert.equal(alert.data.maxAttempts, 2);
+  assert.match(alert.message, /still failing/);
 });
 
 test("approval-gated categories are never auto-recovered and nothing is parked in the broker", async () => {

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { createServer as createHttpReceiver } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
@@ -17,6 +18,18 @@ let state;
 let sweep;
 let appId;
 let appDir;
+let hookServer;
+const receivedAlerts = [];
+
+async function waitForAlert(kind, timeoutMs = 2000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const hit = receivedAlerts.find((alert) => alert.kind === kind);
+    if (hit) return hit;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  return null;
+}
 
 before(async () => {
   const { createServerState } = await import("../src/runtime/state-factory.mjs");
@@ -52,9 +65,32 @@ before(async () => {
   });
   assert.equal(registered.status, 201, JSON.stringify(registered.body));
   appId = registered.body.application.id;
+
+  // Local webhook receiver so the sweep's operational alerts are observable.
+  hookServer = createHttpReceiver((req, res) => {
+    let body = "";
+    req.on("data", (chunk) => (body += chunk));
+    req.on("end", () => {
+      try {
+        receivedAlerts.push(JSON.parse(body));
+      } catch {
+        /* non-JSON post — ignore */
+      }
+      res.writeHead(200);
+      res.end();
+    });
+  });
+  await new Promise((resolve) => hookServer.listen(0, "127.0.0.1", resolve));
+  state.autoRunSettings = {
+    ...state.autoRunSettings,
+    alertWebhookUrl: `http://127.0.0.1:${hookServer.address().port}/hook`,
+  };
 });
 
-after(() => server?.close());
+after(() => {
+  server?.close();
+  hookServer?.close();
+});
 
 const app = () => state.applications.find((a) => a.id === appId);
 const events = (type) => state.events.filter((e) => e.type === type);
@@ -110,6 +146,15 @@ test("source disappears: first failure keeps it active, second auto-offlines wit
   // The transition went through the ordinary lifecycle path, attributed to the system.
   assert.equal(app().lifecycle.lastOperation, "offline");
   assert.equal(app().lifecycle.lastActorId, "system_health_probe");
+});
+
+test("the auto-offline pushes an operator alert to the configured webhook", async () => {
+  const alert = await waitForAlert("application_health_auto_offline");
+  assert.ok(alert, "webhook received the auto-offline alert");
+  assert.equal(alert.severity, "warning");
+  assert.equal(alert.data.applicationId, appId);
+  assert.match(alert.message, /taken offline after 2 failed health checks/);
+  assert.match(alert.message, /requires a human/);
 });
 
 test("source recovers: health goes healthy with an event, but status STAYS offline until a human acts", async () => {

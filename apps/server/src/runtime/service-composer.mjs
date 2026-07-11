@@ -140,6 +140,9 @@ export function createServerRuntimeServices({
     addProject,
     cloneProject,
     defaultProjectPath,
+    // Lazy: autoRunAlerts is composed further down; the thunk only runs at sweep
+    // time (post-composition), so the late binding is safe.
+    sendAlert: (alert) => void autoRunAlerts.dispatch(alert),
   });
 
   const {
@@ -989,6 +992,14 @@ export function createServerRuntimeServices({
     const attempts = consecutiveAutoRecoveryAttempts(meta.applicationId, meta.routineId);
     if (attempts >= cap) {
       appendAutoRecoverySkippedEvent(invocation, meta, "attempt_cap", { attempts, maxAttempts: cap });
+      // Crash-loop reached: the one auto-recovery outcome a human MUST hear about,
+      // because from here every further failure just waits silently for them.
+      void autoRunAlerts.dispatch({
+        kind: "application_auto_recovery_capped",
+        severity: "warning",
+        message: `Auto-recovery for ${meta.routineName ?? meta.routineId} stopped after ${attempts} consecutive attempts; the routine is still failing.`,
+        data: { applicationId: meta.applicationId, routineId: meta.routineId, invocationId: invocation.id, attempts, maxAttempts: cap },
+      });
       return;
     }
     // Reuses every guard in the manual path (scoping, action-suggested check,
