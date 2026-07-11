@@ -363,7 +363,7 @@ export function createServerRuntimeServices({
   // applies without a restart. No-op when unconfigured; never throws.
   const autoRunAlerts = createAlertDispatcher({ getWebhookUrl: () => state.autoRunSettings?.alertWebhookUrl ?? null });
 
-  const { startAutoRun, advanceAutoRunForInvocation, syncAutoRunOnApproval, syncAutoRunOnDenial, retryAutoRun, mergeAutoRunPr, reapStuckAutoRuns, autoMergeSweep, approveDesign, rejectDesign, answerClarify, approveDecomposition, rejectDecomposition } = createAutoRunService({
+  const { startAutoRun, advanceAutoRunForInvocation, syncAutoRunOnApproval, syncAutoRunOnDenial, retryAutoRun, cancelAutoRun, mergeAutoRunPr, reapStuckAutoRuns, autoMergeSweep, approveDesign, rejectDesign, answerClarify, approveDecomposition, rejectDecomposition } = createAutoRunService({
     state,
     now,
     nextId,
@@ -373,6 +373,8 @@ export function createServerRuntimeServices({
     sendAlert: (alert) => autoRunAlerts.dispatch(alert),
     // O1 reliability: find a run's invocation for stuck/crash reconcile.
     findInvocation,
+    // Operator stop: cancel a run's in-flight agent invocation.
+    cancelInvocation,
     // O2 graduated approval: apply a human-equivalent approval by policy (used
     // only for operator-opted-in non-code paths). Reuses the existing approve
     // path — no change to the security policy that decides who needs approval.
@@ -2368,6 +2370,7 @@ export function createServerRuntimeServices({
     publishWorktreeBranch,
     startAutoRun,
     retryAutoRun,
+    cancelAutoRun,
     reapStuckAutoRuns,
     autoMergeSweep,
     approveDesign,

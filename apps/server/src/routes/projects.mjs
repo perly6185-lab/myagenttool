@@ -40,6 +40,7 @@ export async function handleProjectRoutes({
   publishWorktreeBranch,
   startAutoRun,
   retryAutoRun,
+  cancelAutoRun,
   mergeAutoRunPr,
   approveDesign,
   rejectDesign,
@@ -200,6 +201,18 @@ export async function handleProjectRoutes({
       sendJson(res, 200, result);
     } catch (error) {
       sendJson(res, 400, { error: "auto_run_retry_failed", message: errorMessage(error) });
+    }
+    return true;
+  }
+
+  const autoRunCancelMatch = url.pathname.match(/^\/api\/auto-runs\/([^\/]+)\/cancel$/);
+  if (autoRunCancelMatch && req.method === "POST") {
+    if (denyForeignAutoRun(decodeURIComponent(autoRunCancelMatch[1]))) return true;
+    try {
+      const result = cancelAutoRun(decodeURIComponent(autoRunCancelMatch[1]), { actor });
+      sendJson(res, 200, result);
+    } catch (error) {
+      sendJson(res, 400, { error: "auto_run_cancel_failed", message: errorMessage(error) });
     }
     return true;
   }

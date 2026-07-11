@@ -67,6 +67,7 @@ export function createAutoRunService({
   sendAlert,
   createInvocation,
   findInvocation,
+  cancelInvocation,
   autoApproveInvocation,
   startInvocationIfAllowed,
   commitWorktreeChanges,
@@ -282,7 +283,7 @@ export function createAutoRunService({
   }
   // Reaction states already handled — advancing past them would re-open a PR.
   // `blocked` (verification failed) is terminal here; a human retries/fixes.
-  const settledStatuses = new Set(["pr_open", "report_posted", "needs_input", "plan_proposed", "decomposed", "blocked", "done", "failed"]);
+  const settledStatuses = new Set(["pr_open", "report_posted", "needs_input", "plan_proposed", "decomposed", "blocked", "done", "failed", "cancelled"]);
 
   // The PR body an auto-run opens with, carrying the verification evidence so the
   // pull request is honest about whether checks ran and passed.
@@ -865,6 +866,33 @@ export function createAutoRunService({
   // prompt and start a fresh invocation for the same record. Without this a
   // failed run dead-ended — the trigger dedup (correctly) never re-picks an
   // issue that has a settled run. (Pilot finding.)
+  // Operator STOP for an in-flight run (运营性 / local control): cancel the underlying
+  // agent invocation and settle the run as `cancelled`. Because `cancelled` is in
+  // settledStatuses, the invocation-terminal reaction (advanceAutoRunForInvocation)
+  // then skips it instead of re-deriving `failed`. Non-destructive: the worktree is left
+  // intact (a fresh run can reuse it), matching retry/teardown's non-destructive posture.
+  function cancelAutoRun(autoRunId, { actor } = {}) {
+    const autoRun = state.autoRuns.find((item) => item.id === autoRunId);
+    if (!autoRun) throw new Error("Auto-run not found.");
+    if (settledStatuses.has(autoRun.status)) {
+      throw new Error("This run has already settled; only an in-flight run can be cancelled.");
+    }
+    if (autoRun.invocationId && typeof cancelInvocation === "function") {
+      const invocation = findInvocation(autoRun.invocationId);
+      if (invocation && !isTerminal(invocation.status)) {
+        try {
+          cancelInvocation(invocation, actor);
+        } catch {
+          // Best-effort: even if the agent cancel signal fails, still settle the run so
+          // the operator isn't stuck watching a run they've explicitly stopped.
+        }
+      }
+    }
+    setAutoRunStatus(autoRun, "cancelled", { error: null });
+    persistStateSoon();
+    return autoRun;
+  }
+
   async function retryAutoRun(autoRunId, { actor } = {}) {
     const autoRun = state.autoRuns.find((item) => item.id === autoRunId);
     if (!autoRun) throw new Error("Auto-run not found.");
@@ -1469,5 +1497,5 @@ export function createAutoRunService({
     return { reaped, readvanced };
   }
 
-  return { startAutoRun, advanceAutoRunForInvocation, syncAutoRunOnApproval, syncAutoRunOnDenial, retryAutoRun, mergeAutoRunPr, maybeDeployAfterMerge, reapStuckAutoRuns, autoMergeSweep, approveDesign, rejectDesign, answerClarify, approveDecomposition, rejectDecomposition };
+  return { startAutoRun, advanceAutoRunForInvocation, syncAutoRunOnApproval, syncAutoRunOnDenial, retryAutoRun, cancelAutoRun, mergeAutoRunPr, maybeDeployAfterMerge, reapStuckAutoRuns, autoMergeSweep, approveDesign, rejectDesign, answerClarify, approveDecomposition, rejectDecomposition };
 }

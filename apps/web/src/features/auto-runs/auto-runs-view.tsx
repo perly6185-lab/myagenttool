@@ -107,11 +107,13 @@ const STATUS_LABEL: Record<string, string> = {
   needs_input: "Needs input",
   blocked: "Blocked",
   failed: "Failed",
+  cancelled: "Cancelled",
 };
 function statusTone(status: string): Tone {
   if (status === "pr_open" || status === "report_posted") return "success";
   if (status === "failed") return "danger";
   if (status === "blocked" || status === "awaiting_approval" || status === "needs_input") return "warning";
+  if (status === "cancelled") return "neutral";
   return "running";
 }
 
@@ -406,7 +408,7 @@ const LANES: { key: LaneKey; label: string }[] = [
 export function runLane(run: AutoRunRecord): LaneKey {
   if (run.status === "failed" || run.status === "blocked" || run.deployment?.status === "failed" || run.deployment?.status === "rolled_back") return "attention";
   if (run.status === "awaiting_approval" || run.status === "needs_input" || run.status === "report_posted" || run.status === "plan_proposed") return "needs_you";
-  if (run.deployment?.status === "deployed" || run.prState === "MERGED" || run.prState === "CLOSED" || run.status === "decomposed") return "done";
+  if (run.status === "cancelled" || run.deployment?.status === "deployed" || run.prState === "MERGED" || run.prState === "CLOSED" || run.status === "decomposed") return "done";
   if (run.status === "pr_open") return "pr_open";
   return "running"; // materializing / running / verifying / publishing + any other in-flight
 }
@@ -1002,6 +1004,21 @@ export function AutoRunsView() {
                       title="Retry this run on its existing worktree"
                     >
                       <RefreshCw className="mr-1 size-3" /> Retry
+                    </Button>
+                  </div>
+                ) : null}
+                {["materializing", "running", "verifying", "publishing"].includes(run.status) ? (
+                  <div>
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      onClick={() => {
+                        if (!window.confirm("Cancel this run? The running agent is stopped and the run is marked cancelled (its worktree is kept).")) return;
+                        void api.cancelAutoRun(run.id).then(() => load()).catch(() => load());
+                      }}
+                      title="Stop the running agent and cancel this run"
+                    >
+                      <X className="mr-1 size-3" /> Cancel
                     </Button>
                   </div>
                 ) : null}
