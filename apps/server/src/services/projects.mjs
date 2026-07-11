@@ -263,9 +263,28 @@ export function createProjectService({ state, now, nextId, appendEvent, persistS
       throw new Error(`Worktree path already exists: ${targetPath}`);
     }
 
+    // Fork point. For issue→PR runs (body.fetchBase), fork from the FRESH remote base
+    // (origin/<base>) so the PR opens on top of current origin — not a stale LOCAL branch
+    // that lags behind concurrently-merged work, which made every auto-run PR conflict.
+    // Best-effort: fall back to the local base / HEAD when there's no origin or the fetch fails.
+    let startPoint = baseBranch;
+    if (body.fetchBase) {
+      const base = baseBranch || readGitFacts(repoRoot).defaultBranch;
+      const tryGit = (args) => {
+        try {
+          execFileSync("git", ["-C", repoRoot, ...args], { timeout: 30_000, stdio: ["ignore", "ignore", "ignore"] });
+          return true;
+        } catch {
+          return false;
+        }
+      };
+      if (base && tryGit(["fetch", "origin", base]) && tryGit(["rev-parse", "--verify", "--quiet", `origin/${base}`])) {
+        startPoint = `origin/${base}`;
+      }
+    }
     const gitArgs = ["-C", repoRoot, "worktree", "add", "-b", branchName, targetPath];
-    if (baseBranch) {
-      gitArgs.push(baseBranch);
+    if (startPoint) {
+      gitArgs.push(startPoint);
     }
     execFileSync("git", gitArgs, {
       encoding: "utf8",

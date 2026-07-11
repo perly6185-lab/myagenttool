@@ -429,6 +429,9 @@ export function createAutoRunService({
       projectId,
       name: name || `issue-${normalizedLink.number}`,
       baseBranch,
+      // Fork from the FRESH remote base (origin/<base>), not the stale local branch —
+      // otherwise every run's PR conflicts with work merged since the local checkout.
+      fetchBase: true,
       agentId: agent.id,
       link: normalizedLink,
     });

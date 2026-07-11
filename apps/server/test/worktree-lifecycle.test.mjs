@@ -173,3 +173,39 @@ test("submitWorktreeReview binds the verdict to the worktree's current HEAD comm
   const review = svc.submitWorktreeReview({ worktreeId: worktree.id, verdict: "approved" });
   assert.equal(review.reviewedCommit, head, "review captures the real worktree HEAD so a later commit invalidates it");
 });
+
+test("createWorktree fetchBase forks from FRESH origin/<base>, not the stale local checkout", () => {
+  // A source repo wired to a bare 'origin', where origin/main is AHEAD of the source's
+  // local main (simulating work merged since the checkout) — the exact situation that made
+  // every auto-run PR conflict.
+  const originDir = mkdtempSync(join(tmpdir(), "wt-origin-"));
+  execFileSync("git", ["init", "--bare", "-b", "main", originDir], { encoding: "utf8" });
+  const srcDir = mkdtempSync(join(tmpdir(), "wt-src-"));
+  execFileSync("git", ["clone", "-q", originDir, srcDir], { encoding: "utf8" });
+  git(srcDir, "config", "user.email", "t@example.com");
+  git(srcDir, "config", "user.name", "T");
+  writeFileSync(join(srcDir, "README.md"), "hello\n");
+  git(srcDir, "add", ".");
+  git(srcDir, "commit", "-m", "init");
+  git(srcDir, "push", "-q", "origin", "main");
+
+  // Advance origin/main from a second clone (a concurrently-merged PR).
+  const advDir = mkdtempSync(join(tmpdir(), "wt-adv-"));
+  execFileSync("git", ["clone", "-q", originDir, advDir], { encoding: "utf8" });
+  git(advDir, "config", "user.email", "t@example.com");
+  git(advDir, "config", "user.name", "T");
+  writeFileSync(join(advDir, "ADVANCE.txt"), "merged since the local checkout\n");
+  git(advDir, "add", ".");
+  git(advDir, "commit", "-m", "advance origin");
+  git(advDir, "push", "-q", "origin", "main");
+
+  // The source's LOCAL main still lacks ADVANCE.txt (it never pulled).
+  assert.ok(!existsSync(join(srcDir, "ADVANCE.txt")), "the source's local checkout is stale");
+
+  const source = svc.addProject({ name: "FreshBase Repo", path: srcDir, ownerTeamId: "team_fb" });
+  const { worktree } = svc.createWorktree({ projectId: source.id, name: "fresh", branchName: "myagent/fresh", baseBranch: "main", fetchBase: true });
+
+  // fetchBase fetched origin + forked from origin/main → the worktree HAS the advance,
+  // despite the stale local. (Without fetchBase it would fork from the stale local main.)
+  assert.ok(existsSync(join(worktree.worktreePath, "ADVANCE.txt")), "forked from FRESH origin/main, not the stale local checkout");
+});
