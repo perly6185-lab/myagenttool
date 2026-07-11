@@ -54,3 +54,26 @@ export function runAsSpawnPlan(spawnPlan, { user } = {}) {
     runAsUser: user, // marker for the execution preview + logs
   };
 }
+
+/**
+ * Argv for the non-interactive preflight probe: `sudo -n -u <user> -- /usr/bin/true`.
+ * Run ONCE before wrapping real spawns — if this fails, sudoers isn't configured and
+ * every wrapped agent would die with a cryptic sudo error. Absolute `/usr/bin/true`
+ * avoids depending on sudo's secure_path. Pure.
+ */
+export function runAsPreflightPlan(user) {
+  return { command: "sudo", args: ["-n", "-u", String(user ?? ""), "--", "/usr/bin/true"] };
+}
+
+/**
+ * Interpret a preflight probe result into { ok, reason }. Pure + total:
+ * exit 0 → confinement is available; a non-zero exit or a spawn `error` (e.g. no
+ * sudo binary) → NOT ok, with the first stderr line (or the error) as the reason so
+ * the operator sees a warning instead of a silent false confinement.
+ */
+export function interpretPreflightResult({ code = null, stderr = "", error = null } = {}) {
+  if (error) return { ok: false, reason: (error instanceof Error ? error.message : String(error)).slice(0, 200) };
+  if (code === 0) return { ok: true };
+  const firstLine = String(stderr ?? "").trim().split("\n")[0].slice(0, 200);
+  return { ok: false, reason: firstLine || `sudo preflight exited ${code}` };
+}
