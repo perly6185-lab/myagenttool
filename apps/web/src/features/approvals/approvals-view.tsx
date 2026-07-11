@@ -1,4 +1,4 @@
-import { Bot, ExternalLink, GitMerge, HelpCircle, Inbox, ListChecks, Loader2, RotateCcw, ShieldAlert, Sparkles, Trophy, Wrench, type LucideIcon } from "lucide-react";
+import { AppWindow, Bot, ExternalLink, GitMerge, HelpCircle, Inbox, ListChecks, Loader2, RotateCcw, ShieldAlert, Sparkles, Trophy, Wrench, type LucideIcon } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -22,6 +22,7 @@ const KIND_META: Record<PendingDecisionKind, { icon: LucideIcon; label: string }
   merge: { icon: GitMerge, label: "Merge" },
   compare_promote: { icon: Trophy, label: "Promote" },
   codex_broker: { icon: Bot, label: "Codex" },
+  application_recovery: { icon: AppWindow, label: "Recovery" },
   lifecycle_approval: { icon: Wrench, label: "Lifecycle" },
   lifecycle_rollback: { icon: RotateCcw, label: "Rollback" },
 };
@@ -45,6 +46,7 @@ export function ApprovalsView() {
   const { execute, pending, error } = useAsyncAction();
   const setSection = useUiStore((s) => s.setSection);
   const setSelectedInvocationId = useUiStore((s) => s.setSelectedInvocationId);
+  const setSelectedApplicationId = useUiStore((s) => s.setSelectedApplicationId);
 
   const decisions = state?.pendingDecisions ?? [];
 
@@ -56,6 +58,7 @@ export function ApprovalsView() {
   // the target is invocation-scoped so the user lands on the right row.
   const open = (d: PendingDecision) => {
     if (d.ref?.invocationId && d.section === "invocations") setSelectedInvocationId(d.ref.invocationId);
+    if (d.section === "applications" && d.targetId) setSelectedApplicationId(d.targetId);
     setSection(d.section as SectionKey);
   };
 
@@ -138,6 +141,9 @@ function DecisionActions({
           {openBtn}
         </>
       );
+    // Application recovery approvals resolve through the same broker endpoints as
+    // codex_broker rows — only the labeling and deep link differ.
+    case "application_recovery":
     case "codex_broker":
       return (
         <>

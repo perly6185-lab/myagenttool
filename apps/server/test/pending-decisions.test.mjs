@@ -121,6 +121,84 @@ test("codex approval-broker: pending only, project resolved from the invocation"
   assert.equal(rows[0].ref.requestId, "cx_1");
 });
 
+test("application recovery approvals become their own kind with application context and deep link", () => {
+  const rows = pendingDecisions({
+    codexApprovalBrokerRequests: [
+      {
+        id: "cx_rec",
+        invocationId: "inv_cx",
+        status: "pending",
+        source: "application_recovery_action",
+        applicationRecoveryActionRequestId: "app_rec_1",
+        toolName: "application.recovery.regenerate_orchestration",
+        summary: "orchestration run failed on step 2",
+        createdAt: "2026-07-11T01:00:00Z",
+      },
+      // A resolved recovery approval must not linger in the queue.
+      {
+        id: "cx_rec_done",
+        invocationId: "inv_cx",
+        status: "approved",
+        source: "application_recovery_action",
+        applicationRecoveryActionRequestId: "app_rec_2",
+      },
+    ],
+    applicationRecoveryActions: [
+      { id: "app_rec_1", applicationId: "app_1", routineId: "rt_1", actionType: "regenerate_orchestration" },
+    ],
+    applicationsById: new Map([["app_1", { id: "app_1", name: "ccusage", projectId: "projApp" }]]),
+    invocationsById,
+  });
+  assert.equal(rows.length, 1);
+  const row = rows[0];
+  assert.equal(row.kind, "application_recovery");
+  assert.equal(row.id, "apprecovery:cx_rec");
+  assert.equal(row.title, "Application recovery needs approval");
+  assert.match(row.subtitle, /ccusage/);
+  assert.match(row.subtitle, /regenerate orchestration/); // humanized actionType
+  assert.match(row.subtitle, /failed on step 2/);
+  assert.equal(row.projectId, "projApp"); // the application's project wins over the invocation's
+  assert.equal(row.section, "applications");
+  assert.equal(row.targetId, "app_1");
+  // requestId keeps the inline approve/deny on the broker endpoints working.
+  assert.deepEqual(row.ref, {
+    requestId: "cx_rec",
+    recoveryActionRequestId: "app_rec_1",
+    applicationId: "app_1",
+    invocationId: "inv_cx",
+  });
+});
+
+test("application recovery approval degrades gracefully when the action request is unknown", () => {
+  // The recovery-actions store is capped at 200 rows, so a broker request can
+  // outlive its action request; the row must still render and route somewhere sane.
+  const rows = pendingDecisions({
+    codexApprovalBrokerRequests: [
+      { id: "cx_orphan", invocationId: "inv_cx", status: "pending", source: "application_recovery_action", applicationRecoveryActionRequestId: "app_rec_gone" },
+    ],
+    invocationsById,
+  });
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].kind, "application_recovery");
+  assert.equal(rows[0].subtitle, "Approve or deny an application recovery action");
+  assert.equal(rows[0].projectId, "projB"); // falls back to the invocation's project
+  assert.equal(rows[0].targetId, null);
+  assert.equal(rows[0].ref.requestId, "cx_orphan");
+});
+
+test("plain codex broker requests are untouched by the application-recovery split", () => {
+  const rows = pendingDecisions({
+    codexApprovalBrokerRequests: [
+      { id: "cx_plain", invocationId: "inv_cx", status: "pending", toolName: "shell" },
+    ],
+    applicationRecoveryActions: [{ id: "app_rec_1", applicationId: "app_1", actionType: "regenerate_orchestration" }],
+    invocationsById,
+  });
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].kind, "codex_broker");
+  assert.equal(rows[0].id, "codex:cx_plain");
+});
+
 test("lifecycle local approvals join the queue (pending only)", () => {
   const rows = pendingDecisions({
     lifecycleLocalApprovals: [
