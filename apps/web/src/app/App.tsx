@@ -1,6 +1,7 @@
 import { NavRail } from "@/components/layout/nav-rail";
 import { Topbar } from "@/components/layout/topbar";
 import { Inspector } from "@/components/layout/inspector";
+import { CommandPalette } from "@/components/layout/command-palette";
 import { ErrorBoundary } from "@/components/common/error-boundary";
 import { SECTION_VIEWS } from "@/app/routes";
 import { useUrlNavigationSync } from "@/app/url-navigation-sync";
@@ -18,6 +19,7 @@ export function App() {
 
   return (
     <div className="flex h-full overflow-hidden">
+      <CommandPalette />
       <NavRail />
       <div className="flex min-w-0 flex-1 flex-col">
         <Topbar />
