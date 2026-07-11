@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useQueries } from "@tanstack/react-query";
 import { ChevronRight, GitBranch, Hexagon, Plus, Settings } from "lucide-react";
-import { SECTIONS } from "@/app/sections";
+import { SECTIONS, SECTION_GROUPS } from "@/app/sections";
 import { cn } from "@/lib/cn";
 import { useUiStore } from "@/store/ui-store";
 import { useConsoleState } from "@/data/use-console-state";
@@ -37,7 +37,13 @@ export function NavRail() {
       </div>
 
       <ul className="flex flex-1 flex-col gap-0.5 overflow-y-auto px-3 py-2">
-        {SECTIONS.map((item) => {
+        {SECTION_GROUPS.map((grp) => (
+          <li key={grp.key}>
+            <p className="px-3 pb-1 pt-3 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground/60 first:pt-1">
+              {grp.label}
+            </p>
+            <ul className="flex flex-col gap-0.5">
+              {SECTIONS.filter((s) => s.group === grp.key).map((item) => {
           const Icon = item.icon;
           const active = item.key === section;
           const isProjects = item.key === "projects";
@@ -98,7 +104,10 @@ export function NavRail() {
               {isProjects ? <ProjectTree /> : null}
             </li>
           );
-        })}
+              })}
+            </ul>
+          </li>
+        ))}
       </ul>
 
       <p className="px-5 py-4 text-xs text-muted-foreground">
