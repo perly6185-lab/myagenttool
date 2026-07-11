@@ -23,6 +23,7 @@ export async function handleAgentRoutes({
   createAgentDryProbeRun,
   findIntegrationProbeRun,
   unlinkDevice,
+  relinkDevice,
   issueBridgeCredential,
   requireBridgeCredential,
 }) {
@@ -174,6 +175,15 @@ export async function handleAgentRoutes({
 
   if (req.method === "POST" && url.pathname === "/api/device/unlink") {
     unlinkDevice();
+    sendJson(res, 200, { device: publicDeviceView(state.device) });
+    return true;
+  }
+
+  // Re-pair recovery: clear the paired credential so the bridge re-registers with a
+  // fresh one. The operator recovery for an idle-expired credential (register can't
+  // rotate an expired token by design), replacing the manual state-file edit.
+  if (req.method === "POST" && url.pathname === "/api/device/relink") {
+    relinkDevice();
     sendJson(res, 200, { device: publicDeviceView(state.device) });
     return true;
   }
