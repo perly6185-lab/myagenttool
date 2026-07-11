@@ -119,6 +119,17 @@ export interface EvidenceLedgerRow {
   attentionReasons: string[];
 }
 
+/** One per-application per-UTC-day execution counter row. */
+export interface ApplicationDailyStat {
+  applicationId: string;
+  date: string;
+  succeeded: number;
+  failed: number;
+  timedOut: number;
+  cancelled: number;
+  recovered: number;
+}
+
 /** One row in the consolidated Approvals queue (server read-model `pendingDecisions`). */
 export type PendingDecisionKind =
   | "invocation_approval"
@@ -835,6 +846,8 @@ export interface ConsoleSnapshot {
   invocations: InvocationSnapshot[];
   compareRuns?: CompareRunSnapshot[];
   pendingDecisions?: PendingDecision[];
+  /** Durable per-application daily execution counters (survive the invocation cap). */
+  applicationDailyStats?: ApplicationDailyStat[];
   evidenceLedger?: EvidenceLedgerRow[];
   events: InvocationEventSnapshot[];
   auditSummaries: AuditSnapshot[];

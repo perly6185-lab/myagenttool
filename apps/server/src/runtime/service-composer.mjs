@@ -15,6 +15,7 @@ import { createAgentSkillService } from "../services/agent-skills.mjs";
 import { createApplicationService, validateApplicationRoutineDraft } from "../services/applications.mjs";
 import { createApprovalGrantService } from "../services/approval-grants.mjs";
 import { createRetentionArchive } from "../services/retention-archive.mjs";
+import { createApplicationStatsRuntime } from "../services/application-stats.mjs";
 import { createCapabilityService } from "../services/capabilities.mjs";
 import { createCcusageImportService } from "../services/ccusage-imports.mjs";
 import { createClaudeReviewImportService } from "../services/claude-review-imports.mjs";
@@ -128,6 +129,7 @@ export function createServerRuntimeServices({
   // Cap-evicted audit rows land in an on-disk JSONL archive instead of
   // vanishing (docs: retention-archive.mjs). Disabled with persistence (tests).
   const retentionArchive = createRetentionArchive({ stateStorePath, enabled: persistenceEnabled, now });
+  const { recordApplicationExecutionStat } = createApplicationStatsRuntime({ state, now, persistStateSoon });
 
   const { issueApprovalGrant, mintDecisionGrant, validateApprovalToken } = createApprovalGrantService({
     state,
@@ -332,6 +334,11 @@ export function createServerRuntimeServices({
     budgetGateForProject,
     onInvocationCompleted: (invocation) => {
       advanceAutoRunHook?.(invocation);
+      try {
+        recordApplicationExecutionStat(invocation);
+      } catch {
+        /* stats are best-effort; completion must never fail because of them */
+      }
       try {
         orchestrationAutoRecoveryHook?.(invocation);
       } catch {
