@@ -42,7 +42,8 @@ test("auto-run gates: decomposition / design / clarify / merge each map to one r
     { id: "ar_dec", status: "plan_proposed", decision: { path: "decompose" }, link: { number: 25, title: "Epic" }, updatedAt: "2026-07-09T01:00:00Z" },
     { id: "ar_des", status: "report_posted", decision: { path: "design" }, link: { number: 30, title: "Design me" }, updatedAt: "2026-07-09T02:00:00Z" },
     { id: "ar_clr", status: "needs_input", decision: { path: "clarify" }, link: { number: 31, title: "Which db?" }, updatedAt: "2026-07-09T03:00:00Z" },
-    { id: "ar_mrg", status: "pr_open", prNumber: 42, prState: "OPEN", mergeRisk: "low", decision: { path: "develop" }, link: { number: 32, title: "Add greet" }, updatedAt: "2026-07-09T04:00:00Z" },
+    // mergeRisk is an OBJECT {level,reasons} in real data (computeMergeRisk) — not a bare string.
+    { id: "ar_mrg", status: "pr_open", prNumber: 42, prState: "OPEN", mergeRisk: { level: "low", reasons: ["small diff"] }, decision: { path: "develop" }, link: { number: 32, title: "Add greet" }, updatedAt: "2026-07-09T04:00:00Z" },
   ];
   const rows = pendingDecisions({ autoRuns });
   const byKind = Object.fromEntries(rows.map((r) => [r.kind, r]));
@@ -52,6 +53,7 @@ test("auto-run gates: decomposition / design / clarify / merge each map to one r
   assert.equal(byKind.merge.title, "PR #42 ready to merge");
   assert.equal(byKind.merge.ref.prNumber, 42);
   assert.match(byKind.merge.subtitle, /low risk/);
+  assert.doesNotMatch(byKind.merge.subtitle, /\[object Object\]/); // the object mergeRisk must render its .level, not stringify
   assert.equal(byKind.design.section, "autoRuns");
 });
 

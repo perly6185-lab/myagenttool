@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { Bot, RefreshCw, GitPullRequest, GitMerge, GitBranch, ShieldCheck, ExternalLink, CircleAlert, Check, X, Minus, Loader2, Rocket } from "lucide-react";
+import { Bot, RefreshCw, GitPullRequest, GitMerge, GitBranch, ShieldCheck, ExternalLink, CircleAlert, Check, X, Minus, Loader2, Rocket, ScrollText, FolderGit2 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -18,6 +18,7 @@ import { ClarifyAnswer } from "./clarify-answer";
 import { DecompositionApproval } from "./decomposition-approval";
 import { EpicRollup } from "./epic-rollup";
 import { useConsoleState } from "@/data/use-console-state";
+import { useUiStore } from "@/store/ui-store";
 
 interface AutoRunLink {
   type: "issue" | "pr";
@@ -34,6 +35,7 @@ export interface AutoRunRecord {
   decision?: { path: string; decidedBy: string; confidence: number; rationale?: string | null } | null;
   branchName?: string | null;
   worktreeId?: string | null;
+  invocationId?: string | null;
   mergeRisk?: { level: "low" | "medium" | "high"; reasons: string[] } | null;
   prNumber?: number | null;
   prUrl?: string | null;
@@ -128,6 +130,15 @@ const STAGE_INDEX: Record<string, number> = {
   publishing: 3,
   pr_open: 4,
 };
+// The linear stepper only describes the DEVELOP route. Off-route runs (design /
+// clarify / decompose → report_posted / needs_input / plan_proposed / decomposed)
+// and failed/blocked runs have no position in it, so we HIDE it for them instead
+// of rendering every node grey (which reads as "stuck at the very start" — the run
+// A audit's "all-grey stepper" defect). Their status badge + route panels + error
+// carry the state; the true per-stage lifecycle comes from the event timeline (next).
+function hasDevelopStepper(status: string): boolean {
+  return STAGE_INDEX[status] !== undefined;
+}
 
 function fmtDuration(seconds: number | null): string {
   if (seconds == null) return "—";
@@ -252,6 +263,96 @@ function DiffLines({ diff }: { diff: string }) {
         </span>
       ) : null}
     </div>
+  );
+}
+
+// Durable, status-independent diff peek for a run's worktree. MergeControl has an
+// identical peek, but it unmounts the instant the PR merges — yet the auto-run
+// worktree is preserved and GET /api/worktrees/:id/diff still serves it, so this
+// keeps "what did this run change?" answerable AFTER merge too (browsability G1).
+function WorktreeDiffPeek({ worktreeId }: { worktreeId: string }) {
+  const [show, setShow] = useState(false);
+  const [diff, setDiff] = useState<WorktreeDiff | null>(null);
+  const [state, setState] = useState<"idle" | "loading" | "error" | "done">("idle");
+  async function toggle() {
+    if (show) {
+      setShow(false);
+      return;
+    }
+    setShow(true);
+    if (diff || state === "loading") return;
+    setState("loading");
+    try {
+      setDiff((await api.worktreeDiff(worktreeId)) as WorktreeDiff);
+      setState("done");
+    } catch {
+      setState("error");
+    }
+  }
+  return (
+    <div className="flex w-full flex-col gap-1.5">
+      <button
+        type="button"
+        onClick={() => void toggle()}
+        className="flex items-center gap-1 self-start text-xs text-muted-foreground hover:text-foreground"
+      >
+        <GitBranch className="size-3" /> {show ? "Hide changes" : "Show changes"}
+        {diff ? ` (${diff.files.length} file${diff.files.length === 1 ? "" : "s"}${diff.truncated ? ", truncated" : ""})` : ""}
+      </button>
+      {show ? (
+        state === "loading" ? (
+          <span className="flex items-center gap-1 text-xs text-muted-foreground"><Loader2 className="size-3 animate-spin" /> loading diff…</span>
+        ) : state === "error" ? (
+          <span className="text-xs text-red-600 dark:text-red-400">Diff unavailable — the worktree may have been torn down.</span>
+        ) : diff && diff.diff ? (
+          <DiffLines diff={diff.diff} />
+        ) : (
+          <span className="text-xs text-muted-foreground">No changes in the worktree.</span>
+        )
+      ) : null}
+    </div>
+  );
+}
+
+// Inward traceability from a run: jump to its agent transcript (invocationId) and
+// its worktree in the workspace (files + full diff). The IDs are already on the
+// record + wire; the console previously only linked OUTWARD to GitHub.
+function RunTraceLinks({ run }: { run: AutoRunRecord }) {
+  const setSection = useUiStore((s) => s.setSection);
+  const setSelectedInvocationId = useUiStore((s) => s.setSelectedInvocationId);
+  const setSelectedWorktreeId = useUiStore((s) => s.setSelectedWorktreeId);
+  const setSelectedProjectId = useUiStore((s) => s.setSelectedProjectId);
+  if (!run.invocationId && !run.worktreeId) return null;
+  return (
+    <>
+      {run.invocationId ? (
+        <button
+          type="button"
+          onClick={() => {
+            setSelectedInvocationId(run.invocationId ?? null);
+            setSection("invocations");
+          }}
+          className="inline-flex items-center gap-1 hover:text-foreground"
+          title="Open this run's agent transcript"
+        >
+          <ScrollText className="size-3" /> Transcript
+        </button>
+      ) : null}
+      {run.worktreeId ? (
+        <button
+          type="button"
+          onClick={() => {
+            if (run.projectId) setSelectedProjectId(run.projectId);
+            setSelectedWorktreeId(run.worktreeId ?? null);
+            setSection("projects");
+          }}
+          className="inline-flex items-center gap-1 hover:text-foreground"
+          title="Open this run's worktree in the workspace (files + full diff)"
+        >
+          <FolderGit2 className="size-3" /> Workspace
+        </button>
+      ) : null}
+    </>
   );
 }
 
@@ -625,15 +726,32 @@ export function AutoRunsView() {
                     ) : null}
                     {run.prState === "MERGED" ? <Badge tone="success">merged</Badge> : null}
                     {run.deployment ? (
-                      <Badge tone={run.deployment.status === "deployed" ? "success" : run.deployment.status === "rolled_back" ? "warning" : "danger"}>
+                      <Badge
+                        tone={run.deployment.status === "deployed" ? "success" : run.deployment.status === "rolled_back" ? "warning" : "danger"}
+                        title={[run.deployment.summary, run.deployment.at].filter(Boolean).join(" · ") || undefined}
+                      >
                         {run.deployment.status === "deployed" ? "deployed" : run.deployment.status === "rolled_back" ? "rolled back" : "deploy failed"}
                       </Badge>
                     ) : null}
                     {run.remediationIssue ? (
-                      <Badge tone="warning">
-                        <Rocket className="mr-1 size-3" />
-                        remediating #{run.remediationIssue.number}
-                      </Badge>
+                      run.remediationIssue.url ? (
+                        <a
+                          href={run.remediationIssue.url}
+                          target="_blank"
+                          rel="noreferrer"
+                          title={run.remediationIssue.culpritPr ? `Fix-forward remediation for the failed deploy of PR #${run.remediationIssue.culpritPr}` : "Remediation issue for the failed deploy"}
+                        >
+                          <Badge tone="warning">
+                            <Rocket className="mr-1 size-3" />
+                            remediating #{run.remediationIssue.number}
+                          </Badge>
+                        </a>
+                      ) : (
+                        <Badge tone="warning" title={run.remediationIssue.culpritPr ? `Fix-forward for PR #${run.remediationIssue.culpritPr}` : undefined}>
+                          <Rocket className="mr-1 size-3" />
+                          remediating #{run.remediationIssue.number}
+                        </Badge>
+                      )
                     ) : null}
                     {run.prState === "CLOSED" ? <Badge tone="warning">closed</Badge> : null}
                     {run.prNumber && run.status === "pr_open" && run.prState !== "MERGED" && run.prState !== "CLOSED" ? (
@@ -656,7 +774,7 @@ export function AutoRunsView() {
                   </div>
                 </div>
                 <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">
-                  <Stepper status={run.status} />
+                  {hasDevelopStepper(run.status) ? <Stepper status={run.status} /> : null}
                   {run.decision ? (
                     <span
                       className="rounded bg-muted px-1.5 py-0.5 font-medium"
@@ -684,7 +802,9 @@ export function AutoRunsView() {
                       ⚖ {run.judgment.solved === true ? "solves issue" : run.judgment.solved === false ? "does NOT solve issue" : "judge unavailable"}
                     </span>
                   ) : null}
+                  <RunTraceLinks run={run} />
                 </div>
+                {run.worktreeId ? <WorktreeDiffPeek worktreeId={run.worktreeId} /> : null}
                 {run.status === "failed" || run.status === "blocked" ? (
                   <div>
                     <Button
@@ -754,6 +874,11 @@ export function AutoRunsView() {
                 ) : null}
                 {run.status === "decomposed" && run.childIssues?.length ? (
                   <EpicRollup run={run} onDone={load} />
+                ) : null}
+                {run.deployment && (run.deployment.status === "failed" || run.deployment.status === "rolled_back") && run.deployment.summary ? (
+                  <p className="text-xs text-amber-600 dark:text-amber-400">
+                    Deploy {run.deployment.status === "rolled_back" ? "rolled back" : "failed"}: {run.deployment.summary}
+                  </p>
                 ) : null}
                 {run.error ? <p className="text-xs text-amber-600 dark:text-amber-400">{run.error}</p> : null}
               </CardContent>
