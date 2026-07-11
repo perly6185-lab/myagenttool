@@ -255,6 +255,48 @@ describe("InvocationsView operator explanation", () => {
     });
   });
 
+  it("shows the rows THIS run imported inline, scoped to the run, with an Economics link", async () => {
+    const estimate = (over: Record<string, unknown>) => ({
+      id: "ccu_x",
+      source: "ccusage",
+      reportInvocationId: "inv_report",
+      invocationId: "inv_report",
+      reportId: "daily",
+      rowIndex: 0,
+      amountSource: "imported_ccusage_report" as const,
+      economicModel: "external_billed" as const,
+      authoritative: false as const,
+      createdAt: "2026-07-05T08:00:00.000Z",
+      ...over,
+    });
+    apiMock.fetchState.mockResolvedValue({
+      ...actionExplanationState(),
+      importedUsageEstimates: [
+        estimate({ id: "ccu_1", provider: "claude", model: "claude-sonnet-5", date: "2026-07-10", totalTokens: 12345, estimatedCostUsd: 1.23 }),
+        // Another run's row — must NOT leak into this run's card.
+        estimate({ id: "ccu_other", invocationId: "inv_other", reportInvocationId: "inv_other", provider: "openai", model: "gpt-other" }),
+      ],
+    });
+    useUiStore.setState({ section: "invocations", selectedInvocationId: "inv_report" });
+    renderWithClient(createElement(InvocationsView));
+
+    expect(await screen.findByText("Imported usage · this run")).toBeTruthy();
+    expect(screen.getByText("claude-sonnet-5")).toBeTruthy();
+    expect(screen.getByText("2026-07-10")).toBeTruthy();
+    expect(screen.queryByText("gpt-other")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: /View in Economics/i }));
+    expect(useUiStore.getState().section).toBe("economics");
+  });
+
+  it("hides the imported-usage card for runs that imported nothing", async () => {
+    apiMock.fetchState.mockResolvedValue(actionExplanationState());
+    useUiStore.setState({ section: "invocations", selectedInvocationId: "inv_report" });
+    renderWithClient(createElement(InvocationsView));
+    await screen.findByText(/Timeline · inv_report/);
+    expect(screen.queryByText("Imported usage · this run")).toBeNull();
+  });
+
   it("renders executed recovery result and follows the result link", async () => {
     apiMock.fetchState.mockResolvedValue(consoleState());
     apiMock.getApplicationOrchestrationRunRecovery.mockResolvedValue({
