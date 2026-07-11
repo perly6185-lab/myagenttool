@@ -109,6 +109,12 @@ export interface EvidenceLedgerRow {
   audit?: { permissionDecision?: string | null; status?: string | null } | null;
   troubleshooting: { present: boolean; fixes: number };
   runtimeEvidence: number;
+  /** Present when the run is an application orchestration run. */
+  application?: { id?: string | null; name?: string | null; routineId?: string | null } | null;
+  /** Recovery requests attached to this (failed) run — the resolution story. */
+  recovery?: { total: number; latestStatus?: string | null; latestActionType?: string | null; executed: boolean } | null;
+  /** Present when this run was produced BY a recovery action (provenance). */
+  recoveryResultOf?: { invocationId?: string | null; actionType?: string | null; recoveryActionRequestId?: string | null } | null;
   attention: boolean;
   attentionReasons: string[];
 }
