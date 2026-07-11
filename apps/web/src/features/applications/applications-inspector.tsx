@@ -23,6 +23,7 @@ import {
   applicationExecutionDigest,
   applicationInvocations,
   digestTone,
+  durableStatsWindow,
   executionKind,
   formatResultOutput,
 } from "@/features/applications/application-executions";
@@ -345,9 +346,13 @@ function ApplicationExecutions({
   invocations: InvocationSnapshot[];
   onViewInvocation: (invocationId: string) => void;
 }) {
+  const { data: state } = useConsoleState();
   const [showAll, setShowAll] = useState(false);
   const rows = applicationInvocations(invocations, application.id);
-  if (!rows.length) return null;
+  const dailyStats = state?.applicationDailyStats ?? [];
+  const week = durableStatsWindow(dailyStats, application.id, 7);
+  const month = durableStatsWindow(dailyStats, application.id, 30);
+  if (!rows.length && !month.succeeded && !month.failed) return null;
   const digest = applicationExecutionDigest(rows);
   const visible = showAll ? rows : rows.slice(0, 8);
   return (
@@ -365,6 +370,12 @@ function ApplicationExecutions({
           {digest.recoveryRuns ? ` · ${digest.recoveryRuns} from recovery` : ""}
           {digest.lastAt ? ` · last ${shortTime(digest.lastAt)}` : ""}
         </p>
+        {week.succeeded + week.failed + month.succeeded + month.failed > 0 ? (
+          <p className="text-xs text-muted-foreground">
+            Durable: 7d {week.succeeded} ✓ / {week.failed} ✗ · 30d {month.succeeded} ✓ / {month.failed} ✗
+            {month.recovered ? ` · ${month.recovered} recovered (30d)` : ""}
+          </p>
+        ) : null}
       </CardHeader>
       <CardContent className="space-y-2">
         {visible.map((invocation) => (

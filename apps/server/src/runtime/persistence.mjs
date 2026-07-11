@@ -38,6 +38,7 @@ const persistedArrayKeys = [
   "applications",
   "applicationRecoveryActions",
   "approvalGrants",
+  "applicationDailyStats",
   "projectTargets",
   "invocations",
   "worktrees",
