@@ -163,15 +163,31 @@ export function createPersistenceRuntime({
     }
   }
 
+  // A snapshot we refuse to load must be MOVED ASIDE, not left in place: the
+  // server continues with fresh state and the next debounced save would
+  // overwrite the only copy of the old data. Renaming preserves a forensic
+  // copy for recovery/migration and makes the loss loud instead of silent.
+  function quarantineSnapshot(reason) {
+    const quarantinePath = `${stateStorePath}.${reason}-${Date.now()}`;
+    try {
+      renameSync(stateStorePath, quarantinePath);
+      console.error(`[server] state snapshot not loadable (${reason}); preserved at ${quarantinePath} and starting fresh`);
+    } catch (error) {
+      console.error(`[server] state snapshot not loadable (${reason}) and could not be preserved: ${error?.message ?? error}`);
+    }
+  }
+
   function restorePersistentState() {
     if (!enabled || !existsSync(stateStorePath)) return;
     let snapshot;
     try {
       snapshot = JSON.parse(readFileSync(stateStorePath, "utf8"));
     } catch {
+      quarantineSnapshot("corrupt");
       return;
     }
     if (snapshot?.schemaVersion !== schemaVersion) {
+      quarantineSnapshot(`schema-${snapshot?.schemaVersion ?? "unknown"}`);
       return;
     }
     let restoredProjects = Array.isArray(snapshot.projects)

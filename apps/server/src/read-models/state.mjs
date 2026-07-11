@@ -194,6 +194,9 @@ export function buildPublicState({
     projects,
     applications,
     applicationRecoveryActions,
+    // Sweep self-observability (admin-plane, like healthChecks): when the probe
+    // last ran, how many apps it checked, and the last per-app error it swallowed.
+    applicationHealthSweepStatus: state.applicationHealthSweepStatus ?? null,
     projectTargets: byProject(state.projectTargets),
     currentProjectId: state.currentProjectId,
     currentProject: currentProject(),
