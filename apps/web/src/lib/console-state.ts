@@ -793,6 +793,28 @@ export interface RetentionSettings {
   promptsDays: number;
   responsesDays: number;
   artifactsDays: number;
+  refusalsDays?: number;
+}
+
+/**
+ * One refusal record (server read-model `refusals`, protocol `Refusal`). The
+ * device's veto as a first-class, auditable reply — NOT a failure or an incident.
+ * Refusal model Phase 3 (#761).
+ */
+export interface RefusalRow {
+  id: string;
+  at: string;
+  subject: { kind: string; id: string | null };
+  requester: { kind: string; id: string | null };
+  category: "not_granted" | "policy" | "state" | "human";
+  code: string;
+  decidedBy: { kind: string; id: string | null };
+  summary: string;
+  evidence?: Record<string, unknown> | null;
+  remedy: string;
+  retryAfter: string | null;
+  appealTo: string | null;
+  invocationId?: string | null;
 }
 
 export interface AutomationSchedule {
@@ -864,6 +886,8 @@ export interface ConsoleSnapshot {
   applicationHealthSweepStatus?: ApplicationHealthSweepStatus | null;
   approvalTokenLegacyUses?: ApprovalTokenLegacyUses | null;
   evidenceLedger?: EvidenceLedgerRow[];
+  /** The device's veto — first-class refusal records (refusal model Phase 3). */
+  refusals?: RefusalRow[];
   events: InvocationEventSnapshot[];
   auditSummaries: AuditSnapshot[];
   healthChecks?: LifecycleAuditSnapshot[];
