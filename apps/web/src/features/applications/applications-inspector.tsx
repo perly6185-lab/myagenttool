@@ -30,6 +30,7 @@ import {
   executionKind,
   formatResultOutput,
 } from "@/features/applications/application-executions";
+import { applicationSetupState, setupNextHint } from "@/features/applications/application-setup";
 import { ArchivedRecoveryActions } from "@/features/applications/archived-recovery";
 import { ImportedUsageTable } from "@/features/economics/imported-usage-table";
 import { Transcript } from "@/features/invocations/transcript";
@@ -100,6 +101,47 @@ interface PendingConfirm {
   confirmLabel: string;
   destructive: boolean;
   run: () => Promise<unknown>;
+}
+
+// Guided onboarding: register → probe → generate → run is four scattered actions;
+// this checklist orients a freshly-registered application to its next step and
+// disappears once set up. The action buttons live in the Lifecycle card below.
+function SetupChecklist({ application, invocations }: { application: ApplicationSnapshot; invocations: InvocationSnapshot[] }) {
+  const setup = applicationSetupState(application, invocations);
+  if (setup.nextStep === "done") return null;
+  const steps: { key: "probe" | "generate" | "run"; label: string; done: boolean }[] = [
+    { key: "probe", label: "Probe capabilities", done: setup.probed },
+    { key: "generate", label: "Generate orchestration", done: setup.hasOrchestration },
+    { key: "run", label: "First run", done: setup.hasRun },
+  ];
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex items-center justify-between gap-3">
+          <CardTitle>Get set up</CardTitle>
+          <Badge tone="neutral">{setup.completed}/3</Badge>
+        </div>
+        <p className="text-xs text-muted-foreground">Next: {setupNextHint(setup.nextStep)}</p>
+      </CardHeader>
+      <CardContent>
+        <ol className="flex flex-wrap gap-x-4 gap-y-1 text-xs">
+          {steps.map((step) => {
+            const current = step.key === setup.nextStep;
+            return (
+              <li
+                key={step.key}
+                className={`flex items-center gap-1.5 ${step.done ? "text-success" : current ? "font-semibold text-foreground" : "text-muted-foreground"}`}
+              >
+                <span aria-hidden="true">{step.done ? "✓" : current ? "→" : "○"}</span>
+                {step.label}
+              </li>
+            );
+          })}
+        </ol>
+        <p className="mt-2 text-xs text-muted-foreground">Use the Lifecycle actions below to complete the next step.</p>
+      </CardContent>
+    </Card>
+  );
 }
 
 function ApplicationActions({ application }: { application: ApplicationSnapshot }) {
@@ -1359,6 +1401,7 @@ export function ApplicationsInspector() {
         </CardContent>
       </Card>
 
+      <SetupChecklist application={application} invocations={invocations} />
       <ApplicationActions application={application} />
       <ApplicationExecutions application={application} invocations={invocations} onViewInvocation={viewInvocation} />
       <ArchivedRecoveryActions applicationId={application.id} />
