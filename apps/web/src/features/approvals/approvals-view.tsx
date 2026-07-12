@@ -73,6 +73,25 @@ export function ApprovalsView() {
 
       {error ? <p className="text-sm text-destructive">{error}</p> : null}
 
+      {state?.approvalTokenLegacyUses ? (
+        <div className="flex flex-wrap items-center gap-2 rounded-md border border-border bg-muted/40 px-3 py-2 text-xs">
+          <span className="font-medium">Approval grants</span>
+          {state.approvalTokenLegacyUses.count > 0 ? (
+            <Badge tone="warning">
+              {state.approvalTokenLegacyUses.count} legacy token use(s)
+              {state.approvalTokenLegacyUses.lastAt ? ` · last ${state.approvalTokenLegacyUses.lastAt.slice(0, 10)}` : ""}
+            </Badge>
+          ) : (
+            <Badge tone="success">no legacy token use — safe to require issued grants</Badge>
+          )}
+          <span className="text-muted-foreground">
+            {state.approvalTokenLegacyUses.count > 0
+              ? "Some callers still send free-text tokens; migrate them, then flip strict mode in Auto-run settings."
+              : "Strict mode (require issued grants) can be enabled in Auto-run settings."}
+          </span>
+        </div>
+      ) : null}
+
       {decisions.length === 0 ? (
         <EmptyState title="Nothing waiting on you" hint="Approvals, decomposition plans, design sign-offs, clarify answers, PR merges, and compare promotions all land here." />
       ) : (

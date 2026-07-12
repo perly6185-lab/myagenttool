@@ -212,6 +212,8 @@ export function resolveAutoRunConfig(state = {}, baseEnv = process.env) {
     requireChecksGreenToMerge: Boolean(settings.requireChecksGreenToMerge),
     // O0 global kill switch (not env-backed): halts all autonomous runs.
     autonomyKillSwitch: Boolean(settings.autonomyKillSwitch),
+    // Approval grants phase-2 (not env-backed): reject legacy free-text approvalTokens.
+    requireIssuedApprovals: Boolean(settings.requireIssuedApprovals),
     // O2 graduated approval (not env-backed): auto-approve non-code paths.
     autoApproveNonCodePaths: Boolean(settings.autoApproveNonCodePaths),
     // Self-repair attempt cap (not env-backed); default 2, 0 disables the loop.

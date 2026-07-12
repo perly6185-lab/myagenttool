@@ -16,6 +16,7 @@ interface AutoRunConfig {
   judgeTimeoutMs: number;
   requireChecksGreenToMerge: boolean;
   autonomyKillSwitch: boolean;
+  requireIssuedApprovals: boolean;
   autoApproveNonCodePaths: boolean;
   globalMaxConcurrent: number;
   breakerFailureThreshold: number;
@@ -44,6 +45,7 @@ interface Draft {
   judgeTimeoutMs: number;
   requireChecksGreenToMerge: boolean;
   autonomyKillSwitch: boolean;
+  requireIssuedApprovals: boolean;
   autoApproveNonCodePaths: boolean;
   alertWebhookUrl: string;
   globalMaxConcurrent: number;
@@ -73,6 +75,7 @@ function toDraft(c: AutoRunConfig): Draft {
     judgeTimeoutMs: c.judgeTimeoutMs,
     requireChecksGreenToMerge: c.requireChecksGreenToMerge,
     autonomyKillSwitch: c.autonomyKillSwitch,
+    requireIssuedApprovals: c.requireIssuedApprovals,
     autoApproveNonCodePaths: c.autoApproveNonCodePaths,
     alertWebhookUrl: (c.settings?.alertWebhookUrl as string) ?? "",
     globalMaxConcurrent: c.globalMaxConcurrent,
@@ -118,6 +121,7 @@ const RECOMMENDED_SAFE_DEFAULTS = {
   spawnIssues: false,
   deciderFastPath: true,
   autonomyKillSwitch: false,
+  requireIssuedApprovals: false,
   designArtifacts: false,
   designImagesToIssue: false,
   autoMergeLowRisk: false,
@@ -235,6 +239,14 @@ export function AutoRunConfigCard() {
               <span className="block text-xs text-muted-foreground">Applies immediately: auto-trigger stops scanning and new runs are refused. Merge is unaffected.</span>
             </span>
             <input type="checkbox" className="mt-0.5 shrink-0" checked={draft.autonomyKillSwitch} onChange={(e) => set("autonomyKillSwitch", e.target.checked)} />
+          </label>
+          {/* Approval grants phase-2 — reject legacy free-text approvalTokens once migration is complete. */}
+          <label className="flex items-center justify-between gap-3 rounded-lg border border-border px-3 py-2">
+            <span className="min-w-0">
+              <span className="block text-sm font-semibold">Require issued approval grants (strict)</span>
+              <span className="block text-xs text-muted-foreground">Rejects legacy free-text approvalTokens everywhere — only server-issued grants pass. Flip once legacy usage reads 0 (see Approvals).</span>
+            </span>
+            <input type="checkbox" className="mt-0.5 shrink-0" checked={draft.requireIssuedApprovals} onChange={(e) => set("requireIssuedApprovals", e.target.checked)} />
           </label>
           <p className="text-xs text-muted-foreground">
             Safe knobs are editable here; saved values <strong>apply on the next server start</strong> (the kill switch and require-green-checks apply immediately). The verify / decider /
