@@ -32,6 +32,7 @@ export async function handleBridgeRoutes({
   findInvocation,
   acknowledgeInvocation,
   appendEvent,
+  recordAgentFileAccess,
   completeInvocation,
   requireBridgeCredential,
 }) {
@@ -415,6 +416,12 @@ export async function handleBridgeRoutes({
       message: body.message ?? "",
       data: body.data,
     });
+    // File ledger: the bridge piggybacks file accesses on the agent_output event's
+    // data; accumulate them onto the invocation (deduped/capped) so a run's read +
+    // written files are observable. Never let a malformed payload break the event.
+    if (Array.isArray(body.data?.fileAccess) && body.data.fileAccess.length && typeof recordAgentFileAccess === "function") {
+      recordAgentFileAccess(invocation, body.data.fileAccess);
+    }
     sendJson(res, 200, { ok: true });
     return true;
   }

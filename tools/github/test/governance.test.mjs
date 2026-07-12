@@ -7,7 +7,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { computeGovernanceStats, countBypassCommits, formatGovernanceReport, judgePrEvidence } from "../src/governance.mjs";
+import { computeGovernanceStats, countBypassCommits, formatGovernanceReport, judgePrEvidence, GOVERNANCE_ENFORCEMENT_SINCE } from "../src/governance.mjs";
 
 const coveredPr = {
   number: 1,
@@ -70,6 +70,23 @@ test("computeGovernanceStats: --since slice judges only post-cutoff merges", () 
   assert.equal(stats.coverageSince.coverageRate, 1);
   assert.equal(stats.coverageSince.coverageMet, true);
   assert.equal(stats.coverageSince.bypassMet, true);
+});
+
+test("GOVERNANCE_ENFORCEMENT_SINCE: a valid enforcement anchor the CLI defaults --since to", () => {
+  assert.equal(GOVERNANCE_ENFORCEMENT_SINCE, "2026-07-03");
+  assert.ok(!Number.isNaN(new Date(GOVERNANCE_ENFORCEMENT_SINCE).getTime()), "parses as a date");
+  // anchored at the enforcement date, the slice excludes pre-enforcement merges and
+  // clears their stale bypasses — the honest current-discipline reading.
+  const preEnforcement = { number: 1, body: "no evidence", files: [], mergedAt: "2026-07-01T00:00:00Z" };
+  const postEnforcement = { ...coveredPr, mergedAt: "2026-07-05T00:00:00Z" };
+  const stats = computeGovernanceStats([preEnforcement, postEnforcement], {
+    days: 30,
+    directPushCount: 2,
+    since: GOVERNANCE_ENFORCEMENT_SINCE,
+    directPushCountSince: 0,
+  });
+  assert.equal(stats.coverageSince.mergedPrCount, 1, "only the post-enforcement merge is in the slice");
+  assert.equal(stats.coverageSince.directPushCount, 0, "stale pre-enforcement bypasses are excluded from the slice");
 });
 
 test("computeGovernanceStats: no --since → no slice; empty slice reads n/a not a fake pass", () => {

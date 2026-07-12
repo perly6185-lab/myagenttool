@@ -38,6 +38,13 @@ export function judgePrEvidence(pr) {
   };
 }
 
+// When pr-governance was promoted from advisory to a REQUIRED merge check
+// (commit f798ed3, #294 — the ci:activate --require-governance promotion). Merges
+// before this date predate enforcement, so the rolling all-time window understates
+// current discipline; the coverageSince slice is anchored here by default. Same
+// role as dora.mjs's CHANGE_FAILURE_SIGNAL_SINCE (2026-07-04).
+export const GOVERNANCE_ENFORCEMENT_SINCE = "2026-07-03";
+
 export function computeGovernanceStats(mergedPrs, { days, directPushCount = null, since = null, directPushCountSince = null }) {
   const judged = mergedPrs.map(judgePrEvidence);
   const covered = judged.filter((pr) => pr.covered);

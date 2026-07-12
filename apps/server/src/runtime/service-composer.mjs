@@ -10,6 +10,7 @@ import {
 import { existsSync, readFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { dirname, resolve, sep } from "node:path";
+import { mergeFileAccesses } from "../read-models/file-ledger.mjs";
 import { createAgentSkillService } from "../services/agent-skills.mjs";
 import { createApplicationService, validateApplicationRoutineDraft } from "../services/applications.mjs";
 import { createApprovalGrantService } from "../services/approval-grants.mjs";
@@ -2386,6 +2387,14 @@ export function createServerRuntimeServices({
   const httpDependencies = {
     state,
     now,
+    // Agent file ledger: accumulate a run's read/written files (deduped, capped)
+    // from the bridge's tool_use stream. Stored on the invocation so it ships to
+    // the client with state.invocations. See read-models/file-ledger.mjs.
+    recordAgentFileAccess: (invocation, accesses) => {
+      if (!invocation || !Array.isArray(accesses) || accesses.length === 0) return;
+      invocation.fileLedger = mergeFileAccesses(invocation.fileLedger, accesses);
+      persistStateSoon();
+    },
     publicState,
     currentLoopRoutineProjectContext,
     currentProject,
