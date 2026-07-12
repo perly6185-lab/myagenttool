@@ -74,30 +74,61 @@ export function computeMaturityScorecard({
     verdict: verdict(l1Rate, l1Rate >= 1),
   });
 
-  // L2 — CI green on ≥95% of merged PRs AND DORA lead time < 1 day.
-  const green = dora?.ciChecks?.greenRate ?? null;
+  // L2 — CI green on ≥95% of PRs that RAN CI AND DORA lead time < 1 day.
+  // Re-anchored (activation window): a merge from before CI existed has no checks,
+  // so it is N/A — not a CI failure. Measure green over PRs that actually ran CI
+  // (greenPrs/prsWithChecks); keep the all-time rate visible as context. Falls back
+  // to the all-time rate when the CI-run breakdown isn't in the artifact.
+  const ci = dora?.ciChecks ?? null;
+  const allTimeGreen = ci?.greenRate ?? null;
+  const checkedGreen =
+    ci && ci.prsWithChecks > 0 && Number.isFinite(ci.greenPrs) ? ci.greenPrs / ci.prsWithChecks : null;
+  const green = checkedGreen ?? allTimeGreen;
   const leadH = dora?.leadTimeHours?.median ?? null;
   const l2Ok = green != null && leadH != null && green >= 0.95 && leadH < 24;
+  const preCiMerges =
+    ci && Number.isFinite(ci.mergedPrCount) && Number.isFinite(ci.prsWithChecks)
+      ? ci.mergedPrCount - ci.prsWithChecks
+      : null;
   levels.push({
     level: 2,
     name: "Branch, PR, CI, smoke",
-    gate: "CI green ≥95% of merged PRs; DORA lead time <1 day",
+    gate: "CI green ≥95% of PRs that ran CI; DORA lead time <1 day",
     anchor: "DORA lead time / change-failure rate",
-    measured: green == null ? null : `CI-green ${pct(green)} (≥95%), lead time ${leadH == null ? "?" : `${leadH}h`} (<24h)`,
+    measured:
+      green == null
+        ? null
+        : checkedGreen != null
+          ? `CI-green ${pct(checkedGreen)} of ${ci.prsWithChecks} CI-run PRs${preCiMerges ? ` (all-time ${pct(allTimeGreen)} incl. ${preCiMerges} pre-CI merges)` : ""}, lead time ${leadH == null ? "?" : `${leadH}h`} (<24h)`
+          : `CI-green ${pct(green)} (≥95%), lead time ${leadH == null ? "?" : `${leadH}h`} (<24h)`,
     verdict: verdict(green, l2Ok),
-    detail: green != null && green < 0.95 ? "rolling window includes pre-CI-activation merges — see the post-activation slice (ciChecksSince) which meets the gate" : undefined,
+    detail:
+      checkedGreen == null && green != null && green < 0.95
+        ? "rolling window includes pre-CI-activation merges — provide ciChecks.greenPrs/prsWithChecks to measure green over PRs that actually ran CI"
+        : undefined,
   });
 
   // L3 — 100% of PRs carry risk-evidence; 0 silent bypasses. (change-fail anchor)
-  const gcov = governance?.coverageRate ?? null;
-  const bypass = governance?.directPushCount ?? null;
+  // Re-anchored (enforcement window): prefer the post-enforcement slice
+  // (coverageSince) when the governance artifact carries one — the rolling window
+  // holds pre-enforcement merges, so the slice shows current discipline (same
+  // rationale as L2's CI-run rate). Falls back to the all-time rate. The slice
+  // populates once the governance metrics are generated with `--since <date>`.
+  const govSlice = governance?.coverageSince ?? null;
+  const gcov = govSlice?.coverageRate ?? governance?.coverageRate ?? null;
+  const bypass = govSlice ? govSlice.directPushCount : governance?.directPushCount;
   const l3Ok = gcov != null && gcov >= 1 && (bypass ?? 1) === 0;
   levels.push({
     level: 3,
     name: "Governance + drift checks",
     gate: "100% of PRs carry risk-evidence routes; 0 silent-bypass merges",
     anchor: "DORA change-failure rate ~5%",
-    measured: gcov == null ? null : `risk-evidence ${pct(gcov)}, ${bypass ?? "?"} silent bypass(es)`,
+    measured:
+      gcov == null
+        ? null
+        : govSlice
+          ? `risk-evidence ${pct(gcov)} since ${String(govSlice.since).slice(0, 10)} (all-time ${pct(governance.coverageRate)}), ${bypass ?? "?"} silent bypass(es)`
+          : `risk-evidence ${pct(gcov)}, ${bypass ?? "?"} silent bypass(es)`,
     verdict: verdict(gcov, l3Ok),
     detail: dora && dora.changeFailures?.recorded === false ? "change-failure rate not yet recorded (the `Change-failure: #N` marker convention is unused)" : undefined,
   });
