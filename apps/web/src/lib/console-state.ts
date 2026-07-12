@@ -130,6 +130,13 @@ export interface ApplicationDailyStat {
   recovered: number;
 }
 
+/** Self-observability for the health-probe sweep (server: applicationHealthSweep). */
+export interface ApplicationHealthSweepStatus {
+  lastSweepAt: string | null;
+  checkedCount: number;
+  lastError: string | null;
+}
+
 /** One row in the consolidated Approvals queue (server read-model `pendingDecisions`). */
 export type PendingDecisionKind =
   | "invocation_approval"
@@ -848,6 +855,7 @@ export interface ConsoleSnapshot {
   pendingDecisions?: PendingDecision[];
   /** Durable per-application daily execution counters (survive the invocation cap). */
   applicationDailyStats?: ApplicationDailyStat[];
+  applicationHealthSweepStatus?: ApplicationHealthSweepStatus | null;
   evidenceLedger?: EvidenceLedgerRow[];
   events: InvocationEventSnapshot[];
   auditSummaries: AuditSnapshot[];

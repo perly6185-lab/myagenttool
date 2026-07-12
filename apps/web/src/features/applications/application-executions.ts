@@ -88,6 +88,51 @@ export function durableStatsWindow(
   };
 }
 
+export interface DailyStatBar {
+  date: string;
+  succeeded: number;
+  failed: number;
+  total: number;
+}
+
+/**
+ * Per-day series for one application over the last N days, oldest→newest, with
+ * empty days zero-filled so a sparkline has a continuous baseline (the durable
+ * counters only store days that had activity).
+ */
+export function dailyStatsSeries(
+  stats: { applicationId: string; date: string; succeeded: number; failed: number; timedOut: number }[],
+  applicationId: string,
+  days: number,
+  today = new Date().toISOString().slice(0, 10),
+): DailyStatBar[] {
+  const byDate = new Map(
+    stats.filter((row) => row.applicationId === applicationId).map((row) => [row.date, row]),
+  );
+  const out: DailyStatBar[] = [];
+  const todayMs = Date.parse(`${today}T00:00:00Z`);
+  for (let i = days - 1; i >= 0; i -= 1) {
+    const date = new Date(todayMs - i * 86_400_000).toISOString().slice(0, 10);
+    const row = byDate.get(date);
+    const succeeded = row?.succeeded ?? 0;
+    const failed = (row?.failed ?? 0) + (row?.timedOut ?? 0);
+    out.push({ date, succeeded, failed, total: succeeded + failed });
+  }
+  return out;
+}
+
+/** A card-glance success rate over the durable window; null until something finished. */
+export function durableSuccessRate(
+  stats: { applicationId: string; date: string; succeeded: number; failed: number; timedOut: number; recovered: number }[],
+  applicationId: string,
+  days = 30,
+  today = new Date().toISOString().slice(0, 10),
+): number | null {
+  const w = durableStatsWindow(stats, applicationId, days, today);
+  const terminal = w.succeeded + w.failed;
+  return terminal ? Math.round((w.succeeded / terminal) * 100) / 100 : null;
+}
+
 /** Bounded, copy-safe rendering of a result payload for the output browser. */
 export function formatResultOutput(output: unknown, maxChars = 4000): { text: string; truncated: boolean } | null {
   if (output == null) return null;

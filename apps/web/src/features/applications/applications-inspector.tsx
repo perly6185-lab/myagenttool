@@ -25,6 +25,7 @@ import {
   applicationExecutionDigest,
   applicationInvocations,
   digestTone,
+  dailyStatsSeries,
   durableStatsWindow,
   executionKind,
   formatResultOutput,
@@ -65,6 +66,7 @@ import type {
   ApplicationRecoveryActionRequest,
   ApplicationRecoveryTimelineEntry,
   ApplicationOrchestrationRun,
+  ApplicationDailyStat,
   ApplicationSnapshot,
   ApplicationResultRef,
   InvocationSnapshot,
@@ -340,6 +342,23 @@ function ResultOutputBrowser({ output }: { output?: unknown }) {
 // Every invocation this application produced — orchestration runs, wrapper
 // commands, lifecycle/generate calls, recovery products — with an honest
 // rollup over what is visible in the current snapshot window.
+// A compact 14-day run-volume sparkline from the durable daily counters:
+// stacked green (succeeded) over red (failed), normalized to the busiest day.
+function DailyStatsSparkline({ stats, applicationId }: { stats: ApplicationDailyStat[]; applicationId: string }) {
+  const series = dailyStatsSeries(stats, applicationId, 14);
+  const max = Math.max(1, ...series.map((b) => b.total));
+  return (
+    <div className="mt-1 flex h-8 items-end gap-0.5" title="Runs per day, last 14 days (succeeded / failed)" aria-hidden="true">
+      {series.map((bar) => (
+        <div key={bar.date} className="flex w-full flex-col justify-end" style={{ height: "100%" }}>
+          <div className="w-full rounded-sm bg-destructive/70" style={{ height: `${(bar.failed / max) * 100}%` }} />
+          <div className="w-full rounded-sm bg-success/70" style={{ height: `${(bar.succeeded / max) * 100}%` }} />
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function ApplicationExecutions({
   application,
   invocations,
@@ -374,10 +393,13 @@ function ApplicationExecutions({
           {digest.lastAt ? ` · last ${shortTime(digest.lastAt)}` : ""}
         </p>
         {week.succeeded + week.failed + month.succeeded + month.failed > 0 ? (
-          <p className="text-xs text-muted-foreground">
-            Durable: 7d {week.succeeded} ✓ / {week.failed} ✗ · 30d {month.succeeded} ✓ / {month.failed} ✗
-            {month.recovered ? ` · ${month.recovered} recovered (30d)` : ""}
-          </p>
+          <>
+            <p className="text-xs text-muted-foreground">
+              Durable: 7d {week.succeeded} ✓ / {week.failed} ✗ · 30d {month.succeeded} ✓ / {month.failed} ✗
+              {month.recovered ? ` · ${month.recovered} recovered (30d)` : ""}
+            </p>
+            <DailyStatsSparkline stats={dailyStats} applicationId={application.id} />
+          </>
         ) : null}
       </CardHeader>
       <CardContent className="space-y-2">

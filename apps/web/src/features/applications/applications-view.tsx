@@ -11,6 +11,7 @@ import { useUiStore } from "@/store/ui-store";
 import { cn } from "@/lib/cn";
 import { RegisterApplicationModal } from "@/features/applications/register-application-modal";
 import { applicationOpsBadges } from "@/features/applications/application-ops-ui";
+import { durableSuccessRate } from "@/features/applications/application-executions";
 import type { ApplicationSnapshot, ApplicationSource } from "@/lib/console-state";
 import type { Tone } from "@/lib/readable-labels";
 
@@ -19,6 +20,14 @@ function statusTone(status: string): Tone {
   if (status === "offline" || status === "registered" || status === "draft" || status === "probing") return "warning";
   if (status === "archived" || status === "failed") return "danger";
   return "neutral";
+}
+
+function sweepAgo(iso: string): string {
+  const secs = Math.max(0, Math.round((Date.now() - Date.parse(iso)) / 1000));
+  if (secs < 90) return "just now";
+  if (secs < 3600) return `${Math.round(secs / 60)}m ago`;
+  if (secs < 86400) return `${Math.round(secs / 3600)}h ago`;
+  return `${Math.round(secs / 86400)}d ago`;
 }
 
 export function sourceSummary(source: ApplicationSource): string {
@@ -98,6 +107,14 @@ export function ApplicationsView() {
         <span className="pb-2 text-xs text-muted-foreground">
           {applications.length} of {all.length} application(s)
         </span>
+        {state?.applicationHealthSweepStatus?.lastSweepAt ? (
+          <span className="pb-2 text-xs text-muted-foreground">
+            · health sweep {sweepAgo(state.applicationHealthSweepStatus.lastSweepAt)}
+            {state.applicationHealthSweepStatus.lastError ? (
+              <span className="text-destructive"> · last error: {state.applicationHealthSweepStatus.lastError}</span>
+            ) : null}
+          </span>
+        ) : null}
       </div>
 
       {!applications.length ? (
@@ -146,6 +163,14 @@ export function ApplicationsView() {
                   {applicationOpsBadges(app).map((badge) => (
                     <Badge key={badge.label} tone={badge.tone}>{badge.label}</Badge>
                   ))}
+                  {(() => {
+                    const rate = durableSuccessRate(state?.applicationDailyStats ?? [], app.id, 30);
+                    return rate == null ? null : (
+                      <Badge tone={rate >= 0.9 ? "success" : rate >= 0.5 ? "warning" : "danger"}>
+                        {Math.round(rate * 100)}% success · 30d
+                      </Badge>
+                    );
+                  })()}
                 </div>
               </CardContent>
             </Card>
