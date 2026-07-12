@@ -6,6 +6,7 @@ const now = () => new Date().toISOString();
 let server;
 let base;
 let state;
+let deps;
 
 before(async () => {
   const { createServerState } = await import("../src/runtime/state-factory.mjs");
@@ -26,6 +27,7 @@ before(async () => {
     dispatchLeaseMs: 30_000,
     now,
   });
+  deps = httpDependencies;
 
   server = createHttpServer({ host: "127.0.0.1", port: 0, namespace: "test", protocolVersion: "0.0.0", ...httpDependencies });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -421,6 +423,112 @@ function otherDeviceCliAgentFixture() {
     location: { type: "local_device", deviceId: "dev_other_bridge" },
     health: { status: "healthy", checkedAt: now(), message: "Other device healthy.", nextAction: null },
   };
+}
+
+/*
+ * The ownership gates are only meaningful once a SECOND device can authenticate.
+ * With one device they compare the primary to itself and pass vacuously — and
+ * the `dev_other_bridge` case above proves only that a fabricated delivery id is
+ * rejected, not that a real second bridge is confined to its own work.
+ *
+ * This is the case that separates "the token names the device" from "the token
+ * unlocks the bridge API": beta presents a VALID credential, so it is a
+ * legitimate bridge — it simply is not alpha, and must not be able to ack, log
+ * to, or complete alpha's run.
+ */
+test("a second device authenticates as itself and cannot touch another device's work", async () => {
+  const alpha = enrollDeviceFixture("dev_alpha");
+  const beta = enrollDeviceFixture("dev_beta");
+
+  // Distinct machines get distinct credentials.
+  assert.notEqual(alpha.token, beta.token);
+  assert.notEqual(
+    state.devices.find((device) => device.id === "dev_alpha").bridgeCredential.tokenHash,
+    state.devices.find((device) => device.id === "dev_beta").bridgeCredential.tokenHash,
+  );
+
+  const alphaRun = bridgeInvocationFixture("inv_fleet_alpha", {
+    status: "dispatching",
+    deliveryState: "dispatching",
+    deviceId: "dev_alpha",
+  });
+  state.invocations.unshift(alphaRun);
+
+  // Beta holds a valid credential, so it authenticates — and is then refused on
+  // ownership, not on authentication. A 401 here would mean the gate never ran.
+  const spoofedAck = await call("/api/bridge/ack", {
+    method: "POST",
+    body: { invocationId: alphaRun.id },
+    token: beta.token,
+  });
+  assert.equal(spoofedAck.status, 403);
+  assert.equal(spoofedAck.body.error, "bridge_invocation_not_owned");
+  assert.equal(alphaRun.status, "dispatching", "a refused ack must not advance the run");
+
+  // The refusal names beta as the caller: the audit trail has to record which
+  // machine actually reached for the work, not the primary device.
+  assert(
+    state.events.some(
+      (event) =>
+        event.invocationId === alphaRun.id &&
+        event.type === "bridge_delivery_refused" &&
+        event.data?.reason === "bridge_invocation_not_owned" &&
+        event.data?.deviceId === "dev_beta",
+    ),
+    "the refusal should be attributed to the device that made the request",
+  );
+
+  // Alpha's own token drives alpha's run normally.
+  const ownAck = await call("/api/bridge/ack", {
+    method: "POST",
+    body: { invocationId: alphaRun.id },
+    token: alpha.token,
+  });
+  assert.equal(ownAck.status, 200);
+  assert.equal(alphaRun.status, "running");
+
+  // ...and beta is a working bridge in its own right, not merely a rejected one.
+  const betaRun = bridgeInvocationFixture("inv_fleet_beta", {
+    status: "dispatching",
+    deliveryState: "dispatching",
+    deviceId: "dev_beta",
+  });
+  state.invocations.unshift(betaRun);
+  const betaAck = await call("/api/bridge/ack", {
+    method: "POST",
+    body: { invocationId: betaRun.id },
+    token: beta.token,
+  });
+  assert.equal(betaAck.status, 200);
+  assert.equal(betaRun.status, "running");
+  assert.equal(
+    state.devices.find((device) => device.id === "dev_beta").lastSeenAt !== null,
+    true,
+    "an authenticated bridge stamps its OWN device's liveness",
+  );
+});
+
+/** Add a machine to the fleet and pair it. Stands in for P2 enrollment. */
+function enrollDeviceFixture(id) {
+  state.devices.push({
+    id,
+    ownerUserId: "usr_local",
+    name: id,
+    platform: "linux",
+    architecture: "x64",
+    bridgeVersion: "0.0.0",
+    status: "offline",
+    unlinkState: "linked",
+    lastSeenAt: null,
+    registeredCapabilities: [],
+    credentialRevokedAt: null,
+    bridgeCredential: null,
+    maxConcurrency: 1,
+    createdAt: now(),
+  });
+  const issued = deps.issueBridgeCredential({ deviceId: id, rotate: true });
+  assert.equal(issued.issued, true, `${id} should receive its own credential`);
+  return { id, token: issued.token };
 }
 
 function bridgeInvocationFixture(id, { agentId = "agt_demo_cli", status, deliveryState, deviceId }) {

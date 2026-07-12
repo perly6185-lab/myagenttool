@@ -1,5 +1,7 @@
 import { resolve, sep } from "node:path";
 
+import { DEFAULT_DEVICE_ID } from "../runtime/device.mjs";
+
 // A local managed terminal is the broadest execution surface on the bridge (an
 // interactive shell). Its cwd must stay inside a registered project or worktree
 // root so a session can't be opened at an arbitrary path on the host. (Remote
@@ -24,7 +26,7 @@ export function createTerminalRuntimeCapability({ now = defaultNow } = {}) {
   const isWindows = platform === "win32";
   const shells = isWindows ? ["powershell", "cmd", "pwsh", "wsl", "git-bash"] : ["bash", "zsh", "sh"];
   return {
-    deviceId: "dev_local_001",
+    deviceId: DEFAULT_DEVICE_ID,
     status: "managed_pty_supported",
     localPty: {
       available: true,
