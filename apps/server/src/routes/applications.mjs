@@ -18,6 +18,7 @@ export async function handleApplicationRoutes({
   probeApplication,
   registerApplication,
   requestApplicationOrchestrationRecoveryAction,
+  readApplicationRecoveryArchive,
   setApplicationAutoRecovery,
   setApplicationHealthProbe,
   transitionApplication,
@@ -161,6 +162,22 @@ export async function handleApplicationRoutes({
     if (denyForeignApplication({ res, sendJson, state, actor, applicationId, findApplication })) return true;
     const result = requestApplicationOrchestrationRecoveryAction(applicationId, routineId, invocationId, await readJson(req), actor);
     sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  // The recovery archive: recovery actions the in-memory cap evicted, read back
+  // per application so an audit survives the 200-row window. Read-only, tenancy
+  // guarded like every other per-application route.
+  const recoveryArchiveMatch = url.pathname.match(/^\/api\/applications\/([^/]+)\/recovery-archive$/);
+  if (recoveryArchiveMatch && req.method === "GET") {
+    const applicationId = decodeURIComponent(recoveryArchiveMatch[1]);
+    if (denyForeignApplication({ res, sendJson, state, actor, applicationId, findApplication })) return true;
+    if (!findApplication(applicationId)) {
+      sendJson(res, 404, { error: "application_not_found" });
+      return true;
+    }
+    const limit = Math.min(500, Math.max(1, Number(url.searchParams.get("limit")) || 50));
+    sendJson(res, 200, { applicationId, entries: readApplicationRecoveryArchive(applicationId, limit) });
     return true;
   }
 

@@ -131,6 +131,16 @@ export function createServerRuntimeServices({
   const retentionArchive = createRetentionArchive({ stateStorePath, enabled: persistenceEnabled, now });
   const { recordApplicationExecutionStat } = createApplicationStatsRuntime({ state, now, persistStateSoon });
 
+  // The read half of the audit loop: recovery actions the 200-row cap evicted are
+  // recoverable per application, not just greppable on disk. Scoped by the route's
+  // denyForeignApplication guard before it reaches here.
+  function readApplicationRecoveryArchive(applicationId, limit = 50) {
+    return retentionArchive.readArchive("applicationRecoveryActions", {
+      filter: (row) => row?.applicationId === applicationId,
+      limit,
+    });
+  }
+
   const { issueApprovalGrant, mintDecisionGrant, validateApprovalToken } = createApprovalGrantService({
     state,
     now,
@@ -2333,6 +2343,7 @@ export function createServerRuntimeServices({
     probeApplication,
     registerApplication,
     requestApplicationOrchestrationRecoveryAction,
+    readApplicationRecoveryArchive,
     runApplicationOrchestration,
     setApplicationAutoRecovery,
     issueApprovalGrant,
@@ -2480,6 +2491,7 @@ export function createServerRuntimeServices({
     probeApplication,
     registerApplication,
     requestApplicationOrchestrationRecoveryAction,
+    readApplicationRecoveryArchive,
     runApplicationOrchestration,
     setApplicationAutoRecovery,
     issueApprovalGrant,
