@@ -21,6 +21,7 @@ export function createIntegrationGovernanceRuntime({
       promptsDays: normalizeRetentionDays(body.promptsDays, state.retentionSettings.promptsDays),
       responsesDays: normalizeRetentionDays(body.responsesDays, state.retentionSettings.responsesDays),
       artifactsDays: normalizeRetentionDays(body.artifactsDays, state.retentionSettings.artifactsDays),
+      refusalsDays: normalizeRetentionDays(body.refusalsDays, state.retentionSettings.refusalsDays),
       updatedAt: now(),
     };
     appendEvent({

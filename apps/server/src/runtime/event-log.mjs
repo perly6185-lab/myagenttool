@@ -1,3 +1,7 @@
+import { SERVER_REFUSAL_EVENT_TYPES } from "./refusal-log.mjs";
+
+const warnedRefusalBypass = new Set();
+
 export function createEventLogRuntime({
   state,
   now,
@@ -5,7 +9,22 @@ export function createEventLogRuntime({
   persistStateSoon,
   getCodexEventHandlers,
 }) {
-  function appendEvent(event) {
+  // The structural chokepoint (refusal model Phase 2, #760): a refusal-typed
+  // event may only reach the log via refuse(), which passes { viaRefuse: true }.
+  // A denial that appends one directly has bypassed the single writer — throw
+  // under REFUSAL_STRICT (the refusal test suite), warn otherwise so a stray
+  // legacy path never turns a live refusal into a 500.
+  function appendEvent(event, options = {}) {
+    if (event && SERVER_REFUSAL_EVENT_TYPES.has(event.type) && !options.viaRefuse) {
+      const message = `refusal-typed event "${event.type}" appended outside refuse() — route it through the single writer`;
+      if (process.env.REFUSAL_STRICT === "1") {
+        throw new Error(message);
+      }
+      if (!warnedRefusalBypass.has(event.type)) {
+        warnedRefusalBypass.add(event.type);
+        console.warn(`[refusal] ${message}`);
+      }
+    }
     const record = {
       id: nextId("evt_demo"),
       invocationId: event.invocationId,

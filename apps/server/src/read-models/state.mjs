@@ -273,6 +273,9 @@ export function buildPublicState({
     // owning team, and terminal rows by their owning terminal session.
     evidenceCenterRecords: evidenceCenterVisible,
     evidenceLedger: evidenceLedgerRows,
+    // Refusal model Phase 2 (#760): the device's veto, scoped like every other
+    // invocation-linked collection (null-invocation refusals stay owner-visible).
+    refusals: byInvocation(state.refusals),
     codexApprovalBrokerRequests,
     pendingDecisions: pendingDecisionQueue,
     codexImportedEvidenceRecords: visibleImported,

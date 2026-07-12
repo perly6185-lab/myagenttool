@@ -1,5 +1,5 @@
 import { useMemo, useState, type ReactNode } from "react";
-import { AlertTriangle, AppWindow, ChevronDown, ChevronRight, ClipboardCheck, FileText, LifeBuoy, ShieldCheck, Wrench } from "lucide-react";
+import { AlertTriangle, AppWindow, Ban, ChevronDown, ChevronRight, ClipboardCheck, Clock, FileText, Gavel, LifeBuoy, ShieldCheck, Wrench } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge, StatusBadge } from "@/components/ui/badge";
 import { Select } from "@/components/ui/input";
@@ -9,8 +9,14 @@ import { SectionHeading } from "@/components/common/section-heading";
 import { cn } from "@/lib/cn";
 import { useConsoleState } from "@/data/use-console-state";
 import { useUiStore } from "@/store/ui-store";
-import type { EvidenceLedgerRow } from "@/lib/console-state";
+import type { EvidenceLedgerRow, RefusalRow } from "@/lib/console-state";
 import type { Tone } from "@/lib/readable-labels";
+import {
+  groupRefusals,
+  readableAppealTo,
+  readableRefusalCode,
+  type RefusalCategoryGroup,
+} from "@/lib/refusals";
 import {
   readableRecoveryActionRequestStatus,
   readableRecoveryActionType,
@@ -43,10 +49,12 @@ function since(iso?: string | null): string | null {
 
 export function EvidenceView() {
   const { data: state } = useConsoleState();
+  const [lens, setLens] = useState<"evidence" | "refusals">("evidence");
   const [filter, setFilter] = useState<"all" | "attention">("all");
   const [expandedId, setExpandedId] = useState<string | null>(null);
 
   const ledger = state?.evidenceLedger ?? [];
+  const refusals = state?.refusals ?? [];
   const attentionCount = useMemo(() => ledger.filter((r) => r.attention).length, [ledger]);
   const rows = useMemo(() => (filter === "attention" ? ledger.filter((r) => r.attention) : ledger), [ledger, filter]);
   const agentName = (id?: string | null) => state?.agents?.find((a) => a.id === id)?.name ?? id ?? "agent";
@@ -59,6 +67,29 @@ export function EvidenceView() {
         description="Per-run rollup of the evidence that a change is sound — review findings, the audit record, troubleshooting, and Codex/terminal runtime evidence — joined on the run that produced it."
       />
 
+      {/* Two lenses over the same trust surface: the per-run evidence ledger, and
+          the device's veto. A refusal is a normal reply, not a failure. */}
+      <div className="inline-flex rounded-lg border border-border bg-muted/40 p-0.5 text-sm">
+        <button
+          type="button"
+          onClick={() => setLens("evidence")}
+          className={cn("rounded-md px-3 py-1.5 font-medium transition", lens === "evidence" ? "bg-background shadow-sm" : "text-muted-foreground")}
+        >
+          Trust ledger
+        </button>
+        <button
+          type="button"
+          onClick={() => setLens("refusals")}
+          className={cn("flex items-center gap-1.5 rounded-md px-3 py-1.5 font-medium transition", lens === "refusals" ? "bg-background shadow-sm" : "text-muted-foreground")}
+        >
+          <Ban className="size-3.5" /> Refusals{refusals.length ? ` · ${refusals.length}` : ""}
+        </button>
+      </div>
+
+      {lens === "refusals" ? (
+        <RefusalsLens refusals={refusals} />
+      ) : (
+      <>
       <div className="flex flex-wrap items-end gap-3">
         <Field label="Show" className="w-44">
           <Select value={filter} onChange={(e) => setFilter(e.target.value as typeof filter)}>
@@ -93,6 +124,122 @@ export function EvidenceView() {
           ))}
         </div>
       )}
+      </>
+      )}
+    </div>
+  );
+}
+
+// The refusal lens: what did this device refuse, and why? Grouped by category and
+// code. A refusal is a NORMAL reply — rendered calm, never red, never as an
+// incident. Every refusal shows a remedy (a refusal with no next action is a dead
+// end, and dead ends are what push operators to disable the guardrail).
+function RefusalsLens({ refusals }: { refusals: RefusalRow[] }) {
+  const groups = useMemo(() => groupRefusals(refusals), [refusals]);
+  if (!groups.length) {
+    return (
+      <EmptyState
+        title="Nothing refused"
+        hint="When this device declines a request — an ungranted capability, a policy rule, a budget, a human veto — it appears here with the reason and what would make it succeed. Refusals are normal replies, not failures."
+      />
+    );
+  }
+  return (
+    <div className="space-y-4">
+      <p className="flex items-start gap-2 rounded-md border border-border bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
+        <ShieldCheck className="mt-0.5 size-3.5 shrink-0" />
+        <span>
+          A refusal is the device declining to try — a normal, auditable reply, not a failure. Each is grouped by the authority that decided it and shows what would make the request succeed.
+        </span>
+      </p>
+      {groups.map((group) => (
+        <RefusalCategorySection key={group.category} group={group} />
+      ))}
+    </div>
+  );
+}
+
+function RefusalCategorySection({ group }: { group: RefusalCategoryGroup }) {
+  return (
+    <div className="space-y-2">
+      <div className="flex items-baseline gap-2">
+        <h3 className="text-sm font-semibold">{group.label}</h3>
+        <span className="text-xs text-muted-foreground">{group.count}</span>
+      </div>
+      <p className="text-xs text-muted-foreground">{group.hint}</p>
+      <div className="space-y-2">
+        {group.codes.map((codeGroup) => (
+          <Card key={codeGroup.code}>
+            <CardContent className="space-y-2 p-4">
+              <div className="flex items-center gap-2">
+                <Badge tone="neutral">
+                  <Ban className="size-3" /> {codeGroup.label}
+                </Badge>
+                <span className="text-xs text-muted-foreground">
+                  {codeGroup.refusals.length} refusal{codeGroup.refusals.length === 1 ? "" : "s"}
+                </span>
+              </div>
+              <div className="space-y-2">
+                {codeGroup.refusals.map((refusal) => (
+                  <RefusalItem key={refusal.id} refusal={refusal} />
+                ))}
+              </div>
+            </CardContent>
+          </Card>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function RefusalItem({ refusal }: { refusal: RefusalRow }) {
+  const [showEvidence, setShowEvidence] = useState(false);
+  const appeal = readableAppealTo(refusal.appealTo);
+  const age = since(refusal.at);
+  const hasEvidence = refusal.evidence && Object.keys(refusal.evidence).length > 0;
+  return (
+    <div className="rounded-md border border-border/70 bg-background/60 px-3 py-2.5 text-sm">
+      <div className="flex items-start justify-between gap-3">
+        <p className="min-w-0 flex-1 font-medium">{refusal.summary || readableRefusalCode(refusal.code)}</p>
+        {age ? <span className="shrink-0 text-xs text-muted-foreground">{age}</span> : null}
+      </div>
+      {refusal.remedy ? (
+        <p className="mt-1 flex items-start gap-1.5 text-xs text-muted-foreground">
+          <Wrench className="mt-0.5 size-3 shrink-0" />
+          <span>{refusal.remedy}</span>
+        </p>
+      ) : null}
+      <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+        {refusal.decidedBy?.kind ? (
+          <span className="inline-flex items-center gap-1">
+            <Gavel className="size-3" /> {refusal.decidedBy.kind.replace(/_/g, " ")}
+          </span>
+        ) : null}
+        {refusal.retryAfter ? (
+          <span className="inline-flex items-center gap-1">
+            <Clock className="size-3" /> retry after {refusal.retryAfter}
+          </span>
+        ) : (
+          <span className="text-muted-foreground/70">retry won’t help on its own</span>
+        )}
+        {appeal ? <span>appeal to {appeal}</span> : <span className="text-muted-foreground/70">final — no appeal</span>}
+      </div>
+      {hasEvidence ? (
+        <div className="mt-2">
+          <button
+            type="button"
+            onClick={() => setShowEvidence((v) => !v)}
+            className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
+          >
+            {showEvidence ? <ChevronDown className="size-3" /> : <ChevronRight className="size-3" />} Evidence
+          </button>
+          {showEvidence ? (
+            <pre className="mt-1 max-h-56 overflow-auto rounded bg-muted/50 p-2 text-[11px] leading-relaxed">
+              {JSON.stringify(refusal.evidence, null, 2)}
+            </pre>
+          ) : null}
+        </div>
+      ) : null}
     </div>
   );
 }
