@@ -1,4 +1,4 @@
-import { appendFileSync, mkdirSync } from "node:fs";
+import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 // On-disk archive for rows evicted by in-memory caps. The caps keep /api/state
@@ -31,5 +31,39 @@ export function createRetentionArchive({ stateStorePath, enabled = true, now = (
     return list.slice(0, max);
   }
 
-  return { archiveEvicted, capWithArchive, archiveDir };
+  /**
+   * The read half of the archive — the loop the audit trail was missing: what the
+   * cap evicted is recoverable, not just greppable by hand. Reads the whole
+   * append-only file, skips torn lines, applies an optional row filter, and returns
+   * the most-recently-archived `limit` matches newest-first as `{ archivedAt, row }`.
+   * Ordered by archivedAt, NOT file position: one eviction batch is written
+   * newest-first, so raw file order would misrank within a batch; the sort is
+   * stable, so a batch's own order is preserved when stamps tie. Best-effort: no
+   * file yet → honest empty, never a throw. Reading the full file is fine for an
+   * occasional audit; a tail-read is the follow-up if archives outgrow memory.
+   */
+  function readArchive(collection, { filter = null, limit = 50 } = {}) {
+    let text;
+    try {
+      text = readFileSync(join(archiveDir, `${collection}.jsonl`), "utf8");
+    } catch {
+      return [];
+    }
+    const matches = [];
+    for (const line of text.split("\n")) {
+      if (!line.trim()) continue;
+      let parsed;
+      try {
+        parsed = JSON.parse(line);
+      } catch {
+        continue; // a torn final line from a crash mid-append — skip, don't fail
+      }
+      if (filter && !filter(parsed.row)) continue;
+      matches.push({ archivedAt: parsed.archivedAt ?? null, row: parsed.row });
+    }
+    matches.sort((a, b) => String(b.archivedAt ?? "").localeCompare(String(a.archivedAt ?? "")));
+    return matches.slice(0, Math.max(1, limit));
+  }
+
+  return { archiveEvicted, capWithArchive, readArchive, archiveDir };
 }

@@ -29,6 +29,7 @@ import {
   executionKind,
   formatResultOutput,
 } from "@/features/applications/application-executions";
+import { ArchivedRecoveryActions } from "@/features/applications/archived-recovery";
 import { ImportedUsageTable } from "@/features/economics/imported-usage-table";
 import { Transcript } from "@/features/invocations/transcript";
 import {
@@ -1338,6 +1339,7 @@ export function ApplicationsInspector() {
 
       <ApplicationActions application={application} />
       <ApplicationExecutions application={application} invocations={invocations} onViewInvocation={viewInvocation} />
+      <ArchivedRecoveryActions applicationId={application.id} />
       <ApplicationResultSummary result={application.latestResult} invocations={invocations} onViewInvocation={viewInvocation} />
 
       <Card>

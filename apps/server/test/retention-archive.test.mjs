@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -8,6 +8,34 @@ import { createRetentionArchive } from "../src/services/retention-archive.mjs";
 import { createApprovalGrantService } from "../src/services/approval-grants.mjs";
 
 const now = () => "2026-07-11T12:00:00.000Z";
+
+test("readArchive: recovers evicted rows most-recently-archived first, filters, bounds, tolerates a torn line", () => {
+  const dir = mkdtempSync(join(tmpdir(), "retention-read-"));
+  let clock = 0;
+  const archive = createRetentionArchive({ stateStorePath: join(dir, "state.json"), now: () => `2026-07-12T00:00:0${clock}.000Z` });
+
+  // No file yet → honest empty, not a throw.
+  assert.deepEqual(archive.readArchive("recovery"), []);
+
+  // Two eviction batches at distinct times. capWithArchive evicts list.slice(max)
+  // (the oldest of a newest-first list): batch 1 evicts a1, batch 2 evicts b1.
+  clock = 1;
+  archive.capWithArchive([{ id: "a2", app: "x" }, { id: "a1", app: "y" }], 1, "recovery");
+  clock = 2;
+  archive.capWithArchive([{ id: "b2", app: "x" }, { id: "b1", app: "x" }], 1, "recovery");
+
+  const all = archive.readArchive("recovery");
+  assert.deepEqual(all.map((e) => e.row.id), ["b1", "a1"], "most-recently-archived first");
+  assert.equal(all[0].archivedAt, "2026-07-12T00:00:02.000Z");
+
+  // Filter by a row field (the endpoint scopes by applicationId this way).
+  assert.deepEqual(archive.readArchive("recovery", { filter: (row) => row.app === "x" }).map((e) => e.row.id), ["b1"]);
+  assert.equal(archive.readArchive("recovery", { limit: 1 }).length, 1);
+
+  // A torn final line (crash mid-append) is skipped, not fatal.
+  appendFileSync(join(archive.archiveDir, "recovery.jsonl"), '{"archivedAt":"2026-07-12T00:00:09.000Z","collection":"recovery","row":{"id":"tor');
+  assert.deepEqual(archive.readArchive("recovery").map((e) => e.row.id), ["b1", "a1"], "torn line ignored");
+});
 
 test("capWithArchive keeps the cap and appends the overflow as JSONL, newest kept", () => {
   const dir = mkdtempSync(join(tmpdir(), "retention-"));
