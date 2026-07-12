@@ -331,6 +331,7 @@ export function createApplicationService({
         execCommand: plan.command,
         execArgs: plan.args,
         cwd: plan.cwd,
+        cwdPolicy: plan.cwdPolicy,
         capability: plan.capability,
         filePolicy: plan.filePolicy,
         networkPolicy: plan.networkPolicy,
@@ -664,7 +665,11 @@ export function applicationWrapperExecutionPlan(application, commandId, input = 
     command: command.command,
     // Base args + only the declared, validated per-invocation flag inputs.
     args: [...command.args, ...resolveWrapperInputArgs(command.argInputs, input)],
-    cwd: command.cwd ?? ".",
+    // "invocation_root" emits cwd:null so the bridge's worktreePath → projectPath
+    // fallback resolves it to the invocation's repository (#773). "fixed" keeps
+    // ccusage's behavior byte-for-byte.
+    cwd: command.cwdPolicy === "invocation_root" ? null : (command.cwd ?? "."),
+    cwdPolicy: command.cwdPolicy ?? "fixed",
     timeoutSeconds: command.timeoutSeconds,
     cancellation: command.cancellation,
     envPolicy: command.envPolicy,
@@ -1719,6 +1724,11 @@ function normalizeWrapperCommand(command, index) {
     command: commandText,
     args: normalizeStringList(command.args),
     cwd: stringOrNull(command.cwd) ?? ".",
+    // cwdPolicy governs where the command runs. "fixed" (default, ccusage's
+    // behavior) uses `cwd`; "invocation_root" plans cwd:null so the bridge
+    // resolves it to the invocation's worktree/project root (#773). An unknown
+    // value degrades to "fixed" — the safe, cwd-insensitive default.
+    cwdPolicy: normalizeWrapperCwdPolicy(command.cwdPolicy),
     status: normalizeWrapperCommandStatus(command.status),
     riskLevel: normalizeRiskLevel(command.riskLevel, commandType === "npm_script" ? "medium" : "high"),
     riskTags: normalizeStringList(command.riskTags ?? command.tags),
@@ -1750,6 +1760,10 @@ function normalizeWrapperCommandType(value) {
 function normalizeWrapperCommandStatus(value) {
   const text = String(value ?? "").trim();
   return ["draft", "approved", "disabled"].includes(text) ? text : "draft";
+}
+
+function normalizeWrapperCwdPolicy(value) {
+  return String(value ?? "").trim() === "invocation_root" ? "invocation_root" : "fixed";
 }
 
 function normalizeTimeoutSeconds(value) {
