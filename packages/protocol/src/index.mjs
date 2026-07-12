@@ -443,6 +443,111 @@ const m3RequiredDeploymentModes = [
   "private_deployment",
 ];
 
+// --- Refusal model (Epic #758, Phase 1 / #759) ---------------------------
+// Runtime mirror of packages/protocol/src/refusal.ts. Design of record:
+// docs/vision/REFUSAL_MODEL.md. A refusal is a first-class, auditable reply,
+// not a failure. Phase 1 is taxonomy only — no records are written yet.
+
+export const refusalCategories = ["not_granted", "policy", "state", "human"];
+
+// CLOSED enum, versioned with the device API. Adding a code is a deliberate
+// protocol change — never a string literal at a call site.
+export const refusalCodes = [
+  "capability_not_granted",
+  "command_not_allowlisted",
+  "cwd_outside_approved_root",
+  "file_policy_exceeded",
+  "network_policy_exceeded",
+  "action_not_permitted",
+  "subject_not_actionable",
+  "over_budget",
+  "over_quota",
+  "undeliverable",
+  "approval_denied",
+  "deliverable_rejected",
+  "gate_rejected",
+];
+
+// Each code belongs to exactly one category.
+export const refusalCodesByCategory = {
+  not_granted: ["capability_not_granted"],
+  policy: [
+    "command_not_allowlisted",
+    "cwd_outside_approved_root",
+    "file_policy_exceeded",
+    "network_policy_exceeded",
+    "action_not_permitted",
+  ],
+  state: ["subject_not_actionable", "over_budget", "over_quota", "undeliverable"],
+  human: ["approval_denied", "deliverable_rejected", "gate_rejected"],
+};
+
+export const refusalSubjectKinds = [
+  "invocation",
+  "lifecycle_action",
+  "capability_call",
+  "worktree_action",
+  "application_action",
+  "registration",
+];
+
+export const refusalRequesterKinds = ["local_user", "control_plane", "automation"];
+
+export const refusalDeciderKinds = ["grant", "policy_engine", "arbiter", "user"];
+
+// The completeness map — every existing refusal event type / blocking HTTP error
+// code, mapped onto exactly one (category, code). Umbrella event types that
+// refuse for several reasons appear once per reason. Mirrors the table in
+// docs/vision/REFUSAL_MODEL.md; asserted complete by test/refusal.test.mjs.
+export const refusalEventCatalog = [
+  // --- bridge ownership / status (state) ---
+  { eventType: "bridge_delivery_refused", reason: "not_owned_or_inactive", category: "state", code: "subject_not_actionable" },
+  { eventType: "bridge_lifecycle_refused", reason: "not_owned_or_not_running", category: "state", code: "subject_not_actionable" },
+  { eventType: "bridge_operation_refused", reason: "not_owned_or_bad_status", category: "state", code: "subject_not_actionable" },
+  { eventType: "delivery_refused", reason: "bridge_self_reported", category: "state", code: "undeliverable" },
+  { eventType: "device_dispatch_blocked", category: "state", code: "undeliverable", reserved: true },
+  { eventType: "project_remove_blocked", category: "state", code: "subject_not_actionable", httpErrorCode: true },
+  // --- local execution policy (policy) — umbrella event, one row per reason ---
+  { eventType: "local_execution_refused", reason: "command_not_allowlisted", category: "policy", code: "command_not_allowlisted" },
+  { eventType: "local_execution_refused", reason: "cwd_outside_approved_root", category: "policy", code: "cwd_outside_approved_root" },
+  { eventType: "local_execution_refused", reason: "file_policy_exceeded", category: "policy", code: "file_policy_exceeded" },
+  { eventType: "local_execution_refused", reason: "network_policy_exceeded", category: "policy", code: "network_policy_exceeded" },
+  { eventType: "policy_blocked", category: "policy", code: "command_not_allowlisted", httpErrorCode: true },
+  // --- recovery / lifecycle policy (policy) ---
+  { eventType: "application_orchestration_recovery_action_rejected", category: "policy", code: "action_not_permitted" },
+  { eventType: "recovery_action_blocked", category: "policy", code: "action_not_permitted", httpErrorCode: true },
+  { eventType: "lifecycle_gate_blocked", category: "policy", code: "action_not_permitted", httpErrorCode: true },
+  { eventType: "rollback_gate_blocked", category: "policy", code: "action_not_permitted", httpErrorCode: true },
+  { eventType: "loop_worktree_promotion_pr_merge_prep_blocked", category: "policy", code: "action_not_permitted" },
+  // --- economics / quota / approval on invocation creation (state + human) ---
+  { eventType: "invocation_rejected", reason: "over_quota", category: "state", code: "over_quota" },
+  { eventType: "invocation_rejected", reason: "over_budget", category: "state", code: "over_budget" },
+  { eventType: "invocation_rejected", reason: "local_approval_denied", category: "human", code: "approval_denied" },
+  // --- human approvals (human) ---
+  { eventType: "local_approval_denied", category: "human", code: "approval_denied" },
+  { eventType: "codex_approval_denied", category: "human", code: "approval_denied" },
+  { eventType: "auto_run_denied", category: "human", code: "approval_denied" },
+  { eventType: "permission_denied", category: "not_granted", code: "capability_not_granted", reserved: true },
+  // --- human rejected a deliverable (human) ---
+  { eventType: "auto_run_design_rejected", category: "human", code: "deliverable_rejected" },
+  { eventType: "auto_run_decomposition_rejected", category: "human", code: "deliverable_rejected" },
+  // --- human rejected a workflow / promotion gate (human) ---
+  { eventType: "loop_human_gate_rejected", category: "human", code: "gate_rejected" },
+  { eventType: "loop_worktree_cleanup_refused", category: "human", code: "gate_rejected" },
+  { eventType: "loop_worktree_promotion_refused", category: "human", code: "gate_rejected" },
+  { eventType: "loop_worktree_promotion_apply_refused", category: "human", code: "gate_rejected" },
+  { eventType: "loop_worktree_promotion_verify_refused", category: "human", code: "gate_rejected" },
+  { eventType: "loop_worktree_promotion_pr_prep_refused", category: "human", code: "gate_rejected" },
+  { eventType: "loop_worktree_promotion_commit_refused", category: "human", code: "gate_rejected" },
+  { eventType: "loop_worktree_promotion_push_plan_refused", category: "human", code: "gate_rejected" },
+  { eventType: "loop_worktree_promotion_push_preflight_refused", category: "human", code: "gate_rejected" },
+  { eventType: "loop_worktree_promotion_push_execute_refused", category: "human", code: "gate_rejected" },
+  { eventType: "loop_worktree_promotion_pr_create_prep_refused", category: "human", code: "gate_rejected" },
+  { eventType: "loop_worktree_promotion_pr_create_execute_refused", category: "human", code: "gate_rejected" },
+  { eventType: "loop_worktree_promotion_pr_merge_prep_refused", category: "human", code: "gate_rejected" },
+  { eventType: "loop_worktree_promotion_pr_merge_execute_refused", category: "human", code: "gate_rejected" },
+];
+
 const mode = process.argv.includes("--check") ? "check" : "dev";
 
 if (mode === "check") {
@@ -468,6 +573,7 @@ function runM0ProtocolCheck() {
   assertIncludes(lifecycleRecipeQueueStates, m3RequiredLifecycleRecipeQueueStates, "M3 lifecycle recipe queue state");
   assertIncludes(aiProviderModes, m3RequiredAiProviderModes, "M3 AI provider mode");
   assertIncludes(deploymentModes, m3RequiredDeploymentModes, "M3 deployment mode");
+  runRefusalTaxonomyCheck();
   assertIncludes(m0RequiredEventTypes, [
     "invocation_created",
     "delivery_dispatched",
@@ -477,6 +583,76 @@ function runM0ProtocolCheck() {
     "span_completed",
     "cancel_applied",
   ], "event type");
+}
+
+function runRefusalTaxonomyCheck() {
+  // The closed enum must contain the codes the design (docs/vision/REFUSAL_MODEL.md)
+  // pins. A code being dropped is a protocol break, not a refactor.
+  const requiredRefusalCodes = [
+    "capability_not_granted",
+    "command_not_allowlisted",
+    "cwd_outside_approved_root",
+    "file_policy_exceeded",
+    "network_policy_exceeded",
+    "action_not_permitted",
+    "subject_not_actionable",
+    "over_budget",
+    "over_quota",
+    "undeliverable",
+    "approval_denied",
+    "deliverable_rejected",
+    "gate_rejected",
+  ];
+  assertIncludes(refusalCodes, requiredRefusalCodes, "refusal code");
+  assertIncludes(refusalCategories, ["not_granted", "policy", "state", "human"], "refusal category");
+
+  // Every code belongs to exactly one category, and the partition covers the enum.
+  const seen = new Set();
+  for (const category of refusalCategories) {
+    const codes = refusalCodesByCategory[category];
+    if (!Array.isArray(codes)) {
+      throw new Error(`Missing refusal category in map: ${category}`);
+    }
+    for (const code of codes) {
+      if (!refusalCodes.includes(code)) {
+        throw new Error(`refusalCodesByCategory has unknown code: ${code}`);
+      }
+      if (seen.has(code)) {
+        throw new Error(`refusal code in more than one category: ${code}`);
+      }
+      seen.add(code);
+    }
+  }
+  for (const code of refusalCodes) {
+    if (!seen.has(code)) {
+      throw new Error(`refusal code not assigned to a category: ${code}`);
+    }
+  }
+
+  // Every catalog entry uses a code from the closed enum, and its category
+  // agrees with the map. A typo here is a taxonomy break.
+  for (const entry of refusalEventCatalog) {
+    if (!refusalCodes.includes(entry.code)) {
+      throw new Error(`refusalEventCatalog uses unknown code: ${entry.code} (${entry.eventType})`);
+    }
+    if (!refusalCodesByCategory[entry.category]?.includes(entry.code)) {
+      throw new Error(
+        `refusalEventCatalog category/code mismatch: ${entry.eventType} → ${entry.category}/${entry.code}`,
+      );
+    }
+  }
+
+  // Completeness: every loop refusal event in the protocol vocabulary
+  // (`*_refused` / `*_blocked`) must be mapped. A newly-added loop refusal fails
+  // here until it is added to the catalog and the design table.
+  const mappedEventTypes = new Set(refusalEventCatalog.map((e) => e.eventType));
+  for (const eventType of loopEventTypes) {
+    if (/_refused$/.test(eventType) || /_blocked$/.test(eventType)) {
+      if (!mappedEventTypes.has(eventType)) {
+        throw new Error(`Unmapped loop refusal event: ${eventType}`);
+      }
+    }
+  }
 }
 
 function assertIncludes(actual, required, label) {

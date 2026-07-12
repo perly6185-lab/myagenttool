@@ -1,10 +1,12 @@
 import { renderAgentSkillsIntoWorktree } from "../agent-skills.mjs";
+import { createRefusalRuntime } from "../../runtime/refusal-log.mjs";
 
 export function createInvocationCreationRuntime({
   state,
   now,
   nextId,
   appendEvent,
+  refuse: injectedRefuse,
   persistStateSoon,
   persistStateNow,
   defaultAgent,
@@ -25,6 +27,8 @@ export function createInvocationCreationRuntime({
   recordAgentUsage,
   budgetGateForProject,
 }) {
+  // Shared writer in production; a state-bound fallback for direct construction.
+  const refuse = injectedRefuse ?? createRefusalRuntime({ state, now, nextId, appendEvent }).refuse;
   function createInvocation(task, agent = defaultAgent(), options = {}) {
     if (!agent) {
       throw new Error("No agent is registered.");
@@ -203,12 +207,24 @@ export function createInvocationCreationRuntime({
       }
       invocation.completedAt = createdAt;
       completeRootSpan(invocation, "failed");
-      appendEvent({
-        invocationId: invocation.id,
-        type: "invocation_rejected",
-        level: "warn",
-        message: quotaGate.quotaDecision.reason,
-        data: { quotaDecisionId: quotaGate.quotaDecision.id, decision: quotaGate.quotaDecision.decision }
+      refuse({
+        subject: { kind: "invocation", id: invocation.id },
+        requester: { kind: "local_user", id: invocation.requestedBy ?? "usr_local" },
+        category: "state",
+        code: "over_quota",
+        decidedBy: { kind: "policy_engine", id: quotaGate.quotaDecision.id },
+        summary: quotaGate.quotaDecision.reason,
+        evidence: { quotaDecisionId: quotaGate.quotaDecision.id, decision: quotaGate.quotaDecision.decision },
+        remedy: "Wait for the quota window to reset or raise the platform AI quota.",
+        retryAfter: null,
+        appealTo: "device_owner",
+        event: {
+          invocationId: invocation.id,
+          type: "invocation_rejected",
+          level: "warn",
+          message: quotaGate.quotaDecision.reason,
+          data: { quotaDecisionId: quotaGate.quotaDecision.id, decision: quotaGate.quotaDecision.decision }
+        },
       });
       state.auditSummaries.push(createAuditSummary(invocation, quotaGate.quotaDecision.reason));
       recordAgentUsage(invocation, "rejected");
@@ -223,12 +239,24 @@ export function createInvocationCreationRuntime({
       }
       invocation.completedAt = createdAt;
       completeRootSpan(invocation, "failed");
-      appendEvent({
-        invocationId: invocation.id,
-        type: "invocation_rejected",
-        level: "warn",
-        message: budgetGate.reason,
-        data: { gate: "budget" }
+      refuse({
+        subject: { kind: "invocation", id: invocation.id },
+        requester: { kind: "local_user", id: invocation.requestedBy ?? "usr_local" },
+        category: "state",
+        code: "over_budget",
+        decidedBy: { kind: "policy_engine", id: targetProjectId ?? "budget" },
+        summary: budgetGate.reason,
+        evidence: { gate: "budget", projectId: targetProjectId ?? null },
+        remedy: "Raise the project or team budget, or wait for the budget window to reset.",
+        retryAfter: null,
+        appealTo: "device_owner",
+        event: {
+          invocationId: invocation.id,
+          type: "invocation_rejected",
+          level: "warn",
+          message: budgetGate.reason,
+          data: { gate: "budget" }
+        },
       });
       state.auditSummaries.push(createAuditSummary(invocation, budgetGate.reason));
       recordAgentUsage(invocation, "rejected");
