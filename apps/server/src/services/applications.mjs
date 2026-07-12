@@ -593,7 +593,7 @@ export function createApplicationWrapperAgentRegistration({
 // anything else returns null. This is the single source of truth for WHAT may
 // execute — the bridge only ever runs a command that came through here, so an
 // unapproved or unregistered command can never reach execution.
-const WRAPPER_ARG_INPUT_TYPES = new Set(["date", "token", "enum", "string", "boolean-flag"]);
+const WRAPPER_ARG_INPUT_TYPES = new Set(["date", "token", "enum", "string", "boolean-flag", "git-rev"]);
 const RESERVED_WRAPPER_ARG_INPUT_KEYS = new Set([
   "approvalToken",
   "idempotencyKey",
@@ -619,12 +619,22 @@ function normalizeWrapperArgInputs(argInputs) {
     if (RESERVED_WRAPPER_ARG_INPUT_KEYS.has(key)) {
       throw new Error(`NPM wrapper argInput ${key} uses a reserved control-plane key.`);
     }
-    const flag = String(entry.flag ?? "").trim();
-    if (!/^--[a-z0-9][a-z0-9-]*$/.test(flag)) {
-      throw new Error(`NPM wrapper argInput ${key} requires a valid --flag.`);
+    // A positional input carries no --flag; it becomes an argv element on its own
+    // (#777). Positional and flag are mutually exclusive.
+    const positional = entry.positional === true;
+    let flag = null;
+    if (positional) {
+      if (entry.flag) {
+        throw new Error(`NPM wrapper argInput ${key} cannot be both positional and a --flag.`);
+      }
+    } else {
+      flag = String(entry.flag ?? "").trim();
+      if (!/^--[a-z0-9][a-z0-9-]*$/.test(flag)) {
+        throw new Error(`NPM wrapper argInput ${key} requires a valid --flag.`);
+      }
     }
     const type = WRAPPER_ARG_INPUT_TYPES.has(String(entry.type)) ? String(entry.type) : "token";
-    return { key, flag, type, values: type === "enum" ? normalizeStringList(entry.values) : [] };
+    return { key, flag, positional, type, values: type === "enum" ? normalizeStringList(entry.values) : [] };
   });
 }
 
@@ -633,20 +643,26 @@ function normalizeWrapperArgInputs(argInputs) {
 // a flag (leading "-") is refused so it can never inject a new option.
 function resolveWrapperInputArgs(argInputs, input) {
   if (!Array.isArray(argInputs) || !input || typeof input !== "object" || Array.isArray(input)) return [];
-  const args = [];
+  const flagArgs = [];
+  const positionalArgs = [];
   for (const spec of argInputs) {
     const raw = input[spec.key];
     if (raw === undefined || raw === null) continue;
     if (spec.type === "boolean-flag") {
-      if (raw === true || raw === "true") args.push(spec.flag);
+      if (raw === true || raw === "true") flagArgs.push(spec.flag);
       continue;
     }
     const value = String(raw).trim();
     if (!value || value.startsWith("-")) continue;
     if (!isValidWrapperArgValue(spec, value)) continue;
-    args.push(spec.flag, value);
+    if (spec.positional) {
+      positionalArgs.push(value);
+    } else {
+      flagArgs.push(spec.flag, value);
+    }
   }
-  return args;
+  // Positionals are appended AFTER all flags, in declaration order (#777).
+  return [...flagArgs, ...positionalArgs];
 }
 
 function isValidWrapperArgValue(spec, value) {
@@ -655,6 +671,9 @@ function isValidWrapperArgValue(spec, value) {
     case "token": return /^[A-Za-z0-9_+/:.][A-Za-z0-9_+/:.-]{0,63}$/.test(value);
     case "enum": return spec.values.includes(value);
     case "string": return value.length <= 200 && !/[\r\n]/.test(value);
+    // A git revision as a positional arg. Closed char class, no leading "-"
+    // (already enforced above), and NO ".." until ranges are explicitly designed.
+    case "git-rev": return /^[A-Za-z0-9._/-]{1,100}$/.test(value) && !value.includes("..");
     default: return false;
   }
 }

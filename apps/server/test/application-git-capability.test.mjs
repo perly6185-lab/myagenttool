@@ -36,11 +36,11 @@ const EXPECTED_ARGV = {
   head: ["--no-pager", "rev-parse", "HEAD"],
 };
 
-test("registering app_git projects its five read-only capabilities (kind binary_wrapper)", () => {
+test("registering app_git projects its read-only capability set (kind binary_wrapper)", () => {
   const app = service().registerApplication(createGitApplicationRegistration());
   assert.equal(app.id, GIT_APPLICATION_ID);
   const caps = projectApplicationCapabilities(app).filter((c) => String(c.name).includes(".wrapper."));
-  assert.equal(caps.length, 5);
+  assert.equal(caps.length, 7); // 5 read-only + show/diff_ref (#777)
   for (const cap of caps) {
     assert.equal(cap.kind, "binary_wrapper");
     assert.equal(cap.riskLevel, "low");
@@ -90,7 +90,6 @@ test("log appends only validated since/until/author/maxCount flags; invalid valu
 test("an unknown git command does not plan (→ wrapper_command_not_found upstream)", () => {
   const app = service().registerApplication(createGitApplicationRegistration());
   assert.equal(applicationWrapperExecutionPlan(app, "push"), null);
-  assert.equal(applicationWrapperExecutionPlan(app, "show"), null, "positional show is #777, not here");
 });
 
 test("planApplicationWrapperInvocation refuses unknown command (404) and offline/archived (409)", () => {
@@ -132,6 +131,6 @@ test("registration, capabilities, and argv survive a state serialize/restore rou
   assert.equal(app.source.type, "binary");
   assert.equal(app.source.binary, "git");
   const caps = projectApplicationCapabilities(app).filter((c) => String(c.name).includes(".wrapper."));
-  assert.equal(caps.length, 5);
+  assert.equal(caps.length, 7);
   assert.deepEqual(applicationWrapperExecutionPlan(app, "status").args, EXPECTED_ARGV.status);
 });
