@@ -51,6 +51,22 @@ const GIT_WRAPPER_COMMANDS = [
     description: "The current HEAD commit hash.",
     args: ["--no-pager", "rev-parse", "HEAD"],
   },
+  // Positional-rev commands (#777): the rev is an argv element with no --flag in
+  // front of it, validated by the closed `git-rev` type (no leading "-", no "..").
+  {
+    id: "show",
+    displayName: "Git show (stat)",
+    description: "Commit metadata + change summary for a revision.",
+    args: ["--no-pager", "show", "--stat", "--no-color"],
+    argInputs: [{ key: "rev", positional: true, type: "git-rev" }],
+  },
+  {
+    id: "diff_ref",
+    displayName: "Git diff (stat) against a ref",
+    description: "Change summary of the working tree against a revision.",
+    args: ["--no-pager", "diff", "--stat", "--no-color"],
+    argInputs: [{ key: "rev", positional: true, type: "git-rev" }],
+  },
 ];
 
 /**

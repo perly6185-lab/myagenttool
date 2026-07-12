@@ -25,6 +25,9 @@ const CCUSAGE_WRAPPER_ARGS = {
 const isIsoDate = (value) => /^\d{4}-\d{2}-\d{2}$/.test(value);
 const isGitToken = (value) => /^[A-Za-z0-9_+/:.][A-Za-z0-9_+/:.-]{0,63}$/.test(value);
 const isMaxCount = (value) => /^\d{1,4}$/.test(value) && Number(value) >= 1 && Number(value) <= 1000;
+// A git revision as a positional arg (#777). Mirrors the server's `git-rev`
+// validator INDEPENDENTLY — closed char class, no leading "-", no "..".
+const isGitRev = (value) => /^[A-Za-z0-9._/-]{1,100}$/.test(value) && !value.includes("..");
 
 const GIT_WRAPPER_ARGS = {
   status: { base: ["--no-pager", "status", "--porcelain=v2", "--branch"], flags: {} },
@@ -35,6 +38,8 @@ const GIT_WRAPPER_ARGS = {
   diff_stat: { base: ["--no-pager", "diff", "--stat", "--no-color"], flags: {} },
   branch_list: { base: ["--no-pager", "branch", "--list", "--format=%(refname:short)%x1f%(objectname)"], flags: {} },
   head: { base: ["--no-pager", "rev-parse", "HEAD"], flags: {} },
+  show: { base: ["--no-pager", "show", "--stat", "--no-color"], flags: {}, positional: isGitRev, maxPositionals: 1 },
+  diff_ref: { base: ["--no-pager", "diff", "--stat", "--no-color"], flags: {}, positional: isGitRev, maxPositionals: 1 },
 };
 
 export function createLocalExecutionPolicyManifest({
@@ -331,16 +336,27 @@ function ccusageArgsAllowed(capability, args) {
 function gitArgsAllowed(capability, args) {
   const cmd = String(capability ?? "").match(/^app\.app_git\.wrapper\.([a-z0-9_]+)$/)?.[1] ?? null;
   const spec = cmd ? GIT_WRAPPER_ARGS[cmd] : null;
-  // Args must match the declared base as a PREFIX, then only declared flag/value
-  // pairs may follow — each value passing its flag's validator.
+  // Args must match the declared base as a PREFIX, then declared flag/value pairs,
+  // then declared positionals (git-rev). A positional has NO leading "-", so it is
+  // never confusable with a flag; an undeclared flag or an over-count positional
+  // is refused.
   if (!spec || !stringArrayStartsWith(args, spec.base)) return false;
   const rest = args.slice(spec.base.length);
-  for (let index = 0; index < rest.length; index += 2) {
-    const flag = rest[index];
-    const value = rest[index + 1];
-    if (value === undefined) return false;
-    const validate = spec.flags[flag];
-    if (typeof validate !== "function" || !validate(value)) return false;
+  let positionals = 0;
+  let index = 0;
+  while (index < rest.length) {
+    const token = String(rest[index] ?? "");
+    if (token.startsWith("-")) {
+      const validate = spec.flags[token];
+      const value = rest[index + 1];
+      if (typeof validate !== "function" || value === undefined || !validate(value)) return false;
+      index += 2;
+    } else {
+      if (typeof spec.positional !== "function" || positionals >= (spec.maxPositionals ?? 0)) return false;
+      if (!spec.positional(token)) return false;
+      positionals += 1;
+      index += 1;
+    }
   }
   return true;
 }

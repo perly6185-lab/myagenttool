@@ -410,3 +410,29 @@ test("git wrapper: a file/network policy exceeding the command allowlist is refu
   });
   assert.equal(gate.allowed, false);
 });
+
+// --- #777: positional revision arguments at the bridge (git-rev), independently ---
+
+test("git wrapper: show/diff_ref with a valid positional rev is allowed", () => {
+  const okShow = gitGate({ capability: "app.app_git.wrapper.show", execArgs: ["--no-pager", "show", "--stat", "--no-color", "HEAD"], root: gitRoot, cwd: gitRoot });
+  assert.equal(okShow.allowed, true, okShow.reason);
+  const okDiff = gitGate({ capability: "app.app_git.wrapper.diff_ref", execArgs: ["--no-pager", "diff", "--stat", "--no-color", "v1.2.3"], root: gitRoot, cwd: gitRoot });
+  assert.equal(okDiff.allowed, true, okDiff.reason);
+});
+
+test("git wrapper: the bridge independently refuses a bad positional rev", () => {
+  for (const rev of ["--upload-pack=/x", "-evil", "a..b", "../../etc", "a;rm", "a b", "a|b", "a".repeat(101)]) {
+    const gate = gitGate({ capability: "app.app_git.wrapper.show", execArgs: ["--no-pager", "show", "--stat", "--no-color", rev], root: gitRoot, cwd: gitRoot });
+    assert.equal(gate.allowed, false, `bridge must refuse rev "${rev}"`);
+  }
+});
+
+test("git wrapper: a second positional (over maxPositionals) is refused", () => {
+  const gate = gitGate({ capability: "app.app_git.wrapper.show", execArgs: ["--no-pager", "show", "--stat", "--no-color", "HEAD", "main"], root: gitRoot, cwd: gitRoot });
+  assert.equal(gate.allowed, false);
+});
+
+test("git wrapper: a positional on a command that declares none is refused", () => {
+  const gate = gitGate({ capability: "app.app_git.wrapper.status", execArgs: ["--no-pager", "status", "--porcelain=v2", "--branch", "HEAD"], root: gitRoot, cwd: gitRoot });
+  assert.equal(gate.allowed, false, "status takes no positional");
+});
