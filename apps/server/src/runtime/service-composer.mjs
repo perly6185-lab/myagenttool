@@ -1,4 +1,5 @@
 import { createEventLogRuntime } from "./event-log.mjs";
+import { createRefusalRuntime } from "./refusal-log.mjs";
 import { createBridgeCredentialRuntime } from "./bridge-auth.mjs";
 import { createPersistenceRuntime } from "./persistence.mjs";
 import { createReadModelRuntime } from "./read-models.mjs";
@@ -84,6 +85,14 @@ export function createServerRuntimeServices({
     nextId,
     persistStateSoon,
     getCodexEventHandlers: () => codexEventHandlers,
+  });
+  // Refusal model Phase 2 (#760): the single writer for the device's veto.
+  const { refuse, firstRefusal } = createRefusalRuntime({
+    state,
+    now,
+    nextId,
+    appendEvent,
+    persistStateSoon,
   });
   const {
     issueBridgeCredential,
@@ -211,6 +220,7 @@ export function createServerRuntimeServices({
     now,
     nextId,
     appendEvent,
+    refuse,
     currentProject,
     findInvocation,
     persistStateSoon,
@@ -316,6 +326,7 @@ export function createServerRuntimeServices({
     now,
     nextId,
     appendEvent,
+    refuse,
     persistStateSoon,
     persistStateNow,
     dispatchLeaseMs,
@@ -391,6 +402,7 @@ export function createServerRuntimeServices({
     state,
     now,
     nextId,
+    refuse,
     // O0 cost brake: refuse to start a run when the project is over budget.
     budgetStatusFor,
     // A1 alerting: best-effort operational webhook (budget breach, stuck reap).
@@ -2191,26 +2203,47 @@ export function createServerRuntimeServices({
   function appendRecoveryActionEvent(kind, invocationId, applicationId, routineId, actionType, recoveryCategory, reason, actionRequest = null) {
     const requested = kind === "requested";
     const pending = kind === "approval_pending";
-    appendEvent({
-      invocationId,
-      type: requested || pending
-        ? "application_orchestration_recovery_action_requested"
-        : "application_orchestration_recovery_action_rejected",
-      level: requested ? "info" : "warn",
-      message: pending
-        ? `Application orchestration recovery action ${actionType} is pending approval.`
-        : requested
-          ? `Application orchestration recovery action ${actionType} requested.`
-        : `Application orchestration recovery action ${actionType} rejected.`,
-      data: {
-        applicationId,
-        routineId,
-        actionType,
-        recoveryCategory,
-        reason,
-        recoveryActionRequestId: actionRequest?.id ?? null,
-        status: actionRequest?.status ?? null,
-        approvalRequestId: actionRequest?.approvalRequestId ?? null,
+    const data = {
+      applicationId,
+      routineId,
+      actionType,
+      recoveryCategory,
+      reason,
+      recoveryActionRequestId: actionRequest?.id ?? null,
+      status: actionRequest?.status ?? null,
+      approvalRequestId: actionRequest?.approvalRequestId ?? null,
+    };
+    if (requested || pending) {
+      appendEvent({
+        invocationId,
+        type: "application_orchestration_recovery_action_requested",
+        level: "info",
+        message: pending
+          ? `Application orchestration recovery action ${actionType} is pending approval.`
+          : `Application orchestration recovery action ${actionType} requested.`,
+        data,
+      });
+      return;
+    }
+    // A rejected recovery action is a policy refusal: the requested action is not
+    // permitted for this application in its current state.
+    refuse({
+      subject: { kind: "application_action", id: actionRequest?.id ?? applicationId },
+      requester: { kind: "automation", id: routineId ?? applicationId },
+      category: "policy",
+      code: "action_not_permitted",
+      decidedBy: { kind: "policy_engine", id: "recovery_arbiter" },
+      summary: `Recovery action ${actionType} was not permitted.`,
+      evidence: data,
+      remedy: reason || "The recovery action is not suggested or is blocked for this application.",
+      retryAfter: null,
+      appealTo: "device_owner",
+      event: {
+        invocationId,
+        type: "application_orchestration_recovery_action_rejected",
+        level: "warn",
+        message: `Application orchestration recovery action ${actionType} rejected.`,
+        data,
       },
     });
   }
@@ -2508,6 +2541,8 @@ export function createServerRuntimeServices({
     recordTerminalEvidence,
     summarizeText,
     appendEvent,
+    refuse,
+    firstRefusal,
     isAgentDisabled,
     redeliverExpiredDispatches,
     registerAgent,

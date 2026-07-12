@@ -1,5 +1,6 @@
 import { detectPromptInjection, roleAutoRunPrompt } from "@myagenttool/protocol/issue-prompt";
 
+import { createRefusalRuntime } from "../runtime/refusal-log.mjs";
 import { isTerminal } from "./invocations.mjs";
 import { normalizeWorktreeLink } from "./projects.mjs";
 import { intentForPath, resolveDecision } from "./auto-run-decision.mjs";
@@ -58,6 +59,7 @@ export function createAutoRunService({
   now,
   nextId,
   appendEvent,
+  refuse: injectedRefuse,
   persistStateSoon,
   createWorktree,
   destroyWorktree,
@@ -94,6 +96,10 @@ export function createAutoRunService({
   runRollback,
   fileRemediationIssue,
 }) {
+  // Production injects the shared refusal writer; fall back to one bound to this
+  // service's own state so a directly-constructed service (unit tests) still
+  // records the veto instead of throwing (refusal model Phase 2, #760).
+  const refuse = injectedRefuse ?? createRefusalRuntime({ state, now, nextId, appendEvent }).refuse;
   // Best-effort issue body fetch (issue links only): richer context for both the
   // decision and the role prompt. Null on any failure — the run proceeds on the
   // title alone rather than failing on a gh hiccup.
@@ -854,12 +860,24 @@ export function createAutoRunService({
         ? "Local approval denied. The worktree was kept because it holds un-pushed work."
         : "Local approval denied — the worktree and branch were reclaimed.",
     });
-    appendEvent({
-      invocationId: invocation.id,
-      type: "auto_run_denied",
-      level: "warn",
-      message: `Auto-run ${autoRun.id} was denied at the approval gate; worktree ${kept ? "kept (holds un-pushed work)" : "and branch reclaimed"}.`,
-      data: { autoRunId: autoRun.id, worktreeId, worktreeKept: Boolean(kept) },
+    refuse({
+      subject: { kind: "invocation", id: invocation.id },
+      requester: { kind: "automation", id: autoRun.id },
+      category: "human",
+      code: "approval_denied",
+      decidedBy: { kind: "user", id: "usr_local" },
+      summary: `Auto-run ${autoRun.id} was denied at the approval gate.`,
+      evidence: { autoRunId: autoRun.id, worktreeId, worktreeKept: Boolean(kept) },
+      remedy: "Re-run the issue and approve it at the local gate.",
+      retryAfter: null,
+      appealTo: "device_owner",
+      event: {
+        invocationId: invocation.id,
+        type: "auto_run_denied",
+        level: "warn",
+        message: `Auto-run ${autoRun.id} was denied at the approval gate; worktree ${kept ? "kept (holds un-pushed work)" : "and branch reclaimed"}.`,
+        data: { autoRunId: autoRun.id, worktreeId, worktreeKept: Boolean(kept) },
+      },
     });
     persistStateSoon();
     return autoRun;
@@ -1257,12 +1275,24 @@ export function createAutoRunService({
     autoRun.designApproval = { status: "rejected", by, at: now(), feedback: note || null };
     const worktree = state.worktrees.find((item) => item.id === autoRun.worktreeId) ?? null;
     maybePostIssueReport(autoRun, worktree, `Design not approved by ${by}.${note ? `\n\nRequested changes:\n${note}` : ""}`);
-    appendEvent({
-      invocationId: autoRun.invocationId,
-      type: "auto_run_design_rejected",
-      level: "info",
-      message: `Auto-run ${autoRun.id} design rejected by ${by}.`,
-      data: { autoRunId: autoRun.id, feedback: note || null },
+    refuse({
+      subject: { kind: "invocation", id: autoRun.invocationId },
+      requester: { kind: "automation", id: autoRun.id },
+      category: "human",
+      code: "deliverable_rejected",
+      decidedBy: { kind: "user", id: by },
+      summary: `Auto-run ${autoRun.id} design rejected by ${by}.`,
+      evidence: { autoRunId: autoRun.id, feedback: note || null },
+      remedy: note || "Revise the design to address the reviewer's requested changes and re-post.",
+      retryAfter: null,
+      appealTo: "device_owner",
+      event: {
+        invocationId: autoRun.invocationId,
+        type: "auto_run_design_rejected",
+        level: "info",
+        message: `Auto-run ${autoRun.id} design rejected by ${by}.`,
+        data: { autoRunId: autoRun.id, feedback: note || null },
+      },
     });
     persistStateSoon();
     return { ok: true };
@@ -1352,12 +1382,24 @@ export function createAutoRunService({
     autoRun.decompositionApproval = { status: "rejected", by, at: now(), feedback: note || null };
     const worktree = state.worktrees.find((item) => item.id === autoRun.worktreeId) ?? null;
     maybePostIssueReport(autoRun, worktree, `Decomposition plan not approved by ${by}.${note ? `\n\nRequested changes:\n${note}` : ""}`);
-    appendEvent({
-      invocationId: autoRun.invocationId,
-      type: "auto_run_decomposition_rejected",
-      level: "info",
-      message: `Auto-run ${autoRun.id} decomposition rejected by ${by}.`,
-      data: { autoRunId: autoRun.id, feedback: note || null },
+    refuse({
+      subject: { kind: "invocation", id: autoRun.invocationId },
+      requester: { kind: "automation", id: autoRun.id },
+      category: "human",
+      code: "deliverable_rejected",
+      decidedBy: { kind: "user", id: by },
+      summary: `Auto-run ${autoRun.id} decomposition rejected by ${by}.`,
+      evidence: { autoRunId: autoRun.id, feedback: note || null },
+      remedy: note || "Revise the decomposition plan to address the reviewer's requested changes and re-propose.",
+      retryAfter: null,
+      appealTo: "device_owner",
+      event: {
+        invocationId: autoRun.invocationId,
+        type: "auto_run_decomposition_rejected",
+        level: "info",
+        message: `Auto-run ${autoRun.id} decomposition rejected by ${by}.`,
+        data: { autoRunId: autoRun.id, feedback: note || null },
+      },
     });
     persistStateSoon();
     return { ok: true };

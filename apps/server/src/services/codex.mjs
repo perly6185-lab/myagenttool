@@ -1,4 +1,5 @@
 import { LOCAL_TEAM_ID, teamOf } from "../runtime/auth.mjs";
+import { createRefusalRuntime } from "../runtime/refusal-log.mjs";
 import { isCodexCliCommand } from "./agents.mjs";
 
 export function createCodexService({
@@ -6,12 +7,15 @@ export function createCodexService({
   now,
   nextId,
   appendEvent,
+  refuse: injectedRefuse,
   currentProject,
   findInvocation,
   persistStateSoon,
   uniqueStrings,
   worktreeForProject,
 }) {
+  // Shared writer in production; a state-bound fallback for direct construction.
+  const refuse = injectedRefuse ?? createRefusalRuntime({ state, now, nextId, appendEvent }).refuse;
   function normalizeCodexSessionMode(value, agent) {
     if (!isCodexCliCommand(agent?.adapter?.command)) {
       return "not_applicable";
@@ -457,7 +461,7 @@ export function createCodexService({
     request.updatedAt = request.decidedAt;
     request.notificationState = "resolved";
     persistStateSoon();
-    appendEvent({
+    const event = {
       invocationId: request.invocationId,
       type: action === "approve" ? "codex_approval_granted" : timedOut ? "codex_approval_timed_out" : "codex_approval_denied",
       level: action === "approve" ? "info" : "warn",
@@ -465,7 +469,26 @@ export function createCodexService({
         ? "Codex approval broker approved the request."
         : timedOut ? "Codex approval broker timed out and denied the request." : "Codex approval broker denied the request.",
       data: { approvalBrokerRequestId: request.id, decision: request.decision },
-    });
+    };
+    // An explicit deny is a human refusal; approve and timeout are not routed
+    // through the refusal writer (timeout is its own signal, not a decision).
+    if (event.type === "codex_approval_denied") {
+      refuse({
+        subject: { kind: "capability_call", id: request.invocationId },
+        requester: { kind: "local_user", id: "usr_local" },
+        category: "human",
+        code: "approval_denied",
+        decidedBy: { kind: "arbiter", id: request.id },
+        summary: "Codex approval broker denied the request.",
+        evidence: { approvalBrokerRequestId: request.id, decision: request.decision },
+        remedy: "Re-request the permission and approve it at the Codex approval broker.",
+        retryAfter: null,
+        appealTo: "device_owner",
+        event,
+      });
+    } else {
+      appendEvent(event);
+    }
     return request;
   }
 

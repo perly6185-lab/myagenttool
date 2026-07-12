@@ -1,10 +1,12 @@
 import { cancellationTextForAdapter, isCodexCliCommand } from "../agents.mjs";
+import { createRefusalRuntime } from "../../runtime/refusal-log.mjs";
 
 export function createInvocationApprovalRuntime({
   state,
   now,
   nextId,
   appendEvent,
+  refuse: injectedRefuse,
   findAgent,
   uniqueStrings,
   completeRootSpan,
@@ -14,6 +16,8 @@ export function createInvocationApprovalRuntime({
   onInvocationApproved,
   onInvocationDenied,
 }) {
+  // Shared writer in production; a state-bound fallback for direct construction.
+  const refuse = injectedRefuse ?? createRefusalRuntime({ state, now, nextId, appendEvent }).refuse;
   function evaluateInvocationPolicy(agent, options = {}) {
     const capabilities = Array.isArray(agent.capabilities) ? agent.capabilities : [];
     const riskLevel = highestRiskLevel(capabilities.map((capability) => capability.riskLevel));
@@ -146,19 +150,33 @@ export function createInvocationApprovalRuntime({
       policyRecord.approver = decidedBy;
       policyRecord.reason = "Local approval denied by user.";
     }
-    appendEvent({
-      invocationId: invocation.id,
-      type: "local_approval_denied",
-      level: "warn",
-      message: "Local approval denied. Invocation was not executed.",
-      data: { approvalRequestId: approval.id }
+    refuse({
+      subject: { kind: "invocation", id: invocation.id },
+      requester: { kind: "local_user", id: invocation.requestedBy ?? "usr_local" },
+      category: "human",
+      code: "approval_denied",
+      decidedBy: { kind: "user", id: decidedBy },
+      summary: "Local approval denied. Invocation was not executed.",
+      evidence: { approvalRequestId: approval.id },
+      remedy: "Re-request the invocation and approve it at the local gate.",
+      retryAfter: null,
+      appealTo: "device_owner",
+      event: {
+        invocationId: invocation.id,
+        type: "local_approval_denied",
+        level: "warn",
+        message: "Local approval denied. Invocation was not executed.",
+        data: { approvalRequestId: approval.id },
+      },
     });
+    // Secondary status echo of the denial the refuse() above already recorded —
+    // not an independent refusal, so it does not mint a second record.
     appendEvent({
       invocationId: invocation.id,
       type: "invocation_rejected",
       level: "warn",
       message: "Invocation rejected before execution."
-    });
+    }, { viaRefuse: true });
     state.auditSummaries.push({
       ...createAuditSummary(invocation, "Local approval denied before execution."),
       permissionDecision: "denied",

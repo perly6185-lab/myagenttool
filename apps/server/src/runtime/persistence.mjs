@@ -47,6 +47,7 @@ const persistedArrayKeys = [
   "compareRuns",
   "worktreeReviews",
   "events",
+  "refusals",
   "traces",
   "spans",
   "auditSummaries",

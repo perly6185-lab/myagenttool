@@ -55,6 +55,8 @@ export function createServerState({ defaultProjectPath, now }) {
     compareRuns: [],
     worktreeReviews: [],
     events: [],
+    // Refusal model Phase 2 (#760): the device's veto as first-class records.
+    refusals: [],
     traces: [],
     spans: [],
     auditSummaries: [],
@@ -151,6 +153,7 @@ export function resetStateForSelfCheck({ state, now }) {
   state.applications = [];
   state.applicationRecoveryActions = [];
   state.events = [];
+  state.refusals = [];
   state.traces = [];
   state.spans = [];
   state.auditSummaries = [];
@@ -183,6 +186,7 @@ export function resetStateForSelfCheck({ state, now }) {
     promptsDays: 30,
     responsesDays: 30,
     artifactsDays: 90,
+    refusalsDays: 30,
     updatedAt: now()
   };
   state.approvalRequests = [];
@@ -693,6 +697,7 @@ function createDefaultRetentionSettings(now) {
     promptsDays: 30,
     responsesDays: 30,
     artifactsDays: 90,
+    refusalsDays: 30,
     updatedAt: now()
   };
 }
