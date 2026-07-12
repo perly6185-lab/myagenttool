@@ -132,6 +132,22 @@ export function createCapabilityService({
     if (!planned.ok) {
       return { status: planned.status, body: planned.body };
     }
+    // A cwdPolicy:"invocation_root" command is defined by the repository it runs
+    // in. With no project to confine to, the bridge would silently fall back to
+    // its own directory — the exact bug #773 exists to remove. Refuse here, with
+    // evidence, rather than dispatch an unrooted command.
+    const resolvedProjectId = capability.application?.projectId ?? input?.projectId ?? null;
+    if (planned.wrapper.cwdPolicy === "invocation_root" && !resolvedProjectId) {
+      return {
+        status: 409,
+        body: {
+          error: "invocation_root_requires_project",
+          capability: name,
+          message: "This command runs in the invocation's repository, but no project is scoped to the invocation.",
+          evidence: { cwdPolicy: "invocation_root", applicationId },
+        },
+      };
+    }
     const agent = findAgent("agt_platform_application_wrapper");
     if (!agent || agent.status === "disabled") {
       return {
