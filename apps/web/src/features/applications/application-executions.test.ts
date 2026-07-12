@@ -2,8 +2,10 @@ import { describe, expect, it } from "vitest";
 import {
   applicationExecutionDigest,
   applicationInvocations,
+  dailyStatsSeries,
   digestTone,
   durableStatsWindow,
+  durableSuccessRate,
   executionKind,
   formatResultOutput,
 } from "@/features/applications/application-executions";
@@ -103,6 +105,36 @@ describe("durableStatsWindow", () => {
 
   it("empty stats → zeros", () => {
     expect(durableStatsWindow([], "app_1", 30, "2026-07-11")).toEqual({ days: 30, succeeded: 0, failed: 0, recovered: 0 });
+  });
+});
+
+describe("dailyStatsSeries", () => {
+  const s = (date: string, over: Record<string, number> = {}, applicationId = "app_1") => ({
+    applicationId, date, succeeded: 0, failed: 0, timedOut: 0, ...over,
+  });
+
+  it("zero-fills empty days, oldest→newest, timeouts fold into failed", () => {
+    const series = dailyStatsSeries(
+      [s("2026-07-12", { succeeded: 2, failed: 1 }), s("2026-07-10", { succeeded: 1, timedOut: 1 }), s("2026-07-12", { succeeded: 9 }, "other")],
+      "app_1",
+      3,
+      "2026-07-12",
+    );
+    expect(series.map((b) => b.date)).toEqual(["2026-07-10", "2026-07-11", "2026-07-12"]);
+    expect(series.map((b) => b.total)).toEqual([2, 0, 3]); // 10th: 1+1, 11th: empty, 12th: 2+1
+    expect(series[0]).toEqual({ date: "2026-07-10", succeeded: 1, failed: 1, total: 2 });
+  });
+});
+
+describe("durableSuccessRate", () => {
+  const s = (date: string, over: Record<string, number> = {}) => ({
+    applicationId: "app_1", date, succeeded: 0, failed: 0, timedOut: 0, recovered: 0, ...over,
+  });
+
+  it("terminal-only rate over the window; null when nothing finished", () => {
+    expect(durableSuccessRate([s("2026-07-12", { succeeded: 3, failed: 1 })], "app_1", 30, "2026-07-12")).toBe(0.75);
+    expect(durableSuccessRate([s("2026-07-12", { succeeded: 2, timedOut: 2 })], "app_1", 30, "2026-07-12")).toBe(0.5);
+    expect(durableSuccessRate([], "app_1", 30, "2026-07-12")).toBeNull();
   });
 });
 
