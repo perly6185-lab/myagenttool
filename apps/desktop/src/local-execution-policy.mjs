@@ -12,6 +12,31 @@ const CCUSAGE_WRAPPER_ARGS = {
   claude_daily: ["claude", "daily", "--json", "--offline"],
 };
 
+// The bridge's OWN copy of the git wrapper argv spec (#775). Deliberately
+// duplicated from the server spec (apps/server .../git-application.mjs) — two
+// independent allowlists, so a buggy or compromised server still cannot make a
+// device spawn something new. Do NOT factor into a shared constant.
+//
+// Validators mirror the server's argInput types independently, and are STRICTER
+// where it costs nothing (max-count numeric 1–1000). A value with a leading "-"
+// never validates, so flag-shaped injections (--upload-pack=, --exec-path=) in a
+// value slot are refused; unlisted flags (-c, --exec-path) in a flag slot have no
+// validator and are refused.
+const isIsoDate = (value) => /^\d{4}-\d{2}-\d{2}$/.test(value);
+const isGitToken = (value) => /^[A-Za-z0-9_+/:.][A-Za-z0-9_+/:.-]{0,63}$/.test(value);
+const isMaxCount = (value) => /^\d{1,4}$/.test(value) && Number(value) >= 1 && Number(value) <= 1000;
+
+const GIT_WRAPPER_ARGS = {
+  status: { base: ["--no-pager", "status", "--porcelain=v2", "--branch"], flags: {} },
+  log: {
+    base: ["--no-pager", "log", "--format=%H%x1f%an%x1f%aI%x1f%s%x1e", "--max-count=50"],
+    flags: { "--since": isIsoDate, "--until": isIsoDate, "--author": isGitToken, "--max-count": isMaxCount },
+  },
+  diff_stat: { base: ["--no-pager", "diff", "--stat", "--no-color"], flags: {} },
+  branch_list: { base: ["--no-pager", "branch", "--list", "--format=%(refname:short)%x1f%(objectname)"], flags: {} },
+  head: { base: ["--no-pager", "rev-parse", "HEAD"], flags: {} },
+};
+
 export function createLocalExecutionPolicyManifest({
   demoAgentPath,
   codexFixtureAgentPath,
@@ -31,6 +56,12 @@ export function createLocalExecutionPolicyManifest({
       {
         command: "ccusage",
         capabilityPrefix: "app.app_ccusage.wrapper.",
+        filePolicy: "read_only",
+        networkPolicy: "forbidden",
+      },
+      {
+        command: "git",
+        capabilityPrefix: "app.app_git.wrapper.",
         filePolicy: "read_only",
         networkPolicy: "forbidden",
       },
@@ -224,8 +255,8 @@ function applicationWrapperGate(work, spawnPlan, localPolicy, approvedRoots, man
       return { allowed: false, reason: "Local execution gate refused an application wrapper cwd outside the approved project or worktree root.", evidence , code: "policy_blocked" };
     }
   }
-  if (!ccusageArgsAllowed(parsed.capability, parsed.execArgs)) {
-    return { allowed: false, reason: "Local execution gate refused application wrapper args outside the local allowlist.", evidence };
+  if (!wrapperArgsAllowed(parsed.capability, parsed.execArgs)) {
+    return { allowed: false, reason: "Local execution gate refused application wrapper args outside the local allowlist.", evidence, code: "policy_blocked" };
   }
   return { allowed: true, reason: "Local execution gate allowed the application wrapper command.", evidence };
 }
@@ -272,6 +303,15 @@ function valueAt(args, index, name, { allowFlag = false } = {}) {
   return text;
 }
 
+// Dispatch on capability prefix to a per-application argv spec. An UNKNOWN prefix
+// returns false — default-deny is the property this whole file exists to hold.
+function wrapperArgsAllowed(capability, args) {
+  const cap = String(capability ?? "");
+  if (cap.startsWith("app.app_ccusage.wrapper.")) return ccusageArgsAllowed(cap, args);
+  if (cap.startsWith("app.app_git.wrapper.")) return gitArgsAllowed(cap, args);
+  return false;
+}
+
 function ccusageArgsAllowed(capability, args) {
   const report = String(capability ?? "").match(/^app\.app_ccusage\.wrapper\.([a-z0-9_]+)$/)?.[1] ?? null;
   const base = report ? CCUSAGE_WRAPPER_ARGS[report] : null;
@@ -284,6 +324,23 @@ function ccusageArgsAllowed(capability, args) {
     if ((flag === "--since" || flag === "--until") && /^\d{4}-\d{2}-\d{2}$/.test(value)) continue;
     if (flag === "--timezone" && /^[A-Za-z0-9_+/:.][A-Za-z0-9_+/:.-]{0,63}$/.test(value)) continue;
     return false;
+  }
+  return true;
+}
+
+function gitArgsAllowed(capability, args) {
+  const cmd = String(capability ?? "").match(/^app\.app_git\.wrapper\.([a-z0-9_]+)$/)?.[1] ?? null;
+  const spec = cmd ? GIT_WRAPPER_ARGS[cmd] : null;
+  // Args must match the declared base as a PREFIX, then only declared flag/value
+  // pairs may follow — each value passing its flag's validator.
+  if (!spec || !stringArrayStartsWith(args, spec.base)) return false;
+  const rest = args.slice(spec.base.length);
+  for (let index = 0; index < rest.length; index += 2) {
+    const flag = rest[index];
+    const value = rest[index + 1];
+    if (value === undefined) return false;
+    const validate = spec.flags[flag];
+    if (typeof validate !== "function" || !validate(value)) return false;
   }
   return true;
 }
