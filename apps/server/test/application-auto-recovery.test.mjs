@@ -194,15 +194,28 @@ test("crash-loop cap: after maxAttempts consecutive auto attempts, it stops with
   assert.match(alert.message, /still failing/);
 });
 
-test("approval-gated categories are never auto-recovered and nothing is parked in the broker", async () => {
+test("approval-gated categories are auto-FILED for human approval, never auto-executed (phase 3)", async () => {
+  // Reset the stream so the crash-loop cap from the previous test can't mask this.
+  await runAndComplete({ status: "succeeded", summary: "healthy again" });
   const brokerBefore = state.codexApprovalBrokerRequests.length;
-  const autoBefore = autoRequests().length;
   const failed = await runAndComplete({ status: "failed", summary: "invalid_application_routine: validation failed" });
-  assert.equal(autoRerunsOf(failed).length, 0);
-  assert.equal(autoRequests().length, autoBefore, "no auto request for a validation failure");
-  assert.equal(state.codexApprovalBrokerRequests.length, brokerBefore, "no auto-parked approval request");
-  const skipped = skipEvents("approval_required");
-  assert.ok(skipped.some((e) => e.invocationId === failed && e.data.recommendedAction === "regenerate_orchestration"));
+
+  assert.equal(autoRerunsOf(failed).length, 0, "nothing auto-EXECUTES for an approval-gated failure");
+  const filedRequest = autoRequests()[0]; // unshift-ordered: newest first
+  assert.equal(filedRequest.invocationId, failed);
+  assert.equal(filedRequest.actionType, "regenerate_orchestration");
+  assert.equal(filedRequest.status, "approval_pending", "the auto-filed action parks for a human");
+  assert.equal(state.codexApprovalBrokerRequests.length, brokerBefore + 1, "one approval request parked in the broker");
+  assert.ok(state.events.some((e) => e.type === "application_orchestration_auto_recovery_approval_filed" && e.invocationId === failed));
+  // The parked decision surfaces in the one queue.
+  const snapshot = await call("/api/state");
+  assert.ok(snapshot.body.pendingDecisions.some((d) => d.kind === "application_recovery" && d.ref?.recoveryActionRequestId === filedRequest.id));
+
+  // A second failure on the SAME run cannot double-file (duplicate guard) —
+  // and the human can still approve the parked one, which executes end-to-end.
+  const approved = await call(`/api/codex/approval-broker/${filedRequest.approvalRequestId}/approve`, { method: "POST", body: {} });
+  assert.equal(approved.status, 200);
+  assert.equal(autoRequests()[0].status, "executed", "human approval executes the auto-filed action");
 });
 
 test("a declared errorCode beats misleading runtime-looking text (no auto-rerun of an approval-gated failure)", async () => {
@@ -230,15 +243,16 @@ test("a declared errorCode beats misleading runtime-looking text (no auto-rerun 
   });
   assert.equal(autoRerunsOf(inv2).length, 0, "declared validation_failed must not auto-rerun");
   assert.ok(
-    skipEvents("approval_required").some((e) => e.invocationId === inv2 && e.data.category === "validation_failed"),
-    "the declared code classified the failure, not the runtime-looking text",
+    state.events.some((e) => e.type === "application_orchestration_auto_recovery_approval_filed"
+      && e.invocationId === inv2 && e.data.category === "validation_failed"),
+    "the declared code classified the failure (auto-filed for approval), not the runtime-looking text",
   );
   const recovery = await call(`/api/applications/${appId}/orchestrations/${routineId}/runs/${inv2}/recovery`);
   assert.equal(recovery.body.recovery.category, "validation_failed");
   assert.equal(recovery.body.recovery.confidence, 0.95, "structured signal carries higher confidence than haystack inference");
-  // Guard against cross-test bleed: the first (undeclared) failure in this test
-  // may have auto-rerun as runtime_error — only assert the declared one did not.
-  assert.ok(autoRequests().length - autoBefore <= 1);
+  // Guard against cross-test bleed: the first (undeclared) failure auto-reran as
+  // runtime_error and the declared one auto-filed — two auto requests at most.
+  assert.ok(autoRequests().length - autoBefore <= 2);
 });
 
 test("a declared runtime_error beats validation-looking text (the live-drive misclassification regression)", async () => {
@@ -278,6 +292,47 @@ test("an unknown errorCode falls back to haystack inference (never a fabricated 
   const recovery = await call(`/api/applications/${appId}/orchestrations/${routineId}/runs/${invocationId}/recovery`);
   assert.equal(recovery.body.recovery.category, "validation_failed", "unknown code → haystack fallback");
   assert.equal(recovery.body.recovery.confidence, 0.86);
+});
+
+test("routine-level overrides win over the app policy: off silences, cap tightens, clear restores", async () => {
+  // Override OFF for this routine while the app stays enabled → silent no-op.
+  await runAndComplete({ status: "succeeded", summary: "healthy again" });
+  const offSet = await call(`/api/applications/${appId}/auto-recovery`, {
+    method: "POST",
+    body: { enabled: false, routineId, approvalToken: "operator-approved" },
+  });
+  assert.equal(offSet.status, 200);
+  assert.deepEqual(offSet.body.application.autoRecovery.routineOverrides[routineId], { enabled: false, maxAttempts: 2 });
+  const autoBefore = autoRequests().length;
+  const silentFail = await runAndComplete({ status: "failed", summary: "npm test failed with exit code 1" });
+  assert.equal(autoRerunsOf(silentFail).length, 0, "override off → no auto action");
+  assert.equal(autoRequests().length, autoBefore);
+
+  // Override ON with a tighter cap (1) → one attempt, then the cap event.
+  await call(`/api/applications/${appId}/auto-recovery`, {
+    method: "POST",
+    body: { enabled: true, maxAttempts: 1, routineId, approvalToken: "operator-approved" },
+  });
+  await runAndComplete({ status: "succeeded", summary: "reset the stream" });
+  const capBefore = skipEvents("attempt_cap").length;
+  const failed = await runAndComplete({ status: "failed", summary: "npm test failed with exit code 1" });
+  const rerun = autoRerunsOf(failed)[0];
+  assert.ok(rerun, "attempt 1 spawned under the override");
+  await completeViaBridge(rerun.id, { status: "failed", summary: "npm test failed with exit code 1" });
+  assert.equal(autoRerunsOf(rerun.id).length, 0, "override cap 1 blocks attempt 2 (app cap is 2)");
+  assert.equal(skipEvents("attempt_cap").length, capBefore + 1);
+  assert.equal(skipEvents("attempt_cap")[0].data.maxAttempts, 1, "the override's cap, not the app's (events are unshift-ordered)");
+
+  // Clear the override → the app-level policy (cap 2) applies again.
+  const cleared = await call(`/api/applications/${appId}/auto-recovery`, {
+    method: "POST",
+    body: { routineId, clearOverride: true, approvalToken: "operator-approved" },
+  });
+  assert.equal(cleared.status, 200);
+  assert.equal(cleared.body.application.autoRecovery.routineOverrides[routineId], undefined);
+  await runAndComplete({ status: "succeeded", summary: "reset the stream" });
+  const failedAgain = await runAndComplete({ status: "failed", summary: "npm test failed with exit code 1" });
+  assert.equal(autoRerunsOf(failedAgain).length, 1, "app-level policy active again");
 });
 
 async function call(path, { method = "GET", body, token } = {}) {

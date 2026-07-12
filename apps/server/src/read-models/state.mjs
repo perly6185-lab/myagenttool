@@ -197,6 +197,11 @@ export function buildPublicState({
     // Sweep self-observability (admin-plane, like healthChecks): when the probe
     // last ran, how many apps it checked, and the last per-app error it swallowed.
     applicationHealthSweepStatus: state.applicationHealthSweepStatus ?? null,
+    // Durable per-app daily counters (survive the invocation cap) — scoped to
+    // the applications the viewer can see, like the applications list itself.
+    applicationDailyStats: (state.applicationDailyStats ?? []).filter((row) =>
+      applications.some((application) => application.id === row.applicationId),
+    ),
     // Legacy-approvalToken usage counter (APPROVAL_GRANTS.md phase 1): the
     // migration gauge — phase 2 flips strict once this stops moving. Grants
     // themselves are never exposed (server-side hashes only).

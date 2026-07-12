@@ -3,6 +3,7 @@ import {
   applicationExecutionDigest,
   applicationInvocations,
   digestTone,
+  durableStatsWindow,
   executionKind,
   formatResultOutput,
 } from "@/features/applications/application-executions";
@@ -71,6 +72,37 @@ describe("applicationExecutionDigest", () => {
     expect(digestTone(applicationExecutionDigest([inv("a"), inv("b")]))).toBe("success");
     expect(digestTone(applicationExecutionDigest([inv("a"), inv("b", { status: "failed" })]))).toBe("warning");
     expect(digestTone(applicationExecutionDigest([inv("a", { status: "failed" })]))).toBe("danger");
+  });
+});
+
+describe("durableStatsWindow", () => {
+  const stat = (date: string, over: Record<string, number> = {}, applicationId = "app_1") => ({
+    applicationId,
+    date,
+    succeeded: 0,
+    failed: 0,
+    timedOut: 0,
+    recovered: 0,
+    ...over,
+  });
+
+  it("sums the window for one app, counting timeouts as failures", () => {
+    const summary = durableStatsWindow(
+      [
+        stat("2026-07-11", { succeeded: 3, failed: 1 }),
+        stat("2026-07-05", { succeeded: 2, timedOut: 1, recovered: 1 }),
+        stat("2026-07-04", { succeeded: 9 }), // outside the 7d window
+        stat("2026-07-11", { succeeded: 100 }, "app_other"), // other app
+      ],
+      "app_1",
+      7,
+      "2026-07-11",
+    );
+    expect(summary).toEqual({ days: 7, succeeded: 5, failed: 2, recovered: 1 });
+  });
+
+  it("empty stats → zeros", () => {
+    expect(durableStatsWindow([], "app_1", 30, "2026-07-11")).toEqual({ days: 30, succeeded: 0, failed: 0, recovered: 0 });
   });
 });
 

@@ -15,6 +15,7 @@ import { createAgentSkillService } from "../services/agent-skills.mjs";
 import { createApplicationService, validateApplicationRoutineDraft } from "../services/applications.mjs";
 import { createApprovalGrantService } from "../services/approval-grants.mjs";
 import { createRetentionArchive } from "../services/retention-archive.mjs";
+import { createApplicationStatsRuntime } from "../services/application-stats.mjs";
 import { createCapabilityService } from "../services/capabilities.mjs";
 import { createCcusageImportService } from "../services/ccusage-imports.mjs";
 import { createClaudeReviewImportService } from "../services/claude-review-imports.mjs";
@@ -128,6 +129,7 @@ export function createServerRuntimeServices({
   // Cap-evicted audit rows land in an on-disk JSONL archive instead of
   // vanishing (docs: retention-archive.mjs). Disabled with persistence (tests).
   const retentionArchive = createRetentionArchive({ stateStorePath, enabled: persistenceEnabled, now });
+  const { recordApplicationExecutionStat } = createApplicationStatsRuntime({ state, now, persistStateSoon });
 
   const { issueApprovalGrant, mintDecisionGrant, validateApprovalToken } = createApprovalGrantService({
     state,
@@ -332,6 +334,11 @@ export function createServerRuntimeServices({
     budgetGateForProject,
     onInvocationCompleted: (invocation) => {
       advanceAutoRunHook?.(invocation);
+      try {
+        recordApplicationExecutionStat(invocation);
+      } catch {
+        /* stats are best-effort; completion must never fail because of them */
+      }
       try {
         orchestrationAutoRecoveryHook?.(invocation);
       } catch {
@@ -1048,7 +1055,11 @@ export function createServerRuntimeServices({
     const meta = invocation?.options?.metadata;
     if (meta?.source !== "application_orchestration" || !meta.applicationId || !meta.routineId) return;
     const application = findApplication(meta.applicationId);
-    if (!application?.autoRecovery?.enabled) return;
+    // Effective config: a per-routine override (局部管控) wins over the
+    // application-level policy for both the switch and the cap.
+    const autoRecoveryConfig = application?.autoRecovery ?? null;
+    const routineOverride = autoRecoveryConfig?.routineOverrides?.[meta.routineId] ?? null;
+    if (!(routineOverride?.enabled ?? autoRecoveryConfig?.enabled)) return;
 
     const recoveryModel = applicationOrchestrationRecovery(
       invocation,
@@ -1056,23 +1067,10 @@ export function createServerRuntimeServices({
       applicationRecoveryActionsForRun(meta.applicationId, meta.routineId, invocation.id),
     );
     const recommended = recoveryModel.actions.find((item) => item.recommended) ?? null;
-    if (!recommended || recommended.requiresApproval) {
-      // Never auto-request an approval either: a parked broker request would sit
-      // in its 5-minute timeout window and expire unseen.
-      appendAutoRecoverySkippedEvent(invocation, meta, "approval_required", {
-        category: recoveryModel.category,
-        recommendedAction: recommended?.type ?? null,
-      });
-      return;
-    }
-    if (!AUTO_RECOVERY_CATEGORIES.has(recoveryModel.category) || recommended.type !== "rerun") {
-      appendAutoRecoverySkippedEvent(invocation, meta, "category_not_eligible", {
-        category: recoveryModel.category,
-        recommendedAction: recommended.type,
-      });
-      return;
-    }
-    const cap = application.autoRecovery.maxAttempts ?? 2;
+    // The crash-loop cap applies to EVERYTHING auto-initiated — executed reruns
+    // and auto-filed approval requests alike — so a routine failing nightly
+    // cannot flood the Approvals queue any more than it can rerun itself.
+    const cap = routineOverride?.maxAttempts ?? autoRecoveryConfig?.maxAttempts ?? 2;
     const attempts = consecutiveAutoRecoveryAttempts(meta.applicationId, meta.routineId);
     if (attempts >= cap) {
       appendAutoRecoverySkippedEvent(invocation, meta, "attempt_cap", { attempts, maxAttempts: cap });
@@ -1083,6 +1081,43 @@ export function createServerRuntimeServices({
         severity: "warning",
         message: `Auto-recovery for ${meta.routineName ?? meta.routineId} stopped after ${attempts} consecutive attempts; the routine is still failing.`,
         data: { applicationId: meta.applicationId, routineId: meta.routineId, invocationId: invocation.id, attempts, maxAttempts: cap },
+      });
+      return;
+    }
+    if (recommended?.requiresApproval) {
+      // Auto-FILE, never auto-approve: park the recommended action as an
+      // ordinary approval request (24h window since #701 — it no longer expires
+      // before a human plausibly sees the queue). The human decides in the
+      // Approvals Center; approval executes through the decision-grant chain.
+      const filed = requestApplicationOrchestrationRecoveryAction(
+        meta.applicationId,
+        meta.routineId,
+        invocation.id,
+        { actionType: recommended.type, reason: `Auto-filed for approval after ${recoveryModel.category} (attempt ${attempts + 1}/${cap}).` },
+        { userId: AUTO_RECOVERY_ACTOR_ID },
+      );
+      if (filed.status === 202) {
+        appendEvent({
+          invocationId: invocation.id,
+          type: "application_orchestration_auto_recovery_approval_filed",
+          level: "info",
+          message: `Auto-recovery filed ${recommended.type} for human approval (${recoveryModel.category}).`,
+          data: { applicationId: meta.applicationId, routineId: meta.routineId, actionType: recommended.type, category: recoveryModel.category },
+        });
+      } else {
+        appendAutoRecoverySkippedEvent(invocation, meta, "approval_filing_blocked", {
+          category: recoveryModel.category,
+          recommendedAction: recommended.type,
+          status: filed.status,
+          error: filed.body?.error ?? null,
+        });
+      }
+      return;
+    }
+    if (!recommended || !AUTO_RECOVERY_CATEGORIES.has(recoveryModel.category) || recommended.type !== "rerun") {
+      appendAutoRecoverySkippedEvent(invocation, meta, "category_not_eligible", {
+        category: recoveryModel.category,
+        recommendedAction: recommended?.type ?? null,
       });
       return;
     }

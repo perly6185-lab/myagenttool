@@ -119,6 +119,17 @@ export interface EvidenceLedgerRow {
   attentionReasons: string[];
 }
 
+/** One per-application per-UTC-day execution counter row. */
+export interface ApplicationDailyStat {
+  applicationId: string;
+  date: string;
+  succeeded: number;
+  failed: number;
+  timedOut: number;
+  cancelled: number;
+  recovered: number;
+}
+
 /** One row in the consolidated Approvals queue (server read-model `pendingDecisions`). */
 export type PendingDecisionKind =
   | "invocation_approval"
@@ -835,6 +846,8 @@ export interface ConsoleSnapshot {
   invocations: InvocationSnapshot[];
   compareRuns?: CompareRunSnapshot[];
   pendingDecisions?: PendingDecision[];
+  /** Durable per-application daily execution counters (survive the invocation cap). */
+  applicationDailyStats?: ApplicationDailyStat[];
   evidenceLedger?: EvidenceLedgerRow[];
   events: InvocationEventSnapshot[];
   auditSummaries: AuditSnapshot[];
@@ -1076,7 +1089,12 @@ export interface ApplicationSnapshot {
   ownerTeamId?: string | null;
   capabilitiesVersion?: number;
   /** Opt-in orchestration auto-recovery (docs/design/ORCHESTRATION_AUTO_RECOVERY.md). */
-  autoRecovery?: { enabled: boolean; maxAttempts?: number } | null;
+  autoRecovery?: {
+    enabled: boolean;
+    maxAttempts?: number;
+    /** Per-routine overrides — win over the app-level switch and cap. */
+    routineOverrides?: Record<string, { enabled?: boolean; maxAttempts?: number }> | null;
+  } | null;
   /** Opt-in periodic source health probe (docs/design/APPLICATION_HEALTH_PROBE.md). */
   healthProbe?: { enabled: boolean; intervalMinutes?: number; lastCheckedAt?: string | null } | null;
   /** Latest health check result; auto-degrade only (active→offline), never auto-online. */

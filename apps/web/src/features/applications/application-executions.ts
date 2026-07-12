@@ -64,6 +64,30 @@ export function digestTone(digest: ExecutionDigest): Tone {
   return "danger";
 }
 
+export interface DurableWindowSummary {
+  days: number;
+  succeeded: number;
+  failed: number;
+  recovered: number;
+}
+
+/** Sum the durable daily counters for one application over the last N days. */
+export function durableStatsWindow(
+  stats: { applicationId: string; date: string; succeeded: number; failed: number; timedOut: number; recovered: number }[],
+  applicationId: string,
+  days: number,
+  today = new Date().toISOString().slice(0, 10),
+): DurableWindowSummary {
+  const cutoff = new Date(Date.parse(`${today}T00:00:00Z`) - (days - 1) * 86_400_000).toISOString().slice(0, 10);
+  const rows = stats.filter((row) => row.applicationId === applicationId && row.date >= cutoff && row.date <= today);
+  return {
+    days,
+    succeeded: rows.reduce((sum, row) => sum + row.succeeded, 0),
+    failed: rows.reduce((sum, row) => sum + row.failed + row.timedOut, 0),
+    recovered: rows.reduce((sum, row) => sum + row.recovered, 0),
+  };
+}
+
 /** Bounded, copy-safe rendering of a result payload for the output browser. */
 export function formatResultOutput(output: unknown, maxChars = 4000): { text: string; truncated: boolean } | null {
   if (output == null) return null;
