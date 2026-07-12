@@ -1,3 +1,20 @@
+// Classify a desktop-reported local-execution refusal into the policy bucket of
+// the closed taxonomy. The precise reason stays verbatim in evidence; if the
+// bridge already declared a policy code, honor it — else default to the
+// command allowlist (the most common local-execution refusal).
+const LOCAL_EXECUTION_POLICY_CODES = new Set([
+  "command_not_allowlisted",
+  "cwd_outside_approved_root",
+  "file_policy_exceeded",
+  "network_policy_exceeded",
+]);
+function localExecutionRefusalCode(evidence = {}) {
+  if (LOCAL_EXECUTION_POLICY_CODES.has(evidence.code)) {
+    return evidence.code;
+  }
+  return "command_not_allowlisted";
+}
+
 export async function handleBridgeRoutes({
   req,
   res,
@@ -32,6 +49,7 @@ export async function handleBridgeRoutes({
   findInvocation,
   acknowledgeInvocation,
   appendEvent,
+  refuse,
   recordAgentFileAccess,
   completeInvocation,
   requireBridgeCredential,
@@ -70,12 +88,24 @@ export async function handleBridgeRoutes({
   }
 
   function appendBridgeRefusalEvent(invocation, reason, evidence) {
-    appendEvent({
-      invocationId: invocation.id,
-      type: "bridge_delivery_refused",
-      level: "warn",
-      message: `Desktop Bridge ${evidence.operation} refused: ${reason}.`,
-      data: { ...evidence, reason },
+    refuse({
+      subject: { kind: "invocation", id: invocation.id },
+      requester: { kind: "local_user", id: evidence.deliveryDeviceId ?? state.device.id },
+      category: "state",
+      code: "subject_not_actionable",
+      decidedBy: { kind: "policy_engine", id: "bridge_gate" },
+      summary: `Bridge ${evidence.operation} refused: ${reason}.`,
+      evidence: { ...evidence, reason },
+      remedy: "The delivery must be owned by this device and in an actionable state.",
+      retryAfter: null,
+      appealTo: null,
+      event: {
+        invocationId: invocation.id,
+        type: "bridge_delivery_refused",
+        level: "warn",
+        message: `Desktop Bridge ${evidence.operation} refused: ${reason}.`,
+        data: { ...evidence, reason },
+      },
     });
   }
 
@@ -102,12 +132,24 @@ export async function handleBridgeRoutes({
   }
 
   function appendBridgeLifecycleRefusalEvent(reason, evidence) {
-    appendEvent({
-      invocationId: null,
-      type: "bridge_lifecycle_refused",
-      level: "warn",
-      message: `Desktop Bridge ${evidence.operation} refused: ${reason}.`,
-      data: { ...evidence, reason },
+    refuse({
+      subject: { kind: "lifecycle_action", id: evidence.lifecycleActionId },
+      requester: { kind: "local_user", id: evidence.actionDeviceId ?? state.device.id },
+      category: "state",
+      code: "subject_not_actionable",
+      decidedBy: { kind: "policy_engine", id: "bridge_gate" },
+      summary: `Bridge ${evidence.operation} refused: ${reason}.`,
+      evidence: { ...evidence, reason },
+      remedy: "The lifecycle action must be owned by this device and running.",
+      retryAfter: null,
+      appealTo: null,
+      event: {
+        invocationId: null,
+        type: "bridge_lifecycle_refused",
+        level: "warn",
+        message: `Desktop Bridge ${evidence.operation} refused: ${reason}.`,
+        data: { ...evidence, reason },
+      },
     });
   }
 
@@ -134,12 +176,24 @@ export async function handleBridgeRoutes({
   }
 
   function appendBridgeOperationRefusalEvent(reason, evidence) {
-    appendEvent({
-      invocationId: null,
-      type: "bridge_operation_refused",
-      level: "warn",
-      message: `Desktop Bridge ${evidence.operation} refused: ${reason}.`,
-      data: { ...evidence, reason },
+    refuse({
+      subject: { kind: "lifecycle_action", id: evidence.operationId },
+      requester: { kind: "local_user", id: evidence.operationDeviceId ?? state.device.id },
+      category: "state",
+      code: "subject_not_actionable",
+      decidedBy: { kind: "policy_engine", id: "bridge_gate" },
+      summary: `Bridge ${evidence.operation} refused: ${reason}.`,
+      evidence: { ...evidence, reason },
+      remedy: "The operation must be owned by this device and in an allowed status.",
+      retryAfter: null,
+      appealTo: null,
+      event: {
+        invocationId: null,
+        type: "bridge_operation_refused",
+        level: "warn",
+        message: `Desktop Bridge ${evidence.operation} refused: ${reason}.`,
+        data: { ...evidence, reason },
+      },
     });
   }
 
@@ -409,13 +463,40 @@ export async function handleBridgeRoutes({
       sendJson(res, gate.status, gate.body);
       return true;
     }
-    appendEvent({
-      invocationId: invocation.id,
-      type: body.type ?? "log",
-      level: body.level ?? "info",
-      message: body.message ?? "",
-      data: body.data,
-    });
+    if (body.type === "local_execution_refused") {
+      // The desktop executor refused at its local-execution policy — the last
+      // gate before spawn, in the only process allowed to spawn. Land it in the
+      // same store as every server refusal. The exact sub-code lives in the
+      // verbatim evidence; server-side we classify it to the policy bucket.
+      const evidence = body.data && typeof body.data === "object" ? body.data : {};
+      refuse({
+        subject: { kind: "capability_call", id: invocation.id },
+        requester: { kind: "local_user", id: invocation.requestedBy ?? state.device.id },
+        category: "policy",
+        code: localExecutionRefusalCode(evidence),
+        decidedBy: { kind: "policy_engine", id: "local_execution_policy" },
+        summary: body.message || "Local execution policy refused the command.",
+        evidence,
+        remedy: "Adjust the command, cwd, or file/network policy to satisfy the device's local-execution allowlist.",
+        retryAfter: null,
+        appealTo: "device_owner",
+        event: {
+          invocationId: invocation.id,
+          type: "local_execution_refused",
+          level: body.level ?? "error",
+          message: body.message ?? "",
+          data: body.data,
+        },
+      });
+    } else {
+      appendEvent({
+        invocationId: invocation.id,
+        type: body.type ?? "log",
+        level: body.level ?? "info",
+        message: body.message ?? "",
+        data: body.data,
+      });
+    }
     // File ledger: the bridge piggybacks file accesses on the agent_output event's
     // data; accumulate them onto the invocation (deduped/capped) so a run's read +
     // written files are observable. Never let a malformed payload break the event.
@@ -474,12 +555,26 @@ export async function handleBridgeRoutes({
     const knownErrorCodes = ["cancelled", "validation_failed", "agent_unavailable", "device_unlinked", "dispatch_timeout", "policy_blocked", "runtime_error"];
     const errorCode = knownErrorCodes.includes(String(body.errorCode ?? "").trim()) ? String(body.errorCode).trim() : null;
     invocation.delivery.state = "refused";
-    appendEvent({
-      invocationId: invocation.id,
-      type: "delivery_refused",
-      level: "warn",
-      message: `Desktop Bridge refused the delivery: ${reason}`,
-      data: { reason, errorCode, dispatchAttempts: invocation.delivery.dispatchAttempts },
+    // The executor is a decider too: the bridge declined to deliver. Record it as
+    // a first-class refusal (the device cannot deliver this work right now).
+    refuse({
+      subject: { kind: "invocation", id: invocation.id },
+      requester: { kind: "control_plane", id: state.device.id },
+      category: "state",
+      code: "undeliverable",
+      decidedBy: { kind: "arbiter", id: invocation.delivery.deviceId ?? state.device.id },
+      summary: `Desktop Bridge refused the delivery: ${reason}`,
+      evidence: { reason, errorCode, dispatchAttempts: invocation.delivery.dispatchAttempts },
+      remedy: "Resolve the cause the bridge reported (missing agent, workspace, or unsupported adapter), then re-dispatch.",
+      retryAfter: null,
+      appealTo: "device_owner",
+      event: {
+        invocationId: invocation.id,
+        type: "delivery_refused",
+        level: "warn",
+        message: `Desktop Bridge refused the delivery: ${reason}`,
+        data: { reason, errorCode, dispatchAttempts: invocation.delivery.dispatchAttempts },
+      },
     });
     completeInvocation(invocation, {
       status: "failed",
