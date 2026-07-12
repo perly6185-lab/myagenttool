@@ -31,6 +31,39 @@ test("allows the manifest-pinned demo agent with read-only/no-network policy", (
   assert.equal(gate.evidence.commandKind, "demoAgent");
 });
 
+test("each refusal carries a recovery-category code (routes bridge/refuse into recovery)", () => {
+  const p = (filePolicy = "read_only", networkPolicy = "forbidden") => ({ filePolicy, networkPolicy, source: "test" });
+  // Unsupported adapter type → agent_unavailable.
+  assert.equal(
+    localExecutionGate({ options: {} }, { type: "a2a" }, {}, { manifest }).code,
+    "agent_unavailable",
+  );
+  // NUL in argv → validation_failed.
+  assert.equal(
+    localExecutionGate({ options: {} }, { type: "cli", command: "demo-agent" },
+      { command: process.execPath, args: [demoAgentPath, "x\0y"], cwd, localPolicy: p() }, { manifest }).code,
+    "validation_failed",
+  );
+  // Missing/non-absolute cwd → runtime_error.
+  assert.equal(
+    localExecutionGate({ options: {} }, { type: "cli", command: "demo-agent" },
+      { command: process.execPath, args: [demoAgentPath], cwd: join(tmpdir(), "does-not-exist-xyz"), localPolicy: p() }, { manifest }).code,
+    "runtime_error",
+  );
+  // Non-allowlisted command → policy_blocked (the default).
+  assert.equal(
+    localExecutionGate({ options: {} }, { type: "cli", command: "node" },
+      { command: process.execPath, args: [join(tmpdir(), "nope.mjs")], cwd, localPolicy: p() }, { manifest }).code,
+    "policy_blocked",
+  );
+  // An allowed run carries no refusal code.
+  assert.equal(
+    localExecutionGate({ options: {} }, { type: "cli", command: "demo-agent" },
+      { command: process.execPath, args: [demoAgentPath, "--task", "hi"], cwd, localPolicy: p() }, { manifest }).code,
+    undefined,
+  );
+});
+
 test("rejects a node script outside the local execution manifest", () => {
   const gate = localExecutionGate(
     { options: {} },
