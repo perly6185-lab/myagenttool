@@ -786,6 +786,20 @@ async function runInvocation(work) {
   const runtimeName = agentRuntimeName(adapter);
   console.log(`[desktop] running ${invocationId}: ${task}`);
 
+  // Pre-ack refusal (docs/design/BRIDGE_LIVENESS_AND_REFUSAL.md): a delivery whose
+  // adapter this bridge has no runtime for cannot run HERE — say so honestly via
+  // the refuse verb (leased→refused, terminal) instead of acking and failing, so
+  // it classifies as agent_unavailable rather than a generic runtime failure.
+  const RUNNABLE_ADAPTER_TYPES = new Set(["cli", "mcp", "a2a", "container"]);
+  if (!RUNNABLE_ADAPTER_TYPES.has(adapter?.type)) {
+    await request("POST", "/api/bridge/refuse", {
+      invocationId,
+      reason: `Desktop Bridge has no runtime for adapter type ${adapter?.type ?? "unknown"}.`,
+      errorCode: "agent_unavailable",
+    });
+    return;
+  }
+
   await request("POST", "/api/bridge/ack", { invocationId });
 
   let finalResult = null;
@@ -814,7 +828,7 @@ async function runInvocation(work) {
       invocationId,
       status: "failed",
       summary: `Desktop Bridge cannot execute adapter type ${adapter?.type ?? "unknown"}.`,
-      result: null
+      result: { errorCode: "agent_unavailable" }
     });
     return;
   }
@@ -836,7 +850,8 @@ async function runInvocation(work) {
       summary: promptHook.hookEvent?.policyReason ?? "Codex prompt was blocked by policy.",
       result: {
         touchedUserFiles: false,
-        policyDecision: "blocked"
+        policyDecision: "blocked",
+        errorCode: "policy_blocked"
       }
     });
     return;
@@ -869,7 +884,8 @@ async function runInvocation(work) {
         : "Codex approval broker denied the request before execution.",
       result: {
         touchedUserFiles: false,
-        policyDecision: permissionDecision
+        policyDecision: permissionDecision,
+        errorCode: permissionDecision === "timed_out" ? "dispatch_timeout" : "policy_blocked"
       }
     });
     return;
@@ -894,7 +910,10 @@ async function runInvocation(work) {
       result: {
         touchedUserFiles: false,
         policyDecision: "local_execution_refused",
-        localExecutionGate: gate.evidence
+        localExecutionGate: gate.evidence,
+        // The gate's recovery-category code (local-execution-policy.mjs) so a
+        // post-ack local refusal classifies honestly instead of as a generic run.
+        errorCode: gate.code ?? "policy_blocked"
       }
     });
     return;

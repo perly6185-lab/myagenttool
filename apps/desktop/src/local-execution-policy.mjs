@@ -91,13 +91,13 @@ export function localExecutionGate(work, adapter, spawnPlan, { permissionDecisio
     manifestVersion: manifest?.version ?? null,
   };
   if (adapter?.type !== "cli") {
-    return refused(`Local execution gate refused adapter type ${adapter?.type ?? "unknown"}.`, evidence);
+    return refused(`Local execution gate refused adapter type ${adapter?.type ?? "unknown"}.`, evidence, "agent_unavailable");
   }
   if (!spawnPlan?.command || !Array.isArray(spawnPlan.args)) {
-    return refused("Local execution gate refused an incomplete spawn plan.", evidence);
+    return refused("Local execution gate refused an incomplete spawn plan.", evidence, "validation_failed");
   }
   if (!spawnPlan.cwd || !isAbsolute(spawnPlan.cwd) || !existsSync(spawnPlan.cwd)) {
-    return refused("Local execution gate refused a missing or non-absolute working directory.", evidence);
+    return refused("Local execution gate refused a missing or non-absolute working directory.", evidence, "runtime_error");
   }
   // cwd confinement: the working directory must stay inside a root the
   // invocation is actually scoped to (its project or worktree). Defense-in-depth
@@ -108,10 +108,10 @@ export function localExecutionGate(work, adapter, spawnPlan, { permissionDecisio
     return refused("Local execution gate refused a working directory outside the approved project or worktree root.", evidence);
   }
   if (spawnPlan.args.some((arg) => String(arg).includes("\0"))) {
-    return refused("Local execution gate refused an argv containing a NUL byte.", evidence);
+    return refused("Local execution gate refused an argv containing a NUL byte.", evidence, "validation_failed");
   }
   if (!FILE_POLICIES.has(localPolicy.filePolicy) || !NETWORK_POLICIES.has(localPolicy.networkPolicy)) {
-    return refused("Local execution gate refused an unknown file or network policy.", evidence);
+    return refused("Local execution gate refused an unknown file or network policy.", evidence, "validation_failed");
   }
   if (spawnPlan.args.includes("--dangerously-bypass-approvals-and-sandbox") && permissionDecision !== "approved") {
     return refused("Local execution gate refused full-access Codex execution without approval evidence.", evidence);
@@ -126,7 +126,7 @@ export function localExecutionGate(work, adapter, spawnPlan, { permissionDecisio
     const wrapperGate = applicationWrapperGate(work, spawnPlan, localPolicy, approvedRoots, manifest);
     evidence.applicationWrapper = wrapperGate.evidence;
     if (!wrapperGate.allowed) {
-      return refused(wrapperGate.reason, evidence);
+      return refused(wrapperGate.reason, evidence, wrapperGate.code ?? "policy_blocked");
     }
   }
   return { allowed: true, reason: "Local execution gate allowed the governed command.", evidence };
@@ -189,39 +189,39 @@ function applicationWrapperGate(work, spawnPlan, localPolicy, approvedRoots, man
     localAllowlist: "applicationWrapperCommands",
   };
   if (!spec) {
-    return { allowed: false, reason: "Local execution gate refused an application wrapper without server-resolved metadata.", evidence };
+    return { allowed: false, reason: "Local execution gate refused an application wrapper without server-resolved metadata.", evidence , code: "validation_failed" };
   }
   if (!parsed.ok) {
-    return { allowed: false, reason: `Local execution gate refused malformed application wrapper argv: ${parsed.reason}`, evidence };
+    return { allowed: false, reason: `Local execution gate refused malformed application wrapper argv: ${parsed.reason}`, evidence , code: "validation_failed" };
   }
   if (parsed.execCommand !== String(spec.execCommand ?? "").trim()) {
-    return { allowed: false, reason: "Local execution gate refused application wrapper command metadata mismatch.", evidence };
+    return { allowed: false, reason: "Local execution gate refused application wrapper command metadata mismatch.", evidence , code: "validation_failed" };
   }
   const specArgs = Array.isArray(spec.execArgs) ? spec.execArgs.map(String) : [];
   if (!stringArrayEquals(parsed.execArgs, specArgs)) {
-    return { allowed: false, reason: "Local execution gate refused application wrapper args metadata mismatch.", evidence };
+    return { allowed: false, reason: "Local execution gate refused application wrapper args metadata mismatch.", evidence , code: "validation_failed" };
   }
   if (parsed.capability !== String(spec.capability ?? "").trim()) {
-    return { allowed: false, reason: "Local execution gate refused application wrapper capability metadata mismatch.", evidence };
+    return { allowed: false, reason: "Local execution gate refused application wrapper capability metadata mismatch.", evidence , code: "validation_failed" };
   }
   if (spec.filePolicy !== localPolicy.filePolicy || spec.networkPolicy !== localPolicy.networkPolicy) {
-    return { allowed: false, reason: "Local execution gate refused application wrapper policy metadata mismatch.", evidence };
+    return { allowed: false, reason: "Local execution gate refused application wrapper policy metadata mismatch.", evidence , code: "validation_failed" };
   }
   const allow = (manifest.applicationWrapperCommands ?? []).find((entry) =>
     parsed.execCommand === entry.command && parsed.capability?.startsWith(entry.capabilityPrefix ?? ""),
   );
   if (!allow) {
-    return { allowed: false, reason: "Local execution gate refused a non-allowlisted application wrapper command.", evidence };
+    return { allowed: false, reason: "Local execution gate refused a non-allowlisted application wrapper command.", evidence , code: "policy_blocked" };
   }
   if (localPolicy.filePolicy !== allow.filePolicy || localPolicy.networkPolicy !== allow.networkPolicy) {
-    return { allowed: false, reason: "Local execution gate refused an application wrapper policy outside the command allowlist.", evidence };
+    return { allowed: false, reason: "Local execution gate refused an application wrapper policy outside the command allowlist.", evidence , code: "policy_blocked" };
   }
   if (parsed.cwd) {
     if (!isAbsolute(parsed.cwd) || !existsSync(parsed.cwd)) {
-      return { allowed: false, reason: "Local execution gate refused an application wrapper cwd that is missing or non-absolute.", evidence };
+      return { allowed: false, reason: "Local execution gate refused an application wrapper cwd that is missing or non-absolute.", evidence , code: "runtime_error" };
     }
     if (approvedRoots.length > 0 && !approvedRoots.some((root) => pathWithin(root, parsed.cwd))) {
-      return { allowed: false, reason: "Local execution gate refused an application wrapper cwd outside the approved project or worktree root.", evidence };
+      return { allowed: false, reason: "Local execution gate refused an application wrapper cwd outside the approved project or worktree root.", evidence , code: "policy_blocked" };
     }
   }
   if (!ccusageArgsAllowed(parsed.capability, parsed.execArgs)) {
@@ -336,6 +336,10 @@ function stringArrayEquals(a, b) {
     && a.every((item, index) => String(item) === String(b[index]));
 }
 
-function refused(reason, evidence) {
-  return { allowed: false, reason, evidence };
+// `code` is a server recovery-category (docs: BRIDGE_LIVENESS_AND_REFUSAL.md +
+// #697 errorCode). It lets a local-gate refusal reported via /api/bridge/refuse
+// (or complete-failed) classify honestly instead of as a generic failure.
+// Default policy_blocked — most gate refusals are a confinement/allowlist call.
+function refused(reason, evidence, code = "policy_blocked") {
+  return { allowed: false, reason, evidence, code };
 }
