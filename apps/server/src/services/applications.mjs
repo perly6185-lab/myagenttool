@@ -8,7 +8,11 @@ import { teamOf } from "../runtime/auth.mjs";
 // transient filesystem states.
 const HEALTH_FAILURE_THRESHOLD = 2;
 
-const APPLICATION_SOURCE_TYPES = new Set(["git", "local", "npm", "manual"]);
+const APPLICATION_SOURCE_TYPES = new Set(["git", "local", "npm", "binary", "manual"]);
+
+// A binary source names a bare program (`git`), never a path on disk. The bridge
+// allowlist decides what may actually run; the caller does not get to name a path.
+const BINARY_SOURCE_NAME = /^[a-z][a-z0-9_-]{0,31}$/;
 const APPLICATION_STATUSES = new Set(["draft", "probing", "registered", "active", "offline", "archived", "failed"]);
 const NPM_WRAPPER_MODES = new Set(["metadata-only", "installed-wrapper"]);
 const APPLICATION_ROUTINE_REQUIRED_APPROVALS = ["apply", "push", "pr-create", "pr-merge"];
@@ -697,7 +701,7 @@ export function projectApplicationCapabilities(app) {
     managedCapability(app, `${prefix}.offline`, "Take application offline", "lifecycle", "high", ["lifecycle", "write_control"], true, app.status === "archived", approvalInputSchema()),
     managedCapability(app, `${prefix}.archive`, "Archive application", "lifecycle", "high", ["lifecycle", "write_control"], true, app.status === "archived", approvalInputSchema()),
     managedCapability(app, `${prefix}.generate_orchestration`, "Generate application orchestration", "orchestration", "medium", ["generated_artifact", "orchestration"], true, disabled, emptyInputSchema()),
-    ...projectNpmWrapperCapabilities(app, prefix, disabled),
+    ...projectWrapperCapabilities(app, prefix, disabled),
   ];
 }
 
@@ -733,17 +737,22 @@ function managedCapability(app, name, displayName, kind, riskLevel, riskTags, re
   };
 }
 
-function projectNpmWrapperCapabilities(app, prefix, disabled) {
-  if (app.source?.type !== "npm" || app.source.wrapper?.mode !== "installed-wrapper") return [];
+function projectWrapperCapabilities(app, prefix, disabled) {
+  // A wrapper descriptor is reachable from any source that installs one — not
+  // only npm (#774). Binary sources (git) project kind `binary_wrapper`; npm
+  // keeps kind `npm_wrapper` and its risk tag byte-identical.
+  if (app.source?.wrapper?.mode !== "installed-wrapper") return [];
+  const isBinary = app.source?.type === "binary";
+  const wrapperKind = isBinary ? "binary_wrapper" : "npm_wrapper";
   return (app.source.wrapper.commands ?? [])
     .filter((command) => command.status === "approved")
     .map((command) => managedCapability(
       app,
       `${prefix}.wrapper.${command.id}`,
       command.displayName,
-      "npm_wrapper",
+      wrapperKind,
       command.riskLevel,
-      [...new Set(["local_execution", "npm_wrapper", ...command.riskTags])],
+      [...new Set(["local_execution", wrapperKind, ...command.riskTags])],
       command.requiresApproval,
       disabled,
       command.inputSchema,
@@ -786,6 +795,15 @@ function capabilityReadiness(app, { disabled, kind, metadata }) {
       reason: installState === "installed" ? "wrapper_installed" : "wrapper_not_confirmed_installed",
       applicationStatus: app.status,
       installState,
+      executionMode: "bridge_wrapper",
+    };
+  }
+  if (kind === "binary_wrapper") {
+    // A system binary has no install step; the bridge allowlist is the real gate.
+    return {
+      state: "ready",
+      reason: "system_binary",
+      applicationStatus: app.status,
       executionMode: "bridge_wrapper",
     };
   }
@@ -1267,8 +1285,10 @@ function probeCapabilityFromManaged(capability) {
 }
 
 function findNpmWrapperCommand(application, commandId) {
-  if (application.source?.type !== "npm") return null;
-  return (application.source.wrapper?.commands ?? []).find((command) => command.id === commandId && command.status === "approved") ?? null;
+  // Any source that installs a wrapper can resolve its approved commands — not
+  // only npm (#774). The bridge allowlist remains the independent execution gate.
+  if (!application.source?.wrapper) return null;
+  return (application.source.wrapper.commands ?? []).find((command) => command.id === commandId && command.status === "approved") ?? null;
 }
 
 function publicNpmWrapperSnapshot(wrapper) {
@@ -1606,7 +1626,7 @@ function sourceFromLegacyBody(body) {
 function normalizeApplicationSource(source = {}) {
   const type = String(source.type ?? "").trim().toLowerCase();
   if (!APPLICATION_SOURCE_TYPES.has(type)) {
-    throw new Error("Application source type must be git, local, npm, or manual.");
+    throw new Error("Application source type must be git, local, npm, binary, or manual.");
   }
   if (type === "git") {
     const url = normalizeGitUrl(source.url ?? source.repoUrl ?? source.gitUrl);
@@ -1633,8 +1653,18 @@ function normalizeApplicationSource(source = {}) {
       manifest: publicJsonObject(source.manifest),
       packageJson: publicJsonObject(source.packageJson),
       readme: stringOrNull(source.readme),
-      wrapper: normalizeNpmWrapper(source.wrapper),
+      wrapper: normalizeWrapperDescriptor(source.wrapper, { npm: true }),
     };
+  }
+  if (type === "binary") {
+    // A system binary that operates on whichever repository the invocation is
+    // scoped to (git). A bare program name only — no path separators, no absolute
+    // paths; the bridge allowlist decides what may actually spawn.
+    const binary = String(source.binary ?? source.command ?? "").trim();
+    if (!BINARY_SOURCE_NAME.test(binary)) {
+      throw new Error("Binary application source must be a bare program name (no path separators or absolute paths).");
+    }
+    return { type, binary, wrapper: normalizeWrapperDescriptor(source.wrapper, { npm: false }) };
   }
   return {
     type: "manual",
@@ -1668,6 +1698,7 @@ function nameFromSource(source) {
   }
   if (source.type === "local") return basename(source.path);
   if (source.type === "npm") return source.package.split("/").at(-1);
+  if (source.type === "binary") return source.binary;
   return "Application";
 }
 
@@ -1675,6 +1706,7 @@ function normalizeApplicationKind(value, source) {
   const text = String(value ?? "").trim();
   if (text) return text;
   if (source.type === "npm") return "npm-package";
+  if (source.type === "binary") return "binary";
   if (source.type === "git" || source.type === "local") return "repository";
   return "manual";
 }
@@ -1684,16 +1716,22 @@ function normalizeApplicationStatus(value) {
   return APPLICATION_STATUSES.has(text) ? text : "registered";
 }
 
-function normalizeNpmWrapper(wrapper = {}) {
+function normalizeWrapperDescriptor(wrapper = {}, { npm = true } = {}) {
   const value = wrapper && typeof wrapper === "object" && !Array.isArray(wrapper) ? wrapper : {};
   const mode = NPM_WRAPPER_MODES.has(String(value.mode ?? "")) ? String(value.mode) : "metadata-only";
+  const commands = normalizeWrapperCommands(value.commands);
+  if (!npm) {
+    // Binary sources carry no npm install/packageManager metadata — those fields
+    // stay npm-only. The wrapper mode + commands are the shared, executable part.
+    return { mode, commands };
+  }
   const packageManager = ["npm", "pnpm", "yarn"].includes(String(value.packageManager ?? "")) ? String(value.packageManager) : "npm";
   return {
     mode,
     installState: mode === "installed-wrapper" ? normalizeWrapperInstallState(value.installState) : "not_installed",
     packageManager,
     installPath: stringOrNull(value.installPath),
-    commands: normalizeWrapperCommands(value.commands),
+    commands,
   };
 }
 
