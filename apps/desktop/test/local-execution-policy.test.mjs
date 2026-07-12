@@ -290,3 +290,123 @@ function wrapperArgs(spec, { cwd: innerCwd } = {}) {
   }
   return args;
 }
+
+// --- #775: generalized git wrapper allowlist (default-deny at the bridge) ---
+
+function gitGate({ execArgs, capability = "app.app_git.wrapper.status", root, cwd: innerCwd, localPolicy }) {
+  const spec = { execCommand: "git", execArgs, capability, filePolicy: "read_only", networkPolicy: "forbidden" };
+  const work = { project: { path: root }, options: { metadata: { applicationWrapper: spec, worktreePath: root } } };
+  return localExecutionGate(
+    work,
+    { type: "cli", command: "node" },
+    {
+      command: process.execPath,
+      args: wrapperArgs(spec, { cwd: innerCwd }),
+      cwd: innerCwd,
+      localPolicy: localPolicy ?? { filePolicy: "read_only", networkPolicy: "forbidden", source: "application_wrapper" },
+    },
+    { manifest },
+  );
+}
+
+const gitRoot = mkdtempSync(join(tmpdir(), "git-app-root-"));
+
+test("git wrapper: status with its registered base argv is allowed", () => {
+  const gate = gitGate({ execArgs: ["--no-pager", "status", "--porcelain=v2", "--branch"], root: gitRoot, cwd: gitRoot });
+  assert.equal(gate.allowed, true, gate.reason);
+});
+
+test("git wrapper: log with valid since/author/max-count trailing flags is allowed", () => {
+  const gate = gitGate({
+    capability: "app.app_git.wrapper.log",
+    execArgs: ["--no-pager", "log", "--format=%H%x1f%an%x1f%aI%x1f%s%x1e", "--max-count=50", "--since", "2026-01-01", "--author", "octocat", "--max-count", "10"],
+    root: gitRoot,
+    cwd: gitRoot,
+  });
+  assert.equal(gate.allowed, true, gate.reason);
+});
+
+test("git wrapper: ccusage argv is unaffected by the generalization", () => {
+  const spec = { execCommand: "ccusage", execArgs: ["daily", "--json", "--offline"], capability: "app.app_ccusage.wrapper.daily", filePolicy: "read_only", networkPolicy: "forbidden" };
+  const gate = localExecutionGate(
+    { project: { path: gitRoot }, options: { metadata: { applicationWrapper: spec, worktreePath: gitRoot } } },
+    { type: "cli", command: "node" },
+    { command: process.execPath, args: wrapperArgs(spec, { cwd: gitRoot }), cwd: gitRoot, localPolicy: { filePolicy: "read_only", networkPolicy: "forbidden", source: "application_wrapper" } },
+    { manifest },
+  );
+  assert.equal(gate.allowed, true, gate.reason);
+});
+
+test("git wrapper: an unregistered git command is refused (default-deny within the app)", () => {
+  const gate = gitGate({ capability: "app.app_git.wrapper.push", execArgs: ["--no-pager", "push"], root: gitRoot, cwd: gitRoot });
+  assert.equal(gate.allowed, false);
+  assert.match(gate.reason, /args outside the local allowlist/);
+});
+
+test("git wrapper: argv not matching the registered base prefix is refused", () => {
+  // status capability but log argv → base mismatch.
+  const gate = gitGate({ execArgs: ["--no-pager", "log"], root: gitRoot, cwd: gitRoot });
+  assert.equal(gate.allowed, false);
+  assert.match(gate.reason, /args outside the local allowlist/);
+});
+
+test("git wrapper: an undeclared trailing flag is refused", () => {
+  const gate = gitGate({
+    capability: "app.app_git.wrapper.log",
+    execArgs: ["--no-pager", "log", "--format=%H%x1f%an%x1f%aI%x1f%s%x1e", "--max-count=50", "--pretty", "oneline"],
+    root: gitRoot,
+    cwd: gitRoot,
+  });
+  assert.equal(gate.allowed, false);
+});
+
+test("git wrapper: a flag value failing its validator is refused", () => {
+  const bad = gitGate({
+    capability: "app.app_git.wrapper.log",
+    execArgs: ["--no-pager", "log", "--format=%H%x1f%an%x1f%aI%x1f%s%x1e", "--max-count=50", "--since", "not-a-date"],
+    root: gitRoot,
+    cwd: gitRoot,
+  });
+  assert.equal(bad.allowed, false);
+  const overCount = gitGate({
+    capability: "app.app_git.wrapper.log",
+    execArgs: ["--no-pager", "log", "--format=%H%x1f%an%x1f%aI%x1f%s%x1e", "--max-count=50", "--max-count", "1001"],
+    root: gitRoot,
+    cwd: gitRoot,
+  });
+  assert.equal(overCount.allowed, false, "max-count is capped at 1000");
+});
+
+test("git wrapper: value-slot injections (--upload-pack=, -c, --exec-path=, leading dash) are refused", () => {
+  for (const injected of [
+    ["--author", "--upload-pack=/x"],
+    ["-c", "core.pager=cat"],
+    ["--exec-path=/tmp"],
+    ["--author", "-evil"],
+  ]) {
+    const gate = gitGate({
+      capability: "app.app_git.wrapper.log",
+      execArgs: ["--no-pager", "log", "--format=%H%x1f%an%x1f%aI%x1f%s%x1e", "--max-count=50", ...injected],
+      root: gitRoot,
+      cwd: gitRoot,
+    });
+    assert.equal(gate.allowed, false, `injection ${injected.join(" ")} must be refused`);
+  }
+});
+
+test("git wrapper: a cwd outside the approved root is refused", () => {
+  const outside = mkdtempSync(join(tmpdir(), "git-outside-"));
+  const gate = gitGate({ execArgs: ["--no-pager", "status", "--porcelain=v2", "--branch"], root: gitRoot, cwd: outside });
+  assert.equal(gate.allowed, false);
+  assert.match(gate.reason, /outside the approved/);
+});
+
+test("git wrapper: a file/network policy exceeding the command allowlist is refused", () => {
+  const gate = gitGate({
+    execArgs: ["--no-pager", "status", "--porcelain=v2", "--branch"],
+    root: gitRoot,
+    cwd: gitRoot,
+    localPolicy: { filePolicy: "workspace_write", networkPolicy: "network", source: "application_wrapper" },
+  });
+  assert.equal(gate.allowed, false);
+});
