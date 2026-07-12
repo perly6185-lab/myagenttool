@@ -81,6 +81,7 @@ export function createHttpServer({
   recordTerminalEvidence,
   summarizeText,
   appendEvent,
+  recordAgentFileAccess,
   isAgentDisabled,
   redeliverExpiredDispatches,
   registerAgent,
@@ -513,6 +514,7 @@ export function createHttpServer({
         findInvocation,
         acknowledgeInvocation,
         appendEvent,
+        recordAgentFileAccess,
         completeInvocation,
         requireBridgeCredential,
       })) {

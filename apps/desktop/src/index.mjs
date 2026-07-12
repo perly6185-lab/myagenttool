@@ -10,6 +10,7 @@ import { runAsUser, shouldRunAsUser, runAsSpawnPlan, runAsPreflightPlan, interpr
 import { callA2aAgent, probeA2aAgent } from "./a2a-client.mjs";
 import { probeContainerRuntime, runContainerAgent } from "./container-client.mjs";
 import { codexResumeArgs } from "./codex-resume.mjs";
+import { extractClaudeFileAccesses } from "./claude-file-access.mjs";
 import { applicationWrapperArgs } from "./application-wrapper-args.mjs";
 import {
   createLocalExecutionPolicyManifest,
@@ -2355,6 +2356,7 @@ async function handleClaudeJsonLine(invocationId, line) {
 
   const message = claudeEventMessage(event);
   if (message) {
+    const fileAccess = extractClaudeFileAccesses(event);
     await request("POST", "/api/bridge/events", {
       invocationId,
       type: "agent_output",
@@ -2367,6 +2369,7 @@ async function handleClaudeJsonLine(invocationId, line) {
         sessionId: event.session_id ?? event.sessionId ?? null,
         model: event.message?.model ?? event.model ?? null,
         usage: event.usage ?? event.message?.usage ?? null,
+        ...(fileAccess.length ? { fileAccess } : {}),
       }
     });
   }

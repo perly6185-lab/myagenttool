@@ -183,6 +183,10 @@ export interface InvocationSnapshot {
   agentId?: string;
   projectId?: string;
   worktreeId?: string | null;
+  // Files the agent read/wrote during the run, captured from its tool_use stream
+  // (server read-models/file-ledger.mjs). Deduped + capped; `truncated` when it hit
+  // the cap. Absent for agents whose stream we don't parse.
+  fileLedger?: { reads?: string[]; writes?: string[]; truncated?: boolean } | null;
   traceId?: string;
   rootSpanId?: string;
   approvalRequestId?: string;

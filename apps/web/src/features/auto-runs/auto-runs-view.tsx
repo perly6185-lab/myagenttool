@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Bot, RefreshCw, GitPullRequest, GitMerge, GitBranch, ShieldCheck, ExternalLink, CircleAlert, Check, X, Minus, Loader2, Rocket, ScrollText, FolderGit2, History, LayoutList, Columns3 } from "lucide-react";
+import { Bot, RefreshCw, GitPullRequest, GitMerge, GitBranch, ShieldCheck, ExternalLink, CircleAlert, Check, X, Minus, Loader2, Rocket, ScrollText, FolderGit2, History, LayoutList, Columns3, FileText, FilePen, Eye } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Modal } from "@/components/ui/modal";
 import { EmptyState } from "@/components/common/empty-state";
 import { api, useAsyncAction } from "@/data/use-console-actions";
+import { reconcileFileLedger, displayPath } from "./file-ledger";
 import { cn } from "@/lib/cn";
 import { shortTime, type Tone } from "@/lib/readable-labels";
 import { AutoRunConfigCard } from "./auto-run-config-card";
@@ -313,6 +314,85 @@ function WorktreeDiffPeek({ worktreeId }: { worktreeId: string }) {
         ) : (
           <span className="text-xs text-muted-foreground">No changes in the worktree.</span>
         )
+      ) : null}
+    </div>
+  );
+}
+
+// Which files the agent READ vs WROTE this run. Writes already show in the git diff,
+// but a file the agent only *read* leaves no other trace — captured from its tool_use
+// stream (server accumulates invocation.fileLedger). On expand we fetch the diff once
+// to cross-check writes: a write not in the diff was a no-op edit; a changed file with
+// no tracked write came from outside the explicit file tools (e.g. a Bash command).
+function RunFilesPeek({ invocationId, worktreeId }: { invocationId: string; worktreeId?: string | null }) {
+  const { data: state } = useConsoleState();
+  const [show, setShow] = useState(false);
+  const [changed, setChanged] = useState<string[] | null>(null);
+  const invocation = (state?.invocations ?? []).find((i) => i.id === invocationId) ?? null;
+  const ledger = invocation?.fileLedger ?? null;
+  const total = (ledger?.reads?.length ?? 0) + (ledger?.writes?.length ?? 0);
+  async function toggle() {
+    if (show) {
+      setShow(false);
+      return;
+    }
+    setShow(true);
+    if (changed != null || !worktreeId) return;
+    try {
+      const diff = (await api.worktreeDiff(worktreeId)) as { files?: { path: string }[] };
+      setChanged((diff.files ?? []).map((f) => f.path));
+    } catch {
+      setChanged([]); // best-effort: no cross-check, still show the lists
+    }
+  }
+  if (!ledger || total === 0) return null; // nothing captured (e.g. a non-Claude agent) → hide
+  const view = reconcileFileLedger(ledger, changed);
+  return (
+    <div className="flex w-full flex-col gap-1.5">
+      <button
+        type="button"
+        onClick={() => void toggle()}
+        className="flex items-center gap-1 self-start text-xs text-muted-foreground hover:text-foreground"
+      >
+        <FileText className="size-3" /> {show ? "Hide files" : "Files"} ({view.writeCount} written · {view.readCount} read
+        {view.truncated ? "+" : ""})
+      </button>
+      {show ? (
+        <div className="flex flex-col gap-2 rounded-md border border-border/60 bg-muted/30 p-2">
+          {view.writeCount > 0 ? (
+            <div className="flex flex-col gap-0.5">
+              <span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Wrote</span>
+              <ul className="flex flex-col gap-0.5">
+                {view.writes.map((w) => (
+                  <li key={w.path} className="flex items-center gap-1.5 font-mono text-xs" title={w.path}>
+                    <FilePen className="size-3 shrink-0 text-emerald-600 dark:text-emerald-400" />
+                    <span className="truncate">{displayPath(w.path)}</span>
+                    {w.inDiff === false ? <span className="shrink-0 text-[10px] text-muted-foreground">(no change)</span> : null}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+          {view.readCount > 0 ? (
+            <div className="flex flex-col gap-0.5">
+              <span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Read</span>
+              <ul className="flex flex-col gap-0.5">
+                {view.reads.map((p) => (
+                  <li key={p} className="flex items-center gap-1.5 font-mono text-xs text-muted-foreground" title={p}>
+                    <Eye className="size-3 shrink-0" />
+                    <span className="truncate">{displayPath(p)}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+          {view.diffOnly.length > 0 ? (
+            <span className="text-[11px] text-muted-foreground">
+              +{view.diffOnly.length} changed outside the tracked tools (e.g. a Bash command)
+            </span>
+          ) : null}
+          {view.truncated ? <span className="text-[11px] text-muted-foreground">List truncated at the capture cap.</span> : null}
+        </div>
       ) : null}
     </div>
   );
@@ -992,6 +1072,7 @@ export function AutoRunsView() {
                   <RunTraceLinks run={run} />
                 </div>
                 {run.worktreeId ? <WorktreeDiffPeek worktreeId={run.worktreeId} /> : null}
+                {run.invocationId ? <RunFilesPeek invocationId={run.invocationId} worktreeId={run.worktreeId} /> : null}
                 <RunTimeline runId={run.id} events={consoleState?.events ?? []} />
                 {run.status === "failed" || run.status === "blocked" ? (
                   <div>
