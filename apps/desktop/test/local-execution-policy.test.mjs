@@ -322,7 +322,7 @@ test("git wrapper: status with its registered base argv is allowed", () => {
 test("git wrapper: log with valid since/author/max-count trailing flags is allowed", () => {
   const gate = gitGate({
     capability: "app.app_git.wrapper.log",
-    execArgs: ["--no-pager", "log", "--format=%H%x1f%an%x1f%aI%x1f%s%x1e", "--max-count=50", "--since", "2026-01-01", "--author", "octocat", "--max-count", "10"],
+    execArgs: ["--no-pager", "log", "-z", "--format=%H%x1f%an%x1f%aI%x1f%s", "--max-count=50", "--since", "2026-01-01", "--author", "octocat", "--max-count", "10"],
     root: gitRoot,
     cwd: gitRoot,
   });
@@ -387,7 +387,7 @@ test("git wrapper: argv not matching the registered base prefix is refused", () 
 test("git wrapper: an undeclared trailing flag is refused", () => {
   const gate = gitGate({
     capability: "app.app_git.wrapper.log",
-    execArgs: ["--no-pager", "log", "--format=%H%x1f%an%x1f%aI%x1f%s%x1e", "--max-count=50", "--pretty", "oneline"],
+    execArgs: ["--no-pager", "log", "-z", "--format=%H%x1f%an%x1f%aI%x1f%s", "--max-count=50", "--pretty", "oneline"],
     root: gitRoot,
     cwd: gitRoot,
   });
@@ -397,14 +397,14 @@ test("git wrapper: an undeclared trailing flag is refused", () => {
 test("git wrapper: a flag value failing its validator is refused", () => {
   const bad = gitGate({
     capability: "app.app_git.wrapper.log",
-    execArgs: ["--no-pager", "log", "--format=%H%x1f%an%x1f%aI%x1f%s%x1e", "--max-count=50", "--since", "not-a-date"],
+    execArgs: ["--no-pager", "log", "-z", "--format=%H%x1f%an%x1f%aI%x1f%s", "--max-count=50", "--since", "not-a-date"],
     root: gitRoot,
     cwd: gitRoot,
   });
   assert.equal(bad.allowed, false);
   const overCount = gitGate({
     capability: "app.app_git.wrapper.log",
-    execArgs: ["--no-pager", "log", "--format=%H%x1f%an%x1f%aI%x1f%s%x1e", "--max-count=50", "--max-count", "1001"],
+    execArgs: ["--no-pager", "log", "-z", "--format=%H%x1f%an%x1f%aI%x1f%s", "--max-count=50", "--max-count", "1001"],
     root: gitRoot,
     cwd: gitRoot,
   });
@@ -420,7 +420,7 @@ test("git wrapper: value-slot injections (--upload-pack=, -c, --exec-path=, lead
   ]) {
     const gate = gitGate({
       capability: "app.app_git.wrapper.log",
-      execArgs: ["--no-pager", "log", "--format=%H%x1f%an%x1f%aI%x1f%s%x1e", "--max-count=50", ...injected],
+      execArgs: ["--no-pager", "log", "-z", "--format=%H%x1f%an%x1f%aI%x1f%s", "--max-count=50", ...injected],
       root: gitRoot,
       cwd: gitRoot,
     });
