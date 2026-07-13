@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { computeDoraStats, doraSelfCheck, formatDoraReport, rollupFromActionsRuns } from "./dora.mjs";
 import { backlogSelfCheck, computeBacklogStats, formatBacklogReport } from "./backlog.mjs";
 import { computeGovernanceStats, countBypassCommits, formatGovernanceReport, governanceSelfCheck, GOVERNANCE_ENFORCEMENT_SINCE } from "./governance.mjs";
-import { hasAcceptanceMention, hasProductFlowEvidence, hasVerificationEvidence, prFilePath, reviewRiskGates } from "./pr-evidence.mjs";
+import { hasAcceptanceMention, hasProductFlowEvidence, hasVerificationEvidence, planPrEvidence, prFilePath, reviewRiskGates } from "./pr-evidence.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(__dirname, "../../..");
@@ -56,6 +56,7 @@ Usage:
   node tools/github/src/index.mjs sync-project --repo OWNER/REPO --owner OWNER --project 1 [--milestone M2|--issues 1,2] [--done] [--apply]
   node tools/github/src/index.mjs dora-report [--repo OWNER/REPO] [--days 30] [--ci-since DATE] [--json] [--out path]
   node tools/github/src/index.mjs governance-report [--repo OWNER/REPO] [--days 30] [--since DATE] [--json] [--out path]
+  node tools/github/src/index.mjs pr-evidence [--base main] [--body-file draft.md] [--strict]
   node tools/github/src/index.mjs backlog-report [--repo OWNER/REPO] [--stale-days 14] [--json] [--out path]
 
 Environment:
@@ -121,6 +122,11 @@ function main() {
 
   if (command === "governance-report") {
     governanceReport(args);
+    return;
+  }
+
+  if (command === "pr-evidence") {
+    prEvidenceAdvisor(args);
     return;
   }
 
@@ -238,6 +244,59 @@ function backlogReport(args) {
   const stats = computeBacklogStats(issues, { staleDays, now: new Date().toISOString() });
   const report = formatBacklogReport(stats, { repo });
   emitMetricsReport({ kind: "backlog", stats, report, args });
+}
+
+// L3 enabler (tooling-first): a LOCAL pre-push advisor. Given the working diff
+// against a base branch, report exactly which risk-evidence routes the diff
+// requires — so an author fills the right PR-template sections BEFORE pushing,
+// instead of finding out from a merged PR's coverage. `--body-file` also checks a
+// draft body; `--strict` exits non-zero when anything is missing (opt-in gate).
+function prEvidenceAdvisor(args) {
+  const base = option(args, "--base") ?? "main";
+  const bodyFile = option(args, "--body-file") ?? null;
+  const strict = args.includes("--strict");
+
+  let files;
+  try {
+    const mergeBase = execFileSync("git", ["merge-base", "HEAD", base], { encoding: "utf8" }).trim();
+    // base → working tree (committed + staged + unstaged), plus untracked new
+    // files, so the advisor works before OR after you commit.
+    const tracked = execFileSync("git", ["diff", "--name-only", mergeBase], { encoding: "utf8" })
+      .split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+    const untracked = execFileSync("git", ["ls-files", "--others", "--exclude-standard"], { encoding: "utf8" })
+      .split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+    files = [...new Set([...tracked, ...untracked])];
+  } catch (error) {
+    fail(`Could not compute the diff against ${base}: ${error instanceof Error ? error.message : String(error)}`);
+    return;
+  }
+
+  const body = bodyFile ? readFileSync(resolve(repoRoot, bodyFile), "utf8") : "";
+  const plan = planPrEvidence({ files, body });
+
+  console.log(`PR evidence plan — ${files.length} file(s) changed vs ${base}`);
+  if (!plan.routes.length) {
+    console.log("  No risk-evidence routes triggered by these files. (Still: link an issue + a Verification section.)");
+  } else {
+    console.log("  Required risk-evidence routes (triggered by your files):");
+    for (const route of plan.routes) {
+      const mark = plan.bodyProvided ? (route.present ? "✓" : "✗ MISSING") : "•";
+      console.log(`    ${mark} ${route.label}`);
+      if (!plan.bodyProvided || !route.present) console.log(`        → ${route.section}`);
+    }
+  }
+  if (plan.bodyProvided) {
+    console.log("  Body checks:");
+    console.log(`    ${plan.linksIssue ? "✓" : "✗ MISSING"} Links an issue (Closes/Fixes/Refs #N)`);
+    console.log(`    ${plan.verification ? "✓" : "✗ MISSING"} Verification section`);
+  } else {
+    console.log("  Tip: pass --body-file <draft.md> to also check your PR body, or --strict to gate.");
+  }
+  console.log("  Sections live in .github/PULL_REQUEST_TEMPLATE.md. If this remediates a prior merge, add `Change-failure: #N`.");
+
+  if (strict && !plan.allSatisfied) {
+    fail("Missing required PR evidence (--strict).");
+  }
 }
 
 // L3 gate reading: re-judge every merged PR in the window with the SAME
