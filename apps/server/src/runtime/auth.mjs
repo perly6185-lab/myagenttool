@@ -121,12 +121,37 @@ export function denyForeignProject({
   projectId,
   notFound = { error: "not_found" },
 }) {
-  if (!projectId) return false;
-  if (actor == null) return false; // unscoped (single-team local dev) — allow.
+  if (actorCanAccessProject(state, actor, projectId)) return false;
+  sendJson(res, 404, notFound);
+  return true;
+}
+
+/**
+ * The rule behind `denyForeignProject`, without the HTTP response — so callers
+ * that are not a route can ask the same question and get the same answer (#847).
+ *
+ * The scheduler needs exactly this: it fires a saved automation, so it never
+ * passes through the route that guards the manual path. A schedule outlives the
+ * access that created it — the ownership check therefore has to happen at FIRE
+ * time, not just at save time, or a capability keeps running against a project
+ * its author can no longer see, on a timer, with nobody watching.
+ *
+ * One rule, two callers. A second copy of it is a second thing to get wrong.
+ */
+export function actorCanAccessProject(state, actor, projectId) {
+  if (!projectId) return true; // absent id — the caller legitimately falls back elsewhere.
+  if (actor == null) return true; // unscoped (single-team local dev).
   const project = (state.projects ?? []).find((p) => p.id === projectId);
-  if (!project || teamOf(project) !== actor.teamId) {
-    sendJson(res, 404, notFound);
-    return true;
-  }
-  return false;
+  return Boolean(project) && teamOf(project) === actor.teamId;
+}
+
+/** The actor a saved automation runs as: its creator, resolved at fire time. */
+export function actorForUser(state, userId) {
+  const user = findUser(state, userId) ?? findUser(state, LOCAL_USER_ID) ?? (state.users ?? [])[0] ?? null;
+  return {
+    userId: user?.id ?? LOCAL_USER_ID,
+    teamId: user?.teamId ?? LOCAL_TEAM_ID,
+    role: user?.role ?? "owner",
+    authenticated: false,
+  };
 }
