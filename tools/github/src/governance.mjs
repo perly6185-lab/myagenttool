@@ -85,6 +85,14 @@ function aggregateMissingRoutes(judged) {
 // role as dora.mjs's CHANGE_FAILURE_SIGNAL_SINCE (2026-07-04).
 export const GOVERNANCE_ENFORCEMENT_SINCE = "2026-07-03";
 
+// When the RISK-EVIDENCE routes became a blocking merge check (failOnRiskWarnings
+// on in .github/workflows/governance.yml). 2026-07-03 gated only issue-link +
+// verification; the six risk routes were advisory until now, so pre-this-date PRs
+// could merge without them and permanently cap coverage below 100% under a fixed
+// 2026-07-03 anchor. L3 measures compliance since the FULL gate is enforced, so
+// the coverageSince slice re-anchors here — same move as #744 for L2's CI window.
+export const RISK_GATE_ENFORCEMENT_SINCE = "2026-07-13";
+
 export function computeGovernanceStats(mergedPrs, { days, directPushCount = null, since = null, directPushCountSince = null }) {
   const judged = mergedPrs.map(judgePrEvidence);
   const covered = judged.filter((pr) => pr.covered);
