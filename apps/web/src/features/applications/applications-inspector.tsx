@@ -13,6 +13,7 @@ import { useAsyncAction, api } from "@/data/use-console-actions";
 import { useUiStore } from "@/store/ui-store";
 import { sourceSummary } from "@/features/applications/applications-view";
 import { CapabilityRunModal } from "@/features/applications/capability-run-modal";
+import { ApplicationSchedules } from "@/features/applications/application-schedules";
 import { capabilityRunContract } from "@/features/applications/capability-run";
 import {
   autoRecoveryConfirmCopy,
@@ -1554,6 +1555,7 @@ export function ApplicationsInspector() {
       <SetupChecklist application={application} invocations={invocations} />
       <ApplicationActions application={application} />
       <ApplicationExecutions application={application} invocations={invocations} onViewInvocation={viewInvocation} />
+      <ApplicationSchedules application={application} />
       <ArchivedRecoveryActions applicationId={application.id} />
       <ApplicationResultSummary result={application.latestResult} invocations={invocations} onViewInvocation={viewInvocation} />
 

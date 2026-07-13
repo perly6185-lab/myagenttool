@@ -1,20 +1,33 @@
-// Classify a desktop-reported local-execution refusal into the policy bucket of
-// the closed taxonomy. The precise reason stays verbatim in evidence; if the
-// bridge already declared a policy code, honor it — else default to the
-// command allowlist (the most common local-execution refusal).
-const LOCAL_EXECUTION_POLICY_CODES = new Set([
+import { refusalCodesByCategory } from "@myagenttool/protocol";
+
+// Classify a desktop-reported local-execution refusal into the closed taxonomy.
+// The precise reason stays verbatim in evidence; if the bridge already declared a
+// sub-code, honor it — else default to the command allowlist (the most common
+// local-execution refusal). Most of these are policy rules; `binary_unavailable`
+// (#802) is an environment STATE (the device lacks the binary), so the category is
+// derived from the code below rather than hardcoded.
+const LOCAL_EXECUTION_REFUSAL_CODES = new Set([
   "command_not_allowlisted",
   "cwd_outside_approved_root",
   "file_policy_exceeded",
   "network_policy_exceeded",
+  "binary_unavailable",
 ]);
+
+// code → its (single) category, from the closed taxonomy map.
+const CODE_CATEGORY = new Map(
+  Object.entries(refusalCodesByCategory).flatMap(([category, codes]) => codes.map((code) => [code, category])),
+);
+export function localExecutionRefusalCategory(code) {
+  return CODE_CATEGORY.get(code) ?? "policy";
+}
 export function localExecutionRefusalCode(evidence = {}) {
   // Prefer the precise sub-code the desktop gate declared (#758 Tier-3), then a
   // legacy evidence.code, else the command allowlist (the most common reason).
-  if (LOCAL_EXECUTION_POLICY_CODES.has(evidence.refusalCode)) {
+  if (LOCAL_EXECUTION_REFUSAL_CODES.has(evidence.refusalCode)) {
     return evidence.refusalCode;
   }
-  if (LOCAL_EXECUTION_POLICY_CODES.has(evidence.code)) {
+  if (LOCAL_EXECUTION_REFUSAL_CODES.has(evidence.code)) {
     return evidence.code;
   }
   return "command_not_allowlisted";
@@ -482,15 +495,19 @@ export async function handleBridgeRoutes({
       // same store as every server refusal. The exact sub-code lives in the
       // verbatim evidence; server-side we classify it to the policy bucket.
       const evidence = body.data && typeof body.data === "object" ? body.data : {};
+      const refusalCode = localExecutionRefusalCode(evidence);
+      const refusalCategory = localExecutionRefusalCategory(refusalCode);
       refuse({
         subject: { kind: "capability_call", id: invocation.id },
         requester: { kind: "local_user", id: invocation.requestedBy ?? state.device.id },
-        category: "policy",
-        code: localExecutionRefusalCode(evidence),
+        category: refusalCategory,
+        code: refusalCode,
         decidedBy: { kind: "policy_engine", id: "local_execution_policy" },
         summary: body.message || "Local execution policy refused the command.",
         evidence,
-        remedy: "Adjust the command, cwd, or file/network policy to satisfy the device's local-execution allowlist.",
+        remedy: refusalCode === "binary_unavailable"
+          ? "Install the required binary on the device that owns this project, or route the run to a device that has it."
+          : "Adjust the command, cwd, or file/network policy to satisfy the device's local-execution allowlist.",
         retryAfter: null,
         appealTo: "device_owner",
         event: {

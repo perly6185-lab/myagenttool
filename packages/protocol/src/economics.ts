@@ -380,6 +380,10 @@ export interface QuotaPolicy {
   model: string;
   limit: number;
   used: number;
+  /** What `limit`/`used` count (#856). Defaults to request-count for compatibility. */
+  meter?: "requests" | "input_tokens" | "total_tokens" | "usd";
+  /** Whether exceeding the window blocks the run or only warns. */
+  enforcement?: "block" | "warn";
   window: "daily" | "monthly" | "custom";
   currency: CurrencyCode;
   costOwner: UserId | TeamId | "unknown";

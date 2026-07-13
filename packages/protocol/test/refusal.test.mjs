@@ -123,14 +123,21 @@ test("all 30 documented refusal event types / error codes are covered", () => {
 });
 
 test("umbrella events map each reason to exactly one code", () => {
-  // local_execution_refused refuses for four distinct policy reasons; each maps
-  // to its own code, and none is dropped.
+  // local_execution_refused refuses for several distinct reasons; each maps to its
+  // own code, and none is dropped. Four are policy rules; binary_unavailable (#802)
+  // is an environment STATE (the device lacks the binary), so the umbrella spans
+  // two categories — like invocation_rejected below.
   const localExec = refusalEventCatalog.filter((e) => e.eventType === "local_execution_refused");
   assert.deepEqual(
-    localExec.map((e) => e.code).sort(),
-    ["command_not_allowlisted", "cwd_outside_approved_root", "file_policy_exceeded", "network_policy_exceeded"].sort(),
+    localExec.map((e) => `${e.category}/${e.code}`).sort(),
+    [
+      "policy/command_not_allowlisted",
+      "policy/cwd_outside_approved_root",
+      "policy/file_policy_exceeded",
+      "policy/network_policy_exceeded",
+      "state/binary_unavailable",
+    ].sort(),
   );
-  for (const e of localExec) assert.equal(e.category, "policy");
 
   // invocation_rejected spans two categories (state gates + a human denial).
   const invRejected = refusalEventCatalog.filter((e) => e.eventType === "invocation_rejected");

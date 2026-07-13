@@ -49,6 +49,9 @@ describe("URL navigation helpers", () => {
         invocationId: "inv_1",
       },
       selectedEvidenceId: "ev_1",
+      // A focused schedule is part of navigation now (#849) — an attention badge
+      // that cannot be linked to is a dead end.
+      selectedAutomationId: null,
     });
 
     expect(navigationFromSearch("?section=missing&application=app_1&routine=routine_1")).toMatchObject({
@@ -56,6 +59,7 @@ describe("URL navigation helpers", () => {
       selectedApplicationId: "app_1",
       selectedApplicationRun: null,
       selectedEvidenceId: null,
+      selectedAutomationId: null,
     });
     expect(navigationFromSearch("")).toEqual({});
   });
@@ -71,6 +75,7 @@ describe("URL navigation helpers", () => {
         invocationId: "inv_run",
       },
       selectedEvidenceId: "ev_selected",
+      selectedAutomationId: null,
     });
     const params = new URLSearchParams(search);
 
@@ -90,6 +95,7 @@ describe("URL navigation helpers", () => {
       selectedApplicationId: null,
       selectedApplicationRun: null,
       selectedEvidenceId: null,
+      selectedAutomationId: null,
     });
     const params = new URLSearchParams(search);
 

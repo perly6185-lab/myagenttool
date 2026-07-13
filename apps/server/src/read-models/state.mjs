@@ -2,6 +2,7 @@ import { LOCAL_TEAM_ID, teamOf } from "../runtime/auth.mjs";
 import { publicDeviceView } from "../runtime/bridge-auth.mjs";
 import { pendingDecisions } from "./pending-decisions.mjs";
 import { evidenceLedger } from "./evidence-ledger.mjs";
+import { scheduleHealthReadModel } from "./schedule-health.mjs";
 
 export function buildPublicState({
   namespace,
@@ -134,6 +135,7 @@ export function buildPublicState({
     troubleshootingReports,
     (report) => report?.invocationId,
   );
+  const visibleAutomations = byProject(state.automations);
   const autoRuns = byProject(state.autoRuns);
   const autoRunsByInvocationId = groupRowsByKey(
     autoRuns.filter((autoRun) => visibleInvIds.has(autoRun?.invocationId)),
@@ -169,6 +171,30 @@ export function buildPublicState({
       policyDecisionRecordsByInvocationId,
       troubleshootingReportsByInvocationId,
     }),
+  }));
+
+  // Schedule health (#848), computed server-side from the runs a schedule caused —
+  // never re-derived by each client, which is how three clients end up with three
+  // different opinions about whether something is broken.
+  //
+  // Built from the already team-scoped locals, so it inherits tenancy: a schedule
+  // the viewer cannot see must not leak through its health row, and an
+  // application's rollup counts only the schedules in that same set.
+  const schedules = scheduleHealthReadModel({
+    automations: visibleAutomations,
+    invocations: visibleInvocations,
+    applications,
+  });
+  const scheduleHealthByApplicationId = new Map(
+    schedules.applicationScheduleHealth.map((row) => [row.applicationId, row]),
+  );
+  // An application whose capability schedules are failing is not healthy. Without
+  // this, the Applications view keeps calling it healthy while the thing it
+  // schedules has been broken for a week — the sweep only ever checked the
+  // application's own source, never what it was asked to do on a timer.
+  const applicationsWithSchedules = applications.map((application) => ({
+    ...application,
+    scheduleHealth: scheduleHealthByApplicationId.get(application.id) ?? null,
   }));
 
   // Consolidated pending-decision queue (the Approvals section). Built from the
@@ -216,7 +242,7 @@ export function buildPublicState({
     users: (state.users ?? []).map(({ passwordHash, ...user }) => user),
     teams: state.teams ?? [],
     projects,
-    applications,
+    applications: applicationsWithSchedules,
     applicationRecoveryActions,
     // Sweep self-observability (admin-plane, like healthChecks): when the probe
     // last ran, how many apps it checked, and the last per-app error it swallowed.
@@ -280,7 +306,8 @@ export function buildPublicState({
     teamBudgetStatuses: (typeof teamBudgetStatuses === "function" ? teamBudgetStatuses() : []).filter(
       (row) => teamId == null || row.teamId === teamId,
     ),
-    automations: byProject(state.automations),
+    automations: visibleAutomations,
+    ...schedules,
     agentSkills: state.agentSkills ?? [],
     privateDeploymentConfig: state.privateDeploymentConfig,
     auditExportRequests: state.auditExportRequests,

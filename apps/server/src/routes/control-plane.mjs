@@ -2,6 +2,12 @@ import crypto from "node:crypto";
 import { canProvision, denyForeignProject, hashPassword, verifyPassword } from "../runtime/auth.mjs";
 import { publicDeviceView } from "../runtime/bridge-auth.mjs";
 import { computeNextRun, normalizeSchedule } from "../services/automation-schedule.mjs";
+import {
+  capabilityInvocationInput,
+  capabilityTargetProblem,
+  isCapabilityTarget,
+  normalizeAutomationTarget,
+} from "../services/automation-target.mjs";
 
 const TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
@@ -23,6 +29,10 @@ export async function handleControlPlaneRoutes({
   persistStateSoon,
   budgetStatusFor,
   upsertBudget,
+  // A capability-target automation validates against the live contract and fires
+  // through the same dispatch the Run panel uses (#847).
+  getCapability,
+  createCapabilityInvocation,
 }) {
   if (req.method === "POST" && url.pathname === "/api/session") {
     // Multi-user login: a body.userId logs in as that seeded user; with none we
@@ -185,11 +195,26 @@ export async function handleControlPlaneRoutes({
     }
     const schedule = normalizeSchedule(body.schedule);
     const enabled = body.enabled !== false;
+    // What this schedule fires (#847). Absent → the agent prompt it has always
+    // been; every existing automation relies on that.
+    const target = normalizeAutomationTarget(body.target);
+    if (target.kind === "capability") {
+      const problem = capabilityTargetProblem({
+        target,
+        capability: getCapability(target.capability, actor),
+        projectId,
+      });
+      if (problem) {
+        sendJson(res, 400, { error: "invalid_automation", message: problem });
+        return true;
+      }
+    }
     const automation = {
       id: nextId("atm_demo"),
       name,
       enabled,
       projectId,
+      target,
       branch: String(body.branch ?? "main"),
       schedule,
       nextRunAt: enabled ? computeNextRun(schedule) : null,
@@ -219,6 +244,49 @@ export async function handleControlPlaneRoutes({
       return true;
     }
     if (denyForeignProject({ res, sendJson, state, actor, projectId: automation.projectId, notFound: { error: "automation_not_found" } })) {
+      return true;
+    }
+    // "Run now" and the scheduler tick must fire the SAME thing (#847). If they
+    // diverge, an operator tests a schedule by hand, sees it work, and the timer
+    // then does something else — the worst possible way to learn about a bug.
+    if (isCapabilityTarget(automation)) {
+      // A refusal is RECORDED on the automation, exactly as the tick records it
+      // (#847/#848). Returning the error only to the caller left the schedule
+      // reading "never run" — so an operator tried it by hand, saw a toast, walked
+      // away, and the schedule went on looking idle. That is the silent-nothing
+      // failure this whole slice exists to end; it must not be reintroduced by the
+      // button next to it.
+      const refuse = (reason) => {
+        automation.lastRunAt = now();
+        automation.lastRunError = reason;
+        persistStateSoon();
+      };
+      const problem = capabilityTargetProblem({
+        target: automation.target,
+        capability: getCapability(automation.target.capability, actor),
+        projectId: automation.projectId,
+      });
+      if (problem) {
+        refuse(problem);
+        sendJson(res, 409, { error: "automation_target_unavailable", message: problem, automation });
+        return true;
+      }
+      const result = createCapabilityInvocation(
+        automation.target.capability,
+        { ...capabilityInvocationInput(automation), automationId: automation.id },
+        actor,
+      );
+      if (result.status >= 400) {
+        refuse(result.body?.message ?? result.body?.error ?? `Dispatch refused with ${result.status}.`);
+        sendJson(res, result.status, { ...result.body, automation });
+        return true;
+      }
+      automation.lastInvocationId = result.body?.invocationId ?? null;
+      automation.lastRunAt = now();
+      automation.lastRunError = null;
+      automation.runCount = (automation.runCount ?? 0) + 1;
+      persistStateSoon();
+      sendJson(res, 201, { ...result.body, automation });
       return true;
     }
     const agent = findAgent(automation.agentId) ?? defaultAgent();

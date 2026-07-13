@@ -9,9 +9,10 @@ invocation detail view in #810, captured with Playwright + Chromium.
 | Narrow (390×900) | [rounds-390w.png](rounds-390w.png) |
 
 The wide capture shows the card as shipped: a `3 rounds` badge, the run-level
-token summary (`33,750 in / 3,560 out tokens`), and one table row per model turn
-— model/provider, in/out/cached tokens (thousands-separated), duration
-(`5.0s` / `14s` / `3.4s`), files read, tool count, and a status badge.
+token + cost summary (`33,750 in / 3,560 out tokens · ~$0.3777 est.`), and one
+table row per model turn — model/provider, in/out/cached tokens
+(thousands-separated), **cost** (`$0.1187` …), duration (`5.0s` / `14s` / `3.4s`),
+files read, tool count, and a status badge.
 
 ## How to regenerate
 

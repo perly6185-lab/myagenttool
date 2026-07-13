@@ -151,6 +151,9 @@ export function explainRunFailure(error: string): string {
   if (error.includes("approval_required")) {
     return "This capability needs an explicit approval before it can run.";
   }
+  if (error.includes("binary_unavailable")) {
+    return "The device that owns this project doesn't have the required program installed (e.g. git). Install it there, or route the run to a device that has it.";
+  }
   if (error.includes("application_offline")) {
     return "The application is offline. Bring it back online to run its capabilities.";
   }

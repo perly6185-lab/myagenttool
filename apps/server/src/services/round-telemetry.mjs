@@ -18,6 +18,8 @@
 // bounded at ingestion — defense-in-depth over the bridge's own truncation, and
 // the single chokepoint that decides what may ever appear in a stored digest.
 
+import { estimateCostUsdFromTokens } from "./m3.mjs";
+
 const MAX_ROUNDS_PER_INVOCATION = 500;
 const MAX_ROUNDS_TOTAL = 5000;
 const MAX_TOOL_RECORDS_TOTAL = 5000;
@@ -140,6 +142,9 @@ export function createRoundTelemetryRuntime({
       filesRead: [],
       toolCallIds: [],
       errorCode: null,
+      // Per-round cost (#853): measured tokens x the matched model rate, filled
+      // when the round completes. Null (not 0) while open or when unpriced.
+      estimatedCostUsd: null,
       usageRecordId: null,
       createdAt: now(),
     };
@@ -183,6 +188,15 @@ export function createRoundTelemetryRuntime({
     round.errorCode = typeof data.errorCode === "string" ? data.errorCode : null;
     if (typeof data.provider === "string") round.provider = data.provider;
     if (typeof data.model === "string") round.model = data.model;
+    // Price this turn from its measured tokens (#853). Display-tier only — no
+    // ledger entry. Unpriced models stay null, never a fabricated $0.
+    const costUsd = estimateCostUsdFromTokens({
+      model: round.model,
+      inputTokens: round.inputTokens,
+      cachedInputTokens: round.cachedTokens,
+      outputTokens: round.outputTokens,
+    });
+    round.estimatedCostUsd = costUsd > 0 ? Number(costUsd.toFixed(6)) : null;
     completeRoundSpan(round, status);
   }
 
