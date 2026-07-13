@@ -548,6 +548,28 @@ export const refusalEventCatalog = [
   { eventType: "loop_worktree_promotion_pr_merge_execute_refused", category: "human", code: "gate_rejected" },
 ];
 
+// --- Invocation round telemetry (Epic #805, Phase 1 / #806) --------------
+// Runtime mirror of packages/protocol/src/round-telemetry.ts. Design of record:
+// docs/engineering/INVOCATION_ROUND_TELEMETRY_ISSUE_PLAN.md. A round is one model
+// turn. Phase 1 is taxonomy only — no records are written yet.
+
+export const roundStatuses = ["started", "succeeded", "failed", "cancelled"];
+
+export const roundKinds = ["model_turn"];
+
+export const toolInvocationStatuses = ["started", "succeeded", "failed"];
+
+// How an aggregate AIUsageRecord's tokens were obtained; `rounds` is authoritative.
+export const aiUsageDerivations = ["rounds", "client_reported", "import"];
+
+// `tool_invocation_created` already exists in InvocationEventType (unbacked until
+// this model); round_started / round_completed are added alongside it.
+export const roundTelemetryEventTypes = [
+  "round_started",
+  "round_completed",
+  "tool_invocation_created",
+];
+
 const mode = process.argv.includes("--check") ? "check" : "dev";
 
 if (mode === "check") {
@@ -574,6 +596,7 @@ function runM0ProtocolCheck() {
   assertIncludes(aiProviderModes, m3RequiredAiProviderModes, "M3 AI provider mode");
   assertIncludes(deploymentModes, m3RequiredDeploymentModes, "M3 deployment mode");
   runRefusalTaxonomyCheck();
+  runRoundTelemetryCheck();
   assertIncludes(m0RequiredEventTypes, [
     "invocation_created",
     "delivery_dispatched",
@@ -651,6 +674,27 @@ function runRefusalTaxonomyCheck() {
       if (!mappedEventTypes.has(eventType)) {
         throw new Error(`Unmapped loop refusal event: ${eventType}`);
       }
+    }
+  }
+}
+
+function runRoundTelemetryCheck() {
+  // The taxonomies the design (docs/engineering/INVOCATION_ROUND_TELEMETRY_ISSUE_PLAN.md)
+  // pins. Dropping a member is a protocol break, not a refactor.
+  assertIncludes(roundStatuses, ["started", "succeeded", "failed", "cancelled"], "round status");
+  assertIncludes(roundKinds, ["model_turn"], "round kind");
+  assertIncludes(toolInvocationStatuses, ["started", "succeeded", "failed"], "tool invocation status");
+  assertIncludes(aiUsageDerivations, ["rounds", "client_reported", "import"], "AI usage derivation");
+  assertIncludes(
+    roundTelemetryEventTypes,
+    ["round_started", "round_completed", "tool_invocation_created"],
+    "round telemetry event type",
+  );
+  // A round's terminal states are a subset of the four; `started` is the only
+  // non-terminal. Guard against a stray tool status leaking in.
+  for (const status of toolInvocationStatuses) {
+    if (!roundStatuses.includes(status)) {
+      throw new Error(`tool invocation status not a valid round status: ${status}`);
     }
   }
 }

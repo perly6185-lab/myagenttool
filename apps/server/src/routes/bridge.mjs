@@ -56,6 +56,7 @@ export async function handleBridgeRoutes({
   appendEvent,
   refuse,
   recordAgentFileAccess,
+  recordRoundEvent,
   completeInvocation,
   requireBridgeCredential,
 }) {
@@ -507,6 +508,14 @@ export async function handleBridgeRoutes({
     // written files are observable. Never let a malformed payload break the event.
     if (Array.isArray(body.data?.fileAccess) && body.data.fileAccess.length && typeof recordAgentFileAccess === "function") {
       recordAgentFileAccess(invocation, body.data.fileAccess);
+    }
+    // Per-round telemetry (#808): fold round_started / round_completed /
+    // tool_invocation_created into first-class per-round records + child spans.
+    if (
+      (body.type === "round_started" || body.type === "round_completed" || body.type === "tool_invocation_created") &&
+      typeof recordRoundEvent === "function"
+    ) {
+      recordRoundEvent(invocation, body);
     }
     sendJson(res, 200, { ok: true });
     return true;
