@@ -1,6 +1,8 @@
 import { closeSync, copyFileSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, writeSync } from "node:fs";
 import { dirname } from "node:path";
 
+import { listDevices } from "./device.mjs";
+
 // Durable atomic snapshot write. `writeFileSync` truncates the target in place
 // and does not fsync, so a crash mid-write left a torn file — and restore's
 // JSON.parse then threw and silently discarded ALL state (total loss, worse
@@ -95,8 +97,10 @@ const persistedArrayKeys = [
   "sshConnectionTests",
 ];
 
+// NOTE: `devices` is deliberately absent from both key lists — it restores
+// through `restoreDevices` (per-record merge + legacy migration) and saves
+// through an explicit dual-write. See those functions.
 const persistedObjectKeys = [
-  "device",
   // Auto-run config overrides + the circuit-breaker are OBJECTS — they must be
   // in the object list, not persistedArrayKeys, or restore's Array.isArray guard
   // silently drops them and every armed brake (kill switch, breaker, saved
@@ -151,6 +155,13 @@ export function createPersistenceRuntime({
       projects: state.projects,
       currentProjectId: state.currentProjectId,
       worktrees: state.worktrees,
+      // The device fleet, plus a mirror of the primary under the pre-fleet key.
+      // The mirror is what makes a rollback to a single-device build survivable:
+      // that build reads `device` and would otherwise come up with no paired
+      // bridge credential, locking the bridge out until someone hand-edited the
+      // snapshot. Drop the mirror once no deployed build reads it.
+      devices: listDevices(state),
+      device: state.device,
       // The id counter travels WITH the state it minted ids for (#832). It used to
       // be recovered on boot by regex-scanning every string in the state for the
       // largest `_NNNN` suffix — a primary key that is only correct because a scan
@@ -243,11 +254,23 @@ export function createPersistenceRuntime({
         };
       }
     }
+    // `devices` restores through its own path (per-record merge + legacy
+    // migration), so it would otherwise sail past the duplicate-id repair every
+    // other collection gets. It is the NEWEST collection, which is exactly the
+    // case #832 warns about: a guard that only covers the arrays someone
+    // remembered to route through it is not a guard. Repair it here, on the
+    // snapshot, so restoreDevices sees a fleet with unique ids.
+    if (Array.isArray(snapshot.devices)) {
+      snapshot.devices = repairDuplicateIds("devices", snapshot.devices);
+    }
+    restoreDevices(state, snapshot);
     if (Number.isFinite(snapshot.idCounter)) {
       state.idCounter = snapshot.idCounter;
     }
-    if (state.device) {
-      state.device.status = "offline";
+    // Every device is offline until its own bridge re-registers — a restart
+    // tells us nothing about which machines are still up.
+    for (const device of listDevices(state)) {
+      device.status = "offline";
     }
     // Keep the evidence before anything overwrites it — the same forensic move
     // quarantineSnapshot makes. Otherwise the next ordinary save silently destroys
@@ -313,6 +336,39 @@ export function createPersistenceRuntime({
     restorePersistentState,
     savePersistentState,
   };
+}
+
+/**
+ * Restore the device fleet, accepting both shapes:
+ *   - `devices: [...]`  — current.
+ *   - `device: {...}`   — pre-fleet snapshot, migrated by wrapping it in a list.
+ *
+ * A restored device is merged OVER its seeded default (matched by id) rather
+ * than replacing it, which is what the old single-object restore did: a field
+ * introduced by a code upgrade is absent from an older snapshot, and the merge
+ * is what lets it pick up its default instead of coming back `undefined`. A
+ * device with no seeded counterpart (an enrolled machine) has no defaults to
+ * inherit and is taken as-is.
+ *
+ * An empty or unusable list leaves the seeded defaults in place: `state.device`
+ * aliases devices[0], so an empty fleet would make the alias null and every
+ * singleton read in the services throw.
+ */
+function restoreDevices(state, snapshot) {
+  const defaults = listDevices(state);
+  const persisted = Array.isArray(snapshot.devices) && snapshot.devices.length
+    ? snapshot.devices
+    : isPlainObject(snapshot.device)
+      ? [snapshot.device]
+      : null;
+  if (!persisted) return;
+  const restored = persisted.filter(isPlainObject).map((device) => {
+    const base = defaults.find((seeded) => seeded.id === device.id);
+    return base ? { ...base, ...device } : device;
+  });
+  if (restored.length) {
+    state.devices = restored;
+  }
 }
 
 function mergeRecordsById(defaultRecords, restoredRecords) {
