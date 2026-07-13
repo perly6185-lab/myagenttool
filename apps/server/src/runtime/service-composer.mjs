@@ -724,6 +724,7 @@ export function createServerRuntimeServices({
     listCapabilities,
   } = createCapabilityService({
     state,
+    refuse,
     listTools,
     getTool,
     createToolInvocation,
