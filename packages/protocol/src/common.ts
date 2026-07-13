@@ -30,6 +30,7 @@ export type ClaudeReviewFindingId = `clf_${string}`;
 export type AgentEconomicRecordId = `eco_${string}`;
 export type AIProviderId = `aip_${string}`;
 export type AIUsageRecordId = `aiu_${string}`;
+export type ModelPriceId = `prc_${string}`;
 export type QuotaDecisionId = `qtd_${string}`;
 export type QuotaPolicyId = `qtp_${string}`;
 export type AuditExportId = `aex_${string}`;

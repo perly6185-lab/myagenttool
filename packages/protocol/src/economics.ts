@@ -11,6 +11,7 @@ import type {
   InvocationId,
   IsoDateTime,
   LedgerEntryId,
+  ModelPriceId,
   QuotaPolicyId,
   QuotaDecisionId,
   TeamId,
@@ -70,6 +71,27 @@ export interface AgentUsageSummary {
   currency: CurrencyCode;
   unknownCostVisible: boolean;
   updatedAt: IsoDateTime | null;
+}
+
+/**
+ * A per-model price, in USD per 1M tokens (Epic #851). Rates are data, not code:
+ * the runtime seeds a config/env-driven default table and matches an
+ * `AIUsageRecord.model` to the most specific entry. An unmatched model is left
+ * `unknown` rather than priced by a guess.
+ */
+export interface ModelPrice {
+  id: ModelPriceId;
+  provider: string;
+  /** Lowercase model id or family prefix matched against the usage record's model. */
+  model: string;
+  currency: CurrencyCode;
+  inputUsdPerMTok: DecimalString;
+  outputUsdPerMTok: DecimalString;
+  cachedInputUsdPerMTok: DecimalString;
+  /** 0 when the provider already folds reasoning tokens into output. */
+  reasoningOutputUsdPerMTok: DecimalString;
+  source: "config" | "default" | "override";
+  updatedAt: IsoDateTime;
 }
 
 export interface AIProvider {
