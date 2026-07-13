@@ -24,7 +24,10 @@ export function createCcusageImportService({
     // Import estimates whether the report arrived via the bespoke governed
     // ccusage agent (source "ccusage") OR the ccusage Application's wrapper
     // capability (#355 Phase 3 — same ccusage `--json` rows, different transport).
-    // Additive: the governed-agent path is unchanged, so nothing regresses.
+    // NOTE (#887): the governed-agent transport (tools/agents/ccusage-wrapper.mjs)
+    // is RETAINED LEGACY, not dead code — it is still exercised by tests + the
+    // ccusage-agent smoke, so it stays; the live product path is the Application
+    // wrapper. Additive: the governed-agent path is unchanged, so nothing regresses.
     const viaGovernedAgent = isGovernedCcusageAgent(agent) && isCcusageResult(result);
     const viaApplication = isCcusageApplicationResult(invocation, result);
     if (!viaGovernedAgent && !viaApplication) {
@@ -70,6 +73,7 @@ export function createCcusageImportService({
         model,
         inputTokens: nonNegativeNumber(row.inputTokens ?? row.input_tokens),
         outputTokens: nonNegativeNumber(row.outputTokens ?? row.output_tokens),
+        cachedTokens: cachedTokensOf(row),
         totalTokens: nonNegativeNumber(row.totalTokens ?? row.total_tokens ?? row.tokens),
         estimatedCostUsd,
         currency: String(row.currency ?? result.cost?.currency ?? "USD"),
@@ -203,6 +207,18 @@ function stringOrNull(value) {
 function nonNegativeNumber(value) {
   const numeric = Number(value);
   return Number.isFinite(numeric) ? Math.max(0, numeric) : null;
+}
+
+// Cache tokens (#887): ccusage reports cache read + creation separately; a single
+// `cachedTokens` field wins when present, else read + creation are summed. Null
+// when the row reports no cache tokens at all.
+function cachedTokensOf(row) {
+  const single = nonNegativeNumber(row.cachedTokens ?? row.cached_tokens ?? row.cacheTokens);
+  if (single != null) return single;
+  const read = nonNegativeNumber(row.cacheReadTokens ?? row.cache_read_tokens ?? row.cacheReadInputTokens);
+  const creation = nonNegativeNumber(row.cacheCreationTokens ?? row.cache_creation_tokens ?? row.cacheCreationInputTokens);
+  if (read == null && creation == null) return null;
+  return (read ?? 0) + (creation ?? 0);
 }
 
 function firstFiniteNumber(values) {
