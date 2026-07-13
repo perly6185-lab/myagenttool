@@ -47,8 +47,12 @@ export function createRoundTelemetryRuntime({
 
   function recordRoundEvent(invocation, body) {
     if (!invocation || !body) return;
-    const data = body.data && typeof body.data === "object" && !Array.isArray(body.data) ? body.data : null;
-    if (!data) return;
+    const raw = body.data && typeof body.data === "object" && !Array.isArray(body.data) ? body.data : null;
+    if (!raw) return;
+    // Redact digests ONCE, at the entry — so every downstream path sees only
+    // sanitized data: the stored records AND the over-cap archive. This is the
+    // single chokepoint that decides what may ever be persisted from a digest.
+    const data = redactRoundData(raw);
     if (body.type === "round_started") handleRoundStarted(invocation, data);
     else if (body.type === "round_completed") handleRoundCompleted(invocation, data);
     else if (body.type === "tool_invocation_created") handleToolInvocation(invocation, data);
@@ -173,8 +177,9 @@ export function createRoundTelemetryRuntime({
     round.filesRead = Array.isArray(data.filesRead)
       ? [...new Set(data.filesRead.filter((path) => typeof path === "string"))]
       : [];
-    round.responseDigest = redactDigest(data.responseDigest);
-    round.requestDigest = redactDigest(data.requestDigest);
+    // Already redacted at the entry (recordRoundEvent).
+    round.responseDigest = typeof data.responseDigest === "string" ? data.responseDigest : null;
+    round.requestDigest = typeof data.requestDigest === "string" ? data.requestDigest : null;
     round.errorCode = typeof data.errorCode === "string" ? data.errorCode : null;
     if (typeof data.provider === "string") round.provider = data.provider;
     if (typeof data.model === "string") round.model = data.model;
@@ -195,8 +200,8 @@ export function createRoundTelemetryRuntime({
       invocationId: invocation.id,
       roundId: round?.id ?? null,
       toolName: typeof data.toolName === "string" ? data.toolName : "unknown",
-      inputDigest: redactDigest(data.inputDigest),
-      outputDigest: redactDigest(data.outputDigest),
+      inputDigest: typeof data.inputDigest === "string" ? data.inputDigest : null,
+      outputDigest: typeof data.outputDigest === "string" ? data.outputDigest : null,
       targetPath: typeof data.targetPath === "string" ? data.targetPath : null,
       action: typeof data.action === "string" ? data.action : null,
       riskTag: typeof data.riskTag === "string" ? data.riskTag : null,
@@ -234,6 +239,20 @@ export function redactDigest(text) {
   let value = text;
   for (const pattern of SECRET_PATTERNS) value = value.replace(pattern, "[redacted]");
   return value.length > DIGEST_MAX ? `${value.slice(0, DIGEST_MAX - 3)}...` : value;
+}
+
+const DIGEST_FIELDS = ["responseDigest", "requestDigest", "inputDigest", "outputDigest"];
+
+// Return a shallow copy of an event's data with every digest field redacted, so
+// the sanitized object can flow to BOTH the stored records and the over-cap
+// archive. Non-digest fields (filesRead, tokens, model, …) pass through.
+export function redactRoundData(data) {
+  if (!data || typeof data !== "object") return data;
+  const clone = { ...data };
+  for (const field of DIGEST_FIELDS) {
+    if (typeof clone[field] === "string") clone[field] = redactDigest(clone[field]);
+  }
+  return clone;
 }
 
 function intOr(value, fallback) {

@@ -1031,7 +1031,16 @@ export function createAutoRunService({
     if (!autoRun || autoRun.prState !== "MERGED") return null;
     if (!state.autoRunSettings?.deployOnMerge || typeof runDeploy !== "function") return null;
     if (state.autoRunSettings?.autonomyKillSwitch) return null;
-    if (autoRun.deployment && autoRun.deployment.prNumber === autoRun.prNumber) return null;
+    // Idempotent per merged PR — null-safe (a null prNumber must not slip the
+    // guard via `null !== undefined`).
+    if (autoRun.deployment && (autoRun.deployment.prNumber ?? null) === (autoRun.prNumber ?? null)) return null;
+    // M6: close the TOCTOU window. `autoRun.deployment` is not stamped until the
+    // deploy finishes (minutes later), so a manual merge racing autoMergeSweep
+    // could both pass the guard above and deploy twice. An in-flight flag, set
+    // synchronously here (no await between check and set), makes the second bail.
+    if (autoRun.deployInFlight) return null;
+    autoRun.deployInFlight = true;
+    try {
     const project = state.projects.find((p) => p.id === autoRun.projectId) ?? null;
     let outcome = null;
     try {
@@ -1077,7 +1086,10 @@ export function createAutoRunService({
       type: outcome.deployed ? "auto_run_deployed" : "auto_run_deploy_failed",
       level: outcome.deployed ? "info" : "warn",
       message: `Auto-run ${autoRun.id} deploy of PR #${autoRun.prNumber} ${outcome.deployed ? "succeeded" : "FAILED"}.`,
-      data: { autoRunId: autoRun.id, prNumber: autoRun.prNumber, deployed: outcome.deployed },
+      // Carry the failure reason on the timeline event itself (M3), so an operator
+      // reading the run's events sees WHY it failed without cross-querying the
+      // deployments collection or the alert channel.
+      data: { autoRunId: autoRun.id, prNumber: autoRun.prNumber, deployed: outcome.deployed, summary: record.summary ?? null },
     });
     if (!outcome.deployed) {
       void sendAlert?.({
@@ -1099,6 +1111,9 @@ export function createAutoRunService({
     }
     persistStateSoon();
     return record;
+    } finally {
+      autoRun.deployInFlight = false;
+    }
   }
 
   // Self-healing (H2): file an auto-labeled remediation issue after a failed deploy
