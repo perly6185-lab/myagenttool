@@ -332,3 +332,45 @@ test("#804 regression: the result importer is actually WIRED to completion", asy
   );
   assert.equal(created.state.applicationResults[0].data.branch.name, "main");
 });
+
+test("#848: 'Run now' records a refusal on the schedule, exactly as the tick does", async () => {
+  // Returning the error only to the caller left the schedule reading "never run":
+  // an operator tried it by hand, saw a toast, walked away, and the schedule went
+  // on looking idle. That is the silent-nothing failure the health model exists to
+  // end — it must not be reintroduced by the button sitting next to it.
+  const { handleControlPlaneRoutes } = await import("../src/routes/control-plane.mjs");
+  const automation = capabilityAutomation({ nextRunAt: null });
+  const state = {
+    automations: [automation],
+    projects: [{ id: "prj_1", ownerTeamId: "team_local" }],
+    users: [{ id: "usr_local", teamId: "team_local" }],
+    invocations: [],
+  };
+  let sent = null;
+  const handled = await handleControlPlaneRoutes({
+    req: { method: "POST" },
+    res: {},
+    url: new URL(`http://x/api/automations/${automation.id}/run`),
+    sendJson: (_res, status, body) => { sent = { status, body }; },
+    readJson: async () => ({}),
+    state,
+    actor: { userId: "usr_local", teamId: "team_local" },
+    now,
+    nextId: (p) => `${p}_x`,
+    appendEvent: () => {},
+    findAgent: () => null,
+    defaultAgent: () => null,
+    createInvocation: () => ({ id: "inv_x" }),
+    startInvocationIfAllowed: () => {},
+    persistStateSoon: () => {},
+    budgetStatusFor: () => ({}),
+    upsertBudget: () => {},
+    getCapability: () => gitStatus,
+    createCapabilityInvocation: () => ({ status: 409, body: { error: "approval_required", message: "needs approval" } }),
+  });
+
+  assert.equal(handled, true);
+  assert.equal(sent.status, 409);
+  assert.match(automation.lastRunError, /needs approval/, "the refusal is on the schedule, not only in the response");
+  assert.ok(automation.lastRunAt, "and the schedule no longer reads as never-run");
+});

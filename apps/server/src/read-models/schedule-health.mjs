@@ -47,6 +47,18 @@ export function automationHealth(automation, runs = []) {
   // access to the project is. It refused rather than running something
   // approximate (#847), and this is where that reason surfaces.
   if (automation?.lastRunError) {
+    // A dispatch refused for want of an approval is NOT broken — it is waiting for
+    // a human, exactly like a run parked at waiting_for_local_approval below. A
+    // schedule pointed at an approval-required capability can never run
+    // unattended; calling that "failing" sends someone to fix a thing that is not
+    // wrong, when what it needs is a person.
+    if (/approval/i.test(automation.lastRunError)) {
+      return summary(
+        "approval_pending",
+        "This schedule needs an approval before it can run, and will not run again until someone gives it.",
+        latest,
+      );
+    }
     // A target that has gone away is "paused" (there is nothing to fix in the
     // schedule itself); anything else is a genuine failure to run.
     const targetGone = /disabled|offline|archived|not available|cannot be invoked/i.test(automation.lastRunError);
