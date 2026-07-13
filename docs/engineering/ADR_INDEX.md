@@ -11,6 +11,8 @@ This index lists accepted engineering decisions that guide implementation.
 - [ADR 0005: M0 Web Console App Shell](ADR_0005_M0_WEB_CONSOLE_APP_SHELL.md)
 - [ADR 0006: Codex CLI Sandbox Default and Writable Opt-In](ADR_0006_CODEX_SANDBOX_DEFAULT.md)
 - [ADR 0007: Re-home ccusage as an Application](ADR_0007_CCUSAGE_AS_APPLICATION.md)
+- [ADR 0008: Executable Applications are platform-shipped, not user-registered](ADR_0008_APPLICATION_REGISTRATION_BOUNDARY.md)
+- [ADR 0009: An Application descriptor is immutable — change means re-register](ADR_0009_APPLICATION_DESCRIPTOR_IMMUTABLE.md)
 
 ## M0 Decision Summary
 
