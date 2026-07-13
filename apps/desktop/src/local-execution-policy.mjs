@@ -1,5 +1,17 @@
 import { existsSync } from "node:fs";
-import { isAbsolute, resolve, sep } from "node:path";
+import { delimiter, isAbsolute, join, resolve, sep } from "node:path";
+
+// Per-device binary availability (#802). git is a per-device property; a wrapper
+// command whose binary PATH cannot resolve would spawn-fail with an opaque exit
+// 127. Resolve it the way spawn() would — a bare name against PATH, a path checked
+// directly — so the gate can refuse with a precise reason INSTEAD of that opaque
+// failure. Injected into the gate so tests can simulate a device without git.
+export function binaryAvailableOnPath(command, env = process.env) {
+  if (!command || typeof command !== "string") return false;
+  if (command.includes("/") || command.includes(sep) || isAbsolute(command)) return existsSync(command);
+  const dirs = String(env.PATH ?? "").split(delimiter).filter(Boolean);
+  return dirs.some((dir) => existsSync(join(dir, command)));
+}
 
 const FILE_POLICIES = new Set(["forbidden", "read_only", "workspace_write", "native_controls"]);
 const NETWORK_POLICIES = new Set(["forbidden", "restricted", "network", "native_controls"]);
@@ -114,7 +126,7 @@ export function localPolicyForAdapter(adapter, payload = {}) {
   };
 }
 
-export function localExecutionGate(work, adapter, spawnPlan, { permissionDecision, permissionHook, manifest } = {}) {
+export function localExecutionGate(work, adapter, spawnPlan, { permissionDecision, permissionHook, manifest, resolveBinary = binaryAvailableOnPath } = {}) {
   const localPolicy = spawnPlan?.localPolicy ?? localPolicyForAdapter(adapter, work);
   const commandKind = classifySpawn(adapter, spawnPlan, manifest);
   const approvedRoots = collectApprovedRoots(work);
@@ -174,10 +186,18 @@ export function localExecutionGate(work, adapter, spawnPlan, { permissionDecisio
     return refused("Local execution gate refused a command whose file or network policy exceeds the local allowlist.", { ...evidence, refusalCode });
   }
   if (isApplicationWrapperSpawn(spawnPlan, manifest)) {
-    const wrapperGate = applicationWrapperGate(work, spawnPlan, localPolicy, approvedRoots, manifest);
+    const wrapperGate = applicationWrapperGate(work, spawnPlan, localPolicy, approvedRoots, manifest, resolveBinary);
     evidence.applicationWrapper = wrapperGate.evidence;
     if (!wrapperGate.allowed) {
-      return refused(wrapperGate.reason, evidence, wrapperGate.code ?? "policy_blocked");
+      // Lift the wrapper gate's precise refusalCode (binary_unavailable,
+      // file_policy_exceeded, …) to the TOP level: the server classifies a
+      // local_execution_refused by `evidence.refusalCode`, not the nested copy.
+      const wrapperRefusalCode = wrapperGate.evidence?.refusalCode;
+      return refused(
+        wrapperGate.reason,
+        wrapperRefusalCode ? { ...evidence, refusalCode: wrapperRefusalCode } : evidence,
+        wrapperGate.code ?? "policy_blocked",
+      );
     }
   }
   return { allowed: true, reason: "Local execution gate allowed the governed command.", evidence };
@@ -227,7 +247,7 @@ function isApplicationWrapperSpawn(spawnPlan, manifest = {}) {
   return script.endsWith("tools/agents/application-wrapper.mjs");
 }
 
-function applicationWrapperGate(work, spawnPlan, localPolicy, approvedRoots, manifest = {}) {
+function applicationWrapperGate(work, spawnPlan, localPolicy, approvedRoots, manifest = {}, resolveBinary = binaryAvailableOnPath) {
   const spec = applicationWrapperSpec(work);
   const parsed = parseApplicationWrapperArgs(spawnPlan?.args ?? []);
   const cwdPolicy = normalizeCwdPolicy(spec?.cwdPolicy);
@@ -303,6 +323,20 @@ function applicationWrapperGate(work, spawnPlan, localPolicy, approvedRoots, man
   }
   if (!wrapperArgsAllowed(parsed.capability, parsed.execArgs)) {
     return { allowed: false, reason: "Local execution gate refused application wrapper args outside the local allowlist.", evidence, code: "policy_blocked" };
+  }
+  // Per-device availability (#802): the command is allowlisted, but the binary may
+  // not be installed on THIS device (git is a per-device property). Resolve it the
+  // way spawn() would and refuse with a PRECISE reason — otherwise the spawn fails
+  // with exit 127 and the operator only learns "the wrapper failed", never that the
+  // device simply lacks git. Checked last, so it never leaks PATH probing for a
+  // command that was going to be refused anyway.
+  if (!resolveBinary(parsed.execCommand)) {
+    return {
+      allowed: false,
+      reason: `Local execution gate refused an application wrapper command whose binary "${parsed.execCommand}" is not available on this device.`,
+      evidence: { ...evidence, refusalCode: "binary_unavailable" },
+      code: "runtime_error",
+    };
   }
   return { allowed: true, reason: "Local execution gate allowed the application wrapper command.", evidence };
 }

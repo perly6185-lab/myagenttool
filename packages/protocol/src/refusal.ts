@@ -49,6 +49,7 @@ export const refusalCodes = [
   "over_budget",
   "over_quota",
   "undeliverable",
+  "binary_unavailable",
   // human
   "approval_denied",
   "deliverable_rejected",
@@ -72,6 +73,10 @@ export const refusalCodesByCategory: Record<RefusalCategory, readonly RefusalCod
     "over_budget",
     "over_quota",
     "undeliverable",
+    // The device that would run a binary wrapper does not have the binary
+    // installed (git is a per-device property) — an environment state, not a
+    // policy rule (#802).
+    "binary_unavailable",
   ],
   human: ["approval_denied", "deliverable_rejected", "gate_rejected"],
 };
