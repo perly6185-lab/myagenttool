@@ -44,6 +44,25 @@ test("truncating a >1000-row report is observable — droppedRowCount + a warn e
   assert.match(event.message, /dropped 1/);
 });
 
+test("cache tokens are captured — read + creation summed (#887)", () => {
+  const { state, service } = svc();
+  service.recordCcusageImportedEstimates({
+    invocation,
+    result: result([{ date: "2026-07-10", model: "m", totalCostUsd: 1, cacheReadTokens: 900, cacheCreationTokens: 100 }]),
+    agent: null,
+  });
+  assert.equal(state.importedUsageEstimates[0].cachedTokens, 1000);
+});
+
+test("a single cachedTokens field wins; no cache fields → null (#887)", () => {
+  const { state, service } = svc();
+  service.recordCcusageImportedEstimates({ invocation, result: result([{ date: "2026-07-10", model: "m", totalCostUsd: 1, cachedTokens: 42 }]), agent: null });
+  assert.equal(state.importedUsageEstimates[0].cachedTokens, 42);
+  const { state: state2, service: service2 } = svc();
+  service2.recordCcusageImportedEstimates({ invocation, result: result([{ date: "2026-07-11", model: "m", totalCostUsd: 1 }]), agent: null });
+  assert.equal(state2.importedUsageEstimates[0].cachedTokens, null);
+});
+
 test("a large raw row is bounded before it is persisted", () => {
   const { state, service } = svc();
   service.recordCcusageImportedEstimates({ invocation, result: result([{ date: "2026-07-10", model: "m", totalCostUsd: 1, blob: "x".repeat(5000) }]), agent: null });
