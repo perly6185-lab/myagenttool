@@ -50,8 +50,8 @@ export function createCapabilityService({
       // response stays an opaque capability_not_found whether the capability is
       // unknown or merely not granted), so it lands only in the owner's ledger.
       // A genuinely-unknown name mints nothing — that is a client typo, not a veto.
-      if (typeof refuse === "function" && getCapability(name, null)) {
-        const unscoped = getCapability(name, null);
+      const unscoped = typeof refuse === "function" ? getCapability(name, null) : null;
+      if (unscoped) {
         refuse({
           subject: { kind: "capability_call", id: name },
           requester: { kind: actor?.userId ? "local_user" : "control_plane", id: actor?.userId ?? actor?.teamId ?? null },
