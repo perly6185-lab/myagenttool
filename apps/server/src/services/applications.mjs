@@ -1723,7 +1723,21 @@ function normalizeApplicationSource(source = {}) {
     if (!BINARY_SOURCE_NAME.test(binary)) {
       throw new Error("Binary application source must be a bare program name (no path separators or absolute paths).");
     }
-    return { type, binary, wrapper: normalizeWrapperDescriptor(source.wrapper, { npm: false }) };
+    const wrapper = normalizeWrapperDescriptor(source.wrapper, { npm: false });
+    // Defence in depth (#865): a binary source's wrapper command may ONLY invoke
+    // the declared binary itself — not an arbitrary program. The bridge allowlist
+    // is the primary gate, but without this the server would happily PLAN (and, if
+    // the caller set status:"approved", dispatch) a command like `/bin/sh -c ...`
+    // registered under `binary:"git"` — a latent RCE the moment any consumer trusts
+    // the server's "approved" plan or the device allowlist is loosened. Whether a
+    // user may register an executable binary Application at all is ADR #803; this
+    // only stops one from masquerading as a different program than it declares.
+    for (const command of wrapper.commands) {
+      if (command.command !== binary) {
+        throw new Error(`Binary application command "${command.id}" must invoke "${binary}", not "${command.command}".`);
+      }
+    }
+    return { type, binary, wrapper };
   }
   return {
     type: "manual",
