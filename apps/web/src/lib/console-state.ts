@@ -445,6 +445,7 @@ export interface InvocationRound {
   toolCallIds?: string[];
   responseDigest?: string | null;
   errorCode?: string | null;
+  estimatedCostUsd?: number | null;
 }
 
 export interface LedgerEntry {
