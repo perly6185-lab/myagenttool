@@ -185,3 +185,40 @@ test("the repair is not a silent one", () => {
     "a corrupt snapshot must say so, naming the collection and the count",
   );
 });
+
+/*
+ * `devices` (the fleet) restores through its OWN path — a per-record merge with
+ * the seeded defaults — so it does not pass through the array loop that repairs
+ * every other collection. It is the newest collection in the state, which is
+ * precisely the case #832 is about: a guard that only covers the arrays someone
+ * remembered to route through it is not a guard.
+ */
+test("the device fleet is de-duplicated on restore like every other collection", () => {
+  const dir = mkdtempSync(join(tmpdir(), "id-uniq-"));
+  const storePath = join(dir, "state.json");
+  const seed = createServerState({ defaultProjectPath: process.cwd(), now });
+
+  const device = (id, name) => ({
+    id,
+    name,
+    ownerUserId: "usr_local",
+    status: "online",
+    unlinkState: "linked",
+    bridgeCredential: null,
+    credentialRevokedAt: null,
+  });
+  // Two machines under one id — the newest first, as records are written.
+  seed.state.devices = [device("dev_local_001", "current"), device("dev_local_001", "stale")];
+  persistence(seed.state, storePath, seed.defaultProject).savePersistentState();
+
+  const restored = createServerState({ defaultProjectPath: process.cwd(), now });
+  persistence(restored.state, storePath, restored.defaultProject).restorePersistentState();
+
+  const ids = restored.state.devices.map((item) => item.id);
+  assert.equal(ids.length, new Set(ids).size, "a fleet cannot hold two machines under one id");
+  assert.equal(
+    restored.state.devices.find((item) => item.id === "dev_local_001").name,
+    "current",
+    "and the newest record under that id is the one that survives",
+  );
+});

@@ -2076,3 +2076,24 @@ test("extractChangeFailureRef parses the DORA change-failure marker", () => {
   assert.equal(extractChangeFailureRef("no marker"), null);
   assert.equal(extractChangeFailureRef(null), null);
 });
+
+test("D1 deploy: an infra miss (runDeploy null) emits an event + medium alert, records NO deployment (H3)", async () => {
+  const alerts = [];
+  const { svc, calls } = makeAutoRun({ runDeploy: async () => null, sendAlert: (a) => alerts.push(a) });
+  state.autoRunSettings = { deployOnMerge: true };
+  const rec = await svc.maybeDeployAfterMerge(mergedRun({ id: "aur_infra" }));
+  assert.equal(rec, null);
+  assert.ok(!state.deployments?.some((d) => d.autoRunId === "aur_infra"), "infra miss records no deployment");
+  assert.ok(calls.events.some((e) => e.type === "auto_run_deploy_infra_miss"), "infra-miss event fired (not silent)");
+  assert.ok(alerts.some((a) => a.kind === "deploy_infra_miss" && a.severity === "medium"), "medium infra-miss alert fired");
+});
+
+test("D1 deploy: an ambiguous outcome (no boolean deployed) is an infra miss, not a failed deploy → no destructive rollback (H3/H2)", async () => {
+  const alerts = [];
+  const { svc } = makeAutoRun({ runDeploy: async () => ({ summary: "hmm" }), sendAlert: (a) => alerts.push(a) });
+  state.autoRunSettings = { deployOnMerge: true };
+  const rec = await svc.maybeDeployAfterMerge(mergedRun({ id: "aur_ambig" }));
+  assert.equal(rec, null);
+  assert.ok(!state.deployments?.some((d) => d.autoRunId === "aur_ambig"), "no `failed` deployment → no rollback triggered");
+  assert.ok(alerts.some((a) => a.kind === "deploy_infra_miss"));
+});

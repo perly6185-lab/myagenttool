@@ -1039,11 +1039,28 @@ export function createAutoRunService({
     } catch {
       outcome = null;
     }
-    if (!outcome) return null; // couldn't run → infra miss, not a change-failure
-    // Defense in depth: a runner that resolves without an explicit boolean
-    // `deployed` is an ambiguous contract, not a change-failure — never let it
-    // record a `failed` deploy (which would trigger a destructive rollback).
-    if (typeof outcome.deployed !== "boolean") return null;
+    // Infra miss: the deploy command couldn't run (missing/spawn error), timed
+    // out, or resolved an ambiguous contract (no boolean `deployed`). It is NOT a
+    // change-failure (don't record a `failed` deployment / trigger a destructive
+    // rollback), but it must NOT be silent either (H3) — a broken deploy pipeline
+    // that leaves no trace reads as "deployed" to an operator. Emit an event +
+    // medium alert so it is visible, then bail without recording a deployment.
+    if (!outcome || typeof outcome.deployed !== "boolean") {
+      appendEvent({
+        invocationId: autoRun.invocationId,
+        type: "auto_run_deploy_infra_miss",
+        level: "warn",
+        message: `Auto-run ${autoRun.id} deploy of PR #${autoRun.prNumber} did not run to a result (infra miss: command missing, timed out, or ambiguous).`,
+        data: { autoRunId: autoRun.id, prNumber: autoRun.prNumber },
+      });
+      void sendAlert?.({
+        kind: "deploy_infra_miss",
+        severity: "medium",
+        message: `Auto-run ${autoRun.id}: deploy of PR #${autoRun.prNumber} did NOT run (infra miss — the deploy command failed to execute or timed out). The merge is live but was never deployed.`,
+        data: { autoRunId: autoRun.id, prNumber: autoRun.prNumber },
+      });
+      return null;
+    }
     const record = {
       id: nextId("dep_demo"),
       autoRunId: autoRun.id,

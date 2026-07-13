@@ -9,6 +9,7 @@ import {
 } from "../services/agents.mjs";
 import { createProjectRecord } from "../services/projects.mjs";
 import { createTerminalRuntimeCapability } from "../services/terminal.mjs";
+import { DEFAULT_DEVICE_ID, defineDeviceAlias } from "./device.mjs";
 
 const defaultAgentIds = [
   "agt_demo_cli",
@@ -31,7 +32,9 @@ export function createServerState({ defaultProjectPath, now }) {
     source: "default"
   });
   const state = {
-    device: createDefaultDevice(now),
+    // Authoritative device store. `state.device` is installed below as a live
+    // alias for devices[0] so the existing singleton reads keep working.
+    devices: [createDefaultDevice(now)],
     users: createDefaultUsers(now),
     teams: createDefaultTeams(now),
     tokens: [],
@@ -111,6 +114,7 @@ export function createServerState({ defaultProjectPath, now }) {
     sshTargets: [],
     sshConnectionTests: []
   };
+  defineDeviceAlias(state);
   return { defaultProject, state };
 }
 
@@ -217,7 +221,7 @@ export function resetStateForSelfCheck({ state, now }) {
 
 function createDefaultDevice(now) {
   return {
-    id: "dev_local_001",
+    id: DEFAULT_DEVICE_ID,
     ownerUserId: "usr_local",
     name: "Local Demo Device",
     platform: process.platform === "win32" ? "windows" : process.platform === "darwin" ? "macos" : "linux",
@@ -267,7 +271,7 @@ function createProjectTargetRecord(project, now) {
   return {
     id: `tgt_${project.id}`,
     projectId: project.id,
-    deviceId: "dev_local_001",
+    deviceId: DEFAULT_DEVICE_ID,
     kind: project.source === "clone" ? "clone" : "local",
     remoteUrl: project.git?.remoteUrl ?? null,
     rootPath: project.path,
@@ -404,7 +408,7 @@ function createDefaultAgents(now) {
       name: "Demo CLI Agent",
       description: "Safe local demo agent for M0 smoke tests.",
       ownerUserId: "usr_local",
-      location: { type: "local_device", deviceId: "dev_local_001" },
+      location: { type: "local_device", deviceId: DEFAULT_DEVICE_ID },
       adapter: {
         type: "cli",
         command: "demo-agent",
@@ -456,7 +460,7 @@ function createDefaultAgents(now) {
       name: "Codex CLI",
       description: "Runs Codex CLI non-interactively through a reviewed local adapter config.",
       ownerUserId: "usr_local",
-      location: { type: "local_device", deviceId: "dev_local_001" },
+      location: { type: "local_device", deviceId: DEFAULT_DEVICE_ID },
       adapter: {
         type: "cli",
         command: "codex",
@@ -509,7 +513,7 @@ function createDefaultAgents(now) {
       name: "Claude Code CLI",
       description: "Runs Claude Code non-interactively (claude -p) through a reviewed local adapter config.",
       ownerUserId: "usr_local",
-      location: { type: "local_device", deviceId: "dev_local_001" },
+      location: { type: "local_device", deviceId: DEFAULT_DEVICE_ID },
       adapter: {
         type: "cli",
         command: "claude",

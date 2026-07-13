@@ -63,7 +63,14 @@ export async function handleBridgeRoutes({
   if (!url.pathname.startsWith("/api/bridge/")) {
     return false;
   }
-  if (!requireBridgeCredential({ req, res, sendJson })) {
+  // The authenticated bridge's OWN device. Every ownership gate and liveness
+  // stamp below keys on this device rather than on `state.device` (the primary
+  // alias) — otherwise each gate compares the primary device to itself, which is
+  // how they stayed vacuously true while a single device existed. Keyed here,
+  // they mean what they say: a bridge cannot ack, log to, or complete work that
+  // was dispatched to a different machine.
+  const device = requireBridgeCredential({ req, res, sendJson });
+  if (!device) {
     return true;
   }
 
@@ -74,12 +81,12 @@ export async function handleBridgeRoutes({
     const delivery = invocation.delivery ?? {};
     const evidence = {
       operation,
-      deviceId: state.device.id,
+      deviceId: device.id,
       deliveryDeviceId: delivery.deviceId ?? null,
       deliveryState: delivery.state ?? null,
       invocationStatus: invocation.status ?? null,
     };
-    if (delivery.deviceId !== state.device.id) {
+    if (delivery.deviceId !== device.id) {
       appendBridgeRefusalEvent(invocation, "bridge_invocation_not_owned", evidence);
       return { allowed: false, status: 403, body: { error: "bridge_invocation_not_owned" } };
     }
@@ -122,11 +129,11 @@ export async function handleBridgeRoutes({
     const evidence = {
       operation,
       lifecycleActionId: lifecycleAction.id,
-      deviceId: state.device.id,
+      deviceId: device.id,
       actionDeviceId: lifecycleAction.deviceId ?? null,
       lifecycleStatus: lifecycleAction.status ?? null,
     };
-    if (lifecycleAction.deviceId !== state.device.id) {
+    if (lifecycleAction.deviceId !== device.id) {
       appendBridgeLifecycleRefusalEvent("bridge_lifecycle_not_owned", evidence);
       return { allowed: false, status: 403, body: { error: "bridge_lifecycle_not_owned" } };
     }
@@ -166,11 +173,11 @@ export async function handleBridgeRoutes({
     const evidence = {
       operation: operationName,
       operationId: operation.id,
-      deviceId: state.device.id,
+      deviceId: device.id,
       operationDeviceId: deviceId ?? null,
       operationStatus: operation.status ?? null,
     };
-    if (deviceId !== state.device.id) {
+    if (deviceId !== device.id) {
       appendBridgeOperationRefusalEvent(`${operationName}_not_owned`, evidence);
       return { allowed: false, status: 403, body: { error: `${operationName}_not_owned` } };
     }
@@ -209,8 +216,8 @@ export async function handleBridgeRoutes({
   }
 
   if (req.method === "GET" && url.pathname === "/api/bridge/next") {
-    state.device.lastSeenAt = now();
-    if (state.device.unlinkState !== "linked") {
+    device.lastSeenAt = now();
+    if (device.unlinkState !== "linked") {
       sendJson(res, 204, null);
       return true;
     }
@@ -238,8 +245,8 @@ export async function handleBridgeRoutes({
   }
 
   if (req.method === "GET" && url.pathname === "/api/bridge/health-next") {
-    state.device.lastSeenAt = now();
-    if (state.device.unlinkState !== "linked") {
+    device.lastSeenAt = now();
+    if (device.unlinkState !== "linked") {
       sendJson(res, 204, null);
       return true;
     }
@@ -280,8 +287,8 @@ export async function handleBridgeRoutes({
   }
 
   if (req.method === "GET" && url.pathname === "/api/bridge/discovery-next") {
-    state.device.lastSeenAt = now();
-    if (state.device.unlinkState !== "linked") {
+    device.lastSeenAt = now();
+    if (device.unlinkState !== "linked") {
       sendJson(res, 204, null);
       return true;
     }
@@ -329,8 +336,8 @@ export async function handleBridgeRoutes({
   }
 
   if (req.method === "GET" && url.pathname === "/api/bridge/probe-next") {
-    state.device.lastSeenAt = now();
-    if (state.device.unlinkState !== "linked") {
+    device.lastSeenAt = now();
+    if (device.unlinkState !== "linked") {
       sendJson(res, 204, null);
       return true;
     }
@@ -354,8 +361,8 @@ export async function handleBridgeRoutes({
   }
 
   if (req.method === "GET" && url.pathname === "/api/bridge/lifecycle-next") {
-    state.device.lastSeenAt = now();
-    if (state.device.unlinkState !== "linked") {
+    device.lastSeenAt = now();
+    if (device.unlinkState !== "linked") {
       sendJson(res, 204, null);
       return true;
     }

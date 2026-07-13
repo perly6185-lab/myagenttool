@@ -82,15 +82,25 @@ export function runDeployCommand({ command, input, timeoutMs = deployTimeoutMs()
     let child;
     try {
       const [cmd, ...args] = command;
-      child = spawn(cmd, args, { stdio: ["pipe", "pipe", "ignore"] });
+      // detached: the child leads its own process group, so a timeout can kill the
+      // WHOLE tree. A real deploy script forks (kubectl/ssh/terraform); killing only
+      // the direct child would leave grandchildren still mutating the target while
+      // we've already given up (M1).
+      child = spawn(cmd, args, { stdio: ["pipe", "pipe", "ignore"], detached: true });
     } catch {
       return done(null);
     }
     const timer = setTimeout(() => {
       try {
-        child.kill("SIGKILL");
+        // Negative pid = the process group (POSIX). Falls back to the direct child
+        // on platforms without process groups (e.g. Windows).
+        process.kill(-child.pid, "SIGKILL");
       } catch {
-        /* already gone */
+        try {
+          child.kill("SIGKILL");
+        } catch {
+          /* already gone */
+        }
       }
       done(null); // couldn't finish → infra miss, not a failed deploy
     }, timeoutMs);

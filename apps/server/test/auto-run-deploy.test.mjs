@@ -70,3 +70,21 @@ test("runDeployCommand: exit 0 with a {summary} but no `deployed` is a SUCCESS (
   assert.equal(r.deployed, true, "an absent `deployed` on exit 0 must not record a failed deploy (would trigger a destructive rollback)");
   assert.equal(r.summary, "shipped to prod");
 });
+
+import { mkdtempSync, existsSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+test("runDeployCommand: a timeout kills the whole process GROUP, not just the direct child (M1)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "deploy-grp-"));
+  const marker = join(dir, "grandchild-ran");
+  // The deploy command spawns a grandchild that writes `marker` after 1.5s, then
+  // the parent hangs. runDeployCommand times out at 300ms and must kill the whole
+  // group so the grandchild never writes the marker (detached + process.kill(-pid)).
+  const grandchild = `setTimeout(()=>require('fs').writeFileSync(${JSON.stringify(marker)},'x'),1500)`;
+  const script = `require('child_process').spawn(process.execPath,['-e',${JSON.stringify(grandchild)}],{stdio:'ignore'});setTimeout(()=>{},60000)`;
+  const out = await runDeployCommand({ command: [process.execPath, "-e", script], timeoutMs: 300 });
+  assert.equal(out, null, "timed out → infra miss (null)");
+  await new Promise((r) => setTimeout(r, 2200)); // past the grandchild's 1.5s delay
+  assert.equal(existsSync(marker), false, "the grandchild was killed with the group and never wrote the marker");
+});

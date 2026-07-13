@@ -4,6 +4,8 @@ import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 
+import { DEFAULT_DEVICE_ID } from "../runtime/device.mjs";
+
 const execFileAsync = promisify(execFile);
 
 function defaultNow() {
@@ -699,7 +701,7 @@ export function createProjectService({ state, now, nextId, appendEvent, persistS
     const target = {
       id: `tgt_${project.id}`,
       projectId: project.id,
-      deviceId: "dev_local_001",
+      deviceId: DEFAULT_DEVICE_ID,
       kind: project.source === "clone" ? "clone" : "local",
       remoteUrl: project.git?.remoteUrl ?? null,
       rootPath: project.path,
