@@ -1,4 +1,4 @@
-import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, writeSync } from "node:fs";
+import { closeSync, copyFileSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, writeSync } from "node:fs";
 import { dirname } from "node:path";
 
 import { listDevices } from "./device.mjs";
@@ -162,6 +162,12 @@ export function createPersistenceRuntime({
       // snapshot. Drop the mirror once no deployed build reads it.
       devices: listDevices(state),
       device: state.device,
+      // The id counter travels WITH the state it minted ids for (#832). It used to
+      // be recovered on boot by regex-scanning every string in the state for the
+      // largest `_NNNN` suffix — a primary key that is only correct because a scan
+      // happened to find the biggest number is not a primary key, and it silently
+      // lowers itself the day a collection holds ids the scan does not reach.
+      idCounter: Number.isFinite(state.idCounter) ? state.idCounter : null,
     };
     for (const key of persistedArrayKeys) {
       snapshot[key] = state[key];
@@ -195,8 +201,14 @@ export function createPersistenceRuntime({
     }
   }
 
+  // Set by repairDuplicateIds; consumed at the end of restore. The repair is
+  // useless if it only ever lives in memory — the next process would read the same
+  // corrupt file and log the same alarm forever.
+  let duplicateIdsRepaired = 0;
+
   function restorePersistentState() {
     if (!enabled || !existsSync(stateStorePath)) return;
+    duplicateIdsRepaired = 0;
     let snapshot;
     try {
       snapshot = JSON.parse(readFileSync(stateStorePath, "utf8"));
@@ -231,7 +243,7 @@ export function createPersistenceRuntime({
       if (Array.isArray(snapshot[key])) {
         state[key] = key === "agents"
           ? mergeRecordsById(defaultArrays[key], snapshot[key])
-          : snapshot[key];
+          : repairDuplicateIds(key, snapshot[key]);
       }
     }
     for (const key of persistedObjectKeys) {
@@ -242,12 +254,80 @@ export function createPersistenceRuntime({
         };
       }
     }
+    // `devices` restores through its own path (per-record merge + legacy
+    // migration), so it would otherwise sail past the duplicate-id repair every
+    // other collection gets. It is the NEWEST collection, which is exactly the
+    // case #832 warns about: a guard that only covers the arrays someone
+    // remembered to route through it is not a guard. Repair it here, on the
+    // snapshot, so restoreDevices sees a fleet with unique ids.
+    if (Array.isArray(snapshot.devices)) {
+      snapshot.devices = repairDuplicateIds("devices", snapshot.devices);
+    }
     restoreDevices(state, snapshot);
+    if (Number.isFinite(snapshot.idCounter)) {
+      state.idCounter = snapshot.idCounter;
+    }
     // Every device is offline until its own bridge re-registers — a restart
     // tells us nothing about which machines are still up.
     for (const device of listDevices(state)) {
       device.status = "offline";
     }
+    // Keep the evidence before anything overwrites it — the same forensic move
+    // quarantineSnapshot makes. Otherwise the next ordinary save silently destroys
+    // the only copy of what went wrong.
+    //
+    // The repaired snapshot is NOT written here: the id counter is not settled yet
+    // (the composer raises it right after this returns), and persisting a counter
+    // that is behind its own records is the exact bug this is fixing. The caller
+    // writes it once the state is whole.
+    if (duplicateIdsRepaired > 0) {
+      const preservedPath = `${stateStorePath}.duplicate-ids-${Date.now()}`;
+      try {
+        copyFileSync(stateStorePath, preservedPath);
+        console.error(`[server] pre-repair snapshot preserved at ${preservedPath}`);
+      } catch (error) {
+        console.error(`[server] could not preserve the pre-repair snapshot: ${error?.message ?? error}`);
+      }
+    }
+    return { duplicateIdsRepaired };
+  }
+
+  /**
+   * A snapshot carrying two records under one id is CORRUPT (#832): `find` by id
+   * then returns an arbitrary one of them, so the record an operator reads and the
+   * record the scheduler acts on can be different objects. That is exactly how a
+   * ghost invocation — stuck `running`, unreachable by its own id — wedged a
+   * device's dispatch for three weeks while every read of it said `cancelled`.
+   *
+   * Repair rather than quarantine: the whole snapshot is not junk, and an operator
+   * needs a way back that is not "throw the state away". Records are unshifted
+   * (newest first), so the FIRST occurrence is the newest — keep it, drop the rest,
+   * and be loud about what was dropped. Loading it silently is what let this hide.
+   */
+  function repairDuplicateIds(key, records) {
+    const seen = new Set();
+    const kept = [];
+    let dropped = 0;
+    for (const record of records) {
+      const id = record?.id;
+      if (typeof id !== "string" || !id) {
+        kept.push(record);
+        continue;
+      }
+      if (seen.has(id)) {
+        dropped += 1;
+        continue;
+      }
+      seen.add(id);
+      kept.push(record);
+    }
+    if (dropped > 0) {
+      duplicateIdsRepaired += dropped;
+      console.error(
+        `[server] state snapshot had ${dropped} duplicate-id record(s) in "${key}" — kept the newest of each id and dropped the rest. This is corruption (see #832).`,
+      );
+    }
+    return kept;
   }
 
   return {

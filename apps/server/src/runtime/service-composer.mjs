@@ -78,8 +78,24 @@ export function createServerRuntimeServices({
     defaultProject,
     sameProjectPath,
   });
-  restorePersistentState();
-  idCounter = nextIdCounterAfterState(state);
+  const restored = restorePersistentState();
+  // The counter comes from the snapshot it minted ids for. The scan is kept ONLY
+  // as a floor — for a snapshot written before the counter was persisted, and as a
+  // backstop if a restored counter is somehow behind the records it must not
+  // collide with. It can raise the counter; it can never lower it (#832).
+  idCounter = Math.max(state.idCounter ?? 0, nextIdCounterAfterState(state));
+  state.idCounter = idCounter;
+  // Every id the state already holds. `nextId` refuses to reissue one, so a
+  // counter that is wrong — reset, restored from an older snapshot, whatever —
+  // produces a gap, never a duplicate primary key.
+  let issuedIds = collectRecordIds(state);
+  // A snapshot that had to be repaired is written back now that the state is whole
+  // (ids de-duplicated, counter settled). Without this the repair would live only
+  // in memory: the next process would read the same corrupt file, raise the same
+  // alarm, and nothing would ever get better.
+  if (restored?.duplicateIdsRepaired > 0) {
+    savePersistentState();
+  }
 
   const { appendEvent } = createEventLogRuntime({
     state,
@@ -1890,10 +1906,29 @@ export function createServerRuntimeServices({
       && agent.capabilities.some((capability) => capability?.name === "application_control");
   }
 
+  /**
+   * Mint an id that the state does not already hold (#832).
+   *
+   * The counter alone is not a guarantee: it lives in memory, it is restored from
+   * a snapshot, and `resetIdCounter` exists. Any of those going wrong used to mint
+   * an id that already existed — and nothing complained, because nothing checked.
+   * The store then held two records under one key, `find` returned an arbitrary
+   * one, and the other became a ghost: unreachable by its own id, invisible to
+   * every read, still very much alive to the scheduler.
+   *
+   * So uniqueness is enforced HERE, at the only place ids are born, rather than
+   * being an invariant the rest of the system hopes for. A wrong counter now costs
+   * a gap in the numbering. It cannot cost a duplicate.
+   */
   function nextId(prefix) {
-    const id = `${prefix}_${String(idCounter).padStart(4, "0")}`;
-    idCounter += 1;
-    return id;
+    for (;;) {
+      const id = `${prefix}_${String(idCounter).padStart(4, "0")}`;
+      idCounter += 1;
+      state.idCounter = idCounter;
+      if (issuedIds.has(id)) continue;
+      issuedIds.add(id);
+      return id;
+    }
   }
 
   function findInvocation(id) {
@@ -2463,8 +2498,14 @@ export function createServerRuntimeServices({
     queueRollbackAction,
     recordAiUsage,
     requestLifecycleLocalApproval,
+    // The self-check resets the demo state, then resets the counter. Rebuild the
+    // issued-id set from whatever the reset LEFT BEHIND (it keeps the default
+    // agents, projects, …) — clearing it blindly would disarm the very guard that
+    // makes a reset counter safe (#832).
     resetIdCounter: () => {
       idCounter = 1;
+      state.idCounter = 1;
+      issuedIds = collectRecordIds(state);
     },
     resolveCodexApprovalBrokerRequest,
     startInvocationIfAllowed,
@@ -2486,6 +2527,8 @@ export function createServerRuntimeServices({
     nextId,
     appendEvent,
     persistStateSoon,
+    capWithArchive: retentionArchive.capWithArchive,
+    archiveEvicted: retentionArchive.archiveEvicted,
   });
 
   const httpDependencies = {
@@ -2662,6 +2705,26 @@ export function createServerRuntimeServices({
     savePersistentState,
     selfCheckDependencies,
   };
+}
+
+/**
+ * Every record id the state currently holds, across every collection (#832).
+ *
+ * Generic on purpose: it walks the arrays it finds rather than a list someone has
+ * to remember to extend. A new collection is protected the day it is added, not
+ * the day someone notices it was not.
+ */
+function collectRecordIds(state) {
+  const ids = new Set();
+  for (const value of Object.values(state ?? {})) {
+    if (!Array.isArray(value)) continue;
+    for (const record of value) {
+      if (record && typeof record === "object" && typeof record.id === "string" && record.id) {
+        ids.add(record.id);
+      }
+    }
+  }
+  return ids;
 }
 
 function nextIdCounterAfterState(state) {

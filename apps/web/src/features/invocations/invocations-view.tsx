@@ -38,6 +38,7 @@ import {
 } from "@/features/recovery/application-recovery-ui";
 import { useUiStore } from "@/store/ui-store";
 import { cn } from "@/lib/cn";
+import { formatDuration, formatTokens } from "@/lib/format";
 import { readableDelivery, readableStatus, statusTone } from "@/lib/readable-labels";
 import type {
   ApplicationRecoveryActionRequest,
@@ -65,6 +66,15 @@ export function InvocationsView() {
   const importedRows = selected
     ? (state?.importedUsageEstimates ?? []).filter((row) => row.invocationId === selected.id)
     : [];
+  // Per-round telemetry for this run — one row per model turn (Epic #805).
+  const rounds = selected
+    ? (state?.invocationRounds ?? [])
+        .filter((round) => round.invocationId === selected.id)
+        .slice()
+        .sort((a, b) => a.roundIndex - b.roundIndex)
+    : [];
+  const roundInputTokens = rounds.reduce((sum, round) => sum + (round.inputTokens ?? 0), 0);
+  const roundOutputTokens = rounds.reduce((sum, round) => sum + (round.outputTokens ?? 0), 0);
 
   function viewInvocation(invocationId: string) {
     setSelectedInvocationId(invocationId);
@@ -186,6 +196,72 @@ export function InvocationsView() {
           </CardHeader>
           <CardContent>
             <ImportedUsageTable rows={importedRows} />
+          </CardContent>
+        </Card>
+      ) : null}
+
+      {selected && rounds.length ? (
+        <Card>
+          <CardHeader>
+            <div className="flex items-start justify-between gap-3">
+              <CardTitle>Rounds · this run</CardTitle>
+              <Badge tone="neutral">{rounds.length} round{rounds.length === 1 ? "" : "s"}</Badge>
+            </div>
+            <p className="text-sm text-muted-foreground">
+              One row per model turn — measured tokens, timing, and content read.{" "}
+              {formatTokens(roundInputTokens)} in / {formatTokens(roundOutputTokens)} out tokens across this run.
+            </p>
+          </CardHeader>
+          <CardContent>
+            <div className="overflow-x-auto rounded-lg border border-border">
+              <table className="w-full text-sm">
+                <thead className="bg-muted/40 text-xs uppercase tracking-wide text-muted-foreground">
+                  <tr>
+                    <th className="px-3 py-2 text-left font-medium">#</th>
+                    <th className="px-3 py-2 text-left font-medium">Model</th>
+                    <th className="px-3 py-2 text-right font-medium">In</th>
+                    <th className="px-3 py-2 text-right font-medium">Out</th>
+                    <th className="px-3 py-2 text-right font-medium">Cached</th>
+                    <th className="px-3 py-2 text-right font-medium">Duration</th>
+                    <th className="px-3 py-2 text-right font-medium">Files</th>
+                    <th className="px-3 py-2 text-right font-medium">Tools</th>
+                    <th className="px-3 py-2 text-right font-medium">Status</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {rounds.map((round) => {
+                    const files = round.filesRead ?? [];
+                    return (
+                      <tr key={round.id} className="border-t border-border align-top">
+                        <td className="px-3 py-2 font-mono text-xs text-muted-foreground">{round.roundIndex}</td>
+                        <td className="px-3 py-2 [overflow-wrap:anywhere]">
+                          {round.model ?? "—"}
+                          {round.provider ? (
+                            <span className="ml-1 text-xs text-muted-foreground">{round.provider}</span>
+                          ) : null}
+                        </td>
+                        <td className="px-3 py-2 text-right tabular-nums">{formatTokens(round.inputTokens)}</td>
+                        <td className="px-3 py-2 text-right tabular-nums">{formatTokens(round.outputTokens)}</td>
+                        <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">{formatTokens(round.cachedTokens)}</td>
+                        <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">{formatDuration(round.durationMs)}</td>
+                        <td
+                          className="px-3 py-2 text-right tabular-nums text-muted-foreground"
+                          title={files.length ? files.join("\n") : undefined}
+                        >
+                          {files.length}
+                        </td>
+                        <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">{(round.toolCallIds ?? []).length}</td>
+                        <td className="px-3 py-2 text-right">
+                          <StatusBadge tone={statusTone(round.status ?? "")}>
+                            {readableStatus(round.status ?? "")}
+                          </StatusBadge>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
           </CardContent>
         </Card>
       ) : null}
