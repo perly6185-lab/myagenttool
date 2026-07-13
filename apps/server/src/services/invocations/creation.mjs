@@ -1,5 +1,6 @@
 import { renderAgentSkillsIntoWorktree } from "../agent-skills.mjs";
 import { createRefusalRuntime } from "../../runtime/refusal-log.mjs";
+import { teamOf } from "../../runtime/auth.mjs";
 
 export function createInvocationCreationRuntime({
   state,
@@ -86,10 +87,23 @@ export function createInvocationCreationRuntime({
     const requestedWorktree = requestedMetadata.worktreeId
       ? state.worktrees.find((item) => item.id === requestedMetadata.worktreeId)
       : null;
+    // Service-layer tenant guard (#865, S3): the HTTP route already blocks a
+    // foreign projectId (denyForeignProject), but the service must not itself
+    // resolve a project outside the actor's team — a future internal caller that
+    // bypasses the route guard would otherwise run against a foreign project's
+    // path. When the actor is unscoped (local dev, no teamId) this is a no-op,
+    // exactly matching the route guard's own "unscoped ⇒ allow".
+    const actorTeamId = options.actor?.teamId ?? null;
+    const findProjectForActor = (projectId) => {
+      if (!projectId) return null;
+      const found = state.projects.find((item) => item.id === projectId) ?? null;
+      if (found && actorTeamId != null && teamOf(found) !== actorTeamId) return null;
+      return found;
+    };
     const visibleProject = requestedMetadata.projectId
-      ? state.projects.find((item) => item.id === requestedMetadata.projectId) ?? currentProject()
+      ? findProjectForActor(requestedMetadata.projectId) ?? currentProject()
       : requestedWorktree?.projectId
-        ? state.projects.find((item) => item.id === requestedWorktree.projectId) ?? currentProject()
+        ? findProjectForActor(requestedWorktree.projectId) ?? currentProject()
         : currentProject();
     const project = requestedWorktree?.workspaceProjectId
       ? state.projects.find((item) => item.id === requestedWorktree.workspaceProjectId) ?? visibleProject
