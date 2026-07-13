@@ -1528,6 +1528,12 @@ test("POST /api/tools/ccusage.report/invocations creates a governed invocation",
   assert.equal(invocation?.projectId, "projA");
   assert.equal(invocation?.options?.metadata?.tool, "ccusage.report");
   assert.equal(invocation?.options?.metadata?.report, "daily");
+  // #884: the platform-context (actor:null) run is attributable — the audit event
+  // stamps the real caller and flags the shared-asset tenancy bypass.
+  const audit = ctx.state.events.find((event) => event.invocationId === res.body.invocationId && event.type === "tool_invocation_created");
+  assert.ok(audit, "a tool_invocation_created audit event is recorded");
+  assert.equal(audit.data.platformContext, true);
+  assert.equal(audit.data.requestedBy, invocation.requestedBy, "the audit records the real caller");
 });
 
 test("POST /api/tools/codex.review.diff/invocations creates a governed invocation", async () => {
