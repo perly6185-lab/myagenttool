@@ -436,3 +436,37 @@ test("git wrapper: a positional on a command that declares none is refused", () 
   const gate = gitGate({ capability: "app.app_git.wrapper.status", execArgs: ["--no-pager", "status", "--porcelain=v2", "--branch", "HEAD"], root: gitRoot, cwd: gitRoot });
   assert.equal(gate.allowed, false, "status takes no positional");
 });
+
+// --- #758 Tier-3: the gate stamps a precise refusalCode for server classification ---
+
+test("gate stamps refusalCode cwd_outside_approved_root for a cwd outside the approved root", () => {
+  const outside = mkdtempSync(join(tmpdir(), "rc-outside-"));
+  const gate = gitGate({ execArgs: ["--no-pager", "status", "--porcelain=v2", "--branch"], root: gitRoot, cwd: outside });
+  assert.equal(gate.allowed, false);
+  assert.equal(gate.evidence.refusalCode, "cwd_outside_approved_root");
+});
+
+// The file/network branch fires when spec and localPolicy AGREE (as they do in
+// production — localPolicy is derived from the spec) but exceed the manifest
+// ceiling (git is read_only/forbidden). Build both to that shape.
+function gitPolicyGate({ filePolicy, networkPolicy }) {
+  const spec = { execCommand: "git", execArgs: ["--no-pager", "status", "--porcelain=v2", "--branch"], capability: "app.app_git.wrapper.status", filePolicy, networkPolicy };
+  return localExecutionGate(
+    { project: { path: gitRoot }, options: { metadata: { applicationWrapper: spec, worktreePath: gitRoot } } },
+    { type: "cli", command: "node" },
+    { command: process.execPath, args: wrapperArgs(spec, { cwd: gitRoot }), cwd: gitRoot, localPolicy: { filePolicy, networkPolicy, source: "application_wrapper" } },
+    { manifest },
+  );
+}
+
+test("gate stamps file_policy_exceeded when the file policy exceeds the command allowlist", () => {
+  const gate = gitPolicyGate({ filePolicy: "workspace_write", networkPolicy: "forbidden" });
+  assert.equal(gate.allowed, false);
+  assert.equal(gate.evidence.refusalCode, "file_policy_exceeded");
+});
+
+test("gate stamps network_policy_exceeded when only the network policy exceeds", () => {
+  const gate = gitPolicyGate({ filePolicy: "read_only", networkPolicy: "network" });
+  assert.equal(gate.allowed, false);
+  assert.equal(gate.evidence.refusalCode, "network_policy_exceeded");
+});
