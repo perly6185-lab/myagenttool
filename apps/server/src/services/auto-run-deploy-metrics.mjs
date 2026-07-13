@@ -39,14 +39,20 @@ export function summarizeDeployments(deployments = []) {
     return { total: 0, deployed: 0, failed: 0, changeFailureRate: null, recoveryHours: { median: null, count: 0 }, deployFrequencyPerWeek: null, lastDeployAt: null };
   }
 
-  // Recovery: each failure is recovered by the FIRST later restore — a successful
-  // deploy (fix-forward) OR a rollback (self-healing), whichever comes first.
+  // Recovery (DORA MTTR): a maximal run of consecutive failures is ONE incident,
+  // recovered by the first later restore (a successful deploy fix-forward OR a
+  // rollback). Recovery time = restore − the incident's FIRST failure. A single
+  // restore recovers ONE incident — not once per failure, which would count a
+  // burst of retries as several short recoveries and understate the median.
   const recoveries = [];
-  for (let i = 0; i < sorted.length; i += 1) {
-    if (sorted[i].status !== "failed") continue;
-    const failedAt = Date.parse(sorted[i].at);
-    const next = sorted.slice(i + 1).find((d) => d.status === "deployed" || d.status === "rolled_back");
-    if (next) recoveries.push((Date.parse(next.at) - failedAt) / 3_600_000); // hours
+  let incidentStart = null;
+  for (const d of sorted) {
+    if (d.status === "failed") {
+      if (incidentStart === null) incidentStart = Date.parse(d.at);
+    } else if ((d.status === "deployed" || d.status === "rolled_back") && incidentStart !== null) {
+      recoveries.push((Date.parse(d.at) - incidentStart) / 3_600_000); // hours
+      incidentStart = null;
+    }
   }
 
   // Frequency of SUCCESSFUL deploys over the observed span (fallback: the count

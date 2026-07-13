@@ -156,19 +156,32 @@ export function computeMaturityScorecard({
   // data, a measured orchestration failure→success recovery stands in as a
   // labeled proxy (docs/design/APPLICATION_RECOVERY_CONVERGENCE.md) — the gate
   // becomes measured, and the measured string names the source honestly.
-  const recoveryH = release?.recoveryHours ?? dora?.changeFailures?.recoveryHours?.median ?? null;
-  const recoveryIsProxy = release?.source === "orchestration";
+  // Recovery has three honestly-distinct sources — never label a non-deploy
+  // number "deploy recovery". release wins (deploy > orchestration proxy); the
+  // github Change-failure marker signal is a LAST resort and is a
+  // change-failure-recovery time, not a deploy metric.
+  let recoveryH = null;
+  let recoverySource = null; // "deploy" | "orchestration" | "change_failure_marker"
+  if (release?.recoveryHours != null) {
+    recoveryH = release.recoveryHours;
+    recoverySource = release.source; // "deploy" or "orchestration"
+  } else if (dora?.changeFailures?.recoveryHours?.median != null) {
+    recoveryH = dora.changeFailures.recoveryHours.median;
+    recoverySource = "change_failure_marker";
+  }
+  const recoveryLabel = {
+    deploy: `deploy recovery ${recoveryH}h`,
+    orchestration: `orchestration recovery ${recoveryH}h (no deploy data — orchestration proxy)`,
+    change_failure_marker: `change-failure recovery ${recoveryH}h (from Change-failure markers — not deploy data)`,
+  };
   levels.push({
     level: 5,
     name: "Human-approved merge + release + rollback",
     gate: "releases carry rollback notes; deploy recovery time <1h",
     anchor: "DORA recovery time; SLSA/SSDF",
     frontier: "partial",
-    measured: recoveryH == null
-      ? null
-      : recoveryIsProxy
-        ? `orchestration recovery ${recoveryH}h (no deploy data — orchestration proxy)`
-        : `deploy recovery ${recoveryH}h`,
+    measured: recoveryH == null ? null : recoveryLabel[recoverySource],
+    recoverySource: recoverySource ?? undefined,
     verdict: recoveryH == null ? "indeterminate" : verdict(recoveryH, recoveryH < 1),
     detail:
       recoveryH == null

@@ -234,3 +234,18 @@ test("full ladder met → currentLevel 6, nextGap null", () => {
   assert.ok(sc.levels.every((l) => l.verdict === "met"));
   assert.equal(sc.nextGap, null);
 });
+
+test("L5: a change-failure-marker recovery is labeled honestly, never 'deploy recovery'", () => {
+  const sc = computeMaturityScorecard({ dora: { changeFailures: { recoveryHours: { median: 0.5 } } } });
+  const l5 = sc.levels.find((l) => l.level === 5);
+  assert.equal(l5.recoverySource, "change_failure_marker");
+  assert.match(l5.measured, /change-failure recovery/);
+  assert.doesNotMatch(l5.measured, /deploy recovery/, "a github marker number must not masquerade as deploy recovery");
+});
+
+test("L5: a real deploy recovery is labeled 'deploy recovery' with source deploy", () => {
+  const sc = computeMaturityScorecard({ release: { recoveryHours: 0.4, source: "deploy" } });
+  const l5 = sc.levels.find((l) => l.level === 5);
+  assert.equal(l5.recoverySource, "deploy");
+  assert.match(l5.measured, /deploy recovery 0\.4h/);
+});
