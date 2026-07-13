@@ -141,7 +141,10 @@ export function localExecutionGate(work, adapter, spawnPlan, { permissionDecisio
   // no root can be derived, there is nothing to confine to, so the run is not
   // blocked on this check alone.
   if (approvedRoots.length > 0 && !approvedRoots.some((root) => pathWithin(root, spawnPlan.cwd))) {
-    return refused("Local execution gate refused a working directory outside the approved project or worktree root.", evidence);
+    // refusalCode (refusal model #758): the precise sub-code the server classifies
+    // this refusal by. This general cwd check fires before the wrapper gate, so
+    // it is where a cwd-outside refusal is actually caught for wrapper commands.
+    return refused("Local execution gate refused a working directory outside the approved project or worktree root.", { ...evidence, refusalCode: "cwd_outside_approved_root" });
   }
   if (spawnPlan.args.some((arg) => String(arg).includes("\0"))) {
     return refused("Local execution gate refused an argv containing a NUL byte.", evidence, "validation_failed");
@@ -156,7 +159,13 @@ export function localExecutionGate(work, adapter, spawnPlan, { permissionDecisio
     return refused("Local execution gate refused a non-allowlisted command.", evidence);
   }
   if (!policyAllowed(manifest, commandKind, localPolicy)) {
-    return refused("Local execution gate refused a command whose file or network policy exceeds the local allowlist.", evidence);
+    // refusalCode (refusal model #758): which of file/network exceeded the local
+    // allowlist for this command kind — the precise sub-code the server records.
+    const kindPolicy = manifest?.policies?.[commandKind];
+    const refusalCode = kindPolicy && !kindPolicy.file.includes(localPolicy.filePolicy)
+      ? "file_policy_exceeded"
+      : "network_policy_exceeded";
+    return refused("Local execution gate refused a command whose file or network policy exceeds the local allowlist.", { ...evidence, refusalCode });
   }
   if (isApplicationWrapperSpawn(spawnPlan, manifest)) {
     const wrapperGate = applicationWrapperGate(work, spawnPlan, localPolicy, approvedRoots, manifest);
@@ -252,7 +261,12 @@ function applicationWrapperGate(work, spawnPlan, localPolicy, approvedRoots, man
     return { allowed: false, reason: "Local execution gate refused a non-allowlisted application wrapper command.", evidence , code: "policy_blocked" };
   }
   if (localPolicy.filePolicy !== allow.filePolicy || localPolicy.networkPolicy !== allow.networkPolicy) {
-    return { allowed: false, reason: "Local execution gate refused an application wrapper policy outside the command allowlist.", evidence , code: "policy_blocked" };
+    // refusalCode (refusal model #758): the precise policy sub-code the server
+    // classifies the refusal by — distinct from `code`, which is the recovery
+    // category. Only the non-default branches carry it; everything else the
+    // server buckets as command_not_allowlisted.
+    const refusalCode = localPolicy.filePolicy !== allow.filePolicy ? "file_policy_exceeded" : "network_policy_exceeded";
+    return { allowed: false, reason: "Local execution gate refused an application wrapper policy outside the command allowlist.", evidence: { ...evidence, refusalCode }, code: "policy_blocked" };
   }
   // An "invocation_root" command IS its repository — cwd is not a detail of it,
   // it is the whole definition. With no resolved cwd the runner would fall back to
@@ -263,14 +277,22 @@ function applicationWrapperGate(work, spawnPlan, localPolicy, approvedRoots, man
   // cwd from a root it happens to know. Guessing the half the server did not send
   // is how the control plane's word becomes the device's truth again.
   if (cwdPolicy === "invocation_root" && !parsed.cwd) {
-    return { allowed: false, reason: "Local execution gate refused an invocation-root application wrapper command with no resolved working directory.", evidence, code: "policy_blocked" };
+    // refusalCode (#758): a command with NO cwd is trivially not within an approved
+    // root, so it maps onto the existing code rather than minting a new one — the
+    // taxonomy is closed on purpose, and widening it is a protocol change (#759).
+    return {
+      allowed: false,
+      reason: "Local execution gate refused an invocation-root application wrapper command with no resolved working directory.",
+      evidence: { ...evidence, refusalCode: "cwd_outside_approved_root" },
+      code: "policy_blocked",
+    };
   }
   if (parsed.cwd) {
     if (!isAbsolute(parsed.cwd) || !existsSync(parsed.cwd)) {
-      return { allowed: false, reason: "Local execution gate refused an application wrapper cwd that is missing or non-absolute.", evidence , code: "runtime_error" };
+      return { allowed: false, reason: "Local execution gate refused an application wrapper cwd that is missing or non-absolute.", evidence: { ...evidence, refusalCode: "cwd_outside_approved_root" }, code: "runtime_error" };
     }
     if (approvedRoots.length > 0 && !approvedRoots.some((root) => pathWithin(root, parsed.cwd))) {
-      return { allowed: false, reason: "Local execution gate refused an application wrapper cwd outside the approved project or worktree root.", evidence , code: "policy_blocked" };
+      return { allowed: false, reason: "Local execution gate refused an application wrapper cwd outside the approved project or worktree root.", evidence: { ...evidence, refusalCode: "cwd_outside_approved_root" }, code: "policy_blocked" };
     }
   }
   if (!wrapperArgsAllowed(parsed.capability, parsed.execArgs)) {

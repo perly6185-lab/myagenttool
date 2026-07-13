@@ -5,6 +5,7 @@ import {
   readableAppealTo,
   readableRefusalCategory,
   readableRefusalCode,
+  summarizeRefusals,
 } from "@/lib/refusals";
 
 function refusal(over: Partial<RefusalRow>): RefusalRow {
@@ -59,5 +60,46 @@ describe("groupRefusals", () => {
 
   it("returns nothing for an empty list", () => {
     expect(groupRefusals([])).toEqual([]);
+  });
+});
+
+describe("summarizeRefusals", () => {
+  const NOW = Date.parse("2026-07-13T12:00:00.000Z");
+
+  it("counts totals, categories, top codes, and a zero-filled 7-day trend", () => {
+    const rows = [
+      refusal({ category: "policy", code: "command_not_allowlisted", at: "2026-07-13T01:00:00.000Z" }),
+      refusal({ category: "policy", code: "command_not_allowlisted", at: "2026-07-12T01:00:00.000Z" }),
+      refusal({ category: "policy", code: "cwd_outside_approved_root", at: "2026-07-13T02:00:00.000Z" }),
+      refusal({ category: "human", code: "approval_denied", at: "2026-07-11T02:00:00.000Z" }),
+      refusal({ category: "state", code: "over_budget", at: "2026-07-13T03:00:00.000Z" }),
+    ];
+    const s = summarizeRefusals(rows, { nowMs: NOW });
+    expect(s.total).toBe(5);
+    expect(s.byCategory).toEqual({ not_granted: 0, policy: 3, state: 1, human: 1 });
+    expect(s.topCodes[0]).toEqual({ code: "command_not_allowlisted", label: "Command not allowlisted", count: 2 });
+    expect(s.daily).toHaveLength(7);
+    expect(s.daily[s.daily.length - 1]).toEqual({ date: "2026-07-13", count: 3 }); // today
+    expect(s.daily[s.daily.length - 2].count).toBe(1); // 07-12
+    expect(s.daily.reduce((n, d) => n + d.count, 0)).toBe(5); // all within the window
+  });
+
+  it("flags a loop source and ignores rows outside the window in the trend (not the total)", () => {
+    const rows = [
+      refusal({ code: "gate_rejected", category: "human", source: "loop", at: "2026-07-13T00:00:00.000Z" }),
+      refusal({ code: "over_budget", category: "state", at: "2026-01-01T00:00:00.000Z" }), // old
+    ];
+    const s = summarizeRefusals(rows, { nowMs: NOW });
+    expect(s.total).toBe(2);
+    expect(s.hasLoopSource).toBe(true);
+    expect(s.daily.reduce((n, d) => n + d.count, 0)).toBe(1); // the January row is outside the 7-day trend
+  });
+
+  it("is safe on an empty list", () => {
+    const s = summarizeRefusals([], { nowMs: NOW });
+    expect(s.total).toBe(0);
+    expect(s.topCodes).toEqual([]);
+    expect(s.daily).toHaveLength(7);
+    expect(s.hasLoopSource).toBe(false);
   });
 });
