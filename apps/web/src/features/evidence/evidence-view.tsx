@@ -1,4 +1,4 @@
-import { useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { AlertTriangle, AppWindow, Ban, ChevronDown, ChevronRight, ClipboardCheck, Clock, FileText, Gavel, LifeBuoy, ShieldCheck, Wrench } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge, StatusBadge } from "@/components/ui/badge";
@@ -8,6 +8,7 @@ import { EmptyState } from "@/components/common/empty-state";
 import { SectionHeading } from "@/components/common/section-heading";
 import { cn } from "@/lib/cn";
 import { useConsoleState } from "@/data/use-console-state";
+import { api } from "@/lib/api-client";
 import { useUiStore } from "@/store/ui-store";
 import type { EvidenceLedgerRow, RefusalRow } from "@/lib/console-state";
 import type { Tone } from "@/lib/readable-labels";
@@ -135,7 +136,21 @@ export function EvidenceView() {
 // incident. Every refusal shows a remedy (a refusal with no next action is a dead
 // end, and dead ends are what push operators to disable the guardrail).
 function RefusalsLens({ refusals }: { refusals: RefusalRow[] }) {
-  const groups = useMemo(() => groupRefusals(refusals), [refusals]);
+  // Loop promotion refusals live in tools/ai (not server state), so fetch them
+  // lazily when this lens opens and merge — one lens over both sources (refusal
+  // model #758). Best-effort: a fetch failure just shows the server refusals.
+  const [loopRefusals, setLoopRefusals] = useState<RefusalRow[]>([]);
+  const [loopTruncated, setLoopTruncated] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    api.getLoopRefusals()
+      .then((res) => { if (alive) { setLoopRefusals(res.refusals ?? []); setLoopTruncated(Boolean(res.truncatedRuns)); } })
+      .catch(() => { if (alive) setLoopRefusals([]); });
+    return () => { alive = false; };
+  }, []);
+
+  const merged = useMemo(() => [...refusals, ...loopRefusals], [refusals, loopRefusals]);
+  const groups = useMemo(() => groupRefusals(merged), [merged]);
   if (!groups.length) {
     return (
       <EmptyState
@@ -149,9 +164,12 @@ function RefusalsLens({ refusals }: { refusals: RefusalRow[] }) {
       <p className="flex items-start gap-2 rounded-md border border-border bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
         <ShieldCheck className="mt-0.5 size-3.5 shrink-0" />
         <span>
-          A refusal is the device declining to try — a normal, auditable reply, not a failure. Each is grouped by the authority that decided it and shows what would make the request succeed.
+          A refusal is the device declining to try — a normal, auditable reply, not a failure. Each is grouped by the authority that decided it and shows what would make the request succeed. Includes agent-loop promotion refusals.
         </span>
       </p>
+      {loopTruncated ? (
+        <p className="text-xs text-muted-foreground/70">Older loop runs were not scanned — only recent promotion refusals are shown.</p>
+      ) : null}
       {groups.map((group) => (
         <RefusalCategorySection key={group.category} group={group} />
       ))}
@@ -201,7 +219,10 @@ function RefusalItem({ refusal }: { refusal: RefusalRow }) {
     <div className="rounded-md border border-border/70 bg-background/60 px-3 py-2.5 text-sm">
       <div className="flex items-start justify-between gap-3">
         <p className="min-w-0 flex-1 font-medium">{refusal.summary || readableRefusalCode(refusal.code)}</p>
-        {age ? <span className="shrink-0 text-xs text-muted-foreground">{age}</span> : null}
+        <div className="flex shrink-0 items-center gap-2">
+          {refusal.source === "loop" ? <Badge tone="neutral">agent loop</Badge> : null}
+          {age ? <span className="text-xs text-muted-foreground">{age}</span> : null}
+        </div>
       </div>
       {refusal.remedy ? (
         <p className="mt-1 flex items-start gap-1.5 text-xs text-muted-foreground">
