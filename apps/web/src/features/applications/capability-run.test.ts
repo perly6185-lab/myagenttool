@@ -3,6 +3,8 @@ import {
   buildInvokeBody,
   capabilityRunContract,
   explainRunFailure,
+  fieldErrors,
+  inputError,
   runBlocker,
 } from "@/features/applications/capability-run";
 import type { ApplicationCapability } from "@/lib/console-state";
@@ -73,6 +75,37 @@ describe("runBlocker", () => {
   it("does not demand a repository from a capability that does not run in one", () => {
     const contract = capabilityRunContract(capability({ metadata: { wrapper: { cwdPolicy: "fixed" } } }));
     expect(runBlocker(contract, { projectId: "", values: {} })).toBeNull();
+  });
+});
+
+describe("inputError (#869: catch what the server would silently drop)", () => {
+  it("accepts empty (optional) and valid values, per declared type", () => {
+    expect(inputError({ key: "since", type: "date", values: [] }, "")).toBeNull();
+    expect(inputError({ key: "since", type: "date", values: [] }, "2026-07-01")).toBeNull();
+    expect(inputError({ key: "author", type: "token", values: [] }, "octocat")).toBeNull();
+    expect(inputError({ key: "n", type: "count", values: [] }, "50")).toBeNull();
+    expect(inputError({ key: "rev", type: "git-rev", values: [] }, "HEAD")).toBeNull();
+  });
+
+  it("rejects values the server would drop — the operator's intent, not a silent no-op", () => {
+    expect(inputError({ key: "since", type: "date", values: [] }, "yesterday")).toMatch(/date picker/i);
+    expect(inputError({ key: "author", type: "token", values: [] }, "-evil")).toMatch(/-/);
+    expect(inputError({ key: "n", type: "count", values: [] }, "2000")).toMatch(/1 to 1000/);
+    expect(inputError({ key: "n", type: "count", values: [] }, "0")).toMatch(/1 to 1000/);
+    expect(inputError({ key: "rev", type: "git-rev", values: [] }, "a..b")).toMatch(/ranges/i);
+    expect(inputError({ key: "mode", type: "enum", values: ["fast", "full"] }, "nope")).toMatch(/fast, full/);
+  });
+});
+
+describe("runBlocker blocks an invalid declared value before submit (#869)", () => {
+  it("does not let an invalid filter run the command without it", () => {
+    const contract = capabilityRunContract(capability());
+    // Invalid `since` would be silently dropped server-side and the log would run
+    // unfiltered, returning 200 — block it instead.
+    expect(runBlocker(contract, { projectId: "prj_1", values: { since: "last week" } })).toMatch(/fix the highlighted/i);
+    expect(fieldErrors(contract, { projectId: "prj_1", values: { since: "last week" } })).toHaveProperty("since");
+    // A valid value clears the block.
+    expect(runBlocker(contract, { projectId: "prj_1", values: { since: "2026-07-01" } })).toBeNull();
   });
 });
 

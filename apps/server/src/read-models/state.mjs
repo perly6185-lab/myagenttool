@@ -139,8 +139,22 @@ export function buildPublicState({
     autoRuns.filter((autoRun) => visibleInvIds.has(autoRun?.invocationId)),
     (autoRun) => autoRun?.invocationId,
   );
+  // #776/#869: the invocation stores its resolved wrapper plan — including the
+  // exact `execCommand` + `execArgs` the bridge runs — because the delivery channel
+  // needs it. The web console must NOT receive that argv (the descriptor rule is
+  // that discovery/observability never exposes local commands or argv). Strip it
+  // from the /api/state projection only; the bridge gets its copy via delivery, not
+  // this read-model. The rest of the wrapper (capability, cwdPolicy, policies,
+  // resultImport) is the public contract and stays.
+  const sanitizeInvocationOptions = (options) => {
+    const wrapper = options?.metadata?.applicationWrapper;
+    if (!wrapper || (wrapper.execCommand === undefined && wrapper.execArgs === undefined)) return options;
+    const { execCommand, execArgs, ...safeWrapper } = wrapper;
+    return { ...options, metadata: { ...options.metadata, applicationWrapper: safeWrapper } };
+  };
   const invocations = visibleInvocations.map((invocation) => ({
     ...invocation,
+    options: sanitizeInvocationOptions(invocation.options),
     explanation: buildInvocationExplanation(invocation, {
       applicationRecoveryActionsByInvocationId,
       applicationRecoveryActionsByResultInvocationId,

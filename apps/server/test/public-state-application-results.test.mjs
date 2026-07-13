@@ -68,6 +68,50 @@ test("the raw text is trimmed to a preview, and the parsed data is kept whole", 
   assert.deepEqual(projected.data.commits, [{ hash: "a".repeat(40) }], "structured data is not trimmed");
 });
 
+test("#776/#869: the invocation projection strips the wrapper's execCommand/execArgs", () => {
+  const withWrapper = buildPublicState({
+    namespace: "test",
+    protocolVersion: "1",
+    state: {
+      projects: [{ id: "proj_a", ownerTeamId: TEAM_A }],
+      invocations: [
+        {
+          id: "inv_a",
+          projectId: "proj_a",
+          options: {
+            metadata: {
+              capability: "app.app_git.wrapper.log",
+              applicationWrapper: {
+                capability: "app.app_git.wrapper.log",
+                execCommand: "git",
+                execArgs: ["--no-pager", "log", "--format=secret"],
+                cwdPolicy: "invocation_root",
+                resultImport: { source: "git", kind: "repo_state" },
+              },
+            },
+          },
+        },
+      ],
+    },
+    defaultProjectPath: "/tmp",
+    currentProject: () => null,
+    defaultAgent: () => null,
+    loopRoutineReadModel: () => null,
+    codexApprovalQueue: () => [],
+    evidenceCenterRecords: () => [],
+    ledgerSummary: () => null,
+    budgetStatuses: () => [],
+    actor: { teamId: TEAM_A },
+  });
+  const wrapper = withWrapper.invocations[0].options.metadata.applicationWrapper;
+  assert.equal(wrapper.execCommand, undefined, "the bridge argv must not reach the browser");
+  assert.equal(wrapper.execArgs, undefined);
+  // The public contract stays.
+  assert.equal(wrapper.capability, "app.app_git.wrapper.log");
+  assert.equal(wrapper.cwdPolicy, "invocation_root");
+  assert.deepEqual(wrapper.resultImport, { source: "git", kind: "repo_state" });
+});
+
 test("the snapshot caps the number of results (newest-first survive)", () => {
   const rows = Array.from({ length: 130 }, (_, index) => ({
     id: `res_${index}`,
