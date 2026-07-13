@@ -134,6 +134,31 @@ test("rounds are capped per invocation with a visible dropped counter, not silen
   assert.equal(capEvents.length, 1, "the cap is announced once, not per dropped round");
 });
 
+// --- Per-round cost (#853) ----------------------------------------------------
+
+test("round_completed prices the turn from its tokens x the model rate", () => {
+  const { state, runtime, invocation } = harness();
+  // claude-opus default: input $15/MTok. 1M input tokens -> $15.
+  runtime.recordRoundEvent(invocation, ev("round_completed", {
+    roundIndex: 0, model: "claude-opus-4-8", inputTokens: 1_000_000, outputTokens: 0, cachedTokens: 0,
+  }));
+  assert.equal(state.invocationRounds[0].estimatedCostUsd, 15);
+});
+
+test("an unpriced round's cost is null, not zero", () => {
+  const { state, runtime, invocation } = harness();
+  runtime.recordRoundEvent(invocation, ev("round_completed", {
+    roundIndex: 0, model: "mystery-model", inputTokens: 5000, outputTokens: 1000,
+  }));
+  assert.equal(state.invocationRounds[0].estimatedCostUsd, null);
+});
+
+test("an open (started) round has no cost yet", () => {
+  const { state, runtime, invocation } = harness();
+  runtime.recordRoundEvent(invocation, ev("round_started", { roundIndex: 0, model: "claude-opus-4-8" }));
+  assert.equal(state.invocationRounds[0].estimatedCostUsd, null);
+});
+
 // --- Redaction (#811) ---------------------------------------------------------
 
 test("redactDigest scrubs secret-shaped tokens and bounds length", () => {

@@ -27,6 +27,7 @@ export function createInvocationCreationRuntime({
   createAuditSummary,
   recordAgentUsage,
   budgetGateForProject,
+  checkUsageQuota,
 }) {
   // Shared writer in production; a state-bound fallback for direct construction.
   const refuse = injectedRefuse ?? createRefusalRuntime({ state, now, nextId, appendEvent }).refuse;
@@ -116,7 +117,12 @@ export function createInvocationCreationRuntime({
       typeof budgetGateForProject === "function" && targetProjectId
         ? budgetGateForProject(targetProjectId)
         : { blocked: false };
-    const gateRejected = quotaGate?.allowed === false || budgetGate.blocked;
+    // Usage-based quota gate (#856): a per-subject token/USD window already spent
+    // rejects the run up front — applies to BYOK/bridge runs, not just platform AI.
+    const usageQuotaGate = typeof checkUsageQuota === "function"
+      ? checkUsageQuota({ subjectId: requestedBy })
+      : { blocked: false };
+    const gateRejected = quotaGate?.allowed === false || budgetGate.blocked || usageQuotaGate.blocked === true;
     const invocation = {
       id,
       idempotencyKey: clientIdempotencyKey,

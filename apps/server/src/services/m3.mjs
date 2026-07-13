@@ -39,6 +39,7 @@ export function createM3Service({
   appendEvent,
   findAgent,
   persistStateSoon = () => {},
+  dispatchAlert = () => {},
 }) {
   function createPrivateCatalogEntry(body = {}) {
     const createdAt = now();
@@ -642,6 +643,11 @@ export function createM3Service({
       model: String(body.model ?? "default"),
       limit: Math.max(0, Number(body.limit ?? 10)),
       used: Math.max(0, Number(body.used ?? 0)),
+      // What `limit`/`used` count (#856). "requests" (default) keeps the legacy
+      // request-counter semantics; the others meter real consumption so a policy
+      // can cap tokens or USD — and apply to BYOK runs, not just platform-managed.
+      meter: ["requests", "input_tokens", "total_tokens", "usd"].includes(body.meter) ? body.meter : "requests",
+      enforcement: ["block", "warn"].includes(body.enforcement) ? body.enforcement : "block",
       window: ["daily", "monthly", "custom"].includes(body.window) ? body.window : "monthly",
       currency: String(body.currency ?? "USD"),
       costOwner: String(body.costOwner ?? "usr_local"),
@@ -653,6 +659,62 @@ export function createM3Service({
     state.quotaPolicies = state.quotaPolicies.slice(0, 100);
     persistStateSoon();
     return policy;
+  }
+
+  // What a policy's meter counts for one completed usage record (#856).
+  function meterQuantity(usage, meter) {
+    if (meter === "input_tokens") return Math.max(0, Number(usage.inputTokens ?? 0));
+    if (meter === "total_tokens") {
+      return Math.max(0, Number(usage.inputTokens ?? 0)) + Math.max(0, Number(usage.outputTokens ?? 0));
+    }
+    if (meter === "usd") {
+      const usd = Number(usage.estimatedCost);
+      return Number.isFinite(usd) && usd > 0 ? usd : 0;
+    }
+    return Math.max(1, Number(usage.requestCount ?? 1)); // "requests"
+  }
+
+  // Enabled policies governing a subject (a per-user/team cap). A policy's
+  // provider is matched when it pins one; a wildcard/"default" provider matches all.
+  function policiesForSubject(subjectId, provider) {
+    return state.quotaPolicies.filter((policy) =>
+      policy.status === "enabled"
+      && String(policy.subjectId) === String(subjectId)
+      && (!provider || ["", "default", "any", "*", String(provider)].includes(String(policy.provider))));
+  }
+
+  // Accrue a completed usage record against its subject's metered policies —
+  // this is what makes token/USD quotas track REAL consumption from BYOK runs.
+  function accrueUsageQuota(usage) {
+    if (!usage) return;
+    let touched = false;
+    for (const policy of policiesForSubject(usage.userId, usage.provider)) {
+      if (policy.meter === "requests") continue;
+      policy.used += meterQuantity(usage, policy.meter);
+      policy.updatedAt = now();
+      touched = true;
+    }
+    if (touched) persistStateSoon();
+  }
+
+  // Pre-flight: is this subject already over a metered window allowance? Applies
+  // to ANY run (including BYOK), unlike decideQuota which only gates platform_managed.
+  function checkUsageQuota({ subjectId, provider } = {}) {
+    if (!subjectId) return { allowed: true, blocked: false, policy: null };
+    const over = policiesForSubject(subjectId, provider)
+      .filter((policy) => policy.meter !== "requests" && policy.limit > 0 && policy.used >= policy.limit);
+    if (over.length === 0) return { allowed: true, blocked: false, policy: null };
+    const blocking = over.find((policy) => policy.enforcement === "block");
+    const policy = blocking ?? over[0];
+    const blocked = Boolean(blocking);
+    appendEvent({
+      invocationId: null,
+      type: "quota_checked",
+      level: blocked ? "warn" : "info",
+      message: `Usage quota ${blocked ? "blocked" : "warning"}: ${policy.meter} used ${policy.used}/${policy.limit}.`,
+      data: { policyId: policy.id, meter: policy.meter, used: policy.used, limit: policy.limit, enforcement: policy.enforcement },
+    });
+    return { allowed: !blocked, blocked, warnOnly: !blocked, policy };
   }
 
   function recordAiUsage(body = {}) {
@@ -718,7 +780,7 @@ export function createM3Service({
     quotaDecision.createdUsageRecordId = usageRecord.id;
     quotaDecision.createdLedgerEntryIds = [ledgerEntry.id];
     if (policy && quotaDecision.decision === "allowed") {
-      policy.used += usageRecord.requestCount;
+      policy.used += meterQuantity(usageRecord, policy.meter);
       policy.updatedAt = now();
     }
     state.aiUsageRecords.unshift(usageRecord);
@@ -744,6 +806,42 @@ export function createM3Service({
   // client-asserted defaults the /api/m3/ai-usage route falls back to. Called at
   // completion. Does NOT create its own ledger entry: cost is already attributed
   // by recordInvocationLedgerEntry from the run's aggregate; we link that entry.
+  // Cost-anomaly detection (#857): flag a run whose cost is unusually high, in
+  // absolute terms or as a spike vs the subject's recent runs, and fire a
+  // cost_anomaly alert through the existing dispatcher. Thresholds are config.
+  function detectCostAnomaly(usage) {
+    const cost = Number(usage?.estimatedCost);
+    if (!Number.isFinite(cost) || cost <= 0) return null;
+    const absolute = Number(process.env.COST_ANOMALY_USD_PER_RUN ?? 5);
+    const ratio = Number(process.env.COST_ANOMALY_RATIO ?? 4);
+    const floor = Number(process.env.COST_ANOMALY_MIN_USD ?? 0.5);
+    const prior = state.aiUsageRecords
+      .filter((record) => record.id !== usage.id && record.userId === usage.userId)
+      .map((record) => Number(record.estimatedCost))
+      .filter((value) => Number.isFinite(value) && value > 0)
+      .slice(0, 20);
+    const avg = prior.length ? prior.reduce((total, value) => total + value, 0) / prior.length : 0;
+    const overAbsolute = cost >= absolute;
+    const overSpike = avg >= floor && cost >= ratio * avg;
+    if (!overAbsolute && !overSpike) return null;
+    const reason = overAbsolute ? "absolute_threshold" : "spike_vs_recent";
+    const message = `Cost anomaly: $${roundUsd(cost)} on one run (${reason}).`;
+    const data = {
+      kind: "cost_anomaly",
+      reason,
+      costUsd: roundUsd(cost),
+      subjectId: usage.userId,
+      agentId: usage.agentId ?? null,
+      invocationId: usage.invocationId ?? null,
+      recentAvgUsd: roundUsd(avg),
+      thresholdUsd: roundUsd(overAbsolute ? absolute : ratio * avg),
+    };
+    appendEvent({ invocationId: usage.invocationId ?? null, type: "alert_triggered", level: "warn", message, data });
+    // Alerting must never break or slow a run.
+    try { void dispatchAlert({ kind: "cost_anomaly", severity: "high", message, data }); } catch { /* best-effort */ }
+    return data;
+  }
+
   function recordInvocationRoundUsage({ invocation, ledgerEntryIds = [] } = {}) {
     if (!invocation) return null;
     const rounds = state.invocationRounds?.filter((round) => round.invocationId === invocation.id) ?? [];
@@ -799,6 +897,9 @@ export function createM3Service({
     state.aiUsageRecords.unshift(usageRecord);
     state.aiUsageRecords = state.aiUsageRecords.slice(0, 200);
     for (const round of rounds) round.usageRecordId = usageRecord.id;
+    // Charge this real BYOK usage against the subject's metered quota windows.
+    accrueUsageQuota(usageRecord);
+    detectCostAnomaly(usageRecord);
 
     appendEvent({
       invocationId: invocation.id,
@@ -943,6 +1044,7 @@ export function createM3Service({
     createSignedBundleManifest,
     createLifecycleRecipe,
     createQuotaPolicy,
+    checkUsageQuota,
     decideLifecycleLocalApproval,
     evaluateLifecyclePolicy,
     enforcePlatformAiQuota,

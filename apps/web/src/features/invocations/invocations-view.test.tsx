@@ -305,11 +305,13 @@ describe("InvocationsView operator explanation", () => {
           id: "rnd_1", invocationId: "inv_report", roundIndex: 0, provider: "anthropic",
           model: "claude-opus-4-8", status: "succeeded", inputTokens: 100, outputTokens: 50,
           cachedTokens: 25, reasoningTokens: 0, durationMs: 5000, filesRead: ["/wt/a.mjs"], toolCallIds: ["tiv_1"],
+          estimatedCostUsd: 0.1875,
         },
         {
           id: "rnd_2", invocationId: "inv_report", roundIndex: 1, provider: "anthropic",
           model: "claude-opus-4-8", status: "succeeded", inputTokens: 20, outputTokens: 8,
           cachedTokens: 0, reasoningTokens: 0, durationMs: 1200, filesRead: [], toolCallIds: [],
+          estimatedCostUsd: 0.02,
         },
         // Another run's round — must NOT leak into this run's card.
         { id: "rnd_other", invocationId: "inv_other", roundIndex: 0, model: "gpt-other-model", status: "succeeded", inputTokens: 1, outputTokens: 1 },
@@ -322,6 +324,23 @@ describe("InvocationsView operator explanation", () => {
     expect(screen.getAllByText("claude-opus-4-8").length).toBe(2);
     expect(screen.getByText("100")).toBeTruthy();
     expect(screen.queryByText("gpt-other-model")).toBeNull();
+    // Per-round cost column + run-total estimate.
+    expect(screen.getByText("$0.1875")).toBeTruthy();
+    expect(screen.getByText(/~\$0\.2075 est\./)).toBeTruthy();
+  });
+
+  it("renders an em dash for a round with no priced cost", async () => {
+    apiMock.fetchState.mockResolvedValue({
+      ...actionExplanationState(),
+      invocationRounds: [
+        { id: "rnd_np", invocationId: "inv_report", roundIndex: 0, model: "mystery-model", status: "succeeded", inputTokens: 10, outputTokens: 5, estimatedCostUsd: null },
+      ],
+    });
+    useUiStore.setState({ section: "invocations", selectedInvocationId: "inv_report" });
+    renderWithClient(createElement(InvocationsView));
+    await screen.findByText("Rounds · this run");
+    // No run-total estimate when nothing is priced; the cost cell shows an em dash.
+    expect(screen.queryByText(/est\./)).toBeNull();
   });
 
   it("hides the rounds card for runs with no round telemetry", async () => {

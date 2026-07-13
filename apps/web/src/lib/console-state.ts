@@ -445,6 +445,7 @@ export interface InvocationRound {
   toolCallIds?: string[];
   responseDigest?: string | null;
   errorCode?: string | null;
+  estimatedCostUsd?: number | null;
 }
 
 export interface LedgerEntry {
@@ -848,6 +849,13 @@ export interface AutomationSchedule {
   label: string;
 }
 
+/** What a schedule fires. An ABSENT target means "agent" — every pre-#847 automation. */
+export interface AutomationTarget {
+  kind: "agent" | "capability";
+  capability?: string;
+  inputs?: Record<string, string>;
+}
+
 export interface AutomationSnapshot {
   id: string;
   name: string;
@@ -861,9 +869,41 @@ export interface AutomationSnapshot {
   precheck?: string;
   agentId: string;
   prompt: string;
+  target?: AutomationTarget;
   lastRunAt: string | null;
+  /** Why the scheduler could not fire at all — a refused tick leaves no invocation. */
+  lastRunError?: string | null;
   runCount?: number;
   tokens?: number;
+}
+
+export type ScheduleHealthState = "healthy" | "failing" | "approval_pending" | "paused" | "unknown";
+
+/** Server-computed schedule health (#848) — never re-derived here. */
+export interface ScheduleHealthRow {
+  automationId: string;
+  applicationId: string | null;
+  targetKind: "agent" | "capability";
+  capability: string | null;
+  state: ScheduleHealthState;
+  reason: string | null;
+  needsAttention: boolean;
+  latestInvocationId: string | null;
+  latestStatus: string | null;
+  latestRunAt: string | null;
+}
+
+/** The per-application rollup, so a card can say WHY it wants attention. */
+export interface ApplicationScheduleHealth {
+  applicationId: string;
+  total: number;
+  failing: number;
+  approvalPending: number;
+  paused: number;
+  healthy: number;
+  unknown: number;
+  needsAttention: boolean;
+  attentionAutomationIds: string[];
 }
 
 export type AgentSkillTarget = "claude" | "codex";
@@ -892,6 +932,9 @@ export interface ConsoleSnapshot {
   /** Server-resolved defaults the browser can't compute (e.g. home-relative paths). */
   defaults?: { cloneParentDir?: string };
   automations?: AutomationSnapshot[];
+  /** Per-schedule health, computed server-side (#848). */
+  scheduleHealth?: ScheduleHealthRow[];
+  applicationScheduleHealth?: ApplicationScheduleHealth[];
   agentSkills?: AgentSkillSnapshot[];
   device: DeviceSnapshot;
   projects?: ProjectSnapshot[];
@@ -1169,6 +1212,12 @@ export interface ApplicationSnapshot {
   orchestrations?: ApplicationOrchestration[];
   orchestrationIds?: string[];
   latestResult?: ApplicationResultRef | null;
+  /**
+   * The rollup of this application's capability schedules (#848). An application
+   * whose schedules are failing or parked is not healthy — the health sweep only
+   * ever checked its own source, never what it was asked to do on a timer.
+   */
+  scheduleHealth?: ApplicationScheduleHealth | null;
   createdAt?: string;
   updatedAt?: string;
 }

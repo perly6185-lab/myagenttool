@@ -11,6 +11,10 @@ import { useUiStore } from "@/store/ui-store";
 import { cn } from "@/lib/cn";
 import { RegisterApplicationModal } from "@/features/applications/register-application-modal";
 import { applicationOpsBadges } from "@/features/applications/application-ops-ui";
+import {
+  applicationAttentionSummary,
+  firstAttentionAutomationId,
+} from "@/features/automation/schedule-health-ui";
 import { durableSuccessRate } from "@/features/applications/application-executions";
 import type { ApplicationSnapshot, ApplicationSource } from "@/lib/console-state";
 import type { Tone } from "@/lib/readable-labels";
@@ -60,6 +64,19 @@ export function ApplicationsView() {
     const map = new Map((state?.projects ?? []).map((project) => [project.id, project.name]));
     return (id?: string | null) => (id ? map.get(id) ?? id : null);
   }, [state?.projects]);
+
+  const setSection = useUiStore((s) => s.setSection);
+  const setSelectedAutomationId = useUiStore((s) => s.setSelectedAutomationId);
+
+  // Route the operator to the exact schedule, focused. An attention badge that
+  // only says "something is wrong" and then leaves them to search is the thing
+  // this slice exists to end (#849).
+  function focusAttentionSchedule(app: ApplicationSnapshot) {
+    const automationId = firstAttentionAutomationId(app.scheduleHealth);
+    if (!automationId) return;
+    setSelectedAutomationId(automationId);
+    setSection("automation");
+  }
 
   const kinds = useMemo(() => Array.from(new Set(all.map((app) => app.kind))).sort(), [all]);
   const applications = useMemo(
@@ -165,6 +182,33 @@ export function ApplicationsView() {
                   {applicationOpsBadges(app).map((badge) => (
                     <Badge key={badge.label} tone={badge.tone}>{badge.label}</Badge>
                   ))}
+                  {/*
+                    An application whose schedules are failing or parked is not
+                    healthy — the health sweep only ever checked its own source,
+                    never what it was asked to do on a timer (#848). The badge names
+                    WHAT is wrong and takes the operator straight to the schedule:
+                    "something is wrong here, go find it" is the state this replaces.
+                  */}
+                  {applicationAttentionSummary(app.scheduleHealth) ? (
+                    <Badge
+                      tone="warning"
+                      role="button"
+                      tabIndex={0}
+                      className="cursor-pointer"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        focusAttentionSchedule(app);
+                      }}
+                      onKeyDown={(event) => {
+                        if (event.key !== "Enter" && event.key !== " ") return;
+                        event.stopPropagation();
+                        event.preventDefault();
+                        focusAttentionSchedule(app);
+                      }}
+                    >
+                      {applicationAttentionSummary(app.scheduleHealth)}
+                    </Badge>
+                  ) : null}
                   {(() => {
                     const rate = durableSuccessRate(state?.applicationDailyStats ?? [], app.id, 30);
                     return rate == null ? null : (

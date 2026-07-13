@@ -12,6 +12,14 @@ import { useAsyncAction, api } from "@/data/use-console-actions";
 import { useUiStore } from "@/store/ui-store";
 import { cn } from "@/lib/cn";
 import { readableStatus, statusTone } from "@/lib/readable-labels";
+import {
+  healthFor,
+  matchesScheduleFilter,
+  scheduleHealthLabel,
+  scheduleHealthTone,
+  SCHEDULE_FILTERS,
+  type ScheduleFilter,
+} from "@/features/automation/schedule-health-ui";
 import type { AutomationSnapshot } from "@/lib/console-state";
 
 type ScheduleKind = "weekdays" | "daily" | "interval";
@@ -69,14 +77,21 @@ export function AutomationView() {
   const automations = state?.automations ?? [];
   const agents = state?.agents ?? [];
   const projects = state?.projects ?? [];
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  // Selection lives in the store so a focused schedule survives a deep link and a
+  // refresh (#849) — an attention badge that cannot be linked to is a dead end.
+  const selectedId = useUiStore((s) => s.selectedAutomationId);
+  const setSelectedId = useUiStore((s) => s.setSelectedAutomationId);
+  const [filter, setFilter] = useState<ScheduleFilter["key"]>("all");
   const [creating, setCreating] = useState(false);
   const [editing, setEditing] = useState<AutomationSnapshot | null>(null);
   const [detailTab, setDetailTab] = useState<"overview" | "runs">("overview");
   const setSection = useUiStore((s) => s.setSection);
   const setSelectedInvocationId = useUiStore((s) => s.setSelectedInvocationId);
 
-  const selected = automations.find((a) => a.id === selectedId) ?? automations[0] ?? null;
+  const scheduleHealth = state?.scheduleHealth ?? [];
+  const visible = automations.filter((a) => matchesScheduleFilter(healthFor(a.id, scheduleHealth), filter));
+  const selected = automations.find((a) => a.id === selectedId) ?? visible[0] ?? automations[0] ?? null;
+  const selectedHealth = selected ? healthFor(selected.id, scheduleHealth) : undefined;
   const agentName = (id: string) => agents.find((a) => a.id === id)?.name ?? id;
   const projectName = (id: string) => projects.find((p) => p.id === id)?.name ?? id;
   // Invocations this rule has triggered (run-now + scheduled), newest first.
@@ -115,33 +130,68 @@ export function AutomationView() {
           </div>
         </CardHeader>
         <CardContent className="space-y-2">
+          <div className="flex flex-wrap gap-1.5">
+            {SCHEDULE_FILTERS.map((option) => {
+              const count = automations.filter((a) =>
+                matchesScheduleFilter(healthFor(a.id, scheduleHealth), option.key),
+              ).length;
+              if (option.key !== "all" && option.key !== "attention" && count === 0) return null;
+              return (
+                <button
+                  key={option.key}
+                  type="button"
+                  onClick={() => setFilter(option.key)}
+                  className={cn(
+                    "rounded-full border px-2.5 py-0.5 text-xs transition",
+                    filter === option.key
+                      ? "border-primary bg-primary/10 text-foreground"
+                      : "border-border text-muted-foreground hover:bg-muted/40",
+                  )}
+                >
+                  {option.label} ({count})
+                </button>
+              );
+            })}
+          </div>
+
           {automations.length === 0 ? (
             <EmptyState title="No automations" hint="Scheduled agent runs will appear here." />
+          ) : visible.length === 0 ? (
+            <EmptyState title="Nothing matches this filter" hint="Loosen the filter to see the rest." />
           ) : (
-            automations.map((a) => (
-              <button
-                key={a.id}
-                type="button"
-                onClick={() => setSelectedId(a.id)}
-                className={cn(
-                  "block w-full rounded-lg border px-3 py-2.5 text-left transition",
-                  selected?.id === a.id ? "border-primary bg-primary/5" : "border-border hover:bg-muted/40",
-                )}
-              >
-                <div className="flex items-center justify-between gap-2">
-                  <span className="flex min-w-0 items-center gap-2">
-                    <span className={cn("size-2 shrink-0 rounded-full", a.enabled ? "bg-success" : "bg-muted-foreground/40")} />
-                    <span className="truncate text-sm font-medium">{a.name}</span>
-                  </span>
-                  <Clock className="size-3.5 shrink-0 text-muted-foreground" />
-                </div>
-                <div className="mt-1 truncate text-xs text-muted-foreground">{a.schedule.label}</div>
-                <div className="mt-0.5 truncate text-xs text-muted-foreground">
-                  {projectName(a.projectId)}
-                  {a.branch ? ` · ${a.branch}` : ""} · {agentName(a.agentId)}
-                </div>
-              </button>
-            ))
+            visible.map((a) => {
+              const health = healthFor(a.id, scheduleHealth);
+              return (
+                <button
+                  key={a.id}
+                  type="button"
+                  onClick={() => setSelectedId(a.id)}
+                  className={cn(
+                    "block w-full rounded-lg border px-3 py-2.5 text-left transition",
+                    selected?.id === a.id ? "border-primary bg-primary/5" : "border-border hover:bg-muted/40",
+                  )}
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="flex min-w-0 items-center gap-2">
+                      <span className={cn("size-2 shrink-0 rounded-full", a.enabled ? "bg-success" : "bg-muted-foreground/40")} />
+                      <span className="truncate text-sm font-medium">{a.name}</span>
+                    </span>
+                    {health ? (
+                      <Badge tone={scheduleHealthTone(health.state)}>{scheduleHealthLabel(health.state)}</Badge>
+                    ) : (
+                      <Clock className="size-3.5 shrink-0 text-muted-foreground" />
+                    )}
+                  </div>
+                  <div className="mt-1 truncate text-xs text-muted-foreground">{a.schedule.label}</div>
+                  <div className="mt-0.5 truncate text-xs text-muted-foreground">
+                    {projectName(a.projectId)}
+                    {a.target?.kind === "capability"
+                      ? ` · ${a.target.capability}`
+                      : `${a.branch ? ` · ${a.branch}` : ""} · ${agentName(a.agentId)}`}
+                  </div>
+                </button>
+              );
+            })
           )}
         </CardContent>
       </Card>
@@ -151,14 +201,34 @@ export function AutomationView() {
           <CardHeader>
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div className="min-w-0">
-                <div className="flex items-center gap-2">
+                <div className="flex flex-wrap items-center gap-2">
                   <CardTitle>{selected.name}</CardTitle>
                   <Badge tone={selected.enabled ? "success" : "neutral"}>{selected.enabled ? "Enabled" : "Paused"}</Badge>
+                  {selectedHealth ? (
+                    <Badge tone={scheduleHealthTone(selectedHealth.state)}>
+                      {scheduleHealthLabel(selectedHealth.state)}
+                    </Badge>
+                  ) : null}
                 </div>
                 <p className="text-sm text-muted-foreground">
                   {projectName(selected.projectId)}
                   {selected.branch ? ` / ${selected.branch}` : ""}
                 </p>
+                {/*
+                  The reason, in words. A schedule parked on an approval produces no
+                  error and no failed run — it simply stops, and looks exactly like a
+                  schedule with nothing to do. Saying so is the entire point (#848).
+                */}
+                {selectedHealth?.reason ? (
+                  <p
+                    className={cn(
+                      "mt-1 text-xs",
+                      selectedHealth.needsAttention ? "text-warning" : "text-muted-foreground",
+                    )}
+                  >
+                    {selectedHealth.reason}
+                  </p>
+                ) : null}
               </div>
               <div className="flex items-center gap-1.5">
                 <Button size="sm" disabled={pending} onClick={() => runNow(selected)}>
