@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { createRoundTelemetryRuntime } from "../src/services/round-telemetry.mjs";
+import { createRoundTelemetryRuntime, redactDigest } from "../src/services/round-telemetry.mjs";
 
 const T0 = "2026-07-13T00:00:00.000Z";
 const T5 = "2026-07-13T00:00:05.000Z";
 
-function harness() {
+function harness(archiveSpies = {}) {
   const state = { invocationRounds: [], toolInvocationRecords: [], spans: [] };
   const events = [];
   let counter = 1;
@@ -16,6 +16,7 @@ function harness() {
     nextId: (prefix) => `${prefix}_${String(counter++).padStart(4, "0")}`,
     appendEvent: (event) => events.push(event),
     persistStateSoon: () => {},
+    ...archiveSpies,
   });
   const invocation = { id: "inv_1", traceId: "trc_1", rootSpanId: "spn_root", delivery: {} };
   return { state, events, runtime, invocation };
@@ -131,4 +132,70 @@ test("rounds are capped per invocation with a visible dropped counter, not silen
   assert.equal(invocation.droppedRoundCount, 2, "drops are counted");
   const capEvents = events.filter((e) => e.level === "warn" && /capped/.test(e.message));
   assert.equal(capEvents.length, 1, "the cap is announced once, not per dropped round");
+});
+
+// --- Redaction (#811) ---------------------------------------------------------
+
+test("redactDigest scrubs secret-shaped tokens and bounds length", () => {
+  assert.equal(redactDigest("token sk-ABCDEFGHIJKLMNOPQRST here"), "token [redacted] here");
+  assert.equal(redactDigest("pat github_pat_11ABCDEFGHIJKLMNOPQRSTUV done"), "pat [redacted] done");
+  assert.equal(redactDigest("Bearer abcdef0123456789ABCDEF"), "[redacted]");
+  assert.equal(redactDigest("email a.user@example.com ok"), "email [redacted] ok");
+  assert.equal(redactDigest(""), null);
+  assert.equal(redactDigest(null), null);
+  const long = "x".repeat(1000);
+  const out = redactDigest(long);
+  assert.equal(out.length, 500);
+  assert.ok(out.endsWith("..."));
+});
+
+test("round and tool digests are redacted at ingestion, not stored raw", () => {
+  const { state, runtime, invocation } = harness();
+  runtime.recordRoundEvent(invocation, ev("round_completed", {
+    roundIndex: 0,
+    responseDigest: "done, key sk-ABCDEFGHIJKLMNOPQRST",
+    requestDigest: "prompt for a.user@example.com",
+  }));
+  const round = state.invocationRounds[0];
+  assert.ok(!/sk-ABCDEFGHIJKLMNOPQRST/.test(round.responseDigest), "secret scrubbed from responseDigest");
+  assert.ok(round.responseDigest.includes("[redacted]"));
+  assert.ok(round.requestDigest.includes("[redacted]"), "email scrubbed from requestDigest");
+
+  runtime.recordRoundEvent(invocation, ev("tool_invocation_created", {
+    roundIndex: 0, toolName: "Bash", inputDigest: "curl -H 'Authorization: Bearer abcdef0123456789ABCDEF'",
+  }));
+  const tool = state.toolInvocationRecords[0];
+  assert.ok(tool.inputDigest.includes("[redacted]"), "secret scrubbed from tool inputDigest");
+  assert.ok(!/abcdef0123456789ABCDEF/.test(tool.inputDigest));
+});
+
+// --- Durable retention (#811) -------------------------------------------------
+
+test("every ingestion routes global retention through the archive, not a silent slice", () => {
+  const capCalls = [];
+  const { runtime, invocation } = harness({
+    capWithArchive: (list, max, collection) => {
+      capCalls.push({ collection, max });
+      return Array.isArray(list) ? list.slice(0, max) : [];
+    },
+  });
+  runtime.recordRoundEvent(invocation, ev("round_started", { roundIndex: 0 }));
+  const collections = capCalls.map((c) => `${c.collection}:${c.max}`);
+  assert.ok(collections.includes("invocationRounds:5000"), "rounds capped via archive");
+  assert.ok(collections.includes("toolInvocationRecords:5000"), "tool records capped via archive");
+});
+
+test("a per-invocation over-cap round is archived, never silently lost", () => {
+  const archived = [];
+  const { state, runtime, invocation } = harness({
+    archiveEvicted: (collection, rows) => archived.push({ collection, rows }),
+  });
+  for (let i = 0; i < 501; i += 1) {
+    runtime.recordRoundEvent(invocation, ev("round_started", { roundIndex: i }));
+  }
+  assert.equal(state.invocationRounds.length, 500, "cap holds in memory");
+  const roundArchive = archived.filter((a) => a.collection === "invocationRounds");
+  assert.equal(roundArchive.length, 1, "the over-cap round was archived");
+  assert.equal(roundArchive[0].rows[0].overCap, true);
+  assert.equal(roundArchive[0].rows[0].invocationId, "inv_1");
 });
