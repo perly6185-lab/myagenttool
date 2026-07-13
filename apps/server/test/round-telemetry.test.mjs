@@ -199,3 +199,22 @@ test("a per-invocation over-cap round is archived, never silently lost", () => {
   assert.equal(roundArchive[0].rows[0].overCap, true);
   assert.equal(roundArchive[0].rows[0].invocationId, "inv_1");
 });
+
+test("an over-cap round's digest is redacted before it is archived (no bypass)", () => {
+  const archived = [];
+  const { runtime, invocation } = harness({
+    archiveEvicted: (collection, rows) => { for (const row of rows) archived.push(row); },
+  });
+  for (let i = 0; i < 500; i += 1) {
+    runtime.recordRoundEvent(invocation, ev("round_started", { roundIndex: i }));
+  }
+  // A 501st round carrying a secret in its digest must be archived REDACTED —
+  // the over-cap path used to hand the raw event data straight to the archive.
+  runtime.recordRoundEvent(invocation, ev("round_completed", {
+    roundIndex: 500, responseDigest: "leaked key sk-ABCDEFGHIJKLMNOPQRST",
+  }));
+  const overCap = archived.filter((row) => row.overCap);
+  assert.equal(overCap.length, 1);
+  assert.ok(overCap[0].data.responseDigest.includes("[redacted]"), "archived digest is redacted");
+  assert.ok(!/sk-ABCDEFGHIJKLMNOPQRST/.test(overCap[0].data.responseDigest), "secret is not in the archive");
+});
