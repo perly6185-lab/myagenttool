@@ -60,6 +60,16 @@ export function buildPublicState({
     return teamId == null || (application?.ownerTeamId ?? LOCAL_TEAM_ID) === teamId;
   });
   const importedUsagePublic = (rows) => byInvocation(rows).map(({ raw, ...row }) => row);
+  // #868: surface the parsed repo_state the git result importer stores (branch /
+  // ahead-behind / commits / changed files) so the web can render it instead of
+  // raw porcelain. Scope by PROJECT — durable, unlike the capped invocation list,
+  // so a result outlives its invocation aging out of state. Cap the count and trim
+  // the raw `text` to a preview to keep the snapshot small; the full 500-row ledger
+  // stays server-side for a detail endpoint.
+  const applicationResultPublic = (rows) =>
+    byProject(rows ?? [])
+      .slice(0, 100)
+      .map((row) => ({ ...row, text: typeof row.text === "string" ? row.text.slice(0, 2000) : row.text }));
   const codexReviewFindings = byInvocation(state.codexReviewFindings).map(({ raw, ...row }) => row);
   const claudeReviewFindings = byInvocation(state.claudeReviewFindings).map(({ raw, ...row }) => row);
   const reviewFindings = [...codexReviewFindings, ...claudeReviewFindings].sort(compareReviewFindings);
@@ -131,8 +141,22 @@ export function buildPublicState({
     autoRuns.filter((autoRun) => visibleInvIds.has(autoRun?.invocationId)),
     (autoRun) => autoRun?.invocationId,
   );
+  // #776/#869: the invocation stores its resolved wrapper plan — including the
+  // exact `execCommand` + `execArgs` the bridge runs — because the delivery channel
+  // needs it. The web console must NOT receive that argv (the descriptor rule is
+  // that discovery/observability never exposes local commands or argv). Strip it
+  // from the /api/state projection only; the bridge gets its copy via delivery, not
+  // this read-model. The rest of the wrapper (capability, cwdPolicy, policies,
+  // resultImport) is the public contract and stays.
+  const sanitizeInvocationOptions = (options) => {
+    const wrapper = options?.metadata?.applicationWrapper;
+    if (!wrapper || (wrapper.execCommand === undefined && wrapper.execArgs === undefined)) return options;
+    const { execCommand, execArgs, ...safeWrapper } = wrapper;
+    return { ...options, metadata: { ...options.metadata, applicationWrapper: safeWrapper } };
+  };
   const invocations = visibleInvocations.map((invocation) => ({
     ...invocation,
+    options: sanitizeInvocationOptions(invocation.options),
     explanation: buildInvocationExplanation(invocation, {
       applicationRecoveryActionsByInvocationId,
       applicationRecoveryActionsByResultInvocationId,
@@ -266,6 +290,7 @@ export function buildPublicState({
     toolInvocationRecords: byInvocation(state.toolInvocationRecords),
     ledgerEntries: byProject(state.ledgerEntries),
     importedUsageEstimates: importedUsagePublic(state.importedUsageEstimates),
+    applicationResults: applicationResultPublic(state.applicationResults),
     codexReviewFindings,
     claudeReviewFindings,
     reviewFindings,

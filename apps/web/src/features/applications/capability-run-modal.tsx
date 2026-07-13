@@ -10,6 +10,7 @@ import {
   buildInvokeBody,
   capabilityRunContract,
   explainRunFailure,
+  fieldErrors,
   runBlocker,
   type RunFormState,
 } from "@/features/applications/capability-run";
@@ -48,6 +49,7 @@ export function CapabilityRunModal({
   if (!capability || !contract) return null;
 
   const blocker = runBlocker(contract, form);
+  const errors = fieldErrors(contract, form);
 
   function submit(event: React.FormEvent) {
     event.preventDefault();
@@ -129,6 +131,7 @@ export function CapabilityRunModal({
                   </Select>
                 ) : (
                   <Input
+                    type={inputTypeFor(input.type)}
                     value={form.values[input.key] ?? ""}
                     onChange={(e) =>
                       setForm((prev) => ({
@@ -137,8 +140,12 @@ export function CapabilityRunModal({
                       }))
                     }
                     placeholder={placeholderFor(input.type)}
+                    aria-invalid={errors[input.key] ? true : undefined}
                   />
                 )}
+                {errors[input.key] ? (
+                  <p className="mt-1 text-xs text-destructive">{errors[input.key]}</p>
+                ) : null}
               </Field>
             ))}
           </div>
@@ -162,8 +169,16 @@ export function CapabilityRunModal({
   );
 }
 
+// A native date picker for date inputs (#869, U4) — the operator can't fat-finger
+// "yesterday" into it. Everything else is a plain text field.
+function inputTypeFor(type: string): string {
+  return type === "date" ? "date" : "text";
+}
+
 function placeholderFor(type: string): string {
   if (type === "date") return "2026-07-01";
   if (type === "git-rev") return "HEAD";
+  if (type === "count") return "50";
+  if (type === "token") return "e.g. octocat";
   return "";
 }

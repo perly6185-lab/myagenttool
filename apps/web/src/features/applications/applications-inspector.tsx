@@ -74,6 +74,8 @@ import type {
   ApplicationDailyStat,
   ApplicationSnapshot,
   ApplicationResultRef,
+  ApplicationResult,
+  GitRepoState,
   InvocationSnapshot,
 } from "@/lib/console-state";
 
@@ -335,6 +337,10 @@ function ApplicationResultSummary({
   const importedCount = result.importedRecordCount ?? result.importedRecordIds?.length ?? 0;
   const resultInvocation = invocations.find((invocation) => invocation.id === result.invocationId) ?? null;
   const importedRows = (state?.importedUsageEstimates ?? []).filter((row) => row.invocationId === result.invocationId);
+  // #868: the parsed repo_state (branch / ahead-behind / commits / changed files)
+  // the git importer stored for this run — render it structurally instead of the
+  // raw porcelain the operator used to be left with.
+  const parsedResult = (state?.applicationResults ?? []).find((row) => row.invocationId === result.invocationId) ?? null;
   return (
     <Card>
       <CardHeader>
@@ -345,6 +351,7 @@ function ApplicationResultSummary({
           <Badge tone={statusTone(result.status ?? "unknown")}>{readableStatus(result.status ?? "unknown")}</Badge>
           {result.outputCollection ? <Badge tone="neutral">{result.outputCollection}</Badge> : null}
           {importedCount > 0 ? <Badge tone="success">{importedCount} imported</Badge> : null}
+          {parsedResult?.truncated ? <Badge tone="warning">truncated</Badge> : null}
         </div>
         <FactList
           facts={[
@@ -358,6 +365,7 @@ function ApplicationResultSummary({
           ]}
         />
         {importedRows.length ? <ImportedUsageTable rows={importedRows} limit={10} /> : null}
+        {parsedResult ? <RepoStateView result={parsedResult} /> : null}
         <ResultOutputBrowser output={resultInvocation?.result?.output} />
         {result.invocationId ? (
           <Button size="sm" variant="secondary" onClick={() => onViewInvocation(result.invocationId!)}>
@@ -382,6 +390,144 @@ function ResultOutputBrowser({ output }: { output?: unknown }) {
       </summary>
       <pre className="mt-2 max-h-72 overflow-auto whitespace-pre-wrap break-all text-xs text-muted-foreground">{formatted.text}</pre>
     </details>
+  );
+}
+
+// #868: render a stored git repo_state structurally. The parser (#801) already
+// turned porcelain into typed data; this is the last mile that finally shows it —
+// branch + ahead/behind, commits, changed files, a diff stat — instead of the raw
+// `# branch.oid …` text. An `unparsed` result (a git format we could not read)
+// falls back to its raw preview, honestly labelled.
+function RepoStateView({ result }: { result: ApplicationResult }) {
+  const data = result.data ?? null;
+  if (result.status === "unparsed" || !data) {
+    return (
+      <div className="rounded-md border border-border bg-muted/40 p-2 text-xs text-muted-foreground">
+        <span className="font-medium">Unreadable result</span> — the raw output is kept below.
+      </div>
+    );
+  }
+  return (
+    <div className="space-y-2 rounded-md border border-border bg-muted/30 p-3 text-xs">
+      {data.branch ? <RepoBranchLine branch={data.branch} /> : null}
+      {typeof data.hash === "string" && !data.commit ? (
+        <div><span className="text-muted-foreground">HEAD</span> <code className="font-mono">{shortHash(data.hash)}</code></div>
+      ) : null}
+      {data.commit ? <RepoBranchCommit commit={data.commit} /> : null}
+      {Array.isArray(data.commits) && data.commits.length ? <RepoCommitList commits={data.commits} /> : null}
+      {Array.isArray(data.branches) && data.branches.length ? (
+        <div className="flex flex-wrap gap-1">
+          {data.branches.map((b) => (
+            <Badge key={b.name} tone="neutral">{b.name}</Badge>
+          ))}
+        </div>
+      ) : null}
+      {Array.isArray(data.changed) || Array.isArray(data.untracked) || Array.isArray(data.unmerged) ? (
+        <RepoChangedFiles data={data} />
+      ) : null}
+      {Array.isArray(data.files) && data.files.length ? <RepoDiffStat files={data.files} summary={data.summary} /> : null}
+      {data.summary && !(Array.isArray(data.files) && data.files.length) ? <RepoDiffSummaryLine summary={data.summary} /> : null}
+    </div>
+  );
+}
+
+function shortHash(hash?: string | null) {
+  return hash ? hash.slice(0, 10) : "—";
+}
+
+function RepoBranchLine({ branch }: { branch: NonNullable<GitRepoState["branch"]> }) {
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      <Badge tone="neutral">{branch.name ?? "(detached)"}</Badge>
+      {branch.oid ? <code className="font-mono text-muted-foreground">{shortHash(branch.oid)}</code> : null}
+      {branch.upstream ? <span className="text-muted-foreground">→ {branch.upstream}</span> : null}
+      {branch.ahead ? <Badge tone="success">↑{branch.ahead}</Badge> : null}
+      {branch.behind ? <Badge tone="warning">↓{branch.behind}</Badge> : null}
+    </div>
+  );
+}
+
+function RepoBranchCommit({ commit }: { commit: NonNullable<GitRepoState["commit"]> }) {
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      <code className="font-mono">{shortHash(commit.hash)}</code>
+      {commit.author ? <span>{commit.author}</span> : null}
+      {commit.date ? <span className="text-muted-foreground">{commit.date}</span> : null}
+    </div>
+  );
+}
+
+function RepoCommitList({ commits }: { commits: NonNullable<GitRepoState["commits"]> }) {
+  const shown = commits.slice(0, 20);
+  return (
+    <div className="space-y-1">
+      <div className="font-medium">{commits.length} commit{commits.length === 1 ? "" : "s"}</div>
+      <ul className="space-y-0.5">
+        {shown.map((commit) => (
+          <li key={commit.hash} className="flex items-baseline gap-2">
+            <code className="font-mono text-muted-foreground">{shortHash(commit.hash)}</code>
+            <span className="truncate">{commit.subject ?? "—"}</span>
+          </li>
+        ))}
+      </ul>
+      {commits.length > shown.length ? <div className="text-muted-foreground">+{commits.length - shown.length} more</div> : null}
+    </div>
+  );
+}
+
+function RepoChangedFiles({ data }: { data: GitRepoState }) {
+  const rows = [
+    ...(data.changed ?? []).map((f) => ({ code: f.code ?? "M", path: f.path, tone: "warning" as const })),
+    ...(data.unmerged ?? []).map((f) => ({ code: "U", path: f.path, tone: "danger" as const })),
+    ...(data.untracked ?? []).map((f) => ({ code: "?", path: f.path, tone: "neutral" as const })),
+  ];
+  if (!rows.length) {
+    return <div className="text-muted-foreground">Working tree clean</div>;
+  }
+  const shown = rows.slice(0, 30);
+  return (
+    <div className="space-y-1">
+      <div className="font-medium">{rows.length} changed file{rows.length === 1 ? "" : "s"}</div>
+      <ul className="space-y-0.5 font-mono">
+        {shown.map((row) => (
+          <li key={`${row.code}:${row.path}`} className="flex items-baseline gap-2">
+            <Badge tone={row.tone}>{row.code}</Badge>
+            <span className="truncate">{row.path}</span>
+          </li>
+        ))}
+      </ul>
+      {rows.length > shown.length ? <div className="text-muted-foreground">+{rows.length - shown.length} more</div> : null}
+    </div>
+  );
+}
+
+function RepoDiffStat({ files, summary }: { files: NonNullable<GitRepoState["files"]>; summary?: GitRepoState["summary"] }) {
+  const shown = files.slice(0, 30);
+  return (
+    <div className="space-y-1">
+      <RepoDiffSummaryLine summary={summary} fallbackFiles={files.length} />
+      <ul className="space-y-0.5 font-mono">
+        {shown.map((file) => (
+          <li key={file.path} className="flex items-baseline gap-2">
+            <span className="truncate">{file.path}</span>
+            <span className="text-muted-foreground">{file.binary ? "Bin" : file.changes}</span>
+          </li>
+        ))}
+      </ul>
+      {files.length > shown.length ? <div className="text-muted-foreground">+{files.length - shown.length} more</div> : null}
+    </div>
+  );
+}
+
+function RepoDiffSummaryLine({ summary, fallbackFiles }: { summary?: GitRepoState["summary"]; fallbackFiles?: number }) {
+  const filesChanged = summary?.filesChanged ?? fallbackFiles ?? 0;
+  return (
+    <div className="flex flex-wrap items-center gap-2 font-medium">
+      <span>{filesChanged} file{filesChanged === 1 ? "" : "s"} changed</span>
+      {/* insertions/deletions are null when the summary line was truncated (#866, C3) — show them only when known. */}
+      {summary?.insertions != null ? <span className="text-emerald-600 dark:text-emerald-400">+{summary.insertions}</span> : null}
+      {summary?.deletions != null ? <span className="text-destructive">−{summary.deletions}</span> : null}
+    </div>
   );
 }
 

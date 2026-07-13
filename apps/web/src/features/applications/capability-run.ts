@@ -65,14 +65,61 @@ export interface RunFormState {
 }
 
 /**
+ * Validate ONE input's value against its declared type, mirroring the server's
+ * argInput validators. Returns an operator-facing error, or null when the value is
+ * empty (optional) or valid. This is why it matters (#869, U5): the server SILENTLY
+ * DROPS a declared value that fails its validator, so an invalid `author`/`since`/
+ * `rev` used to run the command WITHOUT that filter and still return 200 — the
+ * operator's intent quietly ignored. For `diff_ref` a dropped `rev` even collapses
+ * `git diff --stat <rev>` into a different command. Catch it before submit instead.
+ */
+export function inputError(input: CapabilityInput, rawValue: string): string | null {
+  const value = (rawValue ?? "").trim();
+  if (!value) return null; // empty = omitted, not invalid
+  if (value.startsWith("-")) return "Cannot start with “-”.";
+  switch (input.type) {
+    case "date":
+      return /^\d{4}-\d{2}-\d{2}$/.test(value) ? null : "Use the date picker (YYYY-MM-DD).";
+    case "token":
+      return /^[A-Za-z0-9_+/:.][A-Za-z0-9_+/:.-]{0,63}$/.test(value) ? null : "Letters, digits, and _ + / : . - only (max 64).";
+    case "count":
+      return /^\d{1,4}$/.test(value) && Number(value) >= 1 && Number(value) <= 1000 ? null : "A whole number from 1 to 1000.";
+    case "git-rev":
+      return /^[A-Za-z0-9._/-]{1,100}$/.test(value) && !value.includes("..")
+        ? null
+        : "A branch, tag, or commit — no “..” ranges.";
+    case "enum":
+      return input.values.length === 0 || input.values.includes(value) ? null : `Choose one of: ${input.values.join(", ")}.`;
+    case "string":
+      return value.length <= 200 && !/[\r\n]/.test(value) ? null : "Keep it on one line, 200 characters or fewer.";
+    default:
+      return null; // an unknown/future type is validated server-side, not blocked here
+  }
+}
+
+/** Per-field errors for the values currently entered (empty fields excluded). */
+export function fieldErrors(contract: CapabilityRunContract, form: RunFormState): Record<string, string> {
+  const errors: Record<string, string> = {};
+  for (const input of contract.inputs) {
+    const error = inputError(input, form.values[input.key] ?? "");
+    if (error) errors[input.key] = error;
+  }
+  return errors;
+}
+
+/**
  * Can this form be submitted? A missing project on an invocation-root capability
  * is blocked HERE rather than sent — the server would refuse it, and an error the
- * UI could have prevented is not an error worth showing an operator.
+ * UI could have prevented is not an error worth showing an operator. An invalid
+ * declared value is likewise blocked, not sent to be silently dropped (#869).
  */
 export function runBlocker(contract: CapabilityRunContract, form: RunFormState): string | null {
   if (contract.blockedReason) return contract.blockedReason;
   if (contract.needsProject && !form.projectId) {
     return "Choose the repository this command runs in.";
+  }
+  if (Object.keys(fieldErrors(contract, form)).length > 0) {
+    return "Fix the highlighted inputs before running.";
   }
   return null;
 }

