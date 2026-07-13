@@ -64,3 +64,9 @@ test("resolveRollbackCommand + rollbackTimeoutMs mirror the deploy command (H1)"
   assert.equal(rollbackTimeoutMs({}), 300_000);
   assert.equal(rollbackTimeoutMs({ MYAGENTTOOL_AUTORUN_ROLLBACK_TIMEOUT_MS: "60000" }), 60_000);
 });
+
+test("runDeployCommand: exit 0 with a {summary} but no `deployed` is a SUCCESS (not a false-fail)", async () => {
+  const r = await runDeployCommand({ command: ["node", "-e", "console.log(JSON.stringify({summary:'shipped to prod'}))"] });
+  assert.equal(r.deployed, true, "an absent `deployed` on exit 0 must not record a failed deploy (would trigger a destructive rollback)");
+  assert.equal(r.summary, "shipped to prod");
+});

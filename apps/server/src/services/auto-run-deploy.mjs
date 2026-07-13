@@ -104,10 +104,15 @@ export function runDeployCommand({ command, input, timeoutMs = deployTimeoutMs()
     });
     child.on("close", (code) => {
       clearTimeout(timer);
-      const parsed = normalizeDeployResult(extractJsonObject(stdout));
+      const raw = extractJsonObject(stdout);
+      const parsed = normalizeDeployResult(raw);
       if (code === 0) {
-        // Exit 0 = success by convention; an explicit {deployed:false} still vetoes.
-        done(parsed ?? { deployed: true, summary: "" });
+        // Exit 0 = success unless stdout EXPLICITLY vetoes with {"deployed": false}.
+        // A bare {"summary": "…"} (no `deployed`) on exit 0 is still a success —
+        // normalizeDeployResult collapses an absent `deployed` to false, which
+        // would wrongly record a successful deploy as failed (and trigger a
+        // destructive rollback), so recompute from the raw JSON here.
+        done({ deployed: raw?.deployed !== false, summary: parsed?.summary ?? "" });
       } else {
         done({ deployed: false, summary: parsed?.summary || `deploy command exited ${code}` });
       }
