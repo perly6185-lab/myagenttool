@@ -1040,6 +1040,10 @@ export function createAutoRunService({
       outcome = null;
     }
     if (!outcome) return null; // couldn't run → infra miss, not a change-failure
+    // Defense in depth: a runner that resolves without an explicit boolean
+    // `deployed` is an ambiguous contract, not a change-failure — never let it
+    // record a `failed` deploy (which would trigger a destructive rollback).
+    if (typeof outcome.deployed !== "boolean") return null;
     const record = {
       id: nextId("dep_demo"),
       autoRunId: autoRun.id,

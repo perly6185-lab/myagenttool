@@ -47,12 +47,18 @@ export function summarizeOrchestrationRecovery(invocations = []) {
   let failed = 0;
   for (const list of streams.values()) {
     const sorted = [...list].sort((a, b) => Date.parse(a.completedAt) - Date.parse(b.completedAt));
-    for (let i = 0; i < sorted.length; i += 1) {
-      if (sorted[i].status !== "failed") continue;
-      failed += 1;
-      const failedAt = Date.parse(sorted[i].completedAt);
-      const next = sorted.slice(i + 1).find((run) => run.status === "succeeded");
-      if (next) recoveries.push((Date.parse(next.completedAt) - failedAt) / 3_600_000); // hours
+    // One incident = a maximal run of consecutive failures, recovered by the
+    // first later success. Recovery time = success − the incident's FIRST
+    // failure; one restore recovers one incident (not once per failed run).
+    let incidentStart = null;
+    for (const run of sorted) {
+      if (run.status === "failed") {
+        failed += 1;
+        if (incidentStart === null) incidentStart = Date.parse(run.completedAt);
+      } else if (run.status === "succeeded" && incidentStart !== null) {
+        recoveries.push((Date.parse(run.completedAt) - incidentStart) / 3_600_000); // hours
+        incidentStart = null;
+      }
     }
   }
 

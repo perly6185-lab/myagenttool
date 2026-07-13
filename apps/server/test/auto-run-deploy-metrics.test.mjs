@@ -87,3 +87,13 @@ test("summarizeDeployments: a rollback recovers a failure and is excluded from d
   assert.equal(s.recoveryHours.count, 1, "the rollback IS the recovery");
   assert.equal(s.recoveryHours.median, 0.5);
 });
+
+test("summarizeDeployments: consecutive failures are ONE incident recovered once (no double-count)", () => {
+  const s = summarizeDeployments([
+    { status: "failed", at: t(BASE) },             // incident starts
+    { status: "failed", at: t(BASE + 0.9 * H) },   // same ongoing incident
+    { status: "deployed", at: t(BASE + 1.1 * H) }, // recovers it
+  ]);
+  assert.equal(s.recoveryHours.count, 1, "one restore recovers one incident, not once per failure");
+  assert.equal(s.recoveryHours.median, 1.1, "recovery = restore − the incident's FIRST failure (was 0.65 under the double-count bug)");
+});

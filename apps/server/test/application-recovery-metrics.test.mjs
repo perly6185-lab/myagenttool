@@ -55,3 +55,13 @@ test("empty / missing input → honest nulls, no throw", () => {
   assert.deepEqual(summarizeOrchestrationRecovery(), { total: 0, failed: 0, recoveryHours: { median: null, count: 0 } });
   assert.deepEqual(summarizeOrchestrationRecovery([]).recoveryHours, { median: null, count: 0 });
 });
+
+test("consecutive failures on a stream are ONE incident recovered once (no double-count)", () => {
+  const summary = summarizeOrchestrationRecovery([
+    run("failed", 0),
+    run("failed", 0.9 * 3_600_000),
+    run("succeeded", 1.1 * 3_600_000),
+  ]);
+  assert.equal(summary.recoveryHours.count, 1);
+  assert.equal(summary.recoveryHours.median, 1.1, "success − the incident's FIRST failure, not once per failed run");
+});
