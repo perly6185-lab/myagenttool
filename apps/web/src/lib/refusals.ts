@@ -101,3 +101,67 @@ export function refusalRetryHint(refusal: RefusalRow): string | null {
   if (!refusal.retryAfter) return null;
   return refusal.retryAfter;
 }
+
+export interface RefusalDailyBucket {
+  /** UTC day, "YYYY-MM-DD". */
+  date: string;
+  count: number;
+}
+
+export interface RefusalSummary {
+  total: number;
+  byCategory: Record<RefusalCategory, number>;
+  topCodes: { code: string; label: string; count: number }[];
+  /** Newest last — the trailing `days` UTC days (default 7), zero-filled. */
+  daily: RefusalDailyBucket[];
+  /** True if any row is loop-sourced (the merged view spans subsystems). */
+  hasLoopSource: boolean;
+}
+
+function utcDay(iso: string | null | undefined): string | null {
+  if (!iso) return null;
+  const ms = Date.parse(iso);
+  if (Number.isNaN(ms)) return null;
+  return new Date(ms).toISOString().slice(0, 10);
+}
+
+/**
+ * Aggregate the (recent, capped) refusal set for the lens header: how much this
+ * device is refusing, the dominant reasons, and a short daily trend. "Recent" on
+ * purpose — refusals are a bounded ring buffer, so this is a window, not all-time.
+ */
+export function summarizeRefusals(
+  rows: RefusalRow[],
+  { days = 7, topN = 4, nowMs = Date.now() }: { days?: number; topN?: number; nowMs?: number } = {},
+): RefusalSummary {
+  const byCategory: Record<RefusalCategory, number> = { not_granted: 0, policy: 0, state: 0, human: 0 };
+  const codeCounts = new Map<string, number>();
+  let hasLoopSource = false;
+
+  // Zero-filled trailing `days` UTC days, oldest → newest.
+  const dayIndex = new Map<string, number>();
+  const daily: RefusalDailyBucket[] = [];
+  for (let i = days - 1; i >= 0; i -= 1) {
+    const date = new Date(nowMs - i * 86_400_000).toISOString().slice(0, 10);
+    dayIndex.set(date, daily.length);
+    daily.push({ date, count: 0 });
+  }
+
+  for (const row of rows ?? []) {
+    const category = (["not_granted", "policy", "state", "human"] as RefusalCategory[]).includes(row.category)
+      ? row.category
+      : "policy";
+    byCategory[category] += 1;
+    codeCounts.set(row.code, (codeCounts.get(row.code) ?? 0) + 1);
+    if (row.source === "loop") hasLoopSource = true;
+    const day = utcDay(row.at);
+    if (day != null && dayIndex.has(day)) daily[dayIndex.get(day)!].count += 1;
+  }
+
+  const topCodes = [...codeCounts.entries()]
+    .map(([code, count]) => ({ code, label: readableRefusalCode(code), count }))
+    .sort((a, b) => b.count - a.count || a.code.localeCompare(b.code))
+    .slice(0, topN);
+
+  return { total: (rows ?? []).length, byCategory, topCodes, daily, hasLoopSource };
+}
