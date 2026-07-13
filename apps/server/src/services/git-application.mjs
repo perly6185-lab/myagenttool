@@ -11,9 +11,11 @@
 
 export const GIT_APPLICATION_ID = "app_git";
 
-// Porcelain / --format with %x1f (unit separator) and %x1e (record separator) so
-// the result parses without a JSON mode (git has none). --no-pager is defense in
-// depth — the spawn has no tty anyway. All read-only, offline, low risk.
+// Porcelain / --format with a %x1f unit separator and `-z` (NUL) record
+// separation so the result parses without a JSON mode (git has none). NUL cannot
+// appear in a commit message, so a message cannot forge a log record boundary
+// (#864). --no-pager is defense in depth — the spawn has no tty anyway. All
+// read-only, offline, low risk.
 const GIT_WRAPPER_COMMANDS = [
   {
     id: "status",
@@ -24,8 +26,8 @@ const GIT_WRAPPER_COMMANDS = [
   {
     id: "log",
     displayName: "Git log",
-    description: "Recent commits (hash, author, ISO date, subject), separator-delimited.",
-    args: ["--no-pager", "log", "--format=%H%x1f%an%x1f%aI%x1f%s%x1e", "--max-count=50"],
+    description: "Recent commits (hash, author, ISO date, subject), NUL-record-delimited.",
+    args: ["--no-pager", "log", "-z", "--format=%H%x1f%an%x1f%aI%x1f%s", "--max-count=50"],
     argInputs: [
       { key: "since", flag: "--since", type: "date" },
       { key: "until", flag: "--until", type: "date" },

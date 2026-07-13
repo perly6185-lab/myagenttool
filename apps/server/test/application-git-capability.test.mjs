@@ -30,7 +30,7 @@ function service(state = { applications: [] }) {
 
 const EXPECTED_ARGV = {
   status: ["--no-pager", "status", "--porcelain=v2", "--branch"],
-  log: ["--no-pager", "log", "--format=%H%x1f%an%x1f%aI%x1f%s%x1e", "--max-count=50"],
+  log: ["--no-pager", "log", "-z", "--format=%H%x1f%an%x1f%aI%x1f%s", "--max-count=50"],
   diff_stat: ["--no-pager", "diff", "--stat", "--no-color"],
   // `%1f`, NOT `%x1f`: ref-filter (branch --format) and log --format spell a hex
   // byte differently, and git emits an unrecognized escape verbatim (#801).
