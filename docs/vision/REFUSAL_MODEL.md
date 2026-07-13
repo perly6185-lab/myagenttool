@@ -81,7 +81,7 @@ Each code belongs to exactly one category.
 
 | category | code | meaning |
 |---|---|---|
-| `not_granted` | `capability_not_granted` | The requester holds no grant for this capability. **Never surfaced to the requester** — Phase 4 makes it reachable at all. |
+| `not_granted` | `capability_not_granted` | The requester holds no grant for this capability. **Never surfaced to the requester** (recorded with no event — see Phase 4). |
 | `policy` | `command_not_allowlisted` | The command, adapter, or argv is not on the local-execution allowlist. |
 | `policy` | `cwd_outside_approved_root` | The resolved working directory is outside `approvedRoots`. |
 | `policy` | `file_policy_exceeded` | Requested file access exceeds the command's allowed file policy. |
@@ -152,3 +152,18 @@ until it is mapped here.
 - No new records are written. `state.refusals[]` is defined but unpopulated.
 - The 23+ existing event types keep firing unchanged.
 - `capability_not_granted` is in the enum but unreachable until Phase 4.
+
+## Phase 4 — `capability_not_granted` becomes reachable
+
+When a requester invokes a capability that **exists but is not granted to their
+team** (tenancy/ownership), `createCapabilityInvocation` records a `not_granted`
+refusal. Two properties make this safe:
+
+- **It is evaluated first.** The grant/visibility check precedes every policy,
+  state, and human gate, so an ungranted request never reveals downstream
+  (approval/budget) detail — the evaluation order exists for exactly this.
+- **It carries no event.** `capability_not_granted` must never surface to the
+  requester: the response stays an opaque `capability_not_found` whether the
+  capability is unknown or merely not granted, and the refusal lands **only** in
+  the owner's ledger (`state.refusals[]`, the Evidence Center refusal lens). A
+  genuinely-unknown name mints nothing — a typo is a client error, not a veto.
