@@ -920,6 +920,8 @@ export type ApplicationSource =
   | { type: "git"; url: string; ref?: string | null }
   | { type: "local"; path: string }
   | { type: "npm"; package: string; version?: string | null; wrapper?: NpmWrapperSnapshot | null }
+  // A system binary the platform runs on the device (git) — #774.
+  | { type: "binary"; binary: string; wrapper?: NpmWrapperSnapshot | null }
   | { type: "manual"; uri?: string | null; manifest?: Record<string, unknown> };
 
 export interface NpmWrapperSnapshot {
@@ -1195,6 +1197,14 @@ export interface ApplicationCapability {
   requiresApproval?: boolean;
   invocationMode?: string;
   status?: string;
+  /**
+   * The capability's declared inputs — key and type only. The `--flag` each key
+   * becomes stays server-side (a descriptor never exposes argv), so a caller sends
+   * `{ since: "2026-07-01" }` and the server alone decides what that means.
+   */
+  inputSchema?: {
+    properties?: Record<string, { type?: string; enum?: string[] }>;
+  };
   metadata?: {
     readiness?: {
       state?: string;
@@ -1202,6 +1212,13 @@ export interface ApplicationCapability {
       applicationStatus?: string;
       installState?: string;
       executionMode?: string;
+    };
+    wrapper?: {
+      commandId?: string;
+      filePolicy?: string;
+      networkPolicy?: string;
+      /** "invocation_root" — the command runs inside the invocation's repository, so one must be named. */
+      cwdPolicy?: string;
     };
     resultPath?: {
       outputCollection?: string;
