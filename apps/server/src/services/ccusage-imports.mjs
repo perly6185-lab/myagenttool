@@ -76,6 +76,15 @@ export function createCcusageImportService({
         createdAt,
       };
     });
+    // Idempotent upsert (#882): re-running the same report REPLACES its rows
+    // instead of duplicating them (which used to inflate the economics external
+    // total on every run, and compound under a schedule). Key on the row's
+    // semantic identity, so a re-import supersedes matching rows and a changed
+    // value updates in place; a new period just adds.
+    const incomingKeys = new Set(records.map(estimateKey));
+    state.importedUsageEstimates = state.importedUsageEstimates.filter(
+      (existing) => !incomingKeys.has(estimateKey(existing)),
+    );
     state.importedUsageEstimates.unshift(...records);
     state.importedUsageEstimates = state.importedUsageEstimates.slice(0, MAX_IMPORTED_USAGE_ESTIMATES);
     appendEvent({
@@ -96,6 +105,19 @@ export function createCcusageImportService({
   }
 
   return { recordCcusageImportedEstimates };
+}
+
+// Stable identity for one imported estimate, so repeated imports of the same
+// report are idempotent. Uses the row's semantic bucket (report + period +
+// session + model + provider); falls back to the report + row position only when
+// a row carries nothing to identify it, so distinct unidentifiable rows are not
+// collapsed.
+function estimateKey(record) {
+  const identity = [record.periodStart, record.sessionId, record.model, record.provider];
+  if (identity.every((part) => part == null || part === "")) {
+    return `${record.reportId ?? "unknown"}#idx:${record.rowIndex ?? 0}`;
+  }
+  return [record.reportId ?? "unknown", ...identity.map((part) => part ?? "")].join("::");
 }
 
 function isCcusageResult(result) {
