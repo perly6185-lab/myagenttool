@@ -929,6 +929,8 @@ export interface ConsoleSnapshot {
   ledgerEntries?: LedgerEntry[];
   invocationRounds?: InvocationRound[];
   importedUsageEstimates?: ImportedUsageEstimate[];
+  /** Parsed Application results (git repo_state, #868), scoped by project. */
+  applicationResults?: ApplicationResult[];
   evidenceCenterRecords?: EvidenceCenterRecord[];
   codexReviewFindings?: CodexReviewFinding[];
   claudeReviewFindings?: ClaudeReviewFinding[];
@@ -1184,6 +1186,45 @@ export interface ApplicationResultRef {
   invocationId?: string | null;
   status?: string | null;
   completedAt?: string | null;
+}
+
+/**
+ * A stored, typed Application result (#801/#868). For the git application `data`
+ * is a parsed `repo_state`; its shape depends on the capability (status / log /
+ * diff / branch_list / head / show). The web renders `data` structurally and
+ * falls back to the trimmed `text` preview when `status === "unparsed"`.
+ */
+export interface ApplicationResult {
+  id: string;
+  source: string;
+  kind?: string | null;
+  applicationId?: string | null;
+  capability?: string | null;
+  invocationId: string;
+  projectId?: string | null;
+  status: "parsed" | "unparsed" | string;
+  truncated?: boolean;
+  data?: GitRepoState | null;
+  /** Raw command output, trimmed to a preview in the snapshot. */
+  text?: string;
+  createdAt?: string;
+}
+
+/** The union of git repo_state shapes the parser emits (all fields optional). */
+export interface GitRepoState {
+  branch?: { name: string | null; oid: string | null; upstream: string | null; ahead: number; behind: number };
+  changed?: { code: string | null; path: string; originalPath?: string; renamed?: boolean }[];
+  untracked?: { path: string }[];
+  unmerged?: { code: string | null; path: string }[];
+  clean?: boolean;
+  counts?: { changed: number; untracked: number; unmerged: number };
+  commits?: { hash: string; author: string | null; date: string | null; subject: string | null }[];
+  branches?: { name: string; objectName: string | null }[];
+  files?: { path: string; changes: number | null; binary: boolean }[];
+  summary?: { filesChanged: number; insertions: number | null; deletions: number | null };
+  commit?: { hash: string | null; author: string | null; date: string | null };
+  hash?: string;
+  count?: number;
 }
 
 export interface ProjectTreeEntry {

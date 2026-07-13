@@ -59,6 +59,16 @@ export function buildPublicState({
     return teamId == null || (application?.ownerTeamId ?? LOCAL_TEAM_ID) === teamId;
   });
   const importedUsagePublic = (rows) => byInvocation(rows).map(({ raw, ...row }) => row);
+  // #868: surface the parsed repo_state the git result importer stores (branch /
+  // ahead-behind / commits / changed files) so the web can render it instead of
+  // raw porcelain. Scope by PROJECT — durable, unlike the capped invocation list,
+  // so a result outlives its invocation aging out of state. Cap the count and trim
+  // the raw `text` to a preview to keep the snapshot small; the full 500-row ledger
+  // stays server-side for a detail endpoint.
+  const applicationResultPublic = (rows) =>
+    byProject(rows ?? [])
+      .slice(0, 100)
+      .map((row) => ({ ...row, text: typeof row.text === "string" ? row.text.slice(0, 2000) : row.text }));
   const codexReviewFindings = byInvocation(state.codexReviewFindings).map(({ raw, ...row }) => row);
   const claudeReviewFindings = byInvocation(state.claudeReviewFindings).map(({ raw, ...row }) => row);
   const reviewFindings = [...codexReviewFindings, ...claudeReviewFindings].sort(compareReviewFindings);
@@ -240,6 +250,7 @@ export function buildPublicState({
     toolInvocationRecords: byInvocation(state.toolInvocationRecords),
     ledgerEntries: byProject(state.ledgerEntries),
     importedUsageEstimates: importedUsagePublic(state.importedUsageEstimates),
+    applicationResults: applicationResultPublic(state.applicationResults),
     codexReviewFindings,
     claudeReviewFindings,
     reviewFindings,
