@@ -2097,3 +2097,12 @@ test("D1 deploy: an ambiguous outcome (no boolean deployed) is an infra miss, no
   assert.ok(!state.deployments?.some((d) => d.autoRunId === "aur_ambig"), "no `failed` deployment → no rollback triggered");
   assert.ok(alerts.some((a) => a.kind === "deploy_infra_miss"));
 });
+
+test("D1 deploy: a failed deploy's timeline event carries the failure reason (M3)", async () => {
+  const { svc, calls } = makeAutoRun({ runDeploy: async () => ({ deployed: false, summary: "kubectl apply timed out" }), sendAlert: () => {} });
+  state.autoRunSettings = { deployOnMerge: true };
+  await svc.maybeDeployAfterMerge(mergedRun({ id: "aur_failreason" }));
+  const ev = calls.events.find((e) => e.type === "auto_run_deploy_failed");
+  assert.ok(ev, "a deploy_failed event fired");
+  assert.equal(ev.data.summary, "kubectl apply timed out", "the reason is on the event, not just the alert/record");
+});

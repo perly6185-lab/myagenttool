@@ -1077,7 +1077,10 @@ export function createAutoRunService({
       type: outcome.deployed ? "auto_run_deployed" : "auto_run_deploy_failed",
       level: outcome.deployed ? "info" : "warn",
       message: `Auto-run ${autoRun.id} deploy of PR #${autoRun.prNumber} ${outcome.deployed ? "succeeded" : "FAILED"}.`,
-      data: { autoRunId: autoRun.id, prNumber: autoRun.prNumber, deployed: outcome.deployed },
+      // Carry the failure reason on the timeline event itself (M3), so an operator
+      // reading the run's events sees WHY it failed without cross-querying the
+      // deployments collection or the alert channel.
+      data: { autoRunId: autoRun.id, prNumber: autoRun.prNumber, deployed: outcome.deployed, summary: record.summary ?? null },
     });
     if (!outcome.deployed) {
       void sendAlert?.({

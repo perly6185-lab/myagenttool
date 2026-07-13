@@ -68,6 +68,10 @@ export function summarizeDeployments(deployments = []) {
     failed,
     changeFailureRate: round(failed / total, 3),
     recoveryHours: { median: round(median(recoveries), 2), count: recoveries.length },
+    // An incident still open at the end of the window is an ACTIVE, unrecovered
+    // failure — the median (which only reflects healed incidents) would otherwise
+    // let L5 read "met" during a live outage. Surface it so it stays visible.
+    openIncident: incidentStart !== null,
     deployFrequencyPerWeek,
     lastDeployAt: attempts[attempts.length - 1].at,
   };

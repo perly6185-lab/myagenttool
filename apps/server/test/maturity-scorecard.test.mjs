@@ -156,7 +156,7 @@ test("orchestration recovery stands in for L5 when there is no deploy data — l
     deployments: [],
     invocations: [orchestrationRun("failed", 0), orchestrationRun("succeeded", 1_800_000)],
   });
-  assert.deepEqual(inputs.release, { recoveryHours: 0.5, source: "orchestration" });
+  assert.deepEqual(inputs.release, { recoveryHours: 0.5, recoveryCount: 1, source: "orchestration", deployPresentNoRecovery: false });
   const l5 = byLevel(computeMaturityScorecard(inputs))[5];
   assert.equal(l5.verdict, "met");
   assert.match(l5.measured, /orchestration proxy/, "the proxy is named, never passed off as a deploy");
@@ -180,7 +180,7 @@ test("deploy recovery wins over orchestration when both are measured (the gate's
     ],
     invocations: [orchestrationRun("failed", 0), orchestrationRun("succeeded", 1_800_000)], // 0.5h orchestration
   });
-  assert.deepEqual(inputs.release, { recoveryHours: 2, source: "deploy" });
+  assert.deepEqual(inputs.release, { recoveryHours: 2, recoveryCount: 1, openIncident: false, source: "deploy" });
   assert.equal(inputs.orchestration.recoveryHours.median, 0.5, "orchestration stays visible in inputs");
   const l5 = byLevel(computeMaturityScorecard(inputs))[5];
   assert.match(l5.measured, /deploy recovery 2h/);
@@ -248,4 +248,21 @@ test("L5: a real deploy recovery is labeled 'deploy recovery' with source deploy
   const l5 = sc.levels.find((l) => l.level === 5);
   assert.equal(l5.recoverySource, "deploy");
   assert.match(l5.measured, /deploy recovery 0\.4h/);
+});
+
+test("L5 measured surfaces the recovery sample size and an open incident (M4 + n)", () => {
+  const l5 = byLevel(computeMaturityScorecard({
+    release: { recoveryHours: 0.3, recoveryCount: 1, openIncident: true, source: "deploy" },
+  }))[5];
+  assert.match(l5.measured, /n=1/, "sample size is visible (a met on n=1 is not n=20)");
+  assert.match(l5.measured, /open incident/, "an active unrecovered failure is surfaced, not hidden by the median");
+  assert.equal(l5.openIncident, true);
+});
+
+test("L5 orchestration proxy names 'deploys present, no recovery sample' honestly (M5)", () => {
+  const withDeploys = byLevel(computeMaturityScorecard({
+    release: { recoveryHours: 0.5, recoveryCount: 2, source: "orchestration", deployPresentNoRecovery: true },
+  }))[5];
+  assert.match(withDeploys.measured, /deploys present, no failure→recovery sample/);
+  assert.doesNotMatch(withDeploys.measured, /no deploy data/, "don't claim 'no deploy data' when deploys exist");
 });

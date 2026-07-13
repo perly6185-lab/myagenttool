@@ -97,3 +97,16 @@ test("summarizeDeployments: consecutive failures are ONE incident recovered once
   assert.equal(s.recoveryHours.count, 1, "one restore recovers one incident, not once per failure");
   assert.equal(s.recoveryHours.median, 1.1, "recovery = restore − the incident's FIRST failure (was 0.65 under the double-count bug)");
 });
+
+test("summarizeDeployments: an unrecovered trailing failure is an OPEN incident (M4)", () => {
+  const open = summarizeDeployments([
+    { status: "deployed", at: t(BASE) },
+    { status: "failed", at: t(BASE + H) }, // still open — no later restore
+  ]);
+  assert.equal(open.openIncident, true, "active outage stays visible");
+  const healed = summarizeDeployments([
+    { status: "failed", at: t(BASE) },
+    { status: "deployed", at: t(BASE + H) },
+  ]);
+  assert.equal(healed.openIncident, false);
+});
