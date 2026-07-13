@@ -64,7 +64,11 @@ export function computeMaturityScorecard({
   });
 
   // L1 — 100% of active work items carry issue + Project fields.
-  const l1Rate = backlog ? Math.min(backlog.labelCoverage?.rate ?? 0, backlog.milestoneCoverage?.rate ?? 0) : null;
+  // A backlog artifact that loaded but is missing a coverage field is
+  // INDETERMINATE, not 0% — folding an absent field to 0 would report a false
+  // "unmet" (a measurement gap dressed up as a failure).
+  const l1Rates = backlog ? [backlog.labelCoverage?.rate, backlog.milestoneCoverage?.rate] : null;
+  const l1Rate = l1Rates && l1Rates.every((r) => typeof r === "number") ? Math.min(...l1Rates) : null;
   levels.push({
     level: 1,
     name: "Issues + Project exist",
@@ -213,7 +217,11 @@ export function computeMaturityScorecard({
     frontier: "yes",
     measured: conv == null ? null : `${pct(conv)} conversion`,
     verdict: conv == null ? "indeterminate" : verdict(conv, conv > 0),
-    detail: "frontier — local target only; no external standard for the autonomy claim",
+    // Honest about WHY it is indeterminate: the feedback input is a structural
+    // dead input (nothing feeds `feedback` yet), not "data pending".
+    detail: conv == null
+      ? "not instrumented — no feedback-triage input is wired into the scorecard yet"
+      : "frontier — local target only; no external standard for the autonomy claim",
   });
 
   // Current level = the highest level reached WITHOUT a gap ("reached only when the
@@ -273,6 +281,24 @@ function latestArtifact(kind, metricsDir = METRICS_DIR) {
   return null;
 }
 
+// The timestamp of the newest artifact of a kind (from its run-dir name), so a
+// reader can tell HOW FRESH each level's evidence is — the scorecard mixes
+// artifact-sourced levels (L1/L2/L3, only as fresh as the last CLI run) with
+// live-state levels (L5 deploy), and nothing regenerates the artifacts on a
+// schedule. Returns an ISO string, or null.
+function artifactGeneratedAt(kind, metricsDir = METRICS_DIR) {
+  try {
+    if (!existsSync(metricsDir)) return null;
+    const dir = readdirSync(metricsDir).filter((d) => d.endsWith(`-${kind}`)).sort().reverse()[0];
+    if (!dir) return null;
+    const stamp = dir.slice(0, dir.length - `-${kind}`.length); // 2026-07-13T04-17-33-153Z
+    const iso = stamp.replace(/T(\d{2})-(\d{2})-(\d{2})-(\d{3})Z$/, "T$1:$2:$3.$4Z");
+    return Number.isNaN(Date.parse(iso)) ? null : iso;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Gather the latest measured evidence for the scorecard. Best-effort: any input
  * that can't be read stays null (→ indeterminate levels). `metricsDir`/`evalTrend`
@@ -299,14 +325,36 @@ export function loadMaturityInputs({ metricsDir = METRICS_DIR, evalTrend, repoRo
     : orchestration && orchestration.recoveryHours?.median != null
       ? { recoveryHours: orchestration.recoveryHours.median, recoveryCount: orchestration.recoveryHours.count, source: "orchestration", deployPresentNoRecovery: Boolean(deploy && deploy.total > 0) }
       : null;
-  return { docsOk, dora, backlog, governance, evalSummary, release, deploy, orchestration };
+  return {
+    docsOk, dora, backlog, governance, evalSummary, release, deploy, orchestration,
+    // How fresh each artifact-sourced input is (L5's deploy/orchestration are live
+    // state, so they have no artifact timestamp — they are always current).
+    generatedAt: {
+      dora: artifactGeneratedAt("dora", metricsDir),
+      backlog: artifactGeneratedAt("backlog", metricsDir),
+      governance: artifactGeneratedAt("governance", metricsDir),
+    },
+  };
 }
 
 /** Load inputs + compute — the read-model behind GET /api/maturity. */
 export function maturityScorecard(opts = {}) {
   const inputs = loadMaturityInputs(opts);
   const scorecard = computeMaturityScorecard(inputs);
-  return { ...scorecard, inputs };
+  // Freshness so a reader knows the artifact-sourced levels (L1/L2/L3) may be
+  // stale — nothing regenerates the metrics on a schedule (run `pnpm
+  // github:governance|dora|backlog` to refresh). stale = the oldest present
+  // source is > 24h old.
+  const now = Date.now();
+  const freshness = Object.entries(inputs.generatedAt ?? {})
+    .filter(([, at]) => at)
+    .map(([source, at]) => ({ source, at, ageHours: Math.round(((now - Date.parse(at)) / 3_600_000) * 10) / 10 }));
+  const oldest = freshness.reduce((max, f) => Math.max(max, f.ageHours), 0);
+  return {
+    ...scorecard,
+    inputs,
+    metricsFreshness: { sources: freshness, oldestAgeHours: freshness.length ? oldest : null, stale: oldest > 24 },
+  };
 }
 
 /** The latest DORA report artifact (Four Keys), best-effort — behind GET /api/dora. */

@@ -65,13 +65,13 @@ test("summarizeDeployments: order-independent (input may be newest-first, as sto
   assert.equal(s.lastDeployAt, t(BASE + 2 * H));
 });
 
-test("summarizeDeployments: frequency = successful deploys/week over the span; a single deploy -> the count", () => {
+test("summarizeDeployments: frequency = successful deploys/week over the span; a zero-span instant -> null", () => {
   const s = summarizeDeployments([
     { status: "deployed", at: t(BASE) },
     { status: "deployed", at: t(BASE + 14 * D) },
   ]);
   assert.equal(s.deployFrequencyPerWeek, 1, "2 successes over 14 days = 1/week");
-  assert.equal(summarizeDeployments([{ status: "deployed", at: t(BASE) }]).deployFrequencyPerWeek, 1, "zero span -> count");
+  assert.equal(summarizeDeployments([{ status: "deployed", at: t(BASE) }]).deployFrequencyPerWeek, null, "zero span -> no rate (not the raw count)");
 });
 
 test("summarizeDeployments: a rollback recovers a failure and is excluded from deploy counts (H1)", () => {
