@@ -75,6 +75,9 @@ export function createServerState({ defaultProjectPath, now }) {
     quotaDecisionRecords: [],
     quotaPolicies: [],
     aiUsageRecords: [],
+    // Per-round (per model turn) telemetry — Epic #805, Phase 3 (#808).
+    invocationRounds: [],
+    toolInvocationRecords: [],
     ledgerEntries: [],
     importedUsageEstimates: [],
     codexReviewFindings: [],
@@ -172,6 +175,8 @@ export function resetStateForSelfCheck({ state, now }) {
   state.quotaDecisionRecords = [];
   state.quotaPolicies = [];
   state.aiUsageRecords = [];
+  state.invocationRounds = [];
+  state.toolInvocationRecords = [];
   state.ledgerEntries = [];
   state.importedUsageEstimates = [];
   state.codexReviewFindings = [];

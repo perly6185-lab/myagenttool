@@ -84,6 +84,7 @@ export function createHttpServer({
   appendEvent,
   refuse,
   recordAgentFileAccess,
+  recordRoundEvent,
   isAgentDisabled,
   redeliverExpiredDispatches,
   registerAgent,
@@ -521,6 +522,7 @@ export function createHttpServer({
         appendEvent,
         refuse,
         recordAgentFileAccess,
+        recordRoundEvent,
         completeInvocation,
         requireBridgeCredential,
       })) {
