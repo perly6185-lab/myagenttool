@@ -1,4 +1,5 @@
-// Per-round (per model turn) telemetry ingestion — Epic #805, Phase 3 (#808).
+// Per-round (per model turn) telemetry ingestion — Epic #805, Phases 3 & 7
+// (#808, #811).
 //
 // The bridge emits round_started / round_completed / tool_invocation_created on
 // /api/bridge/events (see apps/desktop/src/round-telemetry.mjs). This runtime
@@ -7,18 +8,42 @@
 // invocation's rootSpanId (real per-step timing). It also records the
 // invocation's true execution start from the first round.
 //
-// Records are bounded per invocation with a visible dropped counter, so a
-// runaway multi-round run never silently truncates.
+// Retention (#811): records are bounded two ways, and NEITHER truncates
+// silently. A per-invocation cap stops one runaway run from evicting every
+// other run's rounds; a global cap bounds total memory. Both route the overflow
+// through the durable archive (retention-archive.mjs) so an evicted row is
+// appended to disk (recoverable via readArchive), not dropped.
+//
+// Redaction (#811): digest fields are scrubbed of secret-shaped tokens and
+// bounded at ingestion — defense-in-depth over the bridge's own truncation, and
+// the single chokepoint that decides what may ever appear in a stored digest.
 
 const MAX_ROUNDS_PER_INVOCATION = 500;
+const MAX_ROUNDS_TOTAL = 5000;
+const MAX_TOOL_RECORDS_TOTAL = 5000;
 
 const ROUND_TERMINAL_STATUSES = new Set(["succeeded", "failed", "cancelled"]);
 const TOOL_STATUSES = new Set(["started", "succeeded", "failed"]);
 
-export function createRoundTelemetryRuntime({ state, now, nextId, appendEvent, persistStateSoon }) {
+export function createRoundTelemetryRuntime({
+  state,
+  now,
+  nextId,
+  appendEvent,
+  persistStateSoon,
+  capWithArchive,
+  archiveEvicted,
+}) {
   // Tolerate snapshots persisted before these arrays existed.
   if (!Array.isArray(state.invocationRounds)) state.invocationRounds = [];
   if (!Array.isArray(state.toolInvocationRecords)) state.toolInvocationRecords = [];
+
+  // Fall back to a plain slice / no-op when no archive is wired (e.g. unit tests
+  // or persistence disabled) — retention still holds, only the disk copy is skipped.
+  const capList = typeof capWithArchive === "function"
+    ? capWithArchive
+    : (list, max) => (Array.isArray(list) ? list.slice(0, max) : []);
+  const archive = typeof archiveEvicted === "function" ? archiveEvicted : () => {};
 
   function recordRoundEvent(invocation, body) {
     if (!invocation || !body) return;
@@ -28,6 +53,9 @@ export function createRoundTelemetryRuntime({ state, now, nextId, appendEvent, p
     else if (body.type === "round_completed") handleRoundCompleted(invocation, data);
     else if (body.type === "tool_invocation_created") handleToolInvocation(invocation, data);
     else return;
+    // Global retention: keep the newest N in memory, archive the overflow.
+    state.invocationRounds = capList(state.invocationRounds, MAX_ROUNDS_TOTAL, "invocationRounds");
+    state.toolInvocationRecords = capList(state.toolInvocationRecords, MAX_TOOL_RECORDS_TOTAL, "toolInvocationRecords");
     if (typeof persistStateSoon === "function") persistStateSoon();
   }
 
@@ -47,16 +75,19 @@ export function createRoundTelemetryRuntime({ state, now, nextId, appendEvent, p
     return state.invocationRounds.find((round) => round.invocationId === invocation.id) ?? null;
   }
 
-  // Returns true (and accounts the drop) when this invocation is already at cap.
-  function atCap(invocation) {
+  // Returns true when this invocation is already at its per-run cap. The
+  // over-cap round is NOT silently lost — its raw event data is archived to disk
+  // so the audit trail survives a runaway run.
+  function atCap(invocation, data) {
     if (roundsForInvocation(invocation.id).length < MAX_ROUNDS_PER_INVOCATION) return false;
     invocation.droppedRoundCount = (invocation.droppedRoundCount ?? 0) + 1;
+    archive("invocationRounds", [{ invocationId: invocation.id, overCap: true, data, at: now() }]);
     if (invocation.droppedRoundCount === 1) {
       appendEvent({
         invocationId: invocation.id,
         type: "log",
         level: "warn",
-        message: `Round telemetry capped at ${MAX_ROUNDS_PER_INVOCATION}; further rounds dropped for this invocation.`,
+        message: `Round telemetry capped at ${MAX_ROUNDS_PER_INVOCATION}; further rounds archived, not kept in state, for this invocation.`,
       });
     }
     return true;
@@ -118,7 +149,7 @@ export function createRoundTelemetryRuntime({ state, now, nextId, appendEvent, p
 
   function handleRoundStarted(invocation, data) {
     if (findRound(invocation, intOr(data.roundIndex, null))) return; // idempotent
-    if (atCap(invocation)) return;
+    if (atCap(invocation, data)) return;
     createRound(invocation, data, "started");
   }
 
@@ -126,7 +157,7 @@ export function createRoundTelemetryRuntime({ state, now, nextId, appendEvent, p
     let round = findRound(invocation, intOr(data.roundIndex, null));
     if (!round) {
       // round_completed without a preceding round_started — still record it.
-      if (atCap(invocation)) return;
+      if (atCap(invocation, data)) return;
       round = createRound(invocation, data, "started");
     }
     const status = ROUND_TERMINAL_STATUSES.has(data.status) ? data.status : "succeeded";
@@ -142,8 +173,8 @@ export function createRoundTelemetryRuntime({ state, now, nextId, appendEvent, p
     round.filesRead = Array.isArray(data.filesRead)
       ? [...new Set(data.filesRead.filter((path) => typeof path === "string"))]
       : [];
-    round.responseDigest = typeof data.responseDigest === "string" ? data.responseDigest : null;
-    round.requestDigest = typeof data.requestDigest === "string" ? data.requestDigest : null;
+    round.responseDigest = redactDigest(data.responseDigest);
+    round.requestDigest = redactDigest(data.requestDigest);
     round.errorCode = typeof data.errorCode === "string" ? data.errorCode : null;
     if (typeof data.provider === "string") round.provider = data.provider;
     if (typeof data.model === "string") round.model = data.model;
@@ -164,8 +195,8 @@ export function createRoundTelemetryRuntime({ state, now, nextId, appendEvent, p
       invocationId: invocation.id,
       roundId: round?.id ?? null,
       toolName: typeof data.toolName === "string" ? data.toolName : "unknown",
-      inputDigest: typeof data.inputDigest === "string" ? data.inputDigest : null,
-      outputDigest: typeof data.outputDigest === "string" ? data.outputDigest : null,
+      inputDigest: redactDigest(data.inputDigest),
+      outputDigest: redactDigest(data.outputDigest),
       targetPath: typeof data.targetPath === "string" ? data.targetPath : null,
       action: typeof data.action === "string" ? data.action : null,
       riskTag: typeof data.riskTag === "string" ? data.riskTag : null,
@@ -179,6 +210,30 @@ export function createRoundTelemetryRuntime({ state, now, nextId, appendEvent, p
   }
 
   return { recordRoundEvent };
+}
+
+// The digest redaction policy (#811): the one place that decides what may ever
+// be stored in a round/tool digest. Secret-shaped tokens are replaced and the
+// result is length-bounded. High-confidence patterns only — a digest is an
+// observability aid, so over-redaction is safer than leaking a credential.
+const DIGEST_MAX = 500;
+const SECRET_PATTERNS = [
+  /sk-[A-Za-z0-9]{16,}/g, // OpenAI-style API key
+  /github_pat_[A-Za-z0-9_]{20,}/g, // GitHub fine-grained PAT
+  /gh[posru]_[A-Za-z0-9]{20,}/g, // GitHub classic tokens (ghp_/gho_/…)
+  /AKIA[0-9A-Z]{16}/g, // AWS access key id
+  /xox[baprs]-[A-Za-z0-9-]{10,}/g, // Slack token
+  /eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{6,}/g, // JWT
+  /(?:bearer|authorization:?)\s+[A-Za-z0-9._~+/=-]{16,}/gi, // bearer / authorization value
+  /-----BEGIN (?:[A-Z ]+)?PRIVATE KEY-----/g, // private key block
+  /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g, // email address (PII)
+];
+
+export function redactDigest(text) {
+  if (typeof text !== "string" || text.length === 0) return null;
+  let value = text;
+  for (const pattern of SECRET_PATTERNS) value = value.replace(pattern, "[redacted]");
+  return value.length > DIGEST_MAX ? `${value.slice(0, DIGEST_MAX - 3)}...` : value;
 }
 
 function intOr(value, fallback) {

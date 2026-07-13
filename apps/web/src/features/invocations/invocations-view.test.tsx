@@ -297,6 +297,41 @@ describe("InvocationsView operator explanation", () => {
     expect(screen.queryByText("Imported usage · this run")).toBeNull();
   });
 
+  it("shows this run's per-round telemetry, scoped to the run", async () => {
+    apiMock.fetchState.mockResolvedValue({
+      ...actionExplanationState(),
+      invocationRounds: [
+        {
+          id: "rnd_1", invocationId: "inv_report", roundIndex: 0, provider: "anthropic",
+          model: "claude-opus-4-8", status: "succeeded", inputTokens: 100, outputTokens: 50,
+          cachedTokens: 25, reasoningTokens: 0, durationMs: 5000, filesRead: ["/wt/a.mjs"], toolCallIds: ["tiv_1"],
+        },
+        {
+          id: "rnd_2", invocationId: "inv_report", roundIndex: 1, provider: "anthropic",
+          model: "claude-opus-4-8", status: "succeeded", inputTokens: 20, outputTokens: 8,
+          cachedTokens: 0, reasoningTokens: 0, durationMs: 1200, filesRead: [], toolCallIds: [],
+        },
+        // Another run's round — must NOT leak into this run's card.
+        { id: "rnd_other", invocationId: "inv_other", roundIndex: 0, model: "gpt-other-model", status: "succeeded", inputTokens: 1, outputTokens: 1 },
+      ],
+    });
+    useUiStore.setState({ section: "invocations", selectedInvocationId: "inv_report" });
+    renderWithClient(createElement(InvocationsView));
+
+    expect(await screen.findByText("Rounds · this run")).toBeTruthy();
+    expect(screen.getAllByText("claude-opus-4-8").length).toBe(2);
+    expect(screen.getByText("100")).toBeTruthy();
+    expect(screen.queryByText("gpt-other-model")).toBeNull();
+  });
+
+  it("hides the rounds card for runs with no round telemetry", async () => {
+    apiMock.fetchState.mockResolvedValue(actionExplanationState());
+    useUiStore.setState({ section: "invocations", selectedInvocationId: "inv_report" });
+    renderWithClient(createElement(InvocationsView));
+    await screen.findByText(/Timeline · inv_report/);
+    expect(screen.queryByText("Rounds · this run")).toBeNull();
+  });
+
   it("renders executed recovery result and follows the result link", async () => {
     apiMock.fetchState.mockResolvedValue(consoleState());
     apiMock.getApplicationOrchestrationRunRecovery.mockResolvedValue({

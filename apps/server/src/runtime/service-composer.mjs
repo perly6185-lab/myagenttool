@@ -2485,6 +2485,8 @@ export function createServerRuntimeServices({
     nextId,
     appendEvent,
     persistStateSoon,
+    capWithArchive: retentionArchive.capWithArchive,
+    archiveEvicted: retentionArchive.archiveEvicted,
   });
 
   const httpDependencies = {
