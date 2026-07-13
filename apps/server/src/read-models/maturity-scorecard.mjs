@@ -64,7 +64,11 @@ export function computeMaturityScorecard({
   });
 
   // L1 — 100% of active work items carry issue + Project fields.
-  const l1Rate = backlog ? Math.min(backlog.labelCoverage?.rate ?? 0, backlog.milestoneCoverage?.rate ?? 0) : null;
+  // A backlog artifact that loaded but is missing a coverage field is
+  // INDETERMINATE, not 0% — folding an absent field to 0 would report a false
+  // "unmet" (a measurement gap dressed up as a failure).
+  const l1Rates = backlog ? [backlog.labelCoverage?.rate, backlog.milestoneCoverage?.rate] : null;
+  const l1Rate = l1Rates && l1Rates.every((r) => typeof r === "number") ? Math.min(...l1Rates) : null;
   levels.push({
     level: 1,
     name: "Issues + Project exist",
@@ -162,16 +166,29 @@ export function computeMaturityScorecard({
   // change-failure-recovery time, not a deploy metric.
   let recoveryH = null;
   let recoverySource = null; // "deploy" | "orchestration" | "change_failure_marker"
+  let recoveryCount = null;
+  let openIncident = false;
+  let deployPresentNoRecovery = false;
   if (release?.recoveryHours != null) {
     recoveryH = release.recoveryHours;
     recoverySource = release.source; // "deploy" or "orchestration"
+    recoveryCount = release.recoveryCount ?? null;
+    openIncident = Boolean(release.openIncident);
+    deployPresentNoRecovery = Boolean(release.deployPresentNoRecovery);
   } else if (dora?.changeFailures?.recoveryHours?.median != null) {
     recoveryH = dora.changeFailures.recoveryHours.median;
     recoverySource = "change_failure_marker";
   }
+  // Expose the recovery sample size (a "met" that rests on n=1 is not the same as
+  // n=20) and any ACTIVE unrecovered incident (a median-only reading can hide a
+  // live outage). And name the orchestration proxy honestly: "no deploy data" is
+  // wrong when deploys exist but simply had no failure→recovery sample.
+  const sampleSuffix = recoveryCount != null ? ` (n=${recoveryCount})` : "";
+  const openSuffix = openIncident ? " · ⚠ open incident (currently unrecovered)" : "";
+  const orchestrationNote = deployPresentNoRecovery ? "deploys present, no failure→recovery sample" : "no deploy data";
   const recoveryLabel = {
-    deploy: `deploy recovery ${recoveryH}h`,
-    orchestration: `orchestration recovery ${recoveryH}h (no deploy data — orchestration proxy)`,
+    deploy: `deploy recovery ${recoveryH}h${sampleSuffix}${openSuffix}`,
+    orchestration: `orchestration recovery ${recoveryH}h${sampleSuffix} (${orchestrationNote} — orchestration proxy)`,
     change_failure_marker: `change-failure recovery ${recoveryH}h (from Change-failure markers — not deploy data)`,
   };
   levels.push({
@@ -182,6 +199,7 @@ export function computeMaturityScorecard({
     frontier: "partial",
     measured: recoveryH == null ? null : recoveryLabel[recoverySource],
     recoverySource: recoverySource ?? undefined,
+    openIncident: openIncident || undefined,
     verdict: recoveryH == null ? "indeterminate" : verdict(recoveryH, recoveryH < 1),
     detail:
       recoveryH == null
@@ -199,7 +217,11 @@ export function computeMaturityScorecard({
     frontier: "yes",
     measured: conv == null ? null : `${pct(conv)} conversion`,
     verdict: conv == null ? "indeterminate" : verdict(conv, conv > 0),
-    detail: "frontier — local target only; no external standard for the autonomy claim",
+    // Honest about WHY it is indeterminate: the feedback input is a structural
+    // dead input (nothing feeds `feedback` yet), not "data pending".
+    detail: conv == null
+      ? "not instrumented — no feedback-triage input is wired into the scorecard yet"
+      : "frontier — local target only; no external standard for the autonomy claim",
   });
 
   // Current level = the highest level reached WITHOUT a gap ("reached only when the
@@ -259,6 +281,24 @@ function latestArtifact(kind, metricsDir = METRICS_DIR) {
   return null;
 }
 
+// The timestamp of the newest artifact of a kind (from its run-dir name), so a
+// reader can tell HOW FRESH each level's evidence is — the scorecard mixes
+// artifact-sourced levels (L1/L2/L3, only as fresh as the last CLI run) with
+// live-state levels (L5 deploy), and nothing regenerates the artifacts on a
+// schedule. Returns an ISO string, or null.
+function artifactGeneratedAt(kind, metricsDir = METRICS_DIR) {
+  try {
+    if (!existsSync(metricsDir)) return null;
+    const dir = readdirSync(metricsDir).filter((d) => d.endsWith(`-${kind}`)).sort().reverse()[0];
+    if (!dir) return null;
+    const stamp = dir.slice(0, dir.length - `-${kind}`.length); // 2026-07-13T04-17-33-153Z
+    const iso = stamp.replace(/T(\d{2})-(\d{2})-(\d{2})-(\d{3})Z$/, "T$1:$2:$3.$4Z");
+    return Number.isNaN(Date.parse(iso)) ? null : iso;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Gather the latest measured evidence for the scorecard. Best-effort: any input
  * that can't be read stays null (→ indeterminate levels). `metricsDir`/`evalTrend`
@@ -281,18 +321,40 @@ export function loadMaturityInputs({ metricsDir = METRICS_DIR, evalTrend, repoRo
   const deploy = Array.isArray(deployments) && deployments.length ? summarizeDeployments(deployments) : null;
   const orchestration = Array.isArray(invocations) && invocations.length ? summarizeOrchestrationRecovery(invocations) : null;
   const release = deploy && deploy.recoveryHours?.median != null
-    ? { recoveryHours: deploy.recoveryHours.median, source: "deploy" }
+    ? { recoveryHours: deploy.recoveryHours.median, recoveryCount: deploy.recoveryHours.count, openIncident: Boolean(deploy.openIncident), source: "deploy" }
     : orchestration && orchestration.recoveryHours?.median != null
-      ? { recoveryHours: orchestration.recoveryHours.median, source: "orchestration" }
+      ? { recoveryHours: orchestration.recoveryHours.median, recoveryCount: orchestration.recoveryHours.count, source: "orchestration", deployPresentNoRecovery: Boolean(deploy && deploy.total > 0) }
       : null;
-  return { docsOk, dora, backlog, governance, evalSummary, release, deploy, orchestration };
+  return {
+    docsOk, dora, backlog, governance, evalSummary, release, deploy, orchestration,
+    // How fresh each artifact-sourced input is (L5's deploy/orchestration are live
+    // state, so they have no artifact timestamp — they are always current).
+    generatedAt: {
+      dora: artifactGeneratedAt("dora", metricsDir),
+      backlog: artifactGeneratedAt("backlog", metricsDir),
+      governance: artifactGeneratedAt("governance", metricsDir),
+    },
+  };
 }
 
 /** Load inputs + compute — the read-model behind GET /api/maturity. */
 export function maturityScorecard(opts = {}) {
   const inputs = loadMaturityInputs(opts);
   const scorecard = computeMaturityScorecard(inputs);
-  return { ...scorecard, inputs };
+  // Freshness so a reader knows the artifact-sourced levels (L1/L2/L3) may be
+  // stale — nothing regenerates the metrics on a schedule (run `pnpm
+  // github:governance|dora|backlog` to refresh). stale = the oldest present
+  // source is > 24h old.
+  const now = Date.now();
+  const freshness = Object.entries(inputs.generatedAt ?? {})
+    .filter(([, at]) => at)
+    .map(([source, at]) => ({ source, at, ageHours: Math.round(((now - Date.parse(at)) / 3_600_000) * 10) / 10 }));
+  const oldest = freshness.reduce((max, f) => Math.max(max, f.ageHours), 0);
+  return {
+    ...scorecard,
+    inputs,
+    metricsFreshness: { sources: freshness, oldestAgeHours: freshness.length ? oldest : null, stale: oldest > 24 },
+  };
 }
 
 /** The latest DORA report artifact (Four Keys), best-effort — behind GET /api/dora. */

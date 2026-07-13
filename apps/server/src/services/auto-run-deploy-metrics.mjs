@@ -60,7 +60,10 @@ export function summarizeDeployments(deployments = []) {
   const firstAt = Date.parse(attempts[0].at);
   const lastAt = Date.parse(attempts[attempts.length - 1].at);
   const spanDays = Math.max((lastAt - firstAt) / 86_400_000, 0);
-  const deployFrequencyPerWeek = spanDays > 0 ? round((deployed / spanDays) * 7, 2) : deployed;
+  // A rate needs a span: with everything at one instant (e.g. a single deploy),
+  // "N per week" is undefined — report null, not the raw count (which read as a
+  // weekly rate misstates the magnitude).
+  const deployFrequencyPerWeek = spanDays > 0 ? round((deployed / spanDays) * 7, 2) : null;
 
   return {
     total,
@@ -68,6 +71,10 @@ export function summarizeDeployments(deployments = []) {
     failed,
     changeFailureRate: round(failed / total, 3),
     recoveryHours: { median: round(median(recoveries), 2), count: recoveries.length },
+    // An incident still open at the end of the window is an ACTIVE, unrecovered
+    // failure — the median (which only reflects healed incidents) would otherwise
+    // let L5 read "met" during a live outage. Surface it so it stays visible.
+    openIncident: incidentStart !== null,
     deployFrequencyPerWeek,
     lastDeployAt: attempts[attempts.length - 1].at,
   };
