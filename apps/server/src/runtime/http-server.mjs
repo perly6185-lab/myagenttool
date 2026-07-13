@@ -232,6 +232,10 @@ export function createHttpServer({
         persistStateSoon,
         budgetStatusFor,
         upsertBudget,
+        // A capability-target automation validates against the live contract and
+        // fires through the same dispatch the Run panel uses (#847).
+        getCapability,
+        createCapabilityInvocation,
       })) {
         return;
       }

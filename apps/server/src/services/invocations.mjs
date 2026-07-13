@@ -25,6 +25,7 @@ export function createInvocationService({
   recordCcusageImportedEstimates,
   recordCodexReviewFindings,
   recordClaudeReviewFindings,
+  recordApplicationResult,
   currentProject,
   worktreeForProject,
   createWorktree,
@@ -39,6 +40,7 @@ export function createInvocationService({
   createManagedCodexSession,
   resolveResumeCodexSessionId,
   budgetGateForProject,
+  checkUsageQuota,
   closeCodexSession,
   onInvocationCompleted,
   onInvocationApproved,
@@ -67,6 +69,12 @@ export function createInvocationService({
     recordCcusageImportedEstimates,
     recordCodexReviewFindings,
     recordClaudeReviewFindings,
+    // #804's generic importer was composed and handed to this service, and then
+    // never forwarded to the runtime that calls it — so `typeof
+    // recordApplicationResult === "function"` was false in completion.mjs and the
+    // import silently never ran. Every unit test passed: they exercised the
+    // importer directly and never this wire.
+    recordApplicationResult,
     onInvocationCompleted,
   });
   const {
@@ -124,6 +132,7 @@ export function createInvocationService({
     createAuditSummary,
     recordAgentUsage,
     budgetGateForProject,
+    checkUsageQuota,
   });
   const {
     acknowledgeInvocation,

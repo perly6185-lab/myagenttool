@@ -39,6 +39,7 @@ import {
 import { useUiStore } from "@/store/ui-store";
 import { cn } from "@/lib/cn";
 import { formatDuration, formatTokens } from "@/lib/format";
+import { formatUsd } from "@/lib/money";
 import { readableDelivery, readableStatus, statusTone } from "@/lib/readable-labels";
 import type {
   ApplicationRecoveryActionRequest,
@@ -75,6 +76,8 @@ export function InvocationsView() {
     : [];
   const roundInputTokens = rounds.reduce((sum, round) => sum + (round.inputTokens ?? 0), 0);
   const roundOutputTokens = rounds.reduce((sum, round) => sum + (round.outputTokens ?? 0), 0);
+  const roundCostUsd = rounds.reduce((sum, round) => sum + (round.estimatedCostUsd ?? 0), 0);
+  const anyRoundPriced = rounds.some((round) => round.estimatedCostUsd != null);
 
   function viewInvocation(invocationId: string) {
     setSelectedInvocationId(invocationId);
@@ -209,7 +212,8 @@ export function InvocationsView() {
             </div>
             <p className="text-sm text-muted-foreground">
               One row per model turn — measured tokens, timing, and content read.{" "}
-              {formatTokens(roundInputTokens)} in / {formatTokens(roundOutputTokens)} out tokens across this run.
+              {formatTokens(roundInputTokens)} in / {formatTokens(roundOutputTokens)} out tokens across this run
+              {anyRoundPriced ? ` · ~${formatUsd(roundCostUsd)} est.` : "."}
             </p>
           </CardHeader>
           <CardContent>
@@ -222,6 +226,7 @@ export function InvocationsView() {
                     <th className="px-3 py-2 text-right font-medium">In</th>
                     <th className="px-3 py-2 text-right font-medium">Out</th>
                     <th className="px-3 py-2 text-right font-medium">Cached</th>
+                    <th className="px-3 py-2 text-right font-medium">Cost</th>
                     <th className="px-3 py-2 text-right font-medium">Duration</th>
                     <th className="px-3 py-2 text-right font-medium">Files</th>
                     <th className="px-3 py-2 text-right font-medium">Tools</th>
@@ -243,6 +248,9 @@ export function InvocationsView() {
                         <td className="px-3 py-2 text-right tabular-nums">{formatTokens(round.inputTokens)}</td>
                         <td className="px-3 py-2 text-right tabular-nums">{formatTokens(round.outputTokens)}</td>
                         <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">{formatTokens(round.cachedTokens)}</td>
+                        <td className="px-3 py-2 text-right tabular-nums">
+                          {round.estimatedCostUsd != null ? formatUsd(round.estimatedCostUsd) : "—"}
+                        </td>
                         <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">{formatDuration(round.durationMs)}</td>
                         <td
                           className="px-3 py-2 text-right tabular-nums text-muted-foreground"

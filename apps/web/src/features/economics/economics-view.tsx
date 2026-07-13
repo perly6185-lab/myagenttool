@@ -5,6 +5,7 @@ import { BudgetsCard } from "@/features/economics/budgets-card";
 import { TeamBudgetsCard } from "@/features/economics/team-budgets-card";
 import { ChargebackCard } from "@/features/economics/chargeback-card";
 import { ImportedUsageCard } from "@/features/economics/imported-usage-card";
+import { SpendDashboard } from "@/features/economics/spend-dashboard";
 import { useConsoleState } from "@/data/use-console-state";
 import { shortTime } from "@/lib/readable-labels";
 import { formatUsd as usd } from "@/lib/money";
@@ -64,6 +65,8 @@ export function EconomicsView() {
         />
         <Metric label="Billable runs" value={String(summary?.billableEntries ?? 0)} hint="Flagged billable by the agent" />
       </div>
+
+      <SpendDashboard summary={summary} entries={entries} />
 
       <BudgetsCard />
       <TeamBudgetsCard />
