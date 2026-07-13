@@ -10,6 +10,7 @@ export function createInvocationCompletionRuntime({
   closeCodexSession,
   isTerminal,
   recordInvocationLedgerEntry,
+  recordInvocationRoundUsage,
   recordCcusageImportedEstimates,
   recordCodexReviewFindings,
   recordClaudeReviewFindings,
@@ -57,8 +58,16 @@ export function createInvocationCompletionRuntime({
     // the bridge surfaces under result.cost) to the ledger + budget. No-ops when
     // the agent reported no USD amount.
     const reportedCost = body.result?.cost ?? body.cost;
+    let roundUsageLedgerIds = [];
     if (reportedCost && typeof recordInvocationLedgerEntry === "function") {
-      recordInvocationLedgerEntry({ invocation, cost: reportedCost, agent: findAgent(invocation.agentId) });
+      const ledgerEntry = recordInvocationLedgerEntry({ invocation, cost: reportedCost, agent: findAgent(invocation.agentId) });
+      if (ledgerEntry) roundUsageLedgerIds = [ledgerEntry.id];
+    }
+    // Sum this run's per-round telemetry into an authoritative AIUsageRecord
+    // (derivedFrom: "rounds") — real measured tokens, linked to the cost ledger
+    // entry above. No-op when the run produced no rounds (e.g. non-JSONL agents).
+    if (typeof recordInvocationRoundUsage === "function") {
+      recordInvocationRoundUsage({ invocation, ledgerEntryIds: roundUsageLedgerIds });
     }
     if (terminalStatus === "succeeded" && typeof recordCcusageImportedEstimates === "function") {
       const records = recordCcusageImportedEstimates({

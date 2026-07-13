@@ -39,6 +39,11 @@ console.log(`RESULT ${JSON.stringify({
     model: "codex",
     billable: true,
     unknown: true,
+    currency: "USD",
+    inputTokens: review.inputTokens ?? 0,
+    cachedInputTokens: review.cachedInputTokens ?? 0,
+    outputTokens: review.outputTokens ?? 0,
+    reasoningOutputTokens: review.reasoningOutputTokens ?? 0,
     amountSource: "external_codex_usage",
   },
 })}`);
@@ -144,16 +149,35 @@ function parseReviewOutput(stdout) {
   const direct = parseJsonMaybe(text);
   if (direct) return normalizeReviewObject(direct);
   const lines = text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  // Capture the turn's real token usage (previously dropped) so the server can
+  // attribute measured tokens for the review run.
+  let usageTokens = {};
+  for (const line of lines) {
+    const parsed = parseJsonMaybe(line);
+    if (parsed?.type === "turn.completed" && parsed.usage) {
+      usageTokens = codexUsageTokens(parsed.usage);
+    }
+  }
   for (const line of lines.toReversed()) {
     if (line.startsWith("RESULT ")) {
       const result = parseJsonMaybe(line.slice("RESULT ".length));
-      if (result) return normalizeReviewObject(result.output ?? result);
+      if (result) return { ...normalizeReviewObject(result.output ?? result), ...usageTokens };
     }
     const parsed = parseJsonMaybe(line);
     const candidate = extractReviewFromCodexEvent(parsed);
-    if (candidate) return normalizeReviewObject(candidate);
+    if (candidate) return { ...normalizeReviewObject(candidate), ...usageTokens };
   }
   fail("Codex produced malformed review JSON.", { stdoutPreview: text.slice(0, 500) });
+}
+
+function codexUsageTokens(usage) {
+  const nonNeg = (value) => (Number.isFinite(Number(value)) && Number(value) > 0 ? Number(value) : 0);
+  return {
+    inputTokens: nonNeg(usage?.input_tokens),
+    cachedInputTokens: nonNeg(usage?.cached_input_tokens),
+    outputTokens: nonNeg(usage?.output_tokens),
+    reasoningOutputTokens: nonNeg(usage?.reasoning_output_tokens),
+  };
 }
 
 function parseJsonMaybe(text) {
