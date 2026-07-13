@@ -5,10 +5,10 @@ invocation detail view in #810, captured with Playwright + Chromium.
 
 | Viewport | Screenshot |
 | --- | --- |
-| Desktop (1440×900) | [rounds-desktop.png](rounds-desktop.png) |
-| Mobile (390×900) | [rounds-mobile.png](rounds-mobile.png) |
+| Wide (1440×900) | [rounds-1440w.png](rounds-1440w.png) |
+| Narrow (390×900) | [rounds-390w.png](rounds-390w.png) |
 
-The desktop capture shows the card as shipped: a `3 rounds` badge, the run-level
+The wide capture shows the card as shipped: a `3 rounds` badge, the run-level
 token summary (`33,750 in / 3,560 out tokens`), and one table row per model turn
 — model/provider, in/out/cached tokens (thousands-separated), duration
 (`5.0s` / `14s` / `3.4s`), files read, tool count, and a status badge.
