@@ -704,6 +704,9 @@ export function createM3Service({
       reasoningTokens: Math.max(0, Number(body.reasoningTokens ?? 0)),
       requestCount: Math.max(1, Number(body.requestCount ?? 1)),
       latencyMs: body.latencyMs === undefined ? null : Math.max(0, Number(body.latencyMs)),
+      // This path's token counts are asserted by the caller, not measured; the
+      // rounds-summed path (recordInvocationRoundUsage) is the authoritative one.
+      derivedFrom: "client_reported",
       estimatedCost,
       ledgerEntryIds: [],
       status: "succeeded",
@@ -734,6 +737,75 @@ export function createM3Service({
       ledgerEntries: [ledgerEntry],
       blocked: false,
     };
+  }
+
+  // Sum an invocation's per-round telemetry (state.invocationRounds, #808) into
+  // one authoritative AIUsageRecord — real measured tokens instead of the
+  // client-asserted defaults the /api/m3/ai-usage route falls back to. Called at
+  // completion. Does NOT create its own ledger entry: cost is already attributed
+  // by recordInvocationLedgerEntry from the run's aggregate; we link that entry.
+  function recordInvocationRoundUsage({ invocation, ledgerEntryIds = [] } = {}) {
+    if (!invocation) return null;
+    const rounds = state.invocationRounds?.filter((round) => round.invocationId === invocation.id) ?? [];
+    if (rounds.length === 0) return null;
+
+    const sum = (key) => rounds.reduce((total, round) => total + Math.max(0, Number(round[key] ?? 0)), 0);
+    const durations = rounds.map((round) => round.durationMs).filter((value) => Number.isFinite(value));
+    const latencyMs = durations.length ? durations.reduce((total, value) => total + value, 0) : null;
+    // Prefer a round that actually named its model over an "unknown" placeholder.
+    const named = rounds.find((round) => round.model && round.model !== "unknown") ?? rounds[0];
+    const createdAt = now();
+
+    const usageRecord = {
+      id: nextId("aiu_demo"),
+      userId: String(invocation.requestedBy ?? "usr_local"),
+      teamId: null,
+      agentId: invocation.agentId ?? null,
+      invocationId: invocation.id,
+      deviceId: invocation.delivery?.deviceId ?? null,
+      quotaDecisionId: null,
+      provider: named.provider ?? "unknown",
+      model: named.model ?? "unknown",
+      providerMode: "byok",
+      inputTokens: sum("inputTokens"),
+      outputTokens: sum("outputTokens"),
+      cachedTokens: sum("cachedTokens"),
+      reasoningTokens: sum("reasoningTokens"),
+      requestCount: rounds.length,
+      latencyMs,
+      roundCount: rounds.length,
+      derivedFrom: "rounds",
+      estimatedCost: "unknown",
+      ledgerEntryIds: [...ledgerEntryIds],
+      status: mapInvocationUsageStatus(invocation.status),
+      errorCode: null,
+      createdAt,
+    };
+    state.aiUsageRecords.unshift(usageRecord);
+    state.aiUsageRecords = state.aiUsageRecords.slice(0, 200);
+    for (const round of rounds) round.usageRecordId = usageRecord.id;
+
+    appendEvent({
+      invocationId: invocation.id,
+      type: "ai_usage_recorded",
+      level: "info",
+      message: `AI usage summed from ${rounds.length} round(s) for ${usageRecord.provider}/${usageRecord.model}.`,
+      data: {
+        usageRecordId: usageRecord.id,
+        derivedFrom: "rounds",
+        roundCount: rounds.length,
+        inputTokens: usageRecord.inputTokens,
+        outputTokens: usageRecord.outputTokens,
+      },
+    });
+    persistStateSoon();
+    return usageRecord;
+  }
+
+  function mapInvocationUsageStatus(status) {
+    if (status === "succeeded") return "succeeded";
+    if (status === "cancelled") return "cancelled";
+    return "failed";
   }
 
   function enforcePlatformAiQuota(body = {}) {
@@ -876,6 +948,7 @@ export function createM3Service({
     queueRollbackAction,
     recordAiUsage,
     recordInvocationLedgerEntry,
+    recordInvocationRoundUsage,
     requestLifecycleLocalApproval,
     transitionLifecycleRecipe,
     updatePrivateDeploymentConfig,

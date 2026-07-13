@@ -262,6 +262,17 @@ export const api = {
       "GET",
       `/api/applications/${encodeURIComponent(id)}/capabilities`,
     ),
+  /**
+   * Run an Application capability as a governed invocation (#800). The body carries
+   * only the capability's DECLARED inputs (plus the project it runs in) — the flag
+   * and argv each input becomes are decided server-side and never travel from here.
+   */
+  invokeCapability: (name: string, body: Record<string, string> = {}) =>
+    request<{ capability: string; invocationId: string; status: string; agentId?: string }>(
+      "POST",
+      `/api/capabilities/${encodeURIComponent(name)}/invocations`,
+      body,
+    ),
   registerApplication: (body: ApplicationRegisterRequest) =>
     request<{ application: ApplicationSnapshot; capabilities: ApplicationCapability[] }>(
       "POST",

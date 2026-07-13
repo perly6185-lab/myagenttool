@@ -48,6 +48,9 @@ console.log(`RESULT ${JSON.stringify({
     billable: true,
     unknown: !review.reportedCost,
     currency: "USD",
+    inputTokens: review.inputTokens ?? 0,
+    outputTokens: review.outputTokens ?? 0,
+    cachedInputTokens: review.cachedTokens ?? 0,
     ...(review.reportedCost ? { amountUsd: review.amountUsd, amountSource: "reported" } : { amountSource: "external_claude_usage" }),
   },
 })}`);
@@ -224,9 +227,16 @@ function normalizeReviewObject(value) {
 function costFields(event) {
   const amountUsd = Number(event.total_cost_usd ?? event.cost_usd);
   const reportedCost = Number.isFinite(amountUsd) && amountUsd > 0;
+  // Surface the real token usage the result event carries (previously dropped),
+  // so the server can attribute measured tokens — not only a USD amount.
+  const usage = event.usage ?? event.message?.usage ?? null;
+  const nonNeg = (value) => (Number.isFinite(Number(value)) && Number(value) > 0 ? Number(value) : 0);
   return {
     model: event.message?.model ?? event.model ?? "claude",
     reportedCost,
+    inputTokens: nonNeg(usage?.input_tokens),
+    outputTokens: nonNeg(usage?.output_tokens),
+    cachedTokens: nonNeg(usage?.cache_read_input_tokens) + nonNeg(usage?.cache_creation_input_tokens),
     ...(reportedCost ? { amountUsd } : {}),
   };
 }

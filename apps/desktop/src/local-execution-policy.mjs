@@ -36,7 +36,10 @@ const GIT_WRAPPER_ARGS = {
     flags: { "--since": isIsoDate, "--until": isIsoDate, "--author": isGitToken, "--max-count": isMaxCount },
   },
   diff_stat: { base: ["--no-pager", "diff", "--stat", "--no-color"], flags: {} },
-  branch_list: { base: ["--no-pager", "branch", "--list", "--format=%(refname:short)%x1f%(objectname)"], flags: {} },
+  // ref-filter spells a hex byte `%1f`; `log --format` spells it `%x1f`. Keep this
+  // base byte-identical to the server's registered argv (#801) — a mismatch here
+  // is refused, which is the two-allowlist design working, not a bug to paper over.
+  branch_list: { base: ["--no-pager", "branch", "--list", "--format=%(refname:short)%1f%(objectname)"], flags: {} },
   head: { base: ["--no-pager", "rev-parse", "HEAD"], flags: {} },
   show: { base: ["--no-pager", "show", "--stat", "--no-color"], flags: {}, positional: isGitRev, maxPositionals: 1 },
   diff_ref: { base: ["--no-pager", "diff", "--stat", "--no-color"], flags: {}, positional: isGitRev, maxPositionals: 1 },
@@ -224,11 +227,13 @@ function isApplicationWrapperSpawn(spawnPlan, manifest = {}) {
 function applicationWrapperGate(work, spawnPlan, localPolicy, approvedRoots, manifest = {}) {
   const spec = applicationWrapperSpec(work);
   const parsed = parseApplicationWrapperArgs(spawnPlan?.args ?? []);
+  const cwdPolicy = normalizeCwdPolicy(spec?.cwdPolicy);
   const evidence = {
     capability: parsed.capability ?? spec?.capability ?? null,
     command: parsed.execCommand ?? spec?.execCommand ?? null,
     execArgCount: parsed.execArgs?.length ?? 0,
     cwd: parsed.cwd ?? null,
+    cwdPolicy,
     declaredFilePolicy: spec?.filePolicy ?? null,
     declaredNetworkPolicy: spec?.networkPolicy ?? null,
     localAllowlist: "applicationWrapperCommands",
@@ -265,6 +270,25 @@ function applicationWrapperGate(work, spawnPlan, localPolicy, approvedRoots, man
     // server buckets as command_not_allowlisted.
     const refusalCode = localPolicy.filePolicy !== allow.filePolicy ? "file_policy_exceeded" : "network_policy_exceeded";
     return { allowed: false, reason: "Local execution gate refused an application wrapper policy outside the command allowlist.", evidence: { ...evidence, refusalCode }, code: "policy_blocked" };
+  }
+  // An "invocation_root" command IS its repository — cwd is not a detail of it,
+  // it is the whole definition. With no resolved cwd the runner would fall back to
+  // process.cwd(), i.e. the bridge's own directory, and the cwd checks below would
+  // be skipped entirely. Refuse (#794).
+  //
+  // The device refuses an under-specified command; it does NOT derive the missing
+  // cwd from a root it happens to know. Guessing the half the server did not send
+  // is how the control plane's word becomes the device's truth again.
+  if (cwdPolicy === "invocation_root" && !parsed.cwd) {
+    // refusalCode (#758): a command with NO cwd is trivially not within an approved
+    // root, so it maps onto the existing code rather than minting a new one — the
+    // taxonomy is closed on purpose, and widening it is a protocol change (#759).
+    return {
+      allowed: false,
+      reason: "Local execution gate refused an invocation-root application wrapper command with no resolved working directory.",
+      evidence: { ...evidence, refusalCode: "cwd_outside_approved_root" },
+      code: "policy_blocked",
+    };
   }
   if (parsed.cwd) {
     if (!isAbsolute(parsed.cwd) || !existsSync(parsed.cwd)) {
@@ -388,6 +412,14 @@ function isClaudeCliCommand(command) {
 function normalizePolicy(value, fallback) {
   const text = String(value ?? "").trim();
   return FILE_POLICIES.has(text) || NETWORK_POLICIES.has(text) ? text : fallback;
+}
+
+// The device's OWN reading of cwdPolicy (#794). A missing or unrecognized value is
+// "fixed" — the cwd-insensitive default — rather than an inference about what the
+// server meant. Only the exact string opts a command into invocation-root
+// confinement, so a truncated or older payload can never silently acquire it.
+function normalizeCwdPolicy(value) {
+  return String(value ?? "").trim() === "invocation_root" ? "invocation_root" : "fixed";
 }
 
 function collectApprovedRoots(work) {

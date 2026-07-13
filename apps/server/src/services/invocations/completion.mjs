@@ -10,9 +10,11 @@ export function createInvocationCompletionRuntime({
   closeCodexSession,
   isTerminal,
   recordInvocationLedgerEntry,
+  recordInvocationRoundUsage,
   recordCcusageImportedEstimates,
   recordCodexReviewFindings,
   recordClaudeReviewFindings,
+  recordApplicationResult,
   onInvocationCompleted,
 }) {
   function completeInvocation(invocation, body) {
@@ -57,8 +59,16 @@ export function createInvocationCompletionRuntime({
     // the bridge surfaces under result.cost) to the ledger + budget. No-ops when
     // the agent reported no USD amount.
     const reportedCost = body.result?.cost ?? body.cost;
+    let roundUsageLedgerIds = [];
     if (reportedCost && typeof recordInvocationLedgerEntry === "function") {
-      recordInvocationLedgerEntry({ invocation, cost: reportedCost, agent: findAgent(invocation.agentId) });
+      const ledgerEntry = recordInvocationLedgerEntry({ invocation, cost: reportedCost, agent: findAgent(invocation.agentId) });
+      if (ledgerEntry) roundUsageLedgerIds = [ledgerEntry.id];
+    }
+    // Sum this run's per-round telemetry into an authoritative AIUsageRecord
+    // (derivedFrom: "rounds") — real measured tokens, linked to the cost ledger
+    // entry above. No-op when the run produced no rounds (e.g. non-JSONL agents).
+    if (typeof recordInvocationRoundUsage === "function") {
+      recordInvocationRoundUsage({ invocation, ledgerEntryIds: roundUsageLedgerIds });
     }
     if (terminalStatus === "succeeded" && typeof recordCcusageImportedEstimates === "function") {
       const records = recordCcusageImportedEstimates({
@@ -83,6 +93,20 @@ export function createInvocationCompletionRuntime({
         agent: findAgent(invocation.agentId),
       });
       attachApplicationResult({ invocation, auditSummary, records, outputCollection: "claudeReviewFindings" });
+    }
+    // The generic path (#801): dispatch on the wrapper command's declared
+    // `resultImport`, so a new Application imports without another branch here.
+    // The three importers above predate it and stay as they are — the point is
+    // that this is the LAST per-application `if` in this function, not that they
+    // were worth rewriting.
+    if (terminalStatus === "succeeded" && typeof recordApplicationResult === "function") {
+      const records = recordApplicationResult({ invocation, result: body.result ?? null });
+      attachApplicationResult({
+        invocation,
+        auditSummary,
+        records,
+        outputCollection: invocation.options?.metadata?.applicationWrapper?.outputCollection ?? "applicationResults",
+      });
     }
     attachApplicationResult({ invocation, auditSummary, records: [], outputCollection: "invocations" });
     closeCodexSession(invocation, terminalStatus);

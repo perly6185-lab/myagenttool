@@ -18,6 +18,7 @@ import { createApprovalGrantService } from "../services/approval-grants.mjs";
 import { createRetentionArchive } from "../services/retention-archive.mjs";
 import { createApplicationStatsRuntime } from "../services/application-stats.mjs";
 import { createCapabilityService } from "../services/capabilities.mjs";
+import { createApplicationResultImportService } from "../services/application-results.mjs";
 import { createCcusageImportService } from "../services/ccusage-imports.mjs";
 import { createClaudeReviewImportService } from "../services/claude-review-imports.mjs";
 import { createCodexReviewImportService } from "../services/codex-review-imports.mjs";
@@ -277,6 +278,7 @@ export function createServerRuntimeServices({
     queueRollbackAction,
     recordAiUsage,
     recordInvocationLedgerEntry,
+    recordInvocationRoundUsage,
     requestLifecycleLocalApproval,
     transitionLifecycleRecipe,
     updatePrivateDeploymentConfig,
@@ -290,6 +292,13 @@ export function createServerRuntimeServices({
     persistStateSoon,
   });
   const { recordCcusageImportedEstimates } = createCcusageImportService({
+    state,
+    now,
+    nextId,
+    appendEvent,
+    persistStateSoon,
+  });
+  const { recordApplicationResult } = createApplicationResultImportService({
     state,
     now,
     nextId,
@@ -336,9 +345,11 @@ export function createServerRuntimeServices({
     findAgent,
     enforcePlatformAiQuota,
     recordInvocationLedgerEntry,
+    recordInvocationRoundUsage,
     recordCcusageImportedEstimates,
     recordCodexReviewFindings,
     recordClaudeReviewFindings,
+    recordApplicationResult,
     currentProject,
     worktreeForProject,
     createWorktree,
@@ -2426,6 +2437,7 @@ export function createServerRuntimeServices({
     nextDispatchableInvocation,
     nextTerminalBridgeAction,
     queueTerminalBridgeAction,
+    recordApplicationResult,
     recordCcusageImportedEstimates,
     recordCodexHookEvent,
     recordTerminalBridgeEvent,
