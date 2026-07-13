@@ -149,7 +149,7 @@
     "smoke:port": "node tools/dev/agent-skills-smoke.mjs && node tools/dev/dispatch-concurrency-smoke.mjs && node tools/dev/automation-scheduler-smoke.mjs && node tools/dev/claude-agent-smoke.mjs && node tools/dev/ccusage-agent-smoke.mjs && node tools/dev/tool-registry-contract-smoke.mjs && node tools/dev/cost-attribution-smoke.mjs && node tools/dev/tenancy-smoke.mjs && node tools/dev/worktree-diff-smoke.mjs && node tools/dev/mcp-agent-smoke.mjs",
     "acceptance:m0": "node tools/dev/m0-acceptance.mjs",
     "test:ci": "pnpm -r --filter \"!@myagenttool/desktop\" test && pnpm --filter @myagenttool/desktop test:unit",
-  "test:refusal-strict": "REFUSAL_STRICT=1 pnpm --filter @myagenttool/server test:unit && REFUSAL_STRICT=1 pnpm --filter @myagenttool/server test:integration",
+    "test:refusal-strict": "REFUSAL_STRICT=1 pnpm --filter @myagenttool/server test:unit && REFUSAL_STRICT=1 pnpm --filter @myagenttool/server test:integration",
     "ci:simulate": "node tools/dev/ci-simulate.mjs",
     "ci:activate": "node tools/dev/ci-activate.mjs",
     "github:governance": "node tools/github/src/index.mjs governance-report",
@@ -160,6 +160,7 @@
     "eval:install-cron": "sh tools/dev/install-eval-launchagent.sh"
   },
   "devDependencies": {
+    "playwright": "^1.61.1",
     "typescript": "^5.7.2"
   }
 }
