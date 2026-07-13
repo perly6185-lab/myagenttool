@@ -426,6 +426,27 @@ export interface AgentUsageSummary {
   unknownCostInvocations?: number;
 }
 
+/** One model turn within a run — per-round telemetry (Epic #805). */
+export interface InvocationRound {
+  id: string;
+  invocationId: string;
+  roundIndex: number;
+  provider?: string;
+  model?: string;
+  status?: string;
+  startedAt?: string;
+  endedAt?: string | null;
+  durationMs?: number | null;
+  inputTokens?: number;
+  outputTokens?: number;
+  cachedTokens?: number;
+  reasoningTokens?: number;
+  filesRead?: string[];
+  toolCallIds?: string[];
+  responseDigest?: string | null;
+  errorCode?: string | null;
+}
+
 export interface LedgerEntry {
   id: string;
   invocationId?: string;
@@ -906,6 +927,7 @@ export interface ConsoleSnapshot {
   quotaDecisionRecords?: QuotaDecisionRecord[];
   retentionSettings?: RetentionSettings;
   ledgerEntries?: LedgerEntry[];
+  invocationRounds?: InvocationRound[];
   importedUsageEstimates?: ImportedUsageEstimate[];
   evidenceCenterRecords?: EvidenceCenterRecord[];
   codexReviewFindings?: CodexReviewFinding[];
