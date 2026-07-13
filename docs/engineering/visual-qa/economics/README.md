@@ -13,8 +13,9 @@ The wide capture shows the Economics view as shipped: the **Spend dashboard**
 **Top agents** / **Top projects** magnitude bars with direct USD labels
 (single-hue marks on the theme's primary token, recessive tracks, dark-mode
 correct) — and, lower on the page, the **Imported usage (ccusage)** card showing
-the `last imported <time>` freshness label (#883). The cost-ledger table is the
-table view.
+the `last imported <time>` freshness label (#883) and the opt-in
+**"Enable daily auto-import"** toggle (#901). The cost-ledger table is the table
+view.
 
 ## How these were captured
 
