@@ -66,6 +66,8 @@ const persistedArrayKeys = [
   "quotaDecisionRecords",
   "quotaPolicies",
   "aiUsageRecords",
+  "invocationRounds",
+  "toolInvocationRecords",
   "ledgerEntries",
   "importedUsageEstimates",
   "codexReviewFindings",

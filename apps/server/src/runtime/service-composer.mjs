@@ -21,6 +21,7 @@ import { createCapabilityService } from "../services/capabilities.mjs";
 import { createCcusageImportService } from "../services/ccusage-imports.mjs";
 import { createClaudeReviewImportService } from "../services/claude-review-imports.mjs";
 import { createCodexReviewImportService } from "../services/codex-review-imports.mjs";
+import { createRoundTelemetryRuntime } from "../services/round-telemetry.mjs";
 import { createCodexService } from "../services/codex.mjs";
 import { createIntegrationService } from "../services/integrations.mjs";
 import { createInvocationService } from "../services/invocations.mjs";
@@ -2464,9 +2465,20 @@ export function createServerRuntimeServices({
     now,
   };
 
+  // Per-round telemetry ingestion (#808): folds bridge round_* / tool events
+  // into state.invocationRounds / state.toolInvocationRecords + child spans.
+  const { recordRoundEvent } = createRoundTelemetryRuntime({
+    state,
+    now,
+    nextId,
+    appendEvent,
+    persistStateSoon,
+  });
+
   const httpDependencies = {
     state,
     now,
+    recordRoundEvent,
     // Agent file ledger: accumulate a run's read/written files (deduped, capped)
     // from the bridge's tool_use stream. Stored on the invocation so it ships to
     // the client with state.invocations. See read-models/file-ledger.mjs.

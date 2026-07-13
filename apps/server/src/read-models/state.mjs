@@ -236,6 +236,8 @@ export function buildPublicState({
     quotaDecisionRecords: byInvocation(state.quotaDecisionRecords),
     quotaPolicies: state.quotaPolicies,
     aiUsageRecords: byInvocation(state.aiUsageRecords),
+    invocationRounds: byInvocation(state.invocationRounds),
+    toolInvocationRecords: byInvocation(state.toolInvocationRecords),
     ledgerEntries: byProject(state.ledgerEntries),
     importedUsageEstimates: importedUsagePublic(state.importedUsageEstimates),
     codexReviewFindings,
