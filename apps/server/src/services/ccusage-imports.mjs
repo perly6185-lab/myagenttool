@@ -24,9 +24,6 @@ export function createCcusageImportService({
     const allRows = normalizeReportRows(result.output.report);
     const droppedRowCount = Math.max(0, allRows.length - MAX_IMPORTED_ROWS_PER_REPORT);
     const report = allRows.slice(0, MAX_IMPORTED_ROWS_PER_REPORT);
-    if (!report.length) {
-      return [];
-    }
     const createdAt = now();
     const reportId = String(result.output.reportId ?? reportIdFromCapability(invocation) ?? "unknown");
     const filters = plainObjectOrNull(result.output.filters);
@@ -87,17 +84,24 @@ export function createCcusageImportService({
     );
     state.importedUsageEstimates.unshift(...records);
     state.importedUsageEstimates = state.importedUsageEstimates.slice(0, MAX_IMPORTED_USAGE_ESTIMATES);
+    // Always emit — a 0-row import (#883) must be distinguishable from "never
+    // ran", so an operator can tell a report ran and found nothing apart from a
+    // wedged/absent schedule.
     appendEvent({
       invocationId: invocation.id,
       type: "ccusage_imported_estimates_recorded",
       level: "info",
-      message: `Imported ${records.length} ccusage estimate row(s) from ${reportId}.`,
+      message: records.length
+        ? `Imported ${records.length} ccusage estimate row(s) from ${reportId}.`
+        : `Ran ${reportId} ccusage report — no usage rows to import.`,
       data: {
         importedUsageEstimateIds: records.map((record) => record.id),
         reportId,
+        importedRecordCount: records.length,
         authoritative: false,
         amountSource: "imported_ccusage_report",
         droppedRowCount,
+        importedAt: createdAt,
       },
     });
     persistStateSoon();
