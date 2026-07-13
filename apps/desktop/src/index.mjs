@@ -11,6 +11,7 @@ import { callA2aAgent, probeA2aAgent } from "./a2a-client.mjs";
 import { probeContainerRuntime, runContainerAgent } from "./container-client.mjs";
 import { codexResumeArgs } from "./codex-resume.mjs";
 import { extractClaudeFileAccesses } from "./claude-file-access.mjs";
+import { newRoundState, claudeRoundEmits, codexRoundEmits } from "./round-telemetry.mjs";
 import { applicationWrapperArgs } from "./application-wrapper-args.mjs";
 import {
   createLocalExecutionPolicyManifest,
@@ -809,6 +810,7 @@ async function runInvocation(work) {
   let cancelResult = null;
   let timedOut = false;
   let spawnError = null;
+  const roundState = newRoundState();
 
   if (adapter?.type === "mcp") {
     await runMcpInvocation(work);
@@ -993,7 +995,7 @@ async function runInvocation(work) {
     const lines = stdoutBuffer.split(/\r?\n/);
     stdoutBuffer = lines.pop() ?? "";
     for (const line of lines) {
-      handleAgentLine(invocationId, line, adapter).then((result) => {
+      handleAgentLine(invocationId, line, adapter, roundState).then((result) => {
         if (result) {
           finalResult = result;
         }
@@ -1023,7 +1025,7 @@ async function runInvocation(work) {
   clearTimeout(timeoutTimer);
 
   if (stdoutBuffer.trim()) {
-    const result = await handleAgentLine(invocationId, stdoutBuffer.trim(), adapter);
+    const result = await handleAgentLine(invocationId, stdoutBuffer.trim(), adapter, roundState);
     if (result) {
       finalResult = result;
     }
@@ -2214,15 +2216,15 @@ async function reportForcedKill(invocationId, runtimeName, result) {
   });
 }
 
-async function handleAgentLine(invocationId, line, adapter = {}) {
+async function handleAgentLine(invocationId, line, adapter = {}, roundState = null) {
   if (!line) {
     return null;
   }
   if (adapter.outputFormat === "codex_jsonl") {
-    return handleCodexJsonLine(invocationId, line);
+    return handleCodexJsonLine(invocationId, line, roundState);
   }
   if (adapter.outputFormat === "claude_jsonl") {
-    return handleClaudeJsonLine(invocationId, line);
+    return handleClaudeJsonLine(invocationId, line, roundState);
   }
   if (line.startsWith("RESULT ")) {
     return JSON.parse(line.slice("RESULT ".length));
@@ -2359,7 +2361,15 @@ function summarizeTaskForHook(task) {
   return normalized.length <= 180 ? normalized : `${normalized.slice(0, 177)}...`;
 }
 
-async function handleClaudeJsonLine(invocationId, line) {
+async function emitRoundEvents(invocationId, roundState, event, emitter) {
+  if (!roundState) return;
+  const emits = emitter(roundState, event, new Date().toISOString());
+  for (const emit of emits) {
+    await request("POST", "/api/bridge/events", { invocationId, ...emit });
+  }
+}
+
+async function handleClaudeJsonLine(invocationId, line, roundState = null) {
   let event;
   try {
     event = JSON.parse(line);
@@ -2372,6 +2382,8 @@ async function handleClaudeJsonLine(invocationId, line) {
     });
     return null;
   }
+
+  await emitRoundEvents(invocationId, roundState, event, claudeRoundEmits);
 
   const message = claudeEventMessage(event);
   if (message) {
@@ -2452,7 +2464,7 @@ function claudeMessageText(content) {
   return text.length > 240 ? `${text.slice(0, 237)}...` : text;
 }
 
-async function handleCodexJsonLine(invocationId, line) {
+async function handleCodexJsonLine(invocationId, line, roundState = null) {
   let event;
   try {
     event = JSON.parse(line);
@@ -2465,6 +2477,8 @@ async function handleCodexJsonLine(invocationId, line) {
     });
     return null;
   }
+
+  await emitRoundEvents(invocationId, roundState, event, codexRoundEmits);
 
   const message = codexEventMessage(event);
   if (message) {
