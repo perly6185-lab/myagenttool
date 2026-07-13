@@ -750,11 +750,24 @@ export function createM3Service({
     if (rounds.length === 0) return null;
 
     const sum = (key) => rounds.reduce((total, round) => total + Math.max(0, Number(round[key] ?? 0)), 0);
+    // Summed WALL-CLOCK across the rounds (each round's durationMs is the gap
+    // between turn boundaries, so this includes tool/IO time, not pure model
+    // latency). It is the run's observable duration, which is what the field is
+    // used for here — not a model-latency SLA.
     const durations = rounds.map((round) => round.durationMs).filter((value) => Number.isFinite(value));
     const latencyMs = durations.length ? durations.reduce((total, value) => total + value, 0) : null;
     // Prefer a round that actually named its model over an "unknown" placeholder.
     const named = rounds.find((round) => round.model && round.model !== "unknown") ?? rounds[0];
     const createdAt = now();
+
+    // Real cost from measured tokens × the matched model rate (#851). Stays
+    // "unknown" for an unpriced model — never a fabricated $0.
+    const estimatedUsd = estimateCostUsdFromTokens({
+      model: named.model,
+      inputTokens: sum("inputTokens"),
+      cachedInputTokens: sum("cachedTokens"),
+      outputTokens: sum("outputTokens"),
+    });
 
     const usageRecord = {
       id: nextId("aiu_demo"),
@@ -766,6 +779,8 @@ export function createM3Service({
       quotaDecisionId: null,
       provider: named.provider ?? "unknown",
       model: named.model ?? "unknown",
+      // Rounds only exist for bridge-run CLI agents (Claude/Codex on the user's
+      // machine, using their own credentials) — that is BYOK by definition.
       providerMode: "byok",
       inputTokens: sum("inputTokens"),
       outputTokens: sum("outputTokens"),
@@ -775,7 +790,7 @@ export function createM3Service({
       latencyMs,
       roundCount: rounds.length,
       derivedFrom: "rounds",
-      estimatedCost: "unknown",
+      estimatedCost: estimatedUsd > 0 ? String(roundUsd(estimatedUsd)) : "unknown",
       ledgerEntryIds: [...ledgerEntryIds],
       status: mapInvocationUsageStatus(invocation.status),
       errorCode: null,
@@ -1611,29 +1626,70 @@ function ledgerEntryAmount(entry) {
 }
 
 // Per-million-token USD rates used to ESTIMATE cost for agents that report token
-// usage but no billed amount (e.g. codex, which is API-billed). Defaults are the
-// gpt-5.3-codex official API list price (input $1.75 / cached $0.175 / output $14
-// per 1M tokens, as of 2026-07); override via CODEX_*_USD_PER_MTOK env if your
-// codex CLI uses a different model or the rate changes. The resulting ledger entry
-// is marked amountSource "estimated" (never "reported").
-const TOKEN_RATES_USD_PER_MTOK = {
-  codex: {
-    input: Number(process.env.CODEX_INPUT_USD_PER_MTOK ?? 1.75),
-    cachedInput: Number(process.env.CODEX_CACHED_INPUT_USD_PER_MTOK ?? 0.175),
-    output: Number(process.env.CODEX_OUTPUT_USD_PER_MTOK ?? 14),
-  },
-};
+// usage but no billed amount (Epic #851). Rates are DATA, not code: entries are
+// matched by the longest model-prefix, and an unmatched model stays `unknown`
+// rather than being priced by a guess. Defaults are provider list prices as of
+// 2026-07; override any of them via <PREFIX>_{INPUT,CACHED_INPUT,OUTPUT}_USD_PER_MTOK
+// env (e.g. CLAUDE_OPUS_INPUT_USD_PER_MTOK, CODEX_OUTPUT_USD_PER_MTOK). The
+// resulting ledger entry is marked amountSource "estimated" (never "reported").
+const PRICE_UPDATED_AT = "2026-07-01T00:00:00.000Z";
+
+function modelPrice(provider, model, envPrefix, [input, cachedInput, output]) {
+  const rate = (suffix, fallback) => String(Number(process.env[`${envPrefix}_${suffix}_USD_PER_MTOK`] ?? fallback));
+  return {
+    id: `prc_${provider}_${model}`,
+    provider,
+    model,
+    currency: "USD",
+    inputUsdPerMTok: rate("INPUT", input),
+    cachedInputUsdPerMTok: rate("CACHED_INPUT", cachedInput),
+    outputUsdPerMTok: rate("OUTPUT", output),
+    // These providers already fold reasoning tokens into output, so it is not
+    // billed again; the field exists for providers that meter it separately.
+    reasoningOutputUsdPerMTok: "0",
+    source: "default",
+    updatedAt: PRICE_UPDATED_AT,
+  };
+}
+
+// Ordered most-specific-first only for readability; the matcher picks the
+// longest matching prefix regardless of order.
+const MODEL_PRICES = [
+  modelPrice("anthropic", "claude-opus", "CLAUDE_OPUS", [15, 1.5, 75]),
+  modelPrice("anthropic", "claude-sonnet", "CLAUDE_SONNET", [3, 0.3, 15]),
+  modelPrice("anthropic", "claude-haiku", "CLAUDE_HAIKU", [0.8, 0.08, 4]),
+  modelPrice("openai", "gpt", "OPENAI_GPT", [2.5, 0.25, 10]),
+  modelPrice("codex", "codex", "CODEX", [1.75, 0.175, 14]),
+];
+
+/** The current price table (read-only view). */
+export function modelPrices() {
+  return MODEL_PRICES.map((price) => ({ ...price }));
+}
+
+/** The most specific price whose `model` is a prefix of `model`, else null. */
+export function priceForModel(model) {
+  const key = String(model ?? "").toLowerCase();
+  if (!key) return null;
+  let best = null;
+  for (const price of MODEL_PRICES) {
+    if (key.startsWith(price.model) && (!best || price.model.length > best.model.length)) best = price;
+  }
+  return best;
+}
 
 // Estimate USD from reported token counts when the agent reported no billed amount.
 // Cached input is priced at its own (cheaper) rate; output already includes any
 // reasoning tokens, so reasoning is not billed again. Returns 0 when unpriceable.
 export function estimateCostUsdFromTokens(cost) {
-  const rates = TOKEN_RATES_USD_PER_MTOK[String(cost?.model ?? "").toLowerCase()];
-  if (!rates) return 0;
+  const price = priceForModel(cost?.model);
+  if (!price) return 0;
   const input = Math.max(0, Number(cost.inputTokens ?? 0));
   const cached = Math.min(input, Math.max(0, Number(cost.cachedInputTokens ?? 0)));
   const output = Math.max(0, Number(cost.outputTokens ?? 0));
-  const usd = ((input - cached) * rates.input + cached * rates.cachedInput + output * rates.output) / 1_000_000;
+  const usd = ((input - cached) * Number(price.inputUsdPerMTok)
+    + cached * Number(price.cachedInputUsdPerMTok)
+    + output * Number(price.outputUsdPerMTok)) / 1_000_000;
   return Number.isFinite(usd) && usd > 0 ? usd : 0;
 }
 
