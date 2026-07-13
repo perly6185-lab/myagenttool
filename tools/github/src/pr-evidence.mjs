@@ -102,6 +102,33 @@ export function planPrEvidence({ files, body = "" }) {
   return { routes, bodyProvided, linksIssue, verification, allSatisfied };
 }
 
+// Change-failure marker adoption (L3 anchor). A change failure is a PR that
+// remediates a FAILURE from a PRIOR MERGE — a regression/incident, not a routine
+// fix. Use only STRONG signals so the prompt stays low-noise (plain "fix" is not
+// one — most fixes aren't regressions of shipped code).
+export function detectRemediationSignal({ branch = "", body = "" } = {}) {
+  return /\b(revert|hotfix|regression|rollback)\b/i.test(`${branch}\n${body}`);
+}
+
+// Parse `Change-failure: #N` markers. Kept byte-aligned with dora.mjs's
+// parseChangeFailureRefs (the recorder) so the advisor and the DORA CFR never
+// disagree on what a valid marker is.
+export function changeFailureMarkerRefs(body) {
+  const refs = new Set();
+  const re = /change-failure:\s*((?:#\d+[\s,]*)+)/gi;
+  let match;
+  while ((match = re.exec(String(body ?? ""))) !== null) {
+    for (const token of match[1].match(/#\d+/g) ?? []) refs.add(Number(token.slice(1)));
+  }
+  return [...refs];
+}
+
+export function changeFailureMarkerStatus(body) {
+  const mentioned = /change-failure/i.test(String(body ?? ""));
+  const refs = changeFailureMarkerRefs(body);
+  return { mentioned, refs, malformed: mentioned && refs.length === 0 };
+}
+
 export function prFilePath(file) {
   return typeof file === "string" ? file : file.path ?? file.filename ?? file.name ?? "";
 }
