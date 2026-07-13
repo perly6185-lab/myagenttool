@@ -3,6 +3,15 @@ import { CCUSAGE_APPLICATION_ID } from "./ccusage-application.mjs";
 
 const MAX_IMPORTED_USAGE_ESTIMATES = 1000;
 const MAX_IMPORTED_ROWS_PER_REPORT = 1000;
+const MAX_RAW_BYTES = 4000;
+
+// The row keys the extractor reads for a token/cost signal — used to tell a
+// legitimate single-row summary from an unrecognized wrapper object.
+const USAGE_SIGNAL_KEYS = [
+  "inputTokens", "input_tokens", "outputTokens", "output_tokens",
+  "totalTokens", "total_tokens", "tokens",
+  "totalCostUsd", "totalCostUSD", "costUsd", "costUSD", "totalCost", "cost",
+];
 
 export function createCcusageImportService({
   state,
@@ -69,7 +78,8 @@ export function createCcusageImportService({
         authoritative: false,
         offline: result.output.offline === undefined ? null : Boolean(result.output.offline),
         filters,
-        raw: row,
+        droppedRowCount,
+        raw: boundRaw(row),
         createdAt,
       };
     });
@@ -90,10 +100,13 @@ export function createCcusageImportService({
     appendEvent({
       invocationId: invocation.id,
       type: "ccusage_imported_estimates_recorded",
-      level: "info",
-      message: records.length
-        ? `Imported ${records.length} ccusage estimate row(s) from ${reportId}.`
-        : `Ran ${reportId} ccusage report — no usage rows to import.`,
+      // Warn when the report was truncated so the drop is observable, not silent (#886).
+      level: droppedRowCount > 0 ? "warn" : "info",
+      message: droppedRowCount > 0
+        ? `Imported ${records.length} ccusage estimate row(s) from ${reportId}; dropped ${droppedRowCount} over the ${MAX_IMPORTED_ROWS_PER_REPORT}-row cap.`
+        : records.length
+          ? `Imported ${records.length} ccusage estimate row(s) from ${reportId}.`
+          : `Ran ${reportId} ccusage report — no usage rows to import.`,
       data: {
         importedUsageEstimateIds: records.map((record) => record.id),
         reportId,
@@ -155,9 +168,23 @@ function normalizeReportRows(report) {
         return report[key].filter(isPlainObject);
       }
     }
-    return [report];
+    // No recognized array. Keep the object as one row ONLY if it looks like a
+    // usage row (#886) — otherwise drop it rather than store an all-null phantom.
+    return looksLikeUsageRow(report) ? [report] : [];
   }
   return [];
+}
+
+function looksLikeUsageRow(row) {
+  return USAGE_SIGNAL_KEYS.some((key) => row[key] != null);
+}
+
+// Bound the raw row before it is persisted to the state snapshot (#886) — a large
+// session row would otherwise bloat the file. Small rows pass through unchanged.
+function boundRaw(row) {
+  const json = JSON.stringify(row);
+  if (typeof json !== "string" || json.length <= MAX_RAW_BYTES) return row;
+  return { truncated: true, byteLength: json.length, preview: json.slice(0, MAX_RAW_BYTES) };
 }
 
 function isPlainObject(value) {
