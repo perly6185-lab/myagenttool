@@ -13,23 +13,21 @@ token summary (`33,750 in / 3,560 out tokens`), and one table row per model turn
 — model/provider, in/out/cached tokens (thousands-separated), duration
 (`5.0s` / `14s` / `3.4s`), files read, tool count, and a status badge.
 
-## How these were captured
+## How to regenerate
 
-The demo server seeds no invocations, so the card was rendered against an
-injected state snapshot rather than a live run:
+The demo server seeds no invocations, so the card is rendered against an injected
+state snapshot rather than a live run. That whole flow is scripted in
+[tools/dev/round-telemetry-shot.mjs](../../../../tools/dev/round-telemetry-shot.mjs):
+it boots the server to obtain a real, complete `GET /api/state` base, injects one
+`succeeded` invocation plus three `invocationRounds`, then drives headless
+Chromium (intercepting `/api/state`) at both viewports.
 
-1. `pnpm --filter @myagenttool/web build` (the console is served from `dist/`).
-2. Boot the server once and save a real `GET /api/state` snapshot as a base
-   (all read-model arrays present), then inject one `succeeded` invocation plus
-   three `invocationRounds` for it.
-3. A Playwright script serves `dist/` over HTTP, intercepts `**/api/state` to
-   return the injected snapshot (register the catch-all `**/api/**` route first
-   and the specific `**/api/state` route last — Playwright runs the
-   last-registered matching route first), and deep-links to
-   `/?section=invocations&invocation=inv_demo`.
-4. Screenshot at desktop and mobile viewports.
+```sh
+pnpm exec playwright install chromium          # once
+pnpm --filter @myagenttool/web build           # produce apps/web/dist
+pnpm visual:qa:rounds -- --out docs/engineering/visual-qa/round-telemetry
+```
 
-Prerequisite: `playwright` (dev dependency) and its Chromium browser
-(`pnpm exec playwright install chromium`). See `tools/dev/visual-qa.mjs`, which
-attaches screenshots automatically once a browser-automation dependency is
-present.
+Without `--out` it writes to `.myagenttool/visual-qa/round-telemetry/`
+(gitignored). The capture is deterministic, so re-running against this directory
+is a no-op unless the card's rendering changes.
