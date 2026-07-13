@@ -1,7 +1,8 @@
 import { normalizeMcpAdapterConfig } from "@myagenttool/adapters/mcp";
 
 import { isClaudeCliCommand, isCodexCliCommand } from "../services/agents.mjs";
-import { publicDeviceView } from "../runtime/bridge-auth.mjs";
+import { bearerToken, publicDeviceView } from "../runtime/bridge-auth.mjs";
+import { listDevices, primaryDevice } from "../runtime/device.mjs";
 
 export async function handleAgentRoutes({
   req,
@@ -24,32 +25,68 @@ export async function handleAgentRoutes({
   findIntegrationProbeRun,
   unlinkDevice,
   relinkDevice,
+  deviceForToken,
   issueBridgeCredential,
   requireBridgeCredential,
 }) {
   if (req.method === "POST" && url.pathname === "/api/bridge/register") {
     const body = await readJson(req);
-    if (state.device.unlinkState !== "linked") {
-      sendJson(res, 403, { error: "device_credentials_revoked" });
+    // Which machine is registering?
+    //
+    // Pairing is PER DEVICE, not per fleet. A token that matches a credential
+    // names its device — that bridge is re-registering and must prove it. A
+    // request that matches nothing is *claiming* an unpaired device: the seeded
+    // one on first boot, or one whose credential `relink` just cleared.
+    //
+    // Reading it per-fleet ("is anything paired?") is what the single-device
+    // control plane made look right, and it breaks the moment there are two:
+    // relinking device A would demand a credential A no longer has, because B is
+    // still paired — and A could never re-pair. `relink` is the operator's only
+    // recovery for a lost token, so that failure has no way out.
+    //
+    // A claim is unauthenticated by construction (a first-boot bridge has nothing
+    // to present), so it may only ever land on a device with NO credential — a
+    // paired machine can never be taken over this way. Two unpaired devices are
+    // ambiguous: refuse rather than guess which machine is on the other end.
+    const claimable = listDevices(state).filter((item) => !item.bridgeCredential?.tokenHash);
+    const authenticated = deviceForToken(bearerToken(req));
+    let device;
+    let issuedCredential = null;
+    if (authenticated) {
+      // Re-run the full gate (revoked / idle-expired), which answers on its own.
+      device = requireBridgeCredential({ req, res, sendJson });
+      if (!device) return true;
+      if (body.rotateCredential === true) {
+        issuedCredential = issueBridgeCredential({ deviceId: device.id, rotate: true });
+      }
+    } else if (claimable.length === 1) {
+      device = claimable[0];
+      if (device.unlinkState !== "linked") {
+        sendJson(res, 403, { error: "device_credentials_revoked" });
+        return true;
+      }
+      issuedCredential = issueBridgeCredential({ deviceId: device.id, rotate: true });
+    } else if (claimable.length === 0) {
+      // Every device is paired: an unmatched token cannot name any of them.
+      sendJson(res, 401, { error: "invalid_bridge_credentials" });
+      return true;
+    } else {
+      sendJson(res, 409, { error: "ambiguous_device_claim", claimableDeviceCount: claimable.length });
       return true;
     }
-    const hasCredential = Boolean(state.device.bridgeCredential?.tokenHash);
-    let issuedCredential = null;
-    if (hasCredential) {
-      const credential = requireBridgeCredential({ req, res, sendJson });
-      if (!credential) return true;
-      if (body.rotateCredential === true) {
-        issuedCredential = issueBridgeCredential({ rotate: true });
-      }
-    } else {
-      issuedCredential = issueBridgeCredential({ rotate: true });
-    }
-    state.device.status = "online";
-    state.device.livenessLostAt = null;
-    state.device.lastSeenAt = now();
-    state.device.bridgeVersion = String(body.bridgeVersion ?? "0.0.0");
-    state.device.registeredCapabilities = Array.isArray(body.capabilities) ? body.capabilities.map(String) : [];
-    state.device.updatedAt = now();
+    device.status = "online";
+    // Clearing livenessLostAt on the REGISTERING device, not the primary alias:
+    // on a fleet they differ, and clearing the primary's would declare a machine
+    // healthy because a different one just checked in.
+    device.livenessLostAt = null;
+    device.lastSeenAt = now();
+    device.bridgeVersion = String(body.bridgeVersion ?? "0.0.0");
+    device.registeredCapabilities = Array.isArray(body.capabilities) ? body.capabilities.map(String) : [];
+    device.updatedAt = now();
+    // NOTE: this marks every local agent available, not just the ones located on
+    // the registering device. Correct while one device exists; scoping it to
+    // `agent.location.deviceId === device.id` belongs with the routing work that
+    // makes the dispatch queue per-device.
     for (const agent of state.agents.filter((item) => item.location.type === "local_device")) {
       if (isAgentDisabled(agent)) {
         agent.updatedAt = now();
@@ -78,9 +115,9 @@ export async function handleAgentRoutes({
     });
     sendJson(res, 200, {
       ok: true,
-      device: publicDeviceView(state.device),
+      device: publicDeviceView(device),
       agents: state.agents,
-      bridgeCredential: issuedCredential?.credential ?? publicDeviceView(state.device).bridgeCredential,
+      bridgeCredential: issuedCredential?.credential ?? publicDeviceView(device).bridgeCredential,
       bridgeToken: issuedCredential?.token ?? null,
     });
     return true;

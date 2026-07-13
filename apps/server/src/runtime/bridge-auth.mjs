@@ -1,5 +1,7 @@
 import crypto from "node:crypto";
 
+import { listDevices, primaryDevice } from "./device.mjs";
+
 const TOKEN_BYTES = 32;
 // A bridge credential expires after this much inactivity. An active bridge polls
 // continuously so it never idles out; a LEAKED-but-unused bearer stops working
@@ -13,8 +15,12 @@ export function createBridgeCredentialRuntime({ state, now, persistStateSoon, ap
     return Number.isFinite(lastSeenMs) && Number.isFinite(atMs) && atMs - lastSeenMs > credentialIdleTtlMs;
   }
 
-  function issueBridgeCredential({ rotate = false } = {}) {
-    const existing = currentCredential();
+  function issueBridgeCredential({ deviceId = null, rotate = false } = {}) {
+    const device = (deviceId ? findDeviceById(deviceId) : primaryDevice(state)) ?? null;
+    if (!device) {
+      return { credential: null, token: null, issued: false };
+    }
+    const existing = credentialOf(device);
     // Reuse a live credential; re-issue if rotating OR the existing one idled
     // out, so a reconnecting bridge naturally recovers a fresh token.
     if (existing && !rotate && !credentialIsIdleExpired(existing)) {
@@ -23,33 +29,60 @@ export function createBridgeCredentialRuntime({ state, now, persistStateSoon, ap
     const token = crypto.randomBytes(TOKEN_BYTES).toString("base64url");
     const issuedAt = now();
     const credential = {
-      id: "brg_cred_local_001",
-      deviceId: state.device.id,
+      id: `brg_cred_${device.id}`,
+      deviceId: device.id,
       tokenHash: hashBridgeToken(token),
       tokenPrefix: token.slice(0, 8),
       issuedAt,
       lastSeenAt: issuedAt,
       revokedAt: null,
     };
-    state.device.bridgeCredential = credential;
-    state.device.credentialRevokedAt = null;
+    device.bridgeCredential = credential;
+    device.credentialRevokedAt = null;
     persistStateSoon();
     return { credential: publicCredential(credential), token, issued: true };
   }
 
+  /**
+   * The bearer token IS the device identity: each device holds its own
+   * credential, so the only machine a token can name is the one whose hash it
+   * matches. Every device is compared (each comparison constant-time) — the
+   * size of the fleet is not a secret, and short-circuiting on a prefix would
+   * leak which device a guessed token was closest to.
+   */
+  function deviceForToken(token) {
+    if (!token) return null;
+    return listDevices(state).find((device) => {
+      const tokenHash = credentialOf(device)?.tokenHash;
+      return tokenHash && verifyBridgeToken(token, tokenHash);
+    }) ?? null;
+  }
+
+  /**
+   * Authenticate a bridge request and return the DEVICE that made it — not just
+   * the credential. Callers must route and gate on this device rather than on
+   * `state.device` (the primary alias), or every ownership check collapses into
+   * comparing the primary device to itself.
+   *
+   * Revocation is checked *after* the token resolves a device: in a fleet there
+   * is no "the" device to check first, and an unauthenticated caller has no
+   * business learning whether some machine was unlinked. A revoked device keeps
+   * its token hash (unlink only stamps `revokedAt`), so its own bridge still
+   * resolves here and still gets the 403 it did before.
+   */
   function requireBridgeCredential({ req, res, sendJson }) {
-    const credential = currentCredential();
-    if (state.device.unlinkState !== "linked" || state.device.credentialRevokedAt || credential?.revokedAt) {
-      sendJson(res, 403, { error: "device_credentials_revoked" });
-      return null;
-    }
-    if (!credential?.tokenHash) {
+    if (!listDevices(state).some((device) => credentialOf(device)?.tokenHash)) {
       sendJson(res, 401, { error: "bridge_credentials_required" });
       return null;
     }
-    const token = bearer(req);
-    if (!token || !verifyBridgeToken(token, credential.tokenHash)) {
+    const device = deviceForToken(bearer(req));
+    if (!device) {
       sendJson(res, 401, { error: "invalid_bridge_credentials" });
+      return null;
+    }
+    const credential = credentialOf(device);
+    if (device.unlinkState !== "linked" || device.credentialRevokedAt || credential.revokedAt) {
+      sendJson(res, 403, { error: "device_credentials_revoked" });
       return null;
     }
     // Idle expiry: a valid token unused past the TTL is rejected (re-register to
@@ -59,33 +92,43 @@ export function createBridgeCredentialRuntime({ state, now, persistStateSoon, ap
       return null;
     }
     credential.lastSeenAt = now();
-    state.device.lastSeenAt = credential.lastSeenAt;
-    // Liveness restore is symmetric with the staleness sweep that flips the
-    // device offline (BRIDGE_LIVENESS_AND_REFUSAL.md): any authenticated bridge
-    // request proves the bridge is back, immediately.
-    if (state.device.status !== "online") {
-      state.device.status = "online";
-      state.device.livenessLostAt = null;
-      state.device.updatedAt = credential.lastSeenAt;
+    device.lastSeenAt = credential.lastSeenAt;
+    // Liveness restore is symmetric with the staleness sweep that flips a device
+    // offline (BRIDGE_LIVENESS_AND_REFUSAL.md): any authenticated bridge request
+    // proves that bridge is back, immediately.
+    //
+    // It restores THE DEVICE THE TOKEN NAMED, not the primary alias. On a fleet
+    // those differ, and restoring `state.device` here would mark the wrong
+    // machine online — one that may still be unreachable — every time any other
+    // device polled.
+    if (device.status !== "online") {
+      device.status = "online";
+      device.livenessLostAt = null;
+      device.updatedAt = credential.lastSeenAt;
       persistStateSoon();
       appendEvent?.({
         invocationId: null,
         type: "bridge_liveness_restored",
         level: "info",
         message: "Desktop Bridge is reachable again; device back online.",
-        data: { deviceId: state.device.id },
+        data: { deviceId: device.id },
       });
     }
-    return credential;
+    return device;
   }
 
-  function currentCredential() {
-    return state.device?.bridgeCredential && typeof state.device.bridgeCredential === "object"
-      ? state.device.bridgeCredential
+  function findDeviceById(deviceId) {
+    return listDevices(state).find((device) => device?.id === deviceId) ?? null;
+  }
+
+  function credentialOf(device) {
+    return device?.bridgeCredential && typeof device.bridgeCredential === "object"
+      ? device.bridgeCredential
       : null;
   }
 
   return {
+    deviceForToken,
     issueBridgeCredential,
     requireBridgeCredential,
   };
@@ -101,10 +144,19 @@ function verifyBridgeToken(token, expectedHash) {
   return expected.length === actual.length && crypto.timingSafeEqual(expected, actual);
 }
 
-function bearer(req) {
+/**
+ * The bearer token on a request, or null. Exported so a route can ask "does this
+ * request name a device?" before deciding whether it is a re-registration or a
+ * claim — without re-implementing the header parse and drifting from it.
+ */
+export function bearerToken(req) {
   const header = req?.headers?.authorization ?? "";
   const match = /^Bearer\s+(.+)$/i.exec(String(header));
   return match ? match[1].trim() : null;
+}
+
+function bearer(req) {
+  return bearerToken(req);
 }
 
 function publicCredential(credential) {
