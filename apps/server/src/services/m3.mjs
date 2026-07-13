@@ -39,6 +39,7 @@ export function createM3Service({
   appendEvent,
   findAgent,
   persistStateSoon = () => {},
+  dispatchAlert = () => {},
 }) {
   function createPrivateCatalogEntry(body = {}) {
     const createdAt = now();
@@ -805,6 +806,42 @@ export function createM3Service({
   // client-asserted defaults the /api/m3/ai-usage route falls back to. Called at
   // completion. Does NOT create its own ledger entry: cost is already attributed
   // by recordInvocationLedgerEntry from the run's aggregate; we link that entry.
+  // Cost-anomaly detection (#857): flag a run whose cost is unusually high, in
+  // absolute terms or as a spike vs the subject's recent runs, and fire a
+  // cost_anomaly alert through the existing dispatcher. Thresholds are config.
+  function detectCostAnomaly(usage) {
+    const cost = Number(usage?.estimatedCost);
+    if (!Number.isFinite(cost) || cost <= 0) return null;
+    const absolute = Number(process.env.COST_ANOMALY_USD_PER_RUN ?? 5);
+    const ratio = Number(process.env.COST_ANOMALY_RATIO ?? 4);
+    const floor = Number(process.env.COST_ANOMALY_MIN_USD ?? 0.5);
+    const prior = state.aiUsageRecords
+      .filter((record) => record.id !== usage.id && record.userId === usage.userId)
+      .map((record) => Number(record.estimatedCost))
+      .filter((value) => Number.isFinite(value) && value > 0)
+      .slice(0, 20);
+    const avg = prior.length ? prior.reduce((total, value) => total + value, 0) / prior.length : 0;
+    const overAbsolute = cost >= absolute;
+    const overSpike = avg >= floor && cost >= ratio * avg;
+    if (!overAbsolute && !overSpike) return null;
+    const reason = overAbsolute ? "absolute_threshold" : "spike_vs_recent";
+    const message = `Cost anomaly: $${roundUsd(cost)} on one run (${reason}).`;
+    const data = {
+      kind: "cost_anomaly",
+      reason,
+      costUsd: roundUsd(cost),
+      subjectId: usage.userId,
+      agentId: usage.agentId ?? null,
+      invocationId: usage.invocationId ?? null,
+      recentAvgUsd: roundUsd(avg),
+      thresholdUsd: roundUsd(overAbsolute ? absolute : ratio * avg),
+    };
+    appendEvent({ invocationId: usage.invocationId ?? null, type: "alert_triggered", level: "warn", message, data });
+    // Alerting must never break or slow a run.
+    try { void dispatchAlert({ kind: "cost_anomaly", severity: "high", message, data }); } catch { /* best-effort */ }
+    return data;
+  }
+
   function recordInvocationRoundUsage({ invocation, ledgerEntryIds = [] } = {}) {
     if (!invocation) return null;
     const rounds = state.invocationRounds?.filter((round) => round.invocationId === invocation.id) ?? [];
@@ -862,6 +899,7 @@ export function createM3Service({
     for (const round of rounds) round.usageRecordId = usageRecord.id;
     // Charge this real BYOK usage against the subject's metered quota windows.
     accrueUsageQuota(usageRecord);
+    detectCostAnomaly(usageRecord);
 
     appendEvent({
       invocationId: invocation.id,
