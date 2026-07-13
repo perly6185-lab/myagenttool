@@ -600,6 +600,11 @@ const RESERVED_WRAPPER_ARG_INPUT_KEYS = new Set([
   "permissionLevel",
   "permissionMode",
   "applicationWrapper",
+  // Control-plane keys on the capability input, not application inputs (#847).
+  // An application must not be able to declare an argInput that collides with the
+  // fields the scheduler uses to attribute a run to its schedule.
+  "automationId",
+  "scheduled",
 ]);
 
 // Normalize a wrapper command's declared per-invocation flag inputs. Each entry
