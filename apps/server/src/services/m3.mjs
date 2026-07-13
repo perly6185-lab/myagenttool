@@ -750,6 +750,10 @@ export function createM3Service({
     if (rounds.length === 0) return null;
 
     const sum = (key) => rounds.reduce((total, round) => total + Math.max(0, Number(round[key] ?? 0)), 0);
+    // Summed WALL-CLOCK across the rounds (each round's durationMs is the gap
+    // between turn boundaries, so this includes tool/IO time, not pure model
+    // latency). It is the run's observable duration, which is what the field is
+    // used for here — not a model-latency SLA.
     const durations = rounds.map((round) => round.durationMs).filter((value) => Number.isFinite(value));
     const latencyMs = durations.length ? durations.reduce((total, value) => total + value, 0) : null;
     // Prefer a round that actually named its model over an "unknown" placeholder.
@@ -766,6 +770,8 @@ export function createM3Service({
       quotaDecisionId: null,
       provider: named.provider ?? "unknown",
       model: named.model ?? "unknown",
+      // Rounds only exist for bridge-run CLI agents (Claude/Codex on the user's
+      // machine, using their own credentials) — that is BYOK by definition.
       providerMode: "byok",
       inputTokens: sum("inputTokens"),
       outputTokens: sum("outputTokens"),
