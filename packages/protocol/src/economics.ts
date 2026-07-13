@@ -16,6 +16,7 @@ import type {
   TeamId,
   UserId,
 } from "./common.js";
+import type { AIUsageDerivation } from "./round-telemetry.js";
 
 export type CurrencyCode = string;
 
@@ -100,6 +101,10 @@ export interface AIUsageRecord {
   reasoningTokens: number;
   requestCount?: number;
   latencyMs?: number | null;
+  /** Number of model rounds this aggregate was summed from, when derived from rounds. */
+  roundCount?: number;
+  /** How the token counts were obtained. Absent on legacy records. */
+  derivedFrom?: AIUsageDerivation;
   estimatedCost: DecimalString;
   ledgerEntryIds: LedgerEntryId[];
   status: "succeeded" | "failed" | "cancelled" | "blocked";
