@@ -121,6 +121,8 @@ export interface InvocationRound {
   filesRead: string[];
   toolCallIds: ToolInvocationRecordId[];
   errorCode: string | null;
+  /** Per-round cost from measured tokens x the matched model rate; null when unpriced. */
+  estimatedCostUsd?: number | null;
   /** The aggregate usage record this round rolled into, once summed. */
   usageRecordId?: AIUsageRecordId | null;
   createdAt: IsoDateTime;
