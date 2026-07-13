@@ -36,7 +36,10 @@ const GIT_WRAPPER_ARGS = {
     flags: { "--since": isIsoDate, "--until": isIsoDate, "--author": isGitToken, "--max-count": isMaxCount },
   },
   diff_stat: { base: ["--no-pager", "diff", "--stat", "--no-color"], flags: {} },
-  branch_list: { base: ["--no-pager", "branch", "--list", "--format=%(refname:short)%x1f%(objectname)"], flags: {} },
+  // ref-filter spells a hex byte `%1f`; `log --format` spells it `%x1f`. Keep this
+  // base byte-identical to the server's registered argv (#801) — a mismatch here
+  // is refused, which is the two-allowlist design working, not a bug to paper over.
+  branch_list: { base: ["--no-pager", "branch", "--list", "--format=%(refname:short)%1f%(objectname)"], flags: {} },
   head: { base: ["--no-pager", "rev-parse", "HEAD"], flags: {} },
   show: { base: ["--no-pager", "show", "--stat", "--no-color"], flags: {}, positional: isGitRev, maxPositionals: 1 },
   diff_ref: { base: ["--no-pager", "diff", "--stat", "--no-color"], flags: {}, positional: isGitRev, maxPositionals: 1 },
