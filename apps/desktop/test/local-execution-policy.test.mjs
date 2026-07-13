@@ -4,6 +4,7 @@ import { join, resolve } from "node:path";
 import { test } from "node:test";
 
 import {
+  binaryAvailableOnPath,
   createLocalExecutionPolicyManifest,
   localExecutionGate,
   localPolicyForAdapter,
@@ -293,7 +294,7 @@ function wrapperArgs(spec, { cwd: innerCwd } = {}) {
 
 // --- #775: generalized git wrapper allowlist (default-deny at the bridge) ---
 
-function gitGate({ execArgs, capability = "app.app_git.wrapper.status", root, cwd: innerCwd, localPolicy }) {
+function gitGate({ execArgs, capability = "app.app_git.wrapper.status", root, cwd: innerCwd, localPolicy, resolveBinary = () => true }) {
   const spec = { execCommand: "git", execArgs, capability, filePolicy: "read_only", networkPolicy: "forbidden" };
   const work = { project: { path: root }, options: { metadata: { applicationWrapper: spec, worktreePath: root } } };
   return localExecutionGate(
@@ -305,7 +306,9 @@ function gitGate({ execArgs, capability = "app.app_git.wrapper.status", root, cw
       cwd: innerCwd,
       localPolicy: localPolicy ?? { filePolicy: "read_only", networkPolicy: "forbidden", source: "application_wrapper" },
     },
-    { manifest },
+    // Default the availability resolver to "present" so these tests assert argv/cwd
+    // policy independently of whether the CI runner has git; #802 cases override it.
+    { manifest, resolveBinary },
   );
 }
 
@@ -324,6 +327,37 @@ test("git wrapper: log with valid since/author/max-count trailing flags is allow
     cwd: gitRoot,
   });
   assert.equal(gate.allowed, true, gate.reason);
+});
+
+test("#802: an allowlisted git command whose binary is NOT on the device is refused with binary_unavailable", () => {
+  const gate = gitGate({
+    execArgs: ["--no-pager", "status", "--porcelain=v2", "--branch"],
+    root: gitRoot,
+    cwd: gitRoot,
+    resolveBinary: () => false, // this device has no git
+  });
+  assert.equal(gate.allowed, false);
+  assert.equal(gate.evidence.refusalCode, "binary_unavailable", "precise per-device signal, not an opaque exit 127");
+  assert.match(gate.reason, /not available on this device/i);
+});
+
+test("#802: the availability check runs AFTER the allowlist — a bad command is still command-refused, not binary-refused", () => {
+  const gate = gitGate({
+    capability: "app.app_git.wrapper.log",
+    execArgs: ["--no-pager", "log", "--format=%H", "--max-count=50", "--evil"],
+    root: gitRoot,
+    cwd: gitRoot,
+    resolveBinary: () => false,
+  });
+  assert.equal(gate.allowed, false);
+  assert.notEqual(gate.evidence.refusalCode, "binary_unavailable", "an allowlist refusal takes precedence over availability");
+});
+
+test("#802: binaryAvailableOnPath resolves a bare name against PATH and a path directly", () => {
+  assert.equal(binaryAvailableOnPath("node", { PATH: process.env.PATH }), true, "node is on PATH in this runner");
+  assert.equal(binaryAvailableOnPath("definitely-not-a-real-binary-xyz", { PATH: process.env.PATH }), false);
+  assert.equal(binaryAvailableOnPath(process.execPath), true, "an absolute path is checked directly");
+  assert.equal(binaryAvailableOnPath("git", { PATH: "" }), false, "empty PATH resolves nothing");
 });
 
 test("git wrapper: ccusage argv is unaffected by the generalization", () => {
