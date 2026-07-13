@@ -4,6 +4,12 @@
  * same worktree), and that off-device (platform/http) runs don't consume a
  * bridge slot. A regression here either starves CLI dispatch or lets two agents
  * write the same working tree.
+ *
+ * #817: these fixtures used to put the metadata on `input`, mirroring the bug in
+ * invocationDirKey — so the suite was green while per-worktree serialization was
+ * dead in production for every invocation ever created. The fixtures now carry
+ * the shape `invocations/creation.mjs` ACTUALLY writes (`options.metadata`), which
+ * is what makes the guard testable at all. Do not "simplify" them back.
  */
 
 import assert from "node:assert/strict";
@@ -46,14 +52,14 @@ const queued = (id, worktreePath, agentId = "agt_cli") => ({
   agentId,
   status: "queued",
   delivery: { state: "queued" },
-  input: { metadata: { worktreePath } },
+  options: { metadata: { worktreePath } },
 });
 const running = (id, worktreePath, agentId = "agt_cli") => ({
   id,
   agentId,
   status: "running",
   delivery: { state: "running" },
-  input: { metadata: { worktreePath } },
+  options: { metadata: { worktreePath } },
 });
 
 test("device cap: a full cap yields nothing; freeing it dispatches the queued run", () => {
@@ -91,7 +97,7 @@ test("claim invariant: a dispatched run is not re-claimable (atomic claim, no do
   // the WS2 dispatch-claim property. It holds because nextDispatchable +
   // markDispatched run synchronously in the /api/bridge/next handler, so no
   // second poll can interleave and re-claim the same run.
-  const inv = (id, w) => ({ id, agentId: "agt_cli", status: "queued", delivery: { state: "queued", dispatchAttempts: 0 }, input: { metadata: { worktreePath: w } } });
+  const inv = (id, w) => ({ id, agentId: "agt_cli", status: "queued", delivery: { state: "queued", dispatchAttempts: 0 }, options: { metadata: { worktreePath: w } } });
   const rt = runtimeWith([inv("inv_a", "/w1"), inv("inv_b", "/w2")], 2);
 
   const first = rt.nextDispatchableInvocation();
@@ -104,4 +110,57 @@ test("claim invariant: a dispatched run is not re-claimable (atomic claim, no do
   rt.markDispatched(second);
 
   assert.equal(rt.nextDispatchableInvocation(), undefined, "both claimed → nothing left, no double-dispatch");
+});
+
+/*
+ * #817 regression. The bug was invisible because the guard read
+ * `invocation.input.metadata` while `creation.mjs` writes `options.metadata` —
+ * so EVERY dir key was "__default__", every queued run collided with any single
+ * in-flight run, and one stuck run wedged the device's dispatch forever.
+ *
+ * These two build their invocations exactly as creation.mjs does. Against the old
+ * `input?.metadata` reader the first one FAILS (the queued run in a different
+ * repository is refused dispatch) — which is the whole point of pinning the real
+ * shape rather than the shape the code happened to read.
+ */
+
+// The shape creation.mjs produces: task on `input`, paths on `options.metadata`.
+const realInvocation = (id, status, projectPath) => ({
+  id,
+  agentId: "agt_cli",
+  status,
+  delivery: { state: status === "queued" ? "queued" : "running", dispatchAttempts: 0 },
+  input: { task: "do a thing" },
+  options: { metadata: { projectPath, projectId: "prj_1" } },
+});
+
+test("#817: a stuck in-flight run does NOT wedge dispatch for a run in another repository", () => {
+  const rt = runtimeWith(
+    [
+      realInvocation("inv_stuck", "running", "C:/tmp/some-other-repo"),
+      realInvocation("inv_queued", "queued", "D:/repos/myagenttool"),
+    ],
+    3,
+  );
+  assert.equal(
+    rt.nextDispatchableInvocation()?.id,
+    "inv_queued",
+    "different repositories must not collide — a wedged device is the bug",
+  );
+});
+
+test("#817: the per-directory guard still holds on the real metadata shape", () => {
+  const rt = runtimeWith(
+    [
+      realInvocation("inv_running", "running", "D:/repos/myagenttool"),
+      realInvocation("inv_same_dir", "queued", "D:/repos/myagenttool"),
+      realInvocation("inv_other_dir", "queued", "D:/repos/other"),
+    ],
+    3,
+  );
+  assert.equal(
+    rt.nextDispatchableInvocation()?.id,
+    "inv_other_dir",
+    "two runs must still never share a working tree",
+  );
 });

@@ -321,3 +321,34 @@ scheduled `eval:real` runs, per #250. **Subcap has reached the ≥3-real-runs ba
 **Status: subcap line DERIVED + ENFORCED at n=3 (the minimum bar).** Revisit /
 tighten at n=5 as more nightly runs accrue. **Held-out has n=0 real runs**, so
 its floor stays provisional (0.6) until the held-out set accrues ≥3 real points.
+
+## L3 risk gate — blocking + re-anchored, 2026-07-13
+
+The L3 gate (100% of PRs carry the required risk-evidence routes) was **advisory
+for the six risk routes** — `pr-governance` blocked only issue-link + verification,
+while Product Flow, cross-platform, visual QA, Security Review, protocol
+compatibility, and release/deploy evidence were warnings. So the measured
+`riskRoutesClean` sat at ~63% (coverage 65% since 2026-07-03), and a **fixed
+2026-07-03 anchor** kept the pre-enforcement non-compliant PRs in the slice
+forever, capping coverage below 100% no matter how disciplined new PRs were.
+
+Two coordinated changes close it:
+
+1. **Enforcement.** `MYAGENTTOOL_PR_RISK_GATE_FAIL=true` is set on the
+   `pr-governance` check-pr step (`.github/workflows/governance.yml`), so
+   `reviewRiskGates` now emits **failures**, not warnings — a PR that touches a
+   risk surface without the matching evidence section fails the required check.
+2. **Re-anchor.** `RISK_GATE_ENFORCEMENT_SINCE = 2026-07-13` (governance.mjs) is
+   the new default `--since` for `governance-report`, so the L3 `coverageSince`
+   slice measures discipline **since the full gate became blocking**. This is the
+   same move #744 made for L2's CI-run window: measuring compliance only from
+   when it became mandatory, not counting the pre-enforcement advisory era as
+   failure.
+
+Honest trajectory: right after this lands there are ~0 post-anchor PRs, so L3
+reads `n/a` (no data), not `met` — it is **not an instant flip**. It climbs to
+100% and flips to met as post-enforcement PRs accumulate (all compliant, because
+non-compliance now fails CI). Enablers shipped first so the demanding bar is
+mechanical: `pnpm pr:evidence` tells an author which sections their diff needs
+(#812), and the governance report's "top missing routes" shows the team where
+the gaps are (#814).

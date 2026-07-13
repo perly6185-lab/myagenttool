@@ -5,7 +5,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { computeDoraStats, doraSelfCheck, formatDoraReport, rollupFromActionsRuns } from "./dora.mjs";
 import { backlogSelfCheck, computeBacklogStats, formatBacklogReport } from "./backlog.mjs";
-import { computeGovernanceStats, countBypassCommits, formatGovernanceReport, governanceSelfCheck, GOVERNANCE_ENFORCEMENT_SINCE } from "./governance.mjs";
+import { computeGovernanceStats, countBypassCommits, formatGovernanceReport, governanceSelfCheck, RISK_GATE_ENFORCEMENT_SINCE } from "./governance.mjs";
 import { hasAcceptanceMention, hasProductFlowEvidence, hasVerificationEvidence, planPrEvidence, prFilePath, reviewRiskGates } from "./pr-evidence.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -320,10 +320,11 @@ function governanceReport(args) {
     console.error(`Warning: hit the ${limit}-PR fetch limit; coverage is truncated.`);
   }
 
-  // Default the post-enforcement slice to when pr-governance became required, so
-  // every regen shows current discipline (and clears pre-enforcement stale bypasses)
-  // without needing the flag. An explicit --since still overrides.
-  const sinceRaw = option(args, "--since") ?? GOVERNANCE_ENFORCEMENT_SINCE;
+  // Default the post-enforcement slice to when the FULL gate (incl. the six risk
+  // routes) became blocking, so L3 measures discipline since risk-evidence is
+  // actually enforced — pre-enforcement PRs that predate the risk gate no longer
+  // cap coverage below 100%. An explicit --since still overrides.
+  const sinceRaw = option(args, "--since") ?? RISK_GATE_ENFORCEMENT_SINCE;
   const sinceCutoff = sinceRaw ? new Date(sinceRaw).toISOString() : null;
   if (sinceRaw && !sinceCutoff) fail(`--since must be a date. Got: ${sinceRaw}`);
 
