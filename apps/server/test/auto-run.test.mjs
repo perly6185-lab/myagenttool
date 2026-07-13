@@ -2097,3 +2097,35 @@ test("D1 deploy: an ambiguous outcome (no boolean deployed) is an infra miss, no
   assert.ok(!state.deployments?.some((d) => d.autoRunId === "aur_ambig"), "no `failed` deployment → no rollback triggered");
   assert.ok(alerts.some((a) => a.kind === "deploy_infra_miss"));
 });
+
+test("D1 deploy: a failed deploy's timeline event carries the failure reason (M3)", async () => {
+  const { svc, calls } = makeAutoRun({ runDeploy: async () => ({ deployed: false, summary: "kubectl apply timed out" }), sendAlert: () => {} });
+  state.autoRunSettings = { deployOnMerge: true };
+  await svc.maybeDeployAfterMerge(mergedRun({ id: "aur_failreason" }));
+  const ev = calls.events.find((e) => e.type === "auto_run_deploy_failed");
+  assert.ok(ev, "a deploy_failed event fired");
+  assert.equal(ev.data.summary, "kubectl apply timed out", "the reason is on the event, not just the alert/record");
+});
+
+test("D1 deploy: concurrent calls do NOT double-deploy (M6 in-flight guard)", async () => {
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  const { svc } = makeAutoRun({ runDeploy: async () => { await gate; return { deployed: true }; }, sendAlert: () => {} });
+  state.autoRunSettings = { deployOnMerge: true };
+  const run = mergedRun({ id: "aur_race" });
+  const p1 = svc.maybeDeployAfterMerge(run);          // starts, sets deployInFlight, suspends at await
+  const r2 = await svc.maybeDeployAfterMerge(run);    // concurrent → must bail
+  assert.equal(r2, null, "the second concurrent call bails while a deploy is in flight");
+  release();
+  assert.ok(await p1, "the first call deployed");
+  assert.equal(state.deployments.filter((d) => d.autoRunId === "aur_race").length, 1, "exactly one deployment recorded");
+});
+
+test("D1 deploy: idempotency guard is null-safe (a null prNumber doesn't slip through)", async () => {
+  const { svc } = makeAutoRun({ runDeploy: async () => ({ deployed: true }), sendAlert: () => {} });
+  state.autoRunSettings = { deployOnMerge: true };
+  const run = mergedRun({ id: "aur_nullpr" });
+  run.prNumber = null;
+  run.deployment = { status: "deployed", at: "2026-07-01T00:00:00Z", prNumber: null };
+  assert.equal(await svc.maybeDeployAfterMerge(run), null, "null===null → already deployed, not re-deployed");
+});

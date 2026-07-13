@@ -156,7 +156,7 @@ test("orchestration recovery stands in for L5 when there is no deploy data — l
     deployments: [],
     invocations: [orchestrationRun("failed", 0), orchestrationRun("succeeded", 1_800_000)],
   });
-  assert.deepEqual(inputs.release, { recoveryHours: 0.5, source: "orchestration" });
+  assert.deepEqual(inputs.release, { recoveryHours: 0.5, recoveryCount: 1, source: "orchestration", deployPresentNoRecovery: false });
   const l5 = byLevel(computeMaturityScorecard(inputs))[5];
   assert.equal(l5.verdict, "met");
   assert.match(l5.measured, /orchestration proxy/, "the proxy is named, never passed off as a deploy");
@@ -180,7 +180,7 @@ test("deploy recovery wins over orchestration when both are measured (the gate's
     ],
     invocations: [orchestrationRun("failed", 0), orchestrationRun("succeeded", 1_800_000)], // 0.5h orchestration
   });
-  assert.deepEqual(inputs.release, { recoveryHours: 2, source: "deploy" });
+  assert.deepEqual(inputs.release, { recoveryHours: 2, recoveryCount: 1, openIncident: false, source: "deploy" });
   assert.equal(inputs.orchestration.recoveryHours.median, 0.5, "orchestration stays visible in inputs");
   const l5 = byLevel(computeMaturityScorecard(inputs))[5];
   assert.match(l5.measured, /deploy recovery 2h/);
@@ -248,4 +248,48 @@ test("L5: a real deploy recovery is labeled 'deploy recovery' with source deploy
   const l5 = sc.levels.find((l) => l.level === 5);
   assert.equal(l5.recoverySource, "deploy");
   assert.match(l5.measured, /deploy recovery 0\.4h/);
+});
+
+test("L5 measured surfaces the recovery sample size and an open incident (M4 + n)", () => {
+  const l5 = byLevel(computeMaturityScorecard({
+    release: { recoveryHours: 0.3, recoveryCount: 1, openIncident: true, source: "deploy" },
+  }))[5];
+  assert.match(l5.measured, /n=1/, "sample size is visible (a met on n=1 is not n=20)");
+  assert.match(l5.measured, /open incident/, "an active unrecovered failure is surfaced, not hidden by the median");
+  assert.equal(l5.openIncident, true);
+});
+
+test("L5 orchestration proxy names 'deploys present, no recovery sample' honestly (M5)", () => {
+  const withDeploys = byLevel(computeMaturityScorecard({
+    release: { recoveryHours: 0.5, recoveryCount: 2, source: "orchestration", deployPresentNoRecovery: true },
+  }))[5];
+  assert.match(withDeploys.measured, /deploys present, no failure→recovery sample/);
+  assert.doesNotMatch(withDeploys.measured, /no deploy data/, "don't claim 'no deploy data' when deploys exist");
+});
+
+import { maturityScorecard } from "../src/read-models/maturity-scorecard.mjs";
+import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { tmpdir as tmp } from "node:os";
+import { join as pjoin } from "node:path";
+
+test("L1: a backlog artifact missing a coverage field is INDETERMINATE, not 0% unmet", () => {
+  const l1 = byLevel(computeMaturityScorecard({ backlog: { labelCoverage: { rate: 1 } } }))[1]; // milestoneCoverage absent
+  assert.equal(l1.verdict, "indeterminate", "an absent coverage field is a measurement gap, not a failure");
+});
+
+test("L6: an unwired feedback input reads as 'not instrumented', not silent-indeterminate", () => {
+  const l6 = byLevel(computeMaturityScorecard({}))[6];
+  assert.equal(l6.verdict, "indeterminate");
+  assert.match(l6.detail, /not instrumented/);
+});
+
+test("maturityScorecard surfaces metrics freshness + a stale flag (H5)", () => {
+  const dir = mkdtempSync(pjoin(tmp(), "mx-fresh-"));
+  mkdirSync(pjoin(dir, "2020-01-01T00-00-00-000Z-governance"));
+  writeFileSync(pjoin(dir, "2020-01-01T00-00-00-000Z-governance", "governance.json"), JSON.stringify({ coverageRate: 1, directPushCount: 0 }));
+  const sc = maturityScorecard({ metricsDir: dir, evalTrend: [] });
+  const gov = sc.metricsFreshness.sources.find((s) => s.source === "governance");
+  assert.ok(gov, "the governance artifact's age is surfaced");
+  assert.ok(gov.ageHours > 24, "a 2020 artifact is very old");
+  assert.equal(sc.metricsFreshness.stale, true, "stale when the oldest source is >24h old");
 });
