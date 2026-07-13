@@ -223,7 +223,7 @@ test("application wrapper gate allows the local ccusage allowlist contract", () 
       cwd,
       localPolicy: { filePolicy: "read_only", networkPolicy: "forbidden", source: "application_wrapper" },
     },
-    { manifest },
+    { manifest, resolveBinary: () => true }, // #802: this contract tests argv/policy, not availability
   );
   assert.equal(gate.allowed, true, gate.reason);
   assert.equal(gate.evidence.applicationWrapper.command, "ccusage");
@@ -366,7 +366,7 @@ test("git wrapper: ccusage argv is unaffected by the generalization", () => {
     { project: { path: gitRoot }, options: { metadata: { applicationWrapper: spec, worktreePath: gitRoot } } },
     { type: "cli", command: "node" },
     { command: process.execPath, args: wrapperArgs(spec, { cwd: gitRoot }), cwd: gitRoot, localPolicy: { filePolicy: "read_only", networkPolicy: "forbidden", source: "application_wrapper" } },
-    { manifest },
+    { manifest, resolveBinary: () => true }, // #802: this contract tests argv/policy, not availability
   );
   assert.equal(gate.allowed, true, gate.reason);
 });
