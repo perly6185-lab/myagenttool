@@ -32,7 +32,10 @@ const isGitRev = (value) => /^[A-Za-z0-9._/-]{1,100}$/.test(value) && !value.inc
 const GIT_WRAPPER_ARGS = {
   status: { base: ["--no-pager", "status", "--porcelain=v2", "--branch"], flags: {} },
   log: {
-    base: ["--no-pager", "log", "--format=%H%x1f%an%x1f%aI%x1f%s%x1e", "--max-count=50"],
+    // `-z` NUL-separates records; a commit message cannot contain NUL, so it
+    // cannot forge a record boundary (#864). Keep byte-identical to the server's
+    // registered argv (git-application.mjs) — a mismatch here is refused.
+    base: ["--no-pager", "log", "-z", "--format=%H%x1f%an%x1f%aI%x1f%s", "--max-count=50"],
     flags: { "--since": isIsoDate, "--until": isIsoDate, "--author": isGitToken, "--max-count": isMaxCount },
   },
   diff_stat: { base: ["--no-pager", "diff", "--stat", "--no-color"], flags: {} },

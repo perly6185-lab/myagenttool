@@ -114,6 +114,6 @@ test("an argInput cannot be both positional and a --flag", () => {
 test("the read-only git capabilities plan identical argv to before (no positionals declared)", () => {
   const app = service().registerApplication(createGitApplicationRegistration());
   assert.deepEqual(applicationWrapperExecutionPlan(app, "status").args, ["--no-pager", "status", "--porcelain=v2", "--branch"]);
-  assert.deepEqual(applicationWrapperExecutionPlan(app, "log").args, ["--no-pager", "log", "--format=%H%x1f%an%x1f%aI%x1f%s%x1e", "--max-count=50"]);
+  assert.deepEqual(applicationWrapperExecutionPlan(app, "log").args, ["--no-pager", "log", "-z", "--format=%H%x1f%an%x1f%aI%x1f%s", "--max-count=50"]);
   assert.deepEqual(applicationWrapperExecutionPlan(app, "head").args, ["--no-pager", "rev-parse", "HEAD"]);
 });
