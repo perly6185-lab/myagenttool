@@ -129,10 +129,12 @@ function injectRounds(base) {
     filesRead: [], toolCallIds: [], errorCode: null, usageRecordId: "aiu_demo",
     createdAt: "2026-07-13T09:00:06.000Z", ...over,
   });
+  // estimatedCostUsd matches the tokens at the claude-opus default rates
+  // (input $15 / cached $1.5 / output $75 per MTok), as the server would compute.
   base.invocationRounds = [
-    round(0, { durationMs: 5000, inputTokens: 12450, outputTokens: 820, cachedTokens: 9600, filesRead: ["apps/server/src/services/auth.mjs", "apps/server/src/routes/auth.mjs"], toolCallIds: ["tiv_0", "tiv_1"], responseDigest: "Reading the auth module to map the login flow." }),
-    round(1, { durationMs: 14000, inputTokens: 13200, outputTokens: 2100, cachedTokens: 11800, filesRead: ["apps/server/src/services/auth.mjs"], toolCallIds: ["tiv_2"], responseDigest: "Refactoring: extract token verification into verifyToken()." }),
-    round(2, { durationMs: 3400, inputTokens: 8100, outputTokens: 640, cachedTokens: 7900, responseDigest: "Added 6 tests; all green." }),
+    round(0, { durationMs: 5000, inputTokens: 12450, outputTokens: 820, cachedTokens: 9600, estimatedCostUsd: 0.11865, filesRead: ["apps/server/src/services/auth.mjs", "apps/server/src/routes/auth.mjs"], toolCallIds: ["tiv_0", "tiv_1"], responseDigest: "Reading the auth module to map the login flow." }),
+    round(1, { durationMs: 14000, inputTokens: 13200, outputTokens: 2100, cachedTokens: 11800, estimatedCostUsd: 0.1962, filesRead: ["apps/server/src/services/auth.mjs"], toolCallIds: ["tiv_2"], responseDigest: "Refactoring: extract token verification into verifyToken()." }),
+    round(2, { durationMs: 3400, inputTokens: 8100, outputTokens: 640, cachedTokens: 7900, estimatedCostUsd: 0.06285, responseDigest: "Added 6 tests; all green." }),
   ];
   return JSON.stringify(base);
 }

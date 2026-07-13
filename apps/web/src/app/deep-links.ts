@@ -14,6 +14,8 @@ interface WebNavigationTarget {
   selectedApplicationId?: string | null;
   selectedApplicationRun?: ApplicationRunSelection | null;
   selectedEvidenceId?: string | null;
+  /** A focused schedule, so an attention badge can be linked to (#849). */
+  selectedAutomationId?: string | null;
 }
 
 interface RelativeWebNavigationLink {
@@ -33,6 +35,7 @@ export function webDeepLink(target: WebNavigationTarget, href = currentHref()): 
     selectedApplicationId: target.selectedApplicationId ?? null,
     selectedApplicationRun: target.selectedApplicationRun ?? null,
     selectedEvidenceId: target.selectedEvidenceId ?? null,
+    selectedAutomationId: target.selectedAutomationId ?? null,
   });
   return url.toString();
 }

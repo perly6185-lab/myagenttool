@@ -278,6 +278,7 @@ export function createServerRuntimeServices({
     createSignedBundleManifest,
     createLifecycleRecipe,
     createQuotaPolicy,
+    checkUsageQuota,
     decideLifecycleLocalApproval,
     evaluateLifecyclePolicy,
     enforcePlatformAiQuota,
@@ -307,6 +308,9 @@ export function createServerRuntimeServices({
     appendEvent,
     findAgent,
     persistStateSoon,
+    // autoRunAlerts is created later in this factory; the closure is only invoked
+    // at run-completion (well after init), so referencing it here is safe.
+    dispatchAlert: (alert) => autoRunAlerts.dispatch(alert),
   });
   const { recordCcusageImportedEstimates } = createCcusageImportService({
     state,
@@ -382,6 +386,7 @@ export function createServerRuntimeServices({
     resolveResumeCodexSessionId,
     closeCodexSession,
     budgetGateForProject,
+    checkUsageQuota,
     onInvocationCompleted: (invocation) => {
       advanceAutoRunHook?.(invocation);
       try {

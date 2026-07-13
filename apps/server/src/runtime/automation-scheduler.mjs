@@ -7,7 +7,13 @@
  */
 
 import { isTerminal } from "../services/invocations.mjs";
+import { actorCanAccessProject, actorForUser } from "./auth.mjs";
 import { computeNextRun, normalizeSchedule } from "../services/automation-schedule.mjs";
+import {
+  capabilityInvocationInput,
+  capabilityTargetProblem,
+  isCapabilityTarget,
+} from "../services/automation-target.mjs";
 
 const TICK_MS = 30_000;
 
@@ -25,6 +31,9 @@ export function runDueAutomations({
   defaultAgent,
   findInvocation,
   persistStateSoon,
+  createCapabilityInvocation,
+  getCapability,
+  appendEvent,
 }) {
   const nowMs = Date.now();
   let changed = false;
@@ -43,6 +52,18 @@ export function runDueAutomations({
     // period.
     const prev = automation.lastInvocationId ? findInvocation(automation.lastInvocationId) : null;
     if (prev && !isTerminal(prev.status)) {
+      automation.nextRunAt = computeNextRun(schedule, nowMs);
+      changed = true;
+      continue;
+    }
+    if (isCapabilityTarget(automation)) {
+      fireCapabilityAutomation(automation, {
+        state,
+        now,
+        createCapabilityInvocation,
+        getCapability,
+        appendEvent,
+      });
       automation.nextRunAt = computeNextRun(schedule, nowMs);
       changed = true;
       continue;
@@ -66,6 +87,71 @@ export function runDueAutomations({
     changed = true;
   }
   if (changed) persistStateSoon();
+}
+
+/**
+ * Fire a capability schedule (#847), through the same dispatch the Run panel and
+ * the manual /run route use.
+ *
+ * The scheduler does NOT pass through the HTTP layer, so `denyForeignProject` —
+ * the gate protecting the manual path — never runs here. Ownership is therefore
+ * re-asserted at FIRE time, against the automation's creator. A schedule outlives
+ * the access that created it: without this, a capability keeps running against a
+ * project its author can no longer see, on a timer, with nobody watching.
+ *
+ * A target that has since gone away (disabled, offline, archived, project gone)
+ * records WHY on the automation and refuses. It does not fire something
+ * approximate, and it does not wedge the tick — the schedule rolls forward, as it
+ * already does for a bad agent.
+ */
+function fireCapabilityAutomation(automation, { state, now, createCapabilityInvocation, getCapability, appendEvent }) {
+  const fail = (reason) => {
+    automation.lastRunAt = now();
+    automation.lastRunError = reason;
+    appendEvent?.({
+      invocationId: null,
+      type: "automation_target_refused",
+      level: "warn",
+      message: `Scheduled capability ${automation.target?.capability ?? "?"} did not run: ${reason}`,
+      data: { automationId: automation.id, capability: automation.target?.capability ?? null, reason },
+    });
+  };
+
+  const actor = actorForUser(state, automation.createdBy);
+  if (!actorCanAccessProject(state, actor, automation.projectId)) {
+    fail("The automation's creator can no longer access its project.");
+    return;
+  }
+  if (typeof getCapability !== "function" || typeof createCapabilityInvocation !== "function") {
+    fail("Capability dispatch is not available on this control plane.");
+    return;
+  }
+  const problem = capabilityTargetProblem({
+    target: automation.target,
+    capability: getCapability(automation.target.capability, actor),
+    projectId: automation.projectId,
+  });
+  if (problem) {
+    fail(problem);
+    return;
+  }
+  try {
+    const result = createCapabilityInvocation(
+      automation.target.capability,
+      { ...capabilityInvocationInput(automation), automationId: automation.id, scheduled: true },
+      actor,
+    );
+    if (result.status >= 400) {
+      fail(result.body?.message ?? result.body?.error ?? `Dispatch refused with ${result.status}.`);
+      return;
+    }
+    automation.lastInvocationId = result.body?.invocationId ?? null;
+    automation.lastRunAt = now();
+    automation.lastRunError = null;
+    automation.runCount = (automation.runCount ?? 0) + 1;
+  } catch (error) {
+    fail(error?.message ?? "Dispatch threw.");
+  }
 }
 
 /** Start the 30s scheduler tick. Unref'd so it never keeps the process alive.
