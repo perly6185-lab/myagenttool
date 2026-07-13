@@ -78,6 +78,7 @@
     "github:check": "node tools/github/src/index.mjs --check",
     "github:check:issues": "node tools/github/src/index.mjs check-issues",
     "github:check:pr": "node tools/github/src/index.mjs check-pr",
+    "pr:evidence": "node tools/github/src/index.mjs pr-evidence",
     "github:check:branch": "node tools/github/src/index.mjs check-branch-protection",
     "github:dora": "node tools/github/src/index.mjs dora-report",
     "github:backlog": "node tools/github/src/index.mjs backlog-report",

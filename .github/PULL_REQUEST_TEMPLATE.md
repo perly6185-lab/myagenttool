@@ -1,3 +1,6 @@
+<!-- Tip: run `pnpm pr:evidence` (optionally `--body-file this.md`) to see exactly
+     which evidence sections your diff requires before you push. -->
+
 ## Summary
 
 - 
