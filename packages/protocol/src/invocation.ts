@@ -169,6 +169,8 @@ export type InvocationEventType =
   | "trace_created"
   | "span_started"
   | "span_completed"
+  | "round_started"
+  | "round_completed"
   | "delivery_queued"
   | "delivery_dispatched"
   | "delivery_acknowledged"

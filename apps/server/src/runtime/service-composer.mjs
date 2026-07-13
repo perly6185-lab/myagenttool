@@ -18,9 +18,11 @@ import { createApprovalGrantService } from "../services/approval-grants.mjs";
 import { createRetentionArchive } from "../services/retention-archive.mjs";
 import { createApplicationStatsRuntime } from "../services/application-stats.mjs";
 import { createCapabilityService } from "../services/capabilities.mjs";
+import { createApplicationResultImportService } from "../services/application-results.mjs";
 import { createCcusageImportService } from "../services/ccusage-imports.mjs";
 import { createClaudeReviewImportService } from "../services/claude-review-imports.mjs";
 import { createCodexReviewImportService } from "../services/codex-review-imports.mjs";
+import { createRoundTelemetryRuntime } from "../services/round-telemetry.mjs";
 import { createCodexService } from "../services/codex.mjs";
 import { createIntegrationService } from "../services/integrations.mjs";
 import { createInvocationService } from "../services/invocations.mjs";
@@ -295,6 +297,13 @@ export function createServerRuntimeServices({
     appendEvent,
     persistStateSoon,
   });
+  const { recordApplicationResult } = createApplicationResultImportService({
+    state,
+    now,
+    nextId,
+    appendEvent,
+    persistStateSoon,
+  });
   const { recordCodexReviewFindings } = createCodexReviewImportService({
     state,
     now,
@@ -338,6 +347,7 @@ export function createServerRuntimeServices({
     recordCcusageImportedEstimates,
     recordCodexReviewFindings,
     recordClaudeReviewFindings,
+    recordApplicationResult,
     currentProject,
     worktreeForProject,
     createWorktree,
@@ -724,6 +734,7 @@ export function createServerRuntimeServices({
     listCapabilities,
   } = createCapabilityService({
     state,
+    refuse,
     listTools,
     getTool,
     createToolInvocation,
@@ -2424,6 +2435,7 @@ export function createServerRuntimeServices({
     nextDispatchableInvocation,
     nextTerminalBridgeAction,
     queueTerminalBridgeAction,
+    recordApplicationResult,
     recordCcusageImportedEstimates,
     recordCodexHookEvent,
     recordTerminalBridgeEvent,
@@ -2463,9 +2475,20 @@ export function createServerRuntimeServices({
     now,
   };
 
+  // Per-round telemetry ingestion (#808): folds bridge round_* / tool events
+  // into state.invocationRounds / state.toolInvocationRecords + child spans.
+  const { recordRoundEvent } = createRoundTelemetryRuntime({
+    state,
+    now,
+    nextId,
+    appendEvent,
+    persistStateSoon,
+  });
+
   const httpDependencies = {
     state,
     now,
+    recordRoundEvent,
     // Agent file ledger: accumulate a run's read/written files (deduped, capped)
     // from the bridge's tool_use stream. Stored on the invocation so it ships to
     // the client with state.invocations. See read-models/file-ledger.mjs.

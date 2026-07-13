@@ -13,6 +13,7 @@ export function createInvocationCompletionRuntime({
   recordCcusageImportedEstimates,
   recordCodexReviewFindings,
   recordClaudeReviewFindings,
+  recordApplicationResult,
   onInvocationCompleted,
 }) {
   function completeInvocation(invocation, body) {
@@ -83,6 +84,20 @@ export function createInvocationCompletionRuntime({
         agent: findAgent(invocation.agentId),
       });
       attachApplicationResult({ invocation, auditSummary, records, outputCollection: "claudeReviewFindings" });
+    }
+    // The generic path (#801): dispatch on the wrapper command's declared
+    // `resultImport`, so a new Application imports without another branch here.
+    // The three importers above predate it and stay as they are — the point is
+    // that this is the LAST per-application `if` in this function, not that they
+    // were worth rewriting.
+    if (terminalStatus === "succeeded" && typeof recordApplicationResult === "function") {
+      const records = recordApplicationResult({ invocation, result: body.result ?? null });
+      attachApplicationResult({
+        invocation,
+        auditSummary,
+        records,
+        outputCollection: invocation.options?.metadata?.applicationWrapper?.outputCollection ?? "applicationResults",
+      });
     }
     attachApplicationResult({ invocation, auditSummary, records: [], outputCollection: "invocations" });
     closeCodexSession(invocation, terminalStatus);
@@ -172,7 +187,9 @@ export function createInvocationCompletionRuntime({
       status: invocation.status,
       permissionDecision: invocation.status === "rejected" ? "denied" : "allowed",
       traceId: invocation.traceId ?? null,
-      startedAt: invocation.createdAt,
+      // True execution start: the first round's start (set by round telemetry),
+      // else the bridge ack, else createdAt. Was conflated with createdAt (queue time).
+      startedAt: invocation.startedAt ?? invocation.delivery?.acknowledgedAt ?? invocation.createdAt,
       completedAt: invocation.completedAt ?? now(),
       resultSummary: invocation.status === "succeeded" ? summary : null,
       errorSummary: invocation.status === "succeeded" ? null : summary,

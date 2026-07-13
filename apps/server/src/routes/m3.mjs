@@ -1,4 +1,5 @@
 import { denyForeignProject } from "../runtime/auth.mjs";
+import { recordHttpGateRefusal } from "./refusal-http-gate.mjs";
 
 export async function handleM3Routes({
   req,
@@ -8,6 +9,7 @@ export async function handleM3Routes({
   readJson,
   state,
   actor,
+  refuse,
   chargebackExport,
   createAuditExportRequest,
   createPrivateCatalogEntry,
@@ -112,9 +114,20 @@ export async function handleM3Routes({
         return true;
       }
     } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      // Refusal model (#758): make the lifecycle gate's veto auditable. The HTTP
+      // 409 already surfaces it to the operator, so no new event — record only.
+      recordHttpGateRefusal(refuse, {
+        subjectKind: "lifecycle_action",
+        subjectId: recipe?.id ?? null,
+        code: "action_not_permitted",
+        summary: `Lifecycle action ${action} was blocked: ${message}`,
+        evidence: { recipeId: recipe?.id ?? null, action, message },
+        remedy: "Resolve what the lifecycle gate reported (policy, approval, or queue state), then retry the action.",
+      });
       sendJson(res, 409, {
         error: "lifecycle_gate_blocked",
-        message: error instanceof Error ? error.message : String(error),
+        message,
         recipe,
       });
       return true;
@@ -132,9 +145,18 @@ export async function handleM3Routes({
       sendJson(res, 202, { rollback, queuedAction: queueRollbackAction(rollback) });
       return true;
     } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      recordHttpGateRefusal(refuse, {
+        subjectKind: "lifecycle_action",
+        subjectId: rollback?.id ?? null,
+        code: "action_not_permitted",
+        summary: `Lifecycle rollback was blocked: ${message}`,
+        evidence: { rollbackId: rollback?.id ?? null, message },
+        remedy: "Resolve what the rollback queue reported, then retry.",
+      });
       sendJson(res, 409, {
         error: "rollback_gate_blocked",
-        message: error instanceof Error ? error.message : String(error),
+        message,
         rollback,
       });
       return true;

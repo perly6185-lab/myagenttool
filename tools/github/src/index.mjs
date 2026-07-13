@@ -5,8 +5,8 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { computeDoraStats, doraSelfCheck, formatDoraReport, rollupFromActionsRuns } from "./dora.mjs";
 import { backlogSelfCheck, computeBacklogStats, formatBacklogReport } from "./backlog.mjs";
-import { computeGovernanceStats, countBypassCommits, formatGovernanceReport, governanceSelfCheck, GOVERNANCE_ENFORCEMENT_SINCE } from "./governance.mjs";
-import { hasAcceptanceMention, hasProductFlowEvidence, hasVerificationEvidence, prFilePath, reviewRiskGates } from "./pr-evidence.mjs";
+import { computeGovernanceStats, countBypassCommits, formatGovernanceReport, governanceSelfCheck, RISK_GATE_ENFORCEMENT_SINCE } from "./governance.mjs";
+import { changeFailureMarkerStatus, detectRemediationSignal, hasAcceptanceMention, hasProductFlowEvidence, hasVerificationEvidence, planPrEvidence, prFilePath, reviewRiskGates } from "./pr-evidence.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(__dirname, "../../..");
@@ -56,6 +56,7 @@ Usage:
   node tools/github/src/index.mjs sync-project --repo OWNER/REPO --owner OWNER --project 1 [--milestone M2|--issues 1,2] [--done] [--apply]
   node tools/github/src/index.mjs dora-report [--repo OWNER/REPO] [--days 30] [--ci-since DATE] [--json] [--out path]
   node tools/github/src/index.mjs governance-report [--repo OWNER/REPO] [--days 30] [--since DATE] [--json] [--out path]
+  node tools/github/src/index.mjs pr-evidence [--base main] [--body-file draft.md] [--strict]
   node tools/github/src/index.mjs backlog-report [--repo OWNER/REPO] [--stale-days 14] [--json] [--out path]
 
 Environment:
@@ -121,6 +122,11 @@ function main() {
 
   if (command === "governance-report") {
     governanceReport(args);
+    return;
+  }
+
+  if (command === "pr-evidence") {
+    prEvidenceAdvisor(args);
     return;
   }
 
@@ -240,6 +246,72 @@ function backlogReport(args) {
   emitMetricsReport({ kind: "backlog", stats, report, args });
 }
 
+// L3 enabler (tooling-first): a LOCAL pre-push advisor. Given the working diff
+// against a base branch, report exactly which risk-evidence routes the diff
+// requires — so an author fills the right PR-template sections BEFORE pushing,
+// instead of finding out from a merged PR's coverage. `--body-file` also checks a
+// draft body; `--strict` exits non-zero when anything is missing (opt-in gate).
+function prEvidenceAdvisor(args) {
+  const base = option(args, "--base") ?? "main";
+  const bodyFile = option(args, "--body-file") ?? null;
+  const strict = args.includes("--strict");
+
+  let files;
+  try {
+    const mergeBase = execFileSync("git", ["merge-base", "HEAD", base], { encoding: "utf8" }).trim();
+    // base → working tree (committed + staged + unstaged), plus untracked new
+    // files, so the advisor works before OR after you commit.
+    const tracked = execFileSync("git", ["diff", "--name-only", mergeBase], { encoding: "utf8" })
+      .split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+    const untracked = execFileSync("git", ["ls-files", "--others", "--exclude-standard"], { encoding: "utf8" })
+      .split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+    files = [...new Set([...tracked, ...untracked])];
+  } catch (error) {
+    fail(`Could not compute the diff against ${base}: ${error instanceof Error ? error.message : String(error)}`);
+    return;
+  }
+
+  const body = bodyFile ? readFileSync(resolve(repoRoot, bodyFile), "utf8") : "";
+  const plan = planPrEvidence({ files, body });
+
+  console.log(`PR evidence plan — ${files.length} file(s) changed vs ${base}`);
+  if (!plan.routes.length) {
+    console.log("  No risk-evidence routes triggered by these files. (Still: link an issue + a Verification section.)");
+  } else {
+    console.log("  Required risk-evidence routes (triggered by your files):");
+    for (const route of plan.routes) {
+      const mark = plan.bodyProvided ? (route.present ? "✓" : "✗ MISSING") : "•";
+      console.log(`    ${mark} ${route.label}`);
+      if (!plan.bodyProvided || !route.present) console.log(`        → ${route.section}`);
+    }
+  }
+  if (plan.bodyProvided) {
+    console.log("  Body checks:");
+    console.log(`    ${plan.linksIssue ? "✓" : "✗ MISSING"} Links an issue (Closes/Fixes/Refs #N)`);
+    console.log(`    ${plan.verification ? "✓" : "✗ MISSING"} Verification section`);
+  } else {
+    console.log("  Tip: pass --body-file <draft.md> to also check your PR body, or --strict to gate.");
+  }
+  console.log("  Sections live in .github/PULL_REQUEST_TEMPLATE.md.");
+
+  // Change-failure marker adoption: prompt on likely remediations so DORA's CFR
+  // starts recording (it stays null until markers are used).
+  let branch = "";
+  try { branch = execFileSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], { encoding: "utf8" }).trim(); } catch { /* detached / no git */ }
+  const marker = changeFailureMarkerStatus(body);
+  if (marker.malformed) {
+    console.log("  ⚠ A `change-failure` marker is malformed — use `Change-failure: #<culprit-PR>` so DORA can record it.");
+  } else if (marker.refs.length) {
+    console.log(`  ✓ Change-failure marker records: ${marker.refs.map((n) => `#${n}`).join(", ")}`);
+  } else if (detectRemediationSignal({ branch, body })) {
+    console.log("  ↪ This looks like a remediation (revert/hotfix/regression). If it fixes a prior merge, add `Change-failure: #N` so DORA records the incident.");
+  }
+
+  if (strict && !plan.allSatisfied) {
+    fail("Missing required PR evidence (--strict).");
+  }
+}
+
 // L3 gate reading: re-judge every merged PR in the window with the SAME
 // predicates check-pr enforces, and count silent-bypass merges (first-parent
 // non-merge commits on the default branch = changes that skipped a PR).
@@ -261,10 +333,11 @@ function governanceReport(args) {
     console.error(`Warning: hit the ${limit}-PR fetch limit; coverage is truncated.`);
   }
 
-  // Default the post-enforcement slice to when pr-governance became required, so
-  // every regen shows current discipline (and clears pre-enforcement stale bypasses)
-  // without needing the flag. An explicit --since still overrides.
-  const sinceRaw = option(args, "--since") ?? GOVERNANCE_ENFORCEMENT_SINCE;
+  // Default the post-enforcement slice to when the FULL gate (incl. the six risk
+  // routes) became blocking, so L3 measures discipline since risk-evidence is
+  // actually enforced — pre-enforcement PRs that predate the risk gate no longer
+  // cap coverage below 100%. An explicit --since still overrides.
+  const sinceRaw = option(args, "--since") ?? RISK_GATE_ENFORCEMENT_SINCE;
   const sinceCutoff = sinceRaw ? new Date(sinceRaw).toISOString() : null;
   if (sinceRaw && !sinceCutoff) fail(`--since must be a date. Got: ${sinceRaw}`);
 
@@ -731,6 +804,12 @@ function checkPullRequest(args) {
   const riskGateResult = reviewRiskGates(changedFiles, body, pr.number, { failOnRiskWarnings: args.includes("--fail-on-risk-warnings") || process.env.MYAGENTTOOL_PR_RISK_GATE_FAIL === "true" });
   warnings.push(...riskGateResult.warnings);
   failures.push(...riskGateResult.failures);
+
+  // A `change-failure` marker that parses to no PR ref would silently fail to
+  // record the incident in DORA — surface it as a warning, not a merge blocker.
+  if (changeFailureMarkerStatus(body).malformed) {
+    warnings.push(`PR #${pr.number} has a malformed Change-failure marker (use \`Change-failure: #N\`)`);
+  }
 
   if (pr.commits.length === 0) {
     failures.push(`PR #${pr.number} has no commits`);

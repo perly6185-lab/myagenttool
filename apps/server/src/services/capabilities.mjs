@@ -2,6 +2,7 @@ import { teamOf } from "../runtime/auth.mjs";
 
 export function createCapabilityService({
   state,
+  refuse,
   listTools,
   getTool,
   createToolInvocation,
@@ -41,6 +42,30 @@ export function createCapabilityService({
     }
     const capability = getCapability(name, actor);
     if (!capability) {
+      // Refusal model Phase 4 (#758): if the capability EXISTS but is not granted
+      // to this requester (tenancy/ownership), record a `not_granted` refusal —
+      // evaluated BEFORE any policy/state/human gate, so an ungranted request
+      // never reveals downstream (approval/budget) detail. The refusal carries NO
+      // event: `capability_not_granted` must never surface to the requester (the
+      // response stays an opaque capability_not_found whether the capability is
+      // unknown or merely not granted), so it lands only in the owner's ledger.
+      // A genuinely-unknown name mints nothing — that is a client typo, not a veto.
+      if (typeof refuse === "function" && getCapability(name, null)) {
+        const unscoped = getCapability(name, null);
+        refuse({
+          subject: { kind: "capability_call", id: name },
+          requester: { kind: actor?.userId ? "local_user" : "control_plane", id: actor?.userId ?? actor?.teamId ?? null },
+          category: "not_granted",
+          code: "capability_not_granted",
+          decidedBy: { kind: "grant", id: unscoped.provider?.id ?? name },
+          summary: `Capability ${name} is not granted to this requester.`,
+          evidence: { capability: name, providerType: unscoped.provider?.type ?? null, actorTeamId: actor?.teamId ?? null },
+          remedy: "Grant this requester's team access to the owning application, or invoke from an authorized context.",
+          retryAfter: null,
+          appealTo: "device_owner",
+          event: null,
+        });
+      }
       return { status: 404, body: { error: "capability_not_found" } };
     }
     if (capability.provider?.type === "application") {

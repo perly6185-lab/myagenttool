@@ -43,7 +43,11 @@ const GIT_WRAPPER_COMMANDS = [
     id: "branch_list",
     displayName: "Git branches",
     description: "Local branches (short name + objectname), separator-delimited.",
-    args: ["--no-pager", "branch", "--list", "--format=%(refname:short)%x1f%(objectname)"],
+    // NOTE the escape: ref-filter (`branch --format`, `for-each-ref`) spells a hex
+    // byte `%1f`, while `log --format` spells the same byte `%x1f`. They are not
+    // interchangeable — git emits an unrecognized escape VERBATIM rather than
+    // failing, so `%x1f` here silently produced "name%x1f<hash>" (#801).
+    args: ["--no-pager", "branch", "--list", "--format=%(refname:short)%1f%(objectname)"],
   },
   {
     id: "head",

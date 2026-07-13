@@ -75,10 +75,14 @@ export function createServerState({ defaultProjectPath, now }) {
     quotaDecisionRecords: [],
     quotaPolicies: [],
     aiUsageRecords: [],
+    // Per-round (per model turn) telemetry — Epic #805, Phase 3 (#808).
+    invocationRounds: [],
+    toolInvocationRecords: [],
     ledgerEntries: [],
     importedUsageEstimates: [],
     codexReviewFindings: [],
     claudeReviewFindings: [],
+    applicationResults: [],
     budgets: [],
     automations: createDefaultAutomations(defaultProject.id, now),
     agentSkills: createDefaultAgentSkills(now),
@@ -172,10 +176,13 @@ export function resetStateForSelfCheck({ state, now }) {
   state.quotaDecisionRecords = [];
   state.quotaPolicies = [];
   state.aiUsageRecords = [];
+  state.invocationRounds = [];
+  state.toolInvocationRecords = [];
   state.ledgerEntries = [];
   state.importedUsageEstimates = [];
   state.codexReviewFindings = [];
   state.claudeReviewFindings = [];
+  state.applicationResults = [];
   state.budgets = [];
   state.automations = createDefaultAutomations(state.currentProjectId ?? state.projects[0]?.id ?? "prj_myagenttool", now);
   state.privateDeploymentConfig = createDefaultPrivateDeploymentConfig(now);

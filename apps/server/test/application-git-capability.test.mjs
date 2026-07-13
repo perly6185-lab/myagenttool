@@ -32,7 +32,9 @@ const EXPECTED_ARGV = {
   status: ["--no-pager", "status", "--porcelain=v2", "--branch"],
   log: ["--no-pager", "log", "--format=%H%x1f%an%x1f%aI%x1f%s%x1e", "--max-count=50"],
   diff_stat: ["--no-pager", "diff", "--stat", "--no-color"],
-  branch_list: ["--no-pager", "branch", "--list", "--format=%(refname:short)%x1f%(objectname)"],
+  // `%1f`, NOT `%x1f`: ref-filter (branch --format) and log --format spell a hex
+  // byte differently, and git emits an unrecognized escape verbatim (#801).
+  branch_list: ["--no-pager", "branch", "--list", "--format=%(refname:short)%1f%(objectname)"],
   head: ["--no-pager", "rev-parse", "HEAD"],
 };
 

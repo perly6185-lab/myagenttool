@@ -6,6 +6,7 @@ export * from "./economics.js";
 export * from "./agent.js";
 export * from "./lifecycle.js";
 export * from "./invocation.js";
+export * from "./round-telemetry.js";
 export * from "./project.js";
 export * from "./audit.js";
 export * from "./loop.js";

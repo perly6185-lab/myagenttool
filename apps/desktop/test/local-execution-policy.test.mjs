@@ -436,3 +436,97 @@ test("git wrapper: a positional on a command that declares none is refused", () 
   const gate = gitGate({ capability: "app.app_git.wrapper.status", execArgs: ["--no-pager", "status", "--porcelain=v2", "--branch", "HEAD"], root: gitRoot, cwd: gitRoot });
   assert.equal(gate.allowed, false, "status takes no positional");
 });
+
+// --- #758 Tier-3: the gate stamps a precise refusalCode for server classification ---
+
+test("gate stamps refusalCode cwd_outside_approved_root for a cwd outside the approved root", () => {
+  const outside = mkdtempSync(join(tmpdir(), "rc-outside-"));
+  const gate = gitGate({ execArgs: ["--no-pager", "status", "--porcelain=v2", "--branch"], root: gitRoot, cwd: outside });
+  assert.equal(gate.allowed, false);
+  assert.equal(gate.evidence.refusalCode, "cwd_outside_approved_root");
+});
+
+// The file/network branch fires when spec and localPolicy AGREE (as they do in
+// production — localPolicy is derived from the spec) but exceed the manifest
+// ceiling (git is read_only/forbidden). Build both to that shape.
+function gitPolicyGate({ filePolicy, networkPolicy }) {
+  const spec = { execCommand: "git", execArgs: ["--no-pager", "status", "--porcelain=v2", "--branch"], capability: "app.app_git.wrapper.status", filePolicy, networkPolicy };
+  return localExecutionGate(
+    { project: { path: gitRoot }, options: { metadata: { applicationWrapper: spec, worktreePath: gitRoot } } },
+    { type: "cli", command: "node" },
+    { command: process.execPath, args: wrapperArgs(spec, { cwd: gitRoot }), cwd: gitRoot, localPolicy: { filePolicy, networkPolicy, source: "application_wrapper" } },
+    { manifest },
+  );
+}
+
+test("gate stamps file_policy_exceeded when the file policy exceeds the command allowlist", () => {
+  const gate = gitPolicyGate({ filePolicy: "workspace_write", networkPolicy: "forbidden" });
+  assert.equal(gate.allowed, false);
+  assert.equal(gate.evidence.refusalCode, "file_policy_exceeded");
+});
+
+test("gate stamps network_policy_exceeded when only the network policy exceeds", () => {
+  const gate = gitPolicyGate({ filePolicy: "read_only", networkPolicy: "network" });
+  assert.equal(gate.allowed, false);
+  assert.equal(gate.evidence.refusalCode, "network_policy_exceeded");
+});
+
+// --- #794: the device enforces cwdPolicy itself, rather than trusting the server ---
+//
+// The unrooted case reproduces what the bridge actually builds when projectPath
+// and worktreePath never arrive: resolveCwd yields null, so no --cwd is injected,
+// and the OUTER spawn cwd falls back to process.cwd() (projectCwd in index.mjs).
+// Without the gate's own cwdPolicy check the wrapper would then run git in the
+// bridge's own repository — read-only today, a write into the wrong repo at P1.
+function cwdPolicyGate({ cwdPolicy, root = null, cwd: innerCwd = null }) {
+  const spec = {
+    execCommand: "git",
+    execArgs: ["--no-pager", "status", "--porcelain=v2", "--branch"],
+    capability: "app.app_git.wrapper.status",
+    cwdPolicy,
+    filePolicy: "read_only",
+    networkPolicy: "forbidden",
+  };
+  const metadata = { applicationWrapper: spec, ...(root ? { worktreePath: root } : {}) };
+  return localExecutionGate(
+    { ...(root ? { project: { path: root } } : {}), options: { metadata } },
+    { type: "cli", command: "node" },
+    {
+      command: process.execPath,
+      args: wrapperArgs(spec, { cwd: innerCwd }),
+      cwd: innerCwd ?? process.cwd(),
+      localPolicy: { filePolicy: "read_only", networkPolicy: "forbidden", source: "application_wrapper" },
+    },
+    { manifest },
+  );
+}
+
+test("cwdPolicy: an invocation_root command with no resolved cwd is refused BY THE DEVICE", () => {
+  const gate = cwdPolicyGate({ cwdPolicy: "invocation_root" });
+  assert.equal(gate.allowed, false, "the device must not run an unrooted invocation_root command");
+  assert.match(gate.reason, /invocation-root .* no resolved working directory/);
+  assert.equal(gate.code, "policy_blocked");
+  // Maps onto the closed refusal taxonomy (#758/#759) rather than minting a code.
+  assert.equal(gate.evidence.applicationWrapper.refusalCode, "cwd_outside_approved_root");
+  assert.equal(gate.evidence.applicationWrapper.cwdPolicy, "invocation_root");
+  assert.equal(gate.evidence.applicationWrapper.cwd, null);
+});
+
+test("cwdPolicy: invocation_root with a cwd inside the approved root is allowed", () => {
+  const gate = cwdPolicyGate({ cwdPolicy: "invocation_root", root: gitRoot, cwd: gitRoot });
+  assert.equal(gate.allowed, true, gate.reason);
+  assert.equal(gate.evidence.applicationWrapper.cwdPolicy, "invocation_root");
+});
+
+test("cwdPolicy: 'fixed' with no cwd stays allowed (ccusage's contract is untouched)", () => {
+  const gate = cwdPolicyGate({ cwdPolicy: "fixed" });
+  assert.equal(gate.allowed, true, gate.reason);
+});
+
+test("cwdPolicy: an unknown or missing policy is read as 'fixed', never inferred as rooted", () => {
+  for (const cwdPolicy of [undefined, null, "", "INVOCATION_ROOT", "invocation-root", "project_root", 7]) {
+    const gate = cwdPolicyGate({ cwdPolicy });
+    assert.equal(gate.allowed, true, `cwdPolicy ${JSON.stringify(cwdPolicy)} must degrade to "fixed"`);
+    assert.equal(gate.evidence.applicationWrapper.cwdPolicy, "fixed");
+  }
+});
