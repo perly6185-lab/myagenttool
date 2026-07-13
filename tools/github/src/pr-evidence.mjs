@@ -63,6 +63,45 @@ export function reviewRiskGates(files, body, prNumber, options = {}) {
   return { warnings, failures };
 }
 
+// Map a risk-gate warning to a short, author-facing route label + the PR-template
+// section that satisfies it. Keeps the advisor's output aligned with the gate.
+const RISK_ROUTE_LABELS = [
+  [/visual QA/i, { label: "Visual QA (web UI changes)", section: "Risk Gates → visual QA screenshot evidence" }],
+  [/Product Flow/i, { label: "Product Flow (product-facing UI/workflow)", section: "## Product Flow" }],
+  [/cross-platform/i, { label: "Cross-platform execution/cancellation (desktop/local-exec)", section: "Risk Gates → cross-platform evidence" }],
+  [/state-machine or schema/i, { label: "Protocol compatibility (protocol changes)", section: "state-machine / schema compatibility note" }],
+  [/adapter/i, { label: "Adapter evidence (adapter changes)", section: "adapter success/failure/cancel evidence" }],
+  [/security review/i, { label: "Security Review (governed execution surface)", section: "## Security Review (Tenancy/Filesystem/Approval/Injection)" }],
+  [/release, rollback/i, { label: "Release/deploy safety (release/deploy changes)", section: "Risk Gates → release/deploy/rollback evidence" }],
+];
+
+function riskRouteLabel(message) {
+  for (const [re, meta] of RISK_ROUTE_LABELS) {
+    if (re.test(message)) return meta;
+  }
+  return { label: message, section: "(see PR template)" };
+}
+
+/**
+ * Given a diff's changed files and an optional draft PR body, report exactly
+ * which risk-evidence routes the diff REQUIRES and which are still missing — the
+ * local pre-push advisor behind `pnpm pr:evidence`. Pure + testable.
+ */
+export function planPrEvidence({ files, body = "" }) {
+  // Empty-body pass → every route the files TRIGGER shows as missing = required.
+  const required = reviewRiskGates(files, "", null).warnings.map(riskRouteLabel);
+  const stillMissing = new Set(reviewRiskGates(files, body, null).warnings.map((m) => riskRouteLabel(m).label));
+  const routes = required.map((meta) => ({ ...meta, present: !stillMissing.has(meta.label) }));
+
+  const bodyProvided = Boolean(String(body ?? "").trim());
+  const linksIssue = bodyProvided ? /\b(closes|fixes|refs)\s+#\d+/i.test(body) : null;
+  const verification = bodyProvided ? hasVerificationEvidence(body) : null;
+  const allSatisfied =
+    routes.every((r) => r.present) && (!bodyProvided || (linksIssue === true && verification === true));
+
+  return { routes, bodyProvided, linksIssue, verification, allSatisfied };
+}
+
 export function prFilePath(file) {
   return typeof file === "string" ? file : file.path ?? file.filename ?? file.name ?? "";
 }
