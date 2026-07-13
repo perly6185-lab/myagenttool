@@ -106,7 +106,26 @@ test("a bin command's riskLevel defaults to high, and is respected when set expl
   assert.equal(cmds.find((c) => c.id === "explicit").riskLevel, "low");
 });
 
-test("ccusage's projected npm_wrapper capability is BYTE-IDENTICAL (fixture, not by eye)", () => {
+/*
+ * The full projected descriptor, pinned as a fixture so a change to it has to be
+ * a DECISION rather than a diff nobody reads.
+ *
+ * #800 changed it deliberately, and this fixture is what forced the change to be
+ * explicit. Two fields are new, both additive:
+ *
+ *   - `metadata.wrapper.cwdPolicy` — a caller cannot know it must name a
+ *     repository unless the contract says so. ccusage is "fixed": it is
+ *     cwd-insensitive and keeps running exactly as before.
+ *   - `inputSchema` is now DERIVED from the command's declared argInputs, so
+ *     ccusage finally publishes its since/until/timezone inputs. It was empty
+ *     before — meaning the only way to build a run form for ccusage was to
+ *     hardcode one, which is precisely the per-application screen the registry
+ *     exists to avoid. Note what it still withholds: the `--flag` each key
+ *     becomes never leaves the server.
+ *
+ * Execution is untouched: same argv, same policies, same result import.
+ */
+test("ccusage's projected npm_wrapper capability matches its pinned descriptor (fixture, not by eye)", () => {
   const app = service().registerApplication(createCcusageApplicationRegistration());
   const daily = projectApplicationCapabilities(app).find((c) => c.name === "app.app_ccusage.wrapper.daily");
   assert.deepEqual(daily, {
@@ -122,7 +141,16 @@ test("ccusage's projected npm_wrapper capability is BYTE-IDENTICAL (fixture, not
     requiresApproval: false,
     invocationMode: "gateway",
     status: "available",
-    inputSchema: { type: "object", additionalProperties: false, properties: {} },
+    // Derived from argInputs (#800): key + type only, never the flag.
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        since: { type: "date" },
+        until: { type: "date" },
+        timezone: { type: "token" },
+      },
+    },
     outputSchema: { structuredResult: true, provider: "application" },
     metadata: {
       readiness: {
@@ -147,6 +175,8 @@ test("ccusage's projected npm_wrapper capability is BYTE-IDENTICAL (fixture, not
         envPolicy: { allow: [], redact: [], inherit: false },
         filePolicy: "read_only",
         networkPolicy: "forbidden",
+        // "fixed": ccusage is cwd-insensitive, so it needs no repository (#773).
+        cwdPolicy: "fixed",
       },
       compatibilityFacade: { type: "tool", name: "ccusage.report", invocationMode: "tool-facade" },
       execution: { mode: "bridge_wrapper", agentId: "agt_platform_application_wrapper" },
@@ -155,6 +185,23 @@ test("ccusage's projected npm_wrapper capability is BYTE-IDENTICAL (fixture, not
       resultImport: { source: "ccusage", kind: "usage_estimates", amountSource: "imported_ccusage_report" },
     },
   });
+});
+
+test("#800: publishing the declared inputs does not change what ccusage EXECUTES", () => {
+  // The contract got richer; the command did not. Same argv, same policies — the
+  // flag mapping stayed server-side, which is the property that lets a generic run
+  // panel exist without leaking argv to it.
+  const app = service().registerApplication(createCcusageApplicationRegistration());
+  const plan = applicationWrapperExecutionPlan(app, "daily", { since: "2026-07-01", timezone: "Asia/Shanghai" });
+  assert.equal(plan.command, "ccusage");
+  assert.deepEqual(plan.args, [
+    "daily", "--json", "--offline",
+    "--since", "2026-07-01",
+    "--timezone", "Asia/Shanghai",
+  ]);
+  assert.equal(plan.cwdPolicy, "fixed");
+  assert.equal(plan.filePolicy, "read_only");
+  assert.equal(plan.networkPolicy, "forbidden");
 });
 
 test("a registered binary source survives a state serialize/restore round-trip", () => {
