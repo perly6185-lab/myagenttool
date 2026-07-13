@@ -80,13 +80,25 @@ test("log appends only validated since/until/author/maxCount flags; invalid valu
     "--author", "octocat",
     "--max-count", "10",
   ]);
-  // Invalid / flag-shaped values never append.
+  // Invalid / flag-shaped values never append. maxCount:"2000" is now a `count`
+  // type bounded 1–1000 (#867): the server drops it instead of appending a value
+  // the device would then hard-refuse.
   const dropped = applicationWrapperExecutionPlan(app, "log", {
     since: "not-a-date",
     author: "-evil",
     until: "--upload-pack=/x",
+    maxCount: "2000",
   });
   assert.deepEqual(dropped.args, EXPECTED_ARGV.log, "no invalid input reaches the argv");
+});
+
+test("#867: maxCount is bounded 1–1000 server-side, matching the device allowlist", () => {
+  const app = service().registerApplication(createGitApplicationRegistration());
+  const at = (maxCount) => applicationWrapperExecutionPlan(app, "log", { maxCount }).args;
+  assert.deepEqual(at("1000"), [...EXPECTED_ARGV.log, "--max-count", "1000"], "the upper bound appends");
+  assert.deepEqual(at("1001"), EXPECTED_ARGV.log, "just over the bound is dropped, not sent to be refused");
+  assert.deepEqual(at("0"), EXPECTED_ARGV.log, "zero is dropped");
+  assert.deepEqual(at("12x"), EXPECTED_ARGV.log, "non-numeric is dropped");
 });
 
 test("an unknown git command does not plan (→ wrapper_command_not_found upstream)", () => {
