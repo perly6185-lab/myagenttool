@@ -231,7 +231,10 @@ if (process.argv.includes("--check")) {
     appWrapperWork,
     { type: "cli", command: "node", args: ["tools/agents/application-wrapper.mjs"] },
     appWrapperPlan,
-    { permissionDecision: "not_required", permissionHook: null, manifest: localExecutionPolicyManifest },
+    // This self-check verifies the argv/policy CONTRACT, not binary availability
+    // (#802) — a bridge without ccusage installed must still pass its own startup
+    // check. The real per-device availability refusal happens at execution time.
+    { permissionDecision: "not_required", permissionHook: null, manifest: localExecutionPolicyManifest, resolveBinary: () => true },
   );
   if (!appWrapperGate.allowed) {
     throw new Error(`Application wrapper local execution gate rejected the allowlisted contract: ${appWrapperGate.reason}`);

@@ -101,6 +101,9 @@ describe("explainRunFailure", () => {
     expect(explainRunFailure("409 invocation_root_requires_project")).toMatch(/choose a project/i);
     expect(explainRunFailure("409 approval_required")).toMatch(/approval/i);
     expect(explainRunFailure("409 application_offline")).toMatch(/offline/i);
+    // #802: a per-device availability refusal reads as "install git / route to a
+    // device that has it", not an opaque failure.
+    expect(explainRunFailure("409 binary_unavailable")).toMatch(/install it|route the run/i);
     // An unrecognized error is passed through verbatim rather than mangled into a
     // reassuring lie.
     expect(explainRunFailure("500 something new")).toBe("500 something new");
