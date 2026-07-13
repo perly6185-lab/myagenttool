@@ -774,7 +774,7 @@ function projectWrapperCapabilities(app, prefix, disabled) {
       [...new Set(["local_execution", wrapperKind, ...command.riskTags])],
       command.requiresApproval,
       disabled,
-      command.inputSchema,
+      wrapperInputSchema(command),
       {
         wrapper: {
           mode: app.source.wrapper.mode,
@@ -786,6 +786,10 @@ function projectWrapperCapabilities(app, prefix, disabled) {
           envPolicy: command.envPolicy,
           filePolicy: command.filePolicy,
           networkPolicy: command.networkPolicy,
+          // A caller cannot decide whether it must name a repository unless the
+          // contract says so (#800). This is a property of the capability, not an
+          // argv detail — the flag/argv the inputs become stays server-side.
+          cwdPolicy: command.cwdPolicy,
         },
         compatibilityFacade: command.compatibilityFacade,
         execution: {
@@ -836,6 +840,37 @@ function capabilityReadiness(app, { disabled, kind, metadata }) {
 
 function emptyInputSchema() {
   return { type: "object", additionalProperties: false, properties: {} };
+}
+
+// Project a wrapper command's declared inputs into its PUBLIC contract (#800).
+//
+// A caller has to know that `log` takes a `since` and what shape it must be —
+// otherwise the only way to build a run form is to hardcode one screen per
+// application, which is the thing this registry exists to avoid.
+//
+// What it publishes is the input KEY and its TYPE. What it withholds is the
+// `--flag` each key becomes, and the argv it lands in: the descriptor rule is
+// that discovery never exposes local commands, wrapper paths, or argv. A caller
+// sends `{ since: "2026-01-01" }`; the server alone decides that this means
+// `--since 2026-01-01`, and only if it validates.
+//
+// An explicitly declared inputSchema always wins — this only derives one for a
+// command that declared inputs but no schema.
+function wrapperInputSchema(command) {
+  const declared = command.inputSchema;
+  if (Object.keys(declared?.properties ?? {}).length > 0) return declared;
+  if (!Array.isArray(command.argInputs) || command.argInputs.length === 0) return declared ?? emptyInputSchema();
+  return {
+    type: "object",
+    additionalProperties: false,
+    properties: Object.fromEntries(command.argInputs.map((input) => [
+      input.key,
+      {
+        type: input.type,
+        ...(input.values?.length ? { enum: input.values } : {}),
+      },
+    ])),
+  };
 }
 
 function approvalInputSchema() {

@@ -38,6 +38,8 @@ export function sourceSummary(source: ApplicationSource): string {
       return source.path;
     case "npm":
       return `${source.package}${source.version ? `@${source.version}` : ""}`;
+    case "binary":
+      return `${source.binary} (system binary on the device)`;
     default:
       return source.uri ?? "manual manifest";
   }

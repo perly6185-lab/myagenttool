@@ -12,6 +12,8 @@ import { useConsoleState } from "@/data/use-console-state";
 import { useAsyncAction, api } from "@/data/use-console-actions";
 import { useUiStore } from "@/store/ui-store";
 import { sourceSummary } from "@/features/applications/applications-view";
+import { CapabilityRunModal } from "@/features/applications/capability-run-modal";
+import { capabilityRunContract } from "@/features/applications/capability-run";
 import {
   autoRecoveryConfirmCopy,
   autoRecoveryMaxAttempts,
@@ -67,6 +69,7 @@ import type {
   ApplicationRecoveryActionRequest,
   ApplicationRecoveryTimelineEntry,
   ApplicationOrchestrationRun,
+  ApplicationCapability,
   ApplicationDailyStat,
   ApplicationSnapshot,
   ApplicationResultRef,
@@ -1347,6 +1350,7 @@ export function ApplicationsInspector() {
   const setSelectedInvocationId = useUiStore((s) => s.setSelectedInvocationId);
   const setSection = useUiStore((s) => s.setSection);
   const application = (state?.applications ?? []).find((app) => app.id === selectedApplicationId);
+  const [runCapability, setRunCapability] = useState<ApplicationCapability | null>(null);
 
   const { data: capabilityData } = useQuery({
     queryKey: ["application-capabilities", application?.id],
@@ -1415,32 +1419,46 @@ export function ApplicationsInspector() {
           {!capabilities.length ? (
             <p className="text-sm text-muted-foreground">No capabilities projected.</p>
           ) : (
-            capabilities.map((capability) => (
-              <div key={capability.name} className="flex items-start justify-between gap-2 text-sm">
-                <span className="[overflow-wrap:anywhere]">
-                  {capability.displayName ?? capability.name}
-                  {capability.requiresApproval ? <span className="text-warning"> ⚠</span> : null}
-                </span>
-                <div className="flex shrink-0 flex-wrap justify-end gap-1.5">
-                  <Badge tone={riskTone(capability.riskLevel)}>{capability.riskLevel ?? "—"}</Badge>
-                  <Badge tone={capability.status === "disabled" ? "danger" : "success"}>
-                    {capability.status ?? "—"}
-                  </Badge>
-                  {capability.metadata?.readiness?.state ? (
-                    <Badge tone={readinessTone(capability.metadata.readiness.state)}>
-                      {capability.metadata.readiness.state}
+            capabilities.map((capability) => {
+              const contract = capabilityRunContract(capability);
+              return (
+                <div key={capability.name} className="flex items-start justify-between gap-2 text-sm">
+                  <span className="[overflow-wrap:anywhere]">
+                    {capability.displayName ?? capability.name}
+                    {capability.requiresApproval ? <span className="text-warning"> ⚠</span> : null}
+                  </span>
+                  <div className="flex shrink-0 flex-wrap items-center justify-end gap-1.5">
+                    <Badge tone={riskTone(capability.riskLevel)}>{capability.riskLevel ?? "—"}</Badge>
+                    <Badge tone={capability.status === "disabled" ? "danger" : "success"}>
+                      {capability.status ?? "—"}
                     </Badge>
-                  ) : null}
-                  {capability.metadata?.resultPath?.outputCollection ? (
-                    <Badge tone="neutral">{capability.metadata.resultPath.outputCollection}</Badge>
-                  ) : null}
+                    {capability.metadata?.readiness?.state ? (
+                      <Badge tone={readinessTone(capability.metadata.readiness.state)}>
+                        {capability.metadata.readiness.state}
+                      </Badge>
+                    ) : null}
+                    {capability.metadata?.resultPath?.outputCollection ? (
+                      <Badge tone="neutral">{capability.metadata.resultPath.outputCollection}</Badge>
+                    ) : null}
+                    {contract.invokable ? (
+                      <Button size="sm" variant="secondary" onClick={() => setRunCapability(capability)}>
+                        Run
+                      </Button>
+                    ) : null}
+                  </div>
                 </div>
-              </div>
-            ))
+              );
+            })
           )}
           <p className="text-xs text-muted-foreground">⚠ requires an explicit approval token</p>
         </CardContent>
       </Card>
+
+      <CapabilityRunModal
+        capability={runCapability}
+        onClose={() => setRunCapability(null)}
+        onRan={viewInvocation}
+      />
 
       {probe ? (
         <Card>

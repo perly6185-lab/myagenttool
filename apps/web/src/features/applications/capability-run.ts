@@ -1,0 +1,120 @@
+import type { ApplicationCapability } from "@/lib/console-state";
+
+/**
+ * The rules behind the capability run panel (#800), kept out of the JSX so they
+ * can be tested without a DOM — and so the panel stays generic. Nothing here
+ * knows what git is.
+ */
+
+export interface CapabilityInput {
+  key: string;
+  /** date | token | string | enum | boolean-flag | git-rev — the server's declared type. */
+  type: string;
+  values: string[];
+}
+
+export interface CapabilityRunContract {
+  invokable: boolean;
+  /** Why it cannot be run, in words an operator can act on. */
+  blockedReason: string | null;
+  /**
+   * A cwdPolicy:"invocation_root" command IS its repository — the server refuses
+   * it without one (`invocation_root_requires_project`). The panel must therefore
+   * ask for a project rather than let the run 409.
+   */
+  needsProject: boolean;
+  requiresApproval: boolean;
+  inputs: CapabilityInput[];
+}
+
+export function capabilityRunContract(capability: ApplicationCapability): CapabilityRunContract {
+  const wrapper = capability.metadata?.wrapper;
+  const needsProject = wrapper?.cwdPolicy === "invocation_root";
+  const inputs = declaredInputs(capability);
+  const blockedReason =
+    capability.status === "disabled"
+      ? "This capability is disabled while the application is offline or archived."
+      : capability.invocationMode === "not_invokable"
+        ? "This capability was discovered but has no approved wrapper — it cannot be invoked."
+        : null;
+  return {
+    invokable: blockedReason === null,
+    blockedReason,
+    needsProject,
+    requiresApproval: capability.requiresApproval === true,
+    inputs,
+  };
+}
+
+/** The declared inputs, from the capability's published schema — never guessed. */
+function declaredInputs(capability: ApplicationCapability): CapabilityInput[] {
+  const properties = (capability.inputSchema?.properties ?? {}) as Record<
+    string,
+    { type?: string; enum?: string[] }
+  >;
+  return Object.entries(properties).map(([key, schema]) => ({
+    key,
+    type: schema?.type ?? "string",
+    values: Array.isArray(schema?.enum) ? schema.enum : [],
+  }));
+}
+
+export interface RunFormState {
+  projectId: string;
+  values: Record<string, string>;
+}
+
+/**
+ * Can this form be submitted? A missing project on an invocation-root capability
+ * is blocked HERE rather than sent — the server would refuse it, and an error the
+ * UI could have prevented is not an error worth showing an operator.
+ */
+export function runBlocker(contract: CapabilityRunContract, form: RunFormState): string | null {
+  if (contract.blockedReason) return contract.blockedReason;
+  if (contract.needsProject && !form.projectId) {
+    return "Choose the repository this command runs in.";
+  }
+  return null;
+}
+
+/**
+ * The request body. Only DECLARED keys with a non-empty value are sent: an
+ * undeclared field cannot be smuggled in through the form, and an empty one is
+ * omitted rather than sent as "" (the server drops it anyway — but a request
+ * should say what it means).
+ */
+export function buildInvokeBody(
+  contract: CapabilityRunContract,
+  form: RunFormState,
+): Record<string, string> {
+  const body: Record<string, string> = {};
+  if (form.projectId) body.projectId = form.projectId;
+  for (const input of contract.inputs) {
+    const value = (form.values[input.key] ?? "").trim();
+    if (value) body[input.key] = value;
+  }
+  return body;
+}
+
+/** A run refusal, rendered as something an operator can act on rather than a code. */
+export function explainRunFailure(error: string): string {
+  if (error.includes("invocation_root_requires_project")) {
+    return "This command runs inside a repository, but no project was scoped to the run. Choose a project and try again.";
+  }
+  if (error.includes("approval_required")) {
+    return "This capability needs an explicit approval before it can run.";
+  }
+  if (error.includes("application_offline")) {
+    return "The application is offline. Bring it back online to run its capabilities.";
+  }
+  if (error.includes("application_archived")) {
+    return "The application is archived. It cannot run until it is restored.";
+  }
+  if (error.includes("agent_not_available")) {
+    return "The platform wrapper runner is not available on this control plane.";
+  }
+  if (error.includes("capability_not_found")) {
+    return "This capability is no longer projected by the application.";
+  }
+  return error;
+}
