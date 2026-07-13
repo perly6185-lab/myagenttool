@@ -32,7 +32,7 @@ const GIT_WRAPPER_COMMANDS = [
       { key: "since", flag: "--since", type: "date" },
       { key: "until", flag: "--until", type: "date" },
       { key: "author", flag: "--author", type: "token" },
-      { key: "maxCount", flag: "--max-count", type: "token" },
+      { key: "maxCount", flag: "--max-count", type: "count" },
     ],
   },
   {

@@ -593,7 +593,7 @@ export function createApplicationWrapperAgentRegistration({
 // anything else returns null. This is the single source of truth for WHAT may
 // execute — the bridge only ever runs a command that came through here, so an
 // unapproved or unregistered command can never reach execution.
-const WRAPPER_ARG_INPUT_TYPES = new Set(["date", "token", "enum", "string", "boolean-flag", "git-rev"]);
+const WRAPPER_ARG_INPUT_TYPES = new Set(["date", "token", "enum", "string", "boolean-flag", "git-rev", "count"]);
 const RESERVED_WRAPPER_ARG_INPUT_KEYS = new Set([
   "approvalToken",
   "idempotencyKey",
@@ -679,6 +679,12 @@ function isValidWrapperArgValue(spec, value) {
     // A git revision as a positional arg. Closed char class, no leading "-"
     // (already enforced above), and NO ".." until ranges are explicitly designed.
     case "git-rev": return /^[A-Za-z0-9._/-]{1,100}$/.test(value) && !value.includes("..");
+    // A small positive integer (e.g. git --max-count). Bounded to 1–1000 to MIRROR
+    // the device allowlist's isMaxCount (#867): a `token` value like "2000" the
+    // server accepted was then hard-refused by the stricter device, so a value the
+    // server itself approved failed the run. The two validators stay independent
+    // copies — this narrows the server to the device's real bound, not the reverse.
+    case "count": return /^\d{1,4}$/.test(value) && Number(value) >= 1 && Number(value) <= 1000;
     default: return false;
   }
 }
