@@ -2,6 +2,7 @@ import { randomBytes } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { basename, dirname, extname, join, relative, resolve, sep } from "node:path";
 import { denyForeignProject } from "../runtime/auth.mjs";
+import { recordHttpGateRefusal } from "./refusal-http-gate.mjs";
 import { summarizeAutoRuns } from "../services/auto-run-metrics.mjs";
 import { summarizeDeployments } from "../services/auto-run-deploy-metrics.mjs";
 import { readEvalTrend, summarizeEvalTrend } from "../services/eval-trend.mjs";
@@ -30,6 +31,7 @@ export async function handleProjectRoutes({
   readJson,
   state,
   actor,
+  refuse,
   persistStateSoon,
   currentProject,
   addProject,
@@ -167,12 +169,25 @@ export async function handleProjectRoutes({
 
   if (projectMatch && req.method === "DELETE") {
     let removed;
+    const projectId = decodeURIComponent(projectMatch[1]);
     try {
-      removed = removeProject(decodeURIComponent(projectMatch[1]));
+      removed = removeProject(projectId);
     } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      // Refusal model (#758): the project isn't in a state where it may be
+      // removed (in use / invariant). The HTTP 400 already surfaces it — record
+      // only, no new event.
+      recordHttpGateRefusal(refuse, {
+        subjectKind: "registration",
+        subjectId: projectId,
+        code: "subject_not_actionable",
+        summary: `Project removal was blocked: ${message}`,
+        evidence: { projectId, message },
+        remedy: "Resolve what holds the project (in-use references or an invariant), then remove it.",
+      });
       sendJson(res, 400, {
         error: "project_remove_blocked",
-        message: error instanceof Error ? error.message : String(error),
+        message,
       });
       return true;
     }
