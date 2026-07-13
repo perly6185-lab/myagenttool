@@ -193,6 +193,12 @@ export function createCapabilityService({
         applicationId,
         applicationWrapper: planned.wrapper,
         projectId: capability.application?.projectId ?? input?.projectId ?? null,
+        // A run fired by a schedule must be traceable back to it (#847). The agent
+        // path has always stamped this; without it here, a scheduled capability run
+        // is an orphan — no way to ask "which schedule produced this?", and no way
+        // for a schedule to report its own health (#848) from the runs it caused.
+        ...(input?.automationId ? { automationId: String(input.automationId) } : {}),
+        ...(input?.scheduled ? { scheduled: true } : {}),
       },
     });
     if (invocation.status === "rejected") {
