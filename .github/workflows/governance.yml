@@ -58,6 +58,8 @@ jobs:
           GH_TOKEN: ${{ secrets.GOVERNANCE_PROJECTS_TOKEN }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           GITHUB_REPOSITORY: ${{ github.repository }}
+          # L3: the six risk-evidence routes are now BLOCKING, not advisory.
+          MYAGENTTOOL_PR_RISK_GATE_FAIL: "true"
         run: pnpm github:check:pr
 
   pull-request-governance:
@@ -89,6 +91,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GOVERNANCE_PROJECTS_TOKEN }}
           PR_NUMBER: ${{ inputs.pr }}
           GITHUB_REPOSITORY: ${{ github.repository }}
+          MYAGENTTOOL_PR_RISK_GATE_FAIL: "true"
         run: pnpm github:check:pr
 
   issue-hygiene:

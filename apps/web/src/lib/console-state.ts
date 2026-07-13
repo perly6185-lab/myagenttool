@@ -815,6 +815,9 @@ export interface RefusalRow {
   retryAfter: string | null;
   appealTo: string | null;
   invocationId?: string | null;
+  /** "loop" for a promotion refusal surfaced from tools/ai (refusal model #758). */
+  source?: string;
+  runId?: string | null;
 }
 
 export interface AutomationSchedule {
