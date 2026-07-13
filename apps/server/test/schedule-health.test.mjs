@@ -248,3 +248,17 @@ test("schedule health reaches the public state, and is scoped to what the viewer
   assert.equal(app.scheduleHealth.needsAttention, true);
   assert.deepEqual(app.scheduleHealth.attentionAutomationIds, ["atm_mine"]);
 });
+
+test("a dispatch refused for want of an approval is WAITING, not broken", () => {
+  // A schedule pointed at an approval-required capability can never run
+  // unattended. Calling that "failing" sends someone to fix a thing that is not
+  // wrong — what it needs is a person. It belongs with the parked run, not with
+  // the broken one.
+  const health = automationHealth(
+    automation({ lastRunError: "This wrapper command requires an explicit approvalToken." }),
+    [],
+  );
+  assert.equal(health.state, "approval_pending");
+  assert.equal(health.needsAttention, true);
+  assert.match(health.reason, /needs an approval/i);
+});
