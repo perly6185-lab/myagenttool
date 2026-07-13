@@ -40,6 +40,7 @@ export function createInvocationService({
   createManagedCodexSession,
   resolveResumeCodexSessionId,
   budgetGateForProject,
+  checkUsageQuota,
   closeCodexSession,
   onInvocationCompleted,
   onInvocationApproved,
@@ -131,6 +132,7 @@ export function createInvocationService({
     createAuditSummary,
     recordAgentUsage,
     budgetGateForProject,
+    checkUsageQuota,
   });
   const {
     acknowledgeInvocation,
