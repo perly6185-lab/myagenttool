@@ -1959,7 +1959,11 @@ function sanitizeApplicationId(value) {
   return text.startsWith("app_") ? text : `app_${text || Date.now().toString(36)}`;
 }
 
-function slugify(value) {
+// Exported so the schedule-health read model derives an application's capability
+// prefix with the SAME function that mints it (#848). A second copy of this rule
+// would drift, and a schedule would then be attributed to no application at all —
+// silently, since a schedule with no owner simply stops appearing anywhere.
+export function slugify(value) {
   return String(value ?? "")
     .trim()
     .toLowerCase()
