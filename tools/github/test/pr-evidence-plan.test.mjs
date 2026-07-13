@@ -73,3 +73,25 @@ test("each route carries the PR-template section that satisfies it", () => {
     assert.ok(route.section && route.section.length > 0, `${route.label} names a section`);
   }
 });
+
+import { changeFailureMarkerStatus, detectRemediationSignal } from "../src/pr-evidence.mjs";
+
+test("detectRemediationSignal fires only on strong signals, not plain 'fix'", () => {
+  assert.equal(detectRemediationSignal({ branch: "revert-bad-merge" }), true);
+  assert.equal(detectRemediationSignal({ body: "This hotfix restores the broken deploy." }), true);
+  assert.equal(detectRemediationSignal({ branch: "regression-42" }), true);
+  assert.equal(detectRemediationSignal({ branch: "feat/fix-typo", body: "small fix" }), false, "plain 'fix' is too noisy to prompt on");
+  assert.equal(detectRemediationSignal({}), false);
+});
+
+test("changeFailureMarkerStatus parses valid markers and flags malformed ones", () => {
+  assert.deepEqual(changeFailureMarkerStatus("Change-failure: #123").refs, [123]);
+  assert.deepEqual(changeFailureMarkerStatus("Change-failure: #12, #34").refs, [12, 34]);
+  const malformed = changeFailureMarkerStatus("this change-failure had no ref");
+  assert.equal(malformed.mentioned, true);
+  assert.equal(malformed.malformed, true);
+  assert.deepEqual(malformed.refs, []);
+  const clean = changeFailureMarkerStatus("no marker here");
+  assert.equal(clean.mentioned, false);
+  assert.equal(clean.malformed, false);
+});

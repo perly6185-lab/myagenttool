@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { computeDoraStats, doraSelfCheck, formatDoraReport, rollupFromActionsRuns } from "./dora.mjs";
 import { backlogSelfCheck, computeBacklogStats, formatBacklogReport } from "./backlog.mjs";
 import { computeGovernanceStats, countBypassCommits, formatGovernanceReport, governanceSelfCheck, RISK_GATE_ENFORCEMENT_SINCE } from "./governance.mjs";
-import { hasAcceptanceMention, hasProductFlowEvidence, hasVerificationEvidence, planPrEvidence, prFilePath, reviewRiskGates } from "./pr-evidence.mjs";
+import { changeFailureMarkerStatus, detectRemediationSignal, hasAcceptanceMention, hasProductFlowEvidence, hasVerificationEvidence, planPrEvidence, prFilePath, reviewRiskGates } from "./pr-evidence.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(__dirname, "../../..");
@@ -292,7 +292,20 @@ function prEvidenceAdvisor(args) {
   } else {
     console.log("  Tip: pass --body-file <draft.md> to also check your PR body, or --strict to gate.");
   }
-  console.log("  Sections live in .github/PULL_REQUEST_TEMPLATE.md. If this remediates a prior merge, add `Change-failure: #N`.");
+  console.log("  Sections live in .github/PULL_REQUEST_TEMPLATE.md.");
+
+  // Change-failure marker adoption: prompt on likely remediations so DORA's CFR
+  // starts recording (it stays null until markers are used).
+  let branch = "";
+  try { branch = execFileSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], { encoding: "utf8" }).trim(); } catch { /* detached / no git */ }
+  const marker = changeFailureMarkerStatus(body);
+  if (marker.malformed) {
+    console.log("  ⚠ A `change-failure` marker is malformed — use `Change-failure: #<culprit-PR>` so DORA can record it.");
+  } else if (marker.refs.length) {
+    console.log(`  ✓ Change-failure marker records: ${marker.refs.map((n) => `#${n}`).join(", ")}`);
+  } else if (detectRemediationSignal({ branch, body })) {
+    console.log("  ↪ This looks like a remediation (revert/hotfix/regression). If it fixes a prior merge, add `Change-failure: #N` so DORA records the incident.");
+  }
 
   if (strict && !plan.allSatisfied) {
     fail("Missing required PR evidence (--strict).");
@@ -791,6 +804,12 @@ function checkPullRequest(args) {
   const riskGateResult = reviewRiskGates(changedFiles, body, pr.number, { failOnRiskWarnings: args.includes("--fail-on-risk-warnings") || process.env.MYAGENTTOOL_PR_RISK_GATE_FAIL === "true" });
   warnings.push(...riskGateResult.warnings);
   failures.push(...riskGateResult.failures);
+
+  // A `change-failure` marker that parses to no PR ref would silently fail to
+  // record the incident in DORA — surface it as a warning, not a merge blocker.
+  if (changeFailureMarkerStatus(body).malformed) {
+    warnings.push(`PR #${pr.number} has a malformed Change-failure marker (use \`Change-failure: #N\`)`);
+  }
 
   if (pr.commits.length === 0) {
     failures.push(`PR #${pr.number} has no commits`);
