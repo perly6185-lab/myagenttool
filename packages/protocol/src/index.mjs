@@ -463,6 +463,7 @@ export const refusalCodes = [
   "over_budget",
   "over_quota",
   "undeliverable",
+  "binary_unavailable",
   "approval_denied",
   "deliverable_rejected",
   "gate_rejected",
@@ -478,7 +479,7 @@ export const refusalCodesByCategory = {
     "network_policy_exceeded",
     "action_not_permitted",
   ],
-  state: ["subject_not_actionable", "over_budget", "over_quota", "undeliverable"],
+  state: ["subject_not_actionable", "over_budget", "over_quota", "undeliverable", "binary_unavailable"],
   human: ["approval_denied", "deliverable_rejected", "gate_rejected"],
 };
 
@@ -512,6 +513,9 @@ export const refusalEventCatalog = [
   { eventType: "local_execution_refused", reason: "cwd_outside_approved_root", category: "policy", code: "cwd_outside_approved_root" },
   { eventType: "local_execution_refused", reason: "file_policy_exceeded", category: "policy", code: "file_policy_exceeded" },
   { eventType: "local_execution_refused", reason: "network_policy_exceeded", category: "policy", code: "network_policy_exceeded" },
+  // A binary wrapper whose program is not installed on the executing device: an
+  // environment STATE, not a policy rule (#802). Same umbrella event, state code.
+  { eventType: "local_execution_refused", reason: "binary_unavailable", category: "state", code: "binary_unavailable" },
   { eventType: "policy_blocked", category: "policy", code: "command_not_allowlisted", httpErrorCode: true },
   // --- recovery / lifecycle policy (policy) ---
   { eventType: "application_orchestration_recovery_action_rejected", category: "policy", code: "action_not_permitted" },
