@@ -8,7 +8,12 @@ const LOCAL_EXECUTION_POLICY_CODES = new Set([
   "file_policy_exceeded",
   "network_policy_exceeded",
 ]);
-function localExecutionRefusalCode(evidence = {}) {
+export function localExecutionRefusalCode(evidence = {}) {
+  // Prefer the precise sub-code the desktop gate declared (#758 Tier-3), then a
+  // legacy evidence.code, else the command allowlist (the most common reason).
+  if (LOCAL_EXECUTION_POLICY_CODES.has(evidence.refusalCode)) {
+    return evidence.refusalCode;
+  }
   if (LOCAL_EXECUTION_POLICY_CODES.has(evidence.code)) {
     return evidence.code;
   }
