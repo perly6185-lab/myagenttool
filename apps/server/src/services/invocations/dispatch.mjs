@@ -10,8 +10,15 @@ export function createInvocationDispatchRuntime({
 }) {
   // The directory a run occupies. Two runs in the same worktree (or the same
   // base project) must not execute concurrently — they'd write the same tree.
+  //
+  // The metadata lives on `options`, NOT on `input` — `input` is `{ task }` (see
+  // invocations/creation.mjs, which writes projectPath/worktreePath into
+  // options.metadata). Reading `input.metadata` yielded undefined for every
+  // invocation ever created, so every dir key was "__default__": the per-worktree
+  // lock silently became a GLOBAL one, and any single stuck in-flight run wedged
+  // all dispatch on the device forever (#817).
   function invocationDirKey(invocation) {
-    const meta = invocation.input?.metadata ?? {};
+    const meta = invocation.options?.metadata ?? {};
     return meta.worktreePath || meta.projectPath || "__default__";
   }
 
