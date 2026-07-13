@@ -703,3 +703,58 @@ test("POST /api/device/relink re-pairs the device so an expired-credential bridg
   assert.notEqual(second.body.bridgeToken, firstToken, "a new token, not the stale one");
   assert.equal(state.device.status, "online", "device back online after re-pair");
 });
+
+/*
+ * Rebase regression (the multi-machine work landing on a main that grew
+ * `/api/device/relink` in the meantime).
+ *
+ * Registration asked "is ANYTHING in the fleet paired?" and demanded a credential
+ * if so. With one device that reads correctly — the only paired device is the one
+ * registering. With two it is a trap: relinking device A clears A's credential,
+ * but B is still paired, so A's bridge is told to present a credential it no
+ * longer has and can never re-pair. `relink` is the operator's ONLY recovery for
+ * a lost token, so that failure has no way out.
+ *
+ * Pairing is per device: a token names its device; a request that names none is
+ * claiming an UNPAIRED one.
+ */
+test("relinking one device in a fleet lets that device re-pair while the others stay paired", async () => {
+  await call("/api/device/relink", { method: "POST" });
+  const primary = await call("/api/bridge/register", { method: "POST", body: { bridgeVersion: "v1" } });
+  assert.equal(primary.status, 200);
+  const primaryToken = primary.body.bridgeToken;
+
+  // A second machine, paired. This is the device that used to poison the recovery.
+  const { token: gammaToken } = enrollDeviceFixture("dev_gamma");
+  const gamma = state.devices.find((device) => device.id === "dev_gamma");
+
+  // Relink the PRIMARY only: its credential is cleared, gamma's is untouched.
+  const relink = await call("/api/device/relink", { method: "POST" });
+  assert.equal(relink.status, 200);
+  assert.equal(state.device.bridgeCredential, null, "the relinked device lost its credential");
+  assert.equal(typeof gamma.bridgeCredential.tokenHash, "string", "the other device stays paired");
+
+  // The relinked bridge comes back with NO usable token and must be able to claim
+  // its device again. Against the per-fleet reading this is a 401 forever.
+  const rePair = await call("/api/bridge/register", { method: "POST", body: { bridgeVersion: "v2" } });
+  assert.equal(rePair.status, 200, "the relinked device must be able to re-pair");
+  assert.equal(typeof rePair.body.bridgeToken, "string");
+  assert.notEqual(rePair.body.bridgeToken, primaryToken, "and it gets a fresh credential");
+
+  // The other device is unaffected: its old token still authenticates it.
+  const poll = await call("/api/bridge/next", { token: gammaToken });
+  assert.ok([200, 204].includes(poll.status), "gamma's credential still works");
+});
+
+test("a bearer-less register cannot take over a device that IS paired", async () => {
+  await call("/api/device/relink", { method: "POST" });
+  const paired = await call("/api/bridge/register", { method: "POST", body: { bridgeVersion: "v1" } });
+  assert.equal(paired.status, 200);
+
+  // Everything in the fleet now holds a credential, so there is nothing to claim.
+  // An unauthenticated register must be refused — a claim may only ever land on a
+  // device with no credential.
+  const hijack = await call("/api/bridge/register", { method: "POST", body: { bridgeVersion: "evil" } });
+  assert.equal(hijack.status, 401);
+  assert.equal(hijack.body.error, "invalid_bridge_credentials");
+});

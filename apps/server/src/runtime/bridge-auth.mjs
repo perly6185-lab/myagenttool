@@ -144,10 +144,19 @@ function verifyBridgeToken(token, expectedHash) {
   return expected.length === actual.length && crypto.timingSafeEqual(expected, actual);
 }
 
-function bearer(req) {
+/**
+ * The bearer token on a request, or null. Exported so a route can ask "does this
+ * request name a device?" before deciding whether it is a re-registration or a
+ * claim — without re-implementing the header parse and drifting from it.
+ */
+export function bearerToken(req) {
   const header = req?.headers?.authorization ?? "";
   const match = /^Bearer\s+(.+)$/i.exec(String(header));
   return match ? match[1].trim() : null;
+}
+
+function bearer(req) {
+  return bearerToken(req);
 }
 
 function publicCredential(credential) {

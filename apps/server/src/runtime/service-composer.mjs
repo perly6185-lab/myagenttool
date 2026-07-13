@@ -97,6 +97,7 @@ export function createServerRuntimeServices({
     persistStateSoon,
   });
   const {
+    deviceForToken,
     issueBridgeCredential,
     requireBridgeCredential,
   } = createBridgeCredentialRuntime({ state, now, persistStateSoon, appendEvent });
@@ -2607,6 +2608,7 @@ export function createServerRuntimeServices({
     transitionLifecycleRecipe,
     updatePrivateDeploymentConfig,
     createAgentDryProbeRun,
+    deviceForToken,
     issueBridgeCredential,
     requireBridgeCredential,
     createIntegrationProbeRun,

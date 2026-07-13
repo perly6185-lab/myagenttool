@@ -1,7 +1,7 @@
 import { normalizeMcpAdapterConfig } from "@myagenttool/adapters/mcp";
 
 import { isClaudeCliCommand, isCodexCliCommand } from "../services/agents.mjs";
-import { publicDeviceView } from "../runtime/bridge-auth.mjs";
+import { bearerToken, publicDeviceView } from "../runtime/bridge-auth.mjs";
 import { listDevices, primaryDevice } from "../runtime/device.mjs";
 
 export async function handleAgentRoutes({
@@ -25,32 +25,54 @@ export async function handleAgentRoutes({
   findIntegrationProbeRun,
   unlinkDevice,
   relinkDevice,
+  deviceForToken,
   issueBridgeCredential,
   requireBridgeCredential,
 }) {
   if (req.method === "POST" && url.pathname === "/api/bridge/register") {
     const body = await readJson(req);
-    // Which machine is registering? Once anything is paired, the credential is
-    // the answer — a re-registering bridge must prove which device it is before
-    // it can stamp that device online. Only a control plane with nothing paired
-    // yet is a first boot, and there the seeded primary device is the one being
-    // claimed.
-    const paired = listDevices(state).some((item) => item.bridgeCredential?.tokenHash);
+    // Which machine is registering?
+    //
+    // Pairing is PER DEVICE, not per fleet. A token that matches a credential
+    // names its device — that bridge is re-registering and must prove it. A
+    // request that matches nothing is *claiming* an unpaired device: the seeded
+    // one on first boot, or one whose credential `relink` just cleared.
+    //
+    // Reading it per-fleet ("is anything paired?") is what the single-device
+    // control plane made look right, and it breaks the moment there are two:
+    // relinking device A would demand a credential A no longer has, because B is
+    // still paired — and A could never re-pair. `relink` is the operator's only
+    // recovery for a lost token, so that failure has no way out.
+    //
+    // A claim is unauthenticated by construction (a first-boot bridge has nothing
+    // to present), so it may only ever land on a device with NO credential — a
+    // paired machine can never be taken over this way. Two unpaired devices are
+    // ambiguous: refuse rather than guess which machine is on the other end.
+    const claimable = listDevices(state).filter((item) => !item.bridgeCredential?.tokenHash);
+    const authenticated = deviceForToken(bearerToken(req));
     let device;
-    if (paired) {
+    let issuedCredential = null;
+    if (authenticated) {
+      // Re-run the full gate (revoked / idle-expired), which answers on its own.
       device = requireBridgeCredential({ req, res, sendJson });
-      if (!device) return true; // 401/403 already sent.
-    } else {
-      device = primaryDevice(state);
-      if (!device || device.unlinkState !== "linked") {
+      if (!device) return true;
+      if (body.rotateCredential === true) {
+        issuedCredential = issueBridgeCredential({ deviceId: device.id, rotate: true });
+      }
+    } else if (claimable.length === 1) {
+      device = claimable[0];
+      if (device.unlinkState !== "linked") {
         sendJson(res, 403, { error: "device_credentials_revoked" });
         return true;
       }
-    }
-    // Mint on first pairing, or when the bridge explicitly asks to rotate.
-    let issuedCredential = null;
-    if (!device.bridgeCredential?.tokenHash || body.rotateCredential === true) {
       issuedCredential = issueBridgeCredential({ deviceId: device.id, rotate: true });
+    } else if (claimable.length === 0) {
+      // Every device is paired: an unmatched token cannot name any of them.
+      sendJson(res, 401, { error: "invalid_bridge_credentials" });
+      return true;
+    } else {
+      sendJson(res, 409, { error: "ambiguous_device_claim", claimableDeviceCount: claimable.length });
+      return true;
     }
     device.status = "online";
     // Clearing livenessLostAt on the REGISTERING device, not the primary alias:
