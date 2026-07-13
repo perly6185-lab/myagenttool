@@ -15,8 +15,11 @@ import type { Tone } from "@/lib/readable-labels";
 import {
   groupRefusals,
   readableAppealTo,
+  readableRefusalCategory,
   readableRefusalCode,
+  summarizeRefusals,
   type RefusalCategoryGroup,
+  type RefusalSummary,
 } from "@/lib/refusals";
 import {
   readableRecoveryActionRequestStatus,
@@ -151,6 +154,7 @@ function RefusalsLens({ refusals }: { refusals: RefusalRow[] }) {
 
   const merged = useMemo(() => [...refusals, ...loopRefusals], [refusals, loopRefusals]);
   const groups = useMemo(() => groupRefusals(merged), [merged]);
+  const summary = useMemo(() => summarizeRefusals(merged), [merged]);
   if (!groups.length) {
     return (
       <EmptyState
@@ -167,12 +171,55 @@ function RefusalsLens({ refusals }: { refusals: RefusalRow[] }) {
           A refusal is the device declining to try — a normal, auditable reply, not a failure. Each is grouped by the authority that decided it and shows what would make the request succeed. Includes agent-loop promotion refusals.
         </span>
       </p>
+      <RefusalSummaryStrip summary={summary} />
       {loopTruncated ? (
         <p className="text-xs text-muted-foreground/70">Older loop runs were not scanned — only recent promotion refusals are shown.</p>
       ) : null}
       {groups.map((group) => (
         <RefusalCategorySection key={group.category} group={group} />
       ))}
+    </div>
+  );
+}
+
+// At-a-glance analytics over the (recent, capped) refusal set: how much this
+// device is refusing, the dominant reasons, and a short daily trend. Calm — this
+// is audit context, not an incident dashboard.
+function RefusalSummaryStrip({ summary }: { summary: RefusalSummary }) {
+  if (!summary.total) return null;
+  const categories = (["not_granted", "policy", "state", "human"] as const).filter((c) => summary.byCategory[c] > 0);
+  const maxDay = Math.max(1, ...summary.daily.map((d) => d.count));
+  return (
+    <div className="flex flex-wrap items-center gap-x-5 gap-y-3 rounded-lg border border-border bg-card px-4 py-3">
+      <div>
+        <div className="text-2xl font-semibold tabular-nums">{summary.total}</div>
+        <div className="text-xs text-muted-foreground">refusals (recent)</div>
+      </div>
+      {categories.length ? (
+        <div className="flex flex-wrap items-center gap-1.5">
+          {categories.map((c) => (
+            <Badge key={c} tone="neutral">{readableRefusalCategory(c)} {summary.byCategory[c]}</Badge>
+          ))}
+        </div>
+      ) : null}
+      {summary.topCodes.length ? (
+        <div className="min-w-0 text-xs text-muted-foreground">
+          <span className="text-muted-foreground/70">Top reasons: </span>
+          {summary.topCodes.map((t, i) => (
+            <span key={t.code}>{i ? " · " : ""}{t.label} <span className="tabular-nums">({t.count})</span></span>
+          ))}
+        </div>
+      ) : null}
+      <div className="ml-auto flex items-end gap-0.5" title="Refusals per day, last 7 days" aria-label="Refusals per day, last 7 days">
+        {summary.daily.map((d) => (
+          <span
+            key={d.date}
+            className="w-2 rounded-sm bg-muted-foreground/30"
+            style={{ height: `${4 + Math.round((d.count / maxDay) * 20)}px` }}
+            title={`${d.date}: ${d.count}`}
+          />
+        ))}
+      </div>
     </div>
   );
 }
