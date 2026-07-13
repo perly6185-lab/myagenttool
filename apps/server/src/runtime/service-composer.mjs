@@ -278,6 +278,7 @@ export function createServerRuntimeServices({
     createSignedBundleManifest,
     createLifecycleRecipe,
     createQuotaPolicy,
+    checkUsageQuota,
     decideLifecycleLocalApproval,
     evaluateLifecyclePolicy,
     enforcePlatformAiQuota,
@@ -382,6 +383,7 @@ export function createServerRuntimeServices({
     resolveResumeCodexSessionId,
     closeCodexSession,
     budgetGateForProject,
+    checkUsageQuota,
     onInvocationCompleted: (invocation) => {
       advanceAutoRunHook?.(invocation);
       try {
