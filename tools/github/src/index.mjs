@@ -1481,6 +1481,10 @@ function gh(args, options = {}) {
       cwd: repoRoot,
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
+      // The default 1 MB maxBuffer overflows (ENOBUFS) on large fetches — e.g.
+      // governance-report / dora-report list up to 500 merged PRs with bodies +
+      // files, which forced narrower --days windows and inconsistent readings.
+      maxBuffer: 64 * 1024 * 1024,
     });
     return { status: 0, stdout, stderr: "" };
   } catch (error) {
