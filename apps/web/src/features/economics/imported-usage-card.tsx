@@ -3,6 +3,7 @@ import { Badge } from "@/components/ui/badge";
 import { EmptyState } from "@/components/common/empty-state";
 import { useConsoleState } from "@/data/use-console-state";
 import { formatUsd as usd } from "@/lib/money";
+import { shortTime } from "@/lib/readable-labels";
 import { ImportedUsageTable } from "@/features/economics/imported-usage-table";
 
 /**
@@ -15,6 +16,8 @@ export function ImportedUsageCard() {
   const estimates = state?.importedUsageEstimates ?? [];
 
   const totalUsd = estimates.reduce((sum, row) => sum + (row.estimatedCostUsd ?? 0), 0);
+  // Freshness: the newest row's import time, so stale/paused data doesn't look current.
+  const lastImported = estimates.reduce((latest, row) => (row.createdAt > latest ? row.createdAt : latest), "");
 
   return (
     <Card>
@@ -42,6 +45,7 @@ export function ImportedUsageCard() {
             <p className="text-sm text-muted-foreground">
               {estimates.length} row(s) · <span className="tabular-nums text-foreground">~{usd(totalUsd)}</span>{" "}
               estimated (external)
+              {lastImported ? <> · last imported {shortTime(lastImported)}</> : null}
             </p>
             <ImportedUsageTable rows={estimates} />
           </div>
