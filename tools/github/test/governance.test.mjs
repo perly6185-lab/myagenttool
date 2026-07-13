@@ -130,3 +130,36 @@ test("formatGovernanceReport: renders the gate table and honest not-instrumented
   assert.match(report, /Silent-bypass merges .* n\/a /);
   assert.match(report, /Scope-drift false-positive rate \| not instrumented/);
 });
+
+test("classifyMissingRoute + topMissingRoutes aggregate gaps by route, ranked", async () => {
+  const { classifyMissingRoute } = await import("../src/governance.mjs");
+  assert.equal(classifyMissingRoute("PR #5 changes web UI files but does not mention visual QA screenshot evidence"), "visual QA (web UI)");
+  assert.equal(classifyMissingRoute("PR #5 changes a governed registry / execution surface ... does not mention a security review"), "security review (governed surface)");
+  assert.equal(classifyMissingRoute("issue link"), "issue link");
+
+  const stats = computeGovernanceStats(
+    [
+      // Two web PRs missing visual QA + product flow; one desktop missing cross-platform.
+      { number: 10, body: "Closes #1\n## Verification\n- test", files: ["apps/web/src/a.tsx"], mergedAt: "2026-07-10T00:00:00.000Z", closingIssuesReferences: [{ number: 1 }] },
+      { number: 11, body: "Closes #2\n## Verification\n- test", files: ["apps/web/src/b.tsx"], mergedAt: "2026-07-10T00:00:00.000Z", closingIssuesReferences: [{ number: 2 }] },
+      { number: 12, body: "Closes #3\n## Verification\n- test", files: ["apps/desktop/src/index.mjs"], mergedAt: "2026-07-10T00:00:00.000Z", closingIssuesReferences: [{ number: 3 }] },
+    ],
+    { days: 30 },
+  );
+  const byRoute = Object.fromEntries(stats.topMissingRoutes.map((r) => [r.route, r.count]));
+  assert.equal(byRoute["visual QA (web UI)"], 2);
+  assert.equal(byRoute["Product Flow (product-facing UI)"], 2);
+  assert.equal(byRoute["cross-platform (desktop/local-exec)"], 1);
+  // Ranked, most-missed first.
+  assert.ok(stats.topMissingRoutes[0].count >= stats.topMissingRoutes[stats.topMissingRoutes.length - 1].count);
+  // The report surfaces the "fix these first" section.
+  const report = formatGovernanceReport(stats, { repo: "o/r" });
+  assert.match(report, /Top missing routes/);
+});
+
+test("RISK_GATE_ENFORCEMENT_SINCE: the L3 re-anchor date for the blocking risk gate", async () => {
+  const { RISK_GATE_ENFORCEMENT_SINCE, GOVERNANCE_ENFORCEMENT_SINCE } = await import("../src/governance.mjs");
+  assert.ok(!Number.isNaN(new Date(RISK_GATE_ENFORCEMENT_SINCE).getTime()), "parses as a date");
+  // The risk gate became blocking no earlier than the base governance enforcement.
+  assert.ok(RISK_GATE_ENFORCEMENT_SINCE >= GOVERNANCE_ENFORCEMENT_SINCE);
+});

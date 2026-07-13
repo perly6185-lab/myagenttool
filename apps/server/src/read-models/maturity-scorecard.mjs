@@ -131,6 +131,9 @@ export function computeMaturityScorecard({
           : `risk-evidence ${pct(gcov)}, ${bypass ?? "?"} silent bypass(es)`,
     verdict: verdict(gcov, l3Ok),
     detail: dora && dora.changeFailures?.recorded === false ? "change-failure rate not yet recorded (the `Change-failure: #N` marker convention is unused)" : undefined,
+    // Actionable team signal: which evidence routes drag coverage down, ranked —
+    // "fix these first" (run `pnpm pr:evidence` locally to comply per-PR).
+    topGaps: Array.isArray(governance?.topMissingRoutes) ? governance.topMissingRoutes.slice(0, 5) : undefined,
   });
 
   // L4 — held-out apply pass rate ≥ floor (local SWE-bench-style).

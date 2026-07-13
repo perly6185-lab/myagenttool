@@ -3,11 +3,19 @@ import {
   listLoopRoutineRunsForRequest,
   showLoopRoutineRunForRequest,
 } from "../read-models/loop-routines.mjs";
+import { loopRefusalReadModel } from "../read-models/loop-refusals.mjs";
 
 export function handleLoopRoutineRoutes({ req, res, url, sendJson, currentLoopRoutineProjectContext }) {
   if (req.method === "GET" && url.pathname === "/api/loop-routines") {
     const context = currentLoopRoutineProjectContext();
     sendJson(res, 200, listLoopRoutineRunsForRequest(context, url.searchParams));
+    return true;
+  }
+
+  // Refusal model (#758): loop promotion refusals, surfaced for the console
+  // refusal lens (read-only, bounded, best-effort — see loop-refusals.mjs).
+  if (req.method === "GET" && url.pathname === "/api/loop-refusals") {
+    sendJson(res, 200, loopRefusalReadModel());
     return true;
   }
 

@@ -38,12 +38,60 @@ export function judgePrEvidence(pr) {
   };
 }
 
+// Classify a missing-evidence reason into a stable route key, so gaps aggregate
+// across PRs. Keep aligned with reviewRiskGates' warning phrasing.
+const MISSING_ROUTE_KEYS = [
+  [/issue link/i, "issue link"],
+  [/verification/i, "verification"],
+  [/visual QA/i, "visual QA (web UI)"],
+  [/Product Flow/i, "Product Flow (product-facing UI)"],
+  [/cross-platform/i, "cross-platform (desktop/local-exec)"],
+  [/state-machine or schema/i, "protocol compatibility"],
+  [/adapter/i, "adapter evidence"],
+  [/security review/i, "security review (governed surface)"],
+  [/release, rollback/i, "release/deploy"],
+];
+
+export function classifyMissingRoute(message) {
+  for (const [re, key] of MISSING_ROUTE_KEYS) {
+    if (re.test(message)) return key;
+  }
+  return "other";
+}
+
+function aggregateMissingRoutes(judged) {
+  const counts = new Map();
+  for (const pr of judged) {
+    if (pr.covered) continue;
+    const reasons = [
+      ...(pr.linksIssue ? [] : ["issue link"]),
+      ...(pr.verification ? [] : ["verification evidence"]),
+      ...pr.riskFindings,
+    ];
+    for (const reason of reasons) {
+      const key = classifyMissingRoute(reason);
+      counts.set(key, (counts.get(key) ?? 0) + 1);
+    }
+  }
+  return [...counts.entries()]
+    .map(([route, count]) => ({ route, count }))
+    .sort((a, b) => b.count - a.count || a.route.localeCompare(b.route));
+}
+
 // When pr-governance was promoted from advisory to a REQUIRED merge check
 // (commit f798ed3, #294 — the ci:activate --require-governance promotion). Merges
 // before this date predate enforcement, so the rolling all-time window understates
 // current discipline; the coverageSince slice is anchored here by default. Same
 // role as dora.mjs's CHANGE_FAILURE_SIGNAL_SINCE (2026-07-04).
 export const GOVERNANCE_ENFORCEMENT_SINCE = "2026-07-03";
+
+// When the RISK-EVIDENCE routes became a blocking merge check (failOnRiskWarnings
+// on in .github/workflows/governance.yml). 2026-07-03 gated only issue-link +
+// verification; the six risk routes were advisory until now, so pre-this-date PRs
+// could merge without them and permanently cap coverage below 100% under a fixed
+// 2026-07-03 anchor. L3 measures compliance since the FULL gate is enforced, so
+// the coverageSince slice re-anchors here — same move as #744 for L2's CI window.
+export const RISK_GATE_ENFORCEMENT_SINCE = "2026-07-13";
 
 export function computeGovernanceStats(mergedPrs, { days, directPushCount = null, since = null, directPushCountSince = null }) {
   const judged = mergedPrs.map(judgePrEvidence);
@@ -75,6 +123,9 @@ export function computeGovernanceStats(mergedPrs, { days, directPushCount = null
           ...pr.riskFindings,
         ],
       })),
+    // Team-level signal: which evidence routes drag coverage down, ranked. Turns
+    // "65% covered" into "fix these two routes" (#812 follow-up).
+    topMissingRoutes: aggregateMissingRoutes(judged),
     directPushCount,
     gate: {
       coverageTarget: 1,
@@ -129,6 +180,12 @@ export function formatGovernanceReport(stats, { repo }) {
     "",
     `Per-check coverage: issue link ${pct(stats.byCheck.linksIssue)} · verification ${pct(stats.byCheck.verification)} · risk routes clean ${pct(stats.byCheck.riskRoutesClean)}`,
   ];
+  if (stats.topMissingRoutes?.length) {
+    lines.push("", "## Top missing routes (fix these first)", "");
+    for (const { route, count } of stats.topMissingRoutes.slice(0, 8)) {
+      lines.push(`- ${route}: ${count} PR(s)`);
+    }
+  }
   if (stats.uncovered.length > 0) {
     lines.push("", "## PRs missing evidence", "");
     for (const pr of stats.uncovered.slice(0, 20)) {

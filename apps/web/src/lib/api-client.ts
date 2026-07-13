@@ -15,11 +15,19 @@ import type {
   ConsoleSnapshot,
   InvocationEventSnapshot,
   ProjectTreeResponse,
+  RefusalRow,
   ReviewFindingQueryResponse,
   ToolDescriptor,
   ToolInvocationRequest,
   ToolInvocationResponse,
 } from "@/lib/console-state";
+
+export interface LoopRefusalsResponse {
+  refusals: RefusalRow[];
+  scannedRuns: number;
+  totalRuns: number;
+  truncatedRuns: boolean;
+}
 
 // The dev server's default port (tools/dev/run-local-demo.mjs SERVER_PORT).
 const SERVER_PORT = "5001";
@@ -268,6 +276,8 @@ export const api = {
   /** Mint a single-use, action-scoped approval grant — the real token behind approvalToken (APPROVAL_GRANTS.md). */
   issueApprovalGrant: (action: string, targetId: string) =>
     request<{ grantId: string; token: string; expiresAt: string }>("POST", "/api/approvals/grants", { action, targetId }),
+  /** Loop promotion refusals (tools/ai), for the console refusal lens (refusal model #758). */
+  getLoopRefusals: () => request<LoopRefusalsResponse>("GET", "/api/loop-refusals"),
   getApplicationRecoveryArchive: (id: string, limit = 50) =>
     request<{ applicationId: string; entries: { archivedAt: string | null; row: Record<string, unknown> }[] }>(
       "GET",

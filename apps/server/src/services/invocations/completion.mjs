@@ -187,7 +187,9 @@ export function createInvocationCompletionRuntime({
       status: invocation.status,
       permissionDecision: invocation.status === "rejected" ? "denied" : "allowed",
       traceId: invocation.traceId ?? null,
-      startedAt: invocation.createdAt,
+      // True execution start: the first round's start (set by round telemetry),
+      // else the bridge ack, else createdAt. Was conflated with createdAt (queue time).
+      startedAt: invocation.startedAt ?? invocation.delivery?.acknowledgedAt ?? invocation.createdAt,
       completedAt: invocation.completedAt ?? now(),
       resultSummary: invocation.status === "succeeded" ? summary : null,
       errorSummary: invocation.status === "succeeded" ? null : summary,
