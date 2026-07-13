@@ -156,3 +156,10 @@ test("classifyMissingRoute + topMissingRoutes aggregate gaps by route, ranked", 
   const report = formatGovernanceReport(stats, { repo: "o/r" });
   assert.match(report, /Top missing routes/);
 });
+
+test("RISK_GATE_ENFORCEMENT_SINCE: the L3 re-anchor date for the blocking risk gate", async () => {
+  const { RISK_GATE_ENFORCEMENT_SINCE, GOVERNANCE_ENFORCEMENT_SINCE } = await import("../src/governance.mjs");
+  assert.ok(!Number.isNaN(new Date(RISK_GATE_ENFORCEMENT_SINCE).getTime()), "parses as a date");
+  // The risk gate became blocking no earlier than the base governance enforcement.
+  assert.ok(RISK_GATE_ENFORCEMENT_SINCE >= GOVERNANCE_ENFORCEMENT_SINCE);
+});
