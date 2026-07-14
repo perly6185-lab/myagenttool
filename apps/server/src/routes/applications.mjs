@@ -11,6 +11,7 @@ export async function handleApplicationRoutes({
   readJson,
   state,
   actor,
+  now,
   cancelApplicationInstall,
   findApplication,
   findApplicationInstallRun,
@@ -63,7 +64,7 @@ export async function handleApplicationRoutes({
       return true;
     }
     try {
-      const plan = createApplicationInstallPlan(body, { device, projectId: body.projectId ?? null });
+      const plan = createApplicationInstallPlan(body, { device, projectId: body.projectId ?? null, now });
       sendJson(res, 200, { plan });
     } catch (error) {
       sendJson(res, Number.isInteger(error?.status) ? error.status : 400, {

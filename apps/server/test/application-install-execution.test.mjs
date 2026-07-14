@@ -16,6 +16,8 @@ before(async () => {
   const projectDir = mkdtempSync(join(tmpdir(), "application-install-execution-"));
   const created = createServerState({ defaultProjectPath: projectDir, now: () => new Date().toISOString() });
   state = created.state;
+  state.users.push({ id: "usr_foreign", teamId: "team_foreign", role: "owner" });
+  state.tokens.push({ token: "foreign-token", userId: "usr_foreign", expiresAt: Date.now() + 60_000 });
   const { httpDependencies } = createServerRuntimeServices({
     namespace: "test", protocolVersion: "0.0.0", state, defaultProject: created.defaultProject,
     defaultProjectPath: projectDir, persistenceEnabled: false, stateStorePath: "/tmp/unused.json",
@@ -63,8 +65,13 @@ test("P2 Bridge dispatch, progress, cancellation, and completion are device-boun
   const completed = await call("/api/bridge/application-install-complete", { method: "POST", token: bridgeToken, body: { runId, status: "cancelled", classification: "cancelled", summary: "Installation cancelled locally.", exitCode: null, durationMs: 10 } });
   assert.equal(completed.status, 200);
   assert.equal(completed.body.run.status, "cancelled");
+  assert.equal(completed.body.run.rollback.status, "operator_review_required");
   assert.ok(state.events.some((event) => event.type === "application_install_cancelled" && event.data?.runId === runId));
   assert.doesNotMatch(JSON.stringify(completed.body.run), /stdout|stderr|token/i);
+  const foreignRead = await call(`/api/applications/install/runs/${runId}`, { token: "foreign-token" });
+  assert.equal(foreignRead.status, 404);
+  const foreignCancel = await call(`/api/applications/install/runs/${runId}/cancel`, { method: "POST", token: "foreign-token", body: {} });
+  assert.equal(foreignCancel.status, 404);
 });
 
 test("P2 rejects a modified plan before consuming installation work", async () => {
@@ -75,6 +82,38 @@ test("P2 rejects a modified plan before consuming installation work", async () =
   const response = await call("/api/applications/install/runs", { method: "POST", body: { plan: modified, approvalToken: grant.body.token } });
   assert.equal(response.status, 409);
   assert.equal(response.body.error, "application_install_plan_mismatch");
+});
+
+test("P4 redacts progress and rejects Bridge result classification spoofing", async () => {
+  const planned = await call("/api/applications/install/plan", { method: "POST", body: { name: "ccusage", deviceId: state.device.id } });
+  const plan = planned.body.plan;
+  const grant = await call("/api/approvals/grants", { method: "POST", body: { action: "application.install", targetId: plan.planId } });
+  const queued = await call("/api/applications/install/runs", { method: "POST", body: { plan, approvalToken: grant.body.token } });
+  const next = await call("/api/bridge/application-install-next", { token: bridgeToken });
+  assert.equal(next.body.runId, queued.body.run.id);
+
+  await call("/api/bridge/application-install-progress", {
+    method: "POST",
+    token: bridgeToken,
+    body: { runId: next.body.runId, type: "arbitrary", summary: "token=supersecret C:\\Users\\alice\\private" },
+  });
+  const visible = await call(`/api/applications/install/runs/${next.body.runId}`);
+  assert.equal(visible.body.run.progress.at(-1).type, "installing");
+  assert.doesNotMatch(visible.body.run.progress.at(-1).summary, /supersecret|alice/i);
+
+  const spoofed = await call("/api/bridge/application-install-complete", {
+    method: "POST",
+    token: bridgeToken,
+    body: { runId: next.body.runId, status: "succeeded", classification: "nonzero_exit", summary: "spoofed" },
+  });
+  assert.equal(spoofed.status, 409);
+  const completed = await call("/api/bridge/application-install-complete", {
+    method: "POST",
+    token: bridgeToken,
+    body: { runId: next.body.runId, status: "failed", classification: "nonzero_exit", summary: "Install failed." },
+  });
+  assert.equal(completed.status, 200);
+  assert.equal(completed.body.run.rollback.status, "operator_review_required");
 });
 
 async function call(path, { method = "GET", body, token } = {}) {

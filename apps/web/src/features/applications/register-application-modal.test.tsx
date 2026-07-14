@@ -34,17 +34,19 @@ const catalog = {
 };
 const plan = {
   schemaVersion: "application-install-plan/v1",
-  recipeVersion: "2026-07-14.1",
+  recipeVersion: "2026-07-14.2",
   planId: "aip_plan",
   fingerprint: "fingerprint",
   application: { name: "ccusage", displayName: "ccusage" },
   target: { projectId: null, deviceId: "dev_local", platform: "windows", architecture: "x64" },
-  package: { provider: "npm", identifier: "ccusage", resolvedIdentifier: "ccusage@latest", versionPolicy: { kind: "approved-channel", channel: "stable", allowCallerOverride: false } },
-  execution: { executable: "npm.cmd", args: ["install", "--global", "ccusage@latest"], shell: false, elevated: false },
+  package: { provider: "npm", identifier: "ccusage", resolvedIdentifier: "ccusage@20.0.14", versionPolicy: { kind: "exact", channel: null, allowCallerOverride: false, exactVersion: "20.0.14" }, source: { kind: "npm-registry", registry: "https://registry.npmjs.org/", packageName: "ccusage" } },
+  execution: { executable: "npm.cmd", args: ["install", "--global", "--registry=https://registry.npmjs.org/", "ccusage@20.0.14"], shell: false, elevated: false },
   risk: { level: "medium", reasons: ["installs_device_software"] },
   approval: { required: true, action: "application.install", bindsToPlanFingerprint: true },
   policy: { timeoutMs: 300000, cancellable: true },
+  validity: { issuedAt: "2026-07-14T09:00:00.000Z", expiresAt: "2026-07-14T09:10:00.000Z", ttlMs: 600000 },
   postInstallProbe: { executable: "ccusage", args: ["--version"], timeoutMs: 15000 },
+  rollback: { automatic: false, uninstallSupported: false, summary: "Operator review required." },
   summary: "Install ccusage",
 };
 

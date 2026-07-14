@@ -1,9 +1,24 @@
 import { applicationInstallPlanMatchesCurrent } from "./application-install-plans.mjs";
 
 const TERMINAL_STATUSES = new Set(["succeeded", "failed", "cancelled", "timed_out", "refused"]);
+const PROGRESS_TYPES = new Set(["spawning", "installing", "probing", "cancelling"]);
+const CLASSIFICATIONS_BY_STATUS = {
+  succeeded: new Set(["installed_and_ready"]),
+  failed: new Set(["spawn_failed", "probe_spawn_failed", "probe_failed", "nonzero_exit"]),
+  cancelled: new Set(["cancelled"]),
+  timed_out: new Set(["install_timeout", "probe_timeout"]),
+  refused: new Set(["plan_not_allowlisted"]),
+};
+
+function redactSensitive(value) {
+  return String(value ?? "")
+    .replace(/\bBearer\s+[A-Za-z0-9._~+/=-]+/gi, "Bearer [redacted]")
+    .replace(/\b(token|secret|password|authorization|api[-_]?key)\b\s*[:=]\s*[^\s,;]+/gi, "$1=[redacted]")
+    .replace(/[A-Za-z]:\\Users\\[^\\\s]+|\/Users\/[^/\s]+|\/home\/[^/\s]+/g, "[user-home]");
+}
 
 function bounded(value, max = 500) {
-  const text = String(value ?? "").replace(/\s+/g, " ").trim();
+  const text = redactSensitive(value).replace(/\s+/g, " ").trim();
   return text.length > max ? `${text.slice(0, max - 3)}...` : text;
 }
 
@@ -13,7 +28,7 @@ export function createApplicationInstallService({ state, now, nextId, appendEven
   }
 
   function queueApplicationInstall({ plan, approvalToken }, { actor, device, projectId = null }) {
-    if (!applicationInstallPlanMatchesCurrent(plan, { device, projectId })) {
+    if (!applicationInstallPlanMatchesCurrent(plan, { device, projectId, now })) {
       const error = new Error("Installation plan is stale, modified, or no longer allowlisted.");
       error.code = "application_install_plan_mismatch";
       throw error;
@@ -46,6 +61,7 @@ export function createApplicationInstallService({ state, now, nextId, appendEven
       startedAt: null,
       completedAt: null,
       result: null,
+      rollback: null,
       progress: [{ at: createdAt, type: "queued", summary: "Approved Application installation queued for Desktop Bridge." }],
       createdAt,
       updatedAt: createdAt,
@@ -95,7 +111,8 @@ export function createApplicationInstallService({ state, now, nextId, appendEven
   function recordApplicationInstallProgress(run, { type = "progress", summary = "Installation progress updated." } = {}) {
     if (!run || !["running", "cancelling"].includes(run.status)) return run;
     const at = now();
-    run.progress.push({ at, type: bounded(type, 40), summary: bounded(summary) });
+    const safeType = PROGRESS_TYPES.has(String(type)) ? String(type) : "installing";
+    run.progress.push({ at, type: safeType, summary: bounded(summary) });
     run.progress = run.progress.slice(-50);
     run.updatedAt = at;
     persistStateSoon();
@@ -110,16 +127,26 @@ export function createApplicationInstallService({ state, now, nextId, appendEven
     if (!TERMINAL_STATUSES.has(status)) {
       throw new Error(`Unsupported Application installation status: ${status}`);
     }
+    const classification = String(body.classification ?? "");
+    if (!CLASSIFICATIONS_BY_STATUS[status]?.has(classification)) {
+      throw new Error(`Unsupported Application installation classification for ${status}.`);
+    }
     const completedAt = now();
     run.status = status;
     run.completedAt = completedAt;
     run.updatedAt = completedAt;
     run.result = {
       status,
-      classification: bounded(body.classification ?? status, 80),
+      classification,
       summary: bounded(body.summary ?? `Application installation ${status}.`),
       exitCode: Number.isInteger(body.exitCode) ? body.exitCode : null,
       durationMs: Number.isFinite(body.durationMs) ? Math.max(0, Number(body.durationMs)) : null,
+    };
+    run.rollback = {
+      automatic: false,
+      status: status === "succeeded" ? "not_required" : "operator_review_required",
+      uninstallSupported: false,
+      summary: run.plan.rollback.summary,
     };
     run.progress.push({ at: completedAt, type: status, summary: run.result.summary });
     appendEvent({

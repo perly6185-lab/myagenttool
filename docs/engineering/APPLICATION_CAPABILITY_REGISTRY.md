@@ -155,6 +155,22 @@ Offline devices, approval failures, installation failures, and probe failures
 remain distinct operator-facing outcomes. Advanced source registration stays
 available as a collapsed secondary path.
 
+P4 hardens the release boundary. NPM recipes use an exact approved version and
+the canonical npm registry instead of a moving `latest` alias. Plans expire ten
+minutes after issuance, and both the server and Desktop Bridge independently
+reject expired, modified, wrong-platform, or elevation-requesting plans. Git is
+enabled only on Windows and macOS until Linux has an explicit elevation broker;
+the Bridge never turns plan metadata into implicit privilege escalation.
+
+Bridge progress and completion evidence are bounded, sensitive assignments and
+user-home paths are redacted, and terminal status/classification pairs are
+allowlisted. Install and readiness-probe timeouts are separate. Automatic
+rollback and uninstall remain disabled because package-manager state may have
+existed before setup; every non-successful run records that operator review is
+required. Cross-platform contract tests run on Windows, macOS, and Linux. The
+release evidence and rollback boundary are recorded in
+`docs/engineering/APPLICATION_INSTALL_RELEASE_EVIDENCE.md`.
+
 ## NPM Wrapper Descriptors
 
 NPM application sources may include a governed wrapper descriptor:
