@@ -41,7 +41,17 @@ export function createM3Service({
   findAgent,
   persistStateSoon = () => {},
   dispatchAlert = () => {},
+  store,
 }) {
+  // #968: run a lifecycle-action transition as one durable unit of work — commit
+  // synchronously through the Store when wired, else fall back to the debounce so
+  // behavior is unchanged where no store is injected (many hermetic m3 tests).
+  const runTx = (fn) => {
+    if (typeof store?.transaction === "function") return store.transaction(fn);
+    const result = fn();
+    persistStateSoon();
+    return result;
+  };
   function createPrivateCatalogEntry(body = {}) {
     const createdAt = now();
     const entry = {
@@ -349,6 +359,7 @@ export function createM3Service({
       requestLifecycleLocalApproval(recipe);
       throw new Error("Lifecycle action requires approved local approval before queueing.");
     }
+    return runTx(() => {
     const createdAt = now();
     const command = buildExecutableLifecycleCommand(recipe);
     const executionEnabled = Boolean(command);
@@ -396,8 +407,8 @@ export function createM3Service({
       message: queued.summary,
       data: { queuedActionId: queued.id, recipeId: recipe.id, executionEnabled },
     });
-    persistStateSoon();
     return queued;
+    });
   }
 
   function nextBridgeLifecycleAction() {
@@ -413,6 +424,7 @@ export function createM3Service({
     if (!lifecycleAction || lifecycleAction.status !== "queued") {
       return lifecycleAction;
     }
+    return runTx(() => {
     if (!lifecycleAction.executionEnabled || !isExecutableLifecycleActionCommand(lifecycleAction.command, lifecycleAction.action)) {
       const completedAt = now();
       lifecycleAction.status = "observed";
@@ -447,7 +459,6 @@ export function createM3Service({
         message: lifecycleAction.result.summary,
         data: { queuedActionId: lifecycleAction.id, recipeId: lifecycleAction.recipeId, executionEnabled: false },
       });
-      persistStateSoon();
       return lifecycleAction;
     }
     lifecycleAction.status = "running";
@@ -469,8 +480,8 @@ export function createM3Service({
       message: "Desktop Bridge started allowlisted lifecycle execution.",
       data: { queuedActionId: lifecycleAction.id, recipeId: lifecycleAction.recipeId, commandId: lifecycleAction.command.commandId },
     });
-    persistStateSoon();
     return lifecycleAction;
+    });
   }
 
   function completeLifecycleAction(lifecycleAction, body = {}) {
@@ -480,6 +491,7 @@ export function createM3Service({
     if (lifecycleAction.status !== "running") {
       throw new Error(`Lifecycle action is not completable from ${lifecycleAction.status}.`);
     }
+    return runTx(() => {
     const status = normalizeLifecycleResultStatus(body.status);
     const recipe = findLifecycleRecipe(lifecycleAction.recipeId);
     const completedAt = now();
@@ -533,8 +545,8 @@ export function createM3Service({
     if (status === "failed" && lifecycleAction.result.rollbackAvailable) {
       createRollbackRequest(lifecycleAction, recipe);
     }
-    persistStateSoon();
     return lifecycleAction;
+    });
   }
 
   function createRollbackRequest(failedAction, recipe = findLifecycleRecipe(failedAction?.recipeId)) {
@@ -1108,13 +1120,19 @@ export function createM3Service({
     const source = reported ? "reported" : hasEstimate ? "estimated" : "unknown";
     const meta = invocation.input?.metadata ?? {};
     const projectId = meta.projectId ?? invocation.projectId ?? state.currentProjectId ?? state.projects[0]?.id ?? null;
+    // #969: stamp the OWNING TEAM on the ledger row (was hardcoded null). An
+    // explicit owner column lets the read-model scope by team directly — robust to
+    // the owning project row being dropped on restore, and the future durable store
+    // indexes on it. Derived from the row's project; null when there is no project.
+    const ledgerProject = projectId ? state.projects.find((project) => project.id === projectId) : null;
+    const ledgerTeamId = ledgerProject ? teamOf(ledgerProject) : null;
     const createdAt = now();
     const model = String(cost.model ?? "unknown");
     const entry = {
       id: nextId("led_demo"),
       workspaceId: agent?.economics?.budgetPoolId ?? "team_local",
       userId: invocation?.requestedBy ?? agent?.economics?.costOwner ?? "usr_local",
-      teamId: null,
+      teamId: ledgerTeamId,
       agentId: invocation.agentId ?? null,
       agentName: agent?.name ?? null,
       invocationId: invocation.id,

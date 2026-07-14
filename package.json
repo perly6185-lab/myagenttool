@@ -148,6 +148,7 @@
     "smoke:codex-capability": "node tools/dev/codex-capability-caller-smoke.mjs",
     "smoke:claude-review-wrapper": "node tools/dev/claude-review-wrapper-smoke.mjs",
     "smoke:claude-tool": "node tools/dev/claude-tool-smoke.mjs",
+    "smoke:claude-apply": "node tools/dev/claude-apply-caller-smoke.mjs",
     "smoke:cost-attribution": "node tools/dev/cost-attribution-smoke.mjs",
     "smoke:tenancy": "node tools/dev/tenancy-smoke.mjs",
     "smoke:worktree-diff": "node tools/dev/worktree-diff-smoke.mjs",

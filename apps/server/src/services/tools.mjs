@@ -18,6 +18,15 @@ import {
   CLAUDE_EXPLAIN_TOOL_CONTRACT,
   isGovernedClaudeExplainAgent,
 } from "./claude-explain-agent.mjs";
+import {
+  CLAUDE_PROPOSE_TOOL_CONTRACT,
+  isGovernedClaudeProposeAgent,
+} from "./claude-propose-agent.mjs";
+import {
+  CLAUDE_APPLY_TOOL_CONTRACT,
+  isClaudeApplyEnabled,
+  isGovernedClaudeApplyAgent,
+} from "./claude-apply-agent.mjs";
 import { CLAUDE_APPLICATION_ID } from "./claude-application.mjs";
 import { teamOf } from "../runtime/auth.mjs";
 
@@ -26,12 +35,18 @@ const CCUSAGE_APPROVAL_REQUIRED_REPORTS = new Set(["session"]);
 export function createToolService({
   state,
   now,
+  nextId,
   appendEvent,
   createInvocation,
   startInvocationIfAllowed,
   findApplication,
   findAgent,
   planApplicationWrapperInvocation,
+  // Phase 4a apply gate: the dual-accept grant validator (APPROVAL_GRANTS.md).
+  // Absent in unit tests that never exercise apply; the apply path fails closed
+  // without it, exactly like the application service's approvalCheck.
+  validateApprovalToken = null,
+  persistStateSoon = () => {},
 }) {
   function listTools() {
     return discoverTools();
@@ -84,6 +99,25 @@ export function createToolService({
         agentLabel: "Claude",
         application: application ? { id: application.id, capability: `app.${application.id}.explain.diff` } : null,
       });
+    }
+    if (name === CLAUDE_PROPOSE_TOOL_CONTRACT.name) {
+      const application = resolveClaudeApp();
+      return createReviewInvocation({
+        input,
+        actor,
+        contract: CLAUDE_PROPOSE_TOOL_CONTRACT,
+        validate: validateClaudeProposeInput,
+        selectAgent: selectClaudeProposeAgent,
+        buildTask: buildClaudeProposeTask,
+        // The proposal is an immutable artifact on the invocation result; a later
+        // approval-bound apply (Phase 4) consumes it by invocation id.
+        outputCollection: "invocations",
+        agentLabel: "Claude",
+        application: application ? { id: application.id, capability: `app.${application.id}.propose.patch` } : null,
+      });
+    }
+    if (name === CLAUDE_APPLY_TOOL_CONTRACT.name) {
+      return authorizeApply(input, actor);
     }
     if (name === CODEX_EXEC_TOOL_CONTRACT.name) {
       return createExecInvocation({ input, actor });
@@ -215,6 +249,8 @@ export function createToolService({
         worktreeId: worktree.id,
         severityFloor: value.severityFloor,
           instruction: value.instruction,
+          // Present only for propose.patch; the bridge injects it as --task.
+          ...(value.task ? { task: value.task } : {}),
           ...(application ? {
             providerType: "application",
             applicationId: application.id,
@@ -346,6 +382,7 @@ export function createToolService({
     const codexReviewAgents = (state.agents ?? []).filter(isGovernedCodexReviewAgent);
     const claudeReviewAgents = (state.agents ?? []).filter(isGovernedClaudeReviewAgent);
     const claudeExplainAgents = (state.agents ?? []).filter(isGovernedClaudeExplainAgent);
+    const claudeProposeAgents = (state.agents ?? []).filter(isGovernedClaudeProposeAgent);
     // Only surface the write-capable exec tool when the feature flag is on, so an
     // off-by-default deployment has no discoverable or invokable Codex write path.
     const codexExecAgents = isCodexExecEnabled() ? (state.agents ?? []).filter(isGovernedCodexExecAgent) : [];
@@ -354,6 +391,10 @@ export function createToolService({
       ...(codexReviewAgents.length ? [buildCodexReviewToolDescriptor(codexReviewAgents)] : []),
       ...(claudeReviewAgents.length ? [buildClaudeReviewToolDescriptor(claudeReviewAgents, resolveClaudeApp())] : []),
       ...(claudeExplainAgents.length ? [buildClaudeExplainToolDescriptor(claudeExplainAgents, resolveClaudeApp())] : []),
+      ...(claudeProposeAgents.length ? [buildClaudeProposeToolDescriptor(claudeProposeAgents, resolveClaudeApp())] : []),
+      // Apply is server-side (no runner agent in 4a) and write-adjacent, so it is
+      // discoverable ONLY when the default-OFF flag is set.
+      ...(isClaudeApplyEnabled() ? [buildClaudeApplyToolDescriptor(resolveClaudeApp())] : []),
       ...(codexExecAgents.length ? [buildCodexExecToolDescriptor(codexExecAgents)] : []),
     ];
   }
@@ -372,6 +413,247 @@ export function createToolService({
 
   function selectClaudeExplainAgent() {
     return (state.agents ?? []).find(isGovernedClaudeExplainAgent) ?? null;
+  }
+
+  function selectClaudeProposeAgent() {
+    return (state.agents ?? []).find(isGovernedClaudeProposeAgent) ?? null;
+  }
+
+  // Phase 4a apply GATE (#914): bind to a Phase 3 proposal, enforce tenancy, and
+  // require a valid single-use approval grant. On success record an immutable,
+  // non-executable authorization — NO file is written here. Fails closed without
+  // the grant validator. A later slice (4b) executes an authorization.
+  function authorizeApply(input, actor = null) {
+    if (!isClaudeApplyEnabled()) {
+      return { status: 403, body: { error: "apply_not_enabled", message: "The Claude apply capability is disabled." } };
+    }
+    const validation = validateClaudeApplyInput(input);
+    if (!validation.ok) return { status: validation.status, body: validation.body };
+    const value = validation.value;
+
+    const project = resolveToolProjectId(value.projectId, actor);
+    if (!project.ok) return { status: project.status, body: project.body };
+    const projectId = project.value;
+    const worktree = findToolWorktree(value.worktreeId, projectId);
+    if (!worktree) return { status: 404, body: { error: "worktree_not_found" } };
+
+    // Bind to the referenced proposal. An unknown or cross-project invocation is
+    // proposal_not_found (no existence leak); a non-proposal or unfinished one is
+    // proposal_not_applicable.
+    const proposal = (state.invocations ?? []).find((item) => item.id === value.proposalInvocationId) ?? null;
+    const proposalProjectId = proposal?.projectId ?? proposal?.options?.metadata?.projectId ?? null;
+    if (!proposal || proposalProjectId !== projectId) {
+      return { status: 404, body: { error: "proposal_not_found" } };
+    }
+    const meta = proposal.options?.metadata ?? {};
+    const patch = proposal.result?.output?.patch;
+    if (meta.tool !== CLAUDE_PROPOSE_TOOL_CONTRACT.name || proposal.status !== "succeeded" || typeof patch !== "string" || !patch.trim()) {
+      return { status: 409, body: { error: "proposal_not_applicable", message: "The referenced invocation is not a completed claude.propose.patch proposal." } };
+    }
+    // Binding: apply only to the worktree the proposal targeted.
+    if (meta.worktreeId && meta.worktreeId !== worktree.id) {
+      return { status: 409, body: { error: "worktree_binding_mismatch", proposalWorktreeId: meta.worktreeId, requestedWorktreeId: worktree.id } };
+    }
+
+    // Approval: a valid, single-use grant for (apply_patch, proposalInvocationId).
+    // Fail closed if the validator is not wired — a missing validator must never
+    // authorize a write-adjacent action.
+    if (typeof validateApprovalToken !== "function") {
+      return { status: 409, body: { error: "approval_required", reason: "approval_validator_unavailable" } };
+    }
+    const approval = validateApprovalToken(value.approvalToken, {
+      action: "apply_patch",
+      targetId: value.proposalInvocationId,
+      actor,
+    });
+    if (!approval.approved) {
+      return { status: 409, body: { error: "approval_required", reason: approval.reason ?? "grant_required" } };
+    }
+
+    const files = Array.isArray(proposal.result?.output?.files) ? proposal.result.output.files : [];
+    const authorization = {
+      id: typeof nextId === "function" ? nextId("cap_demo") : `cap_${(state.claudeApplyAuthorizations?.length ?? 0) + 1}`,
+      source: "claude",
+      tool: CLAUDE_APPLY_TOOL_CONTRACT.name,
+      proposalInvocationId: value.proposalInvocationId,
+      // Scope this artifact to the proposal's invocation in the public read model.
+      invocationId: value.proposalInvocationId,
+      projectId,
+      worktreeId: worktree.id,
+      requestedBy: actor?.userId ?? null,
+      grantId: approval.grantId ?? null,
+      summary: stringOrNull(proposal.result?.output?.summary),
+      patch,
+      files,
+      // Immutable, single-use. 4a authorizes; a later slice (4b) executes it.
+      status: "authorized",
+      executable: false,
+      applied: false,
+      createdAt: now(),
+    };
+    state.claudeApplyAuthorizations = state.claudeApplyAuthorizations ?? [];
+    state.claudeApplyAuthorizations.unshift(authorization);
+    state.claudeApplyAuthorizations = state.claudeApplyAuthorizations.slice(0, 500);
+    appendEvent({
+      invocationId: value.proposalInvocationId,
+      type: "claude_apply_authorized",
+      level: "info",
+      message: `Authorized a Claude patch apply for proposal ${value.proposalInvocationId} (grant ${approval.grantId ?? "legacy"}).`,
+      data: {
+        claudeApplyAuthorizationId: authorization.id,
+        proposalInvocationId: value.proposalInvocationId,
+        worktreeId: worktree.id,
+        grantId: approval.grantId ?? null,
+      },
+    });
+
+    // Phase 4b: if a governed apply RUNNER is available, dispatch the git-apply as
+    // a queued bridge invocation carrying the authorized patch. Without a runner
+    // this stays a 4a authorization (executable: false) — the authorization is the
+    // durable proof the apply was approved either way.
+    const runner = availableClaudeApplyRunner();
+    if (runner) {
+      const invocation = createInvocation(`Apply an authorized Claude patch to worktree ${worktree.id}.`, runner, {
+        actor,
+        requestedBy: actor?.userId,
+        metadata: {
+          tool: CLAUDE_APPLY_TOOL_CONTRACT.name,
+          toolVersion: CLAUDE_APPLY_TOOL_CONTRACT.version,
+          projectId,
+          worktreeId: worktree.id,
+          claudeApplyAuthorizationId: authorization.id,
+          proposalInvocationId: value.proposalInvocationId,
+          // The bridge writes this to a temp file and passes --patch-file. Stripped
+          // from public state (see sanitizeInvocationOptions).
+          applyPatch: patch,
+        },
+        timeoutSeconds: 120,
+      });
+      startInvocationIfAllowed(invocation, runner);
+      authorization.status = "applying";
+      authorization.executable = true;
+      authorization.executionInvocationId = invocation.id;
+      persistStateSoon();
+      return {
+        status: 201,
+        body: {
+          tool: CLAUDE_APPLY_TOOL_CONTRACT.name,
+          authorizationId: authorization.id,
+          status: "applying",
+          executable: true,
+          applied: false,
+          executionInvocationId: invocation.id,
+          agentId: runner.id,
+          proposalInvocationId: value.proposalInvocationId,
+          worktreeId: worktree.id,
+          files,
+        },
+      };
+    }
+
+    persistStateSoon();
+    return {
+      status: 201,
+      body: {
+        tool: CLAUDE_APPLY_TOOL_CONTRACT.name,
+        authorizationId: authorization.id,
+        status: "authorized",
+        executable: false,
+        applied: false,
+        proposalInvocationId: value.proposalInvocationId,
+        worktreeId: worktree.id,
+        files,
+      },
+    };
+  }
+
+  // A governed apply runner that can actually execute now: registered, enabled,
+  // healthy, and on a linked device.
+  function availableClaudeApplyRunner() {
+    const runner = (state.agents ?? []).find(isGovernedClaudeApplyAgent) ?? null;
+    if (!runner || runner.status === "disabled") return null;
+    if (runner.health?.status === "unhealthy") return null;
+    if (runner.location?.type === "local_device" && state.device?.unlinkState === "unlinked") return null;
+    return runner;
+  }
+
+  // Governed ROLLBACK of an applied authorization (#914 follow-up): the recorded
+  // rollback guidance becomes an executable action. Same trust shape as the apply:
+  // tenancy-scoped, bound to the authorization artifact, and gated on a fresh
+  // single-use grant for (rollback_patch, authorizationId) — undoing a write is a
+  // write. The runner re-applies the SAME server-held patch with --reverse.
+  function rollbackClaudeApply(authorizationId, body = {}, actor = null) {
+    if (!isClaudeApplyEnabled()) {
+      return { status: 403, body: { error: "apply_not_enabled", message: "The Claude apply capability is disabled." } };
+    }
+    const authorization = (state.claudeApplyAuthorizations ?? []).find((item) => item.id === String(authorizationId ?? "")) ?? null;
+    // Tenancy: a foreign-team authorization reads as unknown (no existence leak).
+    const project = authorization?.projectId
+      ? (state.projects ?? []).find((item) => item.id === authorization.projectId) ?? null
+      : null;
+    if (!authorization || (actor?.teamId && project && teamOf(project) !== actor.teamId)) {
+      return { status: 404, body: { error: "authorization_not_found" } };
+    }
+    if (authorization.status !== "applied") {
+      return { status: 409, body: { error: "authorization_not_applied", status: authorization.status, message: "Only an applied authorization can be rolled back." } };
+    }
+    const token = stringOrNull(body?.approvalToken);
+    if (!token) {
+      return { status: 409, body: { error: "approval_required", reason: "missing_token" } };
+    }
+    if (typeof validateApprovalToken !== "function") {
+      return { status: 409, body: { error: "approval_required", reason: "approval_validator_unavailable" } };
+    }
+    const approval = validateApprovalToken(token, { action: "rollback_patch", targetId: authorization.id, actor });
+    if (!approval.approved) {
+      return { status: 409, body: { error: "approval_required", reason: approval.reason ?? "grant_required" } };
+    }
+    const runner = availableClaudeApplyRunner();
+    if (!runner) {
+      return { status: 409, body: { error: "agent_not_available", message: "No governed Claude apply runner is available to execute the rollback." } };
+    }
+    const invocation = createInvocation(`Roll back an applied Claude patch on worktree ${authorization.worktreeId}.`, runner, {
+      actor,
+      requestedBy: actor?.userId,
+      metadata: {
+        tool: CLAUDE_APPLY_TOOL_CONTRACT.name,
+        toolVersion: CLAUDE_APPLY_TOOL_CONTRACT.version,
+        projectId: authorization.projectId,
+        worktreeId: authorization.worktreeId,
+        claudeApplyAuthorizationId: authorization.id,
+        // The bridge injects --reverse for this flag; the runner then refuses a
+        // reverse that no longer checks cleanly (worktree moved on).
+        claudeApplyRollback: true,
+        applyPatch: authorization.patch,
+      },
+      timeoutSeconds: 120,
+    });
+    startInvocationIfAllowed(invocation, runner);
+    authorization.status = "rolling_back";
+    authorization.rollbackInvocationId = invocation.id;
+    appendEvent({
+      invocationId: invocation.id,
+      type: "claude_rollback_authorized",
+      level: "warn",
+      message: `Authorized rolling back Claude patch authorization ${authorization.id} (grant ${approval.grantId ?? "legacy"}).`,
+      data: {
+        claudeApplyAuthorizationId: authorization.id,
+        proposalInvocationId: authorization.proposalInvocationId,
+        worktreeId: authorization.worktreeId,
+        grantId: approval.grantId ?? null,
+      },
+    });
+    persistStateSoon();
+    return {
+      status: 202,
+      body: {
+        authorizationId: authorization.id,
+        status: "rolling_back",
+        rollbackInvocationId: invocation.id,
+        agentId: runner.id,
+        worktreeId: authorization.worktreeId,
+      },
+    };
   }
 
   function resolveToolProjectId(projectId, actor) {
@@ -408,6 +690,7 @@ export function createToolService({
     createToolInvocation,
     getTool,
     listTools,
+    rollbackClaudeApply,
     validateCodexReviewInput,
     validateClaudeReviewInput,
     validateCodexExecInput,
@@ -525,6 +808,58 @@ function buildClaudeExplainToolDescriptor(agents, application = null) {
     authoritativeBilling: false,
     outputCollection: "invocations",
     application: application ? { id: application.id, capability: `app.${application.id}.explain.diff` } : null,
+  };
+}
+
+function buildClaudeProposeToolDescriptor(agents, application = null) {
+  return {
+    name: CLAUDE_PROPOSE_TOOL_CONTRACT.name,
+    version: CLAUDE_PROPOSE_TOOL_CONTRACT.version,
+    displayName: "Claude Patch Proposal",
+    description: "Run a governed Claude session that proposes a change as an immutable patch artifact — never applied.",
+    riskLevel: "low",
+    riskTags: ["read_only", "read_project", "code_proposal", "local_agent"],
+    requiresLocalDevice: true,
+    inputSchema: CLAUDE_PROPOSE_TOOL_CONTRACT.inputSchema,
+    outputSchema: CLAUDE_PROPOSE_TOOL_CONTRACT.outputSchema,
+    agents: agents.map((agent) => ({
+      id: agent.id,
+      name: agent.name,
+      status: agent.status,
+      mode: "propose-patch",
+    })),
+    approvalPolicy: {
+      // Generating a proposal is read-only. Applying it is the separate,
+      // approval-bound Phase 4 path.
+      proposePatch: "allowed",
+      applyPatch: "approval_required",
+    },
+    authoritativeBilling: false,
+    outputCollection: "invocations",
+    application: application ? { id: application.id, capability: `app.${application.id}.propose.patch` } : null,
+  };
+}
+
+function buildClaudeApplyToolDescriptor(application = null) {
+  return {
+    name: CLAUDE_APPLY_TOOL_CONTRACT.name,
+    version: CLAUDE_APPLY_TOOL_CONTRACT.version,
+    displayName: "Claude Patch Apply",
+    description: "Authorize applying a reviewed Claude patch proposal to its bound worktree. Requires a single-use approval grant. Phase 4a records the authorization only; execution is a follow-up.",
+    riskLevel: "high",
+    riskTags: ["write_worktree", "code_change", "local_agent", "approval_required"],
+    requiresLocalDevice: true,
+    inputSchema: CLAUDE_APPLY_TOOL_CONTRACT.inputSchema,
+    outputSchema: CLAUDE_APPLY_TOOL_CONTRACT.outputSchema,
+    // No runner agent in 4a: the gate is server-side. 4b adds the bridge apply runner.
+    agents: [],
+    approvalPolicy: {
+      applyPatch: "approval_required",
+      executable: false,
+    },
+    authoritativeBilling: false,
+    outputCollection: "claudeApplyAuthorizations",
+    application: application ? { id: application.id, capability: `app.${application.id}.apply.patch` } : null,
   };
 }
 
@@ -745,6 +1080,45 @@ function validateClaudeExplainInput(input = {}) {
   };
 }
 
+// Propose requires a task (the change to propose) and an optional instruction; it
+// takes no severityFloor. A stray field is a hard unknown_field.
+function validateClaudeProposeInput(input = {}) {
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    return { ok: false, status: 400, body: { error: "invalid_input", message: "Tool input must be an object." } };
+  }
+  const allowed = new Set(["projectId", "worktreeId", "task", "instruction"]);
+  const unknown = Object.keys(input).filter((key) => !allowed.has(key));
+  if (unknown.length) {
+    return { ok: false, status: 400, body: { error: "unknown_field", fields: unknown } };
+  }
+  const worktreeId = stringOrNull(input.worktreeId);
+  if (!worktreeId) {
+    return { ok: false, status: 400, body: { error: "worktree_required" } };
+  }
+  const task = input.task === undefined || input.task === null ? "" : String(input.task).trim();
+  if (!task) {
+    return { ok: false, status: 400, body: { error: "task_required" } };
+  }
+  if (task.length > 4000) {
+    return { ok: false, status: 400, body: { error: "task_too_long", maxLength: 4000 } };
+  }
+  const instruction = input.instruction === undefined || input.instruction === null
+    ? null
+    : String(input.instruction).trim();
+  if (instruction && instruction.length > 1200) {
+    return { ok: false, status: 400, body: { error: "instruction_too_long", maxLength: 1200 } };
+  }
+  return {
+    ok: true,
+    value: {
+      projectId: stringOrNull(input.projectId),
+      worktreeId,
+      task,
+      instruction,
+    },
+  };
+}
+
 function buildCcusageTask(value) {
   const filters = [
     value.since ? `since ${value.since}` : null,
@@ -769,6 +1143,36 @@ function buildClaudeReviewTask(value) {
 function buildClaudeExplainTask(value) {
   const suffix = value.instruction ? ` Instruction: ${value.instruction}` : "";
   return `Explain the selected worktree diff with Claude.${suffix}`;
+}
+
+function buildClaudeProposeTask(value) {
+  const suffix = value.instruction ? ` Instruction: ${value.instruction}` : "";
+  return `Propose a patch with Claude for: ${value.task}.${suffix}`;
+}
+
+// Apply requires the bound proposal id and a grant token; it produces no task.
+function validateClaudeApplyInput(input = {}) {
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    return { ok: false, status: 400, body: { error: "invalid_input", message: "Tool input must be an object." } };
+  }
+  const allowed = new Set(["projectId", "worktreeId", "proposalInvocationId", "approvalToken"]);
+  const unknown = Object.keys(input).filter((key) => !allowed.has(key));
+  if (unknown.length) {
+    return { ok: false, status: 400, body: { error: "unknown_field", fields: unknown } };
+  }
+  const worktreeId = stringOrNull(input.worktreeId);
+  if (!worktreeId) {
+    return { ok: false, status: 400, body: { error: "worktree_required" } };
+  }
+  const proposalInvocationId = stringOrNull(input.proposalInvocationId);
+  if (!proposalInvocationId) {
+    return { ok: false, status: 400, body: { error: "proposal_required" } };
+  }
+  const approvalToken = stringOrNull(input.approvalToken);
+  if (!approvalToken) {
+    return { ok: false, status: 409, body: { error: "approval_required", reason: "missing_token" } };
+  }
+  return { ok: true, value: { projectId: stringOrNull(input.projectId), worktreeId, proposalInvocationId, approvalToken } };
 }
 
 function buildCodexExecTask(value) {

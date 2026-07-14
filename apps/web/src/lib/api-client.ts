@@ -6,6 +6,8 @@
 
 import type {
   ApplicationCapability,
+  ApplicationInstallPlan,
+  ApplicationInstallRun,
   ApplicationOrchestrationRecovery,
   ApplicationOrchestrationRecoveryAgentCandidate,
   ApplicationOrchestrationRun,
@@ -291,6 +293,14 @@ export const api = {
       "/api/applications/quick-register",
       body,
     ),
+  createApplicationInstallPlan: (body: { name: string; projectId?: string | null; deviceId: string }) =>
+    request<{ plan: ApplicationInstallPlan }>("POST", "/api/applications/install/plan", body),
+  queueApplicationInstall: (body: { plan: ApplicationInstallPlan; approvalToken: string }) =>
+    request<{ run: ApplicationInstallRun }>("POST", "/api/applications/install/runs", body),
+  getApplicationInstallRun: (id: string) =>
+    request<{ run: ApplicationInstallRun }>("GET", `/api/applications/install/runs/${encodeURIComponent(id)}`),
+  cancelApplicationInstall: (id: string) =>
+    request<{ run: ApplicationInstallRun }>("POST", `/api/applications/install/runs/${encodeURIComponent(id)}/cancel`, {}),
   applicationLifecycle: (
     id: string,
     action: "probe" | "online" | "offline" | "archive" | "refresh",
@@ -299,6 +309,14 @@ export const api = {
   /** Mint a single-use, action-scoped approval grant — the real token behind approvalToken (APPROVAL_GRANTS.md). */
   issueApprovalGrant: (action: string, targetId: string) =>
     request<{ grantId: string; token: string; expiresAt: string }>("POST", "/api/approvals/grants", { action, targetId }),
+  /** Governed rollback of an applied Claude patch authorization (#914): requires a
+   * fresh single-use grant for (rollback_patch, authorizationId). */
+  rollbackClaudeApply: (authorizationId: string, approvalToken: string) =>
+    request<{ authorizationId: string; status: string; rollbackInvocationId: string }>(
+      "POST",
+      `/api/claude-apply/authorizations/${encodeURIComponent(authorizationId)}/rollback`,
+      { approvalToken },
+    ),
   /** Loop promotion refusals (tools/ai), for the console refusal lens (refusal model #758). */
   getLoopRefusals: () => request<LoopRefusalsResponse>("GET", "/api/loop-refusals"),
   getApplicationRecoveryArchive: (id: string, limit = 50) =>

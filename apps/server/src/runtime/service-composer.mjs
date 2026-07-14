@@ -3,6 +3,7 @@ import { createRefusalRuntime } from "./refusal-log.mjs";
 import { createBridgeCredentialRuntime } from "./bridge-auth.mjs";
 import { createPersistenceRuntime } from "./persistence.mjs";
 import { createReadModelRuntime } from "./read-models.mjs";
+import { createInMemoryStore } from "./store/in-memory-store.mjs";
 import {
   createAgentService,
   isAgentDisabled,
@@ -22,6 +23,7 @@ import { createCapabilityService } from "../services/capabilities.mjs";
 import { createApplicationResultImportService } from "../services/application-results.mjs";
 import { createCcusageImportService } from "../services/ccusage-imports.mjs";
 import { createClaudeReviewImportService } from "../services/claude-review-imports.mjs";
+import { createClaudeApplyImportService } from "../services/claude-apply-imports.mjs";
 import { createCodexReviewImportService } from "../services/codex-review-imports.mjs";
 import { createCodexExecImportService } from "../services/codex-exec-imports.mjs";
 import { createRoundTelemetryRuntime } from "../services/round-telemetry.mjs";
@@ -80,6 +82,11 @@ export function createServerRuntimeServices({
     defaultProject,
     sameProjectPath,
   });
+  // #966 (#124): the Store seam over today's snapshot — reads scan `state`, a
+  // transaction stages writes and commits atomically through the synchronous
+  // barrier. Constructed now and exposed for services to migrate onto
+  // incrementally (#968); nothing routes through it yet, so behavior is unchanged.
+  const store = createInMemoryStore({ state, commit: persistStateNow });
   const restored = restorePersistentState();
   // The counter comes from the snapshot it minted ids for. The scan is kept ONLY
   // as a floor — for a snapshot written before the counter was persisted, and as a
@@ -145,7 +152,7 @@ export function createServerRuntimeServices({
     selectProject,
     updateProject,
     worktreeForProject,
-  } = createProjectService({ state, now, nextId, appendEvent, persistStateSoon });
+  } = createProjectService({ state, now, nextId, appendEvent, persistStateSoon, store });
 
   const {
     createAgentSkill,
@@ -225,7 +232,7 @@ export function createServerRuntimeServices({
     markHealthCheckStarted,
     nextBridgeHealthCheck,
     registerAgent,
-  } = createAgentService({ state, now, nextId, appendEvent, persistStateSoon });
+  } = createAgentService({ state, now, nextId, appendEvent, persistStateSoon, store });
 
   const {
     closeCodexSession,
@@ -323,6 +330,8 @@ export function createServerRuntimeServices({
     appendEvent,
     findAgent,
     persistStateSoon,
+    // #968: commit lifecycle-action transitions through the Store's unit of work.
+    store,
     // autoRunAlerts is created later in this factory; the closure is only invoked
     // at run-completion (well after init), so referencing it here is safe.
     dispatchAlert: (alert) => autoRunAlerts.dispatch(alert),
@@ -352,6 +361,12 @@ export function createServerRuntimeServices({
     state,
     now,
     nextId,
+    appendEvent,
+    persistStateSoon,
+  });
+  const { recordClaudeApplyResult } = createClaudeApplyImportService({
+    state,
+    now,
     appendEvent,
     persistStateSoon,
   });
@@ -392,6 +407,7 @@ export function createServerRuntimeServices({
     recordCcusageImportedEstimates,
     recordCodexReviewFindings,
     recordClaudeReviewFindings,
+    recordClaudeApplyResult,
     recordCodexExecChanges,
     recordApplicationResult,
     currentProject,
@@ -412,6 +428,8 @@ export function createServerRuntimeServices({
     // #890.1 tail: hold budget at manual/API accept, release on completion.
     reserveBudget,
     releaseReservationsForInvocation,
+    // #968: the Store seam — dispatch claim/ack commit through its unit of work.
+    store,
     checkUsageQuota,
     onInvocationCompleted: (invocation) => {
       advanceAutoRunHook?.(invocation);
@@ -772,15 +790,19 @@ export function createServerRuntimeServices({
     createToolInvocation,
     getTool,
     listTools,
+    rollbackClaudeApply,
   } = createToolService({
     state,
     now,
+    nextId,
     appendEvent,
     createInvocation,
     startInvocationIfAllowed,
     findApplication,
     findAgent,
     planApplicationWrapperInvocation,
+    validateApprovalToken,
+    persistStateSoon,
   });
 
   const {
@@ -2747,6 +2769,7 @@ export function createServerRuntimeServices({
     createToolInvocation,
     getTool,
     listTools,
+    rollbackClaudeApply,
     nextId,
     persistStateSoon,
     budgetStatusFor,
@@ -2757,6 +2780,8 @@ export function createServerRuntimeServices({
     httpDependencies,
     savePersistentState,
     selfCheckDependencies,
+    // #966: the Store seam, exposed for incremental service migration (#968).
+    store,
   };
 }
 

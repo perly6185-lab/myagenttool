@@ -6,6 +6,7 @@ import { runProtocolSelfCheck } from "./runtime/self-check.mjs";
 import { createServerRuntimeServices } from "./runtime/service-composer.mjs";
 import { createServerState } from "./runtime/state-factory.mjs";
 import { acquireStateLock } from "./runtime/state-lock.mjs";
+import { applyRetentionPolicies } from "./services/retention.mjs";
 
 const namespace = "com.myagenttool";
 const protocolVersion = "0.0.0";
@@ -114,6 +115,22 @@ if (typeof httpDependencies.bridgeLivenessSweep === "function") {
       /* best-effort sweep */
     }
   }, 60_000).unref?.();
+}
+
+// #970 retention: reap telemetry (events/traces/spans) past the configured
+// retention window on boot + a slow (hourly) tick. Time policy on top of the
+// per-collection count caps; shielded evidence (ledger/audit/refusals) untouched.
+{
+  const sweepRetention = () => {
+    try {
+      const { reaped } = applyRetentionPolicies(state, { now });
+      if (reaped > 0) savePersistentState();
+    } catch {
+      /* best-effort retention sweep */
+    }
+  };
+  sweepRetention();
+  setInterval(sweepRetention, 3_600_000).unref?.();
 }
 
 process.on("SIGINT", () => {
