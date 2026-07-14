@@ -70,6 +70,26 @@ export function buildEvidenceCenterRecords({
       createdAt: review.createdAt
     });
   }
+  // Governed codex.exec changesets are a first-class trust-ledger artifact: an AI
+  // that WROTE code is exactly what a supervisor needs to see. Each git-derived
+  // change row surfaces as a file_change record, scoped to its invocation.
+  for (const change of state.codexExecChanges ?? []) {
+    const worktree = change.worktreeId ? (state.worktrees ?? []).find((item) => item.id === change.worktreeId) : null;
+    records.push({
+      id: change.id,
+      type: "file_change",
+      source: "governed_codex_exec",
+      redactionState: "summary_only",
+      invocationId: change.invocationId,
+      codexSessionRegistryId: null,
+      agentId: change.agentId ?? findInvocation(change.invocationId)?.agentId ?? null,
+      repoPath: worktree?.worktreePath ?? null,
+      summary: `${change.action}: ${change.file}`,
+      detail: change.changeSummary ?? change.diffPreview ?? change.file,
+      marker: "governed",
+      createdAt: change.createdAt
+    });
+  }
   for (const usage of state.importedUsageEstimates ?? []) {
     records.push({
       id: usage.id,

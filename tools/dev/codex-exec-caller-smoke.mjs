@@ -117,6 +117,17 @@ try {
   assert(!JSON.stringify(result.catalogEntry).includes("codex-exec-wrapper.mjs"), "catalog must not leak wrapper argv");
   ok("capability catalog exposes the contract without raw argv");
 
+  // Phase 2: the exec changeset surfaces in the Evidence Center trust ledger — an
+  // AI that wrote code is visible to a supervisor, scoped to the run.
+  const evidenceState = await request("GET", "/api/state");
+  const execEvidence = (evidenceState.evidenceCenterRecords ?? []).filter(
+    (record) => record.source === "governed_codex_exec" && record.invocationId === result.invocationId,
+  );
+  assert(execEvidence.length >= 1, "exec changeset should appear in the Evidence Center");
+  assert(execEvidence.some((record) => record.summary.includes("greeting.txt")), "evidence record should name the changed file");
+  assert(execEvidence.every((record) => record.redactionState === "summary_only"), "exec evidence must stay summary-only");
+  ok("exec changeset surfaces in the Evidence Center trust ledger");
+
   const capture = await waitFor(() => readJsonFile(codexCapturePath), "fake Codex capture");
   assert(resolve(capture.cwd) === resolve(worktreeCreated.worktree.worktreePath), "Codex ran in the selected worktree");
   assert(capture.prompt.includes("Add a greeting file."), "caller task reached the wrapper");
