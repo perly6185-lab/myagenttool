@@ -155,6 +155,14 @@ try {
   assert(authorization.patchPreview === undefined || typeof authorization.patchPreview === "string", "public authorization exposes only a bounded preview");
   ok("the applied file list + rollback guidance are recorded on the authorization");
 
+  // Evidence unification: a Claude apply is trust-ledger evidence with the same
+  // vocabulary as codex.exec — a governed file_change a supervisor can see.
+  const appliedEvidence = (await request("GET", "/api/state")).evidenceCenterRecords
+    .filter((record) => record.source === "governed_claude_apply");
+  assert(appliedEvidence.some((record) => record.type === "file_change" && record.summary === "applied: greeting.txt" && record.marker === "governed"),
+    "the applied file should surface as governed file_change evidence");
+  ok("the apply surfaces in the Evidence Center with the shared governed vocabulary");
+
   // ---- Governed rollback (#914 follow-up): the guidance is now an ACTION -----
   // A fresh single-use grant per rollback — undoing a write is a write.
   const missingGrant = await fetch(`${serverUrl}/api/claude-apply/authorizations/${encodeURIComponent(authorization.id)}/rollback`, {
@@ -181,6 +189,13 @@ try {
   assert(retired.rollback?.available === false, "a completed rollback consumes the guidance");
   assert(!existsSync(appliedFile), "the governed rollback should remove the applied file from disk");
   ok("the bridge git-reverse rollback removed the applied change from disk");
+
+  // Evidence of a write does not vanish on undo — the record's summary flips.
+  const rolledBackEvidence = (await request("GET", "/api/state")).evidenceCenterRecords
+    .filter((record) => record.source === "governed_claude_apply");
+  assert(rolledBackEvidence.some((record) => record.summary === "rolled back: greeting.txt"),
+    "the rolled-back file should keep its evidence with the final state in the summary");
+  ok("the rollback keeps the evidence, restated as rolled back");
 
   console.log(`\nclaude-apply-caller-smoke: ${passed} checks passed`);
 } finally {

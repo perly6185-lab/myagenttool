@@ -11,6 +11,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
+import { buildEvidenceCenterRecords } from "../src/read-models/evidence-center.mjs";
 import { createApprovalGrantService } from "../src/services/approval-grants.mjs";
 import { createToolService } from "../src/services/tools.mjs";
 import { createClaudeApplyAgentRegistration, isGovernedClaudeApplyAgent } from "../src/services/claude-apply-agent.mjs";
@@ -396,6 +397,40 @@ test("Phase 4b: a failed apply marks the authorization failed with no rollback a
   assert.equal(authorization.rollback, null);
   assert.equal(authorization.verification.checkPassed, false);
   assert(state.events.some((e) => e.type === "claude_apply_failed"));
+});
+
+// --- Evidence unification: Claude applies share the codex.exec trust-ledger vocabulary ---
+
+test("applied and rolled-back authorizations surface as governed file_change evidence; unexecuted ones do not", () => {
+  const state = {
+    worktrees: [{ id: "wt_a", worktreePath: "/tmp/wt-a" }],
+    claudeApplyAuthorizations: [
+      {
+        id: "cap_applied", proposalInvocationId: "inv_p1", invocationId: "inv_p1", worktreeId: "wt_a",
+        status: "applied", appliedFiles: [{ path: "x.mjs" }, { path: "y.mjs" }],
+        resultSummary: "Applied a Claude patch touching 2 file(s).", appliedAt: "2026-07-14T00:01:00.000Z",
+      },
+      {
+        id: "cap_rolled", proposalInvocationId: "inv_p2", invocationId: "inv_p2", worktreeId: "wt_a",
+        status: "rolled_back", appliedFiles: [{ path: "z.mjs" }], rolledBackAt: "2026-07-14T00:02:00.000Z",
+      },
+      // Authorized but never executed: nothing reached the worktree, no evidence row.
+      { id: "cap_pending", proposalInvocationId: "inv_p3", invocationId: "inv_p3", status: "authorized", files: [{ path: "n.mjs" }] },
+    ],
+  };
+  const records = buildEvidenceCenterRecords({
+    state,
+    findInvocation: () => null,
+    codexSessionForInvocation: () => null,
+    repoPathForEvidence: () => null,
+  }).filter((record) => record.source === "governed_claude_apply");
+  assert.equal(records.length, 3, "two applied files + one rolled-back file");
+  assert.ok(records.every((record) => record.type === "file_change" && record.marker === "governed" && record.redactionState === "summary_only"),
+    "claude applies use the same trust-ledger vocabulary as codex exec");
+  assert.deepEqual(records.filter((r) => r.invocationId === "inv_p1").map((r) => r.summary).sort(), ["applied: x.mjs", "applied: y.mjs"]);
+  assert.equal(records.find((r) => r.invocationId === "inv_p2").summary, "rolled back: z.mjs", "evidence of a write does not vanish on undo — the summary reflects the final state");
+  assert.equal(records[0].repoPath, "/tmp/wt-a");
+  assert.ok(!records.some((r) => r.invocationId === "inv_p3"), "an unexecuted authorization leaves no file_change evidence");
 });
 
 test("apply refuses an unknown proposal, a non-proposal invocation, and a worktree binding mismatch", () => {
