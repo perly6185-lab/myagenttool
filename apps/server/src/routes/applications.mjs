@@ -1,4 +1,5 @@
 import { denyForeignProject, teamOf } from "../runtime/auth.mjs";
+import { createKnownApplicationRegistration, listKnownApplications } from "../services/application-catalog.mjs";
 
 export async function handleApplicationRoutes({
   req,
@@ -28,6 +29,47 @@ export async function handleApplicationRoutes({
 }) {
   if (req.method === "GET" && url.pathname === "/api/applications") {
     sendJson(res, 200, { applications: visibleApplications(state, actor, listApplications()) });
+    return true;
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/applications/quick-register/catalog") {
+    sendJson(res, 200, { applications: listKnownApplications() });
+    return true;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/applications/quick-register") {
+    const body = await readJson(req);
+    if (!body || typeof body !== "object" || Array.isArray(body)) {
+      sendJson(res, 400, { error: "invalid_application", message: "Request body must be an object." });
+      return true;
+    }
+    if (body.projectId && denyForeignProject({ res, sendJson, state, actor, projectId: body.projectId, notFound: { error: "project_not_found" } })) {
+      return true;
+    }
+    const resolved = createKnownApplicationRegistration(body.name, { projectId: body.projectId });
+    if (!resolved) {
+      sendJson(res, 400, {
+        error: "known_application_not_supported",
+        message: `Known application is not supported. Try: ${listKnownApplications().map((entry) => entry.name).join(", ")}.`,
+      });
+      return true;
+    }
+    try {
+      const existed = Boolean(findApplication(resolved.registration.id));
+      const application = registerApplication(resolved.registration, actor);
+      sendJson(res, existed ? 200 : 201, {
+        application,
+        capabilities: listApplicationCapabilities(application.id) ?? [],
+        catalog: resolved.entry,
+      });
+    } catch (error) {
+      const code = typeof error?.code === "string" ? error.code : "invalid_application";
+      const status = code === "application_descriptor_conflict" || code === "application_already_replaced" ? 409 : 400;
+      sendJson(res, status, {
+        error: code,
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
     return true;
   }
 

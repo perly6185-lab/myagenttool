@@ -14,6 +14,7 @@ import type {
   ApplicationSnapshot,
   ConsoleSnapshot,
   InvocationEventSnapshot,
+  KnownApplicationCatalogEntry,
   ProjectTreeResponse,
   RefusalRow,
   ReviewFindingQueryResponse,
@@ -277,6 +278,17 @@ export const api = {
     request<{ application: ApplicationSnapshot; capabilities: ApplicationCapability[] }>(
       "POST",
       "/api/applications/register",
+      body,
+    ),
+  listKnownApplications: () =>
+    request<{ applications: KnownApplicationCatalogEntry[] }>(
+      "GET",
+      "/api/applications/quick-register/catalog",
+    ),
+  quickRegisterApplication: (body: { name: string; projectId?: string | null }) =>
+    request<{ application: ApplicationSnapshot; capabilities: ApplicationCapability[]; catalog: KnownApplicationCatalogEntry }>(
+      "POST",
+      "/api/applications/quick-register",
       body,
     ),
   applicationLifecycle: (
