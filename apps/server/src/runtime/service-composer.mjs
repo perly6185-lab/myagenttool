@@ -232,7 +232,7 @@ export function createServerRuntimeServices({
     markHealthCheckStarted,
     nextBridgeHealthCheck,
     registerAgent,
-  } = createAgentService({ state, now, nextId, appendEvent, persistStateSoon });
+  } = createAgentService({ state, now, nextId, appendEvent, persistStateSoon, store });
 
   const {
     closeCodexSession,
