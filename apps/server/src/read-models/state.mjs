@@ -313,7 +313,14 @@ export function buildPublicState({
     claudeReviewFindings,
     reviewFindings,
     codexExecChanges,
-    ledgerSummary: typeof ledgerSummary === "function" ? ledgerSummary() : null,
+    // Scope the economics rollup to the viewer's team: an unscoped viewer
+    // (teamId == null, local dev/admin) gets the platform total; a scoped viewer
+    // gets only its own entries, mirroring `ledgerEntries: byProject(...)` above.
+    // Passing the global summary here leaks foreign totals + project names (#891).
+    ledgerSummary:
+      typeof ledgerSummary === "function"
+        ? ledgerSummary(teamId == null ? undefined : (entry) => projectVisible(entry?.projectId))
+        : null,
     // Project budgets scope by project; team pools (rows with teamId, no
     // projectId) scope by the viewer's team — byProject alone would treat them
     // as global and leak every team's pool to every viewer.
