@@ -59,6 +59,10 @@ export function createServerState({ defaultProjectPath, now }) {
     compareRuns: [],
     worktreeReviews: [],
     events: [],
+    // Known gaps in the durable invocation-event archive. The hot event ring is
+    // still bounded when archival fails; this marker lets the detail endpoint say
+    // that history is incomplete instead of silently presenting a partial run.
+    eventHistoryRetention: createEventHistoryRetention(),
     // Refusal model Phase 2 (#760): the device's veto as first-class records.
     refusals: [],
     traces: [],
@@ -172,6 +176,7 @@ export function resetStateForSelfCheck({ state, now }) {
   state.applicationInstallRuns = [];
   state.applicationRecoveryActions = [];
   state.events = [];
+  state.eventHistoryRetention = createEventHistoryRetention();
   state.refusals = [];
   state.traces = [];
   state.spans = [];
@@ -252,6 +257,15 @@ function createDefaultDevice(now) {
     bridgeCredential: null,
     maxConcurrency: defaultMaxConcurrency,
     createdAt: now()
+  };
+}
+
+function createEventHistoryRetention() {
+  return {
+    truncatedInvocationIds: [],
+    globalTruncated: false,
+    lastArchiveErrorAt: null,
+    lastArchiveError: null,
   };
 }
 

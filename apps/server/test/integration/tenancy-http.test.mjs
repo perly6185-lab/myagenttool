@@ -77,6 +77,15 @@ before(async () => {
     requestedBy: "usr_a",
     createdAt: now(),
   });
+  state.events.push({
+    id: "evt_inv_a_created",
+    invocationId: "inv_a",
+    type: "invocation_created",
+    level: "info",
+    message: "Team A invocation created.",
+    data: null,
+    createdAt: now(),
+  });
   state.codexApprovalBrokerRequests.push({
     id: "cdx_appr_a",
     invocationId: "inv_a",
@@ -278,6 +287,20 @@ test("write guard: team B cannot cancel or troubleshoot team A's invocation (404
   assert.equal(cancel.status, 404);
   const troubleshoot = await call("/api/invocations/inv_a/troubleshoot", { token: "tok_b", method: "POST" });
   assert.equal(troubleshoot.status, 404);
+});
+
+test("invocation event detail is readable by its team and existence-hidden from another team", async () => {
+  const own = await call("/api/invocations/inv_a/events", { token: "tok_a" });
+  assert.equal(own.status, 200);
+  assert.equal(own.body.invocationId, "inv_a");
+  assert.deepEqual(own.body.events.map((event) => event.id), ["evt_inv_a_created"]);
+  assert.equal(own.body.retentionTruncated, false);
+
+  const foreign = await call("/api/invocations/inv_a/events?before=malformed%2Bcursor", { token: "tok_b" });
+  const missing = await call("/api/invocations/inv_missing/events", { token: "tok_b" });
+  assert.equal(foreign.status, 404);
+  assert.deepEqual(foreign.body, missing.body);
+  assert.deepEqual(foreign.body, { error: "invocation_not_found" });
 });
 
 test("write guard: team B cannot control team A's terminal session (404)", async () => {

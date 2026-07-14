@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { appendFileSync, existsSync, mkdtempSync, readFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -35,6 +35,9 @@ test("readArchive: recovers evicted rows most-recently-archived first, filters, 
   // A torn final line (crash mid-append) is skipped, not fatal.
   appendFileSync(join(archive.archiveDir, "recovery.jsonl"), '{"archivedAt":"2026-07-12T00:00:09.000Z","collection":"recovery","row":{"id":"tor');
   assert.deepEqual(archive.readArchive("recovery").map((e) => e.row.id), ["b1", "a1"], "torn line ignored");
+  const diagnostic = archive.readArchiveWithMetadata("recovery");
+  assert.equal(diagnostic.malformedLines, 1, "a caller can report that the recovered history is incomplete");
+  assert.equal(diagnostic.readError, null);
 });
 
 test("capWithArchive keeps the cap and appends the overflow as JSONL, newest kept", () => {
@@ -55,7 +58,7 @@ test("capWithArchive keeps the cap and appends the overflow as JSONL, newest kep
   assert.equal(after.length, 3);
 });
 
-test("under the cap nothing is written; disabled archive drops silently (old behavior)", () => {
+test("under the cap nothing is written; a disabled archive reports unavailable", () => {
   const dir = mkdtempSync(join(tmpdir(), "retention-"));
   const archive = createRetentionArchive({ stateStorePath: join(dir, "state.json"), now });
   const same = archive.capWithArchive([{ id: "x" }], 5, "quiet");
@@ -63,8 +66,81 @@ test("under the cap nothing is written; disabled archive drops silently (old beh
   assert.equal(existsSync(join(archive.archiveDir, "quiet.jsonl")), false);
 
   const disabled = createRetentionArchive({ stateStorePath: join(dir, "state.json"), enabled: false, now });
+  const disabledResult = disabled.archiveEvicted("disabled", [{ id: "2" }]);
+  assert.equal(disabledResult.ok, false);
+  assert.equal(disabledResult.error, "archive_disabled");
   disabled.capWithArchive([{ id: "1" }, { id: "2" }], 1, "disabled");
   assert.equal(existsSync(join(disabled.archiveDir, "disabled.jsonl")), false);
+});
+
+test("archiveEvicted reports an I/O failure instead of silently claiming durability", () => {
+  const dir = mkdtempSync(join(tmpdir(), "retention-failure-"));
+  const blocker = join(dir, "not-a-directory");
+  writeFileSync(blocker, "file");
+  const archive = createRetentionArchive({ stateStorePath: join(blocker, "state.json"), now });
+  const result = archive.archiveEvicted("events", [{ id: "evt_1" }]);
+  assert.equal(result.ok, false);
+  assert.equal(result.archivedCount, 0);
+  assert.ok(result.error);
+});
+
+test("invocation events use traversal-safe per-invocation shards with a restart id floor", () => {
+  const dir = mkdtempSync(join(tmpdir(), "invocation-event-shards-"));
+  const stateStorePath = join(dir, "state.json");
+  const archive = createRetentionArchive({ stateStorePath, now });
+  const suspiciousInvocationId = "../../inv_a";
+  const result = archive.archiveInvocationEvents([
+    { id: "evt_demo_101", invocationId: suspiciousInvocationId, type: "log", createdAt: now() },
+    { id: "evt_demo_103", invocationId: suspiciousInvocationId, type: "log", createdAt: now() },
+    { id: "evt_demo_102", invocationId: "inv_b", type: "log", createdAt: now() },
+  ]);
+  assert.equal(result.ok, true);
+  assert.equal(existsSync(join(dir, "inv_a.jsonl")), false, "an invocation id never becomes a path");
+  assert.equal(existsSync(join(archive.archiveDir, "events.jsonl")), false, "production event reads are not global");
+  assert.deepEqual(
+    readdirSync(archive.invocationEventArchiveDir).sort().map((name) => /^[a-f0-9]{64}\.jsonl$/.test(name)),
+    [true, true],
+  );
+  assert.deepEqual(
+    archive.readInvocationEventArchive(suspiciousInvocationId).entries.map((entry) => entry.row.id),
+    ["evt_demo_101", "evt_demo_103"],
+  );
+  assert.deepEqual(
+    archive.readInvocationEventArchive("inv_b").entries.map((entry) => entry.row.id),
+    ["evt_demo_102"],
+  );
+
+  // A power loss can leave the JSON row complete but omit only its trailing
+  // newline. The row is readable and therefore its id must still raise the
+  // allocator floor after restart.
+  for (const name of readdirSync(archive.invocationEventArchiveDir)) {
+    const path = join(archive.invocationEventArchiveDir, name);
+    writeFileSync(path, readFileSync(path, "utf8").trimEnd());
+  }
+  const restarted = createRetentionArchive({ stateStorePath, now });
+  assert.deepEqual(restarted.prepareInvocationEventArchive(), { maxOrdinal: 103, readError: null });
+
+  const suspiciousShard = readdirSync(archive.invocationEventArchiveDir)
+    .map((name) => join(archive.invocationEventArchiveDir, name))
+    .find((path) => readFileSync(path, "utf8").includes(suspiciousInvocationId));
+  assert.ok(suspiciousShard);
+  appendFileSync(
+    suspiciousShard,
+    '\n{"archivedAt":"2026-07-11T12:00:00.000Z","collection":"events","row":{"id":"evt_demo_104"',
+  );
+  const afterTornRow = createRetentionArchive({ stateStorePath, now });
+  assert.deepEqual(afterTornRow.prepareInvocationEventArchive(), { maxOrdinal: 104, readError: null });
+  assert.equal(afterTornRow.archiveInvocationEvents([
+    { id: "evt_demo_105", invocationId: suspiciousInvocationId, type: "log", createdAt: now() },
+  ]).ok, true);
+  const recovered = afterTornRow.readInvocationEventArchive(suspiciousInvocationId);
+  assert.deepEqual(recovered.entries.map((entry) => entry.row.id), ["evt_demo_101", "evt_demo_103", "evt_demo_105"]);
+  assert.equal(recovered.malformedLines, 1, "the torn row remains an honest truncation signal");
+  assert.deepEqual(
+    createRetentionArchive({ stateStorePath, now }).prepareInvocationEventArchive(),
+    { maxOrdinal: 105, readError: null },
+    "a later valid append remains restart-readable after a torn row",
+  );
 });
 
 test("grant pruning archives what it drops — expired-unconsumed and over-cap consumed alike", () => {

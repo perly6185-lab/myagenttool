@@ -119,6 +119,7 @@ export const persistedObjectKeys = [
   "autoRunSettings",
   "autoRunBreaker",
   "approvalTokenLegacyUses",
+  "eventHistoryRetention",
   "privateDeploymentConfig",
   "retentionSettings",
   "terminalRuntimeCapability",

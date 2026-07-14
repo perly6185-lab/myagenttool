@@ -28,6 +28,7 @@ import { createCodexExecImportService } from "../services/codex-exec-imports.mjs
 import { createRoundTelemetryRuntime } from "../services/round-telemetry.mjs";
 import { createCodexService } from "../services/codex.mjs";
 import { createIntegrationService } from "../services/integrations.mjs";
+import { createInvocationEventService } from "../services/invocation-events.mjs";
 import { createInvocationService } from "../services/invocations.mjs";
 import { createM3Service } from "../services/m3.mjs";
 import { createProjectService, sameProjectPath } from "../services/projects.mjs";
@@ -87,11 +88,22 @@ export function createServerRuntimeServices({
   // incrementally (#968); nothing routes through it yet, so behavior is unchanged.
   const store = createInMemoryStore({ state, commit: persistStateNow });
   const restored = restorePersistentState();
+  // Event archive ids can be newer than the last debounced state snapshot. Read
+  // their durable high-water before minting any new ids after a restart.
+  const retentionArchive = createRetentionArchive({ stateStorePath, enabled: persistenceEnabled, now });
+  const eventArchive = retentionArchive.prepareInvocationEventArchive();
+  if (eventArchive.readError) {
+    throw new Error(`Cannot establish invocation event id high-water: ${eventArchive.readError}`);
+  }
   // The counter comes from the snapshot it minted ids for. The scan is kept ONLY
   // as a floor — for a snapshot written before the counter was persisted, and as a
   // backstop if a restored counter is somehow behind the records it must not
   // collide with. It can raise the counter; it can never lower it (#832).
-  idCounter = Math.max(state.idCounter ?? 0, nextIdCounterAfterState(state));
+  idCounter = Math.max(
+    state.idCounter ?? 0,
+    nextIdCounterAfterState(state),
+    eventArchive.maxOrdinal > 0 ? eventArchive.maxOrdinal + 1 : 0,
+  );
   state.idCounter = idCounter;
   // Every id the state already holds. `nextId` refuses to reissue one, so a
   // counter that is wrong — reset, restored from an older snapshot, whatever —
@@ -105,12 +117,20 @@ export function createServerRuntimeServices({
     savePersistentState();
   }
 
+  // Cap-evicted audit rows land in an on-disk JSONL archive instead of
+  // vanishing. Compose it before the event writer so an event is archived and
+  // fsynced before the 500-row hot tail drops it.
+  const { listInvocationEvents } = createInvocationEventService({
+    state,
+    readInvocationEventArchive: retentionArchive.readInvocationEventArchive,
+  });
   const { appendEvent } = createEventLogRuntime({
     state,
     now,
     nextId,
     persistStateSoon,
     getCodexEventHandlers: () => codexEventHandlers,
+    archiveEvicted: (_collection, rows) => retentionArchive.archiveInvocationEvents(rows),
   });
   // Refusal model Phase 2 (#760): the single writer for the device's veto.
   const { refuse, firstRefusal } = createRefusalRuntime({
@@ -162,9 +182,6 @@ export function createServerRuntimeServices({
   // Approval grants (docs/design/APPROVAL_GRANTS.md): the issuance flow behind
   // every approvalToken field. Composed before the application service so the
   // validator can be injected into its guards.
-  // Cap-evicted audit rows land in an on-disk JSONL archive instead of
-  // vanishing (docs: retention-archive.mjs). Disabled with persistence (tests).
-  const retentionArchive = createRetentionArchive({ stateStorePath, enabled: persistenceEnabled, now });
   const { recordApplicationExecutionStat } = createApplicationStatsRuntime({ state, now, persistStateSoon });
 
   // The read half of the audit loop: recovery actions the 200-row cap evicted are
@@ -2746,6 +2763,7 @@ export function createServerRuntimeServices({
     findInvocation,
     acknowledgeInvocation,
     completeInvocation,
+    listInvocationEvents,
     findApprovalRequest,
     approveInvocation,
     denyInvocation,
