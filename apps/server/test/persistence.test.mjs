@@ -10,8 +10,10 @@ import { createPersistenceRuntime } from "../src/runtime/persistence.mjs";
 import { createServerRuntimeServices } from "../src/runtime/service-composer.mjs";
 import { createServerState } from "../src/runtime/state-factory.mjs";
 import { createAgentService } from "../src/services/agents.mjs";
+import { createApplicationResultImportService } from "../src/services/application-results.mjs";
 import { CCUSAGE_VERSION } from "../src/services/ccusage-agent.mjs";
 import { createCcusageImportService } from "../src/services/ccusage-imports.mjs";
+import { createInvocationCompletionRuntime } from "../src/services/invocations/completion.mjs";
 import { createClaudeReviewImportService } from "../src/services/claude-review-imports.mjs";
 import { createCodexReviewImportService } from "../src/services/codex-review-imports.mjs";
 import { createCodexService } from "../src/services/codex.mjs";
@@ -320,6 +322,246 @@ test("persistence restores imported usage and review evidence across runtime res
     const exportRequest = restoredM3.createAuditExportRequest({ subjects: ["usage"], dryRun: false });
     assert.equal(exportRequest.status, "exported");
     assert(exportRequest.manifest.recordRefs.some((ref) => ref.subject === "usage" && ref.id === usage[0].id), "imported usage estimate should remain exportable after restore");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// Gap closed here: `state.applicationResults` is on `persistedArrayKeys`, but no
+// test proved the whole Application-result LINK CHAIN survives a restart. A row
+// on disk is not the same as an explainable result: completion writes the link
+// to five places (invocation.result, invocation.metadata, audit summary,
+// application.latestResult, and an `application_result_recorded` event), and two
+// read models (public state, Evidence Center) recompute from those. This drives
+// the generic `resultImport` importer (git repo_state) through the real
+// completion runtime, restarts, and re-checks every link and both read models.
+test("persistence restores application result links across runtime restart", () => {
+  const root = join(tmpdir(), `myagenttool-persistence-app-result-test-${Date.now()}`);
+  const projectPath = join(root, "project");
+  const stateStorePath = join(root, "state", "snapshot.json");
+  mkdirSync(projectPath, { recursive: true });
+
+  try {
+    const first = createServerState({ defaultProjectPath: projectPath, now });
+    const projectId = first.defaultProject.id;
+    // A registered git Application so `application.latestResult` has something to
+    // attach to and the imported row resolves an owning team (not the fallback).
+    first.state.applications.push({
+      id: "app_git",
+      name: "Managed Git",
+      source: { kind: "git" },
+      ownerTeamId: "team_local",
+      ownerUserId: "usr_local",
+      status: "active",
+      createdAt: now(),
+      updatedAt: now(),
+    });
+    const invocation = {
+      id: "inv_app_git_restore",
+      agentId: "agt_platform_application_wrapper",
+      requestedBy: "usr_local",
+      projectId,
+      status: "running",
+      input: { task: "Run application capability app.app_git.wrapper.status." },
+      options: {
+        metadata: {
+          providerType: "application",
+          applicationId: "app_git",
+          capability: "app.app_git.wrapper.status",
+          applicationWrapper: {
+            capability: "app.app_git.wrapper.status",
+            resultImport: { source: "git", kind: "repo_state" },
+            outputCollection: "applicationResults",
+          },
+        },
+      },
+      delivery: { deviceId: first.state.device.id },
+      cancellation: { state: "none" },
+      createdAt: now(),
+    };
+    first.state.invocations.push(invocation);
+
+    let id = 0;
+    const nextId = (prefix) => `${prefix}_${++id}`;
+    const appendEvent = (event) => first.state.events.unshift({ id: nextId("evt"), createdAt: now(), ...event });
+    const { recordApplicationResult } = createApplicationResultImportService({
+      state: first.state,
+      now,
+      nextId,
+      appendEvent,
+    });
+    const completion = createInvocationCompletionRuntime({
+      state: first.state,
+      now,
+      appendEvent,
+      persistStateSoon: () => {},
+      namespace: "test",
+      protocolVersion: "0",
+      findAgent: (agentId) => first.state.agents.find((agent) => agent.id === agentId) ?? null,
+      findInvocation: (invocationId) => first.state.invocations.find((item) => item.id === invocationId) ?? null,
+      closeCodexSession: () => {},
+      isTerminal: (status) => ["succeeded", "failed", "cancelled", "timed_out", "expired", "rejected"].includes(status),
+      recordInvocationLedgerEntry: () => null,
+      recordApplicationResult,
+    });
+
+    completion.completeInvocation(invocation, {
+      status: "succeeded",
+      summary: "Managed git status completed.",
+      result: {
+        output: {
+          source: "application",
+          capability: "app.app_git.wrapper.status",
+          report: { text: "# branch.head main" },
+        },
+      },
+    });
+
+    // Live linkage before persisting — the chain must exist to be worth restoring.
+    const importedId = first.state.applicationResults[0]?.id;
+    assert.ok(importedId, "completion should import the git application result row");
+    assert.equal(first.state.applicationResults[0].data.branch.name, "main");
+    assert.deepEqual(invocation.result.applicationResult.importedRecordIds, [importedId]);
+    assert.equal(invocation.options.metadata.applicationResult.importedRecordIds[0], importedId);
+    assert.equal(first.state.applications.find((app) => app.id === "app_git").latestResult.importedRecordIds[0], importedId);
+    assert.ok(first.state.auditSummaries.some((summary) => summary.applicationResult?.importedRecordIds?.[0] === importedId));
+    assert.ok(first.state.events.some((event) => event.type === "application_result_recorded"));
+
+    saveState(first, { stateStorePath });
+
+    const second = createServerState({ defaultProjectPath: projectPath, now });
+    restoreState(second, { stateStorePath });
+
+    // 1. The ledger row survives with its parsed body intact.
+    const restoredRow = second.state.applicationResults.find((row) => row.id === importedId);
+    assert.equal(restoredRow?.status, "parsed", "parsed git repo_state row survives restart");
+    assert.equal(restoredRow?.data?.branch?.name, "main", "parsed data survives restart");
+
+    // 2-4. The link on the invocation, audit summary, and application all survive.
+    const restoredInvocation = second.state.invocations.find((item) => item.id === invocation.id);
+    assert.deepEqual(
+      restoredInvocation?.result?.applicationResult?.importedRecordIds,
+      [importedId],
+      "invocation result link survives restart",
+    );
+    assert.equal(
+      restoredInvocation?.options?.metadata?.applicationResult?.importedRecordIds?.[0],
+      importedId,
+      "invocation metadata link survives restart",
+    );
+    assert.ok(
+      second.state.auditSummaries.some((summary) => summary.applicationResult?.importedRecordIds?.[0] === importedId),
+      "audit summary application-result link survives restart",
+    );
+    const restoredApp = second.state.applications.find((app) => app.id === "app_git");
+    assert.equal(
+      restoredApp?.latestResult?.importedRecordIds?.[0],
+      importedId,
+      "application latestResult link survives restart",
+    );
+
+    // 5. The lineage event survives.
+    assert.ok(
+      second.state.events.some((event) => event.type === "application_result_recorded"),
+      "application_result_recorded event survives restart",
+    );
+
+    // Both read models rebuild purely from the restored durable rows.
+    const publicState = publicStateFor(second.state, { defaultProjectPath: projectPath });
+    assert.ok(
+      publicState.applicationResults.some((row) => row.id === importedId),
+      "public applicationResults projects the restored row",
+    );
+    assert.equal(
+      publicState.applications.find((app) => app.id === "app_git")?.latestResult?.importedRecordIds?.[0],
+      importedId,
+      "public application latestResult survives restart",
+    );
+    assert.ok(
+      publicState.evidenceCenterRecords.some((record) => record.id === importedId && record.type === "application_result"),
+      "Evidence Center rebuilds the application result row after restart",
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// The tenancy boundary is a read-model property, so it has to hold on RESTORED
+// rows too — a snapshot round-trip must not turn a scoped row into a global one.
+// The existing tenancy tests run with persistence disabled; this one writes two
+// teams' evidence, restarts, and proves each team's public read models, Evidence
+// Center rows, and budgets still hide the other team after restore.
+test("persistence keeps tenancy scoping across runtime restart for two teams", () => {
+  const root = join(tmpdir(), `myagenttool-persistence-tenancy-test-${Date.now()}`);
+  const projectPath = join(root, "project");
+  const stateStorePath = join(root, "state", "snapshot.json");
+  mkdirSync(projectPath, { recursive: true });
+  const TEAM_A = "team_a";
+  const TEAM_B = "team_b";
+  // restore drops projects whose path no longer exists on disk (persistence.mjs),
+  // so a project row must point at a real directory to survive the round-trip —
+  // otherwise its rows would look "orphaned" and hide under scoping for a reason
+  // unrelated to tenancy.
+  const projectPathA = `${projectPath}-a`;
+  const projectPathB = `${projectPath}-b`;
+  mkdirSync(projectPathA, { recursive: true });
+  mkdirSync(projectPathB, { recursive: true });
+
+  try {
+    const first = createServerState({ defaultProjectPath: projectPath, now });
+    first.state.teams.push({ id: TEAM_A, name: "Team A", slug: "a", createdAt: now() }, { id: TEAM_B, name: "Team B", slug: "b", createdAt: now() });
+    first.state.users.push(
+      { id: "usr_a", name: "User A", email: null, teamId: TEAM_A, role: "owner", createdAt: now() },
+      { id: "usr_b", name: "User B", email: null, teamId: TEAM_B, role: "owner", createdAt: now() },
+    );
+    first.state.projects.push(
+      { id: "prj_a", name: "Project A", path: projectPathA, source: "local", ownerTeamId: TEAM_A },
+      { id: "prj_b", name: "Project B", path: projectPathB, source: "local", ownerTeamId: TEAM_B },
+    );
+    // Per-team evidence across every surface the closeout names: invocation,
+    // application result (project-scoped), imported usage (invocation-scoped),
+    // and a project budget row.
+    const seedTeam = (suffix, teamId, projectId) => {
+      first.state.applications.push({ id: `app_${suffix}`, name: `Git ${suffix}`, projectId, ownerTeamId: teamId, status: "active", createdAt: now(), updatedAt: now() });
+      first.state.invocations.push({ id: `inv_${suffix}`, projectId, requestedBy: `usr_${suffix}`, agentId: "agt_platform_application_wrapper", status: "succeeded", createdAt: now() });
+      first.state.applicationResults.push({
+        id: `res_${suffix}`, source: "git", kind: "repo_state", applicationId: `app_${suffix}`,
+        capability: "app.app_git.wrapper.status", invocationId: `inv_${suffix}`, projectId, ownerTeamId: teamId,
+        status: "parsed", truncated: false, data: { branch: { name: `main-${suffix}` } }, text: "# branch.head main", createdAt: now(),
+      });
+      first.state.importedUsageEstimates.push({ id: `usage_${suffix}`, invocationId: `inv_${suffix}`, estimatedCostUsd: 1, source: "ccusage" });
+      first.state.budgets.push({ id: `bud_${suffix}`, projectId, limitUsd: 100, createdAt: now() });
+    };
+    seedTeam("a", TEAM_A, "prj_a");
+    seedTeam("b", TEAM_B, "prj_b");
+
+    saveState(first, { stateStorePath });
+
+    const second = createServerState({ defaultProjectPath: projectPath, now });
+    restoreState(second, { stateStorePath });
+
+    const idsOf = (rows) => (rows ?? []).map((row) => row.id).sort();
+    const forTeam = (teamId) => publicStateFor(second.state, { defaultProjectPath: projectPath, actor: { teamId } });
+
+    const a = forTeam(TEAM_A);
+    const b = forTeam(TEAM_B);
+
+    // Each durable surface scopes to the owning team after restore — no leaks.
+    assert.deepEqual(idsOf(a.applicationResults), ["res_a"], "team A sees only its own restored application result");
+    assert.deepEqual(idsOf(b.applicationResults), ["res_b"], "team B sees only its own restored application result");
+    assert.deepEqual(idsOf(a.importedUsageEstimates), ["usage_a"], "imported usage scopes by invocation after restore");
+    assert.deepEqual(idsOf(b.importedUsageEstimates), ["usage_b"]);
+    assert.deepEqual(idsOf(a.invocations), ["inv_a"], "invocations scope by project after restore");
+    assert.deepEqual(idsOf(b.invocations), ["inv_b"]);
+    assert.deepEqual(idsOf(a.budgets), ["bud_a"], "project budgets scope by project after restore");
+    assert.deepEqual(idsOf(b.budgets), ["bud_b"]);
+    assert.deepEqual(idsOf(a.applications.filter((app) => app.id.startsWith("app_"))), ["app_a"], "applications scope by team after restore");
+    assert.deepEqual(idsOf(b.applications.filter((app) => app.id.startsWith("app_"))), ["app_b"]);
+
+    // Evidence Center application-result rows scope by their invocation's project.
+    const ecAppResultIds = (publicState) => idsOf(publicState.evidenceCenterRecords.filter((record) => record.type === "application_result"));
+    assert.deepEqual(ecAppResultIds(a), ["res_a"], "team A's Evidence Center hides team B's application result after restore");
+    assert.deepEqual(ecAppResultIds(b), ["res_b"], "team B's Evidence Center hides team A's application result after restore");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -977,7 +1219,7 @@ function importServicesFor(state) {
   };
 }
 
-function publicStateFor(state, { defaultProjectPath }) {
+function publicStateFor(state, { defaultProjectPath, actor = null }) {
   const currentProject = () => state.projects.find((item) => item.id === state.currentProjectId) ?? state.projects[0] ?? null;
   const m3 = m3ServiceFor(state);
   const findInvocation = (invocationId) => state.invocations.find((item) => item.id === invocationId) ?? null;
@@ -1000,6 +1242,7 @@ function publicStateFor(state, { defaultProjectPath }) {
     ledgerSummary: () => m3.ledgerSummary(),
     budgetStatuses: () => m3.budgetStatuses(),
     teamBudgetStatuses: () => m3.teamBudgetStatuses(),
+    actor,
   });
 }
 

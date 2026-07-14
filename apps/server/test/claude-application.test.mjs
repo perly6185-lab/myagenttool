@@ -66,14 +66,16 @@ test("Claude Application capability delegates to the governed Tool and stamps re
 
 test("Claude Application result lineage enters the Evidence Center", () => {
   const invocation = { id: "inv_claude", agentId: "agt_claude_review_diff" };
+  // Sourced from the durable audit summary, not the 500-capped event stream, so
+  // the lineage row outlives event eviction (see evidence-center.mjs).
   const records = buildEvidenceCenterRecords({
     state: {
-      events: [{
-        id: "evt_result",
-        type: "application_result_recorded",
+      auditSummaries: [{
         invocationId: invocation.id,
-        createdAt: "2026-07-14T00:00:01.000Z",
-        data: {
+        agentId: invocation.agentId,
+        status: "succeeded",
+        completedAt: "2026-07-14T00:00:01.000Z",
+        applicationResult: {
           applicationId: CLAUDE_APPLICATION_ID,
           capability: "app.app_claude.review.diff",
           applicationAction: "tool:claude.review.diff",
