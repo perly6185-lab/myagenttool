@@ -59,6 +59,9 @@ export function createInvocationService({
     now,
     appendEvent,
     persistStateSoon,
+    // #890.2: completion writes the terminal status + ledger entry; give it the
+    // synchronous barrier so a crash can't lose a committed charge and re-run.
+    persistStateNow,
     namespace,
     protocolVersion,
     findAgent,
