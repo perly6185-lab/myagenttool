@@ -1,6 +1,7 @@
 import { closeSync, copyFileSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, writeSync } from "node:fs";
 import { dirname } from "node:path";
 
+import { LOCAL_TEAM_ID, teamOf } from "./auth.mjs";
 import { listDevices } from "./device.mjs";
 
 // Durable atomic snapshot write. `writeFileSync` truncates the target in place
@@ -32,7 +33,12 @@ function durableWriteFileSync(path, data) {
   }
 }
 
-const persistedArrayKeys = [
+// Exported as the canonical registry of durable ARRAY collections so a
+// completeness test (tenancy-persistence.test.mjs) can assert every state key is
+// deliberately classified as durable or transient — a new owner-scoped collection
+// added to the state factory without landing here would silently be non-durable
+// (and, if tenancy-scoped, could restore inconsistently). See #891.
+export const persistedArrayKeys = [
   "users",
   "teams",
   "tokens",
@@ -78,6 +84,7 @@ const persistedArrayKeys = [
   "codexExecChangeReviews",
   "applicationResults",
   "budgets",
+  "budgetReservations",
   "automations",
   "agentSkills",
   "auditExportRequests",
@@ -102,7 +109,7 @@ const persistedArrayKeys = [
 // NOTE: `devices` is deliberately absent from both key lists — it restores
 // through `restoreDevices` (per-record merge + legacy migration) and saves
 // through an explicit dual-write. See those functions.
-const persistedObjectKeys = [
+export const persistedObjectKeys = [
   // Auto-run config overrides + the circuit-breaker are OBJECTS — they must be
   // in the object list, not persistedArrayKeys, or restore's Array.isArray guard
   // silently drops them and every armed brake (kill switch, breaker, saved
@@ -114,6 +121,47 @@ const persistedObjectKeys = [
   "retentionSettings",
   "terminalRuntimeCapability",
 ];
+
+// Collections that carry BOTH a self-stamped owning team AND a project link. The
+// public read model scopes these by their PROJECT's team when a projectId is
+// present (ignoring the stamp), and falls back to the stamp only when there is no
+// project. A restored record whose stamp DISAGREES with its project's team is
+// therefore ownership-inconsistent: harmless under today's project-first scoping,
+// but a latent leak the moment any path trusts the stamp. We surface it as an
+// auditable diagnostic on restore — never delete it, never broaden its visibility.
+const OWNER_STAMPED_PROJECT_COLLECTIONS = [
+  { key: "applications", owner: "ownerTeamId" },
+  { key: "applicationResults", owner: "ownerTeamId" },
+];
+
+/**
+ * Pure integrity scan for ownership-inconsistent persisted records (#891): a row
+ * whose self-stamped owning team contradicts the team that owns its linked
+ * project. Returns a bounded list of `{collection, id, projectId, stampedTeam,
+ * projectTeam}` diagnostics; empty when the snapshot is consistent. Read-only —
+ * it classifies, it does not mutate or hide anything.
+ */
+export function detectOwnershipInconsistencies(state, { limit = 100 } = {}) {
+  const projectsById = new Map((state?.projects ?? []).map((project) => [project.id, project]));
+  const diagnostics = [];
+  for (const { key, owner } of OWNER_STAMPED_PROJECT_COLLECTIONS) {
+    for (const row of state?.[key] ?? []) {
+      const projectId = row?.projectId;
+      const stampedTeam = row?.[owner];
+      if (!projectId || !stampedTeam) continue; // no project link, or no stamp → nothing to cross-check
+      const project = projectsById.get(projectId);
+      if (!project) continue; // dangling projectId is fail-closed in scoped views, not a misattribution
+      const projectTeam = teamOf(project);
+      // teamOf already applies the LOCAL_TEAM_ID default, so a stamp of
+      // LOCAL_TEAM_ID against an unowned project is a match, not a mismatch.
+      if (projectTeam !== stampedTeam) {
+        diagnostics.push({ collection: key, id: row?.id ?? null, projectId, stampedTeam, projectTeam });
+        if (diagnostics.length >= limit) return diagnostics;
+      }
+    }
+  }
+  return diagnostics;
+}
 
 export function createPersistenceRuntime({
   state,
@@ -291,7 +339,24 @@ export function createPersistenceRuntime({
         console.error(`[server] could not preserve the pre-repair snapshot: ${error?.message ?? error}`);
       }
     }
-    return { duplicateIdsRepaired };
+    // #891: surface any ownership-inconsistent restored record as an auditable
+    // diagnostic. This is loud-not-silent by design — the record is neither
+    // deleted nor made more visible (scoped views already attribute it by its
+    // project's team); the log is the "quarantined/omitted with auditable
+    // diagnostics" contract so an operator can reconcile it.
+    const ownershipInconsistencies = detectOwnershipInconsistencies(state);
+    if (ownershipInconsistencies.length > 0) {
+      const preview = ownershipInconsistencies
+        .slice(0, 10)
+        .map((d) => `${d.collection}#${d.id} stamped ${d.stampedTeam} but project ${d.projectId} owned by ${d.projectTeam}`)
+        .join("; ");
+      console.error(
+        `[server] restore found ${ownershipInconsistencies.length} ownership-inconsistent record(s); ` +
+          `kept and scoped by project (visibility unchanged): ${preview}`,
+      );
+    }
+
+    return { duplicateIdsRepaired, ownershipInconsistencies };
   }
 
   /**

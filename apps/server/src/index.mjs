@@ -5,6 +5,7 @@ import { createHttpServer } from "./runtime/http-server.mjs";
 import { runProtocolSelfCheck } from "./runtime/self-check.mjs";
 import { createServerRuntimeServices } from "./runtime/service-composer.mjs";
 import { createServerState } from "./runtime/state-factory.mjs";
+import { acquireStateLock } from "./runtime/state-lock.mjs";
 
 const namespace = "com.myagenttool";
 const protocolVersion = "0.0.0";
@@ -16,6 +17,22 @@ const persistenceEnabled = !isSelfCheck && process.env.MYAGENTTOOL_STATE_DISABLE
 const stateStorePath = resolve(process.env.MYAGENTTOOL_STATE_PATH ?? ".myagenttool/state/local-demo-state.json");
 const stateSchemaVersion = 1;
 const defaultProjectPath = resolve(process.env.MYAGENTTOOL_PROJECT_PATH ?? process.cwd());
+
+// #890 single-writer lock: acquire BEFORE the composer restores/writes the state
+// file, so a second live server on the same host refuses to start instead of
+// clobbering this one's snapshot. Only when persistence is real (skips --check and
+// MYAGENTTOOL_STATE_DISABLED); disable entirely with MYAGENTTOOL_STATE_LOCK=0.
+let releaseStateLock = () => {};
+if (persistenceEnabled && process.env.MYAGENTTOOL_STATE_LOCK !== "0") {
+  const lock = acquireStateLock(stateStorePath, { now });
+  if (!lock.ok) {
+    const heldBy = lock.heldBy ? ` (held by pid ${lock.heldBy.pid} on ${lock.heldBy.hostname} since ${lock.heldBy.acquiredAt})` : "";
+    console.error(`[server] another server already owns ${stateStorePath}${heldBy}. Refusing to start to avoid clobbering its state. Stop the other process, or set MYAGENTTOOL_STATE_LOCK=0 to override.`);
+    process.exit(1);
+  }
+  releaseStateLock = lock.release;
+}
+
 const { defaultProject, state } = createServerState({ defaultProjectPath, now });
 const {
   httpDependencies,
@@ -101,12 +118,17 @@ if (typeof httpDependencies.bridgeLivenessSweep === "function") {
 
 process.on("SIGINT", () => {
   savePersistentState();
+  releaseStateLock();
   process.exit(0);
 });
 process.on("SIGTERM", () => {
   savePersistentState();
+  releaseStateLock();
   process.exit(0);
 });
+// Best-effort release on any other clean exit so a crash-free shutdown never
+// leaves a stale lock the next start has to reclaim.
+process.on("exit", () => releaseStateLock());
 
 function now() {
   return new Date().toISOString();
