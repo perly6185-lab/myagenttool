@@ -45,21 +45,42 @@ test("P2 Desktop Bridge rejects modified and stale plans before spawn", async ()
 test("P2 runs fixed discrete argv with shell disabled", async () => {
   const target = device("macos");
   const plan = createApplicationInstallPlan({ name: "ccusage" }, { device: target });
-  let observed;
+  const observed = [];
   const result = await runApprovedApplicationInstall({
     plan,
     platform: "darwin",
     spawnProcess: (command, args, options) => {
-      observed = { command, args, options };
+      observed.push({ command, args, options });
       const child = fakeChild();
       queueMicrotask(() => child.emit("close", 0));
       return child;
     },
   });
   assert.equal(result.status, "succeeded");
-  assert.equal(observed.command, "npm");
-  assert.deepEqual(observed.args, ["install", "--global", "ccusage@latest"]);
-  assert.equal(observed.options.shell, false);
+  assert.equal(observed[0].command, "npm");
+  assert.deepEqual(observed[0].args, ["install", "--global", "ccusage@latest"]);
+  assert.equal(observed[0].options.shell, false);
+  assert.equal(observed[1].command, "ccusage");
+  assert.deepEqual(observed[1].args, ["--version"]);
+  assert.equal(observed[1].options.shell, false);
+});
+
+test("P3 probe failure is distinct from install failure", async () => {
+  const target = device("macos");
+  const plan = createApplicationInstallPlan({ name: "git" }, { device: target });
+  let spawnCount = 0;
+  const result = await runApprovedApplicationInstall({
+    plan,
+    platform: "darwin",
+    spawnProcess: () => {
+      const child = fakeChild();
+      const code = spawnCount++ === 0 ? 0 : 1;
+      queueMicrotask(() => child.emit("close", code));
+      return child;
+    },
+  });
+  assert.equal(result.status, "failed");
+  assert.equal(result.classification, "probe_failed");
 });
 
 test("P2 cancellation terminates the child and reports cancelled", async () => {

@@ -6,6 +6,8 @@
 
 import type {
   ApplicationCapability,
+  ApplicationInstallPlan,
+  ApplicationInstallRun,
   ApplicationOrchestrationRecovery,
   ApplicationOrchestrationRecoveryAgentCandidate,
   ApplicationOrchestrationRun,
@@ -291,6 +293,14 @@ export const api = {
       "/api/applications/quick-register",
       body,
     ),
+  createApplicationInstallPlan: (body: { name: string; projectId?: string | null; deviceId: string }) =>
+    request<{ plan: ApplicationInstallPlan }>("POST", "/api/applications/install/plan", body),
+  queueApplicationInstall: (body: { plan: ApplicationInstallPlan; approvalToken: string }) =>
+    request<{ run: ApplicationInstallRun }>("POST", "/api/applications/install/runs", body),
+  getApplicationInstallRun: (id: string) =>
+    request<{ run: ApplicationInstallRun }>("GET", `/api/applications/install/runs/${encodeURIComponent(id)}`),
+  cancelApplicationInstall: (id: string) =>
+    request<{ run: ApplicationInstallRun }>("POST", `/api/applications/install/runs/${encodeURIComponent(id)}/cancel`, {}),
   applicationLifecycle: (
     id: string,
     action: "probe" | "online" | "offline" | "archive" | "refresh",
