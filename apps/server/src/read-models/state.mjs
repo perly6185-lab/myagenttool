@@ -73,6 +73,9 @@ export function buildPublicState({
   const codexReviewFindings = byInvocation(state.codexReviewFindings).map(({ raw, ...row }) => row);
   const claudeReviewFindings = byInvocation(state.claudeReviewFindings).map(({ raw, ...row }) => row);
   const reviewFindings = [...codexReviewFindings, ...claudeReviewFindings].sort(compareReviewFindings);
+  // Governed codex.exec changesets — same invocation-scoped visibility + raw strip
+  // as review findings (the git porcelain preview stays out of public state).
+  const codexExecChanges = byInvocation(state.codexExecChanges).map(({ raw, ...row }) => row);
   // Imported evidence has no invocation, so it can't ride byInvocation (a null
   // invocationId reads as globally visible). Scope it by its stamped owning team
   // instead; rows written before that stamp existed belong to the local team.
@@ -294,6 +297,7 @@ export function buildPublicState({
     codexReviewFindings,
     claudeReviewFindings,
     reviewFindings,
+    codexExecChanges,
     ledgerSummary: typeof ledgerSummary === "function" ? ledgerSummary() : null,
     // Project budgets scope by project; team pools (rows with teamId, no
     // projectId) scope by the viewer's team — byProject alone would treat them

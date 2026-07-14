@@ -22,6 +22,7 @@ import { createApplicationResultImportService } from "../services/application-re
 import { createCcusageImportService } from "../services/ccusage-imports.mjs";
 import { createClaudeReviewImportService } from "../services/claude-review-imports.mjs";
 import { createCodexReviewImportService } from "../services/codex-review-imports.mjs";
+import { createCodexExecImportService } from "../services/codex-exec-imports.mjs";
 import { createRoundTelemetryRuntime } from "../services/round-telemetry.mjs";
 import { createCodexService } from "../services/codex.mjs";
 import { createIntegrationService } from "../services/integrations.mjs";
@@ -340,6 +341,13 @@ export function createServerRuntimeServices({
     appendEvent,
     persistStateSoon,
   });
+  const { recordCodexExecChanges } = createCodexExecImportService({
+    state,
+    now,
+    nextId,
+    appendEvent,
+    persistStateSoon,
+  });
 
   // Late-bound so completion can trigger the auto-run reaction, which is created
   // below (it needs createInvocation from this very service). Set after the
@@ -370,6 +378,7 @@ export function createServerRuntimeServices({
     recordCcusageImportedEstimates,
     recordCodexReviewFindings,
     recordClaudeReviewFindings,
+    recordCodexExecChanges,
     recordApplicationResult,
     currentProject,
     worktreeForProject,

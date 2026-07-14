@@ -75,6 +75,13 @@ export function createLocalExecutionPolicyManifest({
       "tools/agents/codex-review-wrapper.mjs",
       "tools/agents/claude-review-wrapper.mjs",
     ],
+    // The write-capable exec wrapper is kept OUT of the read-only nodeWrappers
+    // list and classified as its own `codexExec` kind, so a writer is never
+    // mislabeled read_only. File writes are delegated to Codex's native sandbox
+    // (native_controls), exactly as for the codex CLI path.
+    codexExecWrappers: [
+      "tools/agents/codex-exec-wrapper.mjs",
+    ],
     applicationWrapperCommands: [
       {
         command: "ccusage",
@@ -94,6 +101,9 @@ export function createLocalExecutionPolicyManifest({
       codex: { file: ["native_controls", "workspace_write", "read_only"], network: ["native_controls", "restricted", "network"] },
       claude: { file: ["native_controls", "workspace_write", "read_only"], network: ["native_controls", "restricted", "network"] },
       wrapper: { file: ["read_only"], network: ["forbidden"] },
+      // codex.exec: writes are permitted but governed by Codex's native sandbox;
+      // network stays no-broader than restricted (never open `network`).
+      codexExec: { file: ["native_controls", "workspace_write", "read_only"], network: ["native_controls", "restricted", "forbidden"] },
     },
   };
 }
@@ -117,6 +127,16 @@ export function localPolicyForAdapter(adapter, payload = {}) {
       filePolicy: normalizePolicy(adapter?.filePolicy, "native_controls"),
       networkPolicy: normalizePolicy(adapter?.networkPolicy, "native_controls"),
       source: "coding_cli_native_controls",
+    };
+  }
+  // The governed exec wrapper spawns Codex, which owns file/sandbox controls, so
+  // it delegates to native_controls just like the codex CLI — not the read_only
+  // default that a generic node wrapper would get.
+  if (usesCodexExecWrapper(adapter)) {
+    return {
+      filePolicy: normalizePolicy(adapter?.filePolicy, "native_controls"),
+      networkPolicy: normalizePolicy(adapter?.networkPolicy, "restricted"),
+      source: "codex_exec_wrapper_native_controls",
     };
   }
   return {
@@ -211,6 +231,9 @@ function classifySpawn(adapter, spawnPlan, manifest = {}) {
   if (command === manifest.execPath && samePath(firstArg, manifest.codexFixtureAgentPath)) return "codex";
   if (isCodexCliCommand(adapter?.command) && isAllowlistedCodexSpawn(spawnPlan, manifest)) return "codex";
   if (isClaudeCliCommand(adapter?.command) && isClaudeCliCommand(spawnPlan.command)) return "claude";
+  // Classify the write-capable exec wrapper BEFORE the generic read_only wrapper
+  // check, so it lands in the codexExec policy rather than being treated read_only.
+  if (isAllowlistedCodexExecWrapper(spawnPlan, manifest)) return "codexExec";
   if (isAllowlistedNodeWrapper(adapter, spawnPlan, manifest)) return "wrapper";
   return null;
 }
@@ -238,6 +261,19 @@ function isAllowlistedNodeWrapper(adapter, spawnPlan, manifest = {}) {
   const script = String(spawnPlan.args?.[0] ?? "").replaceAll("\\", "/");
   return (manifest.nodeWrappers ?? []).some((suffix) => script.endsWith(suffix))
     && String(adapter?.command ?? "") === "node";
+}
+
+function isAllowlistedCodexExecWrapper(spawnPlan, manifest = {}) {
+  const command = String(spawnPlan?.command ?? "");
+  if (command !== "node" && command !== manifest.execPath) return false;
+  const script = String(spawnPlan?.args?.[0] ?? "").replaceAll("\\", "/");
+  return (manifest.codexExecWrappers ?? []).some((suffix) => script.endsWith(suffix));
+}
+
+function usesCodexExecWrapper(adapter) {
+  const args = Array.isArray(adapter?.args) ? adapter.args.map(String) : [];
+  return String(adapter?.command ?? "") === "node"
+    && args.some((arg) => arg.replaceAll("\\", "/").endsWith("tools/agents/codex-exec-wrapper.mjs"));
 }
 
 function isApplicationWrapperSpawn(spawnPlan, manifest = {}) {

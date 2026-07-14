@@ -141,6 +141,7 @@
     "smoke:claude-agent": "node tools/dev/claude-agent-smoke.mjs",
     "smoke:ccusage-agent": "node tools/dev/ccusage-agent-smoke.mjs",
     "smoke:codex-tool": "node tools/dev/codex-tool-smoke.mjs",
+    "smoke:codex-exec": "node tools/dev/codex-exec-caller-smoke.mjs",
     "smoke:claude-review-wrapper": "node tools/dev/claude-review-wrapper-smoke.mjs",
     "smoke:claude-tool": "node tools/dev/claude-tool-smoke.mjs",
     "smoke:cost-attribution": "node tools/dev/cost-attribution-smoke.mjs",
