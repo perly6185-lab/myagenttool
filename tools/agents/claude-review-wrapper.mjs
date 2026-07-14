@@ -3,13 +3,23 @@ import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { isAbsolute } from "node:path";
 
+// Phase 2 (#912) adds `diff-explain` beside `diff-review`. Both run the same
+// fixed, read-only (`--permission-mode plan`) Claude wrapper; only the prompt and
+// the shape of the structured output differ. The tool name is derived from the
+// mode so the server's per-tool import gate routes each correctly.
+// Default until the mode is known, so an early parseArgs failure still stamps a
+// valid tool on its error output.
+let outputTool = "claude.review.diff";
 const options = parseArgs(process.argv.slice(2));
-if (options.mode !== "diff-review") fail(`Unsupported Claude review mode: ${options.mode}`);
+const MODE_TOOL = { "diff-review": "claude.review.diff", "diff-explain": "claude.explain.diff" };
+const TOOL = MODE_TOOL[options.mode];
+if (!TOOL) fail(`Unsupported Claude wrapper mode: ${options.mode}`);
+outputTool = TOOL;
 requireReviewCwd(options);
 
-console.log(`Claude review started: ${options.mode}`);
+console.log(`Claude ${options.mode === "diff-explain" ? "explain" : "review"} started: ${options.mode}`);
 
-const prompt = buildPrompt(options);
+const prompt = options.mode === "diff-explain" ? buildExplainPrompt(options) : buildPrompt(options);
 const commandPlan = claudeCommandPlan(options.claudeCli, [
   "-p",
   prompt,
@@ -29,31 +39,61 @@ if (code !== 0) {
   fail(`Claude exited with code ${code}.`, { exitCode: code, stderr: stderr.trim() });
 }
 
-const review = parseReviewOutput(stdout);
-const findings = normalizeFindings(review.findings);
-console.log(`RESULT ${JSON.stringify({
-  summary: summarizeFindings(findings, review.summary),
-  touchedUserFiles: false,
-  output: {
-    source: "claude",
-    tool: "claude.review.diff",
-    mode: options.mode,
-    severityFloor: options.severityFloor,
-    instruction: options.instruction,
-    summary: review.summary ?? null,
-    findings,
-  },
-  cost: {
-    model: review.model ?? "claude",
+if (options.mode === "diff-explain") {
+  emitExplainResult(stdout);
+} else {
+  emitReviewResult(stdout);
+}
+
+function emitReviewResult(rawStdout) {
+  const review = parseReviewOutput(rawStdout);
+  const findings = normalizeFindings(review.findings);
+  console.log(`RESULT ${JSON.stringify({
+    summary: summarizeFindings(findings, review.summary),
+    touchedUserFiles: false,
+    output: {
+      source: "claude",
+      tool: TOOL,
+      mode: options.mode,
+      severityFloor: options.severityFloor,
+      instruction: options.instruction,
+      summary: review.summary ?? null,
+      findings,
+    },
+    cost: costPayload(review),
+  })}`);
+}
+
+function emitExplainResult(rawStdout) {
+  const explain = parseExplainOutput(rawStdout);
+  const highlights = normalizeHighlights(explain.highlights);
+  console.log(`RESULT ${JSON.stringify({
+    summary: explain.summary ?? summarizeHighlights(highlights),
+    touchedUserFiles: false,
+    output: {
+      source: "claude",
+      tool: TOOL,
+      mode: options.mode,
+      instruction: options.instruction,
+      summary: explain.summary ?? null,
+      highlights,
+    },
+    cost: costPayload(explain),
+  })}`);
+}
+
+function costPayload(result) {
+  return {
+    model: result.model ?? "claude",
     billable: true,
-    unknown: !review.reportedCost,
+    unknown: !result.reportedCost,
     currency: "USD",
-    inputTokens: review.inputTokens ?? 0,
-    outputTokens: review.outputTokens ?? 0,
-    cachedInputTokens: review.cachedTokens ?? 0,
-    ...(review.reportedCost ? { amountUsd: review.amountUsd, amountSource: "reported" } : { amountSource: "external_claude_usage" }),
-  },
-})}`);
+    inputTokens: result.inputTokens ?? 0,
+    outputTokens: result.outputTokens ?? 0,
+    cachedInputTokens: result.cachedTokens ?? 0,
+    ...(result.reportedCost ? { amountUsd: result.amountUsd, amountSource: "reported" } : { amountSource: "external_claude_usage" }),
+  };
+}
 
 function parseArgs(args) {
   const parsed = {
@@ -125,6 +165,17 @@ function buildPrompt(value) {
     `Only include findings at or above severity floor: ${value.severityFloor}.`,
     "Do not edit files, run apply tools, or change the worktree.",
     value.instruction ? `Additional reviewer instruction: ${value.instruction}` : null,
+  ].filter(Boolean).join("\n");
+}
+
+function buildExplainPrompt(value) {
+  return [
+    "Explain the current worktree diff: what each change does and why it matters.",
+    "Return JSON only with this shape:",
+    "{\"summary\":\"...\",\"highlights\":[{\"file\":\"path\",\"change\":\"what changed\",\"impact\":\"why it matters\"}]}",
+    "Describe behavior and intent, not style. Do NOT judge, score, or list bugs — that is the review tool's job.",
+    "Do not edit files, run apply tools, or change the worktree.",
+    value.instruction ? `Additional instruction: ${value.instruction}` : null,
   ].filter(Boolean).join("\n");
 }
 
@@ -272,11 +323,76 @@ function summarizeFindings(findings, summary) {
   return `Claude review completed with ${findings.length} finding(s), including ${high} high and ${medium} medium.`;
 }
 
+// Explain-mode parsing mirrors the review path but extracts `highlights` (what
+// changed / why) instead of `findings`. It reuses the same leaf JSON helpers so
+// only the object shape differs; the review path above is left untouched.
+function parseExplainOutput(stdout) {
+  const text = String(stdout ?? "").trim();
+  if (!text) fail("Claude produced no explanation output.");
+  const direct = parseJsonMaybe(text);
+  if (direct) return normalizeExplainObject(direct);
+  const lines = text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  let latestCost = {};
+  for (const line of lines) {
+    const parsed = parseJsonMaybe(line);
+    if (parsed?.type === "result" || parsed?.subtype === "success") {
+      latestCost = costFields(parsed);
+    }
+  }
+  for (const line of lines.toReversed()) {
+    if (line.startsWith("RESULT ")) {
+      const result = parseJsonMaybe(line.slice("RESULT ".length));
+      if (result) return { ...normalizeExplainObject(result.output ?? result), ...latestCost };
+    }
+    const parsed = parseJsonMaybe(line);
+    const candidate = extractExplainFromClaudeEvent(parsed);
+    if (candidate) return { ...normalizeExplainObject(candidate), ...latestCost };
+  }
+  fail("Claude produced malformed explanation JSON.", { stdoutPreview: text.slice(0, 500) });
+}
+
+function extractExplainFromClaudeEvent(event) {
+  if (!event || typeof event !== "object") return null;
+  if (Array.isArray(event.highlights)) return event;
+  const text = event.result
+    ?? event.summary
+    ?? claudeContentText(event.message?.content)
+    ?? claudeContentText(event.content)
+    ?? null;
+  if (!text) return null;
+  return parseJsonFromText(String(text).trim());
+}
+
+function normalizeExplainObject(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    fail("Claude explanation output must be an object.");
+  }
+  return {
+    summary: typeof value.summary === "string" ? value.summary.trim() : null,
+    highlights: Array.isArray(value.highlights) ? value.highlights : [],
+  };
+}
+
+function normalizeHighlights(value) {
+  return (Array.isArray(value) ? value : [])
+    .filter((item) => item && typeof item === "object" && !Array.isArray(item))
+    .map((item) => ({
+      file: String(item.file ?? "").trim(),
+      change: String(item.change ?? "").trim(),
+      impact: String(item.impact ?? "").trim(),
+    }))
+    .filter((item) => item.file && item.change);
+}
+
+function summarizeHighlights(highlights) {
+  return `Claude explained ${highlights.length} change highlight(s).`;
+}
+
 function fail(message, output = {}) {
   console.log(`RESULT ${JSON.stringify({
     summary: message,
     touchedUserFiles: false,
-    output: { source: "claude", tool: "claude.review.diff", error: message, ...output },
+    output: { source: "claude", tool: outputTool, error: message, ...output },
   })}`);
   process.exit(1);
 }

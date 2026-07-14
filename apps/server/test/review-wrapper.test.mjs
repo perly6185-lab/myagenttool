@@ -65,6 +65,48 @@ test("claude wrapper fails fast when --cwd is missing", () => {
   assert.match(resultPayload(res.stdout).output.error, /--cwd must be an absolute path/);
 });
 
+// --- Phase 2 (#912): the same wrapper's diff-explain mode ---
+
+// A fake Claude CLI that ignores args and prints the explanation JSON the wrapper
+// expects (one valid highlight + one file-less highlight that must be dropped).
+function writeClaudeExplainStub(output) {
+  const stub = join(workdir, `fake-claude-explain-${Math.abs(hash(output ?? "default"))}.mjs`);
+  writeFileSync(stub, output === undefined
+    ? "console.log(JSON.stringify({ summary: 'Explains the diff.', highlights: [{ file: 'a.ts', change: 'added guard', impact: 'prevents npe' }, { file: '', change: 'dropped', impact: 'no file' }] }));"
+    : `process.stdout.write(${JSON.stringify(output)});`);
+  return stub;
+}
+
+test("claude explain wrapper fails fast when --cwd is missing and stamps the explain tool", () => {
+  const res = runWrapper(claudeWrapper, ["--mode", "diff-explain"]);
+  assert.notEqual(res.status, 0);
+  const payload = resultPayload(res.stdout);
+  assert.match(payload.output.error, /--cwd must be an absolute path/);
+  assert.equal(payload.output.tool, "claude.explain.diff");
+});
+
+test("claude explain wrapper normalizes highlights, drops file-less ones, and reports plan mode", () => {
+  const stub = writeClaudeExplainStub();
+  const res = runWrapper(claudeWrapper, ["--mode", "diff-explain", "--cwd", workdir, "--claude-cli", stub]);
+  assert.equal(res.status, 0, res.stderr || res.stdout);
+  const payload = resultPayload(res.stdout);
+  assert.equal(payload.output.source, "claude");
+  assert.equal(payload.output.tool, "claude.explain.diff");
+  assert.equal(payload.output.mode, "diff-explain");
+  assert.equal(payload.output.highlights.length, 1, "file-less highlight is dropped");
+  assert.equal(payload.output.highlights[0].file, "a.ts");
+  assert.equal(payload.output.highlights[0].change, "added guard");
+  // The wrapper must never carry review-only fields into an explanation.
+  assert.ok(!("findings" in payload.output), "explanation output must not contain findings");
+});
+
+test("claude explain wrapper fails on malformed explanation JSON", () => {
+  const stub = writeClaudeExplainStub("not json at all\n");
+  const res = runWrapper(claudeWrapper, ["--mode", "diff-explain", "--cwd", workdir, "--claude-cli", stub]);
+  assert.notEqual(res.status, 0);
+  assert.match(resultPayload(res.stdout).output.error, /malformed explanation JSON|no explanation output/);
+});
+
 test("codex wrapper rejects a --cwd that does not exist", () => {
   const res = runWrapper(codexWrapper, ["--mode", "diff-review", "--cwd", join(workdir, "does-not-exist")]);
   assert.notEqual(res.status, 0);

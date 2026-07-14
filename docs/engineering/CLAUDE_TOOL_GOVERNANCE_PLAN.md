@@ -177,6 +177,21 @@ Acceptance:
 - External orchestrators can consume governed Claude analysis without arbitrary
   command, cwd, environment, or permission control.
 
+Implementation status (first slice): `claude.explain.diff` ships as the first
+Phase 2 capability — it explains a worktree diff (what changed / why it matters)
+instead of judging it. It reuses the Phase 1 machinery: the same fixed wrapper
+(`claude-review-wrapper.mjs`) with a new read-only `--mode diff-explain`
+(`--permission-mode plan`), the same project/worktree tenancy guard via
+`createReviewInvocation`, and the same `tool_facade` discovery
+(`app.app_claude.explain.diff`). It takes no `severityFloor` (a stray one is a
+hard `unknown_field`) and, because an explanation is analysis rather than
+queryable evidence, it does not write a bespoke findings collection — the
+explanation rides the invocation result and the durable Application-result
+lineage. The governed identity gate (`isGovernedClaudeExplainAgent`) pins the
+`diff-explain` mode and the canonical wrapper path, and the Desktop Bridge injects
+only the governed `--cwd`/`--instruction` flags. Remaining Phase 2 surface (broader
+inspection capabilities) can follow the same pattern.
+
 ### Phase 3: Immutable Patch Proposal (#913)
 
 - Add `claude.plan.change` or `claude.propose.patch`.

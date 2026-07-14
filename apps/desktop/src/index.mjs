@@ -1571,7 +1571,7 @@ function governedExecWrapperArgs(renderedArgs, payload) {
 function usesGovernedReviewWrapper(tool, args) {
   const wrapper = tool === "codex.review.diff"
     ? "codex-review-wrapper.mjs"
-    : tool === "claude.review.diff"
+    : tool === "claude.review.diff" || tool === "claude.explain.diff"
       ? "claude-review-wrapper.mjs"
       : null;
   // Require the full canonical directory segment, not just the basename — a
