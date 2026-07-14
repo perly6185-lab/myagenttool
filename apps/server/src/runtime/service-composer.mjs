@@ -288,6 +288,7 @@ export function createServerRuntimeServices({
     budgetGateForProject,
     reserveBudget,
     releaseReservationsForAutoRun,
+    releaseReservationsForInvocation,
     reconcileBudgetReservations,
     findLifecycleLocalApproval,
     findLifecycleRollbackRequest,
@@ -398,6 +399,9 @@ export function createServerRuntimeServices({
     resolveResumeCodexSessionId,
     closeCodexSession,
     budgetGateForProject,
+    // #890.1 tail: hold budget at manual/API accept, release on completion.
+    reserveBudget,
+    releaseReservationsForInvocation,
     checkUsageQuota,
     onInvocationCompleted: (invocation) => {
       advanceAutoRunHook?.(invocation);

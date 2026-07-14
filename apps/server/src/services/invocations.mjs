@@ -41,6 +41,8 @@ export function createInvocationService({
   createManagedCodexSession,
   resolveResumeCodexSessionId,
   budgetGateForProject,
+  reserveBudget,
+  releaseReservationsForInvocation,
   checkUsageQuota,
   closeCodexSession,
   onInvocationCompleted,
@@ -69,6 +71,7 @@ export function createInvocationService({
     closeCodexSession,
     isTerminal,
     recordInvocationLedgerEntry,
+    releaseReservationsForInvocation,
     recordInvocationRoundUsage,
     recordCcusageImportedEstimates,
     recordCodexReviewFindings,
@@ -137,6 +140,7 @@ export function createInvocationService({
     createAuditSummary,
     recordAgentUsage,
     budgetGateForProject,
+    reserveBudget,
     checkUsageQuota,
   });
   const {

@@ -13,6 +13,7 @@ export function createInvocationCompletionRuntime({
   closeCodexSession,
   isTerminal,
   recordInvocationLedgerEntry,
+  releaseReservationsForInvocation,
   recordInvocationRoundUsage,
   recordCcusageImportedEstimates,
   recordCodexReviewFindings,
@@ -142,6 +143,13 @@ export function createInvocationCompletionRuntime({
     attachApplicationResult({ invocation, auditSummary, records: [], outputCollection: "invocations" });
     closeCodexSession(invocation, terminalStatus);
     updateCompareRunForInvocation(invocation);
+    // #890.1 tail: a plain-invocation budget hold (manual/API accept) releases now
+    // that the run is terminal — its real ledger spend, recorded just above, gates
+    // the next admission. No-op for auto-run runs (released by setAutoRunStatus) and
+    // when reservations are disabled. Committed by the enclosing transaction.
+    if (typeof releaseReservationsForInvocation === "function") {
+      releaseReservationsForInvocation(invocation.id, { outcome: "committed" });
+    }
     // No barrier here: the enclosing runStateTransaction commits on exit.
   }
 

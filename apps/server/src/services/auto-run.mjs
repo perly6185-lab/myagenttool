@@ -1675,6 +1675,13 @@ export function createAutoRunService({
           const run = activeById.get(autoRunId);
           return !run || settledStatuses.has(run.status);
         },
+        // A plain-invocation hold (manual/API accept) is reclaimable once its
+        // invocation is terminal or gone — the completion release is the fast path,
+        // this sweep catches cancel/expire that didn't run it.
+        isInvocationTerminal: (invocationId) => {
+          const inv = typeof findInvocation === "function" ? findInvocation(invocationId) : null;
+          return !inv || isTerminal(inv.status);
+        },
       });
     }
     if (reaped > 0 || holdsReleased > 0) persistStateSoon();
