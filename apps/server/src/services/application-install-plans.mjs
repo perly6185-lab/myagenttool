@@ -2,9 +2,13 @@ import crypto from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 
 const SCHEMA_VERSION = "application-install-plan/v1";
-const RECIPE_VERSION = "2026-07-14.1";
+const RECIPE_VERSION = "2026-07-14.2";
+const PLAN_TTL_MS = 10 * 60 * 1000;
 const SUPPORTED_PLATFORMS = ["windows", "macos", "linux"];
 const ALLOWED_REQUEST_FIELDS = new Set(["name", "projectId", "deviceId", "platform", "architecture"]);
+const NPM_REGISTRY = "https://registry.npmjs.org/";
+const CCUSAGE_VERSION = "20.0.14";
+const CLAUDE_CODE_VERSION = "2.1.206";
 
 const APPLICATIONS = {
   git: {
@@ -13,9 +17,14 @@ const APPLICATIONS = {
     packageIdentifier: "git",
     probe: { executable: "git", args: ["--version"] },
     recipes: {
-      windows: recipe("winget", "winget", ["install", "--id", "Git.Git", "--exact", "--silent", "--accept-package-agreements", "--accept-source-agreements"], "Git.Git"),
-      macos: recipe("homebrew", "brew", ["install", "git"], "git"),
-      linux: recipe("apt", "apt-get", ["install", "-y", "git"], "git", { elevated: true }),
+      windows: recipe("winget", "winget", ["install", "--id", "Git.Git", "--exact", "--source", "winget", "--silent", "--disable-interactivity", "--accept-package-agreements", "--accept-source-agreements"], "Git.Git", {
+        source: { kind: "winget-source", name: "winget" },
+        versionPolicy: providerVersionPolicy(),
+      }),
+      macos: recipe("homebrew", "brew", ["install", "--formula", "git"], "git", {
+        source: { kind: "homebrew-core", name: "homebrew/core" },
+        versionPolicy: providerVersionPolicy(),
+      }),
     },
   },
   ccusage: {
@@ -23,25 +32,37 @@ const APPLICATIONS = {
     aliases: ["ccusage"],
     packageIdentifier: "ccusage",
     probe: { executable: "ccusage", args: ["--version"] },
-    recipes: npmRecipes("ccusage@latest"),
+    recipes: npmRecipes("ccusage", CCUSAGE_VERSION),
   },
   claude: {
     displayName: "Claude Code",
     aliases: ["claude", "claude code"],
     packageIdentifier: "@anthropic-ai/claude-code",
     probe: { executable: "claude", args: ["--version"] },
-    recipes: npmRecipes("@anthropic-ai/claude-code@latest"),
+    recipes: npmRecipes("@anthropic-ai/claude-code", CLAUDE_CODE_VERSION),
   },
 };
 
-function recipe(provider, executable, args, packageIdentifier, { elevated = false } = {}) {
-  return { provider, executable, args, packageIdentifier, elevated };
+function providerVersionPolicy() {
+  return { kind: "provider-managed", channel: "stable", allowCallerOverride: false, exactVersion: null };
 }
 
-function npmRecipes(packageSpecifier) {
+function exactVersionPolicy(version) {
+  return { kind: "exact", channel: null, allowCallerOverride: false, exactVersion: version };
+}
+
+function recipe(provider, executable, args, packageIdentifier, { elevated = false, source, versionPolicy } = {}) {
+  return { provider, executable, args, packageIdentifier, elevated, source, versionPolicy };
+}
+
+function npmRecipes(packageName, version) {
+  const packageSpecifier = `${packageName}@${version}`;
   return Object.fromEntries(SUPPORTED_PLATFORMS.map((platform) => [
     platform,
-    recipe("npm", platform === "windows" ? "npm.cmd" : "npm", ["install", "--global", packageSpecifier], packageSpecifier),
+    recipe("npm", platform === "windows" ? "npm.cmd" : "npm", ["install", "--global", `--registry=${NPM_REGISTRY}`, packageSpecifier], packageSpecifier, {
+      source: { kind: "npm-registry", registry: NPM_REGISTRY, packageName },
+      versionPolicy: exactVersionPolicy(version),
+    }),
   ]));
 }
 
@@ -67,12 +88,12 @@ export function listApplicationInstallCatalog() {
     displayName: application.displayName,
     supportedPlatforms: SUPPORTED_PLATFORMS.filter((platform) => application.recipes[platform]),
     providers: Object.fromEntries(SUPPORTED_PLATFORMS.map((platform) => [platform, application.recipes[platform]?.provider ?? null])),
-    versionPolicy: { kind: "approved-channel", channel: "stable", allowCallerOverride: false },
+    versionPolicies: Object.fromEntries(SUPPORTED_PLATFORMS.map((platform) => [platform, application.recipes[platform]?.versionPolicy ?? null])),
     approvalRequired: true,
   }));
 }
 
-export function createApplicationInstallPlan(input, { device, projectId = null } = {}) {
+export function createApplicationInstallPlan(input, { device, projectId = null, now = () => new Date().toISOString(), issuedAt = null } = {}) {
   if (!input || typeof input !== "object" || Array.isArray(input)) {
     throw planError("invalid_install_plan_request", "Request body must be an object.");
   }
@@ -99,6 +120,12 @@ export function createApplicationInstallPlan(input, { device, projectId = null }
   if (!selected) {
     throw planError("install_platform_not_supported", `Installation is not supported on platform: ${platform || "unknown"}.`);
   }
+  const issuedAtValue = issuedAt ?? now();
+  const issuedAtMs = Date.parse(issuedAtValue);
+  if (!Number.isFinite(issuedAtMs)) {
+    throw planError("invalid_install_plan_time", "Installation plan time is invalid.");
+  }
+  const expiresAt = new Date(issuedAtMs + PLAN_TTL_MS).toISOString();
 
   const identity = {
     schemaVersion: SCHEMA_VERSION,
@@ -112,6 +139,10 @@ export function createApplicationInstallPlan(input, { device, projectId = null }
     packageIdentifier: selected.packageIdentifier,
     executable: selected.executable,
     args: selected.args,
+    source: selected.source,
+    versionPolicy: selected.versionPolicy,
+    issuedAt: new Date(issuedAtMs).toISOString(),
+    expiresAt,
   };
   const planFingerprint = fingerprint(identity);
   return {
@@ -125,7 +156,8 @@ export function createApplicationInstallPlan(input, { device, projectId = null }
       provider: selected.provider,
       identifier: application.packageIdentifier,
       resolvedIdentifier: selected.packageIdentifier,
-      versionPolicy: { kind: "approved-channel", channel: "stable", allowCallerOverride: false },
+      versionPolicy: selected.versionPolicy,
+      source: selected.source,
     },
     execution: { executable: selected.executable, args: [...selected.args], shell: false, elevated: selected.elevated },
     risk: {
@@ -134,7 +166,13 @@ export function createApplicationInstallPlan(input, { device, projectId = null }
     },
     approval: { required: true, action: "application.install", bindsToPlanFingerprint: true },
     policy: { timeoutMs: 300_000, cancellable: true },
+    validity: { issuedAt: identity.issuedAt, expiresAt, ttlMs: PLAN_TTL_MS },
     postInstallProbe: { executable: application.probe.executable, args: [...application.probe.args], timeoutMs: 15_000 },
+    rollback: {
+      automatic: false,
+      uninstallSupported: false,
+      summary: "Automatic rollback is disabled because installation may modify pre-existing package-manager state; failed installs require operator review.",
+    },
     summary: `Install ${application.displayName} on ${device.name ?? device.id} with ${selected.provider}; explicit local approval is required.`,
   };
 }
@@ -142,13 +180,18 @@ export function createApplicationInstallPlan(input, { device, projectId = null }
 export function applicationInstallPlanMatchesCurrent(plan, context) {
   if (!plan || typeof plan !== "object") return false;
   try {
+    const issuedAtMs = Date.parse(plan.validity?.issuedAt);
+    const expiresAtMs = Date.parse(plan.validity?.expiresAt);
+    const currentMs = Date.parse(context?.now?.() ?? new Date().toISOString());
+    if (!Number.isFinite(issuedAtMs) || !Number.isFinite(expiresAtMs) || !Number.isFinite(currentMs)) return false;
+    if (expiresAtMs - issuedAtMs !== PLAN_TTL_MS || currentMs < issuedAtMs - 60_000 || currentMs > expiresAtMs) return false;
     const current = createApplicationInstallPlan({
       name: plan.application?.name,
       projectId: plan.target?.projectId ?? null,
       deviceId: plan.target?.deviceId,
       platform: plan.target?.platform,
       architecture: plan.target?.architecture,
-    }, context);
+    }, { ...context, issuedAt: plan.validity.issuedAt });
     return current.planId === plan.planId
       && current.fingerprint === plan.fingerprint
       && isDeepStrictEqual(current, plan);

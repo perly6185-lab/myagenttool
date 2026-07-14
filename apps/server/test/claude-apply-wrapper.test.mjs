@@ -25,6 +25,8 @@ function git(cwd, args) {
 function makeRepoWithPatch() {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), "claude-apply-test-")));
   git(dir, ["init"]);
+  git(dir, ["config", "core.autocrlf", "false"]);
+  git(dir, ["config", "core.eol", "lf"]);
   git(dir, ["config", "user.email", "t@t"]);
   git(dir, ["config", "user.name", "t"]);
   writeFileSync(join(dir, "x.txt"), "foo\n");

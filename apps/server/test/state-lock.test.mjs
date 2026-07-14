@@ -9,6 +9,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import { spawn } from "node:child_process";
 
 import { acquireStateLock } from "../src/runtime/state-lock.mjs";
 
@@ -18,6 +19,12 @@ function tmpRoot() {
   const root = join(tmpdir(), `myagenttool-lock-${Date.now()}-${Math.floor(process.hrtime()[1] % 1e6)}`);
   mkdirSync(root, { recursive: true });
   return root;
+}
+
+function liveChildProcess() {
+  const child = spawn(process.execPath, ["-e", "setTimeout(() => {}, 30000)"], { stdio: "ignore" });
+  child.unref();
+  return child;
 }
 
 test("#890 acquire on a fresh path succeeds and writes an owner record", () => {
@@ -39,15 +46,16 @@ test("#890 a DIFFERENT live process on the same host is refused", () => {
   const root = tmpRoot();
   const statePath = join(root, "snapshot.json");
   const lockPath = `${statePath}.lock`;
+  const child = liveChildProcess();
   try {
-    // pid 1 (init/launchd) is always alive; kill(1,0) throws EPERM → treated alive.
-    writeFileSync(lockPath, JSON.stringify({ pid: 1, hostname: "hostA", acquiredAt: now() }));
+    writeFileSync(lockPath, JSON.stringify({ pid: child.pid, hostname: "hostA", acquiredAt: now() }));
     const lock = acquireStateLock(statePath, { pid: 4242, hostname: "hostA", now });
     assert.equal(lock.ok, false);
-    assert.equal(lock.heldBy.pid, 1);
+    assert.equal(lock.heldBy.pid, child.pid);
     // The incumbent lock is untouched.
-    assert.equal(JSON.parse(readFileSync(lockPath, "utf8")).pid, 1);
+    assert.equal(JSON.parse(readFileSync(lockPath, "utf8")).pid, child.pid);
   } finally {
+    child.kill();
     rmSync(root, { recursive: true, force: true });
   }
 });
