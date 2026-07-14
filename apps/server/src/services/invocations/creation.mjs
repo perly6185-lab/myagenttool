@@ -1,6 +1,7 @@
 import { renderAgentSkillsIntoWorktree } from "../agent-skills.mjs";
 import { createRefusalRuntime } from "../../runtime/refusal-log.mjs";
 import { teamOf } from "../../runtime/auth.mjs";
+import { runStateTransaction } from "../../runtime/state-transaction.mjs";
 
 export function createInvocationCreationRuntime({
   state,
@@ -55,6 +56,13 @@ export function createInvocationCreationRuntime({
       );
       if (existing) return existing;
     }
+    // #890.2: every exit from the accept below — queued/running, awaiting
+    // approval, OR a quota/budget rejection — commits through this one synchronous
+    // barrier. The rejection returns previously used only the 20ms debounce, so a
+    // crash could lose the rejection (invocation + refusal + audit); now the whole
+    // accept outcome is durable when createInvocation returns. The single-file
+    // snapshot rename makes each commit all-or-nothing across collections.
+    const commitAccept = persistStateNow ?? persistStateSoon ?? (() => {});
     const id = nextId("inv_demo");
     const createdAt = now();
     const trace = createTrace(id, agent);
@@ -248,7 +256,7 @@ export function createInvocationCreationRuntime({
       });
       state.auditSummaries.push(createAuditSummary(invocation, quotaGate.quotaDecision.reason));
       recordAgentUsage(invocation, "rejected");
-      persistStateSoon();
+      commitAccept();
       return invocation;
     }
     if (budgetGate.blocked) {
@@ -280,7 +288,7 @@ export function createInvocationCreationRuntime({
       });
       state.auditSummaries.push(createAuditSummary(invocation, budgetGate.reason));
       recordAgentUsage(invocation, "rejected");
-      persistStateSoon();
+      commitAccept();
       return invocation;
     }
     appendEvent({
@@ -314,7 +322,7 @@ export function createInvocationCreationRuntime({
     // Durable barrier: an accepted (queued/running) invocation has no lease to
     // recover it, so flush synchronously before returning — a crash in the
     // debounce window must not silently drop a run the caller was told exists.
-    if (typeof persistStateNow === "function") persistStateNow();
+    commitAccept();
     return invocation;
   }
 

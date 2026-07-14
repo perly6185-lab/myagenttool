@@ -1,8 +1,11 @@
+import { runStateTransaction } from "../../runtime/state-transaction.mjs";
+
 export function createInvocationCompletionRuntime({
   state,
   now,
   appendEvent,
   persistStateSoon,
+  persistStateNow,
   namespace,
   protocolVersion,
   findAgent,
@@ -18,10 +21,29 @@ export function createInvocationCompletionRuntime({
   recordApplicationResult,
   onInvocationCompleted,
 }) {
+  // #890.2: prefer the synchronous barrier so a completion — terminal status,
+  // result, and the ledger entry it records — is durable before this returns. A
+  // crash in the old 20ms debounce window recovered the run as still running, its
+  // lease later expired, and it re-executed AND recorded a second ledger entry
+  // (double charge). Falls back to the debounced writer if the barrier is unwired.
+  const commitCompletion = persistStateNow ?? persistStateSoon;
+
   function completeInvocation(invocation, body) {
     if (isTerminal(invocation.status)) {
       return;
     }
+    // One unit of work: every mutation below commits together on exit.
+    runStateTransaction(commitCompletion, () => completeInvocationWork(invocation, body));
+    // Late-bound reaction hook (e.g. auto-run: succeeded -> publish -> open PR).
+    // Fire-and-forget AFTER the durable commit, so the reaction always observes a
+    // persisted terminal state. The advancer does its own I/O + error handling so
+    // a slow git/gh publish never blocks the bridge's completion response.
+    if (typeof onInvocationCompleted === "function") {
+      onInvocationCompleted(invocation);
+    }
+  }
+
+  function completeInvocationWork(invocation, body) {
     const terminalStatus =
       body.status === "cancelled"
         ? "cancelled"
@@ -120,13 +142,7 @@ export function createInvocationCompletionRuntime({
     attachApplicationResult({ invocation, auditSummary, records: [], outputCollection: "invocations" });
     closeCodexSession(invocation, terminalStatus);
     updateCompareRunForInvocation(invocation);
-    persistStateSoon();
-    // Late-bound reaction hook (e.g. auto-run: succeeded -> publish -> open PR).
-    // Fire-and-forget: the advancer does its own I/O and error handling so a
-    // slow git/gh publish never blocks the bridge's completion response.
-    if (typeof onInvocationCompleted === "function") {
-      onInvocationCompleted(invocation);
-    }
+    // No barrier here: the enclosing runStateTransaction commits on exit.
   }
 
   function updateCompareRunForInvocation(invocation) {
