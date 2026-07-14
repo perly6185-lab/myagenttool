@@ -85,6 +85,13 @@ export function buildPublicState({
   // Governed codex.exec changesets — same invocation-scoped visibility + raw strip
   // as review findings (the git porcelain preview stays out of public state).
   const codexExecChanges = byInvocation(state.codexExecChanges).map(({ raw, ...row }) => row);
+  // Claude apply authorizations (Phase 4a): invocation-scoped. The full patch stays
+  // server-side; public rows carry a bounded preview so a client can see what an
+  // authorized apply would touch without shipping the whole diff.
+  const claudeApplyAuthorizations = byInvocation(state.claudeApplyAuthorizations).map(({ patch, ...row }) => ({
+    ...row,
+    patchPreview: typeof patch === "string" ? patch.slice(0, 2000) : null,
+  }));
   // Imported evidence has no invocation, so it can't ride byInvocation (a null
   // invocationId reads as globally visible). Scope it by its stamped owning team
   // instead; rows written before that stamp existed belong to the local team.
@@ -313,6 +320,7 @@ export function buildPublicState({
     claudeReviewFindings,
     reviewFindings,
     codexExecChanges,
+    claudeApplyAuthorizations,
     // Scope the economics rollup to the viewer's team: an unscoped viewer
     // (teamId == null, local dev/admin) gets the platform total; a scoped viewer
     // gets only its own entries, mirroring `ledgerEntries: byProject(...)` above.

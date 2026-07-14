@@ -783,12 +783,15 @@ export function createServerRuntimeServices({
   } = createToolService({
     state,
     now,
+    nextId,
     appendEvent,
     createInvocation,
     startInvocationIfAllowed,
     findApplication,
     findAgent,
     planApplicationWrapperInvocation,
+    validateApprovalToken,
+    persistStateSoon,
   });
 
   const {
