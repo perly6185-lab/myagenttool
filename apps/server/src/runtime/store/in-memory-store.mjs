@@ -48,8 +48,46 @@ export function createInMemoryStore({ state, commit }) {
     return typeof predicate === "function" ? rows.filter(predicate) : [...rows];
   }
 
+  // Reentrancy: a service composite op (A calls B, both runTx-wrapped) nests
+  // transactions. A nested call applies its writes DIRECTLY to `state` and does
+  // NOT commit — the outermost transaction's commit flushes everything as one
+  // unit. Matches how the SQLite adapter will nest (a SAVEPOINT under the outer
+  // BEGIN). Note: a nested call's writes are not independently rolled back, but
+  // services mutate `state` in place anyway (the store is their commit boundary),
+  // so this is faithful to how they're used.
+  let active = false;
+  const directTx = {
+    get,
+    query,
+    insert(collection, record) {
+      if (!record || record.id == null) throw new Error("insert requires a record with an id.");
+      if (!Array.isArray(state[collection])) state[collection] = [];
+      state[collection] = state[collection].filter((row) => row?.id !== record.id);
+      state[collection].unshift(record);
+      return record;
+    },
+    update(collection, id, patch) {
+      const row = get(collection, id);
+      if (row) Object.assign(row, patch);
+      return row ?? { id, ...patch };
+    },
+    delete(collection, id) {
+      if (Array.isArray(state[collection])) state[collection] = state[collection].filter((row) => row?.id !== id);
+    },
+  };
+
   function transaction(fn) {
     if (typeof fn !== "function") throw new Error("transaction(fn) requires a function.");
+    if (active) return fn(directTx); // reentrant — apply inline, the outer commits
+    active = true;
+    try {
+      return runOuterTransaction(fn);
+    } finally {
+      active = false;
+    }
+  }
+
+  function runOuterTransaction(fn) {
     // Staged writes per collection; nothing touches `state` until commit.
     const staged = new Map();
     const stageFor = (collection) => {

@@ -5,6 +5,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "nod
 import { promisify } from "node:util";
 
 import { DEFAULT_DEVICE_ID } from "../runtime/device.mjs";
+import { makeRunTx } from "../runtime/store/run-tx.mjs";
 
 const execFileAsync = promisify(execFile);
 
@@ -90,7 +91,10 @@ export function readGitFacts(cwd) {
   return { repoPath: cwd, remoteUrl, defaultBranch, currentBranch, isRepo: true };
 }
 
-export function createProjectService({ state, now, nextId, appendEvent, persistStateSoon }) {
+export function createProjectService({ state, now, nextId, appendEvent, persistStateSoon, store }) {
+  // #1001 Phase A: durable project/worktree/review writes commit through the
+  // Store's unit of work (falls back to the debounce where no store is injected).
+  const runTx = makeRunTx({ store, persistStateSoon });
   function addProject(body = {}) {
     const project = createProjectRecord({
       name: body.name,
@@ -106,34 +110,35 @@ export function createProjectService({ state, now, nextId, appendEvent, persistS
     }, { nextId, now });
     // Capture git facts (remote/default/current branch) from the real root — #160.
     project.git = readGitFacts(project.path);
-    const existing = state.projects.find((item) => sameProjectPath(item.path, project.path));
-    if (existing) {
-      existing.name = project.name || existing.name;
-      existing.host = project.host;
-      existing.git = project.git;
-      existing.color = project.color ?? existing.color;
-      existing.ownerTeamId = project.ownerTeamId ?? existing.ownerTeamId;
-      existing.budgetPoolId = project.budgetPoolId ?? existing.budgetPoolId ?? null;
-      existing.defaultAgentId = project.defaultAgentId ?? existing.defaultAgentId ?? null;
-      existing.status = project.status ?? existing.status ?? "active";
-      existing.isolation = project.isolation ?? existing.isolation ?? "shared";
-      existing.updatedAt = now();
-      ensureProjectTarget(existing);
-      selectProject(existing.id);
-      return existing;
-    }
-    state.projects.unshift(project);
-    ensureProjectTarget(project);
-    selectProject(project.id);
-    appendEvent({
-      invocationId: null,
-      type: "project_registered",
-      level: "info",
-      message: `${project.name} project registered.`,
-      data: { projectId: project.id, path: project.path, host: project.host },
+    return runTx(() => {
+      const existing = state.projects.find((item) => sameProjectPath(item.path, project.path));
+      if (existing) {
+        existing.name = project.name || existing.name;
+        existing.host = project.host;
+        existing.git = project.git;
+        existing.color = project.color ?? existing.color;
+        existing.ownerTeamId = project.ownerTeamId ?? existing.ownerTeamId;
+        existing.budgetPoolId = project.budgetPoolId ?? existing.budgetPoolId ?? null;
+        existing.defaultAgentId = project.defaultAgentId ?? existing.defaultAgentId ?? null;
+        existing.status = project.status ?? existing.status ?? "active";
+        existing.isolation = project.isolation ?? existing.isolation ?? "shared";
+        existing.updatedAt = now();
+        ensureProjectTarget(existing);
+        selectProject(existing.id);
+        return existing;
+      }
+      state.projects.unshift(project);
+      ensureProjectTarget(project);
+      selectProject(project.id);
+      appendEvent({
+        invocationId: null,
+        type: "project_registered",
+        level: "info",
+        message: `${project.name} project registered.`,
+        data: { projectId: project.id, path: project.path, host: project.host },
+      });
+      return project;
     });
-    persistStateSoon();
-    return project;
   }
 
   // Async so the (potentially slow) `git clone` runs off the event loop instead
@@ -200,11 +205,12 @@ export function createProjectService({ state, now, nextId, appendEvent, persistS
   function selectProject(projectId) {
     const project = state.projects.find((item) => item.id === projectId);
     if (!project) return null;
-    state.currentProjectId = project.id;
-    project.lastOpenedAt = now();
-    project.updatedAt = project.lastOpenedAt;
-    persistStateSoon();
-    return project;
+    return runTx(() => {
+      state.currentProjectId = project.id;
+      project.lastOpenedAt = now();
+      project.updatedAt = project.lastOpenedAt;
+      return project;
+    });
   }
 
   function removeProject(projectId) {
@@ -213,20 +219,21 @@ export function createProjectService({ state, now, nextId, appendEvent, persistS
     }
     const index = state.projects.findIndex((item) => item.id === projectId);
     if (index === -1) return null;
-    const [removed] = state.projects.splice(index, 1);
-    if (state.currentProjectId === removed.id) {
-      state.currentProjectId = state.projects[0]?.id ?? null;
-      if (state.currentProjectId) selectProject(state.currentProjectId);
-    }
-    appendEvent({
-      invocationId: null,
-      type: "project_removed",
-      level: "info",
-      message: `${removed.name} project removed from registry.`,
-      data: { projectId: removed.id, path: removed.path },
+    return runTx(() => {
+      const [removed] = state.projects.splice(index, 1);
+      if (state.currentProjectId === removed.id) {
+        state.currentProjectId = state.projects[0]?.id ?? null;
+        if (state.currentProjectId) selectProject(state.currentProjectId);
+      }
+      appendEvent({
+        invocationId: null,
+        type: "project_removed",
+        level: "info",
+        message: `${removed.name} project removed from registry.`,
+        data: { projectId: removed.id, path: removed.path },
+      });
+      return removed;
     });
-    persistStateSoon();
-    return removed;
   }
 
   function currentProject() {
@@ -336,31 +343,33 @@ export function createProjectService({ state, now, nextId, appendEvent, persistS
     // Capture git facts for the worktree checkout too, so the workspace header shows
     // its branch/remote instead of "not a git repository". (review D)
     project.git = readGitFacts(project.path);
-    project.activeCheckoutId = worktree.id;
-    worktree.workspaceProjectId = project.id;
-    state.worktrees.unshift(worktree);
-    state.projects.unshift(project);
-    selectProject(project.id);
-    appendEvent({
-      invocationId: null,
-      type: "worktree_created",
-      level: "info",
-      message: `Created worktree ${branchName}.`,
-      data: {
-        worktreeId: worktree.id,
-        sourceProjectId: sourceProject.id,
-        projectId: project.id,
-        path: targetPath,
-        branchName,
-      },
+    runTx(() => {
+      project.activeCheckoutId = worktree.id;
+      worktree.workspaceProjectId = project.id;
+      state.worktrees.unshift(worktree);
+      state.projects.unshift(project);
+      selectProject(project.id);
+      appendEvent({
+        invocationId: null,
+        type: "worktree_created",
+        level: "info",
+        message: `Created worktree ${branchName}.`,
+        data: {
+          worktreeId: worktree.id,
+          sourceProjectId: sourceProject.id,
+          projectId: project.id,
+          path: targetPath,
+          branchName,
+        },
+      });
     });
-    persistStateSoon();
     return { worktree, project, projects: state.projects, currentProjectId: state.currentProjectId };
   }
 
   function updateProject(projectId, body = {}) {
     const project = state.projects.find((item) => item.id === projectId);
     if (!project) return null;
+    return runTx(() => {
     if (body.name !== undefined) project.name = String(body.name).trim() || project.name;
     if (body.color !== undefined) project.color = normalizeProjectColor(body.color, project.color);
     if (body.status !== undefined) project.status = body.status === "archived" ? "archived" : "active";
@@ -375,13 +384,14 @@ export function createProjectService({ state, now, nextId, appendEvent, persistS
     }
     project.updatedAt = now();
     ensureProjectTarget(project);
-    persistStateSoon();
     return project;
+    });
   }
 
   function removeWorktree(worktreeId) {
     const index = state.worktrees.findIndex((item) => item.id === worktreeId);
     if (index === -1) return null;
+    return runTx(() => {
     const [removed] = state.worktrees.splice(index, 1);
     // The derived workspace project is keyed by workspaceProjectId; projectId
     // points at the SOURCE project (source "user"), which the source==="worktree"
@@ -413,8 +423,8 @@ export function createProjectService({ state, now, nextId, appendEvent, persistS
       message: `Removed worktree ${removed.branchName ?? removed.branch ?? removed.id} from registry.`,
       data: { worktreeId: removed.id, sourceProjectId: removed.sourceProjectId, projectId: removed.projectId },
     });
-    persistStateSoon();
     return removed;
+    });
   }
 
   // Teardown for an ABANDONED worktree — a denied/rejected auto-run that never
@@ -533,17 +543,18 @@ export function createProjectService({ state, now, nextId, appendEvent, persistS
     }
 
     const upstreamProbe = await runGitCapture(cwd, ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"], { timeout: 5_000 });
-    worktree.published = true;
-    worktree.upstream = upstreamProbe.ok && upstreamProbe.stdout ? upstreamProbe.stdout : `origin/${branch}`;
-    worktree.lastSeenAt = now();
-    appendEvent({
-      invocationId: null,
-      type: "worktree_published",
-      level: "info",
-      message: `Published ${branch} to origin.`,
-      data: { worktreeId: worktree.id, branch, remoteUrl, upstream: worktree.upstream },
+    runTx(() => {
+      worktree.published = true;
+      worktree.upstream = upstreamProbe.ok && upstreamProbe.stdout ? upstreamProbe.stdout : `origin/${branch}`;
+      worktree.lastSeenAt = now();
+      appendEvent({
+        invocationId: null,
+        type: "worktree_published",
+        level: "info",
+        message: `Published ${branch} to origin.`,
+        data: { worktreeId: worktree.id, branch, remoteUrl, upstream: worktree.upstream },
+      });
     });
-    persistStateSoon();
     return { ok: true, worktreeId: worktree.id, branch, remoteUrl, upstream: worktree.upstream, published: true };
   }
 
@@ -600,16 +611,17 @@ export function createProjectService({ state, now, nextId, appendEvent, persistS
     }
 
     const parsed = parseGhPrCreateOutput(stdout);
-    worktree.pr = { number: parsed.number, url: parsed.url, state: parsed.state };
-    worktree.lastSeenAt = now();
-    appendEvent({
-      invocationId: null,
-      type: "worktree_pr_created",
-      level: "info",
-      message: `Opened pull request for ${branch}.`,
-      data: { worktreeId: worktree.id, branch, base: baseBranch, number: parsed.number, url: parsed.url, link },
+    runTx(() => {
+      worktree.pr = { number: parsed.number, url: parsed.url, state: parsed.state };
+      worktree.lastSeenAt = now();
+      appendEvent({
+        invocationId: null,
+        type: "worktree_pr_created",
+        level: "info",
+        message: `Opened pull request for ${branch}.`,
+        data: { worktreeId: worktree.id, branch, base: baseBranch, number: parsed.number, url: parsed.url, link },
+      });
     });
-    persistStateSoon();
     return { ok: true, worktreeId: worktree.id, branch, base: baseBranch, number: parsed.number, url: parsed.url, state: parsed.state };
   }
 
@@ -640,17 +652,18 @@ export function createProjectService({ state, now, nextId, appendEvent, persistS
       reviewedCommit: worktreeHeadCommit(worktree.id), // bind the verdict to this exact diff
       createdAt: now(),
     };
-    state.worktreeReviews.unshift(review);
-    state.worktreeReviews = state.worktreeReviews.slice(0, 500);
-    appendEvent({
-      invocationId: null,
-      type: "worktree_reviewed",
-      level: normalizedVerdict === "approved" ? "info" : "warning",
-      message: `Worktree ${worktree.branchName ?? worktree.branch ?? worktree.id}: ${normalizedVerdict === "approved" ? "approved" : "changes requested"}.`,
-      data: { worktreeId: worktree.id, verdict: normalizedVerdict, reviewedBy: review.reviewedBy },
+    return runTx(() => {
+      state.worktreeReviews.unshift(review);
+      state.worktreeReviews = state.worktreeReviews.slice(0, 500);
+      appendEvent({
+        invocationId: null,
+        type: "worktree_reviewed",
+        level: normalizedVerdict === "approved" ? "info" : "warning",
+        message: `Worktree ${worktree.branchName ?? worktree.branch ?? worktree.id}: ${normalizedVerdict === "approved" ? "approved" : "changes requested"}.`,
+        data: { worktreeId: worktree.id, verdict: normalizedVerdict, reviewedBy: review.reviewedBy },
+      });
+      return review;
     });
-    persistStateSoon();
-    return review;
   }
 
   // The latest review for a worktree (state.worktreeReviews is newest-first).

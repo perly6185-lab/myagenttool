@@ -1,7 +1,8 @@
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
-import { dirname, isAbsolute, relative, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { delimiter } from "node:path";
 import * as pty from "node-pty";
 import { callMcpTool, probeMcpServer } from "./mcp-client.mjs";
@@ -1506,7 +1507,7 @@ function createCliSpawnPlan(adapter, payload) {
   const renderedArgs = isCodexCliCommand(adapter.command)
     ? applyCodexPermissionMode(renderArgs(argsTemplate, payloadJson, payload), payload)
     : applicationWrapperArgs(
-        governedExecWrapperArgs(governedReviewWrapperArgs(renderArgs(argsTemplate, payloadJson, payload), payload), payload),
+        governedApplyWrapperArgs(governedExecWrapperArgs(governedReviewWrapperArgs(renderArgs(argsTemplate, payloadJson, payload), payload), payload), payload),
         payload,
         { resolveCwd: (spec, metadata) => normalizedExistingPath(spec.cwd) ?? normalizedExistingPath(metadata?.worktreePath) ?? normalizedExistingPath(metadata?.projectPath) },
       );
@@ -1575,6 +1576,40 @@ function governedReviewWrapperArgs(renderedArgs, payload) {
   const task = boundedString(metadata.task, 4000);
   if (task && !hasFlag(injected, "--task")) {
     injected.push("--task", task);
+  }
+  return injected;
+}
+
+// Phase 4b: materialize the authorized patch for the Claude apply runner. The
+// server sends the patch in metadata (too large for argv); write it to a temp file
+// and inject --cwd + --patch-file. The runner git-applies it into the bound
+// worktree. Only fires for the governed claude.apply.patch wrapper.
+function governedApplyWrapperArgs(renderedArgs, payload) {
+  const metadata = payload.options?.metadata && typeof payload.options.metadata === "object" && !Array.isArray(payload.options.metadata)
+    ? payload.options.metadata
+    : {};
+  const usesApplyWrapper = String(metadata.tool ?? "") === "claude.apply.patch"
+    && renderedArgs.some((arg) => String(arg).replaceAll("\\", "/").endsWith("tools/agents/claude-apply-wrapper.mjs"));
+  if (!usesApplyWrapper) {
+    return renderedArgs;
+  }
+  const injected = [...renderedArgs];
+  const cwd = normalizedExistingPath(metadata.worktreePath) ?? normalizedExistingPath(metadata.projectPath);
+  if (cwd && !hasFlag(injected, "--cwd")) {
+    injected.push("--cwd", cwd);
+  }
+  const patch = typeof metadata.applyPatch === "string" ? metadata.applyPatch : null;
+  if (patch && !hasFlag(injected, "--patch-file")) {
+    const dir = join(tmpdir(), "myagenttool-apply");
+    mkdirSync(dir, { recursive: true });
+    const patchFile = join(dir, `patch-${process.pid}-${payload.id ?? "inv"}.diff`);
+    writeFileSync(patchFile, patch, "utf8");
+    injected.push("--patch-file", patchFile);
+  }
+  // A governed rollback run re-applies the same server-held patch in reverse; the
+  // runner then refuses a reverse that no longer checks cleanly.
+  if (metadata.claudeApplyRollback === true && !hasFlag(injected, "--reverse")) {
+    injected.push("--reverse");
   }
   return injected;
 }

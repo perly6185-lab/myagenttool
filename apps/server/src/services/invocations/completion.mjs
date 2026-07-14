@@ -18,6 +18,7 @@ export function createInvocationCompletionRuntime({
   recordCcusageImportedEstimates,
   recordCodexReviewFindings,
   recordClaudeReviewFindings,
+  recordClaudeApplyResult,
   recordCodexExecChanges,
   recordApplicationResult,
   onInvocationCompleted,
@@ -117,6 +118,12 @@ export function createInvocationCompletionRuntime({
         agent: findAgent(invocation.agentId),
       });
       attachApplicationResult({ invocation, auditSummary, records, outputCollection: "claudeReviewFindings" });
+    }
+    // Apply runs on ANY terminal status: a refused/failed git apply exits non-zero
+    // but still reports a result, and the authorization must be marked failed (not
+    // left "applying"). recordClaudeApplyResult no-ops for non-apply invocations.
+    if (typeof recordClaudeApplyResult === "function") {
+      recordClaudeApplyResult({ invocation, result: body.result ?? null, agent: findAgent(invocation.agentId) });
     }
     if (terminalStatus === "succeeded" && typeof recordCodexExecChanges === "function") {
       const records = recordCodexExecChanges({

@@ -1,3 +1,5 @@
+import { isGovernedWrapperAgent } from "./governed-agent.mjs";
+
 export const CODEX_REVIEW_TOOL_CONTRACT = {
   name: "codex.review.diff",
   version: "1",
@@ -77,34 +79,13 @@ export function createCodexReviewAgentRegistration({
 }
 
 export function isGovernedCodexReviewAgent(agent) {
-  if (!agent) {
-    return false;
-  }
-  const hasId = agent.id === "agt_codex_review_diff";
-  const hasCliAdapter = agent.adapter?.type === "cli";
-  const hasNodeCommand = String(agent.adapter?.command ?? "") === "node";
-  const hasPlainResultOutput = agent.adapter?.outputFormat === "plain_result";
-  const hasToolContract = agent.toolContract?.name === CODEX_REVIEW_TOOL_CONTRACT.name;
-  const hasReviewCapability = (agent.capabilities ?? []).some((capability) => capability?.name === "code_review");
-  const adapterArgs = Array.isArray(agent.adapter?.args) ? agent.adapter.args.map(String) : [];
-  const fixedWrapperArgs = isExactGovernedReviewWrapperArgs(adapterArgs, "codex-review-wrapper.mjs");
-  return hasId && hasCliAdapter && hasNodeCommand && hasPlainResultOutput && hasToolContract && hasReviewCapability && fixedWrapperArgs;
-}
-
-function isExactGovernedReviewWrapperArgs(args, wrapperName) {
-  if (args.length !== 3) {
-    return false;
-  }
-  // Require the full canonical directory segment, not just the basename. A
-  // bare-basename match (`endsWith(wrapperName)`) would also accept an
-  // attacker-controlled script at an arbitrary location whose filename ends
-  // with the wrapper name (e.g. /tmp/evil/codex-review-wrapper.mjs), which a
-  // forged/overriding agent registration could point the governed tool at —
-  // turning the "governed" facade into arbitrary local execution. The wrapper
-  // is registered as an absolute path, so match the trailing repo path.
-  return args[0].replaceAll("\\", "/").endsWith(`tools/agents/${wrapperName}`)
-    && args[1] === "--mode"
-    && args[2] === "diff-review";
+  return isGovernedWrapperAgent(agent, {
+    id: "agt_codex_review_diff",
+    toolName: CODEX_REVIEW_TOOL_CONTRACT.name,
+    capabilityName: "code_review",
+    wrapper: "codex-review-wrapper.mjs",
+    mode: "diff-review",
+  });
 }
 
 // --- codex.exec (write-capable) — see docs/engineering/CODEX_EXEC_CONTRACT_DESIGN.md ---
@@ -203,28 +184,11 @@ export function createCodexExecAgentRegistration({
 }
 
 export function isGovernedCodexExecAgent(agent) {
-  if (!agent) {
-    return false;
-  }
-  const hasId = agent.id === "agt_codex_exec";
-  const hasCliAdapter = agent.adapter?.type === "cli";
-  const hasNodeCommand = String(agent.adapter?.command ?? "") === "node";
-  const hasPlainResultOutput = agent.adapter?.outputFormat === "plain_result";
-  const hasToolContract = agent.toolContract?.name === CODEX_EXEC_TOOL_CONTRACT.name;
-  const hasEditCapability = (agent.capabilities ?? []).some((capability) => capability?.name === "code_edit");
-  const adapterArgs = Array.isArray(agent.adapter?.args) ? agent.adapter.args.map(String) : [];
-  const fixedWrapperArgs = isExactGovernedExecWrapperArgs(adapterArgs, "codex-exec-wrapper.mjs");
-  return hasId && hasCliAdapter && hasNodeCommand && hasPlainResultOutput && hasToolContract && hasEditCapability && fixedWrapperArgs;
-}
-
-function isExactGovernedExecWrapperArgs(args, wrapperName) {
-  if (args.length !== 3) {
-    return false;
-  }
-  // Same path-segment lock as the review wrapper: match the full trailing repo
-  // path, not the basename, so a forged registration cannot repoint the governed
-  // exec facade at an arbitrary script (which would be arbitrary local writes).
-  return args[0].replaceAll("\\", "/").endsWith(`tools/agents/${wrapperName}`)
-    && args[1] === "--mode"
-    && args[2] === "edit";
+  return isGovernedWrapperAgent(agent, {
+    id: "agt_codex_exec",
+    toolName: CODEX_EXEC_TOOL_CONTRACT.name,
+    capabilityName: "code_edit",
+    wrapper: "codex-exec-wrapper.mjs",
+    mode: "edit",
+  });
 }

@@ -53,6 +53,19 @@ export function buildPublicState({
     teamId == null || !invocationId || visibleInvIds.has(invocationId);
   const byInvocation = (rows) => (rows ?? []).filter((r) => invVisible(r?.invocationId));
   const byProject = (rows) => (rows ?? []).filter((r) => projectVisible(r?.projectId));
+  // #969: ledger rows carry an explicit owning `teamId` (stamped at write time).
+  // Scope by the SAME project gate as before, then ADD the team check — this can
+  // only NARROW visibility, never broaden it: a scoped viewer still needs the
+  // project to be theirs, and a stamped team must match. This closes the leak
+  // where a null-projectId ledger row (projectVisible(null) === true) was visible
+  // to every scoped team; a mismatched (inconsistent) stamp hides it from both,
+  // the conservative choice. Unscoped/local-dev (teamId == null) is unchanged.
+  const ledgerEntryVisible = (entry) => {
+    if (teamId == null) return true;
+    if (!projectVisible(entry?.projectId)) return false;
+    const stamped = entry?.teamId ?? null;
+    return stamped == null || stamped === teamId;
+  };
   const visibleEvents = byInvocation(state.events).filter(eventVisible);
   const eventsByInvocationId = groupRowsByKey(visibleEvents, (event) => event?.invocationId);
   const recoveryEventsByRequestId = groupRecoveryEventsByRequestId(visibleEvents);
@@ -168,10 +181,22 @@ export function buildPublicState({
   // this read-model. The rest of the wrapper (capability, cwdPolicy, policies,
   // resultImport) is the public contract and stays.
   const sanitizeInvocationOptions = (options) => {
-    const wrapper = options?.metadata?.applicationWrapper;
-    if (!wrapper || (wrapper.execCommand === undefined && wrapper.execArgs === undefined)) return options;
-    const { execCommand, execArgs, ...safeWrapper } = wrapper;
-    return { ...options, metadata: { ...options.metadata, applicationWrapper: safeWrapper } };
+    const metadata = options?.metadata;
+    // The Phase 4b apply invocation carries the full patch so the bridge can write
+    // it to a temp file. The bridge gets it over its own work channel; keep the
+    // (up to 100 KB) blob out of every public state fetch — the authorization row
+    // already exposes a bounded patchPreview.
+    const hasApplyPatch = typeof metadata?.applyPatch === "string";
+    const wrapper = metadata?.applicationWrapper;
+    const hasWrapperExec = wrapper && (wrapper.execCommand !== undefined || wrapper.execArgs !== undefined);
+    if (!hasApplyPatch && !hasWrapperExec) return options;
+    const nextMetadata = { ...metadata };
+    if (hasApplyPatch) delete nextMetadata.applyPatch;
+    if (hasWrapperExec) {
+      const { execCommand, execArgs, ...safeWrapper } = wrapper;
+      nextMetadata.applicationWrapper = safeWrapper;
+    }
+    return { ...options, metadata: nextMetadata };
   };
   const invocations = visibleInvocations.map((invocation) => ({
     ...invocation,
@@ -313,7 +338,7 @@ export function buildPublicState({
     aiUsageRecords: byInvocation(state.aiUsageRecords),
     invocationRounds: byInvocation(state.invocationRounds),
     toolInvocationRecords: byInvocation(state.toolInvocationRecords),
-    ledgerEntries: byProject(state.ledgerEntries),
+    ledgerEntries: (state.ledgerEntries ?? []).filter(ledgerEntryVisible),
     importedUsageEstimates: importedUsagePublic(state.importedUsageEstimates),
     applicationResults: applicationResultPublic(state.applicationResults),
     codexReviewFindings,
@@ -323,11 +348,13 @@ export function buildPublicState({
     claudeApplyAuthorizations,
     // Scope the economics rollup to the viewer's team: an unscoped viewer
     // (teamId == null, local dev/admin) gets the platform total; a scoped viewer
-    // gets only its own entries, mirroring `ledgerEntries: byProject(...)` above.
-    // Passing the global summary here leaks foreign totals + project names (#891).
+    // gets only its own entries, mirroring the `ledgerEntries` filter above (#969:
+    // same narrow-only project-gate + stamped-team check, so the rollup can't
+    // leak a foreign null-projectId row's cost either). Passing the global summary
+    // here leaks foreign totals + project names (#891).
     ledgerSummary:
       typeof ledgerSummary === "function"
-        ? ledgerSummary(teamId == null ? undefined : (entry) => projectVisible(entry?.projectId))
+        ? ledgerSummary(teamId == null ? undefined : ledgerEntryVisible)
         : null,
     // Project budgets scope by project; team pools (rows with teamId, no
     // projectId) scope by the viewer's team — byProject alone would treat them

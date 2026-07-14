@@ -23,6 +23,7 @@ import { createCapabilityService } from "../services/capabilities.mjs";
 import { createApplicationResultImportService } from "../services/application-results.mjs";
 import { createCcusageImportService } from "../services/ccusage-imports.mjs";
 import { createClaudeReviewImportService } from "../services/claude-review-imports.mjs";
+import { createClaudeApplyImportService } from "../services/claude-apply-imports.mjs";
 import { createCodexReviewImportService } from "../services/codex-review-imports.mjs";
 import { createCodexExecImportService } from "../services/codex-exec-imports.mjs";
 import { createRoundTelemetryRuntime } from "../services/round-telemetry.mjs";
@@ -151,7 +152,7 @@ export function createServerRuntimeServices({
     selectProject,
     updateProject,
     worktreeForProject,
-  } = createProjectService({ state, now, nextId, appendEvent, persistStateSoon });
+  } = createProjectService({ state, now, nextId, appendEvent, persistStateSoon, store });
 
   const {
     createAgentSkill,
@@ -231,7 +232,7 @@ export function createServerRuntimeServices({
     markHealthCheckStarted,
     nextBridgeHealthCheck,
     registerAgent,
-  } = createAgentService({ state, now, nextId, appendEvent, persistStateSoon });
+  } = createAgentService({ state, now, nextId, appendEvent, persistStateSoon, store });
 
   const {
     closeCodexSession,
@@ -363,6 +364,12 @@ export function createServerRuntimeServices({
     appendEvent,
     persistStateSoon,
   });
+  const { recordClaudeApplyResult } = createClaudeApplyImportService({
+    state,
+    now,
+    appendEvent,
+    persistStateSoon,
+  });
   const { recordCodexExecChanges, createCodexExecReview, isExecChangeApproved, execRunPromotionGate } = createCodexExecImportService({
     state,
     now,
@@ -400,6 +407,7 @@ export function createServerRuntimeServices({
     recordCcusageImportedEstimates,
     recordCodexReviewFindings,
     recordClaudeReviewFindings,
+    recordClaudeApplyResult,
     recordCodexExecChanges,
     recordApplicationResult,
     currentProject,
@@ -782,6 +790,7 @@ export function createServerRuntimeServices({
     createToolInvocation,
     getTool,
     listTools,
+    rollbackClaudeApply,
   } = createToolService({
     state,
     now,
@@ -2760,6 +2769,7 @@ export function createServerRuntimeServices({
     createToolInvocation,
     getTool,
     listTools,
+    rollbackClaudeApply,
     nextId,
     persistStateSoon,
     budgetStatusFor,
