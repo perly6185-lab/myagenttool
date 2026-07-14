@@ -279,6 +279,20 @@ grant. The Approvals view renders each authorization (status, files, bounded
 patch preview) with a grant-backed Roll back action, and the e2e smoke drives the
 whole rollback leg through the bridge.
 
+Operator UX + evidence unification (follow-up, shipped): the Approvals view also
+renders a "Patch proposals" panel — every completed `claude.propose.patch`
+invocation with its summary, touched files, and the proposed diff — with a
+grant-backed "Approve & apply" action, closing the browse -> approve -> apply loop
+in one surface; a proposal already moving through the apply lifecycle shows its
+authorization status instead, and a failed or rolled-back apply may be re-applied
+under a fresh grant. On the evidence side, Claude applies now share the
+codex.exec trust-ledger vocabulary: each applied file surfaces in the Evidence
+Center as a governed `file_change` record (`source:
+"governed_claude_apply"`, summary-only), and a rollback does not erase the
+evidence — the record's summary flips to `rolled back: <file>`, so a supervisor
+sees every AI-authored change that reached a worktree, whichever write path
+produced it.
+
 Phases are stage-gated. Phase 2 implementation starts only after Phase 1
 acceptance is verified; the same rule applies between later phases.
 
