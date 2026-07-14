@@ -177,6 +177,29 @@ try {
   assert(promoteBody.error !== "exec_changes_not_approved", "approval gate should be satisfied after every change is approved");
   ok(`promote gate opens after approval (downstream result: ${promoteAfter.status} ${promoteBody.error ?? "promoted"})`);
 
+  // Phase 2 (approval broker): an exec run carries its approvalMode, so a Codex
+  // PermissionRequest hook posted for THIS invocation is governed by that mode —
+  // the same broker the managed-session path uses, no session required. (The
+  // bridge forwarding real Codex hooks is the remaining integration; here we
+  // prove the server contract the forwarding will target.)
+  const benignHook = await request("POST", "/api/codex/hooks", {
+    invocationId: result.invocationId,
+    eventName: "PermissionRequest",
+    toolName: "apply_patch",
+    summary: "Write greeting.txt in the worktree.",
+  });
+  assert(benignHook.brokerRequest?.status === "approved", "auto mode should auto-approve a low-risk exec permission request");
+  ok("exec approvalMode=auto auto-approves a low-risk Codex permission request");
+
+  const sensitiveHook = await request("POST", "/api/codex/hooks", {
+    invocationId: result.invocationId,
+    eventName: "PermissionRequest",
+    toolName: "shell",
+    summary: "Read ~/.codex/auth.json to inspect the API key.",
+  });
+  assert(sensitiveHook.brokerRequest?.status === "pending", "even in auto mode a credential-shaped request must fall to manual review");
+  ok("sensitive-pattern request forces manual review even under auto mode");
+
   console.log(`\ncodex-exec-caller-smoke: ${passed} checks passed`);
 } finally {
   for (const child of children.reverse()) {
