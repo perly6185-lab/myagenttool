@@ -90,6 +90,37 @@ export function buildEvidenceCenterRecords({
       createdAt: change.createdAt
     });
   }
+  // Claude apply/rollback shares the SAME trust-ledger vocabulary as codex.exec:
+  // an AI-authored change that reached the worktree is a governed `file_change`,
+  // whichever write path produced it. One record per applied file, scoped to the
+  // proposal invocation; a rolled-back authorization keeps its records with the
+  // final state in the summary — evidence of a write does not vanish on undo.
+  for (const authorization of state.claudeApplyAuthorizations ?? []) {
+    const appliedFiles = Array.isArray(authorization.appliedFiles) ? authorization.appliedFiles : [];
+    if (!appliedFiles.length) continue; // nothing reached the worktree
+    const worktree = authorization.worktreeId ? (state.worktrees ?? []).find((item) => item.id === authorization.worktreeId) : null;
+    const verb = authorization.status === "rolled_back"
+      ? "rolled back"
+      : authorization.status === "rolling_back"
+        ? "rolling back"
+        : "applied";
+    for (const [index, file] of appliedFiles.entries()) {
+      records.push({
+        id: `${authorization.id}_f${index}`,
+        type: "file_change",
+        source: "governed_claude_apply",
+        redactionState: "summary_only",
+        invocationId: authorization.invocationId ?? authorization.proposalInvocationId,
+        codexSessionRegistryId: null,
+        agentId: findInvocation(authorization.executionInvocationId)?.agentId ?? null,
+        repoPath: worktree?.worktreePath ?? null,
+        summary: `${verb}: ${file.path}`,
+        detail: authorization.resultSummary ?? authorization.summary ?? `${verb}: ${file.path}`,
+        marker: "governed",
+        createdAt: authorization.rolledBackAt ?? authorization.appliedAt ?? authorization.createdAt
+      });
+    }
+  }
   // A human's review of an exec changeset — the governance decision that gates a
   // later promote — is itself trust-ledger evidence.
   for (const review of state.codexExecChangeReviews ?? []) {
