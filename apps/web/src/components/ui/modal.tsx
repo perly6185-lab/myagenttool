@@ -43,7 +43,7 @@ export function Modal({
         role="dialog"
         aria-modal="true"
         aria-label={title}
-        className={`relative z-10 w-full ${size === "lg" ? "max-w-lg" : "max-w-md"} rounded-xl border border-border bg-card p-5 shadow-xl`}
+        className={`relative z-10 max-h-[calc(100vh-2rem)] w-full overflow-y-auto ${size === "lg" ? "max-w-lg" : "max-w-md"} rounded-xl border border-border bg-card p-4 shadow-xl sm:p-5`}
       >
         <button
           type="button"

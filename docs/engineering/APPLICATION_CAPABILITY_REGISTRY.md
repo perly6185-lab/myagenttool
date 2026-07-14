@@ -142,6 +142,19 @@ can request cancellation; the Bridge polls the device-bound run, terminates the
 process tree, and reports a terminal `succeeded`, `failed`, `cancelled`,
 `timed_out`, or `refused` classification for audit.
 
+P3 exposes the governed setup state machine in the Register application dialog:
+
+```text
+detect -> plan -> approval -> installing -> probing -> registering -> ready
+```
+
+Failed and cancelled runs retain actionable recovery and retry controls. If
+device readiness already reports the binary as available, setup skips plan,
+approval, and installation and registers the canonical Application directly.
+Offline devices, approval failures, installation failures, and probe failures
+remain distinct operator-facing outcomes. Advanced source registration stays
+available as a collapsed secondary path.
+
 ## NPM Wrapper Descriptors
 
 NPM application sources may include a governed wrapper descriptor:

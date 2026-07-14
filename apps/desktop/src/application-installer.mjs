@@ -110,15 +110,41 @@ export async function runApprovedApplicationInstall({
       resolve({ status: "failed", classification: "spawn_failed", summary: `Approved installation failed to start: ${error instanceof Error ? error.message : String(error)}`, exitCode: null, durationMs: Date.now() - startedAt });
       return;
     }
-    child.stdout?.resume?.();
-    child.stderr?.resume?.();
-    child.on("error", (error) => finish({ status: "failed", classification: "spawn_failed", summary: `Approved installation failed to start: ${error.message}`, exitCode: null }));
-    child.on("close", (code) => {
-      if (cancelled) return finish({ status: "cancelled", classification: "cancelled", summary: "Application installation was cancelled locally.", exitCode: Number.isInteger(code) ? code : null });
-      if (timedOut) return finish({ status: "timed_out", classification: "timeout", summary: "Application installation exceeded its approved timeout.", exitCode: Number.isInteger(code) ? code : null });
-      const succeeded = code === 0;
-      return finish({ status: succeeded ? "succeeded" : "failed", classification: succeeded ? "installed" : "nonzero_exit", summary: succeeded ? `${plan.application.displayName} installation completed.` : `${plan.application.displayName} installation failed with exit code ${code ?? "unknown"}.`, exitCode: Number.isInteger(code) ? code : null });
-    });
+    const watchChild = (current, phase) => {
+      current.stdout?.resume?.();
+      current.stderr?.resume?.();
+      current.on("error", (error) => finish({
+        status: "failed",
+        classification: phase === "probe" ? "probe_spawn_failed" : "spawn_failed",
+        summary: `${phase === "probe" ? "Post-install probe" : "Approved installation"} failed to start: ${error.message}`,
+        exitCode: null,
+      }));
+      current.on("close", async (code) => {
+        if (cancelled) return finish({ status: "cancelled", classification: "cancelled", summary: "Application installation was cancelled locally.", exitCode: Number.isInteger(code) ? code : null });
+        if (timedOut) return finish({ status: "timed_out", classification: "timeout", summary: "Application installation exceeded its approved timeout.", exitCode: Number.isInteger(code) ? code : null });
+        if (phase === "install" && code === 0) {
+          await onProgress({ type: "probing", summary: `Verifying ${plan.application.displayName} readiness.` });
+          try {
+            child = spawnProcess(plan.postInstallProbe.executable, [...plan.postInstallProbe.args], {
+              cwd: process.cwd(), env, windowsHide: true, shell: false, stdio: ["ignore", "pipe", "pipe"],
+            });
+            watchChild(child, "probe");
+          } catch (error) {
+            finish({ status: "failed", classification: "probe_spawn_failed", summary: `Post-install probe failed to start: ${error instanceof Error ? error.message : String(error)}`, exitCode: null });
+          }
+          return;
+        }
+        const succeeded = code === 0;
+        const classification = succeeded ? "installed_and_ready" : phase === "probe" ? "probe_failed" : "nonzero_exit";
+        const summary = succeeded
+          ? `${plan.application.displayName} installation and readiness probe completed.`
+          : phase === "probe"
+            ? `${plan.application.displayName} installed, but its readiness probe failed with exit code ${code ?? "unknown"}.`
+            : `${plan.application.displayName} installation failed with exit code ${code ?? "unknown"}.`;
+        return finish({ status: succeeded ? "succeeded" : "failed", classification, summary, exitCode: Number.isInteger(code) ? code : null });
+      });
+    };
+    watchChild(child, "install");
     const timeoutTimer = scheduleTimeout(async () => {
       timedOut = true;
       await terminate(child);
