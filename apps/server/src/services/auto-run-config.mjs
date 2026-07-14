@@ -107,6 +107,10 @@ export function normalizeAutoRunSettings(patch = {}, prev = {}) {
     // Self-repair: how many times a develop run may re-attempt after a verify
     // failure (feeding the failure back to the agent) before it blocks. 0 disables.
     maxRepairAttempts: keep("maxRepairAttempts", (v) => clampInt(v, 0, 3)),
+    // #890 budget reservations (UI-only). The per-run USD hold placed at admission
+    // so concurrent runs can't jointly exceed a hard block budget. 0 = disabled
+    // (accounting-only, no admission holds — the default, byte-identical to before).
+    reservationEstimateUsd: keep("reservationEstimateUsd", (v) => clampNum(v, 0, 1_000_000)),
     // A1 alerting (UI-only): operator webhook for real-time operational alerts.
     // Validated http(s); a typo/blank clears it (alerting disabled).
     alertWebhookUrl: keep("alertWebhookUrl", (v) => normalizeAlertWebhookUrl(v)),
@@ -218,6 +222,8 @@ export function resolveAutoRunConfig(state = {}, baseEnv = process.env) {
     autoApproveNonCodePaths: Boolean(settings.autoApproveNonCodePaths),
     // Self-repair attempt cap (not env-backed); default 2, 0 disables the loop.
     maxRepairAttempts: Number.isInteger(settings.maxRepairAttempts) ? settings.maxRepairAttempts : 2,
+    // #890 per-run budget hold at admission (not env-backed); 0 = disabled.
+    reservationEstimateUsd: Number(settings.reservationEstimateUsd ?? 0) || 0,
     // A1 alerting: whether an operational-alert webhook is configured.
     alertWebhookConfigured: Boolean(settings.alertWebhookUrl),
     // A3 reliability knobs (effective values; 0 = off).

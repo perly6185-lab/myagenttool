@@ -89,6 +89,9 @@ export function createServerState({ defaultProjectPath, now }) {
     codexExecChangeReviews: [],
     applicationResults: [],
     budgets: [],
+    // #890: in-flight budget holds placed at admission and released on settle so
+    // concurrent spend-bearing runs cannot jointly exceed a hard block budget.
+    budgetReservations: [],
     automations: createDefaultAutomations(defaultProject.id, now),
     agentSkills: createDefaultAgentSkills(now),
     // Auto-run config overrides (services/auto-run-config.mjs). Empty = every

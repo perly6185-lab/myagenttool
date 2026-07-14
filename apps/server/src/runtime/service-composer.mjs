@@ -286,6 +286,9 @@ export function createServerRuntimeServices({
     budgetStatusFor,
     budgetStatuses,
     budgetGateForProject,
+    reserveBudget,
+    releaseReservationsForAutoRun,
+    reconcileBudgetReservations,
     findLifecycleLocalApproval,
     findLifecycleRollbackRequest,
     findLifecycleRecipe,
@@ -448,6 +451,11 @@ export function createServerRuntimeServices({
     refuse,
     // O0 cost brake: refuse to start a run when the project is over budget.
     budgetStatusFor,
+    // #890 budget reservations: hold at admission, release on settle, reconcile
+    // leaked holds on the boot + 60s stuck-run sweep.
+    reserveBudget,
+    releaseReservationsForAutoRun,
+    reconcileBudgetReservations,
     // A1 alerting: best-effort operational webhook (budget breach, stuck reap).
     sendAlert: (alert) => autoRunAlerts.dispatch(alert),
     // O1 reliability: find a run's invocation for stuck/crash reconcile.

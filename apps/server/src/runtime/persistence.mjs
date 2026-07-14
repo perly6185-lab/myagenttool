@@ -84,6 +84,7 @@ export const persistedArrayKeys = [
   "codexExecChangeReviews",
   "applicationResults",
   "budgets",
+  "budgetReservations",
   "automations",
   "agentSkills",
   "auditExportRequests",
