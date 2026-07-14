@@ -223,6 +223,7 @@ export function DashboardView({ surface = "overview" }: { surface?: DashboardSur
                 value={agent?.id ?? ""}
                 onChange={(e) => setSelectedAgentId(e.target.value || null)}
                 aria-label="Agent"
+                title={agent ? `${agent.name} — ${readableAgentStatus(agent.status)} — ${readableHealthLabel(agent.health)}` : undefined}
               >
                 {agents.length === 0 ? <option value="">No agent registered</option> : null}
                 {agents.map((item) => (

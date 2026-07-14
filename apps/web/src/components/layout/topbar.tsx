@@ -21,6 +21,7 @@ function ProjectSwitcher() {
       <span>Project</span>
       <Select
         aria-label="Current project"
+        title={projects.find((p) => p.id === currentProjectId)?.name ?? undefined}
         className="h-8 w-44"
         value={currentProjectId}
         disabled={pending}

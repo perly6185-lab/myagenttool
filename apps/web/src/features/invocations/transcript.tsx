@@ -53,7 +53,7 @@ export function Transcript({
   onOpenReview?: () => void;
 }) {
   if (events.length === 0 && !summary?.text) {
-    return <EmptyState title="No activity yet" hint="Run a task to watch local progress here." />;
+    return <EmptyState title="No runs yet" hint="Run a task to watch local progress here." />;
   }
 
   const summaryFailed = summary?.status === "failed" || summary?.status === "cancelled";

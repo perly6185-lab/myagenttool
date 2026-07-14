@@ -14,7 +14,7 @@ export function EventTimeline({
   renderAction?: (event: InvocationEventSnapshot) => ReactNode;
 }) {
   if (events.length === 0) {
-    return <EmptyState title="No activity yet" hint="Run a task to watch local progress here." />;
+    return <EmptyState title="No runs yet" hint="Run a task to watch local progress here." />;
   }
 
   return (
