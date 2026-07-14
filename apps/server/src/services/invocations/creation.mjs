@@ -149,7 +149,9 @@ export function createInvocationCreationRuntime({
         state: "none",
         requestedBy: null,
         requestedAt: null,
-        reason: null
+        reason: null,
+        appliedAt: null,
+        message: null
       },
       input: { task },
       options: {

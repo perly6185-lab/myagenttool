@@ -223,7 +223,11 @@ export interface InvocationSnapshot {
   approvalRequestId?: string;
   policyDecisionId?: string;
   delivery?: { state?: string; dispatchAttempts?: number };
-  cancellation?: { state?: string };
+  cancellation?: {
+    state?: string;
+    appliedAt?: string | null;
+    message?: string | null;
+  };
   result?: { summary?: string; touchedUserFiles?: boolean; errorCode?: string | null; output?: unknown };
   explanation?: InvocationExplanation | null;
   createdAt?: string;

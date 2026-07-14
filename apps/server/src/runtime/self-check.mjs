@@ -833,6 +833,8 @@ export async function runProtocolSelfCheck(deps) {
   cancelInvocation(queuedCancel);
   assert(queuedCancel.status === "cancelled", "queued cancellation should cancel invocation");
   assert(queuedCancel.cancellation.state === "queued_cancelled", "queued cancellation state should be queued_cancelled");
+  assert(queuedCancel.cancellation.appliedAt === queuedCancel.completedAt, "queued cancellation should timestamp applied cancellation at completion");
+  assert(state.events.some((item) => item.invocationId === queuedCancel.id && item.type === "cancel_applied" && item.message === queuedCancel.cancellation.message), "queued cancellation should expose its applied event message");
 
   const unlinkQueued = createInvocation("unlink cancellation", cliAgent);
   unlinkDevice();

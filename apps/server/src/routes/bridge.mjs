@@ -242,6 +242,7 @@ export async function handleBridgeRoutes({
       return true;
     }
 
+    const agent = findAgent(invocation.agentId);
     markDispatched(invocation);
 
     sendJson(res, 200, {
@@ -249,7 +250,8 @@ export async function handleBridgeRoutes({
       protocolVersion,
       invocationId: invocation.id,
       agentId: invocation.agentId,
-      adapter: findAgent(invocation.agentId)?.adapter ?? null,
+      agentName: agent?.name ?? null,
+      adapter: agent?.adapter ?? null,
       input: invocation.input,
       options: invocation.options,
       project: projectForInvocation(invocation),

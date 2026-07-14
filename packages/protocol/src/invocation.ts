@@ -62,6 +62,8 @@ export interface InvocationCancellation {
   requestedBy: UserId | null;
   requestedAt: IsoDateTime | null;
   reason: string | null;
+  appliedAt: IsoDateTime | null;
+  message: string | null;
 }
 
 export interface InvocationOptions {
