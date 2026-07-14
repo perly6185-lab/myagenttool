@@ -168,10 +168,22 @@ export function buildPublicState({
   // this read-model. The rest of the wrapper (capability, cwdPolicy, policies,
   // resultImport) is the public contract and stays.
   const sanitizeInvocationOptions = (options) => {
-    const wrapper = options?.metadata?.applicationWrapper;
-    if (!wrapper || (wrapper.execCommand === undefined && wrapper.execArgs === undefined)) return options;
-    const { execCommand, execArgs, ...safeWrapper } = wrapper;
-    return { ...options, metadata: { ...options.metadata, applicationWrapper: safeWrapper } };
+    const metadata = options?.metadata;
+    // The Phase 4b apply invocation carries the full patch so the bridge can write
+    // it to a temp file. The bridge gets it over its own work channel; keep the
+    // (up to 100 KB) blob out of every public state fetch — the authorization row
+    // already exposes a bounded patchPreview.
+    const hasApplyPatch = typeof metadata?.applyPatch === "string";
+    const wrapper = metadata?.applicationWrapper;
+    const hasWrapperExec = wrapper && (wrapper.execCommand !== undefined || wrapper.execArgs !== undefined);
+    if (!hasApplyPatch && !hasWrapperExec) return options;
+    const nextMetadata = { ...metadata };
+    if (hasApplyPatch) delete nextMetadata.applyPatch;
+    if (hasWrapperExec) {
+      const { execCommand, execArgs, ...safeWrapper } = wrapper;
+      nextMetadata.applicationWrapper = safeWrapper;
+    }
+    return { ...options, metadata: nextMetadata };
   };
   const invocations = visibleInvocations.map((invocation) => ({
     ...invocation,

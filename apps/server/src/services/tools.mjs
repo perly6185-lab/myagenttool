@@ -25,6 +25,7 @@ import {
 import {
   CLAUDE_APPLY_TOOL_CONTRACT,
   isClaudeApplyEnabled,
+  isGovernedClaudeApplyAgent,
 } from "./claude-apply-agent.mjs";
 import { CLAUDE_APPLICATION_ID } from "./claude-application.mjs";
 import { teamOf } from "../runtime/auth.mjs";
@@ -503,9 +504,53 @@ export function createToolService({
         proposalInvocationId: value.proposalInvocationId,
         worktreeId: worktree.id,
         grantId: approval.grantId ?? null,
-        executable: false,
       },
     });
+
+    // Phase 4b: if a governed apply RUNNER is available, dispatch the git-apply as
+    // a queued bridge invocation carrying the authorized patch. Without a runner
+    // this stays a 4a authorization (executable: false) — the authorization is the
+    // durable proof the apply was approved either way.
+    const runner = availableClaudeApplyRunner();
+    if (runner) {
+      const invocation = createInvocation(`Apply an authorized Claude patch to worktree ${worktree.id}.`, runner, {
+        actor,
+        requestedBy: actor?.userId,
+        metadata: {
+          tool: CLAUDE_APPLY_TOOL_CONTRACT.name,
+          toolVersion: CLAUDE_APPLY_TOOL_CONTRACT.version,
+          projectId,
+          worktreeId: worktree.id,
+          claudeApplyAuthorizationId: authorization.id,
+          proposalInvocationId: value.proposalInvocationId,
+          // The bridge writes this to a temp file and passes --patch-file. Stripped
+          // from public state (see sanitizeInvocationOptions).
+          applyPatch: patch,
+        },
+        timeoutSeconds: 120,
+      });
+      startInvocationIfAllowed(invocation, runner);
+      authorization.status = "applying";
+      authorization.executable = true;
+      authorization.executionInvocationId = invocation.id;
+      persistStateSoon();
+      return {
+        status: 201,
+        body: {
+          tool: CLAUDE_APPLY_TOOL_CONTRACT.name,
+          authorizationId: authorization.id,
+          status: "applying",
+          executable: true,
+          applied: false,
+          executionInvocationId: invocation.id,
+          agentId: runner.id,
+          proposalInvocationId: value.proposalInvocationId,
+          worktreeId: worktree.id,
+          files,
+        },
+      };
+    }
+
     persistStateSoon();
     return {
       status: 201,
@@ -520,6 +565,16 @@ export function createToolService({
         files,
       },
     };
+  }
+
+  // A governed apply runner that can actually execute now: registered, enabled,
+  // healthy, and on a linked device.
+  function availableClaudeApplyRunner() {
+    const runner = (state.agents ?? []).find(isGovernedClaudeApplyAgent) ?? null;
+    if (!runner || runner.status === "disabled") return null;
+    if (runner.health?.status === "unhealthy") return null;
+    if (runner.location?.type === "local_device" && state.device?.unlinkState === "unlinked") return null;
+    return runner;
   }
 
   function resolveToolProjectId(projectId, actor) {
