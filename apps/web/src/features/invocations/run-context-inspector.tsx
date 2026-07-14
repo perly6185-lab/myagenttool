@@ -122,6 +122,9 @@ export function RunContextInspector() {
         </Card>
       ) : null}
 
+      {/* No empty result/record scaffolding before a run exists (#930). */}
+      {invocation ? (
+      <>
       <Card>
         <CardHeader className="flex-row items-center justify-between">
           <CardTitle>{resultTitle(invocation?.status)}</CardTitle>
@@ -187,6 +190,8 @@ export function RunContextInspector() {
           />
         </CardContent>
       </Card>
+      </>
+      ) : null}
     </div>
   );
 }
