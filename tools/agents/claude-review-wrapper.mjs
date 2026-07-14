@@ -11,15 +11,24 @@ import { isAbsolute } from "node:path";
 // valid tool on its error output.
 let outputTool = "claude.review.diff";
 const options = parseArgs(process.argv.slice(2));
-const MODE_TOOL = { "diff-review": "claude.review.diff", "diff-explain": "claude.explain.diff" };
+const MODE_TOOL = {
+  "diff-review": "claude.review.diff",
+  "diff-explain": "claude.explain.diff",
+  "propose-patch": "claude.propose.patch",
+};
 const TOOL = MODE_TOOL[options.mode];
 if (!TOOL) fail(`Unsupported Claude wrapper mode: ${options.mode}`);
 outputTool = TOOL;
 requireReviewCwd(options);
+if (options.mode === "propose-patch" && !options.task) fail("--task is required for propose-patch.");
 
-console.log(`Claude ${options.mode === "diff-explain" ? "explain" : "review"} started: ${options.mode}`);
+console.log(`Claude wrapper started: ${options.mode}`);
 
-const prompt = options.mode === "diff-explain" ? buildExplainPrompt(options) : buildPrompt(options);
+const prompt = options.mode === "propose-patch"
+  ? buildProposePrompt(options)
+  : options.mode === "diff-explain"
+    ? buildExplainPrompt(options)
+    : buildPrompt(options);
 const commandPlan = claudeCommandPlan(options.claudeCli, [
   "-p",
   prompt,
@@ -39,10 +48,34 @@ if (code !== 0) {
   fail(`Claude exited with code ${code}.`, { exitCode: code, stderr: stderr.trim() });
 }
 
-if (options.mode === "diff-explain") {
+if (options.mode === "propose-patch") {
+  emitProposeResult(stdout);
+} else if (options.mode === "diff-explain") {
   emitExplainResult(stdout);
 } else {
   emitReviewResult(stdout);
+}
+
+function emitProposeResult(rawStdout) {
+  const proposal = parseProposeOutput(rawStdout);
+  const patch = normalizePatch(proposal.patch);
+  const files = normalizeProposedFiles(proposal.files, patch);
+  console.log(`RESULT ${JSON.stringify({
+    summary: proposal.summary ?? summarizeProposal(files),
+    // A proposal is never applied by the wrapper; it only reports what it would do.
+    touchedUserFiles: false,
+    output: {
+      source: "claude",
+      tool: TOOL,
+      mode: options.mode,
+      task: options.task,
+      instruction: options.instruction,
+      summary: proposal.summary ?? null,
+      patch,
+      files,
+    },
+    cost: costPayload(proposal),
+  })}`);
 }
 
 function emitReviewResult(rawStdout) {
@@ -102,6 +135,7 @@ function parseArgs(args) {
     cwd: null,
     instruction: null,
     severityFloor: "low",
+    task: null,
   };
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
@@ -113,6 +147,8 @@ function parseArgs(args) {
       parsed.cwd = requireValue(args, ++index, arg);
     } else if (arg === "--instruction") {
       parsed.instruction = normalizeInstruction(requireValue(args, ++index, arg));
+    } else if (arg === "--task") {
+      parsed.task = normalizeTask(requireValue(args, ++index, arg));
     } else if (arg === "--severity-floor") {
       parsed.severityFloor = normalizeSeverity(requireValue(args, ++index, arg));
     } else if (arg === "--help" || arg === "-h") {
@@ -151,6 +187,12 @@ function normalizeInstruction(value) {
   return text || null;
 }
 
+function normalizeTask(value) {
+  const text = String(value ?? "").trim();
+  if (text.length > 4000) fail("--task exceeds 4000 characters.");
+  return text || null;
+}
+
 function normalizeSeverity(value) {
   const text = String(value ?? "").trim();
   if (!["low", "medium", "high"].includes(text)) fail("--severity-floor must be low, medium, or high.");
@@ -175,6 +217,18 @@ function buildExplainPrompt(value) {
     "{\"summary\":\"...\",\"highlights\":[{\"file\":\"path\",\"change\":\"what changed\",\"impact\":\"why it matters\"}]}",
     "Describe behavior and intent, not style. Do NOT judge, score, or list bugs — that is the review tool's job.",
     "Do not edit files, run apply tools, or change the worktree.",
+    value.instruction ? `Additional instruction: ${value.instruction}` : null,
+  ].filter(Boolean).join("\n");
+}
+
+function buildProposePrompt(value) {
+  return [
+    "Propose a change to this repository that accomplishes the task below.",
+    `Task: ${value.task}`,
+    "Return JSON only with this shape:",
+    "{\"summary\":\"...\",\"patch\":\"<a unified diff in git apply format>\",\"files\":[{\"path\":\"path\",\"action\":\"created|modified|deleted\"}]}",
+    "The patch MUST be a valid unified diff (as produced by `git diff`), applyable with `git apply`.",
+    "IMPORTANT: Do NOT edit files, run apply tools, or change the worktree. Output the proposed diff as TEXT only.",
     value.instruction ? `Additional instruction: ${value.instruction}` : null,
   ].filter(Boolean).join("\n");
 }
@@ -386,6 +440,84 @@ function normalizeHighlights(value) {
 
 function summarizeHighlights(highlights) {
   return `Claude explained ${highlights.length} change highlight(s).`;
+}
+
+// Propose-mode parsing: extract the proposed { summary, patch, files } object.
+// Reuses the same leaf JSON helpers; the review/explain paths are untouched.
+function parseProposeOutput(stdout) {
+  const text = String(stdout ?? "").trim();
+  if (!text) fail("Claude produced no proposal output.");
+  const direct = parseJsonMaybe(text);
+  if (direct) return normalizeProposeObject(direct);
+  const lines = text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  let latestCost = {};
+  for (const line of lines) {
+    const parsed = parseJsonMaybe(line);
+    if (parsed?.type === "result" || parsed?.subtype === "success") {
+      latestCost = costFields(parsed);
+    }
+  }
+  for (const line of lines.toReversed()) {
+    if (line.startsWith("RESULT ")) {
+      const result = parseJsonMaybe(line.slice("RESULT ".length));
+      if (result) return { ...normalizeProposeObject(result.output ?? result), ...latestCost };
+    }
+    const parsed = parseJsonMaybe(line);
+    const candidate = extractProposeFromClaudeEvent(parsed);
+    if (candidate) return { ...normalizeProposeObject(candidate), ...latestCost };
+  }
+  fail("Claude produced malformed proposal JSON.", { stdoutPreview: text.slice(0, 500) });
+}
+
+function extractProposeFromClaudeEvent(event) {
+  if (!event || typeof event !== "object") return null;
+  if (typeof event.patch === "string") return event;
+  const text = event.result
+    ?? event.summary
+    ?? claudeContentText(event.message?.content)
+    ?? claudeContentText(event.content)
+    ?? null;
+  if (!text) return null;
+  return parseJsonFromText(String(text).trim());
+}
+
+function normalizeProposeObject(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    fail("Claude proposal output must be an object.");
+  }
+  return {
+    summary: typeof value.summary === "string" ? value.summary.trim() : null,
+    patch: typeof value.patch === "string" ? value.patch : "",
+    files: Array.isArray(value.files) ? value.files : [],
+  };
+}
+
+function normalizePatch(patch) {
+  const maxPatchChars = 100000;
+  const text = String(patch ?? "");
+  return text.length <= maxPatchChars ? text : `${text.slice(0, maxPatchChars)}\n... (patch truncated)`;
+}
+
+function normalizeProposedFiles(files, patch) {
+  const declared = (Array.isArray(files) ? files : [])
+    .filter((item) => item && typeof item === "object" && !Array.isArray(item))
+    .map((item) => ({
+      path: String(item.path ?? item.file ?? "").trim(),
+      action: normalizeFindingEnum(item.action, "modified", ["created", "modified", "deleted"]),
+    }))
+    .filter((item) => item.path);
+  // If the model omitted the file list, recover paths from the diff headers so the
+  // artifact always names what it touches.
+  if (declared.length) return declared;
+  const fromDiff = [...String(patch ?? "").matchAll(/^\+\+\+ b\/(.+)$/gm)].map((match) => ({
+    path: match[1].trim(),
+    action: "modified",
+  }));
+  return fromDiff.filter((item) => item.path);
+}
+
+function summarizeProposal(files) {
+  return `Claude proposed a patch touching ${files.length} file(s).`;
 }
 
 function fail(message, output = {}) {

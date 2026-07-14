@@ -129,6 +129,19 @@ closed. Foreign project/device scope and target platform mismatches also fail
 closed. Future execution must re-resolve the current server recipe and require
 an exact plan identity before Desktop Bridge dispatch.
 
+P2 adds that execution boundary. `POST /api/applications/install/runs` consumes
+a server-issued, single-use `application.install` approval grant bound to the
+exact `planId`. The server re-resolves and compares the complete current plan
+before queueing a device-bound run. Desktop Bridge then independently verifies
+the schema, recipe version, platform, package, executable, discrete argv,
+fingerprint, and plan id before spawning with `shell = false`.
+
+Install runs expose bounded progress summaries but never persist stdout,
+stderr, environment, credentials, or package-manager shell strings. Operators
+can request cancellation; the Bridge polls the device-bound run, terminates the
+process tree, and reports a terminal `succeeded`, `failed`, `cancelled`,
+`timed_out`, or `refused` classification for audit.
+
 ## NPM Wrapper Descriptors
 
 NPM application sources may include a governed wrapper descriptor:

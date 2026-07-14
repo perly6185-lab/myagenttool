@@ -1,5 +1,6 @@
 import { CLAUDE_REVIEW_TOOL_CONTRACT } from "./claude-agent.mjs";
 import { CLAUDE_EXPLAIN_TOOL_CONTRACT } from "./claude-explain-agent.mjs";
+import { CLAUDE_PROPOSE_TOOL_CONTRACT } from "./claude-propose-agent.mjs";
 
 export const CLAUDE_APPLICATION_ID = "app_claude";
 
@@ -38,6 +39,21 @@ export function createClaudeApplicationRegistration({ autoOnline = false } = {})
         riskTags: ["read_only", "read_project", "code_analysis", "local_agent"],
         requiresApproval: false,
         inputSchema: CLAUDE_EXPLAIN_TOOL_CONTRACT.inputSchema,
+        outputCollection: "invocations",
+      },
+      {
+        // Phase 3 (#913): propose a change as an immutable patch artifact. The
+        // proposal is read-only (Claude never writes the worktree), so it needs no
+        // approval to GENERATE; the approval gate lives on the Phase 4 apply. The
+        // patch rides the durable invocation result, not a bespoke collection.
+        id: "propose.patch",
+        toolName: CLAUDE_PROPOSE_TOOL_CONTRACT.name,
+        displayName: "Claude Patch Proposal",
+        description: "Propose a change to an actor-owned worktree as an immutable patch artifact (never applied).",
+        riskLevel: "low",
+        riskTags: ["read_only", "read_project", "code_proposal", "local_agent"],
+        requiresApproval: false,
+        inputSchema: CLAUDE_PROPOSE_TOOL_CONTRACT.inputSchema,
         outputCollection: "invocations",
       },
     ],

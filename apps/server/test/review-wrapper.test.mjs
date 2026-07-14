@@ -107,6 +107,42 @@ test("claude explain wrapper fails on malformed explanation JSON", () => {
   assert.match(resultPayload(res.stdout).output.error, /malformed explanation JSON|no explanation output/);
 });
 
+// --- Phase 3 (#913): the same wrapper's propose-patch mode ---
+
+function writeClaudeProposeStub(output) {
+  const stub = join(workdir, `fake-claude-propose-${Math.abs(hash(output ?? "default"))}.mjs`);
+  writeFileSync(stub, output === undefined
+    // A proposal with a patch but NO files field, so the wrapper must recover the
+    // touched files from the diff headers.
+    ? "console.log(JSON.stringify({ summary: 'Add a guard.', patch: 'diff --git a/x.mjs b/x.mjs\\n--- a/x.mjs\\n+++ b/x.mjs\\n@@ -1 +1,2 @@\\n foo\\n+bar\\n' }));"
+    : `process.stdout.write(${JSON.stringify(output)});`);
+  return stub;
+}
+
+test("claude propose wrapper requires --task", () => {
+  const res = runWrapper(claudeWrapper, ["--mode", "propose-patch", "--cwd", workdir]);
+  assert.notEqual(res.status, 0);
+  const payload = resultPayload(res.stdout);
+  assert.match(payload.output.error, /--task is required/);
+  assert.equal(payload.output.tool, "claude.propose.patch");
+});
+
+test("claude propose wrapper returns a patch artifact and recovers touched files from the diff", () => {
+  const stub = writeClaudeProposeStub();
+  const res = runWrapper(claudeWrapper, ["--mode", "propose-patch", "--cwd", workdir, "--task", "add bar", "--claude-cli", stub]);
+  assert.equal(res.status, 0, res.stderr || res.stdout);
+  const payload = resultPayload(res.stdout);
+  assert.equal(payload.output.source, "claude");
+  assert.equal(payload.output.tool, "claude.propose.patch");
+  assert.equal(payload.output.mode, "propose-patch");
+  assert.equal(payload.output.task, "add bar");
+  assert.match(payload.output.patch, /diff --git a\/x\.mjs b\/x\.mjs/);
+  assert.deepEqual(payload.output.files, [{ path: "x.mjs", action: "modified" }], "files recovered from the diff header");
+  // A proposal is never applied by the wrapper.
+  assert.equal(payload.touchedUserFiles, false);
+  assert.ok(!("findings" in payload.output), "proposal output must not contain findings");
+});
+
 test("codex wrapper rejects a --cwd that does not exist", () => {
   const res = runWrapper(codexWrapper, ["--mode", "diff-review", "--cwd", join(workdir, "does-not-exist")]);
   assert.notEqual(res.status, 0);

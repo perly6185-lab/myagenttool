@@ -24,6 +24,7 @@ for (const platform of ["windows", "macos", "linux"]) {
       assert.equal(first.approval.required, true);
       assert.equal(first.policy.cancellable, true);
       assert.equal(applicationInstallPlanMatchesCurrent(first, { device: target, projectId: "proj_a" }), true);
+      assert.equal(applicationInstallPlanMatchesCurrent({ fingerprint: first.fingerprint, ...first }, { device: target, projectId: "proj_a" }), true);
       assert.equal(applicationInstallPlanMatchesCurrent({ ...first, fingerprint: "modified" }, { device: target, projectId: "proj_a" }), false);
     });
   }

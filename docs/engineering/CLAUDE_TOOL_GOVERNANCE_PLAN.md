@@ -203,6 +203,21 @@ Acceptance:
 - Other agents can ask Claude for proposed changes without gaining write access
   to a worktree.
 
+Implementation status: `claude.propose.patch` ships as the Phase 3 capability. It
+reuses the Phase 1/2 machinery — the same fixed wrapper with a new read-only
+`--mode propose-patch` (`--permission-mode plan`), the same tenancy guard, and the
+same `tool_facade` discovery (`app.app_claude.propose.patch`). It requires a
+`task` (the change to propose) and returns an immutable artifact: a unified diff
+plus a summary and the touched files (recovered from the diff headers if the model
+omits them). Claude NEVER writes the worktree — the proposal is diff-as-text and
+rides the durable invocation result, so generating it is read-only and needs no
+approval (`requiresApproval: false`); the descriptor's `approvalPolicy.applyPatch`
+stays `approval_required`. A later apply consumes the proposal by invocation id.
+The Desktop Bridge injects only the governed `--cwd`/`--task`/`--instruction`
+flags. Broader-scope/high-risk approval gating for proposal generation, if needed,
+can layer onto the same facade. Phase 4 (below) consumes this proposal by
+invocation id under an approval grant.
+
 ### Phase 4: Approval-Bound Apply (#914)
 
 - Add an apply tool only after approval, preview, and artifact binding exist.

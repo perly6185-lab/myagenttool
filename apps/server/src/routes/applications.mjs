@@ -11,7 +11,9 @@ export async function handleApplicationRoutes({
   readJson,
   state,
   actor,
+  cancelApplicationInstall,
   findApplication,
+  findApplicationInstallRun,
   getApplicationOrchestrationRunRecovery,
   listApplicationOrchestrationRecoveryAgentCandidates,
   getApplicationOrchestrationRun,
@@ -19,6 +21,7 @@ export async function handleApplicationRoutes({
   listApplications,
   listApplicationOrchestrationRunEvents,
   probeApplication,
+  queueApplicationInstall,
   registerApplication,
   requestApplicationOrchestrationRecoveryAction,
   readApplicationRecoveryArchive,
@@ -68,6 +71,53 @@ export async function handleApplicationRoutes({
         message: error?.message ?? "Installation plan could not be created.",
       });
     }
+    return true;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/applications/install/runs") {
+    const body = await readJson(req);
+    const plan = body?.plan;
+    const projectId = plan?.target?.projectId ?? null;
+    const deviceId = plan?.target?.deviceId ?? null;
+    if (projectId && denyForeignProject({ res, sendJson, state, actor, projectId, notFound: { error: "project_not_found" } })) {
+      return true;
+    }
+    const device = findDevice(state, deviceId);
+    const owner = device && (state.users ?? []).find((user) => user.id === device.ownerUserId);
+    if (!device || (actor && owner && owner.teamId !== actor.teamId)) {
+      sendJson(res, 404, { error: "device_not_found" });
+      return true;
+    }
+    try {
+      const run = queueApplicationInstall({ plan, approvalToken: body?.approvalToken }, { actor, device, projectId });
+      sendJson(res, 201, { run });
+    } catch (error) {
+      const code = typeof error?.code === "string" ? error.code : "application_install_not_queued";
+      sendJson(res, code === "application_install_plan_mismatch" ? 409 : 403, { error: code, message: error?.message ?? "Application installation was not queued." });
+    }
+    return true;
+  }
+
+  const installRunMatch = url.pathname.match(/^\/api\/applications\/install\/runs\/([^/]+)$/);
+  if (req.method === "GET" && installRunMatch) {
+    const run = findApplicationInstallRun(decodeURIComponent(installRunMatch[1]));
+    if (!run || (actor && run.ownerTeamId !== actor.teamId)) {
+      sendJson(res, 404, { error: "application_install_run_not_found" });
+      return true;
+    }
+    sendJson(res, 200, { run });
+    return true;
+  }
+
+  const installCancelMatch = url.pathname.match(/^\/api\/applications\/install\/runs\/([^/]+)\/cancel$/);
+  if (req.method === "POST" && installCancelMatch) {
+    const run = findApplicationInstallRun(decodeURIComponent(installCancelMatch[1]));
+    if (!run || (actor && run.ownerTeamId !== actor.teamId)) {
+      sendJson(res, 404, { error: "application_install_run_not_found" });
+      return true;
+    }
+    cancelApplicationInstall(run, actor);
+    sendJson(res, 200, { run });
     return true;
   }
 
