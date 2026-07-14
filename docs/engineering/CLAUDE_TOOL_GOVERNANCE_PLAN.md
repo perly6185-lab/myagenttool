@@ -258,7 +258,13 @@ Bridge classifies the runner as its own write-capable `claudeApply` policy kind
 (`workspace_write`, no network — never read_only) and materializes the patch to a
 temp file (`--patch-file`); the full patch is stripped from public state. The
 wrapper is verified against a real git worktree (apply, clean-check refusal,
-rollback); the end-to-end bridge run is not exercised in CI (same as codex.exec).
+rollback). The full server -> bridge -> git-apply seam is exercised end to end by
+`tools/dev/claude-apply-caller-smoke.mjs` (`pnpm smoke:claude-apply`): it boots a
+real server + Desktop Bridge, proposes a patch (fake Claude), issues an approval
+grant, applies, and asserts the file is git-applied on disk in the bound worktree,
+the authorization transitions to `applied` with the file list + reversible
+rollback, and the rollback genuinely reverts — proving the patch reaches the
+bridge via invocation metadata (it is stripped only from public state).
 
 Phases are stage-gated. Phase 2 implementation starts only after Phase 1
 acceptance is verified; the same rule applies between later phases.
