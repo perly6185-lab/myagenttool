@@ -140,23 +140,37 @@ export function buildEvidenceCenterRecords({
       createdAt: result.createdAt
     });
   }
+  // Lineage row: a compact "this application produced a result" record for every
+  // application invocation whose detailed result lands somewhere OTHER than the
+  // durable `applicationResults` ledger — claude/codex review findings, ccusage
+  // usage estimates, and no-import results all reach here. Source it from
+  // `auditSummaries` (uncapped, persisted), NOT the `application_result_recorded`
+  // event: `state.events` is a 500-row ring buffer, so an event-sourced lineage
+  // row silently vanished once evicted even though the invocation, audit summary,
+  // and `application.latestResult` all still held the link. The audit summary
+  // carries the same final `applicationResult` object and outlives the event.
   const importedApplicationInvocationIds = new Set((state.applicationResults ?? []).map((result) => result.invocationId));
-  for (const event of (state.events ?? []).filter((item) => item.type === "application_result_recorded")) {
-    if (importedApplicationInvocationIds.has(event.invocationId)) continue;
-    const result = event.data ?? {};
+  const seenLineageInvocationIds = new Set();
+  for (const auditSummary of state.auditSummaries ?? []) {
+    const result = auditSummary.applicationResult;
+    if (!result) continue;
+    const invocationId = auditSummary.invocationId;
+    if (importedApplicationInvocationIds.has(invocationId)) continue;
+    if (seenLineageInvocationIds.has(invocationId)) continue;
+    seenLineageInvocationIds.add(invocationId);
     records.push({
-      id: event.id,
+      id: `applineage_${invocationId}`,
       type: "application_result",
       source: "imported_application_result",
       redactionState: "summary_only",
-      invocationId: event.invocationId,
+      invocationId,
       codexSessionRegistryId: null,
-      agentId: findInvocation(event.invocationId)?.agentId ?? null,
+      agentId: auditSummary.agentId ?? findInvocation(invocationId)?.agentId ?? null,
       repoPath: null,
       summary: applicationResultLineageSummary(result),
       detail: applicationResultLineageDetail(result),
       marker: "imported",
-      createdAt: event.createdAt
+      createdAt: result.completedAt ?? auditSummary.completedAt ?? null
     });
   }
   for (const event of (state.events ?? []).filter((item) => item.type === "codex_runtime_warning")) {
