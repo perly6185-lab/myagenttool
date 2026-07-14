@@ -93,7 +93,7 @@ export function WorkspaceView() {
           <ProjectTree />
         </aside>
         <main className="min-h-0 overflow-hidden" aria-label="Agent transcript">
-          <DashboardView />
+          <DashboardView surface="workspace" />
         </main>
         <aside className="hidden min-h-0 overflow-y-auto rounded-lg border border-border bg-card p-2 lg:block" aria-label="Session history">
           <SessionHistory />

@@ -47,7 +47,14 @@ function runBlockReason(
   return "";
 }
 
-export function DashboardView() {
+/**
+ * Where the composer is embedded. "overview" is the home surface and shows the
+ * first-run onboarding checklist; "workspace" reuses the same composer + activity
+ * inside the files/history view, where the onboarding card would be redundant (#927).
+ */
+export type DashboardSurface = "overview" | "workspace";
+
+export function DashboardView({ surface = "overview" }: { surface?: DashboardSurface } = {}) {
   const { data: state } = useConsoleState();
   const selectedAgentId = useUiStore((s) => s.selectedAgentId);
   const setSelectedAgentId = useUiStore((s) => s.setSelectedAgentId);
@@ -143,7 +150,8 @@ export function DashboardView() {
 
   return (
     <div className="flex h-full flex-col gap-4">
-      <GettingStartedCard />
+      {/* Onboarding is a home concern — Workspace embeds the composer without it (#927). */}
+      {surface === "overview" ? <GettingStartedCard /> : null}
       {/* Transcript — the scrolling conversation area. */}
       <Card className="flex min-h-0 flex-1 flex-col">
         <CardHeader>
