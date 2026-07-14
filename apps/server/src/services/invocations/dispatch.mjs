@@ -7,7 +7,15 @@ export function createInvocationDispatchRuntime({
   dispatchLeaseMs,
   findAgent,
   completeInvocation,
+  store,
 }) {
+  // #968: route the dispatch claim/ack through the Store's unit of work so it
+  // commits synchronously. Before this, the lease + attempt increment persisted
+  // only via the appendEvent debounce — a crash in the window lost the claim (W2).
+  // The mutations stay in-place on the shared invocation (the in-memory adapter
+  // commits the same state object); the transaction just owns the durable commit.
+  // Falls back to a direct call when no store is injected (hermetic unit tests).
+  const runTx = (fn) => (typeof store?.transaction === "function" ? store.transaction(fn) : fn());
   // The directory a run occupies. Two runs in the same worktree (or the same
   // base project) must not execute concurrently — they'd write the same tree.
   //
@@ -99,26 +107,28 @@ export function createInvocationDispatchRuntime({
   }
 
   function markDispatched(invocation) {
-    invocation.status = "dispatching";
-    invocation.delivery.state = "dispatching";
-    if (invocation.delivery.deviceId == null) {
-      invocation.delivery.deviceId = state.device.id;
-    }
-    invocation.delivery.dispatchAttempts += 1;
-    invocation.delivery.lastDispatchAt = now();
-    invocation.delivery.leaseExpiresAt = new Date(Date.now() + dispatchLeaseMs).toISOString();
-    invocation.delivery.bridgeCursor = `cursor_${invocation.delivery.dispatchAttempts}_${invocation.id}`;
-    invocation.updatedAt = now();
-    appendEvent({
-      invocationId: invocation.id,
-      type: invocation.delivery.dispatchAttempts > 1 ? "delivery_redelivered" : "delivery_dispatched",
-      level: "info",
-      message: invocation.delivery.dispatchAttempts > 1 ? "Invocation redelivered to Desktop Bridge." : "Invocation dispatched to Desktop Bridge.",
-      data: {
-        dispatchAttempts: invocation.delivery.dispatchAttempts,
-        leaseExpiresAt: invocation.delivery.leaseExpiresAt,
-        bridgeCursor: invocation.delivery.bridgeCursor
+    runTx(() => {
+      invocation.status = "dispatching";
+      invocation.delivery.state = "dispatching";
+      if (invocation.delivery.deviceId == null) {
+        invocation.delivery.deviceId = state.device.id;
       }
+      invocation.delivery.dispatchAttempts += 1;
+      invocation.delivery.lastDispatchAt = now();
+      invocation.delivery.leaseExpiresAt = new Date(Date.now() + dispatchLeaseMs).toISOString();
+      invocation.delivery.bridgeCursor = `cursor_${invocation.delivery.dispatchAttempts}_${invocation.id}`;
+      invocation.updatedAt = now();
+      appendEvent({
+        invocationId: invocation.id,
+        type: invocation.delivery.dispatchAttempts > 1 ? "delivery_redelivered" : "delivery_dispatched",
+        level: "info",
+        message: invocation.delivery.dispatchAttempts > 1 ? "Invocation redelivered to Desktop Bridge." : "Invocation dispatched to Desktop Bridge.",
+        data: {
+          dispatchAttempts: invocation.delivery.dispatchAttempts,
+          leaseExpiresAt: invocation.delivery.leaseExpiresAt,
+          bridgeCursor: invocation.delivery.bridgeCursor
+        }
+      });
     });
   }
 
@@ -126,22 +136,24 @@ export function createInvocationDispatchRuntime({
     if (invocation.delivery.state === "acknowledged" || invocation.status === "running") {
       return;
     }
-    invocation.delivery.state = "acknowledged";
-    invocation.delivery.acknowledgedAt = now();
-    invocation.delivery.leaseExpiresAt = null;
-    invocation.status = "running";
-    invocation.updatedAt = now();
-    appendEvent({
-      invocationId: invocation.id,
-      type: "delivery_acknowledged",
-      level: "info",
-      message: "Desktop Bridge acknowledged durable receipt."
-    });
-    appendEvent({
-      invocationId: invocation.id,
-      type: "invocation_started",
-      level: "info",
-      message: "Demo CLI Agent started."
+    runTx(() => {
+      invocation.delivery.state = "acknowledged";
+      invocation.delivery.acknowledgedAt = now();
+      invocation.delivery.leaseExpiresAt = null;
+      invocation.status = "running";
+      invocation.updatedAt = now();
+      appendEvent({
+        invocationId: invocation.id,
+        type: "delivery_acknowledged",
+        level: "info",
+        message: "Desktop Bridge acknowledged durable receipt."
+      });
+      appendEvent({
+        invocationId: invocation.id,
+        type: "invocation_started",
+        level: "info",
+        message: "Demo CLI Agent started."
+      });
     });
   }
 

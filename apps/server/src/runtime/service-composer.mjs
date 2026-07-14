@@ -418,6 +418,8 @@ export function createServerRuntimeServices({
     // #890.1 tail: hold budget at manual/API accept, release on completion.
     reserveBudget,
     releaseReservationsForInvocation,
+    // #968: the Store seam — dispatch claim/ack commit through its unit of work.
+    store,
     checkUsageQuota,
     onInvocationCompleted: (invocation) => {
       advanceAutoRunHook?.(invocation);
