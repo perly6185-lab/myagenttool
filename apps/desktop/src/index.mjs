@@ -15,6 +15,7 @@ import { extractClaudeFileAccesses } from "./claude-file-access.mjs";
 import { newRoundState, claudeRoundEmits, codexRoundEmits } from "./round-telemetry.mjs";
 import { applicationWrapperArgs } from "./application-wrapper-args.mjs";
 import { collectApplicationBinaryReadiness } from "./application-binary-readiness.mjs";
+import { collectApplicationCredentialReadiness } from "./application-credential-readiness.mjs";
 import { runApprovedApplicationInstall } from "./application-installer.mjs";
 import {
   createLocalExecutionPolicyManifest,
@@ -65,6 +66,11 @@ const serverUrl = process.env.BRIDGE_SERVER_URL ?? "http://127.0.0.1:5001";
 const pollIntervalMs = Number(process.env.BRIDGE_POLL_INTERVAL_MS ?? 700);
 const terminalPollIntervalMs = Number(process.env.BRIDGE_TERMINAL_POLL_INTERVAL_MS ?? 40);
 const binaryReadinessIntervalMs = Number(process.env.BRIDGE_BINARY_READINESS_INTERVAL_MS ?? 5 * 60 * 1000);
+// Where the one-time login flow leaves its NON-SECRET sidecar records
+// (application id, provider, scope). The secret itself lives in the OS
+// credential store and is read only by the MCP server that uses it; the bridge
+// never opens it. Unset means "this device reports holding no credentials".
+const credentialDir = process.env.BRIDGE_CREDENTIAL_DIR ?? null;
 const demoAgentPath = resolve(__dirname, "demo-agent.mjs");
 const codexFixtureAgentPath = resolve(__dirname, "codex-fixture-agent.mjs");
 const remoteRelayPath = resolve(__dirname, "remote-relay.mjs");
@@ -344,6 +350,7 @@ try {
     bridgeVersion: "0.0.0",
     capabilities: ["demo_cli_agent", "managed_terminal_pty", "remote_ssh_relay"],
     applicationBinaryReadiness: collectApplicationBinaryReadiness(localExecutionPolicyManifest),
+    applicationCredentialReadiness: collectApplicationCredentialReadiness(credentialDir),
   });
 } catch (error) {
   const message = error instanceof Error ? error.message : String(error);
@@ -385,6 +392,10 @@ const guarded = (fn, label) => () => Promise.resolve().then(fn).catch((error) =>
 async function refreshApplicationBinaryReadiness() {
   await request("POST", "/api/bridge/readiness", {
     applicationBinaryReadiness: collectApplicationBinaryReadiness(localExecutionPolicyManifest),
+    // A credential revoked in the provider's account shows up here as the sidecar
+    // going away — the same tick that reports a binary vanishing. That is what
+    // lets the server's health probe auto-degrade the application to offline.
+    applicationCredentialReadiness: collectApplicationCredentialReadiness(credentialDir),
   });
 }
 

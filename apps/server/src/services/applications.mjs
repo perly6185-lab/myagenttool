@@ -14,6 +14,10 @@ const APPLICATION_SOURCE_TYPES = new Set(["git", "local", "npm", "binary", "manu
 // A binary source names a bare program (`git`), never a path on disk. The bridge
 // allowlist decides what may actually run; the caller does not get to name a path.
 const BINARY_SOURCE_NAME = /^[a-z][a-z0-9_-]{0,31}$/;
+// A declarable credential scope must be read-only on its face (ADR 0010). The
+// suffix is what a provider calls read: `gmail.readonly`, `drive.read`, `*.ro`.
+// Anything else — send, write, modify, full, admin — is refused at registration.
+const READ_ONLY_CREDENTIAL_SCOPE = /^[a-z][a-z0-9_.-]{0,63}\.(readonly|read|ro)$/;
 const APPLICATION_STATUSES = new Set(["draft", "probing", "registered", "active", "offline", "archived", "failed"]);
 const NPM_WRAPPER_MODES = new Set(["metadata-only", "installed-wrapper"]);
 const APPLICATION_ROUTINE_REQUIRED_APPROVALS = ["apply", "push", "pr-create", "pr-merge"];
@@ -310,7 +314,49 @@ export function createApplicationService({
 
   function listApplicationCapabilities(applicationId) {
     const app = findApplication(applicationId);
-    return app ? projectApplicationCapabilities(app) : null;
+    return app ? projectApplicationCapabilities(app, { credential: credentialStatusForApplication(app) }) : null;
+  }
+
+  // Authorization as READINESS (ADR 0010): the control plane observes the
+  // credential's state; it never mints, transports, stores, or reads one.
+  //
+  // Two independently-sourced facts meet here and nowhere else: what the DEVICE
+  // reports it holds (provider + scope, never the secret) and what the immutable
+  // DESCRIPTOR requires. The device is never told what the server wants, so it
+  // cannot claim a match it does not have.
+  //
+  // Refusals are precise, in the #802 shape — `not_authorized` and
+  // `scope_mismatch` are different problems with different fixes, and the
+  // operator is told which, on which device, and what to run.
+  function credentialStatusForApplication(app) {
+    const required = app?.source?.credential ?? null;
+    if (!required) return null;
+    const device = state.device ?? null;
+    const held = (device?.applicationCredentialReadiness ?? []).find((row) => row.applicationId === app.id);
+    const base = { provider: required.provider, requiredScope: required.scope, deviceId: device?.id ?? null };
+    if (!held) {
+      return {
+        ...base,
+        status: "not_authorized",
+        reason: "no_credential_on_device",
+        checkedAt: device?.updatedAt ?? null,
+        nextAction: `Run the ${required.provider} login flow on device ${device?.id ?? "(none registered)"} to grant ${required.scope}.`,
+      };
+    }
+    if (held.provider !== required.provider || held.scope !== required.scope) {
+      return {
+        ...base,
+        status: "not_authorized",
+        // A held-but-wrong credential is NOT the same failure as a missing one:
+        // the operator must re-consent to a different scope, not simply log in.
+        reason: "scope_mismatch",
+        heldScope: held.scope,
+        heldProvider: held.provider,
+        checkedAt: held.checkedAt,
+        nextAction: `Device ${device?.id ?? "?"} holds ${held.provider} scope "${held.scope}", but this application requires "${required.scope}". Re-run the login flow and consent to ${required.scope}.`,
+      };
+    }
+    return { ...base, status: "authorized", reason: "credential_present", checkedAt: held.checkedAt, nextAction: null };
   }
 
   function invokeApplicationCapability(capabilityName, input = {}, actor = null, options = {}) {
@@ -567,6 +613,18 @@ export function createApplicationService({
     }
     if (["npm", "binary"].includes(app.source?.type)) {
       return checkApplicationHealthFromRuns(app);
+    }
+    // A credential-backed application HAS something to check, even with no local
+    // materialization: is the device still authorized? A token revoked in the
+    // provider's account is exactly the "the app should be offline" case this
+    // probe exists for — so it is health, not `unsupported`. A revocation
+    // auto-degrades to offline through the ordinary path; recovery still never
+    // auto-onlines (re-enabling execution stays a human, approval-gated act).
+    const credential = credentialStatusForApplication(app);
+    if (credential) {
+      return credential.status === "authorized"
+        ? { status: "healthy", reason: null }
+        : { status: "unhealthy", reason: `${credential.reason}: ${credential.nextAction}` };
     }
     return { status: "unsupported", reason: `source type ${app.source?.type ?? "unknown"} has no local materialization to check` };
   }
@@ -847,10 +905,13 @@ export function applicationWrapperExecutionPlan(application, commandId, input = 
   };
 }
 
-export function projectApplicationCapabilities(app) {
+// `context.credential` is the device-vs-descriptor authorization verdict, when
+// the service has state to compute it from. Projection itself stays pure: the
+// verdict is passed in, never fetched here.
+export function projectApplicationCapabilities(app, context = {}) {
   const prefix = `app.${slugify(app.id || app.name)}`;
   const disabled = app.status === "offline" || app.status === "archived";
-  return [
+  return withCredentialReadiness([
     managedCapability(app, `${prefix}.inspect`, "Inspect application", "read", "low", ["read_only", "application_asset"], false, disabled, emptyInputSchema()),
     managedCapability(app, `${prefix}.search`, "Search application", "read", "low", ["read_only", "application_asset"], false, disabled, {
       type: "object",
@@ -864,7 +925,39 @@ export function projectApplicationCapabilities(app) {
     managedCapability(app, `${prefix}.generate_orchestration`, "Generate application orchestration", "orchestration", "medium", ["generated_artifact", "orchestration"], true, disabled, emptyInputSchema()),
     ...projectCapabilityFacades(app, prefix, disabled),
     ...projectWrapperCapabilities(app, prefix, disabled),
-  ];
+  ], context.credential);
+}
+
+// Overlay the authorization verdict onto the capabilities that actually depend
+// on it: an agent_facade whose Application declares a credential requirement.
+// A capability the credential does not gate (inspect, search, lifecycle) is left
+// alone — an unauthorized mailbox must not make "inspect this application" look
+// broken.
+//
+// A `disabled` capability keeps its disabled readiness: the application being
+// offline is the more fundamental fact, and overwriting it would hide it.
+function withCredentialReadiness(capabilities, credential) {
+  if (!credential) return capabilities;
+  return capabilities.map((capability) => {
+    if (capability.kind !== "agent_facade" || capability.metadata?.readiness?.state === "disabled") return capability;
+    const authorized = credential.status === "authorized";
+    return {
+      ...capability,
+      metadata: {
+        ...capability.metadata,
+        readiness: {
+          ...capability.metadata.readiness,
+          state: authorized ? capability.metadata.readiness.state : "needs_setup",
+          reason: authorized ? capability.metadata.readiness.reason : credential.reason,
+          // The verdict travels with the capability so the console can render
+          // "why" and "what to do" without a second call. It carries provider,
+          // scopes, device, and the next action — and, by construction, nothing
+          // that could be a secret.
+          credential,
+        },
+      },
+    };
+  });
 }
 
 function projectCapabilityFacades(app, prefix, disabled) {
@@ -2010,10 +2103,44 @@ function normalizeApplicationSource(source = {}) {
   return {
     type: "manual",
     uri: stringOrNull(source.uri),
+    credential: normalizeCredentialRequirement(source.credential),
     manifest: source.manifest && typeof source.manifest === "object" && !Array.isArray(source.manifest)
       ? source.manifest
       : {},
   };
+}
+
+// A credential REQUIREMENT — never a credential (ADR 0010). The descriptor pins
+// the authority the application's agent must hold (`provider` + `scope`); the
+// secret itself lives with the process that uses it, in the device's credential
+// store, and never enters the registry, persisted state, or an audit record.
+//
+// Because the descriptor is immutable (ADR 0009), widening `scope` is a
+// re-registration — a reviewed event — while rotating the secret behind it is
+// free. Permission change and key rotation are different things, and this is
+// what keeps them apart.
+function normalizeCredentialRequirement(credential) {
+  if (credential == null) return null;
+  if (typeof credential !== "object" || Array.isArray(credential)) {
+    throw new Error("Application source credential must be an object.");
+  }
+  const provider = String(credential.provider ?? "").trim().toLowerCase();
+  const scope = String(credential.scope ?? "").trim();
+  if (!/^[a-z][a-z0-9_.-]{0,31}$/.test(provider)) {
+    throw new Error("Application credential provider must be a bare provider name.");
+  }
+  if (!scope) {
+    throw new Error("Application credential requires a scope.");
+  }
+  // Read-only by construction. A registration may not declare a write-capable
+  // scope: read and write authority never share a credential (ADR 0010), so a
+  // future send capability is a SECOND, separately consented credential — never
+  // a widening of this one. Refusing the write scope here means a read-only
+  // Application cannot quietly acquire send authority through a descriptor edit.
+  if (!READ_ONLY_CREDENTIAL_SCOPE.test(scope)) {
+    throw new Error(`Application credential scope "${scope}" is not read-only; a write-capable scope needs its own separately consented credential (ADR 0010).`);
+  }
+  return { provider, scope };
 }
 
 function normalizeGitUrl(value) {
