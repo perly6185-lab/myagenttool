@@ -14,6 +14,7 @@ import { dirname, resolve, sep } from "node:path";
 import { mergeFileAccesses } from "../read-models/file-ledger.mjs";
 import { createAgentSkillService } from "../services/agent-skills.mjs";
 import { createApplicationService, validateApplicationRoutineDraft } from "../services/applications.mjs";
+import { createApplicationInstallService } from "../services/application-installs.mjs";
 import { createApprovalGrantService } from "../services/approval-grants.mjs";
 import { createRetentionArchive } from "../services/retention-archive.mjs";
 import { createApplicationStatsRuntime } from "../services/application-stats.mjs";
@@ -178,6 +179,15 @@ export function createServerRuntimeServices({
     persistStateSoon,
     archiveEvicted: retentionArchive.archiveEvicted,
   });
+
+  const {
+    cancelApplicationInstall,
+    completeApplicationInstall,
+    findApplicationInstallRun,
+    nextBridgeApplicationInstall,
+    queueApplicationInstall,
+    recordApplicationInstallProgress,
+  } = createApplicationInstallService({ state, now, nextId, appendEvent, persistStateSoon, validateApprovalToken });
 
   const {
     applicationHealthSweep,
@@ -2437,7 +2447,10 @@ export function createServerRuntimeServices({
     completeInvocation,
     createAgentHealthCheck,
     createCapabilityInvocation,
+    cancelApplicationInstall,
+    completeApplicationInstall,
     findApplication,
+    findApplicationInstallRun,
     getApplicationOrchestrationRunRecovery,
     listApplicationOrchestrationRecoveryAgentCandidates,
     getApplicationOrchestrationRun,
@@ -2449,6 +2462,8 @@ export function createServerRuntimeServices({
     listApplicationOrchestrationRunEvents,
     listApplicationOrchestrationRuns,
     probeApplication,
+    queueApplicationInstall,
+    recordApplicationInstallProgress,
     registerApplication,
     requestApplicationOrchestrationRecoveryAction,
     readApplicationRecoveryArchive,
@@ -2608,7 +2623,10 @@ export function createServerRuntimeServices({
     updateAgentSkill,
     deleteAgentSkill,
     createCapabilityInvocation,
+    cancelApplicationInstall,
+    completeApplicationInstall,
     findApplication,
+    findApplicationInstallRun,
     getApplicationOrchestrationRunRecovery,
     listApplicationOrchestrationRecoveryAgentCandidates,
     getApplicationOrchestrationRun,
@@ -2620,6 +2638,8 @@ export function createServerRuntimeServices({
     listApplicationOrchestrationRunEvents,
     listApplicationOrchestrationRuns,
     probeApplication,
+    queueApplicationInstall,
+    recordApplicationInstallProgress,
     registerApplication,
     requestApplicationOrchestrationRecoveryAction,
     readApplicationRecoveryArchive,
@@ -2704,6 +2724,7 @@ export function createServerRuntimeServices({
     normalizeStringArray,
     completeDiscoveryRun,
     nextBridgeProbeRun,
+    nextBridgeApplicationInstall,
     markLifecycleActionStarted,
     nextBridgeLifecycleAction,
     markIntegrationProbeStarted,

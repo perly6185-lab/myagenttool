@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 
 const SCHEMA_VERSION = "application-install-plan/v1";
 const RECIPE_VERSION = "2026-07-14.1";
@@ -148,7 +149,9 @@ export function applicationInstallPlanMatchesCurrent(plan, context) {
       platform: plan.target?.platform,
       architecture: plan.target?.architecture,
     }, context);
-    return current.planId === plan.planId && current.fingerprint === plan.fingerprint;
+    return current.planId === plan.planId
+      && current.fingerprint === plan.fingerprint
+      && isDeepStrictEqual(current, plan);
   } catch {
     return false;
   }

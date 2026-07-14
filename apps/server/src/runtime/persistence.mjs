@@ -44,6 +44,7 @@ export const persistedArrayKeys = [
   "tokens",
   "agents",
   "applications",
+  "applicationInstallRuns",
   "applicationRecoveryActions",
   "approvalGrants",
   "applicationDailyStats",
@@ -131,6 +132,7 @@ export const persistedObjectKeys = [
 // auditable diagnostic on restore — never delete it, never broaden its visibility.
 const OWNER_STAMPED_PROJECT_COLLECTIONS = [
   { key: "applications", owner: "ownerTeamId" },
+  { key: "applicationInstallRuns", owner: "ownerTeamId" },
   { key: "applicationResults", owner: "ownerTeamId" },
 ];
 
