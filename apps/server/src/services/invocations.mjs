@@ -25,6 +25,7 @@ export function createInvocationService({
   recordCcusageImportedEstimates,
   recordCodexReviewFindings,
   recordClaudeReviewFindings,
+  recordClaudeApplyResult,
   recordCodexExecChanges,
   recordApplicationResult,
   currentProject,
@@ -77,6 +78,7 @@ export function createInvocationService({
     recordCcusageImportedEstimates,
     recordCodexReviewFindings,
     recordClaudeReviewFindings,
+    recordClaudeApplyResult,
     recordCodexExecChanges,
     // #804's generic importer was composed and handed to this service, and then
     // never forwarded to the runtime that calls it — so `typeof

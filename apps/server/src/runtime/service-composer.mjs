@@ -23,6 +23,7 @@ import { createCapabilityService } from "../services/capabilities.mjs";
 import { createApplicationResultImportService } from "../services/application-results.mjs";
 import { createCcusageImportService } from "../services/ccusage-imports.mjs";
 import { createClaudeReviewImportService } from "../services/claude-review-imports.mjs";
+import { createClaudeApplyImportService } from "../services/claude-apply-imports.mjs";
 import { createCodexReviewImportService } from "../services/codex-review-imports.mjs";
 import { createCodexExecImportService } from "../services/codex-exec-imports.mjs";
 import { createRoundTelemetryRuntime } from "../services/round-telemetry.mjs";
@@ -361,6 +362,12 @@ export function createServerRuntimeServices({
     appendEvent,
     persistStateSoon,
   });
+  const { recordClaudeApplyResult } = createClaudeApplyImportService({
+    state,
+    now,
+    appendEvent,
+    persistStateSoon,
+  });
   const { recordCodexExecChanges, createCodexExecReview, isExecChangeApproved, execRunPromotionGate } = createCodexExecImportService({
     state,
     now,
@@ -398,6 +405,7 @@ export function createServerRuntimeServices({
     recordCcusageImportedEstimates,
     recordCodexReviewFindings,
     recordClaudeReviewFindings,
+    recordClaudeApplyResult,
     recordCodexExecChanges,
     recordApplicationResult,
     currentProject,

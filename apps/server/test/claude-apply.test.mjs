@@ -13,6 +13,8 @@ import { test } from "node:test";
 
 import { createApprovalGrantService } from "../src/services/approval-grants.mjs";
 import { createToolService } from "../src/services/tools.mjs";
+import { createClaudeApplyAgentRegistration, isGovernedClaudeApplyAgent } from "../src/services/claude-apply-agent.mjs";
+import { createClaudeApplyImportService } from "../src/services/claude-apply-imports.mjs";
 
 const now = () => "2026-07-14T00:00:00.000Z";
 const ACTOR = { userId: "usr_a", teamId: "team_a" };
@@ -174,6 +176,91 @@ test("apply fails closed when the grant validator is not wired", () => {
   } finally {
     setApplyFlag(false);
   }
+});
+
+// --- Phase 4b: execution dispatch + result recording ---
+
+function governedApplyAgent() {
+  const reg = createClaudeApplyAgentRegistration();
+  return {
+    id: reg.id,
+    name: reg.name,
+    adapter: { type: "cli", command: reg.command, args: reg.args, outputFormat: reg.outputFormat },
+    toolContract: reg.toolContract,
+    capabilities: [{ name: reg.capabilityName }],
+    status: "available",
+    health: { status: "healthy" },
+    location: { type: "local_device", deviceId: "dev_local_001" },
+  };
+}
+
+test("createClaudeApplyAgentRegistration is a governed WRITE runner (canonical path, code_apply)", () => {
+  assert.equal(isGovernedClaudeApplyAgent(governedApplyAgent()), true);
+  const foreign = governedApplyAgent();
+  foreign.adapter.args = ["/tmp/evil/claude-apply-wrapper.mjs"];
+  assert.equal(isGovernedClaudeApplyAgent(foreign), false, "a wrapper outside tools/agents is not governed");
+});
+
+test("Phase 4b: with a runner available, an authorized apply is dispatched as a queued invocation carrying the patch", () => {
+  setApplyFlag(true);
+  try {
+    const { service, state, grantFor } = harness();
+    state.agents.push(governedApplyAgent());
+    const created = [];
+    // Re-wire createInvocation on the same state via a fresh tool service so the
+    // dispatch can create the apply invocation (the base harness throws on create).
+    let id = 100;
+    const { validateApprovalToken } = createApprovalGrantService({ state, now, nextId: (p) => `${p}_${id += 1}`, appendEvent: (e) => state.events.push(e), persistStateSoon: () => {} });
+    const svc = createToolService({
+      state, now, nextId: (p) => `${p}_${id += 1}`, appendEvent: (e) => state.events.push(e),
+      createInvocation: (task, agent, options) => { const inv = { id: `inv_apply_${id += 1}`, status: "queued", agentId: agent.id, options, task }; created.push(inv); state.invocations.push(inv); return inv; },
+      startInvocationIfAllowed: () => {}, findApplication: () => null, findAgent: (aid) => state.agents.find((a) => a.id === aid) ?? null,
+      planApplicationWrapperInvocation: () => ({}), validateApprovalToken, persistStateSoon: () => {},
+    });
+    const res = svc.createToolInvocation("claude.apply.patch", { worktreeId: "wt_a", proposalInvocationId: "inv_proposal", approvalToken: grantFor("inv_proposal") }, ACTOR);
+    assert.equal(res.status, 201);
+    assert.equal(res.body.status, "applying");
+    assert.equal(res.body.executable, true);
+    assert.ok(res.body.executionInvocationId);
+    assert.equal(created.length, 1, "a queued apply invocation was dispatched");
+    assert.equal(created[0].options.metadata.tool, "claude.apply.patch");
+    assert.match(created[0].options.metadata.applyPatch, /diff --git/);
+    assert.equal(created[0].options.metadata.claudeApplyAuthorizationId, state.claudeApplyAuthorizations[0].id);
+    assert.equal(state.claudeApplyAuthorizations[0].status, "applying");
+  } finally {
+    setApplyFlag(false);
+  }
+});
+
+test("Phase 4b: recording a successful apply result marks the authorization applied with files + rollback", () => {
+  const state = { claudeApplyAuthorizations: [{ id: "cap_1", proposalInvocationId: "inv_proposal", status: "applying", executable: true, executionInvocationId: "inv_apply" }], events: [] };
+  const { recordClaudeApplyResult } = createClaudeApplyImportService({ state, now, appendEvent: (e) => state.events.push(e) });
+  const authorization = recordClaudeApplyResult({
+    invocation: { id: "inv_apply", options: { metadata: { claudeApplyAuthorizationId: "cap_1" } } },
+    result: { output: { source: "claude", tool: "claude.apply.patch", applied: true, appliedFiles: [{ path: "x.mjs", added: 1, deleted: 0 }], verification: { checkPassed: true }, rollback: { available: true, strategy: "git_apply_reverse" } } },
+    agent: governedApplyAgent(),
+  });
+  assert.equal(authorization.status, "applied");
+  assert.equal(authorization.applied, true);
+  assert.equal(authorization.executable, false);
+  assert.deepEqual(authorization.appliedFiles.map((f) => f.path), ["x.mjs"]);
+  assert.equal(authorization.rollback.available, true);
+  assert(state.events.some((e) => e.type === "claude_apply_completed"));
+});
+
+test("Phase 4b: a failed apply marks the authorization failed with no rollback and no file claim", () => {
+  const state = { claudeApplyAuthorizations: [{ id: "cap_1", status: "applying", executionInvocationId: "inv_apply" }], events: [] };
+  const { recordClaudeApplyResult } = createClaudeApplyImportService({ state, now, appendEvent: (e) => state.events.push(e) });
+  const authorization = recordClaudeApplyResult({
+    invocation: { id: "inv_apply", options: { metadata: { claudeApplyAuthorizationId: "cap_1" } } },
+    result: { output: { source: "claude", tool: "claude.apply.patch", applied: false, appliedFiles: [], verification: { checkPassed: false, error: "does not apply" }, rollback: null } },
+    agent: governedApplyAgent(),
+  });
+  assert.equal(authorization.status, "failed");
+  assert.equal(authorization.applied, false);
+  assert.equal(authorization.rollback, null);
+  assert.equal(authorization.verification.checkPassed, false);
+  assert(state.events.some((e) => e.type === "claude_apply_failed"));
 });
 
 test("apply refuses an unknown proposal, a non-proposal invocation, and a worktree binding mismatch", () => {
