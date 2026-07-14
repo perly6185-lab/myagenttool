@@ -53,6 +53,17 @@ test("a new period adds a row without touching the old", () => {
   assert.equal(total(state), 3);
 });
 
+test("a zero-row import still emits an event (ran, found nothing != never ran)", () => {
+  const { state, events, service } = svc();
+  const records = service.recordCcusageImportedEstimates({ invocation: invocationFor(), result: result([]), agent: null });
+  assert.equal(records.length, 0);
+  assert.equal(state.importedUsageEstimates.length, 0);
+  const event = events.find((e) => e.type === "ccusage_imported_estimates_recorded");
+  assert.ok(event, "an event fires even with no rows");
+  assert.equal(event.data.importedRecordCount, 0);
+  assert.ok(event.data.importedAt, "carries an import timestamp for freshness");
+});
+
 test("different reports (daily vs weekly) never collide", () => {
   const { state, service } = svc();
   service.recordCcusageImportedEstimates({ invocation: invocationFor("daily"), result: result([{ date: "2026-07-10", model: "m", totalCostUsd: 1 }]), agent: null });

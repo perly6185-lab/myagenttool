@@ -59,14 +59,20 @@ export function createApplicationResultImportService({
     const data = parse({ capability, text });
     const createdAt = now();
 
+    const applicationId = stringOrNull(metadata.applicationId);
+    // Owning team, so a repo_state row with no projectId is still tenant-scoped in
+    // the read-model (#904) — not made globally visible by projectVisible(null).
+    const ownerTeamId = (state.applications ?? []).find((app) => app.id === applicationId)?.ownerTeamId ?? "team_local";
+
     const record = {
       id: nextId("appres"),
       source,
       kind: stringOrNull(resultImport.kind),
-      applicationId: stringOrNull(metadata.applicationId),
+      applicationId,
       capability,
       invocationId: invocation.id,
       projectId: invocation.projectId ?? metadata.projectId ?? null,
+      ownerTeamId,
       worktreeId: invocation.worktreeId ?? metadata.worktreeId ?? null,
       requestedBy: invocation.requestedBy ?? null,
       // "parsed" | "unparsed" — an unparsed record is still a record. The operator

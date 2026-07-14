@@ -901,6 +901,11 @@ export function readProjectTree(project, { relativePath = "", search = "" } = {}
     throw new Error("Project tree path must be a directory.");
   }
 
+  // Keep project.git (branch/remote/default) fresh while the workspace is browsed
+  // (#908) — it was captured once at registration, so a checkout since then showed
+  // a stale branch. TTL-bounded so navigation/search doesn't re-run git each keystroke.
+  refreshProjectGitFacts(project);
+
   const gitStatus = gitStatusMap(root);
   // `git status --ignored` collapses an ignored directory to one entry, so a child
   // browsed inside it isn't in the map. Inherit `ignored` from any ancestor so the
@@ -943,6 +948,9 @@ export function readProjectTree(project, { relativePath = "", search = "" } = {}
     entries,
     truncated: entries.length >= 200,
     gitSummary: gitSummary(gitStatus),
+    // True when `git status` could not be read (#905) — the tree is not known
+    // clean, it's unknown. The web can flag it instead of implying no changes.
+    gitStatusUnavailable: Boolean(gitStatus.unavailable),
   };
 }
 
@@ -1080,6 +1088,19 @@ export function safeProjectPath(project, relativePath = "") {
 const GIT_STATUS_TTL_MS = 2_000;
 const _gitStatusCache = new Map(); // root -> { at, map }
 
+// Refresh project.git (branch/remote/default) on workspace browse, TTL-bounded so
+// a keystroke-debounced search doesn't re-run git each time (#908).
+const GIT_FACTS_TTL_MS = 5_000;
+const _gitFactsRefreshedAt = new Map(); // projectId -> ms
+
+function refreshProjectGitFacts(project) {
+  if (!project?.path || !project?.id) return;
+  const last = _gitFactsRefreshedAt.get(project.id) ?? 0;
+  if (Date.now() - last < GIT_FACTS_TTL_MS) return;
+  _gitFactsRefreshedAt.set(project.id, Date.now());
+  try { project.git = readGitFacts(project.path); } catch { /* keep the prior facts on a transient error */ }
+}
+
 export function gitStatusMap(root, { fresh = false } = {}) {
   const nowMs = Date.now();
   if (!fresh) {
@@ -1106,6 +1127,10 @@ function computeGitStatusMap(root) {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"],
       timeout: 3_000,
+      // Match worktreeDiff (#905): without this, execFileSync defaults to 1 MiB and
+      // a large `status --ignored` throws ENOBUFS — which the catch below would turn
+      // into a silent "clean" tree.
+      maxBuffer: 64 * 1024 * 1024,
     });
     for (const line of output.split(/\r?\n/)) {
       if (!line.trim()) continue;
@@ -1118,6 +1143,9 @@ function computeGitStatusMap(root) {
       statuses.set(filePath, status);
     }
   } catch {
+    // Distinguish "status unavailable" (git failed / missing / not a repo) from a
+    // genuinely clean tree (#905), so a broken repo isn't badged clean silently.
+    statuses.unavailable = true;
     return statuses;
   }
   return statuses;
