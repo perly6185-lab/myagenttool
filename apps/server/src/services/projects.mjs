@@ -901,6 +901,11 @@ export function readProjectTree(project, { relativePath = "", search = "" } = {}
     throw new Error("Project tree path must be a directory.");
   }
 
+  // Keep project.git (branch/remote/default) fresh while the workspace is browsed
+  // (#908) — it was captured once at registration, so a checkout since then showed
+  // a stale branch. TTL-bounded so navigation/search doesn't re-run git each keystroke.
+  refreshProjectGitFacts(project);
+
   const gitStatus = gitStatusMap(root);
   // `git status --ignored` collapses an ignored directory to one entry, so a child
   // browsed inside it isn't in the map. Inherit `ignored` from any ancestor so the
@@ -1082,6 +1087,19 @@ export function safeProjectPath(project, relativePath = "") {
 // on the next poll. (review follow-up: repo-wide git status per read)
 const GIT_STATUS_TTL_MS = 2_000;
 const _gitStatusCache = new Map(); // root -> { at, map }
+
+// Refresh project.git (branch/remote/default) on workspace browse, TTL-bounded so
+// a keystroke-debounced search doesn't re-run git each time (#908).
+const GIT_FACTS_TTL_MS = 5_000;
+const _gitFactsRefreshedAt = new Map(); // projectId -> ms
+
+function refreshProjectGitFacts(project) {
+  if (!project?.path || !project?.id) return;
+  const last = _gitFactsRefreshedAt.get(project.id) ?? 0;
+  if (Date.now() - last < GIT_FACTS_TTL_MS) return;
+  _gitFactsRefreshedAt.set(project.id, Date.now());
+  try { project.git = readGitFacts(project.path); } catch { /* keep the prior facts on a transient error */ }
+}
 
 export function gitStatusMap(root, { fresh = false } = {}) {
   const nowMs = Date.now();
