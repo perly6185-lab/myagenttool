@@ -1544,6 +1544,12 @@ function governedReviewWrapperArgs(renderedArgs, payload) {
   if (severityFloor && !hasFlag(injected, "--severity-floor")) {
     injected.push("--severity-floor", severityFloor);
   }
+  // Present only for claude.propose.patch — the change to propose. Read-only:
+  // the wrapper stays in plan mode and outputs a diff as text, never applies it.
+  const task = boundedString(metadata.task, 4000);
+  if (task && !hasFlag(injected, "--task")) {
+    injected.push("--task", task);
+  }
   return injected;
 }
 
@@ -1571,7 +1577,7 @@ function governedExecWrapperArgs(renderedArgs, payload) {
 function usesGovernedReviewWrapper(tool, args) {
   const wrapper = tool === "codex.review.diff"
     ? "codex-review-wrapper.mjs"
-    : tool === "claude.review.diff" || tool === "claude.explain.diff"
+    : tool === "claude.review.diff" || tool === "claude.explain.diff" || tool === "claude.propose.patch"
       ? "claude-review-wrapper.mjs"
       : null;
   // Require the full canonical directory segment, not just the basename — a
