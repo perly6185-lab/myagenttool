@@ -172,9 +172,18 @@ exercises; only the output collection and the follow-up (review/promote) differ.
   shipped default-OFF). `approvalMode` supports `ask` + `auto` (not `full`; §11.1).
   Wrapper computes the authoritative diff; a fixture drives CI without a live
   model. Ship a `codex-exec-caller-smoke` analogous to the read-only one.
-- **Phase 2 — governance wiring.** Approval-broker integration on real permission
-  requests + change-review gate + an Evidence Center lens for exec changesets.
-- **Phase 3 — promote path.** Changeset → worktree-PR reuse (human-gated).
+- **Phase 2 — governance wiring.** ✅ Change-review gate (2b) + Evidence Center lens
+  (2a) shipped. Approval broker: the server contract is **already in place** — an
+  exec invocation carries its `approvalMode` in `options`, and `recordCodexHookEvent`
+  → `createCodexApprovalBrokerRequest` governs a `PermissionRequest` for ANY
+  invocation (no managed session required), so exec runs auto-approve low-risk
+  requests and force manual review on the sensitive-pattern list. Locked by
+  `codex-exec-caller-smoke`. **Residual:** the Desktop Bridge does not yet forward
+  real Codex `PermissionRequest` hooks (with the exec `invocationId`) to
+  `/api/codex/hooks` — that integration needs a live Codex to validate and is the
+  one remaining piece of end-to-end unattended approval.
+- **Phase 3 — promote path.** ✅ Changeset → worktree-PR reuse, gated on
+  `execRunPromotionGate` (every change approved). Human-gated.
 - **Phase 4 — policy.** `approvalMode` authority (who may `auto`/`full`), budget pool.
 
 ## 10. pr-governance note
