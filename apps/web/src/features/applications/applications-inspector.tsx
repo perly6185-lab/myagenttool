@@ -1525,6 +1525,14 @@ export function ApplicationsInspector() {
   const probe = application.probe;
   const orchestrations = application.orchestrations ?? [];
   const invocations = state?.invocations ?? [];
+  const sourceBinary = application.source.type === "binary" ? application.source.binary : application.source.type === "npm" ? application.source.package : null;
+  const readinessDevices = state?.devices?.length ? state.devices : state?.device ? [state.device] : [];
+  const binaryReadiness = sourceBinary
+    ? readinessDevices.map((device) => ({ device, readiness: device.applicationBinaryReadiness?.find((row) => row.command === sourceBinary) ?? null }))
+    : [];
+  const binaryReadinessSummary = sourceBinary
+    ? binaryReadiness.map(({ device, readiness }) => `${device.name}: ${readiness ? `${readiness.status}${readiness.version && readiness.status !== "stale" ? ` · ${readiness.version}` : ""} · ${shortTime(readiness.checkedAt)}` : "never reported"}`).join(" | ") || "No eligible devices"
+    : "Not applicable";
 
   function viewInvocation(invocationId: string) {
     setSelectedInvocationId(invocationId);
@@ -1547,6 +1555,11 @@ export function ApplicationsInspector() {
               { term: "Source", value: `${application.source.type} · ${sourceSummary(application.source)}` },
               { term: "Path", value: application.path ?? "—" },
               { term: "Owner", value: application.ownerTeamId ?? "—" },
+              { term: "Descriptor revision", value: application.descriptorRevision ?? 1 },
+              { term: "Descriptor fingerprint", value: application.descriptorFingerprint ?? "Legacy / not recorded" },
+              { term: "Previous revision", value: application.predecessorApplicationId ?? "—" },
+              { term: "Replacement revision", value: application.successorApplicationId ?? "—" },
+              { term: "Device readiness", value: binaryReadinessSummary },
             ]}
           />
         </CardContent>

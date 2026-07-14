@@ -138,7 +138,7 @@ before(() => {
           "node",
           "--input-type=module",
           "-e",
-          "const { backend } = await import(process.cwd() + '/queue.mjs'); process.exit(backend ? 0 : 1);",
+          "const { pathToFileURL } = await import('node:url'); const { backend } = await import(pathToFileURL(process.cwd() + '/queue.mjs').href); process.exit(backend ? 0 : 1);",
         ],
       }),
     decideIssuePath: async ({ link, issueBody }) => runDeciderCommand({ command: deciderCommand, input: { link, issueBody } }),
@@ -231,9 +231,11 @@ test("[B] the develop run commits, verifies, pushes to origin, and opens the PR"
   // The agent edits the worktree and leaves it UNCOMMITTED (the common case).
   writeFileSync(join(caseB.worktree.worktreePath, "queue.mjs"), "export const backend = 'redis-streams'; // durable, survives restart\n");
 
-  await autoRunSvc.advanceAutoRunForInvocation({ ...caseB.invocation, status: "succeeded", result: { summary: "Swapped backend to Redis Streams." } });
+  assert.equal(caseB.autoRun.invocationId, caseB.invocation.id, "the terminal invocation must still own the auto-run reaction");
+  const advanced = await autoRunSvc.advanceAutoRunForInvocation({ ...caseB.invocation, status: "succeeded", result: { summary: "Swapped backend to Redis Streams." } });
+  assert.equal(advanced, caseB.autoRun, "the terminal invocation should resolve its auto-run reaction");
 
-  assert.equal(caseB.autoRun.status, "pr_open");
+  assert.equal(caseB.autoRun.status, "pr_open", caseB.autoRun.error ?? "develop auto-run should open a PR");
   assert.equal(caseB.autoRun.prNumber, 500);
   assert.equal(caseB.autoRun.verification.verified, true);
   assert.equal(caseB.autoRun.verification.passed, true, "the real verification command ran against the worktree");

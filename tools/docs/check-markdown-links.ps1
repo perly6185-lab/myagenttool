@@ -7,11 +7,12 @@ $failures = New-Object System.Collections.Generic.List[string]
 Get-ChildItem -Path $root -Recurse -Filter "*.md" -File |
   Where-Object {
     $relative = $_.FullName.Substring($root.Length).TrimStart("\", "/")
-    -not ($relative -like "node_modules*" -or $relative -like ".git*")
+    -not ($relative -match '(^|[\\/])node_modules([\\/]|$)' -or $relative -like ".git*" -or $relative -like ".myagenttool\runtimes*" -or $relative -like "doocs-md*")
   } |
   ForEach-Object {
   $path = $_.FullName
   $text = Get-Content -LiteralPath $path -Raw -Encoding UTF8
+  if ($null -eq $text) { $text = "" }
   foreach ($match in $pattern.Matches($text)) {
     $target = ($match.Groups[1].Value -split "#", 2)[0]
     if ([string]::IsNullOrWhiteSpace($target)) { continue }

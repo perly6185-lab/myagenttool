@@ -11,6 +11,14 @@ import type { DeviceUnlinkState } from "./states.js";
 
 export type DeviceStatus = "online" | "offline" | "unknown";
 
+export interface DeviceBinaryReadiness {
+  command: string;
+  capabilityPrefix: string;
+  status: "available" | "absent" | "stale";
+  version: string | null;
+  checkedAt: IsoDateTime;
+}
+
 export interface Device {
   id: DeviceId;
   ownerUserId: UserId;
@@ -24,6 +32,7 @@ export interface Device {
   unlinkState: DeviceUnlinkState;
   lastSeenAt: IsoDateTime | null;
   registeredCapabilities?: string[];
+  applicationBinaryReadiness?: DeviceBinaryReadiness[];
   credentialRevokedAt?: IsoDateTime | null;
   createdAt: IsoDateTime;
   updatedAt?: IsoDateTime;

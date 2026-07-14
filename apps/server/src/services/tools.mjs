@@ -14,6 +14,7 @@ import {
   CLAUDE_REVIEW_TOOL_CONTRACT,
   isGovernedClaudeReviewAgent,
 } from "./claude-agent.mjs";
+import { CLAUDE_APPLICATION_ID } from "./claude-application.mjs";
 import { teamOf } from "../runtime/auth.mjs";
 
 const CCUSAGE_APPROVAL_REQUIRED_REPORTS = new Set(["session"]);
@@ -52,6 +53,7 @@ export function createToolService({
       });
     }
     if (name === CLAUDE_REVIEW_TOOL_CONTRACT.name) {
+      const application = resolveClaudeApp();
       return createReviewInvocation({
         input,
         actor,
@@ -60,6 +62,7 @@ export function createToolService({
         buildTask: buildClaudeReviewTask,
         outputCollection: "claudeReviewFindings",
         agentLabel: "Claude",
+        application: application ? { id: application.id, capability: `app.${application.id}.review.diff` } : null,
       });
     }
     if (name === CODEX_EXEC_TOOL_CONTRACT.name) {
@@ -154,7 +157,7 @@ export function createToolService({
     };
   }
 
-  function createReviewInvocation({ input, actor, contract, selectAgent, buildTask, outputCollection, agentLabel }) {
+  function createReviewInvocation({ input, actor, contract, selectAgent, buildTask, outputCollection, agentLabel, application = null }) {
     const validation = validateReviewInput(input);
     if (!validation.ok) {
       return { status: validation.status, body: validation.body };
@@ -185,14 +188,20 @@ export function createToolService({
     const invocation = createInvocation(buildTask(value), agent, {
       actor,
       requestedBy: actor?.userId,
-      metadata: {
+        metadata: {
         tool: contract.name,
         toolVersion: contract.version,
         projectId,
         worktreeId: worktree.id,
         severityFloor: value.severityFloor,
-        instruction: value.instruction,
-      },
+          instruction: value.instruction,
+          ...(application ? {
+            providerType: "application",
+            applicationId: application.id,
+            capability: application.capability,
+            applicationAction: `tool:${contract.name}`,
+          } : {}),
+        },
       timeoutSeconds: 120,
     });
     startInvocationIfAllowed(invocation, agent);
@@ -305,6 +314,12 @@ export function createToolService({
     return typeof findApplication === "function" ? findApplication(CCUSAGE_APPLICATION_ID) : null;
   }
 
+  function resolveClaudeApp() {
+    if (typeof findApplication !== "function") return null;
+    const application = findApplication(CLAUDE_APPLICATION_ID);
+    return application && ["registered", "active"].includes(application.status) ? application : null;
+  }
+
   function discoverTools() {
     const ccusageApp = resolveCcusageApp();
     const ccusageAvailable = ccusageApp && ["registered", "active"].includes(ccusageApp.status);
@@ -316,7 +331,7 @@ export function createToolService({
     return [
       ...(ccusageAvailable ? [buildCcusageToolDescriptor(ccusageApp)] : []),
       ...(codexReviewAgents.length ? [buildCodexReviewToolDescriptor(codexReviewAgents)] : []),
-      ...(claudeReviewAgents.length ? [buildClaudeReviewToolDescriptor(claudeReviewAgents)] : []),
+      ...(claudeReviewAgents.length ? [buildClaudeReviewToolDescriptor(claudeReviewAgents, resolveClaudeApp())] : []),
       ...(codexExecAgents.length ? [buildCodexExecToolDescriptor(codexExecAgents)] : []),
     ];
   }
@@ -433,7 +448,7 @@ function buildCodexReviewToolDescriptor(agents) {
   };
 }
 
-function buildClaudeReviewToolDescriptor(agents) {
+function buildClaudeReviewToolDescriptor(agents, application = null) {
   return {
     name: CLAUDE_REVIEW_TOOL_CONTRACT.name,
     version: CLAUDE_REVIEW_TOOL_CONTRACT.version,
@@ -457,6 +472,7 @@ function buildClaudeReviewToolDescriptor(agents) {
     },
     authoritativeBilling: false,
     outputCollection: "claudeReviewFindings",
+    application: application ? { id: application.id, capability: `app.${application.id}.review.diff` } : null,
   };
 }
 

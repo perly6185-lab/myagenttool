@@ -1,5 +1,10 @@
 import { spawn } from "node:child_process";
+import { mkdtempSync, rmSync } from "node:fs";
 import http from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { createApplicationWrapperAgentRegistration } from "../../apps/server/src/services/applications.mjs";
+import { createGitApplicationRegistration } from "../../apps/server/src/services/git-application.mjs";
 
 const serverPort = 3221;
 const webPort = 3220;
@@ -9,12 +14,17 @@ const webUrl = `http://127.0.0.1:${webPort}`;
 const httpAgentUrl = `http://127.0.0.1:${httpAgentPort}`;
 const children = [];
 let httpAgentServer = null;
+const tempRoot = mkdtempSync(join(tmpdir(), "myagenttool-m0-acceptance-"));
+const statePath = join(tempRoot, "state.json");
+const bridgeTokenPath = join(tempRoot, "bridge-token.json");
 
 try {
   httpAgentServer = await startHttpAgent();
 
   start("server", process.execPath, ["apps/server/src/index.mjs"], {
     SERVER_PORT: String(serverPort),
+    MYAGENTTOOL_PROJECT_PATH: process.cwd(),
+    MYAGENTTOOL_STATE_PATH: statePath,
   });
   start("web", process.execPath, ["apps/web/src/index.mjs"], {
     WEB_PORT: String(webPort),
@@ -51,12 +61,46 @@ try {
   start("desktop", process.execPath, ["apps/desktop/src/index.mjs"], {
     BRIDGE_SERVER_URL: serverUrl,
     BRIDGE_POLL_INTERVAL_MS: "100",
+    MYAGENTTOOL_BRIDGE_TOKEN_PATH: bridgeTokenPath,
   });
 
   await waitFor(async () => {
     const state = await request("GET", "/api/state");
     return state.device.status === "online" && state.agent.status === "available";
   }, "desktop bridge link");
+
+  const linkedState = await request("GET", "/api/state");
+  const wrapperAgent = await request("POST", "/api/agents", createApplicationWrapperAgentRegistration());
+  assert(wrapperAgent.agent.status === "available", "Application Wrapper Runner should be available through the linked bridge");
+  const gitRegistration = await request("POST", "/api/applications/register", {
+    ...createGitApplicationRegistration({ autoOnline: true }),
+    projectId: linkedState.currentProject.id,
+  });
+  assert(gitRegistration.application.status === "active", "Git Application should register active");
+  assert(
+    gitRegistration.capabilities.some((capability) => capability.name === "app.app_git.wrapper.status"),
+    "Git Application should expose the governed status capability",
+  );
+
+  const gitRun = await request("POST", "/api/capabilities/app.app_git.wrapper.status/invocations", {
+    projectId: linkedState.currentProject.id,
+  });
+  const gitInvocationId = gitRun.invocation.id;
+  const gitState = await waitFor(async () => {
+    const state = await request("GET", "/api/state");
+    const invocation = state.invocations.find((item) => item.id === gitInvocationId);
+    const application = state.applications.find((item) => item.id === "app_git");
+    const evidence = state.evidenceCenterRecords.find((item) => item.invocationId === gitInvocationId && item.type === "application_result");
+    return invocation?.status === "succeeded"
+      && application?.latestResult?.invocationId === gitInvocationId
+      && application.latestResult.importedRecordCount >= 1
+      && evidence
+      ? { state, evidence }
+      : false;
+  }, "Git Application result and evidence import");
+  const gitInvocation = gitState.state.invocations.find((item) => item.id === gitInvocationId);
+  assert(gitInvocation.result?.applicationResult?.invocationId === gitInvocationId, "Git invocation should link its imported Application result");
+  assert(gitState.evidence.source === "imported_application_result", "Git Application result should enter the Evidence Center");
 
   const cliAgent = await request("POST", "/api/agents", {
     id: "agt_acceptance_cli",
@@ -145,12 +189,14 @@ try {
   assert(unlinkState.auditSummaries.some((item) => item.invocationId === unlinkInvocationId), "device unlink cleanup should be audited");
 
   console.log("[acceptance] M0 manual acceptance evidence OK");
+  console.log(`[acceptance] application=${gitInvocationId} evidence=${gitState.evidence.id}`);
   console.log(`[acceptance] web=${webUrl} offline=${offlineInvocationId} cli=${cliInvocationId} http=${httpInvocationId} cancelled=${cancelInvocationId} unlinked=${unlinkInvocationId}`);
 } finally {
   stopChildren();
   if (httpAgentServer) {
     await new Promise((resolve) => httpAgentServer.close(resolve));
   }
+  rmSync(tempRoot, { recursive: true, force: true });
 }
 
 function assertTraceAuditAndLogs(state, invocationId, label, options = {}) {

@@ -24,6 +24,7 @@ export function buildPublicState({
   // second team exists. A row is visible when it carries no owning key (global)
   // or its project/invocation belongs to the actor's team.
   const teamId = actor?.teamId ?? null;
+  const userTeam = new Map((state.users ?? []).map((user) => [user.id, user.teamId ?? LOCAL_TEAM_ID]));
   const projectTeam = new Map((state.projects ?? []).map((p) => [p.id, teamOf(p)]));
   const sshTargetTeam = new Map((state.sshTargets ?? []).map((target) => [target.id, target.ownerTeamId ?? LOCAL_TEAM_ID]));
   const projectVisible = (projectId) => {
@@ -242,13 +243,19 @@ export function buildPublicState({
     applicationRecoveryActions,
   });
 
+  const devices = (state.devices ?? [state.device])
+    .filter(Boolean)
+    .filter((device) => teamId == null || userTeam.get(device.ownerUserId) === teamId)
+    .map((device) => publicDeviceReadinessView(device));
+
   return {
     namespace,
     protocolVersion,
     defaults: {
       cloneParentDir: defaultProjectPath,
     },
-    device: publicDeviceView(state.device),
+    device: devices.find((device) => device.id === state.device?.id) ?? devices[0] ?? null,
+    devices,
     // Never expose password hashes to any client.
     users: (state.users ?? []).map(({ passwordHash, ...user }) => user),
     teams: state.teams ?? [],
@@ -352,6 +359,22 @@ export function buildPublicState({
     terminalBridgeActions,
     sshTargets,
     sshConnectionTests,
+  };
+}
+
+const APPLICATION_BINARY_READINESS_TTL_MS = 10 * 60 * 1000;
+
+function publicDeviceReadinessView(device) {
+  const view = publicDeviceView(device);
+  if (!view) return view;
+  const nowMs = Date.now();
+  return {
+    ...view,
+    applicationBinaryReadiness: (view.applicationBinaryReadiness ?? []).map((row) => {
+      const checkedAtMs = Date.parse(row.checkedAt ?? "");
+      const stale = view.status !== "online" || !Number.isFinite(checkedAtMs) || nowMs - checkedAtMs > APPLICATION_BINARY_READINESS_TTL_MS;
+      return stale ? { ...row, status: "stale" } : row;
+    }),
   };
 }
 

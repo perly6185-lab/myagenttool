@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { normalizeLoopRoutine, validateLoopRoutine } from "../../../../tools/ai/src/loop/routine.mjs";
@@ -17,6 +18,7 @@ const APPLICATION_STATUSES = new Set(["draft", "probing", "registered", "active"
 const NPM_WRAPPER_MODES = new Set(["metadata-only", "installed-wrapper"]);
 const APPLICATION_ROUTINE_REQUIRED_APPROVALS = ["apply", "push", "pr-create", "pr-merge"];
 const APPLICATION_ROUTINE_RISK_LEVELS = ["low", "medium", "high", "critical"];
+const APPLICATION_DESCRIPTOR_SCHEMA_VERSION = 1;
 
 export function createApplicationService({
   state,
@@ -54,24 +56,42 @@ export function createApplicationService({
     const source = normalizeApplicationSource(body.source ?? sourceFromLegacyBody(body));
     const name = normalizeApplicationName(body.name ?? nameFromSource(source));
     const requestedId = body.id == null ? null : sanitizeApplicationId(body.id);
-    const existing = findExistingApplicationBySource(state.applications ?? [], source);
+    const capabilityFacades = normalizeApplicationCapabilityFacades(body.capabilityFacades);
+    const descriptorSchemaVersion = normalizeDescriptorSchemaVersion(body.descriptorSchemaVersion);
+    const descriptorFingerprint = fingerprintApplicationDescriptor(
+      applicationDescriptor({ ...body, name, source, capabilityFacades }, descriptorSchemaVersion),
+    );
+    const replacementTarget = body.replacesApplicationId ? findApplication(String(body.replacesApplicationId)) : null;
+    if (body.replacesApplicationId && (!replacementTarget || !actorCanAccessApplication(state, actor, replacementTarget))) {
+      throw applicationRegistrationError("application_replacement_target_not_found", "Replacement target was not found.");
+    }
+    if (replacementTarget && !sameApplicationSourceIdentity(replacementTarget.source, source)) {
+      throw applicationRegistrationError("application_replacement_identity_mismatch", "Replacement must keep the same Application source identity.");
+    }
+    const existing = replacementTarget
+      ?? (requestedId ? findApplication(requestedId) : null)
+      ?? findExistingApplicationBySource(state.applications ?? [], source);
     if (existing) {
       if (!actorCanAccessApplication(state, actor, existing)) {
         throw new Error("Application source is already registered.");
       }
-      if (requestedId && requestedId !== existing.id) {
+      if (requestedId && requestedId !== existing.id && body.replacesApplicationId !== existing.id) {
         throw new Error(`Application source is already registered as ${existing.id}.`);
       }
-      existing.name = name || existing.name;
-      // Never let re-registration reassign ownership to a caller-supplied team;
-      // access was already checked above. Keep the established owner.
-      existing.ownerTeamId = existing.ownerTeamId ?? actor?.teamId ?? "team_local";
-      existing.updatedAt = now();
-      if (body.autoOnline !== false && existing.status === "registered") {
-        existing.status = "active";
+      const existingFingerprint = existing.descriptorFingerprint
+        ?? fingerprintApplicationDescriptor(applicationDescriptor(existing, existing.descriptorSchemaVersion));
+      if (existingFingerprint === descriptorFingerprint) {
+        return body.autoOnline !== false && existing.status === "registered"
+          ? transitionApplication(existing.id, "online", actor)
+          : existing;
       }
-      persistStateSoon();
-      return existing;
+      if (body.replacesApplicationId !== existing.id) {
+        throw applicationRegistrationError(
+          "application_descriptor_conflict",
+          `Application source is registered as immutable revision ${existing.id}; re-register with replacesApplicationId to replace it.`,
+        );
+      }
+      return createApplicationRevision({ body, actor, source, name, requestedId, capabilityFacades, descriptorSchemaVersion, descriptorFingerprint, existing });
     }
     const applicationId = requestedId ?? sanitizeApplicationId(nextId("app"));
     if (findApplication(applicationId)) {
@@ -114,6 +134,12 @@ export function createApplicationService({
       path: project?.path ?? source.path ?? null,
       ownerTeamId: ownerTeamId ?? project?.ownerTeamId ?? "team_local",
       capabilitiesVersion: 1,
+      capabilityFacades,
+      descriptorSchemaVersion,
+      descriptorFingerprint,
+      descriptorRevision: 1,
+      predecessorApplicationId: null,
+      successorApplicationId: null,
       orchestrationIds: [],
       createdAt,
       updatedAt: createdAt,
@@ -168,6 +194,45 @@ export function createApplicationService({
         persistStateSoon();
       });
     }
+    persistStateSoon();
+    return app;
+  }
+
+  function createApplicationRevision({ body, actor, source, name, requestedId, capabilityFacades, descriptorSchemaVersion, descriptorFingerprint, existing }) {
+    if (existing.successorApplicationId) {
+      throw applicationRegistrationError("application_already_replaced", `Application revision ${existing.id} was already replaced by ${existing.successorApplicationId}.`);
+    }
+    const applicationId = requestedId ?? sanitizeApplicationId(nextId("app"));
+    if (applicationId === existing.id || findApplication(applicationId)) {
+      throw applicationRegistrationError("application_revision_id_conflict", `Application revision id already exists: ${applicationId}.`);
+    }
+    const createdAt = now();
+    const app = {
+      id: applicationId,
+      name,
+      kind: normalizeApplicationKind(body.kind, source),
+      source,
+      status: normalizeApplicationStatus(body.status ?? (body.autoOnline === false ? "registered" : "active")),
+      lifecycle: { state: "registered", lastOperation: "replace", lastOperationAt: createdAt },
+      projectId: existing.projectId ?? body.projectId ?? null,
+      path: existing.path ?? source.path ?? null,
+      ownerTeamId: existing.ownerTeamId ?? actor?.teamId ?? "team_local",
+      capabilitiesVersion: 1,
+      capabilityFacades,
+      descriptorSchemaVersion,
+      descriptorFingerprint,
+      descriptorRevision: Number(existing.descriptorRevision ?? 1) + 1,
+      predecessorApplicationId: existing.id,
+      successorApplicationId: null,
+      orchestrationIds: [],
+      createdAt,
+      updatedAt: createdAt,
+    };
+    existing.successorApplicationId = app.id;
+    existing.status = existing.status === "archived" ? "archived" : "offline";
+    existing.updatedAt = createdAt;
+    state.applications.unshift(app);
+    appendEvent({ invocationId: null, type: "application_descriptor_replaced", level: "warning", message: `${existing.name} application descriptor replaced by immutable revision ${app.id}.`, data: { applicationId: app.id, predecessorApplicationId: existing.id, descriptorFingerprint } });
     persistStateSoon();
     return app;
   }
@@ -754,8 +819,28 @@ export function projectApplicationCapabilities(app) {
     managedCapability(app, `${prefix}.offline`, "Take application offline", "lifecycle", "high", ["lifecycle", "write_control"], true, app.status === "archived", approvalInputSchema()),
     managedCapability(app, `${prefix}.archive`, "Archive application", "lifecycle", "high", ["lifecycle", "write_control"], true, app.status === "archived", approvalInputSchema()),
     managedCapability(app, `${prefix}.generate_orchestration`, "Generate application orchestration", "orchestration", "medium", ["generated_artifact", "orchestration"], true, disabled, emptyInputSchema()),
+    ...projectCapabilityFacades(app, prefix, disabled),
     ...projectWrapperCapabilities(app, prefix, disabled),
   ];
+}
+
+function projectCapabilityFacades(app, prefix, disabled) {
+  return (app.capabilityFacades ?? []).map((facade) => managedCapability(
+    app,
+    `${prefix}.${facade.id}`,
+    facade.displayName,
+    "tool_facade",
+    facade.riskLevel,
+    facade.riskTags,
+    facade.requiresApproval,
+    disabled,
+    facade.inputSchema,
+    {
+      compatibilityFacade: { type: "tool", name: facade.toolName },
+      execution: { mode: "tool_facade", toolName: facade.toolName },
+      outputCollection: facade.outputCollection,
+    },
+  ));
 }
 
 function managedCapability(app, name, displayName, kind, riskLevel, riskTags, requiresApproval, disabled, inputSchema, metadata = {}) {
@@ -1315,7 +1400,76 @@ function publicApplicationSnapshot(application) {
     path: application.path,
     wrapper: application.source?.wrapper ? publicNpmWrapperSnapshot(application.source.wrapper) : null,
     orchestrationIds: application.orchestrationIds ?? [],
+    descriptorSchemaVersion: application.descriptorSchemaVersion ?? APPLICATION_DESCRIPTOR_SCHEMA_VERSION,
+    descriptorFingerprint: application.descriptorFingerprint ?? null,
+    descriptorRevision: application.descriptorRevision ?? 1,
+    predecessorApplicationId: application.predecessorApplicationId ?? null,
+    successorApplicationId: application.successorApplicationId ?? null,
   };
+}
+
+function normalizeDescriptorSchemaVersion(value) {
+  const version = value == null ? APPLICATION_DESCRIPTOR_SCHEMA_VERSION : Number(value);
+  if (!Number.isInteger(version) || version !== APPLICATION_DESCRIPTOR_SCHEMA_VERSION) {
+    throw applicationRegistrationError("unsupported_application_descriptor_schema", `Unsupported Application descriptor schema version: ${value}.`);
+  }
+  return version;
+}
+
+function applicationDescriptor(body, descriptorSchemaVersion = APPLICATION_DESCRIPTOR_SCHEMA_VERSION) {
+  return {
+    schemaVersion: descriptorSchemaVersion ?? APPLICATION_DESCRIPTOR_SCHEMA_VERSION,
+    name: normalizeApplicationName(body.name ?? nameFromSource(body.source)),
+    kind: normalizeApplicationKind(body.kind, body.source),
+    source: body.source,
+    capabilityFacades: normalizeApplicationCapabilityFacades(body.capabilityFacades),
+  };
+}
+
+function fingerprintApplicationDescriptor(descriptor) {
+  return `sha256:${createHash("sha256").update(stableJson(descriptor)).digest("hex")}`;
+}
+
+function stableJson(value) {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
+  if (value && typeof value === "object") return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableJson(value[key])}`).join(",")}}`;
+  return JSON.stringify(value);
+}
+
+function applicationRegistrationError(code, message) {
+  const error = new Error(message);
+  error.code = code;
+  return error;
+}
+
+function normalizeApplicationCapabilityFacades(value) {
+  if (value == null) return [];
+  if (!Array.isArray(value)) throw applicationRegistrationError("invalid_application_capability_facades", "Application capabilityFacades must be an array.");
+  const seen = new Set();
+  return value.map((facade) => {
+    if (!facade || typeof facade !== "object" || Array.isArray(facade)) {
+      throw applicationRegistrationError("invalid_application_capability_facade", "Application capability facade must be an object.");
+    }
+    const id = slugify(facade.id);
+    const toolName = stringOrNull(facade.toolName);
+    if (!id || !toolName || seen.has(id)) {
+      throw applicationRegistrationError("invalid_application_capability_facade", "Application capability facade requires a unique id and toolName.");
+    }
+    seen.add(id);
+    return {
+      id,
+      toolName,
+      displayName: stringOrNull(facade.displayName) ?? id,
+      description: stringOrNull(facade.description),
+      riskLevel: normalizeRiskLevel(facade.riskLevel, "medium"),
+      riskTags: normalizeStringList(facade.riskTags),
+      requiresApproval: facade.requiresApproval === true,
+      inputSchema: facade.inputSchema && typeof facade.inputSchema === "object" && !Array.isArray(facade.inputSchema)
+        ? publicJsonObject(facade.inputSchema)
+        : emptyInputSchema(),
+      outputCollection: stringOrNull(facade.outputCollection) ?? "invocations",
+    };
+  });
 }
 
 function highestCapabilityRiskLevel(capabilities) {
@@ -1978,6 +2132,15 @@ function statusForLifecycleAction(action) {
 function findExistingApplicationBySource(applications, source) {
   const key = sourceKey(source);
   return applications.find((app) => sourceKey(app.source) === key) ?? null;
+}
+
+function sameApplicationSourceIdentity(left, right) {
+  if (left?.type !== right?.type) return false;
+  if (left.type === "npm") return left.package === right.package;
+  if (left.type === "binary") return left.binary === right.binary;
+  if (left.type === "git") return left.url === right.url && (left.ref ?? null) === (right.ref ?? null);
+  if (left.type === "local") return left.path === right.path;
+  return left.uri === right.uri;
 }
 
 function actorCanAccessApplication(state, actor, application) {

@@ -124,6 +124,41 @@ export function buildEvidenceCenterRecords({
       createdAt: usage.createdAt
     });
   }
+  for (const result of state.applicationResults ?? []) {
+    records.push({
+      id: result.id,
+      type: "application_result",
+      source: "imported_application_result",
+      redactionState: "summary_only",
+      invocationId: result.invocationId,
+      codexSessionRegistryId: null,
+      agentId: findInvocation(result.invocationId)?.agentId ?? null,
+      repoPath: null,
+      summary: applicationResultSummary(result),
+      detail: applicationResultDetail(result),
+      marker: "imported",
+      createdAt: result.createdAt
+    });
+  }
+  const importedApplicationInvocationIds = new Set((state.applicationResults ?? []).map((result) => result.invocationId));
+  for (const event of (state.events ?? []).filter((item) => item.type === "application_result_recorded")) {
+    if (importedApplicationInvocationIds.has(event.invocationId)) continue;
+    const result = event.data ?? {};
+    records.push({
+      id: event.id,
+      type: "application_result",
+      source: "imported_application_result",
+      redactionState: "summary_only",
+      invocationId: event.invocationId,
+      codexSessionRegistryId: null,
+      agentId: findInvocation(event.invocationId)?.agentId ?? null,
+      repoPath: null,
+      summary: applicationResultLineageSummary(result),
+      detail: applicationResultLineageDetail(result),
+      marker: "imported",
+      createdAt: event.createdAt
+    });
+  }
   for (const event of (state.events ?? []).filter((item) => item.type === "codex_runtime_warning")) {
     records.push({
       id: event.id,
@@ -196,4 +231,35 @@ function usageEstimateDetail(usage) {
     Number.isFinite(Number(usage.estimatedCostUsd)) ? `estimatedCostUsd=${usage.estimatedCostUsd}` : null,
   ].filter(Boolean);
   return parts.join(" · ") || "Imported ccusage usage estimate.";
+}
+
+function applicationResultSummary(result) {
+  const source = result.source || "application";
+  const kind = result.kind || "result";
+  const capability = result.capability ? ` from ${result.capability}` : "";
+  return `${source} ${kind}${capability}`;
+}
+
+function applicationResultDetail(result) {
+  return [
+    result.status ? `status=${result.status}` : null,
+    result.applicationId ? `application=${result.applicationId}` : null,
+    result.projectId ? `project=${result.projectId}` : null,
+    result.truncated ? "truncated=true" : "truncated=false",
+  ].filter(Boolean).join(" · ");
+}
+
+function applicationResultLineageSummary(result) {
+  const application = result.applicationId || "application";
+  const capability = result.capability ? ` from ${result.capability}` : "";
+  return `${application} result${capability}`;
+}
+
+function applicationResultLineageDetail(result) {
+  return [
+    result.status ? `status=${result.status}` : null,
+    result.outputCollection ? `collection=${result.outputCollection}` : null,
+    Number.isFinite(Number(result.importedRecordCount)) ? `records=${result.importedRecordCount}` : null,
+    result.applicationAction ? `action=${result.applicationAction}` : null,
+  ].filter(Boolean).join(" · ");
 }

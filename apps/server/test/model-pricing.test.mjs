@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
+import { execFileSync, spawnSync } from "node:child_process";
 import { test } from "node:test";
 
 import {
   createM3Service,
   estimateCostUsdFromTokens,
   modelPrices,
+  priceEvidenceForTokens,
   priceForModel,
 } from "../src/services/m3.mjs";
 
@@ -43,6 +45,34 @@ test("modelPrices exposes a read-only table covering the seeded families", () =>
   assert.equal(opus.currency, "USD");
   assert.match(opus.id, /^prc_/);
   assert.equal(opus.source, "default");
+  assert.match(opus.pricingVersion, /^2026-07-01\.[0-9a-f]{12}$/);
+  assert.equal(opus.effectiveFrom, "2026-07-01T00:00:00.000Z");
+});
+
+test("pricing uses the invocation timestamp and returns reproducible evidence", () => {
+  assert.equal(priceForModel("claude-opus-4-8", "2026-06-30T23:59:59.999Z"), null);
+  const evidence = priceEvidenceForTokens({ model: "claude-opus-4-8", inputTokens: 1_000_000 }, "2026-07-13T00:00:00.000Z");
+  assert.equal(evidence.amountUsd, 15);
+  assert.equal(evidence.price.id, "prc_anthropic_claude-opus");
+  assert.match(evidence.price.pricingVersion, /^2026-07-01\.[0-9a-f]{12}$/);
+});
+
+test("pricing version changes when configured rates change", () => {
+  const script = "import('./src/services/m3.mjs').then(m => process.stdout.write(m.modelPrices()[0].pricingVersion))";
+  const base = execFileSync(process.execPath, ["--input-type=module", "-e", script], { cwd: process.cwd(), encoding: "utf8", env: { ...process.env, CLAUDE_OPUS_INPUT_USD_PER_MTOK: "15" } });
+  const changed = execFileSync(process.execPath, ["--input-type=module", "-e", script], { cwd: process.cwd(), encoding: "utf8", env: { ...process.env, CLAUDE_OPUS_INPUT_USD_PER_MTOK: "16" } });
+  assert.notEqual(base, changed);
+});
+
+test("invalid configured rates fail fast instead of publishing NaN evidence", () => {
+  const script = "import('./src/services/m3.mjs')";
+  const result = spawnSync(process.execPath, ["--input-type=module", "-e", script], {
+    cwd: process.cwd(),
+    encoding: "utf8",
+    env: { ...process.env, CLAUDE_OPUS_INPUT_USD_PER_MTOK: "garbage" },
+  });
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /CLAUDE_OPUS_INPUT_USD_PER_MTOK must be a finite non-negative number/u);
 });
 
 // --- integration: the rounds-derived usage record now carries a real cost ----
@@ -61,6 +91,15 @@ test("recordInvocationRoundUsage prices a Claude run from its tokens", () => {
   ]);
   const rec = m3.recordInvocationRoundUsage({ invocation: { id: "inv_1", status: "succeeded" } });
   assert.equal(rec.estimatedCost, "15");
+  assert.match(rec.pricingVersion, /^2026-07-01\.[0-9a-f]{12}$/);
+  assert.equal(rec.pricingModelPriceId, "prc_anthropic_claude-opus");
+  assert.equal(rec.pricingMethod, "token_estimate");
+  assert.deepEqual(rec.pricingRates, {
+    inputUsdPerMTok: "15",
+    cachedInputUsdPerMTok: "1.5",
+    outputUsdPerMTok: "75",
+    reasoningOutputUsdPerMTok: "0",
+  });
 });
 
 test("recordInvocationRoundUsage leaves an unpriced model's cost unknown", () => {
@@ -69,4 +108,6 @@ test("recordInvocationRoundUsage leaves an unpriced model's cost unknown", () =>
   ]);
   const rec = m3.recordInvocationRoundUsage({ invocation: { id: "inv_1", status: "succeeded" } });
   assert.equal(rec.estimatedCost, "unknown");
+  assert.equal(rec.pricingVersion, null);
+  assert.equal(rec.pricingMethod, "unknown");
 });

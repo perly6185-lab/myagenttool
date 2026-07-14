@@ -13,6 +13,7 @@ import { codexResumeArgs } from "./codex-resume.mjs";
 import { extractClaudeFileAccesses } from "./claude-file-access.mjs";
 import { newRoundState, claudeRoundEmits, codexRoundEmits } from "./round-telemetry.mjs";
 import { applicationWrapperArgs } from "./application-wrapper-args.mjs";
+import { collectApplicationBinaryReadiness } from "./application-binary-readiness.mjs";
 import {
   createLocalExecutionPolicyManifest,
   localExecutionGate,
@@ -61,6 +62,7 @@ async function activeRunAsUser() {
 const serverUrl = process.env.BRIDGE_SERVER_URL ?? "http://127.0.0.1:5001";
 const pollIntervalMs = Number(process.env.BRIDGE_POLL_INTERVAL_MS ?? 700);
 const terminalPollIntervalMs = Number(process.env.BRIDGE_TERMINAL_POLL_INTERVAL_MS ?? 40);
+const binaryReadinessIntervalMs = Number(process.env.BRIDGE_BINARY_READINESS_INTERVAL_MS ?? 5 * 60 * 1000);
 const demoAgentPath = resolve(__dirname, "demo-agent.mjs");
 const codexFixtureAgentPath = resolve(__dirname, "codex-fixture-agent.mjs");
 const remoteRelayPath = resolve(__dirname, "remote-relay.mjs");
@@ -338,7 +340,8 @@ let registration;
 try {
   registration = await request("POST", "/api/bridge/register", {
     bridgeVersion: "0.0.0",
-    capabilities: ["demo_cli_agent", "managed_terminal_pty", "remote_ssh_relay"]
+    capabilities: ["demo_cli_agent", "managed_terminal_pty", "remote_ssh_relay"],
+    applicationBinaryReadiness: collectApplicationBinaryReadiness(localExecutionPolicyManifest),
   });
 } catch (error) {
   const message = error instanceof Error ? error.message : String(error);
@@ -377,10 +380,17 @@ function logPollError(label, error) {
 }
 const guarded = (fn, label) => () => Promise.resolve().then(fn).catch((error) => logPollError(label, error));
 
+async function refreshApplicationBinaryReadiness() {
+  await request("POST", "/api/bridge/readiness", {
+    applicationBinaryReadiness: collectApplicationBinaryReadiness(localExecutionPolicyManifest),
+  });
+}
+
 guarded(poll, "bridge")();
 const timer = setInterval(guarded(poll, "bridge"), pollIntervalMs);
 guarded(pollTerminal, "terminal")();
 const terminalTimer = setInterval(guarded(pollTerminal, "terminal"), terminalPollIntervalMs);
+const binaryReadinessTimer = setInterval(guarded(refreshApplicationBinaryReadiness, "binary readiness"), binaryReadinessIntervalMs);
 
 async function poll() {
   if (busy || stopped) {
@@ -2698,5 +2708,6 @@ function stop() {
   stopped = true;
   clearInterval(timer);
   clearInterval(terminalTimer);
+  clearInterval(binaryReadinessTimer);
   process.exit(0);
 }

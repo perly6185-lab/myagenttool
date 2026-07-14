@@ -435,9 +435,9 @@ test("POST /api/applications/register rejects duplicate explicit ids", async () 
     },
     token: "tok_a",
   });
-  assert.equal(duplicate.status, 400);
-  assert.equal(duplicate.body.error, "invalid_application");
-  assert.match(duplicate.body.message, /Application id already exists/);
+  assert.equal(duplicate.status, 409);
+  assert.equal(duplicate.body.error, "application_descriptor_conflict");
+  assert.match(duplicate.body.message, /immutable revision/);
 });
 
 test("POST /api/applications/register scopes ownership to the authenticated actor", async () => {

@@ -489,7 +489,7 @@ function gitPolicyGate({ filePolicy, networkPolicy }) {
     { project: { path: gitRoot }, options: { metadata: { applicationWrapper: spec, worktreePath: gitRoot } } },
     { type: "cli", command: "node" },
     { command: process.execPath, args: wrapperArgs(spec, { cwd: gitRoot }), cwd: gitRoot, localPolicy: { filePolicy, networkPolicy, source: "application_wrapper" } },
-    { manifest },
+    { manifest, resolveBinary: () => true },
   );
 }
 

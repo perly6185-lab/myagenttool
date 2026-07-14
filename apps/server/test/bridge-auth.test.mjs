@@ -37,13 +37,36 @@ before(async () => {
 after(() => server?.close());
 
 test("bridge registration issues a device-bound credential and protects bridge routes", async () => {
-  const registered = await call("/api/bridge/register", { method: "POST", body: { bridgeVersion: "test" } });
+  const registered = await call("/api/bridge/register", { method: "POST", body: {
+    bridgeVersion: "test",
+    applicationBinaryReadiness: [
+      { command: "git", capabilityPrefix: "app.app_git.wrapper.", status: "available", version: "git version 2.50.0" },
+      { command: "C:/evil.exe", capabilityPrefix: "app.app_git.wrapper.", status: "available", version: "bad" },
+      { command: "node", capabilityPrefix: "not-an-app", status: "available", version: "bad" },
+    ],
+  } });
   assert.equal(registered.status, 200);
   assert.equal(typeof registered.body.bridgeToken, "string");
   assert(registered.body.bridgeToken.length > 20);
   assert.equal(registered.body.device.bridgeCredential.tokenHash, undefined);
   assert.equal(registered.body.bridgeCredential.tokenHash, undefined);
   assert.equal(typeof state.device.bridgeCredential.tokenHash, "string");
+  assert.deepEqual(state.device.applicationBinaryReadiness, [{
+    command: "git",
+    capabilityPrefix: "app.app_git.wrapper.",
+    status: "available",
+    version: "git version 2.50.0",
+    checkedAt: state.device.lastSeenAt,
+  }]);
+
+  const refreshed = await call("/api/bridge/readiness", {
+    method: "POST",
+    token: registered.body.bridgeToken,
+    body: { applicationBinaryReadiness: [{ command: "git", capabilityPrefix: "app.app_git.wrapper.", status: "absent", version: "must be dropped" }] },
+  });
+  assert.equal(refreshed.status, 200);
+  assert.equal(state.device.applicationBinaryReadiness[0].status, "absent");
+  assert.equal(state.device.applicationBinaryReadiness[0].version, null);
 
   const unauthenticatedPoll = await call("/api/bridge/next");
   assert.equal(unauthenticatedPoll.status, 401);

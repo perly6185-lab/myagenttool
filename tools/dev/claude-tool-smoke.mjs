@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import net from "node:net";
 import { createClaudeReviewAgentRegistration } from "../../apps/server/src/services/claude-agent.mjs";
+import { createClaudeApplicationRegistration } from "../../apps/server/src/services/claude-application.mjs";
 
 const serverPort = process.env.CLAUDE_TOOL_SMOKE_PORT
   ? Number(process.env.CLAUDE_TOOL_SMOKE_PORT)
@@ -99,13 +100,26 @@ try {
   assert(registered.agent.status === "available", "claude review agent should be available while bridge is online");
   ok("governed claude.review.diff agent registered");
 
+  const applicationRegistration = await request("POST", "/api/applications/register", {
+    ...createClaudeApplicationRegistration({ autoOnline: true }),
+    projectId: initialState.currentProject.id,
+  });
+  assert(applicationRegistration.application.id === "app_claude", "Claude Application should register with deterministic id");
+  assert(applicationRegistration.application.status === "active", "Claude Application should register active");
+  const claudeCapability = applicationRegistration.capabilities.find((item) => item.name === "app.app_claude.review.diff");
+  assert(claudeCapability, "Claude Application should expose the governed review capability");
+  assert(claudeCapability.metadata.execution.mode === "tool_facade", "Claude review capability should use the governed Tool facade");
+  ok("Claude Application registered with its governed review capability");
+
   const tools = await request("GET", "/api/tools");
   const claudeTool = tools.tools.find((item) => item.name === "claude.review.diff");
   assert(claudeTool, "claude.review.diff should be discoverable");
+  assert(claudeTool.application?.id === "app_claude", "Claude Tool should link to the Claude Application");
+  assert(claudeTool.application?.capability === "app.app_claude.review.diff", "Claude Tool should link to the Application capability");
   assert(!JSON.stringify(claudeTool).includes("claude-review-wrapper.mjs"), "tool discovery must not expose wrapper argv");
-  ok("tool discovery exposes the governed Claude channel without raw argv");
+  ok("tool discovery links the Application channel without exposing raw argv");
 
-  const created = await request("POST", "/api/tools/claude.review.diff/invocations", {
+  const created = await request("POST", "/api/capabilities/app.app_claude.review.diff/invocations", {
     projectId: worktreeCreated.project.id,
     worktreeId: worktreeCreated.worktree.id,
     instruction: "Focus on smoke-test correctness.",
@@ -118,18 +132,37 @@ try {
   const finalState = await waitFor(async () => {
     const state = await request("GET", "/api/state");
     const invocation = state.invocations.find((item) => item.id === created.invocationId);
+    const application = state.applications.find((item) => item.id === "app_claude");
+    const evidence = state.evidenceCenterRecords.find((item) => item.invocationId === created.invocationId && item.type === "application_result");
     if (["failed", "cancelled", "timed_out", "expired", "rejected"].includes(invocation?.status)) {
       throw new Error(`claude.review.diff invocation ended unexpectedly: ${invocation.status}`);
     }
     const finding = state.claudeReviewFindings.find((item) => item.invocationId === created.invocationId);
-    return invocation?.status === "succeeded" && finding ? state : false;
-  }, "claude review completion and finding import", 15_000);
-  ok("desktop bridge completed the wrapper run and imported findings");
+    return invocation?.status === "succeeded"
+      && finding
+      && application?.latestResult?.invocationId === created.invocationId
+      && application.latestResult.importedRecordCount > 0
+      && evidence
+      ? state
+      : false;
+  }, "Claude Application result, evidence, and finding import", 15_000);
+  ok("desktop bridge completed the Application run and imported evidence");
 
   const finalInvocation = finalState.invocations.find((item) => item.id === created.invocationId);
   const finalFinding = finalState.claudeReviewFindings.find((item) => item.invocationId === created.invocationId);
   const unifiedFinding = finalState.reviewFindings.find((item) => item.invocationId === created.invocationId);
+  const application = finalState.applications.find((item) => item.id === "app_claude");
+  const applicationEvidence = finalState.evidenceCenterRecords.find((item) => item.invocationId === created.invocationId && item.type === "application_result");
   assert(finalInvocation.options.metadata.worktreePath === worktreeCreated.worktree.worktreePath, "invocation metadata should carry the governed worktree path");
+  assert(finalInvocation.options.metadata.providerType === "application", "invocation should record the Application provider type");
+  assert(finalInvocation.options.metadata.applicationId === "app_claude", "invocation should record the Claude Application id");
+  assert(finalInvocation.options.metadata.capability === "app.app_claude.review.diff", "invocation should record the Application capability");
+  assert(finalInvocation.options.metadata.applicationAction === "tool:claude.review.diff", "invocation should record the delegated Tool action");
+  assert(finalInvocation.result?.applicationResult?.invocationId === created.invocationId, "invocation should link its imported Application result");
+  assert(application.latestResult.invocationId === created.invocationId, "Claude Application should expose the latest imported result");
+  assert(application.latestResult.importedRecordCount > 0, "Claude Application result should include imported records");
+  assert(applicationEvidence.source === "imported_application_result", "Claude Application result should enter the Evidence Center");
+  ok("Application invocation lineage and Evidence Center result are complete");
   assert(finalFinding.severity === "high", "imported finding should preserve severity");
   assert(finalFinding.file === "apps/server/src/routes/tools.mjs", "imported finding should preserve file");
   assert(finalFinding.raw === undefined, "public state should strip raw finding payloads");

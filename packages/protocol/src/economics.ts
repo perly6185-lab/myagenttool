@@ -91,6 +91,9 @@ export interface ModelPrice {
   /** 0 when the provider already folds reasoning tokens into output. */
   reasoningOutputUsdPerMTok: DecimalString;
   source: "config" | "default" | "override";
+  pricingVersion: string;
+  effectiveFrom: IsoDateTime;
+  effectiveTo?: IsoDateTime | null;
   updatedAt: IsoDateTime;
 }
 
@@ -128,6 +131,12 @@ export interface AIUsageRecord {
   /** How the token counts were obtained. Absent on legacy records. */
   derivedFrom?: AIUsageDerivation;
   estimatedCost: DecimalString;
+  pricingVersion?: string | null;
+  pricingModelPriceId?: ModelPriceId | null;
+  pricingCurrency?: CurrencyCode | null;
+  pricingMethod?: "reported" | "token_estimate" | "unknown";
+  pricingEffectiveFrom?: IsoDateTime | null;
+  pricingRates?: ModelPriceRateEvidence | null;
   ledgerEntryIds: LedgerEntryId[];
   status: "succeeded" | "failed" | "cancelled" | "blocked";
   errorCode?: string | null;
@@ -309,10 +318,22 @@ export interface LedgerEntry {
   budgetPoolId: string | null;
   counterparty: string | null;
   provider: string | null;
+  pricingVersion?: string | null;
+  pricingModelPriceId?: ModelPriceId | null;
+  pricingMethod?: "reported" | "token_estimate" | "unknown";
+  pricingEffectiveFrom?: IsoDateTime | null;
+  pricingRates?: ModelPriceRateEvidence | null;
   billable: boolean;
   status: LedgerEntryStatus;
   createdAt: IsoDateTime;
   finalizedAt: IsoDateTime | null;
+}
+
+export interface ModelPriceRateEvidence {
+  inputUsdPerMTok: DecimalString;
+  cachedInputUsdPerMTok: DecimalString;
+  outputUsdPerMTok: DecimalString;
+  reasoningOutputUsdPerMTok: DecimalString;
 }
 
 export interface AgentEconomicRecord {

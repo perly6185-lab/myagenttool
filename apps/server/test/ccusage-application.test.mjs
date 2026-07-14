@@ -16,8 +16,7 @@ import {
   createCcusageApplicationRegistration,
 } from "../src/services/ccusage-application.mjs";
 
-function service() {
-  const state = { applications: [] };
+function service(state = { applications: [] }, overrides = {}) {
   return createApplicationService({
     state,
     now: () => "2026-07-03T00:00:00.000Z",
@@ -27,6 +26,7 @@ function service() {
     addProject: () => null,
     cloneProject: () => null,
     defaultProjectPath: "/tmp/repo",
+    ...overrides,
   });
 }
 
@@ -83,6 +83,78 @@ test("re-registration is idempotent (same source, same id)", () => {
   const second = svc.registerApplication(createCcusageApplicationRegistration());
   assert.equal(first.id, second.id);
   assert.equal(svc.listApplications().length, 1);
+  assert.match(first.descriptorFingerprint, /^sha256:[0-9a-f]{64}$/);
+  assert.equal(first.descriptorRevision, 1);
+});
+
+test("an identical re-registration with autoOnline enables a registered Application", () => {
+  const svc = service();
+  const first = svc.registerApplication(createCcusageApplicationRegistration({ autoOnline: false }));
+  assert.equal(first.status, "registered");
+  const enabled = svc.registerApplication(createCcusageApplicationRegistration({ autoOnline: true }));
+  assert.equal(enabled.id, first.id);
+  assert.equal(enabled.status, "active");
+  assert.equal(enabled.lifecycle.lastOperation, "online");
+  assert.equal(svc.listApplications().length, 1);
+});
+
+test("changed descriptors require explicit immutable replacement and preserve lineage", () => {
+  const svc = service();
+  const first = svc.registerApplication(createCcusageApplicationRegistration());
+  const changed = createCcusageApplicationRegistration();
+  changed.name = "ccusage Reports v2";
+  changed.source.version = "99.0.0";
+  assert.throws(() => svc.registerApplication(changed), /immutable revision/);
+
+  const second = svc.registerApplication({ ...changed, id: "app_ccusage_v2", replacesApplicationId: first.id });
+  assert.equal(second.descriptorRevision, 2);
+  assert.equal(second.predecessorApplicationId, first.id);
+  assert.equal(first.successorApplicationId, second.id);
+  assert.equal(first.status, "offline");
+  assert.notEqual(first.descriptorFingerprint, second.descriptorFingerprint);
+  assert.equal(second.source.version, "99.0.0");
+  assert.deepEqual(first.orchestrationIds, []);
+});
+
+test("unsupported descriptor schema versions are refused explicitly", () => {
+  const svc = service();
+  assert.throws(
+    () => svc.registerApplication({ ...createCcusageApplicationRegistration(), descriptorSchemaVersion: 2 }),
+    /Unsupported Application descriptor schema version/,
+  );
+});
+
+test("foreign replacement targets are indistinguishable from missing targets", () => {
+  const svc = service();
+  const first = svc.registerApplication(createCcusageApplicationRegistration(), { teamId: "team_a", userId: "usr_a" });
+  const changed = createCcusageApplicationRegistration({ version: "99.0.0" });
+  assert.throws(
+    () => svc.registerApplication({ ...changed, id: "app_ccusage_v2", replacesApplicationId: first.id }, { teamId: "team_b", userId: "usr_b" }),
+    (error) => error?.code === "application_replacement_target_not_found",
+  );
+});
+
+test("a Git descriptor replacement cannot silently change the checked-out ref", async () => {
+  const svc = service({ applications: [] }, {
+    cloneProject: async () => ({ id: "prj_git", path: "/tmp/repo" }),
+  });
+  const first = svc.registerApplication({
+    id: "app_repo",
+    name: "Repo",
+    autoOnline: false,
+    source: { type: "git", url: "https://github.com/example/repo.git", ref: "main" },
+  });
+  assert.throws(
+    () => svc.registerApplication({
+      id: "app_repo_release",
+      name: "Repo",
+      autoOnline: false,
+      replacesApplicationId: first.id,
+      source: { type: "git", url: "https://github.com/example/repo.git", ref: "release" },
+    }),
+    (error) => error?.code === "application_replacement_identity_mismatch",
+  );
+  await Promise.resolve();
 });
 
 test("does not touch project records (npm source creates no project)", () => {

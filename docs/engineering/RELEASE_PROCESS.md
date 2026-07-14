@@ -100,6 +100,13 @@ Before release:
 - Linked issues are closed or clearly deferred.
 - Acceptance criteria are verified.
 - Tests pass.
+- `pnpm release:candidate` passes on Windows, macOS, and Linux and each runner
+  uploads its `.myagenttool/release-candidate/*.json` evidence manifest.
+- Candidate evidence covers descriptor compatibility, allowlist-only binary
+  readiness, strict approvals and bounded recovery, versioned economics,
+  reconnect/liveness, quota refusal, and explicit missing-binary refusal.
+- A missing, stale, or failed platform manifest blocks release; do not replace a
+  failed platform with a local-only assertion.
 - Known limitations are listed.
 - Security, data, billing, and audit impact is reviewed.
 - Rollback notes exist.
