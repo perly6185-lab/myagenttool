@@ -83,6 +83,7 @@ export const persistedArrayKeys = [
   "claudeReviewFindings",
   "codexExecChanges",
   "codexExecChangeReviews",
+  "claudeApplyAuthorizations",
   "applicationResults",
   "budgets",
   "budgetReservations",

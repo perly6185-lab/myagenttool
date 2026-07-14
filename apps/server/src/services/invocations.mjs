@@ -45,6 +45,7 @@ export function createInvocationService({
   releaseReservationsForInvocation,
   checkUsageQuota,
   closeCodexSession,
+  store,
   onInvocationCompleted,
   onInvocationApproved,
   onInvocationDenied,
@@ -114,6 +115,7 @@ export function createInvocationService({
     startInvocationIfAllowed,
     onInvocationApproved,
     onInvocationDenied,
+    store,
   });
   const { createInvocation } = createInvocationCreationRuntime({
     state,
@@ -155,6 +157,7 @@ export function createInvocationService({
     dispatchLeaseMs,
     findAgent,
     completeInvocation,
+    store,
   });
   const { createCompareRun, setCompareRunPreferred, promoteCompareRun } = createInvocationCompareRuntime({
     state,

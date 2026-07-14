@@ -88,6 +88,10 @@ export function createServerState({ defaultProjectPath, now }) {
     claudeReviewFindings: [],
     codexExecChanges: [],
     codexExecChangeReviews: [],
+    // Claude governance Phase 4a (#914): approval-bound apply authorizations. Each
+    // row is a single-use, grant-consumed authorization bound to a Phase 3 proposal
+    // — the write itself (4b) is separate.
+    claudeApplyAuthorizations: [],
     applicationResults: [],
     budgets: [],
     // #890: in-flight budget holds placed at admission and released on settle so
@@ -195,6 +199,7 @@ export function resetStateForSelfCheck({ state, now }) {
   state.claudeReviewFindings = [];
   state.codexExecChanges = [];
   state.codexExecChangeReviews = [];
+  state.claudeApplyAuthorizations = [];
   state.applicationResults = [];
   state.budgets = [];
   state.automations = createDefaultAutomations(state.currentProjectId ?? state.projects[0]?.id ?? "prj_myagenttool", now);
