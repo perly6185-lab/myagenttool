@@ -7,7 +7,7 @@ import { cn } from "@/lib/cn";
 import { useConsoleState, useRefreshConsoleState } from "@/data/use-console-state";
 import { api, useAsyncAction } from "@/data/use-console-actions";
 import { useUiStore, type SectionKey } from "@/store/ui-store";
-import type { ClaudeApplyAuthorization, PendingDecision, PendingDecisionKind } from "@/lib/console-state";
+import type { ClaudeApplyAuthorization, InvocationSnapshot, PendingDecision, PendingDecisionKind } from "@/lib/console-state";
 
 // The Approvals section: ONE queue of every pending human decision, aggregated
 // server-side (read-model `pendingDecisions`) from surfaces that used to be
@@ -91,6 +91,13 @@ export function ApprovalsView() {
           </span>
         </div>
       ) : null}
+
+      <ProposalsPanel
+        invocations={state?.invocations ?? []}
+        authorizations={state?.claudeApplyAuthorizations ?? []}
+        pending={pending}
+        act={act}
+      />
 
       <ApplyAuthorizationsPanel
         rows={state?.claudeApplyAuthorizations ?? []}
@@ -236,6 +243,123 @@ function DecisionActions({
         </Button>
       );
   }
+}
+
+// A completed claude.propose.patch invocation, narrowed from the untyped result
+// output. The proposal artifact is the patch text + touched files + summary.
+interface PatchProposal {
+  invocationId: string;
+  projectId?: string;
+  worktreeId?: string | null;
+  summary: string | null;
+  patch: string;
+  files: { path: string; action?: string }[];
+  createdAt?: string;
+}
+
+function proposalOf(invocation: InvocationSnapshot): PatchProposal | null {
+  const metadata = invocation.options?.metadata as { tool?: string; worktreeId?: string; projectId?: string } | undefined;
+  if (metadata?.tool !== "claude.propose.patch" || invocation.status !== "succeeded") return null;
+  const output = invocation.result?.output as { patch?: unknown; summary?: unknown; files?: unknown } | undefined;
+  if (!output || typeof output.patch !== "string" || !output.patch.trim()) return null;
+  const files = Array.isArray(output.files)
+    ? (output.files as { path?: unknown; action?: unknown }[])
+        .map((f) => ({ path: String(f?.path ?? ""), action: typeof f?.action === "string" ? f.action : undefined }))
+        .filter((f) => f.path)
+    : [];
+  return {
+    invocationId: invocation.id,
+    projectId: invocation.projectId ?? metadata.projectId,
+    worktreeId: invocation.worktreeId ?? metadata.worktreeId ?? null,
+    summary: typeof output.summary === "string" ? output.summary : null,
+    patch: output.patch,
+    files,
+    createdAt: invocation.createdAt,
+  };
+}
+
+// Patch proposals (Phase 3): browse what Claude proposed, then approve → apply in
+// one action — the click mints a single-use grant for (apply_patch, proposal) and
+// invokes claude.apply.patch, which authorizes + dispatches the bridge runner.
+// A proposal already moving through the apply lifecycle shows its status instead;
+// a failed or rolled-back apply may be re-applied (a fresh grant each time).
+function ProposalsPanel({
+  invocations,
+  authorizations,
+  pending,
+  act,
+}: {
+  invocations: InvocationSnapshot[];
+  authorizations: ClaudeApplyAuthorization[];
+  pending: boolean;
+  act: (fn: () => Promise<unknown>) => void;
+}) {
+  const proposals = invocations.map(proposalOf).filter((p): p is PatchProposal => p !== null);
+  if (!proposals.length) return null;
+  return (
+    <div className="flex flex-col gap-2">
+      <div className="flex items-center gap-2">
+        <h2 className="text-sm font-semibold">Patch proposals</h2>
+        <Badge tone="neutral">{proposals.length}</Badge>
+        <span className="text-xs text-muted-foreground">Claude-proposed changes — nothing is applied without an approval grant</span>
+      </div>
+      <ul className="flex flex-col gap-2">
+        {proposals.map((proposal) => {
+          // Authorizations are newest-first; the first match is the current lifecycle.
+          const authorization = authorizations.find((a) => a.proposalInvocationId === proposal.invocationId) ?? null;
+          const applicable = !authorization || authorization.status === "failed" || authorization.status === "rolled_back";
+          return (
+            <li key={proposal.invocationId}>
+              <Card>
+                <CardContent className="flex flex-col gap-2 py-3">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Badge tone="neutral">proposal</Badge>
+                    <span className="min-w-0 flex-1 truncate text-sm">
+                      {proposal.summary ?? `Proposal ${proposal.invocationId}`}
+                    </span>
+                    {authorization ? (
+                      <Badge tone={APPLY_STATUS_TONE[authorization.status] ?? "neutral"}>{authorization.status.replaceAll("_", " ")}</Badge>
+                    ) : null}
+                    {applicable && proposal.worktreeId ? (
+                      <Button
+                        variant="primary"
+                        size="sm"
+                        className="h-7 px-2.5 text-xs"
+                        disabled={pending}
+                        onClick={() =>
+                          act(async () => {
+                            const grant = await api.issueApprovalGrant("apply_patch", proposal.invocationId);
+                            return api.invokeCapability("claude.apply.patch", {
+                              ...(proposal.projectId ? { projectId: proposal.projectId } : {}),
+                              worktreeId: proposal.worktreeId!,
+                              proposalInvocationId: proposal.invocationId,
+                              approvalToken: grant.token,
+                            });
+                          })
+                        }
+                      >
+                        {pending ? <Loader2 className="mr-1 size-3 animate-spin" /> : <ShieldAlert className="mr-1 size-3" />}
+                        Approve &amp; apply
+                      </Button>
+                    ) : null}
+                  </div>
+                  {proposal.files.length ? (
+                    <div className="text-xs text-muted-foreground">
+                      <span className="truncate">{proposal.files.map((f) => f.path).join(", ")}</span>
+                    </div>
+                  ) : null}
+                  <details className="text-xs">
+                    <summary className="cursor-pointer text-muted-foreground">Proposed patch</summary>
+                    <pre className="mt-1 max-h-64 overflow-auto rounded-md bg-muted/40 p-2 font-mono text-[11px] leading-4">{proposal.patch.slice(0, 20000)}</pre>
+                  </details>
+                </CardContent>
+              </Card>
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
 }
 
 const APPLY_STATUS_TONE: Record<string, "neutral" | "success" | "warning" | "danger"> = {
