@@ -214,6 +214,18 @@ try {
   assert(sensitiveHook.brokerRequest?.status === "pending", "even in auto mode a credential-shaped request must fall to manual review");
   ok("sensitive-pattern request forces manual review even under auto mode");
 
+  // approvalMode `full` is intentionally NOT offered for codex.exec — it would
+  // either duplicate `auto` or disable the sensitive-pattern guardrail. The
+  // validator rejects it with a message pointing at `auto`.
+  const fullReject = await fetch(`${serverUrl}/api/capabilities/${encodeURIComponent(CAPABILITY_NAME)}/invocations`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ projectId: worktreeCreated.project.id, worktreeId: worktreeCreated.worktree.id, task: "anything", approvalMode: "full" }),
+  });
+  const fullBody = JSON.parse(await fullReject.text());
+  assert(fullReject.status === 400 && fullBody.error === "invalid_approval_mode", "approvalMode full must be rejected");
+  assert(String(fullBody.message ?? "").includes("auto"), "the rejection should point the caller at auto");
+  ok("approvalMode full is rejected with guidance toward auto");
+
   console.log(`\ncodex-exec-caller-smoke: ${passed} checks passed`);
 } finally {
   for (const child of children.reverse()) {

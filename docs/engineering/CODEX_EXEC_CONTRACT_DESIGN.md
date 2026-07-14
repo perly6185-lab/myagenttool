@@ -91,12 +91,15 @@ no default review prompt), `worktreeId` is required and `current_repo` is refuse
   approval broker. `codexApprovalRequiresManualReview` already forces manual review
   when the task/tool/summary mentions secrets, `rm -rf`, credentials, etc.
 - `approvalMode` (default `ask`): `ask` pauses at the broker on every permission
-  request; `auto` auto-approves low-risk requests but still forces manual on the
-  sensitive-pattern list; `full` auto-approves non-blocked requests. **Decision
-  (§11.1): `ask` + `auto` are in scope; `full` is deferred to Phase 4.** Phase 1
-  ships `ask` + `auto`, so unattended internal-agent writes are allowed for
-  low-risk changes while secrets / `rm -rf` / credential-shaped requests still fall
-  to manual review via `codexApprovalRequiresManualReview`.
+  request; `auto` auto-approves non-sensitive requests but still forces manual on
+  the sensitive-pattern list. **Decision (§11.1): `ask` + `auto` only; `full` is
+  intentionally NOT offered for codex.exec.** For exec, `auto` already is the
+  safe-permissive mode (auto-approve non-sensitive, manual on sensitive), so a
+  `full` that kept the fallback would be identical to `auto`, and a `full` that
+  bypassed it would auto-approve `rm -rf` / secret access on an autonomous
+  code-writer. Bypassing the guardrail must be a separate explicit danger flag,
+  never a routine approvalMode. The validator rejects `full` with a message
+  pointing to `auto`.
 - Promotion of the produced changeset is gated on `createCodexChangeReview`
   returning `approved` before any promote/PR step runs.
 
@@ -194,10 +197,13 @@ pr-governance blocks it. Run `pnpm pr:evidence` before pushing each slice.
 
 ## 11. Decisions
 
-1. **`approvalMode` authority — RESOLVED (2026-07-14).** `ask` + `auto` are in
-   scope; `full` deferred to Phase 4. Unattended internal-agent writes are allowed
-   for low-risk changes; the sensitive-pattern list (`codexApprovalRequiresManualReview`)
-   forces manual review on secrets / `rm -rf` / credentials regardless of mode.
+1. **`approvalMode` authority — RESOLVED (2026-07-14).** `ask` + `auto` only.
+   `full` is **intentionally not offered** for codex.exec: with the sensitive-pattern
+   fallback kept (the safe choice for an autonomous code-writer), `full` would be
+   behaviourally identical to `auto`; without it, `full` would auto-approve
+   `rm -rf` / secret access. `auto` is the safe-permissive mode; a guardrail bypass,
+   if ever needed for fully-trusted internal orchestration, must be a separate
+   explicit danger flag — not a routine approvalMode. Validator rejects `full`.
 2. **Default enablement — RESOLVED (2026-07-14).** Ship Phase 1 **default-OFF
    behind a feature flag**, matching the tier-2 sandbox rollout. Enablement is an
    explicit opt-in, not on-by-default even for owner-team projects.
