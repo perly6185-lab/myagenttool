@@ -399,6 +399,53 @@ test("Phase 4b: a failed apply marks the authorization failed with no rollback a
   assert(state.events.some((e) => e.type === "claude_apply_failed"));
 });
 
+// --- Post-apply verification hook (#914 follow-up) ---
+
+test("apply accepts an allowlisted verify id, stamps it on the dispatch, and rejects an unknown one", () => {
+  setApplyFlag(true);
+  try {
+    const { service, state, grantFor } = harness();
+    state.agents.push(governedApplyAgent());
+    const created = [];
+    let id = 300;
+    const { validateApprovalToken } = createApprovalGrantService({ state, now, nextId: (p) => `${p}_${id += 1}`, appendEvent: (e) => state.events.push(e), persistStateSoon: () => {} });
+    const svc = createToolService({
+      state, now, nextId: (p) => `${p}_${id += 1}`, appendEvent: (e) => state.events.push(e),
+      createInvocation: (task, agent, options) => { const inv = { id: `inv_v_${id += 1}`, status: "queued", agentId: agent.id, options, task }; created.push(inv); state.invocations.push(inv); return inv; },
+      startInvocationIfAllowed: () => {}, findApplication: () => null, findAgent: (aid) => state.agents.find((a) => a.id === aid) ?? null,
+      planApplicationWrapperInvocation: () => ({}), validateApprovalToken, persistStateSoon: () => {},
+    });
+    // Unknown verify id → refused before any grant is consumed or dispatch happens.
+    const bad = svc.createToolInvocation("claude.apply.patch", { worktreeId: "wt_a", proposalInvocationId: "inv_proposal", approvalToken: "t", verify: "rm-rf" }, ACTOR);
+    assert.equal(bad.status, 400);
+    assert.equal(bad.body.error, "invalid_verify_command");
+    assert.equal(created.length, 0);
+    // Allowlisted id → stamped on the dispatch metadata and the authorization.
+    const good = svc.createToolInvocation("claude.apply.patch", { worktreeId: "wt_a", proposalInvocationId: "inv_proposal", approvalToken: grantFor("inv_proposal"), verify: "node-test" }, ACTOR);
+    assert.equal(good.status, 201);
+    assert.equal(created[0].options.metadata.verifyCommandId, "node-test");
+    assert.equal(state.claudeApplyAuthorizations[0].verifyCommandId, "node-test");
+  } finally {
+    setApplyFlag(false);
+  }
+});
+
+test("completion folds the verification verdict into the authorization", () => {
+  const state = { claudeApplyAuthorizations: [{ id: "cap_1", status: "applying", executionInvocationId: "inv_apply" }], events: [] };
+  const { recordClaudeApplyResult } = createClaudeApplyImportService({ state, now, appendEvent: (e) => state.events.push(e) });
+  const authorization = recordClaudeApplyResult({
+    invocation: { id: "inv_apply", options: { metadata: { claudeApplyAuthorizationId: "cap_1" } } },
+    result: { output: { source: "claude", tool: "claude.apply.patch", applied: true, appliedFiles: [{ path: "x.mjs" }], verification: { checkPassed: true, verifyCommand: "node --test", testsPassed: false, testExitCode: 1, testOutputPreview: "1 failing" }, rollback: { available: true } } },
+    agent: governedApplyAgent(),
+  });
+  assert.equal(authorization.status, "applied", "a failing verification does not fail the apply");
+  assert.equal(authorization.verification.testsPassed, false);
+  assert.equal(authorization.verification.verifyCommand, "node --test");
+  assert.equal(authorization.verification.testExitCode, 1);
+  assert.match(authorization.verification.testOutputPreview, /1 failing/);
+  assert.equal(authorization.rollback.available, true, "rollback stays available as the undo for a failed verification");
+});
+
 // --- Evidence unification: Claude applies share the codex.exec trust-ledger vocabulary ---
 
 test("applied and rolled-back authorizations surface as governed file_change evidence; unexecuted ones do not", () => {

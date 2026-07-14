@@ -293,6 +293,22 @@ evidence — the record's summary flips to `rolled back: <file>`, so a superviso
 sees every AI-authored change that reached a worktree, whichever write path
 produced it.
 
+Web-initiated proposals + verification hook (follow-up, shipped): the Approvals
+"Patch proposals" panel gains a compose form — pick a worktree, describe the
+change, and Claude proposes a diff (read-only, no grant needed; an unregistered
+propose agent surfaces `agent_not_available`). The apply input gains an optional
+`verify`: an allowlisted command ID (`node-test` → `node --test`; never argv,
+double-allowlisted server- and wrapper-side like the git wrapper). After a
+successful `git apply` the runner executes the command in the worktree and
+records `verification.testsPassed` / exit code / bounded output on the
+authorization. A FAILING verification does not undo the apply — the honest
+record ("applied, tests failed") plus the governed rollback beats a silent
+revert; the Approvals UI shows a tests-passed/failed badge with the failure
+output, next to the Roll back action. The wrapper scrubs inherited
+NODE_TEST_CONTEXT so a nested test-runner context can never fake a pass. The
+e2e smoke applies with `verify: node-test` against a seeded real test and
+asserts the recorded verdict.
+
 Phases are stage-gated. Phase 2 implementation starts only after Phase 1
 acceptance is verified; the same rule applies between later phases.
 

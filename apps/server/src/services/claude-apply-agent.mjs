@@ -12,6 +12,13 @@
 
 import { isGovernedWrapperAgent } from "./governed-agent.mjs";
 
+// Post-apply verification allowlist: command IDs the apply input may select. The
+// wrapper maps each ID to fixed argv INDEPENDENTLY (claude-apply-wrapper.mjs) —
+// the same double-allowlist pattern the git wrapper uses — so neither side alone
+// can turn `verify` into free-form execution. `node-test` stays network-free,
+// matching the runner's declared no-network policy.
+export const CLAUDE_APPLY_VERIFY_COMMANDS = ["node-test"];
+
 export const CLAUDE_APPLY_TOOL_CONTRACT = {
   name: "claude.apply.patch",
   version: "1",
@@ -27,6 +34,10 @@ export const CLAUDE_APPLY_TOOL_CONTRACT = {
       // A server-issued, single-use grant for (action apply_patch, target
       // proposalInvocationId). Without a valid one, no authorization is created.
       approvalToken: { type: "string", minLength: 1, maxLength: 400 },
+      // Optional post-apply verification: an allowlisted command ID, never argv.
+      // A failing verification does not undo the apply — it is recorded on the
+      // authorization, and the governed rollback is the undo.
+      verify: { enum: CLAUDE_APPLY_VERIFY_COMMANDS },
     },
   },
   outputSchema: {

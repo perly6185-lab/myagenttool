@@ -100,6 +100,62 @@ test("apply wrapper --reverse rolls back an applied patch and refuses a second r
   assert.equal(readFileSync(join(dir, "x.txt"), "utf8"), "foo\n");
 });
 
+// A repo whose committed test passes, plus two patches: one that keeps the test
+// green and one that breaks it — verification must report both honestly.
+function makeRepoWithVerifiablePatches() {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "claude-apply-verify-")));
+  git(dir, ["init"]);
+  git(dir, ["config", "user.email", "t@t"]);
+  git(dir, ["config", "user.name", "t"]);
+  writeFileSync(join(dir, "lib.mjs"), "export const v = 1;\n");
+  writeFileSync(join(dir, "lib.test.mjs"), [
+    "import { test } from 'node:test';",
+    "import assert from 'node:assert/strict';",
+    "import { v } from './lib.mjs';",
+    "test('v', () => assert.equal(v, 1));",
+  ].join("\n"));
+  git(dir, ["add", "-A"]);
+  git(dir, ["commit", "-m", "init"]);
+  writeFileSync(join(dir, "lib.mjs"), "export const v = 1;\nexport const w = 2;\n");
+  const goodPatch = join(dir, "good.patch");
+  writeFileSync(goodPatch, git(dir, ["diff"]));
+  git(dir, ["checkout", "--", "lib.mjs"]);
+  writeFileSync(join(dir, "lib.mjs"), "export const v = 99;\n");
+  const badPatch = join(dir, "bad.patch");
+  writeFileSync(badPatch, git(dir, ["diff"]));
+  git(dir, ["checkout", "--", "lib.mjs"]);
+  return { dir, goodPatch, badPatch };
+}
+
+test("apply wrapper --verify runs the allowlisted command and records an honest pass", () => {
+  const { dir, goodPatch } = makeRepoWithVerifiablePatches();
+  const { status, payload } = runApply(["--cwd", dir, "--patch-file", goodPatch, "--verify", "node-test"]);
+  assert.equal(status, 0);
+  assert.equal(payload.output.applied, true);
+  assert.equal(payload.output.verification.testsPassed, true);
+  assert.equal(payload.output.verification.verifyCommand, "node --test");
+  assert.equal(payload.output.verification.testExitCode, 0);
+});
+
+test("apply wrapper --verify records a failure without undoing the apply", () => {
+  const { dir, badPatch } = makeRepoWithVerifiablePatches();
+  const { status, payload } = runApply(["--cwd", dir, "--patch-file", badPatch, "--verify", "node-test"]);
+  assert.equal(status, 0, "the run completes; the verdict rides the result");
+  assert.equal(payload.output.applied, true, "a failing verification does not undo the apply");
+  assert.equal(payload.output.verification.testsPassed, false);
+  assert.match(payload.summary, /verification .+ FAILED/);
+  // The patch is still on disk — the governed rollback is the undo, not a silent revert.
+  assert.match(readFileSync(join(dir, "lib.mjs"), "utf8"), /v = 99/);
+});
+
+test("apply wrapper refuses an unknown verify id before writing anything", () => {
+  const { dir, goodPatch } = makeRepoWithVerifiablePatches();
+  const { status, payload } = runApply(["--cwd", dir, "--patch-file", goodPatch, "--verify", "evil-cmd"]);
+  assert.notEqual(status, 0);
+  assert.match(payload.output.error, /Unsupported verify command id/);
+  assert.match(readFileSync(join(dir, "lib.mjs"), "utf8"), /v = 1;\n$/, "nothing was applied");
+});
+
 test("apply wrapper refuses a non-git cwd and an empty patch", () => {
   const nonGit = realpathSync(mkdtempSync(join(tmpdir(), "claude-apply-nongit-")));
   const patchFile = join(nonGit, "p.patch");

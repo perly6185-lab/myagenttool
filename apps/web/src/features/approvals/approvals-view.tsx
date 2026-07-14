@@ -1,4 +1,5 @@
-import { AppWindow, Bot, ExternalLink, GitMerge, HelpCircle, Inbox, ListChecks, Loader2, RotateCcw, ShieldAlert, Sparkles, Trophy, Wrench, type LucideIcon } from "lucide-react";
+import { useState } from "react";
+import { AppWindow, Bot, ExternalLink, GitMerge, HelpCircle, Inbox, ListChecks, Loader2, PenLine, RotateCcw, ShieldAlert, Sparkles, Trophy, Wrench, type LucideIcon } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -7,7 +8,7 @@ import { cn } from "@/lib/cn";
 import { useConsoleState, useRefreshConsoleState } from "@/data/use-console-state";
 import { api, useAsyncAction } from "@/data/use-console-actions";
 import { useUiStore, type SectionKey } from "@/store/ui-store";
-import type { ClaudeApplyAuthorization, InvocationSnapshot, PendingDecision, PendingDecisionKind } from "@/lib/console-state";
+import type { ClaudeApplyAuthorization, InvocationSnapshot, PendingDecision, PendingDecisionKind, WorktreeSnapshot } from "@/lib/console-state";
 
 // The Approvals section: ONE queue of every pending human decision, aggregated
 // server-side (read-model `pendingDecisions`) from surfaces that used to be
@@ -95,6 +96,7 @@ export function ApprovalsView() {
       <ProposalsPanel
         invocations={state?.invocations ?? []}
         authorizations={state?.claudeApplyAuthorizations ?? []}
+        worktrees={state?.worktrees ?? []}
         pending={pending}
         act={act}
       />
@@ -278,87 +280,213 @@ function proposalOf(invocation: InvocationSnapshot): PatchProposal | null {
   };
 }
 
-// Patch proposals (Phase 3): browse what Claude proposed, then approve → apply in
-// one action — the click mints a single-use grant for (apply_patch, proposal) and
-// invokes claude.apply.patch, which authorizes + dispatches the bridge runner.
-// A proposal already moving through the apply lifecycle shows its status instead;
-// a failed or rolled-back apply may be re-applied (a fresh grant each time).
+// Post-apply verification choices: allowlisted command IDs only (the server and
+// the runner each validate independently); "" = no verification.
+const VERIFY_CHOICES: { value: string; label: string }[] = [
+  { value: "", label: "no verification" },
+  { value: "node-test", label: "verify: node --test" },
+];
+
+// Patch proposals (Phase 3): compose a new proposal from a worktree + task, browse
+// what Claude proposed, then approve → apply in one action — the click mints a
+// single-use grant for (apply_patch, proposal) and invokes claude.apply.patch,
+// optionally with an allowlisted post-apply verification. A proposal already
+// moving through the apply lifecycle shows its status instead; a failed or
+// rolled-back apply may be re-applied (a fresh grant each time).
 function ProposalsPanel({
   invocations,
   authorizations,
+  worktrees,
   pending,
   act,
 }: {
   invocations: InvocationSnapshot[];
   authorizations: ClaudeApplyAuthorization[];
+  worktrees: WorktreeSnapshot[];
   pending: boolean;
   act: (fn: () => Promise<unknown>) => void;
 }) {
+  const [composing, setComposing] = useState(false);
   const proposals = invocations.map(proposalOf).filter((p): p is PatchProposal => p !== null);
-  if (!proposals.length) return null;
+  const composable = worktrees.filter((w) => !w.isMain);
+  if (!proposals.length && !composable.length) return null;
   return (
     <div className="flex flex-col gap-2">
       <div className="flex items-center gap-2">
         <h2 className="text-sm font-semibold">Patch proposals</h2>
         <Badge tone="neutral">{proposals.length}</Badge>
         <span className="text-xs text-muted-foreground">Claude-proposed changes — nothing is applied without an approval grant</span>
+        {composable.length ? (
+          <Button variant="secondary" size="sm" className="ml-auto h-7 px-2 text-xs" onClick={() => setComposing((v) => !v)}>
+            <PenLine className="mr-1 size-3" />
+            New proposal
+          </Button>
+        ) : null}
       </div>
-      <ul className="flex flex-col gap-2">
-        {proposals.map((proposal) => {
-          // Authorizations are newest-first; the first match is the current lifecycle.
-          const authorization = authorizations.find((a) => a.proposalInvocationId === proposal.invocationId) ?? null;
-          const applicable = !authorization || authorization.status === "failed" || authorization.status === "rolled_back";
-          return (
-            <li key={proposal.invocationId}>
-              <Card>
-                <CardContent className="flex flex-col gap-2 py-3">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <Badge tone="neutral">proposal</Badge>
-                    <span className="min-w-0 flex-1 truncate text-sm">
-                      {proposal.summary ?? `Proposal ${proposal.invocationId}`}
-                    </span>
-                    {authorization ? (
-                      <Badge tone={APPLY_STATUS_TONE[authorization.status] ?? "neutral"}>{authorization.status.replaceAll("_", " ")}</Badge>
-                    ) : null}
-                    {applicable && proposal.worktreeId ? (
-                      <Button
-                        variant="primary"
-                        size="sm"
-                        className="h-7 px-2.5 text-xs"
-                        disabled={pending}
-                        onClick={() =>
-                          act(async () => {
-                            const grant = await api.issueApprovalGrant("apply_patch", proposal.invocationId);
-                            return api.invokeCapability("claude.apply.patch", {
-                              ...(proposal.projectId ? { projectId: proposal.projectId } : {}),
-                              worktreeId: proposal.worktreeId!,
-                              proposalInvocationId: proposal.invocationId,
-                              approvalToken: grant.token,
-                            });
-                          })
-                        }
-                      >
-                        {pending ? <Loader2 className="mr-1 size-3 animate-spin" /> : <ShieldAlert className="mr-1 size-3" />}
-                        Approve &amp; apply
-                      </Button>
-                    ) : null}
-                  </div>
-                  {proposal.files.length ? (
-                    <div className="text-xs text-muted-foreground">
-                      <span className="truncate">{proposal.files.map((f) => f.path).join(", ")}</span>
-                    </div>
-                  ) : null}
-                  <details className="text-xs">
-                    <summary className="cursor-pointer text-muted-foreground">Proposed patch</summary>
-                    <pre className="mt-1 max-h-64 overflow-auto rounded-md bg-muted/40 p-2 font-mono text-[11px] leading-4">{proposal.patch.slice(0, 20000)}</pre>
-                  </details>
-                </CardContent>
-              </Card>
-            </li>
-          );
-        })}
-      </ul>
+      {composing ? (
+        <ComposeProposal
+          worktrees={composable}
+          pending={pending}
+          onSubmit={(body) => {
+            act(() => api.invokeCapability("claude.propose.patch", body));
+            setComposing(false);
+          }}
+        />
+      ) : null}
+      {proposals.length ? (
+        <ul className="flex flex-col gap-2">
+          {proposals.map((proposal) => (
+            <ProposalRow
+              key={proposal.invocationId}
+              proposal={proposal}
+              // Authorizations are newest-first; the first match is the current lifecycle.
+              authorization={authorizations.find((a) => a.proposalInvocationId === proposal.invocationId) ?? null}
+              pending={pending}
+              act={act}
+            />
+          ))}
+        </ul>
+      ) : null}
     </div>
+  );
+}
+
+// Compose a new claude.propose.patch run: pick a worktree, describe the change.
+// Proposal generation is read-only (plan mode) so it needs no approval grant;
+// the governed propose agent must be registered or the server answers
+// agent_not_available, surfaced through the shared action error line.
+function ComposeProposal({
+  worktrees,
+  pending,
+  onSubmit,
+}: {
+  worktrees: WorktreeSnapshot[];
+  pending: boolean;
+  onSubmit: (body: Record<string, string>) => void;
+}) {
+  const [worktreeId, setWorktreeId] = useState(worktrees[0]?.id ?? "");
+  const [task, setTask] = useState("");
+  const worktree = worktrees.find((w) => w.id === worktreeId) ?? null;
+  return (
+    <Card>
+      <CardContent className="flex flex-col gap-2 py-3">
+        <div className="flex flex-wrap items-center gap-2 text-xs">
+          <label className="text-muted-foreground" htmlFor="proposal-worktree">Worktree</label>
+          <select
+            id="proposal-worktree"
+            className="h-7 rounded-md border border-border bg-background px-2 text-xs"
+            value={worktreeId}
+            onChange={(event) => setWorktreeId(event.target.value)}
+          >
+            {worktrees.map((w) => (
+              <option key={w.id} value={w.id}>{w.branch}</option>
+            ))}
+          </select>
+        </div>
+        <textarea
+          className="min-h-16 w-full rounded-md border border-border bg-background p-2 text-xs"
+          placeholder="What change should Claude propose? (e.g. Add a null guard to the parser.)"
+          value={task}
+          maxLength={4000}
+          onChange={(event) => setTask(event.target.value)}
+        />
+        <div className="flex items-center gap-2">
+          <Button
+            variant="primary"
+            size="sm"
+            className="h-7 px-2.5 text-xs"
+            disabled={pending || !task.trim() || !worktree}
+            onClick={() =>
+              worktree && onSubmit({
+                projectId: worktree.projectId,
+                worktreeId: worktree.id,
+                task: task.trim(),
+              })
+            }
+          >
+            {pending ? <Loader2 className="mr-1 size-3 animate-spin" /> : <Sparkles className="mr-1 size-3" />}
+            Propose
+          </Button>
+          <span className="text-xs text-muted-foreground">Read-only: Claude proposes a diff, nothing is written.</span>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+function ProposalRow({
+  proposal,
+  authorization,
+  pending,
+  act,
+}: {
+  proposal: PatchProposal;
+  authorization: ClaudeApplyAuthorization | null;
+  pending: boolean;
+  act: (fn: () => Promise<unknown>) => void;
+}) {
+  const [verify, setVerify] = useState("");
+  const applicable = !authorization || authorization.status === "failed" || authorization.status === "rolled_back";
+  return (
+    <li>
+      <Card>
+        <CardContent className="flex flex-col gap-2 py-3">
+          <div className="flex flex-wrap items-center gap-2">
+            <Badge tone="neutral">proposal</Badge>
+            <span className="min-w-0 flex-1 truncate text-sm">
+              {proposal.summary ?? `Proposal ${proposal.invocationId}`}
+            </span>
+            {authorization ? (
+              <Badge tone={APPLY_STATUS_TONE[authorization.status] ?? "neutral"}>{authorization.status.replaceAll("_", " ")}</Badge>
+            ) : null}
+            {applicable && proposal.worktreeId ? (
+              <>
+                <select
+                  aria-label="Post-apply verification"
+                  className="h-7 rounded-md border border-border bg-background px-1.5 text-xs"
+                  value={verify}
+                  onChange={(event) => setVerify(event.target.value)}
+                >
+                  {VERIFY_CHOICES.map((choice) => (
+                    <option key={choice.value} value={choice.value}>{choice.label}</option>
+                  ))}
+                </select>
+                <Button
+                  variant="primary"
+                  size="sm"
+                  className="h-7 px-2.5 text-xs"
+                  disabled={pending}
+                  onClick={() =>
+                    act(async () => {
+                      const grant = await api.issueApprovalGrant("apply_patch", proposal.invocationId);
+                      return api.invokeCapability("claude.apply.patch", {
+                        ...(proposal.projectId ? { projectId: proposal.projectId } : {}),
+                        worktreeId: proposal.worktreeId!,
+                        proposalInvocationId: proposal.invocationId,
+                        approvalToken: grant.token,
+                        ...(verify ? { verify } : {}),
+                      });
+                    })
+                  }
+                >
+                  {pending ? <Loader2 className="mr-1 size-3 animate-spin" /> : <ShieldAlert className="mr-1 size-3" />}
+                  Approve &amp; apply
+                </Button>
+              </>
+            ) : null}
+          </div>
+          {proposal.files.length ? (
+            <div className="text-xs text-muted-foreground">
+              <span className="truncate">{proposal.files.map((f) => f.path).join(", ")}</span>
+            </div>
+          ) : null}
+          <details className="text-xs">
+            <summary className="cursor-pointer text-muted-foreground">Proposed patch</summary>
+            <pre className="mt-1 max-h-64 overflow-auto rounded-md bg-muted/40 p-2 font-mono text-[11px] leading-4">{proposal.patch.slice(0, 20000)}</pre>
+          </details>
+        </CardContent>
+      </Card>
+    </li>
   );
 }
 
@@ -424,9 +552,21 @@ function ApplyAuthorizationsPanel({
                   </div>
                   <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
                     {files.length ? <span className="truncate">{files.map((f) => f.path).join(", ")}</span> : null}
+                    {row.verification?.testsPassed !== undefined ? (
+                      <Badge tone={row.verification.testsPassed ? "success" : "danger"}>
+                        {row.verification.testsPassed ? "tests passed" : "tests failed"}
+                        {row.verification.verifyCommand ? ` · ${row.verification.verifyCommand}` : ""}
+                      </Badge>
+                    ) : null}
                     {row.rolledBackAt ? <span>rolled back {row.rolledBackAt.slice(0, 10)}</span> : null}
                     {row.rollbackError ? <span className="text-destructive">rollback failed: {row.rollbackError}</span> : null}
                   </div>
+                  {row.verification?.testsPassed === false && row.verification.testOutputPreview ? (
+                    <details className="text-xs">
+                      <summary className="cursor-pointer text-destructive">Verification output</summary>
+                      <pre className="mt-1 max-h-40 overflow-auto rounded-md bg-muted/40 p-2 font-mono text-[11px] leading-4">{row.verification.testOutputPreview}</pre>
+                    </details>
+                  ) : null}
                   {row.patchPreview ? (
                     <details className="text-xs">
                       <summary className="cursor-pointer text-muted-foreground">Patch preview</summary>
