@@ -1636,8 +1636,15 @@ export function createM3Service({
     return spend;
   }
 
-  function ledgerSummary() {
-    const entries = state.ledgerEntries ?? [];
+  function ledgerSummary(includeEntry) {
+    // Optional per-entry filter so a tenancy-scoped read model can roll up only
+    // the entries the viewer may see. Default (no filter) is the platform-wide
+    // rollup used by the admin/unscoped path. Without this, buildPublicState
+    // surfaced a GLOBAL totalCostUsd + byProject (with foreign project names) to
+    // every scoped team — a cross-tenant economics leak (#891).
+    const entries = (state.ledgerEntries ?? []).filter(
+      typeof includeEntry === "function" ? includeEntry : () => true,
+    );
     const summary = {
       currency: "USD",
       totalCostUsd: 0,

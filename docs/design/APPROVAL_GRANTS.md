@@ -52,6 +52,19 @@ never had: intent-binding, single-use, expiry, and a decision record.
   flips strict — legacy tokens get 409 `approval_required` with a pointer to the issuance
   endpoint. Off by default until the counter says it's safe.
 
+## Fail-closed default (hardening, 2026-07-14)
+
+The application service's `approvalCheck` used to degrade to "presence approves"
+when no `validateApprovalToken` was injected (`{ approved: true, mode: "presence" }`).
+The composed server always injects the validator, so this was never reachable in
+production — but it is a fail-OPEN default: a future wiring path that forgot to
+pass the validator would silently approve every side-effecting action on a
+non-empty string alone, i.e. exactly the pre-grant vulnerability. It now fails
+CLOSED (`{ approved: false, reason: "approval_validator_unavailable" }`).
+Direct-construction unit tests that exercise an approval gate must pass a stub
+validator; a regression test (`application-wrapper-dispatch.test.mjs`) locks the
+denial. This is orthogonal to the phase-1/phase-2 legacy migration below.
+
 ## Non-goals
 
 - Cryptographic signatures, external IdP, or per-user permission tiers — tenancy stays the
