@@ -1,3 +1,5 @@
+import { isGovernedWrapperAgent } from "./governed-agent.mjs";
+
 export const CLAUDE_REVIEW_TOOL_CONTRACT = {
   name: "claude.review.diff",
   version: "1",
@@ -77,32 +79,11 @@ export function createClaudeReviewAgentRegistration({
 }
 
 export function isGovernedClaudeReviewAgent(agent) {
-  if (!agent) {
-    return false;
-  }
-  const hasId = agent.id === "agt_claude_review_diff";
-  const hasCliAdapter = agent.adapter?.type === "cli";
-  const hasNodeCommand = String(agent.adapter?.command ?? "") === "node";
-  const hasPlainResultOutput = agent.adapter?.outputFormat === "plain_result";
-  const hasToolContract = agent.toolContract?.name === CLAUDE_REVIEW_TOOL_CONTRACT.name;
-  const hasReviewCapability = (agent.capabilities ?? []).some((capability) => capability?.name === "code_review");
-  const adapterArgs = Array.isArray(agent.adapter?.args) ? agent.adapter.args.map(String) : [];
-  const fixedWrapperArgs = isExactGovernedReviewWrapperArgs(adapterArgs, "claude-review-wrapper.mjs");
-  return hasId && hasCliAdapter && hasNodeCommand && hasPlainResultOutput && hasToolContract && hasReviewCapability && fixedWrapperArgs;
-}
-
-function isExactGovernedReviewWrapperArgs(args, wrapperName) {
-  if (args.length !== 3) {
-    return false;
-  }
-  // Require the full canonical directory segment, not just the basename. A
-  // bare-basename match (`endsWith(wrapperName)`) would also accept an
-  // attacker-controlled script at an arbitrary location whose filename ends
-  // with the wrapper name (e.g. /tmp/evil/claude-review-wrapper.mjs), which a
-  // forged/overriding agent registration could point the governed tool at —
-  // turning the "governed" facade into arbitrary local execution. The wrapper
-  // is registered as an absolute path, so match the trailing repo path.
-  return args[0].replaceAll("\\", "/").endsWith(`tools/agents/${wrapperName}`)
-    && args[1] === "--mode"
-    && args[2] === "diff-review";
+  return isGovernedWrapperAgent(agent, {
+    id: "agt_claude_review_diff",
+    toolName: CLAUDE_REVIEW_TOOL_CONTRACT.name,
+    capabilityName: "code_review",
+    wrapper: "claude-review-wrapper.mjs",
+    mode: "diff-review",
+  });
 }

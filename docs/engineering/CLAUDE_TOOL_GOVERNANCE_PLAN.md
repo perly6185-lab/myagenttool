@@ -243,11 +243,28 @@ event. **No file is written in 4a** — the acceptance "missing, denied, or stal
 approvals cannot mutate files" holds because there is no mutation path and no
 authorization exists without a valid grant + applicable, bound proposal.
 
-Follow-up (Phase 4b, not started): a bridge apply runner consumes an authorization
-to `git apply` the patch into the bound worktree, records changed files +
-verification output + rollback guidance, and transitions the authorization to
-`applied`/`failed`. That slice adds the write-capable local-execution policy entry
-and the rollback evidence.
+Implementation status (Phase 4b — the write): shipped, still behind the same
+default-OFF flag. When a governed apply RUNNER agent (`agt_claude_apply_patch`,
+`isGovernedClaudeApplyAgent`) is registered, `authorizeApply` dispatches the
+git-apply as a queued bridge invocation carrying the authorized patch; without a
+runner it stays a 4a authorization. The runner is `tools/agents/claude-apply-wrapper.mjs`:
+it `git apply --check`s first and refuses a patch that does not apply cleanly (no
+half-applied tree), then `git apply`s, and reports the authoritative file list
+(from `git apply --numstat`) plus reversible rollback guidance (`git apply
+--reverse`). On completion `recordClaudeApplyResult` folds the outcome into the
+authorization — `status: applied`/`failed`, applied files, verification, rollback
+— so the authorization row is the one durable record of the write. The Desktop
+Bridge classifies the runner as its own write-capable `claudeApply` policy kind
+(`workspace_write`, no network — never read_only) and materializes the patch to a
+temp file (`--patch-file`); the full patch is stripped from public state. The
+wrapper is verified against a real git worktree (apply, clean-check refusal,
+rollback). The full server -> bridge -> git-apply seam is exercised end to end by
+`tools/dev/claude-apply-caller-smoke.mjs` (`pnpm smoke:claude-apply`): it boots a
+real server + Desktop Bridge, proposes a patch (fake Claude), issues an approval
+grant, applies, and asserts the file is git-applied on disk in the bound worktree,
+the authorization transitions to `applied` with the file list + reversible
+rollback, and the rollback genuinely reverts — proving the patch reaches the
+bridge via invocation metadata (it is stripped only from public state).
 
 Phases are stage-gated. Phase 2 implementation starts only after Phase 1
 acceptance is verified; the same rule applies between later phases.
