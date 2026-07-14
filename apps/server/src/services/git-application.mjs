@@ -8,6 +8,14 @@
 // separate slice (#777).
 //
 // Plan: docs/engineering/GIT_APPLICATION_CAPABILITY_PLAN.md.
+//
+// SCOPE (#909): this managed git Application is INSPECTOR-ONLY. Its parsed
+// repo_state results land in state.applicationResults and are shown in the
+// Applications inspector — they do NOT drive the project file tree or the
+// git-status badges. Those are a SEPARATE subsystem: `gitStatusMap` /
+// `readGitFacts` in services/projects.mjs, which shell out to git directly and
+// never touch this Application. The two are independent by design; don't assume
+// changing one affects the other. See docs/engineering/GIT_APPLICATION_HARDENING_ISSUE_PLAN.md.
 
 export const GIT_APPLICATION_ID = "app_git";
 

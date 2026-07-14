@@ -66,8 +66,16 @@ export function buildPublicState({
   // so a result outlives its invocation aging out of state. Cap the count and trim
   // the raw `text` to a preview to keep the snapshot small; the full 500-row ledger
   // stays server-side for a detail endpoint.
+  // Scope by project when the result has one, else fall back to the owning team
+  // (#904) — a repo_state row with a null projectId must NOT be globally visible
+  // via projectVisible(null), same fallback `applications` uses above.
+  const applicationResultVisible = (row) => {
+    if (row?.projectId) return projectVisible(row.projectId);
+    return teamId == null || (row?.ownerTeamId ?? LOCAL_TEAM_ID) === teamId;
+  };
   const applicationResultPublic = (rows) =>
-    byProject(rows ?? [])
+    (rows ?? [])
+      .filter(applicationResultVisible)
       .slice(0, 100)
       .map((row) => ({ ...row, text: typeof row.text === "string" ? row.text.slice(0, 2000) : row.text }));
   const codexReviewFindings = byInvocation(state.codexReviewFindings).map(({ raw, ...row }) => row);

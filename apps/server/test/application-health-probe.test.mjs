@@ -186,7 +186,7 @@ test("the sweep records its own health signal, visible in /api/state", async () 
   assert.deepEqual(snapshot.body.applicationHealthSweepStatus, state.applicationHealthSweepStatus);
 });
 
-test("npm/manual sources read `unsupported` and are never auto-transitioned", async () => {
+test("manual sources (no local materialization) read `unsupported` and are never auto-transitioned", async () => {
   const registered = await call("/api/applications/register", {
     method: "POST",
     body: { source: { type: "manual", uri: "https://example.com/app" }, name: "manual-demo" },
@@ -204,6 +204,46 @@ test("npm/manual sources read `unsupported` and are never auto-transitioned", as
   const manual = state.applications.find((a) => a.id === manualId);
   assert.equal(manual.health.status, "unsupported");
   assert.notEqual(manual.status, "offline", "unsupported verdicts never degrade the app");
+});
+
+// #885 — an npm source (e.g. ccusage) has no local path, so its health is
+// derived from its most recent run instead of a blind `unsupported`.
+function seedNpmApp(id, status, over = {}) {
+  const app = { id, name: id, status: "active", source: { type: "npm", package: "ccusage" }, path: null, healthProbe: { enabled: true, intervalMinutes: 1, lastCheckedAt: null }, health: null, createdAt: now(), updatedAt: now() };
+  state.applications.push(app);
+  state.invocations.unshift({ id: `inv_${id}`, status, completedAt: now(), options: { metadata: { applicationId: id } }, ...over });
+  return app;
+}
+
+test("an npm-sourced app derives UNHEALTHY from its most recent failed run", () => {
+  seedNpmApp("app_npm_fail", "failed", { result: { output: { error: "ccusage: command not found" } } });
+  sweep({ force: true });
+  const app = state.applications.find((a) => a.id === "app_npm_fail");
+  assert.equal(app.health.status, "unhealthy");
+  assert.match(app.health.reason, /command not found/);
+});
+
+test("an npm-sourced app with a recent successful run is HEALTHY", () => {
+  seedNpmApp("app_npm_ok", "succeeded", { result: {} });
+  sweep({ force: true });
+  assert.equal(state.applications.find((a) => a.id === "app_npm_ok").health.status, "healthy");
+});
+
+test("a binary-source app (e.g. git) derives health from its latest run (#906)", () => {
+  const app = { id: "app_bin_git", name: "git", status: "active", source: { type: "binary", binary: "git" }, path: null, healthProbe: { enabled: true, intervalMinutes: 1, lastCheckedAt: null }, health: null, createdAt: now(), updatedAt: now() };
+  state.applications.push(app);
+  state.invocations.unshift({ id: "inv_bin_git", status: "failed", completedAt: now(), options: { metadata: { applicationId: "app_bin_git" } }, result: { output: { error: "git: command not found" } } });
+  sweep({ force: true });
+  const updated = state.applications.find((a) => a.id === "app_bin_git");
+  assert.equal(updated.health.status, "unhealthy", "a binary source is no longer a permanent `unsupported`");
+  assert.match(updated.health.reason, /command not found/);
+});
+
+test("an npm-sourced app with no runs stays `unsupported` (no guessed verdict)", () => {
+  const app = { id: "app_npm_new", name: "app_npm_new", status: "active", source: { type: "npm" }, path: null, healthProbe: { enabled: true, intervalMinutes: 1, lastCheckedAt: null }, health: null, createdAt: now(), updatedAt: now() };
+  state.applications.push(app);
+  sweep({ force: true });
+  assert.equal(state.applications.find((a) => a.id === "app_npm_new").health.status, "unsupported");
 });
 
 async function call(path, { method = "GET", body, token } = {}) {
