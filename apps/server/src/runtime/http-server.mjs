@@ -321,6 +321,7 @@ export function createHttpServer({
         readJson,
         state,
         actor,
+        now,
         cancelApplicationInstall,
         findApplication,
         findApplicationInstallRun,

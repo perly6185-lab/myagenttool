@@ -1366,13 +1366,16 @@ export interface ApplicationInstallPlan {
     provider: string;
     identifier: string;
     resolvedIdentifier: string;
-    versionPolicy: { kind: string; channel: string; allowCallerOverride: boolean };
+    versionPolicy: { kind: string; channel: string | null; allowCallerOverride: boolean; exactVersion?: string | null };
+    source: { kind: string; name?: string; registry?: string; packageName?: string };
   };
   execution: { executable: string; args: string[]; shell: false; elevated: boolean };
   risk: { level: string; reasons: string[] };
   approval: { required: true; action: "application.install"; bindsToPlanFingerprint: true };
   policy: { timeoutMs: number; cancellable: boolean };
+  validity: { issuedAt: string; expiresAt: string; ttlMs: number };
   postInstallProbe: { executable: string; args: string[]; timeoutMs: number };
+  rollback: { automatic: false; uninstallSupported: false; summary: string };
   summary: string;
 }
 
@@ -1383,6 +1386,7 @@ export interface ApplicationInstallRun {
   status: "queued" | "running" | "cancelling" | "succeeded" | "failed" | "cancelled" | "timed_out" | "refused";
   progress: Array<{ at: string; type: string; summary: string }>;
   result?: { status: string; classification: string; summary: string; exitCode: number | null; durationMs?: number | null } | null;
+  rollback?: { automatic: false; status: "not_required" | "operator_review_required"; uninstallSupported: false; summary: string } | null;
   createdAt: string;
   startedAt?: string | null;
   completedAt?: string | null;

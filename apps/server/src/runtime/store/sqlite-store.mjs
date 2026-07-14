@@ -45,8 +45,17 @@ export async function openSqliteStore({ path = ":memory:" } = {}) {
 export function createSqliteStore({ DatabaseSync, path = ":memory:" }) {
   if (typeof DatabaseSync !== "function") throw new Error("createSqliteStore requires DatabaseSync from node:sqlite.");
   const db = new DatabaseSync(path);
-  db.exec("PRAGMA journal_mode = WAL;");
-  runMigrations(db);
+  try {
+    db.exec("PRAGMA journal_mode = WAL;");
+    runMigrations(db);
+  } catch (error) {
+    try {
+      db.close();
+    } catch {
+      /* best effort */
+    }
+    throw error;
+  }
 
   const selectOne = db.prepare("SELECT json FROM records WHERE collection = ? AND id = ?");
   const selectColl = db.prepare("SELECT json FROM records WHERE collection = ? ORDER BY rowid DESC");
