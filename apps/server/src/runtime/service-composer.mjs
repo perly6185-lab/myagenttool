@@ -232,7 +232,7 @@ export function createServerRuntimeServices({
     markHealthCheckStarted,
     nextBridgeHealthCheck,
     registerAgent,
-  } = createAgentService({ state, now, nextId, appendEvent, persistStateSoon });
+  } = createAgentService({ state, now, nextId, appendEvent, persistStateSoon, store });
 
   const {
     closeCodexSession,
@@ -790,6 +790,7 @@ export function createServerRuntimeServices({
     createToolInvocation,
     getTool,
     listTools,
+    rollbackClaudeApply,
   } = createToolService({
     state,
     now,
@@ -2768,6 +2769,7 @@ export function createServerRuntimeServices({
     createToolInvocation,
     getTool,
     listTools,
+    rollbackClaudeApply,
     nextId,
     persistStateSoon,
     budgetStatusFor,

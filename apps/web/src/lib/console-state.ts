@@ -150,6 +150,36 @@ export interface ApprovalTokenLegacyUses {
   lastAt: string | null;
 }
 
+/** A Claude patch-apply authorization (governance Phase 4, #914): created by the
+ * grant-gated `claude.apply.patch`, executed by the bridge runner, and rolled
+ * back — under a fresh grant — via the governed rollback action. The full patch
+ * stays server-side; the public row carries a bounded `patchPreview`. */
+export interface ClaudeApplyAuthorization {
+  id: string;
+  proposalInvocationId: string;
+  invocationId?: string | null;
+  projectId?: string | null;
+  worktreeId?: string | null;
+  requestedBy?: string | null;
+  grantId?: string | null;
+  summary?: string | null;
+  status: "authorized" | "applying" | "applied" | "failed" | "rolling_back" | "rolled_back" | string;
+  applied?: boolean;
+  executable?: boolean;
+  executionInvocationId?: string | null;
+  rollbackInvocationId?: string | null;
+  files?: { path: string; action?: string }[];
+  appliedFiles?: { path: string; added?: number | null; deleted?: number | null }[];
+  verification?: { checkPassed?: boolean | null; error?: string | null } | null;
+  rollback?: { available?: boolean; executed?: boolean; strategy?: string | null; command?: string | null } | null;
+  rollbackError?: string | null;
+  resultSummary?: string | null;
+  patchPreview?: string | null;
+  createdAt?: string;
+  appliedAt?: string;
+  rolledBackAt?: string;
+}
+
 /** One row in the consolidated Approvals queue (server read-model `pendingDecisions`). */
 export type PendingDecisionKind =
   | "invocation_approval"
@@ -960,6 +990,9 @@ export interface ConsoleSnapshot {
   applicationDailyStats?: ApplicationDailyStat[];
   applicationHealthSweepStatus?: ApplicationHealthSweepStatus | null;
   approvalTokenLegacyUses?: ApprovalTokenLegacyUses | null;
+  /** Claude patch-apply authorizations (governance Phase 4, #914): grant-consumed,
+   * proposal-bound apply records with status + rollback lifecycle. */
+  claudeApplyAuthorizations?: ClaudeApplyAuthorization[];
   evidenceLedger?: EvidenceLedgerRow[];
   /** The device's veto — first-class refusal records (refusal model Phase 3). */
   refusals?: RefusalRow[];

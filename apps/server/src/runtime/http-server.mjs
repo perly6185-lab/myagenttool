@@ -176,6 +176,7 @@ export function createHttpServer({
   createToolInvocation,
   getTool,
   listTools,
+  rollbackClaudeApply,
   createCapabilityInvocation,
   getCapability,
   listCapabilities,
@@ -493,6 +494,7 @@ export function createHttpServer({
         listTools,
         getTool,
         createToolInvocation,
+        rollbackClaudeApply,
       })) {
         return;
       }
