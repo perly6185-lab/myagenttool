@@ -33,6 +33,29 @@ test("in-memory: a rolled-back transaction does not flush", () => {
   assert.equal(commitCount(), 0, "no flush when the tx throws");
 });
 
+test("in-memory: nested (reentrant) transactions apply as one unit + commit once", () => {
+  const { store, commitCount } = makeInMemory();
+  store.transaction((tx) => {
+    tx.insert("c", { id: "a" });
+    // A composite service op calls another runTx-wrapped op — the store nests.
+    store.transaction((inner) => inner.insert("c", { id: "b" }));
+  });
+  assert.equal(store.query("c").length, 2, "both the outer and nested inserts landed");
+  assert.equal(commitCount(), 1, "the nested transaction did not add its own commit");
+});
+
+test("in-memory: a nested direct-mutation body flushes with the outer commit", () => {
+  const state = {};
+  let commits = 0;
+  const store = createInMemoryStore({ state, commit: () => { commits += 1; } });
+  store.transaction(() => {
+    state.c = [{ id: "a" }]; // direct mutation (how services write)
+    store.transaction(() => { state.c.push({ id: "b" }); }); // nested direct mutation
+  });
+  assert.equal(state.c.length, 2);
+  assert.equal(commits, 1, "one commit for the whole nested unit");
+});
+
 test("in-memory: interoperates with unmigrated direct state writes", () => {
   const { store, state } = makeInMemory();
   // An unmigrated service pushes straight onto the shared state array.

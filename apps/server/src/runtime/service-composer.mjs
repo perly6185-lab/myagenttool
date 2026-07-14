@@ -152,7 +152,7 @@ export function createServerRuntimeServices({
     selectProject,
     updateProject,
     worktreeForProject,
-  } = createProjectService({ state, now, nextId, appendEvent, persistStateSoon });
+  } = createProjectService({ state, now, nextId, appendEvent, persistStateSoon, store });
 
   const {
     createAgentSkill,
