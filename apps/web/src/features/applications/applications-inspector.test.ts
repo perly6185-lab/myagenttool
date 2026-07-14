@@ -149,7 +149,11 @@ describe("ApplicationsInspector recovery guidance", () => {
     renderWithClient(createElement(ApplicationsInspector));
 
     expect(await screen.findByText("Latest result")).toBeTruthy();
-    expect(await screen.findByText("ccusage Daily Report")).toBeTruthy();
+    const capabilityName = await screen.findByText("ccusage Daily Report");
+    const capabilityRow = capabilityName.parentElement;
+    expect(capabilityRow?.className).toContain("grid");
+    expect(capabilityRow?.children[1]?.className).toContain("min-w-0");
+    expect(capabilityRow?.children[1]?.className).not.toContain("shrink-0");
     expect(await screen.findByText("ready")).toBeTruthy();
     expect(screen.getAllByText("importedUsageEstimates").length).toBeGreaterThan(0);
     expect(screen.getByText("use_1")).toBeTruthy();

@@ -111,6 +111,24 @@ Inferred capabilities are discovery candidates only. They are intentionally
 later slice. NPM probes inspect registration metadata only; they do not install
 packages, run scripts, or execute package code.
 
+## Governed Installation Plans
+
+Known Applications can request a plan through
+`POST /api/applications/install/plan`. P1 is plan-only: it never spawns a
+process, installs software, queues bridge work, or consumes an approval.
+
+The server resolves `git`, `ccusage`, and `claude` through versioned recipes for
+Windows, macOS, and Linux. Each plan binds the Application, project, device,
+platform, architecture, provider, package identifier, fixed executable, and
+fixed discrete argv into a stable fingerprint. The public contract also carries
+risk, approval, timeout, cancellation, and post-install probe metadata.
+
+Callers may supply only Application and target scope. Command, executable,
+argv, package, provider, version, plan identity, and fingerprint overrides fail
+closed. Foreign project/device scope and target platform mismatches also fail
+closed. Future execution must re-resolve the current server recipe and require
+an exact plan identity before Desktop Bridge dispatch.
+
 ## NPM Wrapper Descriptors
 
 NPM application sources may include a governed wrapper descriptor:

@@ -41,6 +41,8 @@ export function createInvocationService({
   createManagedCodexSession,
   resolveResumeCodexSessionId,
   budgetGateForProject,
+  reserveBudget,
+  releaseReservationsForInvocation,
   checkUsageQuota,
   closeCodexSession,
   onInvocationCompleted,
@@ -59,6 +61,9 @@ export function createInvocationService({
     now,
     appendEvent,
     persistStateSoon,
+    // #890.2: completion writes the terminal status + ledger entry; give it the
+    // synchronous barrier so a crash can't lose a committed charge and re-run.
+    persistStateNow,
     namespace,
     protocolVersion,
     findAgent,
@@ -66,6 +71,7 @@ export function createInvocationService({
     closeCodexSession,
     isTerminal,
     recordInvocationLedgerEntry,
+    releaseReservationsForInvocation,
     recordInvocationRoundUsage,
     recordCcusageImportedEstimates,
     recordCodexReviewFindings,
@@ -134,6 +140,7 @@ export function createInvocationService({
     createAuditSummary,
     recordAgentUsage,
     budgetGateForProject,
+    reserveBudget,
     checkUsageQuota,
   });
   const {

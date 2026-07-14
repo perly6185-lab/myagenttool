@@ -1583,12 +1583,12 @@ export function ApplicationsInspector() {
             capabilities.map((capability) => {
               const contract = capabilityRunContract(capability);
               return (
-                <div key={capability.name} className="flex items-start justify-between gap-2 text-sm">
-                  <span className="[overflow-wrap:anywhere]">
+                <div key={capability.name} className="grid min-w-0 gap-2 text-sm">
+                  <span className="min-w-0 [overflow-wrap:anywhere]">
                     {capability.displayName ?? capability.name}
                     {capability.requiresApproval ? <span className="text-warning"> ⚠</span> : null}
                   </span>
-                  <div className="flex shrink-0 flex-wrap items-center justify-end gap-1.5">
+                  <div className="flex min-w-0 flex-wrap items-center gap-1.5">
                     <Badge tone={riskTone(capability.riskLevel)}>{capability.riskLevel ?? "—"}</Badge>
                     <Badge tone={capability.status === "disabled" ? "danger" : "success"}>
                       {capability.status ?? "—"}

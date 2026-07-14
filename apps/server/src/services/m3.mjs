@@ -1065,6 +1065,7 @@ export function createM3Service({
     reserveBudget,
     releaseBudgetReservation,
     releaseReservationsForAutoRun,
+    releaseReservationsForInvocation,
     reconcileBudgetReservations,
     findLifecycleLocalApproval,
     completeLifecycleAction,
@@ -1596,15 +1597,37 @@ export function createM3Service({
     return released;
   }
 
-  // Boot/sweep reconcile: release any active hold whose owning auto-run is already
-  // settled or gone (a crash between reserve and settle would otherwise leak a
-  // hold that blocks the budget forever). `isSettled(autoRunId)` is injected by the
-  // caller (it owns the auto-run lifecycle).
-  function reconcileBudgetReservations({ isSettled } = {}) {
+  // Release a plain (non-auto-run) invocation's hold when it reaches a terminal
+  // state — the manual/API accept path reserves against the invocation id.
+  function releaseReservationsForInvocation(invocationId, { outcome = "released" } = {}) {
+    if (!invocationId) return 0;
+    let released = 0;
+    for (const reservation of [...(state.budgetReservations ?? [])]) {
+      if (reservation.invocationId === invocationId && !reservation.autoRunId && reservation.status === "active") {
+        if (releaseBudgetReservation(reservation.id, { outcome })) released += 1;
+      }
+    }
+    return released;
+  }
+
+  // Boot/sweep reconcile: release any active hold whose owner is already settled or
+  // gone (a crash between reserve and settle would otherwise leak a hold that
+  // blocks the budget forever). An auto-run hold is judged by `isSettled(autoRunId)`;
+  // a plain-invocation hold by `isInvocationTerminal(invocationId)`; a hold with no
+  // owner link at all can't be tracked, so it is reclaimed. Both predicates are
+  // injected by the caller that owns those lifecycles.
+  function reconcileBudgetReservations({ isSettled, isInvocationTerminal } = {}) {
     let released = 0;
     for (const reservation of [...(state.budgetReservations ?? [])]) {
       if (reservation.status !== "active") continue;
-      const orphaned = !reservation.autoRunId || (typeof isSettled === "function" && isSettled(reservation.autoRunId));
+      let orphaned;
+      if (reservation.autoRunId) {
+        orphaned = typeof isSettled === "function" && isSettled(reservation.autoRunId);
+      } else if (reservation.invocationId) {
+        orphaned = typeof isInvocationTerminal === "function" && isInvocationTerminal(reservation.invocationId);
+      } else {
+        orphaned = true; // no owner link → untrackable, reclaim
+      }
       if (orphaned) {
         if (releaseBudgetReservation(reservation.id, { outcome: "reconciled" })) released += 1;
       }

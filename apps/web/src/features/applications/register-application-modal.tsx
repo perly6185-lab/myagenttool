@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { Modal } from "@/components/ui/modal";
 import { Button } from "@/components/ui/button";
 import { Input, Select } from "@/components/ui/input";
@@ -17,6 +18,7 @@ export function RegisterApplicationModal({ open, onClose }: { open: boolean; onC
   const { execute, pending, error } = useAsyncAction();
 
   const [sourceType, setSourceType] = useState<SourceType>("git");
+  const [knownApplication, setKnownApplication] = useState("");
   const [gitUrl, setGitUrl] = useState("");
   const [gitRef, setGitRef] = useState("");
   const [localPath, setLocalPath] = useState("");
@@ -27,6 +29,12 @@ export function RegisterApplicationModal({ open, onClose }: { open: boolean; onC
   const [projectId, setProjectId] = useState("");
 
   const projects = state?.projects ?? [];
+  const { data: knownApplicationData } = useQuery({
+    queryKey: ["known-application-catalog"],
+    queryFn: () => api.listKnownApplications(),
+    enabled: open,
+    staleTime: 60_000,
+  });
 
   function buildSource(): ApplicationSource | null {
     switch (sourceType) {
@@ -63,9 +71,55 @@ export function RegisterApplicationModal({ open, onClose }: { open: boolean; onC
     });
   }
 
+  function quickRegister() {
+    if (!knownApplication.trim()) return;
+    void execute(async () => {
+      const result = await api.quickRegisterApplication({
+        name: knownApplication.trim(),
+        ...(projectId ? { projectId } : {}),
+      });
+      if (result?.application?.id) {
+        setSelectedApplicationId(result.application.id);
+        onClose();
+      }
+      return result;
+    });
+  }
+
   return (
     <Modal open={open} onClose={onClose} title="Register application" description="Register a governed application asset." size="lg">
       <form className="space-y-3" onSubmit={submit}>
+        <div className="space-y-2 rounded-lg border border-border bg-muted/30 p-3">
+          <div>
+            <p className="text-sm font-medium">Quick setup known application</p>
+            <p className="text-xs text-muted-foreground">
+              Enter a managed application name. Registration is automatic; a missing local binary still requires an approved installation.
+            </p>
+          </div>
+          <div className="flex gap-2">
+            <Input
+              list="known-application-options"
+              value={knownApplication}
+              onChange={(event) => setKnownApplication(event.target.value)}
+              placeholder="ccusage, git, or claude"
+            />
+            <datalist id="known-application-options">
+              {(knownApplicationData?.applications ?? []).map((application) => (
+                <option key={application.name} value={application.name}>{application.displayName}</option>
+              ))}
+            </datalist>
+            <Button type="button" size="sm" disabled={pending || !knownApplication.trim()} onClick={quickRegister}>
+              {pending ? "Setting up…" : "Set up"}
+            </Button>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-3 py-1 text-xs text-muted-foreground">
+          <span className="h-px flex-1 bg-border" />
+          Advanced registration
+          <span className="h-px flex-1 bg-border" />
+        </div>
+
         <Field label="Source type">
           <Select value={sourceType} onChange={(e) => setSourceType(e.target.value as SourceType)}>
             <option value="git">Git</option>

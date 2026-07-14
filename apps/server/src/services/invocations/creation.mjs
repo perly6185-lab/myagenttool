@@ -1,6 +1,7 @@
 import { renderAgentSkillsIntoWorktree } from "../agent-skills.mjs";
 import { createRefusalRuntime } from "../../runtime/refusal-log.mjs";
 import { teamOf } from "../../runtime/auth.mjs";
+import { runStateTransaction } from "../../runtime/state-transaction.mjs";
 
 export function createInvocationCreationRuntime({
   state,
@@ -27,6 +28,7 @@ export function createInvocationCreationRuntime({
   createAuditSummary,
   recordAgentUsage,
   budgetGateForProject,
+  reserveBudget,
   checkUsageQuota,
 }) {
   // Shared writer in production; a state-bound fallback for direct construction.
@@ -55,6 +57,13 @@ export function createInvocationCreationRuntime({
       );
       if (existing) return existing;
     }
+    // #890.2: every exit from the accept below — queued/running, awaiting
+    // approval, OR a quota/budget rejection — commits through this one synchronous
+    // barrier. The rejection returns previously used only the 20ms debounce, so a
+    // crash could lose the rejection (invocation + refusal + audit); now the whole
+    // accept outcome is durable when createInvocation returns. The single-file
+    // snapshot rename makes each commit all-or-nothing across collections.
+    const commitAccept = persistStateNow ?? persistStateSoon ?? (() => {});
     const id = nextId("inv_demo");
     const createdAt = now();
     const trace = createTrace(id, agent);
@@ -122,7 +131,22 @@ export function createInvocationCreationRuntime({
     const usageQuotaGate = typeof checkUsageQuota === "function"
       ? checkUsageQuota({ subjectId: requestedBy })
       : { blocked: false };
-    const gateRejected = quotaGate?.allowed === false || budgetGate.blocked || usageQuotaGate.blocked === true;
+    const otherGatesRejected = quotaGate?.allowed === false || budgetGate.blocked || usageQuotaGate.blocked === true;
+    // #890.1 tail: place a budget HOLD for a concurrent manual/API accept too, so
+    // two runs starting near a block limit can't both pass the finalized-spend gate
+    // (the same TOCTOU 890.1 closed for the auto-run path). Skip when an auto-run
+    // already reserved for this run (metadata.autoRunId) to avoid a double hold, and
+    // when the estimate is 0 (default off). A hold that would exceed the limit
+    // rejects the accept, handled by the budget branch below; the hold releases when
+    // the invocation reaches a terminal state (completion + the reap-sweep reconcile).
+    const reservationEstimateUsd = Number(state.autoRunSettings?.reservationEstimateUsd ?? 0) || 0;
+    const reservedByAutoRun = Boolean(requestedMetadata.autoRunId);
+    let reservationBlockReason = null;
+    if (!otherGatesRejected && reservationEstimateUsd > 0 && !reservedByAutoRun && typeof reserveBudget === "function" && targetProjectId) {
+      const held = reserveBudget({ projectId: targetProjectId, amountUsd: reservationEstimateUsd, invocationId: id });
+      if (!held.ok) reservationBlockReason = held.reason;
+    }
+    const gateRejected = otherGatesRejected || Boolean(reservationBlockReason);
     const invocation = {
       id,
       idempotencyKey: clientIdempotencyKey,
@@ -248,14 +272,17 @@ export function createInvocationCreationRuntime({
       });
       state.auditSummaries.push(createAuditSummary(invocation, quotaGate.quotaDecision.reason));
       recordAgentUsage(invocation, "rejected");
-      persistStateSoon();
+      commitAccept();
       return invocation;
     }
-    if (budgetGate.blocked) {
+    if (budgetGate.blocked || reservationBlockReason) {
+      // Either the finalized-spend gate blocked, or the in-flight-hold gate would
+      // push it over (#890.1 tail — concurrent admissions can't jointly exceed).
+      const budgetReason = budgetGate.blocked ? budgetGate.reason : reservationBlockReason;
       const record = state.policyDecisionRecords.find((item) => item.id === invocation.policyDecisionId);
       if (record) {
         record.decision = "denied";
-        record.reason = budgetGate.reason;
+        record.reason = budgetReason;
       }
       invocation.completedAt = createdAt;
       completeRootSpan(invocation, "failed");
@@ -265,8 +292,8 @@ export function createInvocationCreationRuntime({
         category: "state",
         code: "over_budget",
         decidedBy: { kind: "policy_engine", id: targetProjectId ?? "budget" },
-        summary: budgetGate.reason,
-        evidence: { gate: "budget", projectId: targetProjectId ?? null },
+        summary: budgetReason,
+        evidence: { gate: "budget", projectId: targetProjectId ?? null, inFlightHold: Boolean(reservationBlockReason) },
         remedy: "Raise the project or team budget, or wait for the budget window to reset.",
         retryAfter: null,
         appealTo: "device_owner",
@@ -274,13 +301,13 @@ export function createInvocationCreationRuntime({
           invocationId: invocation.id,
           type: "invocation_rejected",
           level: "warn",
-          message: budgetGate.reason,
-          data: { gate: "budget" }
+          message: budgetReason,
+          data: { gate: "budget", inFlightHold: Boolean(reservationBlockReason) }
         },
       });
-      state.auditSummaries.push(createAuditSummary(invocation, budgetGate.reason));
+      state.auditSummaries.push(createAuditSummary(invocation, budgetReason));
       recordAgentUsage(invocation, "rejected");
-      persistStateSoon();
+      commitAccept();
       return invocation;
     }
     appendEvent({
@@ -314,7 +341,7 @@ export function createInvocationCreationRuntime({
     // Durable barrier: an accepted (queued/running) invocation has no lease to
     // recover it, so flush synchronously before returning — a crash in the
     // debounce window must not silently drop a run the caller was told exists.
-    if (typeof persistStateNow === "function") persistStateNow();
+    commitAccept();
     return invocation;
   }
 
