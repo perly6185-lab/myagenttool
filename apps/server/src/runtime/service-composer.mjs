@@ -202,6 +202,7 @@ export function createServerRuntimeServices({
     invokeApplicationCapability,
     listApplicationCapabilities,
     listApplications,
+    planAgentFacadeInvocation,
     planApplicationWrapperInvocation,
     probeApplication,
     registerApplication,
@@ -821,6 +822,7 @@ export function createServerRuntimeServices({
     listApplications,
     listApplicationCapabilities,
     invokeApplicationCapability,
+    planAgentFacadeInvocation,
     planApplicationWrapperInvocation,
   });
 

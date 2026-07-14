@@ -197,6 +197,57 @@ wrapper invocation creates the normal governed invocation, requires approval,
 and returns the audited wrapper execution plan with `executable = false`.
 Runtime adapter wiring is a follow-up slice.
 
+## Agent Facades
+
+An Application capability may delegate to a **registered Agent** (an MCP, A2A,
+HTTP, or CLI agent) the way a `tool_facade` delegates to a governed Tool:
+
+```text
+capabilityFacades: [
+  { id, toolName, ... }                    -> tool_facade  (governed Tool)
+  { id, agentId, agentToolName?, ... }     -> agent_facade (registered Agent)
+]
+```
+
+A facade declares **exactly one** of `toolName` / `agentId`. `agentToolName`
+names which tool on the agent the capability calls (an MCP server can expose
+several); omitted, the bridge's single-tool auto-resolution applies.
+
+Invocation goes through `POST /api/capabilities/:capabilityName/invocations`,
+creates a normal governed invocation on the named agent (async through the
+bridge), and stamps Application lineage (`applicationId`, `capability`,
+`applicationAction: agent:<agentId>:<toolName>`). Guards run in two layers, on
+purpose:
+
+- **Application-side** (`planAgentFacadeInvocation`): tenancy, lifecycle status
+  (`archived`/`offline` refuse), and the facade's declared `requiresApproval`
+  (missing token -> `409 approval_required`).
+- **Agent-side** (capability service): the agent must exist and not be disabled
+  (`409 agent_not_available`), and a named tool must be inside the agent's own
+  registered `allowedTools` (`409 agent_tool_not_allowlisted`). The bridge's MCP
+  client enforces the same allowlist again client-side before the wire — a
+  mis-pointed descriptor still cannot reach a tool the agent's registration
+  does not allow.
+
+Discovery overlays the **live** agent state onto the capability's readiness
+(`agent_not_registered` / `agent_disabled` / `agent_available`), so a
+capability whose agent has gone away explains itself instead of failing a run
+opaquely — the same precise-refusal shape the device gives a missing binary.
+
+### Why a new mode, not agents projected as Tools
+
+The alternative — projecting registered agents into the Tool Registry so the
+existing `tool_facade` covers them — was rejected (#975). The mode name is
+load-bearing audit metadata: it records **which trust regime** execution was
+delegated to. A Tool is a platform-curated, reviewed contract; a registered
+Agent is user-registered code. Projecting agents as Tools would launder that
+provenance — an audit row saying `tool:` would imply a review status the
+executor does not have — and would churn `/api/tools` (a surface this document
+commits to keeping stable) every time an agent registers, goes offline, or is
+removed, while inheriting none of the agent's tenancy scoping. Convergence
+already happens where it belongs: `/api/capabilities` is the one discovery
+surface, and `provider.type` keeps the provenance honest there.
+
 ## Relationship To Existing Agents
 
 Codex and ccusage remain governed agents/tools. Claude additionally has a
