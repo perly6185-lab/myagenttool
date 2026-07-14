@@ -1611,6 +1611,12 @@ function governedApplyWrapperArgs(renderedArgs, payload) {
   if (metadata.claudeApplyRollback === true && !hasFlag(injected, "--reverse")) {
     injected.push("--reverse");
   }
+  // Post-apply verification: an allowlisted command ID (never argv); the wrapper
+  // maps it to fixed argv independently and refuses unknown IDs. Never on rollback.
+  const verifyId = boundedString(metadata.verifyCommandId, 64);
+  if (verifyId && metadata.claudeApplyRollback !== true && !hasFlag(injected, "--verify")) {
+    injected.push("--verify", verifyId);
+  }
   return injected;
 }
 

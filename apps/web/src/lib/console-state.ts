@@ -170,7 +170,17 @@ export interface ClaudeApplyAuthorization {
   rollbackInvocationId?: string | null;
   files?: { path: string; action?: string }[];
   appliedFiles?: { path: string; added?: number | null; deleted?: number | null }[];
-  verification?: { checkPassed?: boolean | null; error?: string | null } | null;
+  verification?: {
+    checkPassed?: boolean | null;
+    error?: string | null;
+    /** Post-apply verification (allowlisted command) — recorded honestly; a
+     * failing verification does not undo the apply. */
+    verifyCommand?: string | null;
+    testsPassed?: boolean;
+    testExitCode?: number | null;
+    testOutputPreview?: string | null;
+  } | null;
+  verifyCommandId?: string | null;
   rollback?: { available?: boolean; executed?: boolean; strategy?: string | null; command?: string | null } | null;
   rollbackError?: string | null;
   resultSummary?: string | null;
