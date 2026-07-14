@@ -75,7 +75,8 @@ test("P2 Bridge dispatch, progress, cancellation, and completion are device-boun
 });
 
 test("P2 rejects a modified plan before consuming installation work", async () => {
-  const planned = await call("/api/applications/install/plan", { method: "POST", body: { name: "git", deviceId: state.device.id } });
+  const planned = await call("/api/applications/install/plan", { method: "POST", body: { name: "ccusage", deviceId: state.device.id } });
+  assert.equal(planned.status, 200, JSON.stringify(planned.body));
   const plan = planned.body.plan;
   const grant = await call("/api/approvals/grants", { method: "POST", body: { action: "application.install", targetId: plan.planId } });
   const modified = { ...plan, execution: { ...plan.execution, args: [...plan.execution.args, "--evil"] } };
