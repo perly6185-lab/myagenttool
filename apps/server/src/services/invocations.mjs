@@ -115,6 +115,7 @@ export function createInvocationService({
     startInvocationIfAllowed,
     onInvocationApproved,
     onInvocationDenied,
+    store,
   });
   const { createInvocation } = createInvocationCreationRuntime({
     state,
