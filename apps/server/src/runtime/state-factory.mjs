@@ -40,6 +40,7 @@ export function createServerState({ defaultProjectPath, now }) {
     tokens: [],
     projects: [defaultProject],
     applications: [],
+    applicationInstallRuns: [],
     applicationRecoveryActions: [],
     approvalGrants: [],
     approvalTokenLegacyUses: { count: 0, lastAt: null },
@@ -164,6 +165,7 @@ export function resetStateForSelfCheck({ state, now }) {
   state.worktreeReviews = [];
   state.deployments = [];
   state.applications = [];
+  state.applicationInstallRuns = [];
   state.applicationRecoveryActions = [];
   state.events = [];
   state.refusals = [];

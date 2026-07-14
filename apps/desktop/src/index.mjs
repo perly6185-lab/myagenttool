@@ -14,6 +14,7 @@ import { extractClaudeFileAccesses } from "./claude-file-access.mjs";
 import { newRoundState, claudeRoundEmits, codexRoundEmits } from "./round-telemetry.mjs";
 import { applicationWrapperArgs } from "./application-wrapper-args.mjs";
 import { collectApplicationBinaryReadiness } from "./application-binary-readiness.mjs";
+import { runApprovedApplicationInstall } from "./application-installer.mjs";
 import {
   createLocalExecutionPolicyManifest,
   localExecutionGate,
@@ -449,8 +450,33 @@ async function poll() {
     } finally {
       busy = false;
     }
+    return;
   }
 
+  const installWork = await request("GET", "/api/bridge/application-install-next");
+  if (installWork) {
+    busy = true;
+    try {
+      await runApplicationInstall(installWork);
+    } finally {
+      busy = false;
+    }
+  }
+
+}
+
+async function runApplicationInstall(work) {
+  const result = await runApprovedApplicationInstall({
+    plan: work.plan,
+    env: buildEnv({ command: "application-installer", environmentPolicy: "inherit_safe" }),
+    pollCancellation: async () => {
+      const status = await request("GET", `/api/bridge/application-install-cancel-status?runId=${encodeURIComponent(work.runId)}`);
+      return status?.cancelRequested === true;
+    },
+    onProgress: (progress) => request("POST", "/api/bridge/application-install-progress", { runId: work.runId, ...progress }),
+    terminate: (child) => terminateProcessTree(child),
+  });
+  await request("POST", "/api/bridge/application-install-complete", { runId: work.runId, ...result });
 }
 
 async function runLifecycleAction(work) {
