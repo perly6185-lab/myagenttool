@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { teamOf } from "../runtime/auth.mjs";
 import {
   defaultRiskTags,
@@ -860,12 +861,12 @@ export function createM3Service({
 
     // Real cost from measured tokens × the matched model rate (#851). Stays
     // "unknown" for an unpriced model — never a fabricated $0.
-    const estimatedUsd = estimateCostUsdFromTokens({
+    const pricing = priceEvidenceForTokens({
       model: named.model,
       inputTokens: sum("inputTokens"),
       cachedInputTokens: sum("cachedTokens"),
       outputTokens: sum("outputTokens"),
-    });
+    }, invocation.createdAt ?? createdAt);
 
     const usageRecord = {
       id: nextId("aiu_demo"),
@@ -888,7 +889,13 @@ export function createM3Service({
       latencyMs,
       roundCount: rounds.length,
       derivedFrom: "rounds",
-      estimatedCost: estimatedUsd > 0 ? String(roundUsd(estimatedUsd)) : "unknown",
+      estimatedCost: pricing.amountUsd > 0 ? String(roundUsd(pricing.amountUsd)) : "unknown",
+      pricingVersion: pricing.price?.pricingVersion ?? null,
+      pricingModelPriceId: pricing.price?.id ?? null,
+      pricingCurrency: pricing.price?.currency ?? null,
+      pricingMethod: pricing.price ? "token_estimate" : "unknown",
+      pricingEffectiveFrom: pricing.price?.effectiveFrom ?? null,
+      pricingRates: pricing.price ? priceRateEvidence(pricing.price) : null,
       ledgerEntryIds: [...ledgerEntryIds],
       status: mapInvocationUsageStatus(invocation.status),
       errorCode: null,
@@ -912,6 +919,8 @@ export function createM3Service({
         roundCount: rounds.length,
         inputTokens: usageRecord.inputTokens,
         outputTokens: usageRecord.outputTokens,
+        pricingVersion: usageRecord.pricingVersion,
+        pricingModelPriceId: usageRecord.pricingModelPriceId,
       },
     });
     persistStateSoon();
@@ -1087,10 +1096,10 @@ export function createM3Service({
     // When the agent reported no billed USD, estimate from token usage × configured
     // rates (e.g. codex, API-billed). Falls back to an unmetered entry when there is
     // no rate, so a token-bearing run stays visible in economics either way.
-    const estimatedUsd = reported ? 0 : estimateCostUsdFromTokens(cost);
-    const hasEstimate = estimatedUsd > 0;
+    const pricing = reported ? { amountUsd: 0, price: null } : priceEvidenceForTokens(cost, invocation.createdAt ?? now());
+    const hasEstimate = pricing.amountUsd > 0;
     if (!reported && !hasEstimate && !(Boolean(cost.billable) && hasTokens)) return null;
-    const finalUsd = reported ? roundUsd(amountUsd) : hasEstimate ? roundUsd(estimatedUsd) : null;
+    const finalUsd = reported ? roundUsd(amountUsd) : hasEstimate ? roundUsd(pricing.amountUsd) : null;
     const source = reported ? "reported" : hasEstimate ? "estimated" : "unknown";
     const meta = invocation.input?.metadata ?? {};
     const projectId = meta.projectId ?? invocation.projectId ?? state.currentProjectId ?? state.projects[0]?.id ?? null;
@@ -1128,6 +1137,11 @@ export function createM3Service({
       projectId,
       counterparty: model,
       provider: model,
+      pricingVersion: pricing.price?.pricingVersion ?? null,
+      pricingModelPriceId: pricing.price?.id ?? null,
+      pricingMethod: reported ? "reported" : hasEstimate ? "token_estimate" : "unknown",
+      pricingEffectiveFrom: pricing.price?.effectiveFrom ?? null,
+      pricingRates: pricing.price ? priceRateEvidence(pricing.price) : null,
       billable: Boolean(cost.billable),
       status: hasEstimate ? "estimated" : "finalized",
       createdAt,
@@ -1737,7 +1751,15 @@ function ledgerEntryAmount(entry) {
 const PRICE_UPDATED_AT = "2026-07-01T00:00:00.000Z";
 
 function modelPrice(provider, model, envPrefix, [input, cachedInput, output]) {
-  const rate = (suffix, fallback) => String(Number(process.env[`${envPrefix}_${suffix}_USD_PER_MTOK`] ?? fallback));
+  const rate = (suffix, fallback) => {
+    const variable = `${envPrefix}_${suffix}_USD_PER_MTOK`;
+    const configured = process.env[variable];
+    const value = Number(configured == null || configured === "" ? fallback : configured);
+    if (!Number.isFinite(value) || value < 0) {
+      throw new Error(`${variable} must be a finite non-negative number.`);
+    }
+    return String(value);
+  };
   return {
     id: `prc_${provider}_${model}`,
     provider,
@@ -1750,19 +1772,23 @@ function modelPrice(provider, model, envPrefix, [input, cachedInput, output]) {
     // billed again; the field exists for providers that meter it separately.
     reasoningOutputUsdPerMTok: "0",
     source: "default",
+    effectiveFrom: PRICE_UPDATED_AT,
+    effectiveTo: null,
     updatedAt: PRICE_UPDATED_AT,
   };
 }
 
 // Ordered most-specific-first only for readability; the matcher picks the
 // longest matching prefix regardless of order.
-const MODEL_PRICES = [
+const MODEL_PRICE_ROWS = [
   modelPrice("anthropic", "claude-opus", "CLAUDE_OPUS", [15, 1.5, 75]),
   modelPrice("anthropic", "claude-sonnet", "CLAUDE_SONNET", [3, 0.3, 15]),
   modelPrice("anthropic", "claude-haiku", "CLAUDE_HAIKU", [0.8, 0.08, 4]),
   modelPrice("openai", "gpt", "OPENAI_GPT", [2.5, 0.25, 10]),
   modelPrice("codex", "codex", "CODEX", [1.75, 0.175, 14]),
 ];
+const PRICE_TABLE_VERSION = `2026-07-01.${createHash("sha256").update(JSON.stringify(MODEL_PRICE_ROWS.map(priceRateEvidence))).digest("hex").slice(0, 12)}`;
+const MODEL_PRICES = MODEL_PRICE_ROWS.map((price) => ({ ...price, pricingVersion: PRICE_TABLE_VERSION }));
 
 /** The current price table (read-only view). */
 export function modelPrices() {
@@ -1770,11 +1796,15 @@ export function modelPrices() {
 }
 
 /** The most specific price whose `model` is a prefix of `model`, else null. */
-export function priceForModel(model) {
+export function priceForModel(model, at = new Date().toISOString()) {
   const key = String(model ?? "").toLowerCase();
   if (!key) return null;
+  const timestamp = Date.parse(at);
   let best = null;
   for (const price of MODEL_PRICES) {
+    const effectiveFrom = Date.parse(price.effectiveFrom);
+    const effectiveTo = price.effectiveTo ? Date.parse(price.effectiveTo) : Number.POSITIVE_INFINITY;
+    if (Number.isFinite(timestamp) && (timestamp < effectiveFrom || timestamp >= effectiveTo)) continue;
     if (key.startsWith(price.model) && (!best || price.model.length > best.model.length)) best = price;
   }
   return best;
@@ -1784,15 +1814,28 @@ export function priceForModel(model) {
 // Cached input is priced at its own (cheaper) rate; output already includes any
 // reasoning tokens, so reasoning is not billed again. Returns 0 when unpriceable.
 export function estimateCostUsdFromTokens(cost) {
-  const price = priceForModel(cost?.model);
-  if (!price) return 0;
+  return priceEvidenceForTokens(cost).amountUsd;
+}
+
+export function priceEvidenceForTokens(cost, at = new Date().toISOString()) {
+  const price = priceForModel(cost?.model, at);
+  if (!price) return { amountUsd: 0, price: null };
   const input = Math.max(0, Number(cost.inputTokens ?? 0));
   const cached = Math.min(input, Math.max(0, Number(cost.cachedInputTokens ?? 0)));
   const output = Math.max(0, Number(cost.outputTokens ?? 0));
   const usd = ((input - cached) * Number(price.inputUsdPerMTok)
     + cached * Number(price.cachedInputUsdPerMTok)
     + output * Number(price.outputUsdPerMTok)) / 1_000_000;
-  return Number.isFinite(usd) && usd > 0 ? usd : 0;
+  return { amountUsd: Number.isFinite(usd) && usd > 0 ? usd : 0, price };
+}
+
+function priceRateEvidence(price) {
+  return {
+    inputUsdPerMTok: price.inputUsdPerMTok,
+    cachedInputUsdPerMTok: price.cachedInputUsdPerMTok,
+    outputUsdPerMTok: price.outputUsdPerMTok,
+    reasoningOutputUsdPerMTok: price.reasoningOutputUsdPerMTok,
+  };
 }
 
 function ledgerAmountSource(entry, amount = ledgerEntryAmount(entry)) {

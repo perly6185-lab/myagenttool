@@ -113,6 +113,21 @@ describe("recovery lineage labels", () => {
 });
 
 describe("ApplicationsInspector recovery guidance", () => {
+  it("renders binary readiness for every device, including stale reports", async () => {
+    const state = closedLoopConsoleState();
+    state.applications = [{ id: "app_git", name: "Git", kind: "binary", status: "active", source: { type: "binary", binary: "git" } }];
+    state.devices = [
+      { id: "dev_a", name: "Laptop", status: "online", platform: "windows", architecture: "x64", lastSeenAt: "2026-07-14T00:00:00Z", applicationBinaryReadiness: [{ command: "git", capabilityPrefix: "app.app_git.wrapper.", status: "absent", version: null, checkedAt: "2026-07-14T00:00:00Z" }] },
+      { id: "dev_b", name: "Build Mac", status: "offline", platform: "macos", architecture: "arm64", lastSeenAt: "2026-07-13T00:00:00Z", applicationBinaryReadiness: [{ command: "git", capabilityPrefix: "app.app_git.wrapper.", status: "stale", version: "git version 2.50", checkedAt: "2026-07-13T00:00:00Z" }] },
+    ];
+    apiMock.fetchState.mockResolvedValue(state);
+    apiMock.listApplicationCapabilities.mockResolvedValue({ applicationId: "app_git", capabilities: [] });
+    useUiStore.setState({ selectedApplicationId: "app_git" });
+    renderWithClient(createElement(ApplicationsInspector));
+    expect(await screen.findByText(/Laptop: absent/)).toBeTruthy();
+    expect(screen.getByText(/Build Mac: stale/)).toBeTruthy();
+  });
+
   it("renders the application discover to result loop and opens the result invocation", async () => {
     apiMock.fetchState.mockResolvedValue(closedLoopConsoleState());
     apiMock.listApplicationCapabilities.mockResolvedValue({

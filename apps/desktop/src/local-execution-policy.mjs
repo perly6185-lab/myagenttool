@@ -10,7 +10,10 @@ export function binaryAvailableOnPath(command, env = process.env) {
   if (!command || typeof command !== "string") return false;
   if (command.includes("/") || command.includes(sep) || isAbsolute(command)) return existsSync(command);
   const dirs = String(env.PATH ?? "").split(delimiter).filter(Boolean);
-  return dirs.some((dir) => existsSync(join(dir, command)));
+  const extensions = process.platform === "win32"
+    ? String(env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD").split(";").filter(Boolean)
+    : [""];
+  return dirs.some((dir) => extensions.some((extension) => existsSync(join(dir, `${command}${extension}`))));
 }
 
 const FILE_POLICIES = new Set(["forbidden", "read_only", "workspace_write", "native_controls"]);
@@ -92,6 +95,12 @@ export function createLocalExecutionPolicyManifest({
       {
         command: "git",
         capabilityPrefix: "app.app_git.wrapper.",
+        filePolicy: "read_only",
+        networkPolicy: "forbidden",
+      },
+      {
+        command: "claude",
+        capabilityPrefix: "app.app_claude.",
         filePolicy: "read_only",
         networkPolicy: "forbidden",
       },

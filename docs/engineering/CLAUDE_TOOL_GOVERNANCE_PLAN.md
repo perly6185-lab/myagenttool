@@ -5,11 +5,13 @@ same governed tool registry used by `ccusage.report` and `codex.review.diff`.
 
 ## Decision
 
-Expose Claude as governed tools, not as raw local CLI access.
+Expose Claude as a governed Application with capability facades, not as raw
+local CLI access.
 
 ```text
 external agent
--> Tool Registry / Tool Facade
+-> Application Capability Registry (`app_claude`)
+-> `app.app_claude.review.diff` Tool facade
 -> governed Claude tool contract
 -> dedicated Claude wrapper
 -> normal invocation
@@ -22,7 +24,8 @@ Callers discover and invoke Claude capabilities through:
 ```text
 GET /api/tools
 GET /api/tools/claude.review.diff
-POST /api/tools/claude.review.diff/invocations
+GET /api/capabilities/app.app_claude.review.diff
+POST /api/capabilities/app.app_claude.review.diff/invocations
 GET /api/state
 ```
 
@@ -125,24 +128,32 @@ Output:
 
 ## Development Plan
 
-### Phase 1: Governed Read-Only Review
+### Phase 1: Application-Backed Read-Only Review (#911)
 
 - Define `CLAUDE_REVIEW_TOOL_CONTRACT`.
+- Register the canonical binary Application as `app_claude`.
+- Project `app.app_claude.review.diff` as a generic `tool_facade` capability
+  backed by `claude.review.diff`.
 - Add `createClaudeReviewAgentRegistration()` with deterministic id
   `agt_claude_review_diff`.
-- Add `claude.review.diff` discovery to `/api/tools`.
-- Add facade validation and invocation creation through
-  `POST /api/tools/claude.review.diff/invocations`.
+- Keep `claude.review.diff` discovery in `/api/tools` for compatibility and link
+  its descriptor to the Application capability.
+- Report local binary readiness for the `app.app_claude.*` capability prefix.
 - Add `tools/agents/claude-review-wrapper.mjs`.
 - Force wrapper execution to Claude `--permission-mode plan`.
 - Import structured findings into `state.claudeReviewFindings`.
+- Attach Application lineage to the invocation, latest Application result,
+  audit event, and Evidence Center.
 - Strip raw finding payloads from public state.
-- Add external contract fixture coverage and smoke tests.
+- Add registration tooling, contract tests, and a real Server/Bridge process
+  smoke test.
 
 Acceptance:
 
-- `GET /api/tools` includes `claude.review.diff` only when a governed Claude
-  review agent is registered.
+- Claude registers active as `app_claude` and exposes
+  `app.app_claude.review.diff` through `/api/capabilities`.
+- `GET /api/tools` links `claude.review.diff` to that Application capability
+  when the Application is active.
 - Discovery exposes schemas, risk metadata, approval policy, and output
   collection, but no command, argv, cwd, env, permission mode, or wrapper path.
 - Valid actor-owned worktree requests create queued invocations.
@@ -150,21 +161,23 @@ Acceptance:
 - Desktop Bridge injects only governed `--cwd`, `--instruction`, and
   `--severity-floor` wrapper flags.
 - Completed invocations import normalized findings into `claudeReviewFindings`.
+- Completion records `providerType`, `applicationId`, capability, delegated Tool
+  action, imported record ids, latest Application result, and Evidence Center
+  evidence.
 
-### Phase 2: Review Result Consumption
+### Phase 2: Governed Read-Only Analysis (#912)
 
-- Add UI views or filters for Claude review findings next to Codex findings.
-- Add agent-facing examples for joining `invocationId` to
-  `claudeReviewFindings`.
-- Add retention/export rules for raw Claude transcripts if audit storage needs
-  them later.
+- Add narrowly scoped repository inspection and analysis capabilities.
+- Reuse the Application registry, readiness, project/worktree tenancy, and
+  bounded wrapper policies established in Phase 1.
+- Keep every Phase 2 capability read-only and independently discoverable.
 
 Acceptance:
 
-- External orchestrators can discover, invoke, poll, and consume Claude review
-  findings without any local CLI knowledge.
+- External orchestrators can consume governed Claude analysis without arbitrary
+  command, cwd, environment, or permission control.
 
-### Phase 3: Patch Proposal
+### Phase 3: Immutable Patch Proposal (#913)
 
 - Add `claude.plan.change` or `claude.propose.patch`.
 - Store plans or patch proposals as artifacts, not applied files.
@@ -175,7 +188,7 @@ Acceptance:
 - Other agents can ask Claude for proposed changes without gaining write access
   to a worktree.
 
-### Phase 4: Approved Apply
+### Phase 4: Approval-Bound Apply (#914)
 
 - Add an apply tool only after approval, preview, and artifact binding exist.
 - Reuse reviewed patch artifacts bound to the same project/worktree.
@@ -184,6 +197,11 @@ Acceptance:
 Acceptance:
 
 - Missing, denied, or stale approvals cannot mutate files.
+- Successful apply records verification and rollback evidence bound to the
+  approved proposal artifact.
+
+Phases are stage-gated. Phase 2 implementation starts only after Phase 1
+acceptance is verified; the same rule applies between later phases.
 
 ## Recommended Checks
 

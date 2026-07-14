@@ -554,8 +554,9 @@ export function createAutoRunService({
   // front-run a verification gate here). On failure, mark the auto-run failed.
   // Called fire-and-forget from completion, so it never throws.
   async function advanceAutoRunForInvocation(invocation) {
+    let autoRun = null;
     try {
-      const autoRun = state.autoRuns.find((item) => item.invocationId === invocation?.id);
+      autoRun = state.autoRuns.find((item) => item.invocationId === invocation?.id) ?? null;
       if (!autoRun || settledStatuses.has(autoRun.status)) return null;
 
       if (invocation.status === "succeeded") {
@@ -819,8 +820,14 @@ export function createAutoRunService({
       }
       persistStateSoon();
       return autoRun;
-    } catch {
-      // Never let a reaction error escape the fire-and-forget caller.
+    } catch (error) {
+      // Never let a reaction error escape the fire-and-forget caller, but do not
+      // leave the operator-facing run stuck in "running" with no explanation.
+      if (autoRun && !settledStatuses.has(autoRun.status)) {
+        setAutoRunStatus(autoRun, "failed", { error: `Auto-run reaction failed: ${String(error?.message ?? error)}` });
+        persistStateSoon();
+        return autoRun;
+      }
       return null;
     }
   }

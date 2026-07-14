@@ -49,8 +49,10 @@ export async function handleApplicationRoutes({
         capabilities: listApplicationCapabilities(application.id) ?? [],
       });
     } catch (error) {
-      sendJson(res, 400, {
-        error: "invalid_application",
+      const code = typeof error?.code === "string" ? error.code : "invalid_application";
+      const status = code === "application_descriptor_conflict" || code === "application_already_replaced" ? 409 : 400;
+      sendJson(res, status, {
+        error: code,
         message: error instanceof Error ? error.message : String(error),
       });
     }

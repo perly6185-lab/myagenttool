@@ -69,6 +69,21 @@ export function createCapabilityService({
       return { status: 404, body: { error: "capability_not_found" } };
     }
     if (capability.provider?.type === "application") {
+      if (capability.metadata?.execution?.mode === "tool_facade") {
+        const toolName = capability.metadata.execution.toolName;
+        const result = createToolInvocation(toolName, input, actor);
+        const invocation = result?.body?.invocation;
+        if (invocation?.options?.metadata) {
+          invocation.options.metadata = {
+            ...invocation.options.metadata,
+            providerType: "application",
+            applicationId: capability.provider.id,
+            capability: capability.name,
+            applicationAction: `tool:${toolName}`,
+          };
+        }
+        return result;
+      }
       // Wrapper capabilities execute a real command on the local machine, so they
       // run through the bridge (async), not the synchronous Application Control
       // agent. Everything else (inspect/search/lifecycle/orchestration) stays

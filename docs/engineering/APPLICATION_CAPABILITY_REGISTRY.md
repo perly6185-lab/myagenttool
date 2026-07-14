@@ -139,8 +139,11 @@ Runtime adapter wiring is a follow-up slice.
 
 ## Relationship To Existing Agents
 
-Codex, Claude, and ccusage remain normal governed agents/tools. Application
-capabilities should reuse their existing facade pattern:
+Codex and ccusage remain governed agents/tools. Claude additionally has a
+canonical `app_claude` registration whose `app.app_claude.review.diff`
+capability delegates to the existing `claude.review.diff` Tool. This generic
+`tool_facade` pattern lets an Application own discovery, readiness, lineage,
+and result presentation without duplicating the governed execution adapter:
 
 ```text
 discover contract -> validate input -> create invocation -> policy/audit/trace
@@ -153,9 +156,11 @@ can appear beside `ccusage.report`, `codex.review.diff`, and
 The first generalized discovery slice adds `/api/capabilities` while keeping
 `/api/tools` stable. Existing tools are mapped with `provider.type = "tool"`;
 application-projected capabilities use `provider.type = "application"`.
-Application capability invocation runs through the platform
-`agt_platform_application_control` agent for the first synchronous execution
-slice. Every side-effecting action — `offline`, `archive`, `refresh`,
+Application capability invocation normally runs through the platform
+`agt_platform_application_control` agent for synchronous control actions.
+Capabilities declaring `metadata.execution.mode = "tool_facade"` delegate to
+their named governed Tool while stamping Application lineage on the invocation.
+Every side-effecting action — `offline`, `archive`, `refresh`,
 `generate_orchestration`, and `wrapper:*` commands — requires an explicit
 `approvalToken` and returns `409 approval_required` without one. In this slice
 the token is an explicit-intent confirmation on an owner-scoped resource

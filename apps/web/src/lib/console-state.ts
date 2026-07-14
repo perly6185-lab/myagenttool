@@ -14,6 +14,13 @@ export interface DeviceSnapshot {
   lastSeenAt: string | null;
   /** Max invocations this machine runs at once (across distinct worktrees). */
   maxConcurrency?: number;
+  applicationBinaryReadiness?: Array<{
+    command: string;
+    capabilityPrefix: string;
+    status: "available" | "absent" | "stale";
+    version: string | null;
+    checkedAt: string;
+  }>;
 }
 
 export interface AgentHealth {
@@ -936,7 +943,8 @@ export interface ConsoleSnapshot {
   scheduleHealth?: ScheduleHealthRow[];
   applicationScheduleHealth?: ApplicationScheduleHealth[];
   agentSkills?: AgentSkillSnapshot[];
-  device: DeviceSnapshot;
+  device: DeviceSnapshot | null;
+  devices?: DeviceSnapshot[];
   projects?: ProjectSnapshot[];
   currentProjectId?: string | null;
   projectTargets?: ProjectTargetSnapshot[];
@@ -1199,6 +1207,11 @@ export interface ApplicationSnapshot {
   path?: string | null;
   ownerTeamId?: string | null;
   capabilitiesVersion?: number;
+  descriptorSchemaVersion?: number;
+  descriptorFingerprint?: string | null;
+  descriptorRevision?: number;
+  predecessorApplicationId?: string | null;
+  successorApplicationId?: string | null;
   /** Opt-in orchestration auto-recovery (docs/design/ORCHESTRATION_AUTO_RECOVERY.md). */
   autoRecovery?: {
     enabled: boolean;
@@ -1297,6 +1310,8 @@ export interface ApplicationRegisterRequest {
   name?: string;
   projectId?: string | null;
   source: ApplicationSource;
+  descriptorSchemaVersion?: number;
+  replacesApplicationId?: string;
 }
 
 export interface ApplicationCapability {

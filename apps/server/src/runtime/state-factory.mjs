@@ -237,6 +237,7 @@ function createDefaultDevice(now) {
     unlinkState: "linked",
     lastSeenAt: null,
     registeredCapabilities: [],
+    applicationBinaryReadiness: [],
     credentialRevokedAt: null,
     bridgeCredential: null,
     maxConcurrency: defaultMaxConcurrency,

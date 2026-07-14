@@ -29,6 +29,16 @@ export async function handleAgentRoutes({
   issueBridgeCredential,
   requireBridgeCredential,
 }) {
+  if (req.method === "POST" && url.pathname === "/api/bridge/readiness") {
+    const device = requireBridgeCredential({ req, res, sendJson });
+    if (!device) return true;
+    const body = await readJson(req);
+    device.applicationBinaryReadiness = normalizeApplicationBinaryReadiness(body?.applicationBinaryReadiness, now());
+    device.updatedAt = now();
+    sendJson(res, 200, { device: publicDeviceView(device) });
+    return true;
+  }
+
   if (req.method === "POST" && url.pathname === "/api/bridge/register") {
     const body = await readJson(req);
     // Which machine is registering?
@@ -82,6 +92,7 @@ export async function handleAgentRoutes({
     device.lastSeenAt = now();
     device.bridgeVersion = String(body.bridgeVersion ?? "0.0.0");
     device.registeredCapabilities = Array.isArray(body.capabilities) ? body.capabilities.map(String) : [];
+    device.applicationBinaryReadiness = normalizeApplicationBinaryReadiness(body.applicationBinaryReadiness, device.lastSeenAt);
     device.updatedAt = now();
     // NOTE: this marks every local agent available, not just the ones located on
     // the registering device. Correct while one device exists; scoping it to
@@ -226,4 +237,15 @@ export async function handleAgentRoutes({
   }
 
   return false;
+}
+
+function normalizeApplicationBinaryReadiness(rows, checkedAt) {
+  if (!Array.isArray(rows)) return [];
+  return rows.flatMap((row) => {
+    const command = String(row?.command ?? "").trim();
+    const capabilityPrefix = String(row?.capabilityPrefix ?? "").trim();
+    const status = row?.status === "available" ? "available" : row?.status === "absent" ? "absent" : null;
+    if (!/^[a-z][a-z0-9_-]{0,31}$/.test(command) || !capabilityPrefix.startsWith("app.") || !status) return [];
+    return [{ command, capabilityPrefix, status, version: status === "available" ? String(row?.version ?? "").trim().slice(0, 120) || null : null, checkedAt }];
+  });
 }
