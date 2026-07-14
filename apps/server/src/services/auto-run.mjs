@@ -66,6 +66,9 @@ export function createAutoRunService({
   findAgent,
   defaultAgent,
   budgetStatusFor,
+  reserveBudget,
+  releaseReservationsForAutoRun,
+  reconcileBudgetReservations,
   sendAlert,
   createInvocation,
   findInvocation,
@@ -334,6 +337,12 @@ export function createAutoRunService({
     autoRun.updatedAt = now();
     if (extra) Object.assign(autoRun, extra);
     updateBreakerForTerminal(status);
+    // #890: a settled run has finished spending — release its budget hold so the
+    // (now-recorded) real ledger spend is what gates the next admission, not a
+    // stale estimate. Idempotent; a no-op when reservations are disabled.
+    if (settledStatuses.has(status) && typeof releaseReservationsForAutoRun === "function") {
+      releaseReservationsForAutoRun(autoRun.id, { outcome: status === "failed" ? "released_failed" : "committed" });
+    }
     appendEvent({
       invocationId: autoRun.invocationId,
       type: "auto_run_status_changed",
@@ -400,6 +409,26 @@ export function createAutoRunService({
 
     const autoRunId = nextId("aur_demo");
     const createdAt = now();
+
+    // #890 budget reservation: place the hold SYNCHRONOUSLY here — before the
+    // decision/issue-fetch awaits below — so a second run starting in that same
+    // window sees this run's hold and cannot also pass a near-limit budget. The
+    // hold is released when the run settles (setAutoRunStatus) or, if a pre-record
+    // throw leaks it, by reconcileBudgetReservations on the next sweep. Disabled
+    // (estimate <= 0) → no hold written, byte-identical to before.
+    const reservationEstimateUsd = Number(state.autoRunSettings?.reservationEstimateUsd ?? 0) || 0;
+    if (reservationEstimateUsd > 0 && typeof reserveBudget === "function" && projectId) {
+      const reservation = reserveBudget({ projectId, amountUsd: reservationEstimateUsd, autoRunId });
+      if (!reservation.ok) {
+        void sendAlert?.({
+          kind: "budget_exceeded",
+          severity: "high",
+          message: `Auto-run blocked at admission: ${reservation.reason}`,
+          data: { projectId, link: normalizedLink, reason: reservation.reason },
+        });
+        throw new Error(`${reservation.reason} Raise the budget, wait for in-flight runs to finish, or reset spend.`);
+      }
+    }
 
     // 0. Decision step: the injected decider (or the heuristic floor) triages the
     // issue into a path BEFORE any execution. The decision is data, not action.
@@ -1635,8 +1664,21 @@ export function createAutoRunService({
         reaped += 1;
       }
     }
-    if (reaped > 0) persistStateSoon();
-    return { reaped, readvanced };
+    // #890: release any budget hold whose owning run is already settled or gone
+    // (a crash between reserve and the record/settle would otherwise leak a hold
+    // that blocks the budget). Rides this existing boot + 60s sweep.
+    let holdsReleased = 0;
+    if (typeof reconcileBudgetReservations === "function") {
+      const activeById = new Map((state.autoRuns ?? []).map((r) => [r.id, r]));
+      holdsReleased = reconcileBudgetReservations({
+        isSettled: (autoRunId) => {
+          const run = activeById.get(autoRunId);
+          return !run || settledStatuses.has(run.status);
+        },
+      });
+    }
+    if (reaped > 0 || holdsReleased > 0) persistStateSoon();
+    return { reaped, readvanced, holdsReleased };
   }
 
   return { startAutoRun, advanceAutoRunForInvocation, syncAutoRunOnApproval, syncAutoRunOnDenial, retryAutoRun, cancelAutoRun, mergeAutoRunPr, maybeDeployAfterMerge, reapStuckAutoRuns, autoMergeSweep, approveDesign, rejectDesign, answerClarify, approveDecomposition, rejectDecomposition };

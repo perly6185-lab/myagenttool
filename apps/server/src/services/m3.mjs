@@ -1062,6 +1062,10 @@ export function createM3Service({
     teamBudgetStatuses,
     teamBudgetStatusFor,
     budgetGateForProject,
+    reserveBudget,
+    releaseBudgetReservation,
+    releaseReservationsForAutoRun,
+    reconcileBudgetReservations,
     findLifecycleLocalApproval,
     completeLifecycleAction,
     findLifecycleRollbackRequest,
@@ -1364,6 +1368,11 @@ export function createM3Service({
     const spend = ledgerSpendForProject(projectId);
     const limitUsd = budget ? Number(budget.limitUsd) : null;
     const remainingUsd = budget && limitUsd !== null ? roundUsd(limitUsd - spend.spentUsd) : null;
+    // #890: in-flight holds for runs admitted-but-not-yet-billed. `spentUsd`/`over`
+    // keep their finalized-display meaning; `admissionUsd`/`admissionOver` add the
+    // holds so a concurrent admission sees runs already in flight (the TOCTOU fix).
+    const reservedUsd = activeReservedForProject(projectId);
+    const admissionUsd = roundUsd(spend.spentUsd + reservedUsd);
     return {
       projectId,
       projectName: project?.name,
@@ -1375,8 +1384,11 @@ export function createM3Service({
       spentUsd: spend.spentUsd,
       finalizedUsd: spend.finalizedUsd,
       estimatedUsd: spend.estimatedUsd,
+      reservedUsd,
+      admissionUsd,
       remainingUsd,
       over: budget ? spend.spentUsd > limitUsd : false,
+      admissionOver: budget ? admissionUsd > limitUsd : false,
     };
   }
 
@@ -1450,6 +1462,154 @@ export function createM3Service({
       };
     }
     return { blocked: false };
+  }
+
+  // ── Budget reservations (#890) ──────────────────────────────────────────────
+  // A reservation is a synchronous HOLD placed at admission, before a run has
+  // spent anything, so two runs starting near the limit see each other. Node is
+  // single-threaded, so a read-then-write done in ONE synchronous tick (no await
+  // between) is atomic — reserveBudget is that tick. The hold is released when the
+  // run settles (its real ledger spend then carries the cost). Without this, the
+  // budget check reads only finalized spend, so N concurrent runs all pass then
+  // all spend (the TOCTOU the check-then-await window opened).
+  function reservationProjectId(reservation) {
+    return reservation?.projectId ?? null;
+  }
+
+  function activeReservedForProject(projectId) {
+    let total = 0;
+    for (const reservation of state.budgetReservations ?? []) {
+      if (reservation?.status === "active" && reservationProjectId(reservation) === projectId) {
+        total = roundUsd(total + (Number(reservation.amountUsd) || 0));
+      }
+    }
+    return total;
+  }
+
+  function activeReservedForTeam(teamId) {
+    const teamProjectIds = new Set(
+      (state.projects ?? []).filter((project) => teamOf(project) === teamId).map((project) => project.id),
+    );
+    let total = 0;
+    for (const reservation of state.budgetReservations ?? []) {
+      if (reservation?.status === "active" && teamProjectIds.has(reservationProjectId(reservation))) {
+        total = roundUsd(total + (Number(reservation.amountUsd) || 0));
+      }
+    }
+    return total;
+  }
+
+  // Keep the collection bounded: all active holds + a recent tail of settled ones
+  // for evidence. Active holds are never dropped (they gate admission).
+  function capBudgetReservations(limitSettled = 200) {
+    const rows = state.budgetReservations ?? [];
+    const active = rows.filter((r) => r?.status === "active");
+    const settled = rows.filter((r) => r?.status !== "active").slice(0, limitSettled);
+    state.budgetReservations = [...active, ...settled];
+  }
+
+  /**
+   * Atomically reserve `amountUsd` against a project's (and its team pool's) hard
+   * block budget. Returns `{ok:true, reservationId}` after writing the hold, or
+   * `{ok:false, reason}` WITHOUT writing when the hold would push finalized spend +
+   * existing holds over a block limit. A non-positive amount, or a project/team
+   * with no block budget, always succeeds (accounting-only) — this never invents a
+   * refusal a plain over-budget check wouldn't also raise. Synchronous by design.
+   */
+  function reserveBudget({ projectId, amountUsd = 0, invocationId = null, autoRunId = null, teamId = null } = {}) {
+    const reserveUsd = roundUsd(Math.max(0, Number(amountUsd) || 0));
+    if (reserveUsd > 0 && projectId) {
+      const status = budgetStatusFor(projectId);
+      if (status.exists && status.policy === "block" && status.limitUsd != null) {
+        const wouldBe = roundUsd(status.spentUsd + status.reservedUsd + reserveUsd);
+        if (wouldBe > status.limitUsd) {
+          return {
+            ok: false,
+            reason: `Project budget would be exceeded ($${wouldBe} of $${status.limitUsd} including in-flight runs).`,
+          };
+        }
+      }
+      const project = (state.projects ?? []).find((item) => item.id === projectId);
+      const team = teamId ?? (project ? teamOf(project) : null);
+      const teamStatus = team ? teamBudgetStatusFor(team) : null;
+      if (teamStatus?.exists && teamStatus.policy === "block" && teamStatus.limitUsd != null) {
+        const wouldBe = roundUsd(teamStatus.spentUsd + activeReservedForTeam(team) + reserveUsd);
+        if (wouldBe > teamStatus.limitUsd) {
+          return {
+            ok: false,
+            reason: `Team budget would be exceeded ($${wouldBe} of $${teamStatus.limitUsd} including in-flight runs).`,
+          };
+        }
+      }
+    }
+    const project = (state.projects ?? []).find((item) => item.id === projectId);
+    const reservation = {
+      id: nextId("bres"),
+      projectId: projectId ?? null,
+      teamId: teamId ?? (project ? teamOf(project) : null),
+      amountUsd: reserveUsd,
+      invocationId,
+      autoRunId,
+      status: "active",
+      createdAt: now(),
+      settledAt: null,
+      outcome: null,
+    };
+    (state.budgetReservations ??= []).unshift(reservation);
+    capBudgetReservations();
+    appendEvent({
+      invocationId,
+      type: "budget_reserved",
+      level: "info",
+      message: `Reserved $${reserveUsd} for ${projectId ?? "unscoped"} (auto-run ${autoRunId ?? "n/a"}).`,
+      data: { reservationId: reservation.id, projectId, autoRunId, amountUsd: reserveUsd },
+    });
+    persistStateSoon();
+    return { ok: true, reservationId: reservation.id, amountUsd: reserveUsd };
+  }
+
+  function releaseBudgetReservation(reservationId, { outcome = "released" } = {}) {
+    const reservation = (state.budgetReservations ?? []).find((item) => item.id === reservationId);
+    if (!reservation || reservation.status !== "active") return false; // idempotent
+    reservation.status = "settled";
+    reservation.outcome = outcome;
+    reservation.settledAt = now();
+    appendEvent({
+      invocationId: reservation.invocationId,
+      type: "budget_reservation_released",
+      level: "info",
+      message: `Released reservation ${reservation.id} (${outcome}).`,
+      data: { reservationId: reservation.id, projectId: reservation.projectId, autoRunId: reservation.autoRunId, outcome },
+    });
+    persistStateSoon();
+    return true;
+  }
+
+  function releaseReservationsForAutoRun(autoRunId, { outcome = "released" } = {}) {
+    if (!autoRunId) return 0;
+    let released = 0;
+    for (const reservation of [...(state.budgetReservations ?? [])]) {
+      if (reservation.autoRunId === autoRunId && reservation.status === "active") {
+        if (releaseBudgetReservation(reservation.id, { outcome })) released += 1;
+      }
+    }
+    return released;
+  }
+
+  // Boot/sweep reconcile: release any active hold whose owning auto-run is already
+  // settled or gone (a crash between reserve and settle would otherwise leak a
+  // hold that blocks the budget forever). `isSettled(autoRunId)` is injected by the
+  // caller (it owns the auto-run lifecycle).
+  function reconcileBudgetReservations({ isSettled } = {}) {
+    let released = 0;
+    for (const reservation of [...(state.budgetReservations ?? [])]) {
+      if (reservation.status !== "active") continue;
+      const orphaned = !reservation.autoRunId || (typeof isSettled === "function" && isSettled(reservation.autoRunId));
+      if (orphaned) {
+        if (releaseBudgetReservation(reservation.id, { outcome: "reconciled" })) released += 1;
+      }
+    }
+    return released;
   }
 
   function ledgerSpendForProject(projectId) {

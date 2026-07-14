@@ -14,6 +14,7 @@ import { before, beforeEach, test } from "node:test";
 
 import { createProjectService } from "../src/services/projects.mjs";
 import { createAutoRunService, extractChangeFailureRef } from "../src/services/auto-run.mjs";
+import { createM3Service } from "../src/services/m3.mjs";
 
 function git(cwd, ...args) {
   return execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8" }).trim();
@@ -70,6 +71,9 @@ function makeAutoRun({
   mergePr = async ({ prNumber }) => ({ ok: true, prNumber, method: "squash" }),
   fetchPrChecks = undefined,
   budgetStatusFor = undefined,
+  reserveBudget = undefined,
+  releaseReservationsForAutoRun = undefined,
+  reconcileBudgetReservations = undefined,
   findInvocation = undefined,
   cancelInvocation = undefined,
   autoApproveInvocation = undefined,
@@ -145,6 +149,9 @@ function makeAutoRun({
     },
     fetchPrChecks,
     budgetStatusFor,
+    reserveBudget,
+    releaseReservationsForAutoRun,
+    reconcileBudgetReservations,
     sendAlert,
     findInvocation,
     cancelInvocation,
@@ -1205,6 +1212,51 @@ test("O0 budget gate: under-budget run proceeds normally", async () => {
   const { autoRun } = await svc.startAutoRun({ projectId: sourceProjectId, link: { type: "issue", number: 3, title: "z", url: null, state: "open" }, agentId: "agt_1", name: "issue-3-z" });
   assert.equal(autoRun.status, "running", "proceeds when under budget");
   assert.equal(calls.createInvocation.length, 1);
+});
+
+test("#890 budget reservation: a concurrent start near the limit is refused, then freed on settle", async () => {
+  // Real m3 reservations against the harness state + a $10 block budget, with the
+  // per-run hold armed. Two $6 runs can't both be in flight; settling the first
+  // releases its hold so a third fits.
+  state.budgets ??= [];
+  state.ledgerEntries ??= [];
+  state.budgetReservations ??= [];
+  let mid = 0;
+  const m3 = createM3Service({
+    state,
+    now: () => new Date().toISOString(),
+    nextId: (p) => `${p}_m3_${++mid}`,
+    appendEvent: () => {},
+    findAgent: () => null,
+  });
+  m3.upsertBudget({ projectId: sourceProjectId, limitUsd: 10, policy: "block" });
+  state.autoRunSettings = { ...state.autoRunSettings, reservationEstimateUsd: 6 };
+
+  const { svc, calls } = makeAutoRun({
+    reserveBudget: m3.reserveBudget,
+    releaseReservationsForAutoRun: m3.releaseReservationsForAutoRun,
+    reconcileBudgetReservations: m3.reconcileBudgetReservations,
+    budgetStatusFor: m3.budgetStatusFor,
+  });
+
+  const start = (n) => svc.startAutoRun({ projectId: sourceProjectId, link: { type: "issue", number: n, title: `t${n}`, url: null, state: "open" }, agentId: "agt_1", name: `issue-${n}-t` });
+
+  const firstRun = await start(21);
+  assert.equal(firstRun.autoRun.status, "running");
+  assert.equal(m3.budgetStatusFor(sourceProjectId).reservedUsd, 6, "first run holds $6");
+
+  // Second concurrent start: $6 + $6 = $12 > $10 → refused at admission, no spend.
+  const before = calls.createInvocation.length;
+  await assert.rejects(() => start(22), /would be exceeded|Raise the budget/);
+  assert.equal(calls.createInvocation.length, before, "the refused run never dispatched");
+
+  // Settle the first run through the REAL settle path (cancelAutoRun →
+  // setAutoRunStatus("cancelled")) — that wiring releases the hold.
+  svc.cancelAutoRun(firstRun.autoRun.id);
+  assert.equal(m3.budgetStatusFor(sourceProjectId).reservedUsd, 0, "settling frees the hold");
+
+  const thirdRun = await start(23);
+  assert.equal(thirdRun.autoRun.status, "running", "a third run fits once the first settled");
 });
 
 test("O1 reaper: an orphaned active run (invocation gone) is failed", async () => {
