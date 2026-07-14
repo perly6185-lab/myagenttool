@@ -617,7 +617,16 @@ function validateCodexExecInput(input = {}) {
     return { ok: false, status: 400, body: { error: "task_too_long", maxLength: 4000 } };
   }
   const approvalMode = input.approvalMode === undefined ? "ask" : String(input.approvalMode);
-  // Phase 1 supports ask + auto only (design §11.1); full is deferred.
+  // codex.exec offers ask + auto only. `full` is intentionally NOT offered
+  // (design §11.1): for exec, `auto` already auto-approves every non-sensitive
+  // request while forcing manual review on the sensitive-pattern list — so a
+  // "full that keeps the fallback" would be identical to `auto`, and a "full that
+  // bypasses the fallback" would auto-approve rm -rf / secret access on an
+  // autonomous code-writer. Bypassing the guardrail must be a separate, explicit
+  // danger flag, never a routine approvalMode.
+  if (approvalMode === "full") {
+    return { ok: false, status: 400, body: { error: "invalid_approval_mode", message: "codex.exec does not offer approvalMode \"full\"; use \"auto\" (auto-approves non-sensitive requests, forces manual review on sensitive ones)." } };
+  }
   if (!["ask", "auto"].includes(approvalMode)) {
     return { ok: false, status: 400, body: { error: "invalid_approval_mode" } };
   }
