@@ -124,13 +124,31 @@ export function createCodexExecImportService({
 
   // The change is promotable only when its most recent review approved it. A
   // rejected/feedback (or unreviewed) change is not approved — Phase 3 promote
-  // will gate on this.
+  // gates on this.
   function isExecChangeApproved(execChangeId) {
     const review = state.codexExecChangeReviews.find((item) => item.execChangeId === execChangeId);
     return review?.decision === "approved";
   }
 
-  return { recordCodexExecChanges, createCodexExecReview, isExecChangeApproved };
+  // Phase 3 gate: an exec run's changeset is promotable only when it produced at
+  // least one change and EVERY change has been approved. Returns the unapproved
+  // files so the caller can report exactly what still needs review — a partially
+  // reviewed changeset must never reach a PR.
+  function execRunPromotionGate(invocationId) {
+    const changes = (state.codexExecChanges ?? []).filter((change) => change.invocationId === invocationId);
+    if (changes.length === 0) {
+      return { ok: false, reason: "no_changes", changes, unapproved: [] };
+    }
+    const unapproved = changes.filter((change) => !isExecChangeApproved(change.id));
+    return {
+      ok: unapproved.length === 0,
+      reason: unapproved.length === 0 ? null : "changes_not_approved",
+      changes,
+      unapproved: unapproved.map((change) => ({ execChangeId: change.id, file: change.file, action: change.action })),
+    };
+  }
+
+  return { recordCodexExecChanges, createCodexExecReview, isExecChangeApproved, execRunPromotionGate };
 }
 
 function normalizeExecReviewDecision(value) {
