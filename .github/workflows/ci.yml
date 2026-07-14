@@ -152,6 +152,7 @@ jobs:
         uses: actions/setup-node@v5
         with:
           node-version: 22
+          package-manager-cache: false
 
       - name: Verify Application install contract
         run: node --test apps/server/test/application-install-plans.test.mjs apps/desktop/test/application-installer.test.mjs
