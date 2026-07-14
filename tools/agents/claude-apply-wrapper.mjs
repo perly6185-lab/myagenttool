@@ -13,48 +13,62 @@ const TOOL = "claude.apply.patch";
 const options = parseArgs(process.argv.slice(2));
 requireApplyInputs(options);
 
-console.log(`Claude apply started: ${options.cwd}`);
+// `--reverse` is the governed ROLLBACK: the exact same patch the server holds on
+// the authorization, undone with git's own reversal. Same check-then-apply
+// discipline in both directions — a reverse that does not check cleanly (e.g. the
+// worktree moved on since the apply) is refused, never force-applied.
+const direction = options.reverse ? ["--reverse"] : [];
+const word = options.reverse ? "reverse" : "apply";
+
+console.log(`Claude ${word} started: ${options.cwd}`);
 
 // The file list is derived from git, never the model — `--numstat` reports exactly
 // which files this patch touches without applying anything.
-const numstat = git(options.cwd, ["apply", "--numstat", "--", options.patchFile], { allowFailure: true });
+const numstat = git(options.cwd, ["apply", ...direction, "--numstat", "--", options.patchFile], { allowFailure: true });
 const files = parseNumstat(numstat.stdout);
 
 // Verify before writing. A patch that does not apply cleanly is refused, not
 // force-applied — a half-applied worktree is worse than a rejected one.
-const check = git(options.cwd, ["apply", "--check", "--", options.patchFile], { allowFailure: true });
+const check = git(options.cwd, ["apply", ...direction, "--check", "--", options.patchFile], { allowFailure: true });
 if (check.status !== 0) {
   emit({
     applied: false,
+    reversed: options.reverse,
     appliedFiles: [],
     verification: { checkPassed: false, error: truncate(check.stderr) },
     rollback: null,
-    summary: "Patch did not apply cleanly; nothing was written.",
+    summary: `Patch did not ${word} cleanly; nothing was written.`,
   }, /* exitCode */ 1);
 }
 
-const apply = git(options.cwd, ["apply", "--", options.patchFile], { allowFailure: true });
+const apply = git(options.cwd, ["apply", ...direction, "--", options.patchFile], { allowFailure: true });
 if (apply.status !== 0) {
   // --check passed but apply failed (rare: races/permissions). Report as not
   // applied; git apply is atomic, so a failed apply leaves the tree untouched.
   emit({
     applied: false,
+    reversed: options.reverse,
     appliedFiles: [],
     verification: { checkPassed: true, error: truncate(apply.stderr) },
     rollback: null,
-    summary: "git apply failed after a clean check; nothing was written.",
+    summary: `git ${word} failed after a clean check; nothing was written.`,
   }, /* exitCode */ 1);
 }
 
 emit({
   applied: true,
+  reversed: options.reverse,
   appliedFiles: files,
   verification: { checkPassed: true },
   // git apply is reversible: re-running the SAME patch with --reverse undoes it.
   // The server holds the patch (on the authorization), so rollback re-invokes this
-  // runner with --reverse. No rollback state is stored on disk here.
-  rollback: { available: true, strategy: "git_apply_reverse", command: "git apply --reverse" },
-  summary: `Applied a Claude patch touching ${files.length} file(s).`,
+  // runner with --reverse. A completed rollback is itself not re-reversible here.
+  rollback: options.reverse
+    ? null
+    : { available: true, strategy: "git_apply_reverse", command: "git apply --reverse" },
+  summary: options.reverse
+    ? `Rolled back a Claude patch touching ${files.length} file(s).`
+    : `Applied a Claude patch touching ${files.length} file(s).`,
 }, /* exitCode */ 0);
 
 function emit(output, exitCode) {
@@ -69,11 +83,12 @@ function emit(output, exitCode) {
 }
 
 function parseArgs(args) {
-  const parsed = { cwd: null, patchFile: null };
+  const parsed = { cwd: null, patchFile: null, reverse: false };
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
     if (arg === "--cwd") parsed.cwd = requireValue(args, ++index, arg);
     else if (arg === "--patch-file") parsed.patchFile = requireValue(args, ++index, arg);
+    else if (arg === "--reverse") parsed.reverse = true;
     else if (arg === "--help" || arg === "-h") { printHelp(); process.exit(0); }
     else fail(`Unsupported Claude apply wrapper argument: ${arg}`);
   }
@@ -148,6 +163,6 @@ function fail(message) {
 
 function printHelp() {
   console.log(`Usage:
-  node tools/agents/claude-apply-wrapper.mjs --cwd <worktree> --patch-file <path>
+  node tools/agents/claude-apply-wrapper.mjs --cwd <worktree> --patch-file <path> [--reverse]
 `);
 }

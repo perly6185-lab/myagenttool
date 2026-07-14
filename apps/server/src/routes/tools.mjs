@@ -11,7 +11,19 @@ export async function handleToolRoutes({
   listTools,
   getTool,
   createToolInvocation,
+  rollbackClaudeApply,
 }) {
+  // Governed rollback of an applied Claude patch authorization (#914 follow-up):
+  // bound to the authorization artifact (like the codex-exec promote gate), and
+  // approval-gated inside the service — a fresh single-use grant per rollback.
+  const rollbackMatch = url.pathname.match(/^\/api\/claude-apply\/authorizations\/([^/]+)\/rollback$/);
+  if (req.method === "POST" && rollbackMatch && typeof rollbackClaudeApply === "function") {
+    const body = await readJson(req);
+    const result = rollbackClaudeApply(decodeURIComponent(rollbackMatch[1]), body ?? {}, actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
   if (req.method === "GET" && url.pathname === "/api/tools") {
     sendJson(res, 200, { tools: listTools() });
     return true;

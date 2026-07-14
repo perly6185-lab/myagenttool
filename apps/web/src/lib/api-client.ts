@@ -309,6 +309,14 @@ export const api = {
   /** Mint a single-use, action-scoped approval grant — the real token behind approvalToken (APPROVAL_GRANTS.md). */
   issueApprovalGrant: (action: string, targetId: string) =>
     request<{ grantId: string; token: string; expiresAt: string }>("POST", "/api/approvals/grants", { action, targetId }),
+  /** Governed rollback of an applied Claude patch authorization (#914): requires a
+   * fresh single-use grant for (rollback_patch, authorizationId). */
+  rollbackClaudeApply: (authorizationId: string, approvalToken: string) =>
+    request<{ authorizationId: string; status: string; rollbackInvocationId: string }>(
+      "POST",
+      `/api/claude-apply/authorizations/${encodeURIComponent(authorizationId)}/rollback`,
+      { approvalToken },
+    ),
   /** Loop promotion refusals (tools/ai), for the console refusal lens (refusal model #758). */
   getLoopRefusals: () => request<LoopRefusalsResponse>("GET", "/api/loop-refusals"),
   getApplicationRecoveryArchive: (id: string, limit = 50) =>

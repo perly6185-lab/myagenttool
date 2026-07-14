@@ -266,6 +266,19 @@ the authorization transitions to `applied` with the file list + reversible
 rollback, and the rollback genuinely reverts — proving the patch reaches the
 bridge via invocation metadata (it is stripped only from public state).
 
+Governed rollback (follow-up, shipped): the recorded rollback guidance is an
+executable action, not just text. `POST
+/api/claude-apply/authorizations/:id/rollback` requires a fresh single-use grant
+for `(rollback_patch, authorizationId)` — undoing a write is a write — then
+dispatches the same runner with `--reverse` over the same server-held patch. The
+wrapper enforces check-then-apply in reverse too, so a reverse that no longer
+checks cleanly (the worktree moved on) is refused with nothing written. Success
+retires the authorization (`rolled_back`, guidance consumed); failure returns it
+to `applied` with the error recorded so the operator can retry under a fresh
+grant. The Approvals view renders each authorization (status, files, bounded
+patch preview) with a grant-backed Roll back action, and the e2e smoke drives the
+whole rollback leg through the bridge.
+
 Phases are stage-gated. Phase 2 implementation starts only after Phase 1
 acceptance is verified; the same rule applies between later phases.
 

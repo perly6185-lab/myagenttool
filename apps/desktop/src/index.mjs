@@ -1606,6 +1606,11 @@ function governedApplyWrapperArgs(renderedArgs, payload) {
     writeFileSync(patchFile, patch, "utf8");
     injected.push("--patch-file", patchFile);
   }
+  // A governed rollback run re-applies the same server-held patch in reverse; the
+  // runner then refuses a reverse that no longer checks cleanly.
+  if (metadata.claudeApplyRollback === true && !hasFlag(injected, "--reverse")) {
+    injected.push("--reverse");
+  }
   return injected;
 }
 
