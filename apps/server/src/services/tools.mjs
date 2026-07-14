@@ -14,6 +14,10 @@ import {
   CLAUDE_REVIEW_TOOL_CONTRACT,
   isGovernedClaudeReviewAgent,
 } from "./claude-agent.mjs";
+import {
+  CLAUDE_EXPLAIN_TOOL_CONTRACT,
+  isGovernedClaudeExplainAgent,
+} from "./claude-explain-agent.mjs";
 import { CLAUDE_APPLICATION_ID } from "./claude-application.mjs";
 import { teamOf } from "../runtime/auth.mjs";
 
@@ -63,6 +67,22 @@ export function createToolService({
         outputCollection: "claudeReviewFindings",
         agentLabel: "Claude",
         application: application ? { id: application.id, capability: `app.${application.id}.review.diff` } : null,
+      });
+    }
+    if (name === CLAUDE_EXPLAIN_TOOL_CONTRACT.name) {
+      const application = resolveClaudeApp();
+      return createReviewInvocation({
+        input,
+        actor,
+        contract: CLAUDE_EXPLAIN_TOOL_CONTRACT,
+        validate: validateClaudeExplainInput,
+        selectAgent: selectClaudeExplainAgent,
+        buildTask: buildClaudeExplainTask,
+        // Read-only analysis is not queryable evidence: the explanation rides the
+        // invocation result and the generic Application-result lineage.
+        outputCollection: "invocations",
+        agentLabel: "Claude",
+        application: application ? { id: application.id, capability: `app.${application.id}.explain.diff` } : null,
       });
     }
     if (name === CODEX_EXEC_TOOL_CONTRACT.name) {
@@ -157,8 +177,8 @@ export function createToolService({
     };
   }
 
-  function createReviewInvocation({ input, actor, contract, selectAgent, buildTask, outputCollection, agentLabel, application = null }) {
-    const validation = validateReviewInput(input);
+  function createReviewInvocation({ input, actor, contract, selectAgent, buildTask, outputCollection, agentLabel, application = null, validate = validateReviewInput }) {
+    const validation = validate(input);
     if (!validation.ok) {
       return { status: validation.status, body: validation.body };
     }
@@ -325,6 +345,7 @@ export function createToolService({
     const ccusageAvailable = ccusageApp && ["registered", "active"].includes(ccusageApp.status);
     const codexReviewAgents = (state.agents ?? []).filter(isGovernedCodexReviewAgent);
     const claudeReviewAgents = (state.agents ?? []).filter(isGovernedClaudeReviewAgent);
+    const claudeExplainAgents = (state.agents ?? []).filter(isGovernedClaudeExplainAgent);
     // Only surface the write-capable exec tool when the feature flag is on, so an
     // off-by-default deployment has no discoverable or invokable Codex write path.
     const codexExecAgents = isCodexExecEnabled() ? (state.agents ?? []).filter(isGovernedCodexExecAgent) : [];
@@ -332,6 +353,7 @@ export function createToolService({
       ...(ccusageAvailable ? [buildCcusageToolDescriptor(ccusageApp)] : []),
       ...(codexReviewAgents.length ? [buildCodexReviewToolDescriptor(codexReviewAgents)] : []),
       ...(claudeReviewAgents.length ? [buildClaudeReviewToolDescriptor(claudeReviewAgents, resolveClaudeApp())] : []),
+      ...(claudeExplainAgents.length ? [buildClaudeExplainToolDescriptor(claudeExplainAgents, resolveClaudeApp())] : []),
       ...(codexExecAgents.length ? [buildCodexExecToolDescriptor(codexExecAgents)] : []),
     ];
   }
@@ -346,6 +368,10 @@ export function createToolService({
 
   function selectClaudeReviewAgent() {
     return (state.agents ?? []).find(isGovernedClaudeReviewAgent) ?? null;
+  }
+
+  function selectClaudeExplainAgent() {
+    return (state.agents ?? []).find(isGovernedClaudeExplainAgent) ?? null;
   }
 
   function resolveToolProjectId(projectId, actor) {
@@ -473,6 +499,32 @@ function buildClaudeReviewToolDescriptor(agents, application = null) {
     authoritativeBilling: false,
     outputCollection: "claudeReviewFindings",
     application: application ? { id: application.id, capability: `app.${application.id}.review.diff` } : null,
+  };
+}
+
+function buildClaudeExplainToolDescriptor(agents, application = null) {
+  return {
+    name: CLAUDE_EXPLAIN_TOOL_CONTRACT.name,
+    version: CLAUDE_EXPLAIN_TOOL_CONTRACT.version,
+    displayName: "Claude Diff Explain",
+    description: "Run a governed read-only Claude explanation over a project worktree diff.",
+    riskLevel: "low",
+    riskTags: ["read_only", "read_project", "code_analysis", "local_agent"],
+    requiresLocalDevice: true,
+    inputSchema: CLAUDE_EXPLAIN_TOOL_CONTRACT.inputSchema,
+    outputSchema: CLAUDE_EXPLAIN_TOOL_CONTRACT.outputSchema,
+    agents: agents.map((agent) => ({
+      id: agent.id,
+      name: agent.name,
+      status: agent.status,
+      mode: "diff-explain",
+    })),
+    approvalPolicy: {
+      defaultReadOnlyAnalysis: "allowed",
+    },
+    authoritativeBilling: false,
+    outputCollection: "invocations",
+    application: application ? { id: application.id, capability: `app.${application.id}.explain.diff` } : null,
   };
 }
 
@@ -661,6 +713,38 @@ function validateClaudeReviewInput(input = {}) {
   return validateReviewInput(input);
 }
 
+// Explain takes no severityFloor (it does not judge), so it cannot reuse the
+// review validator — a stray severityFloor must be a hard unknown_field, matching
+// the contract's additionalProperties:false.
+function validateClaudeExplainInput(input = {}) {
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    return { ok: false, status: 400, body: { error: "invalid_input", message: "Tool input must be an object." } };
+  }
+  const allowed = new Set(["projectId", "worktreeId", "instruction"]);
+  const unknown = Object.keys(input).filter((key) => !allowed.has(key));
+  if (unknown.length) {
+    return { ok: false, status: 400, body: { error: "unknown_field", fields: unknown } };
+  }
+  const worktreeId = stringOrNull(input.worktreeId);
+  if (!worktreeId) {
+    return { ok: false, status: 400, body: { error: "worktree_required" } };
+  }
+  const instruction = input.instruction === undefined || input.instruction === null
+    ? null
+    : String(input.instruction).trim();
+  if (instruction && instruction.length > 1200) {
+    return { ok: false, status: 400, body: { error: "instruction_too_long", maxLength: 1200 } };
+  }
+  return {
+    ok: true,
+    value: {
+      projectId: stringOrNull(input.projectId),
+      worktreeId,
+      instruction,
+    },
+  };
+}
+
 function buildCcusageTask(value) {
   const filters = [
     value.since ? `since ${value.since}` : null,
@@ -680,6 +764,11 @@ function buildCodexReviewTask(value) {
 function buildClaudeReviewTask(value) {
   const suffix = value.instruction ? ` Instruction: ${value.instruction}` : "";
   return `Review the selected worktree diff with Claude. Severity floor: ${value.severityFloor}.${suffix}`;
+}
+
+function buildClaudeExplainTask(value) {
+  const suffix = value.instruction ? ` Instruction: ${value.instruction}` : "";
+  return `Explain the selected worktree diff with Claude.${suffix}`;
 }
 
 function buildCodexExecTask(value) {
