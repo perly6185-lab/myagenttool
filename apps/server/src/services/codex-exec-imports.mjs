@@ -106,6 +106,11 @@ export function createCodexExecImportService({
       changeRisk: change.changeRisk ?? "unknown",
       decision,
       comment: comment.length <= 1000 ? comment : `${comment.slice(0, 997)}...`,
+      // Feedback/rejected reviews carry a ready-to-run follow-up prompt. Because
+      // the worktree model is REUSE (not fresh-per-call), the caller re-invokes
+      // codex.exec with the SAME worktreeId and this prompt, and the fix
+      // accumulates in place on top of the reviewed change.
+      followUpPrompt: decision === "approved" ? null : execChangeFollowUpPrompt(change, comment),
       reviewedBy: actor?.userId ?? "usr_local",
       auditState: "recorded",
       createdAt,
@@ -117,7 +122,7 @@ export function createCodexExecImportService({
       type: decision === "feedback" ? "codex_exec_change_feedback_requested" : "codex_exec_change_reviewed",
       level: decision === "rejected" ? "warn" : "info",
       message: execReviewMessage(review),
-      data: { codexExecChangeReviewId: review.id, execChangeId: change.id, decision },
+      data: { codexExecChangeReviewId: review.id, execChangeId: change.id, decision, followUpPrompt: review.followUpPrompt },
     });
     return review;
   }
@@ -160,6 +165,18 @@ function execReviewMessage(review) {
   if (review.decision === "approved") return `Codex exec change approved: ${review.action} ${review.file}.`;
   if (review.decision === "rejected") return `Codex exec change rejected: ${review.action} ${review.file}.`;
   return `Codex exec change feedback recorded for ${review.action} ${review.file}.`;
+}
+
+// A ready-to-run task for the follow-up codex.exec (same worktree, reuse model).
+// Mirrors the managed-session codexChangeFollowUpPrompt shape.
+function execChangeFollowUpPrompt(change, comment) {
+  const trimmed = String(comment ?? "").replace(/\s+/g, " ").trim();
+  const boundedComment = trimmed.length <= 500 ? trimmed : `${trimmed.slice(0, 497)}...`;
+  return [
+    "Follow up on a reviewed Codex exec change in this worktree.",
+    `Change: ${change.action} ${change.file}`,
+    boundedComment ? `Reviewer comment: ${boundedComment}` : "Address the reviewer's concerns.",
+  ].join("\n");
 }
 
 function isCodexExecResult(result) {

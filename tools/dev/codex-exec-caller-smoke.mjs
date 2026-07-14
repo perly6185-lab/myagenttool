@@ -146,6 +146,20 @@ try {
   // Phase 2b: a human reviews the changeset. Approval is recorded and gates a
   // later promote; the review is itself trust-ledger evidence.
   const greetingChange = result.changes.find((change) => change.file === "greeting.txt");
+
+  // Feedback → follow-up loop: a feedback review yields a ready-to-run prompt for
+  // the caller to re-invoke codex.exec with the SAME worktreeId (reuse model), so
+  // the fix accumulates on top of the reviewed change.
+  const feedbackResp = await request("POST", "/api/codex-exec/change-reviews", {
+    execChangeId: greetingChange.id,
+    decision: "feedback",
+    comment: "Please add a trailing newline.",
+  });
+  assert(feedbackResp.execChangeReview?.decision === "feedback", "feedback review should be recorded");
+  const followUp = feedbackResp.execChangeReview?.followUpPrompt ?? "";
+  assert(followUp.includes("greeting.txt") && followUp.includes("trailing newline"), "feedback should yield a follow-up prompt naming the change + comment");
+  ok("feedback review yields a follow-up prompt for a same-worktree re-run");
+
   const reviewResp = await request("POST", "/api/codex-exec/change-reviews", {
     execChangeId: greetingChange.id,
     decision: "approved",

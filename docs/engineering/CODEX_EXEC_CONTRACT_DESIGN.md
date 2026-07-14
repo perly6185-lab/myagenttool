@@ -202,9 +202,12 @@ pr-governance blocks it. Run `pnpm pr:evidence` before pushing each slice.
    behind a feature flag**, matching the tier-2 sandbox rollout. Enablement is an
    explicit opt-in, not on-by-default even for owner-team projects.
 
-Still open:
-
-3. **Worktree lifecycle** — fresh worktree per `codex.exec` call, or reuse a
-   caller-supplied existing worktree (compare-run style)? Affects cleanup/disk.
+3. **Worktree lifecycle — RESOLVED (2026-07-14).** **Reuse** a caller-supplied
+   existing worktree; do NOT auto-create a fresh worktree per call. `worktreeId`
+   stays required. Consequence: successive exec runs on the same `worktreeId`
+   accumulate in place — which is what the feedback → follow-up loop relies on (a
+   `feedback`/`rejected` review yields a `followUpPrompt`; the caller re-invokes
+   `codex.exec` with the same `worktreeId` and the fix lands on top). No
+   auto-create means no new disk/cleanup policy to own.
 4. **Changeset authority** — confirm git-derived diff is the source of truth over
    the model's self-report (this draft assumes yes).
