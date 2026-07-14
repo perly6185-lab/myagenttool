@@ -1322,6 +1322,39 @@ export interface KnownApplicationCatalogEntry {
   installHint: string;
 }
 
+export interface ApplicationInstallPlan {
+  schemaVersion: string;
+  recipeVersion: string;
+  planId: string;
+  fingerprint: string;
+  application: { name: string; displayName: string };
+  target: { projectId: string | null; deviceId: string; platform: string; architecture: string | null };
+  package: {
+    provider: string;
+    identifier: string;
+    resolvedIdentifier: string;
+    versionPolicy: { kind: string; channel: string; allowCallerOverride: boolean };
+  };
+  execution: { executable: string; args: string[]; shell: false; elevated: boolean };
+  risk: { level: string; reasons: string[] };
+  approval: { required: true; action: "application.install"; bindsToPlanFingerprint: true };
+  policy: { timeoutMs: number; cancellable: boolean };
+  postInstallProbe: { executable: string; args: string[]; timeoutMs: number };
+  summary: string;
+}
+
+export interface ApplicationInstallRun {
+  id: string;
+  planId: string;
+  deviceId: string;
+  status: "queued" | "running" | "cancelling" | "succeeded" | "failed" | "cancelled" | "timed_out" | "refused";
+  progress: Array<{ at: string; type: string; summary: string }>;
+  result?: { status: string; classification: string; summary: string; exitCode: number | null; durationMs?: number | null } | null;
+  createdAt: string;
+  startedAt?: string | null;
+  completedAt?: string | null;
+}
+
 export interface ApplicationCapability {
   name: string;
   version?: string;
