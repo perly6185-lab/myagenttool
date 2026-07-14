@@ -34,7 +34,7 @@ test("P1 HTTP catalog and plan endpoints are additive and plan-only", async () =
   const catalog = await call("/api/applications/install/catalog");
   assert.equal(catalog.status, 200);
   assert.deepEqual(catalog.body.applications.map((entry) => entry.name), ["git", "ccusage", "claude"]);
-  const planned = await call("/api/applications/install/plan", { method: "POST", body: { name: "git", deviceId: state.device.id, projectId: state.projects[0].id } });
+  const planned = await call("/api/applications/install/plan", { method: "POST", body: { name: "ccusage", deviceId: state.device.id, projectId: state.projects[0].id } });
   assert.equal(planned.status, 200, JSON.stringify(planned.body));
   assert.equal(planned.body.plan.execution.shell, false);
   assert.equal(state.events.some((event) => /install/i.test(event.type)), false, "P1 must not execute or enqueue installation work");
