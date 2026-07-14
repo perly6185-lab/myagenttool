@@ -943,6 +943,9 @@ export function readProjectTree(project, { relativePath = "", search = "" } = {}
     entries,
     truncated: entries.length >= 200,
     gitSummary: gitSummary(gitStatus),
+    // True when `git status` could not be read (#905) — the tree is not known
+    // clean, it's unknown. The web can flag it instead of implying no changes.
+    gitStatusUnavailable: Boolean(gitStatus.unavailable),
   };
 }
 
@@ -1106,6 +1109,10 @@ function computeGitStatusMap(root) {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"],
       timeout: 3_000,
+      // Match worktreeDiff (#905): without this, execFileSync defaults to 1 MiB and
+      // a large `status --ignored` throws ENOBUFS — which the catch below would turn
+      // into a silent "clean" tree.
+      maxBuffer: 64 * 1024 * 1024,
     });
     for (const line of output.split(/\r?\n/)) {
       if (!line.trim()) continue;
@@ -1118,6 +1125,9 @@ function computeGitStatusMap(root) {
       statuses.set(filePath, status);
     }
   } catch {
+    // Distinguish "status unavailable" (git failed / missing / not a repo) from a
+    // genuinely clean tree (#905), so a broken repo isn't badged clean silently.
+    statuses.unavailable = true;
     return statuses;
   }
   return statuses;
