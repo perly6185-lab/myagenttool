@@ -13,6 +13,7 @@ This index lists accepted engineering decisions that guide implementation.
 - [ADR 0007: Re-home ccusage as an Application](ADR_0007_CCUSAGE_AS_APPLICATION.md)
 - [ADR 0008: Executable Applications are platform-shipped, not user-registered](ADR_0008_APPLICATION_REGISTRATION_BOUNDARY.md)
 - [ADR 0009: An Application descriptor is immutable — change means re-register](ADR_0009_APPLICATION_DESCRIPTOR_IMMUTABLE.md)
+- [ADR 0010: An external Application's authorization is readiness, not a capability](ADR_0010_EXTERNAL_CREDENTIAL_READINESS.md)
 
 ## M0 Decision Summary
 
