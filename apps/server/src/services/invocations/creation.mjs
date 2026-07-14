@@ -179,6 +179,14 @@ export function createInvocationCreationRuntime({
       options: {
         timeoutSeconds: Number(options.timeoutSeconds ?? 30),
         requireLocalApproval: Boolean(options.requireLocalApproval ?? policy.decision === "requires_local_approval"),
+        // MCP tool selection (#975): the bridge's MCP client resolves the tool
+        // from options.toolName / options.toolArguments, but the gateway never
+        // carried them — a multi-tool MCP agent could not be invoked with a
+        // chosen tool. Present only when the caller set them.
+        ...(options.toolName ? { toolName: String(options.toolName) } : {}),
+        ...(options.toolArguments && typeof options.toolArguments === "object" && !Array.isArray(options.toolArguments)
+          ? { toolArguments: options.toolArguments }
+          : {}),
         codexSessionMode,
         codexResumeSessionId,
         codexWorkspacePolicy,
