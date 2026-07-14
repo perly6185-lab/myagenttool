@@ -1,5 +1,7 @@
 import { denyForeignProject, teamOf } from "../runtime/auth.mjs";
+import { findDevice, primaryDevice } from "../runtime/device.mjs";
 import { createKnownApplicationRegistration, listKnownApplications } from "../services/application-catalog.mjs";
+import { createApplicationInstallPlan, listApplicationInstallCatalog } from "../services/application-install-plans.mjs";
 
 export async function handleApplicationRoutes({
   req,
@@ -34,6 +36,38 @@ export async function handleApplicationRoutes({
 
   if (req.method === "GET" && url.pathname === "/api/applications/quick-register/catalog") {
     sendJson(res, 200, { applications: listKnownApplications() });
+    return true;
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/applications/install/catalog") {
+    sendJson(res, 200, { applications: listApplicationInstallCatalog() });
+    return true;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/applications/install/plan") {
+    const body = await readJson(req);
+    if (!body || typeof body !== "object" || Array.isArray(body)) {
+      sendJson(res, 400, { error: "invalid_install_plan_request", message: "Request body must be an object." });
+      return true;
+    }
+    if (body.projectId && denyForeignProject({ res, sendJson, state, actor, projectId: body.projectId, notFound: { error: "project_not_found" } })) {
+      return true;
+    }
+    const device = body.deviceId ? findDevice(state, body.deviceId) : primaryDevice(state);
+    const owner = device && (state.users ?? []).find((user) => user.id === device.ownerUserId);
+    if (!device || (actor && owner && owner.teamId !== actor.teamId)) {
+      sendJson(res, 404, { error: "device_not_found" });
+      return true;
+    }
+    try {
+      const plan = createApplicationInstallPlan(body, { device, projectId: body.projectId ?? null });
+      sendJson(res, 200, { plan });
+    } catch (error) {
+      sendJson(res, Number.isInteger(error?.status) ? error.status : 400, {
+        error: typeof error?.code === "string" ? error.code : "invalid_install_plan_request",
+        message: error?.message ?? "Installation plan could not be created.",
+      });
+    }
     return true;
   }
 
