@@ -446,17 +446,40 @@ export function createApplicationService({
     return app;
   }
 
-  // One health check: source availability. Only local/git sources have a
-  // materialized path to check; npm/manual read `unsupported` — never a
-  // fabricated verdict, never an auto-transition.
+  // One health check: source availability. local/git check the materialized
+  // path; npm and binary sources have no path, so derive a real signal from the
+  // most recent run (#885, #906) — a missing/broken binary (e.g. the git app on a
+  // device without git) shows as unhealthy on the next sweep, not only when the
+  // next invocation fails. manual stays `unsupported`. Never a fabricated verdict.
   function checkApplicationHealth(app) {
     const supported = ["local", "git"].includes(app.source?.type) && typeof app.path === "string" && app.path;
-    if (!supported) {
-      return { status: "unsupported", reason: `source type ${app.source?.type ?? "unknown"} has no local materialization to check` };
+    if (supported) {
+      return existsSync(app.path)
+        ? { status: "healthy", reason: null }
+        : { status: "unhealthy", reason: `source path ${app.path} does not exist` };
     }
-    return existsSync(app.path)
-      ? { status: "healthy", reason: null }
-      : { status: "unhealthy", reason: `source path ${app.path} does not exist` };
+    if (["npm", "binary"].includes(app.source?.type)) {
+      return checkApplicationHealthFromRuns(app);
+    }
+    return { status: "unsupported", reason: `source type ${app.source?.type ?? "unknown"} has no local materialization to check` };
+  }
+
+  // Derive an npm app's health from its newest terminal run: a failed run (e.g.
+  // exit 127 = binary not installed) is unhealthy; a success is healthy; no runs
+  // yet stays `unsupported` (never a guessed verdict).
+  function checkApplicationHealthFromRuns(app) {
+    const terminal = new Set(["succeeded", "failed", "cancelled", "timed_out", "expired", "rejected"]);
+    const latest = (state.invocations ?? [])
+      .filter((inv) => inv.options?.metadata?.applicationId === app.id && terminal.has(inv.status))
+      .sort((a, b) => String(b.completedAt ?? b.createdAt ?? "").localeCompare(String(a.completedAt ?? a.createdAt ?? "")))[0];
+    if (!latest) {
+      return { status: "unsupported", reason: "npm source has no completed run yet to derive health from" };
+    }
+    if (latest.status === "succeeded") {
+      return { status: "healthy", reason: null };
+    }
+    const detail = latest.result?.output?.error ?? latest.result?.summary ?? `run ${latest.status}`;
+    return { status: "unhealthy", reason: `last run ${latest.status}: ${String(detail).slice(0, 200)}` };
   }
 
   // The periodic sweep (driven by index.mjs's slow tick; tests call it directly).

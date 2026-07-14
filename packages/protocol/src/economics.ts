@@ -157,6 +157,8 @@ export interface ImportedUsageEstimate {
   model?: string | null;
   inputTokens?: number | null;
   outputTokens?: number | null;
+  /** Cache read + creation tokens, when the ccusage row reports them. */
+  cachedTokens?: number | null;
   totalTokens?: number | null;
   estimatedCostUsd?: number | null;
   currency: CurrencyCode;

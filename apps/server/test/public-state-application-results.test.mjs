@@ -51,6 +51,17 @@ test("applicationResults are scoped to the actor's team by project", () => {
   assert.deepEqual(idsOf(build({ teamId: TEAM_B }, rows).applicationResults), ["res_b"]);
 });
 
+test("#904: a null-projectId repo_state row is scoped by ownerTeamId, not globally visible", () => {
+  // app_git is a binary source with no projectId — the row must NOT leak to every
+  // team via projectVisible(null); it belongs to its owning team only.
+  const rows = [
+    { id: "res_a", invocationId: "inv_a", projectId: null, ownerTeamId: TEAM_A, status: "parsed", data: { branch: { name: "main" } }, text: "team a repo" },
+    { id: "res_b", invocationId: "inv_b", projectId: null, ownerTeamId: TEAM_B, status: "parsed", data: { branch: { name: "dev" } }, text: "team b repo" },
+  ];
+  assert.deepEqual(idsOf(build({ teamId: TEAM_A }, rows).applicationResults), ["res_a"], "team A sees only its own unscoped result");
+  assert.deepEqual(idsOf(build({ teamId: TEAM_B }, rows).applicationResults), ["res_b"], "team B does not see team A's repo state");
+});
+
 test("unscoped (single-team / no actor) passes every result through", () => {
   const rows = [
     { id: "res_a", invocationId: "inv_a", projectId: "proj_a", status: "parsed", data: {}, text: "x" },
