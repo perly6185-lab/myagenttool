@@ -21,11 +21,17 @@ import { spawn } from "node:child_process";
 // well-formed RESULT via the non-JSON fallback).
 const MAX_CAPTURE_BYTES = 4 * 1024 * 1024;
 
+// Wall-clock bound on the spawned command (#907). Without it a blocking `git`
+// (broken index, a hook, a bad rev) hangs until the 120s agent kill. Default 60s,
+// overridable per-run via --timeout-ms or globally via env.
+const DEFAULT_WRAPPER_TIMEOUT_MS = Number(process.env.APPLICATION_WRAPPER_TIMEOUT_MS ?? 60_000);
+
 const options = parseArgs(process.argv.slice(2));
 if (!options.execCommand) fail("Missing --exec-command.");
 if (options.execCommand.startsWith("-")) fail("--exec-command must be a program, not a flag.");
 
-const { code, stdout, stderr } = await run(options.execCommand, options.execArgs, options.cwd);
+const timeoutMs = options.timeoutMs && options.timeoutMs > 0 ? options.timeoutMs : DEFAULT_WRAPPER_TIMEOUT_MS;
+const { code, stdout, stderr } = await run(options.execCommand, options.execArgs, options.cwd, timeoutMs);
 for (const line of stderr.split(/\r?\n/).map((item) => item.trim()).filter(Boolean)) {
   console.error(line);
 }
@@ -53,7 +59,7 @@ console.log(`RESULT ${JSON.stringify({
 })}`);
 
 function parseArgs(args) {
-  const parsed = { capability: null, execCommand: null, execArgs: [], cwd: null };
+  const parsed = { capability: null, execCommand: null, execArgs: [], cwd: null, timeoutMs: null };
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
     if (arg === "--capability") parsed.capability = requireValue(args, ++index, arg);
@@ -62,6 +68,7 @@ function parseArgs(args) {
     else if (arg === "--exec-command") parsed.execCommand = requireValueAllowingFlags(args, ++index, arg);
     else if (arg === "--exec-arg") parsed.execArgs.push(requireValueAllowingFlags(args, ++index, arg));
     else if (arg === "--cwd") parsed.cwd = requireValue(args, ++index, arg);
+    else if (arg === "--timeout-ms") parsed.timeoutMs = Number(requireValue(args, ++index, arg));
     else if (arg === "--help" || arg === "-h") { printHelp(); process.exit(0); }
     else fail(`Unsupported application wrapper argument: ${arg}`);
   }
@@ -83,7 +90,7 @@ function requireValueAllowingFlags(args, index, name) {
   return value;
 }
 
-function run(command, args, cwd) {
+function run(command, args, cwd, timeoutMs) {
   return new Promise((resolveResult) => {
     const child = spawn(command, args, {
       cwd: cwd || process.cwd(),
@@ -94,6 +101,10 @@ function run(command, args, cwd) {
     let stdout = "";
     let stderr = "";
     let truncated = false;
+    let timedOut = false;
+    const timer = timeoutMs > 0
+      ? setTimeout(() => { timedOut = true; try { child.kill("SIGKILL"); } catch { /* already gone */ } }, timeoutMs)
+      : null;
     const cap = (current, chunk) => {
       if (truncated) return current;
       const next = current + chunk.toString("utf8");
@@ -106,8 +117,13 @@ function run(command, args, cwd) {
     };
     child.stdout.on("data", (chunk) => { stdout = cap(stdout, chunk); });
     child.stderr.on("data", (chunk) => { stderr = cap(stderr, chunk); });
-    child.on("error", (error) => resolveResult({ code: 127, stdout, stderr: `${stderr}${error.message}` }));
-    child.on("close", (code) => resolveResult({ code: truncated ? 1 : (code ?? 1), stdout, stderr }));
+    child.on("error", (error) => { if (timer) clearTimeout(timer); resolveResult({ code: 127, stdout, stderr: `${stderr}${error.message}` }); });
+    child.on("close", (code) => {
+      if (timer) clearTimeout(timer);
+      // 124 = timed out (matches coreutils `timeout`); a fast fail beats the 120s agent kill.
+      if (timedOut) return resolveResult({ code: 124, stdout, stderr: `${stderr}\ncommand timed out after ${timeoutMs}ms` });
+      resolveResult({ code: truncated ? 1 : (code ?? 1), stdout, stderr });
+    });
   });
 }
 

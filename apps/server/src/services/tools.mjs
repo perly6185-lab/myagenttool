@@ -78,7 +78,9 @@ export function createToolService({
     // not bespoke agents. The ccusage app is a platform-shared asset and this tool
     // is the platform-wide authorization boundary, so we plan in platform context
     // (actor: null for the app tenancy gate) — ccusage reports are non-team-scoped
-    // local usage data. The real caller is still recorded via requestedBy.
+    // local usage data. The real caller is recorded on the invocation
+    // (requestedBy) AND stamped on the tool_invocation_created audit event (#884),
+    // so this deliberate tenancy bypass is attributable, never anonymous.
     const application = resolveCcusageApp();
     if (!application || !["registered", "active"].includes(application.status)) {
       return { status: 409, body: { error: "application_not_available", message: "The ccusage application is not registered. Run `pnpm ccusage:register-app`." } };
@@ -133,6 +135,10 @@ export function createToolService({
         version: CCUSAGE_TOOL_CONTRACT.version,
         report: value.report,
         agentId: runner.id,
+        // Audit the real caller of this platform-context (actor:null) run so the
+        // shared-asset tenancy bypass is attributable, not silent (#884).
+        requestedBy: actor?.userId ?? null,
+        platformContext: true,
       },
     });
     return {

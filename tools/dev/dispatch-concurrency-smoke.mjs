@@ -13,7 +13,11 @@ const AGENTS = {
 const findAgent = (id) => AGENTS[id] ?? null;
 
 function inv(id, status, agentId, dir, deliveryState = "queued", extra = {}) {
-  return { id, status, agentId, input: { metadata: { worktreePath: dir } }, delivery: { state: deliveryState }, ...extra };
+  // Metadata lives on `options.metadata`, matching real invocations
+  // (creation.mjs) and the #817 dispatch fix that reads the per-worktree dir key
+  // from there. Writing it under `input.metadata` (the pre-#817 shape) left every
+  // dir key "__default__", collapsing the per-worktree lock into a global one.
+  return { id, status, agentId, options: { metadata: { worktreePath: dir } }, delivery: { state: deliveryState }, ...extra };
 }
 function runtime(state, completeInvocation) {
   return createInvocationDispatchRuntime({

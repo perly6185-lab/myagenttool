@@ -3,6 +3,15 @@ import { CCUSAGE_APPLICATION_ID } from "./ccusage-application.mjs";
 
 const MAX_IMPORTED_USAGE_ESTIMATES = 1000;
 const MAX_IMPORTED_ROWS_PER_REPORT = 1000;
+const MAX_RAW_BYTES = 4000;
+
+// The row keys the extractor reads for a token/cost signal — used to tell a
+// legitimate single-row summary from an unrecognized wrapper object.
+const USAGE_SIGNAL_KEYS = [
+  "inputTokens", "input_tokens", "outputTokens", "output_tokens",
+  "totalTokens", "total_tokens", "tokens",
+  "totalCostUsd", "totalCostUSD", "costUsd", "costUSD", "totalCost", "cost",
+];
 
 export function createCcusageImportService({
   state,
@@ -15,7 +24,10 @@ export function createCcusageImportService({
     // Import estimates whether the report arrived via the bespoke governed
     // ccusage agent (source "ccusage") OR the ccusage Application's wrapper
     // capability (#355 Phase 3 — same ccusage `--json` rows, different transport).
-    // Additive: the governed-agent path is unchanged, so nothing regresses.
+    // NOTE (#887): the governed-agent transport (tools/agents/ccusage-wrapper.mjs)
+    // is RETAINED LEGACY, not dead code — it is still exercised by tests + the
+    // ccusage-agent smoke, so it stays; the live product path is the Application
+    // wrapper. Additive: the governed-agent path is unchanged, so nothing regresses.
     const viaGovernedAgent = isGovernedCcusageAgent(agent) && isCcusageResult(result);
     const viaApplication = isCcusageApplicationResult(invocation, result);
     if (!viaGovernedAgent && !viaApplication) {
@@ -24,9 +36,6 @@ export function createCcusageImportService({
     const allRows = normalizeReportRows(result.output.report);
     const droppedRowCount = Math.max(0, allRows.length - MAX_IMPORTED_ROWS_PER_REPORT);
     const report = allRows.slice(0, MAX_IMPORTED_ROWS_PER_REPORT);
-    if (!report.length) {
-      return [];
-    }
     const createdAt = now();
     const reportId = String(result.output.reportId ?? reportIdFromCapability(invocation) ?? "unknown");
     const filters = plainObjectOrNull(result.output.filters);
@@ -64,6 +73,7 @@ export function createCcusageImportService({
         model,
         inputTokens: nonNegativeNumber(row.inputTokens ?? row.input_tokens),
         outputTokens: nonNegativeNumber(row.outputTokens ?? row.output_tokens),
+        cachedTokens: cachedTokensOf(row),
         totalTokens: nonNegativeNumber(row.totalTokens ?? row.total_tokens ?? row.tokens),
         estimatedCostUsd,
         currency: String(row.currency ?? result.cost?.currency ?? "USD"),
@@ -72,7 +82,8 @@ export function createCcusageImportService({
         authoritative: false,
         offline: result.output.offline === undefined ? null : Boolean(result.output.offline),
         filters,
-        raw: row,
+        droppedRowCount,
+        raw: boundRaw(row),
         createdAt,
       };
     });
@@ -87,17 +98,27 @@ export function createCcusageImportService({
     );
     state.importedUsageEstimates.unshift(...records);
     state.importedUsageEstimates = state.importedUsageEstimates.slice(0, MAX_IMPORTED_USAGE_ESTIMATES);
+    // Always emit — a 0-row import (#883) must be distinguishable from "never
+    // ran", so an operator can tell a report ran and found nothing apart from a
+    // wedged/absent schedule.
     appendEvent({
       invocationId: invocation.id,
       type: "ccusage_imported_estimates_recorded",
-      level: "info",
-      message: `Imported ${records.length} ccusage estimate row(s) from ${reportId}.`,
+      // Warn when the report was truncated so the drop is observable, not silent (#886).
+      level: droppedRowCount > 0 ? "warn" : "info",
+      message: droppedRowCount > 0
+        ? `Imported ${records.length} ccusage estimate row(s) from ${reportId}; dropped ${droppedRowCount} over the ${MAX_IMPORTED_ROWS_PER_REPORT}-row cap.`
+        : records.length
+          ? `Imported ${records.length} ccusage estimate row(s) from ${reportId}.`
+          : `Ran ${reportId} ccusage report — no usage rows to import.`,
       data: {
         importedUsageEstimateIds: records.map((record) => record.id),
         reportId,
+        importedRecordCount: records.length,
         authoritative: false,
         amountSource: "imported_ccusage_report",
         droppedRowCount,
+        importedAt: createdAt,
       },
     });
     persistStateSoon();
@@ -151,9 +172,23 @@ function normalizeReportRows(report) {
         return report[key].filter(isPlainObject);
       }
     }
-    return [report];
+    // No recognized array. Keep the object as one row ONLY if it looks like a
+    // usage row (#886) — otherwise drop it rather than store an all-null phantom.
+    return looksLikeUsageRow(report) ? [report] : [];
   }
   return [];
+}
+
+function looksLikeUsageRow(row) {
+  return USAGE_SIGNAL_KEYS.some((key) => row[key] != null);
+}
+
+// Bound the raw row before it is persisted to the state snapshot (#886) — a large
+// session row would otherwise bloat the file. Small rows pass through unchanged.
+function boundRaw(row) {
+  const json = JSON.stringify(row);
+  if (typeof json !== "string" || json.length <= MAX_RAW_BYTES) return row;
+  return { truncated: true, byteLength: json.length, preview: json.slice(0, MAX_RAW_BYTES) };
 }
 
 function isPlainObject(value) {
@@ -172,6 +207,18 @@ function stringOrNull(value) {
 function nonNegativeNumber(value) {
   const numeric = Number(value);
   return Number.isFinite(numeric) ? Math.max(0, numeric) : null;
+}
+
+// Cache tokens (#887): ccusage reports cache read + creation separately; a single
+// `cachedTokens` field wins when present, else read + creation are summed. Null
+// when the row reports no cache tokens at all.
+function cachedTokensOf(row) {
+  const single = nonNegativeNumber(row.cachedTokens ?? row.cached_tokens ?? row.cacheTokens);
+  if (single != null) return single;
+  const read = nonNegativeNumber(row.cacheReadTokens ?? row.cache_read_tokens ?? row.cacheReadInputTokens);
+  const creation = nonNegativeNumber(row.cacheCreationTokens ?? row.cache_creation_tokens ?? row.cacheCreationInputTokens);
+  if (read == null && creation == null) return null;
+  return (read ?? 0) + (creation ?? 0);
 }
 
 function firstFiniteNumber(values) {
