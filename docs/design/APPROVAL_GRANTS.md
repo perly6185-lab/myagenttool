@@ -52,6 +52,25 @@ never had: intent-binding, single-use, expiry, and a decision record.
   flips strict — legacy tokens get 409 `approval_required` with a pointer to the issuance
   endpoint. Off by default until the counter says it's safe.
 
+### Phase 2 readiness (2026-07-14)
+
+First-party runtime callers now use issued grants exclusively, so the strict flip is safe to
+enable whenever an operator chooses (it stays **off by default** — flipping it also rejects any
+external free-text caller, which is a deliberate operator decision):
+
+- Web console: `withApprovalGrant(action, targetId, …)` mints a grant per confirm and passes its
+  token as `approvalToken` (see `applications-inspector.tsx`, `api-client.issueApprovalGrant`).
+- Internal broker: recovery decisions mint a decision-linked grant (`mintDecisionGrant`) — no
+  magic strings.
+- Dev smoke: `application-registry-smoke.mjs` issues a grant per side-effecting call and asserts
+  `approvalTokenLegacyUses.count === 0`, so it stays green under strict mode and fails loudly if a
+  free-text token is ever reintroduced.
+
+The strict-mode end-to-end contract (grants pass, legacy rejected, counter unmoved) is locked by
+`approval-grants.test.mjs` "phase 2 strict mode". Remaining free-text usage lives only in unit/
+integration test fixtures, which run with the validator injected and do not represent runtime
+callers.
+
 ## Fail-closed default (hardening, 2026-07-14)
 
 The application service's `approvalCheck` used to degrade to "presence approves"
