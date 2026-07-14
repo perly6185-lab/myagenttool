@@ -90,6 +90,24 @@ export function buildEvidenceCenterRecords({
       createdAt: change.createdAt
     });
   }
+  // A human's review of an exec changeset — the governance decision that gates a
+  // later promote — is itself trust-ledger evidence.
+  for (const review of state.codexExecChangeReviews ?? []) {
+    records.push({
+      id: review.id,
+      type: "change_review",
+      source: "governed_codex_exec_review",
+      redactionState: "summary_only",
+      invocationId: review.invocationId,
+      codexSessionRegistryId: null,
+      agentId: findInvocation(review.invocationId)?.agentId ?? null,
+      repoPath: null,
+      summary: `${review.decision}: ${review.action} ${review.file}`,
+      detail: review.comment || `${review.action} ${review.file}`,
+      marker: "governed",
+      createdAt: review.createdAt
+    });
+  }
   for (const usage of state.importedUsageEstimates ?? []) {
     records.push({
       id: usage.id,

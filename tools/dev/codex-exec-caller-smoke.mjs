@@ -133,6 +133,30 @@ try {
   assert(capture.prompt.includes("Add a greeting file."), "caller task reached the wrapper");
   ok("capability invocation drove the governed exec wrapper in the right worktree");
 
+  // Phase 2b: a human reviews the changeset. Approval is recorded and gates a
+  // later promote; the review is itself trust-ledger evidence.
+  const greetingChange = result.changes.find((change) => change.file === "greeting.txt");
+  const reviewResp = await request("POST", "/api/codex-exec/change-reviews", {
+    execChangeId: greetingChange.id,
+    decision: "approved",
+    comment: "Looks good.",
+  });
+  assert(reviewResp.execChangeReview?.decision === "approved", "review should record an approval");
+  const reviewedState = await request("GET", "/api/state");
+  const storedReview = (reviewedState.codexExecChangeReviews ?? []).find((item) => item.execChangeId === greetingChange.id);
+  assert(storedReview && storedReview.decision === "approved", "approval should be queryable in public state");
+  const reviewEvidence = (reviewedState.evidenceCenterRecords ?? []).find(
+    (record) => record.source === "governed_codex_exec_review" && record.id === reviewResp.execChangeReview.id,
+  );
+  assert(reviewEvidence, "the review should surface in the Evidence Center");
+  // Unknown / cross-team id is opaque (no existence leak).
+  const badReview = await fetch(`${serverUrl}/api/codex-exec/change-reviews`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ execChangeId: "cec_demo_does_not_exist", decision: "approved" }),
+  });
+  assert(badReview.status === 400, "an unknown exec change id should be rejected");
+  ok("human review of the exec changeset is recorded, queryable, and evidence-logged");
+
   console.log(`\ncodex-exec-caller-smoke: ${passed} checks passed`);
 } finally {
   for (const child of children.reverse()) {

@@ -21,6 +21,7 @@ export async function handleCodexRoutes({
   resolveCodexApprovalBrokerRequest,
   createCodexImportedEvidenceRecord,
   createCodexChangeReview,
+  createCodexExecReview,
 }) {
   if (req.method === "POST" && url.pathname === "/api/codex/hooks") {
     const body = await readJson(req);
@@ -103,6 +104,25 @@ export async function handleCodexRoutes({
       return true;
     }
     sendJson(res, 201, { changeReview: review });
+    return true;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/codex-exec/change-reviews") {
+    const body = await readJson(req);
+    let review;
+    try {
+      // Tenancy is enforced inside the service: a foreign-team exec change is
+      // rejected with the same "unknown execChangeId" 400 as a missing one, so a
+      // cross-team caller can't tell them apart (no existence leak, no write).
+      review = createCodexExecReview(body, actor);
+    } catch (error) {
+      sendJson(res, 400, {
+        error: "invalid_codex_exec_review",
+        message: error instanceof Error ? error.message : String(error),
+      });
+      return true;
+    }
+    sendJson(res, 201, { execChangeReview: review });
     return true;
   }
 
