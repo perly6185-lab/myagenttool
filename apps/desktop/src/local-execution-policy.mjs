@@ -85,6 +85,12 @@ export function createLocalExecutionPolicyManifest({
     codexExecWrappers: [
       "tools/agents/codex-exec-wrapper.mjs",
     ],
+    // The Claude apply runner (Phase 4b) WRITES via `git apply`, so it is its own
+    // `claudeApply` kind — workspace_write, no network — never read_only. It runs
+    // only for a server-authorized, approval-bound patch.
+    claudeApplyWrappers: [
+      "tools/agents/claude-apply-wrapper.mjs",
+    ],
     applicationWrapperCommands: [
       {
         command: "ccusage",
@@ -113,6 +119,9 @@ export function createLocalExecutionPolicyManifest({
       // codex.exec: writes are permitted but governed by Codex's native sandbox;
       // network stays no-broader than restricted (never open `network`).
       codexExec: { file: ["native_controls", "workspace_write", "read_only"], network: ["native_controls", "restricted", "forbidden"] },
+      // claude.apply: the runner writes to the worktree with git apply and needs no
+      // network. workspace_write only; never native_controls (there is no sandbox).
+      claudeApply: { file: ["workspace_write", "read_only"], network: ["forbidden"] },
     },
   };
 }
@@ -146,6 +155,15 @@ export function localPolicyForAdapter(adapter, payload = {}) {
       filePolicy: normalizePolicy(adapter?.filePolicy, "native_controls"),
       networkPolicy: normalizePolicy(adapter?.networkPolicy, "restricted"),
       source: "codex_exec_wrapper_native_controls",
+    };
+  }
+  // The Claude apply runner writes with git apply (no sandbox), so it is
+  // workspace_write with no network — not the read_only default.
+  if (usesClaudeApplyWrapper(adapter)) {
+    return {
+      filePolicy: normalizePolicy(adapter?.filePolicy, "workspace_write"),
+      networkPolicy: normalizePolicy(adapter?.networkPolicy, "forbidden"),
+      source: "claude_apply_wrapper",
     };
   }
   return {
@@ -243,6 +261,8 @@ function classifySpawn(adapter, spawnPlan, manifest = {}) {
   // Classify the write-capable exec wrapper BEFORE the generic read_only wrapper
   // check, so it lands in the codexExec policy rather than being treated read_only.
   if (isAllowlistedCodexExecWrapper(spawnPlan, manifest)) return "codexExec";
+  // Same for the write-capable Claude apply runner — never read_only.
+  if (isAllowlistedClaudeApplyWrapper(spawnPlan, manifest)) return "claudeApply";
   if (isAllowlistedNodeWrapper(adapter, spawnPlan, manifest)) return "wrapper";
   return null;
 }
@@ -272,6 +292,13 @@ function isAllowlistedNodeWrapper(adapter, spawnPlan, manifest = {}) {
     && String(adapter?.command ?? "") === "node";
 }
 
+function isAllowlistedClaudeApplyWrapper(spawnPlan, manifest = {}) {
+  const command = String(spawnPlan?.command ?? "");
+  if (command !== "node" && command !== manifest.execPath) return false;
+  const script = String(spawnPlan?.args?.[0] ?? "").replaceAll("\\", "/");
+  return (manifest.claudeApplyWrappers ?? []).some((suffix) => script.endsWith(suffix));
+}
+
 function isAllowlistedCodexExecWrapper(spawnPlan, manifest = {}) {
   const command = String(spawnPlan?.command ?? "");
   if (command !== "node" && command !== manifest.execPath) return false;
@@ -283,6 +310,12 @@ function usesCodexExecWrapper(adapter) {
   const args = Array.isArray(adapter?.args) ? adapter.args.map(String) : [];
   return String(adapter?.command ?? "") === "node"
     && args.some((arg) => arg.replaceAll("\\", "/").endsWith("tools/agents/codex-exec-wrapper.mjs"));
+}
+
+function usesClaudeApplyWrapper(adapter) {
+  const args = Array.isArray(adapter?.args) ? adapter.args.map(String) : [];
+  return String(adapter?.command ?? "") === "node"
+    && args.some((arg) => arg.replaceAll("\\", "/").endsWith("tools/agents/claude-apply-wrapper.mjs"));
 }
 
 function isApplicationWrapperSpawn(spawnPlan, manifest = {}) {
