@@ -102,6 +102,8 @@ export function ApplicationsView() {
 
       <RegisterApplicationModal open={registerOpen} onClose={() => setRegisterOpen(false)} />
 
+      {/* No filters before there's anything to filter — the empty state carries the Register CTA (#930). */}
+      {all.length ? (
       <div className="flex flex-wrap items-end gap-3">
         <Field label="Status" className="w-40">
           <Select value={status} onChange={(e) => setStatus(e.target.value as typeof status)}>
@@ -135,6 +137,7 @@ export function ApplicationsView() {
           </span>
         ) : null}
       </div>
+      ) : null}
 
       {!applications.length ? (
         <EmptyState
