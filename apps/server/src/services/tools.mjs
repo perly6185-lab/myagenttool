@@ -577,6 +577,85 @@ export function createToolService({
     return runner;
   }
 
+  // Governed ROLLBACK of an applied authorization (#914 follow-up): the recorded
+  // rollback guidance becomes an executable action. Same trust shape as the apply:
+  // tenancy-scoped, bound to the authorization artifact, and gated on a fresh
+  // single-use grant for (rollback_patch, authorizationId) — undoing a write is a
+  // write. The runner re-applies the SAME server-held patch with --reverse.
+  function rollbackClaudeApply(authorizationId, body = {}, actor = null) {
+    if (!isClaudeApplyEnabled()) {
+      return { status: 403, body: { error: "apply_not_enabled", message: "The Claude apply capability is disabled." } };
+    }
+    const authorization = (state.claudeApplyAuthorizations ?? []).find((item) => item.id === String(authorizationId ?? "")) ?? null;
+    // Tenancy: a foreign-team authorization reads as unknown (no existence leak).
+    const project = authorization?.projectId
+      ? (state.projects ?? []).find((item) => item.id === authorization.projectId) ?? null
+      : null;
+    if (!authorization || (actor?.teamId && project && teamOf(project) !== actor.teamId)) {
+      return { status: 404, body: { error: "authorization_not_found" } };
+    }
+    if (authorization.status !== "applied") {
+      return { status: 409, body: { error: "authorization_not_applied", status: authorization.status, message: "Only an applied authorization can be rolled back." } };
+    }
+    const token = stringOrNull(body?.approvalToken);
+    if (!token) {
+      return { status: 409, body: { error: "approval_required", reason: "missing_token" } };
+    }
+    if (typeof validateApprovalToken !== "function") {
+      return { status: 409, body: { error: "approval_required", reason: "approval_validator_unavailable" } };
+    }
+    const approval = validateApprovalToken(token, { action: "rollback_patch", targetId: authorization.id, actor });
+    if (!approval.approved) {
+      return { status: 409, body: { error: "approval_required", reason: approval.reason ?? "grant_required" } };
+    }
+    const runner = availableClaudeApplyRunner();
+    if (!runner) {
+      return { status: 409, body: { error: "agent_not_available", message: "No governed Claude apply runner is available to execute the rollback." } };
+    }
+    const invocation = createInvocation(`Roll back an applied Claude patch on worktree ${authorization.worktreeId}.`, runner, {
+      actor,
+      requestedBy: actor?.userId,
+      metadata: {
+        tool: CLAUDE_APPLY_TOOL_CONTRACT.name,
+        toolVersion: CLAUDE_APPLY_TOOL_CONTRACT.version,
+        projectId: authorization.projectId,
+        worktreeId: authorization.worktreeId,
+        claudeApplyAuthorizationId: authorization.id,
+        // The bridge injects --reverse for this flag; the runner then refuses a
+        // reverse that no longer checks cleanly (worktree moved on).
+        claudeApplyRollback: true,
+        applyPatch: authorization.patch,
+      },
+      timeoutSeconds: 120,
+    });
+    startInvocationIfAllowed(invocation, runner);
+    authorization.status = "rolling_back";
+    authorization.rollbackInvocationId = invocation.id;
+    appendEvent({
+      invocationId: invocation.id,
+      type: "claude_rollback_authorized",
+      level: "warn",
+      message: `Authorized rolling back Claude patch authorization ${authorization.id} (grant ${approval.grantId ?? "legacy"}).`,
+      data: {
+        claudeApplyAuthorizationId: authorization.id,
+        proposalInvocationId: authorization.proposalInvocationId,
+        worktreeId: authorization.worktreeId,
+        grantId: approval.grantId ?? null,
+      },
+    });
+    persistStateSoon();
+    return {
+      status: 202,
+      body: {
+        authorizationId: authorization.id,
+        status: "rolling_back",
+        rollbackInvocationId: invocation.id,
+        agentId: runner.id,
+        worktreeId: authorization.worktreeId,
+      },
+    };
+  }
+
   function resolveToolProjectId(projectId, actor) {
     if (projectId) {
       const project = (state.projects ?? []).find((item) => item.id === projectId);
@@ -611,6 +690,7 @@ export function createToolService({
     createToolInvocation,
     getTool,
     listTools,
+    rollbackClaudeApply,
     validateCodexReviewInput,
     validateClaudeReviewInput,
     validateCodexExecInput,

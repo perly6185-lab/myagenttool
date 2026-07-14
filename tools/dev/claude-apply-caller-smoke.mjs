@@ -155,10 +155,32 @@ try {
   assert(authorization.patchPreview === undefined || typeof authorization.patchPreview === "string", "public authorization exposes only a bounded preview");
   ok("the applied file list + rollback guidance are recorded on the authorization");
 
-  // Rollback is genuine: git apply --reverse of the same patch reverts the file.
-  runGit(["apply", "--reverse", "--", writePatchFile(authorization)], worktreePath);
-  assert(!existsSync(appliedFile), "rollback (git apply --reverse) should remove the applied file");
-  ok("the recorded rollback genuinely reverts the applied change");
+  // ---- Governed rollback (#914 follow-up): the guidance is now an ACTION -----
+  // A fresh single-use grant per rollback — undoing a write is a write.
+  const missingGrant = await fetch(`${serverUrl}/api/claude-apply/authorizations/${encodeURIComponent(authorization.id)}/rollback`, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: "{}",
+  });
+  assert(missingGrant.status === 409, "rollback without a grant must be refused");
+  ok("rollback without an approval grant is refused");
+
+  const rollbackGrant = await request("POST", "/api/approvals/grants", { action: "rollback_patch", targetId: authorization.id });
+  const rolledBack = await request("POST", `/api/claude-apply/authorizations/${encodeURIComponent(authorization.id)}/rollback`, {
+    approvalToken: rollbackGrant.token,
+  });
+  assert(rolledBack.status === "rolling_back", `rollback should dispatch, got ${rolledBack.status}`);
+  ok("governed rollback dispatched under a fresh single-use grant");
+
+  await maybeApproveLocalGate(rolledBack.rollbackInvocationId);
+
+  const retired = await waitFor(async () => {
+    const state = await request("GET", "/api/state");
+    const row = (state.claudeApplyAuthorizations ?? []).find((item) => item.id === authorization.id);
+    if (row?.rollbackError) throw new Error(`rollback failed: ${row.rollbackError}`);
+    return row?.status === "rolled_back" ? row : false;
+  }, "rollback completion", 20_000);
+  assert(retired.rollback?.available === false, "a completed rollback consumes the guidance");
+  assert(!existsSync(appliedFile), "the governed rollback should remove the applied file from disk");
+  ok("the bridge git-reverse rollback removed the applied change from disk");
 
   console.log(`\nclaude-apply-caller-smoke: ${passed} checks passed`);
 } finally {
@@ -180,14 +202,6 @@ async function maybeApproveLocalGate(invocationId) {
     await request("POST", `/api/approvals/${encodeURIComponent(pending.id)}/approve`);
     ok("released the apply run at the platform local-approval gate");
   }
-}
-
-// The full patch is stripped from public state; the smoke rebuilt it from the
-// original fixture for the rollback assertion.
-function writePatchFile() {
-  const patchFile = join(fixtureDir, "applied.patch");
-  writeFileSync(patchFile, proposalPatch);
-  return patchFile;
 }
 
 function start(label, command, args, env = {}) {

@@ -16,38 +16,77 @@ export function createClaudeApplyImportService({
     }
     const metadata = invocation?.options?.metadata ?? {};
     const authorization = (state.claudeApplyAuthorizations ?? []).find(
-      (item) => item.id === metadata.claudeApplyAuthorizationId || item.executionInvocationId === invocation.id,
+      (item) => item.id === metadata.claudeApplyAuthorizationId
+        || item.executionInvocationId === invocation.id
+        || item.rollbackInvocationId === invocation.id,
     );
     if (!authorization) {
       return null;
     }
     const output = result.output;
-    const applied = output.applied === true;
-    authorization.status = applied ? "applied" : "failed";
-    authorization.applied = applied;
+    const succeeded = output.applied === true;
+    if (metadata.claudeApplyRollback === true) {
+      recordRollbackOutcome({ invocation, authorization, output, succeeded, resultSummary: result.summary });
+      persistStateSoon();
+      return authorization;
+    }
+    authorization.status = succeeded ? "applied" : "failed";
+    authorization.applied = succeeded;
     authorization.executable = false;
     authorization.appliedFiles = normalizeAppliedFiles(output.appliedFiles);
     authorization.verification = normalizeVerification(output.verification);
-    authorization.rollback = applied ? normalizeRollback(output.rollback) : null;
+    authorization.rollback = succeeded ? normalizeRollback(output.rollback) : null;
     authorization.resultSummary = stringOrNull(output.summary ?? result.summary);
     authorization.appliedAt = now();
     appendEvent({
       invocationId: invocation.id,
-      type: applied ? "claude_apply_completed" : "claude_apply_failed",
-      level: applied ? "info" : "warn",
-      message: applied
+      type: succeeded ? "claude_apply_completed" : "claude_apply_failed",
+      level: succeeded ? "info" : "warn",
+      message: succeeded
         ? `Applied an authorized Claude patch (${authorization.appliedFiles.length} file(s)) for authorization ${authorization.id}.`
         : `A Claude patch apply failed for authorization ${authorization.id}; the worktree was not mutated.`,
       data: {
         claudeApplyAuthorizationId: authorization.id,
         proposalInvocationId: authorization.proposalInvocationId,
-        applied,
+        applied: succeeded,
         fileCount: authorization.appliedFiles.length,
         rollbackAvailable: Boolean(authorization.rollback?.available),
       },
     });
     persistStateSoon();
     return authorization;
+  }
+
+  // The governed rollback run (#914 follow-up). Success retires the authorization
+  // (`rolled_back`; the rollback guidance is consumed). Failure is honest about
+  // the tree: git apply is atomic, so a refused/failed reverse leaves the patch
+  // APPLIED — the status returns to `applied` with the error recorded, and the
+  // operator may retry with a fresh grant.
+  function recordRollbackOutcome({ invocation, authorization, output, succeeded, resultSummary }) {
+    if (succeeded) {
+      authorization.status = "rolled_back";
+      authorization.rolledBackAt = now();
+      authorization.rollback = { ...(authorization.rollback ?? {}), available: false, executed: true };
+    } else {
+      authorization.status = "applied";
+      authorization.rollbackError = normalizeVerification(output.verification).error
+        ?? stringOrNull(output.summary ?? resultSummary)
+        ?? "rollback failed";
+    }
+    authorization.resultSummary = stringOrNull(output.summary ?? resultSummary);
+    appendEvent({
+      invocationId: invocation.id,
+      type: succeeded ? "claude_rollback_completed" : "claude_rollback_failed",
+      level: "warn",
+      message: succeeded
+        ? `Rolled back Claude patch authorization ${authorization.id}; the worktree no longer carries the patch.`
+        : `Rolling back Claude patch authorization ${authorization.id} failed; the patch remains applied.`,
+      data: {
+        claudeApplyAuthorizationId: authorization.id,
+        proposalInvocationId: authorization.proposalInvocationId,
+        rolledBack: succeeded,
+      },
+    });
   }
 
   return { recordClaudeApplyResult };
