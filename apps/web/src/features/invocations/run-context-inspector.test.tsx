@@ -81,6 +81,50 @@ describe("RunContextInspector troubleshooting report links", () => {
   });
 });
 
+describe("RunContextInspector empty scaffolding (#930)", () => {
+  it("shows the result/record cards when a run is in context", async () => {
+    apiMock.fetchState.mockResolvedValue(consoleState());
+    useUiStore.setState({ section: "dashboard", selectedInvocationId: "inv_failed" });
+    renderWithClient(createElement(RunContextInspector));
+    expect(await screen.findByText("What was recorded")).toBeTruthy();
+  });
+
+  it("hides them before any run exists, so the first-run rail isn't empty placeholders", async () => {
+    apiMock.fetchState.mockResolvedValue(emptyState());
+    useUiStore.setState({ section: "dashboard", selectedInvocationId: null });
+    renderWithClient(createElement(RunContextInspector));
+    await waitFor(() => expect(apiMock.fetchState).toHaveBeenCalled());
+    expect(screen.queryByText("What was recorded")).toBeNull();
+    expect(screen.queryByText("Nothing recorded yet")).toBeNull();
+  });
+});
+
+function emptyState(): ConsoleSnapshot {
+  return {
+    namespace: "test",
+    protocolVersion: "0.0.0",
+    serverTime: "2026-07-05T12:00:00.000Z",
+    device: {
+      id: "dev_local",
+      name: "Local bridge",
+      status: "online",
+      platform: "win32",
+      architecture: "x64",
+      lastSeenAt: "2026-07-05T12:00:00.000Z",
+    },
+    agent: null,
+    agents: [],
+    projects: [],
+    worktrees: [],
+    currentProjectId: null,
+    invocations: [],
+    events: [],
+    auditSummaries: [],
+    approvalRequests: [],
+    troubleshootingReports: [],
+  } as ConsoleSnapshot;
+}
+
 function renderWithClient(ui: ReactElement) {
   const client = new QueryClient({
     defaultOptions: {
