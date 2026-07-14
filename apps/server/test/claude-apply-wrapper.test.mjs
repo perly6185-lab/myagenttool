@@ -75,6 +75,29 @@ test("apply wrapper refuses a patch that does not check cleanly and writes nothi
   assert.equal(readFileSync(join(dir, "x.txt"), "utf8"), "foo\n", "the worktree is untouched after a refused apply");
 });
 
+test("apply wrapper --reverse rolls back an applied patch and refuses a second reverse", () => {
+  const { dir, patchFile } = makeRepoWithPatch();
+  // Apply first.
+  const applied = runApply(["--cwd", dir, "--patch-file", patchFile]);
+  assert.equal(applied.status, 0);
+  assert.equal(readFileSync(join(dir, "x.txt"), "utf8"), "foo\nbar\n");
+  // Governed rollback: same patch, --reverse.
+  const reversed = runApply(["--cwd", dir, "--patch-file", patchFile, "--reverse"]);
+  assert.equal(reversed.status, 0);
+  assert.equal(reversed.payload.output.applied, true);
+  assert.equal(reversed.payload.output.reversed, true);
+  assert.equal(reversed.payload.touchedUserFiles, true, "a rollback is an honest worktree mutation too");
+  assert.equal(reversed.payload.output.rollback, null, "a completed rollback is not itself re-reversible here");
+  assert.deepEqual(reversed.payload.output.appliedFiles.map((f) => f.path), ["x.txt"]);
+  assert.equal(readFileSync(join(dir, "x.txt"), "utf8"), "foo\n", "the file is back to its pre-apply content");
+  // A second reverse no longer checks cleanly → refused, nothing written.
+  const again = runApply(["--cwd", dir, "--patch-file", patchFile, "--reverse"]);
+  assert.notEqual(again.status, 0);
+  assert.equal(again.payload.output.applied, false);
+  assert.equal(again.payload.output.verification.checkPassed, false);
+  assert.equal(readFileSync(join(dir, "x.txt"), "utf8"), "foo\n");
+});
+
 test("apply wrapper refuses a non-git cwd and an empty patch", () => {
   const nonGit = realpathSync(mkdtempSync(join(tmpdir(), "claude-apply-nongit-")));
   const patchFile = join(nonGit, "p.patch");

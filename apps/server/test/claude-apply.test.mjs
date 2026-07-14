@@ -232,6 +232,141 @@ test("Phase 4b: with a runner available, an authorized apply is dispatched as a 
   }
 });
 
+// --- Governed rollback (#914 follow-up): guidance becomes an executable action ---
+
+// A tool service over `state` whose createInvocation records dispatches, with the
+// real grant service — the rollback tests drive the same wiring the route uses.
+function rollbackHarness({ authorizationStatus = "applied", withRunner = true } = {}) {
+  let id = 500;
+  const created = [];
+  const state = {
+    projects: [{ id: "prj_a", ownerTeamId: "team_a" }, { id: "prj_b", ownerTeamId: "team_b" }],
+    worktrees: [{ id: "wt_a", projectId: "prj_a" }],
+    currentProjectId: "prj_a",
+    agents: withRunner ? [governedApplyAgent()] : [],
+    applications: [],
+    invocations: [],
+    claudeApplyAuthorizations: [{
+      id: "cap_roll",
+      proposalInvocationId: "inv_proposal",
+      invocationId: "inv_proposal",
+      projectId: "prj_a",
+      worktreeId: "wt_a",
+      status: authorizationStatus,
+      applied: authorizationStatus === "applied",
+      patch: "diff --git a/x.mjs b/x.mjs\n--- a/x.mjs\n+++ b/x.mjs\n@@ -1 +1,2 @@\n foo\n+bar\n",
+      appliedFiles: [{ path: "x.mjs", added: 1, deleted: 0 }],
+      rollback: { available: true, strategy: "git_apply_reverse" },
+    }],
+    approvalGrants: [],
+    approvalTokenLegacyUses: { count: 0, lastAt: null },
+    autoRunSettings: {},
+    events: [],
+    device: { unlinkState: "linked" },
+  };
+  const { issueApprovalGrant, validateApprovalToken } = createApprovalGrantService({
+    state, now, nextId: (p) => `${p}_${id += 1}`, appendEvent: (e) => state.events.push(e), persistStateSoon: () => {},
+  });
+  const service = createToolService({
+    state, now, nextId: (p) => `${p}_${id += 1}`, appendEvent: (e) => state.events.push(e),
+    createInvocation: (task, agent, options) => { const inv = { id: `inv_rb_${id += 1}`, status: "queued", agentId: agent.id, options, task }; created.push(inv); state.invocations.push(inv); return inv; },
+    startInvocationIfAllowed: () => {}, findApplication: () => null, findAgent: (aid) => state.agents.find((a) => a.id === aid) ?? null,
+    planApplicationWrapperInvocation: () => ({}), validateApprovalToken, persistStateSoon: () => {},
+  });
+  const grantFor = (targetId, actor = ACTOR) => issueApprovalGrant({ action: "rollback_patch", targetId }, actor).body.token;
+  return { state, service, created, grantFor };
+}
+
+test("rollback dispatches a --reverse run for an applied authorization under a fresh grant", () => {
+  setApplyFlag(true);
+  try {
+    const { service, state, created, grantFor } = rollbackHarness();
+    const res = service.rollbackClaudeApply("cap_roll", { approvalToken: grantFor("cap_roll") }, ACTOR);
+    assert.equal(res.status, 202);
+    assert.equal(res.body.status, "rolling_back");
+    assert.ok(res.body.rollbackInvocationId);
+    assert.equal(created.length, 1, "a queued rollback invocation was dispatched");
+    const metadata = created[0].options.metadata;
+    assert.equal(metadata.claudeApplyRollback, true, "the bridge injects --reverse from this flag");
+    assert.match(metadata.applyPatch, /diff --git/, "the SAME server-held patch travels to the runner");
+    assert.equal(state.claudeApplyAuthorizations[0].status, "rolling_back");
+    assert(state.events.some((e) => e.type === "claude_rollback_authorized"));
+  } finally {
+    setApplyFlag(false);
+  }
+});
+
+test("rollback refuses without a valid grant, on a non-applied authorization, and for a foreign team — no dispatch", () => {
+  setApplyFlag(true);
+  try {
+    // Missing token.
+    const h1 = rollbackHarness();
+    const noToken = h1.service.rollbackClaudeApply("cap_roll", {}, ACTOR);
+    assert.equal(noToken.status, 409);
+    assert.equal(noToken.body.error, "approval_required");
+    // A grant for the WRONG action (apply_patch) does not authorize a rollback.
+    const h2 = rollbackHarness();
+    const { issueApprovalGrant } = createApprovalGrantService({ state: h2.state, now, nextId: (p) => `${p}_w`, appendEvent: () => {}, persistStateSoon: () => {} });
+    const applyGrant = issueApprovalGrant({ action: "apply_patch", targetId: "cap_roll" }, ACTOR).body.token;
+    const wrong = h2.service.rollbackClaudeApply("cap_roll", { approvalToken: applyGrant }, ACTOR);
+    assert.equal(wrong.status, 409);
+    assert.match(wrong.body.reason, /action_mismatch/);
+    assert.equal(h2.created.length, 0);
+    // Not applied yet.
+    const h3 = rollbackHarness({ authorizationStatus: "authorized" });
+    const notApplied = h3.service.rollbackClaudeApply("cap_roll", { approvalToken: h3.grantFor("cap_roll") }, ACTOR);
+    assert.equal(notApplied.status, 409);
+    assert.equal(notApplied.body.error, "authorization_not_applied");
+    // Foreign team reads as unknown (no existence leak).
+    const h4 = rollbackHarness();
+    const foreign = h4.service.rollbackClaudeApply("cap_roll", { approvalToken: h4.grantFor("cap_roll", { userId: "usr_b", teamId: "team_b" }) }, { userId: "usr_b", teamId: "team_b" });
+    assert.equal(foreign.status, 404);
+    assert.equal(foreign.body.error, "authorization_not_found");
+    // No runner available.
+    const h5 = rollbackHarness({ withRunner: false });
+    const noRunner = h5.service.rollbackClaudeApply("cap_roll", { approvalToken: h5.grantFor("cap_roll") }, ACTOR);
+    assert.equal(noRunner.status, 409);
+    assert.equal(noRunner.body.error, "agent_not_available");
+  } finally {
+    setApplyFlag(false);
+  }
+});
+
+test("a successful rollback run retires the authorization; a failed one returns it to applied", () => {
+  const base = () => ({
+    id: "cap_roll",
+    proposalInvocationId: "inv_proposal",
+    status: "rolling_back",
+    rollbackInvocationId: "inv_rb",
+    rollback: { available: true, strategy: "git_apply_reverse" },
+  });
+  // Success → rolled_back, guidance consumed.
+  const okState = { claudeApplyAuthorizations: [base()], events: [] };
+  const okSvc = createClaudeApplyImportService({ state: okState, now, appendEvent: (e) => okState.events.push(e) });
+  const rolledBack = okSvc.recordClaudeApplyResult({
+    invocation: { id: "inv_rb", options: { metadata: { claudeApplyAuthorizationId: "cap_roll", claudeApplyRollback: true } } },
+    result: { output: { source: "claude", tool: "claude.apply.patch", applied: true, reversed: true, appliedFiles: [{ path: "x.mjs" }], verification: { checkPassed: true }, rollback: null } },
+    agent: governedApplyAgent(),
+  });
+  assert.equal(rolledBack.status, "rolled_back");
+  assert.equal(rolledBack.rollback.available, false, "the rollback guidance is consumed");
+  assert.equal(rolledBack.rollback.executed, true);
+  assert(okState.events.some((e) => e.type === "claude_rollback_completed"));
+
+  // Failure → back to applied (git apply is atomic; the patch is still on disk),
+  // with the error recorded so the operator can retry under a fresh grant.
+  const failState = { claudeApplyAuthorizations: [base()], events: [] };
+  const failSvc = createClaudeApplyImportService({ state: failState, now, appendEvent: (e) => failState.events.push(e) });
+  const failed = failSvc.recordClaudeApplyResult({
+    invocation: { id: "inv_rb", options: { metadata: { claudeApplyAuthorizationId: "cap_roll", claudeApplyRollback: true } } },
+    result: { output: { source: "claude", tool: "claude.apply.patch", applied: false, reversed: true, appliedFiles: [], verification: { checkPassed: false, error: "does not reverse" }, rollback: null } },
+    agent: governedApplyAgent(),
+  });
+  assert.equal(failed.status, "applied", "a failed rollback leaves the patch applied");
+  assert.match(failed.rollbackError, /does not reverse/);
+  assert(failState.events.some((e) => e.type === "claude_rollback_failed"));
+});
+
 test("Phase 4b: recording a successful apply result marks the authorization applied with files + rollback", () => {
   const state = { claudeApplyAuthorizations: [{ id: "cap_1", proposalInvocationId: "inv_proposal", status: "applying", executable: true, executionInvocationId: "inv_apply" }], events: [] };
   const { recordClaudeApplyResult } = createClaudeApplyImportService({ state, now, appendEvent: (e) => state.events.push(e) });

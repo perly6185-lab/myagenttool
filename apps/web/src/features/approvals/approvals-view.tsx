@@ -7,7 +7,7 @@ import { cn } from "@/lib/cn";
 import { useConsoleState, useRefreshConsoleState } from "@/data/use-console-state";
 import { api, useAsyncAction } from "@/data/use-console-actions";
 import { useUiStore, type SectionKey } from "@/store/ui-store";
-import type { PendingDecision, PendingDecisionKind } from "@/lib/console-state";
+import type { ClaudeApplyAuthorization, PendingDecision, PendingDecisionKind } from "@/lib/console-state";
 
 // The Approvals section: ONE queue of every pending human decision, aggregated
 // server-side (read-model `pendingDecisions`) from surfaces that used to be
@@ -91,6 +91,12 @@ export function ApprovalsView() {
           </span>
         </div>
       ) : null}
+
+      <ApplyAuthorizationsPanel
+        rows={state?.claudeApplyAuthorizations ?? []}
+        pending={pending}
+        act={act}
+      />
 
       {decisions.length === 0 ? (
         <EmptyState title="Nothing waiting on you" hint="Approvals, decomposition plans, design sign-offs, clarify answers, PR merges, and compare promotions all land here." />
@@ -230,4 +236,85 @@ function DecisionActions({
         </Button>
       );
   }
+}
+
+const APPLY_STATUS_TONE: Record<string, "neutral" | "success" | "warning" | "danger"> = {
+  authorized: "neutral",
+  applying: "warning",
+  applied: "success",
+  failed: "danger",
+  rolling_back: "warning",
+  rolled_back: "neutral",
+};
+
+// Claude patch-apply authorizations (governance Phase 4, #914): each row is a
+// grant-consumed apply bound to a proposal. An `applied` row offers the governed
+// rollback — the click mints a fresh single-use grant for (rollback_patch, id)
+// and the bridge runner re-applies the same server-held patch with --reverse.
+function ApplyAuthorizationsPanel({
+  rows,
+  pending,
+  act,
+}: {
+  rows: ClaudeApplyAuthorization[];
+  pending: boolean;
+  act: (fn: () => Promise<unknown>) => void;
+}) {
+  if (!rows.length) return null;
+  return (
+    <div className="flex flex-col gap-2">
+      <div className="flex items-center gap-2">
+        <h2 className="text-sm font-semibold">Patch applies</h2>
+        <Badge tone="neutral">{rows.length}</Badge>
+        <span className="text-xs text-muted-foreground">Approval-bound Claude patch applies and their rollback state</span>
+      </div>
+      <ul className="flex flex-col gap-2">
+        {rows.map((row) => {
+          const files = (row.appliedFiles?.length ? row.appliedFiles : row.files) ?? [];
+          return (
+            <li key={row.id}>
+              <Card>
+                <CardContent className="flex flex-col gap-2 py-3">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Badge tone={APPLY_STATUS_TONE[row.status] ?? "neutral"}>{row.status.replaceAll("_", " ")}</Badge>
+                    <span className="min-w-0 flex-1 truncate text-sm">
+                      {row.summary ?? row.resultSummary ?? `Patch for proposal ${row.proposalInvocationId}`}
+                    </span>
+                    {row.status === "applied" ? (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-7 px-2 text-xs"
+                        disabled={pending}
+                        onClick={() =>
+                          act(async () => {
+                            const grant = await api.issueApprovalGrant("rollback_patch", row.id);
+                            return api.rollbackClaudeApply(row.id, grant.token);
+                          })
+                        }
+                      >
+                        {pending ? <Loader2 className="mr-1 size-3 animate-spin" /> : <RotateCcw className="mr-1 size-3" />}
+                        Roll back
+                      </Button>
+                    ) : null}
+                  </div>
+                  <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+                    {files.length ? <span className="truncate">{files.map((f) => f.path).join(", ")}</span> : null}
+                    {row.rolledBackAt ? <span>rolled back {row.rolledBackAt.slice(0, 10)}</span> : null}
+                    {row.rollbackError ? <span className="text-destructive">rollback failed: {row.rollbackError}</span> : null}
+                  </div>
+                  {row.patchPreview ? (
+                    <details className="text-xs">
+                      <summary className="cursor-pointer text-muted-foreground">Patch preview</summary>
+                      <pre className="mt-1 max-h-48 overflow-auto rounded-md bg-muted/40 p-2 font-mono text-[11px] leading-4">{row.patchPreview}</pre>
+                    </details>
+                  ) : null}
+                </CardContent>
+              </Card>
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
 }
