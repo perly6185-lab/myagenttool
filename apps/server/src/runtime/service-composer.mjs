@@ -341,7 +341,7 @@ export function createServerRuntimeServices({
     appendEvent,
     persistStateSoon,
   });
-  const { recordCodexExecChanges, createCodexExecReview, isExecChangeApproved } = createCodexExecImportService({
+  const { recordCodexExecChanges, createCodexExecReview, isExecChangeApproved, execRunPromotionGate } = createCodexExecImportService({
     state,
     now,
     nextId,
@@ -2450,6 +2450,7 @@ export function createServerRuntimeServices({
     createCodexChangeReview,
     createCodexExecReview,
     isExecChangeApproved,
+    execRunPromotionGate,
     createCodexImportedEvidenceRecord,
     createCompareRun,
     setCompareRunPreferred,
@@ -2644,6 +2645,7 @@ export function createServerRuntimeServices({
     createCodexChangeReview,
     createCodexExecReview,
     isExecChangeApproved,
+    execRunPromotionGate,
     createDiscoveryRun,
     createIntegrationArtifact,
     createLifecycleRecipe,

@@ -133,6 +133,16 @@ try {
   assert(capture.prompt.includes("Add a greeting file."), "caller task reached the wrapper");
   ok("capability invocation drove the governed exec wrapper in the right worktree");
 
+  // Phase 3: the promote gate refuses an unreviewed changeset — no PR machinery
+  // runs until every change is approved.
+  const prematurePromote = await fetch(`${serverUrl}/api/codex-exec/invocations/${encodeURIComponent(result.invocationId)}/promote`, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: "{}",
+  });
+  const prematureBody = JSON.parse(await prematurePromote.text());
+  assert(prematurePromote.status === 409 && prematureBody.error === "exec_changes_not_approved", "promote must be blocked before approval");
+  assert((prematureBody.unapproved ?? []).some((item) => item.file === "greeting.txt"), "the gate should name the unapproved file");
+  ok("promote gate blocks an unreviewed changeset");
+
   // Phase 2b: a human reviews the changeset. Approval is recorded and gates a
   // later promote; the review is itself trust-ledger evidence.
   const greetingChange = result.changes.find((change) => change.file === "greeting.txt");
@@ -156,6 +166,16 @@ try {
   });
   assert(badReview.status === 400, "an unknown exec change id should be rejected");
   ok("human review of the exec changeset is recorded, queryable, and evidence-logged");
+
+  // Phase 3: once every change is approved the gate opens. The PR machinery
+  // itself needs a real remote (absent in this smoke), so we assert the gate is
+  // PASSED — the response is no longer the approval refusal.
+  const promoteAfter = await fetch(`${serverUrl}/api/codex-exec/invocations/${encodeURIComponent(result.invocationId)}/promote`, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: "{}",
+  });
+  const promoteBody = JSON.parse(await promoteAfter.text());
+  assert(promoteBody.error !== "exec_changes_not_approved", "approval gate should be satisfied after every change is approved");
+  ok(`promote gate opens after approval (downstream result: ${promoteAfter.status} ${promoteBody.error ?? "promoted"})`);
 
   console.log(`\ncodex-exec-caller-smoke: ${passed} checks passed`);
 } finally {

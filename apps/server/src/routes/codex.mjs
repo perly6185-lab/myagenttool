@@ -22,6 +22,10 @@ export async function handleCodexRoutes({
   createCodexImportedEvidenceRecord,
   createCodexChangeReview,
   createCodexExecReview,
+  execRunPromotionGate,
+  createWorktreePr,
+  findInvocation,
+  appendEvent,
 }) {
   if (req.method === "POST" && url.pathname === "/api/codex/hooks") {
     const body = await readJson(req);
@@ -123,6 +127,61 @@ export async function handleCodexRoutes({
       return true;
     }
     sendJson(res, 201, { execChangeReview: review });
+    return true;
+  }
+
+  // Phase 3: promote an approved exec changeset by opening a PR from its worktree.
+  // The approval gate is enforced BEFORE any PR machinery runs — a partially
+  // reviewed changeset never reaches a PR.
+  const promoteMatch = url.pathname.match(/^\/api\/codex-exec\/invocations\/([^/]+)\/promote$/);
+  if (req.method === "POST" && promoteMatch && typeof execRunPromotionGate === "function") {
+    const invocationId = decodeURIComponent(promoteMatch[1]);
+    const invocation = typeof findInvocation === "function" ? findInvocation(invocationId) : null;
+    if (!invocation) {
+      sendJson(res, 404, { error: "invocation_not_found" });
+      return true;
+    }
+    // Tenancy: scope by the invocation's project, same as other codex routes.
+    if (denyForeignProject({ res, sendJson, state, actor, projectId: codexInvocationProjectId(state, invocationId), notFound: { error: "invocation_not_found" } })) {
+      return true;
+    }
+    const gate = execRunPromotionGate(invocationId);
+    if (!gate.ok) {
+      sendJson(res, 409, {
+        error: gate.reason === "no_changes" ? "no_exec_changes" : "exec_changes_not_approved",
+        message: gate.reason === "no_changes"
+          ? "This exec run produced no changes to promote."
+          : "Every exec change must be approved before the changeset can be promoted.",
+        unapproved: gate.unapproved,
+      });
+      return true;
+    }
+    const worktreeId = invocation.options?.metadata?.worktreeId ?? null;
+    if (!worktreeId) {
+      sendJson(res, 409, { error: "worktree_not_found", message: "The exec invocation has no worktree to promote." });
+      return true;
+    }
+    let body = {};
+    try {
+      body = (await readJson(req)) ?? {};
+    } catch {
+      body = {};
+    }
+    try {
+      const result = await createWorktreePr(worktreeId, { title: body.title, body: body.body, base: body.base });
+      if (typeof appendEvent === "function") {
+        appendEvent({
+          invocationId,
+          type: "codex_exec_promoted",
+          level: "info",
+          message: `Promoted approved Codex exec changeset (${gate.changes.length} change(s)) to a pull request.`,
+          data: { worktreeId, changeCount: gate.changes.length },
+        });
+      }
+      sendJson(res, 200, { promoted: true, invocationId, worktreeId, result });
+    } catch (error) {
+      sendJson(res, 400, { error: "worktree_pr_failed", message: error instanceof Error ? error.message : String(error) });
+    }
     return true;
   }
 
