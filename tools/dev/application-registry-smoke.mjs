@@ -3,6 +3,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFileSync, spawn } from "node:child_process";
 
+import { createApplicationWrapperAgentRegistration } from "../../apps/server/src/services/applications.mjs";
+
 const serverPort = Number(process.env.APPLICATION_REGISTRY_SMOKE_PORT ?? 3331);
 const serverUrl = `http://127.0.0.1:${serverPort}`;
 const defaultProjectPath = join(tmpdir(), `myagenttool-app-default-${Date.now()}`);
@@ -86,6 +88,12 @@ try {
       },
     },
   });
+  // The npm-wrapper capability dispatches to the opt-in platform wrapper runner
+  // agent; register it so the wrapper invocation below resolves a runner instead
+  // of failing agent_not_available.
+  const wrapperAgent = await request("POST", "/api/agents", createApplicationWrapperAgentRegistration());
+  assert(wrapperAgent.agent?.id === "agt_platform_application_wrapper", "wrapper runner agent should register");
+
   const npmPrefix = `app.${npmWrapper.application.id}`;
   const npmCapabilities = await request("GET", "/api/capabilities?providerType=application");
   assert(
@@ -94,9 +102,13 @@ try {
   );
   const wrapperBlocked = await request("POST", `/api/capabilities/${npmPrefix}.wrapper.lint/invocations`, {}, { expectOk: false });
   assert(wrapperBlocked.status === 409 && wrapperBlocked.data.error === "approval_required", "wrapper command should require approval");
-  const wrapperInvocation = await request("POST", `/api/capabilities/${npmPrefix}.wrapper.lint/invocations`, { approvalToken: "operator-approved-wrapper" });
-  assert(wrapperInvocation.invocation.result.output.command.id === "lint", "wrapper invocation should return the governed command plan");
-  assert(wrapperInvocation.invocation.result.output.invocationPlan.executable === false, "wrapper invocation should not execute npm yet");
+  // An approved wrapper command dispatches as a QUEUED bridge invocation for the
+  // platform wrapper runner (the server-resolved argv rides as allowlisted
+  // metadata); it does not execute npm inline.
+  const wrapperInvocation = await request("POST", `/api/capabilities/${npmPrefix}.wrapper.lint/invocations`, { approvalToken: await issueGrant(`wrapper:lint`, npmWrapper.application.id) });
+  assert(wrapperInvocation.status === "queued", "approved wrapper command should dispatch a queued invocation");
+  assert(wrapperInvocation.agentId === "agt_platform_application_wrapper", "wrapper invocation should route to the platform wrapper runner");
+  assert(typeof wrapperInvocation.invocationId === "string" && wrapperInvocation.invocationId.length > 0, "wrapper dispatch should return an invocation id");
 
   const expectedRoutineId = `app-${registered.application.id}-maintenance`;
 
@@ -107,7 +119,7 @@ try {
   const offlineNoToken = await request("POST", `/api/applications/${registered.application.id}/offline`, {}, { expectOk: false });
   assert(offlineNoToken.status === 409 && offlineNoToken.data?.error === "approval_required", "offline without an approvalToken should be rejected");
 
-  const orchestration = await request("POST", `/api/capabilities/${capabilityPrefix}.generate_orchestration/invocations`, { approvalToken: "operator-approved-generate" });
+  const orchestration = await request("POST", `/api/capabilities/${capabilityPrefix}.generate_orchestration/invocations`, { approvalToken: await issueGrant("generate_orchestration", registered.application.id) });
   const orchestrationDraft = orchestration.invocation.result.output.orchestration;
   const routinePath = orchestrationDraft.path;
   assert(orchestrationDraft.validation?.ok, "generate_orchestration should return server-side routine validation");
@@ -117,7 +129,7 @@ try {
   assert(routinePath.includes(join(".myagenttool", "applications")), "routine draft must live under the managed applications directory");
   const routineCheck = aiJson(["loop-routine-check", "--file", routinePath, "--json"], applicationPath);
   assert(routineCheck.validation?.ok, "generated routine spec should validate");
-  const generated = await request("POST", `/api/applications/${registered.application.id}/orchestrations/generate`, { approvalToken: "operator-approved-generate" });
+  const generated = await request("POST", `/api/applications/${registered.application.id}/orchestrations/generate`, { approvalToken: await issueGrant("generate_orchestration", registered.application.id) });
   assert(generated.invocation.result.output.orchestration.id === expectedRoutineId, "application orchestration endpoint should use the id-derived routine id");
   const orchestrations = await request("GET", `/api/applications/${registered.application.id}/orchestrations`);
   assert(orchestrations.orchestrations.some((item) => item.routineId === expectedRoutineId), "orchestration list should expose generated routine draft");
@@ -139,7 +151,7 @@ try {
   assert(probed.application.probe.package?.name === "smoke-app", "probe should summarize package metadata");
   assert(probed.application.probe.readme?.heading === "Smoke App", "probe should summarize README metadata");
 
-  const offline = await request("POST", `/api/applications/${registered.application.id}/offline`, { approvalToken: "operator-approved-offline" });
+  const offline = await request("POST", `/api/applications/${registered.application.id}/offline`, { approvalToken: await issueGrant("offline", registered.application.id) });
   assert(offline.invocation.result.output.status === "offline", "offline action should update status");
   const offlineState = await request("GET", `/api/applications/${registered.application.id}`);
   const refresh = offlineState.capabilities.find((capability) => capability.name === `${capabilityPrefix}.refresh`);
@@ -147,6 +159,14 @@ try {
 
   const state = await request("GET", "/api/state");
   assert(state.applications.some((application) => application.id === registered.application.id), "public state should include application");
+  // Phase 2 readiness: every side-effecting call above used an issued grant, so
+  // the legacy free-text counter must still read zero. If someone reintroduces a
+  // free-text token, this fails loudly instead of silently keeping the migration
+  // from ever reaching strict mode.
+  assert(
+    (state.approvalTokenLegacyUses?.count ?? 0) === 0,
+    `smoke must use issued grants only — legacy token counter is ${state.approvalTokenLegacyUses?.count}`,
+  );
 
   console.log("[application-registry-smoke] application registry API OK");
 } finally {
@@ -162,6 +182,16 @@ async function waitForServer() {
       return false;
     }
   }, "server health");
+}
+
+// Phase 2 (APPROVAL_GRANTS.md): every side-effecting call below carries a real
+// server-issued, single-use, action+target-scoped grant instead of a free-text
+// token — so this smoke no longer trips the legacy-token counter and passes even
+// once `requireIssuedApprovals` strict mode is flipped on.
+async function issueGrant(action, targetId) {
+  const grant = await request("POST", "/api/approvals/grants", { action, targetId });
+  assert(grant?.token, `grant issuance should return a token for ${action} on ${targetId}`);
+  return grant.token;
 }
 
 async function request(method, path, body = undefined, options = {}) {
