@@ -7,6 +7,7 @@ import { computeDoraStats, doraSelfCheck, formatDoraReport, rollupFromActionsRun
 import { backlogSelfCheck, computeBacklogStats, formatBacklogReport } from "./backlog.mjs";
 import { computeGovernanceStats, countBypassCommits, formatGovernanceReport, governanceSelfCheck, RISK_GATE_ENFORCEMENT_SINCE } from "./governance.mjs";
 import { changeFailureMarkerStatus, detectRemediationSignal, hasAcceptanceMention, hasProductFlowEvidence, hasVerificationEvidence, planPrEvidence, prFilePath, reviewRiskGates } from "./pr-evidence.mjs";
+import { buildProjectFieldMap, currentProjectFields, hasProjectFields, normalizeValue, parseProjectFields, planProjectFieldOperations } from "./project-fields.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(__dirname, "../../..");
@@ -496,6 +497,26 @@ function checkLocal() {
     failReport("Project sync command check failed", ["Project values should normalize label slugs and option names"]);
   }
 
+  // normalizeValue is a comparison key, not a value. A text field must receive the
+  // author's raw string: writing the key back mangled
+  // `docs/engineering/ADR_0010_X.md` into `docs/engineering/adr 0010 x.md`.
+  const textFieldPlan = planProjectFieldOperations({
+    desired: parseProjectFields("## Project Fields\nSource Doc: docs/engineering/ADR_0010_X.md\nArea: cross-cutting\n"),
+    current: {},
+    fieldMap: buildProjectFieldMap([
+      { name: "Source Doc", type: "ProjectV2Field", id: "field-source-doc" },
+      { name: "Area", type: "ProjectV2SingleSelectField", id: "field-area", options: [{ name: "cross-cutting", id: "area-cross-cutting" }] },
+    ]),
+  });
+  const sourceDocOperation = textFieldPlan.operations.find((operation) => operation.field === "sourceDoc");
+  if (sourceDocOperation?.to !== "docs/engineering/ADR_0010_X.md") {
+    failReport("Project sync command check failed", ["text Project fields should be written verbatim, not normalized"]);
+  }
+  const areaOperation = textFieldPlan.operations.find((operation) => operation.field === "area");
+  if (areaOperation?.optionId !== "area-cross-cutting") {
+    failReport("Project sync command check failed", ["single-select Project fields should still match options through the comparison key"]);
+  }
+
   const visualResult = reviewRiskGates(["apps/web/src/App.tsx"], "## Verification\n- pnpm test\n", 0);
   if (!visualResult.warnings.some((warning) => warning.includes("visual QA"))) {
     failReport("Pull request risk routing check failed", ["web changes should warn when visual QA evidence is missing"]);
@@ -941,38 +962,24 @@ function syncProjectFields(args) {
       continue;
     }
 
-    const desired = parseProjectFields(item.content.body);
-    const normalizedDesired = normalizeProjectFields(desired);
-    const current = currentProjectFields(item);
+    const plan = planProjectFieldOperations({
+      desired: parseProjectFields(item.content.body),
+      current: currentProjectFields(item),
+      fieldMap,
+    });
 
-    for (const [field, desiredValue] of Object.entries(normalizedDesired)) {
-      if (!desiredValue || field === "milestone") continue;
+    for (const warning of plan.warnings) {
+      warnings.push(warning.reason === "field-not-found"
+        ? `${item.title}: Project field not found: ${warning.field}`
+        : `${item.title}: option not found for ${warning.field}=${warning.value}`);
+    }
 
-      const currentValue = current[field];
-      if (normalizeValue(currentValue) === normalizeValue(desiredValue)) continue;
-
-      const projectField = fieldMap[field];
-      if (!projectField) {
-        warnings.push(`${item.title}: Project field not found: ${field}`);
-        continue;
-      }
-
-      const optionId = projectField.options?.get(desiredValue);
-      if (projectField.type === "single-select" && !optionId) {
-        warnings.push(`${item.title}: option not found for ${field}=${desiredValue}`);
-        continue;
-      }
-
+    for (const operation of plan.operations) {
       operations.push({
+        ...operation,
         itemId: item.id,
         issue: `#${item.content.number}`,
         title: item.title,
-        field,
-        fieldId: projectField.id,
-        type: projectField.type,
-        from: currentValue ?? "",
-        to: desiredValue,
-        optionId,
       });
     }
   }
@@ -1097,36 +1104,27 @@ function syncProject(args) {
       });
     }
 
-    const currentProjectValues = projectItem ? currentProjectFields(projectItem) : {};
-    for (const [field, desiredValue] of Object.entries(desired)) {
-      if (!desiredValue || field === "milestone") continue;
+    const plan = planProjectFieldOperations({
+      desired,
+      current: projectItem ? currentProjectFields(projectItem) : {},
+      fieldMap,
+      // An item added in this same run has no field values yet: there is nothing
+      // to compare against, so every declared field is a write.
+      compareCurrent: Boolean(projectItem),
+    });
 
-      const projectField = fieldMap[field];
-      if (!projectField) {
-        warnings.push(`#${issue.number} ${issue.title}: Project field not found: ${field}`);
-        continue;
-      }
+    for (const warning of plan.warnings) {
+      warnings.push(warning.reason === "field-not-found"
+        ? `#${issue.number} ${issue.title}: Project field not found: ${warning.field}`
+        : `#${issue.number} ${issue.title}: Project option not found for ${warning.field}=${warning.value}`);
+    }
 
-      const normalizedDesired = normalizeValue(desiredValue);
-      const currentValue = currentProjectValues[field];
-      if (projectItem && normalizeValue(currentValue) === normalizedDesired) continue;
-
-      const optionId = projectField.options?.get(normalizedDesired);
-      if (projectField.type === "single-select" && !optionId) {
-        warnings.push(`#${issue.number} ${issue.title}: Project option not found for ${field}=${desiredValue}`);
-        continue;
-      }
-
+    for (const operation of plan.operations) {
       operations.push({
+        ...operation,
         kind: "project-field",
         issue,
         itemId: projectItem?.id ?? null,
-        field,
-        fieldId: projectField.id,
-        type: projectField.type,
-        from: currentValue ?? "",
-        to: desiredValue,
-        optionId,
       });
     }
   }
@@ -1349,25 +1347,6 @@ function printProjectSyncOperation(operation) {
   }
 }
 
-function hasProjectFields(body) {
-  return /##\s+Project Fields/i.test(body ?? "");
-}
-
-function parseProjectFields(body) {
-  const result = {};
-  const text = body ?? "";
-  const match = text.match(/##\s+Project Fields\s*([\s\S]*?)(?:\n##\s+|$)/i);
-  if (!match) return result;
-
-  for (const line of match[1].split(/\r?\n/)) {
-    const fieldMatch = line.match(/^\s*([A-Za-z ]+):\s*(.+?)\s*$/);
-    if (!fieldMatch) continue;
-    result[toFieldKey(fieldMatch[1])] = fieldMatch[2].trim();
-  }
-
-  return result;
-}
-
 function fieldsFromLabels(labels) {
   const fields = {};
   for (const label of labels) {
@@ -1381,66 +1360,6 @@ function fieldsFromLabels(labels) {
     if (label.startsWith("priority/")) fields.priority = label.slice("priority/".length);
   }
   return fields;
-}
-
-function normalizeProjectFields(fields) {
-  const normalized = {};
-  for (const [field, value] of Object.entries(fields)) {
-    normalized[field] = normalizeValue(value);
-  }
-  return normalized;
-}
-
-function currentProjectFields(item) {
-  return {
-    status: projectFieldValue(item.status),
-    area: projectFieldValue(item.area),
-    type: projectFieldValue(item.type),
-    risk: projectFieldValue(item.risk),
-    acceptance: projectFieldValue(item.acceptance),
-    platform: projectFieldValue(item.platform),
-    agentTarget: projectFieldValue(item["agent Target"]),
-    priority: projectFieldValue(item.priority),
-    sourceDoc: projectFieldValue(item["source Doc"]),
-  };
-}
-
-function projectFieldValue(value) {
-  if (value && typeof value === "object" && "name" in value) return value.name;
-  return value;
-}
-
-function buildProjectFieldMap(fields) {
-  const map = {};
-  for (const field of fields) {
-    const key = toFieldKey(field.name);
-    if (field.type === "ProjectV2SingleSelectField") {
-      map[key] = {
-        id: field.id,
-        type: "single-select",
-        options: new Map(field.options.map((optionValue) => [normalizeValue(optionValue.name), optionValue.id])),
-      };
-    } else if (field.type === "ProjectV2Field") {
-      map[key] = { id: field.id, type: "text" };
-    }
-  }
-  return map;
-}
-
-function toFieldKey(name) {
-  const normalized = name.trim().toLowerCase();
-  if (normalized === "agent target") return "agentTarget";
-  if (normalized === "source doc") return "sourceDoc";
-  return normalized.replace(/\s+([a-z])/g, (_, letter) => letter.toUpperCase());
-}
-
-function normalizeValue(value) {
-  return String(value ?? "")
-    .trim()
-    .toLowerCase()
-    .replace(/^m(\d).*$/, "m$1")
-    .replace(/[_-]/g, " ")
-    .replace(/\s+/g, " ");
 }
 
 function isProductFlowIssue(issue) {
