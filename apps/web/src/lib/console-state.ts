@@ -1314,6 +1314,14 @@ export interface ApplicationRegisterRequest {
   replacesApplicationId?: string;
 }
 
+export interface KnownApplicationCatalogEntry {
+  name: string;
+  displayName: string;
+  aliases: string[];
+  command: string;
+  installHint: string;
+}
+
 export interface ApplicationCapability {
   name: string;
   version?: string;
