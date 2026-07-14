@@ -114,6 +114,14 @@ function normalizeVerification(value) {
   return {
     checkPassed: value.checkPassed === true ? true : value.checkPassed === false ? false : null,
     error: stringOrNull(value.error),
+    // Post-apply verification (allowlisted command): recorded honestly whether it
+    // passed or failed — a failing verification does not undo the apply.
+    ...(value.testsPassed !== undefined ? {
+      verifyCommand: stringOrNull(value.verifyCommand),
+      testsPassed: value.testsPassed === true,
+      testExitCode: Number.isFinite(Number(value.testExitCode)) ? Number(value.testExitCode) : null,
+      testOutputPreview: stringOrNull(value.testOutputPreview),
+    } : {}),
   };
 }
 
