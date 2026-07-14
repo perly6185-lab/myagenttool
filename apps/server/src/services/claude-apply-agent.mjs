@@ -10,6 +10,8 @@
 // The whole tool is behind a default-OFF feature flag, so a deployment that has not
 // opted in has no discoverable or invokable apply path at all.
 
+import { isGovernedWrapperAgent } from "./governed-agent.mjs";
+
 export const CLAUDE_APPLY_TOOL_CONTRACT = {
   name: "claude.apply.patch",
   version: "1",
@@ -101,20 +103,13 @@ export function createClaudeApplyAgentRegistration({
 }
 
 export function isGovernedClaudeApplyAgent(agent) {
-  if (!agent) {
-    return false;
-  }
-  const hasId = agent.id === "agt_claude_apply_patch";
-  const hasCliAdapter = agent.adapter?.type === "cli";
-  const hasNodeCommand = String(agent.adapter?.command ?? "") === "node";
-  const hasPlainResultOutput = agent.adapter?.outputFormat === "plain_result";
-  const hasToolContract = agent.toolContract?.name === CLAUDE_APPLY_TOOL_CONTRACT.name;
-  const hasApplyCapability = (agent.capabilities ?? []).some((capability) => capability?.name === "code_apply");
-  const adapterArgs = Array.isArray(agent.adapter?.args) ? agent.adapter.args.map(String) : [];
-  // Exactly one arg: the canonical wrapper path (full trailing segment, never a
-  // bare basename), so a forged registration cannot point the write-capable runner
-  // at an attacker-controlled script.
-  const fixedWrapperArgs = adapterArgs.length === 1
-    && adapterArgs[0].replaceAll("\\", "/").endsWith("tools/agents/claude-apply-wrapper.mjs");
-  return hasId && hasCliAdapter && hasNodeCommand && hasPlainResultOutput && hasToolContract && hasApplyCapability && fixedWrapperArgs;
+  // mode: null → the single-argument write runner (no --mode). The shared gate
+  // still pins the exact canonical wrapper path.
+  return isGovernedWrapperAgent(agent, {
+    id: "agt_claude_apply_patch",
+    toolName: CLAUDE_APPLY_TOOL_CONTRACT.name,
+    capabilityName: "code_apply",
+    wrapper: "claude-apply-wrapper.mjs",
+    mode: null,
+  });
 }
