@@ -447,10 +447,10 @@ export function createApplicationService({
   }
 
   // One health check: source availability. local/git check the materialized
-  // path; an npm source has no path, so derive a real signal from its most recent
-  // run (#885) — a missing/broken binary shows as unhealthy on the next sweep,
-  // not only when the next invocation fails. manual stays `unsupported`. Never a
-  // fabricated verdict.
+  // path; npm and binary sources have no path, so derive a real signal from the
+  // most recent run (#885, #906) — a missing/broken binary (e.g. the git app on a
+  // device without git) shows as unhealthy on the next sweep, not only when the
+  // next invocation fails. manual stays `unsupported`. Never a fabricated verdict.
   function checkApplicationHealth(app) {
     const supported = ["local", "git"].includes(app.source?.type) && typeof app.path === "string" && app.path;
     if (supported) {
@@ -458,7 +458,7 @@ export function createApplicationService({
         ? { status: "healthy", reason: null }
         : { status: "unhealthy", reason: `source path ${app.path} does not exist` };
     }
-    if (app.source?.type === "npm") {
+    if (["npm", "binary"].includes(app.source?.type)) {
       return checkApplicationHealthFromRuns(app);
     }
     return { status: "unsupported", reason: `source type ${app.source?.type ?? "unknown"} has no local materialization to check` };

@@ -229,6 +229,16 @@ test("an npm-sourced app with a recent successful run is HEALTHY", () => {
   assert.equal(state.applications.find((a) => a.id === "app_npm_ok").health.status, "healthy");
 });
 
+test("a binary-source app (e.g. git) derives health from its latest run (#906)", () => {
+  const app = { id: "app_bin_git", name: "git", status: "active", source: { type: "binary", binary: "git" }, path: null, healthProbe: { enabled: true, intervalMinutes: 1, lastCheckedAt: null }, health: null, createdAt: now(), updatedAt: now() };
+  state.applications.push(app);
+  state.invocations.unshift({ id: "inv_bin_git", status: "failed", completedAt: now(), options: { metadata: { applicationId: "app_bin_git" } }, result: { output: { error: "git: command not found" } } });
+  sweep({ force: true });
+  const updated = state.applications.find((a) => a.id === "app_bin_git");
+  assert.equal(updated.health.status, "unhealthy", "a binary source is no longer a permanent `unsupported`");
+  assert.match(updated.health.reason, /command not found/);
+});
+
 test("an npm-sourced app with no runs stays `unsupported` (no guessed verdict)", () => {
   const app = { id: "app_npm_new", name: "app_npm_new", status: "active", source: { type: "npm" }, path: null, healthProbe: { enabled: true, intervalMinutes: 1, lastCheckedAt: null }, health: null, createdAt: now(), updatedAt: now() };
   state.applications.push(app);
