@@ -1120,13 +1120,19 @@ export function createM3Service({
     const source = reported ? "reported" : hasEstimate ? "estimated" : "unknown";
     const meta = invocation.input?.metadata ?? {};
     const projectId = meta.projectId ?? invocation.projectId ?? state.currentProjectId ?? state.projects[0]?.id ?? null;
+    // #969: stamp the OWNING TEAM on the ledger row (was hardcoded null). An
+    // explicit owner column lets the read-model scope by team directly — robust to
+    // the owning project row being dropped on restore, and the future durable store
+    // indexes on it. Derived from the row's project; null when there is no project.
+    const ledgerProject = projectId ? state.projects.find((project) => project.id === projectId) : null;
+    const ledgerTeamId = ledgerProject ? teamOf(ledgerProject) : null;
     const createdAt = now();
     const model = String(cost.model ?? "unknown");
     const entry = {
       id: nextId("led_demo"),
       workspaceId: agent?.economics?.budgetPoolId ?? "team_local",
       userId: invocation?.requestedBy ?? agent?.economics?.costOwner ?? "usr_local",
-      teamId: null,
+      teamId: ledgerTeamId,
       agentId: invocation.agentId ?? null,
       agentName: agent?.name ?? null,
       invocationId: invocation.id,

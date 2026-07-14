@@ -64,6 +64,38 @@ test("sqlite: importSnapshot loads whitelisted collections idempotently", { skip
   store.close();
 });
 
+// #971: cross-restart tenant isolation on the DURABLE adapter — two teams' rows
+// round-trip a close+reopen with the owner column (#969's teamId) intact, so the
+// read-model's team scoping holds on the durable backing, not just in memory.
+test("sqlite: two-team data round-trips a close+reopen with the owner column intact", { skip }, async () => {
+  const dir = mkdtempSync(join(tmpdir(), "sqlite-store-tenant-"));
+  const path = join(dir, "store.sqlite");
+  try {
+    let store = await openSqliteStore({ path });
+    store.importSnapshot({
+      projects: [{ id: "proj_a", ownerTeamId: "team_a" }, { id: "proj_b", ownerTeamId: "team_b" }],
+      ledgerEntries: [
+        { id: "led_a1", teamId: "team_a", projectId: "proj_a", amountUsd: 3 },
+        { id: "led_a2", teamId: "team_a", projectId: "proj_a", amountUsd: 4 },
+        { id: "led_b1", teamId: "team_b", projectId: "proj_b", amountUsd: 9 },
+      ],
+    });
+    store.close();
+
+    store = await openSqliteStore({ path });
+    assert.equal(store.query("ledgerEntries").length, 3, "all rows survived the reopen");
+    const teamA = store.query("ledgerEntries", (r) => r.teamId === "team_a");
+    const teamB = store.query("ledgerEntries", (r) => r.teamId === "team_b");
+    assert.deepEqual(teamA.map((r) => r.id).sort(), ["led_a1", "led_a2"], "team A's rows are intact + isolated");
+    assert.deepEqual(teamB.map((r) => r.id), ["led_b1"], "team B's row is intact + isolated");
+    assert.equal(teamA.some((r) => r.teamId === "team_b"), false, "no team B row bleeds into team A's slice");
+    assert.equal(store.get("ledgerEntries", "led_b1").teamId, "team_b", "the owner column survived the reopen");
+    store.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("sqlite: a store schema newer than the binary refuses to open", { skip }, () => {
   const dir = mkdtempSync(join(tmpdir(), "sqlite-store-ver-"));
   const path = join(dir, "store.sqlite");
