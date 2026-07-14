@@ -85,6 +85,7 @@ export function createServerState({ defaultProjectPath, now }) {
     importedUsageEstimates: [],
     codexReviewFindings: [],
     claudeReviewFindings: [],
+    codexExecChanges: [],
     applicationResults: [],
     budgets: [],
     automations: createDefaultAutomations(defaultProject.id, now),
@@ -186,6 +187,7 @@ export function resetStateForSelfCheck({ state, now }) {
   state.importedUsageEstimates = [];
   state.codexReviewFindings = [];
   state.claudeReviewFindings = [];
+  state.codexExecChanges = [];
   state.applicationResults = [];
   state.budgets = [];
   state.automations = createDefaultAutomations(state.currentProjectId ?? state.projects[0]?.id ?? "prj_myagenttool", now);
