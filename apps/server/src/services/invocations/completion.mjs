@@ -14,6 +14,7 @@ export function createInvocationCompletionRuntime({
   recordCcusageImportedEstimates,
   recordCodexReviewFindings,
   recordClaudeReviewFindings,
+  recordCodexExecChanges,
   recordApplicationResult,
   onInvocationCompleted,
 }) {
@@ -93,6 +94,14 @@ export function createInvocationCompletionRuntime({
         agent: findAgent(invocation.agentId),
       });
       attachApplicationResult({ invocation, auditSummary, records, outputCollection: "claudeReviewFindings" });
+    }
+    if (terminalStatus === "succeeded" && typeof recordCodexExecChanges === "function") {
+      const records = recordCodexExecChanges({
+        invocation,
+        result: body.result ?? null,
+        agent: findAgent(invocation.agentId),
+      });
+      attachApplicationResult({ invocation, auditSummary, records, outputCollection: "codexExecChanges" });
     }
     // The generic path (#801): dispatch on the wrapper command's declared
     // `resultImport`, so a new Application imports without another branch here.

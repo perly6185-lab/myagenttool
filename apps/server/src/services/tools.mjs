@@ -5,6 +5,9 @@ import {
 import { CCUSAGE_APPLICATION_ID } from "./ccusage-application.mjs";
 import {
   CODEX_REVIEW_TOOL_CONTRACT,
+  CODEX_EXEC_TOOL_CONTRACT,
+  isCodexExecEnabled,
+  isGovernedCodexExecAgent,
   isGovernedCodexReviewAgent,
 } from "./codex-agent.mjs";
 import {
@@ -58,6 +61,9 @@ export function createToolService({
         outputCollection: "claudeReviewFindings",
         agentLabel: "Claude",
       });
+    }
+    if (name === CODEX_EXEC_TOOL_CONTRACT.name) {
+      return createExecInvocation({ input, actor });
     }
     return { status: 404, body: { error: "tool_not_found" } };
   }
@@ -215,6 +221,84 @@ export function createToolService({
     };
   }
 
+  // codex.exec (write-capable) — mirrors createReviewInvocation but requires a
+  // task, requires a materialized worktree (writes never touch the base checkout),
+  // carries approvalMode, and is gated behind the default-OFF feature flag.
+  function createExecInvocation({ input, actor }) {
+    if (!isCodexExecEnabled()) {
+      return { status: 409, body: { error: "codex_exec_disabled", message: "Codex exec is disabled. Set MYAGENTTOOL_CODEX_EXEC_ENABLED=1 to enable it." } };
+    }
+    const validation = validateCodexExecInput(input);
+    if (!validation.ok) {
+      return { status: validation.status, body: validation.body };
+    }
+    const value = validation.value;
+    const project = resolveToolProjectId(value.projectId, actor);
+    if (!project.ok) {
+      return { status: project.status, body: project.body };
+    }
+    const projectId = project.value;
+    const worktree = findToolWorktree(value.worktreeId, projectId);
+    if (!worktree) {
+      return { status: 404, body: { error: "worktree_not_found" } };
+    }
+    const agent = selectCodexExecAgent();
+    if (!agent) {
+      return { status: 409, body: { error: "agent_not_available", message: "No governed Codex exec agent is available." } };
+    }
+    if (agent.status === "disabled") {
+      return { status: 409, body: { error: "agent_not_available", message: "The governed Codex exec agent is disabled.", agentId: agent.id } };
+    }
+    if (agent.health?.status === "unhealthy") {
+      return { status: 409, body: { error: "agent_not_available", message: agent.health.message ?? "The governed Codex exec agent is unhealthy.", agentId: agent.id } };
+    }
+    if (agent.location?.type === "local_device" && state.device?.unlinkState === "unlinked") {
+      return { status: 409, body: { error: "agent_not_available", message: "The local device is unlinked.", agentId: agent.id } };
+    }
+    const invocation = createInvocation(buildCodexExecTask(value), agent, {
+      actor,
+      requestedBy: actor?.userId,
+      // approvalMode drives the Codex approval broker (codex.mjs). ask pauses on
+      // every permission request; auto auto-approves low-risk requests while the
+      // sensitive-pattern list still forces manual review.
+      approvalMode: value.approvalMode,
+      metadata: {
+        tool: CODEX_EXEC_TOOL_CONTRACT.name,
+        toolVersion: CODEX_EXEC_TOOL_CONTRACT.version,
+        projectId,
+        worktreeId: worktree.id,
+        task: value.task,
+        permissionMode: value.approvalMode,
+      },
+      timeoutSeconds: 600,
+    });
+    startInvocationIfAllowed(invocation, agent);
+    appendEvent({
+      invocationId: invocation.id,
+      type: "tool_invocation_created",
+      level: "info",
+      message: `Tool ${CODEX_EXEC_TOOL_CONTRACT.name} created edit invocation.`,
+      data: {
+        tool: CODEX_EXEC_TOOL_CONTRACT.name,
+        version: CODEX_EXEC_TOOL_CONTRACT.version,
+        agentId: agent.id,
+        worktreeId: worktree.id,
+        approvalMode: value.approvalMode,
+      },
+    });
+    return {
+      status: 201,
+      body: {
+        tool: CODEX_EXEC_TOOL_CONTRACT.name,
+        invocationId: invocation.id,
+        agentId: agent.id,
+        status: invocation.status,
+        outputCollection: "codexExecChanges",
+        invocation,
+      },
+    };
+  }
+
   // The ccusage app backs the tool; when the app service isn't wired (review-only
   // harnesses) the tool is simply absent.
   function resolveCcusageApp() {
@@ -226,15 +310,23 @@ export function createToolService({
     const ccusageAvailable = ccusageApp && ["registered", "active"].includes(ccusageApp.status);
     const codexReviewAgents = (state.agents ?? []).filter(isGovernedCodexReviewAgent);
     const claudeReviewAgents = (state.agents ?? []).filter(isGovernedClaudeReviewAgent);
+    // Only surface the write-capable exec tool when the feature flag is on, so an
+    // off-by-default deployment has no discoverable or invokable Codex write path.
+    const codexExecAgents = isCodexExecEnabled() ? (state.agents ?? []).filter(isGovernedCodexExecAgent) : [];
     return [
       ...(ccusageAvailable ? [buildCcusageToolDescriptor(ccusageApp)] : []),
       ...(codexReviewAgents.length ? [buildCodexReviewToolDescriptor(codexReviewAgents)] : []),
       ...(claudeReviewAgents.length ? [buildClaudeReviewToolDescriptor(claudeReviewAgents)] : []),
+      ...(codexExecAgents.length ? [buildCodexExecToolDescriptor(codexExecAgents)] : []),
     ];
   }
 
   function selectCodexReviewAgent() {
     return (state.agents ?? []).find(isGovernedCodexReviewAgent) ?? null;
+  }
+
+  function selectCodexExecAgent() {
+    return (state.agents ?? []).find(isGovernedCodexExecAgent) ?? null;
   }
 
   function selectClaudeReviewAgent() {
@@ -277,6 +369,7 @@ export function createToolService({
     listTools,
     validateCodexReviewInput,
     validateClaudeReviewInput,
+    validateCodexExecInput,
     validateCcusageReportInput,
   };
 }
@@ -364,6 +457,34 @@ function buildClaudeReviewToolDescriptor(agents) {
     },
     authoritativeBilling: false,
     outputCollection: "claudeReviewFindings",
+  };
+}
+
+function buildCodexExecToolDescriptor(agents) {
+  return {
+    name: CODEX_EXEC_TOOL_CONTRACT.name,
+    version: CODEX_EXEC_TOOL_CONTRACT.version,
+    displayName: "Codex Exec",
+    description: "Run a governed Codex edit session in a project worktree and return the resulting changeset.",
+    riskLevel: "high",
+    riskTags: ["write_worktree", "code_change", "local_agent"],
+    requiresLocalDevice: true,
+    inputSchema: CODEX_EXEC_TOOL_CONTRACT.inputSchema,
+    outputSchema: CODEX_EXEC_TOOL_CONTRACT.outputSchema,
+    agents: agents.map((agent) => ({
+      id: agent.id,
+      name: agent.name,
+      status: agent.status,
+      mode: "edit",
+    })),
+    approvalPolicy: {
+      // Writes always go through the approval broker; the sensitive-pattern list
+      // forces manual review even in auto mode. Promotion is separately human-gated.
+      edit: "approval_required",
+      promote: "approval_required",
+    },
+    authoritativeBilling: false,
+    outputCollection: "codexExecChanges",
   };
 }
 
@@ -475,6 +596,42 @@ function validateCodexReviewInput(input = {}) {
   return validateReviewInput(input);
 }
 
+function validateCodexExecInput(input = {}) {
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    return { ok: false, status: 400, body: { error: "invalid_input", message: "Tool input must be an object." } };
+  }
+  const allowed = new Set(["projectId", "worktreeId", "task", "approvalMode"]);
+  const unknown = Object.keys(input).filter((key) => !allowed.has(key));
+  if (unknown.length) {
+    return { ok: false, status: 400, body: { error: "unknown_field", fields: unknown } };
+  }
+  const worktreeId = stringOrNull(input.worktreeId);
+  if (!worktreeId) {
+    return { ok: false, status: 400, body: { error: "worktree_required" } };
+  }
+  const task = input.task === undefined || input.task === null ? "" : String(input.task).trim();
+  if (!task) {
+    return { ok: false, status: 400, body: { error: "task_required" } };
+  }
+  if (task.length > 4000) {
+    return { ok: false, status: 400, body: { error: "task_too_long", maxLength: 4000 } };
+  }
+  const approvalMode = input.approvalMode === undefined ? "ask" : String(input.approvalMode);
+  // Phase 1 supports ask + auto only (design §11.1); full is deferred.
+  if (!["ask", "auto"].includes(approvalMode)) {
+    return { ok: false, status: 400, body: { error: "invalid_approval_mode" } };
+  }
+  return {
+    ok: true,
+    value: {
+      projectId: stringOrNull(input.projectId),
+      worktreeId,
+      task,
+      approvalMode,
+    },
+  };
+}
+
 function validateClaudeReviewInput(input = {}) {
   return validateReviewInput(input);
 }
@@ -498,6 +655,10 @@ function buildCodexReviewTask(value) {
 function buildClaudeReviewTask(value) {
   const suffix = value.instruction ? ` Instruction: ${value.instruction}` : "";
   return `Review the selected worktree diff with Claude. Severity floor: ${value.severityFloor}.${suffix}`;
+}
+
+function buildCodexExecTask(value) {
+  return `Make the requested code changes in the selected worktree with Codex. Task: ${value.task}`;
 }
 
 

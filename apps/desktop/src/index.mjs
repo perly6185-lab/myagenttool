@@ -1470,7 +1470,7 @@ function createCliSpawnPlan(adapter, payload) {
   const renderedArgs = isCodexCliCommand(adapter.command)
     ? applyCodexPermissionMode(renderArgs(argsTemplate, payloadJson, payload), payload)
     : applicationWrapperArgs(
-        governedReviewWrapperArgs(renderArgs(argsTemplate, payloadJson, payload), payload),
+        governedExecWrapperArgs(governedReviewWrapperArgs(renderArgs(argsTemplate, payloadJson, payload), payload), payload),
         payload,
         { resolveCwd: (spec, metadata) => normalizedExistingPath(spec.cwd) ?? normalizedExistingPath(metadata?.worktreePath) ?? normalizedExistingPath(metadata?.projectPath) },
       );
@@ -1533,6 +1533,27 @@ function governedReviewWrapperArgs(renderedArgs, payload) {
     : null;
   if (severityFloor && !hasFlag(injected, "--severity-floor")) {
     injected.push("--severity-floor", severityFloor);
+  }
+  return injected;
+}
+
+function governedExecWrapperArgs(renderedArgs, payload) {
+  const metadata = payload.options?.metadata && typeof payload.options.metadata === "object" && !Array.isArray(payload.options.metadata)
+    ? payload.options.metadata
+    : {};
+  const usesExecWrapper = String(metadata.tool ?? "") === "codex.exec"
+    && renderedArgs.some((arg) => String(arg).replaceAll("\\", "/").endsWith("tools/agents/codex-exec-wrapper.mjs"));
+  if (!usesExecWrapper) {
+    return renderedArgs;
+  }
+  const injected = [...renderedArgs];
+  const cwd = normalizedExistingPath(metadata.worktreePath) ?? normalizedExistingPath(metadata.projectPath);
+  if (cwd && !hasFlag(injected, "--cwd")) {
+    injected.push("--cwd", cwd);
+  }
+  const task = boundedString(metadata.task, 4000);
+  if (task && !hasFlag(injected, "--task")) {
+    injected.push("--task", task);
   }
   return injected;
 }
