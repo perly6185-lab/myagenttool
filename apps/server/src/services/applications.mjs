@@ -35,12 +35,16 @@ export function createApplicationService({
   // Approval check behind every `approvalToken` field (docs/design/
   // APPROVAL_GRANTS.md): issued grants are validated + consumed; in phase 1 a
   // legacy free-text token still passes (stamped + counted by the validator).
-  // Presence stays a hard requirement either way. A null validator (direct
-  // service construction in unit tests) degrades to the presence check.
+  // Presence stays a hard requirement either way. FAIL CLOSED: if no validator
+  // is wired, deny — the whole point of grants is that a side-effecting action
+  // proves a specific approval, so a missing validator must never degrade to
+  // "any non-empty string approves". The composed server always injects it
+  // (service-composer); a null validator only happens in direct-construction
+  // unit tests, which must pass a stub to exercise an approval gate.
   function approvalCheck(input, action, targetId, actor = null) {
     const token = input && typeof input === "object" && !Array.isArray(input) ? input.approvalToken : null;
     if (!String(token ?? "").trim()) return { approved: false, reason: "missing_token" };
-    if (typeof validateApprovalToken !== "function") return { approved: true, mode: "presence" };
+    if (typeof validateApprovalToken !== "function") return { approved: false, reason: "approval_validator_unavailable" };
     return validateApprovalToken(token, { action, targetId, actor });
   }
 

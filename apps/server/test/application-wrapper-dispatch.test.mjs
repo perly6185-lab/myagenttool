@@ -25,6 +25,10 @@ function harness({ agentAvailable = true } = {}) {
     addProject: () => null,
     cloneProject: () => null,
     defaultProjectPath: "/tmp/repo",
+    // Stub the grant validator: this test exercises the DISPATCH path, not grant
+    // semantics, so approval is granted once a token is present. The gate still
+    // enforces presence (session-with-no-token below is refused before this runs).
+    validateApprovalToken: () => ({ approved: true, mode: "test" }),
   });
   appSvc.registerApplication(createCcusageApplicationRegistration());
 
@@ -95,6 +99,43 @@ test("the session report still requires an approvalToken (approval gate preserve
   // With a token it proceeds.
   const ok = capSvc.createCapabilityInvocation("app.app_ccusage.wrapper.session", { approvalToken: "operator" });
   assert.equal(ok.status, 202);
+});
+
+test("fail-closed: with no grant validator wired, a gated command is denied even WITH a token", () => {
+  // A misconfiguration that forgets to inject validateApprovalToken must NOT
+  // degrade to "any non-empty string approves" — the pre-grant vulnerability the
+  // whole system exists to close. Build the service exactly like the harness but
+  // without the validator stub, and confirm a requiresApproval command with a
+  // token is still refused.
+  const state = { applications: [], projects: [] };
+  const appSvc = createApplicationService({
+    state,
+    now: () => "2026-07-03T00:00:00.000Z",
+    nextId: (p) => `${p}_x`,
+    appendEvent: () => {},
+    persistStateSoon: () => {},
+    addProject: () => null,
+    cloneProject: () => null,
+    defaultProjectPath: "/tmp/repo",
+    // validateApprovalToken intentionally omitted.
+  });
+  appSvc.registerApplication(createCcusageApplicationRegistration());
+  const capSvc = createCapabilityService({
+    state,
+    listTools: () => [],
+    getTool: () => null,
+    createToolInvocation: () => ({ status: 500 }),
+    createInvocation: () => ({ id: "inv_x", status: "queued", agentId: "agt_platform_application_wrapper", options: {} }),
+    completeInvocation: () => {},
+    findAgent: (id) => (id === "agt_platform_application_wrapper" ? { id, status: "available" } : null),
+    listApplications: appSvc.listApplications,
+    listApplicationCapabilities: appSvc.listApplicationCapabilities,
+    invokeApplicationCapability: appSvc.invokeApplicationCapability,
+    planApplicationWrapperInvocation: appSvc.planApplicationWrapperInvocation,
+  });
+  const res = capSvc.createCapabilityInvocation("app.app_ccusage.wrapper.session", { approvalToken: "operator" });
+  assert.equal(res.status, 409);
+  assert.equal(res.body.error, "approval_required");
 });
 
 test("an unknown wrapper command resolves no plan and is refused", () => {
