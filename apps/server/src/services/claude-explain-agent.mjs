@@ -10,6 +10,8 @@
 // explanation rides the invocation result and the generic Application-result
 // lineage.
 
+import { isGovernedWrapperAgent } from "./governed-agent.mjs";
+
 export const CLAUDE_EXPLAIN_TOOL_CONTRACT = {
   name: "claude.explain.diff",
   version: "1",
@@ -87,29 +89,11 @@ export function createClaudeExplainAgentRegistration({
 }
 
 export function isGovernedClaudeExplainAgent(agent) {
-  if (!agent) {
-    return false;
-  }
-  const hasId = agent.id === "agt_claude_explain_diff";
-  const hasCliAdapter = agent.adapter?.type === "cli";
-  const hasNodeCommand = String(agent.adapter?.command ?? "") === "node";
-  const hasPlainResultOutput = agent.adapter?.outputFormat === "plain_result";
-  const hasToolContract = agent.toolContract?.name === CLAUDE_EXPLAIN_TOOL_CONTRACT.name;
-  const hasAnalysisCapability = (agent.capabilities ?? []).some((capability) => capability?.name === "code_analysis");
-  const adapterArgs = Array.isArray(agent.adapter?.args) ? agent.adapter.args.map(String) : [];
-  const fixedWrapperArgs = isExactGovernedExplainWrapperArgs(adapterArgs, "claude-review-wrapper.mjs");
-  return hasId && hasCliAdapter && hasNodeCommand && hasPlainResultOutput && hasToolContract && hasAnalysisCapability && fixedWrapperArgs;
-}
-
-function isExactGovernedExplainWrapperArgs(args, wrapperName) {
-  if (args.length !== 3) {
-    return false;
-  }
-  // Same canonical-path guard as the review agent: match the full trailing repo
-  // path segment, never a bare basename, so a forged registration cannot point
-  // the governed facade at an attacker-controlled script whose filename ends with
-  // the wrapper name. The mode is hardcoded to diff-explain.
-  return args[0].replaceAll("\\", "/").endsWith(`tools/agents/${wrapperName}`)
-    && args[1] === "--mode"
-    && args[2] === "diff-explain";
+  return isGovernedWrapperAgent(agent, {
+    id: "agt_claude_explain_diff",
+    toolName: CLAUDE_EXPLAIN_TOOL_CONTRACT.name,
+    capabilityName: "code_analysis",
+    wrapper: "claude-review-wrapper.mjs",
+    mode: "diff-explain",
+  });
 }
