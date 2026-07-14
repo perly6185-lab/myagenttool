@@ -3,6 +3,7 @@ import { createRefusalRuntime } from "./refusal-log.mjs";
 import { createBridgeCredentialRuntime } from "./bridge-auth.mjs";
 import { createPersistenceRuntime } from "./persistence.mjs";
 import { createReadModelRuntime } from "./read-models.mjs";
+import { createInMemoryStore } from "./store/in-memory-store.mjs";
 import {
   createAgentService,
   isAgentDisabled,
@@ -80,6 +81,11 @@ export function createServerRuntimeServices({
     defaultProject,
     sameProjectPath,
   });
+  // #966 (#124): the Store seam over today's snapshot — reads scan `state`, a
+  // transaction stages writes and commits atomically through the synchronous
+  // barrier. Constructed now and exposed for services to migrate onto
+  // incrementally (#968); nothing routes through it yet, so behavior is unchanged.
+  const store = createInMemoryStore({ state, commit: persistStateNow });
   const restored = restorePersistentState();
   // The counter comes from the snapshot it minted ids for. The scan is kept ONLY
   // as a floor — for a snapshot written before the counter was persisted, and as a
@@ -412,6 +418,8 @@ export function createServerRuntimeServices({
     // #890.1 tail: hold budget at manual/API accept, release on completion.
     reserveBudget,
     releaseReservationsForInvocation,
+    // #968: the Store seam — dispatch claim/ack commit through its unit of work.
+    store,
     checkUsageQuota,
     onInvocationCompleted: (invocation) => {
       advanceAutoRunHook?.(invocation);
@@ -2760,6 +2768,8 @@ export function createServerRuntimeServices({
     httpDependencies,
     savePersistentState,
     selfCheckDependencies,
+    // #966: the Store seam, exposed for incremental service migration (#968).
+    store,
   };
 }
 
