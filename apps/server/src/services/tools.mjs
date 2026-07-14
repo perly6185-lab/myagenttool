@@ -24,6 +24,7 @@ import {
 } from "./claude-propose-agent.mjs";
 import {
   CLAUDE_APPLY_TOOL_CONTRACT,
+  CLAUDE_APPLY_VERIFY_COMMANDS,
   isClaudeApplyEnabled,
   isGovernedClaudeApplyAgent,
 } from "./claude-apply-agent.mjs";
@@ -485,6 +486,7 @@ export function createToolService({
       summary: stringOrNull(proposal.result?.output?.summary),
       patch,
       files,
+      verifyCommandId: value.verify ?? null,
       // Immutable, single-use. 4a authorizes; a later slice (4b) executes it.
       status: "authorized",
       executable: false,
@@ -526,6 +528,9 @@ export function createToolService({
           // The bridge writes this to a temp file and passes --patch-file. Stripped
           // from public state (see sanitizeInvocationOptions).
           applyPatch: patch,
+          // Optional allowlisted post-apply verification; the bridge injects
+          // --verify <id> and the wrapper maps it to fixed argv independently.
+          ...(value.verify ? { verifyCommandId: value.verify } : {}),
         },
         timeoutSeconds: 120,
       });
@@ -1155,7 +1160,7 @@ function validateClaudeApplyInput(input = {}) {
   if (!input || typeof input !== "object" || Array.isArray(input)) {
     return { ok: false, status: 400, body: { error: "invalid_input", message: "Tool input must be an object." } };
   }
-  const allowed = new Set(["projectId", "worktreeId", "proposalInvocationId", "approvalToken"]);
+  const allowed = new Set(["projectId", "worktreeId", "proposalInvocationId", "approvalToken", "verify"]);
   const unknown = Object.keys(input).filter((key) => !allowed.has(key));
   if (unknown.length) {
     return { ok: false, status: 400, body: { error: "unknown_field", fields: unknown } };
@@ -1168,11 +1173,16 @@ function validateClaudeApplyInput(input = {}) {
   if (!proposalInvocationId) {
     return { ok: false, status: 400, body: { error: "proposal_required" } };
   }
+  // Post-apply verification: an allowlisted command ID only, never argv.
+  const verify = stringOrNull(input.verify);
+  if (verify && !CLAUDE_APPLY_VERIFY_COMMANDS.includes(verify)) {
+    return { ok: false, status: 400, body: { error: "invalid_verify_command", allowed: CLAUDE_APPLY_VERIFY_COMMANDS } };
+  }
   const approvalToken = stringOrNull(input.approvalToken);
   if (!approvalToken) {
     return { ok: false, status: 409, body: { error: "approval_required", reason: "missing_token" } };
   }
-  return { ok: true, value: { projectId: stringOrNull(input.projectId), worktreeId, proposalInvocationId, approvalToken } };
+  return { ok: true, value: { projectId: stringOrNull(input.projectId), worktreeId, proposalInvocationId, approvalToken, verify } };
 }
 
 function buildCodexExecTask(value) {

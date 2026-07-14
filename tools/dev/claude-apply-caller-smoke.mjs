@@ -35,7 +35,14 @@ runGit(["init", "-b", "main"], repoPath);
 runGit(["config", "user.email", "claude-apply-smoke@example.test"], repoPath);
 runGit(["config", "user.name", "Claude Apply Smoke"], repoPath);
 writeFileSync(join(repoPath, "README.md"), "# Claude apply caller smoke\n");
-runGit(["add", "README.md"], repoPath);
+// A committed passing test so the post-apply verification hook (verify: node-test)
+// has something real to run in the worktree.
+writeFileSync(join(repoPath, "smoke.test.mjs"), [
+  "import { test } from 'node:test';",
+  "import assert from 'node:assert/strict';",
+  "test('smoke', () => assert.equal(1, 1));",
+].join("\n"));
+runGit(["add", "README.md", "smoke.test.mjs"], repoPath);
 runGit(["commit", "-m", "seed claude apply smoke repo"], repoPath);
 
 // A git-produced create-file patch for greeting.txt — guaranteed to apply cleanly
@@ -126,6 +133,9 @@ try {
     worktreeId: worktreeCreated.worktree.id,
     proposalInvocationId,
     approvalToken: grant.token,
+    // Post-apply verification hook: allowlisted command id, runs in the worktree
+    // after git apply; the verdict lands on the authorization.
+    verify: "node-test",
   });
   assert(applied.status === "applying", `apply should dispatch to the runner, got ${applied.status}`);
   assert(applied.executionInvocationId, "apply should link the execution invocation");
@@ -151,6 +161,9 @@ try {
   ok("the patch was git-applied into the worktree on disk (server -> bridge -> git apply seam)");
 
   assert((authorization.appliedFiles ?? []).some((f) => f.path === "greeting.txt"), "the authorization should record greeting.txt");
+  assert(authorization.verification?.testsPassed === true, "the post-apply verification (node --test) should run in the worktree and pass");
+  assert(authorization.verification?.verifyCommand === "node --test", "the authorization should record which command verified it");
+  ok("the post-apply verification hook ran real tests in the worktree and recorded the verdict");
   assert(authorization.rollback?.available === true, "a successful apply should record reversible rollback guidance");
   assert(authorization.patchPreview === undefined || typeof authorization.patchPreview === "string", "public authorization exposes only a bounded preview");
   ok("the applied file list + rollback guidance are recorded on the authorization");

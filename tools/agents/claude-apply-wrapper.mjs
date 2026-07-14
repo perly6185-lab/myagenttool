@@ -10,8 +10,21 @@ import { existsSync, readFileSync } from "node:fs";
 import { isAbsolute } from "node:path";
 
 const TOOL = "claude.apply.patch";
+
+// Post-apply verification allowlist (#914 follow-up). The caller selects an ID,
+// never argv — mirrored independently on the server (tools.mjs), not shared, so a
+// compromised server value still cannot make this runner execute a free-form
+// command. `node-test` is deliberately network-free, matching the runner's
+// declared no-network policy; package-manager runners are a separate decision.
+const VERIFY_COMMANDS = {
+  "node-test": { command: "node", args: ["--test"], label: "node --test" },
+};
+
 const options = parseArgs(process.argv.slice(2));
 requireApplyInputs(options);
+if (options.verify && !VERIFY_COMMANDS[options.verify]) {
+  fail(`Unsupported verify command id: ${options.verify}`);
+}
 
 // `--reverse` is the governed ROLLBACK: the exact same patch the server holds on
 // the authorization, undone with git's own reversal. Same check-then-apply
@@ -55,11 +68,17 @@ if (apply.status !== 0) {
   }, /* exitCode */ 1);
 }
 
+// Post-apply verification: run the allowlisted command in the worktree AFTER the
+// patch landed. A failing verification does NOT undo the apply — git already
+// committed the change to the tree, and the honest record ("applied, tests
+// failed") plus the governed rollback is strictly better than a silent revert.
+const verification = { checkPassed: true, ...runVerification() };
+
 emit({
   applied: true,
   reversed: options.reverse,
   appliedFiles: files,
-  verification: { checkPassed: true },
+  verification,
   // git apply is reversible: re-running the SAME patch with --reverse undoes it.
   // The server holds the patch (on the authorization), so rollback re-invokes this
   // runner with --reverse. A completed rollback is itself not re-reversible here.
@@ -68,8 +87,36 @@ emit({
     : { available: true, strategy: "git_apply_reverse", command: "git apply --reverse" },
   summary: options.reverse
     ? `Rolled back a Claude patch touching ${files.length} file(s).`
-    : `Applied a Claude patch touching ${files.length} file(s).`,
+    : verification.testsPassed === false
+      ? `Applied a Claude patch touching ${files.length} file(s); verification (${verification.verifyCommand}) FAILED.`
+      : `Applied a Claude patch touching ${files.length} file(s).`,
 }, /* exitCode */ 0);
+
+function runVerification() {
+  // Rollback runs never verify; the server also never stamps verify on them.
+  if (!options.verify || options.reverse) return {};
+  const spec = VERIFY_COMMANDS[options.verify];
+  // Scrub inherited node test-runner context: if THIS wrapper runs as a
+  // descendant of `node --test` (our own test suite does exactly that), the
+  // inner `node --test` would inherit NODE_TEST_CONTEXT, behave as a child test
+  // process, and exit 0 without a real verdict — a false "tests passed".
+  const { NODE_TEST_CONTEXT, ...env } = process.env;
+  const run = spawnSync(spec.command, spec.args, {
+    cwd: options.cwd,
+    env,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+    timeout: 90_000,
+    windowsHide: true,
+  });
+  const output = `${run.stdout ?? ""}\n${run.stderr ?? ""}`.trim();
+  return {
+    verifyCommand: spec.label,
+    testsPassed: run.status === 0,
+    testExitCode: run.status ?? 1,
+    testOutputPreview: output.length <= 4000 ? output : `${output.slice(0, 4000)}\n... (truncated)`,
+  };
+}
 
 function emit(output, exitCode) {
   console.log(`RESULT ${JSON.stringify({
@@ -83,12 +130,13 @@ function emit(output, exitCode) {
 }
 
 function parseArgs(args) {
-  const parsed = { cwd: null, patchFile: null, reverse: false };
+  const parsed = { cwd: null, patchFile: null, reverse: false, verify: null };
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
     if (arg === "--cwd") parsed.cwd = requireValue(args, ++index, arg);
     else if (arg === "--patch-file") parsed.patchFile = requireValue(args, ++index, arg);
     else if (arg === "--reverse") parsed.reverse = true;
+    else if (arg === "--verify") parsed.verify = requireValue(args, ++index, arg);
     else if (arg === "--help" || arg === "-h") { printHelp(); process.exit(0); }
     else fail(`Unsupported Claude apply wrapper argument: ${arg}`);
   }
