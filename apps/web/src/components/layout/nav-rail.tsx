@@ -16,10 +16,14 @@ import type { ProjectSnapshot } from "@/lib/console-state";
 export function NavRail() {
   const section = useUiStore((s) => s.section);
   const setSection = useUiStore((s) => s.setSection);
+  const collapsedNavGroups = useUiStore((s) => s.collapsedNavGroups);
+  const toggleNavGroup = useUiStore((s) => s.toggleNavGroup);
   const { data: state } = useConsoleState();
   const pendingCount = state?.pendingDecisions?.length ?? 0;
   const attentionCount = state?.evidenceLedger?.filter((r) => r.attention).length ?? 0;
   const [showRegister, setShowRegister] = useState(false);
+  // The active section's group is always shown, so a deep-link never lands in a collapsed group.
+  const activeGroup = SECTIONS.find((s) => s.key === section)?.group;
 
   return (
     <nav
@@ -37,14 +41,25 @@ export function NavRail() {
       </div>
 
       <ul className="flex flex-1 flex-col gap-0.5 overflow-y-auto px-3 py-2">
-        {SECTION_GROUPS.map((grp, gi) => (
+        {SECTION_GROUPS.map((grp, gi) => {
+          // Collapsed groups hide their items, but the group holding the active
+          // section is force-open so navigation is never stranded behind a caret.
+          const groupOpen = grp.key === activeGroup || !collapsedNavGroups.includes(grp.key);
+          return (
           // Space groups apart from the second onward. (A `first:` variant on the
-          // header <p> can't do this — each <p> is the first child of its own <li>,
+          // header can't do this — each header is the first child of its own <li>,
           // so `:first-child` matched every header and the spacing never rendered.)
-          <li key={grp.key} className={cn(gi > 0 && "mt-3")}>
-            <p className="px-3 pb-1 pt-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground/60">
+          <li key={grp.key} className={cn(gi > 0 && "mt-2")}>
+            <button
+              type="button"
+              onClick={() => toggleNavGroup(grp.key)}
+              aria-expanded={groupOpen}
+              className="flex w-full items-center gap-1 rounded px-2 pb-1 pt-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground/60 hover:text-sidebar-foreground"
+            >
+              <ChevronRight className={cn("size-3 shrink-0 transition-transform", groupOpen && "rotate-90")} />
               {grp.label}
-            </p>
+            </button>
+            {groupOpen ? (
             <ul className="flex flex-col gap-0.5">
               {SECTIONS.filter((s) => s.group === grp.key).map((item) => {
           const Icon = item.icon;
@@ -109,8 +124,10 @@ export function NavRail() {
           );
               })}
             </ul>
+            ) : null}
           </li>
-        ))}
+          );
+        })}
       </ul>
 
       <p className="px-5 py-4 text-xs text-muted-foreground">

@@ -1,11 +1,15 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import {
+  DEFAULT_COLLAPSED_NAV_GROUPS,
   navigationFromSearch,
   searchFromNavigationState,
   useUiStore,
 } from "@/store/ui-store";
 
-beforeEach(() => localStorage.clear());
+beforeEach(() => {
+  localStorage.clear();
+  useUiStore.setState({ collapsedNavGroups: [...DEFAULT_COLLAPSED_NAV_GROUPS] });
+});
 
 describe("ui-store persistence", () => {
   it("persists section + selections to localStorage, excluding setters", () => {
@@ -34,6 +38,21 @@ describe("ui-store persistence", () => {
     expect(parsed.state.setSection).toBeUndefined();
     expect(parsed.state.setSelectedApplicationId).toBeUndefined();
     expect(parsed.state.setSelectedEvidenceId).toBeUndefined();
+  });
+});
+
+describe("nav group collapse (#928)", () => {
+  it("starts with the expert groups collapsed and persists toggles", () => {
+    expect(useUiStore.getState().collapsedNavGroups).toEqual(["configure", "ledgers"]);
+
+    useUiStore.getState().toggleNavGroup("configure"); // expand
+    expect(useUiStore.getState().collapsedNavGroups).toEqual(["ledgers"]);
+
+    useUiStore.getState().toggleNavGroup("run"); // collapse a default-open group
+    expect(useUiStore.getState().collapsedNavGroups).toEqual(["ledgers", "run"]);
+
+    const parsed = JSON.parse(localStorage.getItem("myagenttool-ui") as string);
+    expect(parsed.state.collapsedNavGroups).toEqual(["ledgers", "run"]);
   });
 });
 

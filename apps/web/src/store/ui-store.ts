@@ -46,6 +46,8 @@ interface UiState {
   selectedAutomationId: string | null;
   /** Transient: the invocation whose Codex session the composer will continue on next send (#163). */
   resumeFromInvocationId: string | null;
+  /** Nav groups the operator has collapsed; expert groups start here so the rail isn't a wall of 22 (#928). */
+  collapsedNavGroups: string[];
   setSection: (section: SectionKey) => void;
   setSelectedAgentId: (id: string | null) => void;
   setSelectedInvocationId: (id: string | null) => void;
@@ -59,7 +61,11 @@ interface UiState {
   setSelectedEvidenceId: (id: string | null) => void;
   setSelectedAutomationId: (id: string | null) => void;
   setResumeFromInvocationId: (id: string | null) => void;
+  toggleNavGroup: (group: string) => void;
 }
+
+/** Expert groups collapsed by default — Work/Run/Oversee stay open (#928). */
+export const DEFAULT_COLLAPSED_NAV_GROUPS = ["configure", "ledgers"];
 
 export const SECTION_KEYS: SectionKey[] = [
   "dashboard",
@@ -197,6 +203,7 @@ export const useUiStore = create<UiState>()(
         selectedEvidenceId: initialNavigation.selectedEvidenceId ?? null,
         selectedAutomationId: initialNavigation.selectedAutomationId ?? null,
         resumeFromInvocationId: null,
+        collapsedNavGroups: [...DEFAULT_COLLAPSED_NAV_GROUPS],
         setSection: (section) => set({ section }),
         setSelectedAgentId: (selectedAgentId) => set({ selectedAgentId }),
         setSelectedInvocationId: (selectedInvocationId) => set({ selectedInvocationId }),
@@ -210,6 +217,12 @@ export const useUiStore = create<UiState>()(
         setSelectedEvidenceId: (selectedEvidenceId) => set({ selectedEvidenceId }),
         setSelectedAutomationId: (selectedAutomationId) => set({ selectedAutomationId }),
         setResumeFromInvocationId: (resumeFromInvocationId) => set({ resumeFromInvocationId }),
+        toggleNavGroup: (group) =>
+          set((state) => ({
+            collapsedNavGroups: state.collapsedNavGroups.includes(group)
+              ? state.collapsedNavGroups.filter((key) => key !== group)
+              : [...state.collapsedNavGroups, group],
+          })),
       };
     },
     {
@@ -229,10 +242,15 @@ export const useUiStore = create<UiState>()(
         selectedApplicationId: state.selectedApplicationId,
         selectedApplicationRun: state.selectedApplicationRun,
         selectedEvidenceId: state.selectedEvidenceId,
+        collapsedNavGroups: state.collapsedNavGroups,
       }),
       merge: (persisted, current) => {
         const saved = (persisted ?? {}) as Partial<UiState>;
         const merged = { ...current, ...saved };
+        // A pre-#928 persisted blob has no collapsedNavGroups; fall back to the default.
+        if (!Array.isArray(merged.collapsedNavGroups)) {
+          merged.collapsedNavGroups = [...DEFAULT_COLLAPSED_NAV_GROUPS];
+        }
         // Guard against a persisted section that no longer exists after a code change.
         if (!merged.section || !SECTION_KEYS.includes(merged.section)) {
           merged.section = "dashboard";
