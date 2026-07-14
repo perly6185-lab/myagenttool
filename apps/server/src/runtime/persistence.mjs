@@ -75,6 +75,7 @@ const persistedArrayKeys = [
   "codexReviewFindings",
   "claudeReviewFindings",
   "codexExecChanges",
+  "codexExecChangeReviews",
   "applicationResults",
   "budgets",
   "automations",
