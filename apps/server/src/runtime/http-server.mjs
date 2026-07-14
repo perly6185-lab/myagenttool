@@ -103,6 +103,7 @@ export function createHttpServer({
   createCodexImportedEvidenceRecord,
   createCodexChangeReview,
   createCodexExecReview,
+  execRunPromotionGate,
   createDiscoveryRun,
   createIntegrationArtifact,
   createLifecycleRecipe,
@@ -396,6 +397,10 @@ export function createHttpServer({
         createCodexImportedEvidenceRecord,
         createCodexChangeReview,
         createCodexExecReview,
+        execRunPromotionGate,
+        createWorktreePr,
+        findInvocation,
+        appendEvent,
       })) {
         return;
       }
