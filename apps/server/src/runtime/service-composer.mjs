@@ -330,6 +330,8 @@ export function createServerRuntimeServices({
     appendEvent,
     findAgent,
     persistStateSoon,
+    // #968: commit lifecycle-action transitions through the Store's unit of work.
+    store,
     // autoRunAlerts is created later in this factory; the closure is only invoked
     // at run-completion (well after init), so referencing it here is safe.
     dispatchAlert: (alert) => autoRunAlerts.dispatch(alert),
