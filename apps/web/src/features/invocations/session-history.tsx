@@ -94,7 +94,7 @@ export function SessionHistory() {
       </CardHeader>
       <CardContent className="space-y-1.5">
         {!sessions.length ? (
-          <EmptyState title="No sessions" hint="Runs for this project appear here." />
+          <EmptyState title="No runs yet" hint="Runs for this project appear here." />
         ) : (
           sessions.map((inv) => (
             <div

@@ -54,7 +54,7 @@ export function NavRail() {
               type="button"
               onClick={() => toggleNavGroup(grp.key)}
               aria-expanded={groupOpen}
-              className="flex w-full items-center gap-1 rounded px-2 pb-1 pt-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground/60 hover:text-sidebar-foreground"
+              className="flex w-full items-center gap-1 rounded px-2 pb-1 pt-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground/80 hover:text-sidebar-foreground"
             >
               <ChevronRight className={cn("size-3 shrink-0 transition-transform", groupOpen && "rotate-90")} />
               {grp.label}
@@ -270,8 +270,8 @@ function ProjectTree() {
                       )}
                     >
                       <GitBranch className="size-3 shrink-0 opacity-70" />
-                      <span className="truncate">{mainBranch ?? "…"}</span>
-                      <span className="ml-auto shrink-0 text-[10px] opacity-60">checkout</span>
+                      <span className="truncate" title={mainBranch ?? "branch unknown"}>{mainBranch ?? "…"}</span>
+                      <span className="ml-auto shrink-0 text-[10px] opacity-70">checkout</span>
                     </button>
                   </li>
                 ) : null}
@@ -294,8 +294,8 @@ function ProjectTree() {
                           className="flex min-w-0 flex-1 items-center gap-1.5 px-2 py-1 text-left"
                         >
                           <GitBranch className="size-3 shrink-0 opacity-70" />
-                          <span className="truncate">{w.branch}</span>
-                          {w.isMain ? <span className="shrink-0 text-[10px] opacity-60">main</span> : null}
+                          <span className="truncate" title={w.branch}>{w.branch}</span>
+                          {w.isMain ? <span className="shrink-0 text-[10px] opacity-70">main</span> : null}
                         </button>
                         {w.link ? <WorktreeLinkPopover worktree={w} /> : null}
                       </div>

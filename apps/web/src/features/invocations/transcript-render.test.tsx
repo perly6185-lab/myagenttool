@@ -27,9 +27,9 @@ describe("Transcript rendering (P3)", () => {
 
   it("shows the empty state only when there are no events and no summary", () => {
     const { rerender } = render(<Transcript events={[]} />);
-    expect(screen.getByText("No activity yet")).toBeTruthy();
+    expect(screen.getByText("No runs yet")).toBeTruthy();
     rerender(<Transcript events={[]} summary={{ text: "Cancelled.", status: "cancelled" }} />);
-    expect(screen.queryByText("No activity yet")).toBeNull();
+    expect(screen.queryByText("No runs yet")).toBeNull();
     expect(screen.getByText("Cancelled.")).toBeTruthy();
   });
 });

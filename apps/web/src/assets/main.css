@@ -75,7 +75,8 @@
   --secondary-foreground: oklch(0.92 0.005 250);
 
   --muted: oklch(0.27 0.01 264);
-  --muted-foreground: oklch(0.69 0.01 257);
+  /* Nudged lighter (0.69 → 0.72) so dark-mode blurbs, footer, and group labels clear a readable contrast (#929). */
+  --muted-foreground: oklch(0.72 0.01 257);
 
   --accent: oklch(0.29 0.012 264);
   --accent-foreground: oklch(0.93 0.005 250);

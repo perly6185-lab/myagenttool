@@ -123,8 +123,8 @@ export function InvocationsView() {
         <CardContent>
           {invocations.length === 0 ? (
             <EmptyState
-              title="No invocations yet"
-              hint="Every agent call, its status, and result will show here."
+              title="No runs yet"
+              hint="Every run — its status and result — shows here."
               action={<Button size="sm" onClick={() => setSection("dashboard")}>Start a task</Button>}
             />
           ) : (
