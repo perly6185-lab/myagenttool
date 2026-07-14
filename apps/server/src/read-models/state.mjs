@@ -332,6 +332,7 @@ export function buildPublicState({
     codexWorkspaces: byInvocation(state.codexWorkspaces),
     codexEvidenceRecords: byInvocation(state.codexEvidenceRecords),
     codexChangeReviews: byInvocation(state.codexChangeReviews),
+    codexExecChangeReviews: byInvocation(state.codexExecChangeReviews),
     codexHookEvents: byInvocation(state.codexHookEvents),
     codexApprovalQueue: codexApprovalQueue().filter((q) => invVisible(q?.invocationId)),
     // The evidence center aggregates raw codex/terminal state, so re-apply

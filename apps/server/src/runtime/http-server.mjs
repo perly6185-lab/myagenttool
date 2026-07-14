@@ -102,6 +102,7 @@ export function createHttpServer({
   resolveCodexApprovalBrokerRequest,
   createCodexImportedEvidenceRecord,
   createCodexChangeReview,
+  createCodexExecReview,
   createDiscoveryRun,
   createIntegrationArtifact,
   createLifecycleRecipe,
@@ -394,6 +395,7 @@ export function createHttpServer({
         resolveCodexApprovalBrokerRequest,
         createCodexImportedEvidenceRecord,
         createCodexChangeReview,
+        createCodexExecReview,
       })) {
         return;
       }
