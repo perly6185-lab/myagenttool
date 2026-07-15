@@ -264,6 +264,7 @@ export function createServerRuntimeServices({
     persistStateSoon,
     uniqueStrings,
     worktreeForProject,
+    store,
   });
   codexEventHandlers = {
     createCodexEvidenceRecord,
@@ -287,6 +288,7 @@ export function createServerRuntimeServices({
     summarizeText,
     uniqueStrings,
     codexSessionForInvocation,
+    store,
   });
 
   const {
