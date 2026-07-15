@@ -47,6 +47,7 @@ export function evidenceLedger({
   troubleshootingReports = [],
   evidenceCenterRecords = [],
   applicationRecoveryActions = [],
+  runTranscripts = [],
 } = {}) {
   // Index every evidence source by the invocation it attests to.
   const findingsByInv = new Map();
@@ -79,6 +80,10 @@ export function evidenceLedger({
       recoveryResultByInv.set(r.resultInvocationId, r);
     }
   }
+  // #1085: transcript SUMMARY metadata per run (hash/counts — never blocks).
+  const transcriptByInv = new Map();
+  for (const t of runTranscripts) if (t?.invocationId != null && !transcriptByInv.has(t.invocationId)) transcriptByInv.set(t.invocationId, t);
+
   const stamp = (r) => r?.updatedAt ?? r?.createdAt ?? "";
 
   const rows = [];
@@ -106,13 +111,18 @@ export function evidenceLedger({
         }
       : null;
 
+    const transcriptRecord = transcriptByInv.get(id) ?? null;
+    const transcriptSuperseded = Boolean(transcriptRecord?.supersededHash);
+
     // A run earns a ledger row only when there's something to evaluate — a plain
     // allowed run with no findings/evidence is not interesting for a trust surface
     // (and would just duplicate the Invocations list). Recovery evidence counts:
     // a recovered run's resolution story, and a recovery result's provenance, are
-    // exactly what a trust surface is for.
+    // exactly what a trust surface is for. A transcript's mere PRESENCE does not
+    // create a row (every claude run has one — that's the Invocations list), but
+    // a SUPERSEDED transcript does: replaced-after-delivery is a trust signal.
     const hasEvidence = findings.length > 0 || runtimeEvidence > 0 || Boolean(troubleshooting) || denied || failed
-      || recoveryRequests.length > 0 || Boolean(recoveryResultOf);
+      || recoveryRequests.length > 0 || Boolean(recoveryResultOf) || transcriptSuperseded;
     if (!hasEvidence) continue;
 
     const severity = countBy(findings, (f) => f?.severity);
@@ -127,6 +137,7 @@ export function evidenceLedger({
     else if (latestRecovery?.status === "failed") attentionReasons.push("recovery failed");
     else if (latestRecovery?.status === "approval_denied") attentionReasons.push("recovery denied");
     else if (latestRecovery?.status === "approval_timed_out") attentionReasons.push("recovery approval timed out");
+    if (transcriptSuperseded) attentionReasons.push("transcript superseded after delivery");
 
     rows.push({
       invocationId: id,
@@ -138,6 +149,16 @@ export function evidenceLedger({
       review: { total: findings.length, high, medium: severity.medium ?? 0, low: severity.low ?? 0 },
       audit: audit ? { permissionDecision: audit.permissionDecision ?? null, status: audit.status ?? null } : null,
       troubleshooting: { present: Boolean(troubleshooting), fixes: troubleshooting?.suggestedFixes?.length ?? 0 },
+      transcript: transcriptRecord
+        ? {
+            present: true,
+            contentHash: transcriptRecord.contentHash ?? null,
+            blocks: transcriptRecord.blocks?.length ?? 0,
+            truncated: transcriptRecord.truncated === true,
+            payloadReaped: transcriptRecord.payloadReaped === true,
+            superseded: transcriptSuperseded,
+          }
+        : null,
       runtimeEvidence,
       application,
       recovery: latestRecovery

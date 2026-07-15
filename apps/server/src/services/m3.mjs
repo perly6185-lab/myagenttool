@@ -14,7 +14,7 @@ const allowedLifecycleActions = ["install", "update", "uninstall"];
 const allowedRecipeSources = ["local_file", "workspace_catalog", "private_catalog", "generated_artifact", "manual_entry"];
 const allowedSignatureStatuses = ["unsigned", "signed_verified", "signed_unverified", "signature_missing", "not_required"];
 const allowedDeploymentModes = ["local_developer", "self_hosted", "saas", "private_deployment"];
-const allowedAuditSubjects = ["invocation", "lifecycle", "quota", "usage", "ledger", "policy", "audit", "catalog", "bundle"];
+const allowedAuditSubjects = ["invocation", "lifecycle", "quota", "usage", "ledger", "policy", "audit", "catalog", "bundle", "transcript"];
 const allowedCatalogChannels = ["stable", "beta", "dev"];
 const allowedCatalogVisibility = ["private", "team", "workspace"];
 const lifecycleCommandAllowlist = new Set([
@@ -1795,6 +1795,9 @@ export function createM3Service({
       audit: state.auditSummaries.length,
       catalog: state.privateCatalogEntries.length,
       bundle: state.signedBundleManifests.length,
+      // #1085: run transcripts are exportable evidence (skeleton + hashes
+      // survive retention; payload only while unreaped).
+      transcript: (state.runTranscripts ?? []).length,
     };
     return Object.fromEntries(subjects.map((subject) => [subject, counts[subject] ?? 0]));
   }
@@ -1840,6 +1843,7 @@ export function createM3Service({
     pushRefs("audit", state.auditSummaries);
     pushRefs("catalog", state.privateCatalogEntries);
     pushRefs("bundle", state.signedBundleManifests);
+    pushRefs("transcript", state.runTranscripts ?? []);
     return refs;
   }
 
