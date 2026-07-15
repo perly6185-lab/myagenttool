@@ -712,6 +712,7 @@ export function createServerRuntimeServices({
     // Self-healing (H2): file the auto-labeled remediation issue after a failed
     // deploy (gh issue create; gated at call-time on remediateOnDeployFailure).
     fileRemediationIssue: async ({ repoPath, title, body, labels }) => runChildIssueCreate({ cwd: repoPath, title, body, labels }),
+    store,
   });
   // Now that the reaction exists, let completion drive it.
   advanceAutoRunHook = advanceAutoRunForInvocation;

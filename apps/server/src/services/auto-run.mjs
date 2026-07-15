@@ -11,6 +11,7 @@ import { resolveAutoRunVerifyCommandFor } from "./worktree-verify.mjs";
 import { composeDesignIssueComment, designArtifactIndex, buildDesignImageUrls } from "./auto-run-design.mjs";
 import { decompositionTree, issueTreeApplyFailures, humanApprovalRequiredReasons } from "../../../../tools/ai/src/issue-tree-core.mjs";
 import { scoreDecompositionOverlap } from "./auto-run-epic.mjs";
+import { makeRunTx } from "../runtime/store/run-tx.mjs";
 
 // One-click "Auto" orchestrator. It closes the seam the console never had:
 // turning a linked GitHub issue into a worktree AND a started agent run seeded
@@ -98,7 +99,9 @@ export function createAutoRunService({
   runDeploy,
   runRollback,
   fileRemediationIssue,
+  store,
 }) {
+  const runTx = makeRunTx({ store, persistStateSoon });
   // Production injects the shared refusal writer; fall back to one bound to this
   // service's own state so a directly-constructed service (unit tests) still
   // records the veto instead of throwing (refusal model Phase 2, #760).
@@ -945,9 +948,10 @@ export function createAutoRunService({
         }
       }
     }
-    setAutoRunStatus(autoRun, "cancelled", { error: null });
-    persistStateSoon();
-    return autoRun;
+    return runTx(() => {
+      setAutoRunStatus(autoRun, "cancelled", { error: null });
+      return autoRun;
+    });
   }
 
   async function retryAutoRun(autoRunId, { actor } = {}) {
@@ -977,24 +981,26 @@ export function createAutoRunService({
       });
       startInvocationIfAllowed(invocation, agent);
     } catch (error) {
-      setAutoRunStatus(autoRun, "failed", { error: `Retry could not start the agent run: ${String(error?.message ?? error)}` });
-      persistStateSoon();
+      runTx(() => {
+        setAutoRunStatus(autoRun, "failed", { error: `Retry could not start the agent run: ${String(error?.message ?? error)}` });
+      });
       throw error;
     }
-    autoRun.invocationId = invocation.id;
-    // Fresh repair budget for the retry — otherwise a run that exhausted its
-    // repairs stays at the cap and the retried attempt gets zero self-repair.
-    autoRun.repairAttempts = 0;
-    setAutoRunStatus(autoRun, autoRunStatusForInvocation(invocation), { error: null, prNumber: null, prUrl: null });
-    appendEvent({
-      invocationId: invocation.id,
-      type: "auto_run_retried",
-      level: "info",
-      message: `Auto-run ${autoRun.id} retried on its existing worktree.`,
-      data: { autoRunId: autoRun.id, worktreeId: worktree.id, invocationId: invocation.id, status: autoRun.status },
+    return runTx(() => {
+      autoRun.invocationId = invocation.id;
+      // Fresh repair budget for the retry — otherwise a run that exhausted its
+      // repairs stays at the cap and the retried attempt gets zero self-repair.
+      autoRun.repairAttempts = 0;
+      setAutoRunStatus(autoRun, autoRunStatusForInvocation(invocation), { error: null, prNumber: null, prUrl: null });
+      appendEvent({
+        invocationId: invocation.id,
+        type: "auto_run_retried",
+        level: "info",
+        message: `Auto-run ${autoRun.id} retried on its existing worktree.`,
+        data: { autoRunId: autoRun.id, worktreeId: worktree.id, invocationId: invocation.id, status: autoRun.status },
+      });
+      return { autoRun, invocation };
     });
-    persistStateSoon();
-    return { autoRun, invocation };
   }
 
   // Human-triggered PR merge from the console. The merge stays human — this only
@@ -1040,16 +1046,17 @@ export function createAutoRunService({
     if (!result?.ok) {
       throw new Error(result?.error || "gh pr merge failed.");
     }
-    autoRun.prState = "MERGED";
-    autoRun.prStateCheckedAt = now();
-    appendEvent({
-      invocationId: autoRun.invocationId,
-      type: "auto_run_pr_merged",
-      level: "info",
-      message: `Auto-run ${autoRun.id} PR #${autoRun.prNumber} merged by ${actor?.userId ?? "usr_local"}.`,
-      data: { autoRunId: autoRun.id, prNumber: autoRun.prNumber, method: result.method ?? "squash" },
+    runTx(() => {
+      autoRun.prState = "MERGED";
+      autoRun.prStateCheckedAt = now();
+      appendEvent({
+        invocationId: autoRun.invocationId,
+        type: "auto_run_pr_merged",
+        level: "info",
+        message: `Auto-run ${autoRun.id} PR #${autoRun.prNumber} merged by ${actor?.userId ?? "usr_local"}.`,
+        data: { autoRunId: autoRun.id, prNumber: autoRun.prNumber, method: result.method ?? "squash" },
+      });
     });
-    persistStateSoon();
     // D1 deploy stage: fire the deploy asynchronously so the merge call returns
     // promptly; the deployment record + card update land when it finishes.
     void maybeDeployAfterMerge(autoRun);
@@ -1091,12 +1098,14 @@ export function createAutoRunService({
     // that leaves no trace reads as "deployed" to an operator. Emit an event +
     // medium alert so it is visible, then bail without recording a deployment.
     if (!outcome || typeof outcome.deployed !== "boolean") {
-      appendEvent({
-        invocationId: autoRun.invocationId,
-        type: "auto_run_deploy_infra_miss",
-        level: "warn",
-        message: `Auto-run ${autoRun.id} deploy of PR #${autoRun.prNumber} did not run to a result (infra miss: command missing, timed out, or ambiguous).`,
-        data: { autoRunId: autoRun.id, prNumber: autoRun.prNumber },
+      runTx(() => {
+        appendEvent({
+          invocationId: autoRun.invocationId,
+          type: "auto_run_deploy_infra_miss",
+          level: "warn",
+          message: `Auto-run ${autoRun.id} deploy of PR #${autoRun.prNumber} did not run to a result (infra miss: command missing, timed out, or ambiguous).`,
+          data: { autoRunId: autoRun.id, prNumber: autoRun.prNumber },
+        });
       });
       void sendAlert?.({
         kind: "deploy_infra_miss",
@@ -1115,17 +1124,19 @@ export function createAutoRunService({
       summary: outcome.summary || null,
       at: now(),
     };
-    state.deployments = [record, ...(state.deployments ?? [])].slice(0, 500);
-    autoRun.deployment = { status: record.status, at: record.at, summary: record.summary, prNumber: record.prNumber };
-    appendEvent({
-      invocationId: autoRun.invocationId,
-      type: outcome.deployed ? "auto_run_deployed" : "auto_run_deploy_failed",
-      level: outcome.deployed ? "info" : "warn",
-      message: `Auto-run ${autoRun.id} deploy of PR #${autoRun.prNumber} ${outcome.deployed ? "succeeded" : "FAILED"}.`,
-      // Carry the failure reason on the timeline event itself (M3), so an operator
-      // reading the run's events sees WHY it failed without cross-querying the
-      // deployments collection or the alert channel.
-      data: { autoRunId: autoRun.id, prNumber: autoRun.prNumber, deployed: outcome.deployed, summary: record.summary ?? null },
+    runTx(() => {
+      state.deployments = [record, ...(state.deployments ?? [])].slice(0, 500);
+      autoRun.deployment = { status: record.status, at: record.at, summary: record.summary, prNumber: record.prNumber };
+      appendEvent({
+        invocationId: autoRun.invocationId,
+        type: outcome.deployed ? "auto_run_deployed" : "auto_run_deploy_failed",
+        level: outcome.deployed ? "info" : "warn",
+        message: `Auto-run ${autoRun.id} deploy of PR #${autoRun.prNumber} ${outcome.deployed ? "succeeded" : "FAILED"}.`,
+        // Carry the failure reason on the timeline event itself (M3), so an operator
+        // reading the run's events sees WHY it failed without cross-querying the
+        // deployments collection or the alert channel.
+        data: { autoRunId: autoRun.id, prNumber: autoRun.prNumber, deployed: outcome.deployed, summary: record.summary ?? null },
+      });
     });
     if (!outcome.deployed) {
       void sendAlert?.({
@@ -1145,7 +1156,6 @@ export function createAutoRunService({
       // PR carries the Change-failure: #N marker (propagated from the issue body).
       await maybeRemediateDeploy(autoRun, project, { summary: record.summary, rolledBack: Boolean(rolledBack) });
     }
-    persistStateSoon();
     return record;
     } finally {
       autoRun.deployInFlight = false;
@@ -1188,12 +1198,14 @@ export function createAutoRunService({
           : remediationError != null
             ? String(remediationError)
             : "the issue could not be created";
-      appendEvent({
-        invocationId: autoRun.invocationId,
-        type: "auto_run_remediation_failed",
-        level: "warn",
-        message: `Auto-run ${autoRun.id}: could not file the remediation issue for the failed deploy of PR #${culprit} — file the fix-forward manually (${detail}).`,
-        data: { autoRunId: autoRun.id, prNumber: culprit },
+      runTx(() => {
+        appendEvent({
+          invocationId: autoRun.invocationId,
+          type: "auto_run_remediation_failed",
+          level: "warn",
+          message: `Auto-run ${autoRun.id}: could not file the remediation issue for the failed deploy of PR #${culprit} — file the fix-forward manually (${detail}).`,
+          data: { autoRunId: autoRun.id, prNumber: culprit },
+        });
       });
       void sendAlert?.({
         kind: "remediation_failed",
@@ -1203,13 +1215,15 @@ export function createAutoRunService({
       });
       return null;
     }
-    autoRun.remediationIssue = { number: created.number, url: created.url ?? null, culpritPr: culprit };
-    appendEvent({
-      invocationId: autoRun.invocationId,
-      type: "auto_run_remediation_filed",
-      level: "warn",
-      message: `Auto-run ${autoRun.id}: filed remediation issue #${created.number} for the failed deploy of PR #${culprit}.`,
-      data: { autoRunId: autoRun.id, prNumber: culprit, remediationIssue: created.number },
+    runTx(() => {
+      autoRun.remediationIssue = { number: created.number, url: created.url ?? null, culpritPr: culprit };
+      appendEvent({
+        invocationId: autoRun.invocationId,
+        type: "auto_run_remediation_filed",
+        level: "warn",
+        message: `Auto-run ${autoRun.id}: filed remediation issue #${created.number} for the failed deploy of PR #${culprit}.`,
+        data: { autoRunId: autoRun.id, prNumber: culprit, remediationIssue: created.number },
+      });
     });
     return created;
   }
@@ -1236,12 +1250,14 @@ export function createAutoRunService({
           : rollbackError != null
             ? String(rollbackError)
             : "the rollback command reported it did not roll back";
-      appendEvent({
-        invocationId: autoRun.invocationId,
-        type: "auto_run_rollback_failed",
-        level: "error",
-        message: `Auto-run ${autoRun.id}: auto-rollback of the failed deploy of PR #${autoRun.prNumber} did NOT succeed — the bad deploy may still be live (${detail}).`,
-        data: { autoRunId: autoRun.id, prNumber: autoRun.prNumber ?? null },
+      runTx(() => {
+        appendEvent({
+          invocationId: autoRun.invocationId,
+          type: "auto_run_rollback_failed",
+          level: "error",
+          message: `Auto-run ${autoRun.id}: auto-rollback of the failed deploy of PR #${autoRun.prNumber} did NOT succeed — the bad deploy may still be live (${detail}).`,
+          data: { autoRunId: autoRun.id, prNumber: autoRun.prNumber ?? null },
+        });
       });
       void sendAlert?.({
         kind: "rollback_failed",
@@ -1260,14 +1276,16 @@ export function createAutoRunService({
       summary: rb.summary || `Rolled back after the failed deploy of PR #${autoRun.prNumber}.`,
       at: now(),
     };
-    state.deployments = [rbRecord, ...(state.deployments ?? [])].slice(0, 500);
-    autoRun.deployment = { status: "rolled_back", at: rbRecord.at, summary: rbRecord.summary, prNumber: rbRecord.prNumber };
-    appendEvent({
-      invocationId: autoRun.invocationId,
-      type: "auto_run_rolled_back",
-      level: "warn",
-      message: `Auto-run ${autoRun.id}: auto-rolled back the failed deploy of PR #${autoRun.prNumber}.`,
-      data: { autoRunId: autoRun.id, prNumber: autoRun.prNumber },
+    runTx(() => {
+      state.deployments = [rbRecord, ...(state.deployments ?? [])].slice(0, 500);
+      autoRun.deployment = { status: "rolled_back", at: rbRecord.at, summary: rbRecord.summary, prNumber: rbRecord.prNumber };
+      appendEvent({
+        invocationId: autoRun.invocationId,
+        type: "auto_run_rolled_back",
+        level: "warn",
+        message: `Auto-run ${autoRun.id}: auto-rolled back the failed deploy of PR #${autoRun.prNumber}.`,
+        data: { autoRunId: autoRun.id, prNumber: autoRun.prNumber },
+      });
     });
     void sendAlert?.({
       kind: "deploy_rolled_back",
@@ -1297,16 +1315,17 @@ export function createAutoRunService({
     if (Array.isArray(autoRun.childIssues) && autoRun.childIssues.length > 0) {
       // The implementation issue already exists (auto-spawned at report time);
       // the approval is the human sign-off on record.
-      autoRun.designApproval = { status: "approved", by, at: now() };
-      appendEvent({
-        invocationId: autoRun.invocationId,
-        type: "auto_run_design_approved",
-        level: "info",
-        message: `Auto-run ${autoRun.id} design approved by ${by} (implementation issue already spawned).`,
-        data: { autoRunId: autoRun.id, childIssues: autoRun.childIssues },
+      return runTx(() => {
+        autoRun.designApproval = { status: "approved", by, at: now() };
+        appendEvent({
+          invocationId: autoRun.invocationId,
+          type: "auto_run_design_approved",
+          level: "info",
+          message: `Auto-run ${autoRun.id} design approved by ${by} (implementation issue already spawned).`,
+          data: { autoRunId: autoRun.id, childIssues: autoRun.childIssues },
+        });
+        return { ok: true, childIssues: autoRun.childIssues };
       });
-      persistStateSoon();
-      return { ok: true, childIssues: autoRun.childIssues };
     }
     if (autoRun.link?.type !== "issue" || !Number.isFinite(autoRun.link?.number)) {
       throw new Error("The design run has no linked issue to spawn an implementation issue from.");
@@ -1324,17 +1343,18 @@ export function createAutoRunService({
     ].join("\n");
     const child = await spawnChildIssueDirect({ parentLink: autoRun.link, design, repoPath });
     if (!child || !Number.isFinite(child.number)) throw new Error("Child issue creation failed.");
-    autoRun.childIssues = [{ number: child.number, url: child.url ?? null }];
-    autoRun.designApproval = { status: "approved", by, at: now() };
-    appendEvent({
-      invocationId: autoRun.invocationId,
-      type: "auto_run_design_approved",
-      level: "info",
-      message: `Auto-run ${autoRun.id} design approved by ${by}; implementation issue #${child.number} spawned.`,
-      data: { autoRunId: autoRun.id, childIssue: child.number, url: child.url ?? null },
+    return runTx(() => {
+      autoRun.childIssues = [{ number: child.number, url: child.url ?? null }];
+      autoRun.designApproval = { status: "approved", by, at: now() };
+      appendEvent({
+        invocationId: autoRun.invocationId,
+        type: "auto_run_design_approved",
+        level: "info",
+        message: `Auto-run ${autoRun.id} design approved by ${by}; implementation issue #${child.number} spawned.`,
+        data: { autoRunId: autoRun.id, childIssue: child.number, url: child.url ?? null },
+      });
+      return { ok: true, childIssues: autoRun.childIssues };
     });
-    persistStateSoon();
-    return { ok: true, childIssues: autoRun.childIssues };
   }
 
   async function rejectDesign(autoRunId, { actor, feedback } = {}) {
@@ -1344,30 +1364,31 @@ export function createAutoRunService({
     if (autoRun.status !== "report_posted") throw new Error("Only a posted design report can be rejected.");
     const by = actor?.userId ?? "usr_local";
     const note = String(feedback ?? "").trim().slice(0, 2000);
-    autoRun.designApproval = { status: "rejected", by, at: now(), feedback: note || null };
     const worktree = state.worktrees.find((item) => item.id === autoRun.worktreeId) ?? null;
-    maybePostIssueReport(autoRun, worktree, `Design not approved by ${by}.${note ? `\n\nRequested changes:\n${note}` : ""}`);
-    refuse({
-      subject: { kind: "invocation", id: autoRun.invocationId },
-      requester: { kind: "automation", id: autoRun.id },
-      category: "human",
-      code: "deliverable_rejected",
-      decidedBy: { kind: "user", id: by },
-      summary: `Auto-run ${autoRun.id} design rejected by ${by}.`,
-      evidence: { autoRunId: autoRun.id, feedback: note || null },
-      remedy: note || "Revise the design to address the reviewer's requested changes and re-post.",
-      retryAfter: null,
-      appealTo: "device_owner",
-      event: {
-        invocationId: autoRun.invocationId,
-        type: "auto_run_design_rejected",
-        level: "info",
-        message: `Auto-run ${autoRun.id} design rejected by ${by}.`,
-        data: { autoRunId: autoRun.id, feedback: note || null },
-      },
+    return runTx(() => {
+      autoRun.designApproval = { status: "rejected", by, at: now(), feedback: note || null };
+      maybePostIssueReport(autoRun, worktree, `Design not approved by ${by}.${note ? `\n\nRequested changes:\n${note}` : ""}`);
+      refuse({
+        subject: { kind: "invocation", id: autoRun.invocationId },
+        requester: { kind: "automation", id: autoRun.id },
+        category: "human",
+        code: "deliverable_rejected",
+        decidedBy: { kind: "user", id: by },
+        summary: `Auto-run ${autoRun.id} design rejected by ${by}.`,
+        evidence: { autoRunId: autoRun.id, feedback: note || null },
+        remedy: note || "Revise the design to address the reviewer's requested changes and re-post.",
+        retryAfter: null,
+        appealTo: "device_owner",
+        event: {
+          invocationId: autoRun.invocationId,
+          type: "auto_run_design_rejected",
+          level: "info",
+          message: `Auto-run ${autoRun.id} design rejected by ${by}.`,
+          data: { autoRunId: autoRun.id, feedback: note || null },
+        },
+      });
+      return { ok: true };
     });
-    persistStateSoon();
-    return { ok: true };
   }
 
   // Epic decomposition (Slice 3): the human approves a proposed plan → spawn the N
@@ -1414,34 +1435,35 @@ export function createAutoRunService({
         errors.push(`${spec.title}: ${String(error?.message ?? error).slice(0, 200)}`);
       }
     }
-    autoRun.childIssues = created;
     // Only a FULLY-created plan settles as `decomposed`. On any failure the run
     // stays `plan_proposed` with a retryable `partial` approval so a re-approve
     // creates the rest — the idempotency guard above lets `partial` through.
     const complete = errors.length === 0 && created.length === specs.length;
-    if (complete) {
-      autoRun.decompositionApproval = { status: "approved", by, at: now(), created: created.length, errors: [] };
-      setAutoRunStatus(autoRun, "decomposed", { error: null });
-    } else {
-      autoRun.decompositionApproval = { status: "partial", by, at: now(), created: created.length, errors };
-      setAutoRunStatus(autoRun, "plan_proposed", { error: `${errors.length} of ${specs.length} child issue(s) failed to create — approve again to retry the rest.` });
-    }
-    maybePostIssueReport(autoRun, worktree, [
-      `Decomposition approved by ${by} — created ${created.length}/${specs.length} child issue(s):`,
-      ...created.map((c) => `- #${c.number} ${c.title}`),
-      ...(errors.length ? ["", "Failed to create (approve again to retry):", ...errors.map((e) => `- ${e}`)] : []),
-      "",
-      "Label a child `auto` to start it (or run it manually) — children are never implemented automatically.",
-    ].join("\n"));
-    appendEvent({
-      invocationId: autoRun.invocationId,
-      type: complete ? "auto_run_decomposition_approved" : "auto_run_decomposition_partial",
-      level: complete ? "info" : "warn",
-      message: `Auto-run ${autoRun.id} decomposition approved by ${by}: ${created.length}/${specs.length} child issue(s) created${errors.length ? `, ${errors.length} failed` : ""}.`,
-      data: { autoRunId: autoRun.id, childIssues: created, errors },
+    return runTx(() => {
+      autoRun.childIssues = created;
+      if (complete) {
+        autoRun.decompositionApproval = { status: "approved", by, at: now(), created: created.length, errors: [] };
+        setAutoRunStatus(autoRun, "decomposed", { error: null });
+      } else {
+        autoRun.decompositionApproval = { status: "partial", by, at: now(), created: created.length, errors };
+        setAutoRunStatus(autoRun, "plan_proposed", { error: `${errors.length} of ${specs.length} child issue(s) failed to create — approve again to retry the rest.` });
+      }
+      maybePostIssueReport(autoRun, worktree, [
+        `Decomposition approved by ${by} — created ${created.length}/${specs.length} child issue(s):`,
+        ...created.map((c) => `- #${c.number} ${c.title}`),
+        ...(errors.length ? ["", "Failed to create (approve again to retry):", ...errors.map((e) => `- ${e}`)] : []),
+        "",
+        "Label a child `auto` to start it (or run it manually) — children are never implemented automatically.",
+      ].join("\n"));
+      appendEvent({
+        invocationId: autoRun.invocationId,
+        type: complete ? "auto_run_decomposition_approved" : "auto_run_decomposition_partial",
+        level: complete ? "info" : "warn",
+        message: `Auto-run ${autoRun.id} decomposition approved by ${by}: ${created.length}/${specs.length} child issue(s) created${errors.length ? `, ${errors.length} failed` : ""}.`,
+        data: { autoRunId: autoRun.id, childIssues: created, errors },
+      });
+      return { ok: true, childIssues: created, errors, complete };
     });
-    persistStateSoon();
-    return { ok: true, childIssues: created, errors, complete };
   }
 
   async function rejectDecomposition(autoRunId, { actor, feedback } = {}) {
@@ -1451,30 +1473,31 @@ export function createAutoRunService({
     if (autoRun.status !== "plan_proposed") throw new Error("Only a proposed plan can be rejected.");
     const by = actor?.userId ?? "usr_local";
     const note = String(feedback ?? "").trim().slice(0, 2000);
-    autoRun.decompositionApproval = { status: "rejected", by, at: now(), feedback: note || null };
     const worktree = state.worktrees.find((item) => item.id === autoRun.worktreeId) ?? null;
-    maybePostIssueReport(autoRun, worktree, `Decomposition plan not approved by ${by}.${note ? `\n\nRequested changes:\n${note}` : ""}`);
-    refuse({
-      subject: { kind: "invocation", id: autoRun.invocationId },
-      requester: { kind: "automation", id: autoRun.id },
-      category: "human",
-      code: "deliverable_rejected",
-      decidedBy: { kind: "user", id: by },
-      summary: `Auto-run ${autoRun.id} decomposition rejected by ${by}.`,
-      evidence: { autoRunId: autoRun.id, feedback: note || null },
-      remedy: note || "Revise the decomposition plan to address the reviewer's requested changes and re-propose.",
-      retryAfter: null,
-      appealTo: "device_owner",
-      event: {
-        invocationId: autoRun.invocationId,
-        type: "auto_run_decomposition_rejected",
-        level: "info",
-        message: `Auto-run ${autoRun.id} decomposition rejected by ${by}.`,
-        data: { autoRunId: autoRun.id, feedback: note || null },
-      },
+    return runTx(() => {
+      autoRun.decompositionApproval = { status: "rejected", by, at: now(), feedback: note || null };
+      maybePostIssueReport(autoRun, worktree, `Decomposition plan not approved by ${by}.${note ? `\n\nRequested changes:\n${note}` : ""}`);
+      refuse({
+        subject: { kind: "invocation", id: autoRun.invocationId },
+        requester: { kind: "automation", id: autoRun.id },
+        category: "human",
+        code: "deliverable_rejected",
+        decidedBy: { kind: "user", id: by },
+        summary: `Auto-run ${autoRun.id} decomposition rejected by ${by}.`,
+        evidence: { autoRunId: autoRun.id, feedback: note || null },
+        remedy: note || "Revise the decomposition plan to address the reviewer's requested changes and re-propose.",
+        retryAfter: null,
+        appealTo: "device_owner",
+        event: {
+          invocationId: autoRun.invocationId,
+          type: "auto_run_decomposition_rejected",
+          level: "info",
+          message: `Auto-run ${autoRun.id} decomposition rejected by ${by}.`,
+          data: { autoRunId: autoRun.id, feedback: note || null },
+        },
+      });
+      return { ok: true };
     });
-    persistStateSoon();
-    return { ok: true };
   }
 
   // Risk-based merge (opt-in, default off): auto-merge low-risk PRs on the same
@@ -1505,17 +1528,18 @@ export function createAutoRunService({
       questions.length ? "" : null,
       text,
     ].filter((l) => l !== null).join("\n");
-    maybePostIssueReport(autoRun, worktree, body);
-    autoRun.clarifyAnswer = { by, at: now(), text: text.slice(0, 4000) };
-    appendEvent({
-      invocationId: autoRun.invocationId,
-      type: "auto_run_clarify_answered",
-      level: "info",
-      message: `Auto-run ${autoRun.id} clarify questions answered by ${by}.`,
-      data: { autoRunId: autoRun.id, issue: autoRun.link?.number ?? null },
+    return runTx(() => {
+      maybePostIssueReport(autoRun, worktree, body);
+      autoRun.clarifyAnswer = { by, at: now(), text: text.slice(0, 4000) };
+      appendEvent({
+        invocationId: autoRun.invocationId,
+        type: "auto_run_clarify_answered",
+        level: "info",
+        message: `Auto-run ${autoRun.id} clarify questions answered by ${by}.`,
+        data: { autoRunId: autoRun.id, issue: autoRun.link?.number ?? null },
+      });
+      return { ok: true };
     });
-    persistStateSoon();
-    return { ok: true };
   }
 
   const breakerOpen = () => {
@@ -1600,12 +1624,14 @@ export function createAutoRunService({
       try {
         await mergeAutoRunPr(autoRun.id, { actor: { userId: "usr_autorun_automerge" } });
         merged.push(autoRun.id);
-        appendEvent({
-          invocationId: autoRun.invocationId,
-          type: "auto_run_auto_merged",
-          level: "info",
-          message: `Auto-run ${autoRun.id} PR #${autoRun.prNumber} AUTO-merged (low risk).`,
-          data: { autoRunId: autoRun.id, prNumber: autoRun.prNumber, diffLines: autoRun.diffLines ?? null, link: autoRun.link },
+        runTx(() => {
+          appendEvent({
+            invocationId: autoRun.invocationId,
+            type: "auto_run_auto_merged",
+            level: "info",
+            message: `Auto-run ${autoRun.id} PR #${autoRun.prNumber} AUTO-merged (low risk).`,
+            data: { autoRunId: autoRun.id, prNumber: autoRun.prNumber, diffLines: autoRun.diffLines ?? null, link: autoRun.link },
+          });
         });
         void sendAlert?.({
           kind: "auto_merged",
@@ -1617,7 +1643,6 @@ export function createAutoRunService({
         /* merge refused (checks flipped, conflict, gate) → leave for a human */
       }
     }
-    if (merged.length) persistStateSoon();
     return { merged, evaluated: open.length };
   }
 
@@ -1649,7 +1674,7 @@ export function createAutoRunService({
       }
       // Orphaned by a restart: the invocation record is gone.
       if (run.invocationId && !inv) {
-        setAutoRunStatus(run, "failed", { error: "Run reaped: its invocation no longer exists (server restart)." });
+        runTx(() => setAutoRunStatus(run, "failed", { error: "Run reaped: its invocation no longer exists (server restart)." }));
         void sendAlert?.({ kind: "run_reaped", severity: "medium", message: `Auto-run ${run.id} reaped (orphaned invocation).`, data: { autoRunId: run.id, reason: "orphaned", link: run.link } });
         reaped += 1;
         continue;
@@ -1659,7 +1684,7 @@ export function createAutoRunService({
       const agent = run.agentId ? findAgent(run.agentId) : null;
       const deadlineMs = Math.max(maxIdleMs, Number(agent?.adapter?.timeoutSeconds ?? 0) * 1000 + REAP_MARGIN_MS);
       if (Number.isFinite(idleMs) && idleMs > deadlineMs) {
-        setAutoRunStatus(run, "failed", { error: `Run reaped: no progress for ${Math.round(idleMs / 1000)}s (stuck).` });
+        runTx(() => setAutoRunStatus(run, "failed", { error: `Run reaped: no progress for ${Math.round(idleMs / 1000)}s (stuck).` }));
         void sendAlert?.({ kind: "run_reaped", severity: "medium", message: `Auto-run ${run.id} reaped (stuck ${Math.round(idleMs / 1000)}s).`, data: { autoRunId: run.id, reason: "stuck", idleSeconds: Math.round(idleMs / 1000), link: run.link } });
         reaped += 1;
       }
@@ -1670,7 +1695,7 @@ export function createAutoRunService({
     let holdsReleased = 0;
     if (typeof reconcileBudgetReservations === "function") {
       const activeById = new Map((state.autoRuns ?? []).map((r) => [r.id, r]));
-      holdsReleased = reconcileBudgetReservations({
+      holdsReleased = runTx(() => reconcileBudgetReservations({
         isSettled: (autoRunId) => {
           const run = activeById.get(autoRunId);
           return !run || settledStatuses.has(run.status);
@@ -1682,9 +1707,8 @@ export function createAutoRunService({
           const inv = typeof findInvocation === "function" ? findInvocation(invocationId) : null;
           return !inv || isTerminal(inv.status);
         },
-      });
+      }));
     }
-    if (reaped > 0 || holdsReleased > 0) persistStateSoon();
     return { reaped, readvanced, holdsReleased };
   }
 
