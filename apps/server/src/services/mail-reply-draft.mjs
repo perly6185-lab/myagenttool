@@ -1,19 +1,29 @@
 /*
- * Reply-draft artifact (Phase 4, #979). The issue outcome becomes a reviewable
- * draft reply — and STOPS there. Sending is the exfiltration boundary (ADR 0011):
- * it is outbound, irreversible, speaks in the owner's name, and needs a SECOND,
- * separately consented write-scoped credential (gmail.send) that does not exist
- * (ADR 0010). So this slice produces an inert draft; there is no send path here,
- * by design — safe by absence.
+ * Outbound reply flow (Phase 4, #979), in two gated steps:
  *
- * The one property that keeps this out of ADR 0011's hop 3: the reply body is
- * TRUSTED text (the resolution the operator/triage wrote), never the untrusted
- * original mail body. This service copies the original's threading headers and
- * addressee, but NOT its body — so an injection in the incoming mail cannot shape
- * an outgoing reply. That is asserted in the tests.
+ *   1. replyOnIssue     — the resolution is posted as a comment on the
+ *                         mail-derived issue (a GitHub write, approval-gated),
+ *                         where a human can review it in context. Status:
+ *                         "pending_review".
+ *   2. confirmReplyDraft — only AFTER that review confirms it, the confirmed
+ *                         reply becomes the outgoing-mail draft (the draftbox).
+ *
+ * A send draft therefore cannot be conjured from free text; it can only be the
+ * mail form of a reply that was posted on the issue and confirmed. Sending
+ * itself is still the exfiltration boundary and is NOT built: it needs a second,
+ * separately consented gmail.send credential (ADR 0010) plus approval (ADR 0011).
+ * The draft is inert — safe by absence.
+ *
+ * The property that keeps this out of ADR 0011's hop 3: the reply body is TRUSTED
+ * text (the resolution the operator wrote), never the untrusted original mail
+ * body. Threading headers and addressee are copied from the original; its body
+ * is not. Asserted in the tests.
  */
 
 import { makeRunTx } from "../runtime/store/run-tx.mjs";
+import { runIssueComment } from "./issue-status.mjs";
+
+export const MAIL_ISSUE_REPLY_ACTION = "mail.issue.reply";
 
 const MAX_BODY = 20000;
 const MAX_SUBJECT = 400;
@@ -35,6 +45,9 @@ export function createMailReplyDraftService({
   appendEvent,
   persistStateSoon = () => {},
   store,
+  validateApprovalToken,
+  repoCwd,
+  issueComment = runIssueComment,
 }) {
   const runTx = makeRunTx({ store, persistStateSoon });
 
@@ -46,12 +59,17 @@ export function createMailReplyDraftService({
     ) ?? null;
   }
 
+  function findReply(replyId) {
+    return (state.mailReplies ?? []).find((reply) => reply.id === replyId) ?? null;
+  }
+
   /**
-   * Build and store an inert reply draft for an imported message. `body` is the
-   * TRUSTED reply text (the resolution) — it is the operator's/triage's words,
-   * not the untrusted original. Returns { status, draft }.
+   * Step 1: post the resolution on the mail-derived issue for review. `body` is
+   * TRUSTED text (the resolution), not the untrusted original. A GitHub write,
+   * so it is approval-gated. Requires the message to already have an issue
+   * (Phase 3) — the reply goes ON the issue, so the issue must exist.
    */
-  function createReplyDraft({ messageId, body, actor = null } = {}) {
+  async function replyOnIssue({ messageId, body, approvalToken, actor = null } = {}) {
     const record = findImportedMessage(messageId);
     if (!record) {
       return { ok: false, status: 404, body: { error: "mail_message_not_imported", messageId: String(messageId ?? "") } };
@@ -59,11 +77,86 @@ export function createMailReplyDraftService({
     if (actor?.teamId && record.ownerTeamId && record.ownerTeamId !== actor.teamId) {
       return { ok: false, status: 404, body: { error: "mail_message_not_imported", messageId: String(messageId ?? "") } };
     }
+    // A positive integer — not just "finite": Number(null) is 0, which would let
+    // a reply post against a non-existent issue #0.
+    const issueNumber = state.mailThreads?.[record.data.messageId]?.issueNumber;
+    if (!Number.isInteger(issueNumber) || issueNumber <= 0) {
+      return { ok: false, status: 409, body: { error: "issue_not_created", message: "Transcribe the mail to an issue before replying on it.", messageId: record.data.messageId } };
+    }
     const replyBody = cap(body, MAX_BODY);
     if (!replyBody || !replyBody.trim()) {
-      return { ok: false, status: 422, body: { error: "reply_body_required", message: "A reply draft needs trusted body text (the resolution), not the original mail body." } };
+      return { ok: false, status: 422, body: { error: "reply_body_required", message: "A reply needs trusted body text (the resolution), not the original mail body." } };
+    }
+    // Approval-gated GitHub write, like issue create, bound to this message.
+    const targetId = record.data.messageId;
+    const approval = typeof validateApprovalToken === "function"
+      ? validateApprovalToken(approvalToken, { action: MAIL_ISSUE_REPLY_ACTION, targetId, actor })
+      : { approved: false, reason: "approval_validator_unavailable" };
+    if (!approval.approved) {
+      return {
+        ok: false,
+        status: 409,
+        body: {
+          error: "approval_required",
+          reason: approval.reason === "missing_token"
+            ? "Replying on the issue requires an explicit approvalToken."
+            : `approvalToken rejected: ${approval.reason}.`,
+          action: MAIL_ISSUE_REPLY_ACTION,
+          targetId,
+        },
+      };
     }
 
+    // The comment marks itself as a proposed reply awaiting review — it is not a
+    // sent email, and the issue is the place it gets reviewed.
+    const comment = `**Proposed reply to ${cap(record.data.from, MAX_HEADER) ?? "the sender"}** (draft — not sent; review before it can become an outgoing draft):\n\n${replyBody}`;
+    await issueComment({ cwd: repoCwd, issueNumber: Number(issueNumber), body: comment });
+
+    const reply = {
+      id: nextId("mailreply"),
+      messageId: record.data.messageId,
+      issueNumber: Number(issueNumber),
+      body: replyBody,
+      status: "pending_review",
+      ownerTeamId: record.ownerTeamId ?? "team_local",
+      createdAt: now(),
+      confirmedAt: null,
+      draftId: null,
+    };
+    runTx(() => {
+      state.mailReplies = state.mailReplies ?? [];
+      state.mailReplies.unshift(reply);
+      appendEvent({
+        invocationId: null,
+        type: "mail_issue_reply_posted",
+        level: "info",
+        message: `Posted a proposed reply on issue #${reply.issueNumber} for mail ${reply.messageId} (awaiting review).`,
+        data: { replyId: reply.id, issueNumber: reply.issueNumber, messageId: reply.messageId },
+      });
+    });
+    return { ok: true, status: 201, body: { status: "pending_review", reply } };
+  }
+
+  /**
+   * Step 2: after the issue reply is reviewed and confirmed, turn it into the
+   * inert outgoing-mail draft. The draft is the mail form of a reply that lived
+   * on the issue and passed review — never free text. Still no send.
+   */
+  function confirmReplyDraft({ replyId, actor = null } = {}) {
+    const reply = findReply(replyId);
+    if (!reply) {
+      return { ok: false, status: 404, body: { error: "mail_reply_not_found", replyId: String(replyId ?? "") } };
+    }
+    if (actor?.teamId && reply.ownerTeamId && reply.ownerTeamId !== actor.teamId) {
+      return { ok: false, status: 404, body: { error: "mail_reply_not_found", replyId: String(replyId ?? "") } };
+    }
+    if (reply.status !== "pending_review") {
+      return { ok: false, status: 409, body: { error: "reply_not_pending_review", status: reply.status, replyId: reply.id } };
+    }
+    const record = findImportedMessage(reply.messageId);
+    if (!record) {
+      return { ok: false, status: 404, body: { error: "mail_message_not_imported", messageId: reply.messageId } };
+    }
     const original = record.data;
     // Correct threading or the reply will not attach to the thread in the client:
     // In-Reply-To is the parent's Message-ID; References is the parent's chain
@@ -72,43 +165,42 @@ export function createMailReplyDraftService({
       .map((ref) => cap(ref, MAX_HEADER))
       .filter(Boolean)
       .slice(0, MAX_REFERENCES);
-    const issueNumber = state.mailThreads?.[original.messageId]?.issueNumber ?? null;
 
     const draft = {
       id: nextId("maildraft"),
-      status: "draft", // inert. There is no send action in this slice.
+      status: "draft", // inert. There is no send action.
       to: cap(original.from, MAX_HEADER),
       subject: replySubject(original.subject),
       inReplyTo: cap(original.messageId, MAX_HEADER),
       references,
-      body: replyBody,
-      ownerTeamId: record.ownerTeamId ?? "team_local",
+      body: reply.body, // the CONFIRMED issue reply, verbatim — trusted text.
+      ownerTeamId: reply.ownerTeamId,
       provenance: {
         originalMessageId: original.messageId,
-        issueNumber,
+        issueNumber: reply.issueNumber,
+        replyId: reply.id,
         transcriptionInvocationId: record.invocationId ?? null,
       },
       createdAt: now(),
-      // The gate that would let this leave the machine, recorded but not built:
-      // sending requires a separately consented gmail.send credential (ADR 0010)
-      // and approval (ADR 0011). Until both exist, a draft cannot be sent.
       send: { available: false, requires: ["gmail.send credential (ADR 0010)", "approval (ADR 0011)"] },
     };
 
     runTx(() => {
       state.mailDrafts = state.mailDrafts ?? [];
       state.mailDrafts.unshift(draft);
+      reply.status = "confirmed";
+      reply.confirmedAt = now();
+      reply.draftId = draft.id;
       appendEvent({
         invocationId: null,
         type: "mail_reply_draft_created",
         level: "info",
-        message: `Drafted a reply to ${draft.to ?? "(unknown)"} for mail ${original.messageId}${issueNumber ? ` (issue #${issueNumber})` : ""}.`,
-        data: { draftId: draft.id, originalMessageId: original.messageId, issueNumber },
+        message: `Confirmed reply on issue #${reply.issueNumber} → outgoing draft to ${draft.to ?? "(unknown)"} for mail ${original.messageId}.`,
+        data: { draftId: draft.id, replyId: reply.id, originalMessageId: original.messageId, issueNumber: reply.issueNumber },
       });
     });
-
     return { ok: true, status: 201, body: { status: "draft", draft } };
   }
 
-  return { createReplyDraft };
+  return { replyOnIssue, confirmReplyDraft };
 }

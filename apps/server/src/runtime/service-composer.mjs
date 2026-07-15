@@ -930,10 +930,13 @@ export function createServerRuntimeServices({
     repoCwd: defaultProjectPath,
   });
 
-  // Phase 4 (#979): the issue outcome becomes an INERT reply draft. No send —
-  // that boundary needs a separate credential (ADR 0010) and stays human.
-  const { createReplyDraft } = createMailReplyDraftService({
+  // Phase 4 (#979): the outbound reply goes ON the issue first (approval-gated
+  // GitHub write), and only a reviewed+confirmed reply becomes an INERT outgoing
+  // draft. No send — that boundary needs a separate credential (ADR 0010) and
+  // stays human.
+  const { replyOnIssue, confirmReplyDraft } = createMailReplyDraftService({
     state, now, nextId, appendEvent, persistStateSoon, store,
+    validateApprovalToken, repoCwd: defaultProjectPath,
   });
 
   function runApplicationOrchestration(applicationId, routineId, body = {}, actor = null) {
@@ -2744,7 +2747,8 @@ export function createServerRuntimeServices({
     mergeAutoRunPr,
     refreshAutoRunPrDispositions,
     createMailIssueFromImport,
-    createReplyDraft,
+    replyOnIssue,
+    confirmReplyDraft,
     selectProject,
     removeProject,
     removeWorktree,
