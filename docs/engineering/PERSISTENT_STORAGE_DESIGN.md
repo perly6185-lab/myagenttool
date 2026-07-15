@@ -229,10 +229,18 @@ object as the live materialized **view** (not a full read rewrite):
   the incremental commit sink, a fix for **array-order reversal** (`query` reads
   `ORDER BY rowid DESC`, so the mirror inserts oldest-first — otherwise a cap would
   drop the newest records), mirroring `projects`/`devices` (their own JSON paths), and
-  the id-less blob storage above. The JSON snapshot is still written as a warm
-  fallback. **Remaining (step 3):** after soak confidence, retire the JSON snapshot as
-  the backing, and give `currentProjectId` a durable slot (a scalar the hydrate
-  currently reconciles rather than persists).
+  the id-less blob storage above.
+- **Phase C step 3 (#1042) — JSON retired as the backing.** On the default (SQLite)
+  path a commit writes SQLite only; boot hydrates from SQLite and skips the JSON
+  restore (which now runs only as a one-time JSON→SQLite migration when SQLite is
+  empty). JSON becomes an **explicit export** (`exportJsonSnapshot`) written on clean
+  shutdown as a rollback artifact and available on demand — so reverting to
+  `MYAGENTTOOL_STORE=memory` recovers to the last shutdown, and is lossy for anything
+  written since. The scalar meta row (#1040) + the unified `afterFlush` mirror (#1041)
+  make this safe (every write is durable in SQLite, and `currentProjectId`/`idCounter`
+  survive). JSON stays the live backing on exactly two paths: `MYAGENTTOOL_STORE=memory`
+  (hermetic tests + opt-out) and the loud Node<22.13 degradation. `pnpm store:parity`
+  (#1039) is the drift gate; the soak runbook is §8.
 
 ## 8. Soak runbook (before retiring JSON — #1042)
 
