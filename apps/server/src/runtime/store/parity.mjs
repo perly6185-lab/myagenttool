@@ -101,7 +101,7 @@ async function loadSqliteBacking({ sqlitePath, defaultProjectPath, now }) {
     const objectKeys = persistedObjectKeys;
     if (isStoreEmpty({ store, arrayKeys, objectKeys })) return { state, empty: true };
     const seededDefaults = captureSeededDefaults(state);
-    seedOrHydrate({ store, state, arrayKeys, objectKeys });
+    seedOrHydrate({ store, state, arrayKeys, objectKeys, scalarKeys: SCALAR_KEYS });
     normalizeLoadedState(state, { seededDefaults, defaultProject, sameProjectPath });
     return { state, empty: false };
   } finally {
