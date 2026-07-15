@@ -194,7 +194,7 @@ export function createServerRuntimeServices({
     nextBridgeApplicationInstall,
     queueApplicationInstall,
     recordApplicationInstallProgress,
-  } = createApplicationInstallService({ state, now, nextId, appendEvent, persistStateSoon, validateApprovalToken });
+  } = createApplicationInstallService({ state, now, nextId, appendEvent, persistStateSoon, validateApprovalToken, store });
 
   const {
     applicationHealthSweep,
@@ -222,6 +222,7 @@ export function createServerRuntimeServices({
     // time (post-composition), so the late binding is safe.
     sendAlert: (alert) => void autoRunAlerts.dispatch(alert),
     validateApprovalToken,
+    store,
   });
 
   const {
