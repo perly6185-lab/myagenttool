@@ -2,6 +2,8 @@
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { isAbsolute } from "node:path";
+import { StringDecoder } from "node:string_decoder";
+import { createTranscriptCollector } from "./stream-transcript.mjs";
 
 // Phase 2 (#912) adds `diff-explain` beside `diff-review`. Both run the same
 // fixed, read-only (`--permission-mode plan`) Claude wrapper; only the prompt and
@@ -38,30 +40,38 @@ const commandPlan = claudeCommandPlan(options.claudeCli, [
   "--permission-mode",
   "plan",
 ]);
+// #1071: capture the stream-json events (thinking / tool_use / tool_result /
+// assistant text) as a bounded transcript while they stream, instead of
+// discarding everything but the final result.
+const transcriptCollector = createTranscriptCollector();
 const { code, stdout, stderr } = await run(commandPlan.command, commandPlan.args, {
   cwd: options.cwd,
+  onStdoutLine: (line) => transcriptCollector.pushLine(line),
 });
+const transcript = transcriptCollector.finish();
 for (const line of stderr.split(/\r?\n/).map((item) => item.trim()).filter(Boolean)) {
   console.error(line);
 }
 if (code !== 0) {
-  fail(`Claude exited with code ${code}.`, { exitCode: code, stderr: stderr.trim() });
+  // A failed run's transcript is the most valuable one — ship what was captured.
+  fail(`Claude exited with code ${code}.`, { exitCode: code, stderr: stderr.trim() }, { transcript });
 }
 
 if (options.mode === "propose-patch") {
-  emitProposeResult(stdout);
+  emitProposeResult(stdout, transcript);
 } else if (options.mode === "diff-explain") {
-  emitExplainResult(stdout);
+  emitExplainResult(stdout, transcript);
 } else {
-  emitReviewResult(stdout);
+  emitReviewResult(stdout, transcript);
 }
 
-function emitProposeResult(rawStdout) {
+function emitProposeResult(rawStdout, transcript) {
   const proposal = parseProposeOutput(rawStdout);
   const patch = normalizePatch(proposal.patch);
   const files = normalizeProposedFiles(proposal.files, patch);
   console.log(`RESULT ${JSON.stringify({
     summary: proposal.summary ?? summarizeProposal(files),
+    transcript,
     // A proposal is never applied by the wrapper; it only reports what it would do.
     touchedUserFiles: false,
     output: {
@@ -88,11 +98,12 @@ function worktreeBaseCommit(cwd) {
   return head.status === 0 && /^[0-9a-f]{40}$/i.test(sha) ? sha.toLowerCase() : null;
 }
 
-function emitReviewResult(rawStdout) {
+function emitReviewResult(rawStdout, transcript) {
   const review = parseReviewOutput(rawStdout);
   const findings = normalizeFindings(review.findings);
   console.log(`RESULT ${JSON.stringify({
     summary: summarizeFindings(findings, review.summary),
+    transcript,
     touchedUserFiles: false,
     output: {
       source: "claude",
@@ -107,11 +118,12 @@ function emitReviewResult(rawStdout) {
   })}`);
 }
 
-function emitExplainResult(rawStdout) {
+function emitExplainResult(rawStdout, transcript) {
   const explain = parseExplainOutput(rawStdout);
   const highlights = normalizeHighlights(explain.highlights);
   console.log(`RESULT ${JSON.stringify({
     summary: explain.summary ?? summarizeHighlights(highlights),
+    transcript,
     touchedUserFiles: false,
     output: {
       source: "claude",
@@ -257,12 +269,32 @@ function run(command, args, options) {
       windowsHide: true,
       stdio: ["ignore", "pipe", "pipe"],
     });
+    // StringDecoder keeps a multibyte character split across chunks intact —
+    // both for the buffered stdout and for the per-line stream below.
+    const decoder = new StringDecoder("utf8");
     let stdout = "";
     let stderr = "";
-    child.stdout.on("data", (chunk) => { stdout += chunk.toString("utf8"); });
+    let remainder = "";
+    const emitLines = (text, flush = false) => {
+      if (!options.onStdoutLine) return;
+      const lines = (remainder + text).split(/\r?\n/);
+      remainder = flush ? "" : lines.pop() ?? "";
+      for (const line of lines) options.onStdoutLine(line);
+    };
+    child.stdout.on("data", (chunk) => {
+      const text = decoder.write(chunk);
+      stdout += text;
+      emitLines(text);
+    });
     child.stderr.on("data", (chunk) => { stderr += chunk.toString("utf8"); });
     child.on("error", (error) => resolveResult({ code: 127, stdout, stderr: `${stderr}${error.message}` }));
-    child.on("close", (code) => resolveResult({ code: code ?? 1, stdout, stderr }));
+    child.on("close", (code) => {
+      const tail = decoder.end();
+      stdout += tail;
+      // A final line without a trailing newline still reaches the collector.
+      emitLines(tail, true);
+      resolveResult({ code: code ?? 1, stdout, stderr });
+    });
   });
 }
 
@@ -530,11 +562,12 @@ function summarizeProposal(files) {
   return `Claude proposed a patch touching ${files.length} file(s).`;
 }
 
-function fail(message, output = {}) {
+function fail(message, output = {}, extra = {}) {
   console.log(`RESULT ${JSON.stringify({
     summary: message,
     touchedUserFiles: false,
     output: { source: "claude", tool: outputTool, error: message, ...output },
+    ...extra,
   })}`);
   process.exit(1);
 }
