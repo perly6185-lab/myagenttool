@@ -1610,6 +1610,23 @@ function governedReviewWrapperArgs(renderedArgs, payload) {
   if (targetLines && !hasFlag(injected, "--lines")) {
     injected.push("--lines", targetLines);
   }
+  // Present only for claude.analyze.issue (#1050) — the server-resolved issue
+  // reference. The bridge injects the fenced block ONLY when it carries the
+  // ADR-0011 BEGIN/END markers (mirrored in the wrapper, which refuses an
+  // unfenced body); a raw body can never reach the prompt through this path.
+  const issueNumber = Number.isInteger(metadata.issueNumber) && metadata.issueNumber >= 1
+    ? String(metadata.issueNumber)
+    : null;
+  if (issueNumber && !hasFlag(injected, "--issue")) {
+    injected.push("--issue", issueNumber);
+  }
+  const issueBlock = boundedString(metadata.issueUntrustedBlock, 8000);
+  const fenced = issueBlock
+    && /----- BEGIN ISSUE DESCRIPTION \(untrusted\) -----/.test(issueBlock)
+    && /----- END ISSUE DESCRIPTION -----/.test(issueBlock);
+  if (fenced && !hasFlag(injected, "--issue-data")) {
+    injected.push("--issue-data", issueBlock);
+  }
   return injected;
 }
 
@@ -1704,7 +1721,7 @@ function governedExecWrapperArgs(renderedArgs, payload) {
 function usesGovernedReviewWrapper(tool, args) {
   const wrapper = tool === "codex.review.diff"
     ? "codex-review-wrapper.mjs"
-    : tool === "claude.review.diff" || tool === "claude.explain.diff" || tool === "claude.explain.code" || tool === "claude.propose.patch"
+    : tool === "claude.review.diff" || tool === "claude.explain.diff" || tool === "claude.explain.code" || tool === "claude.analyze.issue" || tool === "claude.propose.patch"
       ? "claude-review-wrapper.mjs"
       : null;
   // Require the full canonical directory segment, not just the basename — a

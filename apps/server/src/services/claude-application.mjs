@@ -1,6 +1,7 @@
 import { CLAUDE_REVIEW_TOOL_CONTRACT } from "./claude-agent.mjs";
 import { CLAUDE_EXPLAIN_TOOL_CONTRACT } from "./claude-explain-agent.mjs";
 import { CLAUDE_EXPLAIN_CODE_TOOL_CONTRACT } from "./claude-explain-code-agent.mjs";
+import { CLAUDE_ANALYZE_ISSUE_TOOL_CONTRACT } from "./claude-analyze-issue-agent.mjs";
 import { CLAUDE_PROPOSE_TOOL_CONTRACT } from "./claude-propose-agent.mjs";
 
 export const CLAUDE_APPLICATION_ID = "app_claude";
@@ -54,6 +55,21 @@ export function createClaudeApplicationRegistration({ autoOnline = false } = {})
         riskTags: ["read_only", "read_project", "code_analysis", "local_agent"],
         requiresApproval: false,
         inputSchema: CLAUDE_EXPLAIN_CODE_TOOL_CONTRACT.inputSchema,
+        outputCollection: "invocations",
+      },
+      {
+        // #1050 (#912): read-only issue analysis. The issue body is attacker-
+        // adjacent text (ADR 0011): server-resolved by number, bounded, fenced as
+        // untrusted DATA, injection markers recorded — the untrusted_input tag
+        // makes the taint visible in discovery.
+        id: "analyze.issue",
+        toolName: CLAUDE_ANALYZE_ISSUE_TOOL_CONTRACT.name,
+        displayName: "Claude Issue Analysis",
+        description: "Analyze a repo issue against an actor-owned worktree with the governed Claude analysis tool; the issue body is fenced as untrusted data.",
+        riskLevel: "low",
+        riskTags: ["read_only", "read_project", "code_analysis", "local_agent", "untrusted_input"],
+        requiresApproval: false,
+        inputSchema: CLAUDE_ANALYZE_ISSUE_TOOL_CONTRACT.inputSchema,
         outputCollection: "invocations",
       },
       {

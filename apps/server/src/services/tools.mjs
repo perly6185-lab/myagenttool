@@ -24,6 +24,11 @@ import {
   isSafeWorktreeRelativePath,
 } from "./claude-explain-code-agent.mjs";
 import {
+  CLAUDE_ANALYZE_ISSUE_TOOL_CONTRACT,
+  isGovernedClaudeAnalyzeIssueAgent,
+} from "./claude-analyze-issue-agent.mjs";
+import { detectPromptInjection, untrustedBodyBlock } from "@myagenttool/protocol/issue-prompt";
+import {
   CLAUDE_PROPOSE_TOOL_CONTRACT,
   isGovernedClaudeProposeAgent,
 } from "./claude-propose-agent.mjs";
@@ -56,6 +61,10 @@ export function createToolService({
   validateApprovalToken = null,
   persistStateSoon = () => {},
   store,
+  // #1050: the governed gh read used to resolve an issue body server-side for
+  // claude.analyze.issue (same function auto-run uses). Absent in unit tests
+  // that never exercise analyze; the analyze path fails the run closed without it.
+  fetchIssueBody = null,
 }) {
   const runTx = makeRunTx({ store, persistStateSoon });
   function listTools() {
@@ -124,6 +133,9 @@ export function createToolService({
         agentLabel: "Claude",
         application: application ? { id: application.id, capability: `app.${application.id}.explain.code` } : null,
       });
+    }
+    if (name === CLAUDE_ANALYZE_ISSUE_TOOL_CONTRACT.name) {
+      return createAnalyzeIssueInvocation(input, actor);
     }
     if (name === CLAUDE_PROPOSE_TOOL_CONTRACT.name) {
       const application = resolveClaudeApp();
@@ -420,6 +432,7 @@ export function createToolService({
     const claudeReviewAgents = (state.agents ?? []).filter(isGovernedClaudeReviewAgent);
     const claudeExplainAgents = (state.agents ?? []).filter(isGovernedClaudeExplainAgent);
     const claudeExplainCodeAgents = (state.agents ?? []).filter(isGovernedClaudeExplainCodeAgent);
+    const claudeAnalyzeIssueAgents = (state.agents ?? []).filter(isGovernedClaudeAnalyzeIssueAgent);
     const claudeProposeAgents = (state.agents ?? []).filter(isGovernedClaudeProposeAgent);
     // Only surface the write-capable exec tool when the feature flag is on, so an
     // off-by-default deployment has no discoverable or invokable Codex write path.
@@ -430,6 +443,7 @@ export function createToolService({
       ...(claudeReviewAgents.length ? [buildClaudeReviewToolDescriptor(claudeReviewAgents, resolveClaudeApp())] : []),
       ...(claudeExplainAgents.length ? [buildClaudeExplainToolDescriptor(claudeExplainAgents, resolveClaudeApp())] : []),
       ...(claudeExplainCodeAgents.length ? [buildClaudeExplainCodeToolDescriptor(claudeExplainCodeAgents, resolveClaudeApp())] : []),
+      ...(claudeAnalyzeIssueAgents.length ? [buildClaudeAnalyzeIssueToolDescriptor(claudeAnalyzeIssueAgents, resolveClaudeApp())] : []),
       ...(claudeProposeAgents.length ? [buildClaudeProposeToolDescriptor(claudeProposeAgents, resolveClaudeApp())] : []),
       // Apply is server-side (no runner agent in 4a) and write-adjacent, so it is
       // discoverable ONLY when the default-OFF flag is set.
@@ -456,6 +470,143 @@ export function createToolService({
 
   function selectClaudeExplainCodeAgent() {
     return (state.agents ?? []).find(isGovernedClaudeExplainCodeAgent) ?? null;
+  }
+
+  function selectClaudeAnalyzeIssueAgent() {
+    return (state.agents ?? []).find(isGovernedClaudeAnalyzeIssueAgent) ?? null;
+  }
+
+  // #1050: analyze.issue takes an issue NUMBER, never issue text. The invocation
+  // is created immediately (sync, like every tool) but is NOT started until the
+  // server has resolved the body through the governed gh path, bounded it, fenced
+  // it as untrusted DATA (ADR 0011), and recorded any injection markers as
+  // evidence. A failed or timed-out resolve fails the run closed — the wrapper
+  // never spawns without a server-fenced body.
+  const ANALYZE_ISSUE_BODY_CAP = 6000;
+  const ANALYZE_ISSUE_FETCH_TIMEOUT_MS = 15_000;
+
+  function createAnalyzeIssueInvocation(input, actor) {
+    const validation = validateClaudeAnalyzeIssueInput(input);
+    if (!validation.ok) {
+      return { status: validation.status, body: validation.body };
+    }
+    const value = validation.value;
+    const project = resolveToolProjectId(value.projectId, actor);
+    if (!project.ok) {
+      return { status: project.status, body: project.body };
+    }
+    const projectId = project.value;
+    const worktree = findToolWorktree(value.worktreeId, projectId);
+    if (!worktree) {
+      return { status: 404, body: { error: "worktree_not_found" } };
+    }
+    const agent = selectClaudeAnalyzeIssueAgent();
+    if (!agent || agent.status === "disabled" || agent.health?.status === "unhealthy") {
+      return { status: 409, body: { error: "agent_not_available", message: "No governed Claude issue-analysis agent is available." } };
+    }
+    if (agent.location?.type === "local_device" && state.device?.unlinkState === "unlinked") {
+      return { status: 409, body: { error: "agent_not_available", message: "The local device is unlinked.", agentId: agent.id } };
+    }
+    const application = resolveClaudeApp();
+    const invocation = createInvocation(buildClaudeAnalyzeIssueTask(value), agent, {
+      actor,
+      requestedBy: actor?.userId,
+      metadata: {
+        tool: CLAUDE_ANALYZE_ISSUE_TOOL_CONTRACT.name,
+        toolVersion: CLAUDE_ANALYZE_ISSUE_TOOL_CONTRACT.version,
+        projectId,
+        worktreeId: worktree.id,
+        issueNumber: value.issueNumber,
+        instruction: value.instruction,
+        // Start is DEFERRED until the fenced body is stamped (see resolver).
+        pendingIssueFetch: true,
+        ...(application ? {
+          providerType: "application",
+          applicationId: application.id,
+          capability: `app.${application.id}.analyze.issue`,
+          applicationAction: `tool:${CLAUDE_ANALYZE_ISSUE_TOOL_CONTRACT.name}`,
+        } : {}),
+      },
+      timeoutSeconds: 240,
+    });
+    appendEvent({
+      invocationId: invocation.id,
+      type: "tool_invocation_created",
+      level: "info",
+      message: `Tool ${CLAUDE_ANALYZE_ISSUE_TOOL_CONTRACT.name} created issue-analysis invocation for #${value.issueNumber}.`,
+      data: { tool: CLAUDE_ANALYZE_ISSUE_TOOL_CONTRACT.name, issueNumber: value.issueNumber, agentId: agent.id, worktreeId: worktree.id },
+    });
+    // Fire-and-forget continuation: resolve → fence → start. Never throws; a
+    // rejected fetch fails the invocation instead of leaking an unhandled error.
+    resolveAnalyzeIssueAndStart({ invocation, agent, projectId, issueNumber: value.issueNumber })
+      .catch(() => {});
+    return {
+      status: 201,
+      body: {
+        tool: CLAUDE_ANALYZE_ISSUE_TOOL_CONTRACT.name,
+        invocationId: invocation.id,
+        agentId: agent.id,
+        status: invocation.status,
+        outputCollection: "invocations",
+        invocation,
+      },
+    };
+  }
+
+  async function resolveAnalyzeIssueAndStart({ invocation, agent, projectId, issueNumber }) {
+    const projectPath = (state.projects ?? []).find((item) => item.id === projectId)?.path ?? null;
+    let body = null;
+    if (typeof fetchIssueBody === "function" && projectPath) {
+      // The timeout timer must not outlive the race — a dangling 15s timer keeps
+      // the process (and every test run) alive after the fetch already resolved.
+      let timer = null;
+      try {
+        body = await Promise.race([
+          fetchIssueBody({ issueNumber, repoPath: projectPath }),
+          new Promise((resolveTimeout) => { timer = setTimeout(resolveTimeout, ANALYZE_ISSUE_FETCH_TIMEOUT_MS, null); }),
+        ]);
+      } catch {
+        body = null;
+      } finally {
+        if (timer) clearTimeout(timer);
+      }
+    }
+    runTx(() => {
+      delete invocation.options.metadata.pendingIssueFetch;
+      if (typeof body !== "string" || !body.trim()) {
+        // Fail closed: no server-resolved body, no run. The caller sees an
+        // explicit terminal error, never a wrapper spawned on missing data.
+        invocation.status = "failed";
+        invocation.result = { errorCode: "issue_fetch_failed", summary: `Could not resolve issue #${issueNumber} through the governed gh path.` };
+        invocation.completedAt = now();
+        invocation.updatedAt = now();
+        appendEvent({
+          invocationId: invocation.id,
+          type: "invocation_failed",
+          level: "warn",
+          message: `Issue analysis failed: issue #${issueNumber} could not be resolved.`,
+          data: { issueNumber },
+        });
+        return;
+      }
+      const bounded = body.trim().slice(0, ANALYZE_ISSUE_BODY_CAP);
+      const injection = detectPromptInjection(bounded);
+      // The fenced block is what the wrapper embeds — data, never instruction.
+      invocation.options.metadata.issueUntrustedBlock = untrustedBodyBlock("issue", bounded);
+      // Flag-not-block (B1a): markers are evidence for the operator, the run
+      // still proceeds — read-only analysis is exactly the reviewing context.
+      invocation.options.metadata.injectionMarkers = injection.markers;
+      if (injection.suspicious) {
+        appendEvent({
+          invocationId: invocation.id,
+          type: "untrusted_input_flagged",
+          level: "warning",
+          message: `Issue #${issueNumber} body carries prompt-injection markers (${injection.markers.join(", ")}); preserved as fenced evidence.`,
+          data: { issueNumber, markers: injection.markers },
+        });
+      }
+      startInvocationIfAllowed(invocation, agent);
+    });
   }
 
   function selectClaudeProposeAgent() {
@@ -956,6 +1107,32 @@ function buildClaudeExplainCodeToolDescriptor(agents, application = null) {
   };
 }
 
+function buildClaudeAnalyzeIssueToolDescriptor(agents, application = null) {
+  return {
+    name: CLAUDE_ANALYZE_ISSUE_TOOL_CONTRACT.name,
+    version: CLAUDE_ANALYZE_ISSUE_TOOL_CONTRACT.version,
+    displayName: "Claude Issue Analysis",
+    description: "Run a governed read-only Claude analysis of a repo issue, with the issue body server-resolved and fenced as untrusted data.",
+    riskLevel: "low",
+    riskTags: ["read_only", "read_project", "code_analysis", "local_agent", "untrusted_input"],
+    requiresLocalDevice: true,
+    inputSchema: CLAUDE_ANALYZE_ISSUE_TOOL_CONTRACT.inputSchema,
+    outputSchema: CLAUDE_ANALYZE_ISSUE_TOOL_CONTRACT.outputSchema,
+    agents: agents.map((agent) => ({
+      id: agent.id,
+      name: agent.name,
+      status: agent.status,
+      mode: "issue-analyze",
+    })),
+    approvalPolicy: {
+      defaultReadOnlyAnalysis: "allowed",
+    },
+    authoritativeBilling: false,
+    outputCollection: "invocations",
+    application: application ? { id: application.id, capability: `app.${application.id}.analyze.issue` } : null,
+  };
+}
+
 function buildClaudeProposeToolDescriptor(agents, application = null) {
   return {
     name: CLAUDE_PROPOSE_TOOL_CONTRACT.name,
@@ -1280,6 +1457,46 @@ function validateClaudeExplainCodeInput(input = {}) {
   };
 }
 
+// analyze.issue accepts an issue NUMBER only — issue text can never be inlined
+// by the caller (ADR 0011: the body is attacker-adjacent and must be resolved,
+// bounded, and fenced server-side). A stray field is a hard unknown_field.
+function validateClaudeAnalyzeIssueInput(input = {}) {
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    return { ok: false, status: 400, body: { error: "invalid_input", message: "Tool input must be an object." } };
+  }
+  const allowed = new Set(["projectId", "worktreeId", "issueNumber", "instruction"]);
+  const unknown = Object.keys(input).filter((key) => !allowed.has(key));
+  if (unknown.length) {
+    return { ok: false, status: 400, body: { error: "unknown_field", fields: unknown } };
+  }
+  const worktreeId = stringOrNull(input.worktreeId);
+  if (!worktreeId) {
+    return { ok: false, status: 400, body: { error: "worktree_required" } };
+  }
+  if (input.issueNumber === undefined || input.issueNumber === null) {
+    return { ok: false, status: 400, body: { error: "issue_number_required" } };
+  }
+  const issueNumber = Number(input.issueNumber);
+  if (!Number.isInteger(issueNumber) || issueNumber < 1) {
+    return { ok: false, status: 400, body: { error: "issue_number_invalid", message: "issueNumber must be a positive integer." } };
+  }
+  const instruction = input.instruction === undefined || input.instruction === null
+    ? null
+    : String(input.instruction).trim();
+  if (instruction && instruction.length > 1200) {
+    return { ok: false, status: 400, body: { error: "instruction_too_long", maxLength: 1200 } };
+  }
+  return {
+    ok: true,
+    value: {
+      projectId: stringOrNull(input.projectId),
+      worktreeId,
+      issueNumber,
+      instruction,
+    },
+  };
+}
+
 // Propose requires a task (the change to propose) and an optional instruction; it
 // takes no severityFloor. A stray field is a hard unknown_field.
 function validateClaudeProposeInput(input = {}) {
@@ -1353,6 +1570,11 @@ function buildClaudeExplainCodeTask(value) {
   ].filter(Boolean).join(", ");
   const suffix = value.instruction ? ` Instruction: ${value.instruction}` : "";
   return `Explain code with Claude: ${target}.${suffix}`;
+}
+
+function buildClaudeAnalyzeIssueTask(value) {
+  const suffix = value.instruction ? ` Instruction: ${value.instruction}` : "";
+  return `Analyze repo issue #${value.issueNumber} with Claude.${suffix}`;
 }
 
 function buildClaudeProposeTask(value) {
