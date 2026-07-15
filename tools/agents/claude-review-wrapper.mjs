@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { isAbsolute } from "node:path";
+import { isAbsolute, resolve, sep } from "node:path";
 
 // Phase 2 (#912) adds `diff-explain` beside `diff-review`. Both run the same
 // fixed, read-only (`--permission-mode plan`) Claude wrapper; only the prompt and
@@ -14,6 +14,7 @@ const options = parseArgs(process.argv.slice(2));
 const MODE_TOOL = {
   "diff-review": "claude.review.diff",
   "diff-explain": "claude.explain.diff",
+  "code-explain": "claude.explain.code",
   "propose-patch": "claude.propose.patch",
 };
 const TOOL = MODE_TOOL[options.mode];
@@ -21,14 +22,17 @@ if (!TOOL) fail(`Unsupported Claude wrapper mode: ${options.mode}`);
 outputTool = TOOL;
 requireReviewCwd(options);
 if (options.mode === "propose-patch" && !options.task) fail("--task is required for propose-patch.");
+if (options.mode === "code-explain") requireCodeExplainTarget(options);
 
 console.log(`Claude wrapper started: ${options.mode}`);
 
 const prompt = options.mode === "propose-patch"
   ? buildProposePrompt(options)
-  : options.mode === "diff-explain"
-    ? buildExplainPrompt(options)
-    : buildPrompt(options);
+  : options.mode === "code-explain"
+    ? buildCodeExplainPrompt(options)
+    : options.mode === "diff-explain"
+      ? buildExplainPrompt(options)
+      : buildPrompt(options);
 const commandPlan = claudeCommandPlan(options.claudeCli, [
   "-p",
   prompt,
@@ -50,6 +54,8 @@ if (code !== 0) {
 
 if (options.mode === "propose-patch") {
   emitProposeResult(stdout);
+} else if (options.mode === "code-explain") {
+  emitCodeExplainResult(stdout);
 } else if (options.mode === "diff-explain") {
   emitExplainResult(stdout);
 } else {
@@ -146,6 +152,9 @@ function parseArgs(args) {
     instruction: null,
     severityFloor: "low",
     task: null,
+    path: null,
+    symbol: null,
+    lines: null,
   };
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
@@ -159,6 +168,12 @@ function parseArgs(args) {
       parsed.instruction = normalizeInstruction(requireValue(args, ++index, arg));
     } else if (arg === "--task") {
       parsed.task = normalizeTask(requireValue(args, ++index, arg));
+    } else if (arg === "--path") {
+      parsed.path = String(requireValue(args, ++index, arg)).trim() || null;
+    } else if (arg === "--symbol") {
+      parsed.symbol = normalizeSymbol(requireValue(args, ++index, arg));
+    } else if (arg === "--lines") {
+      parsed.lines = normalizeLines(requireValue(args, ++index, arg));
     } else if (arg === "--severity-floor") {
       parsed.severityFloor = normalizeSeverity(requireValue(args, ++index, arg));
     } else if (arg === "--help" || arg === "-h") {
@@ -209,6 +224,38 @@ function normalizeSeverity(value) {
   return text;
 }
 
+function normalizeSymbol(value) {
+  const text = String(value ?? "").trim();
+  if (text.length > 200) fail("--symbol exceeds 200 characters.");
+  return text || null;
+}
+
+function normalizeLines(value) {
+  const text = String(value ?? "").trim();
+  if (!/^\d+-\d+$/.test(text)) fail("--lines must be a 1-indexed range like 10-42.");
+  const [start, end] = text.split("-").map(Number);
+  if (start < 1 || end < start) fail("--lines must satisfy 1 <= start <= end.");
+  return text;
+}
+
+// #1049: the code-explain target must be a real file INSIDE the bound worktree.
+// The server already shape-gated the path (relative, traversal-free); this is the
+// filesystem check against the resolved cwd, so no --path value — however it got
+// here — can read outside the worktree. Runs before Claude spawns.
+function requireCodeExplainTarget(opts) {
+  if (!opts.path) fail("--path is required for code-explain.");
+  if (opts.path.length > 512) fail("--path exceeds 512 characters.");
+  if (isAbsolute(opts.path) || opts.path.includes("\\") || opts.path.includes("\0")) {
+    fail("--path must be a worktree-relative path.");
+  }
+  const root = resolve(opts.cwd);
+  const target = resolve(root, opts.path);
+  if (target !== root && !target.startsWith(root + sep)) {
+    fail("--path escapes the worktree; refusing.");
+  }
+  if (!existsSync(target)) fail(`--path does not exist in the worktree: ${opts.path}`);
+}
+
 function buildPrompt(value) {
   return [
     "Review the current worktree diff for bugs, regressions, and missing tests.",
@@ -225,6 +272,22 @@ function buildExplainPrompt(value) {
     "Explain the current worktree diff: what each change does and why it matters.",
     "Return JSON only with this shape:",
     "{\"summary\":\"...\",\"highlights\":[{\"file\":\"path\",\"change\":\"what changed\",\"impact\":\"why it matters\"}]}",
+    "Describe behavior and intent, not style. Do NOT judge, score, or list bugs — that is the review tool's job.",
+    "Do not edit files, run apply tools, or change the worktree.",
+    value.instruction ? `Additional instruction: ${value.instruction}` : null,
+  ].filter(Boolean).join("\n");
+}
+
+function buildCodeExplainPrompt(value) {
+  const scope = [
+    value.symbol ? `Focus on the symbol \`${value.symbol}\`.` : null,
+    value.lines ? `Focus on lines ${value.lines}.` : null,
+  ].filter(Boolean).join(" ");
+  return [
+    `Read the file at the relative path "${value.path}" and explain the code: what it does, how it fits the surrounding module, and any non-obvious behavior.`,
+    scope || null,
+    "Return JSON only with this shape:",
+    "{\"summary\":\"...\",\"highlights\":[{\"file\":\"path\",\"aspect\":\"what part/behavior\",\"detail\":\"the explanation\"}]}",
     "Describe behavior and intent, not style. Do NOT judge, score, or list bugs — that is the review tool's job.",
     "Do not edit files, run apply tools, or change the worktree.",
     value.instruction ? `Additional instruction: ${value.instruction}` : null,
@@ -450,6 +513,41 @@ function normalizeHighlights(value) {
 
 function summarizeHighlights(highlights) {
   return `Claude explained ${highlights.length} change highlight(s).`;
+}
+
+// code-explain reuses the explain parse loop ({ summary, highlights }); only the
+// highlight fields differ ({ file, aspect, detail } — code in place has no
+// "change"). Emitted under its own tool name for the server's per-tool routing.
+function emitCodeExplainResult(rawStdout) {
+  const explain = parseExplainOutput(rawStdout);
+  const highlights = normalizeCodeHighlights(explain.highlights);
+  console.log(`RESULT ${JSON.stringify({
+    summary: explain.summary ?? `Claude explained ${highlights.length} aspect(s) of ${options.path}.`,
+    touchedUserFiles: false,
+    output: {
+      source: "claude",
+      tool: TOOL,
+      mode: options.mode,
+      path: options.path,
+      symbol: options.symbol,
+      lines: options.lines,
+      instruction: options.instruction,
+      summary: explain.summary ?? null,
+      highlights,
+    },
+    cost: costPayload(explain),
+  })}`);
+}
+
+function normalizeCodeHighlights(value) {
+  return (Array.isArray(value) ? value : [])
+    .filter((item) => item && typeof item === "object" && !Array.isArray(item))
+    .map((item) => ({
+      file: String(item.file ?? "").trim(),
+      aspect: String(item.aspect ?? "").trim(),
+      detail: String(item.detail ?? "").trim(),
+    }))
+    .filter((item) => item.file && item.aspect);
 }
 
 // Propose-mode parsing: extract the proposed { summary, patch, files } object.
