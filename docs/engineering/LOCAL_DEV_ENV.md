@@ -171,3 +171,26 @@ Development mode should default to:
 - Explicit confirmation before running arbitrary commands.
 - No silent startup of user-defined local agents.
 - Clear logging of what command is executed.
+
+## State backing, reset, and export (SQLite)
+
+The server's durable state lives in SQLite by default (`<MYAGENTTOOL_STATE_PATH sans
+.json>.sqlite`, WAL mode). JSON is a rollback/export format, not the backing. See
+`PERSISTENT_STORAGE_DESIGN.md` §7–§9.
+
+- **Reset local state:** stop the server, then remove the SQLite files:
+  ```
+  rm -f .myagenttool/state/local-demo-state.sqlite*
+  ```
+  (and the `.json` if you also want to drop the export). The next boot seeds fresh.
+- **Export / backup:** a clean shutdown writes `…local-demo-state.json` automatically
+  as a rollback artifact. To run purely on JSON (e.g. to inspect or import), start with
+  `MYAGENTTOOL_STORE=memory`.
+- **Roll back to a JSON export:** delete the `.sqlite` and boot on the default backing
+  (it migrates the JSON into a fresh SQLite), or run with `MYAGENTTOOL_STORE=memory`.
+- **Check JSON↔SQLite parity:** against a stopped instance (or a copied state dir):
+  ```
+  pnpm store:parity .myagenttool/state/local-demo-state.json
+  ```
+- **Opt out of SQLite entirely:** `MYAGENTTOOL_STORE=memory` (JSON is the backing;
+  also the automatic fallback on Node < 22.13 without flag-free `node:sqlite`).
