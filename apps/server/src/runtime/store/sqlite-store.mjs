@@ -126,11 +126,61 @@ export function createSqliteStore({ DatabaseSync, path = ":memory:" }) {
     return { imported };
   }
 
+  /**
+   * Faithful whole-DB mirror of an in-memory `state` view → SQLite (#1002 Phase B).
+   * Unlike importSnapshot (upsert-only), this REPLACES the entire durable store so
+   * DELETES propagate: a record removed from a collection (removeProject, retention
+   * reaping, cap-trimming) is gone from SQLite too, and hydration never resurrects
+   * it. One transaction: clear every row, then insert the current rows. Because it
+   * keys on `record.id`, id-less rows cannot be stored — they are counted in
+   * `skipped` (with the collections that carried them) so the caller stays honest
+   * rather than silently losing them.
+   *
+   * NOTE (perf): this rewrites the whole record table on every commit — the same
+   * O(all-records) cost profile as the JSON snapshot it replaces, acceptable for
+   * the opt-in SQLite backing. A per-record delta commit is a later optimization
+   * (it needs services to write through tx.insert, the deferred read-through step).
+   */
+  function replaceSnapshot(collections) {
+    let written = 0;
+    let skipped = 0;
+    const skippedCollections = new Set();
+    transaction((tx) => {
+      db.exec("DELETE FROM records");
+      for (const [collection, rows] of Object.entries(collections ?? {})) {
+        if (!Array.isArray(rows)) continue;
+        for (const row of rows) {
+          if (row && row.id != null) {
+            tx.insert(collection, row);
+            written += 1;
+          } else if (row !== undefined) {
+            skipped += 1;
+            skippedCollections.add(collection);
+          }
+        }
+      }
+    });
+    return { written, skipped, skippedCollections: [...skippedCollections] };
+  }
+
+  /**
+   * Read a set of collections back out for boot hydration (#1002 Phase B): returns
+   * a `{ collection: rows[] }` map (newest-first, matching the array convention),
+   * so the caller can rebuild the in-memory `state` view from the durable store.
+   */
+  function readSnapshot(collectionNames) {
+    const out = {};
+    for (const collection of collectionNames ?? []) {
+      out[collection] = query(collection);
+    }
+    return out;
+  }
+
   function close() {
     db.close();
   }
 
-  return { get, query, transaction, importSnapshot, close, schemaVersion: SCHEMA_VERSION };
+  return { get, query, transaction, importSnapshot, replaceSnapshot, readSnapshot, close, schemaVersion: SCHEMA_VERSION };
 }
 
 /**
