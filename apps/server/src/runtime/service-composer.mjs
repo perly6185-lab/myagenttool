@@ -998,6 +998,9 @@ export function createServerRuntimeServices({
   const channelConversationService = createChannelConversationService({
     state, now, nextId, appendEvent, refuse, persistStateSoon, store,
     createCapabilityInvocation, cancelInvocation,
+    // S6: in-channel /approve mints + consumes a single-use grant, then flips
+    // the SAME approval the console acts on.
+    mintDecisionGrant, validateApprovalToken, approveInvocation, denyInvocation,
   });
   // Outbound delivery (S5): the provider sender is late-bound by index.mjs when
   // the gateway is configured — this service never sees CorpSecret or tokens.

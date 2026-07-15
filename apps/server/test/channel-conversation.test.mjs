@@ -191,26 +191,28 @@ test("/cancel: the requester's own invocation cancels; another user's does not",
   assert.match(own.dispatched.reply, /cancelled/);
 });
 
-test("/apps lists the allowlist to a mapped user; /approve points at the console until S6", () => {
+test("/apps lists the allowlist to a mapped user; /approve of an unknown id is a generic miss", () => {
   const harness = makeHarness({ allowlist: ["git.status", "ccusage.report"] });
   const apps = harness.receive("/apps");
   assert.match(apps.dispatched.reply, /git\.status/);
   assert.match(apps.dispatched.reply, /ccusage\.report/);
 
-  const approve = harness.receive("/approve inv_0001");
-  assert.match(approve.dispatched.reply, /console Approvals Center/);
+  // In-channel /approve is exercised end-to-end in channel-approval.test.mjs (S6);
+  // here we only confirm an unknown id yields the same generic miss as /result.
+  const approve = harness.receive("/approve inv_9999");
+  assert.equal(approve.dispatched.reply, "No such invocation in this conversation.");
 });
 
 test("a write-risk invocation that pauses for approval reports the pending state in-channel", () => {
   const harness = makeHarness({
     allowlist: ["deploy.app"],
     capabilityResult: ({ state, nextId }) => {
-      const invocation = { id: nextId("inv"), status: "awaiting_approval", options: { metadata: {} } };
+      const invocation = { id: nextId("inv"), status: "waiting_for_local_approval", createdAt: "2026-07-15T00:00:00.000Z", options: { metadata: {} } };
       state.invocations.push(invocation);
       return { status: 202, body: { invocation } };
     },
   });
   const { dispatched } = harness.receive("/run deploy.app prod");
   assert.equal(dispatched.ok, true);
-  assert.match(dispatched.reply, /awaits approval/);
+  assert.match(dispatched.reply, /needs approval/);
 });
