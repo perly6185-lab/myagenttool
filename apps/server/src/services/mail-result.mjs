@@ -52,11 +52,25 @@ export function parseMailApplicationResult({ text }) {
   }
 
   // fetch: a single message with a body. The body is DATA — carried, capped,
-  // never executed (#978).
+  // never executed (#978). Threading headers (inReplyTo / references) are carried
+  // when present so a reply can be mapped onto its existing issue rather than
+  // opening a duplicate (Phase 3, #979). References is a space-separated list of
+  // Message-IDs; keep it bounded and as an array.
   if (payload.messageId) {
     const header = normalizeHeader(payload);
     if (!header) return null;
-    return { kind: "message", ...header, body: cap(payload.body, MAX_BODY) ?? "" };
+    const references = Array.isArray(payload.references)
+      ? payload.references.map((ref) => cap(ref, MAX_FIELD)).filter(Boolean).slice(0, 50)
+      : typeof payload.references === "string"
+        ? payload.references.split(/\s+/).map((ref) => cap(ref, MAX_FIELD)).filter(Boolean).slice(0, 50)
+        : [];
+    return {
+      kind: "message",
+      ...header,
+      inReplyTo: cap(payload.inReplyTo, MAX_FIELD),
+      references,
+      body: cap(payload.body, MAX_BODY) ?? "",
+    };
   }
 
   return null;
