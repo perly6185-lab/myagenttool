@@ -73,6 +73,12 @@ export function createServerRuntimeServices({
     updateCodexSessionFromEvent: () => null,
   };
 
+  // #1041: every durable flush (persistStateNow AND the debounced persistStateSoon,
+  // from ANY of the ~40 write sites) mirrors the state into SQLite via this hook —
+  // not only store.transaction commits — so SQLite never lags the JSON snapshot and
+  // the last writes before shutdown are captured. A no-op until the mirror is primed
+  // (and always, when there is no SQLite backing).
+  let durableSync = () => {};
   const {
     persistStateSoon,
     persistStateNow,
@@ -86,6 +92,7 @@ export function createServerRuntimeServices({
     now,
     defaultProject,
     sameProjectPath,
+    afterFlush: () => durableSync(),
   });
   // #966 (#124): the Store seam over today's snapshot — reads scan `state`, a
   // transaction stages writes and commits atomically through the synchronous
@@ -106,16 +113,10 @@ export function createServerRuntimeServices({
   const incrementalMirror = sqliteStore
     ? createIncrementalMirror({ store: sqliteStore, arrayKeys: mirroredArrayKeys, objectKeys: persistedObjectKeys })
     : null;
-  const commitDurable = sqliteStore
-    ? () => {
-        persistStateNow();
-        const { skipped, skippedCollections } = incrementalMirror.sync(state);
-        if (skipped > 0) {
-          console.warn(`[store:sqlite] mirror dropped ${skipped} id-less row(s) in ${skippedCollections.join(", ")} — those records are not durable in the SQLite backing.`);
-        }
-      }
-    : persistStateNow;
-  const store = createInMemoryStore({ state, commit: commitDurable });
+  // The store's commit is just persistStateNow now — persistStateNow already mirrors
+  // to SQLite via the afterFlush hook (durableSync), so a store.transaction commit
+  // and any other durable flush stay on the same, unified path (#1041).
+  const store = createInMemoryStore({ state, commit: persistStateNow });
   // #1003: capture the fresh seeded defaults BEFORE the restore overwrites them, so
   // a SQLite hydrate can run the SAME normalization the JSON restore does.
   const seededDefaults = sqliteStore ? captureSeededDefaults(state) : null;
@@ -144,6 +145,13 @@ export function createServerRuntimeServices({
       mirrorState({ store: sqliteStore, state, arrayKeys: mirroredArrayKeys, objectKeys: persistedObjectKeys });
     }
     incrementalMirror.prime(state);
+    // From here every durable flush mirrors the delta into SQLite (#1041).
+    durableSync = () => {
+      const { skipped, skippedCollections } = incrementalMirror.sync(state);
+      if (skipped > 0) {
+        console.warn(`[store:sqlite] mirror dropped ${skipped} id-less row(s) in ${skippedCollections.join(", ")} — those records are not durable in the SQLite backing.`);
+      }
+    };
     console.log(`[store:sqlite] durable backing ${outcome.mode} (${mirroredArrayKeys.length} collections).`);
   }
   // The counter comes from the snapshot it minted ids for. The scan is kept ONLY
