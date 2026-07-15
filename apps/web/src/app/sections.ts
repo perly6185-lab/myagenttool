@@ -10,6 +10,7 @@ import {
   LayoutDashboard,
   ListChecks,
   ListTodo,
+  MessagesSquare,
   MonitorSmartphone,
   PanelsTopLeft,
   Puzzle,
@@ -76,6 +77,7 @@ export const SECTIONS: SectionDef[] = [
   { key: "integrations", label: "Integrations", icon: Puzzle, blurb: "Connect unsupported agents", group: "configure" },
   { key: "tools", label: "Tools", icon: Wrench, blurb: "Governed tools you can discover and run", group: "configure" },
   { key: "applications", label: "Applications", icon: AppWindow, blurb: "Registered apps and their governed capabilities", group: "configure" },
+  { key: "channels", label: "Channels", icon: MessagesSquare, blurb: "Bidirectional messaging channels (WeCom) and their deliveries", group: "configure" },
   // Ledgers — the metered record.
   { key: "invocations", label: "Invocations", icon: ListChecks, blurb: "Every call, status, and result", group: "ledgers" },
   { key: "economics", label: "Economics", icon: Receipt, blurb: "Metered AI usage and cost ledger", group: "ledgers" },

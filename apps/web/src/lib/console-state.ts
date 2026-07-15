@@ -1035,6 +1035,44 @@ export interface ConsoleSnapshot {
   budgetStatuses?: BudgetStatus[];
   teamBudgetStatuses?: TeamBudgetStatus[];
   teams?: { id: string; name?: string }[];
+  /** Channel subsystem (#1090): operational rollup per channel, team-scoped. */
+  channelOperations?: ChannelOperations[];
+  channelDeliveries?: ChannelDelivery[];
+}
+
+/** Per-channel operational rollup (read-models/channels.mjs). No secrets — readiness is booleans. */
+export interface ChannelOperations {
+  id: string;
+  provider: string;
+  name: string;
+  status: "registered" | "enabled" | "disabled" | string;
+  ownerTeamId?: string | null;
+  readiness: Record<string, boolean>;
+  ready: boolean;
+  health: "ok" | "attention" | "idle" | string;
+  capabilityAllowlist: string[];
+  statusCapability?: string | null;
+  counts: {
+    identities: number;
+    conversations: number;
+    events: number;
+    deliveries: number;
+    failedDeliveries: number;
+    injectionFlagged: number;
+  };
+  lastActivityAt?: string | null;
+}
+
+export interface ChannelDelivery {
+  id: string;
+  channelId: string;
+  conversationId: string;
+  invocationId?: string | null;
+  status: "queued" | "sending" | "delivered" | "retrying" | "failed_terminal" | string;
+  attempts: number;
+  providerReceiptId?: string | null;
+  lastErrorCode?: string | null;
+  updatedAt?: string | null;
 }
 
 export type ApplicationSource =

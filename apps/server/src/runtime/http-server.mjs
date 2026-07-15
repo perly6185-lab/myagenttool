@@ -194,6 +194,7 @@ export function createHttpServer({
   removeChannelIdentity,
   listChannelIdentities,
   setChannelAllowlist,
+  retryChannelDelivery,
   nextId,
   persistStateSoon,
 }) {
@@ -283,6 +284,7 @@ export function createHttpServer({
         removeChannelIdentity,
         listChannelIdentities,
         setChannelAllowlist,
+        retryChannelDelivery,
       })) {
         return;
       }

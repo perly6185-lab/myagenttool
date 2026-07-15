@@ -599,4 +599,15 @@ export const api = {
     request("POST", `/api/codex/approval-broker/${encodeURIComponent(id)}/approve`),
   denyCodexApproval: (id: string) =>
     request("POST", `/api/codex/approval-broker/${encodeURIComponent(id)}/deny`),
+  /** Channel lifecycle (#1090). Enable/allowlist/delivery-retry are approval-gated. */
+  enableChannel: (id: string, approvalToken: string) =>
+    request("POST", `/api/channels/${encodeURIComponent(id)}/enable`, { approvalToken }),
+  disableChannel: (id: string) =>
+    request("POST", `/api/channels/${encodeURIComponent(id)}/disable`, {}),
+  retryChannelDelivery: (channelId: string, deliveryId: string, approvalToken: string) =>
+    request<{ deliveryId: string; status: string }>(
+      "POST",
+      `/api/channels/${encodeURIComponent(channelId)}/deliveries/${encodeURIComponent(deliveryId)}/retry`,
+      { approvalToken },
+    ),
 };

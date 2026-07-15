@@ -1008,6 +1008,7 @@ export function createServerRuntimeServices({
   const channelDeliveryService = createChannelDeliveryService({
     state, now, nextId, appendEvent, refuse, persistStateSoon, store,
     sendMessage: (args) => channelSender.current(args),
+    validateApprovalToken,
   });
   channelDeliveryHook = channelDeliveryService.notifyInvocationCompleted;
 
@@ -2850,6 +2851,7 @@ export function createServerRuntimeServices({
     // The gateway's handoff: import + dispatch + reply-enqueue as one pipeline (S3+S4+S5).
     importChannelEvent: receiveChannelEvent,
     sweepChannelDeliveries: channelDeliveryService.sweepChannelDeliveries,
+    retryChannelDelivery: channelDeliveryService.retryChannelDelivery,
     setChannelDeliverySender: (fn) => {
       channelSender.current = typeof fn === "function" ? fn : null;
     },
