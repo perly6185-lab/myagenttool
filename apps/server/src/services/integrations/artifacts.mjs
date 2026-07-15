@@ -18,6 +18,7 @@ import {
   normalizeTargetType,
   riskNotesForIntegration,
 } from "./helpers.mjs";
+import { makeRunTx } from "../../runtime/store/run-tx.mjs";
 
 export function createIntegrationArtifactRuntime({
   state,
@@ -27,7 +28,9 @@ export function createIntegrationArtifactRuntime({
   buildIntegrationGovernance,
   recordQuotaDecision,
   persistStateSoon = () => {},
+  store,
 }) {
+  const runTx = makeRunTx({ store, persistStateSoon });
   function createIntegrationArtifact(body = {}) {
     const targetType = normalizeTargetType(body.targetType ?? body.adapterType ?? guessAdapterType(body));
     const artifactType = normalizeIntegrationArtifactType(body.artifactType ?? "integration_plan");
@@ -52,17 +55,18 @@ export function createIntegrationArtifactRuntime({
       createdAt,
       updatedAt: createdAt,
     };
-    state.integrationArtifacts.unshift(artifact);
-    state.integrationArtifacts = state.integrationArtifacts.slice(0, 100);
-    recordQuotaDecision(artifact, "create_artifact");
-    appendEvent({
-      invocationId: null,
-      type: artifactType === "integration_plan" ? "artifact_created" : "integration_generated",
-      level: "info",
-      message: `${artifact.summary} It is reviewable and not enabled.`,
-      data: { artifactId: artifact.id, artifactType: artifact.artifactType, reviewState: artifact.reviewState },
+    runTx(() => {
+      state.integrationArtifacts.unshift(artifact);
+      state.integrationArtifacts = state.integrationArtifacts.slice(0, 100);
+      recordQuotaDecision(artifact, "create_artifact");
+      appendEvent({
+        invocationId: null,
+        type: artifactType === "integration_plan" ? "artifact_created" : "integration_generated",
+        level: "info",
+        message: `${artifact.summary} It is reviewable and not enabled.`,
+        data: { artifactId: artifact.id, artifactType: artifact.artifactType, reviewState: artifact.reviewState },
+      });
     });
-    persistStateSoon();
     return artifact;
   }
 
@@ -184,16 +188,17 @@ export function createIntegrationArtifactRuntime({
       costOwner: sourceArtifact.governance?.economics?.costOwner,
       unknownCostPolicy: sourceArtifact.governance?.economics?.unknownCostPolicy,
     }));
-    sourceArtifact.reviewState = "generated";
-    sourceArtifact.updatedAt = now();
-    appendEvent({
-      invocationId: null,
-      type: "integration_generated",
-      level: "info",
-      message: `Generated ${generated.length} reviewable integration artifact(s) from ${sourceArtifact.id}.`,
-      data: { sourceArtifactId: sourceArtifact.id, artifactIds: generated.map((item) => item.id) },
+    runTx(() => {
+      sourceArtifact.reviewState = "generated";
+      sourceArtifact.updatedAt = now();
+      appendEvent({
+        invocationId: null,
+        type: "integration_generated",
+        level: "info",
+        message: `Generated ${generated.length} reviewable integration artifact(s) from ${sourceArtifact.id}.`,
+        data: { sourceArtifactId: sourceArtifact.id, artifactIds: generated.map((item) => item.id) },
+      });
     });
-    persistStateSoon();
     return generated;
   }
 
@@ -207,17 +212,18 @@ export function createIntegrationArtifactRuntime({
     if (!nextState) {
       throw new Error(`Unsupported artifact action: ${action}`);
     }
-    artifact.reviewState = nextState;
-    artifact.updatedAt = now();
-    appendEvent({
-      invocationId: null,
-      type: "integration_reviewed",
-      level: nextState === "rejected" ? "warn" : "info",
-      message: `${artifact.summary} moved to ${nextState}. No integration was enabled automatically.`,
-      data: { artifactId: artifact.id, reviewState: nextState },
+    return runTx(() => {
+      artifact.reviewState = nextState;
+      artifact.updatedAt = now();
+      appendEvent({
+        invocationId: null,
+        type: "integration_reviewed",
+        level: nextState === "rejected" ? "warn" : "info",
+        message: `${artifact.summary} moved to ${nextState}. No integration was enabled automatically.`,
+        data: { artifactId: artifact.id, reviewState: nextState },
+      });
+      return artifact;
     });
-    persistStateSoon();
-    return artifact;
   }
 
   function findIntegrationArtifact(id) {
