@@ -35,6 +35,24 @@ const word = options.reverse ? "reverse" : "apply";
 
 console.log(`Claude ${word} started: ${options.cwd}`);
 
+// #914: revalidate the proposal's base binding at the LAST moment before any
+// write. `git apply --check` only proves the patch still fits; a moved HEAD can
+// still fit by luck and land the change on code nobody reviewed it against.
+if (options.expectBase) {
+  const head = git(options.cwd, ["rev-parse", "HEAD"], { allowFailure: true });
+  const actual = String(head.stdout ?? "").trim().toLowerCase();
+  if (head.status !== 0 || actual !== options.expectBase) {
+    emit({
+      applied: false,
+      reversed: options.reverse,
+      appliedFiles: [],
+      verification: { checkPassed: false, baseMismatch: { expected: options.expectBase, actual: actual || null } },
+      rollback: null,
+      summary: `Worktree HEAD ${actual || "(unknown)"} does not match the proposal base ${options.expectBase}; nothing was written.`,
+    }, /* exitCode */ 1);
+  }
+}
+
 // The file list is derived from git, never the model — `--numstat` reports exactly
 // which files this patch touches without applying anything.
 const numstat = git(options.cwd, ["apply", ...direction, "--numstat", "--", options.patchFile], { allowFailure: true });
@@ -130,13 +148,14 @@ function emit(output, exitCode) {
 }
 
 function parseArgs(args) {
-  const parsed = { cwd: null, patchFile: null, reverse: false, verify: null };
+  const parsed = { cwd: null, patchFile: null, reverse: false, verify: null, expectBase: null };
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
     if (arg === "--cwd") parsed.cwd = requireValue(args, ++index, arg);
     else if (arg === "--patch-file") parsed.patchFile = requireValue(args, ++index, arg);
     else if (arg === "--reverse") parsed.reverse = true;
     else if (arg === "--verify") parsed.verify = requireValue(args, ++index, arg);
+    else if (arg === "--expect-base") parsed.expectBase = requireValue(args, ++index, arg).trim().toLowerCase();
     else if (arg === "--help" || arg === "-h") { printHelp(); process.exit(0); }
     else fail(`Unsupported Claude apply wrapper argument: ${arg}`);
   }
@@ -157,6 +176,9 @@ function requireApplyInputs(opts) {
   }
   const patch = readFileSync(opts.patchFile, "utf8");
   if (!patch.trim()) fail("--patch-file is empty.");
+  if (opts.expectBase !== null && !/^[0-9a-f]{40}$/.test(opts.expectBase)) {
+    fail("--expect-base must be a full 40-hex commit sha.");
+  }
 }
 
 function requireValue(args, index, name) {

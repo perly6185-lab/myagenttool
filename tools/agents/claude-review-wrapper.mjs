@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { isAbsolute } from "node:path";
 
@@ -73,9 +73,19 @@ function emitProposeResult(rawStdout) {
       summary: proposal.summary ?? null,
       patch,
       files,
+      // #913 binding: the worktree HEAD this proposal was generated against,
+      // reported by git itself — never by the model. The server validates the
+      // shape and the apply runner later refuses a worktree whose HEAD moved.
+      baseCommit: worktreeBaseCommit(options.cwd),
     },
     cost: costPayload(proposal),
   })}`);
+}
+
+function worktreeBaseCommit(cwd) {
+  const head = spawnSync("git", ["-C", cwd, "rev-parse", "HEAD"], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+  const sha = String(head.stdout ?? "").trim();
+  return head.status === 0 && /^[0-9a-f]{40}$/i.test(sha) ? sha.toLowerCase() : null;
 }
 
 function emitReviewResult(rawStdout) {
