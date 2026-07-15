@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 /*
  * Run transcripts (#1072, Epic #1070): the wrapper's bounded stream-json
  * transcript (thinking / tool_use / tool_result / assistant text, #1071) gets a
@@ -15,6 +17,12 @@
  * Retention (#913/#970 policy): past the operator window the block PAYLOADS are
  * reaped in place — kind/toolName/durations/sizes survive, so the timeline
  * shape outlives its content, marked `payloadReaped`.
+ *
+ * Evidence chain (#1084): the record carries `traceId` (trace-centric search)
+ * and a server-computed `contentHash`; ingest and reap leave events; replacing
+ * a transcript on re-delivery keeps the superseded hash on the new record —
+ * a swapped transcript is provable, not silent; a count-cap eviction goes to
+ * the retention archive instead of vanishing.
  */
 
 export const RUN_TRANSCRIPT_LIMITS = {
@@ -112,49 +120,87 @@ export function sanitizeRunTranscript(raw, limits = RUN_TRANSCRIPT_LIMITS) {
   };
 }
 
+/** Server-computed integrity binding over the clamped blocks (#1084 — the
+ *  device never supplies it, mirroring the #913 proposal contentHash). */
+export function transcriptContentHash(blocks) {
+  return createHash("sha256").update(JSON.stringify(blocks ?? [])).digest("hex");
+}
+
 /**
  * Ingest the transcript a completed run carried on its RESULT (any terminal
  * status — a failed run's transcript is the most valuable one). Strips the raw
  * payload off `result` and upserts the per-invocation record. Mutates state
  * only; the caller's enclosing transaction owns the durable commit.
+ * `appendEvent` and `capWithArchive` are optional (hermetic harnesses) — the
+ * evidence trail degrades, the ingest never fails over them.
  */
-export function recordRunTranscript({ state, invocation, result, now }) {
+export function recordRunTranscript({ state, invocation, result, now, appendEvent, capWithArchive }) {
   if (!invocation || !result || typeof result !== "object" || Array.isArray(result)) return null;
   const transcript = sanitizeRunTranscript(result.transcript);
   if ("transcript" in result) delete result.transcript;
   if (!transcript || transcript.blocks.length === 0) return null;
   if (!Array.isArray(state.runTranscripts)) state.runTranscripts = [];
+  const contentHash = transcriptContentHash(transcript.blocks);
+  const emit = (type, message, data) => {
+    if (typeof appendEvent === "function") {
+      appendEvent({ invocationId: invocation.id, type, level: "info", message, data });
+    }
+  };
   const record = {
     id: `trs_${invocation.id}`,
     invocationId: invocation.id,
+    traceId: invocation.traceId ?? null,
     projectId: invocation.projectId ?? invocation.input?.metadata?.projectId ?? null,
     agentId: invocation.agentId ?? null,
     status: invocation.status ?? null,
     ...transcript,
+    contentHash,
     payloadReaped: false,
     createdAt: now(),
   };
   // Upsert: a repaired/re-delivered completion replaces its transcript instead
   // of duplicating the row (completeInvocation is already terminal-guarded).
+  // Identical content is an idempotent no-op; DIFFERENT content keeps the
+  // superseded hash on the new record + leaves an event — a swapped transcript
+  // is provable after the fact, never silent.
   const existing = state.runTranscripts.findIndex((item) => item?.invocationId === invocation.id);
   if (existing >= 0) {
+    const previous = state.runTranscripts[existing];
+    if (previous?.contentHash === contentHash) return previous;
+    record.supersededHash = previous?.contentHash ?? null;
+    record.supersededAt = now();
     state.runTranscripts[existing] = record;
-  } else {
-    state.runTranscripts.unshift(record);
-    if (state.runTranscripts.length > MAX_RUN_TRANSCRIPTS) {
-      state.runTranscripts.length = MAX_RUN_TRANSCRIPTS;
-    }
+    emit(
+      "run_transcript_superseded",
+      `Run transcript replaced by re-delivery (${transcript.blocks.length} block(s)).`,
+      { contentHash, supersededHash: record.supersededHash },
+    );
+    return record;
   }
+  state.runTranscripts.unshift(record);
+  if (state.runTranscripts.length > MAX_RUN_TRANSCRIPTS) {
+    // Evictions are audit-relevant: spill to the retention archive (#1084)
+    // rather than vanishing; plain truncation only when no archive is wired.
+    state.runTranscripts = typeof capWithArchive === "function"
+      ? capWithArchive(state.runTranscripts, MAX_RUN_TRANSCRIPTS, "runTranscripts")
+      : state.runTranscripts.slice(0, MAX_RUN_TRANSCRIPTS);
+  }
+  emit(
+    "run_transcript_recorded",
+    `Run transcript captured (${transcript.blocks.length} block(s)${transcript.truncated ? ", truncated" : ""}).`,
+    { contentHash, blocks: transcript.blocks.length, totalChars: transcript.totalChars, truncated: transcript.truncated },
+  );
   return record;
 }
 
 /**
  * Retention: reap block payloads of records older than the cutoff, keeping the
- * skeleton (kinds, tool names, durations, sizes, order). Returns the reap count
- * for the caller's tally.
+ * skeleton (kinds, tool names, durations, sizes, order). Returns the count and
+ * the affected invocationIds so the caller can leave ONE audit event per sweep
+ * (bounded — never per-record event spam).
  */
 export function reapRunTranscriptPayloads(state, { cutoffMs, now }) {
-  let reaped = 0;
+  const invocationIds = [];
   for (const record of state.runTranscripts ?? []) {
     if (!record || record.payloadReaped) continue;
     const ts = Date.parse(record.createdAt ?? "");
@@ -163,9 +209,9 @@ export function reapRunTranscriptPayloads(state, { cutoffMs, now }) {
     record.totalChars = 0;
     record.payloadReaped = true;
     record.reapedAt = now();
-    reaped += 1;
+    invocationIds.push(record.invocationId ?? null);
   }
-  return reaped;
+  return { reaped: invocationIds.length, invocationIds };
 }
 
 function skeletonBlock(block) {

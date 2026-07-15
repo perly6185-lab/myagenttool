@@ -66,6 +66,7 @@ const {
   savePersistentState,
   exportJsonSnapshot,
   selfCheckDependencies,
+  appendEvent,
 } = createServerRuntimeServices({
   namespace,
   protocolVersion,
@@ -151,7 +152,8 @@ if (typeof httpDependencies.bridgeLivenessSweep === "function") {
 {
   const sweepRetention = () => {
     try {
-      const { reaped } = applyRetentionPolicies(state, { now });
+      // #1084: the sweep leaves one audit event per transcript reap batch.
+      const { reaped } = applyRetentionPolicies(state, { now, appendEvent });
       if (reaped > 0) savePersistentState();
     } catch {
       /* best-effort retention sweep */
