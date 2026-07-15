@@ -64,6 +64,7 @@ const { defaultProject, state } = createServerState({ defaultProjectPath, now })
 const {
   httpDependencies,
   savePersistentState,
+  exportJsonSnapshot,
   selfCheckDependencies,
 } = createServerRuntimeServices({
   namespace,
@@ -160,18 +161,19 @@ if (typeof httpDependencies.bridgeLivenessSweep === "function") {
   setInterval(sweepRetention, 3_600_000).unref?.();
 }
 
-process.on("SIGINT", () => {
+// Clean shutdown: flush the durable backing (SQLite mirror, or JSON on the memory
+// path — both via savePersistentState), then write a JSON EXPORT as a rollback/backup
+// artifact (#1042 — a no-op-duplicate on the memory path where JSON is the backing),
+// then release the lock.
+function shutdown() {
   savePersistentState();
+  exportJsonSnapshot?.();
   closeSqliteStore();
   releaseStateLock();
   process.exit(0);
-});
-process.on("SIGTERM", () => {
-  savePersistentState();
-  closeSqliteStore();
-  releaseStateLock();
-  process.exit(0);
-});
+}
+process.on("SIGINT", shutdown);
+process.on("SIGTERM", shutdown);
 // Best-effort release on any other clean exit so a crash-free shutdown never
 // leaves a stale lock the next start has to reclaim.
 process.on("exit", () => releaseStateLock());

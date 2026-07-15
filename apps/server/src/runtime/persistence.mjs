@@ -312,6 +312,12 @@ export function createPersistenceRuntime({
   // so SQLite never lags the JSON snapshot (and the last writes before shutdown are
   // captured). No-op by default (JSON-only backing).
   afterFlush = () => {},
+  // #1042: when false, a per-commit flush writes ONLY the durable backing (SQLite via
+  // afterFlush), not the JSON snapshot — JSON is retired AS the backing and becomes
+  // an explicit export (exportJsonSnapshot: shutdown + on-demand rollback artifact).
+  // Stays true on the MYAGENTTOOL_STORE=memory path and the Node<22.13 degradation,
+  // where JSON IS the backing.
+  jsonBacking = true,
 }) {
   let saveStateTimer = null;
 
@@ -338,8 +344,9 @@ export function createPersistenceRuntime({
     savePersistentState();
   }
 
-  function savePersistentState() {
-    if (!enabled) return;
+  // The actual JSON snapshot write. Called per-commit only when JSON is the backing
+  // (jsonBacking); otherwise it's the explicit export (exportJsonSnapshot).
+  function writeSnapshotFile() {
     const snapshot = {
       schemaVersion,
       savedAt: now(),
@@ -376,14 +383,28 @@ export function createPersistenceRuntime({
     } catch (error) {
       console.error(`[server] failed to persist state: ${error?.message ?? error}`);
     }
+  }
+
+  function savePersistentState() {
+    if (!enabled) return;
+    // JSON is written per-commit only when it is the backing (#1042). On the SQLite
+    // backing this is a no-op — the durable write is the mirror below.
+    if (jsonBacking) writeSnapshotFile();
     // Mirror the same state into the durable backing (SQLite) on the SAME flush, so
     // every write path stays in sync. Best-effort: a mirror failure must not crash
-    // the control plane (the JSON snapshot is already the warm fallback).
+    // the control plane.
     try {
       afterFlush();
     } catch (error) {
       console.error(`[server] durable backing sync failed: ${error?.message ?? error}`);
     }
+  }
+
+  // #1042: explicit JSON export — a rollback/backup artifact, independent of the
+  // backing. Written at shutdown and on demand even when SQLite is the backing.
+  function exportJsonSnapshot() {
+    if (!enabled) return;
+    writeSnapshotFile();
   }
 
   // A snapshot we refuse to load must be MOVED ASIDE, not left in place: the
@@ -473,6 +494,7 @@ export function createPersistenceRuntime({
     persistStateNow,
     restorePersistentState,
     savePersistentState,
+    exportJsonSnapshot,
   };
 }
 
