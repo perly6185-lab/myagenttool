@@ -132,6 +132,18 @@ export function buildPublicState({
   const sshConnectionTests = (state.sshConnectionTests ?? []).filter((test) =>
     teamId == null || visibleSshTargetIds.has(test?.targetId),
   );
+  // Channels (S2, #1090): owner-team scoped; child rows follow their channel's
+  // visibility so a foreign team's channel never leaks through events/deliveries.
+  const channelVisible = (row) =>
+    teamId == null || (row?.ownerTeamId ?? LOCAL_TEAM_ID) === teamId;
+  const channels = (state.channels ?? []).filter(channelVisible);
+  const visibleChannelIds = new Set(channels.map((channel) => channel.id));
+  const byChannel = (rows) =>
+    (rows ?? []).filter((row) => teamId == null || visibleChannelIds.has(row?.channelId));
+  const channelIdentities = byChannel(state.channelIdentities);
+  const channelEvents = byChannel(state.channelEvents);
+  const channelConversations = byChannel(state.channelConversations);
+  const channelDeliveries = byChannel(state.channelDeliveries);
   // A compare run is visible when it spans at least one invocation the team can
   // see; unscoped mode passes everything through.
   const byCompareRun = (rows) =>
@@ -442,6 +454,11 @@ export function buildPublicState({
     terminalBridgeActions,
     sshTargets,
     sshConnectionTests,
+    channels,
+    channelIdentities,
+    channelEvents,
+    channelConversations,
+    channelDeliveries,
   };
 }
 

@@ -107,6 +107,11 @@ export const persistedArrayKeys = [
   "terminalBridgeActions",
   "sshTargets",
   "sshConnectionTests",
+  "channels",
+  "channelIdentities",
+  "channelEvents",
+  "channelConversations",
+  "channelDeliveries",
 ];
 
 // NOTE: `devices` is deliberately absent from both key lists — it restores

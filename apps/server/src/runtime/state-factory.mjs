@@ -125,7 +125,15 @@ export function createServerState({ defaultProjectPath, now }) {
     terminalEvidenceRecords: [],
     terminalBridgeActions: [],
     sshTargets: [],
-    sshConnectionTests: []
+    sshConnectionTests: [],
+    // Channel subsystem (ADR 0012, initiative #1090): owner-team-scoped
+    // conversation boundaries. Credentials never live here — a channel record
+    // carries readiness booleans only.
+    channels: [],
+    channelIdentities: [],
+    channelEvents: [],
+    channelConversations: [],
+    channelDeliveries: []
   };
   defineDeviceAlias(state);
   return { defaultProject, state };
@@ -234,6 +242,11 @@ export function resetStateForSelfCheck({ state, now }) {
   state.terminalBridgeActions = [];
   state.sshTargets = [];
   state.sshConnectionTests = [];
+  state.channels = [];
+  state.channelIdentities = [];
+  state.channelEvents = [];
+  state.channelConversations = [];
+  state.channelDeliveries = [];
   state.terminalRuntimeCapability = createTerminalRuntimeCapability();
 }
 
