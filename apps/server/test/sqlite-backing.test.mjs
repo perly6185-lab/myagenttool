@@ -121,6 +121,30 @@ test("devices mirror + hydrate round-trip (id-keyed array; offline reset lives i
   }
 });
 
+test("mirror + hydrate PRESERVES newest-first order (regression: rowid-DESC vs insert order)", { skip }, () => {
+  const store = createSqliteStore({ DatabaseSync, path: ":memory:" });
+  try {
+    const keys = { arrayKeys: ["events"], objectKeys: [] };
+    // Newest-first, as every collection is kept (services unshift). e5 is newest.
+    const state = { events: [{ id: "e5" }, { id: "e4" }, { id: "e3" }, { id: "e2" }, { id: "e1" }] };
+    mirrorState({ store, state, ...keys });
+    const back = { events: [] };
+    seedOrHydrate({ store, state: back, ...keys });
+    assert.deepEqual(back.events.map((e) => e.id), ["e5", "e4", "e3", "e2", "e1"], "full-mirror round-trip keeps order");
+
+    // Incremental path: unshift two newer records, then hydrate again.
+    const mirror = createIncrementalMirror({ store, ...keys });
+    mirror.prime(state);
+    state.events = [{ id: "e7" }, { id: "e6" }, { id: "e5" }, { id: "e4" }, { id: "e3" }, { id: "e2" }, { id: "e1" }];
+    mirror.sync(state);
+    const back2 = { events: [] };
+    seedOrHydrate({ store, state: back2, ...keys });
+    assert.deepEqual(back2.events.map((e) => e.id), ["e7", "e6", "e5", "e4", "e3", "e2", "e1"], "delta insert keeps newest-first order");
+  } finally {
+    store.close();
+  }
+});
+
 test("createIncrementalMirror writes ONLY the delta and keeps SQLite byte-faithful", { skip }, () => {
   const store = createSqliteStore({ DatabaseSync, path: ":memory:" });
   try {

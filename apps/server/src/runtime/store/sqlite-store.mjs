@@ -115,7 +115,11 @@ export function createSqliteStore({ DatabaseSync, path = ":memory:" }) {
     transaction((tx) => {
       for (const [collection, rows] of Object.entries(collections ?? {})) {
         if (!Array.isArray(rows)) continue;
-        for (const row of rows) {
+        // Insert OLDEST-first (arrays are newest-first) so the newest row gets the
+        // highest rowid — query() reads ORDER BY rowid DESC, so newest-first order
+        // round-trips faithfully. See replaceSnapshot.
+        for (let i = rows.length - 1; i >= 0; i -= 1) {
+          const row = rows[i];
           if (row && row.id != null) {
             tx.insert(collection, row);
             imported += 1;
@@ -136,10 +140,10 @@ export function createSqliteStore({ DatabaseSync, path = ":memory:" }) {
    * `skipped` (with the collections that carried them) so the caller stays honest
    * rather than silently losing them.
    *
-   * NOTE (perf): this rewrites the whole record table on every commit — the same
-   * O(all-records) cost profile as the JSON snapshot it replaces, acceptable for
-   * the opt-in SQLite backing. A per-record delta commit is a later optimization
-   * (it needs services to write through tx.insert, the deferred read-through step).
+   * ORDER: collections are newest-first (services `unshift`), and query() reads
+   * ORDER BY rowid DESC — so rows are inserted OLDEST-first (reverse the array),
+   * giving the newest row the highest rowid. Otherwise a hydrate would return the
+   * array REVERSED, and a cap that keeps the front N would drop the newest records.
    */
   function replaceSnapshot(collections) {
     let written = 0;
@@ -149,7 +153,8 @@ export function createSqliteStore({ DatabaseSync, path = ":memory:" }) {
       db.exec("DELETE FROM records");
       for (const [collection, rows] of Object.entries(collections ?? {})) {
         if (!Array.isArray(rows)) continue;
-        for (const row of rows) {
+        for (let i = rows.length - 1; i >= 0; i -= 1) {
+          const row = rows[i];
           if (row && row.id != null) {
             tx.insert(collection, row);
             written += 1;
