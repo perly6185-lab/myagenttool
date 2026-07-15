@@ -1627,6 +1627,16 @@ function governedReviewWrapperArgs(renderedArgs, payload) {
   if (fenced && !hasFlag(injected, "--issue-data")) {
     injected.push("--issue-data", issueBlock);
   }
+  // Present only for claude.plan.change (#1051) — the optional fenced analysis
+  // context (the goal itself rides the --task injection above). Same fence rule:
+  // an unfenced block is never injected, and the wrapper refuses one anyway.
+  const planContext = boundedString(metadata.planContextBlock, 6000);
+  const planFenced = planContext
+    && /----- BEGIN ANALYSIS DESCRIPTION \(untrusted\) -----/.test(planContext)
+    && /----- END ANALYSIS DESCRIPTION -----/.test(planContext);
+  if (planFenced && !hasFlag(injected, "--plan-context")) {
+    injected.push("--plan-context", planContext);
+  }
   return injected;
 }
 
@@ -1721,7 +1731,7 @@ function governedExecWrapperArgs(renderedArgs, payload) {
 function usesGovernedReviewWrapper(tool, args) {
   const wrapper = tool === "codex.review.diff"
     ? "codex-review-wrapper.mjs"
-    : tool === "claude.review.diff" || tool === "claude.explain.diff" || tool === "claude.explain.code" || tool === "claude.analyze.issue" || tool === "claude.propose.patch"
+    : tool === "claude.review.diff" || tool === "claude.explain.diff" || tool === "claude.explain.code" || tool === "claude.analyze.issue" || tool === "claude.plan.change" || tool === "claude.propose.patch"
       ? "claude-review-wrapper.mjs"
       : null;
   // Require the full canonical directory segment, not just the basename — a

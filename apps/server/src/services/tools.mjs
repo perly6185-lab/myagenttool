@@ -27,6 +27,10 @@ import {
   CLAUDE_ANALYZE_ISSUE_TOOL_CONTRACT,
   isGovernedClaudeAnalyzeIssueAgent,
 } from "./claude-analyze-issue-agent.mjs";
+import {
+  CLAUDE_PLAN_CHANGE_TOOL_CONTRACT,
+  isGovernedClaudePlanChangeAgent,
+} from "./claude-plan-change-agent.mjs";
 import { detectPromptInjection, untrustedBodyBlock } from "@myagenttool/protocol/issue-prompt";
 import {
   CLAUDE_PROPOSE_TOOL_CONTRACT,
@@ -136,6 +140,9 @@ export function createToolService({
     }
     if (name === CLAUDE_ANALYZE_ISSUE_TOOL_CONTRACT.name) {
       return createAnalyzeIssueInvocation(input, actor);
+    }
+    if (name === CLAUDE_PLAN_CHANGE_TOOL_CONTRACT.name) {
+      return createPlanChangeInvocation(input, actor);
     }
     if (name === CLAUDE_PROPOSE_TOOL_CONTRACT.name) {
       const application = resolveClaudeApp();
@@ -299,6 +306,10 @@ export function createToolService({
           ...(value.path ? { targetPath: value.path } : {}),
           ...(value.symbol ? { targetSymbol: value.symbol } : {}),
           ...(value.lineRange ? { targetLines: value.lineRange } : {}),
+          // Present only for plan.change (#1051): the fenced analysis context
+          // (the bridge injects --plan-context only when fenced) + provenance id.
+          ...(value.planContextBlock ? { planContextBlock: value.planContextBlock } : {}),
+          ...(value.analysisInvocationId ? { planAnalysisInvocationId: value.analysisInvocationId } : {}),
           ...(application ? {
             providerType: "application",
             applicationId: application.id,
@@ -433,6 +444,7 @@ export function createToolService({
     const claudeExplainAgents = (state.agents ?? []).filter(isGovernedClaudeExplainAgent);
     const claudeExplainCodeAgents = (state.agents ?? []).filter(isGovernedClaudeExplainCodeAgent);
     const claudeAnalyzeIssueAgents = (state.agents ?? []).filter(isGovernedClaudeAnalyzeIssueAgent);
+    const claudePlanChangeAgents = (state.agents ?? []).filter(isGovernedClaudePlanChangeAgent);
     const claudeProposeAgents = (state.agents ?? []).filter(isGovernedClaudeProposeAgent);
     // Only surface the write-capable exec tool when the feature flag is on, so an
     // off-by-default deployment has no discoverable or invokable Codex write path.
@@ -444,6 +456,7 @@ export function createToolService({
       ...(claudeExplainAgents.length ? [buildClaudeExplainToolDescriptor(claudeExplainAgents, resolveClaudeApp())] : []),
       ...(claudeExplainCodeAgents.length ? [buildClaudeExplainCodeToolDescriptor(claudeExplainCodeAgents, resolveClaudeApp())] : []),
       ...(claudeAnalyzeIssueAgents.length ? [buildClaudeAnalyzeIssueToolDescriptor(claudeAnalyzeIssueAgents, resolveClaudeApp())] : []),
+      ...(claudePlanChangeAgents.length ? [buildClaudePlanChangeToolDescriptor(claudePlanChangeAgents, resolveClaudeApp())] : []),
       ...(claudeProposeAgents.length ? [buildClaudeProposeToolDescriptor(claudeProposeAgents, resolveClaudeApp())] : []),
       // Apply is server-side (no runner agent in 4a) and write-adjacent, so it is
       // discoverable ONLY when the default-OFF flag is set.
@@ -474,6 +487,65 @@ export function createToolService({
 
   function selectClaudeAnalyzeIssueAgent() {
     return (state.agents ?? []).find(isGovernedClaudeAnalyzeIssueAgent) ?? null;
+  }
+
+  function selectClaudePlanChangeAgent() {
+    return (state.agents ?? []).find(isGovernedClaudePlanChangeAgent) ?? null;
+  }
+
+  // #1051: plan.change reuses the shared review-invocation gate, with one extra
+  // resolve step first — the optional analysis context is a LINK to a prior
+  // succeeded claude.analyze.issue run in the SAME project, never free text, and
+  // its content re-enters the prompt fenced as untrusted data (the analysis was
+  // derived from attacker-adjacent issue text; the taint propagates through
+  // derivation, it does not wash off).
+  const PLAN_ANALYSIS_CONTEXT_CAP = 4000;
+
+  function createPlanChangeInvocation(input, actor) {
+    const validation = validateClaudePlanChangeInput(input);
+    if (!validation.ok) {
+      return { status: validation.status, body: validation.body };
+    }
+    const value = validation.value;
+    let planContextBlock = null;
+    if (value.analysisInvocationId) {
+      const project = resolveToolProjectId(value.projectId, actor);
+      if (!project.ok) {
+        return { status: project.status, body: project.body };
+      }
+      const analysis = (state.invocations ?? []).find((item) => item.id === value.analysisInvocationId) ?? null;
+      const analysisMeta = analysis?.options?.metadata ?? {};
+      const analysisProjectId = analysis?.projectId ?? analysisMeta.projectId ?? null;
+      // A cross-project or unknown reference reads as not-applicable — no
+      // existence leak, mirroring the apply gate's proposal binding.
+      if (
+        !analysis
+        || analysisProjectId !== project.value
+        || analysisMeta.tool !== CLAUDE_ANALYZE_ISSUE_TOOL_CONTRACT.name
+        || analysis.status !== "succeeded"
+        || !analysis.result?.output
+      ) {
+        return { status: 409, body: { error: "analysis_not_applicable", message: "analysisInvocationId must reference a completed claude.analyze.issue run in the same project." } };
+      }
+      const { summary, problem, affectedAreas, suggestedAcceptance, risks } = analysis.result.output;
+      const serialized = JSON.stringify({ summary, problem, affectedAreas, suggestedAcceptance, risks }).slice(0, PLAN_ANALYSIS_CONTEXT_CAP);
+      planContextBlock = untrustedBodyBlock("analysis", serialized);
+    }
+    const application = resolveClaudeApp();
+    return createReviewInvocation({
+      input,
+      actor,
+      contract: CLAUDE_PLAN_CHANGE_TOOL_CONTRACT,
+      // Shape validation already ran above; hand the shared gate the enriched
+      // value (the goal rides as `task` so the bridge's existing --task
+      // injection carries it to the wrapper).
+      validate: () => ({ ok: true, value: { ...value, task: value.goal, planContextBlock } }),
+      selectAgent: selectClaudePlanChangeAgent,
+      buildTask: buildClaudePlanChangeTask,
+      outputCollection: "invocations",
+      agentLabel: "Claude",
+      application: application ? { id: application.id, capability: `app.${application.id}.plan.change` } : null,
+    });
   }
 
   // #1050: analyze.issue takes an issue NUMBER, never issue text. The invocation
@@ -1133,6 +1205,32 @@ function buildClaudeAnalyzeIssueToolDescriptor(agents, application = null) {
   };
 }
 
+function buildClaudePlanChangeToolDescriptor(agents, application = null) {
+  return {
+    name: CLAUDE_PLAN_CHANGE_TOOL_CONTRACT.name,
+    version: CLAUDE_PLAN_CHANGE_TOOL_CONTRACT.version,
+    displayName: "Claude Change Planning",
+    description: "Run a governed read-only Claude session that turns a bounded goal into a structured, server-capped change plan.",
+    riskLevel: "low",
+    riskTags: ["read_only", "read_project", "change_planning", "local_agent"],
+    requiresLocalDevice: true,
+    inputSchema: CLAUDE_PLAN_CHANGE_TOOL_CONTRACT.inputSchema,
+    outputSchema: CLAUDE_PLAN_CHANGE_TOOL_CONTRACT.outputSchema,
+    agents: agents.map((agent) => ({
+      id: agent.id,
+      name: agent.name,
+      status: agent.status,
+      mode: "change-plan",
+    })),
+    approvalPolicy: {
+      defaultReadOnlyAnalysis: "allowed",
+    },
+    authoritativeBilling: false,
+    outputCollection: "invocations",
+    application: application ? { id: application.id, capability: `app.${application.id}.plan.change` } : null,
+  };
+}
+
 function buildClaudeProposeToolDescriptor(agents, application = null) {
   return {
     name: CLAUDE_PROPOSE_TOOL_CONTRACT.name,
@@ -1575,6 +1673,53 @@ function buildClaudeExplainCodeTask(value) {
 function buildClaudeAnalyzeIssueTask(value) {
   const suffix = value.instruction ? ` Instruction: ${value.instruction}` : "";
   return `Analyze repo issue #${value.issueNumber} with Claude.${suffix}`;
+}
+
+function buildClaudePlanChangeTask(value) {
+  const context = value.analysisInvocationId ? ` (context: analysis ${value.analysisInvocationId})` : "";
+  const suffix = value.instruction ? ` Instruction: ${value.instruction}` : "";
+  return `Plan a change with Claude: ${value.goal}.${context}${suffix}`;
+}
+
+// plan.change requires a bounded goal; the optional analysis reference is a
+// LINK to a prior invocation, never free text. A stray field is a hard
+// unknown_field.
+function validateClaudePlanChangeInput(input = {}) {
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    return { ok: false, status: 400, body: { error: "invalid_input", message: "Tool input must be an object." } };
+  }
+  const allowed = new Set(["projectId", "worktreeId", "goal", "analysisInvocationId", "instruction"]);
+  const unknown = Object.keys(input).filter((key) => !allowed.has(key));
+  if (unknown.length) {
+    return { ok: false, status: 400, body: { error: "unknown_field", fields: unknown } };
+  }
+  const worktreeId = stringOrNull(input.worktreeId);
+  if (!worktreeId) {
+    return { ok: false, status: 400, body: { error: "worktree_required" } };
+  }
+  const goal = input.goal === undefined || input.goal === null ? "" : String(input.goal).trim();
+  if (!goal) {
+    return { ok: false, status: 400, body: { error: "goal_required" } };
+  }
+  if (goal.length > 4000) {
+    return { ok: false, status: 400, body: { error: "goal_too_long", maxLength: 4000 } };
+  }
+  const instruction = input.instruction === undefined || input.instruction === null
+    ? null
+    : String(input.instruction).trim();
+  if (instruction && instruction.length > 1200) {
+    return { ok: false, status: 400, body: { error: "instruction_too_long", maxLength: 1200 } };
+  }
+  return {
+    ok: true,
+    value: {
+      projectId: stringOrNull(input.projectId),
+      worktreeId,
+      goal,
+      analysisInvocationId: stringOrNull(input.analysisInvocationId),
+      instruction,
+    },
+  };
 }
 
 function buildClaudeProposeTask(value) {
