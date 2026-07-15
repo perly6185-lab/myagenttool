@@ -10,6 +10,7 @@ import { cn } from "@/lib/cn";
 import { useConsoleState } from "@/data/use-console-state";
 import { api } from "@/lib/api-client";
 import { useUiStore } from "@/store/ui-store";
+import { RunTranscriptSection, isTerminalRunStatus } from "@/features/invocations/run-transcript";
 import type { EvidenceLedgerRow, RefusalRow } from "@/lib/console-state";
 import type { Tone } from "@/lib/readable-labels";
 import {
@@ -427,6 +428,17 @@ function Dossier({ invocationId }: { invocationId: string }) {
           </div>
         ) : null}
       </DossierBlock>
+
+      {/* #1086: the trust question is "what did the agent actually do" — answer
+          it in place instead of only via "Open run →". */}
+      <RunTranscriptSection
+        invocationId={invocationId}
+        terminal={(() => {
+          const inv = (state?.invocations ?? []).find((i) => i.id === invocationId);
+          return inv ? isTerminalRunStatus(inv.status) : true;
+        })()}
+        defaultOpen={false}
+      />
 
       <DossierBlock icon={Wrench} title="Troubleshooting" empty={!troubleshooting}>
         {troubleshooting ? (

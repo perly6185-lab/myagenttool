@@ -9,6 +9,7 @@ import { useConsoleState, useRefreshConsoleState } from "@/data/use-console-stat
 import { api, useAsyncAction } from "@/data/use-console-actions";
 import { useUiStore, type SectionKey } from "@/store/ui-store";
 import type { ClaudeApplyAuthorization, InvocationSnapshot, PendingDecision, PendingDecisionKind, WorktreeSnapshot } from "@/lib/console-state";
+import { RunTranscriptSection } from "@/features/invocations/run-transcript";
 
 // The Approvals section: ONE queue of every pending human decision, aggregated
 // server-side (read-model `pendingDecisions`) from surfaces that used to be
@@ -484,6 +485,9 @@ function ProposalRow({
             <summary className="cursor-pointer text-muted-foreground">Proposed patch</summary>
             <pre className="mt-1 max-h-64 overflow-auto rounded-md bg-muted/40 p-2 font-mono text-[11px] leading-4">{proposal.patch.slice(0, 20000)}</pre>
           </details>
+          {/* #1086: how the agent arrived at this patch — read before approving.
+              Proposals only exist for succeeded runs, so the fetch is safe. */}
+          <RunTranscriptSection invocationId={proposal.invocationId} defaultOpen={false} />
         </CardContent>
       </Card>
     </li>

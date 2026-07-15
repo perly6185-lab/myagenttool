@@ -163,6 +163,14 @@ export function RunTranscriptBlocks({ transcript, className }: { transcript: Run
   );
 }
 
+/** Mirror of the server's terminal set — the gate that makes fetching safe
+ *  (the transcript is ingested inside the completion transaction). */
+const TERMINAL_RUN_STATUSES = new Set(["succeeded", "failed", "cancelled", "timed_out", "expired", "rejected"]);
+
+export function isTerminalRunStatus(status: string | null | undefined) {
+  return TERMINAL_RUN_STATUSES.has(status ?? "");
+}
+
 export function useRunTranscript(invocationId: string) {
   return useQuery({
     queryKey: ["run-transcript", invocationId],
@@ -172,21 +180,37 @@ export function useRunTranscript(invocationId: string) {
 }
 
 /**
- * Fetch-and-render wrapper for the two run surfaces. Renders NOTHING when the
- * run has no persisted transcript (old runs, non-claude agents) — those
- * surfaces stay exactly as they are today. The absent-id guard lives OUTSIDE
- * the querying component so a surface with no run never touches the query
- * machinery at all.
+ * Fetch-and-render wrapper for the run surfaces (#1086). Guards, in order:
+ * - no invocationId → nothing (surface has no run);
+ * - `terminal={false}` → one honest pending line, and NO query fires. This is
+ *   also the fix for the stale-null race: the server ingests the transcript
+ *   inside the completion transaction, so a fetch gated on terminal status can
+ *   never observe (and cache) a pre-completion null;
+ * - terminal but no transcript → one honest "did not emit" line (old runs,
+ *   non-claude agents), so absence is distinguishable from a loading failure.
+ * The absent-id guard lives OUTSIDE the querying component so a surface with
+ * no run never touches the query machinery at all.
  */
 export function RunTranscriptSection({
   invocationId,
+  terminal = true,
   ...rest
 }: {
   invocationId: string | null | undefined;
+  /** Whether the run has reached a terminal status. Default true keeps
+   *  call sites that only render for finished runs unchanged. */
+  terminal?: boolean;
   defaultOpen?: boolean;
   className?: string;
 }) {
   if (!invocationId) return null;
+  if (!terminal) {
+    return (
+      <p className="text-xs italic text-muted-foreground">
+        Agent transcript appears here once this run finishes (when the agent emits one).
+      </p>
+    );
+  }
   return <LoadedRunTranscriptSection invocationId={invocationId} {...rest} />;
 }
 
@@ -200,8 +224,15 @@ function LoadedRunTranscriptSection({
   className?: string;
 }) {
   const { data } = useRunTranscript(invocationId);
-  const transcript = data?.transcript ?? null;
-  if (!transcript || (transcript.blocks ?? []).length === 0) return null;
+  if (!data) return null; // still loading — never claim absence before the answer
+  const transcript = data.transcript ?? null;
+  if (!transcript || (transcript.blocks ?? []).length === 0) {
+    return (
+      <p className="text-xs italic text-muted-foreground">
+        This run's agent did not emit a transcript.
+      </p>
+    );
+  }
   return (
     <CollapsiblePanel
       label={`Agent transcript (${transcript.blocks.length} steps)`}
