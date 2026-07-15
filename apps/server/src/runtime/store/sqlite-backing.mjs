@@ -21,6 +21,8 @@
 
 import { existsSync } from "node:fs";
 
+import { listDevices } from "../device.mjs";
+
 // Reserved record id under which an object singleton (a non-array persisted key)
 // is stored. Real record ids are prefixed slugs (agt_, prj_, …) and never collide.
 export const SINGLETON_ID = "__singleton__";
@@ -102,6 +104,19 @@ export function seedOrHydrate({ store, state, arrayKeys, objectKeys }) {
  * The JSON restore in persistence.mjs is the source of truth for this behavior;
  * kept byte-aligned with it (a test pins the parity).
  */
+/**
+ * Force every hydrated device offline (#1003 Phase C prep). A restart tells us
+ * nothing about which machines are still up, so the JSON restore resets liveness
+ * (persistence.mjs). The SQLite mirror stores a device with its LIVE status, so a
+ * raw hydrate would bring it back online — this re-applies the fail-closed reset so
+ * a device is trusted online only after its own bridge re-registers.
+ */
+export function normalizeHydratedDevices({ state }) {
+  for (const device of listDevices(state)) {
+    if (device) device.status = "offline";
+  }
+}
+
 export function normalizeHydratedProjects({ state, defaultProject, sameProjectPath }) {
   if (!defaultProject) return;
   const same = typeof sameProjectPath === "function" ? sameProjectPath : (a, b) => a === b;

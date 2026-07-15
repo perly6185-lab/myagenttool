@@ -4,7 +4,7 @@ import { createBridgeCredentialRuntime } from "./bridge-auth.mjs";
 import { createPersistenceRuntime, persistedArrayKeys, persistedObjectKeys } from "./persistence.mjs";
 import { createReadModelRuntime } from "./read-models.mjs";
 import { createInMemoryStore } from "./store/in-memory-store.mjs";
-import { mirrorState, normalizeHydratedProjects, seedOrHydrate } from "./store/sqlite-backing.mjs";
+import { mirrorState, normalizeHydratedDevices, normalizeHydratedProjects, seedOrHydrate } from "./store/sqlite-backing.mjs";
 import {
   createAgentService,
   isAgentDisabled,
@@ -93,10 +93,15 @@ export function createServerRuntimeServices({
   // the whole `state` view into SQLite (the durable backing); the JSON snapshot is
   // kept current too during the soak so flipping the flag off loses nothing (Phase
   // C retires it). Default (no sqliteStore): today's JSON-only barrier, unchanged.
+  // `devices` persists through its own JSON path (listDevices/restoreDevices, not
+  // the persistedArrayKeys loop) but is an id-keyed array, so the SQLite backing
+  // mirrors it here too — otherwise it would be lost once the JSON snapshot is
+  // retired (Phase C). #1003 prep.
+  const mirroredArrayKeys = [...persistedArrayKeys, "devices"];
   const commitDurable = sqliteStore
     ? () => {
         persistStateNow();
-        const { skipped, skippedCollections } = mirrorState({ store: sqliteStore, state, arrayKeys: persistedArrayKeys, objectKeys: persistedObjectKeys });
+        const { skipped, skippedCollections } = mirrorState({ store: sqliteStore, state, arrayKeys: mirroredArrayKeys, objectKeys: persistedObjectKeys });
         if (skipped > 0) {
           console.warn(`[store:sqlite] mirror dropped ${skipped} id-less row(s) in ${skippedCollections.join(", ")} — those records are not durable in the SQLite backing.`);
         }
@@ -108,17 +113,18 @@ export function createServerRuntimeServices({
   // SEED it from the restored state when empty (one-time JSON→SQLite migration), or
   // HYDRATE `state` from SQLite when it already holds data (SQLite authoritative).
   if (sqliteStore) {
-    const outcome = seedOrHydrate({ store: sqliteStore, state, arrayKeys: persistedArrayKeys, objectKeys: persistedObjectKeys });
+    const outcome = seedOrHydrate({ store: sqliteStore, state, arrayKeys: mirroredArrayKeys, objectKeys: persistedObjectKeys });
     if (outcome.mode === "seeded" && outcome.mirror?.skipped > 0) {
       console.warn(`[store:sqlite] initial seed dropped ${outcome.mirror.skipped} id-less row(s) in ${outcome.mirror.skippedCollections.join(", ")}.`);
     }
     if (outcome.mode === "hydrated") {
-      // Raw hydration bypasses the JSON restore's fail-closed project filter —
-      // re-apply it so a path-missing project isn't resurrected and the default
-      // project is guaranteed present (#1003 Phase C prep).
+      // Raw hydration bypasses the JSON restore's fail-closed normalizations —
+      // re-apply them: drop a path-missing project (+ guarantee the default), and
+      // force every device offline (a restart never implies a bridge is still up).
       normalizeHydratedProjects({ state, defaultProject, sameProjectPath });
+      normalizeHydratedDevices({ state });
     }
-    console.log(`[store:sqlite] durable backing ${outcome.mode} (${persistedArrayKeys.length} collections).`);
+    console.log(`[store:sqlite] durable backing ${outcome.mode} (${mirroredArrayKeys.length} collections).`);
   }
   // The counter comes from the snapshot it minted ids for. The scan is kept ONLY
   // as a floor — for a snapshot written before the counter was persisted, and as a
