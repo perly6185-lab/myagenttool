@@ -47,7 +47,7 @@ function ensureBuild() {
   if (existsSync(indexHtml)) return;
   console.log("[web] dist not found — building the console (vite build)…");
   const require = createRequire(import.meta.url);
-  const viteBin = require.resolve("vite/bin/vite.js");
+  const viteBin = resolveViteBin(require);
   const result = spawnSync(process.execPath, [viteBin, "build"], {
     cwd: webRoot,
     stdio: "inherit",
@@ -55,6 +55,12 @@ function ensureBuild() {
   if (result.status !== 0 || !existsSync(indexHtml)) {
     throw new Error("[web] vite build failed; run `pnpm --filter @myagenttool/web build`.");
   }
+}
+
+function resolveViteBin(require) {
+  const directBin = join(webRoot, "node_modules", "vite", "bin", "vite.js");
+  if (existsSync(directBin)) return directBin;
+  return join(dirname(require.resolve("vite/package.json")), "bin", "vite.js");
 }
 
 function contentType(filePath) {
