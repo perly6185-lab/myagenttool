@@ -24,6 +24,7 @@ import { createCapabilityService } from "../services/capabilities.mjs";
 import { createMailIssueWriteService } from "../services/mail-issue-write.mjs";
 import { createMailReplyDraftService } from "../services/mail-reply-draft.mjs";
 import { createChannelService } from "../services/channels.mjs";
+import { createChannelConversationService } from "../services/channel-conversation.mjs";
 import { createApplicationResultImportService } from "../services/application-results.mjs";
 import { createCcusageImportService } from "../services/ccusage-imports.mjs";
 import { createClaudeReviewImportService } from "../services/claude-review-imports.mjs";
@@ -980,6 +981,21 @@ export function createServerRuntimeServices({
   const channelService = createChannelService({
     state, now, nextId, appendEvent, persistStateSoon, store, validateApprovalToken, refuse,
   });
+
+  // Conversation execution (S4): imported events dispatch into GOVERNED
+  // capability invocations — fail-closed identity, channel allowlist, taint,
+  // correlation. The gateway gets the composed import→dispatch pipeline.
+  const channelConversationService = createChannelConversationService({
+    state, now, nextId, appendEvent, refuse, persistStateSoon, store,
+    createCapabilityInvocation, cancelInvocation,
+  });
+  const receiveChannelEvent = (payload) => {
+    const imported = channelService.importChannelEvent(payload);
+    if (imported?.ok && !imported.duplicate) {
+      channelConversationService.dispatchImportedChannelEvent({ eventId: imported.eventId });
+    }
+    return imported;
+  };
 
   function runApplicationOrchestration(applicationId, routineId, body = {}, actor = null) {
     const application = findApplication(applicationId);
@@ -2799,7 +2815,9 @@ export function createServerRuntimeServices({
     mapChannelIdentity: channelService.mapChannelIdentity,
     removeChannelIdentity: channelService.removeChannelIdentity,
     listChannelIdentities: channelService.listChannelIdentities,
-    importChannelEvent: channelService.importChannelEvent,
+    setChannelAllowlist: channelService.setChannelAllowlist,
+    // The gateway's handoff: import + dispatch as one pipeline (S3+S4).
+    importChannelEvent: receiveChannelEvent,
     selectProject,
     removeProject,
     removeWorktree,

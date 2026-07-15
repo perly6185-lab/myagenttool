@@ -22,7 +22,9 @@ import { LOCAL_TEAM_ID } from "../runtime/auth.mjs";
 import { makeRunTx } from "../runtime/store/run-tx.mjs";
 
 export const CHANNEL_ENABLE_ACTION = "channel.enable";
+export const CHANNEL_ALLOWLIST_ACTION = "channel.allowlist";
 const MAX_NAME_LENGTH = 80;
+const MAX_ALLOWLIST = 50;
 
 /** Default readiness probe: configuration PRESENCE from the gateway env — never values. */
 export function wecomEnvReadiness(env = process.env) {
@@ -93,6 +95,10 @@ export function createChannelService({
       name: normalizedName,
       status: "registered",
       ownerTeamId,
+      // S4: nothing is dispatchable until the owner allowlists it explicitly —
+      // the channel-side gate, independent of the capability gateway's own.
+      capabilityAllowlist: [],
+      statusCapability: null,
       createdAt: now(),
       updatedAt: now(),
     };
@@ -275,6 +281,54 @@ export function createChannelService({
   }
 
   /**
+   * Set the per-channel capability allowlist (S4). Approval-gated: expanding
+   * what a public conversation can reach is a side effect a human confirms.
+   * `statusCapability` must itself be allowlisted — /status is sugar for /run.
+   */
+  function setChannelAllowlist({ channelId, capabilities, statusCapability = null, approvalToken } = {}, actor = null) {
+    const channel = findOwnChannel(channelId, actor);
+    if (!channel) return notFound();
+    if (!Array.isArray(capabilities) || capabilities.length > MAX_ALLOWLIST) {
+      return { ok: false, status: 400, body: { error: "invalid_allowlist" } };
+    }
+    const normalized = [...new Set(capabilities.map((name) => String(name ?? "").trim()).filter(Boolean))];
+    const status = statusCapability == null ? null : String(statusCapability).trim() || null;
+    if (status && !normalized.includes(status)) {
+      return { ok: false, status: 400, body: { error: "status_capability_not_allowlisted" } };
+    }
+    const approval = typeof validateApprovalToken === "function"
+      ? validateApprovalToken(approvalToken, { action: CHANNEL_ALLOWLIST_ACTION, targetId: channel.id, actor })
+      : { approved: false, reason: "approval_validator_unavailable" };
+    if (!approval.approved) {
+      return {
+        ok: false,
+        status: 409,
+        body: {
+          error: "approval_required",
+          reason: approval.reason === "missing_token"
+            ? "Changing a channel's capability allowlist requires an explicit approvalToken."
+            : `approvalToken rejected: ${approval.reason}.`,
+          action: CHANNEL_ALLOWLIST_ACTION,
+          targetId: channel.id,
+        },
+      };
+    }
+    runTx(() => {
+      channel.capabilityAllowlist = normalized;
+      channel.statusCapability = status;
+      channel.updatedAt = now();
+      appendEvent({
+        invocationId: null,
+        type: "channel_allowlist_updated",
+        level: "info",
+        message: `Channel ${channel.id}: capability allowlist set (${normalized.length} entries).`,
+        data: { channelId: channel.id, capabilities: normalized, statusCapability: status },
+      });
+    });
+    return { ok: true, status: 200, body: { channel: publicChannel(channel) } };
+  }
+
+  /**
    * Import one verified, decrypted inbound message from the gateway (S3). This
    * is the exactly-once boundary: a duplicate providerMessageId is a no-op ACK,
    * a disabled/unknown channel refuses (auditable) but still ACKs — WeCom's
@@ -391,6 +445,7 @@ export function createChannelService({
     mapChannelIdentity,
     removeChannelIdentity,
     listChannelIdentities,
+    setChannelAllowlist,
     importChannelEvent,
     findOwnChannel,
   };
