@@ -1,3 +1,5 @@
+import { reapRunTranscriptPayloads } from "./run-transcripts.mjs";
+
 const criticalLifecycleStatuses = new Set(["succeeded", "failed", "cancelled", "blocked", "rejected", "observed"]);
 
 export function isCriticalLifecycleAuditRecord(record) {
@@ -61,6 +63,10 @@ export function applyRetentionPolicies(state, { now }) {
     output.patchRedactedAt = now();
     reaped += 1;
   }
+  // #1072: run-transcript block payloads are payload, not evidence — same window.
+  // The skeleton (kinds, tool names, durations, sizes, order) survives in place,
+  // marked `payloadReaped`, so the timeline shape outlives its content.
+  reaped += reapRunTranscriptPayloads(state, { cutoffMs, now });
   return { reaped };
 }
 
