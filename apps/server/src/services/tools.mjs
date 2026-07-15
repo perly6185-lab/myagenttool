@@ -30,6 +30,7 @@ import {
 } from "./claude-apply-agent.mjs";
 import { CLAUDE_APPLICATION_ID } from "./claude-application.mjs";
 import { LOCAL_TEAM_ID, teamOf } from "../runtime/auth.mjs";
+import { makeRunTx } from "../runtime/store/run-tx.mjs";
 
 const CCUSAGE_APPROVAL_REQUIRED_REPORTS = new Set(["session"]);
 
@@ -48,7 +49,9 @@ export function createToolService({
   // without it, exactly like the application service's approvalCheck.
   validateApprovalToken = null,
   persistStateSoon = () => {},
+  store,
 }) {
+  const runTx = makeRunTx({ store, persistStateSoon });
   function listTools() {
     return discoverTools();
   }
@@ -524,24 +527,25 @@ export function createToolService({
       applied: false,
       createdAt: now(),
     };
-    invocation.options.metadata.claudeApplyAuthorizationId = authorization.id;
-    state.claudeApplyAuthorizations = state.claudeApplyAuthorizations ?? [];
-    state.claudeApplyAuthorizations.unshift(authorization);
-    pruneClaudeApplyAuthorizations();
-    startInvocationIfAllowed(invocation, runner);
-    appendEvent({
-      invocationId: value.proposalInvocationId,
-      type: "claude_apply_authorized",
-      level: "info",
-      message: `Authorized a Claude patch apply for proposal ${value.proposalInvocationId} (grant ${approval.grantId ?? "legacy"}).`,
-      data: {
-        claudeApplyAuthorizationId: authorization.id,
-        proposalInvocationId: value.proposalInvocationId,
-        worktreeId: worktree.id,
-        grantId: approval.grantId ?? null,
-      },
+    runTx(() => {
+      invocation.options.metadata.claudeApplyAuthorizationId = authorization.id;
+      state.claudeApplyAuthorizations = state.claudeApplyAuthorizations ?? [];
+      state.claudeApplyAuthorizations.unshift(authorization);
+      pruneClaudeApplyAuthorizations();
+      startInvocationIfAllowed(invocation, runner);
+      appendEvent({
+        invocationId: value.proposalInvocationId,
+        type: "claude_apply_authorized",
+        level: "info",
+        message: `Authorized a Claude patch apply for proposal ${value.proposalInvocationId} (grant ${approval.grantId ?? "legacy"}).`,
+        data: {
+          claudeApplyAuthorizationId: authorization.id,
+          proposalInvocationId: value.proposalInvocationId,
+          worktreeId: worktree.id,
+          grantId: approval.grantId ?? null,
+        },
+      });
     });
-    persistStateSoon();
     return {
       status: 201,
       body: {
@@ -654,22 +658,23 @@ export function createToolService({
       },
       timeoutSeconds: 120,
     });
-    startInvocationIfAllowed(invocation, runner);
-    authorization.status = "rolling_back";
-    authorization.rollbackInvocationId = invocation.id;
-    appendEvent({
-      invocationId: invocation.id,
-      type: "claude_rollback_authorized",
-      level: "warn",
-      message: `Authorized rolling back Claude patch authorization ${authorization.id} (grant ${approval.grantId ?? "legacy"}).`,
-      data: {
-        claudeApplyAuthorizationId: authorization.id,
-        proposalInvocationId: authorization.proposalInvocationId,
-        worktreeId: authorization.worktreeId,
-        grantId: approval.grantId ?? null,
-      },
+    runTx(() => {
+      startInvocationIfAllowed(invocation, runner);
+      authorization.status = "rolling_back";
+      authorization.rollbackInvocationId = invocation.id;
+      appendEvent({
+        invocationId: invocation.id,
+        type: "claude_rollback_authorized",
+        level: "warn",
+        message: `Authorized rolling back Claude patch authorization ${authorization.id} (grant ${approval.grantId ?? "legacy"}).`,
+        data: {
+          claudeApplyAuthorizationId: authorization.id,
+          proposalInvocationId: authorization.proposalInvocationId,
+          worktreeId: authorization.worktreeId,
+          grantId: approval.grantId ?? null,
+        },
+      });
     });
-    persistStateSoon();
     return {
       status: 202,
       body: {

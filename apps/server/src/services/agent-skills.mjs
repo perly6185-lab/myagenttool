@@ -10,6 +10,7 @@
  */
 
 import { execFileSync } from "node:child_process";
+import { makeRunTx } from "../runtime/store/run-tx.mjs";
 import {
   appendFileSync,
   existsSync,
@@ -216,7 +217,8 @@ export function renderAgentSkillsIntoWorktree(agent, wtPath, skills = [], { role
   }
 }
 
-export function createAgentSkillService({ state, now, nextId, persistStateSoon }) {
+export function createAgentSkillService({ state, now, nextId, persistStateSoon, store }) {
+  const runTx = makeRunTx({ store, persistStateSoon });
   function findAgentSkill(skillId) {
     return (state.agentSkills ?? []).find((s) => s.id === skillId) ?? null;
   }
@@ -240,8 +242,7 @@ export function createAgentSkillService({ state, now, nextId, persistStateSoon }
       createdAt,
       updatedAt: createdAt,
     };
-    state.agentSkills.push(skill);
-    persistStateSoon();
+    runTx(() => state.agentSkills.push(skill));
     return skill;
   }
 
@@ -256,16 +257,17 @@ export function createAgentSkillService({ state, now, nextId, persistStateSoon }
     if (patch.paths !== undefined) skill.paths = normalizeAgentSkillPaths(patch.paths, skill.paths);
     if (patch.tool !== undefined) skill.tool = normalizeAgentSkillTool(patch.tool);
     if (patch.enabled !== undefined) skill.enabled = Boolean(patch.enabled);
-    skill.updatedAt = now();
-    persistStateSoon();
-    return skill;
+    return runTx(() => {
+      skill.updatedAt = now();
+      return skill;
+    });
   }
 
   function deleteAgentSkill(skillId) {
     const before = (state.agentSkills ?? []).length;
-    state.agentSkills = (state.agentSkills ?? []).filter((s) => s.id !== skillId);
-    if (state.agentSkills.length === before) throw new Error("Skill not found.");
-    persistStateSoon();
+    const next = (state.agentSkills ?? []).filter((s) => s.id !== skillId);
+    if (next.length === before) throw new Error("Skill not found.");
+    runTx(() => { state.agentSkills = next; });
   }
 
   return { findAgentSkill, createAgentSkill, updateAgentSkill, deleteAgentSkill };

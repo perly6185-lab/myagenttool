@@ -158,7 +158,7 @@ export function createServerRuntimeServices({
     createAgentSkill,
     updateAgentSkill,
     deleteAgentSkill,
-  } = createAgentSkillService({ state, now, nextId, persistStateSoon });
+  } = createAgentSkillService({ state, now, nextId, persistStateSoon, store });
 
   // Approval grants (docs/design/APPROVAL_GRANTS.md): the issuance flow behind
   // every approvalToken field. Composed before the application service so the
@@ -185,6 +185,7 @@ export function createServerRuntimeServices({
     appendEvent,
     persistStateSoon,
     archiveEvicted: retentionArchive.archiveEvicted,
+    store,
   });
 
   const {
@@ -377,6 +378,7 @@ export function createServerRuntimeServices({
     now,
     appendEvent,
     persistStateSoon,
+    store,
   });
   const { recordCodexExecChanges, createCodexExecReview, isExecChangeApproved, execRunPromotionGate } = createCodexExecImportService({
     state,
@@ -384,6 +386,7 @@ export function createServerRuntimeServices({
     nextId,
     appendEvent,
     persistStateSoon,
+    store,
   });
 
   // Late-bound so completion can trigger the auto-run reaction, which is created
@@ -817,6 +820,7 @@ export function createServerRuntimeServices({
     planApplicationWrapperInvocation,
     validateApprovalToken,
     persistStateSoon,
+    store,
   });
 
   const {
