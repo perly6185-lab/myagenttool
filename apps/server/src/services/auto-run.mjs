@@ -173,12 +173,14 @@ export function createAutoRunService({
     try {
       const child = await spawnChildIssue({ parentLink: autoRun.link, design, repoPath });
       if (!child || !Number.isFinite(child.number)) return null;
-      appendEvent({
-        invocationId: autoRun.invocationId,
-        type: "auto_run_child_spawned",
-        level: "info",
-        message: `Auto-run ${autoRun.id} spawned pending-decision child issue #${child.number}.`,
-        data: { autoRunId: autoRun.id, parentIssue: autoRun.link.number, childIssue: child.number, url: child.url ?? null },
+      runTx(() => {
+        appendEvent({
+          invocationId: autoRun.invocationId,
+          type: "auto_run_child_spawned",
+          level: "info",
+          message: `Auto-run ${autoRun.id} spawned pending-decision child issue #${child.number}.`,
+          data: { autoRunId: autoRun.id, parentIssue: autoRun.link.number, childIssue: child.number, url: child.url ?? null },
+        });
       });
       return { child: { number: child.number, url: child.url ?? null } };
     } catch (error) {
@@ -501,21 +503,23 @@ export function createAutoRunService({
       createdAt,
       updatedAt: createdAt,
     };
-    state.autoRuns.unshift(autoRun);
-    // The routing decision is auditable evidence: path, who decided, and why.
-    appendEvent({
-      invocationId: null,
-      type: "auto_run_decided",
-      level: "info",
-      message: `Auto-run ${autoRunId} routed to "${decision.path}" by ${decision.decidedBy}.`,
-      data: {
-        autoRunId,
-        path: decision.path,
-        decidedBy: decision.decidedBy,
-        confidence: decision.confidence,
-        spawnChildIssues: decision.spawnChildIssues,
-        rationale: decision.rationale,
-      },
+    runTx(() => {
+      state.autoRuns.unshift(autoRun);
+      // The routing decision is auditable evidence: path, who decided, and why.
+      appendEvent({
+        invocationId: null,
+        type: "auto_run_decided",
+        level: "info",
+        message: `Auto-run ${autoRunId} routed to "${decision.path}" by ${decision.decidedBy}.`,
+        data: {
+          autoRunId,
+          path: decision.path,
+          decidedBy: decision.decidedBy,
+          confidence: decision.confidence,
+          spawnChildIssues: decision.spawnChildIssues,
+          rationale: decision.rationale,
+        },
+      });
     });
 
     // 2. Seed the prompt from the issue, and 3. start the agent run in the worktree.
@@ -535,11 +539,13 @@ export function createAutoRunService({
       });
       startInvocationIfAllowed(invocation, agent);
     } catch (error) {
-      setAutoRunStatus(autoRun, "failed", { error: `Could not start the agent run: ${String(error?.message ?? error)}` });
-      persistStateSoon();
+      runTx(() => {
+        setAutoRunStatus(autoRun, "failed", { error: `Could not start the agent run: ${String(error?.message ?? error)}` });
+      });
       throw error;
     }
 
+    return runTx(() => {
     autoRun.invocationId = invocation.id;
     setAutoRunStatus(autoRun, autoRunStatusForInvocation(invocation));
     appendEvent({
@@ -577,8 +583,8 @@ export function createAutoRunService({
     if (autoRun.status !== "failed") {
       maybeWriteIssueStatus(autoRun, worktree, "in-progress");
     }
-    persistStateSoon();
     return { autoRun, worktree, invocation };
+    });
   }
 
   // Reaction: when an auto-run's invocation reaches a terminal state, advance the
@@ -601,9 +607,8 @@ export function createAutoRunService({
         if (autoRun.decision?.path === "decompose") {
           const proposal = buildDecompositionProposal(autoRun, worktree, invocation);
           maybePostIssueReport(autoRun, worktree, proposal.comment);
-          setAutoRunStatus(autoRun, "plan_proposed", proposal.status);
+          runTx(() => setAutoRunStatus(autoRun, "plan_proposed", proposal.status));
           maybeWriteIssueStatus(autoRun, worktree, "review");
-          persistStateSoon();
           return autoRun;
         }
 
@@ -615,8 +620,7 @@ export function createAutoRunService({
           try {
             commitResult = await commitWorktreeChanges(autoRun.worktreeId, { message: commitMessageFor(autoRun) });
           } catch (error) {
-            setAutoRunStatus(autoRun, "failed", { error: `Commit failed: ${String(error?.message ?? error)}` });
-            persistStateSoon();
+            runTx(() => setAutoRunStatus(autoRun, "failed", { error: `Commit failed: ${String(error?.message ?? error)}` }));
             return autoRun;
           }
           if (!commitResult.hasCommits) {
@@ -631,12 +635,12 @@ export function createAutoRunService({
               const summary = extractRunSummary(invocation) ?? "Investigation complete — no code change was needed.";
               maybePostIssueReport(autoRun, worktree, summary);
               const spawn = await maybeSpawnChildIssue(autoRun, worktree, summary);
-              setAutoRunStatus(autoRun, "report_posted", {
+              runTx(() => setAutoRunStatus(autoRun, "report_posted", {
                 report: summary,
                 error: null,
                 ...(spawn?.child ? { childIssues: [spawn.child] } : {}),
                 ...(spawn?.error ? { spawnError: spawn.error } : {}),
-              });
+              }));
               // The design is delivered and waits on a human — the issue label
               // should say review, not linger at in-progress. (Pilot finding.)
               maybeWriteIssueStatus(autoRun, worktree, "review");
@@ -646,15 +650,14 @@ export function createAutoRunService({
               const report = questions.length
                 ? `${summary ? `${summary}\n\n` : ""}Open questions:\n${questions.map((q) => `- ${q}`).join("\n")}`
                 : summary;
-              setAutoRunStatus(autoRun, "needs_input", {
+              runTx(() => setAutoRunStatus(autoRun, "needs_input", {
                 report,
                 error: "The run needs a human decision before it can proceed.",
-              });
+              }));
               maybeWriteIssueStatus(autoRun, worktree, "review");
             } else {
-              setAutoRunStatus(autoRun, "blocked", { error: "The agent run produced no changes to open a pull request with." });
+              runTx(() => setAutoRunStatus(autoRun, "blocked", { error: "The agent run produced no changes to open a pull request with." }));
             }
-            persistStateSoon();
             return autoRun;
           }
 
@@ -693,16 +696,15 @@ export function createAutoRunService({
               // where to open it. Layer B's URLs embed the previews inline.
               maybePostIssueReport(autoRun, worktree, composeDesignIssueComment({ brief: summary, artifacts: changed, imageUrls }));
               const spawn = await maybeSpawnChildIssue(autoRun, worktree, summary);
-              setAutoRunStatus(autoRun, "report_posted", {
+              runTx(() => setAutoRunStatus(autoRun, "report_posted", {
                 report: summary,
                 designArtifacts: changed,
                 ...(Object.keys(imageUrls).length ? { designImageUrls: imageUrls } : {}),
                 error: null,
                 ...(spawn?.child ? { childIssues: [spawn.child] } : {}),
                 ...(spawn?.error ? { spawnError: spawn.error } : {}),
-              });
+              }));
               maybeWriteIssueStatus(autoRun, worktree, "review");
-              persistStateSoon();
               return autoRun;
             }
           }
@@ -715,14 +717,13 @@ export function createAutoRunService({
             const summary = brief || extractRunSummary(invocation) || "Prototype spike complete — see the findings.";
             maybePostIssueReport(autoRun, worktree, summary);
             const spawn = await maybeSpawnChildIssue(autoRun, worktree, summary);
-            setAutoRunStatus(autoRun, "report_posted", {
+            runTx(() => setAutoRunStatus(autoRun, "report_posted", {
               report: summary,
               error: null,
               ...(spawn?.child ? { childIssues: [spawn.child] } : {}),
               ...(spawn?.error ? { spawnError: spawn.error } : {}),
-            });
+            }));
             maybeWriteIssueStatus(autoRun, worktree, "review");
-            persistStateSoon();
             return autoRun;
           }
         }
@@ -777,26 +778,26 @@ export function createAutoRunService({
                 repair = null;
               }
               if (repair) {
-                autoRun.invocationId = repair.id;
-                setAutoRunStatus(autoRun, autoRunStatusForInvocation(repair), { error: null });
-                appendEvent({
-                  invocationId: repair.id,
-                  type: "auto_run_repair_started",
-                  level: "info",
-                  message: `Auto-run ${autoRun.id} self-repair attempt ${autoRun.repairAttempts}/${maxRepairs} after a failed check.`,
-                  data: { autoRunId: autoRun.id, attempt: autoRun.repairAttempts },
+                return runTx(() => {
+                  autoRun.invocationId = repair.id;
+                  setAutoRunStatus(autoRun, autoRunStatusForInvocation(repair), { error: null });
+                  appendEvent({
+                    invocationId: repair.id,
+                    type: "auto_run_repair_started",
+                    level: "info",
+                    message: `Auto-run ${autoRun.id} self-repair attempt ${autoRun.repairAttempts}/${maxRepairs} after a failed check.`,
+                    data: { autoRunId: autoRun.id, attempt: autoRun.repairAttempts },
+                  });
+                  startInvocationIfAllowed(repair, agent);
+                  return autoRun;
                 });
-                startInvocationIfAllowed(repair, agent);
-                persistStateSoon();
-                return autoRun;
               }
             }
           }
           const blockReason = repairRefusal
             ? `Self-repair paused: ${repairRefusal}. ${verification.summary ?? ""}`.trim()
             : verification.summary ?? "Verification failed.";
-          setAutoRunStatus(autoRun, "blocked", { error: blockReason });
-          persistStateSoon();
+          runTx(() => setAutoRunStatus(autoRun, "blocked", { error: blockReason }));
           return autoRun;
         }
         // Acceptance judge (Phase B): did the diff solve THIS issue — the quality
@@ -814,9 +815,8 @@ export function createAutoRunService({
             : { solved: null, confidence: null, summary: "Judge errored — verdict unavailable.", gaps: [] };
           if (judgment && judgment.solved === false) {
             const gaps = judgment.gaps.length ? ` Gaps: ${judgment.gaps.join("; ")}` : "";
-            setAutoRunStatus(autoRun, "blocked", { error: `Acceptance judge: the change does not solve the issue.${gaps}` });
+            runTx(() => setAutoRunStatus(autoRun, "blocked", { error: `Acceptance judge: the change does not solve the issue.${gaps}` }));
             maybeWriteIssueStatus(autoRun, worktree, "review");
-            persistStateSoon();
             return autoRun;
           }
         }
@@ -841,23 +841,21 @@ export function createAutoRunService({
           const changeFailureRef = extractChangeFailureRef(autoRun.issueBody);
           const prBody = verificationEvidenceBody(verification, judgment) + (changeFailureRef ? `\n\nChange-failure: #${changeFailureRef}\n` : "");
           const pr = await createWorktreePr(autoRun.worktreeId, { body: prBody });
-          setAutoRunStatus(autoRun, "pr_open", { prNumber: pr?.number ?? null, prUrl: pr?.url ?? null, error: null, ...(screenshots.length ? { screenshots } : {}) });
+          runTx(() => setAutoRunStatus(autoRun, "pr_open", { prNumber: pr?.number ?? null, prUrl: pr?.url ?? null, error: null, ...(screenshots.length ? { screenshots } : {}) }));
           maybeWriteIssueStatus(autoRun, worktree, "review");
         } catch (error) {
-          setAutoRunStatus(autoRun, "failed", { error: String(error?.message ?? error) });
+          runTx(() => setAutoRunStatus(autoRun, "failed", { error: String(error?.message ?? error) }));
         }
       } else {
         // failed | timed_out | cancelled | rejected
-        setAutoRunStatus(autoRun, "failed", { error: `Agent run ${invocation.status}.` });
+        runTx(() => setAutoRunStatus(autoRun, "failed", { error: `Agent run ${invocation.status}.` }));
       }
-      persistStateSoon();
       return autoRun;
     } catch (error) {
       // Never let a reaction error escape the fire-and-forget caller, but do not
       // leave the operator-facing run stuck in "running" with no explanation.
       if (autoRun && !settledStatuses.has(autoRun.status)) {
-        setAutoRunStatus(autoRun, "failed", { error: `Auto-run reaction failed: ${String(error?.message ?? error)}` });
-        persistStateSoon();
+        runTx(() => setAutoRunStatus(autoRun, "failed", { error: `Auto-run reaction failed: ${String(error?.message ?? error)}` }));
         return autoRun;
       }
       return null;
@@ -869,9 +867,10 @@ export function createAutoRunService({
   function syncAutoRunOnApproval(invocation) {
     const autoRun = state.autoRuns.find((item) => item.invocationId === invocation?.id);
     if (!autoRun || autoRun.status !== "awaiting_approval") return null;
-    setAutoRunStatus(autoRun, "running");
-    persistStateSoon();
-    return autoRun;
+    return runTx(() => {
+      setAutoRunStatus(autoRun, "running");
+      return autoRun;
+    });
   }
 
   // Reflect a DENIED approval: the human rejected the run at the gate, so mark it
@@ -894,6 +893,7 @@ export function createAutoRunService({
       }
     }
     const kept = worktreeId && state.worktrees.some((w) => w.id === worktreeId);
+    return runTx(() => {
     setAutoRunStatus(autoRun, "failed", {
       error: kept
         ? "Local approval denied. The worktree was kept because it holds un-pushed work."
@@ -918,8 +918,8 @@ export function createAutoRunService({
         data: { autoRunId: autoRun.id, worktreeId, worktreeKept: Boolean(kept) },
       },
     });
-    persistStateSoon();
     return autoRun;
+    });
   }
 
   // Retry a failed/blocked auto-run on its existing worktree: rebuild the role

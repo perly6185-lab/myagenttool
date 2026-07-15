@@ -25,7 +25,10 @@ function harness({ wireStore }) {
   const stateStorePath = join(root, "state", "snapshot.json");
   mkdirSync(projectPath, { recursive: true });
   const { state, defaultProject } = createServerState({ defaultProjectPath: projectPath, now });
-  state.autoRuns = [{ id: "aur_demo", status: "running", invocationId: null, worktreeId: null, updatedAt: now(), createdAt: now(), link: null }];
+  state.autoRuns = [
+    { id: "aur_demo", status: "running", invocationId: null, worktreeId: null, updatedAt: now(), createdAt: now(), link: null },
+    { id: "aur_gate", status: "awaiting_approval", invocationId: "inv_gate", worktreeId: null, updatedAt: now(), createdAt: now(), link: null },
+  ];
   const persistence = createPersistenceRuntime({ state, enabled: true, stateStorePath, schemaVersion: 1, now, defaultProject, sameProjectPath: () => false });
   const svc = createAutoRunService({
     state,
@@ -50,6 +53,18 @@ test("#1001 an auto-run cancellation survives a crash via the Store", () => {
     const run = (reload().autoRuns ?? []).find((r) => r.id === "aur_demo");
     assert(run, "the auto-run is durable");
     assert.equal(run.status, "cancelled");
+  } finally {
+    cleanup();
+  }
+});
+
+test("#1001 (5d-2 hot path) a granted-approval sync survives a crash via the Store", () => {
+  const { svc, reload, cleanup } = harness({ wireStore: true });
+  try {
+    svc.syncAutoRunOnApproval({ id: "inv_gate" });
+    const run = (reload().autoRuns ?? []).find((r) => r.id === "aur_gate");
+    assert(run, "the auto-run is durable");
+    assert.equal(run.status, "running");
   } finally {
     cleanup();
   }
