@@ -248,6 +248,9 @@ function createDefaultDevice(now) {
     lastSeenAt: null,
     registeredCapabilities: [],
     applicationBinaryReadiness: [],
+    // What the device HOLDS (application, provider, scope) — never a credential
+    // (ADR 0010). The server compares it against the immutable descriptor.
+    applicationCredentialReadiness: [],
     credentialRevokedAt: null,
     bridgeCredential: null,
     maxConcurrency: defaultMaxConcurrency,
