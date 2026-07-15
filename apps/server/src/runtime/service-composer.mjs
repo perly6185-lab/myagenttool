@@ -908,6 +908,9 @@ export function createServerRuntimeServices({
     validateApprovalToken,
     persistStateSoon,
     store,
+    // #1050: claude.analyze.issue resolves the issue body server-side through the
+    // same governed gh read auto-run uses; the caller can never inline issue text.
+    fetchIssueBody: async ({ issueNumber, repoPath }) => runIssueBodyFetch({ cwd: repoPath, issueNumber }),
   });
 
   const {
