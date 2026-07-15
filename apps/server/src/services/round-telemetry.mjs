@@ -218,6 +218,10 @@ export function createRoundTelemetryRuntime({
       invocationId: invocation.id,
       roundId: round?.id ?? null,
       toolName: typeof data.toolName === "string" ? data.toolName : "unknown",
+      // #1087: the model's tool_use id (tu_…) joins this digest record to the
+      // same call's full-text block in the run transcript. Absent stays null
+      // (server-dispatched tools have no model id; bridge adoption is separate).
+      toolUseId: typeof data.toolUseId === "string" && data.toolUseId ? data.toolUseId.slice(0, 120) : null,
       inputDigest: typeof data.inputDigest === "string" ? data.inputDigest : null,
       outputDigest: typeof data.outputDigest === "string" ? data.outputDigest : null,
       targetPath: typeof data.targetPath === "string" ? data.targetPath : null,

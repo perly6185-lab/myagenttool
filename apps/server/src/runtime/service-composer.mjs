@@ -543,6 +543,8 @@ export function createServerRuntimeServices({
     // #968: the Store seam — dispatch claim/ack commit through its unit of work.
     store,
     checkUsageQuota,
+    // #1084: transcript count-cap evictions spill to the retention archive.
+    capWithArchive: retentionArchive.capWithArchive,
     onInvocationCompleted: (invocation) => {
       advanceAutoRunHook?.(invocation);
       try {
@@ -2929,6 +2931,8 @@ export function createServerRuntimeServices({
   return {
     httpDependencies,
     savePersistentState,
+    // #1084: the retention sweep (index.mjs) leaves an audit event per reap batch.
+    appendEvent,
     // #1042: an explicit JSON export (rollback/backup), written at shutdown so an
     // operator always has a recent rollback artifact even on the SQLite backing.
     exportJsonSnapshot,
