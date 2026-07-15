@@ -137,6 +137,13 @@ export interface ToolInvocationRecord {
   invocationId: InvocationId;
   roundId: InvocationRoundId | null;
   toolName: string;
+  /**
+   * The model-assigned tool_use id (`tu_…`) when the reporting side knows it —
+   * the join key to the same call's full-text block in the run transcript
+   * (#1087). Null for server-dispatched governed tools (no model id exists)
+   * and for bridge clients that have not adopted the field yet.
+   */
+  toolUseId: string | null;
   inputDigest: string | null;
   outputDigest: string | null;
   /** The file touched, when known. */
