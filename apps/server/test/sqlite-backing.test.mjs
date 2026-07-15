@@ -121,6 +121,32 @@ test("devices mirror + hydrate round-trip (id-keyed array; offline reset lives i
   }
 });
 
+test("top-level scalars (currentProjectId, idCounter) round-trip via the meta row (#1040)", { skip }, () => {
+  const store = createSqliteStore({ DatabaseSync, path: ":memory:" });
+  try {
+    const keys = { arrayKeys: ["projects"], objectKeys: [], scalarKeys: ["currentProjectId", "idCounter"] };
+    const state = { projects: [{ id: "prj_1" }], currentProjectId: "prj_1", idCounter: 42 };
+    mirrorState({ store, state, ...keys });
+    const back = { projects: [], currentProjectId: undefined, idCounter: undefined };
+    seedOrHydrate({ store, state: back, ...keys });
+    assert.equal(back.currentProjectId, "prj_1");
+    assert.equal(back.idCounter, 42);
+
+    // Incremental change to a scalar is mirrored too.
+    const mirror = createIncrementalMirror({ store, ...keys });
+    mirror.prime(state);
+    state.idCounter = 99;
+    state.currentProjectId = "prj_2";
+    mirror.sync(state);
+    const back2 = { projects: [], currentProjectId: undefined, idCounter: undefined };
+    seedOrHydrate({ store, state: back2, ...keys });
+    assert.equal(back2.idCounter, 99);
+    assert.equal(back2.currentProjectId, "prj_2");
+  } finally {
+    store.close();
+  }
+});
+
 test("a natural-keyed (id-less) array collection round-trips as a blob, not dropped", { skip }, () => {
   const store = createSqliteStore({ DatabaseSync, path: ":memory:" });
   try {
