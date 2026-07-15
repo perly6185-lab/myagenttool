@@ -4,7 +4,7 @@ import { createBridgeCredentialRuntime } from "./bridge-auth.mjs";
 import { createPersistenceRuntime, persistedArrayKeys, persistedObjectKeys } from "./persistence.mjs";
 import { createReadModelRuntime } from "./read-models.mjs";
 import { createInMemoryStore } from "./store/in-memory-store.mjs";
-import { mirrorState, seedOrHydrate } from "./store/sqlite-backing.mjs";
+import { mirrorState, normalizeHydratedProjects, seedOrHydrate } from "./store/sqlite-backing.mjs";
 import {
   createAgentService,
   isAgentDisabled,
@@ -111,6 +111,12 @@ export function createServerRuntimeServices({
     const outcome = seedOrHydrate({ store: sqliteStore, state, arrayKeys: persistedArrayKeys, objectKeys: persistedObjectKeys });
     if (outcome.mode === "seeded" && outcome.mirror?.skipped > 0) {
       console.warn(`[store:sqlite] initial seed dropped ${outcome.mirror.skipped} id-less row(s) in ${outcome.mirror.skippedCollections.join(", ")}.`);
+    }
+    if (outcome.mode === "hydrated") {
+      // Raw hydration bypasses the JSON restore's fail-closed project filter —
+      // re-apply it so a path-missing project isn't resurrected and the default
+      // project is guaranteed present (#1003 Phase C prep).
+      normalizeHydratedProjects({ state, defaultProject, sameProjectPath });
     }
     console.log(`[store:sqlite] durable backing ${outcome.mode} (${persistedArrayKeys.length} collections).`);
   }

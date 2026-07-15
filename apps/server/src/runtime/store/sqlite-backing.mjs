@@ -19,6 +19,8 @@
  * `{ id: SINGLETON_ID, __value }`; hydration unwraps `.__value`. Arrays store as-is.
  */
 
+import { existsSync } from "node:fs";
+
 // Reserved record id under which an object singleton (a non-array persisted key)
 // is stored. Real record ids are prefixed slugs (agt_, prj_, …) and never collide.
 export const SINGLETON_ID = "__singleton__";
@@ -86,4 +88,35 @@ export function seedOrHydrate({ store, state, arrayKeys, objectKeys }) {
     if (row && "__value" in row) state[key] = row.__value;
   }
   return { mode: "hydrated" };
+}
+
+/**
+ * Apply the JSON restore's fail-closed PROJECT normalization to a state hydrated
+ * from SQLite (#1003 Phase C prep). Boot hydration reads raw rows, so — unlike the
+ * JSON restore path (persistence.mjs restorePersistentState) — it would otherwise:
+ *   - resurrect a project whose materialized path has since vanished, and
+ *   - not guarantee the default project is present / currentProjectId is valid.
+ * This mirrors that logic so the SQLite backing fails closed identically. (Dup-ids
+ * need no repair here — SQLite's PRIMARY KEY(collection,id) makes them impossible.)
+ *
+ * The JSON restore in persistence.mjs is the source of truth for this behavior;
+ * kept byte-aligned with it (a test pins the parity).
+ */
+export function normalizeHydratedProjects({ state, defaultProject, sameProjectPath }) {
+  if (!defaultProject) return;
+  const same = typeof sameProjectPath === "function" ? sameProjectPath : (a, b) => a === b;
+  let projects = Array.isArray(state.projects)
+    ? state.projects.filter((project) => project?.id && project?.path && existsSync(project.path))
+    : [];
+  // A stored row under the default project's id but a different path is stale.
+  projects = projects.filter((project) => project.id !== defaultProject.id || same(project.path, defaultProject.path));
+  let defaultPathProject = projects.find((project) => same(project.path, defaultProject.path));
+  if (!defaultPathProject) {
+    projects.unshift(defaultProject);
+    defaultPathProject = defaultProject;
+  }
+  state.projects = projects;
+  state.currentProjectId = projects.some((project) => project.id === state.currentProjectId)
+    ? state.currentProjectId
+    : defaultPathProject.id;
 }
