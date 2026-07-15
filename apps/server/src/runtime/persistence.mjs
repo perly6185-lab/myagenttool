@@ -305,6 +305,13 @@ export function createPersistenceRuntime({
   now,
   defaultProject,
   sameProjectPath,
+  // #1041: called after every durable flush (persistStateNow AND the debounced
+  // persistStateSoon). The SQLite backing hooks here to mirror the state on EVERY
+  // write path — invocation accept/completion (runStateTransaction), route-level
+  // persistStateSoon, and the runtime helpers — not only store.transaction commits,
+  // so SQLite never lags the JSON snapshot (and the last writes before shutdown are
+  // captured). No-op by default (JSON-only backing).
+  afterFlush = () => {},
 }) {
   let saveStateTimer = null;
 
@@ -368,6 +375,14 @@ export function createPersistenceRuntime({
       durableWriteFileSync(stateStorePath, `${JSON.stringify(snapshot, null, 2)}\n`);
     } catch (error) {
       console.error(`[server] failed to persist state: ${error?.message ?? error}`);
+    }
+    // Mirror the same state into the durable backing (SQLite) on the SAME flush, so
+    // every write path stays in sync. Best-effort: a mirror failure must not crash
+    // the control plane (the JSON snapshot is already the warm fallback).
+    try {
+      afterFlush();
+    } catch (error) {
+      console.error(`[server] durable backing sync failed: ${error?.message ?? error}`);
     }
   }
 

@@ -41,9 +41,32 @@ function isBlobArray(rows) {
   return rows.length > 0 && rows.every((row) => row == null || row.id == null);
 }
 
+// Reserved collection + row that hold the top-level SCALAR state (currentProjectId,
+// idCounter) — values that are neither arrays nor objects, so they have no natural
+// home in the record table. Without a durable slot they'd be lost once the JSON
+// snapshot is retired (currentProjectId → resets to default each boot; idCounter →
+// falls back to the #832-risky records scan). #1040.
+export const SCALAR_COLLECTION = "__store_meta__";
+export const SCALAR_ID = "__meta__";
+
+// One meta row carrying the defined scalar keys; null when there are none to store.
+function scalarRows(state, scalarKeys) {
+  if (!scalarKeys?.length) return null;
+  const values = {};
+  let any = false;
+  for (const key of scalarKeys) {
+    if (state[key] !== undefined) {
+      values[key] = state[key];
+      any = true;
+    }
+  }
+  return any ? [{ id: SCALAR_ID, values }] : [];
+}
+
 // Build the { collection: rows[] } map a full mirror writes: an id-keyed array as-is,
-// an all-id-less array as one blob row, every object key as one singleton row.
-function snapshotFor({ state, arrayKeys, objectKeys }) {
+// an all-id-less array as one blob row, every object key as one singleton row, and
+// the top-level scalars as one reserved meta row.
+function snapshotFor({ state, arrayKeys, objectKeys, scalarKeys = [] }) {
   const snapshot = {};
   for (const key of arrayKeys) {
     if (!Array.isArray(state[key])) continue;
@@ -52,6 +75,8 @@ function snapshotFor({ state, arrayKeys, objectKeys }) {
   for (const key of objectKeys) {
     if (state[key] !== undefined) snapshot[key] = singletonRows(state[key]);
   }
+  const meta = scalarRows(state, scalarKeys);
+  if (meta) snapshot[SCALAR_COLLECTION] = meta;
   return snapshot;
 }
 
@@ -78,8 +103,8 @@ export function isStoreEmpty({ store, arrayKeys, objectKeys }) {
  * accounting ({ written, skipped, skippedCollections }) so the caller can assert no
  * id-less array row was silently dropped.
  */
-export function mirrorState({ store, state, arrayKeys, objectKeys }) {
-  return store.replaceSnapshot(snapshotFor({ state, arrayKeys, objectKeys }));
+export function mirrorState({ store, state, arrayKeys, objectKeys, scalarKeys = [] }) {
+  return store.replaceSnapshot(snapshotFor({ state, arrayKeys, objectKeys, scalarKeys }));
 }
 
 const shadowKey = (collection, id) => `${collection} ${id}`;
@@ -87,11 +112,11 @@ const shadowKey = (collection, id) => `${collection} ${id}`;
 // Serialize the current `state` view grouped BY collection, each collection's rows
 // in array order (so the incremental sync can reason about a row's array POSITION,
 // not just its content), and count id-less rows that can't be keyed (skipped).
-function serializeState({ state, arrayKeys, objectKeys }) {
+function serializeState({ state, arrayKeys, objectKeys, scalarKeys = [] }) {
   const byCollection = new Map(); // collection → [{ key, id, json, row }] in array order
   let skipped = 0;
   const skippedCollections = new Set();
-  for (const [collection, list] of Object.entries(snapshotFor({ state, arrayKeys, objectKeys }))) {
+  for (const [collection, list] of Object.entries(snapshotFor({ state, arrayKeys, objectKeys, scalarKeys }))) {
     const rows = [];
     for (const row of list) {
       if (row && row.id != null) {
@@ -121,7 +146,7 @@ function serializeState({ state, arrayKeys, objectKeys }) {
  * after seed/hydrate). `sync(state)` applies the delta and returns
  * { upserts, deletes, skipped, skippedCollections }.
  */
-export function createIncrementalMirror({ store, arrayKeys, objectKeys }) {
+export function createIncrementalMirror({ store, arrayKeys, objectKeys, scalarKeys = [] }) {
   const shadow = new Map(); // shadowKey → json
 
   function rebuildShadow(byCollection) {
@@ -132,11 +157,11 @@ export function createIncrementalMirror({ store, arrayKeys, objectKeys }) {
   }
 
   function prime(state) {
-    rebuildShadow(serializeState({ state, arrayKeys, objectKeys }).byCollection);
+    rebuildShadow(serializeState({ state, arrayKeys, objectKeys, scalarKeys }).byCollection);
   }
 
   function sync(state) {
-    const { byCollection, skipped, skippedCollections } = serializeState({ state, arrayKeys, objectKeys });
+    const { byCollection, skipped, skippedCollections } = serializeState({ state, arrayKeys, objectKeys, scalarKeys });
     const currentKeys = new Set();
     for (const rows of byCollection.values()) for (const { key } of rows) currentKeys.add(key);
     let upserts = 0;
@@ -197,12 +222,12 @@ export function createIncrementalMirror({ store, arrayKeys, objectKeys }) {
  * Returns { mode: "seeded" | "hydrated", mirror? } — `mirror` (the seed's
  * accounting) is present on the seed path so the caller can verify fidelity.
  */
-export function seedOrHydrate({ store, state, arrayKeys, objectKeys }) {
+export function seedOrHydrate({ store, state, arrayKeys, objectKeys, scalarKeys = [] }) {
   if (isStoreEmpty({ store, arrayKeys, objectKeys })) {
-    const mirror = mirrorState({ store, state, arrayKeys, objectKeys });
+    const mirror = mirrorState({ store, state, arrayKeys, objectKeys, scalarKeys });
     return { mode: "seeded", mirror };
   }
-  const back = store.readSnapshot([...arrayKeys, ...objectKeys]);
+  const back = store.readSnapshot([...arrayKeys, ...objectKeys, SCALAR_COLLECTION]);
   for (const key of arrayKeys) {
     state[key] = unwrapArray(back[key]);
   }
@@ -211,6 +236,14 @@ export function seedOrHydrate({ store, state, arrayKeys, objectKeys }) {
     // Only overwrite when SQLite actually carried the singleton — a key absent from
     // the durable store keeps its state-factory default rather than becoming null.
     if (row && "__value" in row) state[key] = row.__value;
+  }
+  if (scalarKeys.length) {
+    const meta = (back[SCALAR_COLLECTION] ?? []).find((r) => r?.id === SCALAR_ID)?.values ?? {};
+    for (const key of scalarKeys) {
+      // Restore a scalar only when the store carried it — a key absent from an older
+      // backing keeps whatever the restore/composer reconstructs.
+      if (key in meta) state[key] = meta[key];
+    }
   }
   return { mode: "hydrated" };
 }

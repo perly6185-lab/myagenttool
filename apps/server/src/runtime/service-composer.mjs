@@ -74,6 +74,12 @@ export function createServerRuntimeServices({
     updateCodexSessionFromEvent: () => null,
   };
 
+  // #1041: every durable flush (persistStateNow AND the debounced persistStateSoon,
+  // from ANY of the ~40 write sites) mirrors the state into SQLite via this hook —
+  // not only store.transaction commits — so SQLite never lags the JSON snapshot and
+  // the last writes before shutdown are captured. A no-op until the mirror is primed
+  // (and always, when there is no SQLite backing).
+  let durableSync = () => {};
   const {
     persistStateSoon,
     persistStateNow,
@@ -87,6 +93,7 @@ export function createServerRuntimeServices({
     now,
     defaultProject,
     sameProjectPath,
+    afterFlush: () => durableSync(),
   });
   // #966 (#124): the Store seam over today's snapshot — reads scan `state`, a
   // transaction stages writes and commits atomically through the synchronous
@@ -101,22 +108,21 @@ export function createServerRuntimeServices({
   // hydrate reconciles via normalizeLoadedState; a dedicated durable slot for it is
   // a small follow-up before JSON is fully retired.)
   const mirroredArrayKeys = [...persistedArrayKeys, "projects", "devices"];
+  // #1040: top-level scalars (the operator's selected project, the id counter) that
+  // are neither arrays nor object singletons — mirrored as one reserved meta row so
+  // they survive once the JSON snapshot is retired (else currentProjectId resets to
+  // default each boot and idCounter falls back to the #832-risky records scan).
+  const mirroredScalarKeys = ["currentProjectId", "idCounter"];
   // #1003: the commit sink mirrors only the DELTA (changed/new/deleted rows) into
   // SQLite rather than rewriting the whole record table each commit — see
   // createIncrementalMirror. Primed to match the store right after seed/hydrate.
   const incrementalMirror = sqliteStore
-    ? createIncrementalMirror({ store: sqliteStore, arrayKeys: mirroredArrayKeys, objectKeys: persistedObjectKeys })
+    ? createIncrementalMirror({ store: sqliteStore, arrayKeys: mirroredArrayKeys, objectKeys: persistedObjectKeys, scalarKeys: mirroredScalarKeys })
     : null;
-  const commitDurable = sqliteStore
-    ? () => {
-        persistStateNow();
-        const { skipped, skippedCollections } = incrementalMirror.sync(state);
-        if (skipped > 0) {
-          console.warn(`[store:sqlite] mirror dropped ${skipped} id-less row(s) in ${skippedCollections.join(", ")} — those records are not durable in the SQLite backing.`);
-        }
-      }
-    : persistStateNow;
-  const store = createInMemoryStore({ state, commit: commitDurable });
+  // The store's commit is just persistStateNow now — persistStateNow already mirrors
+  // to SQLite via the afterFlush hook (durableSync), so a store.transaction commit
+  // and any other durable flush stay on the same, unified path (#1041).
+  const store = createInMemoryStore({ state, commit: persistStateNow });
   // #1003: capture the fresh seeded defaults BEFORE the restore overwrites them, so
   // a SQLite hydrate can run the SAME normalization the JSON restore does.
   const seededDefaults = sqliteStore ? captureSeededDefaults(state) : null;
@@ -125,7 +131,7 @@ export function createServerRuntimeServices({
   // SEED it from the restored state when empty (one-time JSON→SQLite migration), or
   // HYDRATE `state` from SQLite when it already holds data (SQLite authoritative).
   if (sqliteStore) {
-    const outcome = seedOrHydrate({ store: sqliteStore, state, arrayKeys: mirroredArrayKeys, objectKeys: persistedObjectKeys });
+    const outcome = seedOrHydrate({ store: sqliteStore, state, arrayKeys: mirroredArrayKeys, objectKeys: persistedObjectKeys, scalarKeys: mirroredScalarKeys });
     if (outcome.mode === "seeded" && outcome.mirror?.skipped > 0) {
       console.warn(`[store:sqlite] initial seed dropped ${outcome.mirror.skipped} id-less row(s) in ${outcome.mirror.skippedCollections.join(", ")}.`);
     }
@@ -142,9 +148,16 @@ export function createServerRuntimeServices({
     // already equals `state`. Then prime the incremental mirror's shadow so every
     // subsequent commit writes only its delta.
     if (outcome.mode === "hydrated") {
-      mirrorState({ store: sqliteStore, state, arrayKeys: mirroredArrayKeys, objectKeys: persistedObjectKeys });
+      mirrorState({ store: sqliteStore, state, arrayKeys: mirroredArrayKeys, objectKeys: persistedObjectKeys, scalarKeys: mirroredScalarKeys });
     }
     incrementalMirror.prime(state);
+    // From here every durable flush mirrors the delta into SQLite (#1041).
+    durableSync = () => {
+      const { skipped, skippedCollections } = incrementalMirror.sync(state);
+      if (skipped > 0) {
+        console.warn(`[store:sqlite] mirror dropped ${skipped} id-less row(s) in ${skippedCollections.join(", ")} — those records are not durable in the SQLite backing.`);
+      }
+    };
     console.log(`[store:sqlite] durable backing ${outcome.mode} (${mirroredArrayKeys.length} collections).`);
   }
   // The counter comes from the snapshot it minted ids for. The scan is kept ONLY
