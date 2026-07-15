@@ -137,6 +137,7 @@
     "smoke:loop-routine-fanout-enqueue": "node tools/dev/loop-routine-fanout-enqueue-smoke.mjs",
     "smoke:loop-routine-fanout-worker": "node tools/dev/loop-routine-fanout-worker-smoke.mjs",
     "smoke:local": "node tools/dev/local-smoke.mjs",
+    "store:parity": "node apps/server/src/runtime/store/parity.mjs",
     "smoke:applications": "node tools/dev/application-registry-smoke.mjs",
     "smoke:agent-skills": "node tools/dev/agent-skills-smoke.mjs",
     "smoke:dispatch-concurrency": "node tools/dev/dispatch-concurrency-smoke.mjs",
