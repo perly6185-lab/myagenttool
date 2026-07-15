@@ -4,7 +4,7 @@ import { createBridgeCredentialRuntime } from "./bridge-auth.mjs";
 import { captureSeededDefaults, createPersistenceRuntime, normalizeLoadedState, persistedArrayKeys, persistedObjectKeys } from "./persistence.mjs";
 import { createReadModelRuntime } from "./read-models.mjs";
 import { createInMemoryStore } from "./store/in-memory-store.mjs";
-import { mirrorState, seedOrHydrate } from "./store/sqlite-backing.mjs";
+import { createIncrementalMirror, mirrorState, seedOrHydrate } from "./store/sqlite-backing.mjs";
 import {
   createAgentService,
   isAgentDisabled,
@@ -98,10 +98,16 @@ export function createServerRuntimeServices({
   // mirrors it here too — otherwise it would be lost once the JSON snapshot is
   // retired (Phase C). #1003 prep.
   const mirroredArrayKeys = [...persistedArrayKeys, "devices"];
+  // #1003: the commit sink mirrors only the DELTA (changed/new/deleted rows) into
+  // SQLite rather than rewriting the whole record table each commit — see
+  // createIncrementalMirror. Primed to match the store right after seed/hydrate.
+  const incrementalMirror = sqliteStore
+    ? createIncrementalMirror({ store: sqliteStore, arrayKeys: mirroredArrayKeys, objectKeys: persistedObjectKeys })
+    : null;
   const commitDurable = sqliteStore
     ? () => {
         persistStateNow();
-        const { skipped, skippedCollections } = mirrorState({ store: sqliteStore, state, arrayKeys: mirroredArrayKeys, objectKeys: persistedObjectKeys });
+        const { skipped, skippedCollections } = incrementalMirror.sync(state);
         if (skipped > 0) {
           console.warn(`[store:sqlite] mirror dropped ${skipped} id-less row(s) in ${skippedCollections.join(", ")} — those records are not durable in the SQLite backing.`);
         }
@@ -127,6 +133,15 @@ export function createServerRuntimeServices({
       // devices, dup-id repair, every device offline, ownership diagnostics.
       normalizeLoadedState(state, { seededDefaults, defaultProject, sameProjectPath });
     }
+    // A hydrate's normalization (dropped project, merged defaults, device offline)
+    // makes `state` diverge from the raw SQLite rows, so fully re-mirror ONCE here
+    // to reconcile SQLite (deletes propagate) before priming. On seed, SQLite
+    // already equals `state`. Then prime the incremental mirror's shadow so every
+    // subsequent commit writes only its delta.
+    if (outcome.mode === "hydrated") {
+      mirrorState({ store: sqliteStore, state, arrayKeys: mirroredArrayKeys, objectKeys: persistedObjectKeys });
+    }
+    incrementalMirror.prime(state);
     console.log(`[store:sqlite] durable backing ${outcome.mode} (${mirroredArrayKeys.length} collections).`);
   }
   // The counter comes from the snapshot it minted ids for. The scan is kept ONLY
