@@ -41,6 +41,26 @@ export function applyRetentionPolicies(state, { now }) {
   reapByAge("events", ["createdAt"]);
   reapByAge("traces", ["createdAt"]);
   reapByAge("spans", ["startedAt", "createdAt"]);
+  // #913: the RAW proposal patch is payload, not evidence. Past the same window
+  // the diff text is reaped IN PLACE — the artifact keeps its bindings
+  // (contentHash/baseCommit/descriptorRevision), summary, and file list, and
+  // becomes visibly not-applicable (the apply gate refuses a proposal with no
+  // patch; the read model reports `payload_reaped`). Terminal invocations only —
+  // an in-flight proposal is never stripped from under its runner.
+  const terminal = new Set(["succeeded", "failed", "cancelled", "timed_out"]);
+  for (const invocation of state.invocations ?? []) {
+    if (invocation?.options?.metadata?.tool !== "claude.propose.patch") continue;
+    if (!terminal.has(invocation.status)) continue;
+    const output = invocation.result?.output;
+    if (!output || typeof output.patch !== "string") continue;
+    const ts = Date.parse(invocation.completedAt ?? invocation.createdAt ?? "");
+    if (!Number.isFinite(ts) || ts >= cutoffMs) continue;
+    delete output.patch;
+    delete output.patchTruncated;
+    output.patchRedacted = true;
+    output.patchRedactedAt = now();
+    reaped += 1;
+  }
   return { reaped };
 }
 

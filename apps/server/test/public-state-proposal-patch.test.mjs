@@ -61,3 +61,56 @@ test("a non-proposal invocation result is untouched", () => {
   const projected = publicState.invocations.find((item) => item.id === "inv_o");
   assert.equal(projected.result.output.patch.length, 20000, "only propose patches are bounded");
 });
+
+// --- #913: applyValidity — staleness visible in the read model, not at the gate ---
+
+function proposeInvocation(output, { status = "succeeded" } = {}) {
+  return {
+    id: "inv_v", projectId: "prj_a", status,
+    options: { metadata: { tool: "claude.propose.patch", worktreeId: "wt_a", projectId: "prj_a" } },
+    result: { output: { source: "claude", tool: "claude.propose.patch", files: [], ...output } },
+  };
+}
+
+function buildWith(invocations, stateExtra = {}) {
+  return buildPublicState({
+    namespace: "test",
+    protocolVersion: "1",
+    state: { projects: [{ id: "prj_a", ownerTeamId: "team_a" }], invocations, ...stateExtra },
+    defaultProjectPath: "/tmp",
+    currentProject: () => null,
+    defaultAgent: () => null,
+    loopRoutineReadModel: () => null,
+    codexApprovalQueue: () => [],
+    evidenceCenterRecords: () => [],
+    ledgerSummary: () => null,
+    budgetStatuses: () => [],
+  });
+}
+
+test("a stamped, current artifact reads applyReady with no reasons", () => {
+  const publicState = buildWith([proposeInvocation({ patch: "diff --git a/x b/x\n+y\n", contentHash: "aa".repeat(32) })]);
+  const validity = publicState.invocations[0].result.output.applyValidity;
+  assert.deepEqual(validity, { applyReady: true, reasons: [] });
+});
+
+test("a reaped payload and a missing stamp are visibly not applicable", () => {
+  const reaped = buildWith([proposeInvocation({ patchRedacted: true, contentHash: "aa".repeat(32) })]);
+  assert.equal(reaped.invocations[0].result.output.applyValidity.applyReady, false);
+  assert.ok(reaped.invocations[0].result.output.applyValidity.reasons.includes("payload_reaped"));
+
+  const unstamped = buildWith([proposeInvocation({ patch: "diff --git a/x b/x\n+y\n" })]);
+  assert.ok(unstamped.invocations[0].result.output.applyValidity.reasons.includes("bindings_missing"));
+});
+
+test("a proposal bound to a replaced or revision-moved descriptor reads descriptor_stale", () => {
+  const artifact = { patch: "diff --git a/x b/x\n+y\n", contentHash: "aa".repeat(32), applicationId: "app_claude", descriptorRevision: 1 };
+  const moved = buildWith([proposeInvocation(artifact)], { applications: [{ id: "app_claude", descriptorRevision: 2 }] });
+  assert.ok(moved.invocations[0].result.output.applyValidity.reasons.includes("descriptor_stale"));
+
+  const replaced = buildWith([proposeInvocation(artifact)], { applications: [{ id: "app_claude", descriptorRevision: 1, successorApplicationId: "app_claude_v2" }] });
+  assert.ok(replaced.invocations[0].result.output.applyValidity.reasons.includes("descriptor_stale"));
+
+  const current = buildWith([proposeInvocation(artifact)], { applications: [{ id: "app_claude", descriptorRevision: 1 }] });
+  assert.equal(current.invocations[0].result.output.applyValidity.applyReady, true);
+});
