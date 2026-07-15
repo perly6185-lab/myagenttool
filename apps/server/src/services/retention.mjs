@@ -23,7 +23,7 @@ export function isCriticalLifecycleAuditRecord(record) {
 // ledger, critical lifecycle audit, refusals, and audit summaries keep their own
 // count caps + shields, so a compliance/billing record can't age out by accident.
 // `logsDays` unset or ≤ 0 turns the time policy off (the count caps still bound).
-export function applyRetentionPolicies(state, { now }) {
+export function applyRetentionPolicies(state, { now, appendEvent }) {
   const days = Number(state?.retentionSettings?.logsDays);
   if (!Number.isFinite(days) || days <= 0) return { reaped: 0 };
   const cutoffMs = Date.parse(now()) - days * 86_400_000;
@@ -66,7 +66,19 @@ export function applyRetentionPolicies(state, { now }) {
   // #1072: run-transcript block payloads are payload, not evidence — same window.
   // The skeleton (kinds, tool names, durations, sizes, order) survives in place,
   // marked `payloadReaped`, so the timeline shape outlives its content.
-  reaped += reapRunTranscriptPayloads(state, { cutoffMs, now });
+  // #1084: ONE audit event per sweep records which runs were reaped, so "this
+  // transcript existed and was emptied at T" is provable from the event log.
+  const transcriptReap = reapRunTranscriptPayloads(state, { cutoffMs, now });
+  reaped += transcriptReap.reaped;
+  if (transcriptReap.reaped > 0 && typeof appendEvent === "function") {
+    appendEvent({
+      invocationId: null,
+      type: "run_transcript_payloads_reaped",
+      level: "info",
+      message: `Reaped ${transcriptReap.reaped} run-transcript payload(s) past the ${days}-day retention window.`,
+      data: { invocationIds: transcriptReap.invocationIds },
+    });
+  }
   return { reaped };
 }
 

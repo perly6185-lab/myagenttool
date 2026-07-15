@@ -47,6 +47,7 @@ export function createInvocationService({
   checkUsageQuota,
   closeCodexSession,
   store,
+  capWithArchive,
   onInvocationCompleted,
   onInvocationApproved,
   onInvocationDenied,
@@ -86,6 +87,9 @@ export function createInvocationService({
     // import silently never ran. Every unit test passed: they exercised the
     // importer directly and never this wire.
     recordApplicationResult,
+    // #1084: the transcript ingest's count-cap eviction spills to the retention
+    // archive instead of vanishing.
+    capWithArchive,
     onInvocationCompleted,
   });
   const {

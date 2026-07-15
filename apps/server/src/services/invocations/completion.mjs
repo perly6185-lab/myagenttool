@@ -24,6 +24,7 @@ export function createInvocationCompletionRuntime({
   recordClaudeApplyResult,
   recordCodexExecChanges,
   recordApplicationResult,
+  capWithArchive,
   onInvocationCompleted,
 }) {
   // #890.2: prefer the synchronous barrier so a completion — terminal status,
@@ -73,7 +74,9 @@ export function createInvocationCompletionRuntime({
     // valuable one. Re-clamped server-side; the raw payload is stripped off
     // invocation.result so it is stored exactly once and never ships with the
     // /api/state snapshot. Committed by the enclosing transaction.
-    recordRunTranscript({ state, invocation, result: invocation.result, now });
+    // #1084: appendEvent leaves the recorded/superseded trail; capWithArchive
+    // spills count-cap evictions to the retention archive.
+    recordRunTranscript({ state, invocation, result: invocation.result, now, appendEvent, capWithArchive });
     invocation.completedAt = now();
     invocation.updatedAt = now();
     completeRootSpan(invocation, terminalStatus);
