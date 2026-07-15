@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 
-import { isStoreEmpty, mirrorState, seedOrHydrate, SINGLETON_ID } from "../src/runtime/store/sqlite-backing.mjs";
+import { createIncrementalMirror, isStoreEmpty, mirrorState, seedOrHydrate, SINGLETON_ID } from "../src/runtime/store/sqlite-backing.mjs";
 
 let DatabaseSync;
 let createSqliteStore;
@@ -116,6 +116,42 @@ test("devices mirror + hydrate round-trip (id-keyed array; offline reset lives i
     seedOrHydrate({ store, state: fresh, arrayKeys: ["devices"], objectKeys: [] });
     assert.equal(fresh.devices.length, 1);
     assert.equal(fresh.devices[0].id, "dev_local_001");
+  } finally {
+    store.close();
+  }
+});
+
+test("createIncrementalMirror writes ONLY the delta and keeps SQLite byte-faithful", { skip }, () => {
+  const store = createSqliteStore({ DatabaseSync, path: ":memory:" });
+  try {
+    const keys = { arrayKeys: ["projects", "agents"], objectKeys: ["autoRunSettings"] };
+    const state = {
+      projects: [{ id: "prj_1", name: "A" }, { id: "prj_2", name: "B" }],
+      agents: [{ id: "agt_1", type: "cli" }],
+      autoRunSettings: { globalMaxConcurrent: 3 },
+    };
+    // Seed the store fully, then prime the mirror to that baseline.
+    mirrorState({ store, state, ...keys });
+    const mirror = createIncrementalMirror({ store, ...keys });
+    mirror.prime(state);
+
+    // No change → no writes.
+    assert.deepEqual({ u: mirror.sync(state).upserts, d: mirror.sync(state).deletes }, { u: 0, d: 0 });
+
+    // One change (prj_1 renamed), one add (prj_3), one delete (prj_2), one singleton flip.
+    state.projects = [{ id: "prj_1", name: "A2" }, { id: "prj_3", name: "C" }];
+    state.autoRunSettings.globalMaxConcurrent = 9;
+    const res = mirror.sync(state);
+    assert.equal(res.upserts, 3, "prj_1 changed + prj_3 new + autoRunSettings changed");
+    assert.equal(res.deletes, 1, "prj_2 removed");
+
+    // SQLite now matches the state exactly (delta writes are byte-faithful).
+    const fresh = { projects: [], agents: [], autoRunSettings: {} };
+    seedOrHydrate({ store, state: fresh, ...keys });
+    assert.deepEqual(new Set(fresh.projects.map((p) => p.id)), new Set(["prj_1", "prj_3"]));
+    assert.equal(fresh.projects.find((p) => p.id === "prj_1").name, "A2");
+    assert.equal(fresh.agents.length, 1);
+    assert.equal(fresh.autoRunSettings.globalMaxConcurrent, 9);
   } finally {
     store.close();
   }
