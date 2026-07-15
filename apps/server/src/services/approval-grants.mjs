@@ -1,4 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
+import { makeRunTx } from "../runtime/store/run-tx.mjs";
 
 // Approval grants (docs/design/APPROVAL_GRANTS.md): server-issued, single-use,
 // action-scoped tokens behind the `approvalToken` request field. NOT
@@ -19,7 +20,8 @@ function isSystemActor(actor) {
   return typeof actor?.userId === "string" && actor.userId.startsWith("system");
 }
 
-export function createApprovalGrantService({ state, now, nextId, appendEvent, persistStateSoon, archiveEvicted = null }) {
+export function createApprovalGrantService({ state, now, nextId, appendEvent, persistStateSoon, archiveEvicted = null, store }) {
+  const runTx = makeRunTx({ store, persistStateSoon });
   function pruneGrants(reference) {
     // Consumed grants are audit records and expired ones prove an approval was
     // once minted — neither may vanish silently. Everything the in-memory cap
@@ -65,8 +67,7 @@ export function createApprovalGrantService({ state, now, nextId, appendEvent, pe
       consumedAt: null,
       consumedBy: null,
     };
-    state.approvalGrants.unshift(grant);
-    persistStateSoon();
+    runTx(() => state.approvalGrants.unshift(grant));
     return { ok: true, status: 201, body: { grantId: grant.id, token, action: grant.action, targetId: grant.targetId, expiresAt: grant.expiresAt } };
   }
 
@@ -77,7 +78,7 @@ export function createApprovalGrantService({ state, now, nextId, appendEvent, pe
     const issuedAt = now();
     pruneGrants(Date.parse(issuedAt));
     const token = randomBytes(16).toString("hex");
-    state.approvalGrants.unshift({
+    runTx(() => state.approvalGrants.unshift({
       id: nextId("apg"),
       tokenHash: hashToken(token),
       action: String(action),
@@ -89,8 +90,7 @@ export function createApprovalGrantService({ state, now, nextId, appendEvent, pe
       expiresAt: new Date(Date.parse(issuedAt) + GRANT_TTL_MS).toISOString(),
       consumedAt: null,
       consumedBy: null,
-    });
-    persistStateSoon();
+    }));
     return token;
   }
 
@@ -111,17 +111,18 @@ export function createApprovalGrantService({ state, now, nextId, appendEvent, pe
       if (grant.action !== String(action ?? "").trim()) return { approved: false, mode: "grant", reason: "grant_action_mismatch", grantId: grant.id };
       if (grant.targetId !== String(targetId ?? "").trim()) return { approved: false, mode: "grant", reason: "grant_target_mismatch", grantId: grant.id };
       if ((grant.teamId ?? null) !== (actor?.teamId ?? null)) return { approved: false, mode: "grant", reason: "grant_team_mismatch", grantId: grant.id };
-      grant.consumedAt = at;
-      grant.consumedBy = actor?.userId ?? "usr_local";
-      appendEvent({
-        invocationId: null,
-        type: "approval_grant_consumed",
-        level: "info",
-        message: `Approval grant ${grant.id} consumed for ${grant.action} on ${grant.targetId}.`,
-        data: { grantId: grant.id, action: grant.action, targetId: grant.targetId, issuedBy: grant.issuedBy, consumedBy: grant.consumedBy, sourceDecisionId: grant.sourceDecisionId },
+      return runTx(() => {
+        grant.consumedAt = at;
+        grant.consumedBy = actor?.userId ?? "usr_local";
+        appendEvent({
+          invocationId: null,
+          type: "approval_grant_consumed",
+          level: "info",
+          message: `Approval grant ${grant.id} consumed for ${grant.action} on ${grant.targetId}.`,
+          data: { grantId: grant.id, action: grant.action, targetId: grant.targetId, issuedBy: grant.issuedBy, consumedBy: grant.consumedBy, sourceDecisionId: grant.sourceDecisionId },
+        });
+        return { approved: true, mode: "grant", grantId: grant.id };
       });
-      persistStateSoon();
-      return { approved: true, mode: "grant", grantId: grant.id };
     }
     // Gates that never accepted arbitrary free text (e.g. the recovery bypass's
     // historical operator-approved prefix) opt out of the legacy fallback —
@@ -135,19 +136,20 @@ export function createApprovalGrantService({ state, now, nextId, appendEvent, pe
       return { approved: false, mode: null, reason: "grant_required_strict" };
     }
     // Phase 1 legacy path: honest about what actually gated the action.
-    state.approvalTokenLegacyUses = {
-      count: (state.approvalTokenLegacyUses?.count ?? 0) + 1,
-      lastAt: now(),
-    };
-    appendEvent({
-      invocationId: null,
-      type: "approval_token_legacy_used",
-      level: "warn",
-      message: `Legacy free-text approvalToken accepted for ${action ?? "unknown"} on ${targetId ?? "unknown"} — migrate this caller to issued grants.`,
-      data: { action: action ?? null, targetId: targetId ?? null, actorId: actor?.userId ?? null },
+    return runTx(() => {
+      state.approvalTokenLegacyUses = {
+        count: (state.approvalTokenLegacyUses?.count ?? 0) + 1,
+        lastAt: now(),
+      };
+      appendEvent({
+        invocationId: null,
+        type: "approval_token_legacy_used",
+        level: "warn",
+        message: `Legacy free-text approvalToken accepted for ${action ?? "unknown"} on ${targetId ?? "unknown"} — migrate this caller to issued grants.`,
+        data: { action: action ?? null, targetId: targetId ?? null, actorId: actor?.userId ?? null },
+      });
+      return { approved: true, mode: "legacy" };
     });
-    persistStateSoon();
-    return { approved: true, mode: "legacy" };
   }
 
   return { issueApprovalGrant, mintDecisionGrant, validateApprovalToken };

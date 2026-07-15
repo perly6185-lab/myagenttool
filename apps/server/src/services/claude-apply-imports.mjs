@@ -1,4 +1,5 @@
 import { isGovernedClaudeApplyAgent } from "./claude-apply-agent.mjs";
+import { makeRunTx } from "../runtime/store/run-tx.mjs";
 
 // Phase 4b: when a governed apply RUNNER completes, fold its git-apply result into
 // the authorization the Phase 4a gate created — the applied file list, the
@@ -9,7 +10,9 @@ export function createClaudeApplyImportService({
   now,
   appendEvent,
   persistStateSoon = () => {},
+  store,
 }) {
+  const runTx = makeRunTx({ store, persistStateSoon });
   function findAuthorization(invocation) {
     const metadata = invocation?.options?.metadata ?? {};
     return (state.claudeApplyAuthorizations ?? []).find(
@@ -32,44 +35,47 @@ export function createClaudeApplyImportService({
     // liveness reclaim) must still resolve the authorization — otherwise it is
     // stuck at applying/rolling_back forever with the grant already burned.
     if (!isClaudeApplyResult(result)) {
-      reconcileTerminated(authorization, metadata.claudeApplyRollback === true, terminalReason(invocation, result));
-      dropInvocationPatch(invocation);
-      persistStateSoon();
-      return authorization;
+      return runTx(() => {
+        reconcileTerminated(authorization, metadata.claudeApplyRollback === true, terminalReason(invocation, result));
+        dropInvocationPatch(invocation);
+        return authorization;
+      });
     }
     const output = result.output;
     const succeeded = output.applied === true;
     if (metadata.claudeApplyRollback === true) {
-      recordRollbackOutcome({ invocation, authorization, output, succeeded, resultSummary: result.summary });
-      dropInvocationPatch(invocation);
-      persistStateSoon();
-      return authorization;
+      return runTx(() => {
+        recordRollbackOutcome({ invocation, authorization, output, succeeded, resultSummary: result.summary });
+        dropInvocationPatch(invocation);
+        return authorization;
+      });
     }
-    authorization.status = succeeded ? "applied" : "failed";
-    authorization.applied = succeeded;
-    authorization.appliedFiles = normalizeAppliedFiles(output.appliedFiles);
-    authorization.verification = normalizeVerification(output.verification);
-    authorization.rollback = succeeded ? normalizeRollback(output.rollback) : null;
-    authorization.resultSummary = stringOrNull(output.summary ?? result.summary);
-    authorization.appliedAt = now();
-    appendEvent({
-      invocationId: invocation.id,
-      type: succeeded ? "claude_apply_completed" : "claude_apply_failed",
-      level: succeeded ? "info" : "warn",
-      message: succeeded
-        ? `Applied an authorized Claude patch (${authorization.appliedFiles.length} file(s)) for authorization ${authorization.id}.`
-        : `A Claude patch apply failed for authorization ${authorization.id}; the worktree was not mutated.`,
-      data: {
-        claudeApplyAuthorizationId: authorization.id,
-        proposalInvocationId: authorization.proposalInvocationId,
-        applied: succeeded,
-        fileCount: authorization.appliedFiles.length,
-        rollbackAvailable: Boolean(authorization.rollback?.available),
-      },
+    return runTx(() => {
+      authorization.status = succeeded ? "applied" : "failed";
+      authorization.applied = succeeded;
+      authorization.appliedFiles = normalizeAppliedFiles(output.appliedFiles);
+      authorization.verification = normalizeVerification(output.verification);
+      authorization.rollback = succeeded ? normalizeRollback(output.rollback) : null;
+      authorization.resultSummary = stringOrNull(output.summary ?? result.summary);
+      authorization.appliedAt = now();
+      appendEvent({
+        invocationId: invocation.id,
+        type: succeeded ? "claude_apply_completed" : "claude_apply_failed",
+        level: succeeded ? "info" : "warn",
+        message: succeeded
+          ? `Applied an authorized Claude patch (${authorization.appliedFiles.length} file(s)) for authorization ${authorization.id}.`
+          : `A Claude patch apply failed for authorization ${authorization.id}; the worktree was not mutated.`,
+        data: {
+          claudeApplyAuthorizationId: authorization.id,
+          proposalInvocationId: authorization.proposalInvocationId,
+          applied: succeeded,
+          fileCount: authorization.appliedFiles.length,
+          rollbackAvailable: Boolean(authorization.rollback?.available),
+        },
+      });
+      dropInvocationPatch(invocation);
+      return authorization;
     });
-    dropInvocationPatch(invocation);
-    persistStateSoon();
-    return authorization;
   }
 
   // Deny bypasses the completion runtime entirely (approval.mjs sets status
@@ -79,14 +85,15 @@ export function createClaudeApplyImportService({
   function reconcileClaudeApplyTermination(invocation) {
     const authorization = findAuthorization(invocation);
     if (!authorization) return null;
-    reconcileTerminated(
-      authorization,
-      invocation?.options?.metadata?.claudeApplyRollback === true,
-      terminalReason(invocation, invocation?.result ?? null),
-    );
-    dropInvocationPatch(invocation);
-    persistStateSoon();
-    return authorization;
+    return runTx(() => {
+      reconcileTerminated(
+        authorization,
+        invocation?.options?.metadata?.claudeApplyRollback === true,
+        terminalReason(invocation, invocation?.result ?? null),
+      );
+      dropInvocationPatch(invocation);
+      return authorization;
+    });
   }
 
   // Resolve an authorization whose run ended without applying. git apply is atomic,
