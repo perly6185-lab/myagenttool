@@ -1,4 +1,5 @@
 import { applicationInstallPlanMatchesCurrent } from "./application-install-plans.mjs";
+import { makeRunTx } from "../runtime/store/run-tx.mjs";
 
 const TERMINAL_STATUSES = new Set(["succeeded", "failed", "cancelled", "timed_out", "refused"]);
 const PROGRESS_TYPES = new Set(["spawning", "installing", "probing", "cancelling"]);
@@ -22,7 +23,8 @@ function bounded(value, max = 500) {
   return text.length > max ? `${text.slice(0, max - 3)}...` : text;
 }
 
-export function createApplicationInstallService({ state, now, nextId, appendEvent, persistStateSoon, validateApprovalToken }) {
+export function createApplicationInstallService({ state, now, nextId, appendEvent, persistStateSoon, validateApprovalToken, store }) {
+  const runTx = makeRunTx({ store, persistStateSoon });
   function findApplicationInstallRun(id) {
     return (state.applicationInstallRuns ?? []).find((item) => item.id === id) ?? null;
   }
@@ -66,57 +68,61 @@ export function createApplicationInstallService({ state, now, nextId, appendEven
       createdAt,
       updatedAt: createdAt,
     };
-    state.applicationInstallRuns.unshift(run);
-    state.applicationInstallRuns = state.applicationInstallRuns.slice(0, 100);
-    appendEvent({
-      invocationId: null,
-      type: "application_install_queued",
-      level: "info",
-      message: "Approved Application installation queued for Desktop Bridge.",
-      data: { runId: run.id, planId: run.planId, deviceId: run.deviceId, application: run.plan.application.name },
+    return runTx(() => {
+      state.applicationInstallRuns.unshift(run);
+      state.applicationInstallRuns = state.applicationInstallRuns.slice(0, 100);
+      appendEvent({
+        invocationId: null,
+        type: "application_install_queued",
+        level: "info",
+        message: "Approved Application installation queued for Desktop Bridge.",
+        data: { runId: run.id, planId: run.planId, deviceId: run.deviceId, application: run.plan.application.name },
+      });
+      return run;
     });
-    persistStateSoon();
-    return run;
   }
 
   function nextBridgeApplicationInstall(deviceId) {
     const run = (state.applicationInstallRuns ?? []).find((item) => item.status === "queued" && item.deviceId === deviceId) ?? null;
     if (!run) return null;
-    run.status = "running";
-    run.startedAt = now();
-    run.updatedAt = run.startedAt;
-    run.progress.push({ at: run.startedAt, type: "started", summary: "Desktop Bridge accepted the approved installation plan." });
-    persistStateSoon();
-    return run;
+    return runTx(() => {
+      run.status = "running";
+      run.startedAt = now();
+      run.updatedAt = run.startedAt;
+      run.progress.push({ at: run.startedAt, type: "started", summary: "Desktop Bridge accepted the approved installation plan." });
+      return run;
+    });
   }
 
   function cancelApplicationInstall(run, actor = null) {
     if (!run || TERMINAL_STATUSES.has(run.status)) return run;
     const at = now();
-    run.cancelRequestedAt = at;
-    run.updatedAt = at;
-    if (run.status === "queued") {
-      run.status = "cancelled";
-      run.completedAt = at;
-      run.result = { status: "cancelled", classification: "cancelled_before_dispatch", summary: "Installation cancelled before Desktop Bridge dispatch.", exitCode: null };
-    } else {
-      run.status = "cancelling";
-    }
-    run.progress.push({ at, type: "cancel_requested", summary: "Application installation cancellation requested." });
-    appendEvent({ invocationId: null, type: "application_install_cancel_requested", level: "warn", message: "Application installation cancellation requested.", data: { runId: run.id, requestedBy: actor?.userId ?? "usr_local" } });
-    persistStateSoon();
-    return run;
+    return runTx(() => {
+      run.cancelRequestedAt = at;
+      run.updatedAt = at;
+      if (run.status === "queued") {
+        run.status = "cancelled";
+        run.completedAt = at;
+        run.result = { status: "cancelled", classification: "cancelled_before_dispatch", summary: "Installation cancelled before Desktop Bridge dispatch.", exitCode: null };
+      } else {
+        run.status = "cancelling";
+      }
+      run.progress.push({ at, type: "cancel_requested", summary: "Application installation cancellation requested." });
+      appendEvent({ invocationId: null, type: "application_install_cancel_requested", level: "warn", message: "Application installation cancellation requested.", data: { runId: run.id, requestedBy: actor?.userId ?? "usr_local" } });
+      return run;
+    });
   }
 
   function recordApplicationInstallProgress(run, { type = "progress", summary = "Installation progress updated." } = {}) {
     if (!run || !["running", "cancelling"].includes(run.status)) return run;
     const at = now();
     const safeType = PROGRESS_TYPES.has(String(type)) ? String(type) : "installing";
-    run.progress.push({ at, type: safeType, summary: bounded(summary) });
-    run.progress = run.progress.slice(-50);
-    run.updatedAt = at;
-    persistStateSoon();
-    return run;
+    return runTx(() => {
+      run.progress.push({ at, type: safeType, summary: bounded(summary) });
+      run.progress = run.progress.slice(-50);
+      run.updatedAt = at;
+      return run;
+    });
   }
 
   function completeApplicationInstall(run, body = {}) {
@@ -132,32 +138,33 @@ export function createApplicationInstallService({ state, now, nextId, appendEven
       throw new Error(`Unsupported Application installation classification for ${status}.`);
     }
     const completedAt = now();
-    run.status = status;
-    run.completedAt = completedAt;
-    run.updatedAt = completedAt;
-    run.result = {
-      status,
-      classification,
-      summary: bounded(body.summary ?? `Application installation ${status}.`),
-      exitCode: Number.isInteger(body.exitCode) ? body.exitCode : null,
-      durationMs: Number.isFinite(body.durationMs) ? Math.max(0, Number(body.durationMs)) : null,
-    };
-    run.rollback = {
-      automatic: false,
-      status: status === "succeeded" ? "not_required" : "operator_review_required",
-      uninstallSupported: false,
-      summary: run.plan.rollback.summary,
-    };
-    run.progress.push({ at: completedAt, type: status, summary: run.result.summary });
-    appendEvent({
-      invocationId: null,
-      type: `application_install_${status}`,
-      level: status === "succeeded" ? "info" : "warn",
-      message: run.result.summary,
-      data: { runId: run.id, planId: run.planId, deviceId: run.deviceId, classification: run.result.classification, exitCode: run.result.exitCode },
+    return runTx(() => {
+      run.status = status;
+      run.completedAt = completedAt;
+      run.updatedAt = completedAt;
+      run.result = {
+        status,
+        classification,
+        summary: bounded(body.summary ?? `Application installation ${status}.`),
+        exitCode: Number.isInteger(body.exitCode) ? body.exitCode : null,
+        durationMs: Number.isFinite(body.durationMs) ? Math.max(0, Number(body.durationMs)) : null,
+      };
+      run.rollback = {
+        automatic: false,
+        status: status === "succeeded" ? "not_required" : "operator_review_required",
+        uninstallSupported: false,
+        summary: run.plan.rollback.summary,
+      };
+      run.progress.push({ at: completedAt, type: status, summary: run.result.summary });
+      appendEvent({
+        invocationId: null,
+        type: `application_install_${status}`,
+        level: status === "succeeded" ? "info" : "warn",
+        message: run.result.summary,
+        data: { runId: run.id, planId: run.planId, deviceId: run.deviceId, classification: run.result.classification, exitCode: run.result.exitCode },
+      });
+      return run;
     });
-    persistStateSoon();
-    return run;
   }
 
   return {
