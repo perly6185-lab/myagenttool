@@ -233,3 +233,31 @@ object as the live materialized **view** (not a full read rewrite):
   fallback. **Remaining (step 3):** after soak confidence, retire the JSON snapshot as
   the backing, and give `currentProjectId` a durable slot (a scalar the hydrate
   currently reconciles rather than persists).
+
+## 8. Soak runbook (before retiring JSON — #1042)
+
+The SQLite backing is complete: unified flush (#1041, every durable write mirrors,
+not only store commits), scalar meta row (#1040, `currentProjectId`/`idCounter`), and
+the parity checker (#1039). Before retiring the JSON snapshot as the backing (#1042 —
+which removes the per-commit JSON fallback, after which reverting to `memory` is
+lossy), run a real soak on the default backing and confirm zero drift:
+
+1. **Deploy on the default backing** (SQLite; no env change — it is the default). Let
+   it run under real load for the soak window.
+2. **Watch the logs** for `[store:sqlite] mirror dropped …` (a collection that isn't
+   durable — must be zero) and `durable backing sync failed` (a mirror error). Both
+   should never appear.
+3. **Check parity** periodically. Against a STOPPED instance (or a copied state dir so
+   the live writer's lock/WAL is undisturbed):
+   ```
+   pnpm store:parity <MYAGENTTOOL_STATE_PATH>          # e.g. .myagenttool/state/local-demo-state.json
+   ```
+   Expect `PASS — JSON and SQLite data surfaces agree across N collections` with no
+   scalar NOTE. A `FAIL` means the two backings diverged — do NOT retire; investigate
+   the reported collection (that is exactly the pre-flip bug class: order reversal,
+   id-less drop, push/FIFO reversal).
+4. **Exit criteria:** the soak window elapses with zero drop warnings, zero sync
+   errors, and every parity check a clean PASS. Then #1042 (retirement) is safe: it
+   is a single revert-friendly PR that keeps `savePersistentState` as an on-demand
+   JSON export + a final-export-at-cutover rollback artifact, and keeps the JSON
+   backing on the `MYAGENTTOOL_STORE=memory` and Node<22.13 degrade paths.
