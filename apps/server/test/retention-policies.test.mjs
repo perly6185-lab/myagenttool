@@ -77,3 +77,38 @@ test("#970 a tighter window reaps more", () => {
   assert.deepEqual(state.events.map((r) => r.id), ["e_new"], "e_new (1d) kept, e_old (20d) reaped");
   assert.deepEqual(state.spans.map((r) => r.id), [], "s_new (3d) now falls outside the 2d window too");
 });
+
+// --- #913: raw proposal payloads follow the same time window ---
+
+function proposalRow(id, { completedAt, status = "succeeded", patch = "diff --git a/x b/x\n+y\n" } = {}) {
+  return {
+    id, status, completedAt,
+    options: { metadata: { tool: "claude.propose.patch" } },
+    result: { output: { patch, contentHash: "aa".repeat(32), baseCommit: "bb".repeat(20), summary: "s", files: [{ path: "x" }] } },
+  };
+}
+
+test("#913 reaps the raw patch of an old terminal proposal but keeps its bindings", () => {
+  const state = { ...baseState(14), invocations: [proposalRow("inv_old", { completedAt: daysAgo(20) }), proposalRow("inv_new", { completedAt: daysAgo(1) })] };
+  applyRetentionPolicies(state, { now });
+  const oldOut = state.invocations[0].result.output;
+  assert.equal(oldOut.patch, undefined, "the raw diff text is gone");
+  assert.equal(oldOut.patchRedacted, true);
+  assert.equal(oldOut.patchRedactedAt, NOW);
+  assert.equal(oldOut.contentHash, "aa".repeat(32), "bindings survive the reap");
+  assert.equal(oldOut.baseCommit, "bb".repeat(20));
+  assert.deepEqual(oldOut.files, [{ path: "x" }]);
+  const newOut = state.invocations[1].result.output;
+  assert.match(newOut.patch, /diff --git/, "a fresh proposal keeps its payload");
+  assert.ok(!newOut.patchRedacted);
+});
+
+test("#913 never strips an in-flight proposal and stays off when logsDays is unset", () => {
+  const inFlight = { ...baseState(14), invocations: [proposalRow("inv_run", { completedAt: daysAgo(20), status: "running" })] };
+  applyRetentionPolicies(inFlight, { now });
+  assert.match(inFlight.invocations[0].result.output.patch, /diff --git/);
+
+  const off = { ...baseState(0), invocations: [proposalRow("inv_old", { completedAt: daysAgo(400) })] };
+  applyRetentionPolicies(off, { now });
+  assert.match(off.invocations[0].result.output.patch, /diff --git/, "no window, no reap");
+});

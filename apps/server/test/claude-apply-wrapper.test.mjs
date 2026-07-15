@@ -171,3 +171,36 @@ test("apply wrapper refuses a non-git cwd and an empty patch", () => {
   assert.notEqual(emptyRes.status, 0);
   assert.match(emptyRes.payload.output.error, /empty/);
 });
+
+test("apply wrapper --expect-base applies on a matching HEAD and refuses a moved one before writing (#914)", () => {
+  const { dir, patchFile } = makeRepoWithPatch();
+  const head = git(dir, ["rev-parse", "HEAD"]).trim();
+
+  // Matching base: applies normally.
+  const ok = runApply(["--cwd", dir, "--patch-file", patchFile, "--expect-base", head]);
+  assert.equal(ok.status, 0);
+  assert.equal(ok.payload.output.applied, true);
+  git(dir, ["apply", "--reverse", "--", patchFile]); // reset for the next leg
+
+  // Move HEAD off the proposal's base — the patch would still check cleanly,
+  // which is exactly the case --expect-base exists to catch.
+  writeFileSync(join(dir, "other.txt"), "unrelated\n");
+  git(dir, ["add", "-A"]);
+  git(dir, ["commit", "-m", "moved"]);
+  const refused = runApply(["--cwd", dir, "--patch-file", patchFile, "--expect-base", head]);
+  assert.notEqual(refused.status, 0);
+  assert.equal(refused.payload.output.applied, false);
+  assert.equal(refused.payload.touchedUserFiles, false);
+  assert.equal(refused.payload.output.verification.checkPassed, false);
+  assert.equal(refused.payload.output.verification.baseMismatch.expected, head);
+  assert.match(refused.payload.summary, /does not match the proposal base/);
+  assert.equal(readFileSync(join(dir, "x.txt"), "utf8"), "foo\n", "nothing was written");
+});
+
+test("apply wrapper refuses a malformed --expect-base outright", () => {
+  const { dir, patchFile } = makeRepoWithPatch();
+  const res = runApply(["--cwd", dir, "--patch-file", patchFile, "--expect-base", "abc123"]);
+  assert.notEqual(res.status, 0);
+  assert.match(res.payload.output.error, /full 40-hex commit sha/);
+  assert.equal(readFileSync(join(dir, "x.txt"), "utf8"), "foo\n");
+});

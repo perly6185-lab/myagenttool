@@ -4,7 +4,7 @@ import { createBridgeCredentialRuntime } from "./bridge-auth.mjs";
 import { captureSeededDefaults, createPersistenceRuntime, normalizeLoadedState, persistedArrayKeys, persistedObjectKeys } from "./persistence.mjs";
 import { createReadModelRuntime } from "./read-models.mjs";
 import { createInMemoryStore } from "./store/in-memory-store.mjs";
-import { createIncrementalMirror, mirrorState, seedOrHydrate } from "./store/sqlite-backing.mjs";
+import { createIncrementalMirror, isStoreEmpty, mirrorState, seedOrHydrate } from "./store/sqlite-backing.mjs";
 import {
   createAgentService,
   isAgentDisabled,
@@ -86,6 +86,7 @@ export function createServerRuntimeServices({
     persistStateNow,
     restorePersistentState,
     savePersistentState,
+    exportJsonSnapshot,
   } = createPersistenceRuntime({
     state,
     enabled: persistenceEnabled,
@@ -95,6 +96,10 @@ export function createServerRuntimeServices({
     defaultProject,
     sameProjectPath,
     afterFlush: () => durableSync(),
+    // #1042: on the SQLite backing, JSON is retired AS the backing — per-commit
+    // flushes write SQLite only; JSON becomes an explicit export (exportJsonSnapshot).
+    // JSON stays the backing on the memory / Node<22.13-degrade paths (no sqliteStore).
+    jsonBacking: !sqliteStore,
   });
   // #966 (#124): the Store seam over today's snapshot — reads scan `state`, a
   // transaction stages writes and commits atomically through the synchronous
@@ -127,10 +132,19 @@ export function createServerRuntimeServices({
   // #1003: capture the fresh seeded defaults BEFORE the restore overwrites them, so
   // a SQLite hydrate can run the SAME normalization the JSON restore does.
   const seededDefaults = sqliteStore ? captureSeededDefaults(state) : null;
-  const restored = restorePersistentState();
-  // #1002 Phase B: after the JSON restore, reconcile with the SQLite backing —
-  // SEED it from the restored state when empty (one-time JSON→SQLite migration), or
-  // HYDRATE `state` from SQLite when it already holds data (SQLite authoritative).
+  // #1042: JSON is no longer the backing. Restore it ONLY as a one-time migration
+  // when SQLite is empty (a fresh deploy, or an existing deployment upgrading in
+  // place); a populated SQLite hydrates directly and the JSON restore is skipped.
+  // Without a SQLite backing (memory / degrade), JSON IS the backing — restore it.
+  let restored;
+  if (!sqliteStore) {
+    restored = restorePersistentState();
+  } else if (isStoreEmpty({ store: sqliteStore, arrayKeys: mirroredArrayKeys, objectKeys: persistedObjectKeys })) {
+    restored = restorePersistentState();
+  }
+  // After the (conditional) restore, reconcile with the SQLite backing — SEED it from
+  // the restored/fresh state when empty (one-time JSON→SQLite migration), or HYDRATE
+  // `state` from SQLite when it already holds data (SQLite authoritative).
   if (sqliteStore) {
     const outcome = seedOrHydrate({ store: sqliteStore, state, arrayKeys: mirroredArrayKeys, objectKeys: persistedObjectKeys, scalarKeys: mirroredScalarKeys });
     if (outcome.mode === "seeded" && outcome.mirror?.skipped > 0) {
@@ -2898,6 +2912,9 @@ export function createServerRuntimeServices({
   return {
     httpDependencies,
     savePersistentState,
+    // #1042: an explicit JSON export (rollback/backup), written at shutdown so an
+    // operator always has a recent rollback artifact even on the SQLite backing.
+    exportJsonSnapshot,
     selfCheckDependencies,
     // #966: the Store seam, exposed for incremental service migration (#968).
     store,

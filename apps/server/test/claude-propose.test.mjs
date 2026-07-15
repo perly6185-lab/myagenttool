@@ -161,6 +161,26 @@ test("claude.propose.patch dispatches a governed invocation carrying the task in
   assert.equal(metadata.task, "Add a null guard to the parser.", "the bridge injects --task from this");
   assert.equal(metadata.providerType, "application");
   assert.equal(metadata.capability, "app.app_claude.propose.patch");
+  // #913: the descriptor revision is stamped at creation so the completed artifact
+  // is bound to the exact contract it was generated under (defaults to 1 when the
+  // application record predates revisions).
+  assert.equal(metadata.descriptorRevision, 1);
+});
+
+test("claude.propose.patch stamps the application's current descriptor revision into metadata", () => {
+  const { service, created } = toolServiceWith({
+    agents: [governedProposeAgent()],
+    apps: [{ id: CLAUDE_APPLICATION_ID, status: "active", descriptorRevision: 3 }],
+    projects: [{ id: "prj_a", ownerTeamId: "team_a" }],
+    worktrees: [{ id: "wt_a", projectId: "prj_a" }],
+  });
+  const result = service.createToolInvocation(
+    "claude.propose.patch",
+    { projectId: "prj_a", worktreeId: "wt_a", task: "Rename the flag." },
+    { userId: "usr_a", teamId: "team_a" },
+  );
+  assert.equal(result.status, 201);
+  assert.equal(created[0].options.metadata.descriptorRevision, 3);
 });
 
 test("claude.propose.patch denies a foreign-team worktree before creating an invocation", () => {

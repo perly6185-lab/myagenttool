@@ -229,10 +229,18 @@ object as the live materialized **view** (not a full read rewrite):
   the incremental commit sink, a fix for **array-order reversal** (`query` reads
   `ORDER BY rowid DESC`, so the mirror inserts oldest-first — otherwise a cap would
   drop the newest records), mirroring `projects`/`devices` (their own JSON paths), and
-  the id-less blob storage above. The JSON snapshot is still written as a warm
-  fallback. **Remaining (step 3):** after soak confidence, retire the JSON snapshot as
-  the backing, and give `currentProjectId` a durable slot (a scalar the hydrate
-  currently reconciles rather than persists).
+  the id-less blob storage above.
+- **Phase C step 3 (#1042) — JSON retired as the backing.** On the default (SQLite)
+  path a commit writes SQLite only; boot hydrates from SQLite and skips the JSON
+  restore (which now runs only as a one-time JSON→SQLite migration when SQLite is
+  empty). JSON becomes an **explicit export** (`exportJsonSnapshot`) written on clean
+  shutdown as a rollback artifact and available on demand — so reverting to
+  `MYAGENTTOOL_STORE=memory` recovers to the last shutdown, and is lossy for anything
+  written since. The scalar meta row (#1040) + the unified `afterFlush` mirror (#1041)
+  make this safe (every write is durable in SQLite, and `currentProjectId`/`idCounter`
+  survive). JSON stays the live backing on exactly two paths: `MYAGENTTOOL_STORE=memory`
+  (hermetic tests + opt-out) and the loud Node<22.13 degradation. `pnpm store:parity`
+  (#1039) is the drift gate; the soak runbook is §8.
 
 ## 8. Soak runbook (before retiring JSON — #1042)
 
@@ -261,3 +269,35 @@ lossy), run a real soak on the default backing and confirm zero drift:
    is a single revert-friendly PR that keeps `savePersistentState` as an on-demand
    JSON export + a final-export-at-cutover rollback artifact, and keeps the JSON
    backing on the `MYAGENTTOOL_STORE=memory` and Node<22.13 degrade paths.
+
+## 9. Cutover complete + residual risks (#1043)
+
+The read-through-store cutover (Epic #1000) is **complete**: SQLite is the default
+durable backing, JSON is retired as the backing (an export/rollback format only), and
+the SQLite backing is drift-free (`pnpm store:parity` PASS across 75 collections; the
+unified `afterFlush` mirror + the scalar meta row make every write durable and every
+scalar survive). Phases A (#1001), B (#1002), C flip (#1036), and step 3 (#1042) are
+merged; #1039/#1040/#1041 closed the gates.
+
+**Reset / dev / export workflow** (see also LOCAL_DEV_ENV.md):
+- Local reset: stop the server, delete `<state dir>/*.sqlite*` (and `*.json` if
+  present). Next boot seeds a fresh SQLite from defaults.
+- Export a rollback/backup snapshot: a clean shutdown (SIGINT/SIGTERM) writes the JSON
+  export automatically; `MYAGENTTOOL_STORE=memory` runs entirely on JSON.
+- Import / roll back: run with `MYAGENTTOOL_STORE=memory` against the exported JSON, or
+  delete the `.sqlite` so the next SQLite boot migrates from that JSON.
+- Drift check: `pnpm store:parity <MYAGENTTOOL_STATE_PATH>` against a stopped instance.
+
+**Residual risks (honest, out of scope for #1000):**
+1. **True O(delta) commit not yet reached.** The incremental mirror still serializes
+   the whole state each commit to diff (disk I/O is O(delta), CPU is O(state)). A
+   commit that also avoids the re-serialize needs per-record dirty tracking — the
+   deferred read-through step, where services write via `tx.insert` and reads go
+   through the store. Fine at the current single-node scale.
+2. **Still single-writer / single-process.** The state-lock (#951) enforces one writer;
+   multi-instance needs the Postgres adapter (§3), a separate initiative.
+3. **JSON export can go stale.** It is written on clean shutdown + on demand, not per
+   commit — a crash-only exit leaves the export as old as the last shutdown. SQLite
+   (WAL) is the real durable substrate; the export is a rollback convenience.
+4. **Reverting to `memory` is lossy.** After retirement, `MYAGENTTOOL_STORE=memory`
+   recovers to the last JSON export, losing anything written to SQLite since.
