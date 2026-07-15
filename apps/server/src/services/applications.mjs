@@ -418,6 +418,44 @@ export function createApplicationService({
     };
   }
 
+  // Plan an agent-facade capability invocation (#975). Same split as the wrapper
+  // planner: every guard that belongs to the APPLICATION — tenancy, lifecycle
+  // status, the facade's declared approval requirement — is applied here; the
+  // capability service owns what belongs to the AGENT (existence, status, its
+  // own allowedTools). Two independent layers on purpose, like every other
+  // boundary in this registry: a mis-pointed descriptor still cannot reach a
+  // tool the agent's own registration does not allow.
+  function planAgentFacadeInvocation({ applicationId, facadeId, input = {}, actor = null } = {}) {
+    const application = findApplication(applicationId);
+    if (!application || !actorCanAccessApplication(state, actor, application)) {
+      return { ok: false, status: 404, body: { error: "capability_not_found" } };
+    }
+    if (application.status === "archived") {
+      return { ok: false, status: 409, body: { error: "application_archived", applicationId } };
+    }
+    if (application.status === "offline") {
+      return { ok: false, status: 409, body: { error: "application_offline", applicationId } };
+    }
+    const facade = (application.capabilityFacades ?? []).find((candidate) => candidate.id === facadeId && candidate.agentId);
+    if (!facade) {
+      return { ok: false, status: 404, body: { error: "agent_facade_not_found", applicationId, facadeId } };
+    }
+    if (facade.requiresApproval) {
+      const approval = approvalCheck(input, `agent:${facadeId}`, applicationId, actor);
+      if (!approval.approved) {
+        return { ok: false, status: 409, body: { error: "approval_required", reason: approval.reason === "missing_token" ? "This agent-facade capability requires an explicit approvalToken." : `approvalToken rejected: ${approval.reason}.`, applicationId } };
+      }
+    }
+    return {
+      ok: true,
+      facade: {
+        agentId: facade.agentId,
+        toolName: facade.agentToolName ?? null,
+        outputCollection: facade.outputCollection,
+      },
+    };
+  }
+
   // Opt-in switch for orchestration auto-recovery (docs/design/
   // ORCHESTRATION_AUTO_RECOVERY.md). A side-effecting, write-control config
   // change — it enables autonomous execution — so it demands the explicit
@@ -634,6 +672,7 @@ export function createApplicationService({
     invokeApplicationCapability,
     listApplicationCapabilities,
     listApplications,
+    planAgentFacadeInvocation,
     planApplicationWrapperInvocation,
     probeApplication,
     registerApplication,
@@ -829,22 +868,35 @@ export function projectApplicationCapabilities(app) {
 }
 
 function projectCapabilityFacades(app, prefix, disabled) {
-  return (app.capabilityFacades ?? []).map((facade) => managedCapability(
-    app,
-    `${prefix}.${facade.id}`,
-    facade.displayName,
-    "tool_facade",
-    facade.riskLevel,
-    facade.riskTags,
-    facade.requiresApproval,
-    disabled,
-    facade.inputSchema,
-    {
-      compatibilityFacade: { type: "tool", name: facade.toolName },
-      execution: { mode: "tool_facade", toolName: facade.toolName },
-      outputCollection: facade.outputCollection,
-    },
-  ));
+  return (app.capabilityFacades ?? []).map((facade) => {
+    // The mode name is load-bearing audit metadata: it records WHICH trust
+    // regime execution was delegated to. A Tool is a platform-curated contract;
+    // a registered Agent is user-registered code. Projecting agents as Tools
+    // would launder that provenance, so each keeps its own mode (#975).
+    const isAgentFacade = Boolean(facade.agentId);
+    return managedCapability(
+      app,
+      `${prefix}.${facade.id}`,
+      facade.displayName,
+      isAgentFacade ? "agent_facade" : "tool_facade",
+      facade.riskLevel,
+      facade.riskTags,
+      facade.requiresApproval,
+      disabled,
+      facade.inputSchema,
+      isAgentFacade
+        ? {
+            compatibilityFacade: { type: "agent", name: facade.agentId },
+            execution: { mode: "agent_facade", agentId: facade.agentId, toolName: facade.agentToolName ?? null },
+            outputCollection: facade.outputCollection,
+          }
+        : {
+            compatibilityFacade: { type: "tool", name: facade.toolName },
+            execution: { mode: "tool_facade", toolName: facade.toolName },
+            outputCollection: facade.outputCollection,
+          },
+    );
+  });
 }
 
 function managedCapability(app, name, displayName, kind, riskLevel, riskTags, requiresApproval, disabled, inputSchema, metadata = {}) {
@@ -951,6 +1003,18 @@ function capabilityReadiness(app, { disabled, kind, metadata }) {
       reason: "system_binary",
       applicationStatus: app.status,
       executionMode: "bridge_wrapper",
+    };
+  }
+  if (kind === "agent_facade") {
+    // Projection is pure — it cannot see the live agent. The capability service
+    // overlays the agent's actual status (missing/disabled) where findAgent is
+    // available; the invocation guard refuses precisely either way.
+    return {
+      state: "ready",
+      reason: "delegates_to_registered_agent",
+      applicationStatus: app.status,
+      executionMode: "agent_facade",
+      agentId: metadata?.execution?.agentId ?? null,
     };
   }
   return {
@@ -1456,13 +1520,30 @@ function normalizeApplicationCapabilityFacades(value) {
     }
     const id = slugify(facade.id);
     const toolName = stringOrNull(facade.toolName);
-    if (!id || !toolName || seen.has(id)) {
-      throw applicationRegistrationError("invalid_application_capability_facade", "Application capability facade requires a unique id and toolName.");
+    const agentId = stringOrNull(facade.agentId);
+    const agentToolName = stringOrNull(facade.agentToolName);
+    if (!id || seen.has(id)) {
+      throw applicationRegistrationError("invalid_application_capability_facade", "Application capability facade requires a unique id.");
+    }
+    // A facade delegates to exactly one kind of governed executor, and the
+    // descriptor must say which: a Tool (platform-curated contract) or a
+    // registered Agent (user-registered execution identity). The two trust
+    // regimes are different, so the shape refuses to blur them — one of
+    // toolName / agentId, never both, never neither (#975).
+    if (Boolean(toolName) === Boolean(agentId)) {
+      throw applicationRegistrationError("invalid_application_capability_facade", "Application capability facade requires exactly one of toolName (tool facade) or agentId (agent facade).");
+    }
+    if (agentToolName && !agentId) {
+      throw applicationRegistrationError("invalid_application_capability_facade", "agentToolName is only valid on an agent facade (agentId).");
     }
     seen.add(id);
     return {
       id,
       toolName,
+      agentId,
+      // Which tool on the agent this capability calls (MCP servers can expose
+      // several). Null lets the bridge's single-tool auto-resolution apply.
+      agentToolName,
       displayName: stringOrNull(facade.displayName) ?? id,
       description: stringOrNull(facade.description),
       riskLevel: normalizeRiskLevel(facade.riskLevel, "medium"),
