@@ -235,8 +235,45 @@ export interface IntegrationPayload {
   generatedByAi?: boolean;
 }
 
+// #1074 (Epic #1070): one block of a persisted run transcript. Payload fields
+// (text/input/output) are absent on skeleton blocks (size budget or retention).
+export interface RunTranscriptBlock {
+  kind: "thinking" | "tool_use" | "tool_result" | "text";
+  text?: string;
+  input?: string;
+  output?: string;
+  toolName?: string;
+  toolUseId?: string | null;
+  description?: string;
+  durationMs?: number;
+  isError?: boolean;
+  truncated?: boolean;
+  droppedChars?: number;
+  payloadDropped?: boolean;
+  chars?: number;
+}
+
+export interface RunTranscriptRecord {
+  id: string;
+  invocationId: string;
+  status?: string | null;
+  blocks: RunTranscriptBlock[];
+  totalChars?: number;
+  droppedBlocks: number;
+  unparsedLines: number;
+  truncated: boolean;
+  payloadReaped: boolean;
+  reapedAt?: string;
+  createdAt: string;
+}
+
 export const api = {
   updateDevice: (payload: { maxConcurrency?: number }) => request("PATCH", "/api/device", payload),
+  fetchInvocationTranscript: (invocationId: string) =>
+    request<{ invocationId: string; transcript: RunTranscriptRecord | null }>(
+      "GET",
+      `/api/invocations/${encodeURIComponent(invocationId)}/transcript`,
+    ),
   listTools: () => request<{ tools: ToolDescriptor[] }>("GET", "/api/tools"),
   getTool: (name: string) =>
     request<{ tool: ToolDescriptor }>("GET", `/api/tools/${encodeURIComponent(name)}`),

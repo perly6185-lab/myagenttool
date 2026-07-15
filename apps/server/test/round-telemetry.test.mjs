@@ -94,9 +94,23 @@ test("tool_invocation_created is recorded and linked to its round", () => {
   assert.match(tool.id, /^tiv_demo_/);
   assert.equal(tool.toolName, "Read");
   assert.equal(tool.targetPath, "/wt/a.mjs");
+  assert.equal(tool.toolUseId, null, "no model tool_use id supplied stays honest null");
   const round = state.invocationRounds[0];
   assert.equal(tool.roundId, round.id);
   assert.deepEqual(round.toolCallIds, [tool.id]);
+});
+
+test("#1087: a reported toolUseId is persisted as the join key to the transcript's full-text block", () => {
+  const { state, runtime, invocation } = harness();
+  runtime.recordRoundEvent(invocation, ev("round_started", { roundIndex: 0 }));
+  runtime.recordRoundEvent(invocation, ev("tool_invocation_created", {
+    roundIndex: 0, toolName: "Bash", toolUseId: "tu_01ABC", action: "command",
+  }));
+  runtime.recordRoundEvent(invocation, ev("tool_invocation_created", {
+    roundIndex: 0, toolName: "Bash", toolUseId: "x".repeat(500),
+  }));
+  assert.equal(state.toolInvocationRecords[1].toolUseId, "tu_01ABC");
+  assert.equal(state.toolInvocationRecords[0].toolUseId.length, 120, "oversized ids are clamped");
 });
 
 test("round_completed without a prior round_started still records a round", () => {

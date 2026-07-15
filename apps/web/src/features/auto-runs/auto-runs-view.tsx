@@ -21,6 +21,7 @@ import { EpicRollup } from "./epic-rollup";
 import { useConsoleState } from "@/data/use-console-state";
 import { useUiStore } from "@/store/ui-store";
 import { EventTimeline } from "@/features/invocations/event-timeline";
+import { RunTranscriptSection } from "@/features/invocations/run-transcript";
 import type { InvocationEventSnapshot, DeploymentSnapshot } from "@/lib/console-state";
 
 interface AutoRunLink {
@@ -445,7 +446,7 @@ function RunTraceLinks({ run }: { run: AutoRunRecord }) {
 // receives them in the state snapshot, so we filter + order them here (oldest→newest)
 // and reuse the invocations EventTimeline. Hidden when a run has no events (evicted
 // from the bounded ring buffer, or none yet).
-function RunTimeline({ runId, events }: { runId: string; events: InvocationEventSnapshot[] }) {
+function RunTimeline({ runId, invocationId, events }: { runId: string; invocationId?: string | null; events: InvocationEventSnapshot[] }) {
   const [open, setOpen] = useState(false);
   const runEvents = useMemo(
     () =>
@@ -466,7 +467,10 @@ function RunTimeline({ runId, events }: { runId: string; events: InvocationEvent
         <History className="size-3" /> {open ? "Hide timeline" : `Timeline (${runEvents.length})`}
       </button>
       {open ? (
-        <div className="rounded-md border border-border bg-muted/20 p-3">
+        <div className="space-y-2 rounded-md border border-border bg-muted/20 p-3">
+          {/* #1074: the agent's own work (thinking / tool IN-OUT / Markdown) beside
+              the lifecycle events; renders nothing when the run has no transcript. */}
+          <RunTranscriptSection invocationId={invocationId} defaultOpen={false} />
           <EventTimeline events={runEvents} />
         </div>
       ) : null}
@@ -1073,7 +1077,7 @@ export function AutoRunsView() {
                 </div>
                 {run.worktreeId ? <WorktreeDiffPeek worktreeId={run.worktreeId} /> : null}
                 {run.invocationId ? <RunFilesPeek invocationId={run.invocationId} worktreeId={run.worktreeId} /> : null}
-                <RunTimeline runId={run.id} events={consoleState?.events ?? []} />
+                <RunTimeline runId={run.id} invocationId={run.invocationId} events={consoleState?.events ?? []} />
                 {run.status === "failed" || run.status === "blocked" ? (
                   <div>
                     <Button
