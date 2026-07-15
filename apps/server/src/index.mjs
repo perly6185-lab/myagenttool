@@ -35,14 +35,16 @@ if (persistenceEnabled && process.env.MYAGENTTOOL_STATE_LOCK !== "0") {
   releaseStateLock = lock.release;
 }
 
-// #1002 Phase B: opt-in SQLite durable backing (MYAGENTTOOL_STORE=sqlite). The
-// in-memory `state` stays the live view; its commit mirrors to SQLite and boot
-// hydrates from it. Opened here (index has top-level await) since node:sqlite loads
-// lazily; the composer stays synchronous. Degrades LOUDLY to the JSON backing if
-// the runtime lacks node:sqlite — the server stays up rather than refusing to boot.
+// #1003 Phase C: SQLite is the DEFAULT durable backing (set MYAGENTTOOL_STORE=memory
+// to opt back into the legacy JSON-only snapshot). The in-memory `state` stays the
+// live view; its commit mirrors to SQLite and boot hydrates from it, and the JSON
+// snapshot is kept current too as a warm fallback (Phase C step 3 retires it).
+// Opened here (index has top-level await) since node:sqlite loads lazily; the
+// composer stays synchronous. Degrades LOUDLY to the JSON backing if the runtime
+// lacks node:sqlite — the server stays up rather than refusing to boot.
 let sqliteStore = null;
 let closeSqliteStore = () => {};
-if (persistenceEnabled && (process.env.MYAGENTTOOL_STORE ?? "memory").toLowerCase() === "sqlite") {
+if (persistenceEnabled && (process.env.MYAGENTTOOL_STORE ?? "sqlite").toLowerCase() === "sqlite") {
   const sqlitePath = `${stateStorePath.replace(/\.json$/, "")}.sqlite`;
   try {
     // The persistence runtime creates the state dir on its first write, which is

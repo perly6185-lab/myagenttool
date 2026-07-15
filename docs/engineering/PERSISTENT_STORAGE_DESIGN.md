@@ -209,10 +209,12 @@ object as the live materialized **view** (not a full read rewrite):
   SQLite (`replaceSnapshot`, so deletes propagate), and boot **hydrates** `state`
   from SQLite (`seedOrHydrate` — seeds from the JSON-restored state on first run,
   hydrates thereafter). Reads are unchanged (still scan `state`). Object singletons
-  (`autoRunSettings`, `retentionSettings`, …) store as one reserved-id row. The
-  JSON snapshot stays current during the soak, so flipping the flag off loses
-  nothing. Default is `memory` (today's JSON-only backing, unchanged).
-  - **Operator:** set `MYAGENTTOOL_STORE=sqlite`; the DB lands at
+  (`autoRunSettings`, `retentionSettings`, …) store as one reserved-id row;
+  natural-keyed (id-less) collections (`agentUsageSummaries`, `auditSummaries`) store
+  as one blob row. The JSON snapshot stays current, so flipping the backing off loses
+  nothing.
+  - **Operator:** SQLite is the **default** (Phase C). Set `MYAGENTTOOL_STORE=memory`
+    for the legacy JSON-only backing. The DB lands at
     `<MYAGENTTOOL_STATE_PATH without .json>.sqlite`. Requires flag-free `node:sqlite`
     (Node ≥ 22.13 / 24) — it degrades loudly to the JSON backing otherwise.
   - **Commit cost:** the commit sink writes only the DELTA (`createIncrementalMirror`)
@@ -222,7 +224,12 @@ object as the live materialized **view** (not a full read rewrite):
     to diff (same CPU/memory as the JSON snapshot); a truly O(delta) commit that also
     avoids the re-serialize needs per-record dirty tracking (the deferred read-through
     step). The boot seed / a hydrate reconcile still do one full mirror.
-- **Phase C (#1003) — pending, NO code blockers.** All hydrate/restore parity (shared
-  `normalizeLoadedState`) and the commit-cost caveat are resolved. What's left is
-  operational: soak the SQLite backing on a deployment, make the policy call to flip
-  the default to `sqlite`, and retire the JSON snapshot as the backing.
+- **Phase C (#1003) — default flipped to `sqlite`.** SQLite is now the default backing.
+  Getting here beyond Phase B: shared `normalizeLoadedState` (hydrate ≡ JSON restore),
+  the incremental commit sink, a fix for **array-order reversal** (`query` reads
+  `ORDER BY rowid DESC`, so the mirror inserts oldest-first — otherwise a cap would
+  drop the newest records), mirroring `projects`/`devices` (their own JSON paths), and
+  the id-less blob storage above. The JSON snapshot is still written as a warm
+  fallback. **Remaining (step 3):** after soak confidence, retire the JSON snapshot as
+  the backing, and give `currentProjectId` a durable slot (a scalar the hydrate
+  currently reconciles rather than persists).
