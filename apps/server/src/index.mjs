@@ -1,4 +1,5 @@
-import { resolve } from "node:path";
+import { mkdirSync } from "node:fs";
+import { dirname, resolve } from "node:path";
 import { startAutomationScheduler } from "./runtime/automation-scheduler.mjs";
 import { startAutoTriggerScheduler } from "./runtime/auto-trigger-scheduler.mjs";
 import { createHttpServer } from "./runtime/http-server.mjs";
@@ -34,6 +35,29 @@ if (persistenceEnabled && process.env.MYAGENTTOOL_STATE_LOCK !== "0") {
   releaseStateLock = lock.release;
 }
 
+// #1002 Phase B: opt-in SQLite durable backing (MYAGENTTOOL_STORE=sqlite). The
+// in-memory `state` stays the live view; its commit mirrors to SQLite and boot
+// hydrates from it. Opened here (index has top-level await) since node:sqlite loads
+// lazily; the composer stays synchronous. Degrades LOUDLY to the JSON backing if
+// the runtime lacks node:sqlite — the server stays up rather than refusing to boot.
+let sqliteStore = null;
+let closeSqliteStore = () => {};
+if (persistenceEnabled && (process.env.MYAGENTTOOL_STORE ?? "memory").toLowerCase() === "sqlite") {
+  const sqlitePath = `${stateStorePath.replace(/\.json$/, "")}.sqlite`;
+  try {
+    // The persistence runtime creates the state dir on its first write, which is
+    // AFTER this open — so ensure it exists now, or node:sqlite can't create the file.
+    mkdirSync(dirname(sqlitePath), { recursive: true });
+    const { openSqliteStore } = await import("./runtime/store/sqlite-store.mjs");
+    sqliteStore = await openSqliteStore({ path: sqlitePath });
+    closeSqliteStore = () => sqliteStore.close();
+    console.log(`[store:sqlite] durable backing at ${sqlitePath}`);
+  } catch (error) {
+    console.warn(`[store:sqlite] requested but unavailable (${error?.message ?? error}); falling back to the JSON snapshot backing.`);
+    sqliteStore = null;
+  }
+}
+
 const { defaultProject, state } = createServerState({ defaultProjectPath, now });
 const {
   httpDependencies,
@@ -50,6 +74,7 @@ const {
   stateSchemaVersion,
   dispatchLeaseMs,
   now,
+  sqliteStore,
 });
 
 if (isSelfCheck) {
@@ -135,11 +160,13 @@ if (typeof httpDependencies.bridgeLivenessSweep === "function") {
 
 process.on("SIGINT", () => {
   savePersistentState();
+  closeSqliteStore();
   releaseStateLock();
   process.exit(0);
 });
 process.on("SIGTERM", () => {
   savePersistentState();
+  closeSqliteStore();
   releaseStateLock();
   process.exit(0);
 });
