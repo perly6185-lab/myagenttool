@@ -5,6 +5,8 @@
 // specs over it, so a fix (e.g. a normalization rule) can no longer land in only
 // one of them.
 
+import { makeRunTx } from "../runtime/store/run-tx.mjs";
+
 const MAX_REVIEW_FINDINGS = 1000;
 const MAX_FINDINGS_PER_REVIEW = 1000;
 
@@ -18,7 +20,8 @@ const MAX_FINDINGS_PER_REVIEW = 1000;
  *   - idPrefix: nextId prefix (e.g. "clf_demo")
  *   - isGovernedAgent: the governed-agent identity gate for this tool
  */
-export function createReviewImportService({ state, now, nextId, appendEvent, persistStateSoon = () => {} }, spec) {
+export function createReviewImportService({ state, now, nextId, appendEvent, persistStateSoon = () => {}, store }, spec) {
+  const runTx = makeRunTx({ store, persistStateSoon });
   function recordReviewFindings({ invocation, result, agent }) {
     if (!spec.isGovernedAgent(agent) || !isReviewResult(result, spec)) {
       return [];
@@ -55,21 +58,22 @@ export function createReviewImportService({ state, now, nextId, appendEvent, per
       raw: finding.raw,
       createdAt,
     }));
-    state[spec.collection].unshift(...records);
-    state[spec.collection] = state[spec.collection].slice(0, MAX_REVIEW_FINDINGS);
-    appendEvent({
-      invocationId: invocation.id,
-      type: `${spec.source}_review_findings_recorded`,
-      level: "info",
-      message: `Imported ${records.length} ${spec.label} review finding(s).`,
-      data: {
-        [`${spec.source}ReviewFindingIds`]: records.map((record) => record.id),
-        tool: spec.tool,
-        authoritative: false,
-        droppedFindingCount,
-      },
+    runTx(() => {
+      state[spec.collection].unshift(...records);
+      state[spec.collection] = state[spec.collection].slice(0, MAX_REVIEW_FINDINGS);
+      appendEvent({
+        invocationId: invocation.id,
+        type: `${spec.source}_review_findings_recorded`,
+        level: "info",
+        message: `Imported ${records.length} ${spec.label} review finding(s).`,
+        data: {
+          [`${spec.source}ReviewFindingIds`]: records.map((record) => record.id),
+          tool: spec.tool,
+          authoritative: false,
+          droppedFindingCount,
+        },
+      });
     });
-    persistStateSoon();
     return records;
   }
 
