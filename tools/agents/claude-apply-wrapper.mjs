@@ -26,6 +26,23 @@ if (options.verify && !VERIFY_COMMANDS[options.verify]) {
   fail(`Unsupported verify command id: ${options.verify}`);
 }
 
+// #1052: `--verify-only` is the DEFERRED verification leg — it runs the
+// allowlisted command in an already-applied worktree and writes NOTHING. It is a
+// separate bridge dispatch, so a slow test run no longer holds the lane an apply
+// occupies; the server folds this verdict onto the same authorization.
+if (options.verifyOnly) {
+  console.log(`Claude verify started: ${options.cwd}`);
+  const verification = runVerification();
+  console.log(`RESULT ${JSON.stringify({
+    summary: verification.testsPassed === true
+      ? `Deferred verification (${verification.verifyCommand}) passed.`
+      : `Deferred verification (${verification.verifyCommand}) FAILED; the applied patch is untouched.`,
+    touchedUserFiles: false,
+    output: { source: "claude", tool: TOOL, verifyOnly: true, verification },
+  })}`);
+  process.exit(0);
+}
+
 // `--reverse` is the governed ROLLBACK: the exact same patch the server holds on
 // the authorization, undone with git's own reversal. Same check-then-apply
 // discipline in both directions — a reverse that does not check cleanly (e.g. the
@@ -112,8 +129,9 @@ emit({
 
 function runVerification() {
   // Rollback runs never verify; the server also never stamps verify on them.
-  if (!options.verify || options.reverse) return {};
-  const spec = VERIFY_COMMANDS[options.verify];
+  const verifyId = options.verifyOnly ?? options.verify;
+  if (!verifyId || options.reverse) return {};
+  const spec = VERIFY_COMMANDS[verifyId];
   // Scrub inherited node test-runner context: if THIS wrapper runs as a
   // descendant of `node --test` (our own test suite does exactly that), the
   // inner `node --test` would inherit NODE_TEST_CONTEXT, behave as a child test
@@ -148,13 +166,14 @@ function emit(output, exitCode) {
 }
 
 function parseArgs(args) {
-  const parsed = { cwd: null, patchFile: null, reverse: false, verify: null, expectBase: null };
+  const parsed = { cwd: null, patchFile: null, reverse: false, verify: null, verifyOnly: null, expectBase: null };
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
     if (arg === "--cwd") parsed.cwd = requireValue(args, ++index, arg);
     else if (arg === "--patch-file") parsed.patchFile = requireValue(args, ++index, arg);
     else if (arg === "--reverse") parsed.reverse = true;
     else if (arg === "--verify") parsed.verify = requireValue(args, ++index, arg);
+    else if (arg === "--verify-only") parsed.verifyOnly = requireValue(args, ++index, arg);
     else if (arg === "--expect-base") parsed.expectBase = requireValue(args, ++index, arg).trim().toLowerCase();
     else if (arg === "--help" || arg === "-h") { printHelp(); process.exit(0); }
     else fail(`Unsupported Claude apply wrapper argument: ${arg}`);
@@ -170,6 +189,15 @@ function requireApplyInputs(opts) {
   const gitDir = git(opts.cwd, ["rev-parse", "--is-inside-work-tree"], { allowFailure: true });
   if (gitDir.status !== 0 || String(gitDir.stdout).trim() !== "true") {
     fail("--cwd must be inside a git work tree.");
+  }
+  // #1052: the deferred verify leg takes NO patch and never writes — it is
+  // mutually exclusive with every write-shaped flag.
+  if (opts.verifyOnly !== null) {
+    if (opts.patchFile || opts.reverse || opts.verify || opts.expectBase) {
+      fail("--verify-only cannot be combined with --patch-file, --reverse, --verify, or --expect-base.");
+    }
+    if (!VERIFY_COMMANDS[opts.verifyOnly]) fail(`Unsupported verify command id: ${opts.verifyOnly}`);
+    return;
   }
   if (!opts.patchFile || !isAbsolute(opts.patchFile) || !existsSync(opts.patchFile)) {
     fail("--patch-file must be an absolute path to an existing patch file.");

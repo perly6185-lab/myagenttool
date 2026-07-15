@@ -204,3 +204,44 @@ test("apply wrapper refuses a malformed --expect-base outright", () => {
   assert.match(res.payload.output.error, /full 40-hex commit sha/);
   assert.equal(readFileSync(join(dir, "x.txt"), "utf8"), "foo\n");
 });
+
+// --- #1052: the deferred verify leg (--verify-only) ---
+
+test("apply wrapper --verify-only runs the allowlisted command and writes nothing (#1052)", () => {
+  const { dir, goodPatch } = makeRepoWithVerifiablePatches();
+  // Apply first (separate dispatch in production), then verify as its own run.
+  const applied = runApply(["--cwd", dir, "--patch-file", goodPatch]);
+  assert.equal(applied.status, 0);
+
+  const pass = runApply(["--cwd", dir, "--verify-only", "node-test"]);
+  assert.equal(pass.status, 0);
+  assert.equal(pass.payload.output.verifyOnly, true);
+  assert.equal(pass.payload.output.verification.testsPassed, true);
+  assert.equal(pass.payload.touchedUserFiles, false, "the verify leg never mutates the worktree");
+  assert.match(readFileSync(join(dir, "lib.mjs"), "utf8"), /w = 2/, "the applied patch is untouched");
+
+  // A failing verdict is honest and still exits 0 — the verdict rides the result.
+  const { dir: badDir, badPatch } = makeRepoWithVerifiablePatches();
+  runApply(["--cwd", badDir, "--patch-file", badPatch]);
+  const failing = runApply(["--cwd", badDir, "--verify-only", "node-test"]);
+  assert.equal(failing.status, 0);
+  assert.equal(failing.payload.output.verifyOnly, true);
+  assert.equal(failing.payload.output.verification.testsPassed, false);
+  assert.match(failing.payload.summary, /FAILED/);
+});
+
+test("apply wrapper --verify-only refuses write-shaped flags and unknown ids", () => {
+  const { dir, goodPatch } = makeRepoWithVerifiablePatches();
+  const combined = runApply(["--cwd", dir, "--verify-only", "node-test", "--patch-file", goodPatch]);
+  assert.notEqual(combined.status, 0);
+  assert.match(combined.payload.output.error, /cannot be combined/);
+
+  const reversed = runApply(["--cwd", dir, "--verify-only", "node-test", "--reverse"]);
+  assert.notEqual(reversed.status, 0);
+  assert.match(reversed.payload.output.error, /cannot be combined/);
+
+  const unknown = runApply(["--cwd", dir, "--verify-only", "evil-cmd"]);
+  assert.notEqual(unknown.status, 0);
+  assert.match(unknown.payload.output.error, /Unsupported verify command id/);
+  assert.match(readFileSync(join(dir, "lib.mjs"), "utf8"), /v = 1;\n$/, "nothing was applied by any refusal");
+});

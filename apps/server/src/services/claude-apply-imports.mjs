@@ -11,6 +11,16 @@ export function createClaudeApplyImportService({
   appendEvent,
   persistStateSoon = () => {},
   store,
+  // #1052: the deferred-verify dispatch. A synchronous post-apply verify held the
+  // single-lane bridge for the whole test run; instead, when a successful apply
+  // folds, a SEPARATE verify invocation is created (same transaction — durable
+  // atomically with the applied status) and the lane is already free. Late-bound
+  // lambdas from the composer; when absent (unit tests, misconfiguration) the
+  // fold marks the authorization loudly "applied, unverified" — never a silent
+  // skip and never a silent pass.
+  createInvocation = null,
+  startInvocationIfAllowed = null,
+  findApplyRunner = null,
 }) {
   const runTx = makeRunTx({ store, persistStateSoon });
   function findAuthorization(invocation) {
@@ -18,7 +28,8 @@ export function createClaudeApplyImportService({
     return (state.claudeApplyAuthorizations ?? []).find(
       (item) => item.id === metadata.claudeApplyAuthorizationId
         || item.executionInvocationId === invocation?.id
-        || item.rollbackInvocationId === invocation?.id,
+        || item.rollbackInvocationId === invocation?.id
+        || item.verifyInvocationId === invocation?.id,
     ) ?? null;
   }
 
@@ -31,6 +42,16 @@ export function createClaudeApplyImportService({
       return null;
     }
     const metadata = invocation?.options?.metadata ?? {};
+    // #1052: the deferred verify leg has its own fold — it only ever touches
+    // authorization.verification, never the applied/failed status. Routed FIRST:
+    // a verify result carries no `applied` field, so the apply-result guard below
+    // would misread it as a result-less termination.
+    if (metadata.claudeApplyVerify === true) {
+      return runTx(() => {
+        recordVerifyOutcome({ invocation, result, authorization });
+        return authorization;
+      });
+    }
     // A terminal run that produced NO valid apply result (timeout, cancel, refuse,
     // liveness reclaim) must still resolve the authorization — otherwise it is
     // stuck at applying/rolling_back forever with the grant already burned.
@@ -58,6 +79,13 @@ export function createClaudeApplyImportService({
       authorization.rollback = succeeded ? normalizeRollback(output.rollback) : null;
       authorization.resultSummary = stringOrNull(output.summary ?? result.summary);
       authorization.appliedAt = now();
+      // #1052: the apply run no longer verifies in-line — dispatch the deferred
+      // verify now, inside the SAME transaction as the applied status, so a crash
+      // can never leave "applied" durable without its verify row (or its loud
+      // unverified marker). The bridge lane is already free: this run is terminal.
+      if (succeeded && authorization.verifyCommandId) {
+        dispatchDeferredVerify(invocation, authorization);
+      }
       appendEvent({
         invocationId: invocation.id,
         type: succeeded ? "claude_apply_completed" : "claude_apply_failed",
@@ -85,6 +113,14 @@ export function createClaudeApplyImportService({
   function reconcileClaudeApplyTermination(invocation) {
     const authorization = findAuthorization(invocation);
     if (!authorization) return null;
+    // #1052: a verify leg that terminated without a result (deny/timeout/reclaim)
+    // resolves to "applied, unverified" — the apply status is never touched.
+    if (invocation?.options?.metadata?.claudeApplyVerify === true) {
+      return runTx(() => {
+        markUnverified(authorization, invocation.id, terminalReason(invocation, invocation?.result ?? null));
+        return authorization;
+      });
+    }
     return runTx(() => {
       reconcileTerminated(
         authorization,
@@ -93,6 +129,87 @@ export function createClaudeApplyImportService({
       );
       dropInvocationPatch(invocation);
       return authorization;
+    });
+  }
+
+  // #1052: create the verify leg. Runs inside the caller's transaction. On any
+  // missing prerequisite (no runner, dispatch deps unwired) the verification is
+  // marked "unverified" LOUDLY — an applied-but-unverified patch with rollback
+  // guidance beats a silent skip that reads as verified.
+  function dispatchDeferredVerify(applyInvocation, authorization) {
+    const runner = typeof findApplyRunner === "function" ? findApplyRunner() : null;
+    if (!runner || typeof createInvocation !== "function") {
+      markUnverified(authorization, applyInvocation.id, "no governed runner available to execute the deferred verification");
+      return;
+    }
+    const verifyInvocation = createInvocation(
+      `Verify an applied Claude patch (authorization ${authorization.id}) with ${authorization.verifyCommandId}.`,
+      runner,
+      {
+        requestedBy: authorization.requestedBy ?? null,
+        metadata: {
+          tool: "claude.apply.patch",
+          claudeApplyAuthorizationId: authorization.id,
+          // Routes this run to the verify fold and tells the bridge to inject
+          // --verify-only instead of a patch file.
+          claudeApplyVerify: true,
+          verifyCommandId: authorization.verifyCommandId,
+          projectId: authorization.projectId ?? null,
+          worktreeId: authorization.worktreeId ?? null,
+        },
+        timeoutSeconds: 180,
+      },
+    );
+    authorization.verifyInvocationId = verifyInvocation.id;
+    authorization.verification = { ...(authorization.verification ?? {}), state: "pending", verifyCommand: authorization.verifyCommandId };
+    appendEvent({
+      invocationId: verifyInvocation.id,
+      type: "claude_apply_verify_dispatched",
+      level: "info",
+      message: `Dispatched deferred verification (${authorization.verifyCommandId}) for authorization ${authorization.id}; the apply lane is already free.`,
+      data: { claudeApplyAuthorizationId: authorization.id, verifyInvocationId: verifyInvocation.id, verifyCommandId: authorization.verifyCommandId },
+    });
+    if (typeof startInvocationIfAllowed === "function") {
+      startInvocationIfAllowed(verifyInvocation, runner);
+    }
+  }
+
+  // #1052: fold the verify leg's outcome. Only verification changes — the applied
+  // status and the rollback guidance are untouched whatever the verdict. A
+  // result-less or malformed terminal reads "unverified", never "verified".
+  function recordVerifyOutcome({ invocation, result, authorization }) {
+    const verification = result?.output?.verifyOnly === true ? result.output.verification : null;
+    if (!verification || typeof verification !== "object" || Array.isArray(verification)) {
+      markUnverified(authorization, invocation.id, terminalReason(invocation, result));
+      return;
+    }
+    const passed = verification.testsPassed === true;
+    authorization.verification = {
+      ...normalizeVerification({ checkPassed: authorization.verification?.checkPassed ?? true, ...verification }),
+      state: passed ? "passed" : "failed",
+    };
+    appendEvent({
+      invocationId: invocation.id,
+      type: passed ? "claude_apply_verified" : "claude_apply_verify_failed",
+      level: passed ? "info" : "warn",
+      message: passed
+        ? `Deferred verification passed for authorization ${authorization.id}.`
+        : `Deferred verification FAILED for authorization ${authorization.id}; the patch stays applied and the governed rollback remains available.`,
+      data: { claudeApplyAuthorizationId: authorization.id, verifyInvocationId: invocation.id, testsPassed: passed },
+    });
+  }
+
+  function markUnverified(authorization, invocationId, reason) {
+    // Idempotent: a verdict that already landed must not be downgraded by a late
+    // reconcile of the same run.
+    if (["passed", "failed"].includes(authorization.verification?.state)) return;
+    authorization.verification = { ...(authorization.verification ?? {}), state: "unverified", error: stringOrNull(reason) };
+    appendEvent({
+      invocationId,
+      type: "claude_apply_unverified",
+      level: "warning",
+      message: `Authorization ${authorization.id} is applied but UNVERIFIED (${reason}); review manually or use the governed rollback.`,
+      data: { claudeApplyAuthorizationId: authorization.id, reason: stringOrNull(reason) },
     });
   }
 

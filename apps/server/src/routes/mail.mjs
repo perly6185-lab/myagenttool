@@ -4,7 +4,7 @@
  * Message-ID idempotency key.
  */
 
-export async function handleMailRoutes({ req, res, url, sendJson, readJson, actor, createMailIssueFromImport, createReplyDraft }) {
+export async function handleMailRoutes({ req, res, url, sendJson, readJson, actor, createMailIssueFromImport, replyOnIssue, confirmReplyDraft }) {
   if (req.method === "POST" && url.pathname === "/api/mail/issues") {
     const body = await readJson(req);
     // The client names a Message-ID; the issue body is the server's transcription
@@ -18,11 +18,21 @@ export async function handleMailRoutes({ req, res, url, sendJson, readJson, acto
     return true;
   }
 
-  if (req.method === "POST" && url.pathname === "/api/mail/drafts") {
+  // Step 1 of the outbound flow: post the resolution on the mail-derived issue
+  // for review (a GitHub write, approval-gated). `body.body` is TRUSTED reply
+  // text (the resolution), not the untrusted original.
+  if (req.method === "POST" && url.pathname === "/api/mail/replies") {
     const body = await readJson(req);
-    // `body.body` is the TRUSTED reply text (the resolution), not the original.
-    // The draft is inert — there is no send route (ADR 0010/0011).
-    const result = createReplyDraft({ messageId: body?.messageId, body: body?.body, actor });
+    const result = await replyOnIssue({ messageId: body?.messageId, body: body?.body, approvalToken: body?.approvalToken, actor });
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  // Step 2: after the issue reply is reviewed, confirm it into an inert outgoing
+  // draft. No send route exists (ADR 0010/0011).
+  const confirmMatch = url.pathname.match(/^\/api\/mail\/replies\/([^/]+)\/confirm$/);
+  if (req.method === "POST" && confirmMatch) {
+    const result = confirmReplyDraft({ replyId: decodeURIComponent(confirmMatch[1]), actor });
     sendJson(res, result.status, result.body);
     return true;
   }

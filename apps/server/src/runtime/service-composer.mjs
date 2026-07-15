@@ -27,6 +27,7 @@ import { createApplicationResultImportService } from "../services/application-re
 import { createCcusageImportService } from "../services/ccusage-imports.mjs";
 import { createClaudeReviewImportService } from "../services/claude-review-imports.mjs";
 import { createClaudeApplyImportService } from "../services/claude-apply-imports.mjs";
+import { isGovernedClaudeApplyAgent } from "../services/claude-apply-agent.mjs";
 import { createCodexReviewImportService } from "../services/codex-review-imports.mjs";
 import { createCodexExecImportService } from "../services/codex-exec-imports.mjs";
 import { createRoundTelemetryRuntime } from "../services/round-telemetry.mjs";
@@ -466,6 +467,19 @@ export function createServerRuntimeServices({
     appendEvent,
     persistStateSoon,
     store,
+    // #1052: the deferred-verify dispatch. Late-bound lambdas — the invocation
+    // service (which owns createInvocation/startInvocationIfAllowed) is composed
+    // BELOW this service because completion needs recordClaudeApplyResult; these
+    // close over the outer bindings and only run at completion time, long after
+    // both exist.
+    createInvocation: (task, agent, options) => createInvocation(task, agent, options),
+    startInvocationIfAllowed: (invocation, agent) => startInvocationIfAllowed(invocation, agent),
+    findApplyRunner: () => {
+      const runner = (state.agents ?? []).find(isGovernedClaudeApplyAgent) ?? null;
+      if (!runner || runner.status === "disabled" || runner.health?.status === "unhealthy") return null;
+      if (runner.location?.type === "local_device" && state.device?.unlinkState === "unlinked") return null;
+      return runner;
+    },
   });
   const { recordCodexExecChanges, createCodexExecReview, isExecChangeApproved, execRunPromotionGate } = createCodexExecImportService({
     state,
@@ -908,6 +922,9 @@ export function createServerRuntimeServices({
     validateApprovalToken,
     persistStateSoon,
     store,
+    // #1050: claude.analyze.issue resolves the issue body server-side through the
+    // same governed gh read auto-run uses; the caller can never inline issue text.
+    fetchIssueBody: async ({ issueNumber, repoPath }) => runIssueBodyFetch({ cwd: repoPath, issueNumber }),
   });
 
   const {
@@ -944,10 +961,13 @@ export function createServerRuntimeServices({
     repoCwd: defaultProjectPath,
   });
 
-  // Phase 4 (#979): the issue outcome becomes an INERT reply draft. No send —
-  // that boundary needs a separate credential (ADR 0010) and stays human.
-  const { createReplyDraft } = createMailReplyDraftService({
+  // Phase 4 (#979): the outbound reply goes ON the issue first (approval-gated
+  // GitHub write), and only a reviewed+confirmed reply becomes an INERT outgoing
+  // draft. No send — that boundary needs a separate credential (ADR 0010) and
+  // stays human.
+  const { replyOnIssue, confirmReplyDraft } = createMailReplyDraftService({
     state, now, nextId, appendEvent, persistStateSoon, store,
+    validateApprovalToken, repoCwd: defaultProjectPath,
   });
 
   function runApplicationOrchestration(applicationId, routineId, body = {}, actor = null) {
@@ -2758,7 +2778,8 @@ export function createServerRuntimeServices({
     mergeAutoRunPr,
     refreshAutoRunPrDispositions,
     createMailIssueFromImport,
-    createReplyDraft,
+    replyOnIssue,
+    confirmReplyDraft,
     selectProject,
     removeProject,
     removeWorktree,

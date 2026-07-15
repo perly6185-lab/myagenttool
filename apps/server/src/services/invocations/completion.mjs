@@ -1,5 +1,6 @@
 import { runStateTransaction } from "../../runtime/state-transaction.mjs";
 import { stampClaudeProposalArtifact } from "../claude-propose-imports.mjs";
+import { capClaudePlanResult } from "../claude-plan-imports.mjs";
 import { recordRunTranscript } from "../run-transcripts.mjs";
 
 export function createInvocationCompletionRuntime({
@@ -63,6 +64,9 @@ export function createInvocationCompletionRuntime({
     // anything reads or persists the result. Pure no-op for every other tool.
     if (terminalStatus === "succeeded") {
       stampClaudeProposalArtifact({ invocation, result: invocation.result });
+      // #1051: the plan result is server-capped here — the wrapper's own caps
+      // are belt, this is the braces the read model actually relies on.
+      capClaudePlanResult({ invocation, result: invocation.result });
     }
     // #1072: the wrapper's bounded stream transcript (#1071) moves to its durable
     // per-run home on ANY terminal status — a failed run's transcript is the most
