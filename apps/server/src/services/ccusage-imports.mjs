@@ -1,3 +1,4 @@
+import { makeRunTx } from "../runtime/store/run-tx.mjs";
 import { isGovernedCcusageAgent } from "./ccusage-agent.mjs";
 import { CCUSAGE_APPLICATION_ID } from "./ccusage-application.mjs";
 
@@ -19,7 +20,9 @@ export function createCcusageImportService({
   nextId,
   appendEvent,
   persistStateSoon = () => {},
+  store,
 }) {
+  const runTx = makeRunTx({ store, persistStateSoon });
   function recordCcusageImportedEstimates({ invocation, result, agent }) {
     // Import estimates whether the report arrived via the bespoke governed
     // ccusage agent (source "ccusage") OR the ccusage Application's wrapper
@@ -93,6 +96,7 @@ export function createCcusageImportService({
     // semantic identity, so a re-import supersedes matching rows and a changed
     // value updates in place; a new period just adds.
     const incomingKeys = new Set(records.map(estimateKey));
+    runTx(() => {
     state.importedUsageEstimates = state.importedUsageEstimates.filter(
       (existing) => !incomingKeys.has(estimateKey(existing)),
     );
@@ -121,7 +125,7 @@ export function createCcusageImportService({
         importedAt: createdAt,
       },
     });
-    persistStateSoon();
+    });
     return records;
   }
 

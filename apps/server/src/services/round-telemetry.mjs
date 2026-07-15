@@ -18,6 +18,7 @@
 // bounded at ingestion — defense-in-depth over the bridge's own truncation, and
 // the single chokepoint that decides what may ever appear in a stored digest.
 
+import { makeRunTx } from "../runtime/store/run-tx.mjs";
 import { estimateCostUsdFromTokens } from "./m3.mjs";
 
 const MAX_ROUNDS_PER_INVOCATION = 500;
@@ -35,7 +36,9 @@ export function createRoundTelemetryRuntime({
   persistStateSoon,
   capWithArchive,
   archiveEvicted,
+  store,
 }) {
+  const runTx = makeRunTx({ store, persistStateSoon });
   // Tolerate snapshots persisted before these arrays existed.
   if (!Array.isArray(state.invocationRounds)) state.invocationRounds = [];
   if (!Array.isArray(state.toolInvocationRecords)) state.toolInvocationRecords = [];
@@ -59,10 +62,11 @@ export function createRoundTelemetryRuntime({
     else if (body.type === "round_completed") handleRoundCompleted(invocation, data);
     else if (body.type === "tool_invocation_created") handleToolInvocation(invocation, data);
     else return;
-    // Global retention: keep the newest N in memory, archive the overflow.
-    state.invocationRounds = capList(state.invocationRounds, MAX_ROUNDS_TOTAL, "invocationRounds");
-    state.toolInvocationRecords = capList(state.toolInvocationRecords, MAX_TOOL_RECORDS_TOTAL, "toolInvocationRecords");
-    if (typeof persistStateSoon === "function") persistStateSoon();
+    runTx(() => {
+      // Global retention: keep the newest N in memory, archive the overflow.
+      state.invocationRounds = capList(state.invocationRounds, MAX_ROUNDS_TOTAL, "invocationRounds");
+      state.toolInvocationRecords = capList(state.toolInvocationRecords, MAX_TOOL_RECORDS_TOTAL, "toolInvocationRecords");
+    });
   }
 
   function roundsForInvocation(invocationId) {

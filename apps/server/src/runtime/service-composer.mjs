@@ -166,7 +166,7 @@ export function createServerRuntimeServices({
   // Cap-evicted audit rows land in an on-disk JSONL archive instead of
   // vanishing (docs: retention-archive.mjs). Disabled with persistence (tests).
   const retentionArchive = createRetentionArchive({ stateStorePath, enabled: persistenceEnabled, now });
-  const { recordApplicationExecutionStat } = createApplicationStatsRuntime({ state, now, persistStateSoon });
+  const { recordApplicationExecutionStat } = createApplicationStatsRuntime({ state, now, persistStateSoon, store });
 
   // The read half of the audit loop: recovery actions the 200-row cap evicted are
   // recoverable per application, not just greppable on disk. Scoped by the route's
@@ -345,6 +345,7 @@ export function createServerRuntimeServices({
     nextId,
     appendEvent,
     persistStateSoon,
+    store,
   });
   const { recordApplicationResult } = createApplicationResultImportService({
     state,
@@ -352,6 +353,7 @@ export function createServerRuntimeServices({
     nextId,
     appendEvent,
     persistStateSoon,
+    store,
   });
   const { recordCodexReviewFindings } = createCodexReviewImportService({
     state,
@@ -359,6 +361,7 @@ export function createServerRuntimeServices({
     nextId,
     appendEvent,
     persistStateSoon,
+    store,
   });
   const { recordClaudeReviewFindings } = createClaudeReviewImportService({
     state,
@@ -366,6 +369,7 @@ export function createServerRuntimeServices({
     nextId,
     appendEvent,
     persistStateSoon,
+    store,
   });
   const { recordClaudeApplyResult } = createClaudeApplyImportService({
     state,
@@ -2599,6 +2603,7 @@ export function createServerRuntimeServices({
     persistStateSoon,
     capWithArchive: retentionArchive.capWithArchive,
     archiveEvicted: retentionArchive.archiveEvicted,
+    store,
   });
 
   const httpDependencies = {
