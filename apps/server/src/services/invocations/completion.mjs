@@ -1,4 +1,5 @@
 import { runStateTransaction } from "../../runtime/state-transaction.mjs";
+import { stampClaudeProposalArtifact } from "../claude-propose-imports.mjs";
 
 export function createInvocationCompletionRuntime({
   state,
@@ -56,6 +57,12 @@ export function createInvocationCompletionRuntime({
             : "succeeded";
     invocation.status = terminalStatus;
     invocation.result = body.result ?? null;
+    // #913: a succeeded proposal becomes an immutable artifact NOW — stamp its
+    // bindings (content hash, validated base commit, descriptor lineage) before
+    // anything reads or persists the result. Pure no-op for every other tool.
+    if (terminalStatus === "succeeded") {
+      stampClaudeProposalArtifact({ invocation, result: invocation.result });
+    }
     invocation.completedAt = now();
     invocation.updatedAt = now();
     completeRootSpan(invocation, terminalStatus);

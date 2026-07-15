@@ -1644,6 +1644,15 @@ function governedApplyWrapperArgs(renderedArgs, payload) {
   if (metadata.claudeApplyRollback === true && !hasFlag(injected, "--reverse")) {
     injected.push("--reverse");
   }
+  // #914: the apply gate stamps the proposal's base commit; the runner refuses a
+  // worktree whose HEAD moved off it. Never on rollback — a rollback reverses on
+  // top of the APPLIED state, whose HEAD legitimately differs from the base.
+  const expectedBase = typeof metadata.expectedBaseCommit === "string" && /^[0-9a-f]{40}$/i.test(metadata.expectedBaseCommit)
+    ? metadata.expectedBaseCommit.toLowerCase()
+    : null;
+  if (expectedBase && metadata.claudeApplyRollback !== true && !hasFlag(injected, "--expect-base")) {
+    injected.push("--expect-base", expectedBase);
+  }
   // Post-apply verification: an allowlisted command ID (never argv); the wrapper
   // maps it to fixed argv independently and refuses unknown IDs. Never on rollback.
   const verifyId = boundedString(metadata.verifyCommandId, 64);
