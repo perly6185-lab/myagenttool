@@ -203,16 +203,37 @@ export function buildPublicState({
   // only ever needs a preview to display and the invocation id to apply. Bound it
   // here; a detail view can fetch the full patch on demand later.
   const PROPOSAL_PATCH_PREVIEW = 8000;
+  // #913: an artifact's apply-validity must be VISIBLE in the read model, not
+  // discovered when the apply gate refuses it. Structural checks only — the gate
+  // recomputes the content hash authoritatively at authorize time; re-hashing a
+  // 100 KB patch on every state poll would be wasted CPU. `descriptor_stale`
+  // mirrors the gate's lineage refusal (#897).
+  const proposalApplyValidity = (invocation) => {
+    const output = invocation.result?.output ?? {};
+    const reasons = [];
+    if (invocation.status !== "succeeded") reasons.push("not_succeeded");
+    if (output.patchRedacted === true) reasons.push("payload_reaped");
+    else if (typeof output.patch !== "string" || !output.patch.trim()) reasons.push("no_patch");
+    if (!output.contentHash) reasons.push("bindings_missing");
+    if (output.applicationId) {
+      const app = (state.applications ?? []).find((item) => item.id === output.applicationId) ?? null;
+      const revisionMoved = output.descriptorRevision != null && Number(app?.descriptorRevision ?? 1) !== Number(output.descriptorRevision);
+      if (!app || app.successorApplicationId || revisionMoved) reasons.push("descriptor_stale");
+    }
+    return { applyReady: reasons.length === 0, reasons };
+  };
   const sanitizeInvocationResult = (invocation) => {
     const result = invocation.result;
-    const patch = result?.output?.patch;
-    if (invocation.options?.metadata?.tool !== "claude.propose.patch" || typeof patch !== "string" || patch.length <= PROPOSAL_PATCH_PREVIEW) {
+    if (invocation.options?.metadata?.tool !== "claude.propose.patch" || !result?.output) {
       return result;
     }
-    return {
-      ...result,
-      output: { ...result.output, patch: `${patch.slice(0, PROPOSAL_PATCH_PREVIEW)}\n... (patch truncated; ${patch.length} chars — apply does not need the full patch)`, patchTruncated: true },
-    };
+    const output = { ...result.output };
+    if (typeof output.patch === "string" && output.patch.length > PROPOSAL_PATCH_PREVIEW) {
+      output.patch = `${output.patch.slice(0, PROPOSAL_PATCH_PREVIEW)}\n... (patch truncated; ${output.patch.length} chars — apply does not need the full patch)`;
+      output.patchTruncated = true;
+    }
+    output.applyValidity = proposalApplyValidity(invocation);
+    return { ...result, output };
   };
   const invocations = visibleInvocations.map((invocation) => ({
     ...invocation,
