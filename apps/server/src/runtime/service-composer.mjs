@@ -21,6 +21,7 @@ import { createApprovalGrantService } from "../services/approval-grants.mjs";
 import { createRetentionArchive } from "../services/retention-archive.mjs";
 import { createApplicationStatsRuntime } from "../services/application-stats.mjs";
 import { createCapabilityService } from "../services/capabilities.mjs";
+import { createMailIssueWriteService } from "../services/mail-issue-write.mjs";
 import { createApplicationResultImportService } from "../services/application-results.mjs";
 import { createCcusageImportService } from "../services/ccusage-imports.mjs";
 import { createClaudeReviewImportService } from "../services/claude-review-imports.mjs";
@@ -899,6 +900,20 @@ export function createServerRuntimeServices({
     invokeApplicationCapability,
     planAgentFacadeInvocation,
     planApplicationWrapperInvocation,
+  });
+
+  // Phase 3 (#979): the first governed GitHub write. Approval-gated, idempotent
+  // by Message-ID, and transcribed from the server's imported record — reusing
+  // the existing gh-write primitives, not a new one.
+  const { createMailIssueFromImport } = createMailIssueWriteService({
+    state,
+    now,
+    nextId,
+    appendEvent,
+    persistStateSoon,
+    store,
+    validateApprovalToken,
+    repoCwd: defaultProjectPath,
   });
 
   function runApplicationOrchestration(applicationId, routineId, body = {}, actor = null) {
@@ -2708,6 +2723,7 @@ export function createServerRuntimeServices({
     rejectDecomposition,
     mergeAutoRunPr,
     refreshAutoRunPrDispositions,
+    createMailIssueFromImport,
     selectProject,
     removeProject,
     removeWorktree,
