@@ -148,6 +148,26 @@ test("a natural-keyed (id-less) array collection round-trips as a blob, not drop
   }
 });
 
+test("incremental mirror preserves PUSH (FIFO) order too (regression: push vs unshift)", { skip }, () => {
+  const store = createSqliteStore({ DatabaseSync, path: ":memory:" });
+  try {
+    const keys = { arrayKeys: ["queue"], objectKeys: [] };
+    // A FIFO queue built with push (oldest-first) — e.g. terminalBridgeActions.
+    const state = { queue: [{ id: "q1" }, { id: "q2" }] };
+    mirrorState({ store, state, ...keys });
+    const m = createIncrementalMirror({ store, ...keys });
+    m.prime(state);
+    state.queue.push({ id: "q3" }); m.sync(state);          // enqueue (append)
+    state.queue.push({ id: "q4" }); m.sync(state);
+    state.queue = state.queue.filter((x) => x.id !== "q1"); m.sync(state); // dequeue front
+    const back = { queue: [] };
+    seedOrHydrate({ store, state: back, ...keys });
+    assert.deepEqual(back.queue.map((q) => q.id), ["q2", "q3", "q4"], "FIFO order survives incremental push + hydrate");
+  } finally {
+    store.close();
+  }
+});
+
 test("mirror + hydrate PRESERVES newest-first order (regression: rowid-DESC vs insert order)", { skip }, () => {
   const store = createSqliteStore({ DatabaseSync, path: ":memory:" });
   try {
