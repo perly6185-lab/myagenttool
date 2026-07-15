@@ -25,14 +25,32 @@ function setApplyFlag(on) {
   else delete process.env.MYAGENTTOOL_CLAUDE_APPLY_ENABLED;
 }
 
-function harness({ withProposal = true, patch = "diff --git a/x.mjs b/x.mjs\n--- a/x.mjs\n+++ b/x.mjs\n@@ -1 +1,2 @@\n foo\n+bar\n" } = {}) {
+function governedApplyAgent() {
+  const reg = createClaudeApplyAgentRegistration();
+  return {
+    id: reg.id,
+    name: reg.name,
+    adapter: { type: "cli", command: reg.command, args: reg.args, outputFormat: reg.outputFormat },
+    toolContract: reg.toolContract,
+    capabilities: [{ name: reg.capabilityName }],
+    status: "available",
+    health: { status: "healthy" },
+    location: { type: "local_device", deviceId: "dev_local_001" },
+  };
+}
+
+// apply now REQUIRES a governed runner up front (no runner -> 409, no grant burned,
+// no stranded authorization), so the harness seeds one plus a recording
+// createInvocation. Pass withRunner:false to exercise the no-runner refusal.
+function harness({ withProposal = true, withRunner = true, patch = "diff --git a/x.mjs b/x.mjs\n--- a/x.mjs\n+++ b/x.mjs\n@@ -1 +1,2 @@\n foo\n+bar\n" } = {}) {
   let id = 0;
   const nextId = (prefix) => `${prefix}_${(id += 1)}`;
+  const created = [];
   const state = {
     projects: [{ id: "prj_a", ownerTeamId: "team_a" }, { id: "prj_b", ownerTeamId: "team_b" }],
     worktrees: [{ id: "wt_a", projectId: "prj_a" }, { id: "wt_b", projectId: "prj_b" }],
     currentProjectId: "prj_a",
-    agents: [],
+    agents: withRunner ? [governedApplyAgent()] : [],
     applications: [],
     invocations: [],
     claudeApplyAuthorizations: [],
@@ -59,16 +77,16 @@ function harness({ withProposal = true, patch = "diff --git a/x.mjs b/x.mjs\n---
     now,
     nextId,
     appendEvent: (e) => state.events.push(e),
-    createInvocation: () => { throw new Error("apply must not create a review invocation"); },
+    createInvocation: (task, agent, options) => { const inv = { id: nextId("inv_exec"), status: "queued", agentId: agent.id, options, task }; created.push(inv); state.invocations.push(inv); return inv; },
     startInvocationIfAllowed: () => {},
     findApplication: () => null,
-    findAgent: () => null,
+    findAgent: (aid) => state.agents.find((a) => a.id === aid) ?? null,
     planApplicationWrapperInvocation: () => ({ ok: false, status: 500, body: {} }),
     validateApprovalToken,
     persistStateSoon: () => {},
   });
   const grantFor = (targetId, actor = ACTOR) => issueApprovalGrant({ action: "apply_patch", targetId }, actor).body.token;
-  return { state, service, grantFor };
+  return { state, service, grantFor, created };
 }
 
 // --- Flag gating ---
@@ -99,30 +117,51 @@ test("claude.apply.patch is discoverable as a write-adjacent, approval-gated too
 
 // --- Approval + binding gate (flag on) ---
 
-test("apply authorizes with a valid grant, records a non-executable authorization, and writes nothing", () => {
+test("apply authorizes with a valid grant, dispatches the git-apply, and stamps the authorization", () => {
   setApplyFlag(true);
   try {
-    const { service, state, grantFor } = harness();
+    const { service, state, grantFor, created } = harness();
     const token = grantFor("inv_proposal");
     const res = service.createToolInvocation("claude.apply.patch", { projectId: "prj_a", worktreeId: "wt_a", proposalInvocationId: "inv_proposal", approvalToken: token }, ACTOR);
     assert.equal(res.status, 201);
-    assert.equal(res.body.status, "authorized");
-    assert.equal(res.body.executable, false);
+    assert.equal(res.body.status, "applying");
     assert.equal(res.body.applied, false);
+    assert.ok(res.body.executionInvocationId);
     assert.equal(state.claudeApplyAuthorizations.length, 1);
     const authorization = state.claudeApplyAuthorizations[0];
+    assert.equal(authorization.status, "applying");
     assert.equal(authorization.proposalInvocationId, "inv_proposal");
     assert.equal(authorization.worktreeId, "wt_a");
+    assert.equal(authorization.ownerTeamId, "team_a", "team is stamped so tenancy survives project deletion");
     assert.ok(authorization.grantId, "the authorization records which grant approved it");
     assert.match(authorization.patch, /diff --git a\/x\.mjs/);
+    assert.equal(created.length, 1, "the git-apply is dispatched");
+    assert.equal(created[0].options.metadata.claudeApplyAuthorizationId, authorization.id);
+    assert.match(created[0].options.metadata.applyPatch, /diff --git/);
     assert(state.events.some((e) => e.type === "claude_apply_authorized"));
 
-    // Single-use: replaying the same grant token is refused, no second authorization.
+    // Single-use: replaying the same grant token is refused, no second authorization/dispatch.
     const replay = service.createToolInvocation("claude.apply.patch", { worktreeId: "wt_a", proposalInvocationId: "inv_proposal", approvalToken: token }, ACTOR);
     assert.equal(replay.status, 409);
     assert.equal(replay.body.error, "approval_required");
     assert.match(replay.body.reason, /consumed/);
     assert.equal(state.claudeApplyAuthorizations.length, 1, "a refused apply creates no authorization");
+    assert.equal(created.length, 1);
+  } finally {
+    setApplyFlag(false);
+  }
+});
+
+test("apply refuses (and does NOT burn the grant) when no runner is available", () => {
+  setApplyFlag(true);
+  try {
+    const { service, state, grantFor } = harness({ withRunner: false });
+    const token = grantFor("inv_proposal");
+    const res = service.createToolInvocation("claude.apply.patch", { worktreeId: "wt_a", proposalInvocationId: "inv_proposal", approvalToken: token }, ACTOR);
+    assert.equal(res.status, 409);
+    assert.equal(res.body.error, "agent_not_available");
+    assert.equal(state.claudeApplyAuthorizations.length, 0, "no stranded authorization without a runner");
+    assert.equal(state.approvalGrants[0].consumedAt, null, "the single-use grant was not burned before the runner check");
   } finally {
     setApplyFlag(false);
   }
@@ -159,6 +198,7 @@ test("apply fails closed when the grant validator is not wired", () => {
       projects: [{ id: "prj_a", ownerTeamId: "team_a" }],
       worktrees: [{ id: "wt_a", projectId: "prj_a" }],
       currentProjectId: "prj_a",
+      agents: [governedApplyAgent()],
       invocations: [{ id: "inv_proposal", projectId: "prj_a", status: "succeeded", options: { metadata: { tool: "claude.propose.patch", worktreeId: "wt_a", projectId: "prj_a" } }, result: { output: { tool: "claude.propose.patch", patch: "diff --git a/x b/x\n+y\n", files: [] } } }],
       claudeApplyAuthorizations: [],
       events: [],
@@ -166,7 +206,7 @@ test("apply fails closed when the grant validator is not wired", () => {
     };
     const service = createToolService({
       state, now, nextId: (p) => `${p}_1`, appendEvent: (e) => state.events.push(e),
-      createInvocation: () => ({}), startInvocationIfAllowed: () => {}, findApplication: () => null, findAgent: () => null,
+      createInvocation: () => ({ id: "inv_x", options: { metadata: {} } }), startInvocationIfAllowed: () => {}, findApplication: () => null, findAgent: (aid) => state.agents.find((a) => a.id === aid) ?? null,
       planApplicationWrapperInvocation: () => ({}),
       // validateApprovalToken intentionally omitted.
     });
@@ -179,21 +219,7 @@ test("apply fails closed when the grant validator is not wired", () => {
   }
 });
 
-// --- Phase 4b: execution dispatch + result recording ---
-
-function governedApplyAgent() {
-  const reg = createClaudeApplyAgentRegistration();
-  return {
-    id: reg.id,
-    name: reg.name,
-    adapter: { type: "cli", command: reg.command, args: reg.args, outputFormat: reg.outputFormat },
-    toolContract: reg.toolContract,
-    capabilities: [{ name: reg.capabilityName }],
-    status: "available",
-    health: { status: "healthy" },
-    location: { type: "local_device", deviceId: "dev_local_001" },
-  };
-}
+// --- Runner identity + lifecycle reconciliation ---
 
 test("createClaudeApplyAgentRegistration is a governed WRITE runner (canonical path, code_apply)", () => {
   assert.equal(isGovernedClaudeApplyAgent(governedApplyAgent()), true);
@@ -202,35 +228,25 @@ test("createClaudeApplyAgentRegistration is a governed WRITE runner (canonical p
   assert.equal(isGovernedClaudeApplyAgent(foreign), false, "a wrapper outside tools/agents is not governed");
 });
 
-test("Phase 4b: with a runner available, an authorized apply is dispatched as a queued invocation carrying the patch", () => {
-  setApplyFlag(true);
-  try {
-    const { service, state, grantFor } = harness();
-    state.agents.push(governedApplyAgent());
-    const created = [];
-    // Re-wire createInvocation on the same state via a fresh tool service so the
-    // dispatch can create the apply invocation (the base harness throws on create).
-    let id = 100;
-    const { validateApprovalToken } = createApprovalGrantService({ state, now, nextId: (p) => `${p}_${id += 1}`, appendEvent: (e) => state.events.push(e), persistStateSoon: () => {} });
-    const svc = createToolService({
-      state, now, nextId: (p) => `${p}_${id += 1}`, appendEvent: (e) => state.events.push(e),
-      createInvocation: (task, agent, options) => { const inv = { id: `inv_apply_${id += 1}`, status: "queued", agentId: agent.id, options, task }; created.push(inv); state.invocations.push(inv); return inv; },
-      startInvocationIfAllowed: () => {}, findApplication: () => null, findAgent: (aid) => state.agents.find((a) => a.id === aid) ?? null,
-      planApplicationWrapperInvocation: () => ({}), validateApprovalToken, persistStateSoon: () => {},
-    });
-    const res = svc.createToolInvocation("claude.apply.patch", { worktreeId: "wt_a", proposalInvocationId: "inv_proposal", approvalToken: grantFor("inv_proposal") }, ACTOR);
-    assert.equal(res.status, 201);
-    assert.equal(res.body.status, "applying");
-    assert.equal(res.body.executable, true);
-    assert.ok(res.body.executionInvocationId);
-    assert.equal(created.length, 1, "a queued apply invocation was dispatched");
-    assert.equal(created[0].options.metadata.tool, "claude.apply.patch");
-    assert.match(created[0].options.metadata.applyPatch, /diff --git/);
-    assert.equal(created[0].options.metadata.claudeApplyAuthorizationId, state.claudeApplyAuthorizations[0].id);
-    assert.equal(state.claudeApplyAuthorizations[0].status, "applying");
-  } finally {
-    setApplyFlag(false);
-  }
+test("a result-less terminal (timeout/deny) reconciles an in-flight authorization to a terminal state", () => {
+  // Apply leg: no valid apply result -> failed, not stuck "applying".
+  const applyState = { claudeApplyAuthorizations: [{ id: "cap_a", proposalInvocationId: "inv_p", status: "applying", executionInvocationId: "inv_apply" }], events: [] };
+  const applySvc = createClaudeApplyImportService({ state: applyState, now, appendEvent: (e) => applyState.events.push(e) });
+  const applied = applySvc.recordClaudeApplyResult({
+    invocation: { id: "inv_apply", status: "timed_out", options: { metadata: { claudeApplyAuthorizationId: "cap_a" } } },
+    result: { summary: "dispatch timed out", errorCode: "dispatch_timeout" },
+    agent: governedApplyAgent(),
+  });
+  assert.equal(applied.status, "failed", "an apply that never reported is failed, not left applying");
+  assert.equal(applied.verification.checkPassed, false);
+  assert(applyState.events.some((e) => e.type === "claude_apply_failed"));
+
+  // Rollback leg via the deny hook (no completion runs): rolling_back -> applied.
+  const rbState = { claudeApplyAuthorizations: [{ id: "cap_r", proposalInvocationId: "inv_p", status: "rolling_back", rollbackInvocationId: "inv_rb" }], events: [] };
+  const rbSvc = createClaudeApplyImportService({ state: rbState, now, appendEvent: (e) => rbState.events.push(e) });
+  const reverted = rbSvc.reconcileClaudeApplyTermination({ id: "inv_rb", status: "rejected", options: { metadata: { claudeApplyAuthorizationId: "cap_r", claudeApplyRollback: true } } });
+  assert.equal(reverted.status, "applied", "a rollback that never reported leaves the patch applied and retryable");
+  assert.match(reverted.rollbackError, /rejected|did not complete|without a result/);
 });
 
 // --- Governed rollback (#914 follow-up): guidance becomes an executable action ---
@@ -323,11 +339,45 @@ test("rollback refuses without a valid grant, on a non-applied authorization, an
     const foreign = h4.service.rollbackClaudeApply("cap_roll", { approvalToken: h4.grantFor("cap_roll", { userId: "usr_b", teamId: "team_b" }) }, { userId: "usr_b", teamId: "team_b" });
     assert.equal(foreign.status, 404);
     assert.equal(foreign.body.error, "authorization_not_found");
-    // No runner available.
+    // No runner available: refused, and the single-use grant is NOT burned.
     const h5 = rollbackHarness({ withRunner: false });
-    const noRunner = h5.service.rollbackClaudeApply("cap_roll", { approvalToken: h5.grantFor("cap_roll") }, ACTOR);
+    const token5 = h5.grantFor("cap_roll");
+    const noRunner = h5.service.rollbackClaudeApply("cap_roll", { approvalToken: token5 }, ACTOR);
     assert.equal(noRunner.status, 409);
     assert.equal(noRunner.body.error, "agent_not_available");
+    assert.equal(h5.state.approvalGrants[0].consumedAt, null, "a no-runner rollback must not burn the grant");
+    assert.equal(h5.created.length, 0);
+  } finally {
+    setApplyFlag(false);
+  }
+});
+
+test("rollback refuses a foreign team even when the authorization's project row is gone (tenancy via stamped ownerTeamId)", () => {
+  setApplyFlag(true);
+  try {
+    const h = rollbackHarness();
+    // Simulate the project being deleted after the apply, with the team stamped on
+    // the authorization at creation (the fix). A project lookup now resolves null.
+    h.state.projects = [];
+    h.state.claudeApplyAuthorizations[0].ownerTeamId = "team_a";
+    const foreign = h.service.rollbackClaudeApply("cap_roll", { approvalToken: h.grantFor("cap_roll", { userId: "usr_b", teamId: "team_b" }) }, { userId: "usr_b", teamId: "team_b" });
+    assert.equal(foreign.status, 404, "a foreign team cannot roll back an orphaned authorization");
+    assert.equal(h.created.length, 0);
+  } finally {
+    setApplyFlag(false);
+  }
+});
+
+test("rollback refuses when the bound worktree no longer exists (no reverting the wrong tree)", () => {
+  setApplyFlag(true);
+  try {
+    const h = rollbackHarness();
+    h.state.worktrees = []; // the bound worktree was cleaned up after the apply
+    const res = h.service.rollbackClaudeApply("cap_roll", { approvalToken: h.grantFor("cap_roll") }, ACTOR);
+    assert.equal(res.status, 409);
+    assert.equal(res.body.error, "worktree_not_found");
+    assert.equal(h.created.length, 0, "no rollback is dispatched into a fallback tree");
+    assert.equal(h.state.approvalGrants[0].consumedAt, null, "and the grant is not burned");
   } finally {
     setApplyFlag(false);
   }
@@ -378,7 +428,6 @@ test("Phase 4b: recording a successful apply result marks the authorization appl
   });
   assert.equal(authorization.status, "applied");
   assert.equal(authorization.applied, true);
-  assert.equal(authorization.executable, false);
   assert.deepEqual(authorization.appliedFiles.map((f) => f.path), ["x.mjs"]);
   assert.equal(authorization.rollback.available, true);
   assert(state.events.some((e) => e.type === "claude_apply_completed"));

@@ -198,9 +198,26 @@ export function buildPublicState({
     }
     return { ...options, metadata: nextMetadata };
   };
+  // A claude.propose.patch result carries the full proposed diff (up to 100 KB).
+  // Shipping it verbatim in every /api/state poll is pure bandwidth — the console
+  // only ever needs a preview to display and the invocation id to apply. Bound it
+  // here; a detail view can fetch the full patch on demand later.
+  const PROPOSAL_PATCH_PREVIEW = 8000;
+  const sanitizeInvocationResult = (invocation) => {
+    const result = invocation.result;
+    const patch = result?.output?.patch;
+    if (invocation.options?.metadata?.tool !== "claude.propose.patch" || typeof patch !== "string" || patch.length <= PROPOSAL_PATCH_PREVIEW) {
+      return result;
+    }
+    return {
+      ...result,
+      output: { ...result.output, patch: `${patch.slice(0, PROPOSAL_PATCH_PREVIEW)}\n... (patch truncated; ${patch.length} chars — apply does not need the full patch)`, patchTruncated: true },
+    };
+  };
   const invocations = visibleInvocations.map((invocation) => ({
     ...invocation,
     options: sanitizeInvocationOptions(invocation.options),
+    result: sanitizeInvocationResult(invocation),
     explanation: buildInvocationExplanation(invocation, {
       applicationRecoveryActionsByInvocationId,
       applicationRecoveryActionsByResultInvocationId,
