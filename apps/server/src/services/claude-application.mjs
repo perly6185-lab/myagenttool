@@ -1,5 +1,6 @@
 import { CLAUDE_REVIEW_TOOL_CONTRACT } from "./claude-agent.mjs";
 import { CLAUDE_EXPLAIN_TOOL_CONTRACT } from "./claude-explain-agent.mjs";
+import { CLAUDE_EXPLAIN_CODE_TOOL_CONTRACT } from "./claude-explain-code-agent.mjs";
 import { CLAUDE_PROPOSE_TOOL_CONTRACT } from "./claude-propose-agent.mjs";
 
 export const CLAUDE_APPLICATION_ID = "app_claude";
@@ -39,6 +40,20 @@ export function createClaudeApplicationRegistration({ autoOnline = false } = {})
         riskTags: ["read_only", "read_project", "code_analysis", "local_agent"],
         requiresApproval: false,
         inputSchema: CLAUDE_EXPLAIN_TOOL_CONTRACT.inputSchema,
+        outputCollection: "invocations",
+      },
+      {
+        // #1049 (#912): read-only code-in-place analysis beside the diff explain.
+        // Same posture: collects on the invocation; the target path is confined
+        // to the bound worktree (server shape gate + wrapper filesystem check).
+        id: "explain.code",
+        toolName: CLAUDE_EXPLAIN_CODE_TOOL_CONTRACT.name,
+        displayName: "Claude Code Explain",
+        description: "Explain a file, symbol, or line range in an actor-owned worktree with the governed Claude analysis tool.",
+        riskLevel: "low",
+        riskTags: ["read_only", "read_project", "code_analysis", "local_agent"],
+        requiresApproval: false,
+        inputSchema: CLAUDE_EXPLAIN_CODE_TOOL_CONTRACT.inputSchema,
         outputCollection: "invocations",
       },
       {

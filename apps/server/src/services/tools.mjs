@@ -19,6 +19,11 @@ import {
   isGovernedClaudeExplainAgent,
 } from "./claude-explain-agent.mjs";
 import {
+  CLAUDE_EXPLAIN_CODE_TOOL_CONTRACT,
+  isGovernedClaudeExplainCodeAgent,
+  isSafeWorktreeRelativePath,
+} from "./claude-explain-code-agent.mjs";
+import {
   CLAUDE_PROPOSE_TOOL_CONTRACT,
   isGovernedClaudeProposeAgent,
 } from "./claude-propose-agent.mjs";
@@ -103,6 +108,21 @@ export function createToolService({
         outputCollection: "invocations",
         agentLabel: "Claude",
         application: application ? { id: application.id, capability: `app.${application.id}.explain.diff` } : null,
+      });
+    }
+    if (name === CLAUDE_EXPLAIN_CODE_TOOL_CONTRACT.name) {
+      const application = resolveClaudeApp();
+      return createReviewInvocation({
+        input,
+        actor,
+        contract: CLAUDE_EXPLAIN_CODE_TOOL_CONTRACT,
+        validate: validateClaudeExplainCodeInput,
+        selectAgent: selectClaudeExplainCodeAgent,
+        buildTask: buildClaudeExplainCodeTask,
+        // Same posture as explain.diff: analysis rides the invocation result.
+        outputCollection: "invocations",
+        agentLabel: "Claude",
+        application: application ? { id: application.id, capability: `app.${application.id}.explain.code` } : null,
       });
     }
     if (name === CLAUDE_PROPOSE_TOOL_CONTRACT.name) {
@@ -261,6 +281,12 @@ export function createToolService({
           instruction: value.instruction,
           // Present only for propose.patch; the bridge injects it as --task.
           ...(value.task ? { task: value.task } : {}),
+          // Present only for explain.code; the bridge injects --path/--symbol/
+          // --lines. The path passed server-side shape validation (worktree-
+          // relative, traversal-free) and the wrapper re-checks confinement.
+          ...(value.path ? { targetPath: value.path } : {}),
+          ...(value.symbol ? { targetSymbol: value.symbol } : {}),
+          ...(value.lineRange ? { targetLines: value.lineRange } : {}),
           ...(application ? {
             providerType: "application",
             applicationId: application.id,
@@ -393,6 +419,7 @@ export function createToolService({
     const codexReviewAgents = (state.agents ?? []).filter(isGovernedCodexReviewAgent);
     const claudeReviewAgents = (state.agents ?? []).filter(isGovernedClaudeReviewAgent);
     const claudeExplainAgents = (state.agents ?? []).filter(isGovernedClaudeExplainAgent);
+    const claudeExplainCodeAgents = (state.agents ?? []).filter(isGovernedClaudeExplainCodeAgent);
     const claudeProposeAgents = (state.agents ?? []).filter(isGovernedClaudeProposeAgent);
     // Only surface the write-capable exec tool when the feature flag is on, so an
     // off-by-default deployment has no discoverable or invokable Codex write path.
@@ -402,6 +429,7 @@ export function createToolService({
       ...(codexReviewAgents.length ? [buildCodexReviewToolDescriptor(codexReviewAgents)] : []),
       ...(claudeReviewAgents.length ? [buildClaudeReviewToolDescriptor(claudeReviewAgents, resolveClaudeApp())] : []),
       ...(claudeExplainAgents.length ? [buildClaudeExplainToolDescriptor(claudeExplainAgents, resolveClaudeApp())] : []),
+      ...(claudeExplainCodeAgents.length ? [buildClaudeExplainCodeToolDescriptor(claudeExplainCodeAgents, resolveClaudeApp())] : []),
       ...(claudeProposeAgents.length ? [buildClaudeProposeToolDescriptor(claudeProposeAgents, resolveClaudeApp())] : []),
       // Apply is server-side (no runner agent in 4a) and write-adjacent, so it is
       // discoverable ONLY when the default-OFF flag is set.
@@ -424,6 +452,10 @@ export function createToolService({
 
   function selectClaudeExplainAgent() {
     return (state.agents ?? []).find(isGovernedClaudeExplainAgent) ?? null;
+  }
+
+  function selectClaudeExplainCodeAgent() {
+    return (state.agents ?? []).find(isGovernedClaudeExplainCodeAgent) ?? null;
   }
 
   function selectClaudeProposeAgent() {
@@ -898,6 +930,32 @@ function buildClaudeExplainToolDescriptor(agents, application = null) {
   };
 }
 
+function buildClaudeExplainCodeToolDescriptor(agents, application = null) {
+  return {
+    name: CLAUDE_EXPLAIN_CODE_TOOL_CONTRACT.name,
+    version: CLAUDE_EXPLAIN_CODE_TOOL_CONTRACT.version,
+    displayName: "Claude Code Explain",
+    description: "Run a governed read-only Claude explanation of a file, symbol, or line range in a project worktree.",
+    riskLevel: "low",
+    riskTags: ["read_only", "read_project", "code_analysis", "local_agent"],
+    requiresLocalDevice: true,
+    inputSchema: CLAUDE_EXPLAIN_CODE_TOOL_CONTRACT.inputSchema,
+    outputSchema: CLAUDE_EXPLAIN_CODE_TOOL_CONTRACT.outputSchema,
+    agents: agents.map((agent) => ({
+      id: agent.id,
+      name: agent.name,
+      status: agent.status,
+      mode: "code-explain",
+    })),
+    approvalPolicy: {
+      defaultReadOnlyAnalysis: "allowed",
+    },
+    authoritativeBilling: false,
+    outputCollection: "invocations",
+    application: application ? { id: application.id, capability: `app.${application.id}.explain.code` } : null,
+  };
+}
+
 function buildClaudeProposeToolDescriptor(agents, application = null) {
   return {
     name: CLAUDE_PROPOSE_TOOL_CONTRACT.name,
@@ -1167,6 +1225,61 @@ function validateClaudeExplainInput(input = {}) {
   };
 }
 
+// explain.code targets code in place: a required worktree-relative path plus
+// optional symbol / 1-indexed line range / instruction. Unknown fields are hard
+// errors; the path shape gate refuses absolute paths and traversal outright.
+function validateClaudeExplainCodeInput(input = {}) {
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    return { ok: false, status: 400, body: { error: "invalid_input", message: "Tool input must be an object." } };
+  }
+  const allowed = new Set(["projectId", "worktreeId", "path", "symbol", "startLine", "endLine", "instruction"]);
+  const unknown = Object.keys(input).filter((key) => !allowed.has(key));
+  if (unknown.length) {
+    return { ok: false, status: 400, body: { error: "unknown_field", fields: unknown } };
+  }
+  const worktreeId = stringOrNull(input.worktreeId);
+  if (!worktreeId) {
+    return { ok: false, status: 400, body: { error: "worktree_required" } };
+  }
+  const path = input.path === undefined || input.path === null ? "" : String(input.path).trim();
+  if (!path) {
+    return { ok: false, status: 400, body: { error: "path_required" } };
+  }
+  if (path.length > 512) {
+    return { ok: false, status: 400, body: { error: "path_too_long", maxLength: 512 } };
+  }
+  if (!isSafeWorktreeRelativePath(path)) {
+    return { ok: false, status: 400, body: { error: "path_invalid", message: "path must be worktree-relative with no traversal segments." } };
+  }
+  const symbol = input.symbol === undefined || input.symbol === null ? null : String(input.symbol).trim() || null;
+  if (symbol && symbol.length > 200) {
+    return { ok: false, status: 400, body: { error: "symbol_too_long", maxLength: 200 } };
+  }
+  const startLine = input.startLine === undefined ? null : Number(input.startLine);
+  const endLine = input.endLine === undefined ? null : Number(input.endLine);
+  const validLine = (line) => line === null || (Number.isInteger(line) && line >= 1);
+  if (!validLine(startLine) || !validLine(endLine) || (startLine !== null) !== (endLine !== null) || (startLine !== null && endLine < startLine)) {
+    return { ok: false, status: 400, body: { error: "line_range_invalid", message: "startLine and endLine must be 1-indexed integers given together, with endLine >= startLine." } };
+  }
+  const instruction = input.instruction === undefined || input.instruction === null
+    ? null
+    : String(input.instruction).trim();
+  if (instruction && instruction.length > 1200) {
+    return { ok: false, status: 400, body: { error: "instruction_too_long", maxLength: 1200 } };
+  }
+  return {
+    ok: true,
+    value: {
+      projectId: stringOrNull(input.projectId),
+      worktreeId,
+      path,
+      symbol,
+      lineRange: startLine === null ? null : `${startLine}-${endLine}`,
+      instruction,
+    },
+  };
+}
+
 // Propose requires a task (the change to propose) and an optional instruction; it
 // takes no severityFloor. A stray field is a hard unknown_field.
 function validateClaudeProposeInput(input = {}) {
@@ -1230,6 +1343,16 @@ function buildClaudeReviewTask(value) {
 function buildClaudeExplainTask(value) {
   const suffix = value.instruction ? ` Instruction: ${value.instruction}` : "";
   return `Explain the selected worktree diff with Claude.${suffix}`;
+}
+
+function buildClaudeExplainCodeTask(value) {
+  const target = [
+    value.path,
+    value.symbol ? `symbol ${value.symbol}` : null,
+    value.lineRange ? `lines ${value.lineRange}` : null,
+  ].filter(Boolean).join(", ");
+  const suffix = value.instruction ? ` Instruction: ${value.instruction}` : "";
+  return `Explain code with Claude: ${target}.${suffix}`;
 }
 
 function buildClaudeProposeTask(value) {

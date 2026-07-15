@@ -1592,6 +1592,24 @@ function governedReviewWrapperArgs(renderedArgs, payload) {
   if (task && !hasFlag(injected, "--task")) {
     injected.push("--task", task);
   }
+  // Present only for claude.explain.code (#1049) — the code target. The server
+  // shape-gated the path (worktree-relative, traversal-free) and the wrapper
+  // re-checks filesystem confinement against --cwd before Claude spawns; the
+  // bridge refuses to inject a path that fails the same relative-shape test.
+  const targetPath = boundedString(metadata.targetPath, 512);
+  if (targetPath && !isAbsolute(targetPath) && !targetPath.includes("..") && !hasFlag(injected, "--path")) {
+    injected.push("--path", targetPath);
+  }
+  const targetSymbol = boundedString(metadata.targetSymbol, 200);
+  if (targetSymbol && !hasFlag(injected, "--symbol")) {
+    injected.push("--symbol", targetSymbol);
+  }
+  const targetLines = typeof metadata.targetLines === "string" && /^\d+-\d+$/.test(metadata.targetLines)
+    ? metadata.targetLines
+    : null;
+  if (targetLines && !hasFlag(injected, "--lines")) {
+    injected.push("--lines", targetLines);
+  }
   return injected;
 }
 
@@ -1686,7 +1704,7 @@ function governedExecWrapperArgs(renderedArgs, payload) {
 function usesGovernedReviewWrapper(tool, args) {
   const wrapper = tool === "codex.review.diff"
     ? "codex-review-wrapper.mjs"
-    : tool === "claude.review.diff" || tool === "claude.explain.diff" || tool === "claude.propose.patch"
+    : tool === "claude.review.diff" || tool === "claude.explain.diff" || tool === "claude.explain.code" || tool === "claude.propose.patch"
       ? "claude-review-wrapper.mjs"
       : null;
   // Require the full canonical directory segment, not just the basename — a
