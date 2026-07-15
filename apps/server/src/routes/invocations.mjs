@@ -186,6 +186,24 @@ export async function handleInvocationRoutes({
     return true;
   }
 
+  // #1072: per-run stream transcript, guarded exactly like reading the
+  // invocation itself. Deliberately NOT part of the /api/state snapshot — a
+  // transcript can be 256KB and belongs behind an on-demand fetch.
+  const transcriptMatch = url.pathname.match(/^\/api\/invocations\/([^/]+)\/transcript$/);
+  if (req.method === "GET" && transcriptMatch) {
+    const invocation = findInvocation(decodeURIComponent(transcriptMatch[1]));
+    if (!invocation) {
+      sendJson(res, 404, { error: "invocation_not_found" });
+      return true;
+    }
+    if (denyForeignProject({ res, sendJson, state, actor, projectId: invocationProjectId(invocation), notFound: { error: "invocation_not_found" } })) {
+      return true;
+    }
+    const transcript = (state.runTranscripts ?? []).find((item) => item?.invocationId === invocation.id) ?? null;
+    sendJson(res, 200, { invocationId: invocation.id, transcript });
+    return true;
+  }
+
   const cancelMatch = url.pathname.match(/^\/api\/invocations\/([^/]+)\/cancel$/);
   if (req.method === "POST" && cancelMatch) {
     const invocation = findInvocation(cancelMatch[1]);
