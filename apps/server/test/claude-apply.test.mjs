@@ -488,10 +488,12 @@ test("apply accepts an allowlisted verify id, stamps it on the dispatch, and rej
     assert.equal(bad.status, 400);
     assert.equal(bad.body.error, "invalid_verify_command");
     assert.equal(created.length, 0);
-    // Allowlisted id → stamped on the dispatch metadata and the authorization.
+    // Allowlisted id → held on the AUTHORIZATION only. #1052: the apply dispatch
+    // itself carries no verify — a synchronous verify would hold the single-lane
+    // bridge for the whole test run; the verify runs as its own later dispatch.
     const good = svc.createToolInvocation("claude.apply.patch", { worktreeId: "wt_a", proposalInvocationId: "inv_proposal", approvalToken: grantFor("inv_proposal"), verify: "node-test" }, ACTOR);
     assert.equal(good.status, 201);
-    assert.equal(created[0].options.metadata.verifyCommandId, "node-test");
+    assert.equal(created[0].options.metadata.verifyCommandId, undefined, "the apply dispatch never carries the verify (#1052)");
     assert.equal(state.claudeApplyAuthorizations[0].verifyCommandId, "node-test");
   } finally {
     setApplyFlag(false);
@@ -672,4 +674,139 @@ test("apply ignores a malformed baseCommit (no binding) rather than dispatching 
   } finally {
     setApplyFlag(false);
   }
+});
+
+// --- #1052: the deferred verify leg (verify off the single-lane bridge) ---
+
+function verifyHarness({ verifyCommandId = "node-test", withRunner = true } = {}) {
+  const state = {
+    claudeApplyAuthorizations: [{
+      id: "cap_v", proposalInvocationId: "inv_proposal", status: "applying",
+      executionInvocationId: "inv_apply", projectId: "prj_a", worktreeId: "wt_a",
+      verifyCommandId,
+    }],
+    agents: withRunner ? [governedApplyAgent()] : [],
+    invocations: [],
+    events: [],
+  };
+  const created = [];
+  const started = [];
+  const service = createClaudeApplyImportService({
+    state,
+    now,
+    appendEvent: (e) => state.events.push(e),
+    createInvocation: (task, agent, options) => {
+      const inv = { id: `inv_verify_${created.length + 1}`, status: "queued", agentId: agent.id, options, task };
+      created.push(inv);
+      state.invocations.push(inv);
+      return inv;
+    },
+    startInvocationIfAllowed: (inv) => started.push(inv.id),
+    findApplyRunner: () => (withRunner ? state.agents[0] : null),
+  });
+  const applyResult = {
+    output: { source: "claude", tool: "claude.apply.patch", applied: true, appliedFiles: [{ path: "x.mjs", added: 1, deleted: 0 }], verification: { checkPassed: true }, rollback: { available: true, strategy: "git_apply_reverse" } },
+  };
+  const foldApply = () => service.recordClaudeApplyResult({
+    invocation: { id: "inv_apply", status: "succeeded", options: { metadata: { claudeApplyAuthorizationId: "cap_v" } } },
+    result: applyResult,
+    agent: governedApplyAgent(),
+  });
+  return { state, service, created, started, foldApply };
+}
+
+test("#1052 a successful apply dispatches the verify as its OWN invocation — the lane is already free", () => {
+  const { state, created, started, foldApply } = verifyHarness();
+  const authorization = foldApply();
+  assert.equal(authorization.status, "applied", "the apply verdict lands immediately, not after the tests");
+  assert.equal(created.length, 1, "one separate verify dispatch");
+  const verify = created[0];
+  assert.notEqual(verify.id, "inv_apply", "structurally a second dispatch: a slow verify cannot hold the apply's lane");
+  assert.equal(verify.options.metadata.claudeApplyVerify, true);
+  assert.equal(verify.options.metadata.verifyCommandId, "node-test");
+  assert.equal(verify.options.metadata.claudeApplyAuthorizationId, "cap_v");
+  assert.equal(verify.options.metadata.applyPatch, undefined, "the verify leg carries no patch");
+  assert.equal(authorization.verifyInvocationId, verify.id);
+  assert.equal(authorization.verification.state, "pending");
+  assert.deepEqual(started, [verify.id]);
+  assert(state.events.some((e) => e.type === "claude_apply_verify_dispatched"));
+});
+
+test("#1052 no runner for the verify leg -> applied but loudly UNVERIFIED, rollback intact", () => {
+  const { state, created, foldApply } = verifyHarness({ withRunner: false });
+  const authorization = foldApply();
+  assert.equal(authorization.status, "applied");
+  assert.equal(created.length, 0);
+  assert.equal(authorization.verification.state, "unverified");
+  assert.match(authorization.verification.error, /no governed runner/);
+  assert.equal(authorization.rollback.available, true, "rollback guidance survives an unverified apply");
+  assert(state.events.some((e) => e.type === "claude_apply_unverified"));
+});
+
+test("#1052 no verifyCommandId -> no verify leg at all", () => {
+  const { created, foldApply } = verifyHarness({ verifyCommandId: null });
+  const authorization = foldApply();
+  assert.equal(authorization.status, "applied");
+  assert.equal(created.length, 0);
+  assert.equal(authorization.verification.state, undefined);
+});
+
+test("#1052 the verify verdict folds onto the authorization without touching the applied status", () => {
+  const { service, created, foldApply } = verifyHarness();
+  const authorization = foldApply();
+
+  // Passing verdict.
+  service.recordClaudeApplyResult({
+    invocation: created[0],
+    result: { output: { source: "claude", tool: "claude.apply.patch", verifyOnly: true, verification: { testsPassed: true, verifyCommand: "node --test", testExitCode: 0 } } },
+    agent: governedApplyAgent(),
+  });
+  assert.equal(authorization.verification.state, "passed");
+  assert.equal(authorization.verification.testsPassed, true);
+  assert.equal(authorization.status, "applied");
+
+  // A failing verdict on a fresh harness: applied stays, rollback stays.
+  const failing = verifyHarness();
+  const failAuth = failing.foldApply();
+  failing.service.recordClaudeApplyResult({
+    invocation: failing.created[0],
+    result: { output: { source: "claude", tool: "claude.apply.patch", verifyOnly: true, verification: { testsPassed: false, verifyCommand: "node --test", testExitCode: 1, testOutputPreview: "1 failing" } } },
+    agent: governedApplyAgent(),
+  });
+  assert.equal(failAuth.verification.state, "failed");
+  assert.equal(failAuth.status, "applied", "a failing verification never undoes the apply");
+  assert.equal(failAuth.rollback.available, true);
+  assert(failing.state.events.some((e) => e.type === "claude_apply_verify_failed"));
+});
+
+test("#1052 a verify leg that dies without a result reads applied-but-UNVERIFIED, never verified", () => {
+  // Result-less completion (timeout riding completeInvocation).
+  const timedOut = verifyHarness();
+  const authorization = timedOut.foldApply();
+  timedOut.service.recordClaudeApplyResult({
+    invocation: { ...timedOut.created[0], status: "timed_out" },
+    result: { summary: "dispatch timed out", errorCode: "dispatch_timeout" },
+    agent: governedApplyAgent(),
+  });
+  assert.equal(authorization.verification.state, "unverified");
+  assert.equal(authorization.status, "applied");
+  assert(timedOut.state.events.some((e) => e.type === "claude_apply_unverified"));
+
+  // Deny path (bypasses completion) via the reconcile hook.
+  const denied = verifyHarness();
+  const deniedAuth = denied.foldApply();
+  denied.service.reconcileClaudeApplyTermination({ ...denied.created[0], status: "rejected" });
+  assert.equal(deniedAuth.verification.state, "unverified");
+  assert.equal(deniedAuth.status, "applied");
+
+  // Idempotence: a late reconcile must not downgrade a landed verdict.
+  const landed = verifyHarness();
+  const landedAuth = landed.foldApply();
+  landed.service.recordClaudeApplyResult({
+    invocation: landed.created[0],
+    result: { output: { source: "claude", tool: "claude.apply.patch", verifyOnly: true, verification: { testsPassed: true, verifyCommand: "node --test", testExitCode: 0 } } },
+    agent: governedApplyAgent(),
+  });
+  landed.service.reconcileClaudeApplyTermination({ ...landed.created[0], status: "rejected" });
+  assert.equal(landedAuth.verification.state, "passed", "a landed verdict survives a late reconcile");
 });

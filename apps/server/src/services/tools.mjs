@@ -803,9 +803,11 @@ export function createToolService({
         // #914: the bridge injects --expect-base so the runner refuses a worktree
         // whose HEAD moved off the proposal's base. Never set on rollback runs.
         ...(expectedBaseCommit ? { expectedBaseCommit } : {}),
-        // Optional allowlisted post-apply verification; the bridge injects
-        // --verify <id> and the wrapper maps it to fixed argv independently.
-        ...(value.verify ? { verifyCommandId: value.verify } : {}),
+        // #1052: verification is NOT stamped on the apply dispatch anymore. A
+        // synchronous verify occupied the single-lane bridge for the whole test
+        // run; the verify now runs as its own dispatch, created when the apply
+        // result folds (claude-apply-imports.mjs) from the verifyCommandId held
+        // on the authorization row.
       },
       timeoutSeconds: 120,
     });
