@@ -1592,6 +1592,51 @@ function governedReviewWrapperArgs(renderedArgs, payload) {
   if (task && !hasFlag(injected, "--task")) {
     injected.push("--task", task);
   }
+  // Present only for claude.explain.code (#1049) — the code target. The server
+  // shape-gated the path (worktree-relative, traversal-free) and the wrapper
+  // re-checks filesystem confinement against --cwd before Claude spawns; the
+  // bridge refuses to inject a path that fails the same relative-shape test.
+  const targetPath = boundedString(metadata.targetPath, 512);
+  if (targetPath && !isAbsolute(targetPath) && !targetPath.includes("..") && !hasFlag(injected, "--path")) {
+    injected.push("--path", targetPath);
+  }
+  const targetSymbol = boundedString(metadata.targetSymbol, 200);
+  if (targetSymbol && !hasFlag(injected, "--symbol")) {
+    injected.push("--symbol", targetSymbol);
+  }
+  const targetLines = typeof metadata.targetLines === "string" && /^\d+-\d+$/.test(metadata.targetLines)
+    ? metadata.targetLines
+    : null;
+  if (targetLines && !hasFlag(injected, "--lines")) {
+    injected.push("--lines", targetLines);
+  }
+  // Present only for claude.analyze.issue (#1050) — the server-resolved issue
+  // reference. The bridge injects the fenced block ONLY when it carries the
+  // ADR-0011 BEGIN/END markers (mirrored in the wrapper, which refuses an
+  // unfenced body); a raw body can never reach the prompt through this path.
+  const issueNumber = Number.isInteger(metadata.issueNumber) && metadata.issueNumber >= 1
+    ? String(metadata.issueNumber)
+    : null;
+  if (issueNumber && !hasFlag(injected, "--issue")) {
+    injected.push("--issue", issueNumber);
+  }
+  const issueBlock = boundedString(metadata.issueUntrustedBlock, 8000);
+  const fenced = issueBlock
+    && /----- BEGIN ISSUE DESCRIPTION \(untrusted\) -----/.test(issueBlock)
+    && /----- END ISSUE DESCRIPTION -----/.test(issueBlock);
+  if (fenced && !hasFlag(injected, "--issue-data")) {
+    injected.push("--issue-data", issueBlock);
+  }
+  // Present only for claude.plan.change (#1051) — the optional fenced analysis
+  // context (the goal itself rides the --task injection above). Same fence rule:
+  // an unfenced block is never injected, and the wrapper refuses one anyway.
+  const planContext = boundedString(metadata.planContextBlock, 6000);
+  const planFenced = planContext
+    && /----- BEGIN ANALYSIS DESCRIPTION \(untrusted\) -----/.test(planContext)
+    && /----- END ANALYSIS DESCRIPTION -----/.test(planContext);
+  if (planFenced && !hasFlag(injected, "--plan-context")) {
+    injected.push("--plan-context", planContext);
+  }
   return injected;
 }
 
@@ -1625,6 +1670,16 @@ function governedApplyWrapperArgs(renderedArgs, payload) {
   const cwd = normalizedExistingPath(metadata.worktreePath) ?? normalizedExistingPath(metadata.projectPath);
   if (cwd && !hasFlag(injected, "--cwd")) {
     injected.push("--cwd", cwd);
+  }
+  // #1052: the deferred verify leg — a read-only run of the allowlisted command
+  // in the already-applied worktree. Nothing write-shaped is injected for it;
+  // the wrapper additionally refuses any such combination.
+  if (metadata.claudeApplyVerify === true) {
+    const verifyOnlyId = boundedString(metadata.verifyCommandId, 64);
+    if (verifyOnlyId && !hasFlag(injected, "--verify-only")) {
+      injected.push("--verify-only", verifyOnlyId);
+    }
+    return injected;
   }
   const patch = typeof metadata.applyPatch === "string" ? metadata.applyPatch : null;
   if (patch && !hasFlag(injected, "--patch-file")) {
@@ -1686,7 +1741,7 @@ function governedExecWrapperArgs(renderedArgs, payload) {
 function usesGovernedReviewWrapper(tool, args) {
   const wrapper = tool === "codex.review.diff"
     ? "codex-review-wrapper.mjs"
-    : tool === "claude.review.diff" || tool === "claude.explain.diff" || tool === "claude.propose.patch"
+    : tool === "claude.review.diff" || tool === "claude.explain.diff" || tool === "claude.explain.code" || tool === "claude.analyze.issue" || tool === "claude.plan.change" || tool === "claude.propose.patch"
       ? "claude-review-wrapper.mjs"
       : null;
   // Require the full canonical directory segment, not just the basename — a
