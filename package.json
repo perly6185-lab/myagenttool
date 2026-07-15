@@ -152,6 +152,7 @@
     "smoke:claude-apply": "node tools/dev/claude-apply-caller-smoke.mjs",
     "smoke:cost-attribution": "node tools/dev/cost-attribution-smoke.mjs",
     "smoke:tenancy": "node tools/dev/tenancy-smoke.mjs",
+    "smoke:worktree": "node tools/dev/worktree-smoke.mjs",
     "smoke:worktree-diff": "node tools/dev/worktree-diff-smoke.mjs",
     "smoke:mcp-agent": "node tools/dev/mcp-agent-smoke.mjs",
     "smoke:mail-agent": "node tools/dev/mail-agent-smoke.mjs",
