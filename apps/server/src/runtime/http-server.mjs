@@ -182,6 +182,7 @@ export function createHttpServer({
   getCapability,
   listCapabilities,
   createMailIssueFromImport,
+  createReplyDraft,
   nextId,
   persistStateSoon,
 }) {
@@ -251,7 +252,7 @@ export function createHttpServer({
         return;
       }
 
-      if (await handleMailRoutes({ req, res, url, sendJson, readJson, actor, createMailIssueFromImport })) {
+      if (await handleMailRoutes({ req, res, url, sendJson, readJson, actor, createMailIssueFromImport, createReplyDraft })) {
         return;
       }
 
