@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 
-import { isStoreEmpty, mirrorState, normalizeHydratedDevices, normalizeHydratedProjects, seedOrHydrate, SINGLETON_ID } from "../src/runtime/store/sqlite-backing.mjs";
+import { isStoreEmpty, mirrorState, seedOrHydrate, SINGLETON_ID } from "../src/runtime/store/sqlite-backing.mjs";
 
 let DatabaseSync;
 let createSqliteStore;
@@ -105,68 +105,19 @@ test("a key absent from the durable store keeps its state default (never nulled)
   }
 });
 
-test("normalizeHydratedProjects drops a path-missing project and guarantees the default", () => {
-  const defaultDir = mkdtempSync(join(tmpdir(), "sqlite-proj-def-"));
-  const liveDir = mkdtempSync(join(tmpdir(), "sqlite-proj-live-"));
-  try {
-    const defaultProject = { id: "prj_default", path: defaultDir };
-    const sameProjectPath = (a, b) => a === b;
-    // Hydrated raw from SQLite: a live project (its own real path), a stale one
-    // whose path is gone, and the default project missing from the rows entirely.
-    const state = {
-      projects: [
-        { id: "prj_live", path: liveDir },
-        { id: "prj_gone", path: join(liveDir, "does-not-exist") },
-      ],
-      currentProjectId: "prj_gone",
-    };
-    normalizeHydratedProjects({ state, defaultProject, sameProjectPath });
-
-    const ids = new Set(state.projects.map((p) => p.id));
-    assert(!ids.has("prj_gone"), "the path-missing project is dropped (fail closed)");
-    assert(ids.has("prj_live"), "the live project is kept");
-    assert(ids.has("prj_default"), "the default project is guaranteed present");
-    // currentProjectId pointed at the dropped project → falls back to the default.
-    assert.equal(state.currentProjectId, "prj_default");
-  } finally {
-    rmSync(defaultDir, { recursive: true, force: true });
-    rmSync(liveDir, { recursive: true, force: true });
-  }
-});
-
-test("normalizeHydratedDevices forces every hydrated device offline", () => {
-  const state = { devices: [{ id: "dev_1", status: "online" }, { id: "dev_2", status: "online" }] };
-  normalizeHydratedDevices({ state });
-  assert.deepEqual(state.devices.map((d) => d.status), ["offline", "offline"]);
-});
-
-test("devices mirror + hydrate round-trip (id-keyed array, brought back offline)", { skip }, () => {
+test("devices mirror + hydrate round-trip (id-keyed array; offline reset lives in normalizeLoadedState)", { skip }, () => {
   const store = createSqliteStore({ DatabaseSync, path: ":memory:" });
   try {
-    // A device stored with a LIVE status (as the mirror would on shutdown).
+    // A device stored with a LIVE status (as the mirror would on shutdown); hydrate
+    // reads it back verbatim — the composer's shared normalizeLoadedState is what
+    // forces it offline (covered in persistence.test.mjs).
     mirrorState({ store, state: { devices: [{ id: "dev_local_001", status: "online" }] }, arrayKeys: ["devices"], objectKeys: [] });
     const fresh = { devices: [] };
     seedOrHydrate({ store, state: fresh, arrayKeys: ["devices"], objectKeys: [] });
     assert.equal(fresh.devices.length, 1);
     assert.equal(fresh.devices[0].id, "dev_local_001");
-    // Hydrate reads the stored (online) status; the composer's post-hydrate reset
-    // (normalizeHydratedDevices) is what forces it offline — apply + assert.
-    normalizeHydratedDevices({ state: fresh });
-    assert.equal(fresh.devices[0].status, "offline", "a restart never implies the bridge is still up");
   } finally {
     store.close();
-  }
-});
-
-test("normalizeHydratedProjects keeps a valid currentProjectId", () => {
-  const realDir = mkdtempSync(join(tmpdir(), "sqlite-proj2-"));
-  try {
-    const defaultProject = { id: "prj_default", path: realDir };
-    const state = { projects: [{ id: "prj_default", path: realDir }, { id: "prj_x", path: realDir }], currentProjectId: "prj_x" };
-    normalizeHydratedProjects({ state, defaultProject, sameProjectPath: (a, b) => a === b });
-    assert.equal(state.currentProjectId, "prj_x", "a still-present current project is preserved");
-  } finally {
-    rmSync(realDir, { recursive: true, force: true });
   }
 });
 

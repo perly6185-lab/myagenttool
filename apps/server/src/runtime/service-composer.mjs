@@ -1,10 +1,10 @@
 import { createEventLogRuntime } from "./event-log.mjs";
 import { createRefusalRuntime } from "./refusal-log.mjs";
 import { createBridgeCredentialRuntime } from "./bridge-auth.mjs";
-import { createPersistenceRuntime, persistedArrayKeys, persistedObjectKeys } from "./persistence.mjs";
+import { captureSeededDefaults, createPersistenceRuntime, normalizeLoadedState, persistedArrayKeys, persistedObjectKeys } from "./persistence.mjs";
 import { createReadModelRuntime } from "./read-models.mjs";
 import { createInMemoryStore } from "./store/in-memory-store.mjs";
-import { mirrorState, normalizeHydratedDevices, normalizeHydratedProjects, seedOrHydrate } from "./store/sqlite-backing.mjs";
+import { mirrorState, seedOrHydrate } from "./store/sqlite-backing.mjs";
 import {
   createAgentService,
   isAgentDisabled,
@@ -108,6 +108,9 @@ export function createServerRuntimeServices({
       }
     : persistStateNow;
   const store = createInMemoryStore({ state, commit: commitDurable });
+  // #1003: capture the fresh seeded defaults BEFORE the restore overwrites them, so
+  // a SQLite hydrate can run the SAME normalization the JSON restore does.
+  const seededDefaults = sqliteStore ? captureSeededDefaults(state) : null;
   const restored = restorePersistentState();
   // #1002 Phase B: after the JSON restore, reconcile with the SQLite backing —
   // SEED it from the restored state when empty (one-time JSON→SQLite migration), or
@@ -118,11 +121,11 @@ export function createServerRuntimeServices({
       console.warn(`[store:sqlite] initial seed dropped ${outcome.mirror.skipped} id-less row(s) in ${outcome.mirror.skippedCollections.join(", ")}.`);
     }
     if (outcome.mode === "hydrated") {
-      // Raw hydration bypasses the JSON restore's fail-closed normalizations —
-      // re-apply them: drop a path-missing project (+ guarantee the default), and
-      // force every device offline (a restart never implies a bridge is still up).
-      normalizeHydratedProjects({ state, defaultProject, sameProjectPath });
-      normalizeHydratedDevices({ state });
+      // Raw hydration loads records verbatim; run the SHARED normalization so the
+      // SQLite backing fails closed EXACTLY like the JSON restore — path-missing
+      // project drop + default guarantee, new-default merge for agents/singletons/
+      // devices, dup-id repair, every device offline, ownership diagnostics.
+      normalizeLoadedState(state, { seededDefaults, defaultProject, sameProjectPath });
     }
     console.log(`[store:sqlite] durable backing ${outcome.mode} (${mirroredArrayKeys.length} collections).`);
   }
