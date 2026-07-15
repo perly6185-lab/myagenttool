@@ -16,6 +16,7 @@ import { createApprovalGrantService } from "../src/services/approval-grants.mjs"
 import { createToolService } from "../src/services/tools.mjs";
 import { createClaudeApplyAgentRegistration, isGovernedClaudeApplyAgent } from "../src/services/claude-apply-agent.mjs";
 import { createClaudeApplyImportService } from "../src/services/claude-apply-imports.mjs";
+import { proposalContentHash } from "../src/services/claude-propose-imports.mjs";
 
 const now = () => "2026-07-14T00:00:00.000Z";
 const ACTOR = { userId: "usr_a", teamId: "team_a" };
@@ -42,7 +43,17 @@ function governedApplyAgent() {
 // apply now REQUIRES a governed runner up front (no runner -> 409, no grant burned,
 // no stranded authorization), so the harness seeds one plus a recording
 // createInvocation. Pass withRunner:false to exercise the no-runner refusal.
-function harness({ withProposal = true, withRunner = true, patch = "diff --git a/x.mjs b/x.mjs\n--- a/x.mjs\n+++ b/x.mjs\n@@ -1 +1,2 @@\n foo\n+bar\n" } = {}) {
+function harness({
+  withProposal = true,
+  withRunner = true,
+  patch = "diff --git a/x.mjs b/x.mjs\n--- a/x.mjs\n+++ b/x.mjs\n@@ -1 +1,2 @@\n foo\n+bar\n",
+  // Extra fields merged into the proposal artifact output (e.g. baseCommit,
+  // applicationId/descriptorRevision for the staleness tests).
+  proposalExtra = {},
+  // The completion stamp (#913); pass false to model a pre-stamp legacy artifact.
+  withContentHash = true,
+  findApplication = () => null,
+} = {}) {
   let id = 0;
   const nextId = (prefix) => `${prefix}_${(id += 1)}`;
   const created = [];
@@ -66,7 +77,15 @@ function harness({ withProposal = true, withRunner = true, patch = "diff --git a
       projectId: "prj_a",
       status: "succeeded",
       options: { metadata: { tool: "claude.propose.patch", worktreeId: "wt_a", projectId: "prj_a" } },
-      result: { output: { source: "claude", tool: "claude.propose.patch", summary: "Add bar.", patch, files: [{ path: "x.mjs", action: "modified" }] } },
+      result: { output: {
+        source: "claude",
+        tool: "claude.propose.patch",
+        summary: "Add bar.",
+        patch,
+        files: [{ path: "x.mjs", action: "modified" }],
+        ...(withContentHash ? { contentHash: proposalContentHash(patch) } : {}),
+        ...proposalExtra,
+      } },
     });
   }
   const { issueApprovalGrant, validateApprovalToken } = createApprovalGrantService({
@@ -79,7 +98,7 @@ function harness({ withProposal = true, withRunner = true, patch = "diff --git a
     appendEvent: (e) => state.events.push(e),
     createInvocation: (task, agent, options) => { const inv = { id: nextId("inv_exec"), status: "queued", agentId: agent.id, options, task }; created.push(inv); state.invocations.push(inv); return inv; },
     startInvocationIfAllowed: () => {},
-    findApplication: () => null,
+    findApplication,
     findAgent: (aid) => state.agents.find((a) => a.id === aid) ?? null,
     planApplicationWrapperInvocation: () => ({ ok: false, status: 500, body: {} }),
     validateApprovalToken,
@@ -199,7 +218,7 @@ test("apply fails closed when the grant validator is not wired", () => {
       worktrees: [{ id: "wt_a", projectId: "prj_a" }],
       currentProjectId: "prj_a",
       agents: [governedApplyAgent()],
-      invocations: [{ id: "inv_proposal", projectId: "prj_a", status: "succeeded", options: { metadata: { tool: "claude.propose.patch", worktreeId: "wt_a", projectId: "prj_a" } }, result: { output: { tool: "claude.propose.patch", patch: "diff --git a/x b/x\n+y\n", files: [] } } }],
+      invocations: [{ id: "inv_proposal", projectId: "prj_a", status: "succeeded", options: { metadata: { tool: "claude.propose.patch", worktreeId: "wt_a", projectId: "prj_a" } }, result: { output: { tool: "claude.propose.patch", patch: "diff --git a/x b/x\n+y\n", contentHash: proposalContentHash("diff --git a/x b/x\n+y\n"), files: [] } } }],
       claudeApplyAuthorizations: [],
       events: [],
       device: { unlinkState: "linked" },
@@ -553,6 +572,103 @@ test("apply refuses an unknown proposal, a non-proposal invocation, and a worktr
     assert.equal(mismatch.status, 409);
     assert.equal(mismatch.body.error, "worktree_binding_mismatch");
     assert.equal(h3.state.claudeApplyAuthorizations.length, 0);
+  } finally {
+    setApplyFlag(false);
+  }
+});
+
+// --- Artifact binding revalidation (#913/#914): hash, descriptor lineage, base ---
+
+test("apply refuses a tampered artifact (stored patch != stamped hash) and does NOT burn the grant", () => {
+  setApplyFlag(true);
+  try {
+    const { service, state, grantFor, created } = harness();
+    // Tamper with the stored artifact AFTER completion stamped it.
+    state.invocations[0].result.output.patch += "+evil\n";
+    const token = grantFor("inv_proposal");
+    const res = service.createToolInvocation("claude.apply.patch", { worktreeId: "wt_a", proposalInvocationId: "inv_proposal", approvalToken: token }, ACTOR);
+    assert.equal(res.status, 409);
+    assert.equal(res.body.error, "proposal_integrity_mismatch");
+    assert.equal(state.claudeApplyAuthorizations.length, 0);
+    assert.equal(created.length, 0, "no dispatch");
+    assert.ok(!state.approvalGrants[0].consumedAt, "an integrity refusal must not consume the single-use grant");
+  } finally {
+    setApplyFlag(false);
+  }
+});
+
+test("apply fails closed on a pre-stamp artifact with no content hash", () => {
+  setApplyFlag(true);
+  try {
+    const { service, state, grantFor } = harness({ withContentHash: false });
+    const res = service.createToolInvocation("claude.apply.patch", { worktreeId: "wt_a", proposalInvocationId: "inv_proposal", approvalToken: grantFor("inv_proposal") }, ACTOR);
+    assert.equal(res.status, 409);
+    assert.equal(res.body.error, "proposal_bindings_missing");
+    assert.equal(state.claudeApplyAuthorizations.length, 0);
+    assert.ok(!state.approvalGrants[0].consumedAt);
+  } finally {
+    setApplyFlag(false);
+  }
+});
+
+test("apply refuses a proposal generated under a replaced or revision-moved Application descriptor", () => {
+  setApplyFlag(true);
+  try {
+    // Revision moved (descriptor re-registered as a new immutable revision).
+    const moved = harness({
+      proposalExtra: { applicationId: "app_claude", descriptorRevision: 1 },
+      findApplication: (id) => (id === "app_claude" ? { id: "app_claude", descriptorRevision: 2, successorApplicationId: null } : null),
+    });
+    const res1 = moved.service.createToolInvocation("claude.apply.patch", { worktreeId: "wt_a", proposalInvocationId: "inv_proposal", approvalToken: moved.grantFor("inv_proposal") }, ACTOR);
+    assert.equal(res1.status, 409);
+    assert.equal(res1.body.error, "proposal_descriptor_stale");
+
+    // Replaced (successor lineage, #897): names the successor for the operator.
+    const replaced = harness({
+      proposalExtra: { applicationId: "app_claude", descriptorRevision: 1 },
+      findApplication: (id) => (id === "app_claude" ? { id: "app_claude", descriptorRevision: 1, successorApplicationId: "app_claude_v2" } : null),
+    });
+    const res2 = replaced.service.createToolInvocation("claude.apply.patch", { worktreeId: "wt_a", proposalInvocationId: "inv_proposal", approvalToken: replaced.grantFor("inv_proposal") }, ACTOR);
+    assert.equal(res2.status, 409);
+    assert.equal(res2.body.error, "proposal_descriptor_stale");
+    assert.equal(res2.body.replacedBy, "app_claude_v2");
+
+    // Same revision, no successor: passes the lineage gate.
+    const current = harness({
+      proposalExtra: { applicationId: "app_claude", descriptorRevision: 2 },
+      findApplication: (id) => (id === "app_claude" ? { id: "app_claude", descriptorRevision: 2, successorApplicationId: null } : null),
+    });
+    const res3 = current.service.createToolInvocation("claude.apply.patch", { worktreeId: "wt_a", proposalInvocationId: "inv_proposal", approvalToken: current.grantFor("inv_proposal") }, ACTOR);
+    assert.equal(res3.status, 201);
+  } finally {
+    setApplyFlag(false);
+  }
+});
+
+test("apply stamps the validated bindings on the authorization and dispatches --expect-base material", () => {
+  setApplyFlag(true);
+  try {
+    const sha = "ab".repeat(20);
+    const { service, state, grantFor, created } = harness({ proposalExtra: { baseCommit: sha } });
+    const res = service.createToolInvocation("claude.apply.patch", { worktreeId: "wt_a", proposalInvocationId: "inv_proposal", approvalToken: grantFor("inv_proposal") }, ACTOR);
+    assert.equal(res.status, 201);
+    const authorization = state.claudeApplyAuthorizations[0];
+    assert.equal(authorization.contentHash, state.invocations[0].result.output.contentHash);
+    assert.equal(authorization.baseCommit, sha);
+    assert.equal(created[0].options.metadata.expectedBaseCommit, sha, "the bridge injects --expect-base from this");
+  } finally {
+    setApplyFlag(false);
+  }
+});
+
+test("apply ignores a malformed baseCommit (no binding) rather than dispatching junk to the runner", () => {
+  setApplyFlag(true);
+  try {
+    const { service, state, grantFor, created } = harness({ proposalExtra: { baseCommit: "not-a-sha" } });
+    const res = service.createToolInvocation("claude.apply.patch", { worktreeId: "wt_a", proposalInvocationId: "inv_proposal", approvalToken: grantFor("inv_proposal") }, ACTOR);
+    assert.equal(res.status, 201);
+    assert.equal(state.claudeApplyAuthorizations[0].baseCommit, null);
+    assert.equal(created[0].options.metadata.expectedBaseCommit, undefined);
   } finally {
     setApplyFlag(false);
   }

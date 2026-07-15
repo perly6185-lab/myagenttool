@@ -29,6 +29,7 @@ import {
   isGovernedClaudeApplyAgent,
 } from "./claude-apply-agent.mjs";
 import { CLAUDE_APPLICATION_ID } from "./claude-application.mjs";
+import { proposalContentHash } from "./claude-propose-imports.mjs";
 import { LOCAL_TEAM_ID, teamOf } from "../runtime/auth.mjs";
 import { makeRunTx } from "../runtime/store/run-tx.mjs";
 
@@ -114,10 +115,15 @@ export function createToolService({
         selectAgent: selectClaudeProposeAgent,
         buildTask: buildClaudeProposeTask,
         // The proposal is an immutable artifact on the invocation result; a later
-        // approval-bound apply (Phase 4) consumes it by invocation id.
+        // approval-bound apply (Phase 4) consumes it by invocation id. The
+        // descriptor revision rides along (#913) so the artifact is bound to the
+        // exact contract it was generated under and a replaced descriptor (#897
+        // lineage) visibly staleness-refuses the apply.
         outputCollection: "invocations",
         agentLabel: "Claude",
-        application: application ? { id: application.id, capability: `app.${application.id}.propose.patch` } : null,
+        application: application
+          ? { id: application.id, capability: `app.${application.id}.propose.patch`, descriptorRevision: application.descriptorRevision ?? 1 }
+          : null,
       });
     }
     if (name === CLAUDE_APPLY_TOOL_CONTRACT.name) {
@@ -260,6 +266,7 @@ export function createToolService({
             applicationId: application.id,
             capability: application.capability,
             applicationAction: `tool:${contract.name}`,
+            ...(application.descriptorRevision != null ? { descriptorRevision: application.descriptorRevision } : {}),
           } : {}),
         },
       timeoutSeconds: 120,
@@ -459,6 +466,46 @@ export function createToolService({
       return { status: 409, body: { error: "worktree_binding_mismatch", proposalWorktreeId: meta.worktreeId, requestedWorktreeId: worktree.id } };
     }
 
+    // #913/#914: revalidate the artifact's immutable bindings BEFORE the grant is
+    // consumed and before any mutation path opens. Fail closed: an artifact
+    // without a stamped content hash (pre-stamp legacy, or a result that skipped
+    // completion stamping) is not applicable — regenerate the proposal.
+    const stampedHash = stringOrNull(proposal.result?.output?.contentHash);
+    if (!stampedHash) {
+      return { status: 409, body: { error: "proposal_bindings_missing", message: "The proposal artifact carries no content hash. Regenerate the proposal." } };
+    }
+    if (proposalContentHash(patch) !== stampedHash) {
+      // The stored patch no longer hashes to what completion stamped — a tampered
+      // or corrupted artifact must not apply even when it would patch cleanly.
+      return { status: 409, body: { error: "proposal_integrity_mismatch", message: "The stored proposal patch does not match its stamped content hash. Regenerate the proposal." } };
+    }
+    const stampedApplicationId = stringOrNull(proposal.result?.output?.applicationId) ?? stringOrNull(meta.applicationId);
+    const stampedRevision = proposal.result?.output?.descriptorRevision ?? meta.descriptorRevision ?? null;
+    if (stampedApplicationId) {
+      // Descriptor lineage (#897): a proposal generated under a since-replaced
+      // Application descriptor was reviewed against a contract that no longer
+      // governs — visibly stale, never silently retargeted to the successor.
+      const boundApp = typeof findApplication === "function" ? findApplication(stampedApplicationId) : null;
+      const revisionMoved = stampedRevision != null && Number(boundApp?.descriptorRevision ?? 1) !== Number(stampedRevision);
+      if (!boundApp || boundApp.successorApplicationId || revisionMoved) {
+        return {
+          status: 409,
+          body: {
+            error: "proposal_descriptor_stale",
+            message: "The Application descriptor this proposal was generated under has been replaced. Regenerate the proposal.",
+            applicationId: stampedApplicationId,
+            ...(boundApp?.successorApplicationId ? { replacedBy: boundApp.successorApplicationId } : {}),
+          },
+        };
+      }
+    }
+    // The worktree HEAD the proposal was generated against (wrapper-reported,
+    // shape-validated at stamping). The apply runner re-checks it device-side at
+    // the last moment before writing (--expect-base); absent on a legacy artifact.
+    const expectedBaseCommit = typeof proposal.result?.output?.baseCommit === "string" && /^[0-9a-f]{40}$/.test(proposal.result.output.baseCommit)
+      ? proposal.result.output.baseCommit
+      : null;
+
     // Require a runner BEFORE consuming the single-use grant: a grant that cannot
     // be executed must not be burned, and an authorization we can never run must not
     // be stranded (the old "4a-only, executable:false" path was a permanent dead
@@ -498,6 +545,9 @@ export function createToolService({
         // The bridge writes this to a temp file and passes --patch-file. Stripped
         // from public state (see sanitizeInvocationOptions).
         applyPatch: patch,
+        // #914: the bridge injects --expect-base so the runner refuses a worktree
+        // whose HEAD moved off the proposal's base. Never set on rollback runs.
+        ...(expectedBaseCommit ? { expectedBaseCommit } : {}),
         // Optional allowlisted post-apply verification; the bridge injects
         // --verify <id> and the wrapper maps it to fixed argv independently.
         ...(value.verify ? { verifyCommandId: value.verify } : {}),
@@ -522,6 +572,12 @@ export function createToolService({
       summary: stringOrNull(proposal.result?.output?.summary),
       patch,
       files,
+      // The bindings this authorization was validated against (#913/#914) — part
+      // of the durable write record, so rollback/audit can show exactly what the
+      // integrity gate saw.
+      contentHash: stampedHash,
+      baseCommit: expectedBaseCommit,
+      descriptorRevision: stampedRevision ?? null,
       verifyCommandId: value.verify ?? null,
       status: "applying",
       applied: false,
