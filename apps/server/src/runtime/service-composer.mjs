@@ -93,11 +93,13 @@ export function createServerRuntimeServices({
   // the whole `state` view into SQLite (the durable backing); the JSON snapshot is
   // kept current too during the soak so flipping the flag off loses nothing (Phase
   // C retires it). Default (no sqliteStore): today's JSON-only barrier, unchanged.
-  // `devices` persists through its own JSON path (listDevices/restoreDevices, not
-  // the persistedArrayKeys loop) but is an id-keyed array, so the SQLite backing
-  // mirrors it here too — otherwise it would be lost once the JSON snapshot is
-  // retired (Phase C). #1003 prep.
-  const mirroredArrayKeys = [...persistedArrayKeys, "devices"];
+  // `projects` and `devices` are id-keyed arrays that persist through their OWN JSON
+  // paths (not the persistedArrayKeys loop), so the SQLite backing mirrors them here
+  // too — otherwise the project registry / device fleet would be lost once the JSON
+  // snapshot is retired (Phase C). #1003 prep. (`currentProjectId` is a scalar the
+  // hydrate reconciles via normalizeLoadedState; a dedicated durable slot for it is
+  // a small follow-up before JSON is fully retired.)
+  const mirroredArrayKeys = [...persistedArrayKeys, "projects", "devices"];
   // #1003: the commit sink mirrors only the DELTA (changed/new/deleted rows) into
   // SQLite rather than rewriting the whole record table each commit — see
   // createIncrementalMirror. Primed to match the store right after seed/hydrate.
