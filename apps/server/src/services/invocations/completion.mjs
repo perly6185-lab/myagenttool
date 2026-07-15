@@ -251,9 +251,21 @@ export function createInvocationCompletionRuntime({
   }
 
   function createAuditSummary(invocation, summary) {
+    // #1085: the audit summary is a sanctioned audit exit — it must state
+    // whether a transcript was captured. Summary metadata only, never payload.
+    // Runs on the reject/cancel paths too, where no transcript exists → null.
+    const transcriptRecord = (state.runTranscripts ?? []).find((item) => item?.invocationId === invocation.id);
     return {
       invocationId: invocation.id,
       requesterId: invocation.requestedBy,
+      transcript: transcriptRecord
+        ? {
+            present: true,
+            contentHash: transcriptRecord.contentHash ?? null,
+            blocks: transcriptRecord.blocks?.length ?? 0,
+            truncated: transcriptRecord.truncated === true,
+          }
+        : null,
       agentId: invocation.agentId,
       deviceId: invocation.delivery.deviceId,
       status: invocation.status,

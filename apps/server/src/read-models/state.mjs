@@ -311,6 +311,9 @@ export function buildPublicState({
     troubleshootingReports,
     evidenceCenterRecords: evidenceCenterVisible,
     applicationRecoveryActions,
+    // #1085: transcript summary metadata joins the trust ledger. Scoped by
+    // invocation visibility; the ledger row carries hash/counts, never blocks.
+    runTranscripts: byInvocation(state.runTranscripts ?? []),
   });
 
   const devices = (state.devices ?? [state.device])
