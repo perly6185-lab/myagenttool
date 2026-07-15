@@ -371,7 +371,7 @@ export function createServerRuntimeServices({
     persistStateSoon,
     store,
   });
-  const { recordClaudeApplyResult } = createClaudeApplyImportService({
+  const { recordClaudeApplyResult, reconcileClaudeApplyTermination } = createClaudeApplyImportService({
     state,
     now,
     appendEvent,
@@ -452,7 +452,12 @@ export function createServerRuntimeServices({
       }
     },
     onInvocationApproved: (invocation) => approvalAutoRunHook?.(invocation),
-    onInvocationDenied: (invocation) => denialAutoRunHook?.(invocation),
+    onInvocationDenied: (invocation) => {
+      // Deny skips the completion runtime, so an apply/rollback held at the local
+      // gate and denied would strand its authorization at applying/rolling_back.
+      reconcileClaudeApplyTermination(invocation);
+      denialAutoRunHook?.(invocation);
+    },
   });
 
   const {
