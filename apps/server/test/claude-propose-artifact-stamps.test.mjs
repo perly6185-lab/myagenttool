@@ -57,3 +57,58 @@ test("no-ops for other tools, a missing output, and an empty patch", () => {
   assert.equal(stampClaudeProposalArtifact({ invocation: proposeInvocation(), result: { output: { patch: "   " } } }), null);
   assert.equal(stampClaudeProposalArtifact({ invocation: proposeInvocation(), result: { output: { patch: 7 } } }), null);
 });
+
+// --- #913: Evidence Center provenance for the proposal artifact ---
+
+test("a completed proposal leaves a provenance row with bindings and verification guidance", async () => {
+  const { buildEvidenceCenterRecords } = await import("../src/read-models/evidence-center.mjs");
+  const invocation = {
+    id: "inv_p1",
+    status: "succeeded",
+    agentId: "agt_claude_propose_patch",
+    completedAt: "2026-07-15T00:00:00.000Z",
+    options: { metadata: { tool: "claude.propose.patch", worktreeId: "wt_a" } },
+    result: { output: {
+      patch: PATCH,
+      summary: "Add a null guard.",
+      files: [{ path: "x.mjs", action: "modified" }],
+      contentHash: proposalContentHash(PATCH),
+      baseCommit: SHA.toLowerCase(),
+      descriptorRevision: 2,
+      applicationId: "app_claude",
+    } },
+  };
+  const state = { invocations: [invocation], worktrees: [{ id: "wt_a", worktreePath: "/repo/wt_a" }] };
+  const records = buildEvidenceCenterRecords({
+    state,
+    findInvocation: (id) => state.invocations.find((i) => i.id === id) ?? null,
+    codexSessionForInvocation: () => null,
+    repoPathForEvidence: () => null,
+  });
+  const row = records.find((r) => r.type === "patch_proposal");
+  assert.ok(row, "the proposal artifact is trust-ledger evidence");
+  assert.equal(row.source, "governed_claude_propose");
+  assert.equal(row.redactionState, "summary_only");
+  assert.equal(row.invocationId, "inv_p1");
+  assert.equal(row.repoPath, "/repo/wt_a");
+  assert.equal(row.provenance.contentHash, proposalContentHash(PATCH));
+  assert.equal(row.provenance.baseCommit, SHA.toLowerCase());
+  assert.equal(row.provenance.descriptorRevision, 2);
+  assert.equal(row.provenance.applicationId, "app_claude");
+  assert.match(row.verificationGuidance, /revalidates the content hash/);
+  assert.match(row.summary, /proposed: 1 file/);
+
+  // Provenance must not vanish with the payload: after the retention reap the
+  // row remains, marked payload_reaped.
+  delete invocation.result.output.patch;
+  invocation.result.output.patchRedacted = true;
+  const after = buildEvidenceCenterRecords({
+    state,
+    findInvocation: (id) => state.invocations.find((i) => i.id === id) ?? null,
+    codexSessionForInvocation: () => null,
+    repoPathForEvidence: () => null,
+  });
+  const reaped = after.find((r) => r.type === "patch_proposal");
+  assert.ok(reaped);
+  assert.equal(reaped.redactionState, "payload_reaped");
+});
