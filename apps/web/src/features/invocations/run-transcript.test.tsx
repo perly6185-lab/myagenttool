@@ -1,8 +1,9 @@
 // @vitest-environment jsdom
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, expect, test } from "vitest";
 import type { RunTranscriptBlock, RunTranscriptRecord } from "@/lib/api-client";
-import { RunTranscriptBlocks, pairTranscriptBlocks, thoughtLabel } from "./run-transcript";
+import { RunTranscriptBlocks, RunTranscriptSection, isTerminalRunStatus, pairTranscriptBlocks, thoughtLabel } from "./run-transcript";
 
 // #1074: the transcript block renderers — Thought-for-Ns, tool rows with
 // IN/OUT panels, Markdown text, and honest truncated/reaped states.
@@ -90,4 +91,42 @@ test("a reaped transcript shows the retention banner and skeleton sizes, no payl
 test("dropped steps beyond the size budget are stated, never silent", () => {
   render(<RunTranscriptBlocks transcript={record({ droppedBlocks: 3, truncated: true })} />);
   expect(screen.getByText(/3 step\(s\) were dropped/)).toBeTruthy();
+});
+
+// --- #1086: honest states + the terminal fetch gate ---
+
+test("isTerminalRunStatus mirrors the server's terminal set", () => {
+  expect(isTerminalRunStatus("succeeded")).toBe(true);
+  expect(isTerminalRunStatus("rejected")).toBe(true);
+  expect(isTerminalRunStatus("running")).toBe(false);
+  expect(isTerminalRunStatus(undefined)).toBe(false);
+});
+
+test("a running run announces the transcript honestly and fires NO query (no provider needed)", () => {
+  // No QueryClientProvider on purpose: if the gate leaked a useQuery call,
+  // this render would throw "No QueryClient set".
+  render(<RunTranscriptSection invocationId="inv_running" terminal={false} />);
+  expect(screen.getByText(/appears here once this run finishes/)).toBeTruthy();
+});
+
+test("a terminal run without a transcript says so instead of rendering nothing", () => {
+  const client = new QueryClient();
+  client.setQueryData(["run-transcript", "inv_old"], { invocationId: "inv_old", transcript: null });
+  render(
+    <QueryClientProvider client={client}>
+      <RunTranscriptSection invocationId="inv_old" terminal />
+    </QueryClientProvider>,
+  );
+  expect(screen.getByText(/did not emit a transcript/)).toBeTruthy();
+});
+
+test("a terminal run WITH a transcript renders the collapsible section", () => {
+  const client = new QueryClient();
+  client.setQueryData(["run-transcript", "inv_rich"], { invocationId: "inv_rich", transcript: record() });
+  render(
+    <QueryClientProvider client={client}>
+      <RunTranscriptSection invocationId="inv_rich" terminal />
+    </QueryClientProvider>,
+  );
+  expect(screen.getByRole("button", { name: /Agent transcript \(4 steps\)/ })).toBeTruthy();
 });

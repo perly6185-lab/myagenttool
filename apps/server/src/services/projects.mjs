@@ -252,7 +252,15 @@ export function createProjectService({ state, now, nextId, appendEvent, persistS
   }
 
   function worktreeForProject(projectId) {
-    return state.worktrees.find((item) => item.projectId === projectId) ?? null;
+    // A worktree is reachable from BOTH of its projects: the source repo project
+    // (`projectId`) and the derived workspace project created for the checkout
+    // (`workspaceProjectId`). Matching only the source meant an invocation
+    // created while the WORKSPACE project was current carried no worktreeId at
+    // all — sessions/evidence silently lost their worktree scope (caught by
+    // tools/dev/worktree-smoke.mjs, which was never wired into a gate).
+    return state.worktrees.find(
+      (item) => item.projectId === projectId || item.workspaceProjectId === projectId,
+    ) ?? null;
   }
 
   function createWorktree(body = {}) {

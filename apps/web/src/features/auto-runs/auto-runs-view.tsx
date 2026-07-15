@@ -21,7 +21,7 @@ import { EpicRollup } from "./epic-rollup";
 import { useConsoleState } from "@/data/use-console-state";
 import { useUiStore } from "@/store/ui-store";
 import { EventTimeline } from "@/features/invocations/event-timeline";
-import { RunTranscriptSection } from "@/features/invocations/run-transcript";
+import { RunTranscriptSection, isTerminalRunStatus } from "@/features/invocations/run-transcript";
 import type { InvocationEventSnapshot, DeploymentSnapshot } from "@/lib/console-state";
 
 interface AutoRunLink {
@@ -446,7 +446,7 @@ function RunTraceLinks({ run }: { run: AutoRunRecord }) {
 // receives them in the state snapshot, so we filter + order them here (oldest→newest)
 // and reuse the invocations EventTimeline. Hidden when a run has no events (evicted
 // from the bounded ring buffer, or none yet).
-function RunTimeline({ runId, invocationId, events }: { runId: string; invocationId?: string | null; events: InvocationEventSnapshot[] }) {
+function RunTimeline({ runId, invocationId, terminal, events }: { runId: string; invocationId?: string | null; terminal?: boolean; events: InvocationEventSnapshot[] }) {
   const [open, setOpen] = useState(false);
   const runEvents = useMemo(
     () =>
@@ -468,9 +468,10 @@ function RunTimeline({ runId, invocationId, events }: { runId: string; invocatio
       </button>
       {open ? (
         <div className="space-y-2 rounded-md border border-border bg-muted/20 p-3">
-          {/* #1074: the agent's own work (thinking / tool IN-OUT / Markdown) beside
-              the lifecycle events; renders nothing when the run has no transcript. */}
-          <RunTranscriptSection invocationId={invocationId} defaultOpen={false} />
+          {/* #1074/#1086: the agent's own work (thinking / tool IN-OUT / Markdown)
+              beside the lifecycle events. The terminal gate is the stale-null-race
+              fix: expanding mid-run must not fetch (and cache) a pre-completion null. */}
+          <RunTranscriptSection invocationId={invocationId} terminal={terminal} defaultOpen={false} />
           <EventTimeline events={runEvents} />
         </div>
       ) : null}
@@ -1077,7 +1078,16 @@ export function AutoRunsView() {
                 </div>
                 {run.worktreeId ? <WorktreeDiffPeek worktreeId={run.worktreeId} /> : null}
                 {run.invocationId ? <RunFilesPeek invocationId={run.invocationId} worktreeId={run.worktreeId} /> : null}
-                <RunTimeline runId={run.id} invocationId={run.invocationId} events={consoleState?.events ?? []} />
+                <RunTimeline
+                  runId={run.id}
+                  invocationId={run.invocationId}
+                  terminal={(() => {
+                    const inv = (consoleState?.invocations ?? []).find((i) => i.id === run.invocationId);
+                    // Unknown invocation (evicted old run) is treated as finished.
+                    return inv ? isTerminalRunStatus(inv.status) : true;
+                  })()}
+                  events={consoleState?.events ?? []}
+                />
                 {run.status === "failed" || run.status === "blocked" ? (
                   <div>
                     <Button
