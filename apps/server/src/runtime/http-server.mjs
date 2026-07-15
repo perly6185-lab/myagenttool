@@ -7,6 +7,7 @@ import { handleApprovalGrantRoutes } from "../routes/approval-grants.mjs";
 import { handleBridgeRoutes } from "../routes/bridge.mjs";
 import { handleCapabilityRoutes } from "../routes/capabilities.mjs";
 import { handleMailRoutes } from "../routes/mail.mjs";
+import { handleChannelRoutes } from "../routes/channels.mjs";
 import { handleCodexRoutes } from "../routes/codex.mjs";
 import { handleControlPlaneRoutes } from "../routes/control-plane.mjs";
 import { handleIntegrationRoutes } from "../routes/integrations.mjs";
@@ -184,6 +185,14 @@ export function createHttpServer({
   createMailIssueFromImport,
   replyOnIssue,
   confirmReplyDraft,
+  registerChannel,
+  listChannels,
+  enableChannel,
+  disableChannel,
+  channelHealth,
+  mapChannelIdentity,
+  removeChannelIdentity,
+  listChannelIdentities,
   nextId,
   persistStateSoon,
 }) {
@@ -254,6 +263,25 @@ export function createHttpServer({
       }
 
       if (await handleMailRoutes({ req, res, url, sendJson, readJson, actor, createMailIssueFromImport, replyOnIssue, confirmReplyDraft })) {
+        return;
+      }
+
+      if (await handleChannelRoutes({
+        req,
+        res,
+        url,
+        sendJson,
+        readJson,
+        actor,
+        registerChannel,
+        listChannels,
+        enableChannel,
+        disableChannel,
+        channelHealth,
+        mapChannelIdentity,
+        removeChannelIdentity,
+        listChannelIdentities,
+      })) {
         return;
       }
 
