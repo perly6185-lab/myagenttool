@@ -280,10 +280,14 @@ authorization (apply → failed; rollback → back to applied, retryable) instea
 stranding it at applying/rolling_back; the cap never evicts an in-flight row; the
 bridge deletes the per-run temp patch file (uniquely named per invocation) and
 the terminal invocation drops its patch blob so a patch is not kept in three
-durable copies. Known residual (tracked): post-apply verification still runs
+durable copies. The full proposal patch is bounded to an ~8 KB preview in public state
+(`buildPublicState`) so it no longer rides every poll verbatim — the console only
+needs a preview to display and the invocation id to apply. Known residual
+(tracked, deferred to avoid colliding with the in-flight #890 Store migration of
+the completion/dispatch write paths): post-apply verification still runs
 synchronously in the single-lane bridge (a long test suite delays other bridge
-work), and the full proposal patch still rides public state — both are efficiency
-follow-ups, not correctness.
+work) — the fix is a follow-up verify invocation, best landed after #890 Phase A
+settles.
 
 Governed rollback (follow-up, shipped): the recorded rollback guidance is an
 executable action, not just text. `POST
