@@ -77,6 +77,7 @@ export const persistedArrayKeys = [
   "aiUsageRecords",
   "invocationRounds",
   "toolInvocationRecords",
+  "runTranscripts",
   "ledgerEntries",
   "importedUsageEstimates",
   "codexReviewFindings",
