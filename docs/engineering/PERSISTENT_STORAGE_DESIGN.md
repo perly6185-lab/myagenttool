@@ -215,10 +215,14 @@ object as the live materialized **view** (not a full read rewrite):
   - **Operator:** set `MYAGENTTOOL_STORE=sqlite`; the DB lands at
     `<MYAGENTTOOL_STATE_PATH without .json>.sqlite`. Requires flag-free `node:sqlite`
     (Node ≥ 22.13 / 24) — it degrades loudly to the JSON backing otherwise.
-  - **Perf caveat:** the mirror rewrites the whole record table on every commit —
-    the same O(all-records) profile as the JSON snapshot it replaces. A per-record
-    delta commit is a later optimization (it needs services to write through
-    `tx.insert`, the deferred read-through step).
-- **Phase C (#1003) — pending.** Soak the SQLite backing, flip the default to
-  `sqlite`, and retire the JSON snapshot as the backing (a policy call + real soak
-  time).
+  - **Commit cost:** the commit sink writes only the DELTA (`createIncrementalMirror`)
+    — a `shadow` of the last serialized rows diffs the current state and upserts
+    only changed/new rows, deletes only removed ones. SQLite disk I/O is
+    O(changed-rows), not O(all-rows). The whole state is still serialized each commit
+    to diff (same CPU/memory as the JSON snapshot); a truly O(delta) commit that also
+    avoids the re-serialize needs per-record dirty tracking (the deferred read-through
+    step). The boot seed / a hydrate reconcile still do one full mirror.
+- **Phase C (#1003) — pending, NO code blockers.** All hydrate/restore parity (shared
+  `normalizeLoadedState`) and the commit-cost caveat are resolved. What's left is
+  operational: soak the SQLite backing on a deployment, make the policy call to flip
+  the default to `sqlite`, and retire the JSON snapshot as the backing.
