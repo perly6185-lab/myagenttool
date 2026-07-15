@@ -266,6 +266,25 @@ the authorization transitions to `applied` with the file list + reversible
 rollback, and the rollback genuinely reverts — proving the patch reaches the
 bridge via invocation metadata (it is stripped only from public state).
 
+Post-merge hardening (review follow-up): the apply lifecycle was tightened after
+a recall review found lifecycle/tenancy holes. apply and rollback now require a
+governed runner BEFORE consuming the single-use grant (a runner-absent 409 no
+longer burns the grant, and the old stranded "authorized, no runner" state is
+gone — apply always dispatches or refuses). rollback re-validates the bound
+worktree still exists (a dangling worktree would otherwise let createInvocation
+fall back to the project's default checkout and `git apply --reverse` the wrong
+tree) and enforces tenancy off a team stamped on the authorization at creation
+(robust to the project row being deleted). A result-less terminal — deny at the
+platform gate, timeout, cancel, liveness reclaim — now reconciles the
+authorization (apply → failed; rollback → back to applied, retryable) instead of
+stranding it at applying/rolling_back; the cap never evicts an in-flight row; the
+bridge deletes the per-run temp patch file (uniquely named per invocation) and
+the terminal invocation drops its patch blob so a patch is not kept in three
+durable copies. Known residual (tracked): post-apply verification still runs
+synchronously in the single-lane bridge (a long test suite delays other bridge
+work), and the full proposal patch still rides public state — both are efficiency
+follow-ups, not correctness.
+
 Governed rollback (follow-up, shipped): the recorded rollback guidance is an
 executable action, not just text. `POST
 /api/claude-apply/authorizations/:id/rollback` requires a fresh single-use grant
