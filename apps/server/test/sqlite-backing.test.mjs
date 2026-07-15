@@ -121,6 +121,33 @@ test("devices mirror + hydrate round-trip (id-keyed array; offline reset lives i
   }
 });
 
+test("a natural-keyed (id-less) array collection round-trips as a blob, not dropped", { skip }, () => {
+  const store = createSqliteStore({ DatabaseSync, path: ":memory:" });
+  try {
+    const keys = { arrayKeys: ["agentUsageSummaries"], objectKeys: [] };
+    // Rows keyed by agentId, no `.id` — the record table can't key these individually.
+    const state = { agentUsageSummaries: [{ agentId: "agt_2", n: 2 }, { agentId: "agt_1", n: 1 }] };
+    const res = mirrorState({ store, state, ...keys });
+    assert.equal(res.skipped, 0, "id-less rows are NOT dropped (stored as a blob)");
+
+    const back = { agentUsageSummaries: [] };
+    seedOrHydrate({ store, state: back, ...keys });
+    assert.deepEqual(back.agentUsageSummaries, state.agentUsageSummaries, "blob round-trips faithfully, in order");
+
+    // Incremental delta over a blob collection.
+    const mirror = createIncrementalMirror({ store, ...keys });
+    mirror.prime(state);
+    state.agentUsageSummaries.unshift({ agentId: "agt_3", n: 3 });
+    const d = mirror.sync(state);
+    assert.equal(d.skipped, 0);
+    const back2 = { agentUsageSummaries: [] };
+    seedOrHydrate({ store, state: back2, ...keys });
+    assert.deepEqual(back2.agentUsageSummaries.map((r) => r.agentId), ["agt_3", "agt_2", "agt_1"]);
+  } finally {
+    store.close();
+  }
+});
+
 test("mirror + hydrate PRESERVES newest-first order (regression: rowid-DESC vs insert order)", { skip }, () => {
   const store = createSqliteStore({ DatabaseSync, path: ":memory:" });
   try {
