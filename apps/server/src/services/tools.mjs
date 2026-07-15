@@ -29,7 +29,8 @@ import {
   isGovernedClaudeApplyAgent,
 } from "./claude-apply-agent.mjs";
 import { CLAUDE_APPLICATION_ID } from "./claude-application.mjs";
-import { teamOf } from "../runtime/auth.mjs";
+import { LOCAL_TEAM_ID, teamOf } from "../runtime/auth.mjs";
+import { makeRunTx } from "../runtime/store/run-tx.mjs";
 
 const CCUSAGE_APPROVAL_REQUIRED_REPORTS = new Set(["session"]);
 
@@ -48,7 +49,9 @@ export function createToolService({
   // without it, exactly like the application service's approvalCheck.
   validateApprovalToken = null,
   persistStateSoon = () => {},
+  store,
 }) {
+  const runTx = makeRunTx({ store, persistStateSoon });
   function listTools() {
     return discoverTools();
   }
@@ -456,6 +459,16 @@ export function createToolService({
       return { status: 409, body: { error: "worktree_binding_mismatch", proposalWorktreeId: meta.worktreeId, requestedWorktreeId: worktree.id } };
     }
 
+    // Require a runner BEFORE consuming the single-use grant: a grant that cannot
+    // be executed must not be burned, and an authorization we can never run must not
+    // be stranded (the old "4a-only, executable:false" path was a permanent dead
+    // end — no UI or server route ever executed it). No runner → refuse; the
+    // operator registers one and retries with a fresh grant.
+    const runner = availableClaudeApplyRunner();
+    if (!runner) {
+      return { status: 409, body: { error: "agent_not_available", message: "No governed Claude apply runner is available." } };
+    }
+
     // Approval: a valid, single-use grant for (apply_patch, proposalInvocationId).
     // Fail closed if the validator is not wired — a missing validator must never
     // authorize a write-adjacent action.
@@ -472,6 +485,25 @@ export function createToolService({
     }
 
     const files = Array.isArray(proposal.result?.output?.files) ? proposal.result.output.files : [];
+    const invocation = createInvocation(`Apply an authorized Claude patch to worktree ${worktree.id}.`, runner, {
+      actor,
+      requestedBy: actor?.userId,
+      metadata: {
+        tool: CLAUDE_APPLY_TOOL_CONTRACT.name,
+        toolVersion: CLAUDE_APPLY_TOOL_CONTRACT.version,
+        projectId,
+        worktreeId: worktree.id,
+        claudeApplyAuthorizationId: null, // set below once the id is known
+        proposalInvocationId: value.proposalInvocationId,
+        // The bridge writes this to a temp file and passes --patch-file. Stripped
+        // from public state (see sanitizeInvocationOptions).
+        applyPatch: patch,
+        // Optional allowlisted post-apply verification; the bridge injects
+        // --verify <id> and the wrapper maps it to fixed argv independently.
+        ...(value.verify ? { verifyCommandId: value.verify } : {}),
+      },
+      timeoutSeconds: 120,
+    });
     const authorization = {
       id: typeof nextId === "function" ? nextId("cap_demo") : `cap_${(state.claudeApplyAuthorizations?.length ?? 0) + 1}`,
       source: "claude",
@@ -479,7 +511,11 @@ export function createToolService({
       proposalInvocationId: value.proposalInvocationId,
       // Scope this artifact to the proposal's invocation in the public read model.
       invocationId: value.proposalInvocationId,
+      executionInvocationId: invocation.id,
       projectId,
+      // Team ownership stamped at creation so tenancy survives the project row
+      // being deleted/archived later (a project lookup would then resolve null).
+      ownerTeamId: authorizationOwnerTeam(projectId, actor),
       worktreeId: worktree.id,
       requestedBy: actor?.userId ?? null,
       grantId: approval.grantId ?? null,
@@ -487,89 +523,67 @@ export function createToolService({
       patch,
       files,
       verifyCommandId: value.verify ?? null,
-      // Immutable, single-use. 4a authorizes; a later slice (4b) executes it.
-      status: "authorized",
-      executable: false,
+      status: "applying",
       applied: false,
       createdAt: now(),
     };
-    state.claudeApplyAuthorizations = state.claudeApplyAuthorizations ?? [];
-    state.claudeApplyAuthorizations.unshift(authorization);
-    state.claudeApplyAuthorizations = state.claudeApplyAuthorizations.slice(0, 500);
-    appendEvent({
-      invocationId: value.proposalInvocationId,
-      type: "claude_apply_authorized",
-      level: "info",
-      message: `Authorized a Claude patch apply for proposal ${value.proposalInvocationId} (grant ${approval.grantId ?? "legacy"}).`,
-      data: {
-        claudeApplyAuthorizationId: authorization.id,
-        proposalInvocationId: value.proposalInvocationId,
-        worktreeId: worktree.id,
-        grantId: approval.grantId ?? null,
-      },
-    });
-
-    // Phase 4b: if a governed apply RUNNER is available, dispatch the git-apply as
-    // a queued bridge invocation carrying the authorized patch. Without a runner
-    // this stays a 4a authorization (executable: false) — the authorization is the
-    // durable proof the apply was approved either way.
-    const runner = availableClaudeApplyRunner();
-    if (runner) {
-      const invocation = createInvocation(`Apply an authorized Claude patch to worktree ${worktree.id}.`, runner, {
-        actor,
-        requestedBy: actor?.userId,
-        metadata: {
-          tool: CLAUDE_APPLY_TOOL_CONTRACT.name,
-          toolVersion: CLAUDE_APPLY_TOOL_CONTRACT.version,
-          projectId,
-          worktreeId: worktree.id,
+    runTx(() => {
+      invocation.options.metadata.claudeApplyAuthorizationId = authorization.id;
+      state.claudeApplyAuthorizations = state.claudeApplyAuthorizations ?? [];
+      state.claudeApplyAuthorizations.unshift(authorization);
+      pruneClaudeApplyAuthorizations();
+      startInvocationIfAllowed(invocation, runner);
+      appendEvent({
+        invocationId: value.proposalInvocationId,
+        type: "claude_apply_authorized",
+        level: "info",
+        message: `Authorized a Claude patch apply for proposal ${value.proposalInvocationId} (grant ${approval.grantId ?? "legacy"}).`,
+        data: {
           claudeApplyAuthorizationId: authorization.id,
           proposalInvocationId: value.proposalInvocationId,
-          // The bridge writes this to a temp file and passes --patch-file. Stripped
-          // from public state (see sanitizeInvocationOptions).
-          applyPatch: patch,
-          // Optional allowlisted post-apply verification; the bridge injects
-          // --verify <id> and the wrapper maps it to fixed argv independently.
-          ...(value.verify ? { verifyCommandId: value.verify } : {}),
-        },
-        timeoutSeconds: 120,
-      });
-      startInvocationIfAllowed(invocation, runner);
-      authorization.status = "applying";
-      authorization.executable = true;
-      authorization.executionInvocationId = invocation.id;
-      persistStateSoon();
-      return {
-        status: 201,
-        body: {
-          tool: CLAUDE_APPLY_TOOL_CONTRACT.name,
-          authorizationId: authorization.id,
-          status: "applying",
-          executable: true,
-          applied: false,
-          executionInvocationId: invocation.id,
-          agentId: runner.id,
-          proposalInvocationId: value.proposalInvocationId,
           worktreeId: worktree.id,
-          files,
+          grantId: approval.grantId ?? null,
         },
-      };
-    }
-
-    persistStateSoon();
+      });
+    });
     return {
       status: 201,
       body: {
         tool: CLAUDE_APPLY_TOOL_CONTRACT.name,
         authorizationId: authorization.id,
-        status: "authorized",
-        executable: false,
+        status: "applying",
         applied: false,
+        executionInvocationId: invocation.id,
+        agentId: runner.id,
         proposalInvocationId: value.proposalInvocationId,
         worktreeId: worktree.id,
         files,
       },
     };
+  }
+
+  // Owning team of an apply authorization: the project's team when known, else the
+  // actor's, else the local team. Stamped once so rollback tenancy never depends on
+  // the project row still existing.
+  function authorizationOwnerTeam(projectId, actor) {
+    const project = projectId ? (state.projects ?? []).find((item) => item.id === projectId) : null;
+    return (project ? teamOf(project) : null) ?? actor?.teamId ?? LOCAL_TEAM_ID;
+  }
+
+  // Status-aware cap: never evict an in-flight authorization (applying/rolling_back)
+  // — it is the only server-held copy of the patch and the only durable write
+  // record — and keep the most recent MAX terminal rows. Evicting an in-flight row
+  // would silently drop its git-apply result and strand the write.
+  function pruneClaudeApplyAuthorizations() {
+    const MAX_TERMINAL = 500;
+    let terminalKept = 0;
+    // Preserve newest-first order (rows are unshifted); keep every in-flight row and
+    // the newest MAX_TERMINAL terminal rows.
+    state.claudeApplyAuthorizations = (state.claudeApplyAuthorizations ?? []).filter((row) => {
+      if (row.status === "applying" || row.status === "rolling_back") return true;
+      if (terminalKept < MAX_TERMINAL) { terminalKept += 1; return true; }
+      return false;
+    });
   }
 
   // A governed apply runner that can actually execute now: registered, enabled,
@@ -592,15 +606,24 @@ export function createToolService({
       return { status: 403, body: { error: "apply_not_enabled", message: "The Claude apply capability is disabled." } };
     }
     const authorization = (state.claudeApplyAuthorizations ?? []).find((item) => item.id === String(authorizationId ?? "")) ?? null;
-    // Tenancy: a foreign-team authorization reads as unknown (no existence leak).
-    const project = authorization?.projectId
-      ? (state.projects ?? []).find((item) => item.id === authorization.projectId) ?? null
-      : null;
-    if (!authorization || (actor?.teamId && project && teamOf(project) !== actor.teamId)) {
+    // Tenancy off the STAMPED owning team, not a project lookup: a scoped actor
+    // must match the authorization's team, and an authorization whose team is
+    // unknown reads as not-found. (The old project-lookup guard silently passed a
+    // foreign actor once the project row was deleted, since `project` went null.)
+    const projectRow = authorization?.projectId ? (state.projects ?? []).find((item) => item.id === authorization.projectId) ?? null : null;
+    const ownerTeam = authorization?.ownerTeamId ?? (projectRow ? teamOf(projectRow) : null);
+    if (!authorization || (actor?.teamId && ownerTeam !== actor.teamId)) {
       return { status: 404, body: { error: "authorization_not_found" } };
     }
     if (authorization.status !== "applied") {
       return { status: 409, body: { error: "authorization_not_applied", status: authorization.status, message: "Only an applied authorization can be rolled back." } };
+    }
+    // Re-validate the bound worktree still exists. Without this, createInvocation
+    // silently substitutes the project's default worktree for a dangling id and the
+    // --reverse could git-revert in the WRONG tree (e.g. the main checkout).
+    const worktree = findToolWorktree(authorization.worktreeId, authorization.projectId);
+    if (!worktree) {
+      return { status: 409, body: { error: "worktree_not_found", message: "The bound worktree no longer exists; the patch cannot be safely rolled back." } };
     }
     const token = stringOrNull(body?.approvalToken);
     if (!token) {
@@ -609,13 +632,15 @@ export function createToolService({
     if (typeof validateApprovalToken !== "function") {
       return { status: 409, body: { error: "approval_required", reason: "approval_validator_unavailable" } };
     }
-    const approval = validateApprovalToken(token, { action: "rollback_patch", targetId: authorization.id, actor });
-    if (!approval.approved) {
-      return { status: 409, body: { error: "approval_required", reason: approval.reason ?? "grant_required" } };
-    }
+    // Check the runner BEFORE consuming the single-use grant — a 409 here must not
+    // burn the grant (the web UI mints-then-calls in one click).
     const runner = availableClaudeApplyRunner();
     if (!runner) {
       return { status: 409, body: { error: "agent_not_available", message: "No governed Claude apply runner is available to execute the rollback." } };
+    }
+    const approval = validateApprovalToken(token, { action: "rollback_patch", targetId: authorization.id, actor });
+    if (!approval.approved) {
+      return { status: 409, body: { error: "approval_required", reason: approval.reason ?? "grant_required" } };
     }
     const invocation = createInvocation(`Roll back an applied Claude patch on worktree ${authorization.worktreeId}.`, runner, {
       actor,
@@ -633,22 +658,23 @@ export function createToolService({
       },
       timeoutSeconds: 120,
     });
-    startInvocationIfAllowed(invocation, runner);
-    authorization.status = "rolling_back";
-    authorization.rollbackInvocationId = invocation.id;
-    appendEvent({
-      invocationId: invocation.id,
-      type: "claude_rollback_authorized",
-      level: "warn",
-      message: `Authorized rolling back Claude patch authorization ${authorization.id} (grant ${approval.grantId ?? "legacy"}).`,
-      data: {
-        claudeApplyAuthorizationId: authorization.id,
-        proposalInvocationId: authorization.proposalInvocationId,
-        worktreeId: authorization.worktreeId,
-        grantId: approval.grantId ?? null,
-      },
+    runTx(() => {
+      startInvocationIfAllowed(invocation, runner);
+      authorization.status = "rolling_back";
+      authorization.rollbackInvocationId = invocation.id;
+      appendEvent({
+        invocationId: invocation.id,
+        type: "claude_rollback_authorized",
+        level: "warn",
+        message: `Authorized rolling back Claude patch authorization ${authorization.id} (grant ${approval.grantId ?? "legacy"}).`,
+        data: {
+          claudeApplyAuthorizationId: authorization.id,
+          proposalInvocationId: authorization.proposalInvocationId,
+          worktreeId: authorization.worktreeId,
+          grantId: approval.grantId ?? null,
+        },
+      });
     });
-    persistStateSoon();
     return {
       status: 202,
       body: {

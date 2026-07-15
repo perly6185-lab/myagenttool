@@ -15,6 +15,7 @@
 //      20 000 chars, so a large `log` silently loses its tail — a record that
 //      parsed 40 of 50 commits must not present itself as complete.
 
+import { makeRunTx } from "../runtime/store/run-tx.mjs";
 import { gitCommandIdOf, parseGitApplicationResult } from "./git-result.mjs";
 
 const MAX_APPLICATION_RESULTS = 500;
@@ -38,7 +39,9 @@ export function createApplicationResultImportService({
   nextId,
   appendEvent,
   persistStateSoon = () => {},
+  store,
 }) {
+  const runTx = makeRunTx({ store, persistStateSoon });
   function recordApplicationResult({ invocation, result }) {
     const metadata = invocation?.options?.metadata ?? {};
     const wrapper = metadata.applicationWrapper;
@@ -84,28 +87,28 @@ export function createApplicationResultImportService({
       createdAt,
     };
 
-    state.applicationResults = state.applicationResults ?? [];
-    state.applicationResults.unshift(record);
-    state.applicationResults = state.applicationResults.slice(0, MAX_APPLICATION_RESULTS);
-
-    appendEvent({
-      invocationId: invocation.id,
-      type: "application_result_imported",
-      level: data ? "info" : "warn",
-      message: data
-        ? `Imported a ${source} ${record.kind ?? "result"} from ${capability ?? "an application capability"}.`
-        : `Stored an unparsed ${source} result from ${capability ?? "an application capability"}.`,
-      data: {
-        applicationResultId: record.id,
-        applicationId: record.applicationId,
-        capability,
-        source,
-        kind: record.kind,
-        parsed: Boolean(data),
-        truncated,
-      },
+    runTx(() => {
+      state.applicationResults = state.applicationResults ?? [];
+      state.applicationResults.unshift(record);
+      state.applicationResults = state.applicationResults.slice(0, MAX_APPLICATION_RESULTS);
+      appendEvent({
+        invocationId: invocation.id,
+        type: "application_result_imported",
+        level: data ? "info" : "warn",
+        message: data
+          ? `Imported a ${source} ${record.kind ?? "result"} from ${capability ?? "an application capability"}.`
+          : `Stored an unparsed ${source} result from ${capability ?? "an application capability"}.`,
+        data: {
+          applicationResultId: record.id,
+          applicationId: record.applicationId,
+          capability,
+          source,
+          kind: record.kind,
+          parsed: Boolean(data),
+          truncated,
+        },
+      });
     });
-    persistStateSoon();
     return [record];
   }
 

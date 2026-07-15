@@ -190,3 +190,39 @@ this issue):
 Sequencing: 1 → 2 → 3 unblock the rest of #890 (the broader per-record store);
 4–6 harden multi-tenant + retention. Each is independently reviewable and
 default-safe (the snapshot adapter stays the default until the durable one soaks).
+
+## 7. Read-through-store cutover (Epic #1000) — status
+
+The six tasks above shipped the Store seam + a SQLite adapter as a *standalone*
+capability (the JSON snapshot stayed the live backing). Epic #1000 makes the
+durable store the actual backing, in three phases that keep the in-memory `state`
+object as the live materialized **view** (not a full read rewrite):
+
+- **Phase A (#1001) — DONE.** Every durable `state.<collection>` write across the
+  services now commits through the Store's unit-of-work (`runTx` from
+  `makeRunTx`); a crash between the `persistStateSoon` debounce and its flush no
+  longer loses the write. Byte-identical under the default in-memory adapter. An
+  anti-regression guard (`test/store-write-guard.test.mjs`) freezes it: any file
+  importing `makeRunTx` must have zero bare `persistStateSoon()`.
+- **Phase B (#1002) — DONE (opt-in).** `MYAGENTTOOL_STORE=sqlite` makes SQLite the
+  durable backing: the Store's commit **mirrors** the whole `state` view into
+  SQLite (`replaceSnapshot`, so deletes propagate), and boot **hydrates** `state`
+  from SQLite (`seedOrHydrate` — seeds from the JSON-restored state on first run,
+  hydrates thereafter). Reads are unchanged (still scan `state`). Object singletons
+  (`autoRunSettings`, `retentionSettings`, …) store as one reserved-id row. The
+  JSON snapshot stays current during the soak, so flipping the flag off loses
+  nothing. Default is `memory` (today's JSON-only backing, unchanged).
+  - **Operator:** set `MYAGENTTOOL_STORE=sqlite`; the DB lands at
+    `<MYAGENTTOOL_STATE_PATH without .json>.sqlite`. Requires flag-free `node:sqlite`
+    (Node ≥ 22.13 / 24) — it degrades loudly to the JSON backing otherwise.
+  - **Commit cost:** the commit sink writes only the DELTA (`createIncrementalMirror`)
+    — a `shadow` of the last serialized rows diffs the current state and upserts
+    only changed/new rows, deletes only removed ones. SQLite disk I/O is
+    O(changed-rows), not O(all-rows). The whole state is still serialized each commit
+    to diff (same CPU/memory as the JSON snapshot); a truly O(delta) commit that also
+    avoids the re-serialize needs per-record dirty tracking (the deferred read-through
+    step). The boot seed / a hydrate reconcile still do one full mirror.
+- **Phase C (#1003) — pending, NO code blockers.** All hydrate/restore parity (shared
+  `normalizeLoadedState`) and the commit-cost caveat are resolved. What's left is
+  operational: soak the SQLite backing on a deployment, make the policy call to flip
+  the default to `sqlite`, and retire the JSON snapshot as the backing.

@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { normalizeLoopRoutine, validateLoopRoutine } from "../../../../tools/ai/src/loop/routine.mjs";
 import { teamOf } from "../runtime/auth.mjs";
+import { makeRunTx } from "../runtime/store/run-tx.mjs";
 
 // Consecutive failed health checks before an active application is auto-offlined
 // (docs/design/APPLICATION_HEALTH_PROBE.md) — fixed, to avoid flapping on
@@ -35,7 +36,9 @@ export function createApplicationService({
   defaultProjectPath = process.cwd(),
   sendAlert = null,
   validateApprovalToken = null,
+  store,
 }) {
+  const runTx = makeRunTx({ store, persistStateSoon });
   // Approval check behind every `approvalToken` field (docs/design/
   // APPROVAL_GRANTS.md): issued grants are validated + consumed; in phase 1 a
   // legacy free-text token still passes (stamped + counted by the validator).
@@ -152,18 +155,20 @@ export function createApplicationService({
       createdAt,
       updatedAt: createdAt,
     };
-    state.applications = state.applications ?? [];
-    state.applications.unshift(app);
-    appendEvent({
-      invocationId: null,
-      type: "application_registered",
-      level: "info",
-      message: `${app.name} application registered.`,
-      data: {
-        applicationId: app.id,
-        sourceType: app.source.type,
-        projectId: app.projectId,
-      },
+    runTx(() => {
+      state.applications = state.applications ?? [];
+      state.applications.unshift(app);
+      appendEvent({
+        invocationId: null,
+        type: "application_registered",
+        level: "info",
+        message: `${app.name} application registered.`,
+        data: {
+          applicationId: app.id,
+          sourceType: app.source.type,
+          projectId: app.projectId,
+        },
+      });
     });
     // Background git clone — off the event loop; settle the app when done (#305).
     if (source.type === "git") {
@@ -175,34 +180,35 @@ export function createApplicationService({
         color: body.color,
         ownerTeamId: actor?.teamId,
       })).then((cloned) => {
-        app.projectId = cloned.id;
-        app.path = cloned.path;
-        app.status = "registered";
-        app.lifecycle = { state: "registered", lastOperation: "clone", lastOperationAt: now() };
-        app.updatedAt = now();
-        appendEvent({
-          invocationId: null,
-          type: "application_clone_completed",
-          level: "info",
-          message: `${app.name} git source cloned.`,
-          data: { applicationId: app.id, projectId: cloned.id },
+        runTx(() => {
+          app.projectId = cloned.id;
+          app.path = cloned.path;
+          app.status = "registered";
+          app.lifecycle = { state: "registered", lastOperation: "clone", lastOperationAt: now() };
+          app.updatedAt = now();
+          appendEvent({
+            invocationId: null,
+            type: "application_clone_completed",
+            level: "info",
+            message: `${app.name} git source cloned.`,
+            data: { applicationId: app.id, projectId: cloned.id },
+          });
         });
-        persistStateSoon();
       }).catch((error) => {
-        app.status = "failed";
-        app.lifecycle = { state: "failed", lastOperation: "clone", lastOperationAt: now(), error: String(error?.message ?? error) };
-        app.updatedAt = now();
-        appendEvent({
-          invocationId: null,
-          type: "application_clone_failed",
-          level: "warn",
-          message: `${app.name} git clone failed: ${String(error?.message ?? error)}`,
-          data: { applicationId: app.id },
+        runTx(() => {
+          app.status = "failed";
+          app.lifecycle = { state: "failed", lastOperation: "clone", lastOperationAt: now(), error: String(error?.message ?? error) };
+          app.updatedAt = now();
+          appendEvent({
+            invocationId: null,
+            type: "application_clone_failed",
+            level: "warn",
+            message: `${app.name} git clone failed: ${String(error?.message ?? error)}`,
+            data: { applicationId: app.id },
+          });
         });
-        persistStateSoon();
       });
     }
-    persistStateSoon();
     return app;
   }
 
@@ -236,12 +242,13 @@ export function createApplicationService({
       createdAt,
       updatedAt: createdAt,
     };
-    existing.successorApplicationId = app.id;
-    existing.status = existing.status === "archived" ? "archived" : "offline";
-    existing.updatedAt = createdAt;
-    state.applications.unshift(app);
-    appendEvent({ invocationId: null, type: "application_descriptor_replaced", level: "warning", message: `${existing.name} application descriptor replaced by immutable revision ${app.id}.`, data: { applicationId: app.id, predecessorApplicationId: existing.id, descriptorFingerprint } });
-    persistStateSoon();
+    runTx(() => {
+      existing.successorApplicationId = app.id;
+      existing.status = existing.status === "archived" ? "archived" : "offline";
+      existing.updatedAt = createdAt;
+      state.applications.unshift(app);
+      appendEvent({ invocationId: null, type: "application_descriptor_replaced", level: "warning", message: `${existing.name} application descriptor replaced by immutable revision ${app.id}.`, data: { applicationId: app.id, predecessorApplicationId: existing.id, descriptorFingerprint } });
+    });
     return app;
   }
 
@@ -253,24 +260,25 @@ export function createApplicationService({
     if (!nextStatus) {
       throw new Error(`Unsupported application lifecycle action: ${normalizedAction}`);
     }
-    app.status = nextStatus;
-    app.lifecycle = {
-      ...app.lifecycle,
-      state: nextStatus,
-      lastOperation: normalizedAction,
-      lastOperationAt: now(),
-      lastActorId: actor?.userId ?? null,
-    };
-    app.updatedAt = app.lifecycle.lastOperationAt;
-    appendEvent({
-      invocationId: null,
-      type: `application_${normalizedAction}`,
-      level: nextStatus === "offline" || nextStatus === "archived" ? "warn" : "info",
-      message: `${app.name} application ${normalizedAction}.`,
-      data: { applicationId: app.id, status: app.status },
+    return runTx(() => {
+      app.status = nextStatus;
+      app.lifecycle = {
+        ...app.lifecycle,
+        state: nextStatus,
+        lastOperation: normalizedAction,
+        lastOperationAt: now(),
+        lastActorId: actor?.userId ?? null,
+      };
+      app.updatedAt = app.lifecycle.lastOperationAt;
+      appendEvent({
+        invocationId: null,
+        type: `application_${normalizedAction}`,
+        level: nextStatus === "offline" || nextStatus === "archived" ? "warn" : "info",
+        message: `${app.name} application ${normalizedAction}.`,
+        data: { applicationId: app.id, status: app.status },
+      });
+      return app;
     });
-    persistStateSoon();
-    return app;
   }
 
   function probeApplication(applicationId, actor = null) {
@@ -278,38 +286,39 @@ export function createApplicationService({
     if (!app) return null;
     const probedAt = now();
     const probe = buildApplicationProbe(app);
-    app.probe = {
-      status: "completed",
-      checkedAt: probedAt,
-      summary: probe.summary,
-      source: probe.source,
-      package: probe.package,
-      readme: probe.readme,
-      capabilities: probe.capabilities,
-      capabilityNames: probe.capabilities.map((capability) => capability.name),
-      warnings: probe.warnings,
-    };
-    app.lifecycle = {
-      ...app.lifecycle,
-      lastOperation: "probe",
-      lastOperationAt: probedAt,
-      lastActorId: actor?.userId ?? null,
-    };
-    app.updatedAt = probedAt;
-    appendEvent({
-      invocationId: null,
-      type: "application_probed",
-      level: "info",
-      message: `${app.name} application probe completed.`,
-      data: {
-        applicationId: app.id,
-        capabilityCount: app.probe.capabilities.length,
-        inferredCapabilityCount: app.probe.capabilities.filter((capability) => capability.source === "inferred").length,
-        declaredCapabilityCount: app.probe.capabilities.filter((capability) => capability.source === "declared").length,
-      },
+    return runTx(() => {
+      app.probe = {
+        status: "completed",
+        checkedAt: probedAt,
+        summary: probe.summary,
+        source: probe.source,
+        package: probe.package,
+        readme: probe.readme,
+        capabilities: probe.capabilities,
+        capabilityNames: probe.capabilities.map((capability) => capability.name),
+        warnings: probe.warnings,
+      };
+      app.lifecycle = {
+        ...app.lifecycle,
+        lastOperation: "probe",
+        lastOperationAt: probedAt,
+        lastActorId: actor?.userId ?? null,
+      };
+      app.updatedAt = probedAt;
+      appendEvent({
+        invocationId: null,
+        type: "application_probed",
+        level: "info",
+        message: `${app.name} application probe completed.`,
+        data: {
+          applicationId: app.id,
+          capabilityCount: app.probe.capabilities.length,
+          inferredCapabilityCount: app.probe.capabilities.filter((capability) => capability.source === "inferred").length,
+          declaredCapabilityCount: app.probe.capabilities.filter((capability) => capability.source === "declared").length,
+        },
+      });
+      return app;
     });
-    persistStateSoon();
-    return app;
   }
 
   function listApplicationCapabilities(applicationId) {
@@ -395,19 +404,20 @@ export function createApplicationService({
       }
     }
 
-    const result = executeApplicationAction({ application, action, input, actor, defaultProjectPath, now });
-    if (result?.ok === false) {
-      return result;
-    }
-    appendEvent({
-      invocationId: null,
-      type: "application_capability_executed",
-      level: ["offline", "archive"].includes(action) ? "warn" : "info",
-      message: `${application.name} application capability ${action} executed.`,
-      data: { applicationId: application.id, capability: capabilityName, action },
+    return runTx(() => {
+      const result = executeApplicationAction({ application, action, input, actor, defaultProjectPath, now });
+      if (result?.ok === false) {
+        return result;
+      }
+      appendEvent({
+        invocationId: null,
+        type: "application_capability_executed",
+        level: ["offline", "archive"].includes(action) ? "warn" : "info",
+        message: `${application.name} application capability ${action} executed.`,
+        data: { applicationId: application.id, capability: capabilityName, action },
+      });
+      return { ok: true, application, action, result };
     });
-    persistStateSoon();
-    return { ok: true, application, action, result };
   }
 
   // Plan a wrapper-capability invocation for bridge execution (#359). Applies the
@@ -521,19 +531,20 @@ export function createApplicationService({
     // touching the application-level policy. clearOverride returns the routine
     // to the app default.
     if (routineId && body.clearOverride === true) {
-      const overrides = { ...(app.autoRecovery?.routineOverrides ?? {}) };
-      delete overrides[routineId];
-      app.autoRecovery = { ...(app.autoRecovery ?? { enabled: false, maxAttempts: 2 }), routineOverrides: overrides };
-      app.updatedAt = now();
-      appendEvent({
-        invocationId: null,
-        type: "application_auto_recovery_configured",
-        level: "info",
-        message: `Application ${app.name} auto-recovery override for ${routineId} cleared (back to app default).`,
-        data: { applicationId: app.id, routineId, cleared: true, actorId: actor?.userId ?? null },
+      return runTx(() => {
+        const overrides = { ...(app.autoRecovery?.routineOverrides ?? {}) };
+        delete overrides[routineId];
+        app.autoRecovery = { ...(app.autoRecovery ?? { enabled: false, maxAttempts: 2 }), routineOverrides: overrides };
+        app.updatedAt = now();
+        appendEvent({
+          invocationId: null,
+          type: "application_auto_recovery_configured",
+          level: "info",
+          message: `Application ${app.name} auto-recovery override for ${routineId} cleared (back to app default).`,
+          data: { applicationId: app.id, routineId, cleared: true, actorId: actor?.userId ?? null },
+        });
+        return app;
       });
-      persistStateSoon();
-      return app;
     }
     if (typeof body.enabled !== "boolean") {
       throw new Error("auto-recovery configuration requires enabled: boolean.");
@@ -542,29 +553,30 @@ export function createApplicationService({
     if (!Number.isInteger(maxAttempts) || maxAttempts < 1 || maxAttempts > 5) {
       throw new Error("auto-recovery maxAttempts must be an integer between 1 and 5.");
     }
-    if (routineId) {
-      app.autoRecovery = {
-        ...(app.autoRecovery ?? { enabled: false, maxAttempts: 2 }),
-        routineOverrides: {
-          ...(app.autoRecovery?.routineOverrides ?? {}),
-          [routineId]: { enabled: body.enabled, maxAttempts },
-        },
-      };
-    } else {
-      app.autoRecovery = { ...(app.autoRecovery ?? {}), enabled: body.enabled, maxAttempts };
-    }
-    app.updatedAt = now();
-    appendEvent({
-      invocationId: null,
-      type: "application_auto_recovery_configured",
-      level: body.enabled ? "warn" : "info",
-      message: routineId
-        ? `Application ${app.name} auto-recovery override for ${routineId}: ${body.enabled ? `enabled (max ${maxAttempts} attempts)` : "disabled"}.`
-        : `Application ${app.name} auto-recovery ${body.enabled ? `enabled (max ${maxAttempts} attempts)` : "disabled"}.`,
-      data: { applicationId: app.id, routineId, enabled: body.enabled, maxAttempts, actorId: actor?.userId ?? null },
+    return runTx(() => {
+      if (routineId) {
+        app.autoRecovery = {
+          ...(app.autoRecovery ?? { enabled: false, maxAttempts: 2 }),
+          routineOverrides: {
+            ...(app.autoRecovery?.routineOverrides ?? {}),
+            [routineId]: { enabled: body.enabled, maxAttempts },
+          },
+        };
+      } else {
+        app.autoRecovery = { ...(app.autoRecovery ?? {}), enabled: body.enabled, maxAttempts };
+      }
+      app.updatedAt = now();
+      appendEvent({
+        invocationId: null,
+        type: "application_auto_recovery_configured",
+        level: body.enabled ? "warn" : "info",
+        message: routineId
+          ? `Application ${app.name} auto-recovery override for ${routineId}: ${body.enabled ? `enabled (max ${maxAttempts} attempts)` : "disabled"}.`
+          : `Application ${app.name} auto-recovery ${body.enabled ? `enabled (max ${maxAttempts} attempts)` : "disabled"}.`,
+        data: { applicationId: app.id, routineId, enabled: body.enabled, maxAttempts, actorId: actor?.userId ?? null },
+      });
+      return app;
     });
-    persistStateSoon();
-    return app;
   }
 
   // Opt-in periodic health probe (docs/design/APPLICATION_HEALTH_PROBE.md).
@@ -586,17 +598,18 @@ export function createApplicationService({
     if (!Number.isInteger(intervalMinutes) || intervalMinutes < 1 || intervalMinutes > 60) {
       throw new Error("health-probe intervalMinutes must be an integer between 1 and 60.");
     }
-    app.healthProbe = { enabled: body.enabled, intervalMinutes, lastCheckedAt: app.healthProbe?.lastCheckedAt ?? null };
-    app.updatedAt = now();
-    appendEvent({
-      invocationId: null,
-      type: "application_health_probe_configured",
-      level: "info",
-      message: `Application ${app.name} health probe ${body.enabled ? `enabled (every ${intervalMinutes}m)` : "disabled"}.`,
-      data: { applicationId: app.id, enabled: body.enabled, intervalMinutes, actorId: actor?.userId ?? null },
+    return runTx(() => {
+      app.healthProbe = { enabled: body.enabled, intervalMinutes, lastCheckedAt: app.healthProbe?.lastCheckedAt ?? null };
+      app.updatedAt = now();
+      appendEvent({
+        invocationId: null,
+        type: "application_health_probe_configured",
+        level: "info",
+        message: `Application ${app.name} health probe ${body.enabled ? `enabled (every ${intervalMinutes}m)` : "disabled"}.`,
+        data: { applicationId: app.id, enabled: body.enabled, intervalMinutes, actorId: actor?.userId ?? null },
+      });
+      return app;
     });
-    persistStateSoon();
-    return app;
   }
 
   // One health check: source availability. local/git check the materialized
@@ -656,24 +669,25 @@ export function createApplicationService({
     // own health signal, or a wedged sweep is indistinguishable from "all
     // sources healthy". index.mjs's tick swallows exceptions by design; this
     // records the last run + last error where /api/state can expose them.
-    let checkedCount = 0;
-    let lastError = null;
-    for (const app of listApplications()) {
-      try {
-        if (!app.healthProbe?.enabled || app.status === "archived") continue;
-        const intervalMs = (app.healthProbe.intervalMinutes ?? 5) * 60_000;
-        const last = app.healthProbe.lastCheckedAt ? Date.parse(app.healthProbe.lastCheckedAt) : 0;
-        if (!force && Date.parse(checkedAt) - last < intervalMs) continue;
-        app.healthProbe.lastCheckedAt = checkedAt;
-        checkedCount += 1;
-        checkApplicationHealthAndReact(app, checkedAt);
-      } catch (error) {
-        // One application's failure must not starve the rest of the sweep.
-        lastError = `${app?.id ?? "unknown"}: ${error?.message ?? error}`;
+    runTx(() => {
+      let checkedCount = 0;
+      let lastError = null;
+      for (const app of listApplications()) {
+        try {
+          if (!app.healthProbe?.enabled || app.status === "archived") continue;
+          const intervalMs = (app.healthProbe.intervalMinutes ?? 5) * 60_000;
+          const last = app.healthProbe.lastCheckedAt ? Date.parse(app.healthProbe.lastCheckedAt) : 0;
+          if (!force && Date.parse(checkedAt) - last < intervalMs) continue;
+          app.healthProbe.lastCheckedAt = checkedAt;
+          checkedCount += 1;
+          checkApplicationHealthAndReact(app, checkedAt);
+        } catch (error) {
+          // One application's failure must not starve the rest of the sweep.
+          lastError = `${app?.id ?? "unknown"}: ${error?.message ?? error}`;
+        }
       }
-    }
-    state.applicationHealthSweepStatus = { lastSweepAt: checkedAt, checkedCount, lastError };
-    persistStateSoon();
+      state.applicationHealthSweepStatus = { lastSweepAt: checkedAt, checkedCount, lastError };
+    });
   }
 
   function checkApplicationHealthAndReact(app, checkedAt) {

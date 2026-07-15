@@ -9,6 +9,7 @@ import {
   dataNotesForIntegration,
   suggestedAgentId,
 } from "./helpers.mjs";
+import { makeRunTx } from "../../runtime/store/run-tx.mjs";
 
 export function createIntegrationRegistrationRuntime({
   now,
@@ -16,7 +17,9 @@ export function createIntegrationRegistrationRuntime({
   disableAgent,
   registerAgent,
   persistStateSoon = () => {},
+  store,
 }) {
+  const runTx = makeRunTx({ store, persistStateSoon });
   function registerIntegrationArtifact(artifact) {
     if (artifact.artifactType !== "adapter_config") {
       throw new Error("Only adapter config artifacts can register an agent.");
@@ -24,6 +27,7 @@ export function createIntegrationRegistrationRuntime({
     if (artifact.reviewState !== "tested") {
       throw new Error("Run and pass a probe before registering this integration.");
     }
+    return runTx(() => {
     const adapter = adapterFromArtifact(artifact);
     const agent = registerAgent({
       id: suggestedAgentId(artifact),
@@ -67,8 +71,8 @@ export function createIntegrationRegistrationRuntime({
         : `${agent.name} registered from tested artifact and left disabled.`,
       data: { artifactId: artifact.id, agentId: agent.id, disabled: isAgentDisabled(agent) },
     });
-    persistStateSoon();
     return agent;
+    });
   }
 
   return {

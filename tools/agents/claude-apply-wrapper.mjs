@@ -174,7 +174,10 @@ function git(cwd, args, { allowFailure = false } = {}) {
 }
 
 // `git apply --numstat` prints: "<added>\t<deleted>\t<path>" per file. A binary
-// file prints "-\t-\t<path>". Renames print "old => new"; keep the new path.
+// file prints "-\t-\t<path>". `git apply --numstat` prints the plain full new path
+// even for renames (unlike `git diff --numstat`'s `{old => new}` form), so the path
+// column is taken verbatim — special-casing "=>" would corrupt a real path that
+// legitimately contains it (e.g. "src/a=>b.txt").
 function parseNumstat(stdout) {
   return String(stdout ?? "")
     .split(/\r?\n/)
@@ -183,9 +186,7 @@ function parseNumstat(stdout) {
     .map((line) => {
       const parts = line.split("\t");
       if (parts.length < 3) return null;
-      const rawPath = parts.slice(2).join("\t");
-      const path = rawPath.includes("=>") ? rawPath.split("=>").at(-1).trim().replace(/}$/, "") : rawPath;
-      return { path, added: numOrNull(parts[0]), deleted: numOrNull(parts[1]) };
+      return { path: parts.slice(2).join("\t"), added: numOrNull(parts[0]), deleted: numOrNull(parts[1]) };
     })
     .filter((item) => item && item.path);
 }

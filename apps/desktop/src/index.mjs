@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
@@ -1074,6 +1074,10 @@ async function runInvocation(work) {
   });
   clearInterval(cancelTimer);
   clearTimeout(timeoutTimer);
+  // The temp patch file the apply runner read (materialized in governedApplyWrapperArgs)
+  // is a per-run throwaway — delete it now that the child has exited so an authorized
+  // diff does not linger in the shared temp directory.
+  cleanupApplyPatchFile(spawnPlan.args);
 
   if (stdoutBuffer.trim()) {
     const result = await handleAgentLine(invocationId, stdoutBuffer.trim(), adapter, roundState);
@@ -1595,6 +1599,19 @@ function governedReviewWrapperArgs(renderedArgs, payload) {
 // server sends the patch in metadata (too large for argv); write it to a temp file
 // and inject --cwd + --patch-file. The runner git-applies it into the bound
 // worktree. Only fires for the governed claude.apply.patch wrapper.
+// Delete the temp patch file passed to the apply runner (--patch-file <path>),
+// but only when it lives under our own myagenttool-apply temp dir so we never
+// remove a caller-supplied file.
+function cleanupApplyPatchFile(args) {
+  const list = Array.isArray(args) ? args.map(String) : [];
+  const idx = list.indexOf("--patch-file");
+  const path = idx >= 0 ? list[idx + 1] : null;
+  const applyTempDir = join(tmpdir(), "myagenttool-apply");
+  if (path && resolve(path).startsWith(resolve(applyTempDir))) {
+    try { rmSync(path, { force: true }); } catch { /* best-effort */ }
+  }
+}
+
 function governedApplyWrapperArgs(renderedArgs, payload) {
   const metadata = payload.options?.metadata && typeof payload.options.metadata === "object" && !Array.isArray(payload.options.metadata)
     ? payload.options.metadata
@@ -1612,9 +1629,14 @@ function governedApplyWrapperArgs(renderedArgs, payload) {
   const patch = typeof metadata.applyPatch === "string" ? metadata.applyPatch : null;
   if (patch && !hasFlag(injected, "--patch-file")) {
     const dir = join(tmpdir(), "myagenttool-apply");
-    mkdirSync(dir, { recursive: true });
-    const patchFile = join(dir, `patch-${process.pid}-${payload.id ?? "inv"}.diff`);
-    writeFileSync(patchFile, patch, "utf8");
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    // Name by the (globally unique) invocation id, not payload.id (always
+    // undefined here) — the old fixed `patch-<pid>-inv.diff` name left one
+    // world-readable diff on disk and overwrote it every run. The wrapper deletes
+    // this file when it exits.
+    const invocationId = String(payload.invocationId ?? payload.id ?? `inv-${process.pid}`).replace(/[^A-Za-z0-9_-]/g, "");
+    const patchFile = join(dir, `patch-${invocationId}.diff`);
+    writeFileSync(patchFile, patch, { encoding: "utf8", mode: 0o600 });
     injected.push("--patch-file", patchFile);
   }
   // A governed rollback run re-applies the same server-held patch in reverse; the

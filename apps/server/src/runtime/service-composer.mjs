@@ -1,9 +1,10 @@
 import { createEventLogRuntime } from "./event-log.mjs";
 import { createRefusalRuntime } from "./refusal-log.mjs";
 import { createBridgeCredentialRuntime } from "./bridge-auth.mjs";
-import { createPersistenceRuntime } from "./persistence.mjs";
+import { captureSeededDefaults, createPersistenceRuntime, normalizeLoadedState, persistedArrayKeys, persistedObjectKeys } from "./persistence.mjs";
 import { createReadModelRuntime } from "./read-models.mjs";
 import { createInMemoryStore } from "./store/in-memory-store.mjs";
+import { createIncrementalMirror, mirrorState, seedOrHydrate } from "./store/sqlite-backing.mjs";
 import {
   createAgentService,
   isAgentDisabled,
@@ -60,6 +61,10 @@ export function createServerRuntimeServices({
   stateSchemaVersion,
   dispatchLeaseMs,
   now,
+  // #1002 Phase B: an opened SQLite store makes SQLite the durable backing — the
+  // in-memory `state` stays the live view, its commit MIRRORS to SQLite, and boot
+  // hydrates `state` from SQLite. null (default) = today's JSON-snapshot backing.
+  sqliteStore = null,
 }) {
   let idCounter = 1;
   let invocationService = null;
@@ -84,10 +89,63 @@ export function createServerRuntimeServices({
   });
   // #966 (#124): the Store seam over today's snapshot — reads scan `state`, a
   // transaction stages writes and commits atomically through the synchronous
-  // barrier. Constructed now and exposed for services to migrate onto
-  // incrementally (#968); nothing routes through it yet, so behavior is unchanged.
-  const store = createInMemoryStore({ state, commit: persistStateNow });
+  // barrier. #1002 Phase B: when a SQLite store is wired, the commit ALSO mirrors
+  // the whole `state` view into SQLite (the durable backing); the JSON snapshot is
+  // kept current too during the soak so flipping the flag off loses nothing (Phase
+  // C retires it). Default (no sqliteStore): today's JSON-only barrier, unchanged.
+  // `projects` and `devices` are id-keyed arrays that persist through their OWN JSON
+  // paths (not the persistedArrayKeys loop), so the SQLite backing mirrors them here
+  // too — otherwise the project registry / device fleet would be lost once the JSON
+  // snapshot is retired (Phase C). #1003 prep. (`currentProjectId` is a scalar the
+  // hydrate reconciles via normalizeLoadedState; a dedicated durable slot for it is
+  // a small follow-up before JSON is fully retired.)
+  const mirroredArrayKeys = [...persistedArrayKeys, "projects", "devices"];
+  // #1003: the commit sink mirrors only the DELTA (changed/new/deleted rows) into
+  // SQLite rather than rewriting the whole record table each commit — see
+  // createIncrementalMirror. Primed to match the store right after seed/hydrate.
+  const incrementalMirror = sqliteStore
+    ? createIncrementalMirror({ store: sqliteStore, arrayKeys: mirroredArrayKeys, objectKeys: persistedObjectKeys })
+    : null;
+  const commitDurable = sqliteStore
+    ? () => {
+        persistStateNow();
+        const { skipped, skippedCollections } = incrementalMirror.sync(state);
+        if (skipped > 0) {
+          console.warn(`[store:sqlite] mirror dropped ${skipped} id-less row(s) in ${skippedCollections.join(", ")} — those records are not durable in the SQLite backing.`);
+        }
+      }
+    : persistStateNow;
+  const store = createInMemoryStore({ state, commit: commitDurable });
+  // #1003: capture the fresh seeded defaults BEFORE the restore overwrites them, so
+  // a SQLite hydrate can run the SAME normalization the JSON restore does.
+  const seededDefaults = sqliteStore ? captureSeededDefaults(state) : null;
   const restored = restorePersistentState();
+  // #1002 Phase B: after the JSON restore, reconcile with the SQLite backing —
+  // SEED it from the restored state when empty (one-time JSON→SQLite migration), or
+  // HYDRATE `state` from SQLite when it already holds data (SQLite authoritative).
+  if (sqliteStore) {
+    const outcome = seedOrHydrate({ store: sqliteStore, state, arrayKeys: mirroredArrayKeys, objectKeys: persistedObjectKeys });
+    if (outcome.mode === "seeded" && outcome.mirror?.skipped > 0) {
+      console.warn(`[store:sqlite] initial seed dropped ${outcome.mirror.skipped} id-less row(s) in ${outcome.mirror.skippedCollections.join(", ")}.`);
+    }
+    if (outcome.mode === "hydrated") {
+      // Raw hydration loads records verbatim; run the SHARED normalization so the
+      // SQLite backing fails closed EXACTLY like the JSON restore — path-missing
+      // project drop + default guarantee, new-default merge for agents/singletons/
+      // devices, dup-id repair, every device offline, ownership diagnostics.
+      normalizeLoadedState(state, { seededDefaults, defaultProject, sameProjectPath });
+    }
+    // A hydrate's normalization (dropped project, merged defaults, device offline)
+    // makes `state` diverge from the raw SQLite rows, so fully re-mirror ONCE here
+    // to reconcile SQLite (deletes propagate) before priming. On seed, SQLite
+    // already equals `state`. Then prime the incremental mirror's shadow so every
+    // subsequent commit writes only its delta.
+    if (outcome.mode === "hydrated") {
+      mirrorState({ store: sqliteStore, state, arrayKeys: mirroredArrayKeys, objectKeys: persistedObjectKeys });
+    }
+    incrementalMirror.prime(state);
+    console.log(`[store:sqlite] durable backing ${outcome.mode} (${mirroredArrayKeys.length} collections).`);
+  }
   // The counter comes from the snapshot it minted ids for. The scan is kept ONLY
   // as a floor — for a snapshot written before the counter was persisted, and as a
   // backstop if a restored counter is somehow behind the records it must not
@@ -158,7 +216,7 @@ export function createServerRuntimeServices({
     createAgentSkill,
     updateAgentSkill,
     deleteAgentSkill,
-  } = createAgentSkillService({ state, now, nextId, persistStateSoon });
+  } = createAgentSkillService({ state, now, nextId, persistStateSoon, store });
 
   // Approval grants (docs/design/APPROVAL_GRANTS.md): the issuance flow behind
   // every approvalToken field. Composed before the application service so the
@@ -166,7 +224,7 @@ export function createServerRuntimeServices({
   // Cap-evicted audit rows land in an on-disk JSONL archive instead of
   // vanishing (docs: retention-archive.mjs). Disabled with persistence (tests).
   const retentionArchive = createRetentionArchive({ stateStorePath, enabled: persistenceEnabled, now });
-  const { recordApplicationExecutionStat } = createApplicationStatsRuntime({ state, now, persistStateSoon });
+  const { recordApplicationExecutionStat } = createApplicationStatsRuntime({ state, now, persistStateSoon, store });
 
   // The read half of the audit loop: recovery actions the 200-row cap evicted are
   // recoverable per application, not just greppable on disk. Scoped by the route's
@@ -185,6 +243,7 @@ export function createServerRuntimeServices({
     appendEvent,
     persistStateSoon,
     archiveEvicted: retentionArchive.archiveEvicted,
+    store,
   });
 
   const {
@@ -194,7 +253,7 @@ export function createServerRuntimeServices({
     nextBridgeApplicationInstall,
     queueApplicationInstall,
     recordApplicationInstallProgress,
-  } = createApplicationInstallService({ state, now, nextId, appendEvent, persistStateSoon, validateApprovalToken });
+  } = createApplicationInstallService({ state, now, nextId, appendEvent, persistStateSoon, validateApprovalToken, store });
 
   const {
     applicationHealthSweep,
@@ -222,6 +281,7 @@ export function createServerRuntimeServices({
     // time (post-composition), so the late binding is safe.
     sendAlert: (alert) => void autoRunAlerts.dispatch(alert),
     validateApprovalToken,
+    store,
   });
 
   const {
@@ -264,6 +324,7 @@ export function createServerRuntimeServices({
     persistStateSoon,
     uniqueStrings,
     worktreeForProject,
+    store,
   });
   codexEventHandlers = {
     createCodexEvidenceRecord,
@@ -287,6 +348,7 @@ export function createServerRuntimeServices({
     summarizeText,
     uniqueStrings,
     codexSessionForInvocation,
+    store,
   });
 
   const {
@@ -343,6 +405,7 @@ export function createServerRuntimeServices({
     nextId,
     appendEvent,
     persistStateSoon,
+    store,
   });
   const { recordApplicationResult } = createApplicationResultImportService({
     state,
@@ -350,6 +413,7 @@ export function createServerRuntimeServices({
     nextId,
     appendEvent,
     persistStateSoon,
+    store,
   });
   const { recordCodexReviewFindings } = createCodexReviewImportService({
     state,
@@ -357,6 +421,7 @@ export function createServerRuntimeServices({
     nextId,
     appendEvent,
     persistStateSoon,
+    store,
   });
   const { recordClaudeReviewFindings } = createClaudeReviewImportService({
     state,
@@ -364,12 +429,14 @@ export function createServerRuntimeServices({
     nextId,
     appendEvent,
     persistStateSoon,
+    store,
   });
-  const { recordClaudeApplyResult } = createClaudeApplyImportService({
+  const { recordClaudeApplyResult, reconcileClaudeApplyTermination } = createClaudeApplyImportService({
     state,
     now,
     appendEvent,
     persistStateSoon,
+    store,
   });
   const { recordCodexExecChanges, createCodexExecReview, isExecChangeApproved, execRunPromotionGate } = createCodexExecImportService({
     state,
@@ -377,6 +444,7 @@ export function createServerRuntimeServices({
     nextId,
     appendEvent,
     persistStateSoon,
+    store,
   });
 
   // Late-bound so completion can trigger the auto-run reaction, which is created
@@ -446,7 +514,12 @@ export function createServerRuntimeServices({
       }
     },
     onInvocationApproved: (invocation) => approvalAutoRunHook?.(invocation),
-    onInvocationDenied: (invocation) => denialAutoRunHook?.(invocation),
+    onInvocationDenied: (invocation) => {
+      // Deny skips the completion runtime, so an apply/rollback held at the local
+      // gate and denied would strand its authorization at applying/rolling_back.
+      reconcileClaudeApplyTermination(invocation);
+      denialAutoRunHook?.(invocation);
+    },
   });
 
   const {
@@ -700,6 +773,7 @@ export function createServerRuntimeServices({
     // Self-healing (H2): file the auto-labeled remediation issue after a failed
     // deploy (gh issue create; gated at call-time on remediateOnDeployFailure).
     fileRemediationIssue: async ({ repoPath, title, body, labels }) => runChildIssueCreate({ cwd: repoPath, title, body, labels }),
+    store,
   });
   // Now that the reaction exists, let completion drive it.
   advanceAutoRunHook = advanceAutoRunForInvocation;
@@ -804,6 +878,7 @@ export function createServerRuntimeServices({
     planApplicationWrapperInvocation,
     validateApprovalToken,
     persistStateSoon,
+    store,
   });
 
   const {
@@ -2597,6 +2672,7 @@ export function createServerRuntimeServices({
     persistStateSoon,
     capWithArchive: retentionArchive.capWithArchive,
     archiveEvicted: retentionArchive.archiveEvicted,
+    store,
   });
 
   const httpDependencies = {
