@@ -22,6 +22,7 @@ import { createRetentionArchive } from "../services/retention-archive.mjs";
 import { createApplicationStatsRuntime } from "../services/application-stats.mjs";
 import { createCapabilityService } from "../services/capabilities.mjs";
 import { createMailIssueWriteService } from "../services/mail-issue-write.mjs";
+import { createMailReplyDraftService } from "../services/mail-reply-draft.mjs";
 import { createApplicationResultImportService } from "../services/application-results.mjs";
 import { createCcusageImportService } from "../services/ccusage-imports.mjs";
 import { createClaudeReviewImportService } from "../services/claude-review-imports.mjs";
@@ -927,6 +928,12 @@ export function createServerRuntimeServices({
     store,
     validateApprovalToken,
     repoCwd: defaultProjectPath,
+  });
+
+  // Phase 4 (#979): the issue outcome becomes an INERT reply draft. No send —
+  // that boundary needs a separate credential (ADR 0010) and stays human.
+  const { createReplyDraft } = createMailReplyDraftService({
+    state, now, nextId, appendEvent, persistStateSoon, store,
   });
 
   function runApplicationOrchestration(applicationId, routineId, body = {}, actor = null) {
@@ -2737,6 +2744,7 @@ export function createServerRuntimeServices({
     mergeAutoRunPr,
     refreshAutoRunPrDispositions,
     createMailIssueFromImport,
+    createReplyDraft,
     selectProject,
     removeProject,
     removeWorktree,
