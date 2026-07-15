@@ -27,6 +27,7 @@ import { createApplicationResultImportService } from "../services/application-re
 import { createCcusageImportService } from "../services/ccusage-imports.mjs";
 import { createClaudeReviewImportService } from "../services/claude-review-imports.mjs";
 import { createClaudeApplyImportService } from "../services/claude-apply-imports.mjs";
+import { isGovernedClaudeApplyAgent } from "../services/claude-apply-agent.mjs";
 import { createCodexReviewImportService } from "../services/codex-review-imports.mjs";
 import { createCodexExecImportService } from "../services/codex-exec-imports.mjs";
 import { createRoundTelemetryRuntime } from "../services/round-telemetry.mjs";
@@ -466,6 +467,19 @@ export function createServerRuntimeServices({
     appendEvent,
     persistStateSoon,
     store,
+    // #1052: the deferred-verify dispatch. Late-bound lambdas — the invocation
+    // service (which owns createInvocation/startInvocationIfAllowed) is composed
+    // BELOW this service because completion needs recordClaudeApplyResult; these
+    // close over the outer bindings and only run at completion time, long after
+    // both exist.
+    createInvocation: (task, agent, options) => createInvocation(task, agent, options),
+    startInvocationIfAllowed: (invocation, agent) => startInvocationIfAllowed(invocation, agent),
+    findApplyRunner: () => {
+      const runner = (state.agents ?? []).find(isGovernedClaudeApplyAgent) ?? null;
+      if (!runner || runner.status === "disabled" || runner.health?.status === "unhealthy") return null;
+      if (runner.location?.type === "local_device" && state.device?.unlinkState === "unlinked") return null;
+      return runner;
+    },
   });
   const { recordCodexExecChanges, createCodexExecReview, isExecChangeApproved, execRunPromotionGate } = createCodexExecImportService({
     state,

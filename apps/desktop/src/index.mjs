@@ -1671,6 +1671,16 @@ function governedApplyWrapperArgs(renderedArgs, payload) {
   if (cwd && !hasFlag(injected, "--cwd")) {
     injected.push("--cwd", cwd);
   }
+  // #1052: the deferred verify leg — a read-only run of the allowlisted command
+  // in the already-applied worktree. Nothing write-shaped is injected for it;
+  // the wrapper additionally refuses any such combination.
+  if (metadata.claudeApplyVerify === true) {
+    const verifyOnlyId = boundedString(metadata.verifyCommandId, 64);
+    if (verifyOnlyId && !hasFlag(injected, "--verify-only")) {
+      injected.push("--verify-only", verifyOnlyId);
+    }
+    return injected;
+  }
   const patch = typeof metadata.applyPatch === "string" ? metadata.applyPatch : null;
   if (patch && !hasFlag(injected, "--patch-file")) {
     const dir = join(tmpdir(), "myagenttool-apply");
