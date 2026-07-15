@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 
-import { isStoreEmpty, mirrorState, normalizeHydratedProjects, seedOrHydrate, SINGLETON_ID } from "../src/runtime/store/sqlite-backing.mjs";
+import { isStoreEmpty, mirrorState, normalizeHydratedDevices, normalizeHydratedProjects, seedOrHydrate, SINGLETON_ID } from "../src/runtime/store/sqlite-backing.mjs";
 
 let DatabaseSync;
 let createSqliteStore;
@@ -131,6 +131,30 @@ test("normalizeHydratedProjects drops a path-missing project and guarantees the 
   } finally {
     rmSync(defaultDir, { recursive: true, force: true });
     rmSync(liveDir, { recursive: true, force: true });
+  }
+});
+
+test("normalizeHydratedDevices forces every hydrated device offline", () => {
+  const state = { devices: [{ id: "dev_1", status: "online" }, { id: "dev_2", status: "online" }] };
+  normalizeHydratedDevices({ state });
+  assert.deepEqual(state.devices.map((d) => d.status), ["offline", "offline"]);
+});
+
+test("devices mirror + hydrate round-trip (id-keyed array, brought back offline)", { skip }, () => {
+  const store = createSqliteStore({ DatabaseSync, path: ":memory:" });
+  try {
+    // A device stored with a LIVE status (as the mirror would on shutdown).
+    mirrorState({ store, state: { devices: [{ id: "dev_local_001", status: "online" }] }, arrayKeys: ["devices"], objectKeys: [] });
+    const fresh = { devices: [] };
+    seedOrHydrate({ store, state: fresh, arrayKeys: ["devices"], objectKeys: [] });
+    assert.equal(fresh.devices.length, 1);
+    assert.equal(fresh.devices[0].id, "dev_local_001");
+    // Hydrate reads the stored (online) status; the composer's post-hydrate reset
+    // (normalizeHydratedDevices) is what forces it offline — apply + assert.
+    normalizeHydratedDevices({ state: fresh });
+    assert.equal(fresh.devices[0].status, "offline", "a restart never implies the bridge is still up");
+  } finally {
+    store.close();
   }
 });
 

@@ -67,6 +67,11 @@ test("a runtime write mirrors to SQLite and a fresh boot hydrates it back", { sk
       (b2.state.agentSkills ?? []).some((s) => s.name === "Integration Skill"),
       "the skill survived the restart via the SQLite backing",
     );
+    // devices persist through their own JSON path, but the SQLite backing mirrors +
+    // hydrates them too (else they'd be lost when JSON is retired), brought back offline.
+    const dev = (b2.state.devices ?? []).find((d) => d.id === "dev_local_001");
+    assert(dev, "the default device survived the restart via the SQLite backing");
+    assert.equal(dev.status, "offline", "a hydrated device is offline until its bridge re-registers");
     store.close();
   } finally {
     rmSync(dir, { recursive: true, force: true });
