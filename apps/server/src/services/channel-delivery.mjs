@@ -1,0 +1,193 @@
+/*
+ * Channel outbound delivery (S5, #1090): durable ChannelDelivery records with
+ * bounded, backoff-scheduled retries and first-class terminal failure. Inbound
+ * callbacks were ACKed immediately (S3); everything a conversation should hear
+ * back — staged command replies and invocation results — flows through here as
+ * an asynchronous application message.
+ *
+ * The provider client is INJECTED (`sendMessage`), so this service never sees
+ * CorpSecret or access tokens; delivery records carry only provider msgids and
+ * errcodes (ADR 0012 rule 4).
+ */
+
+import { channelIdPrefixes } from "@myagenttool/protocol/channel";
+import { LOCAL_TEAM_ID } from "../runtime/auth.mjs";
+import { makeRunTx } from "../runtime/store/run-tx.mjs";
+
+export const MAX_DELIVERY_ATTEMPTS = 5;
+const BASE_BACKOFF_MS = 5_000;
+const MAX_BACKOFF_MS = 10 * 60 * 1000;
+const RATE_LIMIT_BACKOFF_MS = 60 * 1000;
+const MAX_CONTENT_CHARS = 2048;
+
+export function backoffMs(attempts, { rateLimited = false } = {}) {
+  if (rateLimited) return RATE_LIMIT_BACKOFF_MS;
+  return Math.min(BASE_BACKOFF_MS * 2 ** Math.max(0, attempts - 1), MAX_BACKOFF_MS);
+}
+
+export function createChannelDeliveryService({
+  state,
+  now,
+  nextId,
+  appendEvent,
+  refuse = null,
+  persistStateSoon = () => {},
+  store,
+  sendMessage = null, // async ({ toUser, content }) => { ok, msgid } | { ok:false, retryable, errcode }
+}) {
+  const runTx = makeRunTx({ store, persistStateSoon });
+
+  const findChannel = (channelId) => (state.channels ?? []).find((row) => row.id === channelId) ?? null;
+  const findConversation = (conversationId) =>
+    (state.channelConversations ?? []).find((row) => row.id === conversationId) ?? null;
+
+  /** Queue one outbound message to a conversation. Durable before any send attempt. */
+  function enqueueChannelDelivery({ channelId, conversationId, invocationId = null, content } = {}) {
+    const channel = findChannel(String(channelId ?? ""));
+    const conversation = findConversation(String(conversationId ?? ""));
+    const text = String(content ?? "").trim();
+    if (!channel || !conversation || conversation.channelId !== channel.id || !text) {
+      return { ok: false, reason: "invalid_delivery" };
+    }
+    const delivery = {
+      id: nextId(channelIdPrefixes.delivery),
+      channelId: channel.id,
+      conversationId: conversation.id,
+      ownerTeamId: channel.ownerTeamId ?? LOCAL_TEAM_ID,
+      invocationId: invocationId ? String(invocationId) : null,
+      toUser: conversation.externalUserId,
+      content: text.slice(0, MAX_CONTENT_CHARS),
+      status: "queued",
+      attempts: 0,
+      nextAttemptAt: now(),
+      providerReceiptId: null,
+      lastErrorCode: null,
+      createdAt: now(),
+      updatedAt: now(),
+    };
+    runTx(() => {
+      state.channelDeliveries.push(delivery);
+    });
+    return { ok: true, deliveryId: delivery.id };
+  }
+
+  async function attemptDelivery(delivery) {
+    runTx(() => {
+      delivery.status = "sending";
+      delivery.attempts += 1;
+      delivery.updatedAt = now();
+    });
+    let outcome;
+    try {
+      outcome = await sendMessage({ toUser: delivery.toUser, content: delivery.content });
+    } catch (error) {
+      outcome = { ok: false, retryable: true, errcode: error?.errcode ?? "transport_error" };
+    }
+
+    if (outcome?.ok) {
+      runTx(() => {
+        delivery.status = "delivered";
+        delivery.providerReceiptId = outcome.msgid || null;
+        delivery.lastErrorCode = null;
+        delivery.updatedAt = now();
+        // Delivery evidence (parent AC #8): the receipt joins the audit spine.
+        appendEvent({
+          invocationId: delivery.invocationId,
+          type: "channel_delivery_recorded",
+          level: "info",
+          message: `Channel ${delivery.channelId}: delivery ${delivery.id} delivered.`,
+          data: {
+            channelId: delivery.channelId,
+            deliveryId: delivery.id,
+            conversationId: delivery.conversationId,
+            providerReceiptId: delivery.providerReceiptId,
+            attempts: delivery.attempts,
+          },
+        });
+      });
+      return { status: "delivered" };
+    }
+
+    const errcode = String(outcome?.errcode ?? "unknown");
+    const retryable = Boolean(outcome?.retryable);
+    const exhausted = delivery.attempts >= MAX_DELIVERY_ATTEMPTS;
+    if (retryable && !exhausted) {
+      runTx(() => {
+        delivery.status = "retrying";
+        delivery.lastErrorCode = errcode;
+        delivery.nextAttemptAt = new Date(Date.parse(now()) + backoffMs(delivery.attempts, { rateLimited: errcode === "45009" })).toISOString();
+        delivery.updatedAt = now();
+      });
+      return { status: "retrying" };
+    }
+
+    runTx(() => {
+      delivery.status = "failed_terminal";
+      delivery.lastErrorCode = errcode;
+      delivery.updatedAt = now();
+    });
+    // Terminal failure is a first-class veto, not a silent drop: the message
+    // could not be delivered, and the owner can see exactly why and retry (S7).
+    refuse?.({
+      subject: { kind: "channel_delivery", id: delivery.id },
+      requester: { kind: "channel_conversation", id: delivery.conversationId },
+      category: "state",
+      code: "undeliverable",
+      decidedBy: { kind: "server", id: delivery.channelId },
+      summary: `Channel delivery ${delivery.id} failed terminally (errcode ${errcode}, ${delivery.attempts} attempts).`,
+      evidence: { channelId: delivery.channelId, deliveryId: delivery.id, errcode, attempts: delivery.attempts },
+      remedy: "Fix the provider-side condition, then retry the delivery from the console.",
+      event: {
+        invocationId: delivery.invocationId,
+        type: "channel_delivery_failed",
+        level: "error",
+        message: `Channel ${delivery.channelId}: delivery ${delivery.id} failed terminally (${errcode}).`,
+        data: { channelId: delivery.channelId, deliveryId: delivery.id, errcode, attempts: delivery.attempts },
+      },
+    });
+    return { status: "failed_terminal" };
+  }
+
+  /**
+   * Process everything due. Serialized (one in-flight send at a time) — WeCom
+   * rate limits are per-app, and ordering within a conversation matters more
+   * than throughput. Restart-safe: `queued`/`retrying` rows resume here.
+   */
+  async function sweepChannelDeliveries() {
+    if (typeof sendMessage !== "function") return { processed: 0 };
+    const nowMs = Date.parse(now());
+    const due = (state.channelDeliveries ?? []).filter(
+      (row) =>
+        (row.status === "queued" || row.status === "retrying")
+        && (!row.nextAttemptAt || Date.parse(row.nextAttemptAt) <= nowMs),
+    );
+    let processed = 0;
+    for (const delivery of due) {
+      await attemptDelivery(delivery);
+      processed += 1;
+    }
+    return { processed };
+  }
+
+  /**
+   * Notify the originating conversation of a completed invocation. Called from
+   * the completion hook; a non-channel invocation is a no-op.
+   */
+  function notifyInvocationCompleted(invocation) {
+    const channelContext = invocation?.options?.metadata?.channel;
+    if (!channelContext?.conversationId) return null;
+    const summary = typeof invocation.result === "string"
+      ? invocation.result
+      : invocation.result?.summary ?? invocation.result?.output ?? null;
+    const lines = [`${invocation.id}: ${invocation.status}`];
+    if (summary) lines.push(String(summary).slice(0, 1500));
+    return enqueueChannelDelivery({
+      channelId: channelContext.channelId,
+      conversationId: channelContext.conversationId,
+      invocationId: invocation.id,
+      content: lines.join("\n"),
+    });
+  }
+
+  return { enqueueChannelDelivery, sweepChannelDeliveries, notifyInvocationCompleted, attemptDelivery };
+}

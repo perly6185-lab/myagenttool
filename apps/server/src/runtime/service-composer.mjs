@@ -25,6 +25,7 @@ import { createMailIssueWriteService } from "../services/mail-issue-write.mjs";
 import { createMailReplyDraftService } from "../services/mail-reply-draft.mjs";
 import { createChannelService } from "../services/channels.mjs";
 import { createChannelConversationService } from "../services/channel-conversation.mjs";
+import { createChannelDeliveryService } from "../services/channel-delivery.mjs";
 import { createApplicationResultImportService } from "../services/application-results.mjs";
 import { createCcusageImportService } from "../services/ccusage-imports.mjs";
 import { createClaudeReviewImportService } from "../services/claude-review-imports.mjs";
@@ -496,6 +497,10 @@ export function createServerRuntimeServices({
   // below (it needs createInvocation from this very service). Set after the
   // auto-run service exists; until then completion has nothing to advance.
   let advanceAutoRunHook = null;
+  // S5 (#1090): channel-originated invocations report their outcome back to the
+  // originating conversation. Late-bound like the auto-run hook — the delivery
+  // service composes after the invocation service.
+  let channelDeliveryHook = null;
   let approvalAutoRunHook = null;
   let denialAutoRunHook = null;
   // Same late-binding for orchestration auto-recovery: it reuses the recovery
@@ -558,6 +563,11 @@ export function createServerRuntimeServices({
         orchestrationAutoRecoveryHook?.(invocation);
       } catch {
         /* auto-recovery is best-effort; completion must never fail because of it */
+      }
+      try {
+        channelDeliveryHook?.(invocation);
+      } catch {
+        /* channel notification is best-effort; completion must never fail because of it */
       }
     },
     onInvocationApproved: (invocation) => approvalAutoRunHook?.(invocation),
@@ -989,10 +999,28 @@ export function createServerRuntimeServices({
     state, now, nextId, appendEvent, refuse, persistStateSoon, store,
     createCapabilityInvocation, cancelInvocation,
   });
+  // Outbound delivery (S5): the provider sender is late-bound by index.mjs when
+  // the gateway is configured — this service never sees CorpSecret or tokens.
+  const channelSender = { current: null };
+  const channelDeliveryService = createChannelDeliveryService({
+    state, now, nextId, appendEvent, refuse, persistStateSoon, store,
+    sendMessage: (args) => channelSender.current(args),
+  });
+  channelDeliveryHook = channelDeliveryService.notifyInvocationCompleted;
+
   const receiveChannelEvent = (payload) => {
     const imported = channelService.importChannelEvent(payload);
     if (imported?.ok && !imported.duplicate) {
-      channelConversationService.dispatchImportedChannelEvent({ eventId: imported.eventId });
+      const dispatched = channelConversationService.dispatchImportedChannelEvent({ eventId: imported.eventId });
+      // Staged command replies become durable outbound deliveries.
+      if (dispatched?.reply) {
+        channelDeliveryService.enqueueChannelDelivery({
+          channelId: payload?.channelId,
+          conversationId: imported.conversationId,
+          invocationId: dispatched.invocationId ?? null,
+          content: dispatched.reply,
+        });
+      }
     }
     return imported;
   };
@@ -2816,8 +2844,12 @@ export function createServerRuntimeServices({
     removeChannelIdentity: channelService.removeChannelIdentity,
     listChannelIdentities: channelService.listChannelIdentities,
     setChannelAllowlist: channelService.setChannelAllowlist,
-    // The gateway's handoff: import + dispatch as one pipeline (S3+S4).
+    // The gateway's handoff: import + dispatch + reply-enqueue as one pipeline (S3+S4+S5).
     importChannelEvent: receiveChannelEvent,
+    sweepChannelDeliveries: channelDeliveryService.sweepChannelDeliveries,
+    setChannelDeliverySender: (fn) => {
+      channelSender.current = typeof fn === "function" ? fn : null;
+    },
     selectProject,
     removeProject,
     removeWorktree,
