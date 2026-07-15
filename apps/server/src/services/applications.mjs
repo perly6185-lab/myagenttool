@@ -996,11 +996,13 @@ function projectCapabilityFacades(app, prefix, disabled) {
             compatibilityFacade: { type: "agent", name: facade.agentId },
             execution: { mode: "agent_facade", agentId: facade.agentId, toolName: facade.agentToolName ?? null },
             outputCollection: facade.outputCollection,
+            resultImport: facade.resultImport ?? null,
           }
         : {
             compatibilityFacade: { type: "tool", name: facade.toolName },
             execution: { mode: "tool_facade", toolName: facade.toolName },
             outputCollection: facade.outputCollection,
+            resultImport: facade.resultImport ?? null,
           },
     );
   });
@@ -1660,8 +1662,22 @@ function normalizeApplicationCapabilityFacades(value) {
         ? publicJsonObject(facade.inputSchema)
         : emptyInputSchema(),
       outputCollection: stringOrNull(facade.outputCollection) ?? "invocations",
+      // A facade may declare how to import its result, exactly like a wrapper
+      // command. Same generic mechanism (application-results RESULT_PARSERS), so
+      // a new importing application adds a parser, not a branch in completion.
+      resultImport: normalizeFacadeResultImport(facade.resultImport),
     };
   });
+}
+
+function normalizeFacadeResultImport(resultImport) {
+  if (resultImport == null) return null;
+  if (typeof resultImport !== "object" || Array.isArray(resultImport)) {
+    throw applicationRegistrationError("invalid_application_capability_facade", "Application capability facade resultImport must be an object.");
+  }
+  const source = stringOrNull(resultImport.source);
+  if (!source) return null;
+  return { source, kind: stringOrNull(resultImport.kind) };
 }
 
 function highestCapabilityRiskLevel(capabilities) {

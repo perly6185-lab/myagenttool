@@ -57,6 +57,11 @@ export function createGmailApplicationRegistration({ agentId, autoOnline = false
           additionalProperties: false,
           properties: { limit: { type: "integer", minimum: 1, maximum: 100 } },
         },
+        // Close the Result step: import unread headers as structured records, so
+        // the run shows up in Application history and the Evidence Center — and so
+        // Phase 3 (mail → issue) has the Message-ID-keyed headers to work from.
+        outputCollection: "mailIntake",
+        resultImport: { source: "mail_headers", kind: "unread_headers" },
       },
       {
         id: "fetch",
@@ -73,6 +78,8 @@ export function createGmailApplicationRegistration({ agentId, autoOnline = false
           required: ["messageId"],
           properties: { messageId: { type: "string", maxLength: 998 } },
         },
+        outputCollection: "mailIntake",
+        resultImport: { source: "mail_headers", kind: "message" },
       },
     ],
   };

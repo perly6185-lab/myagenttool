@@ -144,7 +144,9 @@ export function createInvocationCompletionRuntime({
         invocation,
         auditSummary,
         records,
-        outputCollection: invocation.options?.metadata?.applicationWrapper?.outputCollection ?? "applicationResults",
+        outputCollection: invocation.options?.metadata?.applicationWrapper?.outputCollection
+          ?? invocation.options?.metadata?.outputCollection
+          ?? "applicationResults",
       });
     }
     attachApplicationResult({ invocation, auditSummary, records: [], outputCollection: "invocations" });
@@ -268,8 +270,8 @@ export function createInvocationCompletionRuntime({
       applicationAction: metadata.applicationAction ?? null,
       outputCollection: importedRecords.length > 0
         ? outputCollection
-        : existing?.outputCollection ?? metadata.applicationWrapper?.outputCollection ?? outputCollection,
-      resultImport: metadata.applicationWrapper?.resultImport ?? null,
+        : existing?.outputCollection ?? metadata.applicationWrapper?.outputCollection ?? metadata.outputCollection ?? outputCollection,
+      resultImport: metadata.resultImport ?? metadata.applicationWrapper?.resultImport ?? null,
       importedRecordIds: importedRecords.map((record) => record.id),
       importedRecordCount: importedRecords.length,
       invocationId: invocation.id,

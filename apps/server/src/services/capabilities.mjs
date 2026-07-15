@@ -42,17 +42,26 @@ export function createCapabilityService({
       return capability;
     }
     const agent = findAgent(execution.agentId);
+    // The agent and the credential are BOTH preconditions; a capability is ready
+    // only if both pass. A missing/disabled agent means it cannot run at all, so
+    // it takes precedence and forces needs_setup. An available agent does NOT
+    // force ready — it must preserve a needs_setup the credential gate already set
+    // (an authorized process is no use against an unauthorized mailbox). The two
+    // overlays compose instead of clobbering each other.
+    const incoming = capability.metadata?.readiness ?? {};
     const readiness = !agent
       ? { state: "needs_setup", reason: "agent_not_registered" }
       : agent.status === "disabled"
         ? { state: "needs_setup", reason: "agent_disabled" }
-        : { state: "ready", reason: "agent_available" };
+        : incoming.state === "needs_setup"
+          ? {} // an unmet precondition (e.g. credential) already set — leave it
+          : { state: "ready", reason: "agent_available" };
     return {
       ...capability,
       metadata: {
         ...capability.metadata,
         readiness: {
-          ...capability.metadata.readiness,
+          ...incoming,
           ...readiness,
           agentId: execution.agentId,
           agentStatus: agent?.status ?? null,
@@ -242,6 +251,11 @@ export function createCapabilityService({
     // The capability's validated inputs become the agent's tool arguments;
     // control-plane fields never travel to the agent.
     const { approvalToken, projectId, automationId, scheduled, ...toolArguments } = input ?? {};
+    // Carry the facade's declared result handling to completion so an agent_facade
+    // result imports through the SAME generic path as a wrapper result (keyed on
+    // metadata.resultImport in application-results), not a per-mode branch.
+    const resultImport = capability.metadata?.resultImport ?? null;
+    const outputCollection = capability.metadata?.outputCollection ?? null;
     const invocation = createInvocation(`Run application capability ${name}.`, agent, {
       actor,
       requestedBy: actor?.userId,
@@ -253,6 +267,8 @@ export function createCapabilityService({
         applicationId,
         applicationAction: toolName ? `agent:${agent.id}:${toolName}` : `agent:${agent.id}`,
         projectId: capability.application?.projectId ?? projectId ?? null,
+        ...(resultImport ? { resultImport } : {}),
+        ...(outputCollection && outputCollection !== "invocations" ? { outputCollection } : {}),
         ...(automationId ? { automationId: String(automationId) } : {}),
         ...(scheduled ? { scheduled: true } : {}),
       },
