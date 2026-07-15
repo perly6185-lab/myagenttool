@@ -1,6 +1,7 @@
 import { runStateTransaction } from "../../runtime/state-transaction.mjs";
 import { stampClaudeProposalArtifact } from "../claude-propose-imports.mjs";
 import { capClaudePlanResult } from "../claude-plan-imports.mjs";
+import { recordRunTranscript } from "../run-transcripts.mjs";
 
 export function createInvocationCompletionRuntime({
   state,
@@ -67,6 +68,12 @@ export function createInvocationCompletionRuntime({
       // are belt, this is the braces the read model actually relies on.
       capClaudePlanResult({ invocation, result: invocation.result });
     }
+    // #1072: the wrapper's bounded stream transcript (#1071) moves to its durable
+    // per-run home on ANY terminal status — a failed run's transcript is the most
+    // valuable one. Re-clamped server-side; the raw payload is stripped off
+    // invocation.result so it is stored exactly once and never ships with the
+    // /api/state snapshot. Committed by the enclosing transaction.
+    recordRunTranscript({ state, invocation, result: invocation.result, now });
     invocation.completedAt = now();
     invocation.updatedAt = now();
     completeRootSpan(invocation, terminalStatus);

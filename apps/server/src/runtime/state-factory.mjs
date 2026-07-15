@@ -82,6 +82,9 @@ export function createServerState({ defaultProjectPath, now }) {
     // Per-round (per model turn) telemetry — Epic #805, Phase 3 (#808).
     invocationRounds: [],
     toolInvocationRecords: [],
+    // Per-run stream transcripts (#1072, Epic #1070): the wrapper-captured
+    // thinking / tool IN-OUT / assistant-text timeline, one record per invocation.
+    runTranscripts: [],
     ledgerEntries: [],
     importedUsageEstimates: [],
     codexReviewFindings: [],
@@ -193,6 +196,7 @@ export function resetStateForSelfCheck({ state, now }) {
   state.aiUsageRecords = [];
   state.invocationRounds = [];
   state.toolInvocationRecords = [];
+  state.runTranscripts = [];
   state.ledgerEntries = [];
   state.importedUsageEstimates = [];
   state.codexReviewFindings = [];
