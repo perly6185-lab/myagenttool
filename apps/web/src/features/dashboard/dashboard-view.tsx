@@ -170,9 +170,10 @@ export function DashboardView({ surface = "overview" }: { surface?: DashboardSur
               </div>
             </div>
           ) : null}
-          {/* #1074: the rich per-run transcript (thinking / tool IN-OUT / Markdown)
-              exists once the run is terminal; renders nothing for runs without one. */}
-          <RunTranscriptSection invocationId={terminalStatus ? invocation?.id : null} />
+          {/* #1074/#1086: the rich per-run transcript (thinking / tool IN-OUT /
+              Markdown). While running it announces itself honestly; the fetch
+              only fires once the run is terminal. */}
+          <RunTranscriptSection invocationId={invocation?.id} terminal={Boolean(terminalStatus)} />
           <Transcript
             events={events}
             renderAction={(event) => <DecisionAction event={event} />}

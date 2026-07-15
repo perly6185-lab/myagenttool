@@ -9,6 +9,7 @@ import { FactList } from "@/components/common/fact-list";
 import { WebNavigationLinkActions } from "@/components/common/web-navigation-link-actions";
 import { invocationDeepLink, webNavigationStateFromLink } from "@/app/deep-links";
 import { EventTimeline } from "@/features/invocations/event-timeline";
+import { RunTranscriptSection, isTerminalRunStatus } from "@/features/invocations/run-transcript";
 import { DecisionAction } from "@/features/invocations/decision-action";
 import { ImportedUsageTable } from "@/features/economics/imported-usage-table";
 import { useConsoleState } from "@/data/use-console-state";
@@ -272,6 +273,13 @@ export function InvocationsView() {
             </div>
           </CardContent>
         </Card>
+      ) : null}
+
+      {/* #1086: the run's actual work — every "open run" deep-link (evidence,
+          approvals, operator explanation) lands here; the Rounds table above
+          shows tool/file COUNTS, this is where they expand. */}
+      {selected ? (
+        <RunTranscriptSection invocationId={selected.id} terminal={isTerminalRunStatus(selected.status)} />
       ) : null}
 
       <Card>
