@@ -80,6 +80,9 @@ export function createCodexService({
       workspaceId: workspace?.id ?? null,
       agentId: agent.id,
       sessionMode: codexSessionMode,
+      // #123: user-authored label (never auto-filled from task content — the
+      // issue's retention rule). Null until the user names it.
+      name: null,
       startedAt: createdAt,
       lastSeenAt: createdAt,
       status: "registered",
@@ -124,6 +127,54 @@ export function createCodexService({
       && (userId ? session.userId === userId : true)
       && (repoPath ? session.repoPath === repoPath : true));
     return match?.codexSessionId ?? null;
+  }
+
+  // #123: name a session for safe selection. The name is USER-authored — the
+  // server never auto-populates it from task content, so no retention/redaction
+  // surface opens here. Empty clears. Tenancy: only the session's own user may
+  // name it; a foreign session reads as not-found.
+  const CODEX_SESSION_NAME_MAX = 80;
+  function setCodexSessionName(sessionRegistryId, name, actor = null) {
+    const session = state.codexSessions.find((item) => item.id === String(sessionRegistryId ?? "")) ?? null;
+    if (!session || (actor?.userId && session.userId !== actor.userId)) {
+      return { ok: false, status: 404, body: { error: "codex_session_not_found", sessionId: String(sessionRegistryId ?? "") } };
+    }
+    const trimmed = String(name ?? "").trim();
+    if (trimmed.length > CODEX_SESSION_NAME_MAX) {
+      return { ok: false, status: 400, body: { error: "codex_session_name_too_long", maxLength: CODEX_SESSION_NAME_MAX } };
+    }
+    return runTx(() => {
+      session.name = trimmed || null;
+      session.lastSeenAt = now();
+      appendEvent({
+        invocationId: session.invocationId,
+        type: "codex_session_named",
+        level: "info",
+        message: trimmed ? `Codex session ${session.id} named "${trimmed}".` : `Codex session ${session.id} name cleared.`,
+        data: { codexSessionRegistryId: session.id, named: Boolean(trimmed) },
+      });
+      return { ok: true, status: 200, body: { session: { id: session.id, name: session.name, invocationId: session.invocationId } } };
+    });
+  }
+
+  // #123: the picker read model — which sessions CAN be continued, newest
+  // first, scoped to the caller (and optionally a repo). Projects only safe
+  // metadata: no task content, no evidence bodies.
+  function resumableCodexSessions({ repoPath = null, userId = null } = {}) {
+    return state.codexSessions
+      .filter((session) => session.codexSessionId
+        && (userId ? session.userId === userId : true)
+        && (repoPath ? session.repoPath === repoPath : true))
+      .map((session) => ({
+        id: session.id,
+        name: session.name ?? null,
+        invocationId: session.invocationId,
+        repoPath: session.repoPath,
+        sessionMode: session.sessionMode,
+        startedAt: session.startedAt,
+        lastSeenAt: session.lastSeenAt,
+        status: session.status,
+      }));
   }
 
   function updateCodexSessionFromEvent(record) {
@@ -644,6 +695,8 @@ export function createCodexService({
     repoPathForEvidence,
     resolveCodexApprovalBrokerRequest,
     resolveResumeCodexSessionId,
+    setCodexSessionName,
+    resumableCodexSessions,
     updateCodexSessionFromEvent,
   };
 }

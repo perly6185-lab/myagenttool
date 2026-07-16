@@ -113,6 +113,8 @@ export function createHttpServer({
   createCodexImportedEvidenceRecord,
   createCodexChangeReview,
   createCodexExecReview,
+  setCodexSessionName,
+  resumableCodexSessions,
   execRunPromotionGate,
   createDiscoveryRun,
   createIntegrationArtifact,
@@ -460,7 +462,7 @@ export function createHttpServer({
         execRunPromotionGate,
         createWorktreePr,
         findInvocation,
-        appendEvent,
+        appendEvent, setCodexSessionName, resumableCodexSessions,
       })) {
         return;
       }
