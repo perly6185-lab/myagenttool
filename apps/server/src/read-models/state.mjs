@@ -1,5 +1,6 @@
 import { LOCAL_TEAM_ID, teamOf } from "../runtime/auth.mjs";
 import { publicDeviceView } from "../runtime/bridge-auth.mjs";
+import { channelOperations } from "./channels.mjs";
 import { pendingDecisions } from "./pending-decisions.mjs";
 import { evidenceLedger } from "./evidence-ledger.mjs";
 import { scheduleHealthReadModel } from "./schedule-health.mjs";
@@ -459,6 +460,13 @@ export function buildPublicState({
     channelEvents,
     channelConversations,
     channelDeliveries,
+    channelOperations: channelOperations({
+      channels,
+      channelIdentities,
+      channelEvents,
+      channelConversations,
+      channelDeliveries,
+    }),
   };
 }
 

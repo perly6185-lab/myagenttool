@@ -14,6 +14,7 @@ import { channelIdPrefixes } from "@myagenttool/protocol/channel";
 import { LOCAL_TEAM_ID } from "../runtime/auth.mjs";
 import { makeRunTx } from "../runtime/store/run-tx.mjs";
 
+export const CHANNEL_DELIVERY_RETRY_ACTION = "channel.delivery.retry";
 export const MAX_DELIVERY_ATTEMPTS = 5;
 const BASE_BACKOFF_MS = 5_000;
 const MAX_BACKOFF_MS = 10 * 60 * 1000;
@@ -34,6 +35,7 @@ export function createChannelDeliveryService({
   persistStateSoon = () => {},
   store,
   sendMessage = null, // async ({ toUser, content }) => { ok, msgid } | { ok:false, retryable, errcode }
+  validateApprovalToken = null,
 }) {
   const runTx = makeRunTx({ store, persistStateSoon });
 
@@ -189,5 +191,58 @@ export function createChannelDeliveryService({
     });
   }
 
-  return { enqueueChannelDelivery, sweepChannelDeliveries, notifyInvocationCompleted, attemptDelivery };
+  /**
+   * Operator recovery lever (S7): re-queue one terminally-failed delivery.
+   * Owner-team scoped (foreign → 404) and approval-gated — a human explicitly
+   * re-authorizes the send. Only `failed_terminal` rows are eligible.
+   */
+  function retryChannelDelivery({ channelId, deliveryId, approvalToken } = {}, actor = null) {
+    const channel = findChannel(String(channelId ?? ""));
+    if (!channel || (actor?.teamId && (channel.ownerTeamId ?? LOCAL_TEAM_ID) !== actor.teamId)) {
+      return { ok: false, status: 404, body: { error: "channel_not_found" } };
+    }
+    const delivery = (state.channelDeliveries ?? []).find(
+      (row) => row.id === String(deliveryId ?? "") && row.channelId === channel.id,
+    );
+    if (!delivery) {
+      return { ok: false, status: 404, body: { error: "delivery_not_found" } };
+    }
+    if (delivery.status !== "failed_terminal") {
+      return { ok: false, status: 409, body: { error: "delivery_not_retryable", status: delivery.status } };
+    }
+    const approval = typeof validateApprovalToken === "function"
+      ? validateApprovalToken(approvalToken, { action: CHANNEL_DELIVERY_RETRY_ACTION, targetId: delivery.id, actor })
+      : { approved: false, reason: "approval_validator_unavailable" };
+    if (!approval.approved) {
+      return {
+        ok: false,
+        status: 409,
+        body: {
+          error: "approval_required",
+          reason: approval.reason === "missing_token"
+            ? "Retrying a failed delivery requires an explicit approvalToken."
+            : `approvalToken rejected: ${approval.reason}.`,
+          action: CHANNEL_DELIVERY_RETRY_ACTION,
+          targetId: delivery.id,
+        },
+      };
+    }
+    runTx(() => {
+      delivery.status = "queued";
+      delivery.attempts = 0;
+      delivery.lastErrorCode = null;
+      delivery.nextAttemptAt = now();
+      delivery.updatedAt = now();
+      appendEvent({
+        invocationId: delivery.invocationId,
+        type: "channel_delivery_retry_requested",
+        level: "info",
+        message: `Channel ${channel.id}: delivery ${delivery.id} re-queued by operator.`,
+        data: { channelId: channel.id, deliveryId: delivery.id },
+      });
+    });
+    return { ok: true, status: 200, body: { deliveryId: delivery.id, status: delivery.status } };
+  }
+
+  return { enqueueChannelDelivery, sweepChannelDeliveries, notifyInvocationCompleted, attemptDelivery, retryChannelDelivery };
 }
