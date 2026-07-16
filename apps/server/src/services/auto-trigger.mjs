@@ -1,4 +1,5 @@
 import { branchFromIssue } from "@myagenttool/protocol/issue-prompt";
+import { issueHasActiveClaim } from "./issue-claims.mjs";
 
 // Phase 3: auto-trigger. Periodically scan repo-backed projects for open issues
 // carrying an opt-in label and start an auto-run for each new one. Safety model:
@@ -38,7 +39,7 @@ export function issueHasProjectFields(body) {
 
 // Which label-filtered open issues to auto-run for one project: skip ones that
 // already have an auto-run, and stop at the project's concurrency headroom. Pure.
-export function selectAutoTriggerCandidates({ issues = [], autoRuns = [], projectId, maxConcurrent = 1, requireProjectFields = true }) {
+export function selectAutoTriggerCandidates({ issues = [], autoRuns = [], issueClaims = [], projectId, maxConcurrent = 1, requireProjectFields = true, nowIso }) {
   const projectRuns = autoRuns.filter((run) => run.projectId === projectId);
   const handled = new Set(projectRuns.map((run) => run.link?.number).filter((n) => Number.isFinite(n)));
   const active = projectRuns.filter((run) => ACTIVE_STATUSES.has(run.status)).length;
@@ -52,6 +53,9 @@ export function selectAutoTriggerCandidates({ issues = [], autoRuns = [], projec
     if (handled.has(issue.number)) continue;
     // Skip issues that can't yield a governance-passing PR (no Project Fields).
     if (requireProjectFields && !issueHasProjectFields(issue.body)) continue;
+    // #1143: an issue someone actively holds (develop OR review) is theirs —
+    // an unattended trigger must not race the human working on it.
+    if (issueHasActiveClaim({ issueClaims, projectId, issueNumber: issue.number, nowIso })) continue;
     selected.push(issue);
     headroom -= 1;
   }
@@ -80,9 +84,11 @@ export function createAutoTriggerRuntime({ state, config, listLabeledIssues, sta
       const candidates = selectAutoTriggerCandidates({
         issues,
         autoRuns: state.autoRuns ?? [],
+        issueClaims: state.issueClaims ?? [],
         projectId: project.id,
         maxConcurrent: config.maxConcurrent,
         requireProjectFields: config.requireProjectFields,
+        nowIso: new Date().toISOString(),
       });
       for (const issue of candidates) {
         try {

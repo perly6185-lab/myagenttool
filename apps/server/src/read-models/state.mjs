@@ -182,6 +182,8 @@ export function buildPublicState({
   );
   const visibleAutomations = byProject(state.automations);
   const autoRuns = byProject(state.autoRuns);
+  // #1143 issue claims carry a projectId; project-team scoping is the boundary.
+  const issueClaims = byProject(state.issueClaims);
   const autoRunsByInvocationId = groupRowsByKey(
     autoRuns.filter((autoRun) => visibleInvIds.has(autoRun?.invocationId)),
     (autoRun) => autoRun?.invocationId,
@@ -367,6 +369,7 @@ export function buildPublicState({
     worktrees: byProject(state.worktrees),
     worktreeReviews: byProject(state.worktreeReviews),
     deployments: byProject(state.deployments ?? []),
+    issueClaims,
     agent: defaultAgent(),
     agents: state.agents,
     invocations,

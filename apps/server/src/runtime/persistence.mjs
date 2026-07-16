@@ -88,6 +88,7 @@ export const persistedArrayKeys = [
   "applicationResults",
   "budgets",
   "budgetReservations",
+  "issueClaims",
   "automations",
   "agentSkills",
   "auditExportRequests",
