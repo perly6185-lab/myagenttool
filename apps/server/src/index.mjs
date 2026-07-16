@@ -2,6 +2,8 @@ import { mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { startAutomationScheduler } from "./runtime/automation-scheduler.mjs";
 import { startAutoTriggerScheduler } from "./runtime/auto-trigger-scheduler.mjs";
+import { createFeishuClient } from "./gateway/feishu-client.mjs";
+import { createFeishuGateway, feishuGatewayConfigFromEnv } from "./gateway/feishu-gateway.mjs";
 import { createWecomClient } from "./gateway/wecom-client.mjs";
 import { createWecomGateway, wecomGatewayConfigFromEnv } from "./gateway/wecom-gateway.mjs";
 import { createHttpServer } from "./runtime/http-server.mjs";
@@ -101,36 +103,61 @@ server.listen(port, host, () => {
   console.log(`[server] http://${host}:${port}`);
 });
 
-// WeCom channel gateway (S3, #1090/ADR 0012 rule 1): the ONLY public surface,
-// a separate listener serving nothing but the provider callback path. Off
-// unless fully configured; secrets stay in this process's env — the gateway
-// forwards verified, decrypted, normalized events in-process and the
-// control-plane API is never reachable on this port.
+// Channel gateways (#1090/#1110; ADR 0012 rule 1 + ADR 0013): each provider is
+// its OWN public listener serving nothing but its callback path — off unless
+// fully configured. Secrets stay in this process's env; each gateway forwards
+// verified, decrypted, normalized events into the shared importChannelEvent, and
+// the control-plane API is never reachable on any gateway port.
 {
+  let anySenderBound = false;
+
+  // WeCom (#1090).
   const wecomConfig = wecomGatewayConfigFromEnv();
   if (wecomConfig.port && wecomConfig.token && wecomConfig.encodingAesKey && wecomConfig.channelId) {
-    const gateway = createWecomGateway({
+    createWecomGateway({
       token: wecomConfig.token,
       encodingAesKey: wecomConfig.encodingAesKey,
       receiveId: wecomConfig.receiveId,
       channelId: wecomConfig.channelId,
       importChannelEvent: httpDependencies.importChannelEvent,
-    });
-    gateway.createServer().listen(wecomConfig.port, wecomConfig.host, () => {
+    }).createServer().listen(wecomConfig.port, wecomConfig.host, () => {
       console.log(`[wecom-gateway] callback listener on ${wecomConfig.host}:${wecomConfig.port} → channel ${wecomConfig.channelId}`);
     });
-
-    // S5 outbound: the send credential (CorpSecret) stays in this env-derived
-    // client; the delivery sweep only runs when a sender is actually bound.
     const corpSecret = String(process.env.WECOM_CORP_SECRET ?? "").trim();
     const agentId = String(process.env.WECOM_AGENT_ID ?? "").trim();
     if (corpSecret && agentId && wecomConfig.receiveId) {
       const client = createWecomClient({ corpId: wecomConfig.receiveId, corpSecret, agentId });
       httpDependencies.setChannelDeliverySender("wecom", client.sendApplicationMessage);
-      const sweep = () => httpDependencies.sweepChannelDeliveries().catch(() => {});
-      sweep(); // restart recovery: resume queued/retrying deliveries on boot
-      setInterval(sweep, 15_000).unref?.();
+      anySenderBound = true;
     }
+  }
+
+  // Feishu / Lark (#1110).
+  const feishuConfig = feishuGatewayConfigFromEnv();
+  if (feishuConfig.port && feishuConfig.verificationToken && feishuConfig.encryptKey && feishuConfig.channelId) {
+    createFeishuGateway({
+      verificationToken: feishuConfig.verificationToken,
+      encryptKey: feishuConfig.encryptKey,
+      channelId: feishuConfig.channelId,
+      importChannelEvent: httpDependencies.importChannelEvent,
+    }).createServer().listen(feishuConfig.port, feishuConfig.host, () => {
+      console.log(`[feishu-gateway] callback listener on ${feishuConfig.host}:${feishuConfig.port} → channel ${feishuConfig.channelId}`);
+    });
+    const appId = String(process.env.FEISHU_APP_ID ?? "").trim();
+    const appSecret = String(process.env.FEISHU_APP_SECRET ?? "").trim();
+    const baseUrl = String(process.env.FEISHU_BASE_URL ?? "").trim() || undefined;
+    if (appId && appSecret) {
+      const client = createFeishuClient({ appId, appSecret, baseUrl });
+      httpDependencies.setChannelDeliverySender("feishu", client.sendApplicationMessage);
+      anySenderBound = true;
+    }
+  }
+
+  // One delivery sweep serves every provider (delivery routes by channel.provider).
+  if (anySenderBound) {
+    const sweep = () => httpDependencies.sweepChannelDeliveries().catch(() => {});
+    sweep(); // restart recovery: resume queued/retrying deliveries on boot
+    setInterval(sweep, 15_000).unref?.();
   }
 }
 

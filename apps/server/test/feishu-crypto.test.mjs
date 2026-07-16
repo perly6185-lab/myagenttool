@@ -38,14 +38,30 @@ test("encrypt/decrypt round-trips with the prefixed-IV structure; multibyte surv
   assert.equal(decryptFeishuMessage({ encryptKey: ENCRYPT_KEY, encrypt: enc2 }), zh);
 });
 
-test("wrong key, tampered ciphertext, and junk are rejected without detail", () => {
-  const enc = encryptFeishuMessage({ encryptKey: ENCRYPT_KEY, plaintext: "hello" });
-  assert.throws(() => decryptFeishuMessage({ encryptKey: "another-key", encrypt: enc }));
+test("wrong key / tampered ciphertext never round-trips; structural corruption throws deterministically", () => {
+  const enc = encryptFeishuMessage({ encryptKey: ENCRYPT_KEY, plaintext: "hello world, a plaintext spanning two AES blocks" });
 
+  // AES-CBC has no integrity check, so a wrong key or a flipped byte either
+  // throws (bad PKCS#7 padding) OR returns garbage — but NEVER the original
+  // plaintext. Asserting "throws" is flaky (~6% of keys yield valid-looking
+  // padding); asserting "does not round-trip" is the deterministic property.
+  // Integrity in production is the X-Lark-Signature layer, verified before decrypt.
+  const neverRoundTrips = (fn) => {
+    let out;
+    try {
+      out = fn();
+    } catch {
+      return; // threw on bad padding — fine
+    }
+    assert.notEqual(out, "hello world, a plaintext spanning two AES blocks");
+  };
+  neverRoundTrips(() => decryptFeishuMessage({ encryptKey: "another-key", encrypt: enc }));
   const buf = Buffer.from(enc, "base64");
-  buf[buf.length - 1] ^= 0xff;
-  assert.throws(() => decryptFeishuMessage({ encryptKey: ENCRYPT_KEY, encrypt: buf.toString("base64") }));
+  buf[20] ^= 0xff; // corrupt an early ciphertext block
+  neverRoundTrips(() => decryptFeishuMessage({ encryptKey: ENCRYPT_KEY, encrypt: buf.toString("base64") }));
 
+  // Structural corruption is rejected deterministically (block-length + base64).
+  assert.throws(() => decryptFeishuMessage({ encryptKey: ENCRYPT_KEY, encrypt: Buffer.from("short").toString("base64") }), /feishu_invalid_ciphertext/);
   assert.throws(() => decryptFeishuMessage({ encryptKey: ENCRYPT_KEY, encrypt: "not-base64!!" }));
   assert.throws(() => decryptFeishuMessage({ encryptKey: "", encrypt: enc }), /feishu_missing_encrypt_key/);
 });
