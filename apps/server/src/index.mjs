@@ -6,6 +6,10 @@ import { createDingtalkClient } from "./gateway/dingtalk-client.mjs";
 import { createDingtalkGateway, dingtalkGatewayConfigFromEnv } from "./gateway/dingtalk-gateway.mjs";
 import { createFeishuClient } from "./gateway/feishu-client.mjs";
 import { createFeishuGateway, feishuGatewayConfigFromEnv } from "./gateway/feishu-gateway.mjs";
+import { createSlackClient } from "./gateway/slack-client.mjs";
+import { createSlackGateway, slackGatewayConfigFromEnv } from "./gateway/slack-gateway.mjs";
+import { createTeamsClient } from "./gateway/teams-client.mjs";
+import { createTeamsGateway, teamsGatewayConfigFromEnv } from "./gateway/teams-gateway.mjs";
 import { createWecomClient } from "./gateway/wecom-client.mjs";
 import { createWecomGateway, wecomGatewayConfigFromEnv } from "./gateway/wecom-gateway.mjs";
 import { createHttpServer } from "./runtime/http-server.mjs";
@@ -171,6 +175,42 @@ server.listen(port, host, () => {
     if (appKey && robotCode) {
       const client = createDingtalkClient({ appKey, appSecret: dingtalkConfig.appSecret, robotCode, baseUrl });
       httpDependencies.setChannelDeliverySender("dingtalk", client.sendApplicationMessage);
+      anySenderBound = true;
+    }
+  }
+
+  // Slack (#1128).
+  const slackConfig = slackGatewayConfigFromEnv();
+  if (slackConfig.port && slackConfig.signingSecret && slackConfig.channelId) {
+    createSlackGateway({
+      signingSecret: slackConfig.signingSecret,
+      channelId: slackConfig.channelId,
+      importChannelEvent: httpDependencies.importChannelEvent,
+    }).createServer().listen(slackConfig.port, slackConfig.host, () => {
+      console.log(`[slack-gateway] callback listener on ${slackConfig.host}:${slackConfig.port} → channel ${slackConfig.channelId}`);
+    });
+    const botToken = String(process.env.SLACK_BOT_TOKEN ?? "").trim();
+    if (botToken) {
+      const client = createSlackClient({ botToken });
+      httpDependencies.setChannelDeliverySender("slack", client.sendApplicationMessage);
+      anySenderBound = true;
+    }
+  }
+
+  // Microsoft Teams (#1135).
+  const teamsConfig = teamsGatewayConfigFromEnv();
+  if (teamsConfig.port && teamsConfig.appId && teamsConfig.channelId) {
+    createTeamsGateway({
+      appId: teamsConfig.appId,
+      channelId: teamsConfig.channelId,
+      importChannelEvent: httpDependencies.importChannelEvent,
+    }).createServer().listen(teamsConfig.port, teamsConfig.host, () => {
+      console.log(`[teams-gateway] callback listener on ${teamsConfig.host}:${teamsConfig.port} → channel ${teamsConfig.channelId}`);
+    });
+    const appPassword = String(process.env.TEAMS_APP_PASSWORD ?? "").trim();
+    if (appPassword) {
+      const client = createTeamsClient({ appId: teamsConfig.appId, appPassword });
+      httpDependencies.setChannelDeliverySender("teams", client.sendApplicationMessage);
       anySenderBound = true;
     }
   }

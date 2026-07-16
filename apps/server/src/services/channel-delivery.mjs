@@ -74,7 +74,11 @@ export function createChannelDeliveryService({
       conversationId: conversation.id,
       ownerTeamId: channel.ownerTeamId ?? LOCAL_TEAM_ID,
       invocationId: invocationId ? String(invocationId) : null,
+      // Reply target: a provider whose reply address differs from the sender
+      // identity (Teams, #1135) stamps `replyContext` on the conversation; the
+      // sender receives it verbatim. Others reply to the sender's id as before.
       toUser: conversation.externalUserId,
+      replyContext: conversation.replyContext ?? null,
       content: text.slice(0, MAX_CONTENT_CHARS),
       status: "queued",
       attempts: 0,
@@ -108,7 +112,7 @@ export function createChannelDeliveryService({
     const send = senderFor(delivery);
     try {
       if (typeof send !== "function") throw Object.assign(new Error("no_sender"), { errcode: "no_sender" });
-      outcome = await send({ toUser: delivery.toUser, content: delivery.content });
+      outcome = await send({ toUser: delivery.toUser, content: delivery.content, replyContext: delivery.replyContext ?? null });
     } catch (error) {
       outcome = { ok: false, retryable: true, errcode: error?.errcode ?? "transport_error" };
     }

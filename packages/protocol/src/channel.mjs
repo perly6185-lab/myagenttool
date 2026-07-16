@@ -7,8 +7,8 @@
 // Kept out of index.mjs (like issue-prompt.mjs) so importing it never runs the
 // protocol vocabulary self-check and browser bundles stay clean.
 
-/** Supported channel providers. WeCom (#1090), Feishu/Lark (#1110), DingTalk (#1119). */
-export const channelProviders = ["wecom", "feishu", "dingtalk"];
+/** Supported channel providers. WeCom (#1090), Feishu/Lark (#1110), DingTalk (#1119), Slack (#1128). */
+export const channelProviders = ["wecom", "feishu", "dingtalk", "slack", "teams"];
 
 /** Channel lifecycle statuses. Registration is not enablement (ADR 0012). */
 export const channelStatuses = ["registered", "enabled", "disabled"];
@@ -75,11 +75,25 @@ export const feishuReadinessScopes = [
  */
 export const dingtalkReadinessScopes = ["app_key", "app_secret", "robot_code"];
 
+/**
+ * Slack readiness scopes (#1128): the Events API signing secret + the bot token.
+ * Booleans only, never the secret values.
+ */
+export const slackReadinessScopes = ["signing_secret", "bot_token"];
+
+/**
+ * Microsoft Teams readiness scopes (#1135): the bot app id + password. Booleans
+ * only, never the secret values.
+ */
+export const teamsReadinessScopes = ["app_id", "app_password"];
+
 /** Readiness scope names by provider — the single source of truth for the console. */
 export const channelReadinessScopes = {
   wecom: wecomReadinessScopes,
   feishu: feishuReadinessScopes,
   dingtalk: dingtalkReadinessScopes,
+  slack: slackReadinessScopes,
+  teams: teamsReadinessScopes,
 };
 
 /** Id prefixes for channel collections (see nextId in the server composer). */
