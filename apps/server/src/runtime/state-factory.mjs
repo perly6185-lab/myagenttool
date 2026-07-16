@@ -102,6 +102,9 @@ export function createServerState({ defaultProjectPath, now }) {
     budgetReservations: [],
     // #1151: advisory "X is handling this" markers on pending-decision rows.
     decisionSoftClaims: [],
+    // #1143: issue develop leases — one active develop claim per issue, so
+    // concurrent humans/agents sharing a backlog never start duplicate work.
+    issueClaims: [],
     automations: createDefaultAutomations(defaultProject.id, now),
     agentSkills: createDefaultAgentSkills(now),
     // Auto-run config overrides (services/auto-run-config.mjs). Empty = every
@@ -217,6 +220,7 @@ export function resetStateForSelfCheck({ state, now }) {
   state.applicationResults = [];
   state.budgets = [];
   state.decisionSoftClaims = [];
+  state.issueClaims = [];
   state.automations = createDefaultAutomations(state.currentProjectId ?? state.projects[0]?.id ?? "prj_myagenttool", now);
   state.privateDeploymentConfig = createDefaultPrivateDeploymentConfig(now);
   state.auditExportRequests = [];

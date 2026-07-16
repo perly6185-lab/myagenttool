@@ -70,6 +70,11 @@ export function createAutoRunService({
   reserveBudget,
   releaseReservationsForAutoRun,
   reconcileBudgetReservations,
+  // #1143 issue claims: hold the issue's develop lease at admission, release it
+  // on settle. Both optional — absent (unit tests, claims not composed) the
+  // gate is a no-op and behavior is byte-identical to before.
+  claimIssueForRun,
+  releaseIssueClaimsForAutoRun,
   sendAlert,
   createInvocation,
   findInvocation,
@@ -348,6 +353,11 @@ export function createAutoRunService({
     if (settledStatuses.has(status) && typeof releaseReservationsForAutoRun === "function") {
       releaseReservationsForAutoRun(autoRun.id, { outcome: status === "failed" ? "released_failed" : "committed" });
     }
+    // #1143: a settled run hands its issue back to the pool — the develop lease
+    // held at admission releases here, next to the budget hold. Idempotent.
+    if (settledStatuses.has(status) && typeof releaseIssueClaimsForAutoRun === "function") {
+      releaseIssueClaimsForAutoRun(autoRun.id, { outcome: status === "failed" ? "released_failed" : "committed" });
+    }
     appendEvent({
       invocationId: autoRun.invocationId,
       type: "auto_run_status_changed",
@@ -415,66 +425,108 @@ export function createAutoRunService({
     const autoRunId = nextId("aur_demo");
     const createdAt = now();
 
-    // #890 budget reservation: place the hold SYNCHRONOUSLY here — before the
-    // decision/issue-fetch awaits below — so a second run starting in that same
-    // window sees this run's hold and cannot also pass a near-limit budget. The
-    // hold is released when the run settles (setAutoRunStatus) or, if a pre-record
-    // throw leaks it, by reconcileBudgetReservations on the next sweep. Disabled
-    // (estimate <= 0) → no hold written, byte-identical to before.
-    const reservationEstimateUsd = Number(state.autoRunSettings?.reservationEstimateUsd ?? 0) || 0;
-    if (reservationEstimateUsd > 0 && typeof reserveBudget === "function" && projectId) {
-      const reservation = reserveBudget({ projectId, amountUsd: reservationEstimateUsd, autoRunId });
-      if (!reservation.ok) {
-        void sendAlert?.({
-          kind: "budget_exceeded",
-          severity: "high",
-          message: `Auto-run blocked at admission: ${reservation.reason}`,
-          data: { projectId, link: normalizedLink, reason: reservation.reason },
+    // #1143 issue claim gate: take (or renew) the issue's develop lease
+    // SYNCHRONOUSLY, before any spend, so a colleague already developing this
+    // issue blocks a duplicate run at admission. Same-actor re-entry renews and
+    // attaches this run; a foreign active develop claim refuses with the holder
+    // named. PR-linked runs have no issue to claim and skip the gate, as does a
+    // composition without the claim service (unit tests) — byte-identical then.
+    if (typeof claimIssueForRun === "function" && normalizedLink.type === "issue" && Number.isFinite(normalizedLink.number)) {
+      const claimed = claimIssueForRun({
+        projectId: projectId ?? state.currentProjectId ?? null,
+        issueNumber: normalizedLink.number,
+        actor,
+        mode: "develop",
+        agentId: agent.id,
+        autoRunId,
+      });
+      if (!claimed.ok) {
+        appendEvent({
+          invocationId: null,
+          type: "auto_run_claim_rejected",
+          level: "warn",
+          message: `Auto-run on issue #${normalizedLink.number} refused: ${claimed.reason}`,
+          data: { projectId, issueNumber: normalizedLink.number, requestedBy: actor?.userId ?? "usr_local", holder: claimed.claim?.claimedBy ?? null },
         });
-        throw new Error(`${reservation.reason} Raise the budget, wait for in-flight runs to finish, or reset spend.`);
+        throw new Error(claimed.reason);
       }
     }
 
-    // 0. Decision step: the injected decider (or the heuristic floor) triages the
-    // issue into a path BEFORE any execution. The decision is data, not action.
-    // Both the decider and the role prompt get the issue body when it's readable.
-    const issueBody = await maybeFetchIssueBody(normalizedLink, projectId ?? state.currentProjectId);
-    // B1a: scan the untrusted issue body for prompt-injection markers. A hit
-    // never blocks the run (avoids weaponizing false positives into a DoS), but
-    // it is recorded, alerted, and — crucially — makes the run ineligible for
-    // O2 auto-approval, so a human always reviews a suspicious body.
-    const injection = detectPromptInjection(issueBody);
-    if (injection.suspicious) {
-      void sendAlert?.({
-        kind: "prompt_injection_suspected",
-        severity: "high",
-        message: `Auto-run on ${normalizedLink.type} #${normalizedLink.number}: possible prompt injection in the body (${injection.markers.join(", ")}). Human review required.`,
-        data: { link: normalizedLink, markers: injection.markers },
-      });
-    }
-    const decision = await resolveDecision({
-      link: normalizedLink,
-      issueBody,
-      decideIssuePath,
-      // Console-saved overrides when present; undefined falls back to the env
-      // defaults inside resolveDecision (decisionConfig()).
-      minConfidence: decisionSettings?.minConfidence,
-      fastPath: decisionSettings?.fastPath,
-      // Opt-in: an epic/initiative routes to decompose (a plan, not a diff).
-      epicDecomposition: state.autoRunSettings?.epicDecomposition === true,
-    });
+    // Admission steps below can throw BEFORE the autoRun record exists — the
+    // window where a taken issue claim would dangle (blocking the issue for the
+    // whole lease). Any throw in this zone hands the claim back; after the
+    // record exists, settle (setAutoRunStatus) owns the release.
+    let issueBody;
+    let injection;
+    let decision;
+    let worktree;
+    try {
+      // #890 budget reservation: place the hold SYNCHRONOUSLY here — before the
+      // decision/issue-fetch awaits below — so a second run starting in that same
+      // window sees this run's hold and cannot also pass a near-limit budget. The
+      // hold is released when the run settles (setAutoRunStatus) or, if a pre-record
+      // throw leaks it, by reconcileBudgetReservations on the next sweep. Disabled
+      // (estimate <= 0) → no hold written, byte-identical to before.
+      const reservationEstimateUsd = Number(state.autoRunSettings?.reservationEstimateUsd ?? 0) || 0;
+      if (reservationEstimateUsd > 0 && typeof reserveBudget === "function" && projectId) {
+        const reservation = reserveBudget({ projectId, amountUsd: reservationEstimateUsd, autoRunId });
+        if (!reservation.ok) {
+          void sendAlert?.({
+            kind: "budget_exceeded",
+            severity: "high",
+            message: `Auto-run blocked at admission: ${reservation.reason}`,
+            data: { projectId, link: normalizedLink, reason: reservation.reason },
+          });
+          throw new Error(`${reservation.reason} Raise the budget, wait for in-flight runs to finish, or reset spend.`);
+        }
+      }
 
-    // 1. Materialize the worktree from the issue.
-    const { worktree } = createWorktree({
-      projectId,
-      name: name || `issue-${normalizedLink.number}`,
-      baseBranch,
-      // Fork from the FRESH remote base (origin/<base>), not the stale local branch —
-      // otherwise every run's PR conflicts with work merged since the local checkout.
-      fetchBase: true,
-      agentId: agent.id,
-      link: normalizedLink,
-    });
+      // 0. Decision step: the injected decider (or the heuristic floor) triages the
+      // issue into a path BEFORE any execution. The decision is data, not action.
+      // Both the decider and the role prompt get the issue body when it's readable.
+      issueBody = await maybeFetchIssueBody(normalizedLink, projectId ?? state.currentProjectId);
+      // B1a: scan the untrusted issue body for prompt-injection markers. A hit
+      // never blocks the run (avoids weaponizing false positives into a DoS), but
+      // it is recorded, alerted, and — crucially — makes the run ineligible for
+      // O2 auto-approval, so a human always reviews a suspicious body.
+      injection = detectPromptInjection(issueBody);
+      if (injection.suspicious) {
+        void sendAlert?.({
+          kind: "prompt_injection_suspected",
+          severity: "high",
+          message: `Auto-run on ${normalizedLink.type} #${normalizedLink.number}: possible prompt injection in the body (${injection.markers.join(", ")}). Human review required.`,
+          data: { link: normalizedLink, markers: injection.markers },
+        });
+      }
+      decision = await resolveDecision({
+        link: normalizedLink,
+        issueBody,
+        decideIssuePath,
+        // Console-saved overrides when present; undefined falls back to the env
+        // defaults inside resolveDecision (decisionConfig()).
+        minConfidence: decisionSettings?.minConfidence,
+        fastPath: decisionSettings?.fastPath,
+        // Opt-in: an epic/initiative routes to decompose (a plan, not a diff).
+        epicDecomposition: state.autoRunSettings?.epicDecomposition === true,
+      });
+
+      // 1. Materialize the worktree from the issue.
+      ({ worktree } = createWorktree({
+        projectId,
+        name: name || `issue-${normalizedLink.number}`,
+        baseBranch,
+        // Fork from the FRESH remote base (origin/<base>), not the stale local branch —
+        // otherwise every run's PR conflicts with work merged since the local checkout.
+        fetchBase: true,
+        agentId: agent.id,
+        link: normalizedLink,
+      }));
+    } catch (error) {
+      if (typeof releaseIssueClaimsForAutoRun === "function") {
+        releaseIssueClaimsForAutoRun(autoRunId, { outcome: "released_failed" });
+      }
+      throw error;
+    }
 
     // Record the auto-run BEFORE starting the invocation so the dedup key exists
     // even if invocation creation throws — otherwise auto-trigger, which dedups on

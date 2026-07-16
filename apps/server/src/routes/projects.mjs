@@ -44,6 +44,9 @@ export async function handleProjectRoutes({
   retryAutoRun,
   cancelAutoRun,
   mergeAutoRunPr,
+  claimIssue,
+  releaseIssueClaim,
+  listIssueClaims,
   approveDesign,
   rejectDesign,
   answerClarify,
@@ -441,6 +444,56 @@ export async function handleProjectRoutes({
     } catch (error) {
       sendJson(res, 400, { error: "auto_run_failed", message: errorMessage(error) });
     }
+    return true;
+  }
+
+  // #1143 issue claims: the self-service claim surface. Claiming is the write
+  // chokepoint's decision (409 on a foreign develop claim); reading an issue is
+  // never gated, so GET simply lists.
+  const projectIssueClaimsMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/issue-claims$/);
+  if (projectIssueClaimsMatch && req.method === "GET") {
+    const projectId = decodeURIComponent(projectIssueClaimsMatch[1]);
+    if (denyForeignProject({ res, sendJson, state, actor, projectId, notFound: { error: "project_not_found" } })) {
+      return true;
+    }
+    sendJson(res, 200, {
+      issueClaims: listIssueClaims({ projectId, includeSettled: url.searchParams.get("includeSettled") === "1" }),
+    });
+    return true;
+  }
+  if (projectIssueClaimsMatch && req.method === "POST") {
+    const projectId = decodeURIComponent(projectIssueClaimsMatch[1]);
+    if (denyForeignProject({ res, sendJson, state, actor, projectId, notFound: { error: "project_not_found" } })) {
+      return true;
+    }
+    const body = await readJson(req);
+    const result = claimIssue({
+      projectId,
+      issueNumber: body?.issueNumber,
+      mode: body?.mode ?? "develop",
+      actor,
+    });
+    if (!result.ok) {
+      const conflict = Boolean(result.claim);
+      sendJson(res, conflict ? 409 : 400, { error: conflict ? "issue_already_claimed" : "invalid_claim", message: result.reason, claim: result.claim ?? null });
+      return true;
+    }
+    sendJson(res, 201, { claim: result.claim, renewed: result.renewed === true });
+    return true;
+  }
+
+  const issueClaimReleaseMatch = url.pathname.match(/^\/api\/issue-claims\/([^/]+)\/release$/);
+  if (issueClaimReleaseMatch && req.method === "POST") {
+    const claimId = decodeURIComponent(issueClaimReleaseMatch[1]);
+    const claim = (state.issueClaims ?? []).find((item) => item.id === claimId) ?? null;
+    // A foreign-team claim is indistinguishable from a missing one (404, not
+    // 403) — same anti-enumeration stance as denyForeignProject.
+    if (!claim || denyForeignProject({ res, sendJson, state, actor, projectId: claim.projectId, notFound: { error: "issue_claim_not_found" } })) {
+      if (!claim) sendJson(res, 404, { error: "issue_claim_not_found" });
+      return true;
+    }
+    const released = releaseIssueClaim(claimId, { actor, outcome: "released" });
+    sendJson(res, 200, { released, claim });
     return true;
   }
 
