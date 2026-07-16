@@ -11,6 +11,7 @@
     "git:register-app": "node tools/dev/register-git-application.mjs",
     "claude:register-app": "node tools/dev/register-claude-application.mjs",
     "gmail:register-app": "node tools/dev/register-gmail-application.mjs",
+    "gmail:register-send-app": "node tools/dev/register-gmail-send-application.mjs",
     "test": "pnpm -r --filter \"./apps/*\" --filter \"./packages/*\" --filter \"./tools/*\" --if-present test && pnpm smoke:local && pnpm smoke:port",
     "lint": "pnpm -r --filter \"./apps/*\" --filter \"./packages/*\" --filter \"./tools/*\" --if-present lint",
     "typecheck": "pnpm -r --filter \"./apps/*\" --filter \"./packages/*\" --filter \"./tools/*\" --if-present typecheck",
