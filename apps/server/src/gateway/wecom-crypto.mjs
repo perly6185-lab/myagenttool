@@ -107,16 +107,33 @@ const XML_ENTITIES = { "&amp;": "&", "&lt;": "<", "&gt;": ">", "&quot;": '"', "&
  * XML parser by design: no DTDs, no attributes, no nesting — just the known
  * first-level fields, CDATA-or-entity-decoded. Anything else is ignored.
  */
+// Anchored, linear-time field extraction (code-review M2). The earlier
+// `<f>(?:<![CDATA[..]]>|..*?)</f>` regex has two lazy `[\s\S]*?` alternatives and
+// runs on the RAW request body BEFORE signature verification (the signed value
+// lives inside the XML), so a crafted body of many unclosed `<Encrypt>` tags
+// caused ~O(n²) event-loop stalls. indexOf scanning is linear per field and
+// preserves the CDATA-takes-precedence semantics (CDATA content may itself
+// contain a `</field>`, so CDATA end is found by `]]>`, not the close tag).
+const CDATA_OPEN = "<![CDATA[";
+const CDATA_CLOSE = "]]>";
+
 export function extractXmlFields(xml, fields) {
   const text = String(xml ?? "");
   const out = {};
   for (const field of fields) {
-    const match = text.match(new RegExp(`<${field}>(?:<!\\[CDATA\\[([\\s\\S]*?)\\]\\]>|([\\s\\S]*?))</${field}>`));
-    if (!match) continue;
-    const value = match[1] ?? match[2] ?? "";
-    out[field] = match[1] !== undefined
-      ? value
-      : value.replace(/&amp;|&lt;|&gt;|&quot;|&apos;/g, (entity) => XML_ENTITIES[entity]);
+    const start = text.indexOf(`<${field}>`);
+    if (start === -1) continue;
+    const from = start + field.length + 2;
+    if (text.startsWith(CDATA_OPEN, from)) {
+      const cdataFrom = from + CDATA_OPEN.length;
+      const cdataEnd = text.indexOf(CDATA_CLOSE, cdataFrom);
+      if (cdataEnd === -1) continue;
+      out[field] = text.slice(cdataFrom, cdataEnd);
+    } else {
+      const end = text.indexOf(`</${field}>`, from);
+      if (end === -1) continue;
+      out[field] = text.slice(from, end).replace(/&amp;|&lt;|&gt;|&quot;|&apos;/g, (entity) => XML_ENTITIES[entity]);
+    }
   }
   return out;
 }

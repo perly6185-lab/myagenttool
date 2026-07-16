@@ -42,6 +42,7 @@ export function createChannelDeliveryService({
   validateApprovalToken = null,
 }) {
   const runTx = makeRunTx({ store, persistStateSoon });
+  let sweepInFlight = false;
 
   const findChannel = (channelId) => (state.channels ?? []).find((row) => row.id === channelId) ?? null;
   // Resolve the sender for one delivery by its channel's provider; falls back to
@@ -90,11 +91,19 @@ export function createChannelDeliveryService({
   }
 
   async function attemptDelivery(delivery) {
+    // Compare-and-set (code-review M1): only a queued/retrying row may be
+    // claimed for sending, and the claim + increment happen atomically in one
+    // synchronous tx body. Without this, two overlapping sweeps (the 15s
+    // interval does not await the prior run) could both send the same delivery.
+    let claimed = false;
     runTx(() => {
+      if (delivery.status !== "queued" && delivery.status !== "retrying") return;
       delivery.status = "sending";
       delivery.attempts += 1;
       delivery.updatedAt = now();
+      claimed = true;
     });
+    if (!claimed) return { status: delivery.status, skipped: true };
     let outcome;
     const send = senderFor(delivery);
     try {
@@ -175,6 +184,20 @@ export function createChannelDeliveryService({
    */
   async function sweepChannelDeliveries() {
     if (!anySenderConfigured()) return { processed: 0 };
+    // Re-entrancy guard (code-review M1): the 15s interval fires regardless of
+    // whether the prior async sweep finished; a second concurrent sweep would
+    // race the same rows. The per-row CAS in attemptDelivery is the real fix;
+    // this avoids the wasted work of overlapping passes.
+    if (sweepInFlight) return { processed: 0, skipped: true };
+    sweepInFlight = true;
+    try {
+      return await runSweep();
+    } finally {
+      sweepInFlight = false;
+    }
+  }
+
+  async function runSweep() {
     const nowMs = Date.parse(now());
     const due = (state.channelDeliveries ?? []).filter(
       (row) =>

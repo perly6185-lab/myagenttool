@@ -49,8 +49,13 @@ export function createFeishuClient({
     if (Number(result?.code ?? -1) !== 0) {
       throw Object.assign(new Error("feishu_token_fetch_failed"), { errcode: Number(result?.code ?? -1) });
     }
+    // Guard against caching an empty token (code-review LOW).
+    const token = String(result.tenant_access_token ?? "");
+    if (!token) {
+      throw Object.assign(new Error("feishu_token_fetch_failed"), { errcode: "empty_token" });
+    }
     cachedToken = {
-      token: String(result.tenant_access_token ?? ""),
+      token,
       expiresAtMs: now() + Math.max(0, Number(result.expire ?? 7200) * 1000 - TOKEN_SAFETY_MS),
     };
     return cachedToken.token;
