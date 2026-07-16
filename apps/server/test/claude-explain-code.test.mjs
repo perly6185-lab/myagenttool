@@ -8,7 +8,7 @@
 
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -251,4 +251,22 @@ test("the wrapper refuses a missing, escaping, or absent-on-disk --path before a
   assert.notEqual(badLines.status, 0);
   assert.match(badLines.payload.output.error, /--lines must be/);
   assert.equal(missing.payload.output.tool, "claude.explain.code", "refusals are stamped with the right tool");
+});
+
+test("audit: a symlink inside the worktree pointing OUTSIDE it is refused (realpath confinement)", () => {
+  const outside = realpathSync(mkdtempSync(join(tmpdir(), "claude-explain-outside-")));
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "claude-explain-symlink-")));
+  writeFileSync(join(outside, "secret.txt"), "outside the worktree\n");
+  symlinkSync(join(outside, "secret.txt"), join(dir, "innocent.txt"));
+
+  const escaped = runWrapper(["--mode", "code-explain", "--cwd", dir, "--path", "innocent.txt"]);
+  assert.notEqual(escaped.status, 0);
+  assert.match(escaped.payload.output.error, /resolves \(via symlink\) outside the worktree/);
+
+  // A symlink that stays INSIDE the worktree is fine.
+  writeFileSync(join(dir, "real.txt"), "inside\n");
+  symlinkSync(join(dir, "real.txt"), join(dir, "alias.txt"));
+  const inside = runWrapper(["--mode", "code-explain", "--cwd", dir, "--path", "alias.txt"]);
+  // Fails later at the Claude spawn (no CLI in tests) — but NOT at the path gate.
+  assert.ok(!/outside the worktree|escapes the worktree/.test(String(inside.payload.output.error ?? "")), "an inside-pointing symlink passes the gate");
 });
