@@ -40,6 +40,7 @@ import { createInvocationService } from "../services/invocations.mjs";
 import { createM3Service } from "../services/m3.mjs";
 import { createProjectService, sameProjectPath } from "../services/projects.mjs";
 import { createAutoRunService } from "../services/auto-run.mjs";
+import { createIssueClaimService } from "../services/issue-claims.mjs";
 import { resolveAutoRunVerifyCommand, resolveAutoRunVerifyCommandFor, runWorktreeVerification } from "../services/worktree-verify.mjs";
 import { resolveStatusWritebackConfig, runIssueBodyFetch, runIssueComment, runIssueStatusTransition, runPrChecks, runPrMerge, runPrStateFetch, runIssueStateFetch } from "../services/issue-status.mjs";
 import { deciderTimeoutMs, resolveDeciderCommand, runDeciderCommand } from "../services/decision-command.mjs";
@@ -432,6 +433,22 @@ export function createServerRuntimeServices({
     // at run-completion (well after init), so referencing it here is safe.
     dispatchAlert: (alert) => autoRunAlerts.dispatch(alert),
   });
+  // #1143 issue claims: the issue-level develop lease. Composed before the
+  // auto-run service, which gates admission on it and releases it on settle.
+  const {
+    claimIssue,
+    releaseIssueClaim,
+    releaseClaimsForAutoRun: releaseIssueClaimsForAutoRun,
+    listIssueClaims,
+  } = createIssueClaimService({
+    state,
+    now,
+    nextId,
+    appendEvent,
+    persistStateSoon,
+    store,
+  });
+
   const { recordCcusageImportedEstimates } = createCcusageImportService({
     state,
     now,
@@ -619,6 +636,10 @@ export function createServerRuntimeServices({
     reserveBudget,
     releaseReservationsForAutoRun,
     reconcileBudgetReservations,
+    // #1143 issue claims: hold the issue's develop lease at admission, release
+    // it when the run settles.
+    claimIssueForRun: claimIssue,
+    releaseIssueClaimsForAutoRun,
     // A1 alerting: best-effort operational webhook (budget breach, stuck reap).
     sendAlert: (alert) => autoRunAlerts.dispatch(alert),
     // O1 reliability: find a run's invocation for stuck/crash reconcile.
@@ -2831,6 +2852,9 @@ export function createServerRuntimeServices({
     cancelAutoRun,
     reapStuckAutoRuns,
     autoMergeSweep,
+    claimIssue,
+    releaseIssueClaim,
+    listIssueClaims,
     approveDesign,
     rejectDesign,
     answerClarify,
