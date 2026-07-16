@@ -272,3 +272,26 @@ test("#1110: resolveSender routes each delivery to its channel's provider client
   const receipts = state.channelDeliveries.map((d) => d.providerReceiptId).sort();
   assert.deepEqual(receipts, ["feishu_msg", "wecom_msg"]);
 });
+
+test("#1135: a delivery carries the conversation's replyContext to the sender", async () => {
+  const clockMs = 1_800_000_000_000;
+  const now = () => new Date(clockMs).toISOString();
+  const { state } = createServerState({ defaultProjectPath: tmpdir(), now });
+  let counter = 0;
+  const nextId = (p) => `${p}_${String(++counter).padStart(4, "0")}`;
+  const owner = { userId: "usr_local", teamId: "team_local", role: "owner", authenticated: true };
+  const channels = createChannelService({ state, now, nextId, appendEvent: () => {}, validateApprovalToken: () => ({ approved: true }) });
+  const cid = channels.registerChannel({ provider: "teams", name: "t" }, owner).body.channel.id;
+  channels.enableChannel({ channelId: cid, approvalToken: "ok" }, owner);
+  const rc = { serviceUrl: "https://smba.example/", conversationId: "conv_1" };
+  const imp = channels.importChannelEvent({ channelId: cid, providerMessageId: "act_1", externalUserId: "29:u", content: "/status", replyContext: rc });
+
+  let seenReplyContext = null;
+  const svc = createChannelDeliveryService({
+    state, now, nextId, appendEvent: () => {},
+    resolveSender: () => async ({ replyContext }) => { seenReplyContext = replyContext; return { ok: true, msgid: "m" }; },
+  });
+  svc.enqueueChannelDelivery({ channelId: cid, conversationId: imp.conversationId, content: "hi" });
+  await svc.sweepChannelDeliveries();
+  assert.deepEqual(seenReplyContext, rc, "the sender receives the conversation's replyContext");
+});
