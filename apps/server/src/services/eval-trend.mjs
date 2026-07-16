@@ -13,7 +13,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { PROVISIONAL_FLOORS, looksLikeInfraFailure } from "../../../../tools/ai/src/evals/eval-signals.mjs";
+import { PROVISIONAL_FLOORS, deriveFloors, looksLikeInfraFailure } from "../../../../tools/ai/src/evals/eval-signals.mjs";
 
 // Same anchor eval-real-run.mjs uses so the two always agree on the path.
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../../..");
@@ -47,7 +47,7 @@ function metricPoint(record, key) {
 }
 
 /** Per-metric summary: chronological series + latest, delta, floor, regression. */
-function summarizeMetric(records, key) {
+function summarizeMetric(records, key, derivedLines = null) {
   // Exclude infra/auth outages FIRST: a completed provider outage carries a real
   // (low) passRate, so it would otherwise be counted as a capability regression
   // and toward #250's real-run gate. This mirrors eval-signals.runRegressed /
@@ -56,7 +56,11 @@ function summarizeMetric(records, key) {
   const series = real.map((r) => metricPoint(r, key)).filter(Boolean);
   const latest = series.length ? series[series.length - 1] : null;
   const previous = series.length > 1 ? series[series.length - 2] : null;
-  const floor = PROVISIONAL_FLOORS[key] ?? null;
+  // #250: the panel shows the SAME line the scheduled runner gates on — the
+  // trend-derived floor when >=3 clean points exist, else the provisional
+  // fallback (and says which).
+  const lines = derivedLines ?? deriveFloors(records);
+  const floor = lines.floors[key] ?? PROVISIONAL_FLOORS[key] ?? null;
   return {
     latest,
     previous,
@@ -64,7 +68,8 @@ function summarizeMetric(records, key) {
     series,
     realRuns: series.length,
     floor,
-    floorProvisional: true,
+    floorProvisional: !(lines.meta[key]?.derived === true),
+    floorDerivation: lines.meta[key] ?? null,
     // Only a REAL low score is a regression; infra/auth rows are filtered above.
     regressed: latest && floor != null ? latest.passRate < floor : false,
     // #250 can't set a real line until this clears.
@@ -78,13 +83,16 @@ function summarizeMetric(records, key) {
  */
 export function summarizeEvalTrend(records = []) {
   const list = Array.isArray(records) ? records.filter((r) => r && typeof r === "object") : [];
+  // #250: derive the gate lines ONCE for both metrics (same clean-point policy
+  // as the scheduled runner), so the panel and the red cron log agree.
+  const derivedLines = deriveFloors(list);
   const infraFailures = list.filter(isInfraFailure);
   const lastRecord = list.length ? list[list.length - 1] : null;
   const lastInfraFailure = infraFailures.length ? infraFailures[infraFailures.length - 1] : null;
   return {
     total: list.length,
-    subcap: summarizeMetric(list, "subcap"),
-    heldout: summarizeMetric(list, "heldout"),
+    subcap: summarizeMetric(list, "subcap", derivedLines),
+    heldout: summarizeMetric(list, "heldout", derivedLines),
     infraFailures: infraFailures.length,
     // A run that fired but couldn't authenticate (the pre-fix crontab symptom)
     // — surfaced so a silently-broken scheduler is visible, not just missing data.
