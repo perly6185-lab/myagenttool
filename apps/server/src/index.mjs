@@ -2,6 +2,7 @@ import { mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { startAutomationScheduler } from "./runtime/automation-scheduler.mjs";
 import { startAutoTriggerScheduler } from "./runtime/auto-trigger-scheduler.mjs";
+import { createWecomClient } from "./gateway/wecom-client.mjs";
 import { createWecomGateway, wecomGatewayConfigFromEnv } from "./gateway/wecom-gateway.mjs";
 import { createHttpServer } from "./runtime/http-server.mjs";
 import { runProtocolSelfCheck } from "./runtime/self-check.mjs";
@@ -118,6 +119,18 @@ server.listen(port, host, () => {
     gateway.createServer().listen(wecomConfig.port, wecomConfig.host, () => {
       console.log(`[wecom-gateway] callback listener on ${wecomConfig.host}:${wecomConfig.port} → channel ${wecomConfig.channelId}`);
     });
+
+    // S5 outbound: the send credential (CorpSecret) stays in this env-derived
+    // client; the delivery sweep only runs when a sender is actually bound.
+    const corpSecret = String(process.env.WECOM_CORP_SECRET ?? "").trim();
+    const agentId = String(process.env.WECOM_AGENT_ID ?? "").trim();
+    if (corpSecret && agentId && wecomConfig.receiveId) {
+      const client = createWecomClient({ corpId: wecomConfig.receiveId, corpSecret, agentId });
+      httpDependencies.setChannelDeliverySender(client.sendApplicationMessage);
+      const sweep = () => httpDependencies.sweepChannelDeliveries().catch(() => {});
+      sweep(); // restart recovery: resume queued/retrying deliveries on boot
+      setInterval(sweep, 15_000).unref?.();
+    }
   }
 }
 
