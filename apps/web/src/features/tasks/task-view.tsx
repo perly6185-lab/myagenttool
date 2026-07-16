@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Hand, RefreshCw, ExternalLink, GitBranch, Workflow, Zap } from "lucide-react";
+import { Hand, History, RefreshCw, ExternalLink, GitBranch, Workflow, Zap } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -12,6 +12,7 @@ import { useAsyncAction, api } from "@/data/use-console-actions";
 import { useUiStore } from "@/store/ui-store";
 import { cn } from "@/lib/cn";
 import { readableStatus, statusTone } from "@/lib/readable-labels";
+import type { IssueClaimEvent } from "@/lib/console-state";
 import { branchFromIssue, worktreeLinkFor } from "@/features/projects/worktree-payload";
 import { githubItemKindLabel, worktreeAutoRunPrompt } from "@myagenttool/protocol/issue-prompt";
 
@@ -75,6 +76,13 @@ export function TaskView() {
   }
   function releaseClaimRow(claimId: string) {
     void execute(() => api.releaseIssueClaim(claimId));
+  }
+  // #1163: the issue's durable claim history (#1152's issueClaimEvents — who
+  // held it and how each hold ended). Server rows are newest-first already.
+  const issueClaimEvents = state?.issueClaimEvents ?? [];
+  const [historyRow, setHistoryRow] = useState<Row | null>(null);
+  function claimHistory(row: Row) {
+    return issueClaimEvents.filter((e) => e.projectId === row.projectId && e.issueNumber === row.number);
   }
   // The newest run in a worktree (invocations are newest-first) for its status.
   function latestRun(worktreeId: string) {
@@ -288,6 +296,11 @@ export function TaskView() {
                     </td>
                     <td className="px-3 py-2">
                       <div className="flex items-center justify-end gap-1">
+                        {r.type === "issue" && claimHistory(r).length > 0 ? (
+                          <Button variant="ghost" size="sm" disabled={pending} onClick={() => setHistoryRow(r)} title="Who held this issue and how each hold ended">
+                            <History className="size-3.5" />
+                          </Button>
+                        ) : null}
                         {(() => {
                           if (r.type !== "issue" || r.state !== "open") return null;
                           const claim = activeClaim(r);
@@ -342,6 +355,10 @@ export function TaskView() {
         )}
       </CardContent>
 
+      <Modal open={Boolean(historyRow)} onClose={() => setHistoryRow(null)} title={historyRow ? `Claim history · #${historyRow.number}` : "Claim history"}>
+        {historyRow ? <ClaimHistoryList events={claimHistory(historyRow)} /> : null}
+      </Modal>
+
       <Modal open={Boolean(wtRow)} onClose={() => setWtRow(null)} title={wtRow ? `Worktree for #${wtRow.number}` : "Worktree"}>
         {wtRow ? (
           <WorktreeOptionsForm
@@ -354,6 +371,30 @@ export function TaskView() {
         ) : null}
       </Modal>
     </Card>
+  );
+}
+
+// #1163: the durable claim trail for one issue — each row is a recorded
+// transition from issueClaimEvents (#1152), newest first. Read-only.
+const CLAIM_EVENT_TONE = { claimed: "warning", released: "neutral", expired: "danger" } as const;
+function ClaimHistoryList({ events }: { events: IssueClaimEvent[] }) {
+  if (!events.length) return <p className="text-sm text-muted-foreground">No recorded claim history.</p>;
+  return (
+    <ul className="flex max-h-80 flex-col gap-1.5 overflow-y-auto">
+      {events.map((e) => (
+        <li key={e.id} className="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-md border border-border/60 px-2.5 py-1.5 text-xs">
+          <Badge tone={CLAIM_EVENT_TONE[e.type] ?? "neutral"}>{e.type}</Badge>
+          <span className="font-medium">{e.claimedBy}</span>
+          <span className="text-muted-foreground">{e.mode}</span>
+          {e.type === "released" && e.actorId && e.actorId !== e.claimedBy ? (
+            <span className="text-muted-foreground">released by {e.actorId}</span>
+          ) : null}
+          {e.outcome && e.outcome !== "released" ? <span className="text-muted-foreground">{e.outcome.replaceAll("_", " ")}</span> : null}
+          {e.autoRunId ? <span className="font-mono text-muted-foreground">{e.autoRunId}</span> : null}
+          <span className="ml-auto text-muted-foreground">{e.at.replace("T", " ").slice(0, 16)}</span>
+        </li>
+      ))}
+    </ul>
   );
 }
 
