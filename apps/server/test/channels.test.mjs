@@ -15,6 +15,7 @@ import {
   createChannelService,
   dingtalkEnvReadiness,
   feishuEnvReadiness,
+  slackEnvReadiness,
   wecomEnvReadiness,
 } from "../src/services/channels.mjs";
 
@@ -95,6 +96,30 @@ test("dingtalk (#1119): registers through the same registry and reports DingTalk
   for (const surface of [state, created.body]) assert.ok(!JSON.stringify(surface).includes(SECRET));
 });
 
+test("slack (#1128): registers through the same registry and reports Slack readiness booleans", () => {
+  const probe = () => ({ signing_secret: true, bot_token: Boolean(SECRET) });
+  const { state } = createServerState({ defaultProjectPath: tmpdir(), now: () => NOW });
+  let counter = 0;
+  const service = createChannelService({
+    state, now: () => NOW, nextId: (p) => `${p}_${String(++counter).padStart(4, "0")}`,
+    appendEvent: () => {}, validateApprovalToken: () => ({ approved: true }),
+    readinessProbes: { slack: probe },
+  });
+  const created = service.registerChannel({ provider: "slack", name: "slack-ops" }, owner);
+  assert.equal(created.status, 201);
+  assert.equal(created.body.channel.provider, "slack");
+  assert.deepEqual(created.body.channel.readiness, { signing_secret: true, bot_token: true });
+  assert.equal(service.channelHealth({ channelId: created.body.channel.id }, owner).body.ready, true);
+  for (const surface of [state, created.body]) assert.ok(!JSON.stringify(surface).includes(SECRET));
+});
+
+test("slackEnvReadiness reads presence, not values", () => {
+  assert.deepEqual(slackEnvReadiness({}), { signing_secret: false, bot_token: false });
+  const ready = slackEnvReadiness({ SLACK_SIGNING_SECRET: "s", SLACK_BOT_TOKEN: SECRET });
+  assert.deepEqual(ready, { signing_secret: true, bot_token: true });
+  assert.ok(!JSON.stringify(ready).includes(SECRET));
+});
+
 test("dingtalkEnvReadiness reads presence, not values", () => {
   assert.deepEqual(dingtalkEnvReadiness({}), { app_key: false, app_secret: false, robot_code: false });
   const ready = dingtalkEnvReadiness({ DINGTALK_APP_KEY: "k", DINGTALK_APP_SECRET: SECRET, DINGTALK_ROBOT_CODE: "r" });
@@ -111,7 +136,7 @@ test("feishuEnvReadiness reads presence, not values", () => {
 
 test("register validates provider and name, stamps the owner team, and audits", () => {
   const { state, events, service } = makeService();
-  assert.equal(service.registerChannel({ provider: "slack", name: "x" }, owner).status, 400);
+  assert.equal(service.registerChannel({ provider: "telegram", name: "x" }, owner).status, 400);
   assert.equal(service.registerChannel({ provider: "wecom", name: "  " }, owner).status, 400);
 
   const created = service.registerChannel({ provider: "wecom", name: "ops" }, owner);
