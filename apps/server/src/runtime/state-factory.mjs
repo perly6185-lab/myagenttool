@@ -105,6 +105,9 @@ export function createServerState({ defaultProjectPath, now }) {
     // #1143: issue develop leases — one active develop claim per issue, so
     // concurrent humans/agents sharing a backlog never start duplicate work.
     issueClaims: [],
+    // #1152: durable claim lifecycle history (claimed/released/expired), kept
+    // outside the 500-row event ring buffer so it survives churn + restart.
+    issueClaimEvents: [],
     automations: createDefaultAutomations(defaultProject.id, now),
     agentSkills: createDefaultAgentSkills(now),
     // Auto-run config overrides (services/auto-run-config.mjs). Empty = every
@@ -221,6 +224,7 @@ export function resetStateForSelfCheck({ state, now }) {
   state.budgets = [];
   state.decisionSoftClaims = [];
   state.issueClaims = [];
+  state.issueClaimEvents = [];
   state.automations = createDefaultAutomations(state.currentProjectId ?? state.projects[0]?.id ?? "prj_myagenttool", now);
   state.privateDeploymentConfig = createDefaultPrivateDeploymentConfig(now);
   state.auditExportRequests = [];

@@ -20,6 +20,30 @@ const DEFAULT_TTL_MINUTES = 24 * 60;
 export function createIssueClaimService({ state, now, nextId, appendEvent, persistStateSoon, store, mirrorAssignee }) {
   const runTx = makeRunTx({ store, persistStateSoon });
 
+  // #1152: durable claim history. The global event log is a 500-row ring buffer
+  // — under multi-user load a claim's audit trail churns out of it in minutes.
+  // Every lifecycle transition (claimed/released/expired) also lands here, in a
+  // dedicated persisted collection with its own bound, so "who held #42 and
+  // when" survives both buffer churn and restart. Compact rows, not full events.
+  function recordClaimHistory(claim, type, { actorId = null } = {}) {
+    const row = {
+      id: nextId("iche"),
+      claimId: claim.id,
+      projectId: claim.projectId,
+      issueNumber: claim.issueNumber,
+      type,
+      mode: claim.mode,
+      claimedBy: claim.claimedBy,
+      actorId: actorId ?? claim.claimedBy,
+      autoRunId: claim.autoRunId ?? null,
+      outcome: claim.outcome ?? null,
+      at: now(),
+    };
+    (state.issueClaimEvents ??= []).unshift(row);
+    if (state.issueClaimEvents.length > 1000) state.issueClaimEvents = state.issueClaimEvents.slice(0, 1000);
+    return row;
+  }
+
   // #1150: best-effort GitHub assignee mirror — ownership taken in the console
   // shows up for people who only look at GitHub. Fire-and-forget: a slow or
   // failed gh call never blocks or fails the claim; the LOCAL claim record is
@@ -57,6 +81,7 @@ export function createIssueClaimService({ state, now, nextId, appendEvent, persi
           message: `Issue claim ${claim.id} on #${claim.issueNumber} expired; the issue is back in the pool.`,
           data: { claimId: claim.id, projectId: claim.projectId, issueNumber: claim.issueNumber, claimedBy: claim.claimedBy },
         });
+        recordClaimHistory(claim, "expired");
       });
       maybeMirrorAssignee(claim, "remove");
       expired += 1;
@@ -155,6 +180,7 @@ export function createIssueClaimService({ state, now, nextId, appendEvent, persi
         message: `Issue #${number} claimed for ${mode} by ${userId}.`,
         data: { claimId: claim.id, projectId, issueNumber: number, mode, claimedBy: userId, autoRunId },
       });
+      recordClaimHistory(claim, "claimed");
     });
     maybeMirrorAssignee(claim, "add");
     return { ok: true, claim, renewed: false };
@@ -166,6 +192,9 @@ export function createIssueClaimService({ state, now, nextId, appendEvent, persi
     return runTx(() => {
       claim.status = "released";
       claim.outcome = outcome;
+      // #1152: who handed it back lives on the ROW, not only in the ring-buffer
+      // event (an auto-run settle releases on the holder's behalf).
+      claim.releasedBy = actor?.userId ?? claim.claimedBy;
       claim.updatedAt = now();
       appendEvent({
         invocationId: null,
@@ -177,10 +206,11 @@ export function createIssueClaimService({ state, now, nextId, appendEvent, persi
           projectId: claim.projectId,
           issueNumber: claim.issueNumber,
           claimedBy: claim.claimedBy,
-          releasedBy: actor?.userId ?? claim.claimedBy,
+          releasedBy: claim.releasedBy,
           outcome,
         },
       });
+      recordClaimHistory(claim, "released", { actorId: claim.releasedBy });
       maybeMirrorAssignee(claim, "remove");
       return true;
     });
