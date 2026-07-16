@@ -16,6 +16,7 @@ import {
   dingtalkEnvReadiness,
   feishuEnvReadiness,
   slackEnvReadiness,
+  teamsEnvReadiness,
   wecomEnvReadiness,
 } from "../src/services/channels.mjs";
 
@@ -94,6 +95,35 @@ test("dingtalk (#1119): registers through the same registry and reports DingTalk
   assert.deepEqual(created.body.channel.readiness, { app_key: true, app_secret: true, robot_code: true });
   assert.equal(service.channelHealth({ channelId: created.body.channel.id }, owner).body.ready, true);
   for (const surface of [state, created.body]) assert.ok(!JSON.stringify(surface).includes(SECRET));
+});
+
+test("teams (#1135): registers + reports readiness booleans; replyContext is stored on the conversation and used by delivery", async () => {
+  const probe = () => ({ app_id: true, app_password: Boolean(SECRET) });
+  const { state } = createServerState({ defaultProjectPath: tmpdir(), now: () => NOW });
+  let counter = 0;
+  const nextId = (p) => `${p}_${String(++counter).padStart(4, "0")}`;
+  const service = createChannelService({
+    state, now: () => NOW, nextId, appendEvent: () => {}, validateApprovalToken: () => ({ approved: true }),
+    readinessProbes: { teams: probe },
+  });
+  const created = service.registerChannel({ provider: "teams", name: "teams-ops" }, owner);
+  assert.equal(created.status, 201);
+  assert.deepEqual(created.body.channel.readiness, { app_id: true, app_password: true });
+  const channelId = created.body.channel.id;
+  service.enableChannel({ channelId, approvalToken: "ok" }, owner);
+  // Import with a Teams-style replyContext.
+  const rc = { serviceUrl: "https://smba.example/", conversationId: "conv_9" };
+  const imp = service.importChannelEvent({ channelId, providerMessageId: "act_1", externalUserId: "29:u", content: "/status", replyContext: rc });
+  const conv = state.channelConversations.find((c) => c.id === imp.conversationId);
+  assert.deepEqual(conv.replyContext, rc, "replyContext stored on the conversation");
+  for (const surface of [state, created.body]) assert.ok(!JSON.stringify(surface).includes(SECRET));
+});
+
+test("teamsEnvReadiness reads presence, not values", () => {
+  assert.deepEqual(teamsEnvReadiness({}), { app_id: false, app_password: false });
+  const ready = teamsEnvReadiness({ TEAMS_APP_ID: "id", TEAMS_APP_PASSWORD: SECRET });
+  assert.deepEqual(ready, { app_id: true, app_password: true });
+  assert.ok(!JSON.stringify(ready).includes(SECRET));
 });
 
 test("slack (#1128): registers through the same registry and reports Slack readiness booleans", () => {

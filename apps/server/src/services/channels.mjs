@@ -62,12 +62,21 @@ export function slackEnvReadiness(env = process.env) {
   };
 }
 
-/** Default readiness probes by provider (#1110/#1119/#1128). */
+/** Microsoft Teams readiness probe (#1135): env PRESENCE only, never the secret values. */
+export function teamsEnvReadiness(env = process.env) {
+  return {
+    app_id: Boolean(String(env.TEAMS_APP_ID ?? "").trim()),
+    app_password: Boolean(String(env.TEAMS_APP_PASSWORD ?? "").trim()),
+  };
+}
+
+/** Default readiness probes by provider (#1110/#1119/#1128/#1135). */
 export const defaultReadinessProbes = {
   wecom: wecomEnvReadiness,
   feishu: feishuEnvReadiness,
   dingtalk: dingtalkEnvReadiness,
   slack: slackEnvReadiness,
+  teams: teamsEnvReadiness,
 };
 
 export function createChannelService({
@@ -390,6 +399,11 @@ export function createChannelService({
     content = "",
     providerCreateTime = null,
     agentId = null,
+    // Optional per-provider reply target (#1135): providers whose reply address
+    // differs from the sender identity (Teams: {serviceUrl, conversationId})
+    // pass this; it is stored on the conversation and used by delivery. Other
+    // providers omit it and reply to the sender's externalUserId as before.
+    replyContext = null,
   } = {}) {
     const channel = (state.channels ?? []).find((row) => row.id === String(channelId ?? ""));
     const messageId = String(providerMessageId ?? "").trim();
@@ -441,10 +455,14 @@ export function createChannelService({
           ownerTeamId: channel.ownerTeamId ?? LOCAL_TEAM_ID,
           status: "active",
           invocationIds: [],
+          replyContext: replyContext ?? null,
           createdAt: now(),
           updatedAt: now(),
         };
         state.channelConversations.push(conversation);
+      } else if (replyContext) {
+        // Refresh the reply target — Teams' serviceUrl can rotate between messages.
+        conversation.replyContext = replyContext;
       }
       const event = {
         id: nextId(channelIdPrefixes.event),
