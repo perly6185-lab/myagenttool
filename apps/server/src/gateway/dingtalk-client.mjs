@@ -104,7 +104,13 @@ export function createDingtalkClient({
     if (kind === "token" && !_retried) {
       return sendApplicationMessage({ toUser, content }, { _retried: true });
     }
-    return { ok: false, retryable: kind === "token" || kind === "rate", errcode: String(json?.code ?? status) };
+    // A non-2xx status with NO machine code (5xx/HTML maintenance page, LB blip)
+    // is a TRANSIENT failure, not terminal (code-review H2). Without this, a
+    // routine provider outage would drop the delivery on the first attempt —
+    // WeCom/Feishu already recover because their `.json()` throw is caught as
+    // retryable; DingTalk must match.
+    const transient = !json?.code && (status < 200 || status >= 300);
+    return { ok: false, retryable: kind === "token" || kind === "rate" || transient, errcode: String(json?.code ?? status) };
   }
 
   return { getAccessToken, sendApplicationMessage };

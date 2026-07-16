@@ -13,6 +13,7 @@
 import http from "node:http";
 
 import { parseDingtalkMessage, verifyDingtalkSignature } from "./dingtalk-crypto.mjs";
+import { readCappedBody } from "./read-body.mjs";
 
 const MAX_BODY_BYTES = 64 * 1024;
 const MAX_SEEN = 10_000;
@@ -88,15 +89,7 @@ export function createDingtalkGateway({
       return;
     }
 
-    let raw = "";
-    let overflow = false;
-    for await (const chunk of req) {
-      raw += chunk;
-      if (raw.length > MAX_BODY_BYTES) {
-        overflow = true;
-        break;
-      }
-    }
+    const { raw, overflow } = await readCappedBody(req, MAX_BODY_BYTES);
     if (overflow) {
       send(res, 413);
       return;

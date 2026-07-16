@@ -13,6 +13,7 @@
 import http from "node:http";
 
 import { decryptWecomMessage, extractXmlFields, verifyMsgSignature } from "./wecom-crypto.mjs";
+import { readCappedBody } from "./read-body.mjs";
 
 const MAX_BODY_BYTES = 64 * 1024; // WeCom callbacks are small; anything bigger is hostile
 const MAX_SEEN_NONCES = 10_000;
@@ -103,15 +104,7 @@ export function createWecomGateway({
       return;
     }
 
-    let body = "";
-    let overflow = false;
-    for await (const chunk of req) {
-      body += chunk;
-      if (body.length > MAX_BODY_BYTES) {
-        overflow = true;
-        break;
-      }
-    }
+    const { raw: body, overflow } = await readCappedBody(req, MAX_BODY_BYTES);
     if (overflow) {
       deny(res, 413);
       return;

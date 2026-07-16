@@ -13,7 +13,7 @@
 
 import { channelCommands, parseChannelCommand } from "@myagenttool/protocol/channel";
 import { UNTRUSTED_INPUT_TAG } from "@myagenttool/protocol/issue-prompt";
-import { actorForUser } from "../runtime/auth.mjs";
+import { actorForUser, LOCAL_TEAM_ID } from "../runtime/auth.mjs";
 import { makeRunTx } from "../runtime/store/run-tx.mjs";
 
 const GENERIC_DENIED_REPLY = "Not authorized for this channel. Contact your team administrator.";
@@ -176,6 +176,20 @@ export function createChannelConversationService({
         evidence: { externalUserId: event.externalUserId },
       });
     }
+    // Fail CLOSED on identity drift (code-review H1): a stale mapping whose user
+    // was deleted or moved teams must NOT dispatch. `actorForUser` silently
+    // falls back to usr_local/state.users[0] with role "owner" — so without this
+    // check an external sender could act as an owner, possibly cross-team. The
+    // mapped user must still exist AND belong to the channel's owning team.
+    const mappedUser = (state.users ?? []).find((row) => row.id === identity.userId);
+    const channelTeam = channel.ownerTeamId ?? identity.ownerTeamId ?? LOCAL_TEAM_ID;
+    if (!mappedUser || (mappedUser.teamId ?? LOCAL_TEAM_ID) !== channelTeam) {
+      return refuseDispatch(event, {
+        code: "action_not_permitted",
+        summary: `Channel identity ${identity.id} no longer maps to a valid same-team user.`,
+        evidence: { externalUserId: event.externalUserId, mappedUserId: identity.userId },
+      });
+    }
     const actor = actorForUser(state, identity.userId);
 
     const parsed = parseChannelCommand(event.content);
@@ -294,11 +308,13 @@ export function createChannelConversationService({
           });
         }
         // Freshness: a stale confirmation cannot be approved — re-run instead.
+        // Fail CLOSED when the timestamp can't be established (code-review LOW):
+        // an unparseable createdAt must refuse, not skip the TTL gate.
         const requestedAt = Date.parse(approval.createdAt ?? invocation.createdAt ?? "");
-        if (Number.isFinite(requestedAt) && Date.parse(now()) - requestedAt > CHANNEL_APPROVAL_TTL_MS) {
+        if (!Number.isFinite(requestedAt) || Date.parse(now()) - requestedAt > CHANNEL_APPROVAL_TTL_MS) {
           return refuseDispatch(event, {
             code: "action_not_permitted",
-            summary: `Channel /approve refused: confirmation expired for ${invocation.id}.`,
+            summary: `Channel /approve refused: confirmation expired or undatable for ${invocation.id}.`,
             evidence: { invocationId: invocation.id, requestedAt: approval.createdAt ?? null },
             reply: `The confirmation for ${invocation.id} has expired. Send the command again.`,
           });
@@ -333,6 +349,18 @@ export function createChannelConversationService({
           });
         }
         approveInvocation(approval, invocation, actor);
+        // Confirm the approval actually took (code-review LOW): the single-use
+        // grant is already consumed, so if approveInvocation didn't flip the
+        // invocation off waiting_for_local_approval, report the honest state
+        // rather than a misleading "approved".
+        if (invocation.status === "waiting_for_local_approval") {
+          return settle(event, {
+            status: "refused",
+            invocationId: invocation.id,
+            reply: `${invocation.id} could not be approved (still ${invocation.status}). Try the console Approvals Center.`,
+            data: { command: "/approve", invocationId: invocation.id, reason: "approve_did_not_apply" },
+          });
+        }
         return settle(event, {
           status: "dispatched",
           invocationId: invocation.id,

@@ -48,8 +48,15 @@ export function createWecomClient({
     if (result?.errcode && result.errcode !== 0) {
       throw Object.assign(new Error("wecom_token_fetch_failed"), { errcode: result.errcode });
     }
+    // Guard against caching an empty token (code-review LOW): a success-coded but
+    // token-less response would otherwise be cached for the full window and every
+    // send would go out with "".
+    const token = String(result.access_token ?? "");
+    if (!token) {
+      throw Object.assign(new Error("wecom_token_fetch_failed"), { errcode: "empty_token" });
+    }
     cachedToken = {
-      token: String(result.access_token ?? ""),
+      token,
       expiresAtMs: now() + Math.max(0, Number(result.expires_in ?? 7200) * 1000 - TOKEN_SAFETY_MS),
     };
     return cachedToken.token;

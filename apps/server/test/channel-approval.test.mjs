@@ -17,7 +17,7 @@ import { pendingDecisions } from "../src/read-models/pending-decisions.mjs";
 
 const owner = { userId: "usr_local", teamId: "team_local", role: "owner", authenticated: true };
 
-function makeHarness() {
+function makeHarness({ approveApplies = true } = {}) {
   let clockMs = 1_800_000_000_000;
   const { state } = createServerState({ defaultProjectPath: tmpdir(), now: () => new Date(clockMs).toISOString() });
   const now = () => new Date(clockMs).toISOString();
@@ -64,6 +64,7 @@ function makeHarness() {
     },
     approveInvocation: (approval, invocation, actor) => {
       approveCalls.push({ approvalId: approval.id, invocationId: invocation.id, actor });
+      if (!approveApplies) return; // simulate a failed approval that leaves status unchanged
       approval.status = "approved";
       invocation.status = "queued";
     },
@@ -177,4 +178,32 @@ test("the console Approvals Center and the channel see the SAME pending decision
     invocationsById: new Map(h.state.invocations.map((inv) => [inv.id, inv])),
   });
   assert.ok(!after.some((r) => r.targetId === invocation.id && r.kind === "invocation_approval"));
+});
+
+test("hardening (#1126 LOW): /approve fails closed when the approval timestamp is unparseable", () => {
+  const h = makeHarness();
+  h.receive("/run deploy.app prod");
+  const invocation = h.state.invocations.at(-1);
+  // Corrupt both timestamps so the TTL can't be established.
+  const approval = h.state.approvalRequests.find((a) => a.invocationId === invocation.id);
+  approval.createdAt = undefined;
+  invocation.createdAt = "not-a-date";
+
+  const r = h.receive(`/approve ${invocation.id}`);
+  assert.equal(r.dispatched.status, "refused");
+  assert.match(r.dispatched.reply, /expired/i);
+  assert.equal(h.approveCalls.length, 0, "no grant consumed / no approve attempted on an undatable confirmation");
+});
+
+test("hardening (#1126 LOW): /approve reports the honest state when approveInvocation does not apply", () => {
+  const h = makeHarness({ approveApplies: false });
+  h.receive("/run deploy.app prod");
+  const invocation = h.state.invocations.at(-1);
+
+  const r = h.receive(`/approve ${invocation.id}`);
+  // The single-use grant was consumed, but the invocation stayed pending — the
+  // reply must not falsely claim success.
+  assert.equal(h.approveCalls.length, 1);
+  assert.equal(r.dispatched.status, "refused");
+  assert.match(r.dispatched.reply, /could not be approved/i);
 });
