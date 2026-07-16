@@ -2,7 +2,7 @@ import crypto from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 
 const SCHEMA_VERSION = "application-install-plan/v1";
-const RECIPE_VERSION = "2026-07-14.2";
+const RECIPE_VERSION = "2026-07-16.1";
 const PLAN_TTL_MS = 10 * 60 * 1000;
 const SUPPORTED_PLATFORMS = ["windows", "macos", "linux"];
 const ALLOWED_REQUEST_FIELDS = new Set(["name", "projectId", "deviceId", "platform", "architecture"]);
@@ -17,10 +17,17 @@ const APPLICATIONS = {
     packageIdentifier: "git",
     probe: { executable: "git", args: ["--version"] },
     recipes: {
-      windows: recipe("winget", "winget", ["install", "--id", "Git.Git", "--exact", "--source", "winget", "--silent", "--disable-interactivity", "--accept-package-agreements", "--accept-source-agreements"], "Git.Git", {
+      // #995: winget supports exact-version install — the promoted Git version
+      // is PINNED like the npm apps; bumping it is a reviewed recipe change
+      // (recipeVersion bump + release evidence), never a silent provider drift.
+      windows: recipe("winget", "winget", ["install", "--id", "Git.Git", "--version", "2.50.1", "--exact", "--source", "winget", "--silent", "--disable-interactivity", "--accept-package-agreements", "--accept-source-agreements"], "Git.Git@2.50.1", {
         source: { kind: "winget-source", name: "winget" },
-        versionPolicy: providerVersionPolicy(),
+        versionPolicy: exactVersionPolicy("2.50.1"),
       }),
+      // #995 decision: homebrew/core has no versioned git formula, so an
+      // arbitrary-version pin is structurally impossible without shipping our
+      // own tap (out of scope). macOS stays provider-managed EXPLICITLY — the
+      // post-install probe still records the exact version that landed.
       macos: recipe("homebrew", "brew", ["install", "--formula", "git"], "git", {
         source: { kind: "homebrew-core", name: "homebrew/core" },
         versionPolicy: providerVersionPolicy(),
