@@ -14,6 +14,41 @@
 //     --min-pass-rate until the held-out set accrues >=3 real points.
 export const PROVISIONAL_FLOORS = { subcap: 0.8, heldout: 0.6 };
 
+// #250: derive the gate line FROM the accumulated real-run trend instead of
+// hand-editing the constants above. Policy, mirroring the documented 2026-07-07
+// hand-derivation (observed min 0.93 − 0.13 margin → 0.80):
+//   - only CLEAN capability points count (auth/infra rows never shape a line);
+//   - the line comes from the most recent `window` points, needs >= `minRuns`;
+//   - floor = observedMin − margin, RATCHETED at the provisional baseline —
+//     a derived line may tighten the gate, never loosen it below the fallback
+//     (a window whose min sank is a regression to catch, not a line to lower);
+//   - fewer than minRuns points → the provisional fallback, labelled as such.
+export const FLOOR_DERIVATION = { minRuns: 3, window: 5, margin: 0.13 };
+
+export function deriveFloors(records = [], { minRuns = FLOOR_DERIVATION.minRuns, window = FLOOR_DERIVATION.window, margin = FLOOR_DERIVATION.margin, fallback = PROVISIONAL_FLOORS } = {}) {
+  const clean = (Array.isArray(records) ? records : []).filter(
+    (record) => !record?.authFailure && !record?.infraFailure && !looksLikeInfraFailure(record?.subcap),
+  );
+  const floors = {};
+  const meta = {};
+  for (const metric of ["subcap", "heldout"]) {
+    const rates = clean
+      .map((record) => record?.[metric]?.passRate)
+      .filter((rate) => Number.isFinite(rate));
+    const recent = rates.slice(-window);
+    if (recent.length >= minRuns) {
+      const observedMin = Math.min(...recent);
+      const derived = Math.min(1, Math.max(fallback[metric] ?? 0, Number((observedMin - margin).toFixed(2))));
+      floors[metric] = derived;
+      meta[metric] = { derived: true, n: recent.length, observedMin, margin };
+    } else {
+      floors[metric] = fallback[metric];
+      meta[metric] = { derived: false, n: recent.length, needed: minRuns };
+    }
+  }
+  return { floors, meta };
+}
+
 // Which real capability metrics fell below their floor line. Pure. Infra/auth
 // rows carry no real passRate, so they can never register a breach here.
 export function floorBreaches(record, floors = PROVISIONAL_FLOORS) {
