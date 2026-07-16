@@ -1,5 +1,6 @@
 import { detectPromptInjection, roleAutoRunPrompt } from "@myagenttool/protocol/issue-prompt";
 
+import { teamOf } from "../runtime/auth.mjs";
 import { createRefusalRuntime } from "../runtime/refusal-log.mjs";
 import { isTerminal } from "./invocations.mjs";
 import { normalizeWorktreeLink } from "./projects.mjs";
@@ -531,10 +532,17 @@ export function createAutoRunService({
     // Record the auto-run BEFORE starting the invocation so the dedup key exists
     // even if invocation creation throws — otherwise auto-trigger, which dedups on
     // autoRuns, would re-pick this issue every tick and pile up orphan worktrees.
+    const resolvedProjectId = worktree.sourceProjectId ?? worktree.projectId ?? projectId ?? null;
+    const owningProject = resolvedProjectId ? (state.projects ?? []).find((p) => p.id === resolvedProjectId) ?? null : null;
     const autoRun = {
       id: autoRunId,
       status: "materializing",
-      projectId: worktree.sourceProjectId ?? worktree.projectId ?? projectId ?? null,
+      projectId: resolvedProjectId,
+      // #1152: the owning team, stamped directly at creation. Visibility still
+      // scopes project-first (the stamp is redundant by construction) — the
+      // stamp exists so per-team queues don't re-derive it per row, and so the
+      // #891 ownership-consistency audit can cross-check it on restore.
+      teamId: owningProject ? teamOf(owningProject) : null,
       worktreeId: worktree.id,
       invocationId: null,
       agentId: agent.id,

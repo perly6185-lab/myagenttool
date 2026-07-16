@@ -238,3 +238,70 @@ test("#1150 the assignee mirror fires on develop claim/release, never for review
   await new Promise((resolve) => setImmediate(resolve));
   assert.deepEqual(mirrored[1], { projectId: "projA", issueNumber: 7, action: "remove" });
 });
+
+test("#1152 claim lifecycle history lands in issueClaimEvents and survives ring-buffer churn semantics", () => {
+  const state = baseState();
+  state.issueClaimEvents = [];
+  const { svc, now } = serviceFor(state);
+
+  const claimed = svc.claimIssue({ projectId: "projA", issueNumber: 7, actor: { userId: "usr_a" } });
+  svc.releaseIssueClaim(claimed.claim.id, { actor: { userId: "usr_b" }, outcome: "released" });
+  svc.claimIssue({ projectId: "projA", issueNumber: 7, actor: { userId: "usr_b" } });
+  now.advanceMinutes(24 * 60 + 1);
+  svc.sweepExpiredClaims();
+
+  const types = state.issueClaimEvents.map((e) => `${e.type}:${e.claimedBy}`);
+  assert.deepEqual(types, ["expired:usr_b", "claimed:usr_b", "released:usr_a", "claimed:usr_a"], "newest-first full lifecycle");
+  const released = state.issueClaimEvents.find((e) => e.type === "released");
+  assert.equal(released.actorId, "usr_b", "who handed it back, distinct from who held it");
+  // The row itself also records the releaser (#1152) — not only the event.
+  assert.equal(state.issueClaims.find((c) => c.id === claimed.claim.id).releasedBy, "usr_b");
+});
+
+test("#1152 issueClaimEvents survives restart through the persistence runtime", () => {
+  const root = join(tmpdir(), `issue-claim-events-persist-${process.pid}`);
+  rmSync(root, { recursive: true, force: true });
+  const projectPath = join(root, "project");
+  mkdirSync(projectPath, { recursive: true });
+  const stateStorePath = join(root, "state.json");
+  const now = makeClock();
+  try {
+    const first = createServerState({ defaultProjectPath: projectPath, now });
+    const { svc } = serviceFor(first.state, now);
+    const claimed = svc.claimIssue({ projectId: first.defaultProject.id, issueNumber: 9, actor: { userId: "usr_a" } });
+    svc.releaseIssueClaim(claimed.claim.id, { actor: { userId: "usr_a" } });
+
+    createPersistenceRuntime({
+      state: first.state, enabled: true, stateStorePath, schemaVersion: 1, now,
+      defaultProject: first.defaultProject, sameProjectPath,
+    }).savePersistentState();
+
+    const second = createServerState({ defaultProjectPath: projectPath, now });
+    createPersistenceRuntime({
+      state: second.state, enabled: true, stateStorePath, schemaVersion: 1, now,
+      defaultProject: second.defaultProject, sameProjectPath,
+    }).restorePersistentState();
+
+    assert.deepEqual(second.state.issueClaimEvents.map((e) => e.type), ["released", "claimed"], "history survives restart");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("#1152 the ownership audit cross-checks autoRun team stamps", async () => {
+  const { detectOwnershipInconsistencies } = await import("../src/runtime/persistence.mjs");
+  const state = {
+    projects: [{ id: "projA", ownerTeamId: "team_a" }],
+    autoRuns: [
+      { id: "aur_ok", projectId: "projA", teamId: "team_a" },
+      { id: "aur_bad", projectId: "projA", teamId: "team_evil" },
+      { id: "aur_legacy", projectId: "projA" }, // pre-stamp row: skipped, not flagged
+    ],
+  };
+  const diagnostics = detectOwnershipInconsistencies(state);
+  assert.deepEqual(
+    diagnostics.map((d) => `${d.collection}:${d.id}`),
+    ["autoRuns:aur_bad"],
+    "only the contradicting stamp is flagged",
+  );
+});
