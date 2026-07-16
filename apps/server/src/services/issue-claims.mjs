@@ -17,8 +17,18 @@ import { makeRunTx } from "../runtime/store/run-tx.mjs";
 const CLAIM_MODES = new Set(["develop", "review"]);
 const DEFAULT_TTL_MINUTES = 24 * 60;
 
-export function createIssueClaimService({ state, now, nextId, appendEvent, persistStateSoon, store }) {
+export function createIssueClaimService({ state, now, nextId, appendEvent, persistStateSoon, store, mirrorAssignee }) {
   const runTx = makeRunTx({ store, persistStateSoon });
+
+  // #1150: best-effort GitHub assignee mirror — ownership taken in the console
+  // shows up for people who only look at GitHub. Fire-and-forget: a slow or
+  // failed gh call never blocks or fails the claim; the LOCAL claim record is
+  // the authoritative (mutually exclusive) signal, the assignee is a mirror.
+  // Only develop claims mirror — a reviewer is not the issue's owner.
+  function maybeMirrorAssignee(claim, action) {
+    if (typeof mirrorAssignee !== "function" || claim?.mode !== "develop") return;
+    Promise.resolve(mirrorAssignee({ projectId: claim.projectId, issueNumber: claim.issueNumber, action })).catch(() => {});
+  }
 
   function claimTtlMinutes() {
     const configured = Number(state.autoRunSettings?.issueClaimTtlMinutes ?? 0);
@@ -48,6 +58,7 @@ export function createIssueClaimService({ state, now, nextId, appendEvent, persi
           data: { claimId: claim.id, projectId: claim.projectId, issueNumber: claim.issueNumber, claimedBy: claim.claimedBy },
         });
       });
+      maybeMirrorAssignee(claim, "remove");
       expired += 1;
     }
     return expired;
@@ -145,6 +156,7 @@ export function createIssueClaimService({ state, now, nextId, appendEvent, persi
         data: { claimId: claim.id, projectId, issueNumber: number, mode, claimedBy: userId, autoRunId },
       });
     });
+    maybeMirrorAssignee(claim, "add");
     return { ok: true, claim, renewed: false };
   }
 
@@ -169,6 +181,7 @@ export function createIssueClaimService({ state, now, nextId, appendEvent, persi
           outcome,
         },
       });
+      maybeMirrorAssignee(claim, "remove");
       return true;
     });
   }

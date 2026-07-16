@@ -44,7 +44,7 @@ import { createAutoRunService } from "../services/auto-run.mjs";
 import { createDecisionSoftClaimService } from "../services/decision-soft-claims.mjs";
 import { createIssueClaimService } from "../services/issue-claims.mjs";
 import { resolveAutoRunVerifyCommand, resolveAutoRunVerifyCommandFor, runWorktreeVerification } from "../services/worktree-verify.mjs";
-import { resolveStatusWritebackConfig, runIssueBodyFetch, runIssueComment, runIssueStatusTransition, runPrChecks, runPrMerge, runPrStateFetch, runIssueStateFetch } from "../services/issue-status.mjs";
+import { resolveStatusWritebackConfig, runIssueAssigneeEdit, runIssueBodyFetch, runIssueComment, runIssueStatusTransition, runPrChecks, runPrMerge, runPrStateFetch, runIssueStateFetch } from "../services/issue-status.mjs";
 import { deciderTimeoutMs, resolveDeciderCommand, runDeciderCommand } from "../services/decision-command.mjs";
 import { childIssueBody, childIssueTitle, extractProjectFieldsBlock, runChildIssueCreate, spawnIssuesConfig } from "../services/auto-run-spawn.mjs";
 import { refreshPrDispositions } from "../services/auto-run-eval.mjs";
@@ -464,6 +464,17 @@ export function createServerRuntimeServices({
     appendEvent,
     persistStateSoon,
     store,
+    // #1150: GitHub assignee mirror — opt-in (console knob or env), checked
+    // LIVE per call so flipping it needs no restart. Resolves the project's
+    // ready checkout the same way the gh issue listing does.
+    mirrorAssignee: async ({ projectId, issueNumber, action }) => {
+      const enabled = state.autoRunSettings?.issueAssigneeMirror === true
+        || process.env.MYAGENTTOOL_ISSUE_ASSIGNEE_MIRROR === "1";
+      if (!enabled) return null;
+      const target = (state.projectTargets ?? []).find((t) => t.projectId === projectId && t.state === "ready");
+      if (!target?.rootPath) return null;
+      return runIssueAssigneeEdit({ cwd: target.rootPath, issueNumber, action });
+    },
   });
 
   const { recordCcusageImportedEstimates } = createCcusageImportService({

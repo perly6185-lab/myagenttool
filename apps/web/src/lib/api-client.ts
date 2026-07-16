@@ -537,6 +537,17 @@ export const api = {
     request("POST", `/api/worktrees/${encodeURIComponent(id)}/pr`, payload),
   listGithubItems: (projectId: string) =>
     request("GET", `/api/projects/${encodeURIComponent(projectId)}/github`),
+  // #1143 issue claims: take/hand back an issue's develop lease. A foreign
+  // active develop claim answers 409 with the blocking claim.
+  claimIssue: (projectId: string, payload: { issueNumber: number; mode?: "develop" | "review" }) =>
+    request("POST", `/api/projects/${encodeURIComponent(projectId)}/issue-claims`, payload),
+  releaseIssueClaim: (claimId: string) =>
+    request("POST", `/api/issue-claims/${encodeURIComponent(claimId)}/release`),
+  // #1151 decision soft-claims: advisory "I'm handling this" on an Approvals row.
+  claimDecision: (decisionId: string) =>
+    request("POST", `/api/pending-decisions/${encodeURIComponent(decisionId)}/claim`),
+  releaseDecisionClaim: (decisionId: string) =>
+    request("POST", `/api/pending-decisions/${encodeURIComponent(decisionId)}/release`),
   // Auto-run observability: the records plus an evaluation summary. refresh=true
   // also refreshes PR dispositions (bounded gh reads) for the routing evaluation.
   listAutoRuns: (refresh = false) => request("GET", `/api/auto-runs${refresh ? "?refresh=1" : ""}`),
