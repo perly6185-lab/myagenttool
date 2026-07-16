@@ -8,13 +8,15 @@ import {
   channelEventStatuses,
   channelIdPrefixes,
   channelProviders,
+  channelReadinessScopes,
   channelStatuses,
+  feishuReadinessScopes,
   parseChannelCommand,
   wecomReadinessScopes,
 } from "@myagenttool/protocol/channel";
 
 test("channel vocabulary is the ADR 0012 closed set", () => {
-  assert.deepEqual(channelProviders, ["wecom"]);
+  assert.deepEqual(channelProviders, ["wecom", "feishu"]);
   assert.deepEqual(channelStatuses, ["registered", "enabled", "disabled"]);
   assert.deepEqual(channelEventStatuses, ["imported", "dispatched", "refused"]);
   assert.deepEqual(channelConversationStatuses, ["active", "closed"]);
@@ -39,6 +41,16 @@ test("channel vocabulary is the ADR 0012 closed set", () => {
     "encoding_aes_key",
     "corp_secret",
   ]);
+  assert.deepEqual(feishuReadinessScopes, [
+    "app_id",
+    "app_secret",
+    "verification_token",
+    "encrypt_key",
+  ]);
+  // Every provider has a readiness scope list (the console's single source).
+  for (const provider of channelProviders) {
+    assert.ok(Array.isArray(channelReadinessScopes[provider]), `${provider} has readiness scopes`);
+  }
 });
 
 test("channel id prefixes are distinct and stable", () => {

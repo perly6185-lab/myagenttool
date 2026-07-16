@@ -6,8 +6,8 @@
 
 import type { IsoDateTime } from "./common.js";
 
-/** Supported channel providers. First release: WeCom (Enterprise WeChat). */
-export declare const channelProviders: readonly ["wecom"];
+/** Supported channel providers. WeCom (#1090) first; Feishu/Lark (#1110) second. */
+export declare const channelProviders: readonly ["wecom", "feishu"];
 export type ChannelProvider = (typeof channelProviders)[number];
 
 /** Channel lifecycle statuses. Registration is not enablement (ADR 0012). */
@@ -51,6 +51,18 @@ export declare const wecomReadinessScopes: readonly [
   "corp_secret",
 ];
 export type WecomReadinessScope = (typeof wecomReadinessScopes)[number];
+
+/** Feishu (Lark) readiness scopes, reported as booleans only (#1110). */
+export declare const feishuReadinessScopes: readonly [
+  "app_id",
+  "app_secret",
+  "verification_token",
+  "encrypt_key",
+];
+export type FeishuReadinessScope = (typeof feishuReadinessScopes)[number];
+
+/** Readiness scope names by provider. */
+export declare const channelReadinessScopes: Record<ChannelProvider, readonly string[]>;
 
 /** Id prefixes for channel collections. */
 export declare const channelIdPrefixes: {

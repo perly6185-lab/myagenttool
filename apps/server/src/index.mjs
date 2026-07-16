@@ -126,7 +126,7 @@ server.listen(port, host, () => {
     const agentId = String(process.env.WECOM_AGENT_ID ?? "").trim();
     if (corpSecret && agentId && wecomConfig.receiveId) {
       const client = createWecomClient({ corpId: wecomConfig.receiveId, corpSecret, agentId });
-      httpDependencies.setChannelDeliverySender(client.sendApplicationMessage);
+      httpDependencies.setChannelDeliverySender("wecom", client.sendApplicationMessage);
       const sweep = () => httpDependencies.sweepChannelDeliveries().catch(() => {});
       sweep(); // restart recovery: resume queued/retrying deliveries on boot
       setInterval(sweep, 15_000).unref?.();

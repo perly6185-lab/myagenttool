@@ -7,8 +7,8 @@
 // Kept out of index.mjs (like issue-prompt.mjs) so importing it never runs the
 // protocol vocabulary self-check and browser bundles stay clean.
 
-/** Supported channel providers. First release: WeCom (Enterprise WeChat). */
-export const channelProviders = ["wecom"];
+/** Supported channel providers. WeCom (#1090) first; Feishu/Lark (#1110) second. */
+export const channelProviders = ["wecom", "feishu"];
 
 /** Channel lifecycle statuses. Registration is not enablement (ADR 0012). */
 export const channelStatuses = ["registered", "enabled", "disabled"];
@@ -57,6 +57,23 @@ export const wecomReadinessScopes = [
   "encoding_aes_key",
   "corp_secret",
 ];
+
+/**
+ * Feishu (Lark) readiness scopes (#1110): app credentials + event-callback
+ * verification/encryption keys. Booleans only, never the secret values.
+ */
+export const feishuReadinessScopes = [
+  "app_id",
+  "app_secret",
+  "verification_token",
+  "encrypt_key",
+];
+
+/** Readiness scope names by provider — the single source of truth for the console. */
+export const channelReadinessScopes = {
+  wecom: wecomReadinessScopes,
+  feishu: feishuReadinessScopes,
+};
 
 /** Id prefixes for channel collections (see nextId in the server composer). */
 export const channelIdPrefixes = {

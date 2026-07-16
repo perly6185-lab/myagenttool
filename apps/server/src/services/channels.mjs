@@ -15,7 +15,7 @@
 import {
   channelIdPrefixes,
   channelProviders,
-  wecomReadinessScopes,
+  channelReadinessScopes,
 } from "@myagenttool/protocol/channel";
 import { detectPromptInjection } from "@myagenttool/protocol/issue-prompt";
 import { LOCAL_TEAM_ID } from "../runtime/auth.mjs";
@@ -26,7 +26,7 @@ export const CHANNEL_ALLOWLIST_ACTION = "channel.allowlist";
 const MAX_NAME_LENGTH = 80;
 const MAX_ALLOWLIST = 50;
 
-/** Default readiness probe: configuration PRESENCE from the gateway env — never values. */
+/** WeCom readiness probe: configuration PRESENCE from the gateway env — never values. */
 export function wecomEnvReadiness(env = process.env) {
   return {
     callback_token: Boolean(String(env.WECOM_CALLBACK_TOKEN ?? "").trim()),
@@ -34,6 +34,22 @@ export function wecomEnvReadiness(env = process.env) {
     corp_secret: Boolean(String(env.WECOM_CORP_SECRET ?? "").trim()),
   };
 }
+
+/** Feishu readiness probe (#1110): env PRESENCE only, never the secret values. */
+export function feishuEnvReadiness(env = process.env) {
+  return {
+    app_id: Boolean(String(env.FEISHU_APP_ID ?? "").trim()),
+    app_secret: Boolean(String(env.FEISHU_APP_SECRET ?? "").trim()),
+    verification_token: Boolean(String(env.FEISHU_VERIFICATION_TOKEN ?? "").trim()),
+    encrypt_key: Boolean(String(env.FEISHU_ENCRYPT_KEY ?? "").trim()),
+  };
+}
+
+/** Default readiness probes by provider (#1110). */
+export const defaultReadinessProbes = {
+  wecom: wecomEnvReadiness,
+  feishu: feishuEnvReadiness,
+};
 
 export function createChannelService({
   state,
@@ -43,9 +59,16 @@ export function createChannelService({
   persistStateSoon = () => {},
   store,
   validateApprovalToken,
-  readinessProbe = wecomEnvReadiness,
+  // Back-compat: a single `readinessProbe` still overrides WeCom's probe (the
+  // shape existing tests pass); `readinessProbes` overrides per provider.
+  readinessProbe = null,
+  readinessProbes = defaultReadinessProbes,
   refuse = null,
 }) {
+  const probes = {
+    ...readinessProbes,
+    ...(readinessProbe ? { wecom: readinessProbe } : {}),
+  };
   const runTx = makeRunTx({ store, persistStateSoon });
 
   const actorTeam = (actor) => actor?.teamId ?? LOCAL_TEAM_ID;
@@ -63,9 +86,12 @@ export function createChannelService({
   const notFound = () => ({ ok: false, status: 404, body: { error: "channel_not_found" } });
 
   function readiness(channel) {
-    const probed = channel.provider === "wecom" ? readinessProbe() : {};
+    const probe = probes[channel.provider];
+    const probed = typeof probe === "function" ? probe() : {};
     const scopes = {};
-    for (const scope of wecomReadinessScopes) scopes[scope] = Boolean(probed?.[scope]);
+    for (const scope of channelReadinessScopes[channel.provider] ?? []) {
+      scopes[scope] = Boolean(probed?.[scope]);
+    }
     return scopes;
   }
 
