@@ -19,6 +19,7 @@ export async function handleChannelRoutes({
   mapChannelIdentity,
   removeChannelIdentity,
   listChannelIdentities,
+  setChannelAllowlist,
 }) {
   if (!url.pathname.startsWith("/api/channels")) return false;
 
@@ -31,6 +32,22 @@ export async function handleChannelRoutes({
   if (req.method === "POST" && url.pathname === "/api/channels") {
     const body = await readJson(req);
     const result = registerChannel({ provider: body?.provider, name: body?.name }, actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  const allowlist = url.pathname.match(/^\/api\/channels\/([^/]+)\/allowlist$/);
+  if (allowlist && req.method === "POST") {
+    const body = await readJson(req);
+    const result = setChannelAllowlist(
+      {
+        channelId: decodeURIComponent(allowlist[1]),
+        capabilities: body?.capabilities,
+        statusCapability: body?.statusCapability ?? null,
+        approvalToken: body?.approvalToken,
+      },
+      actor,
+    );
     sendJson(res, result.status, result.body);
     return true;
   }
