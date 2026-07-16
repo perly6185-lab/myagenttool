@@ -23,6 +23,7 @@ import { createApplicationStatsRuntime } from "../services/application-stats.mjs
 import { createCapabilityService } from "../services/capabilities.mjs";
 import { createMailIssueWriteService } from "../services/mail-issue-write.mjs";
 import { createMailReplyDraftService } from "../services/mail-reply-draft.mjs";
+import { createChannelService } from "../services/channels.mjs";
 import { createApplicationResultImportService } from "../services/application-results.mjs";
 import { createCcusageImportService } from "../services/ccusage-imports.mjs";
 import { createClaudeReviewImportService } from "../services/claude-review-imports.mjs";
@@ -970,6 +971,13 @@ export function createServerRuntimeServices({
   const { replyOnIssue, confirmReplyDraft } = createMailReplyDraftService({
     state, now, nextId, appendEvent, persistStateSoon, store,
     validateApprovalToken, repoCwd: defaultProjectPath,
+  });
+
+  // Channel Registry (S2, #1090/ADR 0012): owner-team-scoped channel lifecycle
+  // + fail-closed identity mappings. Readiness is env-presence booleans; enable
+  // is approval-gated like every other side-effecting action.
+  const channelService = createChannelService({
+    state, now, nextId, appendEvent, persistStateSoon, store, validateApprovalToken,
   });
 
   function runApplicationOrchestration(applicationId, routineId, body = {}, actor = null) {
@@ -2782,6 +2790,14 @@ export function createServerRuntimeServices({
     createMailIssueFromImport,
     replyOnIssue,
     confirmReplyDraft,
+    registerChannel: channelService.registerChannel,
+    listChannels: channelService.listChannels,
+    enableChannel: channelService.enableChannel,
+    disableChannel: channelService.disableChannel,
+    channelHealth: channelService.channelHealth,
+    mapChannelIdentity: channelService.mapChannelIdentity,
+    removeChannelIdentity: channelService.removeChannelIdentity,
+    listChannelIdentities: channelService.listChannelIdentities,
     selectProject,
     removeProject,
     removeWorktree,
