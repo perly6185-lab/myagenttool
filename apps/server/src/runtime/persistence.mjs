@@ -90,6 +90,7 @@ export const persistedArrayKeys = [
   "budgetReservations",
   "decisionSoftClaims",
   "issueClaims",
+  "issueClaimEvents",
   "automations",
   "agentSkills",
   "auditExportRequests",
@@ -143,6 +144,9 @@ const OWNER_STAMPED_PROJECT_COLLECTIONS = [
   { key: "applications", owner: "ownerTeamId" },
   { key: "applicationInstallRuns", owner: "ownerTeamId" },
   { key: "applicationResults", owner: "ownerTeamId" },
+  // #1152: auto-runs stamp their owning team at creation. Pre-stamp rows have
+  // no `teamId` and are skipped by the scan (no stamp → nothing to cross-check).
+  { key: "autoRuns", owner: "teamId" },
 ];
 
 /**
