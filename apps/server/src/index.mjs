@@ -6,6 +6,8 @@ import { createDingtalkClient } from "./gateway/dingtalk-client.mjs";
 import { createDingtalkGateway, dingtalkGatewayConfigFromEnv } from "./gateway/dingtalk-gateway.mjs";
 import { createFeishuClient } from "./gateway/feishu-client.mjs";
 import { createFeishuGateway, feishuGatewayConfigFromEnv } from "./gateway/feishu-gateway.mjs";
+import { createSlackClient } from "./gateway/slack-client.mjs";
+import { createSlackGateway, slackGatewayConfigFromEnv } from "./gateway/slack-gateway.mjs";
 import { createWecomClient } from "./gateway/wecom-client.mjs";
 import { createWecomGateway, wecomGatewayConfigFromEnv } from "./gateway/wecom-gateway.mjs";
 import { createHttpServer } from "./runtime/http-server.mjs";
@@ -171,6 +173,24 @@ server.listen(port, host, () => {
     if (appKey && robotCode) {
       const client = createDingtalkClient({ appKey, appSecret: dingtalkConfig.appSecret, robotCode, baseUrl });
       httpDependencies.setChannelDeliverySender("dingtalk", client.sendApplicationMessage);
+      anySenderBound = true;
+    }
+  }
+
+  // Slack (#1128).
+  const slackConfig = slackGatewayConfigFromEnv();
+  if (slackConfig.port && slackConfig.signingSecret && slackConfig.channelId) {
+    createSlackGateway({
+      signingSecret: slackConfig.signingSecret,
+      channelId: slackConfig.channelId,
+      importChannelEvent: httpDependencies.importChannelEvent,
+    }).createServer().listen(slackConfig.port, slackConfig.host, () => {
+      console.log(`[slack-gateway] callback listener on ${slackConfig.host}:${slackConfig.port} → channel ${slackConfig.channelId}`);
+    });
+    const botToken = String(process.env.SLACK_BOT_TOKEN ?? "").trim();
+    if (botToken) {
+      const client = createSlackClient({ botToken });
+      httpDependencies.setChannelDeliverySender("slack", client.sendApplicationMessage);
       anySenderBound = true;
     }
   }
