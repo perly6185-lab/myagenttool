@@ -54,11 +54,20 @@ export function dingtalkEnvReadiness(env = process.env) {
   };
 }
 
-/** Default readiness probes by provider (#1110/#1119). */
+/** Slack readiness probe (#1128): env PRESENCE only, never the secret values. */
+export function slackEnvReadiness(env = process.env) {
+  return {
+    signing_secret: Boolean(String(env.SLACK_SIGNING_SECRET ?? "").trim()),
+    bot_token: Boolean(String(env.SLACK_BOT_TOKEN ?? "").trim()),
+  };
+}
+
+/** Default readiness probes by provider (#1110/#1119/#1128). */
 export const defaultReadinessProbes = {
   wecom: wecomEnvReadiness,
   feishu: feishuEnvReadiness,
   dingtalk: dingtalkEnvReadiness,
+  slack: slackEnvReadiness,
 };
 
 export function createChannelService({

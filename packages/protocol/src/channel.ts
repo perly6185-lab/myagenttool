@@ -6,8 +6,8 @@
 
 import type { IsoDateTime } from "./common.js";
 
-/** Supported channel providers. WeCom (#1090), Feishu/Lark (#1110), DingTalk (#1119). */
-export declare const channelProviders: readonly ["wecom", "feishu", "dingtalk"];
+/** Supported channel providers. WeCom (#1090), Feishu/Lark (#1110), DingTalk (#1119), Slack (#1128). */
+export declare const channelProviders: readonly ["wecom", "feishu", "dingtalk", "slack"];
 export type ChannelProvider = (typeof channelProviders)[number];
 
 /** Channel lifecycle statuses. Registration is not enablement (ADR 0012). */
@@ -64,6 +64,10 @@ export type FeishuReadinessScope = (typeof feishuReadinessScopes)[number];
 /** DingTalk readiness scopes, reported as booleans only (#1119). */
 export declare const dingtalkReadinessScopes: readonly ["app_key", "app_secret", "robot_code"];
 export type DingtalkReadinessScope = (typeof dingtalkReadinessScopes)[number];
+
+/** Slack readiness scopes, reported as booleans only (#1128). */
+export declare const slackReadinessScopes: readonly ["signing_secret", "bot_token"];
+export type SlackReadinessScope = (typeof slackReadinessScopes)[number];
 
 /** Readiness scope names by provider. */
 export declare const channelReadinessScopes: Record<ChannelProvider, readonly string[]>;
