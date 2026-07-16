@@ -18,6 +18,7 @@ This index lists accepted engineering decisions that guide implementation.
 - [ADR 0012: A Channel is a governed conversation boundary; the gateway is a separate public listener](ADR_0012_CHANNEL_BOUNDARY.md)
 - [ADR 0013: Channel providers are pluggable; the governed core is provider-agnostic](ADR_0013_CHANNEL_PROVIDERS_PLUGGABLE.md)
 - [ADR 0014: A write-credential Application is a reviewed exception class, never a widened read credential](ADR_0014_WRITE_CREDENTIAL_APPLICATION.md)
+- [ADR 0015: Linux install elevation is a per-action polkit broker, never an ambient privilege](ADR_0015_LINUX_ELEVATION_BROKER.md)
 
 ## M0 Decision Summary
 
