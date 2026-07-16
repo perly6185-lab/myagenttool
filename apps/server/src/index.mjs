@@ -2,6 +2,8 @@ import { mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { startAutomationScheduler } from "./runtime/automation-scheduler.mjs";
 import { startAutoTriggerScheduler } from "./runtime/auto-trigger-scheduler.mjs";
+import { createDingtalkClient } from "./gateway/dingtalk-client.mjs";
+import { createDingtalkGateway, dingtalkGatewayConfigFromEnv } from "./gateway/dingtalk-gateway.mjs";
 import { createFeishuClient } from "./gateway/feishu-client.mjs";
 import { createFeishuGateway, feishuGatewayConfigFromEnv } from "./gateway/feishu-gateway.mjs";
 import { createWecomClient } from "./gateway/wecom-client.mjs";
@@ -149,6 +151,26 @@ server.listen(port, host, () => {
     if (appId && appSecret) {
       const client = createFeishuClient({ appId, appSecret, baseUrl });
       httpDependencies.setChannelDeliverySender("feishu", client.sendApplicationMessage);
+      anySenderBound = true;
+    }
+  }
+
+  // DingTalk / 钉钉 (#1119).
+  const dingtalkConfig = dingtalkGatewayConfigFromEnv();
+  if (dingtalkConfig.port && dingtalkConfig.appSecret && dingtalkConfig.channelId) {
+    createDingtalkGateway({
+      appSecret: dingtalkConfig.appSecret,
+      channelId: dingtalkConfig.channelId,
+      importChannelEvent: httpDependencies.importChannelEvent,
+    }).createServer().listen(dingtalkConfig.port, dingtalkConfig.host, () => {
+      console.log(`[dingtalk-gateway] callback listener on ${dingtalkConfig.host}:${dingtalkConfig.port} → channel ${dingtalkConfig.channelId}`);
+    });
+    const appKey = String(process.env.DINGTALK_APP_KEY ?? "").trim();
+    const robotCode = String(process.env.DINGTALK_ROBOT_CODE ?? "").trim();
+    const baseUrl = String(process.env.DINGTALK_BASE_URL ?? "").trim() || undefined;
+    if (appKey && robotCode) {
+      const client = createDingtalkClient({ appKey, appSecret: dingtalkConfig.appSecret, robotCode, baseUrl });
+      httpDependencies.setChannelDeliverySender("dingtalk", client.sendApplicationMessage);
       anySenderBound = true;
     }
   }
