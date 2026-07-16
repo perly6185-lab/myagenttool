@@ -462,7 +462,7 @@ export function createCodexService({
     }
   }
 
-  function resolveCodexApprovalBrokerRequest(request, action) {
+  function resolveCodexApprovalBrokerRequest(request, action, actor = null) {
     if (request.status !== "pending") {
       return request;
     }
@@ -471,6 +471,9 @@ export function createCodexService({
     request.status = action === "approve" ? "approved" : timedOut ? "timed_out" : "denied";
     request.decision = action === "approve" ? "allow" : timedOut ? "timeout_deny" : "deny";
     request.decidedAt = now();
+    // #1151: settle must record WHO, not only when — a second operator acting on
+    // this row is told who beat them. A timeout is the system's decision.
+    request.decidedBy = timedOut ? "system:timeout" : (actor?.userId ?? "usr_local");
     request.updatedAt = request.decidedAt;
     request.notificationState = "resolved";
     const event = {

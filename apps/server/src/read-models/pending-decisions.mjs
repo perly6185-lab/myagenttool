@@ -48,6 +48,9 @@ export function pendingDecisions({
   applicationRecoveryActions = [],
   applicationsById = new Map(),
   invocationsById = new Map(),
+  // #1151: active decision soft-claims (already expiry-filtered + team-scoped by
+  // the caller), keyed by this queue's row ids.
+  decisionSoftClaims = [],
 } = {}) {
   const out = [];
   const invOf = (id) => (id != null ? invocationsById.get(id) ?? null : null);
@@ -205,6 +208,16 @@ export function pendingDecisions({
       targetId: r.agentId ?? null,
       ref: { rollbackRequestId: r.id, recipeId: r.recipeId ?? null, agentId: r.agentId ?? null },
     });
+  }
+
+  // #1151: advisory "X is handling this" markers. Attached, never filtering —
+  // a claimed row stays visible and actionable for everyone.
+  if (decisionSoftClaims.length) {
+    const claimByDecision = new Map(decisionSoftClaims.map((claim) => [claim?.decisionId, claim]));
+    for (const row of out) {
+      const claim = claimByDecision.get(row.id);
+      if (claim) row.softClaim = { claimedBy: claim.claimedBy ?? null, expiresAt: claim.expiresAt ?? null };
+    }
   }
 
   // Oldest-waiting first (deterministic tiebreak on id): the stalest decision is the

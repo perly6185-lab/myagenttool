@@ -175,6 +175,8 @@ export function createHttpServer({
   promoteCompareRun,
   cancelInvocation,
   createTroubleshootingReport,
+  claimDecision,
+  releaseDecisionClaim,
   createToolInvocation,
   getTool,
   listTools,
@@ -620,6 +622,8 @@ export function createHttpServer({
         promoteCompareRun,
         cancelInvocation,
         createTroubleshootingReport,
+        claimDecision,
+        releaseDecisionClaim,
       })) {
         return;
       }

@@ -296,6 +296,15 @@ export function buildPublicState({
   // already team-scoped locals so it inherits tenancy; this also surfaces the
   // auto-run lifecycle gates in /api/state for the first time.
   const codexApprovalBrokerRequests = byInvocation(state.codexApprovalBrokerRequests);
+  // #1151: advisory soft-claims on queue rows — active, unexpired, and only the
+  // viewer's own team's markers (a foreign team's "handling this" must not leak).
+  const softClaimCutoff = Date.now();
+  const decisionSoftClaims = (state.decisionSoftClaims ?? []).filter(
+    (claim) =>
+      claim?.status === "active" &&
+      (!claim.expiresAt || Date.parse(claim.expiresAt) > softClaimCutoff) &&
+      (teamId == null || (claim.teamId ?? LOCAL_TEAM_ID) === teamId),
+  );
   const pendingDecisionQueue = pendingDecisions({
     approvalRequests,
     autoRuns,
@@ -306,6 +315,7 @@ export function buildPublicState({
     applicationRecoveryActions,
     applicationsById: new Map(applications.map((application) => [application.id, application])),
     invocationsById: visibleInvocationsById,
+    decisionSoftClaims,
   });
 
   // Per-run trust ledger (the Evidence section). Scope the Codex/terminal evidence
