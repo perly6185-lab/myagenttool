@@ -108,6 +108,9 @@ export function createServerState({ defaultProjectPath, now }) {
     // #1152: durable claim lifecycle history (claimed/released/expired), kept
     // outside the 500-row event ring buffer so it survives churn + restart.
     issueClaimEvents: [],
+    // #1165: dispatcher-mode bookkeeping — one row per issue assignment written
+    // by THIS server acting as the dispatcher (single writer; the staleness clock).
+    dispatchAssignments: [],
     automations: createDefaultAutomations(defaultProject.id, now),
     agentSkills: createDefaultAgentSkills(now),
     // Auto-run config overrides (services/auto-run-config.mjs). Empty = every
@@ -225,6 +228,7 @@ export function resetStateForSelfCheck({ state, now }) {
   state.decisionSoftClaims = [];
   state.issueClaims = [];
   state.issueClaimEvents = [];
+  state.dispatchAssignments = [];
   state.automations = createDefaultAutomations(state.currentProjectId ?? state.projects[0]?.id ?? "prj_myagenttool", now);
   state.privateDeploymentConfig = createDefaultPrivateDeploymentConfig(now);
   state.auditExportRequests = [];
