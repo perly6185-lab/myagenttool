@@ -17,6 +17,7 @@ This index lists accepted engineering decisions that guide implementation.
 - [ADR 0011: Mail intake is untrusted input; send is the exfiltration boundary](ADR_0011_MAIL_UNTRUSTED_INPUT.md)
 - [ADR 0012: A Channel is a governed conversation boundary; the gateway is a separate public listener](ADR_0012_CHANNEL_BOUNDARY.md)
 - [ADR 0013: Channel providers are pluggable; the governed core is provider-agnostic](ADR_0013_CHANNEL_PROVIDERS_PLUGGABLE.md)
+- [ADR 0014: A write-credential Application is a reviewed exception class, never a widened read credential](ADR_0014_WRITE_CREDENTIAL_APPLICATION.md)
 
 ## M0 Decision Summary
 

@@ -686,6 +686,7 @@ function verifyHarness({ verifyCommandId = "node-test", withRunner = true } = {}
       verifyCommandId,
     }],
     agents: withRunner ? [governedApplyAgent()] : [],
+    worktrees: [{ id: "wt_a", projectId: "prj_a" }],
     invocations: [],
     events: [],
   };
@@ -809,4 +810,91 @@ test("#1052 a verify leg that dies without a result reads applied-but-UNVERIFIED
   });
   landed.service.reconcileClaudeApplyTermination({ ...landed.created[0], status: "rejected" });
   assert.equal(landedAuth.verification.state, "passed", "a landed verdict survives a late reconcile");
+});
+
+// --- Audit finds (2026-07-16): gate-rejected dispatches and vanished worktrees ---
+
+test("audit: a gate-rejected verify dispatch reads UNVERIFIED, never pending-forever", () => {
+  const { state, service, foldApply } = (() => {
+    const base = verifyHarness();
+    // Replace createInvocation with one whose admission gate rejects.
+    const svc = createClaudeApplyImportService({
+      state: base.state,
+      now,
+      appendEvent: (e) => base.state.events.push(e),
+      createInvocation: (task, agent, options) => {
+        const inv = { id: "inv_rejected", status: "rejected", agentId: agent.id, options, task, result: { errorCode: "over_budget" } };
+        base.state.invocations.push(inv);
+        return inv;
+      },
+      startInvocationIfAllowed: () => { throw new Error("must not start a rejected dispatch"); },
+      findApplyRunner: () => base.state.agents[0],
+    });
+    return {
+      state: base.state,
+      service: svc,
+      foldApply: () => svc.recordClaudeApplyResult({
+        invocation: { id: "inv_apply", status: "succeeded", options: { metadata: { claudeApplyAuthorizationId: "cap_v" } } },
+        result: { output: { source: "claude", tool: "claude.apply.patch", applied: true, appliedFiles: [], verification: { checkPassed: true }, rollback: { available: true } } },
+        agent: governedApplyAgent(),
+      }),
+    };
+  })();
+  const authorization = foldApply();
+  assert.equal(authorization.status, "applied");
+  assert.equal(authorization.verification.state, "unverified");
+  assert.match(authorization.verification.error, /rejected at creation.*over_budget/);
+  assert(state.events.some((e) => e.type === "claude_apply_unverified"));
+  assert(!state.events.some((e) => e.type === "claude_apply_verify_dispatched"), "no event may claim a dispatch that was rejected");
+});
+
+test("audit: a vanished bound worktree reads UNVERIFIED instead of verifying a sibling directory", () => {
+  const h = verifyHarness();
+  h.state.worktrees = []; // the bound worktree row is gone
+  const authorization = h.foldApply();
+  assert.equal(authorization.status, "applied");
+  assert.equal(authorization.verification.state, "unverified");
+  assert.match(authorization.verification.error, /worktree no longer exists/);
+  assert.equal(h.created.length, 0, "no dispatch that could land in the wrong directory");
+});
+
+test("audit: repeated unverified reconciles append ONE event and never downgrade a landed verdict", () => {
+  const h = verifyHarness();
+  const authorization = h.foldApply();
+  h.service.reconcileClaudeApplyTermination({ ...h.created[0], status: "timed_out" });
+  h.service.reconcileClaudeApplyTermination({ ...h.created[0], status: "rejected" });
+  assert.equal(authorization.verification.state, "unverified");
+  assert.equal(h.state.events.filter((e) => e.type === "claude_apply_unverified").length, 1, "idempotent: one warning, not one per reconcile");
+});
+
+test("audit: a gate-rejected APPLY dispatch fails the authorization instead of stranding it applying", () => {
+  setApplyFlag(true);
+  try {
+    const { state, grantFor } = harness();
+    let id = 700;
+    const { validateApprovalToken } = createApprovalGrantService({ state, now, nextId: (p) => `${p}_${id += 1}`, appendEvent: (e) => state.events.push(e), persistStateSoon: () => {} });
+    const svc = createToolService({
+      state, now, nextId: (p) => `${p}_${id += 1}`, appendEvent: (e) => state.events.push(e),
+      // The admission gate rejects the dispatch at creation.
+      createInvocation: (task, agent, options) => {
+        const inv = { id: `inv_gate_${id += 1}`, status: "rejected", agentId: agent.id, options, task, result: { errorCode: "over_budget" } };
+        state.invocations.push(inv);
+        return inv;
+      },
+      startInvocationIfAllowed: () => { throw new Error("must not start a rejected dispatch"); },
+      findApplication: () => null, findAgent: (aid) => state.agents.find((a) => a.id === aid) ?? null,
+      planApplicationWrapperInvocation: () => ({}), validateApprovalToken, persistStateSoon: () => {},
+    });
+    const res = svc.createToolInvocation("claude.apply.patch", { worktreeId: "wt_a", proposalInvocationId: "inv_proposal", approvalToken: grantFor("inv_proposal") }, ACTOR);
+    assert.equal(res.status, 201, "the authorization record still exists (the grant is burned)");
+    assert.equal(res.body.status, "failed", "the response is honest about the gate rejection");
+    const authorization = state.claudeApplyAuthorizations[0];
+    assert.equal(authorization.status, "failed");
+    assert.match(authorization.resultSummary, /rejected at creation.*over_budget/);
+    const gateInv = state.invocations.find((i) => i.id.startsWith("inv_gate_"));
+    assert.equal(gateInv.options.metadata.applyPatch, undefined, "the patch blob is dropped from the dead dispatch");
+    assert(state.events.some((e) => e.type === "claude_apply_failed"));
+  } finally {
+    setApplyFlag(false);
+  }
 });

@@ -55,7 +55,7 @@ import { decisionConfig } from "../services/auto-run-decision.mjs";
 import { autoRunSettingsEnvOverlay } from "../services/auto-run-config.mjs";
 import { createAlertDispatcher } from "../services/auto-run-alerts.mjs";
 import { createTerminalService } from "../services/terminal.mjs";
-import { createToolService } from "../services/tools.mjs";
+import { createToolService, failStrandedIssueFetches } from "../services/tools.mjs";
 
 export function createServerRuntimeServices({
   namespace,
@@ -205,6 +205,10 @@ export function createServerRuntimeServices({
     persistStateSoon,
     getCodexEventHandlers: () => codexEventHandlers,
   });
+  // Audit find (2026-07-16): an analyze.issue invocation restored mid-fetch has
+  // a resolver that died with the previous process — fail it closed now, before
+  // anything can claim it.
+  failStrandedIssueFetches(state, { now, appendEvent });
   // Refusal model Phase 2 (#760): the single writer for the device's veto.
   const { refuse, firstRefusal } = createRefusalRuntime({
     state,
