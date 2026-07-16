@@ -1002,12 +1002,14 @@ export function createServerRuntimeServices({
     // the SAME approval the console acts on.
     mintDecisionGrant, validateApprovalToken, approveInvocation, denyInvocation,
   });
-  // Outbound delivery (S5): the provider sender is late-bound by index.mjs when
-  // the gateway is configured — this service never sees CorpSecret or tokens.
-  const channelSender = { current: null };
+  // Outbound delivery (S5/#1110): provider senders are late-bound by index.mjs
+  // when each gateway is configured — this service never sees any provider
+  // secret. Keyed by provider so a WeCom and a Feishu delivery route to their
+  // own client (delivery picks by channel.provider).
+  const channelSenders = {};
   const channelDeliveryService = createChannelDeliveryService({
     state, now, nextId, appendEvent, refuse, persistStateSoon, store,
-    sendMessage: (args) => channelSender.current(args),
+    resolveSender: (provider) => channelSenders[provider] ?? null,
     validateApprovalToken,
   });
   channelDeliveryHook = channelDeliveryService.notifyInvocationCompleted;
@@ -2852,8 +2854,12 @@ export function createServerRuntimeServices({
     importChannelEvent: receiveChannelEvent,
     sweepChannelDeliveries: channelDeliveryService.sweepChannelDeliveries,
     retryChannelDelivery: channelDeliveryService.retryChannelDelivery,
-    setChannelDeliverySender: (fn) => {
-      channelSender.current = typeof fn === "function" ? fn : null;
+    // Bind a provider's outbound sender (index.mjs calls this once per configured
+    // gateway). Back-compat: a bare fn with no provider binds WeCom.
+    setChannelDeliverySender: (providerOrFn, maybeFn) => {
+      const provider = typeof providerOrFn === "string" ? providerOrFn : "wecom";
+      const fn = typeof providerOrFn === "function" ? providerOrFn : maybeFn;
+      channelSenders[provider] = typeof fn === "function" ? fn : null;
     },
     selectProject,
     removeProject,

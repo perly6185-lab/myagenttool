@@ -34,12 +34,28 @@ export function createChannelDeliveryService({
   refuse = null,
   persistStateSoon = () => {},
   store,
+  // Single-provider back-compat: `sendMessage` binds every delivery. Multi-provider
+  // (#1110): `resolveSender(provider)` returns the sender for a channel's provider,
+  // so a WeCom and a Feishu delivery each route to their own client.
   sendMessage = null, // async ({ toUser, content }) => { ok, msgid } | { ok:false, retryable, errcode }
+  resolveSender = null, // (provider) => sendMessage | null
   validateApprovalToken = null,
 }) {
   const runTx = makeRunTx({ store, persistStateSoon });
 
   const findChannel = (channelId) => (state.channels ?? []).find((row) => row.id === channelId) ?? null;
+  // Resolve the sender for one delivery by its channel's provider; falls back to
+  // the single injected `sendMessage` when no per-provider resolver is wired.
+  function senderFor(delivery) {
+    if (typeof resolveSender === "function") {
+      const channel = findChannel(delivery.channelId);
+      const fn = resolveSender(channel?.provider);
+      if (typeof fn === "function") return fn;
+    }
+    return typeof sendMessage === "function" ? sendMessage : null;
+  }
+  const anySenderConfigured = () =>
+    typeof sendMessage === "function" || typeof resolveSender === "function";
   const findConversation = (conversationId) =>
     (state.channelConversations ?? []).find((row) => row.id === conversationId) ?? null;
 
@@ -80,8 +96,10 @@ export function createChannelDeliveryService({
       delivery.updatedAt = now();
     });
     let outcome;
+    const send = senderFor(delivery);
     try {
-      outcome = await sendMessage({ toUser: delivery.toUser, content: delivery.content });
+      if (typeof send !== "function") throw Object.assign(new Error("no_sender"), { errcode: "no_sender" });
+      outcome = await send({ toUser: delivery.toUser, content: delivery.content });
     } catch (error) {
       outcome = { ok: false, retryable: true, errcode: error?.errcode ?? "transport_error" };
     }
@@ -156,7 +174,7 @@ export function createChannelDeliveryService({
    * than throughput. Restart-safe: `queued`/`retrying` rows resume here.
    */
   async function sweepChannelDeliveries() {
-    if (typeof sendMessage !== "function") return { processed: 0 };
+    if (!anySenderConfigured()) return { processed: 0 };
     const nowMs = Date.parse(now());
     const due = (state.channelDeliveries ?? []).filter(
       (row) =>

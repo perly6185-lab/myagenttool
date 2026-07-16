@@ -238,3 +238,37 @@ test("no secret or token material ever lands in state, events, or refusals", asy
     assert.ok(!JSON.stringify(surface).includes("access_token"));
   }
 });
+
+test("#1110: resolveSender routes each delivery to its channel's provider client", async () => {
+  const clockMs = 1_800_000_000_000;
+  const now = () => new Date(clockMs).toISOString();
+  const { state } = createServerState({ defaultProjectPath: tmpdir(), now });
+  let counter = 0;
+  const nextId = (p) => `${p}_${String(++counter).padStart(4, "0")}`;
+  const owner = { userId: "usr_local", teamId: "team_local", role: "owner", authenticated: true };
+  const channels = createChannelService({ state, now, nextId, appendEvent: () => {}, validateApprovalToken: () => ({ approved: true }) });
+
+  const wecom = channels.registerChannel({ provider: "wecom", name: "w" }, owner).body.channel.id;
+  const feishu = channels.registerChannel({ provider: "feishu", name: "f" }, owner).body.channel.id;
+  channels.enableChannel({ channelId: wecom, approvalToken: "ok" }, owner);
+  channels.enableChannel({ channelId: feishu, approvalToken: "ok" }, owner);
+  const wImp = channels.importChannelEvent({ channelId: wecom, providerMessageId: "w1", externalUserId: "wx", content: "/status" });
+  const fImp = channels.importChannelEvent({ channelId: feishu, providerMessageId: "f1", externalUserId: "ou_1", content: "/status" });
+
+  const seen = { wecom: 0, feishu: 0 };
+  const service = createChannelDeliveryService({
+    state, now, nextId, appendEvent: () => {},
+    resolveSender: (provider) => async () => {
+      seen[provider] += 1;
+      return { ok: true, msgid: `${provider}_msg` };
+    },
+  });
+  service.enqueueChannelDelivery({ channelId: wecom, conversationId: wImp.conversationId, content: "to-wecom" });
+  service.enqueueChannelDelivery({ channelId: feishu, conversationId: fImp.conversationId, content: "to-feishu" });
+  await service.sweepChannelDeliveries();
+
+  assert.equal(seen.wecom, 1, "wecom delivery used the wecom sender");
+  assert.equal(seen.feishu, 1, "feishu delivery used the feishu sender");
+  const receipts = state.channelDeliveries.map((d) => d.providerReceiptId).sort();
+  assert.deepEqual(receipts, ["feishu_msg", "wecom_msg"]);
+});

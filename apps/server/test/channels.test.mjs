@@ -10,7 +10,12 @@ import { tmpdir } from "node:os";
 import { test } from "node:test";
 
 import { createServerState } from "../src/runtime/state-factory.mjs";
-import { CHANNEL_ENABLE_ACTION, createChannelService, wecomEnvReadiness } from "../src/services/channels.mjs";
+import {
+  CHANNEL_ENABLE_ACTION,
+  createChannelService,
+  feishuEnvReadiness,
+  wecomEnvReadiness,
+} from "../src/services/channels.mjs";
 
 const NOW = "2026-07-15T00:00:00.000Z";
 const SECRET = "corp-secret-value-must-never-leak";
@@ -40,6 +45,44 @@ function makeService({ readinessProbe, validateApprovalToken } = {}) {
 
 const owner = { userId: "usr_local", teamId: "team_local", role: "owner", authenticated: true };
 const foreign = { userId: "usr_b", teamId: "team_b", role: "owner", authenticated: true };
+
+test("feishu (#1110): registers through the same registry and reports Feishu readiness booleans", () => {
+  const probe = () => ({ app_id: true, app_secret: Boolean(SECRET), verification_token: true, encrypt_key: true });
+  const { state } = createServerState({ defaultProjectPath: tmpdir(), now: () => NOW });
+  const events = [];
+  let counter = 0;
+  const service = createChannelService({
+    state,
+    now: () => NOW,
+    nextId: (prefix) => `${prefix}_${String(++counter).padStart(4, "0")}`,
+    appendEvent: (event) => events.push(event),
+    validateApprovalToken: () => ({ approved: true }),
+    readinessProbes: { feishu: probe },
+  });
+
+  const created = service.registerChannel({ provider: "feishu", name: "lark-ops" }, owner);
+  assert.equal(created.status, 201);
+  assert.equal(created.body.channel.provider, "feishu");
+  // Feishu scope names, not WeCom's — booleans only, secret never leaks.
+  assert.deepEqual(created.body.channel.readiness, {
+    app_id: true,
+    app_secret: true,
+    verification_token: true,
+    encrypt_key: true,
+  });
+  const health = service.channelHealth({ channelId: created.body.channel.id }, owner);
+  assert.equal(health.body.ready, true);
+  for (const surface of [state, created.body, health.body]) {
+    assert.ok(!JSON.stringify(surface).includes(SECRET), "feishu secret leaked");
+  }
+});
+
+test("feishuEnvReadiness reads presence, not values", () => {
+  assert.deepEqual(feishuEnvReadiness({}), { app_id: false, app_secret: false, verification_token: false, encrypt_key: false });
+  const ready = feishuEnvReadiness({ FEISHU_APP_ID: "cli_x", FEISHU_APP_SECRET: SECRET, FEISHU_VERIFICATION_TOKEN: "v", FEISHU_ENCRYPT_KEY: "e" });
+  assert.deepEqual(ready, { app_id: true, app_secret: true, verification_token: true, encrypt_key: true });
+  assert.ok(!JSON.stringify(ready).includes(SECRET));
+});
 
 test("register validates provider and name, stamps the owner team, and audits", () => {
   const { state, events, service } = makeService();
