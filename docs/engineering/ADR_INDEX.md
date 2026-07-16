@@ -15,6 +15,7 @@ This index lists accepted engineering decisions that guide implementation.
 - [ADR 0009: An Application descriptor is immutable — change means re-register](ADR_0009_APPLICATION_DESCRIPTOR_IMMUTABLE.md)
 - [ADR 0010: An external Application's authorization is readiness, not a capability](ADR_0010_EXTERNAL_CREDENTIAL_READINESS.md)
 - [ADR 0011: Mail intake is untrusted input; send is the exfiltration boundary](ADR_0011_MAIL_UNTRUSTED_INPUT.md)
+- [ADR 0012: A Channel is a governed conversation boundary; the gateway is a separate public listener](ADR_0012_CHANNEL_BOUNDARY.md)
 
 ## M0 Decision Summary
 
