@@ -19,6 +19,10 @@ import { makeRunTx } from "../runtime/store/run-tx.mjs";
 const GENERIC_DENIED_REPLY = "Not authorized for this channel. Contact your team administrator.";
 const USAGE_REPLY = `Commands: ${channelCommands.join(" ")}`;
 
+// A staged confirmation goes stale after this long — a fresh /run is required
+// (mirrors the approval-grant TTL: a confirm-click artifact, not a work queue).
+export const CHANNEL_APPROVAL_TTL_MS = 10 * 60 * 1000;
+
 export function createChannelConversationService({
   state,
   now,
@@ -29,6 +33,12 @@ export function createChannelConversationService({
   store,
   createCapabilityInvocation,
   cancelInvocation,
+  // S6: the grant chokepoint — /approve mints a single-use grant sourced from
+  // the channel message, consumes it, and only then flips the invocation.
+  mintDecisionGrant = null,
+  validateApprovalToken = null,
+  approveInvocation = null,
+  denyInvocation = null,
 }) {
   const runTx = makeRunTx({ store, persistStateSoon });
   void nextId;
@@ -126,16 +136,19 @@ export function createChannelConversationService({
       conversation.invocationIds = [...(conversation.invocationIds ?? []), invocation.id];
       conversation.updatedAt = now();
     });
-    const pending = invocation.status === "awaiting_approval" || invocation.status === "pending_approval";
+    const pending = invocation.status === "waiting_for_local_approval";
     return settle(event, {
       status: "dispatched",
       invocationId: invocation.id,
       reply: pending
-        ? `${invocation.id} awaits approval (${name}). Approve in the console, or reply /approve ${invocation.id} once in-channel approvals land.`
+        ? `${invocation.id} needs approval to run ${name}${args.length ? ` (${args.join(" ").slice(0, 120)})` : ""}. Reply /approve ${invocation.id} to confirm (valid 10 minutes), or /cancel ${invocation.id}.`
         : `${invocation.id} ${invocation.status} (${name}). Reply /result ${invocation.id} for the outcome.`,
       data: { capability: name, invocationStatus: invocation.status, traceId: invocation.traceId ?? null, riskTags: [UNTRUSTED_INPUT_TAG] },
     });
   }
+
+  const pendingApprovalFor = (invocation) =>
+    (state.approvalRequests ?? []).find((row) => row.invocationId === invocation.id && row.status === "pending") ?? null;
 
   /**
    * Dispatch one imported event. Deterministic and total: every path settles
@@ -238,6 +251,17 @@ export function createChannelConversationService({
           }
           return settle(event, { status: "dispatched", reply: "No such invocation in this conversation.", data: { command: "/cancel" } });
         }
+        // A pending-approval invocation cancels by DENYING the approval — that
+        // path records the veto and settles the policy record (S6).
+        const pending = pendingApprovalFor(invocation);
+        if (invocation.status === "waiting_for_local_approval" && pending && typeof denyInvocation === "function") {
+          denyInvocation(pending, invocation, actor);
+          return settle(event, {
+            status: "dispatched",
+            reply: `${invocation.id}: ${invocation.status}`,
+            data: { command: "/cancel", invocationId: invocation.id, approvalId: pending.id },
+          });
+        }
         const cancelled = cancelInvocation(invocation, actor);
         return settle(event, {
           status: "dispatched",
@@ -245,14 +269,77 @@ export function createChannelConversationService({
           data: { command: "/cancel", invocationId: invocation.id },
         });
       }
-      case "/approve":
-        // S6 (#1098) binds this to the single-use grant flow; until then the
-        // console Approvals Center is the only approval surface.
+      case "/approve": {
+        // Correlation IS the requester binding: a conversation is keyed by the
+        // provider identity, so an uncorrelated (someone else's) invocation
+        // answers exactly like an unknown one — plus a first-class veto.
+        const invocation = correlatedInvocation(conversation, parsed.args[0]);
+        if (!invocation) {
+          if (findInvocation(parsed.args[0])) {
+            return refuseDispatch(event, {
+              code: "action_not_permitted",
+              summary: "Channel /approve refused: invocation not correlated to this conversation.",
+              evidence: { invocationId: String(parsed.args[0] ?? "") },
+              reply: "No such invocation in this conversation.",
+            });
+          }
+          return settle(event, { status: "dispatched", reply: "No such invocation in this conversation.", data: { command: "/approve" } });
+        }
+        const approval = pendingApprovalFor(invocation);
+        if (invocation.status !== "waiting_for_local_approval" || !approval) {
+          return settle(event, {
+            status: "dispatched",
+            reply: `${invocation.id} has no pending approval (status: ${invocation.status}).`,
+            data: { command: "/approve", invocationId: invocation.id, reason: "no_pending_approval" },
+          });
+        }
+        // Freshness: a stale confirmation cannot be approved — re-run instead.
+        const requestedAt = Date.parse(approval.createdAt ?? invocation.createdAt ?? "");
+        if (Number.isFinite(requestedAt) && Date.parse(now()) - requestedAt > CHANNEL_APPROVAL_TTL_MS) {
+          return refuseDispatch(event, {
+            code: "action_not_permitted",
+            summary: `Channel /approve refused: confirmation expired for ${invocation.id}.`,
+            evidence: { invocationId: invocation.id, requestedAt: approval.createdAt ?? null },
+            reply: `The confirmation for ${invocation.id} has expired. Send the command again.`,
+          });
+        }
+        if (typeof mintDecisionGrant !== "function" || typeof validateApprovalToken !== "function" || typeof approveInvocation !== "function") {
+          return settle(event, {
+            status: "refused",
+            reply: "In-channel approval is not available. Approve from the console Approvals Center.",
+            data: { command: "/approve", reason: "approval_flow_unavailable" },
+          });
+        }
+        // The grant chain (ADR 0012 rule 5): channel message → single-use grant
+        // → consume → approve. The audit trail records WHICH message decided.
+        const token = mintDecisionGrant({
+          action: "invocation.approve",
+          targetId: invocation.id,
+          sourceDecisionId: event.id,
+          decidedBy: identity.userId,
+          teamId: actor.teamId ?? null,
+        });
+        const consumed = validateApprovalToken(token, {
+          action: "invocation.approve",
+          targetId: invocation.id,
+          actor,
+          allowLegacy: false,
+        });
+        if (!consumed.approved) {
+          return settle(event, {
+            status: "refused",
+            reply: "Approval could not be confirmed. Try again or use the console.",
+            data: { command: "/approve", reason: consumed.reason ?? "grant_rejected" },
+          });
+        }
+        approveInvocation(approval, invocation, actor);
         return settle(event, {
           status: "dispatched",
-          reply: "In-channel approval is not available yet. Approve from the console Approvals Center.",
-          data: { command: "/approve" },
+          invocationId: invocation.id,
+          reply: `${invocation.id} approved — now ${invocation.status}. Reply /result ${invocation.id} for the outcome.`,
+          data: { command: "/approve", invocationId: invocation.id, approvalId: approval.id, grantSource: event.id },
         });
+      }
       default:
         return settle(event, { status: "dispatched", reply: USAGE_REPLY, data: { reason: "unhandled_command" } });
     }
