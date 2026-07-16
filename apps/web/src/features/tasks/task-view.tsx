@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { RefreshCw, ExternalLink, GitBranch, Workflow, Zap } from "lucide-react";
+import { Hand, RefreshCw, ExternalLink, GitBranch, Workflow, Zap } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -38,7 +38,7 @@ const TABS: [GithubItem["type"], string][] = [
 // board with project/type/search filters.
 export function TaskView() {
   const { data: state } = useConsoleState();
-  const { execute, pending } = useAsyncAction();
+  const { execute, pending, error } = useAsyncAction();
   const setSection = useUiStore((s) => s.setSection);
   const setSelectedProjectId = useUiStore((s) => s.setSelectedProjectId);
   const setSelectedWorktreeId = useUiStore((s) => s.setSelectedWorktreeId);
@@ -53,6 +53,28 @@ export function TaskView() {
   // A worktree already linked to this item (so the row offers "Open" not "Create").
   function linkedWorktree(row: Row) {
     return worktrees.find((w) => w.projectId === row.projectId && w.link?.type === row.type && w.link?.number === row.number) ?? null;
+  }
+  // #1143: the issue's active, unexpired claim (develop lease preferred) — the
+  // pool signal: who holds this issue right now.
+  const issueClaims = state?.issueClaims ?? [];
+  function activeClaim(row: Row) {
+    const nowMs = Date.now();
+    const live = issueClaims.filter(
+      (c) =>
+        c.projectId === row.projectId &&
+        c.issueNumber === row.number &&
+        c.status === "active" &&
+        (!c.leaseExpiresAt || Date.parse(c.leaseExpiresAt) > nowMs),
+    );
+    return live.find((c) => c.mode === "develop") ?? live[0] ?? null;
+  }
+  // Claim/release are advisory-fast: the 700ms state poll reflects the result,
+  // and a 409 (someone else holds the develop lease) surfaces on the error line.
+  function claimIssueRow(row: Row) {
+    void execute(() => api.claimIssue(row.projectId, { issueNumber: row.number }));
+  }
+  function releaseClaimRow(claimId: string) {
+    void execute(() => api.releaseIssueClaim(claimId));
   }
   // The newest run in a worktree (invocations are newest-first) for its status.
   function latestRun(worktreeId: string) {
@@ -208,6 +230,7 @@ export function TaskView() {
         </div>
 
         {notice ? <p className="text-xs text-muted-foreground">{notice}</p> : null}
+        {error ? <p className="text-xs text-destructive">{error}</p> : null}
 
         {visible.length === 0 ? (
           <EmptyState
@@ -247,6 +270,16 @@ export function TaskView() {
                             </span>
                           );
                         })()}
+                        {(() => {
+                          if (r.type !== "issue") return null;
+                          const claim = activeClaim(r);
+                          return claim ? (
+                            <Badge tone={claim.mode === "develop" ? "warning" : "neutral"} className="shrink-0">
+                              <Hand className="mr-1 size-3" />
+                              {claim.mode === "develop" ? "claimed" : "reviewing"} · {claim.claimedBy}
+                            </Badge>
+                          ) : null;
+                        })()}
                       </div>
                     </td>
                     <td className="px-3 py-2 text-xs text-muted-foreground">{r.author || "—"}</td>
@@ -255,6 +288,19 @@ export function TaskView() {
                     </td>
                     <td className="px-3 py-2">
                       <div className="flex items-center justify-end gap-1">
+                        {(() => {
+                          if (r.type !== "issue" || r.state !== "open") return null;
+                          const claim = activeClaim(r);
+                          return claim ? (
+                            <Button variant="ghost" size="sm" disabled={pending} onClick={() => releaseClaimRow(claim.id)} title={`Release the claim held by ${claim.claimedBy}`}>
+                              <Hand className="mr-1 size-3.5" /> Release
+                            </Button>
+                          ) : (
+                            <Button variant="secondary" size="sm" disabled={pending} onClick={() => claimIssueRow(r)} title="Claim this issue for development — one develop claim per issue">
+                              <Hand className="mr-1 size-3.5" /> Claim
+                            </Button>
+                          );
+                        })()}
                         <Button variant="secondary" size="sm" disabled={pending} onClick={() => automateIssue(r)} title="Create an automation for this item">
                           <Workflow className="mr-1 size-3.5" /> Automate
                         </Button>

@@ -209,3 +209,32 @@ test("#1143 claims survive restart through the persistence runtime", () => {
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("#1150 the assignee mirror fires on develop claim/release, never for review, and its failure never breaks the claim", async () => {
+  const state = baseState();
+  const mirrored = [];
+  let id = 0;
+  const svc = createIssueClaimService({
+    state,
+    now: makeClock(),
+    nextId: (prefix) => `${prefix}_${++id}`,
+    appendEvent: () => {},
+    persistStateSoon: () => {},
+    mirrorAssignee: async (payload) => {
+      mirrored.push(payload);
+      throw new Error("gh unavailable"); // fire-and-forget: must be swallowed
+    },
+  });
+
+  const claimed = svc.claimIssue({ projectId: "projA", issueNumber: 7, actor: { userId: "usr_a" } });
+  assert.equal(claimed.ok, true, "a failing mirror never fails the claim");
+  assert.deepEqual(mirrored[0], { projectId: "projA", issueNumber: 7, action: "add" });
+
+  svc.claimIssue({ projectId: "projA", issueNumber: 8, actor: { userId: "usr_b" }, mode: "review" });
+  assert.equal(mirrored.length, 1, "a review claim is not ownership — no mirror");
+
+  svc.releaseIssueClaim(claimed.claim.id, { actor: { userId: "usr_a" } });
+  // Let the fire-and-forget promises settle before asserting.
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(mirrored[1], { projectId: "projA", issueNumber: 7, action: "remove" });
+});

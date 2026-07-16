@@ -213,6 +213,8 @@ export interface PendingDecision {
   /** Native section to deep-link to for the full context. */
   section: string;
   targetId?: string | null;
+  /** #1151: advisory "X is handling this" marker — display-only, never gates the decision. */
+  softClaim?: { claimedBy: string | null; expiresAt: string | null };
   /** Ids the inline actions need (approvalId / autoRunId / compareRunId / requestId / invocationId …). */
   ref?: {
     approvalId?: string;
@@ -229,6 +231,23 @@ export interface PendingDecision {
     recoveryActionRequestId?: string | null;
     applicationId?: string | null;
   };
+}
+
+/** #1143: an issue's develop/review lease — one active develop claim per issue. */
+export interface IssueClaim {
+  id: string;
+  projectId: string;
+  issueNumber: number;
+  mode: "develop" | "review";
+  claimedBy: string;
+  teamId?: string | null;
+  agentId?: string | null;
+  autoRunId?: string | null;
+  status: "active" | "released" | "expired";
+  leaseExpiresAt?: string | null;
+  outcome?: string | null;
+  createdAt?: string;
+  updatedAt?: string;
 }
 
 export interface CompareRunSnapshot {
@@ -991,6 +1010,8 @@ export interface ConsoleSnapshot {
   worktrees?: WorktreeSnapshot[];
   worktreeReviews?: WorktreeReview[];
   deployments?: DeploymentSnapshot[];
+  /** #1143 issue claims — who holds each issue's develop/review lease. */
+  issueClaims?: IssueClaim[];
   agent: AgentSnapshot | null;
   agents: AgentSnapshot[];
   invocations: InvocationSnapshot[];
