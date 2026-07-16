@@ -9,18 +9,21 @@ import { test } from "node:test";
 
 import {
   createAutoTriggerRuntime,
+  planDispatch,
   resolveAutoTriggerConfig,
   selectAutoTriggerCandidates,
 } from "../src/services/auto-trigger.mjs";
 
 test("resolveAutoTriggerConfig is off by default and reads the env opt-in", () => {
-  assert.deepEqual(resolveAutoTriggerConfig({}), { enabled: false, label: "auto", maxConcurrent: 1, requireProjectFields: true });
+  // #1165 dispatch defaults ride along: standalone role = today's behavior.
+  const dispatchDefaults = { dispatchRole: "standalone", serverId: null, dispatchWorkers: [], dispatchWorkerCap: 2, dispatchAssignTtlMinutes: 120 };
+  assert.deepEqual(resolveAutoTriggerConfig({}), { enabled: false, label: "auto", maxConcurrent: 1, requireProjectFields: true, ...dispatchDefaults });
   const on = resolveAutoTriggerConfig({
     MYAGENTTOOL_AUTOTRIGGER_ENABLED: "1",
     MYAGENTTOOL_AUTOTRIGGER_LABEL: "agent-ready",
     MYAGENTTOOL_AUTOTRIGGER_MAX_CONCURRENT: "3",
   });
-  assert.deepEqual(on, { enabled: true, label: "agent-ready", maxConcurrent: 3, requireProjectFields: true });
+  assert.deepEqual(on, { enabled: true, label: "agent-ready", maxConcurrent: 3, requireProjectFields: true, ...dispatchDefaults });
   // Cap is clamped into [1,10].
   assert.equal(resolveAutoTriggerConfig({ MYAGENTTOOL_AUTOTRIGGER_MAX_CONCURRENT: "999" }).maxConcurrent, 10);
   assert.equal(resolveAutoTriggerConfig({ MYAGENTTOOL_AUTOTRIGGER_MAX_CONCURRENT: "0" }).maxConcurrent, 1);
@@ -90,7 +93,7 @@ test("scanOnce is a no-op when disabled", async () => {
     startAutoRun: (arg) => started.push(arg),
   });
   const result = await runtime.scanOnce();
-  assert.deepEqual(result, { enabled: false, scanned: 0, started: 0 });
+  assert.deepEqual(result, { enabled: false, scanned: 0, started: 0, assigned: 0 });
   assert.equal(started.length, 0);
 });
 
@@ -137,4 +140,137 @@ test("scanOnce keeps going when one project's issue list or a startAutoRun throw
   const result = await runtime.scanOnce();
   assert.equal(result.scanned, 2, "both ready projects scanned");
   assert.equal(result.started, 1, "the failing project is skipped, the other still runs");
+});
+
+// ── #1165 dispatch mode ───────────────────────────────────────────────────────
+
+test("#1165 config parses dispatch role, server id, worker list, caps", () => {
+  const cfg = resolveAutoTriggerConfig({
+    MYAGENTTOOL_AUTOTRIGGER_DISPATCH_ROLE: "dispatcher",
+    MYAGENTTOOL_AUTOTRIGGER_SERVER_ID: "desk",
+    MYAGENTTOOL_AUTOTRIGGER_WORKERS: "desk, laptop ,office",
+    MYAGENTTOOL_AUTOTRIGGER_WORKER_CAP: "3",
+    MYAGENTTOOL_AUTOTRIGGER_ASSIGN_TTL_MINUTES: "60",
+  });
+  assert.equal(cfg.dispatchRole, "dispatcher");
+  assert.equal(cfg.serverId, "desk");
+  assert.deepEqual(cfg.dispatchWorkers, ["desk", "laptop", "office"]);
+  assert.equal(cfg.dispatchWorkerCap, 3);
+  assert.equal(cfg.dispatchAssignTtlMinutes, 60);
+  assert.equal(resolveAutoTriggerConfig({ MYAGENTTOOL_AUTOTRIGGER_DISPATCH_ROLE: "bogus" }).dispatchRole, "standalone");
+});
+
+test("#1165 a worker only selects issues assigned to it", () => {
+  const issues = [
+    { number: 1, title: "mine", state: "open", labels: ["auto", "assigned/laptop"] },
+    { number: 2, title: "theirs", state: "open", labels: ["auto", "assigned/office"] },
+    { number: 3, title: "unassigned", state: "open", labels: ["auto"] },
+  ];
+  const mine = selectAutoTriggerCandidates({ issues, autoRuns: [], projectId: "prj", maxConcurrent: 5, requireProjectFields: false, assignedTo: "laptop" });
+  assert.deepEqual(mine.map((i) => i.number), [1], "foreign and unassigned issues are never picked up");
+  // No filter (standalone) selects everything, unchanged.
+  const all = selectAutoTriggerCandidates({ issues, autoRuns: [], projectId: "prj", maxConcurrent: 5, requireProjectFields: false });
+  assert.deepEqual(all.map((i) => i.number), [1, 2, 3]);
+});
+
+const T0 = "2026-07-16T12:00:00.000Z";
+
+test("#1165 planDispatch assigns least-loaded round-robin under per-worker caps", () => {
+  const issues = [1, 2, 3, 4, 5].map((n) => ({ number: n, title: `t${n}`, state: "open", labels: ["auto"] }));
+  const assignments = [{ projectId: "prj", issueNumber: 99, workerId: "a", status: "open", assignedAt: T0 }];
+  const plan = planDispatch({ issues, assignments, projectId: "prj", workers: ["a", "b"], workerCap: 2, requireProjectFields: false, nowIso: T0 });
+  // a already carries one open assignment → b, a, b fill to the caps; 2 remain unassigned.
+  assert.deepEqual(plan.assign.map((x) => `${x.issue.number}:${x.workerId}`), ["1:b", "2:a", "3:b"]);
+  assert.equal(plan.reassign.length, 0);
+});
+
+test("#1165 planDispatch never touches in-progress or already-labeled issues (fresh), and respects foreign labels", () => {
+  const issues = [
+    { number: 1, title: "working", state: "open", labels: ["auto", "assigned/a", "status/in-progress"] },
+    { number: 2, title: "assigned-fresh", state: "open", labels: ["auto", "assigned/a"] },
+    { number: 3, title: "label-no-record", state: "open", labels: ["auto", "assigned/ghost"] },
+    { number: 4, title: "free", state: "open", labels: ["auto"] },
+  ];
+  const assignments = [{ projectId: "prj", issueNumber: 2, workerId: "a", status: "open", assignedAt: T0 }];
+  const plan = planDispatch({ issues, assignments, projectId: "prj", workers: ["a", "b"], workerCap: 2, requireProjectFields: false, ttlMinutes: 120, nowIso: T0 });
+  assert.deepEqual(plan.assign.map((x) => x.issue.number), [4], "only the free issue is assigned");
+  assert.equal(plan.reassign.length, 0, "fresh assignments and foreign labels are left alone");
+});
+
+test("#1165 planDispatch reassigns a stale assignment (TTL passed, no in-progress) to another worker", () => {
+  const issues = [{ number: 7, title: "stalled", state: "open", labels: ["auto", "assigned/a"] }];
+  const assignments = [{ projectId: "prj", issueNumber: 7, workerId: "a", status: "open", assignedAt: "2026-07-16T08:00:00.000Z" }];
+  const plan = planDispatch({ issues, assignments, projectId: "prj", workers: ["a", "b"], workerCap: 2, requireProjectFields: false, ttlMinutes: 120, nowIso: T0 });
+  assert.equal(plan.assign.length, 0);
+  assert.equal(plan.reassign.length, 1);
+  assert.equal(plan.reassign[0].from, "a");
+  assert.equal(plan.reassign[0].to, "b", "prefers a different worker");
+
+  // In-progress protects a stale-by-clock assignment from reassignment.
+  const working = [{ number: 7, title: "stalled", state: "open", labels: ["auto", "assigned/a", "status/in-progress"] }];
+  const guarded = planDispatch({ issues: working, assignments, projectId: "prj", workers: ["a", "b"], workerCap: 2, requireProjectFields: false, ttlMinutes: 120, nowIso: T0 });
+  assert.equal(guarded.reassign.length, 0);
+});
+
+test("#1165 dispatcher runtime assigns via labels + bookkeeping and never starts foreign work; a self-worker dispatcher works its own", async () => {
+  const state = {
+    projects: [{ id: "prj", name: "P", source: "default", defaultAgentId: undefined }],
+    projectTargets: [{ projectId: "prj", state: "ready", rootPath: "/repo" }],
+    autoRuns: [],
+    dispatchAssignments: [],
+    events: [],
+  };
+  const labelEdits = [];
+  const startedRuns = [];
+  const issues = [
+    { number: 1, title: "one", state: "open", labels: ["auto"] },
+    { number: 2, title: "two", state: "open", labels: ["auto", "assigned/desk"] },
+  ];
+  const runtime = createAutoTriggerRuntime({
+    state,
+    config: {
+      enabled: true, label: "auto", maxConcurrent: 5, requireProjectFields: false,
+      dispatchRole: "dispatcher", serverId: "desk", dispatchWorkers: ["desk", "laptop"], dispatchWorkerCap: 2, dispatchAssignTtlMinutes: 120,
+    },
+    listLabeledIssues: async () => issues,
+    startAutoRun: async (args) => { startedRuns.push(args); return {}; },
+    editIssueLabels: async (project, edit) => labelEdits.push(edit),
+    appendEvent: () => {},
+    persistStateSoon: () => {},
+  });
+
+  const result = await runtime.scanOnce();
+  // #1 was free → assigned to the least-loaded worker (laptop: desk already has #2 by label? —
+  // no record for #2, so load counts records only → both 0 → first in list, desk... but #2 has
+  // an assigned label and is skipped from assignment; #1 goes to the first least-loaded: desk.
+  assert.equal(result.assigned, 1);
+  assert.equal(labelEdits.length, 1);
+  assert.equal(labelEdits[0].issueNumber, 1);
+  assert.match(labelEdits[0].add[0], /^assigned\//);
+  assert.equal(state.dispatchAssignments.length, 1, "bookkeeping row recorded");
+  // The dispatcher's own id is in the worker list → it starts ONLY the issue
+  // already assigned to it (#2), never the freshly-assigned-elsewhere or free ones.
+  assert.deepEqual(startedRuns.map((r) => r.link.number), [2]);
+});
+
+test("#1165 a pure dispatcher (not in the worker list) starts nothing", async () => {
+  const state = {
+    projects: [{ id: "prj", name: "P", source: "default" }],
+    projectTargets: [{ projectId: "prj", state: "ready", rootPath: "/repo" }],
+    autoRuns: [],
+    dispatchAssignments: [],
+  };
+  const startedRuns = [];
+  const runtime = createAutoTriggerRuntime({
+    state,
+    config: {
+      enabled: true, label: "auto", maxConcurrent: 5, requireProjectFields: false,
+      dispatchRole: "dispatcher", serverId: "hub", dispatchWorkers: ["laptop"], dispatchWorkerCap: 2, dispatchAssignTtlMinutes: 120,
+    },
+    listLabeledIssues: async () => [{ number: 5, title: "x", state: "open", labels: ["auto", "assigned/hub"] }],
+    startAutoRun: async (args) => { startedRuns.push(args); return {}; },
+    editIssueLabels: async () => {},
+  });
+  await runtime.scanOnce();
+  assert.equal(startedRuns.length, 0, "assignment-only role; execution belongs to workers");
 });
