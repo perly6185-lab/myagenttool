@@ -258,6 +258,9 @@ export function createProjectService({ state, now, nextId, appendEvent, persistS
     // created while the WORKSPACE project was current carried no worktreeId at
     // all — sessions/evidence silently lost their worktree scope (caught by
     // tools/dev/worktree-smoke.mjs, which was never wired into a gate).
+    // Null-guarded: workspaceProjectId is initialized null, so a null query
+    // must not match a half-registered worktree.
+    if (!projectId) return null;
     return state.worktrees.find(
       (item) => item.projectId === projectId || item.workspaceProjectId === projectId,
     ) ?? null;

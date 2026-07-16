@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { isAbsolute, resolve, sep } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { createTranscriptCollector } from "./stream-transcript.mjs";
@@ -316,6 +316,14 @@ function requireCodeExplainTarget(opts) {
     fail("--path escapes the worktree; refusing.");
   }
   if (!existsSync(target)) fail(`--path does not exist in the worktree: ${opts.path}`);
+  // Audit find (2026-07-16): resolve() is lexical — a symlink INSIDE the
+  // worktree can point outside it and pass the prefix check. Compare realpaths,
+  // so the file Claude is pointed at is physically under the worktree.
+  const realRoot = realpathSync(root);
+  const realTarget = realpathSync(target);
+  if (realTarget !== realRoot && !realTarget.startsWith(realRoot + sep)) {
+    fail("--path resolves (via symlink) outside the worktree; refusing.");
+  }
 }
 
 function buildPrompt(value) {
