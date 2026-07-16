@@ -35,6 +35,19 @@ Git and local sources may also create or reuse project records. NPM and manual
 sources are registered as application assets first; execution and installation
 remain separate lifecycle capabilities.
 
+## Registered Applications (current inventory, 2026-07-16)
+
+| Application | Source | Capabilities | Execution | Readiness | Wiring |
+| --- | --- | --- | --- | --- | --- |
+| `app_ccusage` | npm `ccusage@20.0.14` | 6 usage reports (`session` approval-gated) | installed wrapper | binary probe | register script + quick-register catalog + install recipes (3 platforms) |
+| `app_git` | binary `git` | 8 read-only repo inspections | wrapper argv (closed positionals) | binary probe | register script + catalog + install recipes (win/mac; Linux fails closed, #994) |
+| `app_claude` | binary `claude` | 6 read-only `tool_facade`s (review.diff, explain.diff, explain.code, analyze.issue, plan.change, propose.patch) | governed Tool contracts | binary probe | register script + catalog + install recipe (npm) |
+| `app_gmail` | manual, non-executable | 2 `agent_facade`s (list_unread, fetch), both `untrusted_input` | delegated mail MCP agent | **external credential readiness (ADR 0010)** | **registrable but not yet wired** — no register script or catalog entry; production wiring lands with the mail epic (#979) send-boundary slice |
+
+`app_claude`'s `analyze.issue` carries the `untrusted_input` tag (ADR 0011): the
+issue body is server-resolved, bounded, and fenced as data before the wrapper
+ever spawns.
+
 ## Lifecycle
 
 Application status values:
@@ -110,6 +123,18 @@ Inferred capabilities are discovery candidates only. They are intentionally
 `not_invokable` until a wrapper descriptor and approval path are added in a
 later slice. NPM probes inspect registration metadata only; they do not install
 packages, run scripts, or execute package code.
+
+### External credential readiness (ADR 0010)
+
+Binary probes answer "is the executable present"; some Applications instead
+depend on an **externally authorized credential** (an OAuth grant completed
+outside the platform). ADR 0010 models this as a readiness dimension:
+`app_gmail` declares `credential { provider: google, scope: gmail.readonly }`,
+the Desktop Bridge reports non-secret credential metadata
+(`application-credential-readiness.mjs`), and the server authorizes it against
+the descriptor — unauthorized reads as `needs_setup`, a revoked credential
+auto-degrades the Application to `offline` and never auto-onlines. No secret
+ever appears in state or the public contract.
 
 ## Governed Installation Plans
 
@@ -298,8 +323,32 @@ forbidden, and can be validated with `pnpm ai:loop-routine-check`.
 npm package -> application asset -> governed report capability -> fixed wrapper agents
 ```
 
-Existing `ccusage.report` APIs and import guards should remain compatible while
-adding an `app_ccusage` application record later.
+**Status: complete.** `app_ccusage` exists (`services/ccusage-application.mjs`)
+and the `ccusage.report` tool remains a stable compatibility facade over the
+Application path, enforced by the tool-registry contract smoke.
+
+## What Is Deliberately NOT an Application
+
+Three governed surfaces sit outside the Application registry on purpose; the
+distinction is load-bearing, not an accident:
+
+- **Claude apply (write capability).** The `app_claude` descriptor stops at
+  `propose.patch` — read-only generation. The approval-bound apply/rollback
+  (#914) is a governed Tool behind the default-OFF
+  `MYAGENTTOOL_CLAUDE_APPLY_ENABLED` flag, with its own single-use-grant gate
+  and artifact-binding revalidation. Keeping the write capability out of the
+  discoverable catalog is a decision: discovery advertises what an operator may
+  freely invoke; the write path is opt-in infrastructure with its own audit
+  trail (`claudeApplyAuthorizations`), not a browsable capability.
+- **Codex.** `codex.review.diff` / `codex.exec` are governed agents/tools
+  (exec behind default-OFF `MYAGENTTOOL_CODEX_EXEC_ENABLED`); opening Codex as
+  an Application-path capability is tracked as #925.
+- **Channel providers (WeCom / Feishu / DingTalk / Slack / Teams).** The
+  channel subsystem (`services/channels.mjs`, ADR 0013) has its own
+  env-presence readiness probes and delivery lifecycle and does NOT register
+  Application descriptors. Whether channel readiness should converge onto the
+  Application readiness model is an open architecture question — today the
+  split is intentional (channels are transport, not governed local software).
 
 ## Next Phase: Discovery -> Access -> Execute -> Result
 
