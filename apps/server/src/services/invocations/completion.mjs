@@ -22,6 +22,7 @@ export function createInvocationCompletionRuntime({
   recordCodexReviewFindings,
   recordClaudeReviewFindings,
   recordClaudeApplyResult,
+  recordMailSendResult,
   recordCodexExecChanges,
   recordApplicationResult,
   capWithArchive,
@@ -145,6 +146,12 @@ export function createInvocationCompletionRuntime({
     // left "applying"). recordClaudeApplyResult no-ops for non-apply invocations.
     if (typeof recordClaudeApplyResult === "function") {
       recordClaudeApplyResult({ invocation, result: body.result ?? null, agent: findAgent(invocation.agentId) });
+    }
+    // #1147: the send fold runs on ANY terminal status too — a result-less
+    // terminal must resolve the draft to send_unconfirmed, never leave it
+    // "sending". No-ops for non-send invocations (keyed on mailSendDraftId).
+    if (typeof recordMailSendResult === "function") {
+      recordMailSendResult({ invocation, result: body.result ?? null });
     }
     if (terminalStatus === "succeeded" && typeof recordCodexExecChanges === "function") {
       const records = recordCodexExecChanges({

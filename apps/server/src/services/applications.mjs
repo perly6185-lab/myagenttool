@@ -68,6 +68,30 @@ export function createApplicationService({
     const name = normalizeApplicationName(body.name ?? nameFromSource(source));
     const requestedId = body.id == null ? null : sanitizeApplicationId(body.id);
     const capabilityFacades = normalizeApplicationCapabilityFacades(body.capabilityFacades);
+    // ADR 0014: the write-credential exception class. Invariant 2 (every
+    // capability approval-gated) and invariant 3 (a separate Application —
+    // the credential pair may not already belong to another registration)
+    // need both the facades and the registry, so they live here rather than
+    // in the credential normalizer.
+    if (source.credential?.write === true) {
+      if (capabilityFacades.some((facade) => facade.requiresApproval !== true)) {
+        throw applicationRegistrationError(
+          "application_write_capability_unapproved",
+          "A write-credential Application must approval-gate every capability facade (ADR 0014); approval is the floor for write authority.",
+        );
+      }
+      const pairHolder = (state.applications ?? []).find(
+        (item) => item.source?.credential?.provider === source.credential.provider
+          && item.source?.credential?.scope === source.credential.scope
+          && !item.successorApplicationId,
+      );
+      if (pairHolder && pairHolder.id !== body.replacesApplicationId) {
+        throw applicationRegistrationError(
+          "application_write_credential_conflict",
+          `Credential ${source.credential.provider}/${source.credential.scope} is already held by ${pairHolder.id}; a write credential is never shared (ADR 0014).`,
+        );
+      }
+    }
     const descriptorSchemaVersion = normalizeDescriptorSchemaVersion(body.descriptorSchemaVersion);
     const descriptorFingerprint = fingerprintApplicationDescriptor(
       applicationDescriptor({ ...body, name, source, capabilityFacades }, descriptorSchemaVersion),
@@ -495,6 +519,13 @@ export function createApplicationService({
     const facade = (application.capabilityFacades ?? []).find((candidate) => candidate.id === facadeId && candidate.agentId);
     if (!facade) {
       return { ok: false, status: 404, body: { error: "agent_facade_not_found", applicationId, facadeId } };
+    }
+    // ADR 0014: a gate-only facade refuses direct invocation outright — its
+    // server gate is the only path, because the gate (not the caller) resolves
+    // the payload. Without this, a caller holding a grant could pass free-form
+    // toolArguments straight to the agent.
+    if (facade.directInvocation === false) {
+      return { ok: false, status: 409, body: { error: "capability_gate_only", message: "This capability executes only through its dedicated server gate; direct invocation is disabled by the descriptor.", applicationId, facadeId } };
     }
     if (facade.requiresApproval) {
       const approval = approvalCheck(input, `agent:${facadeId}`, applicationId, actor);
@@ -1653,6 +1684,11 @@ function normalizeApplicationCapabilityFacades(value) {
       // Which tool on the agent this capability calls (MCP servers can expose
       // several). Null lets the bridge's single-tool auto-resolution apply.
       agentToolName,
+      // ADR 0014: a gate-only facade is discoverable but not directly invokable —
+      // its execution goes through a dedicated server gate that resolves the
+      // inputs itself (mail.send resolves everything from the confirmed draft).
+      // Default true: ordinary facades are unaffected.
+      directInvocation: facade.directInvocation !== false,
       displayName: stringOrNull(facade.displayName) ?? id,
       description: stringOrNull(facade.description),
       riskLevel: normalizeRiskLevel(facade.riskLevel, "medium"),
@@ -2162,13 +2198,27 @@ function normalizeCredentialRequirement(credential) {
   if (!scope) {
     throw new Error("Application credential requires a scope.");
   }
+  // ADR 0014: the write-credential exception class. Declaring it takes an
+  // explicit `write: true` plus a non-empty justification; the class's other
+  // invariants (every capability approval-gated; the credential pair unique)
+  // are enforced in registerApplication where facades and registry are visible.
+  if (credential.write === true) {
+    const justification = String(credential.justification ?? "").trim();
+    if (!justification) {
+      throw applicationRegistrationError(
+        "application_write_credential_invalid",
+        "A write-credential Application requires credential.justification (ADR 0014).",
+      );
+    }
+    return { provider, scope, write: true, justification: justification.slice(0, 500) };
+  }
   // Read-only by construction. A registration may not declare a write-capable
-  // scope: read and write authority never share a credential (ADR 0010), so a
-  // future send capability is a SECOND, separately consented credential — never
-  // a widening of this one. Refusing the write scope here means a read-only
-  // Application cannot quietly acquire send authority through a descriptor edit.
+  // scope: read and write authority never share a credential (ADR 0010); a
+  // write-capable scope needs the ADR 0014 write-credential class — an explicit
+  // `credential.write: true` with its own invariants — never a quiet widening
+  // of a read registration.
   if (!READ_ONLY_CREDENTIAL_SCOPE.test(scope)) {
-    throw new Error(`Application credential scope "${scope}" is not read-only; a write-capable scope needs its own separately consented credential (ADR 0010).`);
+    throw new Error(`Application credential scope "${scope}" is not read-only; a write-capable scope needs the ADR 0014 write-credential class (credential.write: true), a separately consented credential — never a widening of this one.`);
   }
   return { provider, scope };
 }

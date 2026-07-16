@@ -23,6 +23,7 @@ import { createApplicationStatsRuntime } from "../services/application-stats.mjs
 import { createCapabilityService } from "../services/capabilities.mjs";
 import { createMailIssueWriteService } from "../services/mail-issue-write.mjs";
 import { createMailReplyDraftService } from "../services/mail-reply-draft.mjs";
+import { createMailSendService } from "../services/mail-send.mjs";
 import { createChannelService } from "../services/channels.mjs";
 import { createChannelConversationService } from "../services/channel-conversation.mjs";
 import { createChannelDeliveryService } from "../services/channel-delivery.mjs";
@@ -518,6 +519,9 @@ export function createServerRuntimeServices({
   // below (it needs createInvocation from this very service). Set after the
   // auto-run service exists; until then completion has nothing to advance.
   let advanceAutoRunHook = null;
+  // #1147: same late-binding for the mail send fold — the send service needs
+  // createInvocation (composed below), completion needs the fold here.
+  let mailSendHooks = null;
   // S5 (#1090): channel-originated invocations report their outcome back to the
   // originating conversation. Late-bound like the auto-run hook — the delivery
   // service composes after the invocation service.
@@ -548,6 +552,7 @@ export function createServerRuntimeServices({
     recordCodexReviewFindings,
     recordClaudeReviewFindings,
     recordClaudeApplyResult,
+    recordMailSendResult: (args) => mailSendHooks?.recordMailSendResult(args) ?? null,
     recordCodexExecChanges,
     recordApplicationResult,
     currentProject,
@@ -596,6 +601,8 @@ export function createServerRuntimeServices({
       // Deny skips the completion runtime, so an apply/rollback held at the local
       // gate and denied would strand its authorization at applying/rolling_back.
       reconcileClaudeApplyTermination(invocation);
+      // #1147: same for a denied send — the draft must read send_unconfirmed.
+      mailSendHooks?.reconcileMailSendTermination(invocation);
       denialAutoRunHook?.(invocation);
     },
   });
@@ -1008,6 +1015,21 @@ export function createServerRuntimeServices({
     state, now, nextId, appendEvent, persistStateSoon, store,
     validateApprovalToken, repoCwd: defaultProjectPath,
   });
+
+  // #1147 (ADR 0014): the send gate — the exfiltration boundary, executable
+  // only for a review-confirmed draft under flag + write-credential Application
+  // + credential readiness + single-use grant. The completion fold and the deny
+  // reconcile are late-bound into the invocation runtime above.
+  const mailSendService = createMailSendService({
+    state, now, appendEvent, persistStateSoon, store,
+    validateApprovalToken,
+    createInvocation: (task, agent, options) => createInvocation(task, agent, options),
+    startInvocationIfAllowed: (invocation, agent) => startInvocationIfAllowed(invocation, agent),
+    findAgent,
+    findApplication,
+  });
+  mailSendHooks = mailSendService;
+  const { sendConfirmedDraft } = mailSendService;
 
   // Channel Registry (S2, #1090/ADR 0012): owner-team-scoped channel lifecycle
   // + fail-closed identity mappings. Readiness is env-presence booleans; enable
@@ -2869,6 +2891,7 @@ export function createServerRuntimeServices({
     createMailIssueFromImport,
     replyOnIssue,
     confirmReplyDraft,
+    sendConfirmedDraft,
     registerChannel: channelService.registerChannel,
     listChannels: channelService.listChannels,
     enableChannel: channelService.enableChannel,
