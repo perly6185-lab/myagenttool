@@ -2,13 +2,13 @@ import crypto from "node:crypto";
 import { spawn } from "node:child_process";
 
 const SCHEMA_VERSION = "application-install-plan/v1";
-const RECIPE_VERSION = "2026-07-14.2";
+const RECIPE_VERSION = "2026-07-16.1";
 const PLAN_TTL_MS = 10 * 60 * 1000;
 const NPM_REGISTRY = "https://registry.npmjs.org/";
 
 const RECIPES = {
   git: {
-    windows: ["winget", ["install", "--id", "Git.Git", "--exact", "--source", "winget", "--silent", "--disable-interactivity", "--accept-package-agreements", "--accept-source-agreements"], "Git.Git"],
+    windows: ["winget", ["install", "--id", "Git.Git", "--version", "2.50.1", "--exact", "--source", "winget", "--silent", "--disable-interactivity", "--accept-package-agreements", "--accept-source-agreements"], "Git.Git@2.50.1"],
     macos: ["brew", ["install", "--formula", "git"], "git"],
   },
   ccusage: {
@@ -73,7 +73,10 @@ export function resolveApplicationInstallSpawnPlan(plan, { platform = process.pl
   const expectedSource = plan.application?.name === "git"
     ? targetPlatform === "windows" ? { kind: "winget-source", name: "winget" } : { kind: "homebrew-core", name: "homebrew/core" }
     : { kind: "npm-registry", registry: NPM_REGISTRY, packageName: expectedIdentifier };
-  const expectedVersionPolicy = plan.application?.name === "git"
+  // #995: git-windows is now exact-pinned like the npm apps; git-macos stays
+  // provider-managed (homebrew/core has no versioned formula — explicit
+  // decision, mirrored from the server recipe).
+  const expectedVersionPolicy = plan.application?.name === "git" && targetPlatform === "macos"
     ? { kind: "provider-managed", channel: "stable", allowCallerOverride: false, exactVersion: null }
     : { kind: "exact", channel: null, allowCallerOverride: false, exactVersion: resolvedIdentifier.slice(resolvedIdentifier.lastIndexOf("@") + 1) };
   if (JSON.stringify(plan.package?.source) !== JSON.stringify(expectedSource) || JSON.stringify(plan.package?.versionPolicy) !== JSON.stringify(expectedVersionPolicy)) return null;
