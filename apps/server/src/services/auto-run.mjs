@@ -1059,10 +1059,24 @@ export function createAutoRunService({
   // runs when a person clicks Merge on a pr_open run; it is never automatic.
   // Guards: the run must have an open PR; a MERGED run is a no-op. On success
   // the record flips to prState=MERGED (the routing eval then counts it merged).
+  // #1151: the uniform "someone already decided this" shape returned by every
+  // gate's idempotent branch — the second operator learns who and when instead
+  // of a silent success (or worse, a silent overwrite).
+  function alreadyDecidedRef(mark) {
+    return { decidedBy: mark?.by ?? mark?.decidedBy ?? null, decidedAt: mark?.at ?? mark?.decidedAt ?? null, status: mark?.status ?? null };
+  }
+
   async function mergeAutoRunPr(autoRunId, { actor } = {}) {
     const autoRun = state.autoRuns.find((item) => item.id === autoRunId);
     if (!autoRun) throw new Error("Auto-run not found.");
-    if (autoRun.prState === "MERGED") return { ok: true, alreadyMerged: true, prNumber: autoRun.prNumber };
+    if (autoRun.prState === "MERGED") {
+      return {
+        ok: true,
+        alreadyMerged: true,
+        alreadyDecided: { decidedBy: autoRun.prMergedBy ?? null, decidedAt: autoRun.prMergedAt ?? null, status: "merged" },
+        prNumber: autoRun.prNumber,
+      };
+    }
     if (autoRun.status !== "pr_open" || !autoRun.prNumber) {
       throw new Error("Only an auto-run with an open PR can be merged.");
     }
@@ -1101,6 +1115,10 @@ export function createAutoRunService({
     runTx(() => {
       autoRun.prState = "MERGED";
       autoRun.prStateCheckedAt = now();
+      // #1151: merge was the one autoRun gate whose settle recorded WHO only in
+      // the event log (500-row ring buffer) — stamp it on the record.
+      autoRun.prMergedBy = actor?.userId ?? "usr_local";
+      autoRun.prMergedAt = now();
       appendEvent({
         invocationId: autoRun.invocationId,
         type: "auto_run_pr_merged",
@@ -1362,7 +1380,13 @@ export function createAutoRunService({
       // Already approved, or a near-simultaneous approve is mid-flight — short
       // circuit so two POSTs (double-click / CSRF burst) don't spawn two child
       // issues. (audit finding: approveDesign TOCTOU)
-      return { ok: true, alreadyApproved: true, childIssues: autoRun.childIssues ?? [] };
+      return { ok: true, alreadyApproved: true, alreadyDecided: alreadyDecidedRef(autoRun.designApproval), childIssues: autoRun.childIssues ?? [] };
+    }
+    // #1151: a REJECTED design is settled too — approve doesn't change the run's
+    // status (report_posted), so without this a later approve would overwrite the
+    // recorded rejection.
+    if (autoRun.designApproval) {
+      return { ok: true, alreadyDecided: alreadyDecidedRef(autoRun.designApproval) };
     }
     if (Array.isArray(autoRun.childIssues) && autoRun.childIssues.length > 0) {
       // The implementation issue already exists (auto-spawned at report time);
@@ -1413,6 +1437,12 @@ export function createAutoRunService({
     const autoRun = state.autoRuns.find((item) => item.id === autoRunId);
     if (!autoRun) throw new Error("Auto-run not found.");
     if ((autoRun.decision?.path ?? null) !== "design") throw new Error("Only a design run's report can be rejected.");
+    // #1151: approve leaves the run at report_posted, so the old status guard let
+    // a reject silently OVERWRITE a recorded approval (and a second reject repeat
+    // its side effects). Any existing decision settles this gate.
+    if (autoRun.designApproval) {
+      return { ok: true, alreadyDecided: alreadyDecidedRef(autoRun.designApproval) };
+    }
     if (autoRun.status !== "report_posted") throw new Error("Only a posted design report can be rejected.");
     const by = actor?.userId ?? "usr_local";
     const note = String(feedback ?? "").trim().slice(0, 2000);
@@ -1456,7 +1486,12 @@ export function createAutoRunService({
     // or a near-simultaneous approving) short-circuits instead of erroring — two
     // POSTs (double-click / CSRF burst) must never double-spawn. (mirrors approveDesign)
     if (autoRun.decompositionApproval?.status === "approved" || autoRun.decompositionApproval?.status === "approving") {
-      return { ok: true, alreadyApproved: true, childIssues: autoRun.childIssues ?? [] };
+      return { ok: true, alreadyApproved: true, alreadyDecided: alreadyDecidedRef(autoRun.decompositionApproval), childIssues: autoRun.childIssues ?? [] };
+    }
+    // #1151: a rejected plan is settled — approving it afterwards would overwrite
+    // the recorded rejection. (`partial` deliberately passes: re-approve = retry.)
+    if (autoRun.decompositionApproval?.status === "rejected") {
+      return { ok: true, alreadyDecided: alreadyDecidedRef(autoRun.decompositionApproval) };
     }
     if (autoRun.status !== "plan_proposed") throw new Error("Only a proposed plan can be approved.");
     const by = actor?.userId ?? "usr_local";
@@ -1522,6 +1557,13 @@ export function createAutoRunService({
     const autoRun = state.autoRuns.find((item) => item.id === autoRunId);
     if (!autoRun) throw new Error("Auto-run not found.");
     if ((autoRun.decision?.path ?? null) !== "decompose") throw new Error("Only a decomposition run's plan can be rejected.");
+    // #1151: reject had no idempotency guard — a rejected plan keeps status
+    // plan_proposed, so a second reject re-ran its side effects (duplicate issue
+    // comment + duplicate refusal), and a reject could land on an already
+    // approving/partial plan whose children exist. Any decision settles this gate.
+    if (autoRun.decompositionApproval) {
+      return { ok: true, alreadyDecided: alreadyDecidedRef(autoRun.decompositionApproval) };
+    }
     if (autoRun.status !== "plan_proposed") throw new Error("Only a proposed plan can be rejected.");
     const by = actor?.userId ?? "usr_local";
     const note = String(feedback ?? "").trim().slice(0, 2000);
@@ -1567,6 +1609,11 @@ export function createAutoRunService({
     const autoRun = state.autoRuns.find((item) => item.id === autoRunId);
     if (!autoRun) throw new Error("Auto-run not found.");
     if ((autoRun.decision?.path ?? null) !== "clarify") throw new Error("Only a clarify run's questions can be answered.");
+    // #1151: answering leaves the run at needs_input, so a second answer would
+    // repeat the issue comment and overwrite the recorded answer. First answer wins.
+    if (autoRun.clarifyAnswer) {
+      return { ok: true, alreadyDecided: { decidedBy: autoRun.clarifyAnswer.by ?? null, decidedAt: autoRun.clarifyAnswer.at ?? null, status: "answered" } };
+    }
     if (autoRun.status !== "needs_input") throw new Error("Only a run awaiting input can be answered.");
     const text = String(answers ?? "").trim();
     if (!text) throw new Error("An answer is required.");
