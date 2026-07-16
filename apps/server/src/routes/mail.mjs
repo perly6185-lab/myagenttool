@@ -4,7 +4,7 @@
  * Message-ID idempotency key.
  */
 
-export async function handleMailRoutes({ req, res, url, sendJson, readJson, actor, createMailIssueFromImport, replyOnIssue, confirmReplyDraft }) {
+export async function handleMailRoutes({ req, res, url, sendJson, readJson, actor, createMailIssueFromImport, replyOnIssue, confirmReplyDraft, sendConfirmedDraft }) {
   if (req.method === "POST" && url.pathname === "/api/mail/issues") {
     const body = await readJson(req);
     // The client names a Message-ID; the issue body is the server's transcription
@@ -29,10 +29,23 @@ export async function handleMailRoutes({ req, res, url, sendJson, readJson, acto
   }
 
   // Step 2: after the issue reply is reviewed, confirm it into an inert outgoing
-  // draft. No send route exists (ADR 0010/0011).
+  // draft.
   const confirmMatch = url.pathname.match(/^\/api\/mail\/replies\/([^/]+)\/confirm$/);
   if (req.method === "POST" && confirmMatch) {
     const result = confirmReplyDraft({ replyId: decodeURIComponent(confirmMatch[1]), actor });
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  // Step 3 (#1147, ADR 0014): the exfiltration boundary. Send ONE confirmed
+  // draft — the caller supplies a draft id and a single-use grant; every
+  // outbound field is resolved server-side from the draftbox row. Gated on the
+  // default-OFF flag, the write-credential Application, and credential
+  // readiness — see mail-send.mjs for the ordered gates.
+  const sendMatch = url.pathname.match(/^\/api\/mail\/drafts\/([^/]+)\/send$/);
+  if (req.method === "POST" && sendMatch && typeof sendConfirmedDraft === "function") {
+    const body = await readJson(req);
+    const result = sendConfirmedDraft({ draftId: decodeURIComponent(sendMatch[1]), approvalToken: body?.approvalToken, actor });
     sendJson(res, result.status, result.body);
     return true;
   }

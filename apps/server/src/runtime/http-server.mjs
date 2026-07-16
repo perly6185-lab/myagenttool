@@ -190,6 +190,7 @@ export function createHttpServer({
   createMailIssueFromImport,
   replyOnIssue,
   confirmReplyDraft,
+  sendConfirmedDraft,
   registerChannel,
   listChannels,
   enableChannel,
@@ -269,7 +270,7 @@ export function createHttpServer({
         return;
       }
 
-      if (await handleMailRoutes({ req, res, url, sendJson, readJson, actor, createMailIssueFromImport, replyOnIssue, confirmReplyDraft })) {
+      if (await handleMailRoutes({ req, res, url, sendJson, readJson, actor, createMailIssueFromImport, replyOnIssue, confirmReplyDraft, sendConfirmedDraft })) {
         return;
       }
 

@@ -1,6 +1,6 @@
 # ADR 0014: A write-credential Application is a reviewed exception class, never a widened read credential
 
-Status: proposed · 2026-07-16
+Status: accepted · 2026-07-16
 
 Date: 2026-07-16
 
