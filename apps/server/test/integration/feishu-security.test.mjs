@@ -139,11 +139,20 @@ test("forged signature, tampered ciphertext, and wrong token import nothing", as
   const body = encBody(messageEvent("/status", { eventId: "evt_forge" }));
   assert.equal((await drive(post(body, { nonce: "nf1", signature: "f".repeat(64) }))).statusCode, 403);
 
+  // Tamper the ciphertext WITHOUT re-signing (an attacker has no EncryptKey to
+  // re-sign with) → the signature over the original body no longer matches → 403
+  // at the signature layer, deterministically (AES-CBC itself has no integrity check).
   const env = JSON.parse(body);
   const buf = Buffer.from(env.encrypt, "base64");
   buf[buf.length - 1] ^= 0xff;
   const tampered = JSON.stringify({ encrypt: buf.toString("base64") });
-  assert.equal((await drive(post(tampered, { nonce: "nf2" }))).statusCode, 400);
+  const sigOverOriginal = computeFeishuSignature(String(clockMs / 1000), "nf2", ENCRYPT_KEY, body);
+  const tamperedRes = await drive({
+    method: "POST", url: "/feishu/callback",
+    headers: { "x-lark-request-timestamp": String(clockMs / 1000), "x-lark-request-nonce": "nf2", "x-lark-signature": sigOverOriginal },
+    async *[Symbol.asyncIterator]() { yield tampered; },
+  });
+  assert.equal(tamperedRes.statusCode, 403);
 
   assert.equal((await drive(post(encBody(messageEvent("/status", { token: "wrong", eventId: "evt_wt" })), { nonce: "nwt" }))).statusCode, 403);
   assert.equal(state.channelEvents.length, before, "nothing imported from rejected requests");
