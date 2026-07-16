@@ -91,6 +91,7 @@ export const persistedArrayKeys = [
   "decisionSoftClaims",
   "issueClaims",
   "issueClaimEvents",
+  "dispatchAssignments",
   "automations",
   "agentSkills",
   "auditExportRequests",
