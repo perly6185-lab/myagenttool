@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { AppWindow, Bot, ExternalLink, GitMerge, HelpCircle, Inbox, ListChecks, Loader2, PenLine, RotateCcw, ShieldAlert, Sparkles, Trophy, Wrench, type LucideIcon } from "lucide-react";
+import { AppWindow, Bot, ExternalLink, GitMerge, Hand, HelpCircle, Inbox, ListChecks, Loader2, PenLine, RotateCcw, ShieldAlert, Sparkles, Trophy, Wrench, type LucideIcon } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -52,8 +52,26 @@ export function ApprovalsView() {
 
   const decisions = state?.pendingDecisions ?? [];
 
+  // #1151: a decision that raced another operator answers 200 + alreadyDecided
+  // instead of an indistinguishable success — tell the loser who won and when.
+  const [decidedNote, setDecidedNote] = useState<string | null>(null);
   const act = async (fn: () => Promise<unknown>) => {
-    if (await execute(fn)) void refresh();
+    // execute() reports only success/failure; capture the response body here so
+    // a raced decision's alreadyDecided payload can be surfaced.
+    let result: unknown;
+    const ok = await execute(async () => {
+      result = await fn();
+      return result;
+    });
+    if (ok) {
+      const ad = (result as { alreadyDecided?: { decidedBy?: string | null; decidedAt?: string | null; status?: string | null } } | undefined)?.alreadyDecided;
+      setDecidedNote(
+        ad
+          ? `Already decided${ad.status ? ` (${ad.status})` : ""} by ${ad.decidedBy ?? "someone else"}${ad.decidedAt ? ` at ${ad.decidedAt.replace("T", " ").slice(0, 16)}` : ""}.`
+          : null,
+      );
+      void refresh();
+    }
   };
 
   // Deep-link to the native surface for full context; select the invocation when
@@ -74,6 +92,7 @@ export function ApprovalsView() {
       </div>
 
       {error ? <p className="text-sm text-destructive">{error}</p> : null}
+      {decidedNote ? <p className="text-sm text-muted-foreground">{decidedNote}</p> : null}
 
       {state?.approvalTokenLegacyUses ? (
         <div className="flex flex-wrap items-center gap-2 rounded-md border border-border bg-muted/40 px-3 py-2 text-xs">
@@ -127,11 +146,27 @@ export function ApprovalsView() {
                       <div className="flex items-center gap-2">
                         <span className="truncate text-sm font-medium">{d.title}</span>
                         <Badge tone="neutral" className="shrink-0">{meta?.label ?? d.kind}</Badge>
+                        {d.softClaim?.claimedBy ? (
+                          <Badge tone="warning" className="shrink-0">
+                            <Hand className="mr-1 size-3" />
+                            handling · {d.softClaim.claimedBy}
+                          </Badge>
+                        ) : null}
                         {age ? <span className="shrink-0 text-xs text-muted-foreground">{age}</span> : null}
                       </div>
                       {d.subtitle ? <p className="truncate text-xs text-muted-foreground">{d.subtitle}</p> : null}
                     </div>
                     <div className="flex shrink-0 items-center gap-1.5">
+                      {/* #1151 soft-claim: advisory — marks the row, never gates the buttons. */}
+                      {d.softClaim ? (
+                        <Button variant="ghost" size="sm" className="h-7 px-2 text-xs" disabled={pending} title={`Handled by ${d.softClaim.claimedBy ?? "someone"} — release the marker`} onClick={() => act(() => api.releaseDecisionClaim(d.id))}>
+                          <Hand className="mr-1 size-3" />Release
+                        </Button>
+                      ) : (
+                        <Button variant="ghost" size="sm" className="h-7 px-2 text-xs" disabled={pending} title="Mark that you're handling this decision" onClick={() => act(() => api.claimDecision(d.id))}>
+                          <Hand className="mr-1 size-3" />Handle
+                        </Button>
+                      )}
                       <DecisionActions d={d} pending={pending} act={act} open={open} />
                     </div>
                   </CardContent>
