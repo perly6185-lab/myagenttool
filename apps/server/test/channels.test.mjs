@@ -13,6 +13,7 @@ import { createServerState } from "../src/runtime/state-factory.mjs";
 import {
   CHANNEL_ENABLE_ACTION,
   createChannelService,
+  dingtalkEnvReadiness,
   feishuEnvReadiness,
   wecomEnvReadiness,
 } from "../src/services/channels.mjs";
@@ -75,6 +76,30 @@ test("feishu (#1110): registers through the same registry and reports Feishu rea
   for (const surface of [state, created.body, health.body]) {
     assert.ok(!JSON.stringify(surface).includes(SECRET), "feishu secret leaked");
   }
+});
+
+test("dingtalk (#1119): registers through the same registry and reports DingTalk readiness booleans", () => {
+  const probe = () => ({ app_key: true, app_secret: Boolean(SECRET), robot_code: true });
+  const { state } = createServerState({ defaultProjectPath: tmpdir(), now: () => NOW });
+  let counter = 0;
+  const service = createChannelService({
+    state, now: () => NOW, nextId: (p) => `${p}_${String(++counter).padStart(4, "0")}`,
+    appendEvent: () => {}, validateApprovalToken: () => ({ approved: true }),
+    readinessProbes: { dingtalk: probe },
+  });
+  const created = service.registerChannel({ provider: "dingtalk", name: "dt-ops" }, owner);
+  assert.equal(created.status, 201);
+  assert.equal(created.body.channel.provider, "dingtalk");
+  assert.deepEqual(created.body.channel.readiness, { app_key: true, app_secret: true, robot_code: true });
+  assert.equal(service.channelHealth({ channelId: created.body.channel.id }, owner).body.ready, true);
+  for (const surface of [state, created.body]) assert.ok(!JSON.stringify(surface).includes(SECRET));
+});
+
+test("dingtalkEnvReadiness reads presence, not values", () => {
+  assert.deepEqual(dingtalkEnvReadiness({}), { app_key: false, app_secret: false, robot_code: false });
+  const ready = dingtalkEnvReadiness({ DINGTALK_APP_KEY: "k", DINGTALK_APP_SECRET: SECRET, DINGTALK_ROBOT_CODE: "r" });
+  assert.deepEqual(ready, { app_key: true, app_secret: true, robot_code: true });
+  assert.ok(!JSON.stringify(ready).includes(SECRET));
 });
 
 test("feishuEnvReadiness reads presence, not values", () => {

@@ -7,8 +7,8 @@
 // Kept out of index.mjs (like issue-prompt.mjs) so importing it never runs the
 // protocol vocabulary self-check and browser bundles stay clean.
 
-/** Supported channel providers. WeCom (#1090) first; Feishu/Lark (#1110) second. */
-export const channelProviders = ["wecom", "feishu"];
+/** Supported channel providers. WeCom (#1090), Feishu/Lark (#1110), DingTalk (#1119). */
+export const channelProviders = ["wecom", "feishu", "dingtalk"];
 
 /** Channel lifecycle statuses. Registration is not enablement (ADR 0012). */
 export const channelStatuses = ["registered", "enabled", "disabled"];
@@ -69,10 +69,17 @@ export const feishuReadinessScopes = [
   "encrypt_key",
 ];
 
+/**
+ * DingTalk readiness scopes (#1119): the enterprise-internal-robot app key/
+ * secret + robot code. Booleans only, never the secret values.
+ */
+export const dingtalkReadinessScopes = ["app_key", "app_secret", "robot_code"];
+
 /** Readiness scope names by provider — the single source of truth for the console. */
 export const channelReadinessScopes = {
   wecom: wecomReadinessScopes,
   feishu: feishuReadinessScopes,
+  dingtalk: dingtalkReadinessScopes,
 };
 
 /** Id prefixes for channel collections (see nextId in the server composer). */

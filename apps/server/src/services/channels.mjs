@@ -45,10 +45,20 @@ export function feishuEnvReadiness(env = process.env) {
   };
 }
 
-/** Default readiness probes by provider (#1110). */
+/** DingTalk readiness probe (#1119): env PRESENCE only, never the secret values. */
+export function dingtalkEnvReadiness(env = process.env) {
+  return {
+    app_key: Boolean(String(env.DINGTALK_APP_KEY ?? "").trim()),
+    app_secret: Boolean(String(env.DINGTALK_APP_SECRET ?? "").trim()),
+    robot_code: Boolean(String(env.DINGTALK_ROBOT_CODE ?? "").trim()),
+  };
+}
+
+/** Default readiness probes by provider (#1110/#1119). */
 export const defaultReadinessProbes = {
   wecom: wecomEnvReadiness,
   feishu: feishuEnvReadiness,
+  dingtalk: dingtalkEnvReadiness,
 };
 
 export function createChannelService({
