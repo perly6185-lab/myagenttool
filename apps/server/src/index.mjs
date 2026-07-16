@@ -2,6 +2,7 @@ import { mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { startAutomationScheduler } from "./runtime/automation-scheduler.mjs";
 import { startAutoTriggerScheduler } from "./runtime/auto-trigger-scheduler.mjs";
+import { createWecomGateway, wecomGatewayConfigFromEnv } from "./gateway/wecom-gateway.mjs";
 import { createHttpServer } from "./runtime/http-server.mjs";
 import { runProtocolSelfCheck } from "./runtime/self-check.mjs";
 import { createServerRuntimeServices } from "./runtime/service-composer.mjs";
@@ -98,6 +99,27 @@ const server = createHttpServer({
 server.listen(port, host, () => {
   console.log(`[server] http://${host}:${port}`);
 });
+
+// WeCom channel gateway (S3, #1090/ADR 0012 rule 1): the ONLY public surface,
+// a separate listener serving nothing but the provider callback path. Off
+// unless fully configured; secrets stay in this process's env — the gateway
+// forwards verified, decrypted, normalized events in-process and the
+// control-plane API is never reachable on this port.
+{
+  const wecomConfig = wecomGatewayConfigFromEnv();
+  if (wecomConfig.port && wecomConfig.token && wecomConfig.encodingAesKey && wecomConfig.channelId) {
+    const gateway = createWecomGateway({
+      token: wecomConfig.token,
+      encodingAesKey: wecomConfig.encodingAesKey,
+      receiveId: wecomConfig.receiveId,
+      channelId: wecomConfig.channelId,
+      importChannelEvent: httpDependencies.importChannelEvent,
+    });
+    gateway.createServer().listen(wecomConfig.port, wecomConfig.host, () => {
+      console.log(`[wecom-gateway] callback listener on ${wecomConfig.host}:${wecomConfig.port} → channel ${wecomConfig.channelId}`);
+    });
+  }
+}
 
 // Fire due automations on a 30s tick (self-check exits above, so this only runs
 // for a real server). Pulls the same composed helpers the routes use.

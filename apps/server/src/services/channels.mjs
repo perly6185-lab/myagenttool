@@ -17,6 +17,7 @@ import {
   channelProviders,
   wecomReadinessScopes,
 } from "@myagenttool/protocol/channel";
+import { detectPromptInjection } from "@myagenttool/protocol/issue-prompt";
 import { LOCAL_TEAM_ID } from "../runtime/auth.mjs";
 import { makeRunTx } from "../runtime/store/run-tx.mjs";
 
@@ -41,6 +42,7 @@ export function createChannelService({
   store,
   validateApprovalToken,
   readinessProbe = wecomEnvReadiness,
+  refuse = null,
 }) {
   const runTx = makeRunTx({ store, persistStateSoon });
 
@@ -272,6 +274,114 @@ export function createChannelService({
     return { ok: true, status: 200, body: { identities: rows, count: rows.length } };
   }
 
+  /**
+   * Import one verified, decrypted inbound message from the gateway (S3). This
+   * is the exactly-once boundary: a duplicate providerMessageId is a no-op ACK,
+   * a disabled/unknown channel refuses (auditable) but still ACKs — WeCom's
+   * retry semantics must never observe an error it can amplify.
+   *
+   * Trusted in-process caller only (the gateway); there is no user actor here,
+   * so lookup is by id, not team.
+   */
+  function importChannelEvent({
+    channelId,
+    providerMessageId,
+    externalUserId,
+    msgType = "text",
+    content = "",
+    providerCreateTime = null,
+    agentId = null,
+  } = {}) {
+    const channel = (state.channels ?? []).find((row) => row.id === String(channelId ?? ""));
+    const messageId = String(providerMessageId ?? "").trim();
+    const senderId = String(externalUserId ?? "").trim();
+    if (!channel || channel.status !== "enabled" || !messageId || !senderId) {
+      const reason = !channel ? "channel_not_found" : channel.status !== "enabled" ? "channel_not_enabled" : "invalid_event";
+      // The veto is first-class (refusal model #758) — but the sender only ever
+      // sees the ACK. Content is NOT recorded on a refused import: an
+      // unregistered/disabled channel must not accumulate attacker text.
+      refuse?.({
+        subject: { kind: "channel_event", id: messageId || null },
+        requester: { kind: "channel_identity", id: senderId || null },
+        category: "state",
+        code: "subject_not_actionable",
+        decidedBy: { kind: "server", id: channel?.id ?? (String(channelId ?? "") || null) },
+        summary: `Channel event refused at import: ${reason}.`,
+        evidence: { channelId: channel?.id ?? String(channelId ?? ""), reason, msgType: String(msgType ?? "") },
+        remedy: reason === "channel_not_enabled" ? "Enable the channel, then resend." : "",
+        event: {
+          invocationId: null,
+          type: "channel_event_import_refused",
+          level: "warn",
+          message: `Channel event import refused (${reason}).`,
+          data: { channelId: channel?.id ?? String(channelId ?? ""), reason },
+        },
+      });
+      return { ok: false, refused: true, reason };
+    }
+
+    const duplicate = (state.channelEvents ?? []).find(
+      (row) => row.channelId === channel.id && row.providerMessageId === messageId,
+    );
+    if (duplicate) {
+      return { ok: true, duplicate: true, eventId: duplicate.id, conversationId: duplicate.conversationId };
+    }
+
+    // Preserved, not scrubbed (ADR 0011 rule 3): injection markers flag the
+    // event for a human; the verbatim text stays data.
+    const injection = detectPromptInjection(content);
+    const result = runTx(() => {
+      let conversation = (state.channelConversations ?? []).find(
+        (row) => row.channelId === channel.id && row.externalUserId === senderId && row.status === "active",
+      );
+      if (!conversation) {
+        conversation = {
+          id: nextId(channelIdPrefixes.conversation),
+          channelId: channel.id,
+          externalUserId: senderId,
+          ownerTeamId: channel.ownerTeamId ?? LOCAL_TEAM_ID,
+          status: "active",
+          invocationIds: [],
+          createdAt: now(),
+          updatedAt: now(),
+        };
+        state.channelConversations.push(conversation);
+      }
+      const event = {
+        id: nextId(channelIdPrefixes.event),
+        channelId: channel.id,
+        conversationId: conversation.id,
+        ownerTeamId: channel.ownerTeamId ?? LOCAL_TEAM_ID,
+        providerMessageId: messageId,
+        externalUserId: senderId,
+        msgType: String(msgType ?? "text"),
+        content: String(content ?? ""),
+        providerCreateTime: providerCreateTime ? String(providerCreateTime) : null,
+        agentId: agentId ? String(agentId) : null,
+        status: "imported",
+        injectionSuspicious: injection.suspicious,
+        receivedAt: now(),
+      };
+      state.channelEvents.push(event);
+      conversation.updatedAt = now();
+      appendEvent({
+        invocationId: null,
+        type: "channel_event_imported",
+        level: injection.suspicious ? "warn" : "info",
+        message: `Channel ${channel.id}: event ${event.id} imported${injection.suspicious ? " (prompt injection flagged)" : ""}.`,
+        data: {
+          channelId: channel.id,
+          eventId: event.id,
+          conversationId: conversation.id,
+          msgType: event.msgType,
+          injectionMarkers: injection.markers,
+        },
+      });
+      return { ok: true, eventId: event.id, conversationId: conversation.id, injectionSuspicious: injection.suspicious };
+    });
+    return result;
+  }
+
   return {
     registerChannel,
     listChannels,
@@ -281,6 +391,7 @@ export function createChannelService({
     mapChannelIdentity,
     removeChannelIdentity,
     listChannelIdentities,
+    importChannelEvent,
     findOwnChannel,
   };
 }

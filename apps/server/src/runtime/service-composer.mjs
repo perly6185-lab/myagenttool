@@ -975,9 +975,10 @@ export function createServerRuntimeServices({
 
   // Channel Registry (S2, #1090/ADR 0012): owner-team-scoped channel lifecycle
   // + fail-closed identity mappings. Readiness is env-presence booleans; enable
-  // is approval-gated like every other side-effecting action.
+  // is approval-gated like every other side-effecting action. Import denials
+  // (S3) go through the refuse() chokepoint like every other veto.
   const channelService = createChannelService({
-    state, now, nextId, appendEvent, persistStateSoon, store, validateApprovalToken,
+    state, now, nextId, appendEvent, persistStateSoon, store, validateApprovalToken, refuse,
   });
 
   function runApplicationOrchestration(applicationId, routineId, body = {}, actor = null) {
@@ -2798,6 +2799,7 @@ export function createServerRuntimeServices({
     mapChannelIdentity: channelService.mapChannelIdentity,
     removeChannelIdentity: channelService.removeChannelIdentity,
     listChannelIdentities: channelService.listChannelIdentities,
+    importChannelEvent: channelService.importChannelEvent,
     selectProject,
     removeProject,
     removeWorktree,
