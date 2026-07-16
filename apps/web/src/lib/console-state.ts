@@ -250,6 +250,22 @@ export interface IssueClaim {
   updatedAt?: string;
 }
 
+/** #1152: one durable claim lifecycle transition (kept outside the event ring buffer). */
+export interface IssueClaimEvent {
+  id: string;
+  claimId: string;
+  projectId: string;
+  issueNumber: number;
+  type: "claimed" | "released" | "expired";
+  mode: "develop" | "review";
+  claimedBy: string;
+  /** Who performed the transition — differs from claimedBy when a release was on the holder's behalf. */
+  actorId?: string | null;
+  autoRunId?: string | null;
+  outcome?: string | null;
+  at: string;
+}
+
 export interface CompareRunSnapshot {
   id: string;
   task: string;
@@ -1012,6 +1028,8 @@ export interface ConsoleSnapshot {
   deployments?: DeploymentSnapshot[];
   /** #1143 issue claims — who holds each issue's develop/review lease. */
   issueClaims?: IssueClaim[];
+  /** #1152 durable claim lifecycle history (claimed/released/expired), newest first. */
+  issueClaimEvents?: IssueClaimEvent[];
   agent: AgentSnapshot | null;
   agents: AgentSnapshot[];
   invocations: InvocationSnapshot[];
