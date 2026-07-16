@@ -8,6 +8,8 @@ import { createFeishuClient } from "./gateway/feishu-client.mjs";
 import { createFeishuGateway, feishuGatewayConfigFromEnv } from "./gateway/feishu-gateway.mjs";
 import { createSlackClient } from "./gateway/slack-client.mjs";
 import { createSlackGateway, slackGatewayConfigFromEnv } from "./gateway/slack-gateway.mjs";
+import { createTeamsClient } from "./gateway/teams-client.mjs";
+import { createTeamsGateway, teamsGatewayConfigFromEnv } from "./gateway/teams-gateway.mjs";
 import { createWecomClient } from "./gateway/wecom-client.mjs";
 import { createWecomGateway, wecomGatewayConfigFromEnv } from "./gateway/wecom-gateway.mjs";
 import { createHttpServer } from "./runtime/http-server.mjs";
@@ -191,6 +193,24 @@ server.listen(port, host, () => {
     if (botToken) {
       const client = createSlackClient({ botToken });
       httpDependencies.setChannelDeliverySender("slack", client.sendApplicationMessage);
+      anySenderBound = true;
+    }
+  }
+
+  // Microsoft Teams (#1135).
+  const teamsConfig = teamsGatewayConfigFromEnv();
+  if (teamsConfig.port && teamsConfig.appId && teamsConfig.channelId) {
+    createTeamsGateway({
+      appId: teamsConfig.appId,
+      channelId: teamsConfig.channelId,
+      importChannelEvent: httpDependencies.importChannelEvent,
+    }).createServer().listen(teamsConfig.port, teamsConfig.host, () => {
+      console.log(`[teams-gateway] callback listener on ${teamsConfig.host}:${teamsConfig.port} → channel ${teamsConfig.channelId}`);
+    });
+    const appPassword = String(process.env.TEAMS_APP_PASSWORD ?? "").trim();
+    if (appPassword) {
+      const client = createTeamsClient({ appId: teamsConfig.appId, appPassword });
+      httpDependencies.setChannelDeliverySender("teams", client.sendApplicationMessage);
       anySenderBound = true;
     }
   }
