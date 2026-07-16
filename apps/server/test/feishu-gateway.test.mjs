@@ -102,19 +102,40 @@ test("a valid encrypted message imports exactly one normalized event and acks", 
   });
 });
 
-test("forged signature and tampered ciphertext never reach decrypt/import", async () => {
+test("forged signature → 403; tampered ciphertext (can't be re-signed) → 403; neither imports", async () => {
   const { gateway, imported } = makeGateway();
   const body = encBody(messageEvent("/status", { eventId: "evt_forge" }));
 
+  // A garbage signature is rejected outright.
   const forged = await drive(gateway, post(body, { nonce: "nf1", signature: "0".repeat(64) }));
   assert.equal(forged.statusCode, 403);
 
-  // Tamper the ciphertext but re-sign so the signature matches the tampered body.
+  // An attacker who tampers the ciphertext CANNOT re-sign (no EncryptKey), so the
+  // signature over the original body no longer matches the tampered body → 403,
+  // at the signature layer, before any decrypt. This is the realistic + deterministic
+  // integrity guarantee (AES-CBC itself has no integrity check).
   const env = JSON.parse(body);
   const buf = Buffer.from(env.encrypt, "base64");
   buf[buf.length - 1] ^= 0xff;
   const tampered = JSON.stringify({ encrypt: buf.toString("base64") });
-  const res = await drive(gateway, post(tampered, { nonce: "nf2" }));
+  const sigOverOriginal = computeFeishuSignature(String(NOW_MS / 1000), "nf2", ENCRYPT_KEY, body);
+  const res = await drive(gateway, {
+    method: "POST",
+    url: "/feishu/callback",
+    headers: { "x-lark-request-timestamp": String(NOW_MS / 1000), "x-lark-request-nonce": "nf2", "x-lark-signature": sigOverOriginal },
+    async *[Symbol.asyncIterator]() { yield tampered; },
+  });
+  assert.equal(res.statusCode, 403);
+  assert.equal(imported.length, 0);
+});
+
+test("a validly-signed but structurally-invalid ciphertext is rejected at decrypt (400), deterministically", async () => {
+  const { gateway, imported } = makeGateway();
+  // Reachable only by someone holding the EncryptKey (they signed it) who still
+  // sent an undecryptable blob — a genuine corruption, not an attack. Bad block
+  // length throws deterministically.
+  const bad = JSON.stringify({ encrypt: Buffer.from("too-short-not-a-block").toString("base64") });
+  const res = await drive(gateway, post(bad, { nonce: "nbad" }));
   assert.equal(res.statusCode, 400);
   assert.equal(imported.length, 0);
 });
