@@ -100,6 +100,8 @@ export function createServerState({ defaultProjectPath, now }) {
     // #890: in-flight budget holds placed at admission and released on settle so
     // concurrent spend-bearing runs cannot jointly exceed a hard block budget.
     budgetReservations: [],
+    // #1151: advisory "X is handling this" markers on pending-decision rows.
+    decisionSoftClaims: [],
     // #1143: issue develop leases — one active develop claim per issue, so
     // concurrent humans/agents sharing a backlog never start duplicate work.
     issueClaims: [],
@@ -217,6 +219,7 @@ export function resetStateForSelfCheck({ state, now }) {
   state.claudeApplyAuthorizations = [];
   state.applicationResults = [];
   state.budgets = [];
+  state.decisionSoftClaims = [];
   state.issueClaims = [];
   state.automations = createDefaultAutomations(state.currentProjectId ?? state.projects[0]?.id ?? "prj_myagenttool", now);
   state.privateDeploymentConfig = createDefaultPrivateDeploymentConfig(now);

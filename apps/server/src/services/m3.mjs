@@ -323,6 +323,13 @@ export function createM3Service({
     if (!["approve", "deny"].includes(decision)) {
       throw new Error(`Unsupported lifecycle approval decision: ${decision}`);
     }
+    // #1151: a settled approval is immutable — without this, a second operator's
+    // click silently CLOBBERED status/decidedBy/decidedAt (an approved recipe
+    // could flip to denied with no trace). Idempotent return; the route tells
+    // the second operator who decided and when.
+    if (approval.status !== "pending") {
+      return approval;
+    }
     return runTx(() => {
       approval.status = decision === "approve" ? "approved" : "denied";
       approval.decidedAt = now();
@@ -593,7 +600,7 @@ export function createM3Service({
     return rollback;
   }
 
-  function queueRollbackAction(rollback) {
+  function queueRollbackAction(rollback, { actor = null } = {}) {
     if (!rollback) {
       throw new Error("Rollback request not found.");
     }
@@ -639,6 +646,9 @@ export function createM3Service({
       capLifecycleAuditRecords(state);
       rollback.status = "queued";
       rollback.queuedActionId = queued.id;
+      // #1151: record WHO queued it — `requestedBy` is who asked for the rollback,
+      // not who pulled the trigger.
+      rollback.queuedBy = actor?.userId ?? "usr_local";
       rollback.updatedAt = createdAt;
       appendEvent({
         invocationId: null,

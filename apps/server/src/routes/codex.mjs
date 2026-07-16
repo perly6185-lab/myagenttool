@@ -71,6 +71,15 @@ export async function handleCodexRoutes({
     if (denyForeignProject({ res, sendJson, state, actor, projectId: codexInvocationProjectId(state, request.invocationId), notFound: { error: "codex_approval_request_not_found" } })) {
       return true;
     }
+    // #1151: a settled broker request is immutable (the service already no-ops);
+    // tell the second operator who decided instead of silently echoing the row.
+    if (request.status !== "pending") {
+      sendJson(res, 200, {
+        approvalRequest: request,
+        alreadyDecided: { decidedBy: request.decidedBy ?? null, decidedAt: request.decidedAt ?? null, status: request.status },
+      });
+      return true;
+    }
     const updated = resolveCodexApprovalBrokerRequest(request, approvalMatch[2], actor);
     sendJson(res, 200, { approvalRequest: updated });
     return true;

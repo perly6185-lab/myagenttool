@@ -41,6 +41,7 @@ import { createInvocationService } from "../services/invocations.mjs";
 import { createM3Service } from "../services/m3.mjs";
 import { createProjectService, sameProjectPath } from "../services/projects.mjs";
 import { createAutoRunService } from "../services/auto-run.mjs";
+import { createDecisionSoftClaimService } from "../services/decision-soft-claims.mjs";
 import { createIssueClaimService } from "../services/issue-claims.mjs";
 import { resolveAutoRunVerifyCommand, resolveAutoRunVerifyCommandFor, runWorktreeVerification } from "../services/worktree-verify.mjs";
 import { resolveStatusWritebackConfig, runIssueBodyFetch, runIssueComment, runIssueStatusTransition, runPrChecks, runPrMerge, runPrStateFetch, runIssueStateFetch } from "../services/issue-status.mjs";
@@ -438,6 +439,17 @@ export function createServerRuntimeServices({
     // at run-completion (well after init), so referencing it here is safe.
     dispatchAlert: (alert) => autoRunAlerts.dispatch(alert),
   });
+  // #1151 decision soft-claims: the Approvals queue's advisory "X is handling
+  // this" markers. Independent of the decision paths themselves (which enforce
+  // idempotency on their own records).
+  const { claimDecision, releaseDecisionClaim } = createDecisionSoftClaimService({
+    state,
+    now,
+    nextId,
+    persistStateSoon,
+    store,
+  });
+
   // #1143 issue claims: the issue-level develop lease. Composed before the
   // auto-run service, which gates admission on it and releases it on settle.
   const {
@@ -1974,7 +1986,7 @@ export function createServerRuntimeServices({
   }
 
   function resolveCodexApprovalBrokerRequest(request, action, actor = null) {
-    const updated = resolveCodexApprovalBrokerRequestBase(request, action);
+    const updated = resolveCodexApprovalBrokerRequestBase(request, action, actor);
     syncApplicationRecoveryActionApproval(updated, actor);
     return updated;
   }
@@ -2006,6 +2018,8 @@ export function createServerRuntimeServices({
     if (previousStatus === nextStatus) return;
     actionRequest.status = nextStatus;
     actionRequest.decidedAt = approvalRequest.decidedAt ?? actionRequest.decidedAt ?? null;
+    // #1151: mirror who decided from the broker row (already stamped there).
+    actionRequest.decidedBy = approvalRequest.decidedBy ?? actionRequest.decidedBy ?? null;
     actionRequest.updatedAt = now();
     persistStateSoon();
     if (approvalRequest.status === "pending") return;
@@ -2768,6 +2782,8 @@ export function createServerRuntimeServices({
     createSshConnectionTest,
     createSshTarget,
     createTroubleshootingReport,
+    claimDecision,
+    releaseDecisionClaim,
     createToolInvocation,
     defaultAgent,
     disableAgent,

@@ -22,7 +22,33 @@ export async function handleInvocationRoutes({
   promoteCompareRun,
   cancelInvocation,
   createTroubleshootingReport,
+  claimDecision,
+  releaseDecisionClaim,
 }) {
+  // #1151 decision soft-claims: mark a pending-decision row "I'm handling this".
+  // Advisory — a 409 tells the caller who holds the marker, but the decision
+  // endpoints themselves are never gated by it. `:id` is the pendingDecisions
+  // row id ("<kind>:<record id>").
+  const decisionClaimMatch = url.pathname.match(/^\/api\/pending-decisions\/([^/]+)\/(claim|release)$/);
+  if (decisionClaimMatch && req.method === "POST") {
+    const decisionId = decodeURIComponent(decisionClaimMatch[1]);
+    if (decisionClaimMatch[2] === "claim") {
+      const result = claimDecision({ decisionId, actor });
+      if (!result.ok && result.claim) {
+        sendJson(res, 409, { error: "decision_already_claimed", message: result.reason, claim: result.claim });
+        return true;
+      }
+      if (!result.ok) {
+        sendJson(res, 400, { error: "invalid_decision_claim", message: result.reason });
+        return true;
+      }
+      sendJson(res, 201, { claim: result.claim, renewed: result.renewed === true });
+      return true;
+    }
+    sendJson(res, 200, { released: releaseDecisionClaim({ decisionId, actor }) });
+    return true;
+  }
+
   const approvalMatch = url.pathname.match(/^\/api\/approvals\/([^/]+)\/(approve|deny)$/);
   if (req.method === "POST" && approvalMatch) {
     const approval = findApprovalRequest(decodeURIComponent(approvalMatch[1]));
@@ -39,6 +65,17 @@ export async function handleInvocationRoutes({
       return true;
     }
 
+    // #1151: acting on a settled approval was a silent 200 no-op — the second
+    // operator never learned they lost the race. Same 200 + record shape, plus
+    // an explicit "already decided by X at T".
+    if (approval.status !== "pending") {
+      sendJson(res, 200, {
+        approval,
+        invocation,
+        alreadyDecided: { decidedBy: approval.decidedBy ?? null, decidedAt: approval.decidedAt ?? null, status: approval.status },
+      });
+      return true;
+    }
     if (approvalMatch[2] === "approve") {
       approveInvocation(approval, invocation, actor);
     } else {
@@ -177,6 +214,15 @@ export async function handleInvocationRoutes({
     const compareRun = state.compareRuns.find((c) => c.id === compareRunId);
     if (!compareRun) { sendJson(res, 404, { error: "compare_run_not_found" }); return true; }
     if (denyForeignProject({ res, sendJson, state, actor, projectId: compareRunProjectId(compareRun, findInvocation), notFound: { error: "compare_run_not_found" } })) return true;
+    // #1151: promote is already idempotent in the service (returns the run
+    // unchanged); surface who promoted instead of an indistinguishable success.
+    if (compareRun.promotion?.prNumber) {
+      sendJson(res, 200, {
+        compareRun,
+        alreadyDecided: { decidedBy: compareRun.promotion.by ?? null, decidedAt: compareRun.promotion.at ?? null, status: "promoted" },
+      });
+      return true;
+    }
     try {
       const result = await promoteCompareRun(compareRunId, { actor });
       sendJson(res, 200, { compareRun: result });
