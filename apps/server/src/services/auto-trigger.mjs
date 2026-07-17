@@ -1,5 +1,6 @@
 import { branchFromIssue } from "@myagenttool/protocol/issue-prompt";
 import { issueHasActiveClaim } from "./issue-claims.mjs";
+import { resolveStatusWritebackConfig } from "./issue-status.mjs";
 
 // Phase 3: auto-trigger. Periodically scan repo-backed projects for open issues
 // carrying an opt-in label and start an auto-run for each new one. Safety model:
@@ -30,10 +31,16 @@ export function resolveAutoTriggerConfig(env = process.env) {
     : env.MYAGENTTOOL_AUTOTRIGGER_DISPATCH_ROLE === "worker"
       ? "worker"
       : "standalone";
-  const workers = String(env.MYAGENTTOOL_AUTOTRIGGER_WORKERS ?? "")
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean);
+  // #1172: profiles (WORKERS_JSON) are the richer declaration — when present,
+  // the worker id list derives from them and the plain WORKERS list is ignored
+  // (two lists that could disagree would be a routing split-brain).
+  const profiles = parseWorkerProfiles(env.MYAGENTTOOL_AUTOTRIGGER_WORKERS_JSON);
+  const workers = profiles
+    ? profiles.map((p) => p.id)
+    : String(env.MYAGENTTOOL_AUTOTRIGGER_WORKERS ?? "")
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean);
   return {
     enabled: flag === "1" || flag === "true",
     label: env.MYAGENTTOOL_AUTOTRIGGER_LABEL || "auto",
@@ -52,7 +59,98 @@ export function resolveAutoTriggerConfig(env = process.env) {
     // assignment may sit with no in-progress signal before it is reassigned.
     dispatchWorkerCap: clampInt(env.MYAGENTTOOL_AUTOTRIGGER_WORKER_CAP, 2, 1, 20),
     dispatchAssignTtlMinutes: clampInt(env.MYAGENTTOOL_AUTOTRIGGER_ASSIGN_TTL_MINUTES, 120, 5, 10_080),
+    // #1169: TTL reassignment needs a progress signal to judge staleness by —
+    // that signal is the statusWriteback label. Writeback off (the default)
+    // means "no signal exists", so TTL reassignment is disabled rather than
+    // treating every healthy long run as stale and duplicating it.
+    dispatchTtlEnabled: resolveStatusWritebackConfig(env).enabled,
+    // #1172 (R1 of #1170): declared worker capability profiles. Absent/invalid
+    // → null, and routing stays pure least-loaded round-robin.
+    dispatchWorkerProfiles: profiles,
   };
+}
+
+// #1172: parse MYAGENTTOOL_AUTOTRIGGER_WORKERS_JSON. Shape per worker:
+//   { id, platform?, areas?: [], agents?: [], maxRisk? }
+// Every field beyond `id` is optional and its absence means "unconstrained" —
+// a profiles list of bare ids behaves exactly like the plain WORKERS list.
+// Malformed JSON or a row without an id → null (fall back, loudly at startup).
+export function parseWorkerProfiles(json) {
+  if (!json || !String(json).trim()) return null;
+  let parsed;
+  try {
+    parsed = JSON.parse(json);
+  } catch {
+    return null;
+  }
+  if (!Array.isArray(parsed) || parsed.length === 0) return null;
+  const profiles = [];
+  for (const row of parsed) {
+    const id = String(row?.id ?? "").trim();
+    if (!id) return null;
+    const strings = (v) => (Array.isArray(v) ? v.map((s) => String(s).trim()).filter(Boolean) : null);
+    profiles.push({
+      id,
+      platform: typeof row.platform === "string" && row.platform.trim() ? row.platform.trim() : null,
+      areas: strings(row.areas),
+      agents: strings(row.agents),
+      maxRisk: typeof row.maxRisk === "string" && RISK_ORDER[row.maxRisk.trim()] !== undefined ? row.maxRisk.trim() : null,
+    });
+  }
+  return profiles;
+}
+
+const RISK_ORDER = { low: 0, medium: 1, high: 2, critical: 3 };
+
+// #1172: what an issue declares it needs, read from the governance taxonomy
+// already on every issue (platform/* area/* risk/* agent/* labels). Pure; no
+// body parsing in R1. "all"/"none" values are unconstrained by definition.
+export function issueRequirements(issue) {
+  const labels = issueLabelNames(issue);
+  const values = (prefix) => labels.filter((l) => l.startsWith(prefix)).map((l) => l.slice(prefix.length));
+  return {
+    platforms: values("platform/").filter((v) => v !== "all" && v !== "none"),
+    areas: values("area/"),
+    risk: values("risk/")[0] ?? null,
+    agents: values("agent/").filter((v) => v !== "all" && v !== "none"),
+  };
+}
+
+// #1172: rank workers for one issue. HARD constraints make a worker ineligible
+// with a named reason (never overridden by load or affinity); SOFT ordering is
+// area affinity, then least-loaded, then list order (deterministic). With
+// bare-id profiles every constraint is a wildcard, so the ranking degenerates
+// to exactly the least-loaded round-robin the caller had before.
+export function scoreWorkers({ issue, profiles = [], load = new Map(), workerCap = 2, exclude = null }) {
+  const need = issueRequirements(issue);
+  const eligible = [];
+  const ineligible = [];
+  for (const profile of profiles) {
+    if (profile.id === exclude) {
+      ineligible.push({ id: profile.id, reason: "previous_holder" });
+      continue;
+    }
+    if ((load.get(profile.id) ?? 0) >= workerCap) {
+      ineligible.push({ id: profile.id, reason: "at_capacity" });
+      continue;
+    }
+    if (profile.platform && need.platforms.length && !need.platforms.includes(profile.platform)) {
+      ineligible.push({ id: profile.id, reason: `platform_mismatch (needs ${need.platforms.join("/")}, is ${profile.platform})` });
+      continue;
+    }
+    if (profile.agents && need.agents.length && !need.agents.every((a) => profile.agents.includes(a))) {
+      ineligible.push({ id: profile.id, reason: `agent_mismatch (needs ${need.agents.join("+")})` });
+      continue;
+    }
+    if (profile.maxRisk && need.risk && RISK_ORDER[need.risk] !== undefined && RISK_ORDER[need.risk] > RISK_ORDER[profile.maxRisk]) {
+      ineligible.push({ id: profile.id, reason: `risk_above_ceiling (${need.risk} > ${profile.maxRisk})` });
+      continue;
+    }
+    const affinity = profile.areas && need.areas.some((a) => profile.areas.includes(a)) ? 1 : 0;
+    eligible.push({ id: profile.id, affinity, load: load.get(profile.id) ?? 0 });
+  }
+  eligible.sort((a, b) => b.affinity - a.affinity || a.load - b.load || profiles.findIndex((p) => p.id === a.id) - profiles.findIndex((p) => p.id === b.id));
+  return { eligible, ineligible, requirements: need };
 }
 
 /** The assignment label a dispatcher writes and a worker filters on. */
@@ -97,43 +195,81 @@ export function selectAutoTriggerCandidates({ issues = [], autoRuns = [], issueC
   return selected;
 }
 
-// #1165: which issues the dispatcher should (re)assign this tick. Pure — no gh,
-// no clock reads. Single-writer by design: only the dispatcher runs this, so
-// its `assignments` bookkeeping is authoritative and there is no cross-server
-// race to lose. An issue already carrying `status/in-progress` is being worked
-// (the statusWriteback progress signal) and is never touched; an assignment
-// past its TTL with no such signal is reassigned to the least-loaded other
-// worker. A labeled issue we have NO record for (manual label / foreign
-// history) is respected as assigned and never aged out — no date to judge by.
+// #1165/#1169: which issues the dispatcher should (re)assign this tick, which
+// finished assignments to settle, and which stranded labels to adopt. Pure —
+// no gh, no clock reads. Single-writer by design: only the dispatcher runs
+// this, so its `assignments` bookkeeping is authoritative.
+//
+// Lifecycle rules (each closes a reviewed failure mode, see #1169):
+// - settle-on-absence: an open record whose issue is no longer in the open
+//   labeled listing has FINISHED (closed / label removed) — settle it, or its
+//   phantom load fills every worker's cap and dispatch starves forever.
+// - progress hands-off: `status/in-progress` AND `status/review` both mean a
+//   worker/human is on it; TTL reassignment additionally requires the
+//   statusWriteback signal to EXIST (`ttlEnabled`) — without it a healthy long
+//   run would be "stale" by definition and get duplicated onto a second server.
+// - claims gate: an issue someone actively holds locally (#1143) is theirs;
+//   dispatching it would churn TTL cycles against a human.
+// - label adoption: an `assigned/<w>` label for one of OUR workers with no
+//   record is OUR stranded write (crash before persist) — adopt it so TTL and
+//   load apply. Labels naming unknown ids stay respected as foreign.
+// - a stale assignment never returns to its own worker (an add+remove of the
+//   same label in one edit is at best churn); it waits until another has room.
 export function planDispatch({
   issues = [],
   assignments = [],
+  issueClaims = [],
   projectId,
   workers = [],
   workerCap = 2,
   requireProjectFields = true,
   ttlMinutes = 120,
+  ttlEnabled = true,
+  // #1172 R1: declared capability profiles. Null → bare-id profiles derived
+  // from `workers`, whose wildcards make routing exactly least-loaded (pinned).
+  profiles = null,
   nowIso,
 }) {
   const assign = [];
   const reassign = [];
-  if (!workers.length) return { assign, reassign };
+  const settle = [];
+  const adopt = [];
+  const unroutable = [];
+  const effectiveProfiles = profiles ?? workers.map((id) => ({ id, platform: null, areas: null, agents: null, maxRisk: null }));
+  if (!workers.length) return { assign, reassign, settle, adopt, unroutable };
   const nowMs = Date.parse(nowIso ?? new Date().toISOString());
   const open = (assignments ?? []).filter((a) => a?.projectId === projectId && a.status === "open");
   const openByIssue = new Map(open.map((a) => [a.issueNumber, a]));
   const load = new Map(workers.map((w) => [w, 0]));
   for (const a of open) if (load.has(a.workerId)) load.set(a.workerId, (load.get(a.workerId) ?? 0) + 1);
 
-  const pickWorker = (exclude) => {
-    let best = null;
-    for (const w of workers) {
-      if (w === exclude) continue;
-      if ((load.get(w) ?? 0) >= workerCap) continue;
-      if (best === null || (load.get(w) ?? 0) < (load.get(best) ?? 0)) best = w;
-    }
-    // A stale assignment may return to its old worker only when no one else has room.
-    if (best === null && exclude && (load.get(exclude) ?? 0) < workerCap) best = exclude;
-    return best;
+  // Settle-on-absence: the listing is the dispatcher's whole view; an open
+  // record with no matching open issue is finished work. Free its load NOW so
+  // this same tick can assign into the freed slots.
+  const openIssueNumbers = new Set(issues.filter((i) => !i.state || i.state === "open").map((i) => i.number));
+  for (const record of open) {
+    if (openIssueNumbers.has(record.issueNumber)) continue;
+    settle.push({ record });
+    openByIssue.delete(record.issueNumber);
+    if (load.has(record.workerId)) load.set(record.workerId, Math.max(0, (load.get(record.workerId) ?? 1) - 1));
+  }
+
+  // #1172: capability-ranked pick. Hard constraints first (never overridden),
+  // affinity then load among the eligible. Returns the routing evidence too,
+  // so every assignment records WHY it went where it went.
+  const pickWorker = (issue, exclude) => {
+    const scored = scoreWorkers({ issue, profiles: effectiveProfiles, load, workerCap, exclude });
+    const chosen = scored.eligible[0] ?? null;
+    return {
+      workerId: chosen?.id ?? null,
+      routing: {
+        chosen: chosen?.id ?? null,
+        why: chosen ? (chosen.affinity > 0 ? "area_affinity" : "least_loaded") : null,
+        ineligible: scored.ineligible,
+        requirements: scored.requirements,
+      },
+      constrained: scored.ineligible.some((i) => i.reason !== "at_capacity" && i.reason !== "previous_holder"),
+    };
   };
 
   for (const issue of issues) {
@@ -141,46 +277,76 @@ export function planDispatch({
     if (issue.state && issue.state !== "open") continue;
     if (requireProjectFields && !issueHasProjectFields(issue.body)) continue;
     const labels = issueLabelNames(issue);
-    if (labels.includes("status/in-progress")) continue; // being worked — hands off
-    const hasAssignedLabel = labels.some((l) => l.startsWith("assigned/"));
-    const record = openByIssue.get(issue.number) ?? null;
+    // In-progress OR review = someone is on it (review deliberately removes
+    // in-progress, so checking only the latter re-opened the TTL hole).
+    if (labels.includes("status/in-progress") || labels.includes("status/review")) continue;
+    // #1143 claims: an actively held issue is a person's — never dispatch it.
+    if (issueHasActiveClaim({ issueClaims, projectId, issueNumber: issue.number, nowIso })) continue;
+    const assignedLabels = labels.filter((l) => l.startsWith("assigned/"));
+    let record = openByIssue.get(issue.number) ?? null;
 
-    if (hasAssignedLabel || record) {
-      if (record && nowMs - Date.parse(record.assignedAt) > ttlMinutes * 60_000) {
-        const next = pickWorker(record.workerId);
-        if (next) {
-          reassign.push({ issue, from: record.workerId, to: next, record });
-          load.set(next, (load.get(next) ?? 0) + 1);
+    // Adopt OUR stranded label (crash between label write and persist): a
+    // record dated now, so load counts it and TTL eventually applies.
+    if (!record && assignedLabels.length) {
+      const ownLabel = assignedLabels.map((l) => l.slice("assigned/".length)).find((w) => workers.includes(w));
+      if (ownLabel) {
+        record = { projectId, issueNumber: issue.number, workerId: ownLabel, status: "open", assignedAt: nowIso ?? new Date(nowMs).toISOString(), adopted: true };
+        adopt.push({ issue, record });
+        openByIssue.set(issue.number, record);
+        if (load.has(ownLabel)) load.set(ownLabel, (load.get(ownLabel) ?? 0) + 1);
+      }
+    }
+
+    if (assignedLabels.length || record) {
+      if (ttlEnabled && record && nowMs - Date.parse(record.assignedAt) > ttlMinutes * 60_000) {
+        const next = pickWorker(issue, record.workerId);
+        if (next.workerId) {
+          reassign.push({ issue, from: record.workerId, to: next.workerId, record, routing: next.routing });
+          load.set(next.workerId, (load.get(next.workerId) ?? 0) + 1);
           if (load.has(record.workerId)) load.set(record.workerId, Math.max(0, (load.get(record.workerId) ?? 1) - 1));
         }
       }
       continue;
     }
 
-    const worker = pickWorker(null);
-    if (worker === null) continue; // every worker at cap — next tick
-    assign.push({ issue, workerId: worker });
-    load.set(worker, (load.get(worker) ?? 0) + 1);
+    const pick = pickWorker(issue, null);
+    if (pick.workerId === null) {
+      // Everyone at cap is normal backpressure (next tick); everyone HARD-
+      // ineligible means no configured worker can ever take this issue — that
+      // must be visible, not a silent forever-park.
+      if (pick.constrained && pick.routing.ineligible.every((i) => i.reason !== "at_capacity")) {
+        unroutable.push({ issue, routing: pick.routing });
+      }
+      continue;
+    }
+    assign.push({ issue, workerId: pick.workerId, routing: pick.routing });
+    load.set(pick.workerId, (load.get(pick.workerId) ?? 0) + 1);
   }
-  return { assign, reassign };
+  return { assign, reassign, settle, adopt, unroutable };
 }
 
 // Runtime around the pure selectors. `listLabeledIssues(project, label)`,
 // `startAutoRun`, and (dispatcher only) `editIssueLabels` are injected so a
 // scan is fully testable without gh or a server.
 export function createAutoTriggerRuntime({ state, config, listLabeledIssues, startAutoRun, editIssueLabels, appendEvent, persistStateSoon, log }) {
+  // #1172: unroutable issues are reported once per process, not per tick.
+  const reportedUnroutable = new Set();
+
   function readyProjects() {
     const readyProjectIds = new Set((state.projectTargets ?? []).filter((t) => t.state === "ready").map((t) => t.projectId));
     return (state.projects ?? []).filter((p) => p.source !== "worktree" && readyProjectIds.has(p.id));
   }
 
-  function recordAssignment(project, issue, workerId, nowIso) {
+  function recordAssignment(project, issue, workerId, nowIso, { adopted = false, routing = null } = {}) {
     const row = {
       id: `dsp_${project.id}_${issue.number}_${Date.parse(nowIso)}`,
       projectId: project.id,
       issueNumber: issue.number,
       workerId,
       status: "open",
+      adopted,
+      // #1172: WHY it went where it went — chosen/why/ineligible/requirements.
+      routing,
       assignedAt: nowIso,
       expiredAt: null,
     };
@@ -203,18 +369,66 @@ export function createAutoTriggerRuntime({ state, config, listLabeledIssues, sta
     const plan = planDispatch({
       issues,
       assignments: state.dispatchAssignments ?? [],
+      issueClaims: state.issueClaims ?? [],
       projectId: project.id,
       workers: config.dispatchWorkers,
       workerCap: config.dispatchWorkerCap,
       requireProjectFields: config.requireProjectFields,
       ttlMinutes: config.dispatchAssignTtlMinutes,
+      // #1169: TTL without a progress signal duplicates healthy long runs.
+      ttlEnabled: config.dispatchTtlEnabled !== false,
+      // #1172 R1: capability profiles (null → least-loaded round-robin).
+      profiles: config.dispatchWorkerProfiles ?? null,
       nowIso,
     });
+    let mutated = 0;
+    // Settle-on-absence (#1169): finished issues free their load. No gh write —
+    // the issue is gone from the listing; only the bookkeeping settles.
+    for (const { record } of plan.settle) {
+      record.status = "completed";
+      record.completedAt = nowIso;
+      appendEvent?.({
+        invocationId: null,
+        type: "auto_trigger_assignment_completed",
+        level: "info",
+        message: `Assignment of issue #${record.issueNumber} to ${record.workerId} settled (issue closed or left the pool).`,
+        data: { projectId: project.id, issueNumber: record.issueNumber, workerId: record.workerId },
+      });
+      mutated += 1;
+    }
+    // Adoption (#1169): our own stranded labels (crash before persist) become
+    // records again, so TTL and the load map see them. No gh write needed.
+    for (const { issue, record } of plan.adopt) {
+      recordAssignment(project, issue, record.workerId, nowIso, { adopted: true });
+      appendEvent?.({
+        invocationId: null,
+        type: "auto_trigger_assignment_adopted",
+        level: "warn",
+        message: `Adopted stranded assignment label for issue #${issue.number} (${record.workerId}) — likely a crash before the bookkeeping persisted.`,
+        data: { projectId: project.id, issueNumber: issue.number, workerId: record.workerId },
+      });
+      mutated += 1;
+    }
+    // #1172: an issue no configured worker can EVER take must be visible.
+    // Once per issue per process — every tick would flood the event ring.
+    for (const { issue, routing } of plan.unroutable) {
+      const key = `${project.id}#${issue.number}`;
+      if (reportedUnroutable.has(key)) continue;
+      reportedUnroutable.add(key);
+      appendEvent?.({
+        invocationId: null,
+        type: "auto_trigger_unroutable",
+        level: "warn",
+        message: `Issue #${issue.number} matches no configured worker: ${routing.ineligible.map((i) => `${i.id}: ${i.reason}`).join("; ")}.`,
+        data: { projectId: project.id, issueNumber: issue.number, routing },
+      });
+      log?.(`auto-trigger[dispatch]: #${issue.number} unroutable — ${routing.ineligible.map((i) => `${i.id}: ${i.reason}`).join("; ")}`);
+    }
     let assigned = 0;
-    for (const { issue, workerId } of plan.assign) {
+    for (const { issue, workerId, routing } of plan.assign) {
       try {
         await editIssueLabels(project, { issueNumber: issue.number, add: [assignedLabel(workerId)], remove: [] });
-        recordAssignment(project, issue, workerId, nowIso);
+        recordAssignment(project, issue, workerId, nowIso, { routing });
         appendEvent?.({
           invocationId: null,
           type: "auto_trigger_assigned",
@@ -222,18 +436,17 @@ export function createAutoTriggerRuntime({ state, config, listLabeledIssues, sta
           message: `Dispatcher assigned issue #${issue.number} to ${workerId}.`,
           data: { projectId: project.id, issueNumber: issue.number, workerId },
         });
-        persistStateSoon?.();
         assigned += 1;
       } catch (error) {
         log?.(`auto-trigger[dispatch]: assign #${issue.number} → ${workerId} failed: ${error?.message ?? error}`);
       }
     }
-    for (const { issue, from, to, record } of plan.reassign) {
+    for (const { issue, from, to, record, routing } of plan.reassign) {
       try {
         await editIssueLabels(project, { issueNumber: issue.number, add: [assignedLabel(to)], remove: [assignedLabel(from)] });
         record.status = "expired";
         record.expiredAt = nowIso;
-        recordAssignment(project, issue, to, nowIso);
+        recordAssignment(project, issue, to, nowIso, { routing });
         appendEvent?.({
           invocationId: null,
           type: "auto_trigger_reassigned",
@@ -241,12 +454,14 @@ export function createAutoTriggerRuntime({ state, config, listLabeledIssues, sta
           message: `Dispatcher reassigned stale issue #${issue.number}: ${from} → ${to} (no progress within ${config.dispatchAssignTtlMinutes}m).`,
           data: { projectId: project.id, issueNumber: issue.number, from, to },
         });
-        persistStateSoon?.();
         assigned += 1;
       } catch (error) {
         log?.(`auto-trigger[dispatch]: reassign #${issue.number} ${from}→${to} failed: ${error?.message ?? error}`);
       }
     }
+    // One durable flush for the whole tick's bookkeeping (#1169) — the
+    // per-record flush bought nothing (debounce fired between awaits anyway).
+    if (mutated + assigned > 0) persistStateSoon?.();
     return assigned;
   }
 
