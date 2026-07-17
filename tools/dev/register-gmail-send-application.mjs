@@ -15,10 +15,19 @@ if (!agentId) {
   const state = await stateResponse.json();
   if (!stateResponse.ok) throw new Error(`Reading server state failed: ${JSON.stringify(state)}`);
   const isMcp = (agent) => agent.type === "mcp" || agent.adapter?.type === "mcp";
-  const sendAgent = (state.agents ?? []).find(
+  const candidates = (state.agents ?? []).filter(
     (agent) => isMcp(agent) && (agent.adapter?.allowedTools ?? []).includes("mail_send"),
   );
-  agentId = sendAgent?.id ?? null;
+  // Ambiguity matters more here than on the read side: this Application holds
+  // send authority (ADR 0014), so guessing wrong would bind the exfiltration
+  // boundary to a mailbox nobody named. Refuse rather than pick.
+  if (candidates.length > 1) {
+    throw new Error(
+      `Ambiguous: ${candidates.length} mail send MCP agents are registered (${candidates.map((agent) => agent.id).join(", ")}). `
+      + "Pass --agent-id <id> to name the one app_gmail_send delegates to.",
+    );
+  }
+  agentId = candidates[0]?.id ?? null;
 }
 if (!agentId) {
   throw new Error(

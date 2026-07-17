@@ -11,6 +11,7 @@ import { spawn, spawnSync } from "node:child_process";
 const here = dirname(fileURLToPath(import.meta.url));
 const mailFixture = resolve(here, "../../apps/desktop/test/fixtures/mcp-mail-server.mjs");
 const registerScript = resolve(here, "register-gmail-application.mjs");
+const registerSendScript = resolve(here, "register-gmail-send-application.mjs");
 
 const serverPort = Number(process.env.GMAIL_APP_SMOKE_PORT ?? 3327);
 const serverUrl = `http://127.0.0.1:${serverPort}`;
@@ -77,6 +78,70 @@ try {
   const serialized = JSON.stringify(state);
   assert(!/refresh_token|access_token|client_secret/i.test(serialized), "no credential material in public state");
   console.log(`[gmail-app-smoke] wired app_gmail -> ${agentId}; capabilities tainted; credential readiness: ${readiness ?? "(reported by bridge at runtime)"}`);
+
+  // A SECOND mail provider makes discovery ambiguous. `mail.read` is what every
+  // mail MCP agent declares, so "first match wins" would silently wire app_gmail
+  // to whichever registered first — reading another provider's mailbox under the
+  // Gmail Application's identity. Refuse, and name both candidates.
+  const secondAgent = await request("POST", "/api/agents", {
+    type: "mcp",
+    transport: "stdio",
+    command: process.execPath,
+    args: [mailFixture],
+    allowedTools: ["mail_list_unread", "mail_fetch"],
+    timeoutMs: 5_000,
+    name: "163 Mail (read-only)",
+    capabilityName: "mail.read",
+    riskLevel: "medium",
+    riskTags: ["local_execution", "untrusted_input"],
+  });
+  const secondAgentId = secondAgent.agent?.id ?? secondAgent.id;
+  assert(secondAgentId && secondAgentId !== agentId, "the second mail agent registers with its own id");
+
+  const ambiguous = spawnScript(["--server-url", serverUrl]);
+  assert(ambiguous.status !== 0, "register script must refuse when two mail agents are registered");
+  assert(/Ambiguous: 2 mail MCP agents/.test(ambiguous.stderr), `refusal reports the ambiguity: ${ambiguous.stderr.slice(0, 200)}`);
+  for (const id of [agentId, secondAgentId]) {
+    assert(ambiguous.stderr.includes(id), `refusal names candidate ${id}: ${ambiguous.stderr.slice(0, 300)}`);
+  }
+  assert(/--agent-id/.test(ambiguous.stderr), "refusal names the way out");
+
+  // ...and naming the agent explicitly still works: the refusal is a prompt for
+  // an operator decision, not a dead end.
+  const disambiguated = spawnScript(["--server-url", serverUrl, "--agent-id", agentId]);
+  assert(disambiguated.status === 0, `--agent-id resolves the ambiguity: ${disambiguated.stderr.slice(0, 300)}`);
+  assert(new RegExp(`-> agent ${agentId}`).test(disambiguated.stdout), "the named agent is the one wired");
+
+  console.log(`[gmail-app-smoke] two mail agents -> refused by name; --agent-id ${agentId} still wires`);
+
+  // The same ambiguity on the SEND script (#1147, ADR 0014). It matters more
+  // here: app_gmail_send holds send authority, so a wrong guess would bind the
+  // exfiltration boundary to a mailbox nobody named. Discovery matches on
+  // `allowedTools` including mail_send, so two send-capable agents are ambiguous.
+  const sendAgentIds = [];
+  for (const name of ["Mail (send)", "163 Mail (send)"]) {
+    const registered = await request("POST", "/api/agents", {
+      type: "mcp",
+      transport: "stdio",
+      command: process.execPath,
+      args: [mailFixture],
+      allowedTools: ["mail_send"],
+      timeoutMs: 5_000,
+      name,
+      capabilityName: "mail.send",
+      riskLevel: "high",
+      riskTags: ["local_execution"],
+    });
+    sendAgentIds.push(registered.agent?.id ?? registered.id);
+  }
+  const ambiguousSend = spawnSendScript(["--server-url", serverUrl]);
+  assert(ambiguousSend.status !== 0, "send register script must refuse when two send agents are registered");
+  assert(/Ambiguous: 2 mail send MCP agents/.test(ambiguousSend.stderr), `send refusal reports the ambiguity: ${ambiguousSend.stderr.slice(0, 200)}`);
+  for (const id of sendAgentIds) {
+    assert(ambiguousSend.stderr.includes(id), `send refusal names candidate ${id}: ${ambiguousSend.stderr.slice(0, 300)}`);
+  }
+
+  console.log(`[gmail-app-smoke] two send agents (${sendAgentIds.join(", ")}) -> refused by name`);
   console.log("[gmail-application-smoke] gmail application wiring OK");
 } finally {
   server.kill();
@@ -92,6 +157,10 @@ try {
 
 function spawnScript(args) {
   return spawnSync(process.execPath, [registerScript, ...args], { cwd: process.cwd(), encoding: "utf8" });
+}
+
+function spawnSendScript(args) {
+  return spawnSync(process.execPath, [registerSendScript, ...args], { cwd: process.cwd(), encoding: "utf8" });
 }
 
 async function waitForServer() {
