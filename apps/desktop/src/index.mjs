@@ -13,6 +13,7 @@ import { probeContainerRuntime, runContainerAgent } from "./container-client.mjs
 import { codexResumeArgs } from "./codex-resume.mjs";
 import { extractClaudeFileAccesses } from "./claude-file-access.mjs";
 import { newRoundState, claudeRoundEmits, codexRoundEmits } from "./round-telemetry.mjs";
+import { createAgentLineSink } from "./agent-line-sink.mjs";
 import { applicationWrapperArgs } from "./application-wrapper-args.mjs";
 import { collectApplicationBinaryReadiness } from "./application-binary-readiness.mjs";
 import { collectApplicationCredentialReadiness } from "./application-credential-readiness.mjs";
@@ -856,8 +857,6 @@ async function runInvocation(work) {
 
   let finalResult = null;
   let cancelled = false;
-  let stdoutBuffer = "";
-  let stderrBuffer = "";
   let cancelResult = null;
   let timedOut = false;
   let spawnError = null;
@@ -1041,29 +1040,32 @@ async function runInvocation(work) {
     }
   }, 250);
 
-  child.stdout.on("data", (chunk) => {
-    stdoutBuffer += chunk.toString("utf8");
-    const lines = stdoutBuffer.split(/\r?\n/);
-    stdoutBuffer = lines.pop() ?? "";
-    for (const line of lines) {
-      handleAgentLine(invocationId, line, adapter, roundState).then((result) => {
-        if (result) {
-          finalResult = result;
-        }
-      });
-    }
-  });
-
-  child.stderr.on("data", (chunk) => {
-    stderrBuffer += chunk.toString("utf8");
-    const lines = stderrBuffer.split(/\r?\n/);
-    stderrBuffer = lines.pop() ?? "";
-    for (const line of lines) {
-      if (line.trim()) {
-        emitAgentStderrLine(invocationId, adapter, line);
+  // #1228: line handling is serialized and drained before any outcome is
+  // reported. The jsonl handlers await event posts BEFORE returning the
+  // terminal result, and the CLI's normal behavior is to print that result
+  // line and exit immediately — fire-and-forget here let `close` win the
+  // race, completing the run with finalResult still null (summary degraded,
+  // usage/cost lost) and landing line events after invocation_completed.
+  const stdoutSink = createAgentLineSink(
+    async (line) => {
+      const result = await handleAgentLine(invocationId, line, adapter, roundState);
+      if (result) {
+        finalResult = result;
       }
-    }
-  });
+    },
+    { onError: (error, line) => console.error(`[desktop] ${invocationId} stdout line handling failed (continuing): ${error instanceof Error ? error.message : String(error)} — line: ${String(line).slice(0, 200)}`) },
+  );
+  const stderrSink = createAgentLineSink(
+    async (line) => {
+      if (line.trim()) {
+        await emitAgentStderrLine(invocationId, adapter, line);
+      }
+    },
+    { onError: (error) => console.error(`[desktop] ${invocationId} stderr line handling failed (continuing): ${error instanceof Error ? error.message : String(error)}`) },
+  );
+
+  child.stdout.on("data", (chunk) => stdoutSink.push(chunk));
+  child.stderr.on("data", (chunk) => stderrSink.push(chunk));
 
   child.on("error", (error) => {
     spawnError = error;
@@ -1079,15 +1081,10 @@ async function runInvocation(work) {
   // diff does not linger in the shared temp directory.
   cleanupApplyPatchFile(spawnPlan.args);
 
-  if (stdoutBuffer.trim()) {
-    const result = await handleAgentLine(invocationId, stdoutBuffer.trim(), adapter, roundState);
-    if (result) {
-      finalResult = result;
-    }
-  }
-  if (stderrBuffer.trim()) {
-    await emitAgentStderrLine(invocationId, adapter, stderrBuffer);
-  }
+  // Drain both sinks (residual partial line included) so finalResult is
+  // settled and no agent line event can land after the terminal report below.
+  await stdoutSink.flush();
+  await stderrSink.flush();
 
   if (timedOut) {
     const forcedNote = cancelResult?.message ? ` ${cancelResult.message}` : "";
