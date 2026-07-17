@@ -3,6 +3,7 @@ import { createJSONStorage, persist } from "zustand/middleware";
 
 export type SectionKey =
   | "dashboard"
+  | "workBoard"
   | "workspace"
   | "compare"
   | "projects"
@@ -70,6 +71,7 @@ export const DEFAULT_COLLAPSED_NAV_GROUPS = ["configure", "ledgers"];
 
 export const SECTION_KEYS: SectionKey[] = [
   "dashboard",
+  "workBoard",
   "workspace",
   "compare",
   "projects",

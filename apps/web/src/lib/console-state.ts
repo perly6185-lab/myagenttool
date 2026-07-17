@@ -233,6 +233,54 @@ export interface PendingDecision {
   };
 }
 
+/** The six lenses of the Status board (server read-model `workBoard`). The first
+ * five are exclusive over auto-runs; follow_up is a cross-cutting attention list. */
+export type WorkState = "pending_decision" | "in_progress" | "waiting" | "done" | "failed" | "follow_up";
+
+/** One normalized work item on the Status board. */
+export interface WorkItem {
+  id: string;
+  state: WorkState;
+  /** Underlying kind: "auto_run", "refusal", or a PendingDecisionKind for 待决策 rows. */
+  kind: string;
+  title: string;
+  subtitle?: string;
+  /** Native section to deep-link to for the full context. */
+  section: string;
+  targetId?: string | null;
+  projectId?: string | null;
+  updatedAt?: string | null;
+  /** follow_up rows only: why this needs attention. */
+  reason?: string;
+}
+
+export interface WorkBoard {
+  generatedAt: number;
+  states: Record<WorkState, { count: number; items: WorkItem[] }>;
+}
+
+/** The daily digest (server read-model `dailyDigest`): today's flow + current
+ * standing + aging attention, plus a pre-rendered markdown report. */
+export interface DailyDigest {
+  date: string;
+  windowStart: number;
+  now: number;
+  standing: Record<WorkState, number>;
+  flow: {
+    opened: number;
+    completed: number;
+    failed: number;
+    refusals: number;
+    refusalsByCategory: Record<string, number>;
+  };
+  attention: {
+    agingDecisions: { id: string; title: string; section: string; targetId: string | null; ageHours: number }[];
+    stuckRuns: { id: string; title: string; section: string; targetId: string | null; ageHours: number }[];
+  };
+  /** Copy-pasteable / channel-postable report of the above. */
+  markdown: string;
+}
+
 /** #1143: an issue's develop/review lease — one active develop claim per issue. */
 export interface IssueClaim {
   id: string;
@@ -1071,6 +1119,10 @@ export interface ConsoleSnapshot {
   invocations: InvocationSnapshot[];
   compareRuns?: CompareRunSnapshot[];
   pendingDecisions?: PendingDecision[];
+  /** The Status board — six lenses over the same work, server read-model `workBoard`. */
+  workBoard?: WorkBoard;
+  /** Today's work digest — flow + standing + attention, server read-model `dailyDigest`. */
+  dailyDigest?: DailyDigest;
   /** Durable per-application daily execution counters (survive the invocation cap). */
   applicationDailyStats?: ApplicationDailyStat[];
   applicationHealthSweepStatus?: ApplicationHealthSweepStatus | null;
