@@ -381,6 +381,17 @@ export function digestHasSecret(text) {
   });
 }
 
+// Scrub PII/secret-shaped substrings but do NOT truncate — for RETAINED records
+// (ADR 0018: shielded evidence kept of-record with its subject PII redacted).
+// Unlike redactDigest, the full text survives with only the sensitive spans
+// replaced, so a compliance/audit record stays intact minus the PII.
+export function scrubPii(text) {
+  if (typeof text !== "string" || text.length === 0) return text;
+  let value = text;
+  for (const pattern of SECRET_PATTERNS) value = value.replace(pattern, "[redacted]");
+  return value;
+}
+
 const DIGEST_FIELDS = ["responseDigest", "requestDigest", "inputDigest", "outputDigest"];
 
 // Return a shallow copy of an event's data with every digest field redacted, so

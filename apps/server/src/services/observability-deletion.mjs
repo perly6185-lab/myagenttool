@@ -1,4 +1,5 @@
 import { reapRunTranscriptRecord } from "./run-transcripts.mjs";
+import { scrubPii } from "./round-telemetry.mjs";
 
 /*
  * ADR 0018 — per-subject deletion of observability data. A targeted, on-demand
@@ -86,7 +87,7 @@ export function deleteObservabilityData(state, { scope, subjectId, tier = "opera
       }
     }
   }
-  const counts = { digests: 0, transcripts: 0, patches: 0, events: 0, traces: 0, spans: 0 };
+  const counts = { digests: 0, transcripts: 0, patches: 0, shieldedPiiRedacted: 0, events: 0, traces: 0, spans: 0 };
 
   // --- operational: erase CONTENT in place, keep the skeleton ---
   for (const round of state.invocationRounds ?? []) {
@@ -112,6 +113,38 @@ export function deleteObservabilityData(state, { scope, subjectId, tier = "opera
       output.patchRedacted = true;
       output.patchRedactedAt = now();
       counts.patches += 1;
+    }
+  }
+
+  // --- shielded evidence: RETAIN of-record, but scrub the subject's PII ---
+  // ADR 0018 invariant 4: refusals are never deleted (compliance/audit), but
+  // their verbatim free text (summary / evidence values / remedy) can carry the
+  // subject's PII. For refusals tied to the subject's (team-filtered) invocations,
+  // scrub PII in place and mark the row — the record and its taxonomy survive,
+  // minus the PII, so a Right-to-Erasure request is honoured without dropping
+  // evidence. Runs in BOTH tiers. Idempotent (already-scrubbed text does not
+  // re-match). The ledger and audit summaries are id/amount-keyed, not free PII,
+  // so they are not in scope here.
+  for (const refusal of state.refusals ?? []) {
+    if (!refusal || !ids.has(refusal.invocationId)) continue;
+    let scrubbed = false;
+    for (const field of ["summary", "remedy"]) {
+      if (typeof refusal[field] === "string") {
+        const next = scrubPii(refusal[field]);
+        if (next !== refusal[field]) { refusal[field] = next; scrubbed = true; }
+      }
+    }
+    if (refusal.evidence && typeof refusal.evidence === "object") {
+      for (const [key, value] of Object.entries(refusal.evidence)) {
+        if (typeof value === "string") {
+          const next = scrubPii(value);
+          if (next !== value) { refusal.evidence[key] = next; scrubbed = true; }
+        }
+      }
+    }
+    if (scrubbed) {
+      if (!refusal.piiRedacted) { refusal.piiRedacted = true; refusal.piiRedactedAt = now(); }
+      counts.shieldedPiiRedacted += 1;
     }
   }
 
