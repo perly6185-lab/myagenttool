@@ -16,11 +16,25 @@ if (!agentId) {
   const state = await stateResponse.json();
   if (!stateResponse.ok) throw new Error(`Reading server state failed: ${JSON.stringify(state)}`);
   const isMcp = (agent) => agent.type === "mcp" || agent.adapter?.type === "mcp";
-  const mailAgent = (state.agents ?? []).find(
+  const byCapability = (state.agents ?? []).filter(
     (agent) => isMcp(agent)
       && (agent.capabilities ?? []).some((capability) => (capability?.name ?? capability) === "mail.read"),
-  ) ?? (state.agents ?? []).find((agent) => isMcp(agent) && /mail/i.test(agent.name ?? ""));
-  agentId = mailAgent?.id ?? null;
+  );
+  // `mail.read` is the capability EVERY mail MCP agent declares, not a Gmail
+  // marker — a second provider (163/IMAP, Outlook) is an equally good match. So
+  // more than one candidate is ambiguous, and guessing would silently wire
+  // app_gmail to another provider's mailbox: the Gmail Application would read,
+  // and label as Gmail, mail that never came from Gmail. Refuse and name them.
+  const candidates = byCapability.length
+    ? byCapability
+    : (state.agents ?? []).filter((agent) => isMcp(agent) && /mail/i.test(agent.name ?? ""));
+  if (candidates.length > 1) {
+    throw new Error(
+      `Ambiguous: ${candidates.length} mail MCP agents are registered (${candidates.map((agent) => agent.id).join(", ")}). `
+      + "Pass --agent-id <id> to name the one app_gmail delegates to.",
+    );
+  }
+  agentId = candidates[0]?.id ?? null;
 }
 if (!agentId) {
   throw new Error(
