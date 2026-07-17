@@ -59,6 +59,9 @@ export function createInvocationCompletionRuntime({
           : body.status === "failed"
             ? "failed"
             : "succeeded";
+    const cancellationAppliedMessage = terminalStatus === "cancelled"
+      ? body.summary ?? "Cancellation applied."
+      : null;
     invocation.status = terminalStatus;
     invocation.result = body.result ?? null;
     // #913: a succeeded proposal becomes an immutable artifact NOW — stamp its
@@ -83,6 +86,8 @@ export function createInvocationCompletionRuntime({
     completeRootSpan(invocation, terminalStatus);
     if (terminalStatus === "cancelled") {
       invocation.cancellation.state = "applied";
+      invocation.cancellation.appliedAt = invocation.completedAt;
+      invocation.cancellation.message = cancellationAppliedMessage;
     }
 
     appendEvent({
@@ -96,10 +101,12 @@ export function createInvocationCompletionRuntime({
               ? "invocation_timed_out"
               : "invocation_failed",
       level: terminalStatus === "succeeded" ? "info" : "warn",
-      message: body.summary ?? `Invocation ${terminalStatus}.`,
+      message: terminalStatus === "cancelled"
+        ? cancellationAppliedMessage
+        : body.summary ?? `Invocation ${terminalStatus}.`,
       data: body.result ?? null
     });
-    const auditSummary = createAuditSummary(invocation, body.summary ?? null);
+    const auditSummary = createAuditSummary(invocation, cancellationAppliedMessage ?? body.summary ?? null);
     state.auditSummaries.push(auditSummary);
     recordAgentUsage(invocation, terminalStatus);
     // Attribute an agent-reported run cost (e.g. Claude's total_cost_usd, which

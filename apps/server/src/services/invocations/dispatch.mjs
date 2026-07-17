@@ -152,7 +152,7 @@ export function createInvocationDispatchRuntime({
         invocationId: invocation.id,
         type: "invocation_started",
         level: "info",
-        message: "Demo CLI Agent started."
+        message: `${findAgent(invocation.agentId)?.name || "Agent"} started.`
       });
     });
   }
