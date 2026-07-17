@@ -77,6 +77,15 @@ before(async () => {
     requestedBy: "usr_a",
     createdAt: now(),
   });
+  state.events.push({
+    id: "evt_inv_a_created",
+    invocationId: "inv_a",
+    type: "invocation_created",
+    level: "info",
+    message: "Team A invocation created.",
+    data: null,
+    createdAt: now(),
+  });
   state.codexApprovalBrokerRequests.push({
     id: "cdx_appr_a",
     invocationId: "inv_a",
@@ -278,6 +287,42 @@ test("write guard: team B cannot cancel or troubleshoot team A's invocation (404
   assert.equal(cancel.status, 404);
   const troubleshoot = await call("/api/invocations/inv_a/troubleshoot", { token: "tok_b", method: "POST" });
   assert.equal(troubleshoot.status, 404);
+});
+
+test("invocation event detail is readable by its team and existence-hidden from another team", async () => {
+  const own = await call("/api/invocations/inv_a/events", { token: "tok_a" });
+  assert.equal(own.status, 200);
+  assert.equal(own.body.invocationId, "inv_a");
+  assert.deepEqual(own.body.events.map((event) => event.id), ["evt_inv_a_created"]);
+  assert.equal(own.body.retentionTruncated, false);
+
+  const foreign = await call("/api/invocations/inv_a/events?before=malformed%2Bcursor", { token: "tok_b" });
+  const missing = await call("/api/invocations/inv_missing/events", { token: "tok_b" });
+  assert.equal(foreign.status, 404);
+  assert.deepEqual(foreign.body, missing.body);
+  assert.deepEqual(foreign.body, { error: "invocation_not_found" });
+});
+
+test("decision soft-claim HTTP routes are wired through the composed runtime", async () => {
+  const path = "/api/pending-decisions/approval%3Aapr_http/claim";
+  const claimed = await call(path, { token: "tok_a", method: "POST" });
+  assert.equal(claimed.status, 201);
+  assert.equal(claimed.body.claim.decisionId, "approval:apr_http");
+  assert.equal(claimed.body.claim.claimedBy, "usr_a");
+
+  const foreignRelease = await call(
+    "/api/pending-decisions/approval%3Aapr_http/release",
+    { token: "tok_b", method: "POST" },
+  );
+  assert.equal(foreignRelease.status, 200);
+  assert.equal(foreignRelease.body.released, false, "only the holder may release the advisory marker");
+
+  const released = await call(
+    "/api/pending-decisions/approval%3Aapr_http/release",
+    { token: "tok_a", method: "POST" },
+  );
+  assert.equal(released.status, 200);
+  assert.equal(released.body.released, true);
 });
 
 test("write guard: team B cannot control team A's terminal session (404)", async () => {

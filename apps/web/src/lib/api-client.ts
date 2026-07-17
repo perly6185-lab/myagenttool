@@ -32,6 +32,14 @@ export interface LoopRefusalsResponse {
   truncatedRuns: boolean;
 }
 
+export interface InvocationEventsResponse {
+  invocationId: string;
+  events: InvocationEventSnapshot[];
+  nextCursor: string | null;
+  hasMore: boolean;
+  retentionTruncated: boolean;
+}
+
 // The dev server's default port (tools/dev/run-local-demo.mjs SERVER_PORT).
 const SERVER_PORT = "5001";
 const FALLBACK_API_BASE = `http://127.0.0.1:${SERVER_PORT}`;
@@ -441,6 +449,17 @@ export const api = {
     worktreeId?: string | null,
     options?: Record<string, unknown>,
   ) => request("POST", "/api/invocations", { task, agentId, projectId, worktreeId, options }),
+  listInvocationEvents: (
+    id: string,
+    options: { limit?: number; before?: string } = {},
+  ) => {
+    const query = new URLSearchParams({ limit: String(options.limit ?? 100) });
+    if (options.before) query.set("before", options.before);
+    return request<InvocationEventsResponse>(
+      "GET",
+      `/api/invocations/${encodeURIComponent(id)}/events?${query}`,
+    );
+  },
   uploadWorktreeAttachments: (id: string, files: { name: string; dataBase64: string }[]) =>
     request("POST", `/api/worktrees/${encodeURIComponent(id)}/attachments`, { files }),
   cancelInvocation: (id: string) =>

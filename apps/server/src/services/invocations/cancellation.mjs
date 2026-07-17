@@ -72,13 +72,17 @@ export function createInvocationCancellationRuntime({
   }
 
   function cancelQueuedInvocation(invocation, { cancellationReason, eventType, eventMessage, auditSummary, requestedBy = "usr_local" }) {
+    const completedAt = now();
+    const appliedMessage = "Invocation cancelled before execution.";
     invocation.status = "cancelled";
     invocation.cancellation.state = "queued_cancelled";
     invocation.cancellation.requestedBy = requestedBy;
-    invocation.cancellation.requestedAt = now();
+    invocation.cancellation.requestedAt = completedAt;
     invocation.cancellation.reason = cancellationReason;
-    invocation.completedAt = now();
-    invocation.updatedAt = now();
+    invocation.cancellation.appliedAt = completedAt;
+    invocation.cancellation.message = appliedMessage;
+    invocation.completedAt = completedAt;
+    invocation.updatedAt = completedAt;
     const pendingApproval = invocation.approvalRequestId ? findApprovalRequest(invocation.approvalRequestId) : null;
     if (pendingApproval?.status === "pending") {
       pendingApproval.status = "denied";
@@ -95,7 +99,7 @@ export function createInvocationCancellationRuntime({
       invocationId: invocation.id,
       type: "cancel_applied",
       level: "info",
-      message: "Invocation cancelled before execution."
+      message: appliedMessage
     });
     state.auditSummaries.push(createAuditSummary(invocation, auditSummary));
     recordAgentUsage(invocation, "cancelled");

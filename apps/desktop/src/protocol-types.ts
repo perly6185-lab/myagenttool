@@ -3,6 +3,7 @@ import type { Agent, AgentDiscoveryRun, IntegrationProbeRun, Invocation, Invocat
 export type DesktopBridgeWorkItem = {
   invocationId: Invocation["id"];
   agentId: Invocation["agentId"];
+  agentName: Agent["name"] | null;
   adapter: Agent["adapter"];
   input: Invocation["input"];
   options: Invocation["options"];
