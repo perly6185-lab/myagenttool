@@ -1860,7 +1860,11 @@ export function createM3Service({
       sinkId: request.sinkId,
       subjects: request.subjects,
       recordRefs,
-      checksum: `sha256:${recordRefs.length}:${request.subjects.join(".")}`,
+      // A REAL content digest over what the manifest attests to (the subjects +
+      // the exact record refs), not the old synthetic `count:subjects` token. A
+      // verifier can recompute it from the manifest and detect any tamper of the
+      // attested set (closes the M3 "checksum is synthetic" residual).
+      checksum: computeAuditExportChecksum(request.subjects, recordRefs),
       delivery: {
         externalDeliveryEnabled: Boolean(sink?.externalDeliveryEnabled),
         destinationRef: sink?.destinationRef ?? null,
@@ -1902,6 +1906,15 @@ export function createM3Service({
       ...state.codexApprovalBrokerRequests,
     ];
   }
+}
+
+// A real sha256 digest of what an audit-export manifest attests to: the ordered
+// subjects and the exact record refs. Deterministic (canonical JSON of the
+// as-built refs), so a verifier recomputes it from the manifest and any change to
+// the attested set changes the checksum. Pure + exported for direct testing.
+export function computeAuditExportChecksum(subjects, recordRefs) {
+  const canonical = JSON.stringify({ subjects: Array.isArray(subjects) ? subjects : [], recordRefs: Array.isArray(recordRefs) ? recordRefs : [] });
+  return `sha256:${createHash("sha256").update(canonical).digest("hex")}`;
 }
 
 function validateLifecycleRecipe({ action, agent, source, supportedPlatforms, rollback, uninstall, body }) {
