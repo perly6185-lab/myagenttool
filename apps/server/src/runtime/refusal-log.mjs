@@ -3,6 +3,7 @@ import {
   refusalCodes,
   refusalCodesByCategory,
 } from "@myagenttool/protocol";
+import { recordRefusalDailyStat } from "./refusal-daily-stats.mjs";
 
 // Refusal model Phase 2 (#760). `refuse()` is the SINGLE writer for the device's
 // veto: it records a first-class refusal into `state.refusals[]` AND fires the
@@ -115,6 +116,10 @@ export function createRefusalRuntime({ state, now, nextId, appendEvent, persistS
     // PII-scrubbed); losing them at 200 was the gap. Mirrors the round-telemetry
     // and recovery-action cap-with-archive pattern.
     state.refusals = capWithArchive(state.refusals, REFUSALS_CAP, "refusals");
+    // Durable per-day tally, recorded at refuse() time for every veto — so it is
+    // independent of the 200-row cap's retention, and weekly/monthly/quarterly
+    // reports never undercount refusals the live snapshot has since evicted.
+    recordRefusalDailyStat(state, refusal.at, category);
     persistStateSoon();
     return { refusal, event: firedEvent };
   }

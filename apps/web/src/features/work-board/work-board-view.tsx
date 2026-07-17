@@ -7,7 +7,7 @@ import { EmptyState } from "@/components/common/empty-state";
 import { cn } from "@/lib/cn";
 import { useConsoleState } from "@/data/use-console-state";
 import { useUiStore, type SectionKey } from "@/store/ui-store";
-import type { DailyDigest, WorkBoard, WorkItem, WorkState } from "@/lib/console-state";
+import type { WorkBoard, WorkItem, WorkPeriodKey, WorkReport, WorkState } from "@/lib/console-state";
 
 // The Status board: six lenses over the same work (server read-model `workBoard`)
 // so a supervisor can see, on one screen, what is 待决策 / 在等待 / 正在做 / 已做完 /
@@ -64,7 +64,7 @@ export function WorkBoardView() {
   const setSelectedApplicationId = useUiStore((s) => s.setSelectedApplicationId);
 
   const board = state?.workBoard?.states ?? EMPTY_BOARD;
-  const digest = state?.dailyDigest ?? null;
+  const report = state?.workReport ?? null;
   const total = LENS_ORDER.reduce((n, key) => n + (board[key]?.count ?? 0), 0);
 
   // Land on the native surface for context/action. Follow-up refusal rows and
@@ -85,7 +85,7 @@ export function WorkBoardView() {
         <span className="ml-auto text-xs text-muted-foreground">Every work item by state · newest first</span>
       </div>
 
-      {digest ? <DailyDigestStrip digest={digest} /> : null}
+      {report ? <WorkReportStrip report={report} /> : null}
 
       {total === 0 ? (
         <EmptyState title="Nothing tracked yet" hint="Auto-runs, pending decisions, and recent refusals land here, grouped by state." />
@@ -100,51 +100,84 @@ export function WorkBoardView() {
   );
 }
 
-// The "Today" strip: the daily report at the top of the board — a few flow
-// numbers, the aging-attention nudges, and a one-click copy of the full
-// server-rendered markdown report (reusable by a future scheduled channel post).
-function DailyDigestStrip({ digest }: { digest: DailyDigest }) {
+const PERIOD_ORDER: WorkPeriodKey[] = ["day", "week", "month", "quarter"];
+
+// The report strip at the top of the board — a day/week/month/quarter switch
+// over the flow numbers, the aging-attention nudge, and a one-click copy of the
+// selected period's server-rendered markdown (reusable by a scheduled channel post).
+function WorkReportStrip({ report }: { report: WorkReport }) {
+  const [period, setPeriod] = useState<WorkPeriodKey>("day");
   const [copied, setCopied] = useState(false);
+  const current = report.periods[period];
   const copy = async () => {
     try {
-      await navigator.clipboard.writeText(digest.markdown);
+      await navigator.clipboard.writeText(current.markdown);
       setCopied(true);
       window.setTimeout(() => setCopied(false), 1500);
     } catch {
       setCopied(false);
     }
   };
-  const { flow, attention } = digest;
-  const agingCount = attention.agingDecisions.length + attention.stuckRuns.length;
+  const { flow } = current;
+  const agingCount = report.attention.agingDecisions.length + report.attention.stuckRuns.length;
   return (
     <Card>
-      <CardContent className="flex flex-wrap items-center gap-x-4 gap-y-2 px-3 py-2.5">
-        <div className="flex items-center gap-2">
-          <span className="text-xs font-semibold">Today</span>
-          <span className="text-[11px] text-muted-foreground">{digest.date}</span>
+      <CardContent className="flex flex-col gap-2 px-3 py-2.5">
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+          <div className="inline-flex rounded-md border border-border p-0.5">
+            {PERIOD_ORDER.map((key) => (
+              <button
+                key={key}
+                type="button"
+                onClick={() => setPeriod(key)}
+                className={cn(
+                  "rounded px-2 py-0.5 text-xs capitalize transition-colors",
+                  period === key ? "bg-muted font-medium text-foreground" : "text-muted-foreground hover:text-foreground",
+                )}
+              >
+                {key}
+              </button>
+            ))}
+          </div>
+          <span className="text-[11px] text-muted-foreground">{current.label} · since {current.startDate}</span>
+          <Button variant="ghost" size="sm" className="ml-auto h-7 px-2 text-xs" onClick={copy} title="Copy this period's markdown report">
+            <ClipboardCopy className="mr-1 size-3" />
+            {copied ? "Copied" : "Copy report"}
+          </Button>
         </div>
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
           <DigestStat label="Opened" value={flow.opened} />
           <DigestStat label="Completed" value={flow.completed} tone={flow.completed ? "success" : undefined} />
           <DigestStat label="Failed" value={flow.failed} tone={flow.failed ? "danger" : undefined} />
-          <DigestStat label="Refusals" value={flow.refusals} tone={flow.refusals ? "warning" : undefined} />
+          <DigestStat
+            label={flow.refusalsPartial ? "Refusals*" : "Refusals"}
+            value={flow.refusals}
+            tone={flow.refusals ? "warning" : undefined}
+            title={flow.refusalsPartial ? "Lower bound — the durable rollup started after this window's start" : undefined}
+          />
           {agingCount ? <DigestStat label="Aging >24h" value={agingCount} tone="warning" /> : null}
         </div>
-        <Button variant="ghost" size="sm" className="ml-auto h-7 px-2 text-xs" onClick={copy} title="Copy the full markdown report">
-          <ClipboardCopy className="mr-1 size-3" />
-          {copied ? "Copied" : "Copy report"}
-        </Button>
       </CardContent>
     </Card>
   );
 }
 
-function DigestStat({ label, value, tone }: { label: string; value: number; tone?: "success" | "danger" | "warning" }) {
+function DigestStat({
+  label,
+  value,
+  tone,
+  title,
+}: {
+  label: string;
+  value: number | null;
+  tone?: "success" | "danger" | "warning";
+  title?: string;
+}) {
   const toneClass =
     tone === "success" ? "text-success" : tone === "danger" ? "text-destructive" : tone === "warning" ? "text-warning" : "text-foreground";
   return (
-    <span className="flex items-baseline gap-1">
-      <span className={cn("font-semibold tabular-nums", toneClass)}>{value}</span>
+    <span className="flex items-baseline gap-1" title={title}>
+      <span className={cn("font-semibold tabular-nums", toneClass)}>{value == null ? "—" : value}</span>
       <span className="text-muted-foreground">{label}</span>
     </span>
   );

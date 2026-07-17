@@ -45,6 +45,7 @@ export function createServerState({ defaultProjectPath, now }) {
     approvalGrants: [],
     approvalTokenLegacyUses: { count: 0, lastAt: null },
     applicationDailyStats: [],
+    refusalDailyStats: [],
     currentProjectId: defaultProject.id,
     projectTargets: [createProjectTargetRecord(defaultProject, now)],
     worktrees: [],
