@@ -166,3 +166,30 @@ test("grant pruning archives what it drops — expired-unconsumed and over-cap c
   const lines = readFileSync(join(archive.archiveDir, "approvalGrants.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l));
   assert.ok(lines.some((l) => l.row.id === expiredId), "…but landed in the archive");
 });
+
+test("archiveEvicted dual-writes evicted rows to the history store (ADR 0019 B-2)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "retention-dual-"));
+  const appends = [];
+  const archive = createRetentionArchive({
+    stateStorePath: join(dir, "state.json"),
+    now: () => "2026-07-17T00:00:00.000Z",
+    appendHistory: (collection, rows) => appends.push({ collection, count: rows.length }),
+  });
+  // Evicts the oldest (a1) — dual-writes it to the history store AND the JSONL.
+  archive.capWithArchive([{ id: "a2" }, { id: "a1" }], 1, "refusals");
+  assert.deepEqual(appends, [{ collection: "refusals", count: 1 }], "the evicted row was appended to history");
+  assert.equal(archive.readArchive("refusals").length, 1, "and the JSONL still holds it (dual-write)");
+});
+
+test("archiveEvicted survives a throwing appendHistory (best-effort dual-write)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "retention-dual-fail-"));
+  const archive = createRetentionArchive({
+    stateStorePath: join(dir, "state.json"),
+    now: () => "2026-07-17T00:00:00.000Z",
+    appendHistory: () => { throw new Error("store down"); },
+  });
+  // The JSONL write must still succeed even if the history append throws.
+  const kept = archive.capWithArchive([{ id: "a2" }, { id: "a1" }], 1, "refusals");
+  assert.deepEqual(kept.map((r) => r.id), ["a2"]);
+  assert.equal(archive.readArchive("refusals").length, 1);
+});

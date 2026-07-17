@@ -259,26 +259,60 @@ export interface WorkBoard {
   states: Record<WorkState, { count: number; items: WorkItem[] }>;
 }
 
-/** The daily digest (server read-model `dailyDigest`): today's flow + current
- * standing + aging attention, plus a pre-rendered markdown report. */
-export interface DailyDigest {
-  date: string;
+export type WorkPeriodKey = "day" | "week" | "month" | "quarter";
+
+/** One period's rollup (server read-model `workReport`). Run metrics come from
+ * the auto-run snapshot; refusals from the durable per-day rollup (null when the
+ * viewer is team-scoped, since that rollup has no per-team attribution). */
+export interface WorkPeriodReport {
+  key: WorkPeriodKey;
+  label: string;
   windowStart: number;
-  now: number;
-  standing: Record<WorkState, number>;
+  startDate: string;
   flow: {
     opened: number;
     completed: number;
     failed: number;
-    refusals: number;
+    /** null when not available at team scope. */
+    refusals: number | null;
     refusalsByCategory: Record<string, number>;
+    /** Refusal count is a lower bound (rollup began after the window start). */
+    refusalsPartial: boolean;
   };
+  /** Copy-pasteable / channel-postable report of this period. */
+  markdown: string;
+}
+
+/** Day / week / month / quarter work reports over the six-state board, sharing
+ * one standing + attention snapshot (server read-model `workReport`). */
+export interface WorkReport {
+  generatedAt: number;
+  standing: Record<WorkState, number>;
   attention: {
     agingDecisions: { id: string; title: string; section: string; targetId: string | null; ageHours: number }[];
     stuckRuns: { id: string; title: string; section: string; targetId: string | null; ageHours: number }[];
   };
-  /** Copy-pasteable / channel-postable report of the above. */
-  markdown: string;
+  refusalsAvailable: boolean;
+  refusalDataSince: string | null;
+  periods: Record<WorkPeriodKey, WorkPeriodReport>;
+}
+
+/** Scheduled push of a work report to a channel (server `reportSchedule`). Posts
+ * to a conversation's user (WeCom `touser`) — there is no group-broadcast today. */
+export interface ReportSchedule {
+  enabled: boolean;
+  channelId: string | null;
+  conversationId: string | null;
+  periodKey: WorkPeriodKey;
+  cadence: "daily" | "weekly";
+  /** 0=Sun..6=Sat, used when cadence === "weekly". */
+  weekday: number;
+  /** HH:MM, server local time. */
+  time: string;
+  nextRunAt: string | null;
+  lastPostedStartDate: string | null;
+  lastPostedAt: string | null;
+  updatedAt: string | null;
 }
 
 /** #1143: an issue's develop/review lease — one active develop claim per issue. */
@@ -1121,8 +1155,12 @@ export interface ConsoleSnapshot {
   pendingDecisions?: PendingDecision[];
   /** The Status board — six lenses over the same work, server read-model `workBoard`. */
   workBoard?: WorkBoard;
-  /** Today's work digest — flow + standing + attention, server read-model `dailyDigest`. */
-  dailyDigest?: DailyDigest;
+  /** Day/week/month/quarter work reports — flow + standing + attention, server read-model `workReport`. */
+  workReport?: WorkReport;
+  /** Scheduled work-report → channel push config (admin-plane; null when team-scoped). */
+  reportSchedule?: ReportSchedule | null;
+  /** Inbound-established channel conversations — the addressable outbound targets. */
+  channelConversations?: ChannelConversation[];
   /** Durable per-application daily execution counters (survive the invocation cap). */
   applicationDailyStats?: ApplicationDailyStat[];
   applicationHealthSweepStatus?: ApplicationHealthSweepStatus | null;
@@ -1189,6 +1227,16 @@ export interface ChannelOperations {
     injectionFlagged: number;
   };
   lastActivityAt?: string | null;
+}
+
+/** An inbound-established conversation — the addressable target for an outbound
+ * message (its externalUserId becomes the WeCom `touser`). */
+export interface ChannelConversation {
+  id: string;
+  channelId: string;
+  externalUserId: string;
+  status?: string;
+  updatedAt?: string | null;
 }
 
 export interface ChannelDelivery {

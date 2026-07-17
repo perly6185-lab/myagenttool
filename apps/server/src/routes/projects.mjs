@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { basename, dirname, extname, join, relative, resolve, sep } from "node:path";
-import { denyForeignProject, teamOf } from "../runtime/auth.mjs";
+import { denyForeignProject, teamOf, LOCAL_TEAM_ID } from "../runtime/auth.mjs";
 import { computeDispatchEvaluation } from "../read-models/dispatch-evaluation.mjs";
 import { recordHttpGateRefusal } from "./refusal-http-gate.mjs";
 import { deriveFinalStatus, summarizeAutoRuns } from "../services/auto-run-metrics.mjs";
@@ -46,6 +46,8 @@ export async function handleProjectRoutes({
   retryAutoRun,
   cancelAutoRun,
   mergeAutoRunPr,
+  setReportSchedule,
+  postReportNow,
   claimIssue,
   releaseIssueClaim,
   listIssueClaims,
@@ -456,6 +458,32 @@ export async function handleProjectRoutes({
     state.autoRunSettings = normalizeAutoRunSettings(body ?? {}, state.autoRunSettings ?? {});
     persistStateSoon?.();
     sendJson(res, 200, { config: resolveAutoRunConfig(state) });
+    return true;
+  }
+
+  // Scheduled work-report → channel push. GET reads the current config; PUT edits
+  // it (arming/rearming nextRunAt); post-now sends immediately for setup/testing.
+  // The schedule is a single GLOBAL admin-plane singleton (it names a channel
+  // target and posts platform-wide data), so ALL THREE verbs — read included —
+  // are gated to the admin/local scope. The local owner IS team_local, so the
+  // gate must admit it (a bare `teamId != null` 403s the only real local user).
+  const foreignTenant = actor?.teamId != null && actor.teamId !== LOCAL_TEAM_ID;
+  if (url.pathname === "/api/report-schedule" || url.pathname === "/api/report-schedule/post-now") {
+    if (foreignTenant) { sendJson(res, 403, { error: "admin_only" }); return true; }
+  }
+  if (req.method === "GET" && url.pathname === "/api/report-schedule") {
+    sendJson(res, 200, { reportSchedule: state.reportSchedule ?? null });
+    return true;
+  }
+  if (req.method === "PUT" && url.pathname === "/api/report-schedule") {
+    const body = await readJson(req);
+    const config = typeof setReportSchedule === "function" ? setReportSchedule(body ?? {}) : null;
+    sendJson(res, 200, { reportSchedule: config });
+    return true;
+  }
+  if (req.method === "POST" && url.pathname === "/api/report-schedule/post-now") {
+    const result = typeof postReportNow === "function" ? postReportNow() : { posted: false, reason: "unavailable" };
+    sendJson(res, result.posted ? 200 : 409, result);
     return true;
   }
 

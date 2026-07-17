@@ -77,7 +77,7 @@ function invocationTeam(state, invocation) {
  * so a foreign subjectId (any scope) resolves to nothing and touches no other
  * team's data. `actor == null` is unscoped single-team local dev and is unfiltered.
  */
-export function deleteObservabilityData(state, { scope, subjectId, tier = "operational", now, appendEvent, actor = null }) {
+export function deleteObservabilityData(state, { scope, subjectId, tier = "operational", now, appendEvent, actor = null, deleteHistory = null, redactHistory = null, queryHistory = null }) {
   const resolvedTier = deletionTiers.includes(tier) ? tier : "operational";
   const ids = resolveSubjectInvocationIds(state, { scope, subjectId });
   if (actor && actor.teamId) {
@@ -87,7 +87,10 @@ export function deleteObservabilityData(state, { scope, subjectId, tier = "opera
       }
     }
   }
-  const counts = { digests: 0, transcripts: 0, patches: 0, shieldedPiiRedacted: 0, events: 0, traces: 0, spans: 0 };
+  // historyRedacted/historyDeleted (ADR 0019 B-3): erasure also reaches the durable
+  // history table, which is OUTSIDE the mirrored snapshot so the state scrub above
+  // never touches it. 0 on the memory/degraded backing (no store history bound).
+  const counts = { digests: 0, transcripts: 0, patches: 0, shieldedPiiRedacted: 0, events: 0, traces: 0, spans: 0, historyRedacted: 0, historyDeleted: 0 };
 
   // --- operational: erase CONTENT in place, keep the skeleton ---
   for (const round of state.invocationRounds ?? []) {
@@ -127,24 +130,16 @@ export function deleteObservabilityData(state, { scope, subjectId, tier = "opera
   // so they are not in scope here.
   for (const refusal of state.refusals ?? []) {
     if (!refusal || !ids.has(refusal.invocationId)) continue;
-    let scrubbed = false;
-    for (const field of ["summary", "remedy"]) {
-      if (typeof refusal[field] === "string") {
-        const next = scrubPii(refusal[field]);
-        if (next !== refusal[field]) { refusal[field] = next; scrubbed = true; }
-      }
-    }
-    if (refusal.evidence && typeof refusal.evidence === "object") {
-      for (const [key, value] of Object.entries(refusal.evidence)) {
-        if (typeof value === "string") {
-          const next = scrubPii(value);
-          if (next !== value) { refusal.evidence[key] = next; scrubbed = true; }
-        }
-      }
-    }
-    if (scrubbed) {
-      if (!refusal.piiRedacted) { refusal.piiRedacted = true; refusal.piiRedactedAt = now(); }
-      counts.shieldedPiiRedacted += 1;
+    if (scrubRefusalPii(refusal, now)) counts.shieldedPiiRedacted += 1;
+  }
+
+  // ADR 0019 B-3: the SAME shielded-refusal scrub, applied to any refusal rows the
+  // count cap evicted to the durable history table. Runs in BOTH tiers (like the
+  // live scrub). Idempotent, and the row (its taxonomy) is retained — only PII is
+  // removed. No-op on the memory backing (no store history bound).
+  if (typeof redactHistory === "function") {
+    for (const invId of ids) {
+      counts.historyRedacted += redactHistory("refusals", invId, (row) => scrubRefusalPii(row, now)).redacted;
     }
   }
 
@@ -166,6 +161,29 @@ export function deleteObservabilityData(state, { scope, subjectId, tier = "opera
       state.events = state.events.filter((e) => !ids.has(e.invocationId));
       counts.events = before - state.events.length;
     }
+
+    // ADR 0019 B-3: erase the subject's evicted telemetry from the durable history
+    // table too — traces (scoped by subjectId=invocation.id) and events (scoped by
+    // invocationId) per invocation, and spans (scoped by traceId) per trace. Spans
+    // key off traceIds gathered from BOTH the live snapshot and the archive, so a
+    // trace already evicted to history still has its spans erased. No-op on memory.
+    if (typeof deleteHistory === "function") {
+      const subjectTraceIds = new Set(traceIds);
+      if (typeof queryHistory === "function") {
+        for (const invId of ids) {
+          for (const t of queryHistory("traces", { invocationId: invId, limit: 2000 }).rows ?? []) {
+            if (t?.id) subjectTraceIds.add(t.id);
+          }
+        }
+      }
+      for (const invId of ids) {
+        counts.historyDeleted += deleteHistory("traces", invId).deleted;
+        counts.historyDeleted += deleteHistory("events", invId).deleted;
+      }
+      for (const tid of subjectTraceIds) {
+        counts.historyDeleted += deleteHistory("spans", tid).deleted;
+      }
+    }
   }
 
   // The shielded set is intentionally NOT touched here (ledger/audit/refusals/
@@ -186,4 +204,33 @@ export function deleteObservabilityData(state, { scope, subjectId, tier = "opera
   }
 
   return { tier: resolvedTier, invocationCount: ids.size, counts };
+}
+
+// Scrub a refusal row's free-text PII (summary / remedy / evidence values) in
+// place; mark it redacted on first change. Returns whether anything changed.
+// Shared by the live-state scrub and the history-row redaction so an evicted
+// refusal is erased identically to a live one. Idempotent — already-scrubbed text
+// does not re-match, so a re-run reports 0.
+function scrubRefusalPii(refusal, now) {
+  if (!refusal || typeof refusal !== "object") return false;
+  let scrubbed = false;
+  for (const field of ["summary", "remedy"]) {
+    if (typeof refusal[field] === "string") {
+      const next = scrubPii(refusal[field]);
+      if (next !== refusal[field]) { refusal[field] = next; scrubbed = true; }
+    }
+  }
+  if (refusal.evidence && typeof refusal.evidence === "object") {
+    for (const [key, value] of Object.entries(refusal.evidence)) {
+      if (typeof value === "string") {
+        const next = scrubPii(value);
+        if (next !== value) { refusal.evidence[key] = next; scrubbed = true; }
+      }
+    }
+  }
+  if (scrubbed && !refusal.piiRedacted) {
+    refusal.piiRedacted = true;
+    refusal.piiRedactedAt = now();
+  }
+  return scrubbed;
 }

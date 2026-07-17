@@ -27,6 +27,7 @@ import { createMailSendService } from "../services/mail-send.mjs";
 import { createChannelService } from "../services/channels.mjs";
 import { createChannelConversationService } from "../services/channel-conversation.mjs";
 import { createChannelDeliveryService } from "../services/channel-delivery.mjs";
+import { createReportScheduleRuntime } from "../services/report-schedule.mjs";
 import { createApplicationResultImportService } from "../services/application-results.mjs";
 import { createCcusageImportService } from "../services/ccusage-imports.mjs";
 import { createClaudeReviewImportService } from "../services/claude-review-imports.mjs";
@@ -190,7 +191,23 @@ export function createServerRuntimeServices({
   }
   // Event archive ids can be newer than either the JSON snapshot or the SQLite
   // scalar mirror. Read their durable high-water before minting any new ids.
-  const retentionArchive = createRetentionArchive({ stateStorePath, enabled: persistenceEnabled, now });
+  // ADR 0019 B-2: when a SQLite store is present, over-cap eviction dual-writes to
+  // its durable, indexed `history` table (alongside the JSONL). null on the memory
+  // / Node<22.13 backing — the JSONL stays the only durable archive there.
+  const historyAppend = sqliteStore && typeof sqliteStore.appendHistory === "function"
+    ? (collection, rows) => sqliteStore.appendHistory(collection, rows)
+    : null;
+  const historyQuery = sqliteStore && typeof sqliteStore.queryHistory === "function"
+    ? (collection, options) => sqliteStore.queryHistory(collection, options)
+    : null;
+  // ADR 0019 B-3: erasure of the durable history table (null on the memory backing).
+  const historyDelete = sqliteStore && typeof sqliteStore.deleteHistory === "function"
+    ? (collection, scopeId) => sqliteStore.deleteHistory(collection, scopeId)
+    : null;
+  const historyRedact = sqliteStore && typeof sqliteStore.redactHistory === "function"
+    ? (collection, scopeId, redactRow) => sqliteStore.redactHistory(collection, scopeId, redactRow)
+    : null;
+  const retentionArchive = createRetentionArchive({ stateStorePath, enabled: persistenceEnabled, now, appendHistory: historyAppend });
   const eventArchive = retentionArchive.prepareInvocationEventArchive();
   if (eventArchive.readError) {
     throw new Error(`Cannot establish invocation event id high-water: ${eventArchive.readError}`);
@@ -227,10 +244,12 @@ export function createServerRuntimeServices({
   const { listInvocationRefusals } = createInvocationRefusalService({
     state,
     readArchiveWithMetadata: retentionArchive.readArchiveWithMetadata,
+    queryHistory: historyQuery,
   });
   const { getInvocationTrace } = createInvocationTraceService({
     state,
     readArchiveWithMetadata: retentionArchive.readArchiveWithMetadata,
+    queryHistory: historyQuery,
   });
   const { appendEvent } = createEventLogRuntime({
     state,
@@ -765,7 +784,7 @@ export function createServerRuntimeServices({
       });
       return { ok: false, error: "not_permitted" };
     }
-    const result = deleteObservabilityData(state, { scope, subjectId, tier, now, appendEvent, actor });
+    const result = deleteObservabilityData(state, { scope, subjectId, tier, now, appendEvent, actor, deleteHistory: historyDelete, redactHistory: historyRedact, queryHistory: historyQuery });
     persistStateSoon();
     return { ok: true, ...result };
   }
@@ -1195,6 +1214,18 @@ export function createServerRuntimeServices({
     validateApprovalToken,
   });
   channelDeliveryHook = channelDeliveryService.notifyInvocationCompleted;
+
+  // Scheduled work-report → channel push. Closes over the delivery service's
+  // enqueue so a due schedule lands in the same durable outbound pipeline as an
+  // invocation reply. Its sweep is registered on a slow tick in index.mjs.
+  const reportScheduleService = createReportScheduleRuntime({
+    state,
+    now,
+    enqueueChannelDelivery: channelDeliveryService.enqueueChannelDelivery,
+    persistStateSoon,
+    store,
+    appendEvent,
+  });
 
   const receiveChannelEvent = (payload) => {
     const imported = channelService.importChannelEvent(payload);
@@ -3050,6 +3081,11 @@ export function createServerRuntimeServices({
     importChannelEvent: receiveChannelEvent,
     sweepChannelDeliveries: channelDeliveryService.sweepChannelDeliveries,
     retryChannelDelivery: channelDeliveryService.retryChannelDelivery,
+    // Scheduled work-report post: the slow-tick sweep (index.mjs), the manual
+    // "post now", and the config setter (routes).
+    sweepReportSchedule: reportScheduleService.sweepReportSchedule,
+    postReportNow: reportScheduleService.postReportNow,
+    setReportSchedule: reportScheduleService.setReportSchedule,
     // Bind a provider's outbound sender (index.mjs calls this once per configured
     // gateway). Back-compat: a bare fn with no provider binds WeCom.
     setChannelDeliverySender: (providerOrFn, maybeFn) => {

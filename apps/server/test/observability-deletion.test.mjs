@@ -176,3 +176,87 @@ test("deletion is owner-gated", () => {
   assert.equal(canDeleteObservabilityData({ role: "viewer" }), false);
   assert.equal(canDeleteObservabilityData(undefined), false);
 });
+
+/*
+ * ADR 0019 B-3: per-subject erasure reaches the durable history table (outside the
+ * mirrored snapshot). A small fake history store exercises the engine's wiring;
+ * the real adapters are covered by the store contract suite.
+ */
+function fakeHistory(seed = []) {
+  let rows = seed.map((r, i) => ({ seq: i + 1, ...r }));
+  return {
+    queryHistory: (collection, { invocationId = null } = {}) => ({
+      rows: rows.filter((e) => e.collection === collection && (invocationId == null || String(e.invocationId) === String(invocationId))).map((e) => e.row),
+      nextBefore: null,
+    }),
+    deleteHistory: (collection, scopeId) => {
+      if (scopeId == null) return { deleted: 0 };
+      const before = rows.length;
+      rows = rows.filter((e) => !(e.collection === collection && String(e.invocationId) === String(scopeId)));
+      return { deleted: before - rows.length };
+    },
+    redactHistory: (collection, scopeId, redactRow) => {
+      let redacted = 0;
+      for (const e of rows) {
+        if (e.collection !== collection || String(e.invocationId) !== String(scopeId)) continue;
+        const b = JSON.stringify(e.row);
+        redactRow(e.row);
+        if (JSON.stringify(e.row) !== b) redacted += 1;
+      }
+      return { redacted };
+    },
+    rows: () => rows,
+  };
+}
+
+test("B-3 full deletion erases the subject's history telemetry, incl. spans of an evicted-only trace; other subject survives", () => {
+  const s = baseState();
+  const hist = fakeHistory([
+    // Subject usr_1 (inv_u1). traces are scoped by subjectId=invocation.id; spans by traceId; events by invocationId.
+    { collection: "traces", invocationId: "inv_u1", row: { id: "trc_1", subjectId: "inv_u1" } },
+    { collection: "traces", invocationId: "inv_u1", row: { id: "trc_evicted", subjectId: "inv_u1" } }, // NOT in state.traces
+    { collection: "spans", invocationId: "trc_1", row: { id: "sp_live", traceId: "trc_1" } },
+    { collection: "spans", invocationId: "trc_evicted", row: { id: "sp_evicted", traceId: "trc_evicted" } },
+    { collection: "events", invocationId: "inv_u1", row: { id: "ev_h", invocationId: "inv_u1" } },
+    // Other subject usr_2 (inv_u2) — must survive.
+    { collection: "traces", invocationId: "inv_u2", row: { id: "trc_2", subjectId: "inv_u2" } },
+    { collection: "spans", invocationId: "trc_2", row: { id: "sp_other", traceId: "trc_2" } },
+  ]);
+  const events = [];
+  const result = deleteObservabilityData(s, {
+    scope: "user", subjectId: "usr_1", tier: "full", now, appendEvent: (e) => events.push(e),
+    deleteHistory: hist.deleteHistory, redactHistory: hist.redactHistory, queryHistory: hist.queryHistory,
+  });
+  const remaining = hist.rows().map((e) => e.row.id).sort();
+  assert.deepEqual(remaining, ["sp_other", "trc_2"], "only the OTHER subject's history rows survive");
+  // 2 traces + 1 event + 2 spans (trc_1 live + trc_evicted gathered from history) = 5.
+  assert.equal(result.counts.historyDeleted, 5);
+  assert.equal(events[0].data.counts.historyDeleted, 5, "the audit event carries the history count");
+});
+
+test("B-3 operational deletion PII-scrubs shielded refusals in history (retained, not dropped); other subject untouched", () => {
+  const s = baseState();
+  const hist = fakeHistory([
+    { collection: "refusals", invocationId: "inv_u1", row: { id: "ref_h", invocationId: "inv_u1", category: "policy", summary: "blocked send to bob@example.com", remedy: "call 13800138000" } },
+    { collection: "refusals", invocationId: "inv_u2", row: { id: "ref_other", invocationId: "inv_u2", summary: "email carol@example.com" } },
+  ]);
+  const result = deleteObservabilityData(s, {
+    scope: "user", subjectId: "usr_1", tier: "operational", now,
+    deleteHistory: hist.deleteHistory, redactHistory: hist.redactHistory, queryHistory: hist.queryHistory,
+  });
+  assert.equal(result.counts.historyRedacted, 1);
+  assert.equal(result.counts.historyDeleted, 0, "operational never deletes telemetry");
+  const scrubbed = hist.rows().find((e) => e.row.id === "ref_h").row;
+  assert.ok(scrubbed, "the refusal row is RETAINED, not deleted");
+  assert.ok(!scrubbed.summary.includes("bob@example.com"), "summary PII scrubbed");
+  assert.ok(!scrubbed.remedy.includes("13800138000"), "remedy PII scrubbed");
+  assert.equal(scrubbed.piiRedacted, true);
+  assert.ok(hist.rows().find((e) => e.row.id === "ref_other").row.summary.includes("carol@example.com"), "other subject's refusal untouched");
+});
+
+test("B-3 is a no-op without a store (memory backing): history counts stay 0, no throw", () => {
+  const s = baseState();
+  const result = deleteObservabilityData(s, { scope: "user", subjectId: "usr_1", tier: "full", now });
+  assert.equal(result.counts.historyDeleted, 0);
+  assert.equal(result.counts.historyRedacted, 0);
+});

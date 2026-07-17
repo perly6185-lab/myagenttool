@@ -118,6 +118,29 @@ store already has (`runMigrations` gate).
 - Delivered in slices: B-1 (the `history` table + API + migration + contract),
   B-2 (dual-write wiring + the read surfaces preferring `queryHistory`).
 
+## B-3 — history-table erasure + retention reap (RESOLVED)
+
+The `history` table is OUTSIDE the mirrored snapshot, so the earlier state-only
+per-subject deletion / Right-to-Erasure and the state-only retention reap did **not**
+reach rows dual-written into `history` — a compliance gap (a deleted subject's
+evicted rows survived) plus unbounded growth. B-3 closes both:
+
+- **Store API (both adapters, contract-tested):** `deleteHistory(collection, scopeId)`
+  removes a scope's rows; `redactHistory(collection, scopeId, redactRow)` scrubs
+  SHIELDED rows in place; `reapHistory({ before })` deletes DATED rows past a cutoff
+  (undated rows kept, mirroring the state reap).
+- **Erasure wiring (`observability-deletion.mjs`):** `full` deletes the subject's
+  `traces`/`events` (by invocation id) and `spans` (by trace id, gathering trace ids
+  from BOTH the live snapshot and the archive so an evicted-only trace's spans are
+  still erased); BOTH tiers PII-scrub shielded refusal rows in `history` with the
+  same `scrubRefusalPii` helper the live scrub uses. The audit event's `counts`
+  carry `historyDeleted` / `historyRedacted`. No-op on the memory backing.
+- **Retention reap (`index.mjs` sweep):** reaps `history` rows past the same
+  `logsDays` window as the state telemetry reap (self-durable DELETE).
+
+Memory/degraded backing has no store `history`, so these are no-ops there (its
+JSONL archive remains the durable tier and is covered by the existing state paths).
+
 ## Testable rules
 
 - A history row survives a `replaceSnapshot`/commit that no longer has it in

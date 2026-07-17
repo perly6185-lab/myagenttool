@@ -42,4 +42,12 @@ describe("InvocationRefusalHistory", () => {
     expect(screen.getByText("history may be incomplete")).toBeTruthy();
     expect(screen.getByText("Refusals (1)")).toBeTruthy();
   });
+
+  it("surfaces a failed fetch instead of rendering nothing (error ≠ no refusals)", async () => {
+    apiMock.listInvocationRefusals.mockRejectedValue(new Error("boom"));
+    const { container } = renderWithClient(<InvocationRefusalHistory invocationId="inv_1" />);
+    await waitFor(() => expect(container.querySelector('[data-testid="invocation-refusals-error"]')).not.toBeNull());
+    expect(screen.getByText("Refusal history unavailable")).toBeTruthy();
+    expect(container.querySelector('[data-testid="invocation-refusals"]')).toBeNull();
+  });
 });

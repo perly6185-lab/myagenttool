@@ -20,6 +20,10 @@
  */
 
 const SCHEMA_VERSION = 2;
+// Upper bound on a single history page. Aligned with the largest history reader
+// (invocation-trace's MAX_SPAN_LIMIT = 2000) so the SQLite path never silently
+// returns fewer rows than the whole-file JSONL scan would for the same request.
+const MAX_HISTORY_LIMIT = 2000;
 
 /**
  * Async convenience: dynamically import the experimental `node:sqlite`, then open
@@ -65,6 +69,13 @@ export function createSqliteStore({ DatabaseSync, path = ":memory:" }) {
   const insertHistory = db.prepare("INSERT OR IGNORE INTO history(collection, id, invocation_id, created_at, json) VALUES(?, ?, ?, ?, ?)");
 
   const parse = (row) => (row ? JSON.parse(row.json) : null);
+  // Reentrancy guard: node:sqlite's BEGIN cannot nest ("cannot start a
+  // transaction within a transaction"). A nested transaction() call joins the
+  // outer one (the outermost owns COMMIT/ROLLBACK) — mirroring the in-memory
+  // adapter's `active` guard so appendHistory can run inside an outer store
+  // transaction without throwing and being silently swallowed by a best-effort
+  // dual-write caller.
+  let active = false;
 
   function get(collection, id) {
     return parse(selectOne.get(collection, String(id)));
@@ -94,15 +105,22 @@ export function createSqliteStore({ DatabaseSync, path = ":memory:" }) {
         del.run(collection, String(id));
       },
     };
+    if (active) {
+      // Reentrant call: the outermost transaction owns COMMIT/ROLLBACK.
+      return fn(tx);
+    }
+    active = true;
     db.exec("BEGIN");
     let result;
     try {
       result = fn(tx);
     } catch (error) {
       db.exec("ROLLBACK");
+      active = false;
       throw error;
     }
     db.exec("COMMIT");
+    active = false;
     return result;
   }
 
@@ -193,7 +211,7 @@ export function createSqliteStore({ DatabaseSync, path = ":memory:" }) {
     transaction(() => {
       for (const row of rows) {
         if (!row || row.id == null) continue;
-        const invocationId = row.invocationId ?? row.subjectId ?? null;
+        const invocationId = row.invocationId ?? row.subjectId ?? row.traceId ?? null; // scope key: spans key by traceId
         const createdAt = row.createdAt ?? row.at ?? row.startedAt ?? null;
         const info = insertHistory.run(
           collection,
@@ -208,16 +226,22 @@ export function createSqliteStore({ DatabaseSync, path = ":memory:" }) {
     return { appended };
   }
 
-  // ADR 0019: paginated newest-first read of the history table, optionally scoped
-  // to one invocation. `before` is the rowid cursor from a prior page's
-  // `nextBefore`. Replaces the whole-file JSONL scan on the SQLite path.
-  function queryHistory(collection, { invocationId = null, before = null, limit = 100 } = {}) {
-    const cap = Math.min(1000, Math.max(1, Number.parseInt(limit, 10) || 100));
+  // ADR 0019: paginated read of the history table, optionally scoped to one
+  // invocation. `order` selects the end of the rowid range the cap covers:
+  // "desc" (default) returns the NEWEST cap rows (for refusals — recency matters);
+  // "asc" returns the EARLIEST cap rows (for a span tree — the root span has the
+  // lowest rowid and must survive the cap, matching the whole-file JSONL scan).
+  // `before` is the rowid cursor from a prior page's `nextBefore` (its comparison
+  // direction follows `order`). Cap is aligned with the largest caller
+  // (MAX_HISTORY_LIMIT) so the SQLite path never silently under-returns vs JSONL.
+  function queryHistory(collection, { invocationId = null, before = null, limit = 100, order = "desc" } = {}) {
+    const cap = Math.min(MAX_HISTORY_LIMIT, Math.max(1, Number.parseInt(limit, 10) || 100));
+    const asc = order === "asc";
     const clauses = ["collection = ?"];
     const params = [collection];
     if (invocationId != null) { clauses.push("invocation_id = ?"); params.push(String(invocationId)); }
-    if (before != null && Number.isFinite(Number(before))) { clauses.push("rowid < ?"); params.push(Number(before)); }
-    const sql = `SELECT rowid AS rowid, json FROM history WHERE ${clauses.join(" AND ")} ORDER BY rowid DESC LIMIT ?`;
+    if (before != null && Number.isFinite(Number(before))) { clauses.push(asc ? "rowid > ?" : "rowid < ?"); params.push(Number(before)); }
+    const sql = `SELECT rowid AS rowid, json FROM history WHERE ${clauses.join(" AND ")} ORDER BY rowid ${asc ? "ASC" : "DESC"} LIMIT ?`;
     const rows = db.prepare(sql).all(...params, cap + 1);
     const hasMore = rows.length > cap;
     const page = rows.slice(0, cap);
@@ -227,11 +251,52 @@ export function createSqliteStore({ DatabaseSync, path = ":memory:" }) {
     };
   }
 
+  // ADR 0019 B-3: Right-to-Erasure reaches the history table. Delete every history
+  // row for a collection scoped to `scopeId` (the `invocation_id` column — the
+  // subject/invocation/trace key). Returns how many rows were removed.
+  function deleteHistory(collection, scopeId) {
+    if (scopeId == null) return { deleted: 0 };
+    const info = db.prepare("DELETE FROM history WHERE collection = ? AND invocation_id = ?").run(collection, String(scopeId));
+    return { deleted: Number(info?.changes ?? 0) };
+  }
+
+  // ADR 0019 B-3: in-place redaction for SHIELDED history rows (refusals are
+  // retained of record but must be PII-scrubbed on erasure). `redactRow` mutates a
+  // parsed row in place; rows whose JSON actually changed are rewritten. Returns
+  // how many rows were redacted. Runs in one transaction (reentrant-safe).
+  function redactHistory(collection, scopeId, redactRow) {
+    if (scopeId == null || typeof redactRow !== "function") return { redacted: 0 };
+    const rows = db.prepare("SELECT rowid AS rowid, json FROM history WHERE collection = ? AND invocation_id = ?").all(collection, String(scopeId));
+    if (rows.length === 0) return { redacted: 0 };
+    const update = db.prepare("UPDATE history SET json = ? WHERE rowid = ?");
+    let redacted = 0;
+    transaction(() => {
+      for (const r of rows) {
+        const row = JSON.parse(r.json);
+        redactRow(row);
+        const next = JSON.stringify(row);
+        if (next !== r.json) { update.run(next, r.rowid); redacted += 1; }
+      }
+    });
+    return { redacted };
+  }
+
+  // ADR 0019 B-3: time-based retention reap over the history table (it is outside
+  // the mirrored snapshot, so the count caps / state reap never bound it). Delete
+  // DATED rows older than `before` (an ISO string; lexicographic compare is
+  // chronological for the `now()` ISO-Z format). Undated rows are kept, mirroring
+  // the state reap which never ages out an undated row.
+  function reapHistory({ before } = {}) {
+    if (before == null) return { reaped: 0 };
+    const info = db.prepare("DELETE FROM history WHERE created_at IS NOT NULL AND created_at < ?").run(String(before));
+    return { reaped: Number(info?.changes ?? 0) };
+  }
+
   function close() {
     db.close();
   }
 
-  return { get, query, transaction, importSnapshot, replaceSnapshot, readSnapshot, appendHistory, queryHistory, close, schemaVersion: SCHEMA_VERSION };
+  return { get, query, transaction, importSnapshot, replaceSnapshot, readSnapshot, appendHistory, queryHistory, deleteHistory, redactHistory, reapHistory, close, schemaVersion: SCHEMA_VERSION };
 }
 
 /**

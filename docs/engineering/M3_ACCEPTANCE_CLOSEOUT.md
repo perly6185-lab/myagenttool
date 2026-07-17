@@ -203,8 +203,12 @@ Accepted as skeleton / not-executed in M3, recorded honestly rather than claimed
   from the invocation path. Quota "limit" is a request counter, not windowed
   provider metering.
 - **Audit export is shape only.** External delivery is not executed
-  (`external_delivery_not_executed`); the manifest checksum is synthetic, not a
-  real digest. Immutability is a flag, not an enforced immutable store.
+  (`external_delivery_not_executed`); immutability is a flag, not an enforced
+  immutable store. (The manifest checksum is now a REAL sha256 content digest:
+  each record ref carries a `contentHash` over the record's canonical content, so
+  the checksum detects tamper of both the attested SET and any record's CONTENT —
+  `computeAuditExportChecksum` + `auditExportRecordRefs`, `m3.mjs`. Genuinely
+  content-tamper-evident even though external delivery is still not run.)
 - **Signed bundles are self-declared.** `signatureStatus` is trusted input; there
   is no cryptographic verification or checksum computation.
 - **Lifecycle execution proof stops at the plan.** Smokes validate command

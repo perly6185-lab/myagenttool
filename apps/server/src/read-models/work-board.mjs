@@ -55,6 +55,10 @@ function baseState(run) {
   const status = run?.status;
   if (status === "done") return "done";
   if (status === "failed") return "failed";
+  // `cancelled` is a terminal, operator-settled status — it must NOT fall through
+  // to `waiting`, or a killed run would nag forever as a stuck/aging item. It is
+  // finished (no action needed), so it sits in the done lens like any terminal.
+  if (status === "cancelled") return "done";
   if (status === "pr_open") {
     const prState = run?.prState;
     return prState === "MERGED" || prState === "CLOSED" ? "done" : "waiting";

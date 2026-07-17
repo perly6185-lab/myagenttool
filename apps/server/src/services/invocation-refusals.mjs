@@ -9,23 +9,39 @@
 const DEFAULT_LIMIT = 200;
 const MAX_LIMIT = 500;
 
-export function createInvocationRefusalService({ state, readArchiveWithMetadata }) {
+export function createInvocationRefusalService({ state, readArchiveWithMetadata, queryHistory }) {
+  // Archived refusals for one invocation. Prefers the indexed store query
+  // (ADR 0019 B-2) — paginated, no whole-file scan — falling back to the JSONL
+  // archive read. Returns the rows plus whether the recovered history may be
+  // incomplete (more pages, or a torn/unreadable JSONL line).
+  function archivedRefusals(invocationId, cap) {
+    if (typeof queryHistory === "function") {
+      const page = queryHistory("refusals", { invocationId, limit: cap });
+      return { rows: page.rows ?? [], damaged: false, more: page.nextBefore != null };
+    }
+    const archive = typeof readArchiveWithMetadata === "function"
+      ? readArchiveWithMetadata("refusals", { filter: (row) => row?.invocationId === invocationId })
+      : { entries: [], malformedLines: 0, readError: null };
+    return {
+      rows: (archive.entries ?? []).map((entry) => entry?.row),
+      damaged: Number(archive.malformedLines ?? 0) > 0 || Boolean(archive.readError),
+      more: false,
+    };
+  }
+
   function listInvocationRefusals(invocation, { limit = DEFAULT_LIMIT } = {}) {
     const cap = clampLimit(limit);
-    const archive = typeof readArchiveWithMetadata === "function"
-      ? readArchiveWithMetadata("refusals", { filter: (row) => row?.invocationId === invocation.id })
-      : { entries: [], malformedLines: 0, readError: null };
+    const archived = archivedRefusals(invocation.id, cap);
 
     let invalidArchivedRows = 0;
     const byId = new Map();
-    for (const entry of archive.entries ?? []) {
-      const refusal = entry?.row;
+    for (const refusal of archived.rows) {
       if (!isInvocationRefusal(refusal, invocation.id)) {
         invalidArchivedRows += 1;
         continue;
       }
-      // readArchiveWithMetadata returns newest archive writes first; keep the
-      // first copy if a crash appended the same evicted row twice.
+      // Newest archive write first; keep the first copy if a crash appended the
+      // same evicted row twice.
       if (!byId.has(refusal.id)) byId.set(refusal.id, refusal);
     }
     for (const refusal of state.refusals ?? []) {
@@ -40,11 +56,8 @@ export function createInvocationRefusalService({ state, readArchiveWithMetadata 
       invocationId: invocation.id,
       refusals: all.slice(0, cap).map(publicRefusal),
       // The caller learns the recovered history may be incomplete: over the cap,
-      // or a torn/unreadable archive line.
-      truncated: all.length > cap
-        || Number(archive.malformedLines ?? 0) > 0
-        || Boolean(archive.readError)
-        || invalidArchivedRows > 0,
+      // more archived pages exist, or a torn/unreadable archive line.
+      truncated: all.length > cap || archived.more || archived.damaged || invalidArchivedRows > 0,
     };
   }
 

@@ -9,6 +9,7 @@ import {
 } from "../services/agents.mjs";
 import { createProjectRecord } from "../services/projects.mjs";
 import { createTerminalRuntimeCapability } from "../services/terminal.mjs";
+import { createDefaultReportSchedule } from "../services/report-schedule.mjs";
 import { DEFAULT_DEVICE_ID, defineDeviceAlias } from "./device.mjs";
 
 const defaultAgentIds = [
@@ -45,6 +46,8 @@ export function createServerState({ defaultProjectPath, now }) {
     approvalGrants: [],
     approvalTokenLegacyUses: { count: 0, lastAt: null },
     applicationDailyStats: [],
+    refusalDailyStats: [],
+    reportSchedule: createDefaultReportSchedule(),
     currentProjectId: defaultProject.id,
     projectTargets: [createProjectTargetRecord(defaultProject, now)],
     worktrees: [],

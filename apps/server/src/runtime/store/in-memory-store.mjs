@@ -194,22 +194,69 @@ export function createInMemoryStore({ state, commit }) {
       const key = `${collection}:${row.id}`;
       if (historyKeys.has(key)) continue; // dedup by (collection,id), like OR IGNORE
       historyKeys.add(key);
-      history.push({ seq: (historySeq += 1), collection, invocationId: row.invocationId ?? row.subjectId ?? null, row });
+      history.push({ seq: (historySeq += 1), collection, invocationId: row.invocationId ?? row.subjectId ?? row.traceId ?? null, row });
       appended += 1;
     }
     return { appended };
   }
-  function queryHistory(collection, { invocationId = null, before = null, limit = 100 } = {}) {
-    const cap = Math.min(1000, Math.max(1, Number.parseInt(limit, 10) || 100));
+  // Parity with the SQLite adapter's queryHistory: `order` selects which end of
+  // the seq range the cap covers ("desc" = newest cap, "asc" = earliest cap incl.
+  // the lowest-seq root), and the cap upper bound matches the largest reader.
+  function queryHistory(collection, { invocationId = null, before = null, limit = 100, order = "desc" } = {}) {
+    const cap = Math.min(2000, Math.max(1, Number.parseInt(limit, 10) || 100));
+    const asc = order === "asc";
     const matches = history
       .filter((h) => h.collection === collection
         && (invocationId == null || String(h.invocationId) === String(invocationId))
-        && (before == null || !Number.isFinite(Number(before)) || h.seq < Number(before)))
-      .sort((a, b) => b.seq - a.seq); // newest first
+        && (before == null || !Number.isFinite(Number(before)) || (asc ? h.seq > Number(before) : h.seq < Number(before))))
+      .sort((a, b) => (asc ? a.seq - b.seq : b.seq - a.seq));
     const hasMore = matches.length > cap;
     const page = matches.slice(0, cap);
     return { rows: page.map((h) => h.row), nextBefore: hasMore && page.length > 0 ? page[page.length - 1].seq : null };
   }
 
-  return { get, query, transaction, appendHistory, queryHistory };
+  // ADR 0019 B-3 parity: erasure + retention reach the (process-only) history.
+  const historyKeyOf = (collection, row) => `${collection}:${row?.id}`;
+  const scopeMatches = (entry, scopeId) => scopeId != null && String(entry.invocationId) === String(scopeId);
+
+  function deleteHistory(collection, scopeId) {
+    if (scopeId == null) return { deleted: 0 };
+    let deleted = 0;
+    for (let i = history.length - 1; i >= 0; i -= 1) {
+      const entry = history[i];
+      if (entry.collection !== collection || !scopeMatches(entry, scopeId)) continue;
+      historyKeys.delete(historyKeyOf(collection, entry.row));
+      history.splice(i, 1);
+      deleted += 1;
+    }
+    return { deleted };
+  }
+
+  function redactHistory(collection, scopeId, redactRow) {
+    if (scopeId == null || typeof redactRow !== "function") return { redacted: 0 };
+    let redacted = 0;
+    for (const entry of history) {
+      if (entry.collection !== collection || !scopeMatches(entry, scopeId)) continue;
+      const before = JSON.stringify(entry.row);
+      redactRow(entry.row);
+      if (JSON.stringify(entry.row) !== before) redacted += 1;
+    }
+    return { redacted };
+  }
+
+  function reapHistory({ before } = {}) {
+    if (before == null) return { reaped: 0 };
+    let reaped = 0;
+    for (let i = history.length - 1; i >= 0; i -= 1) {
+      const row = history[i].row;
+      const createdAt = row?.createdAt ?? row?.at ?? row?.startedAt ?? null;
+      if (createdAt == null || String(createdAt) >= String(before)) continue; // undated or in-window → keep
+      historyKeys.delete(historyKeyOf(history[i].collection, row));
+      history.splice(i, 1);
+      reaped += 1;
+    }
+    return { reaped };
+  }
+
+  return { get, query, transaction, appendHistory, queryHistory, deleteHistory, redactHistory, reapHistory };
 }
