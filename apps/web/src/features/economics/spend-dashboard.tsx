@@ -79,7 +79,8 @@ export function SpendDashboard({ summary, entries }: { summary?: LedgerSummary; 
   const trend = dailySpend(entries);
   const byAgent = topSpend(summary?.byAgent, (row) => String(row.agentName ?? row.agentId ?? "unknown"));
   const byProject = topSpend(summary?.byProject, (row) => String(row.projectName ?? row.projectId ?? "unknown"));
-  const hasData = trend.length > 0 || byAgent.length > 0 || byProject.length > 0;
+  const byModel = topSpend(summary?.byModel, (row) => String(row.model ?? "unknown"));
+  const hasData = trend.length > 0 || byAgent.length > 0 || byProject.length > 0 || byModel.length > 0;
 
   return (
     <Card>
@@ -107,6 +108,7 @@ export function SpendDashboard({ summary, entries }: { summary?: LedgerSummary; 
             <div className="grid gap-5 sm:grid-cols-2">
               <BreakdownBars title="Top agents" rows={byAgent} />
               <BreakdownBars title="Top projects" rows={byProject} />
+              <BreakdownBars title="Top models" rows={byModel} />
             </div>
           </>
         )}

@@ -9,6 +9,9 @@ import { DEFAULT_SLO_TARGETS, summarizeAutoRunSlos } from "./auto-run-slo.mjs";
 // both the API and any eval harness.
 
 const ACTIVE_STATUSES = new Set(["materializing", "running", "awaiting_approval", "verifying", "publishing"]);
+// Quality rates (article dimension 8: don't only watch success rate). A run in
+// one of these states handed control back to a human.
+const ESCALATION_STATUSES = new Set(["needs_input", "awaiting_approval", "blocked"]);
 
 function percentile(sortedSeconds, fraction) {
   if (sortedSeconds.length === 0) return null;
@@ -41,6 +44,12 @@ export function summarizeAutoRuns(autoRuns = [], { sloTargets = null } = {}) {
   for (const status of autoRunStates) byStatus[status] = 0;
 
   let active = 0;
+  // Quality rates: how often a human had to step in, and how often a develop run
+  // needed a self-repair round (a machine "correction"). Denominators differ, so
+  // count each population separately.
+  let escalated = 0;
+  let developRuns = 0;
+  let repairedRuns = 0;
   const verification = { passed: 0, failed: 0, unverified: 0 };
   // Acceptance-judge verdicts (Phase B): solved / notSolved / unavailable.
   const judgments = { solved: 0, notSolved: 0, unavailable: 0 };
@@ -58,6 +67,13 @@ export function summarizeAutoRuns(autoRuns = [], { sloTargets = null } = {}) {
   for (const run of autoRuns) {
     byStatus[run.status] = (byStatus[run.status] ?? 0) + 1;
     if (ACTIVE_STATUSES.has(run.status)) active += 1;
+    if (ESCALATION_STATUSES.has(run.status)) escalated += 1;
+    // Only develop runs self-repair (design/clarify/etc. produce no diff to fix),
+    // so the correction rate is over the develop population, not all runs.
+    if ((run.decision?.path ?? "develop") === "develop") {
+      developRuns += 1;
+      if ((run.repairAttempts ?? 0) > 0) repairedRuns += 1;
+    }
 
     if (run.decision?.path) {
       decisions.byPath[run.decision.path] = (decisions.byPath[run.decision.path] ?? 0) + 1;
@@ -121,5 +137,16 @@ export function summarizeAutoRuns(autoRuns = [], { sloTargets = null } = {}) {
     // A2: service-level objectives with target lines + meets/below verdicts.
     // Operator-tunable targets (settings.sloTargets) override the defaults.
     slo: summarizeAutoRunSlos(autoRuns, sloTargets ? { ...DEFAULT_SLO_TARGETS, ...sloTargets } : DEFAULT_SLO_TARGETS),
+    // Dimension 8: quality is more than success rate. Each rate is null until its
+    // population exists, so an empty loop never shows a fake 0%.
+    // - humanEscalation: fraction of ALL runs that handed control to a human.
+    // - selfRepair (machine correction): fraction of DEVELOP runs that needed a
+    //   self-repair round after a failed check.
+    // safetyIntervention / regeneration rates are intentionally omitted: neither
+    // is stamped per-run yet (they need a run-level counter first).
+    rates: {
+      humanEscalation: autoRuns.length > 0 ? Number((escalated / autoRuns.length).toFixed(4)) : null,
+      selfRepair: developRuns > 0 ? Number((repairedRuns / developRuns).toFixed(4)) : null,
+    },
   };
 }

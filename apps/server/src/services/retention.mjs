@@ -24,11 +24,15 @@ export function isCriticalLifecycleAuditRecord(record) {
 // count caps + shields, so a compliance/billing record can't age out by accident.
 // `logsDays` unset or ≤ 0 turns the time policy off (the count caps still bound).
 export function applyRetentionPolicies(state, { now, appendEvent }) {
-  const days = Number(state?.retentionSettings?.logsDays);
-  if (!Number.isFinite(days) || days <= 0) return { reaped: 0 };
-  const cutoffMs = Date.parse(now()) - days * 86_400_000;
-  if (!Number.isFinite(cutoffMs)) return { reaped: 0 };
   let reaped = 0;
+  const days = Number(state?.retentionSettings?.logsDays);
+  const logsCutoff = Number.isFinite(days) && days > 0 ? Date.parse(now()) - days * 86_400_000 : null;
+  // Per-type CONTENT retention runs even when the logs window is off: rounds and
+  // tool records are only count-capped, so their bounded/redacted digests can
+  // otherwise live indefinitely. Do it before the early logs-window guard.
+  reaped += reapRoundDigests(state, { now, appendEvent });
+  if (logsCutoff == null || !Number.isFinite(logsCutoff)) return { reaped };
+  const cutoffMs = logsCutoff;
   const reapByAge = (key, tsFields) => {
     const rows = state[key];
     if (!Array.isArray(rows)) return;
@@ -80,6 +84,54 @@ export function applyRetentionPolicies(state, { now, appendEvent }) {
     });
   }
   return { reaped };
+}
+
+// #970 follow-up: per-type CONTENT retention for round/tool telemetry. These
+// collections are only count-capped, so a round's bounded, redacted digest could
+// live indefinitely. Reap the PROMPT-side digests (round.requestDigest +
+// tool.inputDigest) past `promptsDays` and the RESPONSE-side digests
+// (round.responseDigest + tool.outputDigest) past `responsesDays`, IN PLACE — the
+// skeleton (tokens, timing, model, sizes, status, toolName) survives. Each window
+// is independent; unset/≤0 leaves that content type untouched. Shielded evidence
+// (ledger/audit/refusals) is never in scope. One audit event per sweep records
+// the count so "these digests existed and were emptied at T" is provable.
+export function reapRoundDigests(state, { now, appendEvent }) {
+  const cutoffFor = (setting) => {
+    const d = Number(state?.retentionSettings?.[setting]);
+    if (!Number.isFinite(d) || d <= 0) return null;
+    const c = Date.parse(now()) - d * 86_400_000;
+    return Number.isFinite(c) ? c : null;
+  };
+  const promptCutoff = cutoffFor("promptsDays");
+  const responseCutoff = cutoffFor("responsesDays");
+  if (promptCutoff == null && responseCutoff == null) return 0;
+  let reaped = 0;
+  const reapField = (row, field, cutoff) => {
+    if (cutoff == null) return;
+    if (typeof row?.[field] !== "string" || row[field].length === 0) return;
+    const ts = Date.parse(row.createdAt ?? "");
+    if (!Number.isFinite(ts) || ts >= cutoff) return; // undated or in-window → keep
+    row[field] = null;
+    reaped += 1;
+  };
+  for (const round of state.invocationRounds ?? []) {
+    reapField(round, "requestDigest", promptCutoff);
+    reapField(round, "responseDigest", responseCutoff);
+  }
+  for (const tool of state.toolInvocationRecords ?? []) {
+    reapField(tool, "inputDigest", promptCutoff);
+    reapField(tool, "outputDigest", responseCutoff);
+  }
+  if (reaped > 0 && typeof appendEvent === "function") {
+    appendEvent({
+      invocationId: null,
+      type: "round_digests_reaped",
+      level: "info",
+      message: `Reaped ${reaped} round/tool digest(s) past the prompt/response retention window.`,
+      data: { count: reaped },
+    });
+  }
+  return reaped;
 }
 
 // Lifecycle audit records explain operator-visible recovery state. Bound routine

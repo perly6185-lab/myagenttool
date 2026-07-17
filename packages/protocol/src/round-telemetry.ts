@@ -151,6 +151,22 @@ export interface ToolInvocationRecord {
   /** e.g. "read" | "write" | "command". */
   action: string | null;
   riskTag: string | null;
+  /**
+   * True when the call mutates state or reaches outside the sandbox (a write,
+   * a command, or a network/credential/destructive risk tag). A first-class
+   * boolean so side-effecting calls are directly filterable — a read that
+   * fails only makes an answer incomplete, a write that fails or mis-fires can
+   * cause real loss (#805 follow-up). Derived from `action`/`riskTag` when the
+   * reporter does not set it explicitly.
+   */
+  sideEffect: boolean;
+  /**
+   * Byte length of the raw tool result before digest truncation, when the
+   * reporter knows it. `outputDigest` is capped at 500 chars, so it cannot
+   * answer "did this call return 40 bytes or 40 KB into the context". Null when
+   * the size was not reported.
+   */
+  resultSize: number | null;
   status: ToolInvocationStatus;
   startedAt: IsoDateTime;
   endedAt: IsoDateTime | null;
