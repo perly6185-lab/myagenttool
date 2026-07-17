@@ -53,6 +53,32 @@ export function deriveSideEffect(action, riskTag, explicit) {
   return false;
 }
 
+// Semantic loop signal (article dimension 6 / "how do I detect an agent
+// looping"): the same tool called with the SAME redacted input, back to back, N
+// times inside one invocation is a strong stuck-loop signal. Pure over the
+// newest-first tool records. Only non-empty identical (toolName+inputDigest)
+// streaks count, so a burst of same-tool calls with different/absent inputs
+// (e.g. reading many files) never false-flags.
+export const LOOP_MIN_REPEATS = 3;
+export function detectToolLoop(records, invocationId, minRepeats = LOOP_MIN_REPEATS) {
+  let head = null;
+  const streak = [];
+  for (const r of records ?? []) {
+    if (r?.invocationId !== invocationId) continue;
+    if (!head) head = r;
+    streak.push(r);
+  }
+  if (!head || typeof head.inputDigest !== "string" || head.inputDigest.length === 0) {
+    return { looping: false, repeats: 0, toolName: head?.toolName ?? null };
+  }
+  let repeats = 0;
+  for (const r of streak) {
+    if (r.toolName === head.toolName && r.inputDigest === head.inputDigest) repeats += 1;
+    else break;
+  }
+  return { looping: repeats >= minRepeats, repeats, toolName: head.toolName };
+}
+
 export function createRoundTelemetryRuntime({
   state,
   now,
@@ -266,6 +292,27 @@ export function createRoundTelemetryRuntime({
     };
     state.toolInvocationRecords.unshift(record);
     if (round) round.toolCallIds = [...round.toolCallIds, record.id];
+    maybeFlagToolLoop(invocation);
+  }
+
+  // Observability only — flags a suspected loop, never kills the run. Emits ONE
+  // warn per new same-tool streak that reaches the threshold; a growing streak on
+  // the same tool updates the count without re-alerting. Stores only toolName +
+  // count on the invocation (no redacted input text) so nothing sensitive is
+  // added to a persisted/read-model field.
+  function maybeFlagToolLoop(invocation) {
+    const signal = detectToolLoop(state.toolInvocationRecords, invocation.id);
+    if (!signal.looping) return;
+    const alreadyFlagged = invocation.loopSuspected?.toolName === signal.toolName;
+    invocation.loopSuspected = { toolName: signal.toolName, repeats: signal.repeats, at: now() };
+    if (alreadyFlagged || typeof appendEvent !== "function") return;
+    appendEvent({
+      invocationId: invocation.id,
+      type: "agent_loop_suspected",
+      level: "warn",
+      message: `Possible tool loop: ${signal.toolName} called ${signal.repeats}× with identical input.`,
+      data: { toolName: signal.toolName, repeats: signal.repeats },
+    });
   }
 
   return { recordRoundEvent };

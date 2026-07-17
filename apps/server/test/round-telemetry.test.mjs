@@ -194,6 +194,41 @@ test("an open (started) round has no cost yet", () => {
   assert.equal(state.invocationRounds[0].estimatedCostUsd, null);
 });
 
+// --- Semantic loop signal (dimension 6) --------------------------------------
+
+test("a tool called 3x with identical input inside one invocation flags a loop once", () => {
+  const { state, events, runtime, invocation } = harness();
+  runtime.recordRoundEvent(invocation, ev("round_started", { roundIndex: 0 }));
+  for (let i = 0; i < 3; i += 1) {
+    runtime.recordRoundEvent(invocation, ev("tool_invocation_created", { roundIndex: 0, toolName: "Bash", inputDigest: "grep foo" }));
+  }
+  const loopEvents = events.filter((e) => e.type === "agent_loop_suspected");
+  assert.equal(loopEvents.length, 1, "the loop is announced once, not per repeat past the threshold");
+  assert.equal(loopEvents[0].data.toolName, "Bash");
+  assert.equal(loopEvents[0].data.repeats, 3);
+  assert.equal(invocation.loopSuspected.toolName, "Bash");
+
+  // A 4th identical call grows the streak but does NOT re-alert.
+  runtime.recordRoundEvent(invocation, ev("tool_invocation_created", { roundIndex: 0, toolName: "Bash", inputDigest: "grep foo" }));
+  assert.equal(events.filter((e) => e.type === "agent_loop_suspected").length, 1, "a growing streak does not re-alert");
+  assert.equal(invocation.loopSuspected.repeats, 4, "but the count keeps climbing");
+});
+
+test("same tool with DIFFERENT input is not a loop, and null-input calls never flag", () => {
+  const { state, events, runtime, invocation } = harness();
+  runtime.recordRoundEvent(invocation, ev("round_started", { roundIndex: 0 }));
+  // Three reads of different files — a legitimate scan, not a loop.
+  runtime.recordRoundEvent(invocation, ev("tool_invocation_created", { roundIndex: 0, toolName: "Read", inputDigest: "a.mjs" }));
+  runtime.recordRoundEvent(invocation, ev("tool_invocation_created", { roundIndex: 0, toolName: "Read", inputDigest: "b.mjs" }));
+  runtime.recordRoundEvent(invocation, ev("tool_invocation_created", { roundIndex: 0, toolName: "Read", inputDigest: "c.mjs" }));
+  // Three same-tool calls with no reported input digest — cannot judge, never flag.
+  for (let i = 0; i < 3; i += 1) {
+    runtime.recordRoundEvent(invocation, ev("tool_invocation_created", { roundIndex: 0, toolName: "List" }));
+  }
+  assert.equal(events.filter((e) => e.type === "agent_loop_suspected").length, 0);
+  assert.equal(invocation.loopSuspected, undefined);
+});
+
 // --- Redaction (#811) ---------------------------------------------------------
 
 test("redactDigest scrubs secret-shaped tokens and bounds length", () => {
