@@ -149,6 +149,33 @@ test("#817: a stuck in-flight run does NOT wedge dispatch for a run in another r
   );
 });
 
+test("fairness: a flooding project at the front of the queue doesn't starve an idle one", () => {
+  // Two projects; project A already has a run in flight, project B has none. Both
+  // A's and B's queued runs are dispatchable (different worktrees, cap allows a
+  // second). Array-order would pick A's (it's first); fair dispatch picks B's,
+  // because A's tenant is already loaded — so a burst can't monopolize the device.
+  const projects = [{ id: "prjA", ownerTeamId: "team_a" }, { id: "prjB", ownerTeamId: "team_b" }];
+  const inv = (id, status, projectId, worktreePath, createdAt) => ({
+    id, agentId: "agt_cli", status, createdAt,
+    delivery: { state: status === "queued" ? "queued" : "running", dispatchAttempts: 0 },
+    options: { metadata: { projectId, worktreePath } },
+  });
+  const state = {
+    device: { id: "dev", maxConcurrency: 3 },
+    projects,
+    invocations: [
+      inv("run_A", "running", "prjA", "/wtA0", "2026-07-01T00:00:00.000Z"),
+      inv("q_A", "queued", "prjA", "/wtA1", "2026-07-01T00:00:01.000Z"), // earlier in array
+      inv("q_B", "queued", "prjB", "/wtB1", "2026-07-01T00:00:02.000Z"), // later, idle tenant
+    ],
+  };
+  const rt = createInvocationDispatchRuntime({
+    state, now: () => "2026-07-01T00:01:00.000Z", appendEvent: () => {}, dispatchLeaseMs: 30_000,
+    findAgent: (id) => agents[id] ?? null, completeInvocation: () => {},
+  });
+  assert.equal(rt.nextDispatchableInvocation()?.id, "q_B", "the idle tenant is served ahead of the already-running one");
+});
+
 test("#817: the per-directory guard still holds on the real metadata shape", () => {
   const rt = runtimeWith(
     [
