@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { createRoundTelemetryRuntime, redactDigest } from "../src/services/round-telemetry.mjs";
+import { createRoundTelemetryRuntime, redactDigest, scrubPii } from "../src/services/round-telemetry.mjs";
 
 const T0 = "2026-07-13T00:00:00.000Z";
 const T5 = "2026-07-13T00:00:05.000Z";
@@ -47,6 +47,21 @@ test("round_started persists a round + child span under the root span and sets e
   assert.equal(span.status, "started");
 
   assert.equal(invocation.startedAt, T0, "first round sets true execution start");
+});
+
+test("a round span carries OpenTelemetry GenAI semantic-convention attributes", () => {
+  const { state, runtime, invocation } = harness();
+  runtime.recordRoundEvent(invocation, ev("round_started", { roundIndex: 0, provider: "anthropic", model: "claude-opus-4-8" }));
+  let span = state.spans.find((s) => s.parentSpanId === "spn_root");
+  assert.equal(span.attributes["gen_ai.system"], "anthropic");
+  assert.equal(span.attributes["gen_ai.request.model"], "claude-opus-4-8");
+  assert.equal(span.attributes["gen_ai.operation.name"], "chat", "model_turn maps to the chat operation");
+  assert.equal(span.attributes.provider, "anthropic", "existing custom keys are kept for back-compat");
+
+  runtime.recordRoundEvent(invocation, ev("round_completed", { roundIndex: 0, status: "succeeded", inputTokens: 120, outputTokens: 45 }));
+  span = state.spans.find((s) => s.parentSpanId === "spn_root");
+  assert.equal(span.attributes["gen_ai.usage.input_tokens"], 120, "usage attributes added on completion");
+  assert.equal(span.attributes["gen_ai.usage.output_tokens"], 45);
 });
 
 test("round_completed fills tokens/timing and closes the child span", () => {
@@ -98,6 +113,27 @@ test("tool_invocation_created is recorded and linked to its round", () => {
   const round = state.invocationRounds[0];
   assert.equal(tool.roundId, round.id);
   assert.deepEqual(round.toolCallIds, [tool.id]);
+});
+
+test("a tool call's side effect is a first-class boolean, derived from action/riskTag when not reported", () => {
+  const { state, runtime, invocation } = harness();
+  runtime.recordRoundEvent(invocation, ev("round_started", { roundIndex: 0 }));
+  // read → no side effect
+  runtime.recordRoundEvent(invocation, ev("tool_invocation_created", { roundIndex: 0, toolName: "Read", action: "read" }));
+  // write action → side effect, and resultSize is captured
+  runtime.recordRoundEvent(invocation, ev("tool_invocation_created", { roundIndex: 0, toolName: "Write", action: "write", resultSize: 4096 }));
+  // read action but a network risk tag → still a side effect
+  runtime.recordRoundEvent(invocation, ev("tool_invocation_created", { roundIndex: 0, toolName: "Fetch", action: "read", riskTag: "network_access" }));
+  // an explicit reporter boolean wins over derivation
+  runtime.recordRoundEvent(invocation, ev("tool_invocation_created", { roundIndex: 0, toolName: "Odd", action: "read", sideEffect: true }));
+
+  const [oddCall, fetchCall, writeCall, readCall] = state.toolInvocationRecords; // unshift → newest first
+  assert.equal(readCall.sideEffect, false, "a plain read has no side effect");
+  assert.equal(readCall.resultSize, null, "unreported result size stays null");
+  assert.equal(writeCall.sideEffect, true, "a write action is a side effect");
+  assert.equal(writeCall.resultSize, 4096, "reported result byte size is captured");
+  assert.equal(fetchCall.sideEffect, true, "a network risk tag makes even a read a side effect");
+  assert.equal(oddCall.sideEffect, true, "an explicit reporter boolean is trusted over derivation");
 });
 
 test("#1087: a reported toolUseId is persisted as the join key to the transcript's full-text block", () => {
@@ -173,6 +209,56 @@ test("an open (started) round has no cost yet", () => {
   assert.equal(state.invocationRounds[0].estimatedCostUsd, null);
 });
 
+// --- Semantic loop signal (dimension 6) --------------------------------------
+
+test("a tool called 3x with identical input inside one invocation flags a loop once", () => {
+  const { state, events, runtime, invocation } = harness();
+  runtime.recordRoundEvent(invocation, ev("round_started", { roundIndex: 0 }));
+  for (let i = 0; i < 3; i += 1) {
+    runtime.recordRoundEvent(invocation, ev("tool_invocation_created", { roundIndex: 0, toolName: "Bash", inputDigest: "grep foo" }));
+  }
+  const loopEvents = events.filter((e) => e.type === "agent_loop_suspected");
+  assert.equal(loopEvents.length, 1, "the loop is announced once, not per repeat past the threshold");
+  assert.equal(loopEvents[0].data.toolName, "Bash");
+  assert.equal(loopEvents[0].data.repeats, 3);
+  assert.equal(invocation.loopSuspected.toolName, "Bash");
+
+  // A 4th identical call grows the streak but does NOT re-alert.
+  runtime.recordRoundEvent(invocation, ev("tool_invocation_created", { roundIndex: 0, toolName: "Bash", inputDigest: "grep foo" }));
+  assert.equal(events.filter((e) => e.type === "agent_loop_suspected").length, 1, "a growing streak does not re-alert");
+  assert.equal(invocation.loopSuspected.repeats, 4, "but the count keeps climbing");
+});
+
+test("a same-tool loop that breaks and restarts re-alerts (not swallowed after the first)", () => {
+  const { state, events, runtime, invocation } = harness();
+  runtime.recordRoundEvent(invocation, ev("round_started", { roundIndex: 0 }));
+  const call = (toolName, inputDigest) =>
+    runtime.recordRoundEvent(invocation, ev("tool_invocation_created", { roundIndex: 0, toolName, inputDigest }));
+  // First loop episode: Bash "grep foo" ×3 → one alert.
+  call("Bash", "grep foo"); call("Bash", "grep foo"); call("Bash", "grep foo");
+  assert.equal(events.filter((e) => e.type === "agent_loop_suspected").length, 1);
+  // A different tool breaks the streak…
+  call("Read", "a.mjs");
+  // …then the same tool loops again → the leading run resets and re-alerts.
+  call("Bash", "grep foo"); call("Bash", "grep foo"); call("Bash", "grep foo");
+  assert.equal(events.filter((e) => e.type === "agent_loop_suspected").length, 2, "the second episode is not swallowed");
+});
+
+test("same tool with DIFFERENT input is not a loop, and null-input calls never flag", () => {
+  const { state, events, runtime, invocation } = harness();
+  runtime.recordRoundEvent(invocation, ev("round_started", { roundIndex: 0 }));
+  // Three reads of different files — a legitimate scan, not a loop.
+  runtime.recordRoundEvent(invocation, ev("tool_invocation_created", { roundIndex: 0, toolName: "Read", inputDigest: "a.mjs" }));
+  runtime.recordRoundEvent(invocation, ev("tool_invocation_created", { roundIndex: 0, toolName: "Read", inputDigest: "b.mjs" }));
+  runtime.recordRoundEvent(invocation, ev("tool_invocation_created", { roundIndex: 0, toolName: "Read", inputDigest: "c.mjs" }));
+  // Three same-tool calls with no reported input digest — cannot judge, never flag.
+  for (let i = 0; i < 3; i += 1) {
+    runtime.recordRoundEvent(invocation, ev("tool_invocation_created", { roundIndex: 0, toolName: "List" }));
+  }
+  assert.equal(events.filter((e) => e.type === "agent_loop_suspected").length, 0);
+  assert.equal(invocation.loopSuspected, undefined);
+});
+
 // --- Redaction (#811) ---------------------------------------------------------
 
 test("redactDigest scrubs secret-shaped tokens and bounds length", () => {
@@ -186,6 +272,24 @@ test("redactDigest scrubs secret-shaped tokens and bounds length", () => {
   const out = redactDigest(long);
   assert.equal(out.length, 500);
   assert.ok(out.endsWith("..."));
+});
+
+test("scrubPii removes PII spans but does NOT truncate (retained records keep full text)", () => {
+  const long = `prefix ${"y".repeat(1000)} mail a@b.com tail`;
+  const out = scrubPii(long);
+  assert.ok(out.length > 500, "full text retained, not bounded to 500 like redactDigest");
+  assert.ok(out.includes("[redacted]"), "email scrubbed");
+  assert.ok(!/a@b\.com/.test(out));
+  assert.equal(scrubPii("clean text"), "clean text", "clean text unchanged");
+  assert.equal(scrubPii(""), "", "empty stays empty (not null)");
+});
+
+test("redactDigest scrubs mainland-China PII: mobile, resident id, bank card", () => {
+  assert.equal(redactDigest("call me at 13800138000 tomorrow"), "call me at [redacted] tomorrow");
+  assert.equal(redactDigest("id 11010119900307765X on file"), "id [redacted] on file");
+  assert.equal(redactDigest("card 6222021234567890123 charged"), "card [redacted] charged");
+  // A 13-digit epoch-ms timestamp is not PII and must survive untouched.
+  assert.equal(redactDigest("ts 1700000000000 logged"), "ts 1700000000000 logged");
 });
 
 test("round and tool digests are redacted at ingestion, not stored raw", () => {

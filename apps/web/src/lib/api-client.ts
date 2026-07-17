@@ -267,8 +267,21 @@ export interface RunTranscriptRecord {
   createdAt: string;
 }
 
+export interface ObservabilityDeletionResult {
+  deleted: boolean;
+  scope: string;
+  subjectId: string;
+  tier: string;
+  invocationCount: number;
+  counts: Record<string, number>;
+}
+
 export const api = {
   updateDevice: (payload: { maxConcurrency?: number }) => request("PATCH", "/api/device", payload),
+  // ADR 0018: owner/admin-only per-subject observability data deletion. Throws
+  // with the server's message on 403 (non-owner) / 400 (invalid request).
+  deleteObservabilityData: (payload: { scope: string; subjectId: string; tier: string }) =>
+    request<ObservabilityDeletionResult>("POST", "/api/observability/delete", payload),
   fetchInvocationTranscript: (invocationId: string) =>
     request<{ invocationId: string; transcript: RunTranscriptRecord | null }>(
       "GET",
@@ -523,7 +536,13 @@ export const api = {
     },
   ) => request("POST", `/api/projects/${encodeURIComponent(projectId)}/auto-runs`, payload),
   removeWorktree: (id: string) => request("DELETE", `/api/worktrees/${encodeURIComponent(id)}`),
-  listWorktreeFiles: (id: string) => request("GET", `/api/worktrees/${encodeURIComponent(id)}/files`),
+  // `path` lists one directory (the route's ?path=); omitted, it lists the root.
+  // The tree loads a level at a time — a worktree is too big to walk eagerly.
+  listWorktreeFiles: (id: string, path?: string) =>
+    request(
+      "GET",
+      `/api/worktrees/${encodeURIComponent(id)}/files${path ? `?path=${encodeURIComponent(path)}` : ""}`,
+    ),
   searchWorktree: (id: string, q: string, mode: "name" | "content") =>
     request("GET", `/api/worktrees/${encodeURIComponent(id)}/search?mode=${mode}&q=${encodeURIComponent(q)}`),
   readWorktreeFile: (id: string, filePath: string) =>
@@ -573,6 +592,7 @@ export const api = {
   listEvalTrend: () => request("GET", "/api/eval-trend"),
   maturity: () => request("GET", "/api/maturity"),
   dora: () => request("GET", "/api/dora"),
+  dispatchEvaluation: () => request("GET", "/api/dispatch-evaluation"),
   loopRoutineRuns: () => request("GET", "/api/loop-routines"),
   loopRoutineFindings: (runId: string) => request("GET", `/api/loop-routines/${encodeURIComponent(runId)}/findings`),
   // Auto-run effective configuration (safe knobs overlaid on env + per-command

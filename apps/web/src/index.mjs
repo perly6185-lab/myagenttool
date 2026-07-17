@@ -4,6 +4,7 @@ import { createRequire } from "node:module";
 import { createReadStream, existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, extname, join } from "node:path";
+import { resolveViteBin } from "./vite-bin.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const webRoot = join(__dirname, "..");
@@ -47,7 +48,7 @@ function ensureBuild() {
   if (existsSync(indexHtml)) return;
   console.log("[web] dist not found — building the console (vite build)…");
   const require = createRequire(import.meta.url);
-  const viteBin = require.resolve("vite/bin/vite.js");
+  const viteBin = resolveViteBin(webRoot, require);
   const result = spawnSync(process.execPath, [viteBin, "build"], {
     cwd: webRoot,
     stdio: "inherit",

@@ -1180,6 +1180,14 @@ export function createM3Service({
       revenueOwner: null,
       budgetPoolId: agent?.economics?.budgetPoolId ?? null,
       projectId,
+      // Per-run cost attribution (agent_run_cost_total). The develop/repair/retry
+      // invocations of an auto-run all carry autoRunId in their input metadata;
+      // stamping it here lets ledgerSummary roll a run's whole cost up in one line
+      // without re-deriving it from telemetry. Null for manual/non-auto-run spend.
+      autoRunId: meta.autoRunId ?? null,
+      // Explicit model dimension for the byModel rollup, independent of
+      // `counterparty` (whose meaning differs across ledger paths).
+      model,
       counterparty: model,
       provider: model,
       pricingVersion: pricing.price?.pricingVersion ?? null,
@@ -1315,6 +1323,9 @@ export function createM3Service({
       revenueOwner: body.revenueOwner ? String(body.revenueOwner) : null,
       budgetPoolId: body.budgetPoolId ? String(body.budgetPoolId) : null,
       projectId: body.projectId ? String(body.projectId) : state.currentProjectId ?? state.projects[0]?.id ?? null,
+      // Stamp the real model (not the provider) so byModel rolls up by model, not
+      // by "anthropic"/"openai". counterparty stays the provider for chargeback.
+      model: usageRecord.model,
       counterparty: usageRecord.provider,
       provider: usageRecord.provider,
       billable: usageRecord.providerMode === "platform_managed",
@@ -1727,13 +1738,22 @@ export function createM3Service({
       byCostOwner: [],
       byProject: [],
       byAgent: [],
+      byModel: [],
+      byAutoRun: [],
     };
     const owners = new Map();
     const projects = new Map();
     const agents = new Map();
+    const models = new Map();
+    const autoRuns = new Map();
     for (const entry of entries) {
       if (["voided", "cancelled"].includes(entry.status)) {
+        // Count it, then skip it for ALL spend — a voided/cancelled entry is not
+        // real spend and must not inflate totalCostUsd or any rollup (byModel /
+        // byAutoRun / byAgent / byProject / byCostOwner). Mirrors
+        // ledgerSpendForProject, which already skips these.
         summary.voidedEntries += 1;
+        continue;
       }
       if (entry.billable) summary.billableEntries += 1;
       const amount = ledgerEntryAmount(entry);
@@ -1756,10 +1776,27 @@ export function createM3Service({
       const agentId = entry.agentId ?? "unknown";
       const agent = findAgent(agentId);
       addRollup(agents, agentId, amount, source, { agentId, agentName: agent?.name, provider: entry.provider });
+      // cost_by_model: key on the explicit `model` field (falling back to the
+      // legacy counterparty for pre-fix entries), NOT the provider — so an
+      // AI-usage row whose counterparty is "anthropic"/"openai" still buckets by
+      // its actual model rather than polluting the model dimension.
+      const modelKey = entry.model ?? entry.counterparty ?? entry.provider ?? "unknown";
+      addRollup(models, modelKey, amount, source, { model: modelKey, provider: entry.provider });
+      // agent_run_cost_total: sum a single auto-run's whole spend. Only entries
+      // stamped with an autoRunId participate — manual/unrelated spend is not
+      // conflated into a "none" bucket.
+      if (entry.autoRunId) {
+        addRollup(autoRuns, entry.autoRunId, amount, source, { autoRunId: entry.autoRunId });
+      }
     }
     summary.byCostOwner = [...owners.values()].sort((a, b) => b.entries - a.entries);
     summary.byProject = [...projects.values()].sort((a, b) => b.entries - a.entries);
     summary.byAgent = [...agents.values()].sort((a, b) => b.entries - a.entries);
+    summary.byModel = [...models.values()].sort((a, b) => b.entries - a.entries);
+    // Sorted by total cost desc — "which runs cost the most" is the useful view.
+    summary.byAutoRun = [...autoRuns.values()].sort(
+      (a, b) => b.knownCostUsd + b.estimatedCostUsd - (a.knownCostUsd + a.estimatedCostUsd),
+    );
     return summary;
   }
 

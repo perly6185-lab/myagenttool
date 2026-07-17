@@ -33,6 +33,7 @@ export async function handleControlPlaneRoutes({
   // through the same dispatch the Run panel uses (#847).
   getCapability,
   createCapabilityInvocation,
+  requestObservabilityDeletion,
 }) {
   if (req.method === "POST" && url.pathname === "/api/session") {
     // Multi-user login: a body.userId logs in as that seeded user; with none we
@@ -145,6 +146,39 @@ export async function handleControlPlaneRoutes({
     persistStateSoon();
     const { passwordHash: _omit, ...safeUser } = user;
     sendJson(res, 201, { user: safeUser });
+    return true;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/observability/delete") {
+    // ADR 0018: per-subject observability data deletion is irreversible, so it is
+    // owner/admin-only. The composer re-gates and does the shielded-safe erase.
+    if (!canProvision(actor)) {
+      sendJson(res, 403, { error: "forbidden", message: "Only an owner or admin can delete observability data." });
+      return true;
+    }
+    if (typeof requestObservabilityDeletion !== "function") {
+      sendJson(res, 501, { error: "not_supported" });
+      return true;
+    }
+    const body = await readJson(req).catch(() => ({}));
+    const result = requestObservabilityDeletion({
+      scope: body?.scope,
+      subjectId: body?.subjectId,
+      tier: body?.tier,
+      actor,
+    });
+    if (!result?.ok) {
+      sendJson(res, 400, { error: result?.error ?? "invalid_request" });
+      return true;
+    }
+    sendJson(res, 200, {
+      deleted: true,
+      scope: body.scope,
+      subjectId: body.subjectId,
+      tier: result.tier,
+      invocationCount: result.invocationCount,
+      counts: result.counts,
+    });
     return true;
   }
 

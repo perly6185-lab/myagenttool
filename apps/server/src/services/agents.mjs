@@ -132,6 +132,7 @@ export function createAgentService({ state, now, nextId, appendEvent, persistSta
       type: "mcp",
       name: body.name ?? "MCP Server Agent",
       description: body.description ?? "Manually registered MCP server (stdio).",
+      provider: normalizeAgentProvider(body.provider),
       location: { type: "local_device", deviceId: state.device.id },
       // The slice config uses `kind`; the control plane dispatches on
       // `adapter.type`, so carry both.
@@ -264,13 +265,14 @@ export function createAgentService({ state, now, nextId, appendEvent, persistSta
     });
   }
 
-  function baseAgent({ id, name, description, location, adapter, capabilities, status, registrationNotes, economics = {}, toolContract = null }) {
+  function baseAgent({ id, name, description, location, adapter, capabilities, status, registrationNotes, economics = {}, toolContract = null, provider = null }) {
     const createdAt = now();
     const agent = {
       id,
       name: String(name),
       description: String(description),
       ownerUserId: "usr_local",
+      provider,
       location,
       adapter,
       lifecycle: {
@@ -704,6 +706,26 @@ export function sanitizeAgentId(id) {
   const raw = String(id).trim();
   const withPrefix = raw.startsWith("agt_") ? raw : `agt_${raw}`;
   return withPrefix.replace(/[^a-zA-Z0-9_]/g, "_");
+}
+
+// The external service an agent fronts — `google`, `netease`. Applications have
+// modelled this all along (`source.credential.provider`); agents did not, which
+// is why discovery could only ever count candidates and never identify one
+// (#1185). Undeclared stays null: an agent with no provider is not a match for
+// anyone, which is the safe reading.
+//
+// A supplied-but-malformed provider throws instead of normalizing to null. The
+// two failure modes are not equal: null means "declares nothing" and no script
+// will wire to it, but a caller who MEANT to say `google` and typo'd would get
+// an agent that silently never matches, and would go looking in the wrong place.
+// Registration is the cheap, loud place to fail.
+export function normalizeAgentProvider(value) {
+  if (value === undefined || value === null) return null;
+  const normalized = String(value).trim().toLowerCase();
+  if (!/^[a-z0-9][a-z0-9_.-]{0,62}$/.test(normalized)) {
+    throw new Error(`Agent provider must be a slug like "google" or "netease" (got ${JSON.stringify(value)}).`);
+  }
+  return normalized;
 }
 
 export function isAgentDisabled(agent) {

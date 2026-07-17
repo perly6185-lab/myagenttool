@@ -1,9 +1,10 @@
 import { randomBytes } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { basename, dirname, extname, join, relative, resolve, sep } from "node:path";
-import { denyForeignProject } from "../runtime/auth.mjs";
+import { denyForeignProject, teamOf } from "../runtime/auth.mjs";
+import { computeDispatchEvaluation } from "../read-models/dispatch-evaluation.mjs";
 import { recordHttpGateRefusal } from "./refusal-http-gate.mjs";
-import { summarizeAutoRuns } from "../services/auto-run-metrics.mjs";
+import { deriveFinalStatus, summarizeAutoRuns } from "../services/auto-run-metrics.mjs";
 import { summarizeDeployments } from "../services/auto-run-deploy-metrics.mjs";
 import { readEvalTrend, summarizeEvalTrend } from "../services/eval-trend.mjs";
 import { maturityScorecard, latestDora } from "../read-models/maturity-scorecard.mjs";
@@ -320,6 +321,10 @@ export async function handleProjectRoutes({
     );
     const enriched = autoRuns.map((run) => {
       let out = run;
+      // Derived terminal grade (clean / degraded / unverified success, or failed)
+      // for a per-run quality badge; null while the run is still in flight.
+      const finalStatus = deriveFinalStatus(run);
+      if (finalStatus) out = { ...out, finalStatus };
       // Merge-risk badge for open PRs (the risk-based merge policy's read model).
       if (run.status === "pr_open") {
         // Fold in the STORED review / diff-size / sensitive-path signals when a
@@ -382,6 +387,20 @@ export async function handleProjectRoutes({
     // DORA Four Keys (lead time, deploy frequency, CI-green, change-fail) — the
     // latest `github:dora` artifact. Read-only, best-effort (null if never run).
     sendJson(res, 200, { dora: latestDora() });
+    return true;
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/dispatch-evaluation") {
+    // #1174 (R2 of #1170): per-worker / per-(worker×area) dispatch outcomes.
+    // Unlike /api/maturity and /api/dora (global artifacts), this is per-project
+    // data, so it MUST be team-scoped — filter assignments to projects the
+    // actor's team owns, then aggregate.
+    const teamId = actor?.teamId ?? null;
+    const visibleProjectIds = new Set(
+      (state.projects ?? []).filter((p) => teamId == null || teamOf(p) === teamId).map((p) => p.id),
+    );
+    const scoped = (state.dispatchAssignments ?? []).filter((a) => visibleProjectIds.has(a?.projectId));
+    sendJson(res, 200, computeDispatchEvaluation(scoped));
     return true;
   }
 
@@ -787,12 +806,17 @@ function projectForWorktree(state, worktree) {
     ?? null;
 }
 
+// One level only — readProjectTree does a single readdir, so this knows a
+// directory EXISTS but nothing about what is in it. It used to answer `[]` for
+// every directory, which asserts "empty" and is a claim it cannot make; the
+// browser could not tell an unread directory from a genuinely empty one and
+// rendered both as nothing (#1200). Absent `children` means "not read yet"; the
+// client fetches it with ?path=. `[]` is then honest: an empty directory.
 function treeEntriesToNodes(entries) {
   return entries.map((entry) => ({
     name: entry.name,
     path: entry.path,
     dir: entry.kind === "directory",
-    children: entry.kind === "directory" ? [] : undefined,
   }));
 }
 

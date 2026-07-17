@@ -760,6 +760,23 @@ export interface LedgerAgentRollup {
   unknownEntries: number;
 }
 
+export interface LedgerModelRollup {
+  model: string;
+  provider?: string;
+  entries: number;
+  knownCostUsd: number;
+  estimatedCostUsd: number;
+  unknownEntries: number;
+}
+
+export interface LedgerAutoRunRollup {
+  autoRunId: string;
+  entries: number;
+  knownCostUsd: number;
+  estimatedCostUsd: number;
+  unknownEntries: number;
+}
+
 export interface LedgerSummary {
   currency: string;
   totalCostUsd: number;
@@ -774,6 +791,8 @@ export interface LedgerSummary {
   byCostOwner: LedgerOwnerRollup[];
   byProject: LedgerProjectRollup[];
   byAgent: LedgerAgentRollup[];
+  byModel: LedgerModelRollup[];
+  byAutoRun: LedgerAutoRunRollup[];
 }
 
 export interface ProjectSnapshot {
@@ -1074,6 +1093,7 @@ export interface ConsoleSnapshot {
   budgetStatuses?: BudgetStatus[];
   teamBudgetStatuses?: TeamBudgetStatus[];
   teams?: { id: string; name?: string }[];
+  users?: { id: string; name?: string; teamId?: string; role?: string }[];
   /** Channel subsystem (#1090): operational rollup per channel, team-scoped. */
   channelOperations?: ChannelOperations[];
   channelDeliveries?: ChannelDelivery[];

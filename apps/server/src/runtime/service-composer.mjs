@@ -56,6 +56,9 @@ import { resolveDeployCommand, deployTimeoutMs, runDeployCommand, resolveRollbac
 import { decisionConfig } from "../services/auto-run-decision.mjs";
 import { autoRunSettingsEnvOverlay } from "../services/auto-run-config.mjs";
 import { createAlertDispatcher } from "../services/auto-run-alerts.mjs";
+import { createOtlpTraceExporter } from "../services/otlp-export.mjs";
+import { canDeleteObservabilityData, deleteObservabilityData, deletionScopes } from "../services/observability-deletion.mjs";
+import { DEFAULT_SLO_TARGETS, evaluateSloAlert, summarizeAutoRunSlos } from "../services/auto-run-slo.mjs";
 import { createTerminalService } from "../services/terminal.mjs";
 import { createToolService, failStrandedIssueFetches } from "../services/tools.mjs";
 
@@ -659,6 +662,83 @@ export function createServerRuntimeServices({
   // A1 real-time alerting: best-effort webhook, URL read live so a console edit
   // applies without a restart. No-op when unconfigured; never throws.
   const autoRunAlerts = createAlertDispatcher({ getWebhookUrl: () => state.autoRunSettings?.alertWebhookUrl ?? null });
+
+  // O5.2 follow-up: close the SLO → alert loop. Evaluate the loop's SLOs on a
+  // slow tick (index.mjs) and dispatch when the below-target set CHANGES —
+  // throttled so a persistently-below SLO isn't re-alerted every tick. Emits an
+  // audit event alongside the (best-effort) webhook so the breach is provable
+  // from the event log even when no webhook is configured.
+  function sweepAutoRunSloAlerts() {
+    const targets = state.autoRunSettings?.sloTargets
+      ? { ...DEFAULT_SLO_TARGETS, ...state.autoRunSettings.sloTargets }
+      : DEFAULT_SLO_TARGETS;
+    const summary = summarizeAutoRunSlos(state.autoRuns ?? [], targets);
+    const previous = state.autoRunSloAlert?.signature ?? "";
+    const { changed, signature, alert } = evaluateSloAlert(summary, previous);
+    if (!changed) return { alerted: false };
+    state.autoRunSloAlert = { signature, at: now() };
+    if (alert) {
+      void autoRunAlerts.dispatch(alert);
+      appendEvent({
+        invocationId: null,
+        type: "auto_run_slo_alert",
+        level: alert.severity === "info" ? "info" : "warn",
+        message: alert.message,
+        data: alert.data,
+      });
+    }
+    persistStateSoon();
+    return { alerted: Boolean(alert), kind: alert?.kind ?? null };
+  }
+
+  // ADR 0017: opt-in, best-effort OTLP/HTTP JSON trace export. Reads the endpoint
+  // live so an operator edit applies without a restart; a fire-and-forget mirror
+  // of the authoritative in-memory spans. On a slow tick (index.mjs) it exports
+  // completed, not-yet-exported spans and marks them optimistically, rolling the
+  // mark back if the POST fails so the batch retries next tick. No-op when
+  // unconfigured; never throws into or slows an invocation.
+  const otlpExporter = createOtlpTraceExporter({ now });
+  function flushTraceExport() {
+    if (!(process.env.OTEL_EXPORTER_OTLP_ENDPOINT ?? "").trim()) return { exported: 0 };
+    const pending = (state.spans ?? []).filter((span) => span.endedAt && !span.otlpExportedAt);
+    if (pending.length === 0) return { exported: 0 };
+    const at = now();
+    for (const span of pending) span.otlpExportedAt = at;
+    void otlpExporter.exportSpans(pending).then((result) => {
+      // On failure, roll the optimistic mark back so the batch retries next tick.
+      // Persist in BOTH branches: an unrelated persist between the mark and this
+      // callback can flush the mark, so the rollback must be persisted too — else
+      // a failed export leaves the span marked-exported-but-never-sent on restart.
+      if (!result?.sent) {
+        for (const span of pending) if (span.otlpExportedAt === at) span.otlpExportedAt = null;
+      }
+      persistStateSoon();
+    });
+    return { exported: pending.length };
+  }
+
+  // ADR 0018: owner-gated per-subject deletion of observability data. Erases the
+  // subject's CONTENT (and, at tier `full`, its telemetry rows) through the same
+  // reap primitives as retention; the shielded set (ledger/audit/refusals) is
+  // never touched. A non-owner is refused through the single refusal writer.
+  function requestObservabilityDeletion({ scope, subjectId, tier = "operational", actor } = {}) {
+    if (!deletionScopes.includes(scope) || !subjectId) {
+      return { ok: false, error: "invalid_request" };
+    }
+    if (!canDeleteObservabilityData(actor)) {
+      refuse({
+        category: "policy",
+        code: "action_not_permitted",
+        requester: { kind: "control_plane", id: actor?.userId ?? null },
+        summary: `Observability data deletion is owner-gated; role "${actor?.role ?? "unknown"}" refused.`,
+        remedy: "Retry as an owner or admin.",
+      });
+      return { ok: false, error: "not_permitted" };
+    }
+    const result = deleteObservabilityData(state, { scope, subjectId, tier, now, appendEvent, actor });
+    persistStateSoon();
+    return { ok: true, ...result };
+  }
 
   const { startAutoRun, advanceAutoRunForInvocation, syncAutoRunOnApproval, syncAutoRunOnDenial, retryAutoRun, cancelAutoRun, mergeAutoRunPr, reapStuckAutoRuns, autoMergeSweep, approveDesign, rejectDesign, answerClarify, approveDecomposition, rejectDecomposition } = createAutoRunService({
     state,
@@ -2908,6 +2988,9 @@ export function createServerRuntimeServices({
     retryAutoRun,
     cancelAutoRun,
     reapStuckAutoRuns,
+    sweepAutoRunSloAlerts,
+    flushTraceExport,
+    requestObservabilityDeletion,
     autoMergeSweep,
     claimIssue,
     releaseIssueClaim,

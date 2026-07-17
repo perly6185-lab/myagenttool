@@ -91,6 +91,7 @@ interface AutoRunSummary {
     slos: { key: string; label: string; value: number | null; target: number; direction: "gte" | "lte"; unit: "ratio" | "seconds"; meets: boolean | null }[];
     anyBelow: boolean;
   } | null;
+  rates?: { humanEscalation: number | null; selfRepair: number | null } | null;
 }
 
 function fmtSloValue(v: number | null, unit: "ratio" | "seconds"): string {
@@ -888,6 +889,16 @@ export function AutoRunsView() {
               label="Routing alignment"
               value={summary.routing?.alignmentRate == null ? "—" : `${Math.round(summary.routing.alignmentRate * 100)}%`}
               hint={`over ${summary.routing?.conclusive ?? 0} conclusive run(s)`}
+            />
+            <StatTile
+              label="Human escalation"
+              value={summary.rates?.humanEscalation == null ? "—" : `${Math.round(summary.rates.humanEscalation * 100)}%`}
+              hint="runs that handed control to a human"
+            />
+            <StatTile
+              label="Self-repair rate"
+              value={summary.rates?.selfRepair == null ? "—" : `${Math.round(summary.rates.selfRepair * 100)}%`}
+              hint="develop runs that needed a repair round"
             />
           </div>
           {deployments && deployments.total > 0 ? (
