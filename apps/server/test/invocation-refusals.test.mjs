@@ -58,3 +58,18 @@ test("no archive reader → live-only, never throws", () => {
   const { listInvocationRefusals } = createInvocationRefusalService({ state, readArchiveWithMetadata: null });
   assert.deepEqual(listInvocationRefusals({ id: "inv_1" }).refusals.map((r) => r.id), ["ref_1"]);
 });
+
+test("prefers the indexed store query (paginated) over the whole-file JSONL archive", () => {
+  const state = { refusals: [{ id: "ref_live", invocationId: "inv_1", at: "t3", category: "policy", summary: "live" }] };
+  const calls = [];
+  const queryHistory = (collection, opts) => {
+    calls.push({ collection, opts });
+    return { rows: [{ id: "ref_arch", invocationId: "inv_1", at: "t1", category: "policy", summary: "archived" }], nextBefore: 42 };
+  };
+  const readArchiveWithMetadata = () => { throw new Error("must NOT read the whole-file archive when queryHistory is present"); };
+  const { listInvocationRefusals } = createInvocationRefusalService({ state, readArchiveWithMetadata, queryHistory });
+  const result = listInvocationRefusals({ id: "inv_1" }, { limit: 50 });
+  assert.deepEqual(calls[0], { collection: "refusals", opts: { invocationId: "inv_1", limit: 50 } });
+  assert.deepEqual(result.refusals.map((r) => r.id).sort(), ["ref_arch", "ref_live"], "store-archived + live merged");
+  assert.equal(result.truncated, true, "nextBefore present → more pages → truncated");
+});

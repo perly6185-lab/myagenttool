@@ -9,10 +9,22 @@ import { dirname, join } from "node:path";
 // <stateDir>/archive/<collection>.jsonl before the cap drops it. Append-only,
 // best-effort (archival must never break the write path), greppable offline.
 
-export function createRetentionArchive({ stateStorePath, enabled = true, now = () => new Date().toISOString() }) {
+export function createRetentionArchive({ stateStorePath, enabled = true, now = () => new Date().toISOString(), appendHistory = null }) {
   const archiveDir = join(dirname(stateStorePath ?? "."), "archive");
   const invocationEventArchiveDir = join(archiveDir, "events-by-invocation");
   let eventHighWater = null;
+
+  // ADR 0019 B-2: dual-write evicted rows to the durable, indexed history table
+  // when a SQLite store is present, alongside the JSONL. Best-effort — a store
+  // failure never breaks the archive (the JSONL stays authoritative on rollback).
+  function dualWriteHistory(collection, rows) {
+    if (typeof appendHistory !== "function") return;
+    try {
+      appendHistory(collection, rows);
+    } catch {
+      /* best-effort — the JSONL line already landed */
+    }
+  }
 
   function archiveEvicted(collection, rows) {
     if (!Array.isArray(rows) || rows.length === 0) {
@@ -26,6 +38,7 @@ export function createRetentionArchive({ stateStorePath, enabled = true, now = (
       const archivedAt = now();
       const lines = rows.map((row) => JSON.stringify({ archivedAt, collection, row }));
       durableAppendFileSync(join(archiveDir, `${collection}.jsonl`), `${lines.join("\n")}\n`);
+      dualWriteHistory(collection, rows);
       return { ok: true, archivedCount: rows.length, error: null };
     } catch (error) {
       // Disk full / permissions: the in-memory cap still applies; losing the

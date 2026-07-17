@@ -194,7 +194,7 @@ export function createInMemoryStore({ state, commit }) {
       const key = `${collection}:${row.id}`;
       if (historyKeys.has(key)) continue; // dedup by (collection,id), like OR IGNORE
       historyKeys.add(key);
-      history.push({ seq: (historySeq += 1), collection, invocationId: row.invocationId ?? row.subjectId ?? null, row });
+      history.push({ seq: (historySeq += 1), collection, invocationId: row.invocationId ?? row.subjectId ?? row.traceId ?? null, row });
       appended += 1;
     }
     return { appended };
