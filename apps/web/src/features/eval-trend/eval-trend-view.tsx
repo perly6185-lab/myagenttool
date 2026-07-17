@@ -186,11 +186,22 @@ interface DispatchSlice {
   verdict: "measured" | "indeterminate";
   sample: string;
 }
+interface DispatchShadow {
+  shadowAssignments: number;
+  disagreements: number;
+  agreementRate: number | null;
+  settledDisagreements: number;
+  counterfactualWinRate: number | null;
+  verdict: "measured" | "indeterminate";
+  sample: string;
+  promotionRule: string;
+}
 interface DispatchEvaluation {
   minSamples: number;
   total: DispatchSlice;
   workers: DispatchSlice[];
   workerAreas: DispatchSlice[];
+  shadow: DispatchShadow;
   unmeasured: string[];
 }
 
@@ -274,6 +285,23 @@ function DispatchEvaluationCard({ evaluation }: { evaluation: DispatchEvaluation
             </tbody>
           </table>
         </div>
+        {evaluation.shadow.shadowAssignments > 0 ? (
+          <div className="rounded-md border border-border bg-muted/30 px-2.5 py-2 text-xs">
+            <div className="mb-1 font-medium">Shadow evaluation (router in shadow mode)</div>
+            <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
+              <StatTile label="Shadow assignments" value={String(evaluation.shadow.shadowAssignments)} hint={`${evaluation.shadow.disagreements} disagreed`} />
+              <StatTile label="Agreement" value={evaluation.shadow.agreementRate != null ? pct(evaluation.shadow.agreementRate) : "—"} hint="baseline = scored" />
+              <StatTile label="Settled disagreements" value={String(evaluation.shadow.settledDisagreements)} hint={`target ≥ ${evaluation.minSamples}`} />
+              <StatTile
+                label="Counterfactual win (scored)"
+                value={evaluation.shadow.verdict === "measured" && evaluation.shadow.counterfactualWinRate != null ? pct(evaluation.shadow.counterfactualWinRate) : `insufficient (${evaluation.shadow.sample})`}
+                hint="baseline pick later reassigned"
+                tone={evaluation.shadow.counterfactualWinRate != null && evaluation.shadow.counterfactualWinRate >= 0.5 ? "danger" : undefined}
+              />
+            </div>
+            <p className="mt-1 text-[11px] text-muted-foreground">{evaluation.shadow.promotionRule}</p>
+          </div>
+        ) : null}
         <p className="text-[11px] text-muted-foreground">
           Not shown: time-to-in-progress and time-to-PR — those live in each worker's own server state (the dispatcher only sees assign → settle/reassign). Per-area rows can exceed the worker total when an issue declares multiple areas.
         </p>

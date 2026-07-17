@@ -128,6 +128,9 @@ export const persistedObjectKeys = [
   // knobs) un-arms itself on restart.
   "autoRunSettings",
   "autoRunBreaker",
+  // O5.2 follow-up: the last-emitted below-target SLO set. Durable so a restart
+  // does not re-fire an alert for a breach that was already reported.
+  "autoRunSloAlert",
   "approvalTokenLegacyUses",
   "privateDeploymentConfig",
   "retentionSettings",

@@ -112,3 +112,64 @@ test("#913 never strips an in-flight proposal and stays off when logsDays is uns
   applyRetentionPolicies(off, { now });
   assert.match(off.invocations[0].result.output.patch, /diff --git/, "no window, no reap");
 });
+
+// --- #970 follow-up: per-type digest content retention -----------------------
+
+function roundRow(id, ageDays) {
+  return { id, createdAt: daysAgo(ageDays), requestDigest: "prompt text", responseDigest: "response text", inputTokens: 100 };
+}
+function toolRow(id, ageDays) {
+  return { id, createdAt: daysAgo(ageDays), inputDigest: "tool input", outputDigest: "tool output", toolName: "Bash" };
+}
+
+test("promptsDays reaps the prompt-side digests in place, keeping the skeleton", () => {
+  const state = {
+    retentionSettings: { promptsDays: 30 }, // responsesDays unset → response side untouched
+    invocationRounds: [roundRow("r_old", 40), roundRow("r_new", 1)],
+    toolInvocationRecords: [toolRow("t_old", 40), toolRow("t_new", 1)],
+  };
+  const events = [];
+  const { reaped } = applyRetentionPolicies(state, { now, appendEvent: (e) => events.push(e) });
+  assert.equal(reaped, 2, "one old round requestDigest + one old tool inputDigest");
+  const rOld = state.invocationRounds.find((r) => r.id === "r_old");
+  assert.equal(rOld.requestDigest, null, "old prompt digest emptied");
+  assert.equal(rOld.responseDigest, "response text", "response side untouched (responsesDays off)");
+  assert.equal(rOld.inputTokens, 100, "skeleton survives");
+  assert.equal(state.invocationRounds.find((r) => r.id === "r_new").requestDigest, "prompt text", "in-window kept");
+  assert.equal(state.toolInvocationRecords.find((t) => t.id === "t_old").inputDigest, null);
+  assert.equal(events.filter((e) => e.type === "round_digests_reaped").length, 1, "one audit event per sweep");
+});
+
+test("responsesDays is an independent window from promptsDays", () => {
+  const state = {
+    retentionSettings: { responsesDays: 30 }, // promptsDays unset
+    invocationRounds: [roundRow("r_old", 40)],
+    toolInvocationRecords: [toolRow("t_old", 40)],
+  };
+  const { reaped } = applyRetentionPolicies(state, { now });
+  assert.equal(reaped, 2, "response-side digests reaped, prompt-side kept");
+  assert.equal(state.invocationRounds[0].responseDigest, null);
+  assert.equal(state.invocationRounds[0].requestDigest, "prompt text", "prompt side kept when promptsDays is off");
+  assert.equal(state.toolInvocationRecords[0].outputDigest, null);
+  assert.equal(state.toolInvocationRecords[0].inputDigest, "tool input");
+});
+
+test("digest retention runs even when the logs window is off", () => {
+  const state = {
+    retentionSettings: { logsDays: 0, promptsDays: 30, responsesDays: 30 },
+    invocationRounds: [roundRow("r_old", 40)],
+    toolInvocationRecords: [],
+  };
+  const { reaped } = applyRetentionPolicies(state, { now });
+  assert.equal(reaped, 2, "both digests of the old round reaped despite logsDays=0");
+});
+
+test("digest retention keeps undated and in-window rows", () => {
+  const state = {
+    retentionSettings: { promptsDays: 30, responsesDays: 30 },
+    invocationRounds: [{ id: "r_undated", requestDigest: "p", responseDigest: "r" }, roundRow("r_new", 2)],
+    toolInvocationRecords: [],
+  };
+  const { reaped } = applyRetentionPolicies(state, { now });
+  assert.equal(reaped, 0, "undated + in-window digests are conservatively kept");
+});
