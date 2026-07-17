@@ -77,6 +77,7 @@ export const persistedArrayKeys = [
   "aiUsageRecords",
   "invocationRounds",
   "toolInvocationRecords",
+  "runTranscripts",
   "ledgerEntries",
   "importedUsageEstimates",
   "codexReviewFindings",
@@ -87,6 +88,10 @@ export const persistedArrayKeys = [
   "applicationResults",
   "budgets",
   "budgetReservations",
+  "decisionSoftClaims",
+  "issueClaims",
+  "issueClaimEvents",
+  "dispatchAssignments",
   "automations",
   "agentSkills",
   "auditExportRequests",
@@ -106,6 +111,11 @@ export const persistedArrayKeys = [
   "terminalBridgeActions",
   "sshTargets",
   "sshConnectionTests",
+  "channels",
+  "channelIdentities",
+  "channelEvents",
+  "channelConversations",
+  "channelDeliveries",
 ];
 
 // NOTE: `devices` is deliberately absent from both key lists — it restores
@@ -118,6 +128,9 @@ export const persistedObjectKeys = [
   // knobs) un-arms itself on restart.
   "autoRunSettings",
   "autoRunBreaker",
+  // O5.2 follow-up: the last-emitted below-target SLO set. Durable so a restart
+  // does not re-fire an alert for a breach that was already reported.
+  "autoRunSloAlert",
   "approvalTokenLegacyUses",
   "privateDeploymentConfig",
   "retentionSettings",
@@ -135,6 +148,9 @@ const OWNER_STAMPED_PROJECT_COLLECTIONS = [
   { key: "applications", owner: "ownerTeamId" },
   { key: "applicationInstallRuns", owner: "ownerTeamId" },
   { key: "applicationResults", owner: "ownerTeamId" },
+  // #1152: auto-runs stamp their owning team at creation. Pre-stamp rows have
+  // no `teamId` and are skipped by the scan (no stamp → nothing to cross-check).
+  { key: "autoRuns", owner: "teamId" },
 ];
 
 /**

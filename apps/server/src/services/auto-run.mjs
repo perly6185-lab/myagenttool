@@ -1,5 +1,6 @@
 import { detectPromptInjection, roleAutoRunPrompt } from "@myagenttool/protocol/issue-prompt";
 
+import { teamOf } from "../runtime/auth.mjs";
 import { createRefusalRuntime } from "../runtime/refusal-log.mjs";
 import { isTerminal } from "./invocations.mjs";
 import { normalizeWorktreeLink } from "./projects.mjs";
@@ -70,6 +71,11 @@ export function createAutoRunService({
   reserveBudget,
   releaseReservationsForAutoRun,
   reconcileBudgetReservations,
+  // #1143 issue claims: hold the issue's develop lease at admission, release it
+  // on settle. Both optional — absent (unit tests, claims not composed) the
+  // gate is a no-op and behavior is byte-identical to before.
+  claimIssueForRun,
+  releaseIssueClaimsForAutoRun,
   sendAlert,
   createInvocation,
   findInvocation,
@@ -348,6 +354,11 @@ export function createAutoRunService({
     if (settledStatuses.has(status) && typeof releaseReservationsForAutoRun === "function") {
       releaseReservationsForAutoRun(autoRun.id, { outcome: status === "failed" ? "released_failed" : "committed" });
     }
+    // #1143: a settled run hands its issue back to the pool — the develop lease
+    // held at admission releases here, next to the budget hold. Idempotent.
+    if (settledStatuses.has(status) && typeof releaseIssueClaimsForAutoRun === "function") {
+      releaseIssueClaimsForAutoRun(autoRun.id, { outcome: status === "failed" ? "released_failed" : "committed" });
+    }
     appendEvent({
       invocationId: autoRun.invocationId,
       type: "auto_run_status_changed",
@@ -415,74 +426,123 @@ export function createAutoRunService({
     const autoRunId = nextId("aur_demo");
     const createdAt = now();
 
-    // #890 budget reservation: place the hold SYNCHRONOUSLY here — before the
-    // decision/issue-fetch awaits below — so a second run starting in that same
-    // window sees this run's hold and cannot also pass a near-limit budget. The
-    // hold is released when the run settles (setAutoRunStatus) or, if a pre-record
-    // throw leaks it, by reconcileBudgetReservations on the next sweep. Disabled
-    // (estimate <= 0) → no hold written, byte-identical to before.
-    const reservationEstimateUsd = Number(state.autoRunSettings?.reservationEstimateUsd ?? 0) || 0;
-    if (reservationEstimateUsd > 0 && typeof reserveBudget === "function" && projectId) {
-      const reservation = reserveBudget({ projectId, amountUsd: reservationEstimateUsd, autoRunId });
-      if (!reservation.ok) {
-        void sendAlert?.({
-          kind: "budget_exceeded",
-          severity: "high",
-          message: `Auto-run blocked at admission: ${reservation.reason}`,
-          data: { projectId, link: normalizedLink, reason: reservation.reason },
+    // #1143 issue claim gate: take (or renew) the issue's develop lease
+    // SYNCHRONOUSLY, before any spend, so a colleague already developing this
+    // issue blocks a duplicate run at admission. Same-actor re-entry renews and
+    // attaches this run; a foreign active develop claim refuses with the holder
+    // named. PR-linked runs have no issue to claim and skip the gate, as does a
+    // composition without the claim service (unit tests) — byte-identical then.
+    if (typeof claimIssueForRun === "function" && normalizedLink.type === "issue" && Number.isFinite(normalizedLink.number)) {
+      const claimed = claimIssueForRun({
+        projectId: projectId ?? state.currentProjectId ?? null,
+        issueNumber: normalizedLink.number,
+        actor,
+        mode: "develop",
+        agentId: agent.id,
+        autoRunId,
+      });
+      if (!claimed.ok) {
+        appendEvent({
+          invocationId: null,
+          type: "auto_run_claim_rejected",
+          level: "warn",
+          message: `Auto-run on issue #${normalizedLink.number} refused: ${claimed.reason}`,
+          data: { projectId, issueNumber: normalizedLink.number, requestedBy: actor?.userId ?? "usr_local", holder: claimed.claim?.claimedBy ?? null },
         });
-        throw new Error(`${reservation.reason} Raise the budget, wait for in-flight runs to finish, or reset spend.`);
+        throw new Error(claimed.reason);
       }
     }
 
-    // 0. Decision step: the injected decider (or the heuristic floor) triages the
-    // issue into a path BEFORE any execution. The decision is data, not action.
-    // Both the decider and the role prompt get the issue body when it's readable.
-    const issueBody = await maybeFetchIssueBody(normalizedLink, projectId ?? state.currentProjectId);
-    // B1a: scan the untrusted issue body for prompt-injection markers. A hit
-    // never blocks the run (avoids weaponizing false positives into a DoS), but
-    // it is recorded, alerted, and — crucially — makes the run ineligible for
-    // O2 auto-approval, so a human always reviews a suspicious body.
-    const injection = detectPromptInjection(issueBody);
-    if (injection.suspicious) {
-      void sendAlert?.({
-        kind: "prompt_injection_suspected",
-        severity: "high",
-        message: `Auto-run on ${normalizedLink.type} #${normalizedLink.number}: possible prompt injection in the body (${injection.markers.join(", ")}). Human review required.`,
-        data: { link: normalizedLink, markers: injection.markers },
-      });
-    }
-    const decision = await resolveDecision({
-      link: normalizedLink,
-      issueBody,
-      decideIssuePath,
-      // Console-saved overrides when present; undefined falls back to the env
-      // defaults inside resolveDecision (decisionConfig()).
-      minConfidence: decisionSettings?.minConfidence,
-      fastPath: decisionSettings?.fastPath,
-      // Opt-in: an epic/initiative routes to decompose (a plan, not a diff).
-      epicDecomposition: state.autoRunSettings?.epicDecomposition === true,
-    });
+    // Admission steps below can throw BEFORE the autoRun record exists — the
+    // window where a taken issue claim would dangle (blocking the issue for the
+    // whole lease). Any throw in this zone hands the claim back; after the
+    // record exists, settle (setAutoRunStatus) owns the release.
+    let issueBody;
+    let injection;
+    let decision;
+    let worktree;
+    try {
+      // #890 budget reservation: place the hold SYNCHRONOUSLY here — before the
+      // decision/issue-fetch awaits below — so a second run starting in that same
+      // window sees this run's hold and cannot also pass a near-limit budget. The
+      // hold is released when the run settles (setAutoRunStatus) or, if a pre-record
+      // throw leaks it, by reconcileBudgetReservations on the next sweep. Disabled
+      // (estimate <= 0) → no hold written, byte-identical to before.
+      const reservationEstimateUsd = Number(state.autoRunSettings?.reservationEstimateUsd ?? 0) || 0;
+      if (reservationEstimateUsd > 0 && typeof reserveBudget === "function" && projectId) {
+        const reservation = reserveBudget({ projectId, amountUsd: reservationEstimateUsd, autoRunId });
+        if (!reservation.ok) {
+          void sendAlert?.({
+            kind: "budget_exceeded",
+            severity: "high",
+            message: `Auto-run blocked at admission: ${reservation.reason}`,
+            data: { projectId, link: normalizedLink, reason: reservation.reason },
+          });
+          throw new Error(`${reservation.reason} Raise the budget, wait for in-flight runs to finish, or reset spend.`);
+        }
+      }
 
-    // 1. Materialize the worktree from the issue.
-    const { worktree } = createWorktree({
-      projectId,
-      name: name || `issue-${normalizedLink.number}`,
-      baseBranch,
-      // Fork from the FRESH remote base (origin/<base>), not the stale local branch —
-      // otherwise every run's PR conflicts with work merged since the local checkout.
-      fetchBase: true,
-      agentId: agent.id,
-      link: normalizedLink,
-    });
+      // 0. Decision step: the injected decider (or the heuristic floor) triages the
+      // issue into a path BEFORE any execution. The decision is data, not action.
+      // Both the decider and the role prompt get the issue body when it's readable.
+      issueBody = await maybeFetchIssueBody(normalizedLink, projectId ?? state.currentProjectId);
+      // B1a: scan the untrusted issue body for prompt-injection markers. A hit
+      // never blocks the run (avoids weaponizing false positives into a DoS), but
+      // it is recorded, alerted, and — crucially — makes the run ineligible for
+      // O2 auto-approval, so a human always reviews a suspicious body.
+      injection = detectPromptInjection(issueBody);
+      if (injection.suspicious) {
+        void sendAlert?.({
+          kind: "prompt_injection_suspected",
+          severity: "high",
+          message: `Auto-run on ${normalizedLink.type} #${normalizedLink.number}: possible prompt injection in the body (${injection.markers.join(", ")}). Human review required.`,
+          data: { link: normalizedLink, markers: injection.markers },
+        });
+      }
+      decision = await resolveDecision({
+        link: normalizedLink,
+        issueBody,
+        decideIssuePath,
+        // Console-saved overrides when present; undefined falls back to the env
+        // defaults inside resolveDecision (decisionConfig()).
+        minConfidence: decisionSettings?.minConfidence,
+        fastPath: decisionSettings?.fastPath,
+        // Opt-in: an epic/initiative routes to decompose (a plan, not a diff).
+        epicDecomposition: state.autoRunSettings?.epicDecomposition === true,
+      });
+
+      // 1. Materialize the worktree from the issue.
+      ({ worktree } = createWorktree({
+        projectId,
+        name: name || `issue-${normalizedLink.number}`,
+        baseBranch,
+        // Fork from the FRESH remote base (origin/<base>), not the stale local branch —
+        // otherwise every run's PR conflicts with work merged since the local checkout.
+        fetchBase: true,
+        agentId: agent.id,
+        link: normalizedLink,
+      }));
+    } catch (error) {
+      if (typeof releaseIssueClaimsForAutoRun === "function") {
+        releaseIssueClaimsForAutoRun(autoRunId, { outcome: "released_failed" });
+      }
+      throw error;
+    }
 
     // Record the auto-run BEFORE starting the invocation so the dedup key exists
     // even if invocation creation throws — otherwise auto-trigger, which dedups on
     // autoRuns, would re-pick this issue every tick and pile up orphan worktrees.
+    const resolvedProjectId = worktree.sourceProjectId ?? worktree.projectId ?? projectId ?? null;
+    const owningProject = resolvedProjectId ? (state.projects ?? []).find((p) => p.id === resolvedProjectId) ?? null : null;
     const autoRun = {
       id: autoRunId,
       status: "materializing",
-      projectId: worktree.sourceProjectId ?? worktree.projectId ?? projectId ?? null,
+      projectId: resolvedProjectId,
+      // #1152: the owning team, stamped directly at creation. Visibility still
+      // scopes project-first (the stamp is redundant by construction) — the
+      // stamp exists so per-team queues don't re-derive it per row, and so the
+      // #891 ownership-consistency audit can cross-check it on restore.
+      teamId: owningProject ? teamOf(owningProject) : null,
       worktreeId: worktree.id,
       invocationId: null,
       agentId: agent.id,
@@ -1007,10 +1067,24 @@ export function createAutoRunService({
   // runs when a person clicks Merge on a pr_open run; it is never automatic.
   // Guards: the run must have an open PR; a MERGED run is a no-op. On success
   // the record flips to prState=MERGED (the routing eval then counts it merged).
+  // #1151: the uniform "someone already decided this" shape returned by every
+  // gate's idempotent branch — the second operator learns who and when instead
+  // of a silent success (or worse, a silent overwrite).
+  function alreadyDecidedRef(mark) {
+    return { decidedBy: mark?.by ?? mark?.decidedBy ?? null, decidedAt: mark?.at ?? mark?.decidedAt ?? null, status: mark?.status ?? null };
+  }
+
   async function mergeAutoRunPr(autoRunId, { actor } = {}) {
     const autoRun = state.autoRuns.find((item) => item.id === autoRunId);
     if (!autoRun) throw new Error("Auto-run not found.");
-    if (autoRun.prState === "MERGED") return { ok: true, alreadyMerged: true, prNumber: autoRun.prNumber };
+    if (autoRun.prState === "MERGED") {
+      return {
+        ok: true,
+        alreadyMerged: true,
+        alreadyDecided: { decidedBy: autoRun.prMergedBy ?? null, decidedAt: autoRun.prMergedAt ?? null, status: "merged" },
+        prNumber: autoRun.prNumber,
+      };
+    }
     if (autoRun.status !== "pr_open" || !autoRun.prNumber) {
       throw new Error("Only an auto-run with an open PR can be merged.");
     }
@@ -1049,6 +1123,10 @@ export function createAutoRunService({
     runTx(() => {
       autoRun.prState = "MERGED";
       autoRun.prStateCheckedAt = now();
+      // #1151: merge was the one autoRun gate whose settle recorded WHO only in
+      // the event log (500-row ring buffer) — stamp it on the record.
+      autoRun.prMergedBy = actor?.userId ?? "usr_local";
+      autoRun.prMergedAt = now();
       appendEvent({
         invocationId: autoRun.invocationId,
         type: "auto_run_pr_merged",
@@ -1310,7 +1388,13 @@ export function createAutoRunService({
       // Already approved, or a near-simultaneous approve is mid-flight — short
       // circuit so two POSTs (double-click / CSRF burst) don't spawn two child
       // issues. (audit finding: approveDesign TOCTOU)
-      return { ok: true, alreadyApproved: true, childIssues: autoRun.childIssues ?? [] };
+      return { ok: true, alreadyApproved: true, alreadyDecided: alreadyDecidedRef(autoRun.designApproval), childIssues: autoRun.childIssues ?? [] };
+    }
+    // #1151: a REJECTED design is settled too — approve doesn't change the run's
+    // status (report_posted), so without this a later approve would overwrite the
+    // recorded rejection.
+    if (autoRun.designApproval) {
+      return { ok: true, alreadyDecided: alreadyDecidedRef(autoRun.designApproval) };
     }
     if (Array.isArray(autoRun.childIssues) && autoRun.childIssues.length > 0) {
       // The implementation issue already exists (auto-spawned at report time);
@@ -1361,6 +1445,12 @@ export function createAutoRunService({
     const autoRun = state.autoRuns.find((item) => item.id === autoRunId);
     if (!autoRun) throw new Error("Auto-run not found.");
     if ((autoRun.decision?.path ?? null) !== "design") throw new Error("Only a design run's report can be rejected.");
+    // #1151: approve leaves the run at report_posted, so the old status guard let
+    // a reject silently OVERWRITE a recorded approval (and a second reject repeat
+    // its side effects). Any existing decision settles this gate.
+    if (autoRun.designApproval) {
+      return { ok: true, alreadyDecided: alreadyDecidedRef(autoRun.designApproval) };
+    }
     if (autoRun.status !== "report_posted") throw new Error("Only a posted design report can be rejected.");
     const by = actor?.userId ?? "usr_local";
     const note = String(feedback ?? "").trim().slice(0, 2000);
@@ -1404,7 +1494,12 @@ export function createAutoRunService({
     // or a near-simultaneous approving) short-circuits instead of erroring — two
     // POSTs (double-click / CSRF burst) must never double-spawn. (mirrors approveDesign)
     if (autoRun.decompositionApproval?.status === "approved" || autoRun.decompositionApproval?.status === "approving") {
-      return { ok: true, alreadyApproved: true, childIssues: autoRun.childIssues ?? [] };
+      return { ok: true, alreadyApproved: true, alreadyDecided: alreadyDecidedRef(autoRun.decompositionApproval), childIssues: autoRun.childIssues ?? [] };
+    }
+    // #1151: a rejected plan is settled — approving it afterwards would overwrite
+    // the recorded rejection. (`partial` deliberately passes: re-approve = retry.)
+    if (autoRun.decompositionApproval?.status === "rejected") {
+      return { ok: true, alreadyDecided: alreadyDecidedRef(autoRun.decompositionApproval) };
     }
     if (autoRun.status !== "plan_proposed") throw new Error("Only a proposed plan can be approved.");
     const by = actor?.userId ?? "usr_local";
@@ -1470,6 +1565,13 @@ export function createAutoRunService({
     const autoRun = state.autoRuns.find((item) => item.id === autoRunId);
     if (!autoRun) throw new Error("Auto-run not found.");
     if ((autoRun.decision?.path ?? null) !== "decompose") throw new Error("Only a decomposition run's plan can be rejected.");
+    // #1151: reject had no idempotency guard — a rejected plan keeps status
+    // plan_proposed, so a second reject re-ran its side effects (duplicate issue
+    // comment + duplicate refusal), and a reject could land on an already
+    // approving/partial plan whose children exist. Any decision settles this gate.
+    if (autoRun.decompositionApproval) {
+      return { ok: true, alreadyDecided: alreadyDecidedRef(autoRun.decompositionApproval) };
+    }
     if (autoRun.status !== "plan_proposed") throw new Error("Only a proposed plan can be rejected.");
     const by = actor?.userId ?? "usr_local";
     const note = String(feedback ?? "").trim().slice(0, 2000);
@@ -1515,6 +1617,11 @@ export function createAutoRunService({
     const autoRun = state.autoRuns.find((item) => item.id === autoRunId);
     if (!autoRun) throw new Error("Auto-run not found.");
     if ((autoRun.decision?.path ?? null) !== "clarify") throw new Error("Only a clarify run's questions can be answered.");
+    // #1151: answering leaves the run at needs_input, so a second answer would
+    // repeat the issue comment and overwrite the recorded answer. First answer wins.
+    if (autoRun.clarifyAnswer) {
+      return { ok: true, alreadyDecided: { decidedBy: autoRun.clarifyAnswer.by ?? null, decidedAt: autoRun.clarifyAnswer.at ?? null, status: "answered" } };
+    }
     if (autoRun.status !== "needs_input") throw new Error("Only a run awaiting input can be answered.");
     const text = String(answers ?? "").trim();
     if (!text) throw new Error("An answer is required.");

@@ -14,8 +14,8 @@
 | --- | --- | --- | --- | --- |
 | ccusage | Windows, macOS, Linux | npm | exact `20.0.14` | canonical npm registry |
 | Claude Code | Windows, macOS, Linux | npm | exact `2.1.206` | canonical npm registry |
-| Git | Windows | winget | provider-managed stable | explicit `winget` source and exact package id |
-| Git | macOS | Homebrew | provider-managed stable | explicit `homebrew/core` formula |
+| Git | Windows | winget | exact `2.50.1` (#995) | explicit `winget` source and exact package id |
+| Git | macOS | Homebrew | provider-managed stable (no versioned core formula — explicit #995 decision) | explicit `homebrew/core` formula |
 
 Linux Git installation is intentionally unavailable. `apt-get` requires an
 elevation model that the Desktop Bridge does not implement, so P4 fails closed

@@ -142,6 +142,14 @@ export function createClaudeApplyImportService({
       markUnverified(authorization, applyInvocation.id, "no governed runner available to execute the deferred verification");
       return;
     }
+    // Audit find (2026-07-16): if the bound worktree row is gone, invocation
+    // creation falls back to a SIBLING worktree — the verify would run (and
+    // record a verdict) in the wrong directory. The rollback path guards this
+    // exact substitution; the verify must too.
+    if (authorization.worktreeId && !(state.worktrees ?? []).some((item) => item.id === authorization.worktreeId)) {
+      markUnverified(authorization, applyInvocation.id, "the bound worktree no longer exists");
+      return;
+    }
     const verifyInvocation = createInvocation(
       `Verify an applied Claude patch (authorization ${authorization.id}) with ${authorization.verifyCommandId}.`,
       runner,
@@ -161,6 +169,14 @@ export function createClaudeApplyImportService({
       },
     );
     authorization.verifyInvocationId = verifyInvocation.id;
+    // Audit find (2026-07-16): invocation creation can gate-reject synchronously
+    // (over_budget / over_quota / reservation refused) — a rejected run never
+    // reaches completion, so stamping "pending" here would strand the
+    // verification forever with an event claiming it was dispatched.
+    if (verifyInvocation.status === "rejected" || ["failed", "cancelled", "timed_out"].includes(verifyInvocation.status)) {
+      markUnverified(authorization, verifyInvocation.id, `verify dispatch was ${verifyInvocation.status} at creation (${stringOrNull(verifyInvocation.result?.errorCode) ?? "admission gate"})`);
+      return;
+    }
     authorization.verification = { ...(authorization.verification ?? {}), state: "pending", verifyCommand: authorization.verifyCommandId };
     appendEvent({
       invocationId: verifyInvocation.id,
@@ -201,13 +217,14 @@ export function createClaudeApplyImportService({
 
   function markUnverified(authorization, invocationId, reason) {
     // Idempotent: a verdict that already landed must not be downgraded by a late
-    // reconcile of the same run.
-    if (["passed", "failed"].includes(authorization.verification?.state)) return;
+    // reconcile of the same run — and an already-unverified authorization must
+    // not re-append the same warning (audit find: deny-after-timeout fired twice).
+    if (["passed", "failed", "unverified"].includes(authorization.verification?.state)) return;
     authorization.verification = { ...(authorization.verification ?? {}), state: "unverified", error: stringOrNull(reason) };
     appendEvent({
       invocationId,
       type: "claude_apply_unverified",
-      level: "warning",
+      level: "warn",
       message: `Authorization ${authorization.id} is applied but UNVERIFIED (${reason}); review manually or use the governed rollback.`,
       data: { claudeApplyAuthorizationId: authorization.id, reason: stringOrNull(reason) },
     });

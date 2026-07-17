@@ -49,6 +49,35 @@ import { makeRunTx } from "../runtime/store/run-tx.mjs";
 
 const CCUSAGE_APPROVAL_REQUIRED_REPORTS = new Set(["session"]);
 
+const ANALYZE_TERMINAL_STATUSES = new Set(["succeeded", "failed", "cancelled", "timed_out", "rejected"]);
+
+// Audit find (2026-07-16): the analyze.issue resolver is an in-process
+// continuation — it dies with the server. An invocation restored still carrying
+// `pendingIssueFetch` has a resolver that will NEVER run: fail it closed at boot
+// (same issue_fetch_failed contract as a live fetch miss) instead of leaving a
+// held/queued row stranded forever. Called by the composer after state restore.
+export function failStrandedIssueFetches(state, { now, appendEvent }) {
+  let reconciled = 0;
+  for (const invocation of state.invocations ?? []) {
+    if (invocation?.options?.metadata?.pendingIssueFetch !== true) continue;
+    delete invocation.options.metadata.pendingIssueFetch;
+    if (ANALYZE_TERMINAL_STATUSES.has(invocation.status)) continue;
+    invocation.status = "failed";
+    invocation.result = { errorCode: "issue_fetch_failed", summary: "The issue-body resolver did not survive a server restart; re-run the analysis." };
+    invocation.completedAt = now();
+    invocation.updatedAt = now();
+    appendEvent({
+      invocationId: invocation.id,
+      type: "invocation_failed",
+      level: "warn",
+      message: "Issue analysis failed: the server restarted before its issue body was resolved.",
+      data: { reconciled: true },
+    });
+    reconciled += 1;
+  }
+  return { reconciled };
+}
+
 export function createToolService({
   state,
   now,
@@ -601,6 +630,14 @@ export function createToolService({
       },
       timeoutSeconds: 240,
     });
+    // Audit find (2026-07-16): "queued" is claimable by the bridge IMMEDIATELY —
+    // startInvocationIfAllowed only gates the direct-HTTP path, so without this
+    // hold the bridge could claim the run during the fetch window and spawn the
+    // wrapper with no fenced body. `held` is outside the claim filter's accepted
+    // states; the resolver releases it (or the boot reconcile fails it closed).
+    if (invocation.delivery && invocation.delivery.state === "queued") {
+      invocation.delivery.state = "held";
+    }
     appendEvent({
       invocationId: invocation.id,
       type: "tool_invocation_created",
@@ -645,6 +682,12 @@ export function createToolService({
     }
     runTx(() => {
       delete invocation.options.metadata.pendingIssueFetch;
+      // Audit find (2026-07-16): the run can go terminal DURING the fetch (a
+      // cancel is legal on a queued invocation). A terminal verdict must never
+      // be overwritten by this late resolver — in either branch.
+      if (ANALYZE_TERMINAL_STATUSES.has(invocation.status)) {
+        return;
+      }
       if (typeof body !== "string" || !body.trim()) {
         // Fail closed: no server-resolved body, no run. The caller sees an
         // explicit terminal error, never a wrapper spawned on missing data.
@@ -677,7 +720,14 @@ export function createToolService({
           data: { issueNumber, markers: injection.markers },
         });
       }
-      startInvocationIfAllowed(invocation, agent);
+      // Release the delivery hold now that the fenced body is stamped — the
+      // bridge may claim it from here. Use a FRESH agent lookup: the reference
+      // captured at creation may have been disabled during the fetch.
+      if (invocation.delivery?.state === "held") {
+        invocation.delivery.state = "queued";
+      }
+      const freshAgent = typeof findAgent === "function" ? findAgent(agent.id) ?? agent : agent;
+      startInvocationIfAllowed(invocation, freshAgent);
     });
   }
 
@@ -845,6 +895,25 @@ export function createToolService({
       state.claudeApplyAuthorizations = state.claudeApplyAuthorizations ?? [];
       state.claudeApplyAuthorizations.unshift(authorization);
       pruneClaudeApplyAuthorizations();
+      // Audit find (2026-07-16): invocation creation can gate-reject
+      // synchronously (over_budget / over_quota / reservation refused). A
+      // rejected run never reaches completion, so the fold that would resolve
+      // this authorization never fires — without this it sits "applying"
+      // forever with the grant already burned and the patch blob never dropped.
+      if (invocation.status === "rejected") {
+        authorization.status = "failed";
+        authorization.applied = false;
+        authorization.resultSummary = `apply dispatch rejected at creation (${stringOrNull(invocation.result?.errorCode) ?? "admission gate"}); the grant was consumed — request a fresh one after resolving the gate.`;
+        delete invocation.options.metadata.applyPatch;
+        appendEvent({
+          invocationId: value.proposalInvocationId,
+          type: "claude_apply_failed",
+          level: "warn",
+          message: `Claude patch apply for authorization ${authorization.id} was rejected at creation by an admission gate; the worktree was not mutated.`,
+          data: { claudeApplyAuthorizationId: authorization.id, proposalInvocationId: value.proposalInvocationId, errorCode: stringOrNull(invocation.result?.errorCode) },
+        });
+        return;
+      }
       startInvocationIfAllowed(invocation, runner);
       appendEvent({
         invocationId: value.proposalInvocationId,
@@ -864,7 +933,9 @@ export function createToolService({
       body: {
         tool: CLAUDE_APPLY_TOOL_CONTRACT.name,
         authorizationId: authorization.id,
-        status: "applying",
+        // Reflects the gate outcome: "applying" normally, "failed" when the
+        // dispatch was admission-rejected inside the transaction above.
+        status: authorization.status,
         applied: false,
         executionInvocationId: invocation.id,
         agentId: runner.id,

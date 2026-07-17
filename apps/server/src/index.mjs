@@ -2,6 +2,16 @@ import { mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { startAutomationScheduler } from "./runtime/automation-scheduler.mjs";
 import { startAutoTriggerScheduler } from "./runtime/auto-trigger-scheduler.mjs";
+import { createDingtalkClient } from "./gateway/dingtalk-client.mjs";
+import { createDingtalkGateway, dingtalkGatewayConfigFromEnv } from "./gateway/dingtalk-gateway.mjs";
+import { createFeishuClient } from "./gateway/feishu-client.mjs";
+import { createFeishuGateway, feishuGatewayConfigFromEnv } from "./gateway/feishu-gateway.mjs";
+import { createSlackClient } from "./gateway/slack-client.mjs";
+import { createSlackGateway, slackGatewayConfigFromEnv } from "./gateway/slack-gateway.mjs";
+import { createTeamsClient } from "./gateway/teams-client.mjs";
+import { createTeamsGateway, teamsGatewayConfigFromEnv } from "./gateway/teams-gateway.mjs";
+import { createWecomClient } from "./gateway/wecom-client.mjs";
+import { createWecomGateway, wecomGatewayConfigFromEnv } from "./gateway/wecom-gateway.mjs";
 import { createHttpServer } from "./runtime/http-server.mjs";
 import { runProtocolSelfCheck } from "./runtime/self-check.mjs";
 import { createServerRuntimeServices } from "./runtime/service-composer.mjs";
@@ -66,6 +76,7 @@ const {
   savePersistentState,
   exportJsonSnapshot,
   selfCheckDependencies,
+  appendEvent,
 } = createServerRuntimeServices({
   namespace,
   protocolVersion,
@@ -98,6 +109,120 @@ server.listen(port, host, () => {
   console.log(`[server] http://${host}:${port}`);
 });
 
+// Channel gateways (#1090/#1110; ADR 0012 rule 1 + ADR 0013): each provider is
+// its OWN public listener serving nothing but its callback path — off unless
+// fully configured. Secrets stay in this process's env; each gateway forwards
+// verified, decrypted, normalized events into the shared importChannelEvent, and
+// the control-plane API is never reachable on any gateway port.
+{
+  let anySenderBound = false;
+
+  // WeCom (#1090).
+  const wecomConfig = wecomGatewayConfigFromEnv();
+  if (wecomConfig.port && wecomConfig.token && wecomConfig.encodingAesKey && wecomConfig.channelId) {
+    createWecomGateway({
+      token: wecomConfig.token,
+      encodingAesKey: wecomConfig.encodingAesKey,
+      receiveId: wecomConfig.receiveId,
+      channelId: wecomConfig.channelId,
+      importChannelEvent: httpDependencies.importChannelEvent,
+    }).createServer().listen(wecomConfig.port, wecomConfig.host, () => {
+      console.log(`[wecom-gateway] callback listener on ${wecomConfig.host}:${wecomConfig.port} → channel ${wecomConfig.channelId}`);
+    });
+    const corpSecret = String(process.env.WECOM_CORP_SECRET ?? "").trim();
+    const agentId = String(process.env.WECOM_AGENT_ID ?? "").trim();
+    if (corpSecret && agentId && wecomConfig.receiveId) {
+      const client = createWecomClient({ corpId: wecomConfig.receiveId, corpSecret, agentId });
+      httpDependencies.setChannelDeliverySender("wecom", client.sendApplicationMessage);
+      anySenderBound = true;
+    }
+  }
+
+  // Feishu / Lark (#1110).
+  const feishuConfig = feishuGatewayConfigFromEnv();
+  if (feishuConfig.port && feishuConfig.verificationToken && feishuConfig.encryptKey && feishuConfig.channelId) {
+    createFeishuGateway({
+      verificationToken: feishuConfig.verificationToken,
+      encryptKey: feishuConfig.encryptKey,
+      channelId: feishuConfig.channelId,
+      importChannelEvent: httpDependencies.importChannelEvent,
+    }).createServer().listen(feishuConfig.port, feishuConfig.host, () => {
+      console.log(`[feishu-gateway] callback listener on ${feishuConfig.host}:${feishuConfig.port} → channel ${feishuConfig.channelId}`);
+    });
+    const appId = String(process.env.FEISHU_APP_ID ?? "").trim();
+    const appSecret = String(process.env.FEISHU_APP_SECRET ?? "").trim();
+    const baseUrl = String(process.env.FEISHU_BASE_URL ?? "").trim() || undefined;
+    if (appId && appSecret) {
+      const client = createFeishuClient({ appId, appSecret, baseUrl });
+      httpDependencies.setChannelDeliverySender("feishu", client.sendApplicationMessage);
+      anySenderBound = true;
+    }
+  }
+
+  // DingTalk / 钉钉 (#1119).
+  const dingtalkConfig = dingtalkGatewayConfigFromEnv();
+  if (dingtalkConfig.port && dingtalkConfig.appSecret && dingtalkConfig.channelId) {
+    createDingtalkGateway({
+      appSecret: dingtalkConfig.appSecret,
+      channelId: dingtalkConfig.channelId,
+      importChannelEvent: httpDependencies.importChannelEvent,
+    }).createServer().listen(dingtalkConfig.port, dingtalkConfig.host, () => {
+      console.log(`[dingtalk-gateway] callback listener on ${dingtalkConfig.host}:${dingtalkConfig.port} → channel ${dingtalkConfig.channelId}`);
+    });
+    const appKey = String(process.env.DINGTALK_APP_KEY ?? "").trim();
+    const robotCode = String(process.env.DINGTALK_ROBOT_CODE ?? "").trim();
+    const baseUrl = String(process.env.DINGTALK_BASE_URL ?? "").trim() || undefined;
+    if (appKey && robotCode) {
+      const client = createDingtalkClient({ appKey, appSecret: dingtalkConfig.appSecret, robotCode, baseUrl });
+      httpDependencies.setChannelDeliverySender("dingtalk", client.sendApplicationMessage);
+      anySenderBound = true;
+    }
+  }
+
+  // Slack (#1128).
+  const slackConfig = slackGatewayConfigFromEnv();
+  if (slackConfig.port && slackConfig.signingSecret && slackConfig.channelId) {
+    createSlackGateway({
+      signingSecret: slackConfig.signingSecret,
+      channelId: slackConfig.channelId,
+      importChannelEvent: httpDependencies.importChannelEvent,
+    }).createServer().listen(slackConfig.port, slackConfig.host, () => {
+      console.log(`[slack-gateway] callback listener on ${slackConfig.host}:${slackConfig.port} → channel ${slackConfig.channelId}`);
+    });
+    const botToken = String(process.env.SLACK_BOT_TOKEN ?? "").trim();
+    if (botToken) {
+      const client = createSlackClient({ botToken });
+      httpDependencies.setChannelDeliverySender("slack", client.sendApplicationMessage);
+      anySenderBound = true;
+    }
+  }
+
+  // Microsoft Teams (#1135).
+  const teamsConfig = teamsGatewayConfigFromEnv();
+  if (teamsConfig.port && teamsConfig.appId && teamsConfig.channelId) {
+    createTeamsGateway({
+      appId: teamsConfig.appId,
+      channelId: teamsConfig.channelId,
+      importChannelEvent: httpDependencies.importChannelEvent,
+    }).createServer().listen(teamsConfig.port, teamsConfig.host, () => {
+      console.log(`[teams-gateway] callback listener on ${teamsConfig.host}:${teamsConfig.port} → channel ${teamsConfig.channelId}`);
+    });
+    const appPassword = String(process.env.TEAMS_APP_PASSWORD ?? "").trim();
+    if (appPassword) {
+      const client = createTeamsClient({ appId: teamsConfig.appId, appPassword });
+      httpDependencies.setChannelDeliverySender("teams", client.sendApplicationMessage);
+      anySenderBound = true;
+    }
+  }
+
+  // One delivery sweep serves every provider (delivery routes by channel.provider).
+  if (anySenderBound) {
+    const sweep = () => httpDependencies.sweepChannelDeliveries().catch(() => {});
+    sweep(); // restart recovery: resume queued/retrying deliveries on boot
+    setInterval(sweep, 15_000).unref?.();
+  }
+}
+
 // Fire due automations on a 30s tick (self-check exits above, so this only runs
 // for a real server). Pulls the same composed helpers the routes use.
 startAutomationScheduler({ now, ...httpDependencies });
@@ -111,6 +236,19 @@ startAutoTriggerScheduler({ state, ...httpDependencies });
 if (typeof httpDependencies.reapStuckAutoRuns === "function") {
   httpDependencies.reapStuckAutoRuns().catch(() => {});
   setInterval(() => httpDependencies.reapStuckAutoRuns().catch(() => {}), 60_000).unref?.();
+}
+
+// O5.2 follow-up: close the SLO → alert loop. Evaluate the loop's SLOs on a slow
+// tick and dispatch an operational alert when the below-target set changes
+// (throttled internally; no-op when SLOs are on target or there is no data).
+if (typeof httpDependencies.sweepAutoRunSloAlerts === "function") {
+  setInterval(() => {
+    try {
+      httpDependencies.sweepAutoRunSloAlerts();
+    } catch {
+      /* best-effort SLO alert sweep */
+    }
+  }, 60_000).unref?.();
 }
 
 // Risk-based merge (opt-in): sweep open PRs on a slow tick and auto-merge the
@@ -151,7 +289,8 @@ if (typeof httpDependencies.bridgeLivenessSweep === "function") {
 {
   const sweepRetention = () => {
     try {
-      const { reaped } = applyRetentionPolicies(state, { now });
+      // #1084: the sweep leaves one audit event per transcript reap batch.
+      const { reaped } = applyRetentionPolicies(state, { now, appendEvent });
       if (reaped > 0) savePersistentState();
     } catch {
       /* best-effort retention sweep */

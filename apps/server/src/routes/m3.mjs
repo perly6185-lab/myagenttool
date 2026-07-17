@@ -142,7 +142,7 @@ export async function handleM3Routes({
       return true;
     }
     try {
-      sendJson(res, 202, { rollback, queuedAction: queueRollbackAction(rollback) });
+      sendJson(res, 202, { rollback, queuedAction: queueRollbackAction(rollback, { actor }) });
       return true;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -168,6 +168,16 @@ export async function handleM3Routes({
     const approval = findLifecycleLocalApproval(decodeURIComponent(lifecycleApprovalMatch[1]));
     if (!approval) {
       sendJson(res, 404, { error: "lifecycle_approval_not_found" });
+      return true;
+    }
+    // #1151: a settled lifecycle approval is immutable (the service now guards
+    // the clobber); the second operator is told who decided and when.
+    if (approval.status !== "pending") {
+      sendJson(res, 200, {
+        approval,
+        recipe: findLifecycleRecipe(approval.recipeId),
+        alreadyDecided: { decidedBy: approval.decidedBy ?? null, decidedAt: approval.decidedAt ?? null, status: approval.status },
+      });
       return true;
     }
     const updated = decideLifecycleLocalApproval(approval, lifecycleApprovalMatch[2], actor);

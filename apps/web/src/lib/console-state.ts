@@ -213,6 +213,8 @@ export interface PendingDecision {
   /** Native section to deep-link to for the full context. */
   section: string;
   targetId?: string | null;
+  /** #1151: advisory "X is handling this" marker — display-only, never gates the decision. */
+  softClaim?: { claimedBy: string | null; expiresAt: string | null };
   /** Ids the inline actions need (approvalId / autoRunId / compareRunId / requestId / invocationId …). */
   ref?: {
     approvalId?: string;
@@ -229,6 +231,39 @@ export interface PendingDecision {
     recoveryActionRequestId?: string | null;
     applicationId?: string | null;
   };
+}
+
+/** #1143: an issue's develop/review lease — one active develop claim per issue. */
+export interface IssueClaim {
+  id: string;
+  projectId: string;
+  issueNumber: number;
+  mode: "develop" | "review";
+  claimedBy: string;
+  teamId?: string | null;
+  agentId?: string | null;
+  autoRunId?: string | null;
+  status: "active" | "released" | "expired";
+  leaseExpiresAt?: string | null;
+  outcome?: string | null;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+/** #1152: one durable claim lifecycle transition (kept outside the event ring buffer). */
+export interface IssueClaimEvent {
+  id: string;
+  claimId: string;
+  projectId: string;
+  issueNumber: number;
+  type: "claimed" | "released" | "expired";
+  mode: "develop" | "review";
+  claimedBy: string;
+  /** Who performed the transition — differs from claimedBy when a release was on the holder's behalf. */
+  actorId?: string | null;
+  autoRunId?: string | null;
+  outcome?: string | null;
+  at: string;
 }
 
 export interface CompareRunSnapshot {
@@ -725,6 +760,23 @@ export interface LedgerAgentRollup {
   unknownEntries: number;
 }
 
+export interface LedgerModelRollup {
+  model: string;
+  provider?: string;
+  entries: number;
+  knownCostUsd: number;
+  estimatedCostUsd: number;
+  unknownEntries: number;
+}
+
+export interface LedgerAutoRunRollup {
+  autoRunId: string;
+  entries: number;
+  knownCostUsd: number;
+  estimatedCostUsd: number;
+  unknownEntries: number;
+}
+
 export interface LedgerSummary {
   currency: string;
   totalCostUsd: number;
@@ -739,6 +791,8 @@ export interface LedgerSummary {
   byCostOwner: LedgerOwnerRollup[];
   byProject: LedgerProjectRollup[];
   byAgent: LedgerAgentRollup[];
+  byModel: LedgerModelRollup[];
+  byAutoRun: LedgerAutoRunRollup[];
 }
 
 export interface ProjectSnapshot {
@@ -991,6 +1045,10 @@ export interface ConsoleSnapshot {
   worktrees?: WorktreeSnapshot[];
   worktreeReviews?: WorktreeReview[];
   deployments?: DeploymentSnapshot[];
+  /** #1143 issue claims — who holds each issue's develop/review lease. */
+  issueClaims?: IssueClaim[];
+  /** #1152 durable claim lifecycle history (claimed/released/expired), newest first. */
+  issueClaimEvents?: IssueClaimEvent[];
   agent: AgentSnapshot | null;
   agents: AgentSnapshot[];
   invocations: InvocationSnapshot[];
@@ -1035,6 +1093,44 @@ export interface ConsoleSnapshot {
   budgetStatuses?: BudgetStatus[];
   teamBudgetStatuses?: TeamBudgetStatus[];
   teams?: { id: string; name?: string }[];
+  /** Channel subsystem (#1090): operational rollup per channel, team-scoped. */
+  channelOperations?: ChannelOperations[];
+  channelDeliveries?: ChannelDelivery[];
+}
+
+/** Per-channel operational rollup (read-models/channels.mjs). No secrets — readiness is booleans. */
+export interface ChannelOperations {
+  id: string;
+  provider: string;
+  name: string;
+  status: "registered" | "enabled" | "disabled" | string;
+  ownerTeamId?: string | null;
+  readiness: Record<string, boolean>;
+  ready: boolean;
+  health: "ok" | "attention" | "idle" | string;
+  capabilityAllowlist: string[];
+  statusCapability?: string | null;
+  counts: {
+    identities: number;
+    conversations: number;
+    events: number;
+    deliveries: number;
+    failedDeliveries: number;
+    injectionFlagged: number;
+  };
+  lastActivityAt?: string | null;
+}
+
+export interface ChannelDelivery {
+  id: string;
+  channelId: string;
+  conversationId: string;
+  invocationId?: string | null;
+  status: "queued" | "sending" | "delivered" | "retrying" | "failed_terminal" | string;
+  attempts: number;
+  providerReceiptId?: string | null;
+  lastErrorCode?: string | null;
+  updatedAt?: string | null;
 }
 
 export type ApplicationSource =

@@ -15,6 +15,13 @@ This index lists accepted engineering decisions that guide implementation.
 - [ADR 0009: An Application descriptor is immutable — change means re-register](ADR_0009_APPLICATION_DESCRIPTOR_IMMUTABLE.md)
 - [ADR 0010: An external Application's authorization is readiness, not a capability](ADR_0010_EXTERNAL_CREDENTIAL_READINESS.md)
 - [ADR 0011: Mail intake is untrusted input; send is the exfiltration boundary](ADR_0011_MAIL_UNTRUSTED_INPUT.md)
+- [ADR 0012: A Channel is a governed conversation boundary; the gateway is a separate public listener](ADR_0012_CHANNEL_BOUNDARY.md)
+- [ADR 0013: Channel providers are pluggable; the governed core is provider-agnostic](ADR_0013_CHANNEL_PROVIDERS_PLUGGABLE.md)
+- [ADR 0014: A write-credential Application is a reviewed exception class, never a widened read credential](ADR_0014_WRITE_CREDENTIAL_APPLICATION.md)
+- [ADR 0015: Linux install elevation is a per-action polkit broker, never an ambient privilege](ADR_0015_LINUX_ELEVATION_BROKER.md)
+- [ADR 0016: A run's terminal grade is a derived read-model field first; a stored `finalStatus` is additive, never a replacement for `status`](ADR_0016_TERMINAL_GRADE.md)
+- [ADR 0017: Trace export is a zero-dependency, opt-in OTLP/HTTP JSON exporter over the existing span model, never an OpenTelemetry SDK rewrite](ADR_0017_OTLP_TRACE_EXPORT.md)
+- [ADR 0018: Per-subject deletion erases observability content through the retention chokepoint, but shielded evidence is retained-of-record and only PII-redacted](ADR_0018_OBSERVABILITY_DATA_DELETION.md)
 
 ## M0 Decision Summary
 

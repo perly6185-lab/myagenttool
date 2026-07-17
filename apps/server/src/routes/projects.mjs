@@ -1,9 +1,10 @@
 import { randomBytes } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { basename, dirname, extname, join, relative, resolve, sep } from "node:path";
-import { denyForeignProject } from "../runtime/auth.mjs";
+import { denyForeignProject, teamOf } from "../runtime/auth.mjs";
+import { computeDispatchEvaluation } from "../read-models/dispatch-evaluation.mjs";
 import { recordHttpGateRefusal } from "./refusal-http-gate.mjs";
-import { summarizeAutoRuns } from "../services/auto-run-metrics.mjs";
+import { deriveFinalStatus, summarizeAutoRuns } from "../services/auto-run-metrics.mjs";
 import { summarizeDeployments } from "../services/auto-run-deploy-metrics.mjs";
 import { readEvalTrend, summarizeEvalTrend } from "../services/eval-trend.mjs";
 import { maturityScorecard, latestDora } from "../read-models/maturity-scorecard.mjs";
@@ -44,6 +45,9 @@ export async function handleProjectRoutes({
   retryAutoRun,
   cancelAutoRun,
   mergeAutoRunPr,
+  claimIssue,
+  releaseIssueClaim,
+  listIssueClaims,
   approveDesign,
   rejectDesign,
   answerClarify,
@@ -317,6 +321,10 @@ export async function handleProjectRoutes({
     );
     const enriched = autoRuns.map((run) => {
       let out = run;
+      // Derived terminal grade (clean / degraded / unverified success, or failed)
+      // for a per-run quality badge; null while the run is still in flight.
+      const finalStatus = deriveFinalStatus(run);
+      if (finalStatus) out = { ...out, finalStatus };
       // Merge-risk badge for open PRs (the risk-based merge policy's read model).
       if (run.status === "pr_open") {
         // Fold in the STORED review / diff-size / sensitive-path signals when a
@@ -382,6 +390,20 @@ export async function handleProjectRoutes({
     return true;
   }
 
+  if (req.method === "GET" && url.pathname === "/api/dispatch-evaluation") {
+    // #1174 (R2 of #1170): per-worker / per-(worker×area) dispatch outcomes.
+    // Unlike /api/maturity and /api/dora (global artifacts), this is per-project
+    // data, so it MUST be team-scoped — filter assignments to projects the
+    // actor's team owns, then aggregate.
+    const teamId = actor?.teamId ?? null;
+    const visibleProjectIds = new Set(
+      (state.projects ?? []).filter((p) => teamId == null || teamOf(p) === teamId).map((p) => p.id),
+    );
+    const scoped = (state.dispatchAssignments ?? []).filter((a) => visibleProjectIds.has(a?.projectId));
+    sendJson(res, 200, computeDispatchEvaluation(scoped));
+    return true;
+  }
+
   const readinessMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/auto-run-readiness$/);
   if (readinessMatch && req.method === "GET") {
     // U1 preflight: can this project run an auto-run, and what's missing?
@@ -441,6 +463,56 @@ export async function handleProjectRoutes({
     } catch (error) {
       sendJson(res, 400, { error: "auto_run_failed", message: errorMessage(error) });
     }
+    return true;
+  }
+
+  // #1143 issue claims: the self-service claim surface. Claiming is the write
+  // chokepoint's decision (409 on a foreign develop claim); reading an issue is
+  // never gated, so GET simply lists.
+  const projectIssueClaimsMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/issue-claims$/);
+  if (projectIssueClaimsMatch && req.method === "GET") {
+    const projectId = decodeURIComponent(projectIssueClaimsMatch[1]);
+    if (denyForeignProject({ res, sendJson, state, actor, projectId, notFound: { error: "project_not_found" } })) {
+      return true;
+    }
+    sendJson(res, 200, {
+      issueClaims: listIssueClaims({ projectId, includeSettled: url.searchParams.get("includeSettled") === "1" }),
+    });
+    return true;
+  }
+  if (projectIssueClaimsMatch && req.method === "POST") {
+    const projectId = decodeURIComponent(projectIssueClaimsMatch[1]);
+    if (denyForeignProject({ res, sendJson, state, actor, projectId, notFound: { error: "project_not_found" } })) {
+      return true;
+    }
+    const body = await readJson(req);
+    const result = claimIssue({
+      projectId,
+      issueNumber: body?.issueNumber,
+      mode: body?.mode ?? "develop",
+      actor,
+    });
+    if (!result.ok) {
+      const conflict = Boolean(result.claim);
+      sendJson(res, conflict ? 409 : 400, { error: conflict ? "issue_already_claimed" : "invalid_claim", message: result.reason, claim: result.claim ?? null });
+      return true;
+    }
+    sendJson(res, 201, { claim: result.claim, renewed: result.renewed === true });
+    return true;
+  }
+
+  const issueClaimReleaseMatch = url.pathname.match(/^\/api\/issue-claims\/([^/]+)\/release$/);
+  if (issueClaimReleaseMatch && req.method === "POST") {
+    const claimId = decodeURIComponent(issueClaimReleaseMatch[1]);
+    const claim = (state.issueClaims ?? []).find((item) => item.id === claimId) ?? null;
+    // A foreign-team claim is indistinguishable from a missing one (404, not
+    // 403) — same anti-enumeration stance as denyForeignProject.
+    if (!claim || denyForeignProject({ res, sendJson, state, actor, projectId: claim.projectId, notFound: { error: "issue_claim_not_found" } })) {
+      if (!claim) sendJson(res, 404, { error: "issue_claim_not_found" });
+      return true;
+    }
+    const released = releaseIssueClaim(claimId, { actor, outcome: "released" });
+    sendJson(res, 200, { released, claim });
     return true;
   }
 

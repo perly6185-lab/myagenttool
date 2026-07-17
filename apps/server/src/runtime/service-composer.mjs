@@ -23,6 +23,10 @@ import { createApplicationStatsRuntime } from "../services/application-stats.mjs
 import { createCapabilityService } from "../services/capabilities.mjs";
 import { createMailIssueWriteService } from "../services/mail-issue-write.mjs";
 import { createMailReplyDraftService } from "../services/mail-reply-draft.mjs";
+import { createMailSendService } from "../services/mail-send.mjs";
+import { createChannelService } from "../services/channels.mjs";
+import { createChannelConversationService } from "../services/channel-conversation.mjs";
+import { createChannelDeliveryService } from "../services/channel-delivery.mjs";
 import { createApplicationResultImportService } from "../services/application-results.mjs";
 import { createCcusageImportService } from "../services/ccusage-imports.mjs";
 import { createClaudeReviewImportService } from "../services/claude-review-imports.mjs";
@@ -37,8 +41,10 @@ import { createInvocationService } from "../services/invocations.mjs";
 import { createM3Service } from "../services/m3.mjs";
 import { createProjectService, sameProjectPath } from "../services/projects.mjs";
 import { createAutoRunService } from "../services/auto-run.mjs";
+import { createDecisionSoftClaimService } from "../services/decision-soft-claims.mjs";
+import { createIssueClaimService } from "../services/issue-claims.mjs";
 import { resolveAutoRunVerifyCommand, resolveAutoRunVerifyCommandFor, runWorktreeVerification } from "../services/worktree-verify.mjs";
-import { resolveStatusWritebackConfig, runIssueBodyFetch, runIssueComment, runIssueStatusTransition, runPrChecks, runPrMerge, runPrStateFetch, runIssueStateFetch } from "../services/issue-status.mjs";
+import { resolveStatusWritebackConfig, runIssueAssigneeEdit, runIssueBodyFetch, runIssueComment, runIssueStatusTransition, runPrChecks, runPrMerge, runPrStateFetch, runIssueStateFetch } from "../services/issue-status.mjs";
 import { deciderTimeoutMs, resolveDeciderCommand, runDeciderCommand } from "../services/decision-command.mjs";
 import { childIssueBody, childIssueTitle, extractProjectFieldsBlock, runChildIssueCreate, spawnIssuesConfig } from "../services/auto-run-spawn.mjs";
 import { refreshPrDispositions } from "../services/auto-run-eval.mjs";
@@ -50,8 +56,9 @@ import { resolveDeployCommand, deployTimeoutMs, runDeployCommand, resolveRollbac
 import { decisionConfig } from "../services/auto-run-decision.mjs";
 import { autoRunSettingsEnvOverlay } from "../services/auto-run-config.mjs";
 import { createAlertDispatcher } from "../services/auto-run-alerts.mjs";
+import { DEFAULT_SLO_TARGETS, evaluateSloAlert, summarizeAutoRunSlos } from "../services/auto-run-slo.mjs";
 import { createTerminalService } from "../services/terminal.mjs";
-import { createToolService } from "../services/tools.mjs";
+import { createToolService, failStrandedIssueFetches } from "../services/tools.mjs";
 
 export function createServerRuntimeServices({
   namespace,
@@ -201,6 +208,10 @@ export function createServerRuntimeServices({
     persistStateSoon,
     getCodexEventHandlers: () => codexEventHandlers,
   });
+  // Audit find (2026-07-16): an analyze.issue invocation restored mid-fetch has
+  // a resolver that died with the previous process — fail it closed now, before
+  // anything can claim it.
+  failStrandedIssueFetches(state, { now, appendEvent });
   // Refusal model Phase 2 (#760): the single writer for the device's veto.
   const { refuse, firstRefusal } = createRefusalRuntime({
     state,
@@ -342,6 +353,8 @@ export function createServerRuntimeServices({
     repoPathForEvidence,
     resolveCodexApprovalBrokerRequest: resolveCodexApprovalBrokerRequestBase,
     resolveResumeCodexSessionId,
+    resumableCodexSessions,
+    setCodexSessionName,
     updateCodexSessionFromEvent,
   } = createCodexService({
     state,
@@ -429,6 +442,44 @@ export function createServerRuntimeServices({
     // at run-completion (well after init), so referencing it here is safe.
     dispatchAlert: (alert) => autoRunAlerts.dispatch(alert),
   });
+  // #1151 decision soft-claims: the Approvals queue's advisory "X is handling
+  // this" markers. Independent of the decision paths themselves (which enforce
+  // idempotency on their own records).
+  const { claimDecision, releaseDecisionClaim } = createDecisionSoftClaimService({
+    state,
+    now,
+    nextId,
+    persistStateSoon,
+    store,
+  });
+
+  // #1143 issue claims: the issue-level develop lease. Composed before the
+  // auto-run service, which gates admission on it and releases it on settle.
+  const {
+    claimIssue,
+    releaseIssueClaim,
+    releaseClaimsForAutoRun: releaseIssueClaimsForAutoRun,
+    listIssueClaims,
+  } = createIssueClaimService({
+    state,
+    now,
+    nextId,
+    appendEvent,
+    persistStateSoon,
+    store,
+    // #1150: GitHub assignee mirror — opt-in (console knob or env), checked
+    // LIVE per call so flipping it needs no restart. Resolves the project's
+    // ready checkout the same way the gh issue listing does.
+    mirrorAssignee: async ({ projectId, issueNumber, action }) => {
+      const enabled = state.autoRunSettings?.issueAssigneeMirror === true
+        || process.env.MYAGENTTOOL_ISSUE_ASSIGNEE_MIRROR === "1";
+      if (!enabled) return null;
+      const target = (state.projectTargets ?? []).find((t) => t.projectId === projectId && t.state === "ready");
+      if (!target?.rootPath) return null;
+      return runIssueAssigneeEdit({ cwd: target.rootPath, issueNumber, action });
+    },
+  });
+
   const { recordCcusageImportedEstimates } = createCcusageImportService({
     state,
     now,
@@ -494,6 +545,13 @@ export function createServerRuntimeServices({
   // below (it needs createInvocation from this very service). Set after the
   // auto-run service exists; until then completion has nothing to advance.
   let advanceAutoRunHook = null;
+  // #1147: same late-binding for the mail send fold — the send service needs
+  // createInvocation (composed below), completion needs the fold here.
+  let mailSendHooks = null;
+  // S5 (#1090): channel-originated invocations report their outcome back to the
+  // originating conversation. Late-bound like the auto-run hook — the delivery
+  // service composes after the invocation service.
+  let channelDeliveryHook = null;
   let approvalAutoRunHook = null;
   let denialAutoRunHook = null;
   // Same late-binding for orchestration auto-recovery: it reuses the recovery
@@ -520,6 +578,7 @@ export function createServerRuntimeServices({
     recordCodexReviewFindings,
     recordClaudeReviewFindings,
     recordClaudeApplyResult,
+    recordMailSendResult: (args) => mailSendHooks?.recordMailSendResult(args) ?? null,
     recordCodexExecChanges,
     recordApplicationResult,
     currentProject,
@@ -543,6 +602,8 @@ export function createServerRuntimeServices({
     // #968: the Store seam — dispatch claim/ack commit through its unit of work.
     store,
     checkUsageQuota,
+    // #1084: transcript count-cap evictions spill to the retention archive.
+    capWithArchive: retentionArchive.capWithArchive,
     onInvocationCompleted: (invocation) => {
       advanceAutoRunHook?.(invocation);
       try {
@@ -555,12 +616,19 @@ export function createServerRuntimeServices({
       } catch {
         /* auto-recovery is best-effort; completion must never fail because of it */
       }
+      try {
+        channelDeliveryHook?.(invocation);
+      } catch {
+        /* channel notification is best-effort; completion must never fail because of it */
+      }
     },
     onInvocationApproved: (invocation) => approvalAutoRunHook?.(invocation),
     onInvocationDenied: (invocation) => {
       // Deny skips the completion runtime, so an apply/rollback held at the local
       // gate and denied would strand its authorization at applying/rolling_back.
       reconcileClaudeApplyTermination(invocation);
+      // #1147: same for a denied send — the draft must read send_unconfirmed.
+      mailSendHooks?.reconcileMailSendTermination(invocation);
       denialAutoRunHook?.(invocation);
     },
   });
@@ -593,6 +661,34 @@ export function createServerRuntimeServices({
   // applies without a restart. No-op when unconfigured; never throws.
   const autoRunAlerts = createAlertDispatcher({ getWebhookUrl: () => state.autoRunSettings?.alertWebhookUrl ?? null });
 
+  // O5.2 follow-up: close the SLO → alert loop. Evaluate the loop's SLOs on a
+  // slow tick (index.mjs) and dispatch when the below-target set CHANGES —
+  // throttled so a persistently-below SLO isn't re-alerted every tick. Emits an
+  // audit event alongside the (best-effort) webhook so the breach is provable
+  // from the event log even when no webhook is configured.
+  function sweepAutoRunSloAlerts() {
+    const targets = state.autoRunSettings?.sloTargets
+      ? { ...DEFAULT_SLO_TARGETS, ...state.autoRunSettings.sloTargets }
+      : DEFAULT_SLO_TARGETS;
+    const summary = summarizeAutoRunSlos(state.autoRuns ?? [], targets);
+    const previous = state.autoRunSloAlert?.signature ?? "";
+    const { changed, signature, alert } = evaluateSloAlert(summary, previous);
+    if (!changed) return { alerted: false };
+    state.autoRunSloAlert = { signature, at: now() };
+    if (alert) {
+      void autoRunAlerts.dispatch(alert);
+      appendEvent({
+        invocationId: null,
+        type: "auto_run_slo_alert",
+        level: alert.severity === "info" ? "info" : "warn",
+        message: alert.message,
+        data: alert.data,
+      });
+    }
+    persistStateSoon();
+    return { alerted: Boolean(alert), kind: alert?.kind ?? null };
+  }
+
   const { startAutoRun, advanceAutoRunForInvocation, syncAutoRunOnApproval, syncAutoRunOnDenial, retryAutoRun, cancelAutoRun, mergeAutoRunPr, reapStuckAutoRuns, autoMergeSweep, approveDesign, rejectDesign, answerClarify, approveDecomposition, rejectDecomposition } = createAutoRunService({
     state,
     now,
@@ -605,6 +701,10 @@ export function createServerRuntimeServices({
     reserveBudget,
     releaseReservationsForAutoRun,
     reconcileBudgetReservations,
+    // #1143 issue claims: hold the issue's develop lease at admission, release
+    // it when the run settles.
+    claimIssueForRun: claimIssue,
+    releaseIssueClaimsForAutoRun,
     // A1 alerting: best-effort operational webhook (budget breach, stuck reap).
     sendAlert: (alert) => autoRunAlerts.dispatch(alert),
     // O1 reliability: find a run's invocation for stuck/crash reconcile.
@@ -969,6 +1069,68 @@ export function createServerRuntimeServices({
     state, now, nextId, appendEvent, persistStateSoon, store,
     validateApprovalToken, repoCwd: defaultProjectPath,
   });
+
+  // #1147 (ADR 0014): the send gate — the exfiltration boundary, executable
+  // only for a review-confirmed draft under flag + write-credential Application
+  // + credential readiness + single-use grant. The completion fold and the deny
+  // reconcile are late-bound into the invocation runtime above.
+  const mailSendService = createMailSendService({
+    state, now, appendEvent, persistStateSoon, store,
+    validateApprovalToken,
+    createInvocation: (task, agent, options) => createInvocation(task, agent, options),
+    startInvocationIfAllowed: (invocation, agent) => startInvocationIfAllowed(invocation, agent),
+    findAgent,
+    findApplication,
+  });
+  mailSendHooks = mailSendService;
+  const { sendConfirmedDraft } = mailSendService;
+
+  // Channel Registry (S2, #1090/ADR 0012): owner-team-scoped channel lifecycle
+  // + fail-closed identity mappings. Readiness is env-presence booleans; enable
+  // is approval-gated like every other side-effecting action. Import denials
+  // (S3) go through the refuse() chokepoint like every other veto.
+  const channelService = createChannelService({
+    state, now, nextId, appendEvent, persistStateSoon, store, validateApprovalToken, refuse,
+  });
+
+  // Conversation execution (S4): imported events dispatch into GOVERNED
+  // capability invocations — fail-closed identity, channel allowlist, taint,
+  // correlation. The gateway gets the composed import→dispatch pipeline.
+  const channelConversationService = createChannelConversationService({
+    state, now, nextId, appendEvent, refuse, persistStateSoon, store,
+    createCapabilityInvocation, cancelInvocation,
+    // S6: in-channel /approve mints + consumes a single-use grant, then flips
+    // the SAME approval the console acts on.
+    mintDecisionGrant, validateApprovalToken, approveInvocation, denyInvocation,
+  });
+  // Outbound delivery (S5/#1110): provider senders are late-bound by index.mjs
+  // when each gateway is configured — this service never sees any provider
+  // secret. Keyed by provider so a WeCom and a Feishu delivery route to their
+  // own client (delivery picks by channel.provider).
+  const channelSenders = {};
+  const channelDeliveryService = createChannelDeliveryService({
+    state, now, nextId, appendEvent, refuse, persistStateSoon, store,
+    resolveSender: (provider) => channelSenders[provider] ?? null,
+    validateApprovalToken,
+  });
+  channelDeliveryHook = channelDeliveryService.notifyInvocationCompleted;
+
+  const receiveChannelEvent = (payload) => {
+    const imported = channelService.importChannelEvent(payload);
+    if (imported?.ok && !imported.duplicate) {
+      const dispatched = channelConversationService.dispatchImportedChannelEvent({ eventId: imported.eventId });
+      // Staged command replies become durable outbound deliveries.
+      if (dispatched?.reply) {
+        channelDeliveryService.enqueueChannelDelivery({
+          channelId: payload?.channelId,
+          conversationId: imported.conversationId,
+          invocationId: dispatched.invocationId ?? null,
+          content: dispatched.reply,
+        });
+      }
+    }
+    return imported;
+  };
 
   function runApplicationOrchestration(applicationId, routineId, body = {}, actor = null) {
     const application = findApplication(applicationId);
@@ -1866,7 +2028,7 @@ export function createServerRuntimeServices({
   }
 
   function resolveCodexApprovalBrokerRequest(request, action, actor = null) {
-    const updated = resolveCodexApprovalBrokerRequestBase(request, action);
+    const updated = resolveCodexApprovalBrokerRequestBase(request, action, actor);
     syncApplicationRecoveryActionApproval(updated, actor);
     return updated;
   }
@@ -1898,6 +2060,8 @@ export function createServerRuntimeServices({
     if (previousStatus === nextStatus) return;
     actionRequest.status = nextStatus;
     actionRequest.decidedAt = approvalRequest.decidedAt ?? actionRequest.decidedAt ?? null;
+    // #1151: mirror who decided from the broker row (already stamped there).
+    actionRequest.decidedBy = approvalRequest.decidedBy ?? actionRequest.decidedBy ?? null;
     actionRequest.updatedAt = now();
     persistStateSoon();
     if (approvalRequest.status === "pending") return;
@@ -2644,6 +2808,8 @@ export function createServerRuntimeServices({
     transitionApplication,
     createCodexChangeReview,
     createCodexExecReview,
+    setCodexSessionName,
+    resumableCodexSessions,
     isExecChangeApproved,
     execRunPromotionGate,
     createCodexImportedEvidenceRecord,
@@ -2660,6 +2826,8 @@ export function createServerRuntimeServices({
     createSshConnectionTest,
     createSshTarget,
     createTroubleshootingReport,
+    claimDecision,
+    releaseDecisionClaim,
     createToolInvocation,
     defaultAgent,
     disableAgent,
@@ -2769,7 +2937,11 @@ export function createServerRuntimeServices({
     retryAutoRun,
     cancelAutoRun,
     reapStuckAutoRuns,
+    sweepAutoRunSloAlerts,
     autoMergeSweep,
+    claimIssue,
+    releaseIssueClaim,
+    listIssueClaims,
     approveDesign,
     rejectDesign,
     answerClarify,
@@ -2780,6 +2952,27 @@ export function createServerRuntimeServices({
     createMailIssueFromImport,
     replyOnIssue,
     confirmReplyDraft,
+    sendConfirmedDraft,
+    registerChannel: channelService.registerChannel,
+    listChannels: channelService.listChannels,
+    enableChannel: channelService.enableChannel,
+    disableChannel: channelService.disableChannel,
+    channelHealth: channelService.channelHealth,
+    mapChannelIdentity: channelService.mapChannelIdentity,
+    removeChannelIdentity: channelService.removeChannelIdentity,
+    listChannelIdentities: channelService.listChannelIdentities,
+    setChannelAllowlist: channelService.setChannelAllowlist,
+    // The gateway's handoff: import + dispatch + reply-enqueue as one pipeline (S3+S4+S5).
+    importChannelEvent: receiveChannelEvent,
+    sweepChannelDeliveries: channelDeliveryService.sweepChannelDeliveries,
+    retryChannelDelivery: channelDeliveryService.retryChannelDelivery,
+    // Bind a provider's outbound sender (index.mjs calls this once per configured
+    // gateway). Back-compat: a bare fn with no provider binds WeCom.
+    setChannelDeliverySender: (providerOrFn, maybeFn) => {
+      const provider = typeof providerOrFn === "string" ? providerOrFn : "wecom";
+      const fn = typeof providerOrFn === "function" ? providerOrFn : maybeFn;
+      channelSenders[provider] = typeof fn === "function" ? fn : null;
+    },
     selectProject,
     removeProject,
     removeWorktree,
@@ -2848,6 +3041,8 @@ export function createServerRuntimeServices({
     createCodexImportedEvidenceRecord,
     createCodexChangeReview,
     createCodexExecReview,
+    setCodexSessionName,
+    resumableCodexSessions,
     isExecChangeApproved,
     execRunPromotionGate,
     createDiscoveryRun,
@@ -2929,6 +3124,8 @@ export function createServerRuntimeServices({
   return {
     httpDependencies,
     savePersistentState,
+    // #1084: the retention sweep (index.mjs) leaves an audit event per reap batch.
+    appendEvent,
     // #1042: an explicit JSON export (rollback/backup), written at shutdown so an
     // operator always has a recent rollback artifact even on the SQLite backing.
     exportJsonSnapshot,

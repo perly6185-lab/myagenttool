@@ -14,7 +14,7 @@ const allowedLifecycleActions = ["install", "update", "uninstall"];
 const allowedRecipeSources = ["local_file", "workspace_catalog", "private_catalog", "generated_artifact", "manual_entry"];
 const allowedSignatureStatuses = ["unsigned", "signed_verified", "signed_unverified", "signature_missing", "not_required"];
 const allowedDeploymentModes = ["local_developer", "self_hosted", "saas", "private_deployment"];
-const allowedAuditSubjects = ["invocation", "lifecycle", "quota", "usage", "ledger", "policy", "audit", "catalog", "bundle"];
+const allowedAuditSubjects = ["invocation", "lifecycle", "quota", "usage", "ledger", "policy", "audit", "catalog", "bundle", "transcript"];
 const allowedCatalogChannels = ["stable", "beta", "dev"];
 const allowedCatalogVisibility = ["private", "team", "workspace"];
 const lifecycleCommandAllowlist = new Set([
@@ -323,6 +323,13 @@ export function createM3Service({
     if (!["approve", "deny"].includes(decision)) {
       throw new Error(`Unsupported lifecycle approval decision: ${decision}`);
     }
+    // #1151: a settled approval is immutable — without this, a second operator's
+    // click silently CLOBBERED status/decidedBy/decidedAt (an approved recipe
+    // could flip to denied with no trace). Idempotent return; the route tells
+    // the second operator who decided and when.
+    if (approval.status !== "pending") {
+      return approval;
+    }
     return runTx(() => {
       approval.status = decision === "approve" ? "approved" : "denied";
       approval.decidedAt = now();
@@ -593,7 +600,7 @@ export function createM3Service({
     return rollback;
   }
 
-  function queueRollbackAction(rollback) {
+  function queueRollbackAction(rollback, { actor = null } = {}) {
     if (!rollback) {
       throw new Error("Rollback request not found.");
     }
@@ -639,6 +646,9 @@ export function createM3Service({
       capLifecycleAuditRecords(state);
       rollback.status = "queued";
       rollback.queuedActionId = queued.id;
+      // #1151: record WHO queued it — `requestedBy` is who asked for the rollback,
+      // not who pulled the trigger.
+      rollback.queuedBy = actor?.userId ?? "usr_local";
       rollback.updatedAt = createdAt;
       appendEvent({
         invocationId: null,
@@ -1170,6 +1180,11 @@ export function createM3Service({
       revenueOwner: null,
       budgetPoolId: agent?.economics?.budgetPoolId ?? null,
       projectId,
+      // Per-run cost attribution (agent_run_cost_total). The develop/repair/retry
+      // invocations of an auto-run all carry autoRunId in their input metadata;
+      // stamping it here lets ledgerSummary roll a run's whole cost up in one line
+      // without re-deriving it from telemetry. Null for manual/non-auto-run spend.
+      autoRunId: meta.autoRunId ?? null,
       counterparty: model,
       provider: model,
       pricingVersion: pricing.price?.pricingVersion ?? null,
@@ -1717,10 +1732,14 @@ export function createM3Service({
       byCostOwner: [],
       byProject: [],
       byAgent: [],
+      byModel: [],
+      byAutoRun: [],
     };
     const owners = new Map();
     const projects = new Map();
     const agents = new Map();
+    const models = new Map();
+    const autoRuns = new Map();
     for (const entry of entries) {
       if (["voided", "cancelled"].includes(entry.status)) {
         summary.voidedEntries += 1;
@@ -1746,10 +1765,26 @@ export function createM3Service({
       const agentId = entry.agentId ?? "unknown";
       const agent = findAgent(agentId);
       addRollup(agents, agentId, amount, source, { agentId, agentName: agent?.name, provider: entry.provider });
+      // The model is stamped on every entry as `counterparty` (see
+      // recordInvocationLedgerEntry). cost_by_model answers "which model is the
+      // spend going to" without re-deriving it from per-round telemetry.
+      const modelKey = entry.counterparty ?? entry.provider ?? "unknown";
+      addRollup(models, modelKey, amount, source, { model: modelKey, provider: entry.provider });
+      // agent_run_cost_total: sum a single auto-run's whole spend. Only entries
+      // stamped with an autoRunId participate — manual/unrelated spend is not
+      // conflated into a "none" bucket.
+      if (entry.autoRunId) {
+        addRollup(autoRuns, entry.autoRunId, amount, source, { autoRunId: entry.autoRunId });
+      }
     }
     summary.byCostOwner = [...owners.values()].sort((a, b) => b.entries - a.entries);
     summary.byProject = [...projects.values()].sort((a, b) => b.entries - a.entries);
     summary.byAgent = [...agents.values()].sort((a, b) => b.entries - a.entries);
+    summary.byModel = [...models.values()].sort((a, b) => b.entries - a.entries);
+    // Sorted by total cost desc — "which runs cost the most" is the useful view.
+    summary.byAutoRun = [...autoRuns.values()].sort(
+      (a, b) => b.knownCostUsd + b.estimatedCostUsd - (a.knownCostUsd + a.estimatedCostUsd),
+    );
     return summary;
   }
 
@@ -1795,6 +1830,9 @@ export function createM3Service({
       audit: state.auditSummaries.length,
       catalog: state.privateCatalogEntries.length,
       bundle: state.signedBundleManifests.length,
+      // #1085: run transcripts are exportable evidence (skeleton + hashes
+      // survive retention; payload only while unreaped).
+      transcript: (state.runTranscripts ?? []).length,
     };
     return Object.fromEntries(subjects.map((subject) => [subject, counts[subject] ?? 0]));
   }
@@ -1840,6 +1878,7 @@ export function createM3Service({
     pushRefs("audit", state.auditSummaries);
     pushRefs("catalog", state.privateCatalogEntries);
     pushRefs("bundle", state.signedBundleManifests);
+    pushRefs("transcript", state.runTranscripts ?? []);
     return refs;
   }
 

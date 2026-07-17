@@ -22,7 +22,7 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { buildRunFeedbackEvents, floorBreaches, looksLikeInfraFailure, PROVISIONAL_FLOORS, runRegressed } from "../ai/src/evals/eval-signals.mjs";
+import { buildRunFeedbackEvents, deriveFloors, floorBreaches, looksLikeInfraFailure, PROVISIONAL_FLOORS, runRegressed } from "../ai/src/evals/eval-signals.mjs";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const trendFile = resolve(repoRoot, ".myagenttool/evals/trend.jsonl");
@@ -135,18 +135,32 @@ emitFeedbackEvents(record);
 // regression can no longer complete "green". Auth/infra outages already exited
 // above; runRegressed excludes them so an outage never masquerades as a
 // capability regression here.
-if (runRegressed(record, PROVISIONAL_FLOORS)) {
-  const breaches = floorBreaches(record, PROVISIONAL_FLOORS)
-    .map((b) => `${b.metric} ${(b.passRate * 100).toFixed(0)}% < ${(b.floor * 100).toFixed(0)}%`)
+// #250: the line is DERIVED from the accumulated clean trend when >=3 real
+// points exist (ratcheted at the provisional baseline — a derived line only
+// ever tightens); otherwise the provisional fallback applies, labelled as such.
+const { floors: gateFloors, meta: gateMeta } = deriveFloors(readPriorTrend());
+const floorLabel = (metric) => (gateMeta[metric]?.derived
+  ? `derived from ${gateMeta[metric].n} real runs (min ${(gateMeta[metric].observedMin * 100).toFixed(0)}% − ${(gateMeta[metric].margin * 100).toFixed(0)}pt)`
+  : `provisional (${gateMeta[metric]?.n ?? 0}/${gateMeta[metric]?.needed ?? 3} real runs)`);
+console.log(`[eval:real] gate lines — subcap ${(gateFloors.subcap * 100).toFixed(0)}% [${floorLabel("subcap")}]; heldout ${(gateFloors.heldout * 100).toFixed(0)}% [${floorLabel("heldout")}]`);
+if (runRegressed(record, gateFloors)) {
+  const breaches = floorBreaches(record, gateFloors)
+    .map((b) => `${b.metric} ${(b.passRate * 100).toFixed(0)}% < ${(b.floor * 100).toFixed(0)}% [${floorLabel(b.metric)}]`)
     .join(", ");
-  console.error(`[eval:real] REGRESSION: capability below provisional floor (${breaches}); exiting non-zero so the scheduled log turns red. Floor is provisional until #250 sets the real line.`);
+  console.error(`[eval:real] REGRESSION: capability below the gate line (${breaches}); exiting non-zero so the scheduled log turns red.`);
   process.exit(2);
 }
 
-function emitFeedbackEvents(entry) {
-  const prior = existsSync(trendFile)
+// Prior trend records (excluding the row just appended) — shared by the
+// feedback emitter and the #250 gate-line derivation.
+function readPriorTrend() {
+  return existsSync(trendFile)
     ? readFileSync(trendFile, "utf8").split("\n").filter(Boolean).slice(0, -1).map((line) => tryParse(line)).filter(Boolean)
     : [];
+}
+
+function emitFeedbackEvents(entry) {
+  const prior = readPriorTrend();
   const events = buildRunFeedbackEvents(entry, prior);
   if (events.length === 0) return;
   const inbox = resolve(repoRoot, ".myagenttool/feedback/inbox.jsonl");

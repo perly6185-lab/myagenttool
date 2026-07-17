@@ -64,9 +64,18 @@ try {
 
   console.log("[worktree-smoke] worktree creation and project binding OK");
 } finally {
+  // #1042 aftermath: the server owns an open SQLite/WAL in tempRoot until it
+  // actually exits — an rm racing the shutdown checkpoint dies ENOTEMPTY (and,
+  // thrown from a finally, MASKS the smoke's real verdict). Wait for exit, then
+  // remove with retries.
   server.kill();
+  await new Promise((resolveExit) => {
+    if (server.exitCode !== null) return resolveExit();
+    server.once("exit", resolveExit);
+    setTimeout(resolveExit, 5000).unref?.();
+  });
   if (resolve(tempRoot).startsWith(resolve(tmpdir()))) {
-    rmSync(tempRoot, { recursive: true, force: true });
+    rmSync(tempRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
   }
 }
 

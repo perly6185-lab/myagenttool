@@ -1,5 +1,6 @@
 import { LOCAL_TEAM_ID, teamOf } from "../runtime/auth.mjs";
 import { publicDeviceView } from "../runtime/bridge-auth.mjs";
+import { channelOperations } from "./channels.mjs";
 import { pendingDecisions } from "./pending-decisions.mjs";
 import { evidenceLedger } from "./evidence-ledger.mjs";
 import { scheduleHealthReadModel } from "./schedule-health.mjs";
@@ -132,6 +133,18 @@ export function buildPublicState({
   const sshConnectionTests = (state.sshConnectionTests ?? []).filter((test) =>
     teamId == null || visibleSshTargetIds.has(test?.targetId),
   );
+  // Channels (S2, #1090): owner-team scoped; child rows follow their channel's
+  // visibility so a foreign team's channel never leaks through events/deliveries.
+  const channelVisible = (row) =>
+    teamId == null || (row?.ownerTeamId ?? LOCAL_TEAM_ID) === teamId;
+  const channels = (state.channels ?? []).filter(channelVisible);
+  const visibleChannelIds = new Set(channels.map((channel) => channel.id));
+  const byChannel = (rows) =>
+    (rows ?? []).filter((row) => teamId == null || visibleChannelIds.has(row?.channelId));
+  const channelIdentities = byChannel(state.channelIdentities);
+  const channelEvents = byChannel(state.channelEvents);
+  const channelConversations = byChannel(state.channelConversations);
+  const channelDeliveries = byChannel(state.channelDeliveries);
   // A compare run is visible when it spans at least one invocation the team can
   // see; unscoped mode passes everything through.
   const byCompareRun = (rows) =>
@@ -169,6 +182,10 @@ export function buildPublicState({
   );
   const visibleAutomations = byProject(state.automations);
   const autoRuns = byProject(state.autoRuns);
+  // #1143 issue claims carry a projectId; project-team scoping is the boundary.
+  const issueClaims = byProject(state.issueClaims);
+  // #1152: their durable lifecycle history, scoped the same way.
+  const issueClaimEvents = byProject(state.issueClaimEvents ?? []);
   const autoRunsByInvocationId = groupRowsByKey(
     autoRuns.filter((autoRun) => visibleInvIds.has(autoRun?.invocationId)),
     (autoRun) => autoRun?.invocationId,
@@ -283,6 +300,15 @@ export function buildPublicState({
   // already team-scoped locals so it inherits tenancy; this also surfaces the
   // auto-run lifecycle gates in /api/state for the first time.
   const codexApprovalBrokerRequests = byInvocation(state.codexApprovalBrokerRequests);
+  // #1151: advisory soft-claims on queue rows — active, unexpired, and only the
+  // viewer's own team's markers (a foreign team's "handling this" must not leak).
+  const softClaimCutoff = Date.now();
+  const decisionSoftClaims = (state.decisionSoftClaims ?? []).filter(
+    (claim) =>
+      claim?.status === "active" &&
+      (!claim.expiresAt || Date.parse(claim.expiresAt) > softClaimCutoff) &&
+      (teamId == null || (claim.teamId ?? LOCAL_TEAM_ID) === teamId),
+  );
   const pendingDecisionQueue = pendingDecisions({
     approvalRequests,
     autoRuns,
@@ -293,6 +319,7 @@ export function buildPublicState({
     applicationRecoveryActions,
     applicationsById: new Map(applications.map((application) => [application.id, application])),
     invocationsById: visibleInvocationsById,
+    decisionSoftClaims,
   });
 
   // Per-run trust ledger (the Evidence section). Scope the Codex/terminal evidence
@@ -311,6 +338,9 @@ export function buildPublicState({
     troubleshootingReports,
     evidenceCenterRecords: evidenceCenterVisible,
     applicationRecoveryActions,
+    // #1085: transcript summary metadata joins the trust ledger. Scoped by
+    // invocation visibility; the ledger row carries hash/counts, never blocks.
+    runTranscripts: byInvocation(state.runTranscripts ?? []),
   });
 
   const devices = (state.devices ?? [state.device])
@@ -351,6 +381,8 @@ export function buildPublicState({
     worktrees: byProject(state.worktrees),
     worktreeReviews: byProject(state.worktreeReviews),
     deployments: byProject(state.deployments ?? []),
+    issueClaims,
+    issueClaimEvents,
     agent: defaultAgent(),
     agents: state.agents,
     invocations,
@@ -439,6 +471,18 @@ export function buildPublicState({
     terminalBridgeActions,
     sshTargets,
     sshConnectionTests,
+    channels,
+    channelIdentities,
+    channelEvents,
+    channelConversations,
+    channelDeliveries,
+    channelOperations: channelOperations({
+      channels,
+      channelIdentities,
+      channelEvents,
+      channelConversations,
+      channelDeliveries,
+    }),
   };
 }
 

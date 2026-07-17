@@ -107,7 +107,7 @@ function toolServiceWith({ agents = [], projects = [], worktrees = [], apps = []
     now,
     appendEvent: (event) => events.push(event),
     createInvocation: (task, agent, options) => {
-      const invocation = { id: `inv_${created.length + 1}`, status: "queued", agentId: agent.id, options, task };
+      const invocation = { id: `inv_${created.length + 1}`, status: "queued", agentId: agent.id, options, task, delivery: { state: "queued" } };
       created.push(invocation);
       return invocation;
     },
@@ -263,4 +263,51 @@ test("the wrapper refuses a missing or UNFENCED issue body before any spawn", ()
   const badNumber = runWrapper(["--mode", "issue-analyze", "--cwd", dir, "--issue", "-2", "--issue-data", "x"]);
   assert.notEqual(badNumber.status, 0);
   assert.match(badNumber.payload.output.error, /--issue must be a positive integer/);
+});
+
+// --- Audit finds (2026-07-16): the dispatch hold, the cancel race, restart reconcile ---
+
+test("audit: the delivery is HELD (unclaimable) until the fence is stamped, then released", async () => {
+  const { service, created } = toolServiceWith({ ...OWNED, fetchIssueBody: async () => "body text" });
+  service.createToolInvocation("claude.analyze.issue", { worktreeId: "wt_a", issueNumber: 11 }, ACTOR);
+  assert.equal(created[0].delivery.state, "held", "a queued delivery would be bridge-claimable during the fetch window");
+  await settle();
+  assert.equal(created[0].delivery.state, "queued", "released only after the fenced body is stamped");
+  assert.match(created[0].options.metadata.issueUntrustedBlock, /BEGIN ISSUE DESCRIPTION/);
+});
+
+test("audit: a cancel during the fetch window is never clobbered by the late resolver", async () => {
+  const failing = toolServiceWith({ ...OWNED, fetchIssueBody: async () => null });
+  failing.service.createToolInvocation("claude.analyze.issue", { worktreeId: "wt_a", issueNumber: 12 }, ACTOR);
+  failing.created[0].status = "cancelled";
+  failing.created[0].result = { summary: "cancelled by operator" };
+  await settle();
+  assert.equal(failing.created[0].status, "cancelled", "the fail branch must not overwrite a terminal verdict");
+  assert.equal(failing.created[0].result.summary, "cancelled by operator");
+
+  const succeeding = toolServiceWith({ ...OWNED, fetchIssueBody: async () => "body" });
+  succeeding.service.createToolInvocation("claude.analyze.issue", { worktreeId: "wt_a", issueNumber: 13 }, ACTOR);
+  succeeding.created[0].status = "cancelled";
+  await settle();
+  assert.equal(succeeding.created[0].options.metadata.issueUntrustedBlock, undefined, "no fence is stamped on a dead run");
+  assert.equal(succeeding.started.length, 0, "a cancelled run is never started");
+});
+
+test("audit: failStrandedIssueFetches fails restored mid-fetch invocations closed at boot", async () => {
+  const { failStrandedIssueFetches } = await import("../src/services/tools.mjs");
+  const events = [];
+  const state = { invocations: [
+    { id: "inv_stranded", status: "queued", delivery: { state: "held" }, options: { metadata: { tool: "claude.analyze.issue", pendingIssueFetch: true } } },
+    { id: "inv_done", status: "succeeded", options: { metadata: { tool: "claude.analyze.issue", pendingIssueFetch: true } } },
+    { id: "inv_other", status: "queued", options: { metadata: { tool: "codex.exec" } } },
+  ] };
+  const { reconciled } = failStrandedIssueFetches(state, { now, appendEvent: (e) => events.push(e) });
+  assert.equal(reconciled, 1);
+  assert.equal(state.invocations[0].status, "failed");
+  assert.equal(state.invocations[0].result.errorCode, "issue_fetch_failed");
+  assert.equal(state.invocations[0].options.metadata.pendingIssueFetch, undefined);
+  assert.equal(state.invocations[1].status, "succeeded", "a terminal row is left alone (marker cleared only)");
+  assert.equal(state.invocations[1].options.metadata.pendingIssueFetch, undefined);
+  assert.equal(state.invocations[2].status, "queued", "non-analyze rows untouched");
+  assert.equal(events.length, 1);
 });

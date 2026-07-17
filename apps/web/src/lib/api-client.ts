@@ -235,8 +235,45 @@ export interface IntegrationPayload {
   generatedByAi?: boolean;
 }
 
+// #1074 (Epic #1070): one block of a persisted run transcript. Payload fields
+// (text/input/output) are absent on skeleton blocks (size budget or retention).
+export interface RunTranscriptBlock {
+  kind: "thinking" | "tool_use" | "tool_result" | "text";
+  text?: string;
+  input?: string;
+  output?: string;
+  toolName?: string;
+  toolUseId?: string | null;
+  description?: string;
+  durationMs?: number;
+  isError?: boolean;
+  truncated?: boolean;
+  droppedChars?: number;
+  payloadDropped?: boolean;
+  chars?: number;
+}
+
+export interface RunTranscriptRecord {
+  id: string;
+  invocationId: string;
+  status?: string | null;
+  blocks: RunTranscriptBlock[];
+  totalChars?: number;
+  droppedBlocks: number;
+  unparsedLines: number;
+  truncated: boolean;
+  payloadReaped: boolean;
+  reapedAt?: string;
+  createdAt: string;
+}
+
 export const api = {
   updateDevice: (payload: { maxConcurrency?: number }) => request("PATCH", "/api/device", payload),
+  fetchInvocationTranscript: (invocationId: string) =>
+    request<{ invocationId: string; transcript: RunTranscriptRecord | null }>(
+      "GET",
+      `/api/invocations/${encodeURIComponent(invocationId)}/transcript`,
+    ),
   listTools: () => request<{ tools: ToolDescriptor[] }>("GET", "/api/tools"),
   getTool: (name: string) =>
     request<{ tool: ToolDescriptor }>("GET", `/api/tools/${encodeURIComponent(name)}`),
@@ -500,6 +537,17 @@ export const api = {
     request("POST", `/api/worktrees/${encodeURIComponent(id)}/pr`, payload),
   listGithubItems: (projectId: string) =>
     request("GET", `/api/projects/${encodeURIComponent(projectId)}/github`),
+  // #1143 issue claims: take/hand back an issue's develop lease. A foreign
+  // active develop claim answers 409 with the blocking claim.
+  claimIssue: (projectId: string, payload: { issueNumber: number; mode?: "develop" | "review" }) =>
+    request("POST", `/api/projects/${encodeURIComponent(projectId)}/issue-claims`, payload),
+  releaseIssueClaim: (claimId: string) =>
+    request("POST", `/api/issue-claims/${encodeURIComponent(claimId)}/release`),
+  // #1151 decision soft-claims: advisory "I'm handling this" on an Approvals row.
+  claimDecision: (decisionId: string) =>
+    request("POST", `/api/pending-decisions/${encodeURIComponent(decisionId)}/claim`),
+  releaseDecisionClaim: (decisionId: string) =>
+    request("POST", `/api/pending-decisions/${encodeURIComponent(decisionId)}/release`),
   // Auto-run observability: the records plus an evaluation summary. refresh=true
   // also refreshes PR dispositions (bounded gh reads) for the routing evaluation.
   listAutoRuns: (refresh = false) => request("GET", `/api/auto-runs${refresh ? "?refresh=1" : ""}`),
@@ -525,6 +573,7 @@ export const api = {
   listEvalTrend: () => request("GET", "/api/eval-trend"),
   maturity: () => request("GET", "/api/maturity"),
   dora: () => request("GET", "/api/dora"),
+  dispatchEvaluation: () => request("GET", "/api/dispatch-evaluation"),
   loopRoutineRuns: () => request("GET", "/api/loop-routines"),
   loopRoutineFindings: (runId: string) => request("GET", `/api/loop-routines/${encodeURIComponent(runId)}/findings`),
   // Auto-run effective configuration (safe knobs overlaid on env + per-command
@@ -562,4 +611,15 @@ export const api = {
     request("POST", `/api/codex/approval-broker/${encodeURIComponent(id)}/approve`),
   denyCodexApproval: (id: string) =>
     request("POST", `/api/codex/approval-broker/${encodeURIComponent(id)}/deny`),
+  /** Channel lifecycle (#1090). Enable/allowlist/delivery-retry are approval-gated. */
+  enableChannel: (id: string, approvalToken: string) =>
+    request("POST", `/api/channels/${encodeURIComponent(id)}/enable`, { approvalToken }),
+  disableChannel: (id: string) =>
+    request("POST", `/api/channels/${encodeURIComponent(id)}/disable`, {}),
+  retryChannelDelivery: (channelId: string, deliveryId: string, approvalToken: string) =>
+    request<{ deliveryId: string; status: string }>(
+      "POST",
+      `/api/channels/${encodeURIComponent(channelId)}/deliveries/${encodeURIComponent(deliveryId)}/retry`,
+      { approvalToken },
+    ),
 };
