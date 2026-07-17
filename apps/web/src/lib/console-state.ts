@@ -304,6 +304,8 @@ export interface ReportSchedule {
   channelId: string | null;
   conversationId: string | null;
   periodKey: WorkPeriodKey;
+  /** "previous" = the just-closed period (last week); "current" = period-to-date. */
+  coverage: "previous" | "current";
   cadence: "daily" | "weekly";
   /** 0=Sun..6=Sat, used when cadence === "weekly". */
   weekday: number;
