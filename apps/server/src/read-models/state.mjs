@@ -351,6 +351,7 @@ export function buildPublicState({
     board: workStatusBoard,
     autoRuns,
     refusalDailyStats: state.refusalDailyStats ?? [],
+    refusalStatsSince: state.refusalStatsMeta?.since ?? null,
     refusalsAvailable: isAdminScope,
     periods: workReportPeriods,
     now: digestNow,

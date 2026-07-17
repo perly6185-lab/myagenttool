@@ -33,6 +33,19 @@ test("rows older than the 120-day horizon are trimmed relative to the newest wri
   assert.ok(!dates.includes("2026-01-01"), "over-horizon row trimmed");
 });
 
+test("anchors refusalStatsMeta.since on first record when missing, never moves it after", () => {
+  const state = {};
+  recordRefusalDailyStat(state, "2026-07-17T09:00:00Z", "policy");
+  assert.equal(state.refusalStatsMeta.since, "2026-07-17");
+  // A later (earlier-dated) record must not move the anchor backward or forward.
+  recordRefusalDailyStat(state, "2026-07-20T09:00:00Z", "human");
+  assert.equal(state.refusalStatsMeta.since, "2026-07-17");
+  // A pre-seeded anchor (e.g. from state-factory boot) is respected, not overwritten.
+  const seeded = { refusalStatsMeta: { since: "2026-01-01" } };
+  recordRefusalDailyStat(seeded, "2026-07-17T09:00:00Z", "policy");
+  assert.equal(seeded.refusalStatsMeta.since, "2026-01-01");
+});
+
 test("a malformed timestamp is ignored, not crashed on", () => {
   const state = {};
   recordRefusalDailyStat(state, null, "policy");

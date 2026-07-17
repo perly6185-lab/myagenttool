@@ -116,6 +116,7 @@ export function assembleGlobalWorkReport(state, nowMs, periods = calendarPeriods
     board,
     autoRuns,
     refusalDailyStats: state.refusalDailyStats ?? [],
+    refusalStatsSince: state.refusalStatsMeta?.since ?? null,
     refusalsAvailable: true,
     periods,
     now: nowMs,
