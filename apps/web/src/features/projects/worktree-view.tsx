@@ -9,6 +9,7 @@ import { Modal } from "@/components/ui/modal";
 import { EmptyState } from "@/components/common/empty-state";
 import { DecisionAction } from "@/features/invocations/decision-action";
 import { InvocationEventHistory } from "@/features/invocations/invocation-event-history";
+import { InvocationRefusalHistory } from "@/features/invocations/invocation-refusal-history";
 import { WorktreeLinkPopover } from "@/features/projects/worktree-link-popover";
 import { useConsoleState } from "@/data/use-console-state";
 import { useAsyncAction, api } from "@/data/use-console-actions";
@@ -579,11 +580,14 @@ export function WorktreeView({ worktree }: { worktree: WorktreeSnapshot }) {
                 </CardHeader>
                 <CardContent>
                   {selectedInvocation ? (
-                    <InvocationEventHistory
-                      invocationId={selectedInvocation.id}
-                      live={selectedIsRunning}
-                      renderAction={(event) => <DecisionAction event={event} />}
-                    />
+                    <>
+                      <InvocationEventHistory
+                        invocationId={selectedInvocation.id}
+                        live={selectedIsRunning}
+                        renderAction={(event) => <DecisionAction event={event} />}
+                      />
+                      <InvocationRefusalHistory invocationId={selectedInvocation.id} />
+                    </>
                   ) : (
                     <EmptyState title="No runs yet" hint="Run an agent above to start a session in this worktree." />
                   )}

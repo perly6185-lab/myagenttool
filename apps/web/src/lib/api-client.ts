@@ -40,6 +40,23 @@ export interface InvocationEventsResponse {
   retentionTruncated: boolean;
 }
 
+export interface RefusalSnapshot {
+  id: string;
+  invocationId?: string;
+  at?: string;
+  category: string;
+  code?: string;
+  summary?: string;
+  remedy?: string;
+  piiRedacted?: boolean;
+}
+
+export interface InvocationRefusalsResponse {
+  invocationId: string;
+  refusals: RefusalSnapshot[];
+  truncated: boolean;
+}
+
 // The dev server's default port (tools/dev/run-local-demo.mjs SERVER_PORT).
 const SERVER_PORT = "5001";
 const FALLBACK_API_BASE = `http://127.0.0.1:${SERVER_PORT}`;
@@ -458,6 +475,15 @@ export const api = {
     return request<InvocationEventsResponse>(
       "GET",
       `/api/invocations/${encodeURIComponent(id)}/events?${query}`,
+    );
+  },
+  // Refusals for one invocation, INCLUDING the ones the 200-row cap evicted to the
+  // durable archive (server slice 1/3).
+  listInvocationRefusals: (id: string, options: { limit?: number } = {}) => {
+    const query = new URLSearchParams({ limit: String(options.limit ?? 200) });
+    return request<InvocationRefusalsResponse>(
+      "GET",
+      `/api/invocations/${encodeURIComponent(id)}/refusals?${query}`,
     );
   },
   uploadWorktreeAttachments: (id: string, files: { name: string; dataBase64: string }[]) =>
