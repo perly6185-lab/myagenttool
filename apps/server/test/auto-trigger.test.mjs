@@ -16,7 +16,7 @@ import {
 
 test("resolveAutoTriggerConfig is off by default and reads the env opt-in", () => {
   // #1165 dispatch defaults ride along: standalone role = today's behavior.
-  const dispatchDefaults = { dispatchRole: "standalone", serverId: null, dispatchWorkers: [], dispatchWorkerCap: 2, dispatchAssignTtlMinutes: 120 };
+  const dispatchDefaults = { dispatchRole: "standalone", serverId: null, dispatchWorkers: [], dispatchWorkerCap: 2, dispatchAssignTtlMinutes: 120, dispatchTtlEnabled: false };
   assert.deepEqual(resolveAutoTriggerConfig({}), { enabled: false, label: "auto", maxConcurrent: 1, requireProjectFields: true, ...dispatchDefaults });
   const on = resolveAutoTriggerConfig({
     MYAGENTTOOL_AUTOTRIGGER_ENABLED: "1",
@@ -176,7 +176,12 @@ test("#1165 a worker only selects issues assigned to it", () => {
 const T0 = "2026-07-16T12:00:00.000Z";
 
 test("#1165 planDispatch assigns least-loaded round-robin under per-worker caps", () => {
-  const issues = [1, 2, 3, 4, 5].map((n) => ({ number: n, title: `t${n}`, state: "open", labels: ["auto"] }));
+  const issues = [
+    // #99 is a's live open assignment — present in the listing (else #1169's
+    // settle-on-absence would rightly free that load).
+    { number: 99, title: "held", state: "open", labels: ["auto", "assigned/a"] },
+    ...[1, 2, 3, 4, 5].map((n) => ({ number: n, title: `t${n}`, state: "open", labels: ["auto"] })),
+  ];
   const assignments = [{ projectId: "prj", issueNumber: 99, workerId: "a", status: "open", assignedAt: T0 }];
   const plan = planDispatch({ issues, assignments, projectId: "prj", workers: ["a", "b"], workerCap: 2, requireProjectFields: false, nowIso: T0 });
   // a already carries one open assignment → b, a, b fill to the caps; 2 remain unassigned.
@@ -247,7 +252,9 @@ test("#1165 dispatcher runtime assigns via labels + bookkeeping and never starts
   assert.equal(labelEdits.length, 1);
   assert.equal(labelEdits[0].issueNumber, 1);
   assert.match(labelEdits[0].add[0], /^assigned\//);
-  assert.equal(state.dispatchAssignments.length, 1, "bookkeeping row recorded");
+  // Two rows: the fresh assignment of #1, plus #1169's adoption of #2's
+  // pre-existing assigned/desk label (ours, but had no record).
+  assert.equal(state.dispatchAssignments.length, 2, "assignment + adopted rows recorded");
   // The dispatcher's own id is in the worker list → it starts ONLY the issue
   // already assigned to it (#2), never the freshly-assigned-elsewhere or free ones.
   assert.deepEqual(startedRuns.map((r) => r.link.number), [2]);
@@ -273,4 +280,102 @@ test("#1165 a pure dispatcher (not in the worker list) starts nothing", async ()
   });
   await runtime.scanOnce();
   assert.equal(startedRuns.length, 0, "assignment-only role; execution belongs to workers");
+});
+
+// ── #1169 dispatch lifecycle hardening ───────────────────────────────────────
+
+test("#1169 settle-on-absence: a closed issue's record settles and frees the worker's load", () => {
+  // Worker a is "full" with two records, but both issues are gone from the
+  // open listing (closed) — without settle-on-absence dispatch starves forever.
+  const assignments = [
+    { projectId: "prj", issueNumber: 1, workerId: "a", status: "open", assignedAt: T0 },
+    { projectId: "prj", issueNumber: 2, workerId: "a", status: "open", assignedAt: T0 },
+  ];
+  const issues = [{ number: 3, title: "new", state: "open", labels: ["auto"] }];
+  const plan = planDispatch({ issues, assignments, projectId: "prj", workers: ["a"], workerCap: 2, requireProjectFields: false, nowIso: T0 });
+  assert.equal(plan.settle.length, 2, "both finished assignments settle");
+  assert.deepEqual(plan.assign.map((x) => `${x.issue.number}:${x.workerId}`), ["3:a"], "freed load is assignable the same tick");
+});
+
+test("#1169 TTL reassignment requires the progress signal to exist (ttlEnabled) and respects status/review", () => {
+  const staleAssignments = [{ projectId: "prj", issueNumber: 7, workerId: "a", status: "open", assignedAt: "2026-07-16T08:00:00.000Z" }];
+  const issue = { number: 7, title: "long run", state: "open", labels: ["auto", "assigned/a"] };
+
+  // Writeback off → no signal exists → a healthy long run is NOT "stale".
+  const gated = planDispatch({ issues: [issue], assignments: staleAssignments, projectId: "prj", workers: ["a", "b"], workerCap: 2, requireProjectFields: false, ttlMinutes: 120, ttlEnabled: false, nowIso: T0 });
+  assert.equal(gated.reassign.length, 0, "no progress signal → no staleness verdict → no duplicate run");
+
+  // status/review protects like in-progress (review REMOVES in-progress).
+  const inReview = { ...issue, labels: ["auto", "assigned/a", "status/review"] };
+  const reviewed = planDispatch({ issues: [inReview], assignments: staleAssignments, projectId: "prj", workers: ["a", "b"], workerCap: 2, requireProjectFields: false, ttlMinutes: 120, ttlEnabled: true, nowIso: T0 });
+  assert.equal(reviewed.reassign.length, 0, "an issue in human review is never reassigned");
+});
+
+test("#1169 an actively claimed issue is never dispatched", () => {
+  const issues = [{ number: 9, title: "human's", state: "open", labels: ["auto"] }];
+  const issueClaims = [{ projectId: "prj", issueNumber: 9, status: "active", leaseExpiresAt: "2026-07-17T00:00:00.000Z" }];
+  const plan = planDispatch({ issues, issueClaims, assignments: [], projectId: "prj", workers: ["a"], workerCap: 2, requireProjectFields: false, nowIso: T0 });
+  assert.equal(plan.assign.length, 0, "a person holds it — dispatch keeps hands off");
+});
+
+test("#1169 our own stranded label is adopted (record + load), foreign labels stay respected", () => {
+  const issues = [
+    { number: 1, title: "ours", state: "open", labels: ["auto", "assigned/a"] },     // ours, no record → adopt
+    { number: 2, title: "foreign", state: "open", labels: ["auto", "assigned/ghost"] }, // unknown id → respect
+    { number: 3, title: "free", state: "open", labels: ["auto"] },
+  ];
+  const plan = planDispatch({ issues, assignments: [], projectId: "prj", workers: ["a"], workerCap: 2, requireProjectFields: false, nowIso: T0 });
+  assert.equal(plan.adopt.length, 1);
+  assert.equal(plan.adopt[0].record.workerId, "a");
+  // Adopted record counts toward a's load: cap 2 → one slot left → #3 assigned.
+  assert.deepEqual(plan.assign.map((x) => `${x.issue.number}:${x.workerId}`), ["3:a"]);
+});
+
+test("#1169 a stale assignment never returns to its own worker (no add+remove-same-label churn)", () => {
+  const issues = [{ number: 7, title: "stalled", state: "open", labels: ["auto", "assigned/a"] }];
+  const assignments = [{ projectId: "prj", issueNumber: 7, workerId: "a", status: "open", assignedAt: "2026-07-16T08:00:00.000Z" }];
+  // b is at cap → nobody else has room → the assignment stays put.
+  const others = [
+    { projectId: "prj", issueNumber: 11, workerId: "b", status: "open", assignedAt: T0 },
+    { projectId: "prj", issueNumber: 12, workerId: "b", status: "open", assignedAt: T0 },
+  ];
+  const blocked = [
+    { number: 11, title: "x", state: "open", labels: ["auto", "assigned/b"] },
+    { number: 12, title: "y", state: "open", labels: ["auto", "assigned/b"] },
+    ...issues,
+  ];
+  const plan = planDispatch({ issues: blocked, assignments: [...assignments, ...others], projectId: "prj", workers: ["a", "b"], workerCap: 2, requireProjectFields: false, ttlMinutes: 120, ttlEnabled: true, nowIso: T0 });
+  assert.equal(plan.reassign.length, 0, "waits for room elsewhere instead of self-reassigning");
+});
+
+test("#1169 dispatcher runtime applies settle + adopt bookkeeping without gh writes", async () => {
+  const state = {
+    projects: [{ id: "prj", name: "P", source: "default" }],
+    projectTargets: [{ projectId: "prj", state: "ready", rootPath: "/repo" }],
+    autoRuns: [],
+    issueClaims: [],
+    dispatchAssignments: [
+      { projectId: "prj", issueNumber: 1, workerId: "a", status: "open", assignedAt: T0 }, // issue gone → settle
+    ],
+    events: [],
+  };
+  const labelEdits = [];
+  const runtime = createAutoTriggerRuntime({
+    state,
+    config: {
+      enabled: true, label: "auto", maxConcurrent: 5, requireProjectFields: false,
+      dispatchRole: "dispatcher", serverId: "hub", dispatchWorkers: ["a"], dispatchWorkerCap: 2, dispatchAssignTtlMinutes: 120, dispatchTtlEnabled: false,
+    },
+    listLabeledIssues: async () => [{ number: 5, title: "stranded", state: "open", labels: ["auto", "assigned/a"] }],
+    startAutoRun: async () => ({}),
+    editIssueLabels: async (project, edit) => labelEdits.push(edit),
+    appendEvent: () => {},
+    persistStateSoon: () => {},
+  });
+  await runtime.scanOnce();
+  assert.equal(labelEdits.length, 0, "settle and adopt are bookkeeping-only");
+  assert.equal(state.dispatchAssignments.find((r) => r.issueNumber === 1).status, "completed", "absent issue settled");
+  const adopted = state.dispatchAssignments.find((r) => r.issueNumber === 5);
+  assert.equal(adopted?.status, "open");
+  assert.equal(adopted?.adopted, true, "stranded label adopted into bookkeeping");
 });
