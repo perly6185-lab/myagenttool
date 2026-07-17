@@ -67,6 +67,15 @@ export function resolveAutoTriggerConfig(env = process.env) {
     // #1172 (R1 of #1170): declared worker capability profiles. Absent/invalid
     // → null, and routing stays pure least-loaded round-robin.
     dispatchWorkerProfiles: profiles,
+    // #1180 (R3): the soft-ordering router mode. `scored` (default) = R1 —
+    // affinity-first pick decides. `shadow` = baseline (least-loaded) decides
+    // the real assignment while the scored counterfactual is recorded, so the
+    // evaluation can prove scored beats baseline BEFORE a human promotes it.
+    // `roundrobin` = baseline decides, no counterfactual. Hard constraints
+    // (platform/agent/risk) apply in every mode — only the soft rank varies.
+    dispatchRouterMode: ["shadow", "roundrobin"].includes(env.MYAGENTTOOL_AUTOTRIGGER_ROUTER)
+      ? env.MYAGENTTOOL_AUTOTRIGGER_ROUTER
+      : "scored",
   };
 }
 
@@ -147,10 +156,31 @@ export function scoreWorkers({ issue, profiles = [], load = new Map(), workerCap
       continue;
     }
     const affinity = profile.areas && need.areas.some((a) => profile.areas.includes(a)) ? 1 : 0;
-    eligible.push({ id: profile.id, affinity, load: load.get(profile.id) ?? 0 });
+    // #1180: `order` (declaration index) is carried so BOTH the scored ordering
+    // (affinity, load, order) and the baseline ordering (load, order) share one
+    // deterministic tiebreak — the shadow comparison needs the two to differ
+    // ONLY on the affinity term.
+    eligible.push({ id: profile.id, affinity, load: load.get(profile.id) ?? 0, order: profiles.indexOf(profile) });
   }
-  eligible.sort((a, b) => b.affinity - a.affinity || a.load - b.load || profiles.findIndex((p) => p.id === a.id) - profiles.findIndex((p) => p.id === b.id));
+  // The scored ordering: area affinity first, then least-loaded, then declaration order.
+  eligible.sort((a, b) => b.affinity - a.affinity || a.load - b.load || a.order - b.order);
   return { eligible, ineligible, requirements: need };
+}
+
+// #1180: the two soft orderings the shadow comparison contrasts. Hard eligibility
+// is already decided (the input is scoreWorkers' `eligible`); this is purely the
+// SOFT rank. baseline = least-loaded (pre-R1 behavior); scored = affinity-first
+// (R1). Both respect the same load + declaration-order tiebreak, so they diverge
+// only when affinity actually changes the pick.
+export function scoredPick(eligible) {
+  // Self-contained sort (don't rely on the caller pre-sorting) — affinity, then
+  // least-loaded, then declaration order. Mirrors baselinePick's independence.
+  const byScore = [...eligible].sort((a, b) => b.affinity - a.affinity || a.load - b.load || a.order - b.order);
+  return byScore[0]?.id ?? null;
+}
+export function baselinePick(eligible) {
+  const byLoad = [...eligible].sort((a, b) => a.load - b.load || a.order - b.order);
+  return byLoad[0]?.id ?? null;
 }
 
 /** The assignment label a dispatcher writes and a worker filters on. */
@@ -228,6 +258,8 @@ export function planDispatch({
   // #1172 R1: declared capability profiles. Null → bare-id profiles derived
   // from `workers`, whose wildcards make routing exactly least-loaded (pinned).
   profiles = null,
+  // #1180 R3: soft-ordering router mode (scored | shadow | roundrobin).
+  routerMode = "scored",
   nowIso,
 }) {
   const assign = [];
@@ -254,20 +286,32 @@ export function planDispatch({
     if (load.has(record.workerId)) load.set(record.workerId, Math.max(0, (load.get(record.workerId) ?? 1) - 1));
   }
 
-  // #1172: capability-ranked pick. Hard constraints first (never overridden),
-  // affinity then load among the eligible. Returns the routing evidence too,
-  // so every assignment records WHY it went where it went.
+  // #1172/#1180: capability-ranked pick. Hard constraints first (never
+  // overridden, every mode); the SOFT rank is `scored` (affinity-first) or
+  // `baseline` (least-loaded) per the router mode. In shadow mode baseline
+  // decides but the scored counterfactual is recorded — the evaluation proves
+  // scored beats baseline before a human promotes it.
   const pickWorker = (issue, exclude) => {
     const scored = scoreWorkers({ issue, profiles: effectiveProfiles, load, workerCap, exclude });
-    const chosen = scored.eligible[0] ?? null;
+    const scoredId = scoredPick(scored.eligible);
+    const baselineId = baselinePick(scored.eligible);
+    const activeId = routerMode === "scored" ? scoredId : baselineId;
+    const chosen = scored.eligible.find((e) => e.id === activeId) ?? null;
+    const routing = {
+      chosen: activeId,
+      why: chosen ? (routerMode === "scored" && chosen.affinity > 0 ? "area_affinity" : "least_loaded") : null,
+      mode: routerMode,
+      ineligible: scored.ineligible,
+      requirements: scored.requirements,
+    };
+    // Only shadow mode records the counterfactual — in scored/roundrobin the
+    // active pick IS the decision, so a shadow block would be noise.
+    if (routerMode === "shadow") {
+      routing.shadow = { baseline: baselineId, scored: scoredId, agree: baselineId === scoredId };
+    }
     return {
-      workerId: chosen?.id ?? null,
-      routing: {
-        chosen: chosen?.id ?? null,
-        why: chosen ? (chosen.affinity > 0 ? "area_affinity" : "least_loaded") : null,
-        ineligible: scored.ineligible,
-        requirements: scored.requirements,
-      },
+      workerId: activeId,
+      routing,
       constrained: scored.ineligible.some((i) => i.reason !== "at_capacity" && i.reason !== "previous_holder"),
     };
   };
@@ -379,6 +423,8 @@ export function createAutoTriggerRuntime({ state, config, listLabeledIssues, sta
       ttlEnabled: config.dispatchTtlEnabled !== false,
       // #1172 R1: capability profiles (null → least-loaded round-robin).
       profiles: config.dispatchWorkerProfiles ?? null,
+      // #1180 R3: soft-ordering router mode.
+      routerMode: config.dispatchRouterMode ?? "scored",
       nowIso,
     });
     let mutated = 0;

@@ -98,3 +98,46 @@ test("#1174 a custom minSamples threshold gates the verdict", () => {
   assert.equal(loose.workers[0].verdict, "measured");
   assert.equal(loose.workers[0].completionRate, 1);
 });
+
+// ── #1180 R3: shadow-mode counterfactual evaluation ──────────────────────────
+
+function shadowRow(overrides = {}) {
+  return row({
+    ...overrides,
+    routing: { requirements: { areas: overrides.areas ?? [] }, shadow: { baseline: overrides.baseline, scored: overrides.scored, agree: overrides.baseline === overrides.scored } },
+  });
+}
+
+test("#1180 shadow block: no shadow rows → indeterminate, no rate claimed", () => {
+  const evalResult = computeDispatchEvaluation([row({ status: "completed", completedAt: plusMin(10) })]);
+  assert.equal(evalResult.shadow.shadowAssignments, 0);
+  assert.equal(evalResult.shadow.verdict, "indeterminate");
+  assert.equal(evalResult.shadow.counterfactualWinRate, null);
+});
+
+test("#1180 shadow: agreement rate is over all shadow rows; win rate needs settled disagreements past threshold", () => {
+  const rows = [];
+  // 6 agreements (both picked 'a'), completed.
+  for (let i = 0; i < 6; i++) rows.push(shadowRow({ issueNumber: i, baseline: "a", scored: "a", status: "completed", completedAt: plusMin(10) }));
+  // 12 disagreements (baseline 'a', scored 'b'): 9 baseline reassigned (scored would've won), 3 baseline completed (baseline fine).
+  for (let i = 6; i < 15; i++) rows.push(shadowRow({ issueNumber: i, baseline: "a", scored: "b", status: "expired", expiredAt: plusMin(200) }));
+  for (let i = 15; i < 18; i++) rows.push(shadowRow({ issueNumber: i, baseline: "a", scored: "b", status: "completed", completedAt: plusMin(30) }));
+  const evalResult = computeDispatchEvaluation(rows);
+  const s = evalResult.shadow;
+  assert.equal(s.shadowAssignments, 18);
+  assert.equal(s.disagreements, 12);
+  assert.equal(s.agreementRate, 0.33, "6 of 18 agreed");
+  assert.equal(s.settledDisagreements, 12);
+  assert.equal(s.verdict, "measured", "12 settled disagreements ≥ 10 threshold");
+  assert.equal(s.counterfactualWinRate, 0.75, "9 of 12 baseline picks were reassigned — scored likely better");
+  assert.match(s.promotionRule, /Promote MYAGENTTOOL_AUTOTRIGGER_ROUTER=scored/);
+});
+
+test("#1180 shadow: below the settled-disagreement threshold, the win rate is withheld", () => {
+  const rows = [];
+  for (let i = 0; i < 5; i++) rows.push(shadowRow({ issueNumber: i, baseline: "a", scored: "b", status: "expired", expiredAt: plusMin(200) }));
+  const evalResult = computeDispatchEvaluation(rows);
+  assert.equal(evalResult.shadow.settledDisagreements, 5);
+  assert.equal(evalResult.shadow.verdict, "indeterminate");
+  assert.equal(evalResult.shadow.counterfactualWinRate, null, "5 < 10 → no rate");
+});

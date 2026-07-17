@@ -8,18 +8,20 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import {
+  baselinePick,
   createAutoTriggerRuntime,
   issueRequirements,
   parseWorkerProfiles,
   planDispatch,
   resolveAutoTriggerConfig,
+  scoredPick,
   scoreWorkers,
   selectAutoTriggerCandidates,
 } from "../src/services/auto-trigger.mjs";
 
 test("resolveAutoTriggerConfig is off by default and reads the env opt-in", () => {
   // #1165 dispatch defaults ride along: standalone role = today's behavior.
-  const dispatchDefaults = { dispatchRole: "standalone", serverId: null, dispatchWorkers: [], dispatchWorkerCap: 2, dispatchAssignTtlMinutes: 120, dispatchTtlEnabled: false, dispatchWorkerProfiles: null };
+  const dispatchDefaults = { dispatchRole: "standalone", serverId: null, dispatchWorkers: [], dispatchWorkerCap: 2, dispatchAssignTtlMinutes: 120, dispatchTtlEnabled: false, dispatchWorkerProfiles: null, dispatchRouterMode: "scored" };
   assert.deepEqual(resolveAutoTriggerConfig({}), { enabled: false, label: "auto", maxConcurrent: 1, requireProjectFields: true, ...dispatchDefaults });
   const on = resolveAutoTriggerConfig({
     MYAGENTTOOL_AUTOTRIGGER_ENABLED: "1",
@@ -499,4 +501,73 @@ test("#1172 dispatcher runtime stamps routing on the assignment row and events u
   const row = state.dispatchAssignments.find((r) => r.issueNumber === 1);
   assert.equal(row.routing.chosen, "mac");
   assert.equal(events.filter((e) => e.type === "auto_trigger_unroutable").length, 1, "reported once per process, not per tick");
+});
+
+// ── #1180 R3: shadow-mode routing ────────────────────────────────────────────
+
+test("#1180 router mode config: scored default, shadow/roundrobin opt-in, garbage → scored", () => {
+  assert.equal(resolveAutoTriggerConfig({}).dispatchRouterMode, "scored");
+  assert.equal(resolveAutoTriggerConfig({ MYAGENTTOOL_AUTOTRIGGER_ROUTER: "shadow" }).dispatchRouterMode, "shadow");
+  assert.equal(resolveAutoTriggerConfig({ MYAGENTTOOL_AUTOTRIGGER_ROUTER: "roundrobin" }).dispatchRouterMode, "roundrobin");
+  assert.equal(resolveAutoTriggerConfig({ MYAGENTTOOL_AUTOTRIGGER_ROUTER: "bogus" }).dispatchRouterMode, "scored");
+});
+
+test("#1180 scoredPick and baselinePick diverge only on affinity; hard eligibility is upstream", () => {
+  // webber is busier but has affinity; generalist is idle.
+  const eligible = [
+    { id: "generalist", affinity: 0, load: 0, order: 0 },
+    { id: "webber", affinity: 1, load: 1, order: 1 },
+  ];
+  assert.equal(scoredPick(eligible), "webber", "scored prefers affinity even at higher load");
+  assert.equal(baselinePick(eligible), "generalist", "baseline is pure least-loaded");
+  // With no affinity in play, both agree on least-loaded.
+  const noAffinity = [{ id: "a", affinity: 0, load: 2, order: 0 }, { id: "b", affinity: 0, load: 1, order: 1 }];
+  assert.equal(scoredPick(noAffinity), "b");
+  assert.equal(baselinePick(noAffinity), "b");
+});
+
+test("#1180 shadow mode: baseline decides the assignment, the scored counterfactual is recorded", () => {
+  const profiles = [
+    { id: "generalist", platform: null, areas: null, agents: null, maxRisk: null },
+    { id: "webber", platform: null, areas: ["web"], agents: null, maxRisk: null },
+  ];
+  // Preload webber with load so baseline (least-loaded) picks generalist while
+  // scored (affinity) would pick webber — a recorded disagreement.
+  const assignments = [{ projectId: "prj", issueNumber: 90, workerId: "webber", status: "open", assignedAt: T0, routing: {} }];
+  const issues = [
+    { number: 90, title: "held", state: "open", labels: ["auto", "assigned/webber"] },
+    { number: 1, title: "web work", state: "open", labels: ["auto", "area/web"] },
+  ];
+  const plan = planDispatch({ issues, assignments, projectId: "prj", workers: ["generalist", "webber"], workerCap: 5, requireProjectFields: false, nowIso: T0, profiles, routerMode: "shadow" });
+  const a = plan.assign.find((x) => x.issue.number === 1);
+  assert.equal(a.workerId, "generalist", "baseline (least-loaded) is the ACTUAL assignment in shadow mode");
+  assert.equal(a.routing.mode, "shadow");
+  assert.deepEqual(a.routing.shadow, { baseline: "generalist", scored: "webber", agree: false }, "scored counterfactual + disagreement recorded");
+});
+
+test("#1180 scored mode (default) is unchanged: affinity decides, no shadow block", () => {
+  const profiles = [
+    { id: "generalist", platform: null, areas: null, agents: null, maxRisk: null },
+    { id: "webber", platform: null, areas: ["web"], agents: null, maxRisk: null },
+  ];
+  const assignments = [{ projectId: "prj", issueNumber: 90, workerId: "webber", status: "open", assignedAt: T0, routing: {} }];
+  const issues = [
+    { number: 90, title: "held", state: "open", labels: ["auto", "assigned/webber"] },
+    { number: 1, title: "web work", state: "open", labels: ["auto", "area/web"] },
+  ];
+  const plan = planDispatch({ issues, assignments, projectId: "prj", workers: ["generalist", "webber"], workerCap: 5, requireProjectFields: false, nowIso: T0, profiles, routerMode: "scored" });
+  const a = plan.assign.find((x) => x.issue.number === 1);
+  assert.equal(a.workerId, "webber", "scored (affinity) decides");
+  assert.equal(a.routing.shadow, undefined, "no counterfactual noise when scored is active");
+});
+
+test("#1180 hard constraints apply in shadow mode too — a mismatched worker is never the baseline pick", () => {
+  const profiles = [
+    { id: "mac", platform: "macos", areas: null, agents: null, maxRisk: null },
+    { id: "win", platform: "windows", areas: null, agents: null, maxRisk: null },
+  ];
+  const issues = [{ number: 1, title: "mac only", state: "open", labels: ["auto", "platform/macos"] }];
+  const plan = planDispatch({ issues, assignments: [], projectId: "prj", workers: ["mac", "win"], workerCap: 5, requireProjectFields: false, nowIso: T0, profiles, routerMode: "shadow" });
+  assert.equal(plan.assign[0].workerId, "mac", "windows worker is hard-ineligible even under baseline shadow");
+  assert.match(plan.assign[0].routing.shadow.baseline, /mac/);
 });
