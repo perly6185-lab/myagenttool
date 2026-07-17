@@ -128,6 +128,7 @@ export function createInvocationService({
     now,
     nextId,
     appendEvent,
+    capWithArchive,
     refuse,
     persistStateSoon,
     persistStateNow,
