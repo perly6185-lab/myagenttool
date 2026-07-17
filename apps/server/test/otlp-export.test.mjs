@@ -97,9 +97,72 @@ test("exporter POSTs completed spans to the OTLP /v1/traces path", async () => {
   });
   const result = await exporter.exportSpans([roundSpan()]);
   assert.equal(result.sent, true);
+  assert.equal(result.status, 200);
   assert.equal(result.count, 1);
   assert.equal(calls[0].url, "https://collector.example.com/v1/traces", "trailing slash normalized + traces path");
   assert.equal(calls[0].body.resourceSpans[0].scopeSpans[0].spans[0].name, "round.0");
+});
+
+test("exporter accepts only the numeric 2xx status range", async () => {
+  for (const status of [200, 204, 299]) {
+    const exporter = createOtlpTraceExporter({
+      getEndpoint: () => "https://collector.example.com",
+      fetchImpl: async () => ({ status }),
+    });
+    assert.deepEqual(await exporter.exportSpans([roundSpan()]), { sent: true, status, count: 1 });
+  }
+  for (const status of [199, 300]) {
+    const exporter = createOtlpTraceExporter({
+      getEndpoint: () => "https://collector.example.com",
+      fetchImpl: async () => ({ status }),
+    });
+    assert.deepEqual(await exporter.exportSpans([roundSpan()]), {
+      sent: false, status, count: 1, reason: "http_status",
+    });
+  }
+});
+
+test("exporter classifies non-2xx without reading or leaking the response body", async () => {
+  let bodyRead = false;
+  const exporter = createOtlpTraceExporter({
+    getEndpoint: () => "https://collector.example.com",
+    fetchImpl: async () => ({
+      status: 503,
+      text: async () => {
+        bodyRead = true;
+        return "collector failed with secret-token";
+      },
+    }),
+  });
+  const result = await exporter.exportSpans([roundSpan()]);
+  assert.deepEqual(result, { sent: false, status: 503, count: 1, reason: "http_status" });
+  assert.equal(bodyRead, false, "collector response body is never read");
+  assert.doesNotMatch(JSON.stringify(result), /secret-token/);
+});
+
+test("exporter classifies timeout without leaking the endpoint or thrown error", async () => {
+  const exporter = createOtlpTraceExporter({
+    getEndpoint: () => "https://user:secret@collector.example.com",
+    timeoutMs: 5,
+    fetchImpl: async (_url, { signal }) => new Promise((_, reject) => {
+      signal.addEventListener("abort", () => reject(new Error("timeout at https://user:secret@collector.example.com")), { once: true });
+    }),
+  });
+  const result = await exporter.exportSpans([roundSpan()]);
+  assert.deepEqual(result, { sent: false, status: null, count: 1, reason: "timeout" });
+  assert.doesNotMatch(JSON.stringify(result), /secret|collector\.example/);
+});
+
+test("exporter classifies network errors without leaking raw error details", async () => {
+  const exporter = createOtlpTraceExporter({
+    getEndpoint: () => "https://collector.example.com",
+    fetchImpl: async () => {
+      throw new Error("ECONNREFUSED https://collector.example.com/private-token");
+    },
+  });
+  const result = await exporter.exportSpans([roundSpan()]);
+  assert.deepEqual(result, { sent: false, status: null, count: 1, reason: "network_error" });
+  assert.doesNotMatch(JSON.stringify(result), /private-token|ECONNREFUSED|collector\.example/);
 });
 
 test("exporter skips the POST when there are no completed spans", async () => {
