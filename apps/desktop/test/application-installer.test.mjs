@@ -272,7 +272,7 @@ test("adr0015: every outcome of an elevated run is audited as elevated", async (
         spawnProcess: (command, args) => {
           assert.equal(command, "/usr/bin/pkexec");
           assert.equal(args[0], "apt-get");
-          queueMicrotask(() => child.emit("exit", 1, null)); // provider failed
+          queueMicrotask(() => child.emit("close", 1)); // provider failed (installer listens on "close")
           return child;
         },
       });
