@@ -114,4 +114,34 @@ export function runStoreContract(label, makeStore) {
     assert.deepEqual(page2.rows.map((r) => r.id), ["r1"]);
     assert.equal(page2.nextBefore, null);
   });
+
+  // ADR 0019 fix: order: "asc" returns the EARLIEST cap rows (the span-tree read
+  // needs the lowest-seq root span to survive the cap, not the newest window).
+  test(`${label}: queryHistory order "asc" returns the earliest cap, not the newest`, () => {
+    const { store } = makeStore();
+    store.appendHistory("spans", [
+      { id: "root", traceId: "trc_1", startedAt: "t0" },
+      { id: "s1", traceId: "trc_1", startedAt: "t1" },
+      { id: "s2", traceId: "trc_1", startedAt: "t2" },
+    ]);
+    const desc = store.queryHistory("spans", { invocationId: "trc_1", limit: 2 });
+    assert.deepEqual(desc.rows.map((r) => r.id), ["s2", "s1"], "desc: newest cap");
+    const asc = store.queryHistory("spans", { invocationId: "trc_1", limit: 2, order: "asc" });
+    assert.deepEqual(asc.rows.map((r) => r.id), ["root", "s1"], "asc: earliest cap keeps the root");
+    assert.ok(asc.nextBefore != null, "asc still paginates (more rows remain)");
+  });
+
+  // ADR 0019 fix (H): appendHistory must be callable inside an outer store
+  // transaction — a non-reentrant BEGIN would throw and a best-effort dual-write
+  // caller would silently drop the history. Both adapters must join the outer tx.
+  test(`${label}: appendHistory inside an outer transaction does not throw and persists`, () => {
+    const { store } = makeStore();
+    assert.doesNotThrow(() => {
+      store.transaction((tx) => {
+        tx.insert("c", { id: "rec_1", v: 1 });
+        store.appendHistory("refusals", [{ id: "r1", invocationId: "inv_1", at: "t1", summary: "one" }]);
+      });
+    });
+    assert.deepEqual(store.queryHistory("refusals", { invocationId: "inv_1" }).rows.map((r) => r.id), ["r1"]);
+  });
 }

@@ -118,6 +118,20 @@ store already has (`runMigrations` gate).
 - Delivered in slices: B-1 (the `history` table + API + migration + contract),
   B-2 (dual-write wiring + the read surfaces preferring `queryHistory`).
 
+## Residual — history-table erasure (deferred, tracked)
+
+The `history` table is **append-only with no deletion or redaction path**, and by
+design it is OUTSIDE the mirrored snapshot — so per-subject deletion / Right-to-
+Erasure (which scrubs `state` and the JSONL archive) does **not** reach rows that
+were dual-written into `history`. It is also unbounded (every capped collection's
+evicted rows accumulate, though only refusals/traces/spans are read back), with no
+retention reap. This is a real compliance + disk-growth gap, deferred to a follow-
+up slice (B-3): a `deleteHistory(collection, scopeId)` / redaction API wired into
+`observability-deletion.mjs`, plus a retention reap over `history`. Until then the
+SQLite `history` table must be treated as retaining evicted observability rows past
+a subject deletion — operators relying on erasure should run the memory/JSONL
+backing or restore from a pre-deletion snapshot.
+
 ## Testable rules
 
 - A history row survives a `replaceSnapshot`/commit that no longer has it in

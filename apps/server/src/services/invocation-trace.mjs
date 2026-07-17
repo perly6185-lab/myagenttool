@@ -13,9 +13,16 @@ export function createInvocationTraceService({ state, readArchiveWithMetadata, q
   // Archived rows for a collection scoped to `scopeId` (invocationId for traces,
   // traceId for spans — matching the history table's scope column). Prefers the
   // indexed store query (ADR 0019 B-2, paginated) over the whole-file JSONL read.
-  function readArchived(collection, scopeId, filter, cap) {
+  function readArchived(collection, scopeId, filter, cap, order = "desc") {
+    // A null scope means there is nothing to look up — both traces (scoped to the
+    // invocation id) and spans (scoped to the trace id) are scope-keyed. Skip the
+    // query entirely: an unscoped history read would scan every invocation's rows
+    // (then be filtered back to empty) and falsely raise `truncated`.
+    if (scopeId == null) {
+      return { rows: [], damaged: false, more: false };
+    }
     if (typeof queryHistory === "function") {
-      const page = queryHistory(collection, { invocationId: scopeId, limit: cap });
+      const page = queryHistory(collection, { invocationId: scopeId, limit: cap, order });
       return { rows: page.rows ?? [], damaged: false, more: page.nextBefore != null };
     }
     const archive = typeof readArchiveWithMetadata === "function"
@@ -33,7 +40,7 @@ export function createInvocationTraceService({ state, readArchiveWithMetadata, q
 
     // The trace: one record whose subject is this invocation (live wins on overlap).
     const traceArchive = readArchived("traces", invocation.id, (row) => row?.subjectId === invocation.id, cap);
-    let invalidRows = traceArchive.more ? 0 : 0;
+    let invalidRows = 0;
     const traceById = new Map();
     for (const trace of traceArchive.rows) {
       if (!isInvocationTrace(trace, invocation.id)) { invalidRows += 1; continue; }
@@ -46,8 +53,12 @@ export function createInvocationTraceService({ state, readArchiveWithMetadata, q
     const traceId = trace?.id ?? invocation.traceId ?? null;
 
     // The spans under that trace (live + archived), deduped by span id. Spans key
-    // by traceId, so that is the scope passed to the indexed history query.
-    const spanArchive = readArchived("spans", traceId, (row) => row?.traceId === traceId, cap);
+    // by traceId, so that is the scope passed to the indexed history query. Read
+    // them EARLIEST-first (order: "asc"): eviction is oldest-first, so the root
+    // span has the lowest rowid — a newest-cap read would drop it and dangle
+    // trace.rootSpanId, diverging from the whole-file JSONL scan which keeps the
+    // earliest cap. compareSpans re-sorts chronologically regardless.
+    const spanArchive = readArchived("spans", traceId, (row) => row?.traceId === traceId, cap, "asc");
     const spanById = new Map();
     for (const span of spanArchive.rows) {
       if (!isTraceSpan(span, traceId)) { invalidRows += 1; continue; }
