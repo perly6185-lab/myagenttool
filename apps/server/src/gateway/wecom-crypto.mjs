@@ -46,6 +46,16 @@ function pkcs7Unpad(buffer) {
   if (!padLength || padLength > BLOCK_SIZE || padLength > buffer.length) {
     throw new Error("wecom_invalid_padding");
   }
+  // #1167: verify EVERY padding byte, per PKCS#7 — checking only the length
+  // byte let a tampered final block slip through whenever its random last byte
+  // happened to land on the original pad value (~1/256), decrypting "cleanly".
+  // CBC has no integrity of its own (that's msg_signature's job), but the
+  // padding layer should still reject everything it can see is malformed.
+  for (let i = buffer.length - padLength; i < buffer.length; i += 1) {
+    if (buffer[i] !== padLength) {
+      throw new Error("wecom_invalid_padding");
+    }
+  }
   return buffer.subarray(0, buffer.length - padLength);
 }
 
