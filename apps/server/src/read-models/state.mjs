@@ -496,6 +496,10 @@ export function buildPublicState({
     pendingDecisions: pendingDecisionQueue,
     workBoard: workStatusBoard,
     workReport: workReportSummary,
+    // Scheduled-report config is a single global admin-plane singleton (it names a
+    // channel target) — expose it only to an unscoped/local viewer, like the
+    // report's own refusal figures.
+    reportSchedule: teamId == null ? state.reportSchedule ?? null : null,
     codexImportedEvidenceRecords: visibleImported,
     terminalRuntimeCapability: state.terminalRuntimeCapability,
     terminalSessions,
