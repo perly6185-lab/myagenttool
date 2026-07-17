@@ -15,6 +15,7 @@ import { extractClaudeFileAccesses } from "./claude-file-access.mjs";
 import { newRoundState, claudeRoundEmits, codexRoundEmits } from "./round-telemetry.mjs";
 import { createAgentLineSink } from "./agent-line-sink.mjs";
 import { createInvocationPool, resolveBridgeConcurrency } from "./invocation-pool.mjs";
+import { spawnCapture } from "./spawn-capture.mjs";
 import { applicationWrapperArgs } from "./application-wrapper-args.mjs";
 import { collectApplicationBinaryReadiness } from "./application-binary-readiness.mjs";
 import { collectApplicationCredentialReadiness } from "./application-credential-readiness.mjs";
@@ -357,7 +358,7 @@ try {
   registration = await request("POST", "/api/bridge/register", {
     bridgeVersion: "0.0.0",
     capabilities: ["demo_cli_agent", "managed_terminal_pty", "remote_ssh_relay"],
-    applicationBinaryReadiness: collectApplicationBinaryReadiness(localExecutionPolicyManifest),
+    applicationBinaryReadiness: await collectApplicationBinaryReadiness(localExecutionPolicyManifest),
     applicationCredentialReadiness: collectApplicationCredentialReadiness(credentialDir),
   });
 } catch (error) {
@@ -419,7 +420,7 @@ const guarded = (fn, label) => () => Promise.resolve().then(fn).catch((error) =>
 
 async function refreshApplicationBinaryReadiness() {
   await request("POST", "/api/bridge/readiness", {
-    applicationBinaryReadiness: collectApplicationBinaryReadiness(localExecutionPolicyManifest),
+    applicationBinaryReadiness: await collectApplicationBinaryReadiness(localExecutionPolicyManifest),
     // A credential revoked in the provider's account shows up here as the sidecar
     // going away — the same tick that reports a binary vanishing. That is what
     // lets the server's health probe auto-degrade the application to offline.
@@ -529,14 +530,15 @@ async function runLifecycleAction(work) {
 
   console.log(`[desktop] lifecycle action ${work.lifecycleActionId}: ${work.command.commandId}`);
   const startedAt = Date.now();
-  const result = spawnSync(plan.command, plan.args, {
+  // #1246: async so a slow lifecycle command (10s timeout) no longer freezes
+  // the loop and stalls every in-flight agent run's output forwarding.
+  const result = await spawnCapture(plan.command, plan.args, {
     cwd: process.cwd(),
     env: buildEnv({ command: "demo-agent", environmentPolicy: "inherit_safe" }),
     timeout: 10_000,
     windowsHide: true,
     encoding: "utf8",
     shell: false,
-    stdio: ["ignore", "pipe", "pipe"]
   });
   const durationMs = Date.now() - startedAt;
   const succeeded = result.status === 0 && !result.error;
