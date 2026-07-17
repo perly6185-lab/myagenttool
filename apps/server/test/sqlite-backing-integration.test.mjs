@@ -13,6 +13,7 @@ import { test } from "node:test";
 
 import { createServerRuntimeServices } from "../src/runtime/service-composer.mjs";
 import { createServerState } from "../src/runtime/state-factory.mjs";
+import { createRetentionArchive } from "../src/services/retention-archive.mjs";
 
 let openSqliteStore;
 try {
@@ -72,6 +73,48 @@ test("a runtime write mirrors to SQLite and a fresh boot hydrates it back", { sk
     const dev = (b2.state.devices ?? []).find((d) => d.id === "dev_local_001");
     assert(dev, "the default device survived the restart via the SQLite backing");
     assert.equal(dev.status, "offline", "a hydrated device is offline until its bridge re-registers");
+    store.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("an invocation-event shard high-water wins over a stale SQLite id counter", { skip }, async () => {
+  const dir = mkdtempSync(join(tmpdir(), "sqlite-event-floor-"));
+  const projectPath = join(dir, "proj");
+  const stateStorePath = join(dir, "state", "local.json");
+  const sqlitePath = join(dir, "state", "local.sqlite");
+  mkdirSync(projectPath, { recursive: true });
+  mkdirSync(join(dir, "state"), { recursive: true });
+  try {
+    // Seed SQLite first, leaving its persisted idCounter below the simulated
+    // event-shard crash window written afterward.
+    let store = await openSqliteStore({ path: sqlitePath });
+    boot({ projectPath, stateStorePath, sqliteStore: store });
+    store.close();
+
+    const archive = createRetentionArchive({ stateStorePath, now });
+    const archived = archive.archiveInvocationEvents([{
+      id: "evt_demo_9000",
+      invocationId: "inv_archive_floor",
+      type: "log",
+      level: "info",
+      message: "durable beyond SQLite",
+      data: null,
+      createdAt: now(),
+    }]);
+    assert.equal(archived.ok, true);
+
+    store = await openSqliteStore({ path: sqlitePath });
+    const restarted = boot({ projectPath, stateStorePath, sqliteStore: store });
+    const event = restarted.api.appendEvent({
+      invocationId: "inv_archive_floor",
+      type: "log",
+      level: "info",
+      message: "after SQLite hydrate",
+    });
+    assert.ok(Number(event.id.match(/(\d+)$/)?.[1]) > 9000, "the hydrated runtime never reissues an archived event id");
+    await new Promise((resolve) => setTimeout(resolve, 40));
     store.close();
   } finally {
     rmSync(dir, { recursive: true, force: true });

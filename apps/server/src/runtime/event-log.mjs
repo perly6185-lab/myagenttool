@@ -1,6 +1,8 @@
 import { SERVER_REFUSAL_EVENT_TYPES } from "./refusal-log.mjs";
 
 const warnedRefusalBypass = new Set();
+export const EVENT_HOT_LIMIT = 500;
+const TRUNCATED_INVOCATION_ID_LIMIT = 1_000;
 
 export function createEventLogRuntime({
   state,
@@ -8,6 +10,7 @@ export function createEventLogRuntime({
   nextId,
   persistStateSoon,
   getCodexEventHandlers,
+  archiveEvicted,
 }) {
   // The structural chokepoint (refusal model Phase 2, #760): a refusal-typed
   // event may only reach the log via refuse(), which passes { viaRefuse: true }.
@@ -35,10 +38,25 @@ export function createEventLogRuntime({
       createdAt: now()
     };
     state.events.unshift(record);
-    // Bounded global ring buffer. Raised 200→500 so a run's lifecycle events (the
-    // per-run timeline filters these by data.autoRunId) survive across more
-    // concurrent runs before eviction. Follow-up: per-key retention for true durability.
-    state.events = state.events.slice(0, 500);
+    // Keep /api/state as a bounded real-time tail, but archive the overflow
+    // synchronously BEFORE removing it. A crash before the later state snapshot
+    // can leave a duplicate in hot + archive; the invocation detail reader
+    // de-duplicates by id at that boundary.
+    const overflow = state.events.slice(EVENT_HOT_LIMIT);
+    if (overflow.length > 0) {
+      let archiveResult = null;
+      try {
+        archiveResult = typeof archiveEvicted === "function"
+          ? archiveEvicted("events", overflow)
+          : null;
+      } catch (error) {
+        archiveResult = { ok: false, error: error instanceof Error ? error.message : String(error) };
+      }
+      if (archiveResult?.ok !== true) {
+        markEventHistoryTruncated(state, overflow, now(), archiveResult?.error ?? "event_archive_unavailable");
+      }
+      state.events = state.events.slice(0, EVENT_HOT_LIMIT);
+    }
     const handlers = getCodexEventHandlers();
     handlers.updateCodexSessionFromEvent(record);
     handlers.createCodexEvidenceRecord(record);
@@ -47,4 +65,28 @@ export function createEventLogRuntime({
   }
 
   return { appendEvent };
+}
+
+function markEventHistoryTruncated(state, rows, failedAt, error) {
+  const retention = state.eventHistoryRetention && typeof state.eventHistoryRetention === "object"
+    ? state.eventHistoryRetention
+    : {};
+  const ids = Array.isArray(retention.truncatedInvocationIds)
+    ? retention.truncatedInvocationIds.filter((id) => typeof id === "string" && id)
+    : [];
+  const seen = new Set(ids);
+  for (const row of rows) {
+    if (typeof row?.invocationId !== "string" || !row.invocationId || seen.has(row.invocationId)) continue;
+    if (ids.length >= TRUNCATED_INVOCATION_ID_LIMIT) {
+      retention.globalTruncated = true;
+      break;
+    }
+    ids.push(row.invocationId);
+    seen.add(row.invocationId);
+  }
+  retention.truncatedInvocationIds = ids;
+  retention.globalTruncated = Boolean(retention.globalTruncated);
+  retention.lastArchiveErrorAt = failedAt;
+  retention.lastArchiveError = String(error ?? "event_archive_unavailable").slice(0, 500);
+  state.eventHistoryRetention = retention;
 }

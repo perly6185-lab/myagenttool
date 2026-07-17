@@ -10,6 +10,7 @@ export async function handleInvocationRoutes({
   actor,
   findApprovalRequest,
   findInvocation,
+  listInvocationEvents,
   approveInvocation,
   denyInvocation,
   findAgent,
@@ -46,6 +47,34 @@ export async function handleInvocationRoutes({
       return true;
     }
     sendJson(res, 200, { released: releaseDecisionClaim({ decisionId, actor }) });
+    return true;
+  }
+
+  const eventsMatch = url.pathname.match(/^\/api\/invocations\/([^/]+)\/events$/);
+  if (req.method === "GET" && eventsMatch) {
+    const invocationId = decodeURIComponent(eventsMatch[1]);
+    const invocation = findInvocation(invocationId);
+    if (!invocation) {
+      sendJson(res, 404, { error: "invocation_not_found" });
+      return true;
+    }
+    // Authorize against the durable invocation, never archive row metadata. Read
+    // the archive only after the existence-hiding project/team guard succeeds.
+    if (denyForeignInvocationRead({ res, sendJson, state, actor, invocation })) {
+      return true;
+    }
+    try {
+      sendJson(res, 200, listInvocationEvents(invocation, {
+        limit: url.searchParams.get("limit"),
+        before: url.searchParams.get("before"),
+      }));
+    } catch (error) {
+      if (error?.code === "invalid_cursor") {
+        sendJson(res, 400, { error: "invalid_cursor", message: error.message });
+      } else {
+        throw error;
+      }
+    }
     return true;
   }
 
@@ -242,7 +271,7 @@ export async function handleInvocationRoutes({
       sendJson(res, 404, { error: "invocation_not_found" });
       return true;
     }
-    if (denyForeignProject({ res, sendJson, state, actor, projectId: invocationProjectId(invocation), notFound: { error: "invocation_not_found" } })) {
+    if (denyForeignInvocationRead({ res, sendJson, state, actor, invocation })) {
       return true;
     }
     const transcript = (state.runTranscripts ?? []).find((item) => item?.invocationId === invocation.id) ?? null;
@@ -291,7 +320,30 @@ export async function handleInvocationRoutes({
 // The project an invocation belongs to, for tenancy checks. Creation stores it
 // top-level (invocation.projectId) and in metadata; fall back through both.
 function invocationProjectId(invocation) {
-  return invocation?.projectId ?? invocation?.input?.metadata?.projectId ?? null;
+  return invocation?.projectId
+    ?? invocation?.options?.metadata?.projectId
+    ?? invocation?.input?.metadata?.projectId
+    ?? null;
+}
+
+function denyForeignInvocationRead({ res, sendJson, state, actor, invocation }) {
+  const projectId = invocationProjectId(invocation);
+  if (projectId) {
+    return denyForeignProject({
+      res,
+      sendJson,
+      state,
+      actor,
+      projectId,
+      notFound: { error: "invocation_not_found" },
+    });
+  }
+  if (!actor?.teamId) return false;
+  const requester = (state.users ?? []).find((user) => user.id === invocation?.requestedBy);
+  const ownerTeamId = requester?.teamId ?? "team_local";
+  if (ownerTeamId === actor.teamId) return false;
+  sendJson(res, 404, { error: "invocation_not_found" });
+  return true;
 }
 
 // The project a compare run is anchored to for tenancy — its own projectId, or (for
