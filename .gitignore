@@ -37,3 +37,4 @@ apps/server/data/
 # Linked git worktrees (each carries its own node_modules; a `git add -A`
 # from the main worktree must never commit them)
 .worktrees/
+scratch_diff.txt

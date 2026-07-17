@@ -23,7 +23,13 @@ export function headerOf(message) {
     messageId: envelope.messageId ?? null,
     from: formatAddresses(envelope.from),
     subject: envelope.subject ?? "",
-    date: envelope.date instanceof Date ? envelope.date.toISOString() : String(envelope.date ?? ""),
+    // #1199: a malformed Date header parses to an Invalid Date, which is still
+    // `instanceof Date` but throws RangeError on toISOString(). listUnread maps
+    // headerOf over the whole batch, so one poisoned message would have hidden
+    // every other unread. Guard validity, not just the type.
+    date: envelope.date instanceof Date && !Number.isNaN(envelope.date.getTime())
+      ? envelope.date.toISOString()
+      : String(envelope.date ?? ""),
   };
 }
 
