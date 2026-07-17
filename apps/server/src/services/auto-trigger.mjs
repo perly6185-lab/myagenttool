@@ -31,10 +31,16 @@ export function resolveAutoTriggerConfig(env = process.env) {
     : env.MYAGENTTOOL_AUTOTRIGGER_DISPATCH_ROLE === "worker"
       ? "worker"
       : "standalone";
-  const workers = String(env.MYAGENTTOOL_AUTOTRIGGER_WORKERS ?? "")
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean);
+  // #1172: profiles (WORKERS_JSON) are the richer declaration — when present,
+  // the worker id list derives from them and the plain WORKERS list is ignored
+  // (two lists that could disagree would be a routing split-brain).
+  const profiles = parseWorkerProfiles(env.MYAGENTTOOL_AUTOTRIGGER_WORKERS_JSON);
+  const workers = profiles
+    ? profiles.map((p) => p.id)
+    : String(env.MYAGENTTOOL_AUTOTRIGGER_WORKERS ?? "")
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean);
   return {
     enabled: flag === "1" || flag === "true",
     label: env.MYAGENTTOOL_AUTOTRIGGER_LABEL || "auto",
@@ -58,7 +64,93 @@ export function resolveAutoTriggerConfig(env = process.env) {
     // means "no signal exists", so TTL reassignment is disabled rather than
     // treating every healthy long run as stale and duplicating it.
     dispatchTtlEnabled: resolveStatusWritebackConfig(env).enabled,
+    // #1172 (R1 of #1170): declared worker capability profiles. Absent/invalid
+    // → null, and routing stays pure least-loaded round-robin.
+    dispatchWorkerProfiles: profiles,
   };
+}
+
+// #1172: parse MYAGENTTOOL_AUTOTRIGGER_WORKERS_JSON. Shape per worker:
+//   { id, platform?, areas?: [], agents?: [], maxRisk? }
+// Every field beyond `id` is optional and its absence means "unconstrained" —
+// a profiles list of bare ids behaves exactly like the plain WORKERS list.
+// Malformed JSON or a row without an id → null (fall back, loudly at startup).
+export function parseWorkerProfiles(json) {
+  if (!json || !String(json).trim()) return null;
+  let parsed;
+  try {
+    parsed = JSON.parse(json);
+  } catch {
+    return null;
+  }
+  if (!Array.isArray(parsed) || parsed.length === 0) return null;
+  const profiles = [];
+  for (const row of parsed) {
+    const id = String(row?.id ?? "").trim();
+    if (!id) return null;
+    const strings = (v) => (Array.isArray(v) ? v.map((s) => String(s).trim()).filter(Boolean) : null);
+    profiles.push({
+      id,
+      platform: typeof row.platform === "string" && row.platform.trim() ? row.platform.trim() : null,
+      areas: strings(row.areas),
+      agents: strings(row.agents),
+      maxRisk: typeof row.maxRisk === "string" && RISK_ORDER[row.maxRisk.trim()] !== undefined ? row.maxRisk.trim() : null,
+    });
+  }
+  return profiles;
+}
+
+const RISK_ORDER = { low: 0, medium: 1, high: 2, critical: 3 };
+
+// #1172: what an issue declares it needs, read from the governance taxonomy
+// already on every issue (platform/* area/* risk/* agent/* labels). Pure; no
+// body parsing in R1. "all"/"none" values are unconstrained by definition.
+export function issueRequirements(issue) {
+  const labels = issueLabelNames(issue);
+  const values = (prefix) => labels.filter((l) => l.startsWith(prefix)).map((l) => l.slice(prefix.length));
+  return {
+    platforms: values("platform/").filter((v) => v !== "all" && v !== "none"),
+    areas: values("area/"),
+    risk: values("risk/")[0] ?? null,
+    agents: values("agent/").filter((v) => v !== "all" && v !== "none"),
+  };
+}
+
+// #1172: rank workers for one issue. HARD constraints make a worker ineligible
+// with a named reason (never overridden by load or affinity); SOFT ordering is
+// area affinity, then least-loaded, then list order (deterministic). With
+// bare-id profiles every constraint is a wildcard, so the ranking degenerates
+// to exactly the least-loaded round-robin the caller had before.
+export function scoreWorkers({ issue, profiles = [], load = new Map(), workerCap = 2, exclude = null }) {
+  const need = issueRequirements(issue);
+  const eligible = [];
+  const ineligible = [];
+  for (const profile of profiles) {
+    if (profile.id === exclude) {
+      ineligible.push({ id: profile.id, reason: "previous_holder" });
+      continue;
+    }
+    if ((load.get(profile.id) ?? 0) >= workerCap) {
+      ineligible.push({ id: profile.id, reason: "at_capacity" });
+      continue;
+    }
+    if (profile.platform && need.platforms.length && !need.platforms.includes(profile.platform)) {
+      ineligible.push({ id: profile.id, reason: `platform_mismatch (needs ${need.platforms.join("/")}, is ${profile.platform})` });
+      continue;
+    }
+    if (profile.agents && need.agents.length && !need.agents.every((a) => profile.agents.includes(a))) {
+      ineligible.push({ id: profile.id, reason: `agent_mismatch (needs ${need.agents.join("+")})` });
+      continue;
+    }
+    if (profile.maxRisk && need.risk && RISK_ORDER[need.risk] !== undefined && RISK_ORDER[need.risk] > RISK_ORDER[profile.maxRisk]) {
+      ineligible.push({ id: profile.id, reason: `risk_above_ceiling (${need.risk} > ${profile.maxRisk})` });
+      continue;
+    }
+    const affinity = profile.areas && need.areas.some((a) => profile.areas.includes(a)) ? 1 : 0;
+    eligible.push({ id: profile.id, affinity, load: load.get(profile.id) ?? 0 });
+  }
+  eligible.sort((a, b) => b.affinity - a.affinity || a.load - b.load || profiles.findIndex((p) => p.id === a.id) - profiles.findIndex((p) => p.id === b.id));
+  return { eligible, ineligible, requirements: need };
 }
 
 /** The assignment label a dispatcher writes and a worker filters on. */
@@ -133,13 +225,18 @@ export function planDispatch({
   requireProjectFields = true,
   ttlMinutes = 120,
   ttlEnabled = true,
+  // #1172 R1: declared capability profiles. Null → bare-id profiles derived
+  // from `workers`, whose wildcards make routing exactly least-loaded (pinned).
+  profiles = null,
   nowIso,
 }) {
   const assign = [];
   const reassign = [];
   const settle = [];
   const adopt = [];
-  if (!workers.length) return { assign, reassign, settle, adopt };
+  const unroutable = [];
+  const effectiveProfiles = profiles ?? workers.map((id) => ({ id, platform: null, areas: null, agents: null, maxRisk: null }));
+  if (!workers.length) return { assign, reassign, settle, adopt, unroutable };
   const nowMs = Date.parse(nowIso ?? new Date().toISOString());
   const open = (assignments ?? []).filter((a) => a?.projectId === projectId && a.status === "open");
   const openByIssue = new Map(open.map((a) => [a.issueNumber, a]));
@@ -157,14 +254,22 @@ export function planDispatch({
     if (load.has(record.workerId)) load.set(record.workerId, Math.max(0, (load.get(record.workerId) ?? 1) - 1));
   }
 
-  const pickWorker = (exclude) => {
-    let best = null;
-    for (const w of workers) {
-      if (w === exclude) continue;
-      if ((load.get(w) ?? 0) >= workerCap) continue;
-      if (best === null || (load.get(w) ?? 0) < (load.get(best) ?? 0)) best = w;
-    }
-    return best;
+  // #1172: capability-ranked pick. Hard constraints first (never overridden),
+  // affinity then load among the eligible. Returns the routing evidence too,
+  // so every assignment records WHY it went where it went.
+  const pickWorker = (issue, exclude) => {
+    const scored = scoreWorkers({ issue, profiles: effectiveProfiles, load, workerCap, exclude });
+    const chosen = scored.eligible[0] ?? null;
+    return {
+      workerId: chosen?.id ?? null,
+      routing: {
+        chosen: chosen?.id ?? null,
+        why: chosen ? (chosen.affinity > 0 ? "area_affinity" : "least_loaded") : null,
+        ineligible: scored.ineligible,
+        requirements: scored.requirements,
+      },
+      constrained: scored.ineligible.some((i) => i.reason !== "at_capacity" && i.reason !== "previous_holder"),
+    };
   };
 
   for (const issue of issues) {
@@ -194,34 +299,45 @@ export function planDispatch({
 
     if (assignedLabels.length || record) {
       if (ttlEnabled && record && nowMs - Date.parse(record.assignedAt) > ttlMinutes * 60_000) {
-        const next = pickWorker(record.workerId);
-        if (next) {
-          reassign.push({ issue, from: record.workerId, to: next, record });
-          load.set(next, (load.get(next) ?? 0) + 1);
+        const next = pickWorker(issue, record.workerId);
+        if (next.workerId) {
+          reassign.push({ issue, from: record.workerId, to: next.workerId, record, routing: next.routing });
+          load.set(next.workerId, (load.get(next.workerId) ?? 0) + 1);
           if (load.has(record.workerId)) load.set(record.workerId, Math.max(0, (load.get(record.workerId) ?? 1) - 1));
         }
       }
       continue;
     }
 
-    const worker = pickWorker(null);
-    if (worker === null) continue; // every worker at cap — next tick
-    assign.push({ issue, workerId: worker });
-    load.set(worker, (load.get(worker) ?? 0) + 1);
+    const pick = pickWorker(issue, null);
+    if (pick.workerId === null) {
+      // Everyone at cap is normal backpressure (next tick); everyone HARD-
+      // ineligible means no configured worker can ever take this issue — that
+      // must be visible, not a silent forever-park.
+      if (pick.constrained && pick.routing.ineligible.every((i) => i.reason !== "at_capacity")) {
+        unroutable.push({ issue, routing: pick.routing });
+      }
+      continue;
+    }
+    assign.push({ issue, workerId: pick.workerId, routing: pick.routing });
+    load.set(pick.workerId, (load.get(pick.workerId) ?? 0) + 1);
   }
-  return { assign, reassign, settle, adopt };
+  return { assign, reassign, settle, adopt, unroutable };
 }
 
 // Runtime around the pure selectors. `listLabeledIssues(project, label)`,
 // `startAutoRun`, and (dispatcher only) `editIssueLabels` are injected so a
 // scan is fully testable without gh or a server.
 export function createAutoTriggerRuntime({ state, config, listLabeledIssues, startAutoRun, editIssueLabels, appendEvent, persistStateSoon, log }) {
+  // #1172: unroutable issues are reported once per process, not per tick.
+  const reportedUnroutable = new Set();
+
   function readyProjects() {
     const readyProjectIds = new Set((state.projectTargets ?? []).filter((t) => t.state === "ready").map((t) => t.projectId));
     return (state.projects ?? []).filter((p) => p.source !== "worktree" && readyProjectIds.has(p.id));
   }
 
-  function recordAssignment(project, issue, workerId, nowIso, { adopted = false } = {}) {
+  function recordAssignment(project, issue, workerId, nowIso, { adopted = false, routing = null } = {}) {
     const row = {
       id: `dsp_${project.id}_${issue.number}_${Date.parse(nowIso)}`,
       projectId: project.id,
@@ -229,6 +345,8 @@ export function createAutoTriggerRuntime({ state, config, listLabeledIssues, sta
       workerId,
       status: "open",
       adopted,
+      // #1172: WHY it went where it went — chosen/why/ineligible/requirements.
+      routing,
       assignedAt: nowIso,
       expiredAt: null,
     };
@@ -259,6 +377,8 @@ export function createAutoTriggerRuntime({ state, config, listLabeledIssues, sta
       ttlMinutes: config.dispatchAssignTtlMinutes,
       // #1169: TTL without a progress signal duplicates healthy long runs.
       ttlEnabled: config.dispatchTtlEnabled !== false,
+      // #1172 R1: capability profiles (null → least-loaded round-robin).
+      profiles: config.dispatchWorkerProfiles ?? null,
       nowIso,
     });
     let mutated = 0;
@@ -289,11 +409,26 @@ export function createAutoTriggerRuntime({ state, config, listLabeledIssues, sta
       });
       mutated += 1;
     }
+    // #1172: an issue no configured worker can EVER take must be visible.
+    // Once per issue per process — every tick would flood the event ring.
+    for (const { issue, routing } of plan.unroutable) {
+      const key = `${project.id}#${issue.number}`;
+      if (reportedUnroutable.has(key)) continue;
+      reportedUnroutable.add(key);
+      appendEvent?.({
+        invocationId: null,
+        type: "auto_trigger_unroutable",
+        level: "warn",
+        message: `Issue #${issue.number} matches no configured worker: ${routing.ineligible.map((i) => `${i.id}: ${i.reason}`).join("; ")}.`,
+        data: { projectId: project.id, issueNumber: issue.number, routing },
+      });
+      log?.(`auto-trigger[dispatch]: #${issue.number} unroutable — ${routing.ineligible.map((i) => `${i.id}: ${i.reason}`).join("; ")}`);
+    }
     let assigned = 0;
-    for (const { issue, workerId } of plan.assign) {
+    for (const { issue, workerId, routing } of plan.assign) {
       try {
         await editIssueLabels(project, { issueNumber: issue.number, add: [assignedLabel(workerId)], remove: [] });
-        recordAssignment(project, issue, workerId, nowIso);
+        recordAssignment(project, issue, workerId, nowIso, { routing });
         appendEvent?.({
           invocationId: null,
           type: "auto_trigger_assigned",
@@ -306,12 +441,12 @@ export function createAutoTriggerRuntime({ state, config, listLabeledIssues, sta
         log?.(`auto-trigger[dispatch]: assign #${issue.number} → ${workerId} failed: ${error?.message ?? error}`);
       }
     }
-    for (const { issue, from, to, record } of plan.reassign) {
+    for (const { issue, from, to, record, routing } of plan.reassign) {
       try {
         await editIssueLabels(project, { issueNumber: issue.number, add: [assignedLabel(to)], remove: [assignedLabel(from)] });
         record.status = "expired";
         record.expiredAt = nowIso;
-        recordAssignment(project, issue, to, nowIso);
+        recordAssignment(project, issue, to, nowIso, { routing });
         appendEvent?.({
           invocationId: null,
           type: "auto_trigger_reassigned",
