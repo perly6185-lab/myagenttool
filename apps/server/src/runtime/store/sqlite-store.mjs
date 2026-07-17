@@ -19,7 +19,7 @@
  * pending changes.
  */
 
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 2;
 
 /**
  * Async convenience: dynamically import the experimental `node:sqlite`, then open
@@ -61,6 +61,8 @@ export function createSqliteStore({ DatabaseSync, path = ":memory:" }) {
   const selectColl = db.prepare("SELECT json FROM records WHERE collection = ? ORDER BY rowid DESC");
   const upsert = db.prepare("INSERT INTO records(collection, id, json) VALUES(?, ?, ?) ON CONFLICT(collection, id) DO UPDATE SET json = excluded.json");
   const del = db.prepare("DELETE FROM records WHERE collection = ? AND id = ?");
+  // ADR 0019: append-only history. OR IGNORE dedupes a crash re-append by (collection,id).
+  const insertHistory = db.prepare("INSERT OR IGNORE INTO history(collection, id, invocation_id, created_at, json) VALUES(?, ?, ?, ?, ?)");
 
   const parse = (row) => (row ? JSON.parse(row.json) : null);
 
@@ -181,11 +183,55 @@ export function createSqliteStore({ DatabaseSync, path = ":memory:" }) {
     return out;
   }
 
+  // ADR 0019: append over-cap-evicted rows to the durable history table. Best
+  // effort by shape (the caller wraps it best-effort). invocation_id / created_at
+  // are lifted from the row for the indexed reads; returns how many were newly
+  // inserted (0 for a duplicate).
+  function appendHistory(collection, rows) {
+    if (!Array.isArray(rows) || rows.length === 0) return { appended: 0 };
+    let appended = 0;
+    transaction(() => {
+      for (const row of rows) {
+        if (!row || row.id == null) continue;
+        const invocationId = row.invocationId ?? row.subjectId ?? null;
+        const createdAt = row.createdAt ?? row.at ?? row.startedAt ?? null;
+        const info = insertHistory.run(
+          collection,
+          String(row.id),
+          invocationId != null ? String(invocationId) : null,
+          createdAt != null ? String(createdAt) : null,
+          JSON.stringify(row),
+        );
+        appended += Number(info?.changes ?? 0);
+      }
+    });
+    return { appended };
+  }
+
+  // ADR 0019: paginated newest-first read of the history table, optionally scoped
+  // to one invocation. `before` is the rowid cursor from a prior page's
+  // `nextBefore`. Replaces the whole-file JSONL scan on the SQLite path.
+  function queryHistory(collection, { invocationId = null, before = null, limit = 100 } = {}) {
+    const cap = Math.min(1000, Math.max(1, Number.parseInt(limit, 10) || 100));
+    const clauses = ["collection = ?"];
+    const params = [collection];
+    if (invocationId != null) { clauses.push("invocation_id = ?"); params.push(String(invocationId)); }
+    if (before != null && Number.isFinite(Number(before))) { clauses.push("rowid < ?"); params.push(Number(before)); }
+    const sql = `SELECT rowid AS rowid, json FROM history WHERE ${clauses.join(" AND ")} ORDER BY rowid DESC LIMIT ?`;
+    const rows = db.prepare(sql).all(...params, cap + 1);
+    const hasMore = rows.length > cap;
+    const page = rows.slice(0, cap);
+    return {
+      rows: page.map((r) => JSON.parse(r.json)),
+      nextBefore: hasMore && page.length > 0 ? Number(page[page.length - 1].rowid) : null,
+    };
+  }
+
   function close() {
     db.close();
   }
 
-  return { get, query, transaction, importSnapshot, replaceSnapshot, readSnapshot, close, schemaVersion: SCHEMA_VERSION };
+  return { get, query, transaction, importSnapshot, replaceSnapshot, readSnapshot, appendHistory, queryHistory, close, schemaVersion: SCHEMA_VERSION };
 }
 
 /**
@@ -202,6 +248,18 @@ function runMigrations(db) {
   const migrations = [
     // v1: the generic record table.
     () => db.exec("CREATE TABLE IF NOT EXISTS records(collection TEXT NOT NULL, id TEXT NOT NULL, json TEXT NOT NULL, PRIMARY KEY(collection, id))"),
+    // v2 (ADR 0019): the durable observability HISTORY table. Separate from
+    // `records` and NEVER mirrored — replaceSnapshot only touches `records`, so a
+    // history row survives a commit that no longer has it in `state`. Append-only,
+    // deduped by (collection,id); rowid is the pagination cursor; indexed for the
+    // "by invocation" and "by collection" reads.
+    () => {
+      db.exec("CREATE TABLE IF NOT EXISTS history(collection TEXT NOT NULL, id TEXT NOT NULL, invocation_id TEXT, created_at TEXT, json TEXT NOT NULL, PRIMARY KEY(collection, id))");
+      // Order is by the implicit rowid (insertion order) — do NOT list rowid in an
+      // index; these cover the WHERE, the rowid scan handles ORDER BY / the cursor.
+      db.exec("CREATE INDEX IF NOT EXISTS history_by_invocation ON history(collection, invocation_id)");
+      db.exec("CREATE INDEX IF NOT EXISTS history_by_collection ON history(collection)");
+    },
   ];
   db.exec("BEGIN");
   try {
