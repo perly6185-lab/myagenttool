@@ -3,11 +3,18 @@ import { createRefusalRuntime } from "../../runtime/refusal-log.mjs";
 import { teamOf } from "../../runtime/auth.mjs";
 import { runStateTransaction } from "../../runtime/state-transaction.mjs";
 
+// Traces grow one-per-invocation with no count cap today (only time-reap, which
+// is off by default). Bound the in-memory view and archive the over-cap oldest.
+const MAX_TRACES_TOTAL = 10000;
+
 export function createInvocationCreationRuntime({
   state,
   now,
   nextId,
   appendEvent,
+  // Over-cap (oldest) traces are archived to a durable append-only store instead
+  // of dropped; falls back to a plain newest-keeps slice when none is injected.
+  capWithArchive = (list, max) => (Array.isArray(list) ? list.slice(0, max) : []),
   refuse: injectedRefuse,
   persistStateSoon,
   persistStateNow,
@@ -384,6 +391,9 @@ export function createInvocationCreationRuntime({
     };
     state.traces.unshift(trace);
     state.spans.unshift(span);
+    // Bound the traces view; the over-cap oldest are archived, not dropped. (Spans
+    // are capped in the round-telemetry cap step, which caps the whole array.)
+    state.traces = capWithArchive(state.traces, MAX_TRACES_TOTAL, "traces");
     return { id: traceId, rootSpanId: spanId };
   }
 

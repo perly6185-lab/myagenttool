@@ -24,6 +24,10 @@ import { estimateCostUsdFromTokens } from "./m3.mjs";
 const MAX_ROUNDS_PER_INVOCATION = 500;
 const MAX_ROUNDS_TOTAL = 5000;
 const MAX_TOOL_RECORDS_TOTAL = 5000;
+// Spans had NO count cap (only time-reap, which is off by default): one root span
+// per invocation + one per round, so state.spans could grow unbounded in memory.
+// Bound it and archive the over-cap (oldest) spans, like rounds/tool records.
+const MAX_SPANS_TOTAL = 20000;
 
 const ROUND_TERMINAL_STATUSES = new Set(["succeeded", "failed", "cancelled"]);
 const TOOL_STATUSES = new Set(["started", "succeeded", "failed"]);
@@ -117,6 +121,9 @@ export function createRoundTelemetryRuntime({
       // Global retention: keep the newest N in memory, archive the overflow.
       state.invocationRounds = capList(state.invocationRounds, MAX_ROUNDS_TOTAL, "invocationRounds");
       state.toolInvocationRecords = capList(state.toolInvocationRecords, MAX_TOOL_RECORDS_TOTAL, "toolInvocationRecords");
+      // Caps the WHOLE spans array (root spans from creation.mjs + round child
+      // spans here) — fires on every round event, so spans stay bounded.
+      if (Array.isArray(state.spans)) state.spans = capList(state.spans, MAX_SPANS_TOTAL, "spans");
     });
   }
 
