@@ -72,6 +72,19 @@ backup_file() {
     cp -p "$path" "${path}.bak-agent-proxy-${ts}"
 }
 
+remove_dangling_symlink() {
+    local path="$1"
+    if [ -L "$path" ] && [ ! -e "$path" ]; then
+        rm -f "$path"
+    fi
+}
+
+prepare_install_dirs() {
+    mkdir -p "$bin_dir" "$user_bin_dir"
+    bin_dir="$(cd "$bin_dir" && pwd -P)"
+    user_bin_dir="$(cd "$user_bin_dir" && pwd -P)"
+}
+
 write_with_agent_proxy() {
     mkdir -p "$bin_dir"
     cat > "${bin_dir}/with-agent-proxy" <<'EOF'
@@ -156,10 +169,11 @@ install_claude_wrapper() {
     local real_path="${bin_dir}/claude-real"
     local default_real="$HOME/.local/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe"
 
+    remove_dangling_symlink "$real_path"
     if [ -L "$claude_path" ]; then
         local target
         target="$(readlink "$claude_path")"
-        if [ ! -e "$real_path" ]; then
+        if [ -e "$claude_path" ] && [ ! -e "$real_path" ]; then
             ln -s "$target" "$real_path"
         fi
     elif [ -x "$claude_path" ] && ! grep -q 'MYAGENTTOOL_CLAUDE_PROXY_WRAPPER' "$claude_path" 2>/dev/null; then
@@ -169,7 +183,8 @@ install_claude_wrapper() {
     fi
 
     if [ ! -e "$real_path" ] && [ -x "$default_real" ]; then
-        ln -s "../lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe" "$real_path"
+        remove_dangling_symlink "$real_path"
+        ln -s "$default_real" "$real_path"
     fi
 
     rm -f "$claude_path"
@@ -178,9 +193,14 @@ install_claude_wrapper() {
 # MYAGENTTOOL_CLAUDE_PROXY_WRAPPER
 set -euo pipefail
 
-real_claude="${CLAUDE_REAL_BIN:-$HOME/.local/bin/claude-real}"
+wrapper_dir="$(cd -P -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+real_claude="${CLAUDE_REAL_BIN:-${wrapper_dir}/claude-real}"
 if [ ! -x "$real_claude" ]; then
     real_claude="$HOME/.local/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe"
+fi
+if [ ! -x "$real_claude" ]; then
+    echo "claude-real is not executable: $real_claude" >&2
+    exit 127
 fi
 
 node_options="${NODE_OPTIONS:-}"
@@ -190,7 +210,7 @@ case " $node_options " in
 esac
 export NODE_OPTIONS="$node_options"
 
-proxy_helper="$HOME/.local/bin/with-agent-proxy"
+proxy_helper="${wrapper_dir}/with-agent-proxy"
 if [ -x "$proxy_helper" ] && proxy_url="$("$proxy_helper" --print-url 2>/dev/null)"; then
     export HTTPS_PROXY="$proxy_url"
     export HTTP_PROXY="$proxy_url"
@@ -212,10 +232,11 @@ install_codex_wrapper() {
     local real_path="${bin_dir}/codex-real"
     local default_real="$HOME/.local/lib/node_modules/@openai/codex/bin/codex.js"
 
+    remove_dangling_symlink "$real_path"
     if [ -L "$codex_path" ]; then
         local target
         target="$(readlink "$codex_path")"
-        if [ ! -e "$real_path" ]; then
+        if [ -e "$codex_path" ] && [ ! -e "$real_path" ]; then
             ln -s "$target" "$real_path"
         fi
     elif [ -x "$codex_path" ] && ! grep -q 'MYAGENTTOOL_CODEX_PROXY_WRAPPER' "$codex_path" 2>/dev/null; then
@@ -225,7 +246,8 @@ install_codex_wrapper() {
     fi
 
     if [ ! -e "$real_path" ] && [ -x "$default_real" ]; then
-        ln -s "../lib/node_modules/@openai/codex/bin/codex.js" "$real_path"
+        remove_dangling_symlink "$real_path"
+        ln -s "$default_real" "$real_path"
     fi
 
     rm -f "$codex_path"
@@ -234,9 +256,14 @@ install_codex_wrapper() {
 # MYAGENTTOOL_CODEX_PROXY_WRAPPER
 set -euo pipefail
 
-real_codex="${CODEX_REAL_BIN:-$HOME/.local/bin/codex-real}"
+wrapper_dir="$(cd -P -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+real_codex="${CODEX_REAL_BIN:-${wrapper_dir}/codex-real}"
 if [ ! -x "$real_codex" ]; then
     real_codex="$HOME/.local/lib/node_modules/@openai/codex/bin/codex.js"
+fi
+if [ ! -x "$real_codex" ]; then
+    echo "codex-real is not executable: $real_codex" >&2
+    exit 127
 fi
 
 node_options="${NODE_OPTIONS:-}"
@@ -246,7 +273,7 @@ case " $node_options " in
 esac
 export NODE_OPTIONS="$node_options"
 
-proxy_helper="$HOME/.local/bin/with-agent-proxy"
+proxy_helper="${wrapper_dir}/with-agent-proxy"
 if [ -x "$proxy_helper" ] && proxy_url="$("$proxy_helper" --print-url 2>/dev/null)"; then
     export HTTPS_PROXY="$proxy_url"
     export HTTP_PROXY="$proxy_url"
@@ -277,9 +304,10 @@ install_gemini_wrapper() {
         "$HOME/.local/lib/node_modules/gemini-cli/bin/gemini.js"
     )
 
+    remove_dangling_symlink "$real_path"
     if [ -L "$gemini_path" ]; then
         target="$(readlink "$gemini_path")"
-        if [ ! -e "$real_path" ]; then
+        if [ -e "$gemini_path" ] && [ ! -e "$real_path" ]; then
             ln -s "$target" "$real_path"
         fi
     elif [ -x "$gemini_path" ] && ! grep -q 'MYAGENTTOOL_GEMINI_PROXY_WRAPPER' "$gemini_path" 2>/dev/null; then
@@ -291,6 +319,7 @@ install_gemini_wrapper() {
     if [ ! -e "$real_path" ]; then
         for candidate in "${default_reals[@]}"; do
             if [ -x "$candidate" ]; then
+                remove_dangling_symlink "$real_path"
                 ln -s "$candidate" "$real_path"
                 break
             fi
@@ -308,7 +337,8 @@ install_gemini_wrapper() {
 # MYAGENTTOOL_GEMINI_PROXY_WRAPPER
 set -euo pipefail
 
-real_gemini="${GEMINI_REAL_BIN:-$HOME/.local/bin/gemini-real}"
+wrapper_dir="$(cd -P -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+real_gemini="${GEMINI_REAL_BIN:-${wrapper_dir}/gemini-real}"
 if [ ! -x "$real_gemini" ]; then
     echo "gemini-real is not executable: $real_gemini" >&2
     exit 127
@@ -321,7 +351,7 @@ case " $node_options " in
 esac
 export NODE_OPTIONS="$node_options"
 
-proxy_helper="$HOME/.local/bin/with-agent-proxy"
+proxy_helper="${wrapper_dir}/with-agent-proxy"
 if [ -x "$proxy_helper" ] && proxy_url="$("$proxy_helper" --print-url 2>/dev/null)"; then
     export HTTPS_PROXY="$proxy_url"
     export HTTP_PROXY="$proxy_url"
@@ -338,57 +368,125 @@ EOF
     chmod 755 "$gemini_path"
 }
 
-remove_marked_block() {
+resolve_write_path() {
     local path="$1"
-    local start="$2"
-    local end="$3"
-    [ -f "$path" ] || return 0
-    local tmp
-    local status=0
-    tmp="$(mktemp)"
-    awk -v start="$start" -v end="$end" '
-        $0 == start { skip = 1; changed = 1; next }
-        $0 == end { skip = 0; next }
-        !skip { print }
-        END { if (skip) exit 2; if (!changed) exit 3 }
-    ' "$path" > "$tmp" || status="$?"
-    if [ "$status" = "2" ]; then
-        rm -f "$tmp"
-        die "unterminated block in $path: $start"
+    local resolved
+    if command -v realpath >/dev/null 2>&1; then
+        realpath "$path"
+        return
     fi
-    if [ "$status" = "3" ]; then
-        rm -f "$tmp"
+    if command -v readlink >/dev/null 2>&1; then
+        if resolved="$(readlink -f "$path" 2>/dev/null)" && [ -n "$resolved" ]; then
+            printf '%s\n' "$resolved"
+            return
+        fi
+    fi
+    if [ -L "$path" ]; then
+        return 1
+    fi
+    resolved="$(cd "$(dirname "$path")" && pwd -P)/$(basename "$path")"
+    printf '%s\n' "$resolved"
+}
+
+preserve_file_mode() {
+    local source="$1"
+    local destination="$2"
+    local mode_value
+    if chmod --reference="$source" "$destination" 2>/dev/null; then
         return 0
     fi
-    backup_file "$path"
-    mv "$tmp" "$path"
+    mode_value="$(stat -c '%a' "$source" 2>/dev/null || stat -f '%Lp' "$source" 2>/dev/null || true)"
+    if [ -n "$mode_value" ]; then
+        chmod "$mode_value" "$destination"
+    else
+        warn "could not preserve mode for $source"
+    fi
 }
 
 ensure_bashrc_block() {
-    touch "$bashrc"
-    remove_marked_block "$bashrc" '# >>> myagenttool proxy init >>>' '# <<< myagenttool proxy init <<<'
-    remove_marked_block "$bashrc" '# >>> claude proxy wrapper >>>' '# <<< claude proxy wrapper <<<'
-    remove_marked_block "$bashrc" '# >>> codex proxy wrapper >>>' '# <<< codex proxy wrapper <<<'
-    backup_file "$bashrc"
-    cat >> "$bashrc" <<'EOF'
+    if [ ! -e "$bashrc" ]; then
+        touch "$bashrc"
+    fi
 
-# >>> myagenttool proxy init >>>
-export PATH="$HOME/bin:$HOME/.local/bin:$PATH"
-if [ "${TERM:-}" = "dumb" ]; then export TERM=xterm-256color; fi
+    local write_path
+    if ! write_path="$(resolve_write_path "$bashrc")"; then
+        die "cannot safely resolve bashrc path: $bashrc"
+    fi
+
+    local write_dir
+    local write_name
+    local tmp
+    local status=0
+    local path_prefix
+    local quoted_path_prefix
+    local quoted_proxy_helper
+    write_dir="$(dirname "$write_path")"
+    write_name="$(basename "$write_path")"
+    tmp="$(mktemp "${write_dir}/.${write_name}.agent-proxy.XXXXXX")"
+
+    awk \
+        -v start1='# >>> myagenttool proxy init >>>' \
+        -v end1='# <<< myagenttool proxy init <<<' \
+        -v start2='# >>> claude proxy wrapper >>>' \
+        -v end2='# <<< claude proxy wrapper <<<' \
+        -v start3='# >>> codex proxy wrapper >>>' \
+        -v end3='# <<< codex proxy wrapper <<<' '
+            $0 == start1 || $0 == start2 || $0 == start3 { skip = 1; next }
+            $0 == end1 || $0 == end2 || $0 == end3 { skip = 0; next }
+            !skip { print }
+            END { if (skip) exit 2 }
+        ' "$bashrc" > "$tmp" || status="$?"
+
+    case "$status" in
+        0) ;;
+        2)
+            rm -f "$tmp"
+            die "unterminated proxy block in $bashrc"
+            ;;
+        *)
+            rm -f "$tmp"
+            die "failed to filter proxy blocks in $bashrc (awk status $status)"
+            ;;
+    esac
+
+    path_prefix="${user_bin_dir}:${bin_dir}"
+    printf -v quoted_path_prefix '%q' "$path_prefix"
+    printf -v quoted_proxy_helper '%q' "${bin_dir}/with-agent-proxy"
+
+    {
+        printf '\n# >>> myagenttool proxy init >>>\n'
+        printf 'export PATH=%s:"$PATH"\n' "$quoted_path_prefix"
+        cat <<EOF
+if [ "\${TERM:-}" = "dumb" ]; then export TERM=xterm-256color; fi
 
 codex() {
     local proxy_url
-    if [ -x "$HOME/.local/bin/with-agent-proxy" ] && proxy_url="$("$HOME/.local/bin/with-agent-proxy" --print-url 2>/dev/null)"; then
-        HTTPS_PROXY="$proxy_url" HTTP_PROXY="$proxy_url" ALL_PROXY="$proxy_url" \
-        https_proxy="$proxy_url" http_proxy="$proxy_url" all_proxy="$proxy_url" \
+    local proxy_helper=$quoted_proxy_helper
+    if [ -x "\$proxy_helper" ] && proxy_url="\$("\$proxy_helper" --print-url 2>/dev/null)"; then
+        HTTPS_PROXY="\$proxy_url" HTTP_PROXY="\$proxy_url" ALL_PROXY="\$proxy_url" \
+        https_proxy="\$proxy_url" http_proxy="\$proxy_url" all_proxy="\$proxy_url" \
         NO_PROXY="localhost,127.0.0.1,::1" no_proxy="localhost,127.0.0.1,::1" \
-        command codex "$@"
+        command codex "\$@"
     else
-        command codex "$@"
+        command codex "\$@"
     fi
 }
 # <<< myagenttool proxy init <<<
 EOF
+    } >> "$tmp" || {
+        rm -f "$tmp"
+        die "failed to build bashrc update for $bashrc"
+    }
+
+    preserve_file_mode "$bashrc" "$tmp"
+    if ! backup_file "$bashrc"; then
+        rm -f "$tmp"
+        die "failed to back up $bashrc"
+    fi
+    if ! mv "$tmp" "$write_path"; then
+        rm -f "$tmp"
+        die "failed to replace $bashrc"
+    fi
 }
 
 install_self_launcher() {
@@ -436,12 +534,13 @@ verify_proxy() {
     log "selected proxy: $proxy_url"
 
     if ! command -v curl >/dev/null 2>&1; then
-        warn "curl is not installed; skipping network checks"
-        return 0
+        die "curl is not installed; cannot verify proxy connectivity"
     fi
 
     local trace
-    trace="$(curl -sS --connect-timeout 8 --max-time 20 --proxy "$proxy_url" https://www.cloudflare.com/cdn-cgi/trace || true)"
+    if ! trace="$(curl -sS --connect-timeout 8 --max-time 20 --proxy "$proxy_url" https://www.cloudflare.com/cdn-cgi/trace)"; then
+        die "Cloudflare trace request failed via $proxy_url"
+    fi
     local loc colo
     loc="$(printf '%s\n' "$trace" | awk -F= '$1=="loc"{print $2}')"
     colo="$(printf '%s\n' "$trace" | awk -F= '$1=="colo"{print $2}')"
@@ -454,12 +553,22 @@ verify_proxy() {
         warn "could not read proxy region from Cloudflare trace"
     fi
 
-    log "google.com via proxy: $(curl_status "$proxy_url" https://www.google.com)"
-    log "chatgpt.com via proxy: $(curl_status "$proxy_url" https://chatgpt.com)"
-    log "gemini.google.com via proxy: $(curl_status "$proxy_url" https://gemini.google.com)"
-    log "aistudio.google.com via proxy: $(curl_status "$proxy_url" https://aistudio.google.com)"
-    log "generativelanguage.googleapis.com via proxy: $(curl_status "$proxy_url" https://generativelanguage.googleapis.com)"
-    log "api.anthropic.com via proxy: $(curl_status "$proxy_url" https://api.anthropic.com)"
+    local check_name
+    local check_url
+    local check_result
+    while read -r check_name check_url; do
+        if ! check_result="$(curl_status "$proxy_url" "$check_url")"; then
+            die "$check_name request failed via $proxy_url"
+        fi
+        log "$check_name via proxy: $check_result"
+    done <<'EOF'
+google.com https://www.google.com
+chatgpt.com https://chatgpt.com
+gemini.google.com https://gemini.google.com
+aistudio.google.com https://aistudio.google.com
+generativelanguage.googleapis.com https://generativelanguage.googleapis.com
+api.anthropic.com https://api.anthropic.com
+EOF
 }
 
 if [ "$mode" = "check" ]; then
@@ -468,6 +577,7 @@ if [ "$mode" = "check" ]; then
 fi
 
 log "installing proxy helpers"
+prepare_install_dirs
 write_with_agent_proxy
 install_claude_wrapper
 install_codex_wrapper
