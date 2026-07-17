@@ -1748,7 +1748,12 @@ export function createM3Service({
     const autoRuns = new Map();
     for (const entry of entries) {
       if (["voided", "cancelled"].includes(entry.status)) {
+        // Count it, then skip it for ALL spend — a voided/cancelled entry is not
+        // real spend and must not inflate totalCostUsd or any rollup (byModel /
+        // byAutoRun / byAgent / byProject / byCostOwner). Mirrors
+        // ledgerSpendForProject, which already skips these.
         summary.voidedEntries += 1;
+        continue;
       }
       if (entry.billable) summary.billableEntries += 1;
       const amount = ledgerEntryAmount(entry);
