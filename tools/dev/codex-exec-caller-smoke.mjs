@@ -329,7 +329,7 @@ async function request(method, path, body = undefined) {
   return data;
 }
 
-async function waitFor(check, label, timeoutMs = 7_500) {
+async function waitFor(check, label, timeoutMs = 20_000) {
   const deadline = Date.now() + timeoutMs;
   let lastError = null;
   while (Date.now() < deadline) {

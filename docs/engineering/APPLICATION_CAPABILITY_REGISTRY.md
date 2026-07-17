@@ -375,8 +375,15 @@ distinction is load-bearing, not an accident:
   freely invoke; the write path is opt-in infrastructure with its own audit
   trail (`claudeApplyAuthorizations`), not a browsable capability.
 - **Codex.** `codex.review.diff` / `codex.exec` are governed agents/tools
-  (exec behind default-OFF `MYAGENTTOOL_CODEX_EXEC_ENABLED`); opening Codex as
-  an Application-path capability is tracked as #925.
+  (exec behind default-OFF `MYAGENTTOOL_CODEX_EXEC_ENABLED`). **Settled (#925,
+  closed 2026-07-16): Codex stays a Tool and is not becoming an Application.**
+  Internal callers already drive both capabilities over `/api/capabilities`
+  through tool projection (`provider.type = "tool"`), so an `app_codex`
+  descriptor would add a second provenance story for the same execution path
+  while laundering the trust regime this document keeps honest — Codex CLI is
+  user-installed code owning its own auth, sandbox, and approval model, which is
+  exactly what `provider.type = "tool"` plus the governed argv lock is there to
+  record.
 - **Channel providers (WeCom / Feishu / DingTalk / Slack / Teams).** The
   channel subsystem (`services/channels.mjs`, ADR 0013) has its own
   env-presence readiness probes and delivery lifecycle and does NOT register
