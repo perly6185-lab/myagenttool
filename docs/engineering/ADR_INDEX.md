@@ -38,6 +38,20 @@ This index lists accepted engineering decisions that guide implementation.
 - Codex sandbox: `read-only` default; writable execution is an explicit opt-in
   and always passes the local approval gate.
 
+## Observability Decision Summary
+
+Accepted 2026-07-17 (AI-agent observability gap closure):
+
+- Terminal grade: a run's grade is a DERIVED read-model field; a stored
+  `finalStatus` is an additive, reconciled column, never a replacement for the
+  lifecycle `status` (ADR 0016).
+- Trace export: a zero-dependency, opt-in OTLP/HTTP JSON exporter over the
+  existing span model — not an OpenTelemetry SDK adoption (ADR 0017).
+- Per-subject deletion: erase observability CONTENT through the retention
+  chokepoint, scoped to the actor's team; shielded billing/audit evidence is
+  retained-of-record (ADR 0018). Follow-ups: shielded-row PII redaction +
+  legal sign-off on the erasure-vs-retention policy.
+
 ## Open Decision Rules
 
 Create a new ADR when implementation would otherwise make a durable decision

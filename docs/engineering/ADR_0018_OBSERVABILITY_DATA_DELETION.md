@@ -1,8 +1,17 @@
 # ADR 0018: Per-subject deletion of observability data erases CONTENT through the retention chokepoint, but shielded evidence is retained-of-record and only PII-redacted
 
-Status: proposed · 2026-07-17
+Status: accepted · 2026-07-17
 
 Date: 2026-07-17
+
+Decision: Accepted, including the erasure-vs-retention policy (invariant 4):
+observability CONTENT is erasable, shielded billing/compliance evidence is
+retained-of-record. The engine, tenancy guard, route, and UI shipped
+(#1192/#1193/#1195/#1197) and were hardened against cross-tenant deletion
+(#1199). Two accepted follow-ups remain unbuilt: (a) PII-redaction of the
+shielded rows themselves (today they are retained un-redacted), and (b) a
+compliance/legal sign-off recorded against invariant 4 before this is relied on
+for a formal Right-to-Erasure response.
 
 Related issue: [#1182](https://github.com/perly6185-lab/myagenttool/issues/1182)
 
