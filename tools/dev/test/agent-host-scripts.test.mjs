@@ -7,6 +7,8 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readlinkSync,
+  readdirSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -92,6 +94,9 @@ test("init propagates a curl transport failure during network verification", (t)
   writeExecutable(join(state.mockBin, "curl"), [
     "#!/usr/bin/env bash",
     "printf '%s\\n' \"$*\" >> \"$MOCK_CURL_LOG\"",
+    "case \"$*\" in",
+    "  *cdn-cgi/trace*) printf 'loc=US\\ncolo=TEST\\n'; exit 0 ;;",
+    "esac",
     "printf 'mock curl transport failure\\n' >&2",
     "exit 28",
   ]);
@@ -143,6 +148,10 @@ test("wrappers installed in a custom bin directory remain self-contained", (t) =
     "#!/usr/bin/env bash",
     "exit 0",
   ]);
+  writeExecutable(join(state.mockBin, "date"), [
+    "#!/usr/bin/env bash",
+    "printf '20260717010101\\n'",
+  ]);
 
   const installResult = runShell(initScript, ["--install-only"], isolatedEnv(state, {
     AGENT_PROXY_BIN_DIR: customBin,
@@ -159,6 +168,22 @@ test("wrappers installed in a custom bin directory remain self-contained", (t) =
   const bashrcText = readFileSync(bashrc, "utf8");
   assert.ok(bashrcText.includes(customBin), "bashrc PATH does not include the custom wrapper directory");
   assert.ok(bashrcText.includes(userBin), "bashrc PATH does not include the custom launcher directory");
+
+  const repeatResult = runShell(initScript, ["--install-only"], isolatedEnv(state, {
+    AGENT_PROXY_BIN_DIR: customBin,
+    AGENT_PROXY_USER_BIN_DIR: userBin,
+    AGENT_PROXY_BASHRC: bashrc,
+  }));
+  assert.equal(repeatResult.status, 0, `repeated custom installation failed\n${diagnostic(repeatResult)}`);
+  assert.equal(readFileSync(bashrc, "utf8"), bashrcText, "repeated installation changed bashrc content");
+
+  const backupPrefix = `${bashrc.split("/").at(-1)}.bak-agent-proxy-20260717010101.`;
+  const backups = readdirSync(dirname(bashrc)).filter((name) => name.startsWith(backupPrefix));
+  assert.equal(backups.length, 2, `same-second runs did not retain distinct backups: ${backups.join(", ")}`);
+  assert.ok(
+    backups.some((name) => readFileSync(join(dirname(bashrc), name), "utf8") === ""),
+    "the original empty bashrc backup was overwritten",
+  );
 });
 
 test("migration with both payloads skipped does not contact or preflight the source", (t) => {
@@ -171,7 +196,7 @@ test("migration with both payloads skipped does not contact or preflight the sou
     "printf '\\n' >> \"$MOCK_SSH_LOG\"",
     "case \"$*\" in",
     "  *'uname -s'*|*'uname -m'*) printf 'Linux x86_64\\n' ;;",
-    "  *mktemp*) printf '.cache/agent-host-migrate/mock-run\\n' ;;",
+    "  *mktemp*) printf '%s/.cache/agent-host-migrate/run.mocked1234\\n' \"$HOME\" ;;",
     "esac",
     "exit 0",
   ]);
@@ -191,4 +216,55 @@ test("migration with both payloads skipped does not contact or preflight the sou
   assert.ok(!calls.includes("command -v sudo"), `system-only sudo preflight still ran:\n${calls}`);
   assert.ok(!calls.includes("command -v systemctl"), `systemd preflight still ran:\n${calls}`);
   assert.ok(!calls.includes("command -v tar"), `payload tar preflight still ran:\n${calls}`);
+  assert.ok(calls.includes("--install-only"), `wrapper refresh did not use install-only mode:\n${calls}`);
+  assert.ok(!calls.includes("--check-only"), `--skip-verify still ran proxy verification:\n${calls}`);
+  assert.ok(!calls.includes("claude --version"), `--skip-verify still ran CLI verification:\n${calls}`);
+});
+
+test("migration supports a POSIX login shell and rolls back skip-home wrapper refresh", (t) => {
+  const state = fixture(t, "migrate-dash-rollback");
+  const sshLog = join(state.root, "ssh.log");
+  const profileDir = join(state.home, "profile");
+  const realBashrc = join(profileDir, "bashrc");
+  const bashrc = join(state.home, ".bashrc");
+  const targetInit = join(state.home, "myagenttool/tools/dev/init-agent-proxy.sh");
+  const originalCodex = "#!/usr/bin/env bash\nprintf 'original codex\\n'\n";
+
+  mkdirSync(profileDir, { recursive: true });
+  mkdirSync(dirname(targetInit), { recursive: true });
+  writeFileSync(realBashrc, "export KEEP_ORIGINAL=yes\n", "utf8");
+  symlinkSync(realBashrc, bashrc);
+  symlinkSync(initScript, targetInit);
+  writeExecutable(join(state.home, ".local/bin/codex"), originalCodex.trimEnd().split("\n"));
+
+  writeExecutable(join(state.mockBin, "ssh"), [
+    "#!/usr/bin/env bash",
+    "remote_command=\"${!#}\"",
+    "printf '%s\\n---\\n' \"$remote_command\" >> \"$MOCK_SSH_LOG\"",
+    "exec /bin/dash -c \"$remote_command\"",
+  ]);
+
+  const result = runShell(migrateScript, [
+    "--skip-system",
+    "--skip-home",
+    "target.example",
+  ], isolatedEnv(state, {
+    AGENT_PROXY_PORTS: "1",
+    MOCK_SSH_LOG: sshLog,
+  }));
+
+  assert.notEqual(result.status, 0, "forced verification failure unexpectedly passed\n" + diagnostic(result));
+  const calls = readFileSync(sshLog, "utf8");
+  assert.ok(calls.includes("--install-only"), "migration did not reach wrapper refresh through dash:\n" + calls);
+  assert.ok(calls.includes("bashrc-referent-path"), "home rollback was not attempted:\n" + calls);
+  assert.ok(!calls.includes("$" + "'"), "remote command still contains bash-only login-shell quoting:\n" + calls);
+
+  assert.ok(lstatSync(bashrc).isSymbolicLink(), "rollback replaced the bashrc symlink");
+  assert.equal(readFileSync(realBashrc, "utf8"), "export KEEP_ORIGINAL=yes\n", "rollback did not restore bashrc referent");
+  assert.ok(lstatSync(targetInit).isSymbolicLink(), "rollback replaced the target init-script symlink");
+  assert.equal(readlinkSync(targetInit), initScript);
+  assert.equal(readFileSync(join(state.home, ".local/bin/codex"), "utf8"), originalCodex);
+  assert.ok(!existsSync(join(state.home, ".local/bin/codex-real")), "rollback left codex-real behind");
+  assert.ok(!existsSync(join(state.home, ".local/bin/with-agent-proxy")), "rollback left proxy helper behind");
+  assert.ok(!existsSync(join(state.home, "bin/init-agent-proxy")), "rollback left launcher behind");
 });

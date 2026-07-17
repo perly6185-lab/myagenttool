@@ -67,9 +67,14 @@ pick_proxy_url() {
 backup_file() {
     local path="$1"
     [ -f "$path" ] || return 0
+    local backup
     local ts
     ts="$(date +%Y%m%d%H%M%S)"
-    cp -p "$path" "${path}.bak-agent-proxy-${ts}"
+    backup="$(mktemp "${path}.bak-agent-proxy-${ts}.XXXXXX")"
+    if ! cp -p -- "$path" "$backup"; then
+        rm -f "$backup"
+        return 1
+    fi
 }
 
 remove_dangling_symlink() {
@@ -431,10 +436,21 @@ ensure_bashrc_block() {
         -v end2='# <<< claude proxy wrapper <<<' \
         -v start3='# >>> codex proxy wrapper >>>' \
         -v end3='# <<< codex proxy wrapper <<<' '
-            $0 == start1 || $0 == start2 || $0 == start3 { skip = 1; next }
+            function flush_blanks(    i) {
+                for (i = 0; i < pending_blanks; i++) print ""
+                pending_blanks = 0
+            }
+            $0 == start1 || $0 == start2 || $0 == start3 {
+                if (!skip && pending_blanks > 0) pending_blanks--
+                flush_blanks()
+                skip = 1
+                next
+            }
             $0 == end1 || $0 == end2 || $0 == end3 { skip = 0; next }
-            !skip { print }
-            END { if (skip) exit 2 }
+            skip { next }
+            $0 == "" { pending_blanks++; next }
+            { flush_blanks(); print }
+            END { if (skip) exit 2; flush_blanks() }
         ' "$bashrc" > "$tmp" || status="$?"
 
     case "$status" in

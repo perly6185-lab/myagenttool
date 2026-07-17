@@ -48,6 +48,7 @@ credential-free.
 - The target is a Linux x86_64 host.
 - When installing the system payload, the target is a systemd host and the
   target user can run `sudo`.
+- Unless `--skip-verify` is used, the target has `curl` for endpoint checks.
 - A requested source payload is available either on the machine running the
   script or on the host named by `--source`.
 - The target has enough free space to stage and install the requested payloads.
@@ -63,6 +64,11 @@ checked before existing target files are replaced. These checks catch an
 immediately incompatible Mihomo or Node executable, but they cannot prove that
 every native Node dependency is compatible. Prefer source and target hosts with
 comparable Linux distributions and C library versions.
+
+Before installation, the script snapshots the managed target paths, wrapper
+state, and a symlinked `.bashrc` target. A later install or verification failure
+triggers rollback. Successful rollback is followed by staging cleanup; if
+rollback itself is incomplete, the recovery directory is retained and printed.
 
 ## SSH Key Topology
 
@@ -133,5 +139,6 @@ codex --version
 gemini --version
 ```
 
-Expected proxy checks include a US exit and reachable Google, ChatGPT, Gemini,
-AI Studio, Gemini API, and Anthropic API endpoints.
+The proxy check reports the exit region, warns when it is not US, and requires
+successful transport to Google, ChatGPT, Gemini, AI Studio, Gemini API, and
+Anthropic API endpoints.
