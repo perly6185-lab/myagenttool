@@ -20,7 +20,7 @@ const jwk = { ...publicKey.export({ format: "jwk" }), kid: "kid1", alg: "RS256",
 function b64url(o) { return Buffer.from(JSON.stringify(o)).toString("base64url"); }
 function jwt(over = {}) {
   const h = b64url({ alg: "RS256", kid: "kid1", typ: "JWT" });
-  const p = b64url({ iss: "https://api.botframework.com", aud: APP_ID, exp: nowSec + 3600, nbf: nowSec - 60, ...over });
+  const p = b64url({ iss: "https://api.botframework.com", aud: APP_ID, exp: nowSec + 3600, nbf: nowSec - 60, serviceurl: "https://smba.example/amer/", ...over });
   const si = `${h}.${p}`;
   return `${si}.${sign("RSA-SHA256", Buffer.from(si), privateKey).toString("base64url")}`;
 }
@@ -71,12 +71,23 @@ test("a valid Bearer JWT + Activity imports exactly one event with a replyContex
   });
 });
 
-test("missing token → 401; forged/expired token → 401; nothing imported", async () => {
+test("missing token → 401; forged/expired/exp-less token → 401; nothing imported", async () => {
   const { gateway, imported } = makeGateway();
   assert.equal((await drive(gateway, post(activity("/status"), { token: null }))).statusCode, 401);
   assert.equal((await drive(gateway, post(activity("/status"), { token: jwt({ aud: "wrong" }) }))).statusCode, 401);
   assert.equal((await drive(gateway, post(activity("/status"), { token: jwt({ exp: nowSec - 10000 }) }))).statusCode, 401);
+  // A token with no numeric exp must be rejected (no non-expiring tokens).
+  assert.equal((await drive(gateway, post(activity("/status"), { token: jwt({ exp: undefined }) }))).statusCode, 401);
   assert.equal(imported.length, 0);
+});
+
+test("reply serviceUrl comes from the SIGNED token claim, not the attacker-controlled body", async () => {
+  const { gateway, imported } = makeGateway();
+  // Body claims an attacker host; the token's serviceurl claim is the real one.
+  const forged = { ...activity("/status"), serviceUrl: "https://attacker.example/" };
+  const res = await drive(gateway, post(forged));
+  assert.equal(res.statusCode, 200);
+  assert.equal(imported[0].replyContext.serviceUrl, "https://smba.example/amer/"); // claim wins; body ignored
 });
 
 test("JWKS fetch failure refuses (503) rather than trusting", async () => {

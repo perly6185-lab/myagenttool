@@ -78,7 +78,10 @@ export function verifyTeamsJwt({ token, appId, jwksKeys = [], now = () => Date.n
   if (!issuers.includes(String(payload.iss ?? ""))) return { ok: false, reason: "bad_issuer" };
   if (String(payload.aud ?? "") !== String(appId ?? "")) return { ok: false, reason: "bad_audience" };
   const nowSec = Math.floor(now() / 1000);
-  if (Number.isFinite(payload.exp) && nowSec > payload.exp + CLOCK_SKEW_SECONDS) return { ok: false, reason: "expired" };
+  // `exp` is REQUIRED and numeric — a token without a valid expiry must not be
+  // treated as non-expiring (fail-open). `nbf` is optional.
+  if (!Number.isFinite(payload.exp)) return { ok: false, reason: "missing_expiry" };
+  if (nowSec > payload.exp + CLOCK_SKEW_SECONDS) return { ok: false, reason: "expired" };
   if (Number.isFinite(payload.nbf) && nowSec < payload.nbf - CLOCK_SKEW_SECONDS) return { ok: false, reason: "not_yet_valid" };
 
   return { ok: true, payload };
