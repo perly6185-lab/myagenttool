@@ -43,6 +43,20 @@ test("ledgerSummary rolls spend up by model", () => {
   assert.equal(haiku.knownCostUsd, 1);
 });
 
+test("byModel keys on the explicit model, not the provider (AI-usage chargeback rows)", () => {
+  const { state } = createServerState({ defaultProjectPath: PROJECT_DIR, now });
+  const m3 = m3For(state);
+  // An AI-usage ledger row: counterparty is the PROVIDER ("openai"), model is "gpt-4".
+  // byModel must bucket by the model, not pollute the dimension with "openai".
+  state.ledgerEntries = [
+    { id: "led_1", model: "gpt-4", counterparty: "openai", provider: "openai", amountUsd: 3, status: "finalized", billable: true },
+    { id: "led_2", model: "gpt-4", counterparty: "openai", provider: "openai", amountUsd: 2, status: "finalized", billable: true },
+  ];
+  const summary = m3.ledgerSummary();
+  assert.deepEqual(summary.byModel.map((row) => row.model), ["gpt-4"], "bucketed by model, not provider");
+  assert.equal(summary.byModel[0].knownCostUsd, 5);
+});
+
 test("ledgerSummary rolls a whole auto-run's spend up (agent_run_cost_total)", () => {
   const { state } = createServerState({ defaultProjectPath: PROJECT_DIR, now });
   state.projects = [{ id: "proj_a", name: "A", path: PROJECT_DIR, ownerTeamId: "team_a" }];

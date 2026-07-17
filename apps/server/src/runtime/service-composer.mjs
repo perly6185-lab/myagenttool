@@ -705,11 +705,14 @@ export function createServerRuntimeServices({
     const at = now();
     for (const span of pending) span.otlpExportedAt = at;
     void otlpExporter.exportSpans(pending).then((result) => {
+      // On failure, roll the optimistic mark back so the batch retries next tick.
+      // Persist in BOTH branches: an unrelated persist between the mark and this
+      // callback can flush the mark, so the rollback must be persisted too — else
+      // a failed export leaves the span marked-exported-but-never-sent on restart.
       if (!result?.sent) {
         for (const span of pending) if (span.otlpExportedAt === at) span.otlpExportedAt = null;
-      } else {
-        persistStateSoon();
       }
+      persistStateSoon();
     });
     return { exported: pending.length };
   }
@@ -732,7 +735,7 @@ export function createServerRuntimeServices({
       });
       return { ok: false, error: "not_permitted" };
     }
-    const result = deleteObservabilityData(state, { scope, subjectId, tier, now, appendEvent });
+    const result = deleteObservabilityData(state, { scope, subjectId, tier, now, appendEvent, actor });
     persistStateSoon();
     return { ok: true, ...result };
   }

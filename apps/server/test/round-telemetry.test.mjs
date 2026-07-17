@@ -229,6 +229,21 @@ test("a tool called 3x with identical input inside one invocation flags a loop o
   assert.equal(invocation.loopSuspected.repeats, 4, "but the count keeps climbing");
 });
 
+test("a same-tool loop that breaks and restarts re-alerts (not swallowed after the first)", () => {
+  const { state, events, runtime, invocation } = harness();
+  runtime.recordRoundEvent(invocation, ev("round_started", { roundIndex: 0 }));
+  const call = (toolName, inputDigest) =>
+    runtime.recordRoundEvent(invocation, ev("tool_invocation_created", { roundIndex: 0, toolName, inputDigest }));
+  // First loop episode: Bash "grep foo" ×3 → one alert.
+  call("Bash", "grep foo"); call("Bash", "grep foo"); call("Bash", "grep foo");
+  assert.equal(events.filter((e) => e.type === "agent_loop_suspected").length, 1);
+  // A different tool breaks the streak…
+  call("Read", "a.mjs");
+  // …then the same tool loops again → the leading run resets and re-alerts.
+  call("Bash", "grep foo"); call("Bash", "grep foo"); call("Bash", "grep foo");
+  assert.equal(events.filter((e) => e.type === "agent_loop_suspected").length, 2, "the second episode is not swallowed");
+});
+
 test("same tool with DIFFERENT input is not a loop, and null-input calls never flag", () => {
   const { state, events, runtime, invocation } = harness();
   runtime.recordRoundEvent(invocation, ev("round_started", { roundIndex: 0 }));

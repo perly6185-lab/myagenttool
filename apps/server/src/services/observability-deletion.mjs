@@ -55,15 +55,37 @@ export function resolveSubjectInvocationIds(state, { scope, subjectId }) {
   return ids;
 }
 
+// The team that owns an invocation, via its project. Null when there is no
+// project link (an orphan invocation cannot be attributed to a team).
+function invocationTeam(state, invocation) {
+  const projectId = invocation.projectId ?? invocation.input?.metadata?.projectId ?? null;
+  if (!projectId) return null;
+  const project = (state.projects ?? []).find((p) => p.id === projectId);
+  return project?.ownerTeamId ?? null;
+}
+
 /**
  * Delete a subject's observability data. Idempotent (re-nulling an already-empty
  * digest is a no-op). `operational` erases content; `full` additionally removes
  * the subject's events/traces/spans. The shielded set is never touched. Emits one
  * audit event whose counts equal the rows changed.
+ *
+ * TENANCY (security): a SCOPED actor (authenticated, with a teamId) may only ever
+ * delete its OWN team's data — role alone is not enough, because every team has
+ * its own owner. The resolved invocation set is intersected with the actor's team,
+ * so a foreign subjectId (any scope) resolves to nothing and touches no other
+ * team's data. `actor == null` is unscoped single-team local dev and is unfiltered.
  */
-export function deleteObservabilityData(state, { scope, subjectId, tier = "operational", now, appendEvent }) {
+export function deleteObservabilityData(state, { scope, subjectId, tier = "operational", now, appendEvent, actor = null }) {
   const resolvedTier = deletionTiers.includes(tier) ? tier : "operational";
   const ids = resolveSubjectInvocationIds(state, { scope, subjectId });
+  if (actor && actor.teamId) {
+    for (const invocation of state.invocations ?? []) {
+      if (ids.has(invocation.id) && invocationTeam(state, invocation) !== actor.teamId) {
+        ids.delete(invocation.id);
+      }
+    }
+  }
   const counts = { digests: 0, transcripts: 0, patches: 0, events: 0, traces: 0, spans: 0 };
 
   // --- operational: erase CONTENT in place, keep the skeleton ---
@@ -125,7 +147,8 @@ export function deleteObservabilityData(state, { scope, subjectId, tier = "opera
       type: "observability_data_deleted",
       level: "info",
       message: `Deleted ${resolvedTier} observability data for ${scope} ${subjectId} (${ids.size} invocation(s)).`,
-      data: { scope, subjectId, tier: resolvedTier, invocationCount: ids.size, counts },
+      // An irreversible action records WHO ran it (the deleting actor's user id).
+      data: { scope, subjectId, tier: resolvedTier, invocationCount: ids.size, counts, deletedBy: actor?.userId ?? null },
     });
   }
 
