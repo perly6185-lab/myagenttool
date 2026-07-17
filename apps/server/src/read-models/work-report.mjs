@@ -26,34 +26,62 @@ const STATE_LABELS = {
   follow_up: "要跟进 Follow-up",
 };
 
-// The four calendar-aligned reporting windows, in UTC, as of `nowMs`. Returned
-// as {key,label,windowStart,startDate} specs so the read-model stays pure over
-// primitives (and tests can pass fixed windows). Kept next to the report it
-// feeds so the date semantics live in one place.
-export function calendarPeriods(nowMs) {
+const DAY_MS = 24 * 60 * 60 * 1000;
+const utcDate = (ms) => new Date(ms).toISOString().slice(0, 10);
+
+const CURRENT_LABELS = { day: "Today", week: "This week", month: "This month", quarter: "This quarter" };
+const PREVIOUS_LABELS = { day: "Yesterday", week: "Last week", month: "Last month", quarter: "Last quarter" };
+
+// The start-of-current and start-of-previous UTC instants for a period key.
+function periodStarts(nowMs, key) {
   const d = new Date(nowMs);
-  if (Number.isNaN(d.getTime())) return []; // degrade rather than throw on a bad clock
   const y = d.getUTCFullYear();
   const m = d.getUTCMonth();
-  const day = Date.UTC(y, m, d.getUTCDate());
-  // ISO week: Monday start. getUTCDay() is 0(Sun)..6(Sat); shift so Monday=0.
-  const mondayOffset = (d.getUTCDay() + 6) % 7;
-  const week = day - mondayOffset * 24 * 60 * 60 * 1000;
-  const month = Date.UTC(y, m, 1);
-  const quarter = Date.UTC(y, Math.floor(m / 3) * 3, 1);
-  const spec = (key, label, ms) => ({ key, label, windowStart: ms, startDate: new Date(ms).toISOString().slice(0, 10) });
-  return [
-    spec("day", "Today", day),
-    spec("week", "This week", week),
-    spec("month", "This month", month),
-    spec("quarter", "This quarter", quarter),
-  ];
+  if (key === "day") {
+    const cur = Date.UTC(y, m, d.getUTCDate());
+    return { currentStart: cur, prevStart: cur - DAY_MS };
+  }
+  if (key === "week") {
+    const day = Date.UTC(y, m, d.getUTCDate());
+    const mondayOffset = (d.getUTCDay() + 6) % 7; // Sun→6 so Monday=start
+    const cur = day - mondayOffset * DAY_MS;
+    return { currentStart: cur, prevStart: cur - 7 * DAY_MS };
+  }
+  if (key === "month") {
+    return { currentStart: Date.UTC(y, m, 1), prevStart: Date.UTC(y, m - 1, 1) }; // Date.UTC rolls Jan→Dec prev-year
+  }
+  // quarter
+  const q = Math.floor(m / 3) * 3;
+  return { currentStart: Date.UTC(y, q, 1), prevStart: Date.UTC(y, q - 3, 1) };
 }
 
-function inWindow(iso, windowStart, now) {
+// One reporting window spec. `coverage: "current"` = period-to-date [start, now];
+// `"previous"` = the fully-CLOSED prior period [prevStart, currentStart) — what a
+// scheduled "weekly Monday" push wants (last week, not the just-started one).
+// windowEnd/endDate are the inclusive upper bounds (ms / YYYY-MM-DD) so previous
+// windows don't bleed into the current period.
+export function periodSpec(nowMs, key, coverage = "current") {
+  if (Number.isNaN(new Date(nowMs).getTime())) return null;
+  const { currentStart, prevStart } = periodStarts(nowMs, key);
+  if (coverage === "previous") {
+    const windowEnd = currentStart - 1;
+    return { key, label: PREVIOUS_LABELS[key] ?? key, coverage, windowStart: prevStart, windowEnd, startDate: utcDate(prevStart), endDate: utcDate(windowEnd) };
+  }
+  return { key, label: CURRENT_LABELS[key] ?? key, coverage: "current", windowStart: currentStart, windowEnd: nowMs, startDate: utcDate(currentStart), endDate: utcDate(nowMs) };
+}
+
+// The four calendar-aligned CURRENT-period windows (UTC), as of `nowMs` — the set
+// the live Status strip shows. Scheduled pushes build their own single spec via
+// periodSpec(..., "previous"). Returns [] on a bad clock rather than throwing.
+export function calendarPeriods(nowMs) {
+  if (Number.isNaN(new Date(nowMs).getTime())) return [];
+  return ["day", "week", "month", "quarter"].map((key) => periodSpec(nowMs, key, "current"));
+}
+
+function inWindow(iso, windowStart, windowEnd) {
   if (!iso) return false;
   const ms = Date.parse(iso);
-  return !Number.isNaN(ms) && ms >= windowStart && ms <= now;
+  return !Number.isNaN(ms) && ms >= windowStart && ms <= windowEnd;
 }
 
 function ageHours(iso, now) {
@@ -68,26 +96,28 @@ function ageHours(iso, now) {
 // "done" — a successful run settles as a MERGED pr_open — so a merged PR is the
 // real completion signal, timestamped at prMergedAt (merge does not bump
 // updatedAt). The bare `done` status is kept for forward-compat.
-function runFlow(autoRuns, windowStart, now) {
+function runFlow(autoRuns, windowStart, windowEnd) {
   let opened = 0;
   let completed = 0;
   let failed = 0;
   for (const run of autoRuns) {
-    if (inWindow(run?.createdAt, windowStart, now)) opened += 1;
+    if (inWindow(run?.createdAt, windowStart, windowEnd)) opened += 1;
     const merged = run?.status === "pr_open" && run?.prState === "MERGED";
     const finishedAt = merged ? (run?.prMergedAt ?? run?.updatedAt) : (run?.updatedAt ?? run?.createdAt ?? null);
-    if ((merged || run?.status === "done") && inWindow(finishedAt, windowStart, now)) completed += 1;
-    if (run?.status === "failed" && inWindow(run?.updatedAt ?? run?.createdAt ?? null, windowStart, now)) failed += 1;
+    if ((merged || run?.status === "done") && inWindow(finishedAt, windowStart, windowEnd)) completed += 1;
+    if (run?.status === "failed" && inWindow(run?.updatedAt ?? run?.createdAt ?? null, windowStart, windowEnd)) failed += 1;
   }
   return { opened, completed, failed };
 }
 
-// Refusals within the window, summed from the durable per-day rollup by date.
-function refusalFlow(refusalDailyStats, startDate, refusalDataSince) {
+// Refusals within [startDate, endDate] (inclusive UTC dates), summed from the
+// durable per-day rollup. endDate bounds a "previous" window so it doesn't count
+// the current period's days.
+function refusalFlow(refusalDailyStats, startDate, endDate, refusalDataSince) {
   let refusals = 0;
   const refusalsByCategory = {};
   for (const row of refusalDailyStats) {
-    if (!row?.date || row.date < startDate) continue;
+    if (!row?.date || row.date < startDate || row.date > endDate) continue;
     refusals += row.total ?? 0;
     for (const [cat, n] of Object.entries(row.byCategory ?? {})) {
       refusalsByCategory[cat] = (refusalsByCategory[cat] ?? 0) + n;
@@ -100,9 +130,11 @@ function refusalFlow(refusalDailyStats, startDate, refusalDataSince) {
 }
 
 function renderPeriodMarkdown(report, standing) {
-  const { label, startDate, flow } = report;
+  const { label, startDate, endDate, coverage, flow } = report;
+  // A closed (previous) window reads as a date RANGE; a to-date window as "since".
+  const span = coverage === "previous" && endDate && endDate !== startDate ? `${startDate} → ${endDate}` : `since ${startDate}`;
   const lines = [];
-  lines.push(`# Work report — ${label} (since ${startDate})`);
+  lines.push(`# Work report — ${label} (${span})`);
   lines.push("");
   lines.push("**Flow this period**");
   lines.push(`- Opened: ${flow.opened} · Completed: ${flow.completed} · Failed: ${flow.failed}`);
@@ -156,11 +188,13 @@ export function workReport({ board, autoRuns = [], refusalDailyStats = [], refus
     // Refusals are gated: the durable rollup is a global aggregate with no
     // per-team attribution, so a team-scoped viewer gets null (not a foreign
     // team's count). Run metrics are already team-scoped by the caller.
+    const windowEnd = spec.windowEnd ?? now;
+    const endDate = spec.endDate ?? new Date(windowEnd).toISOString().slice(0, 10);
     const refusalPart = refusalsAvailable
-      ? refusalFlow(refusalDailyStats, spec.startDate, refusalDataSince)
+      ? refusalFlow(refusalDailyStats, spec.startDate, endDate, refusalDataSince)
       : { refusals: null, refusalsByCategory: {}, refusalsPartial: false };
-    const flow = { ...runFlow(autoRuns, spec.windowStart, now), ...refusalPart };
-    const report = { key: spec.key, label: spec.label, windowStart: spec.windowStart, startDate: spec.startDate, flow };
+    const flow = { ...runFlow(autoRuns, spec.windowStart, windowEnd), ...refusalPart };
+    const report = { key: spec.key, label: spec.label, coverage: spec.coverage ?? "current", windowStart: spec.windowStart, windowEnd, startDate: spec.startDate, endDate, flow };
     report.markdown = renderPeriodMarkdown(report, standing);
     periodReports[spec.key] = report;
   }

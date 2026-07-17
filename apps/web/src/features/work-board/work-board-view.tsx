@@ -140,6 +140,7 @@ function ReportSchedulePanel({
         channelId: form.channelId,
         conversationId: form.conversationId,
         periodKey: form.periodKey,
+        coverage: form.coverage,
         cadence: form.cadence,
         weekday: form.weekday,
         time: form.time,
@@ -205,6 +206,13 @@ function ReportSchedulePanel({
               <Field label="Report">
                 <select className={selectCls} value={form.periodKey} onChange={(e) => set("periodKey", e.target.value as WorkPeriodKey)}>
                   {PERIOD_ORDER.map((k) => <option key={k} value={k}>{k}</option>)}
+                </select>
+              </Field>
+
+              <Field label="Cover">
+                <select className={selectCls} value={form.coverage} onChange={(e) => set("coverage", e.target.value as "previous" | "current")}>
+                  <option value="previous">last period</option>
+                  <option value="current">this period</option>
                 </select>
               </Field>
 

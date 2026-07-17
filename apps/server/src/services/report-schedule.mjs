@@ -15,10 +15,11 @@
 
 import { workBoard } from "../read-models/work-board.mjs";
 import { pendingDecisions } from "../read-models/pending-decisions.mjs";
-import { workReport, calendarPeriods } from "../read-models/work-report.mjs";
+import { workReport, calendarPeriods, periodSpec } from "../read-models/work-report.mjs";
 import { makeRunTx } from "../runtime/store/run-tx.mjs";
 
 const PERIOD_KEYS = new Set(["day", "week", "month", "quarter"]);
+const COVERAGES = new Set(["previous", "current"]);
 const CADENCES = new Set(["daily", "weekly"]);
 const CONTENT_LIMIT = 2000; // margin under the 2048 hard cap in channel-delivery
 
@@ -28,6 +29,10 @@ export function createDefaultReportSchedule() {
     channelId: null,
     conversationId: null,
     periodKey: "day",
+    // "previous" = the just-CLOSED period (yesterday / last week …) — what a
+    // scheduled push should summarize. "current" = period-to-date (near-empty
+    // right after the period rolls over).
+    coverage: "previous",
     cadence: "daily",
     weekday: 1, // 0=Sun..6=Sat; used when cadence === "weekly" (1 = Monday)
     time: "09:00", // HH:MM, server LOCAL time (mirrors the automation scheduler)
@@ -92,7 +97,7 @@ export function chunkContent(text, limit = CONTENT_LIMIT) {
 // Assemble the GLOBAL (unscoped) work report from raw state — the sweep has no
 // viewer, so it uses the full data and refusalsAvailable:true. Mirrors the
 // pipeline buildPublicState runs per-viewer.
-export function assembleGlobalWorkReport(state, nowMs) {
+export function assembleGlobalWorkReport(state, nowMs, periods = calendarPeriods(nowMs)) {
   const autoRuns = state.autoRuns ?? [];
   const pd = pendingDecisions({
     approvalRequests: state.approvalRequests ?? [],
@@ -112,7 +117,7 @@ export function assembleGlobalWorkReport(state, nowMs) {
     autoRuns,
     refusalDailyStats: state.refusalDailyStats ?? [],
     refusalsAvailable: true,
-    periods: calendarPeriods(nowMs),
+    periods,
     now: nowMs,
   });
 }
@@ -138,8 +143,13 @@ export function createReportScheduleRuntime({ state, now, enqueueChannelDelivery
     let period;
     try {
       const nowIso = now();
-      const report = assembleGlobalWorkReport(state, Date.parse(nowIso));
-      period = report.periods?.[cfg.periodKey];
+      const nowMs = Date.parse(nowIso);
+      // Build ONLY the configured period at the configured coverage — a scheduled
+      // push defaults to the just-closed period ("previous"), not the near-empty
+      // period-to-date.
+      const spec = periodSpec(nowMs, cfg.periodKey, cfg.coverage ?? "previous");
+      const report = spec ? assembleGlobalWorkReport(state, nowMs, [spec]) : null;
+      period = report?.periods?.[cfg.periodKey];
       if (!period) return { posted: false, reason: "no_report" };
       if (!force && cfg.lastPostedStartDate === period.startDate) return { posted: false, reason: "already_posted" };
       const chunks = chunkContent(period.markdown);
@@ -213,6 +223,7 @@ export function createReportScheduleRuntime({ state, now, enqueueChannelDelivery
         channelId: "channelId" in patch ? (patch.channelId || null) : cur.channelId,
         conversationId: "conversationId" in patch ? (patch.conversationId || null) : cur.conversationId,
         periodKey: PERIOD_KEYS.has(patch.periodKey) ? patch.periodKey : cur.periodKey,
+        coverage: COVERAGES.has(patch.coverage) ? patch.coverage : (cur.coverage ?? "previous"),
         cadence: CADENCES.has(patch.cadence) ? patch.cadence : cur.cadence,
         weekday: patch.weekday != null ? clampInt(patch.weekday, 0, 6, cur.weekday) : cur.weekday,
         time: patch.time != null ? normalizeTime(patch.time, cur.time) : cur.time,
