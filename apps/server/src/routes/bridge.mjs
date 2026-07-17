@@ -73,6 +73,7 @@ export async function handleBridgeRoutes({
   appendEvent,
   refuse,
   recordAgentFileAccess,
+  recordRequestContext,
   recordRoundEvent,
   completeInvocation,
   requireBridgeCredential,
@@ -665,6 +666,12 @@ export async function handleBridgeRoutes({
       typeof recordRoundEvent === "function"
     ) {
       recordRoundEvent(invocation, body);
+    }
+    // Request context: the wrapper relays the CLI's stream-json init (model,
+    // permission mode, tool/MCP/skill/agent inventory) once per run. Re-clamped
+    // server-side; first report wins. A malformed payload degrades to no-op.
+    if (body.type === "request_context" && typeof recordRequestContext === "function") {
+      recordRequestContext(invocation, body.data);
     }
     sendJson(res, 200, { ok: true });
     return true;

@@ -17,6 +17,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { dirname, resolve, sep } from "node:path";
 import { mergeFileAccesses } from "../read-models/file-ledger.mjs";
+import { sanitizeRequestContext } from "../read-models/request-context.mjs";
 import { createAgentSkillService } from "../services/agent-skills.mjs";
 import { createApplicationService, validateApplicationRoutineDraft } from "../services/applications.mjs";
 import { createApplicationInstallService } from "../services/application-installs.mjs";
@@ -3161,6 +3162,18 @@ export function createServerRuntimeServices({
     recordAgentFileAccess: (invocation, accesses) => {
       if (!invocation || !Array.isArray(accesses) || accesses.length === 0) return;
       invocation.fileLedger = mergeFileAccesses(invocation.fileLedger, accesses);
+      persistStateSoon();
+    },
+    // Request context (wrapper-visible SUMMARY): model, permission mode, and the
+    // tool/MCP/skill/agent inventory the run was dispatched with, from the CLI's
+    // stream-json init event. First report wins — a run has one setup. Stored on
+    // the invocation so it ships with state.invocations. See
+    // read-models/request-context.mjs (NOT the raw provider envelope).
+    recordRequestContext: (invocation, raw) => {
+      if (!invocation || invocation.requestContext) return;
+      const context = sanitizeRequestContext(raw);
+      if (!context) return;
+      invocation.requestContext = context;
       persistStateSoon();
     },
     publicState,

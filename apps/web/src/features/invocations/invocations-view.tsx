@@ -204,6 +204,85 @@ export function InvocationsView() {
         </Card>
       ) : null}
 
+      {selected?.requestContext ? (
+        <Card>
+          <CardHeader>
+            <CardTitle>Request context</CardTitle>
+            <p className="text-sm text-muted-foreground">
+              What this run was dispatched with — model, permission mode, and the tool / MCP / skill inventory the
+              agent had available. Tool <em>names</em> only; the raw system prompt and full tool schemas are not
+              emitted by the CLI.
+            </p>
+          </CardHeader>
+          <CardContent>
+            <dl className="grid grid-cols-[auto,1fr] gap-x-4 gap-y-2 text-sm">
+              {selected.requestContext.model ? (
+                <>
+                  <dt className="text-muted-foreground">Model</dt>
+                  <dd className="font-mono [overflow-wrap:anywhere]">
+                    {selected.requestContext.model}
+                    {selected.requestContext.provider ? (
+                      <span className="ml-1 text-xs text-muted-foreground">{selected.requestContext.provider}</span>
+                    ) : null}
+                  </dd>
+                </>
+              ) : null}
+              {selected.requestContext.permissionMode ? (
+                <>
+                  <dt className="text-muted-foreground">Permission</dt>
+                  <dd><Badge tone="neutral">{selected.requestContext.permissionMode}</Badge></dd>
+                </>
+              ) : null}
+              {selected.requestContext.tools?.length ? (
+                <>
+                  <dt className="text-muted-foreground">Tools ({selected.requestContext.tools.length})</dt>
+                  <dd className="flex flex-wrap gap-1">
+                    {selected.requestContext.tools.map((tool) => (
+                      <span key={tool} className="rounded border border-border px-1.5 py-0.5 font-mono text-xs">{tool}</span>
+                    ))}
+                  </dd>
+                </>
+              ) : null}
+              {selected.requestContext.mcpServers?.length ? (
+                <>
+                  <dt className="text-muted-foreground">MCP servers</dt>
+                  <dd className="flex flex-wrap gap-1">
+                    {selected.requestContext.mcpServers.map((server) => (
+                      <span key={server.name} className="rounded border border-border px-1.5 py-0.5 text-xs">
+                        {server.name}
+                        {server.status ? <span className="ml-1 text-muted-foreground">· {server.status}</span> : null}
+                      </span>
+                    ))}
+                  </dd>
+                </>
+              ) : null}
+              {selected.requestContext.skills?.length ? (
+                <>
+                  <dt className="text-muted-foreground">Skills ({selected.requestContext.skills.length})</dt>
+                  <dd className="font-mono text-xs text-muted-foreground [overflow-wrap:anywhere]">
+                    {selected.requestContext.skills.join(", ")}
+                  </dd>
+                </>
+              ) : null}
+              {selected.requestContext.agents?.length ? (
+                <>
+                  <dt className="text-muted-foreground">Agents ({selected.requestContext.agents.length})</dt>
+                  <dd className="font-mono text-xs text-muted-foreground [overflow-wrap:anywhere]">
+                    {selected.requestContext.agents.join(", ")}
+                  </dd>
+                </>
+              ) : null}
+              {selected.requestContext.slashCommandCount ? (
+                <>
+                  <dt className="text-muted-foreground">Slash commands</dt>
+                  <dd className="tabular-nums text-muted-foreground">{selected.requestContext.slashCommandCount}</dd>
+                </>
+              ) : null}
+            </dl>
+          </CardContent>
+        </Card>
+      ) : null}
+
       {selected && rounds.length ? (
         <Card>
           <CardHeader>
