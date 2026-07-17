@@ -4,7 +4,7 @@ import { basename, dirname, extname, join, relative, resolve, sep } from "node:p
 import { denyForeignProject, teamOf } from "../runtime/auth.mjs";
 import { computeDispatchEvaluation } from "../read-models/dispatch-evaluation.mjs";
 import { recordHttpGateRefusal } from "./refusal-http-gate.mjs";
-import { summarizeAutoRuns } from "../services/auto-run-metrics.mjs";
+import { deriveFinalStatus, summarizeAutoRuns } from "../services/auto-run-metrics.mjs";
 import { summarizeDeployments } from "../services/auto-run-deploy-metrics.mjs";
 import { readEvalTrend, summarizeEvalTrend } from "../services/eval-trend.mjs";
 import { maturityScorecard, latestDora } from "../read-models/maturity-scorecard.mjs";
@@ -321,6 +321,10 @@ export async function handleProjectRoutes({
     );
     const enriched = autoRuns.map((run) => {
       let out = run;
+      // Derived terminal grade (clean / degraded / unverified success, or failed)
+      // for a per-run quality badge; null while the run is still in flight.
+      const finalStatus = deriveFinalStatus(run);
+      if (finalStatus) out = { ...out, finalStatus };
       // Merge-risk badge for open PRs (the risk-based merge policy's read model).
       if (run.status === "pr_open") {
         // Fold in the STORED review / diff-size / sensitive-path signals when a
