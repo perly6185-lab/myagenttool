@@ -144,4 +144,54 @@ export function runStoreContract(label, makeStore) {
     });
     assert.deepEqual(store.queryHistory("refusals", { invocationId: "inv_1" }).rows.map((r) => r.id), ["r1"]);
   });
+
+  // ADR 0019 B-3: erasure reaches history — deleteHistory removes a scope's rows.
+  test(`${label}: deleteHistory removes a scope's rows (and only that scope) + re-append works after`, () => {
+    const { store } = makeStore();
+    store.appendHistory("spans", [
+      { id: "s1", traceId: "trc_1", startedAt: "t1" },
+      { id: "s2", traceId: "trc_1", startedAt: "t2" },
+      { id: "sx", traceId: "trc_2", startedAt: "tx" },
+    ]);
+    const del = store.deleteHistory("spans", "trc_1");
+    assert.equal(del.deleted, 2);
+    assert.deepEqual(store.queryHistory("spans", { invocationId: "trc_1" }).rows, [], "scope trc_1 erased");
+    assert.deepEqual(store.queryHistory("spans", { invocationId: "trc_2" }).rows.map((r) => r.id), ["sx"], "other scope untouched");
+    assert.equal(store.deleteHistory("spans", null).deleted, 0, "null scope is a no-op");
+    // Dedup key was released, so a fresh append of the same id is honoured (not swallowed).
+    assert.equal(store.appendHistory("spans", [{ id: "s1", traceId: "trc_1", startedAt: "t1" }]).appended, 1);
+  });
+
+  // ADR 0019 B-3: shielded rows are redacted in place, not dropped.
+  test(`${label}: redactHistory mutates a scope's rows in place and counts only real changes`, () => {
+    const { store } = makeStore();
+    store.appendHistory("refusals", [
+      { id: "r1", invocationId: "inv_1", at: "t1", summary: "call 555-1234" },
+      { id: "r2", invocationId: "inv_1", at: "t2", summary: "clean" },
+      { id: "rx", invocationId: "inv_2", at: "tx", summary: "call 555-9999" },
+    ]);
+    const redactor = (row) => { if (typeof row.summary === "string" && row.summary.includes("555")) { row.summary = "[redacted]"; row.piiRedacted = true; } };
+    const res = store.redactHistory("refusals", "inv_1", redactor);
+    assert.equal(res.redacted, 1, "only the row that actually changed is counted");
+    const rows = store.queryHistory("refusals", { invocationId: "inv_1" }).rows;
+    assert.ok(rows.find((r) => r.id === "r1").piiRedacted, "r1 scrubbed + marked");
+    assert.equal(rows.find((r) => r.id === "r2").summary, "clean", "clean row untouched");
+    assert.equal(store.queryHistory("refusals", { invocationId: "inv_2" }).rows[0].summary, "call 555-9999", "other scope untouched");
+    assert.equal(store.redactHistory("refusals", "inv_1", null).redacted, 0, "no redactor → no-op");
+  });
+
+  // ADR 0019 B-3: time-based retention reap bounds the unmirrored history table.
+  test(`${label}: reapHistory deletes dated rows older than the cutoff, keeps undated + in-window`, () => {
+    const { store } = makeStore();
+    store.appendHistory("events", [
+      { id: "old", invocationId: "inv_1", createdAt: "2026-01-01T00:00:00.000Z" },
+      { id: "new", invocationId: "inv_1", createdAt: "2026-07-01T00:00:00.000Z" },
+      { id: "undated", invocationId: "inv_1" },
+    ]);
+    const res = store.reapHistory({ before: "2026-06-01T00:00:00.000Z" });
+    assert.equal(res.reaped, 1, "only the pre-cutoff dated row is reaped");
+    const remaining = store.queryHistory("events", { invocationId: "inv_1" }).rows.map((r) => r.id).sort();
+    assert.deepEqual(remaining, ["new", "undated"], "in-window and undated rows survive");
+    assert.equal(store.reapHistory({}).reaped, 0, "no cutoff → no-op");
+  });
 }

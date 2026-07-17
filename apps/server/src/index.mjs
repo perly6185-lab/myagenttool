@@ -316,6 +316,15 @@ if (typeof httpDependencies.sweepReportSchedule === "function") {
       // #1084: the sweep leaves one audit event per transcript reap batch.
       const { reaped } = applyRetentionPolicies(state, { now, appendEvent });
       if (reaped > 0) savePersistentState();
+      // ADR 0019 B-3: the durable history table is OUTSIDE the mirrored snapshot,
+      // so applyRetentionPolicies (state-only) never bounds it. Reap its DATED rows
+      // past the same logsDays window. Self-durable (a direct DELETE), so no extra
+      // savePersistentState. No-op when logsDays is off or on the memory backing.
+      const days = Number(state?.retentionSettings?.logsDays);
+      if (sqliteStore && typeof sqliteStore.reapHistory === "function" && Number.isFinite(days) && days > 0) {
+        const cutoffMs = Date.parse(now()) - days * 86_400_000;
+        if (Number.isFinite(cutoffMs)) sqliteStore.reapHistory({ before: new Date(cutoffMs).toISOString() });
+      }
     } catch {
       /* best-effort retention sweep */
     }
