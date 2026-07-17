@@ -80,6 +80,18 @@ test("evaluateSloAlert: the below-target set changing re-alerts", () => {
   assert.deepEqual(r.alert.data.below.map((b) => b.key).sort(), ["failureRate", "prSuccessRate"]);
 });
 
+test("evaluateSloAlert: a breach going to NO DATA clears the signature WITHOUT a false 'recovered'", () => {
+  // Every SLO meets===null (e.g. an empty loop after a restart, breach signature
+  // still persisted). This is not a recovery.
+  const noData = { slos: [
+    { key: "failureRate", label: "Failure rate", meets: null, value: null, target: 0.2, direction: "lte", unit: "ratio" },
+  ] };
+  const r = evaluateSloAlert(noData, "failureRate");
+  assert.equal(r.changed, true, "the stale breach signature is cleared");
+  assert.equal(r.signature, "");
+  assert.equal(r.alert, null, "no false 'back on target' alert when there is no data");
+});
+
 test("evaluateSloAlert: recovery from a breach emits an info alert and clears the signature", () => {
   const healthy = { slos: [
     { key: "failureRate", label: "Failure rate", meets: true, value: 0.1, target: 0.2, direction: "lte", unit: "ratio" },

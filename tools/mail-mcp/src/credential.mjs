@@ -3,9 +3,17 @@ import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 
 export function defaultCredentialPath(env = process.env) {
-  const profile = env.USERPROFILE || env.HOME;
-  if (!profile) throw new Error("not_authorized: user profile is unavailable");
-  return join(profile, "AppData", "Roaming", "myagenttool", "mail", "163.json");
+  // #1199: setup-163.ps1 writes under $env:APPDATA, so the reader MUST resolve
+  // the same base — using it directly when set. Rebuilding USERPROFILE\AppData\
+  // Roaming diverges from APPDATA under folder redirection / roaming profiles /
+  // Known-Folder Move, which left the credential stored but permanently
+  // unreadable (not_authorized). Fall back to the rebuild only when APPDATA is
+  // absent (non-Windows dev shells).
+  const base = env.APPDATA
+    || (env.USERPROFILE && join(env.USERPROFILE, "AppData", "Roaming"))
+    || (env.HOME && join(env.HOME, "AppData", "Roaming"));
+  if (!base) throw new Error("not_authorized: user profile is unavailable");
+  return join(base, "myagenttool", "mail", "163.json");
 }
 
 export function readCredential(path = defaultCredentialPath()) {

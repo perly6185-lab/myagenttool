@@ -1185,6 +1185,9 @@ export function createM3Service({
       // stamping it here lets ledgerSummary roll a run's whole cost up in one line
       // without re-deriving it from telemetry. Null for manual/non-auto-run spend.
       autoRunId: meta.autoRunId ?? null,
+      // Explicit model dimension for the byModel rollup, independent of
+      // `counterparty` (whose meaning differs across ledger paths).
+      model,
       counterparty: model,
       provider: model,
       pricingVersion: pricing.price?.pricingVersion ?? null,
@@ -1320,6 +1323,9 @@ export function createM3Service({
       revenueOwner: body.revenueOwner ? String(body.revenueOwner) : null,
       budgetPoolId: body.budgetPoolId ? String(body.budgetPoolId) : null,
       projectId: body.projectId ? String(body.projectId) : state.currentProjectId ?? state.projects[0]?.id ?? null,
+      // Stamp the real model (not the provider) so byModel rolls up by model, not
+      // by "anthropic"/"openai". counterparty stays the provider for chargeback.
+      model: usageRecord.model,
       counterparty: usageRecord.provider,
       provider: usageRecord.provider,
       billable: usageRecord.providerMode === "platform_managed",
@@ -1765,10 +1771,11 @@ export function createM3Service({
       const agentId = entry.agentId ?? "unknown";
       const agent = findAgent(agentId);
       addRollup(agents, agentId, amount, source, { agentId, agentName: agent?.name, provider: entry.provider });
-      // The model is stamped on every entry as `counterparty` (see
-      // recordInvocationLedgerEntry). cost_by_model answers "which model is the
-      // spend going to" without re-deriving it from per-round telemetry.
-      const modelKey = entry.counterparty ?? entry.provider ?? "unknown";
+      // cost_by_model: key on the explicit `model` field (falling back to the
+      // legacy counterparty for pre-fix entries), NOT the provider — so an
+      // AI-usage row whose counterparty is "anthropic"/"openai" still buckets by
+      // its actual model rather than polluting the model dimension.
+      const modelKey = entry.model ?? entry.counterparty ?? entry.provider ?? "unknown";
       addRollup(models, modelKey, amount, source, { model: modelKey, provider: entry.provider });
       // agent_run_cost_total: sum a single auto-run's whole spend. Only entries
       // stamped with an autoRunId participate — manual/unrelated spend is not

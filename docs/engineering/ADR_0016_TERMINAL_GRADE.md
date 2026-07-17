@@ -1,8 +1,13 @@
 # ADR 0016: A run's terminal grade is a derived read-model field first; a stored `finalStatus` is an additive column, never a replacement for `status`
 
-Status: proposed · 2026-07-17
+Status: accepted · 2026-07-17
 
 Date: 2026-07-17
+
+Decision: Accepted. The derived-grade form ships (#1183). A stored `finalStatus`
+column stays deferred — build it only when history must be graded after its
+inputs are reaped, and then only as the additive, reconciled column this ADR
+scopes.
 
 Related issue: [#1182](https://github.com/perly6185-lab/myagenttool/issues/1182)
 
