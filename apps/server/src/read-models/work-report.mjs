@@ -113,7 +113,7 @@ function runFlow(autoRuns, windowStart, windowEnd) {
 // Refusals within [startDate, endDate] (inclusive UTC dates), summed from the
 // durable per-day rollup. endDate bounds a "previous" window so it doesn't count
 // the current period's days.
-function refusalFlow(refusalDailyStats, startDate, endDate, refusalDataSince) {
+function refusalFlow(refusalDailyStats, startDate, endDate, coverageSince) {
   let refusals = 0;
   const refusalsByCategory = {};
   for (const row of refusalDailyStats) {
@@ -123,9 +123,10 @@ function refusalFlow(refusalDailyStats, startDate, endDate, refusalDataSince) {
       refusalsByCategory[cat] = (refusalsByCategory[cat] ?? 0) + n;
     }
   }
-  // Honest coverage: if the rollup's earliest day is after the window start,
-  // refusals from before that day were never recorded → this is a lower bound.
-  const refusalsPartial = refusalDataSince != null && startDate < refusalDataSince;
+  // Honest coverage: if the window reaches before we began recording, refusals
+  // from before that point were never counted → this is a lower bound. A window
+  // fully within the recorded range reports a trustworthy count (0 included).
+  const refusalsPartial = coverageSince != null && startDate < coverageSince;
   return { refusals, refusalsByCategory, refusalsPartial };
 }
 
@@ -155,11 +156,12 @@ function renderPeriodMarkdown(report, standing) {
  * @param {{states: Record<string,{count:number,items:object[]}>}} sources.board - workBoard() output
  * @param {Array<object>} [sources.autoRuns]
  * @param {Array<object>} [sources.refusalDailyStats] - durable per-day refusal rollup
+ * @param {string|null} [sources.refusalStatsSince] - UTC date this deployment began recording refusals (state.refusalStatsMeta.since)
  * @param {Array<{key:string,label:string,windowStart:number,startDate:string}>} sources.periods - window specs (calendar-aligned by the caller)
  * @param {number} [sources.now]
  * @returns {object} standing + attention + a report per period
  */
-export function workReport({ board, autoRuns = [], refusalDailyStats = [], refusalsAvailable = true, periods = [], now = Date.now() } = {}) {
+export function workReport({ board, autoRuns = [], refusalDailyStats = [], refusalStatsSince = null, refusalsAvailable = true, periods = [], now = Date.now() } = {}) {
   const states = board?.states ?? {};
   const standing = Object.fromEntries(Object.keys(STATE_LABELS).map((key) => [key, states[key]?.count ?? 0]));
 
@@ -176,12 +178,24 @@ export function workReport({ board, autoRuns = [], refusalDailyStats = [], refus
     stuckRuns: agingFrom(states.waiting?.items),
   };
 
-  // Earliest UTC day the durable refusal rollup covers — the honesty anchor for
-  // partial-coverage flags and the UI's "refusal data since …" note.
-  const refusalDataSince = refusalDailyStats.reduce(
+  // Coverage anchor for the honesty flag: the earliest UTC day we can vouch for
+  // a COMPLETE refusal count. That's when this deployment began recording
+  // (refusalStatsSince) — but any actual row proves recording was active by its
+  // date too, so take the earlier. Using the earliest *row* alone was the bug: a
+  // fresh, genuinely-zero install has no rows, so every window read a confident
+  // "0" it could not actually back up. With the recording-start anchor, windows
+  // AFTER we started recording show a trustworthy 0; only windows reaching before
+  // it are flagged partial.
+  const earliestRow = refusalDailyStats.reduce(
     (min, r) => (r?.date && (min == null || r.date < min) ? r.date : min),
     null,
   );
+  const coverageSince =
+    refusalStatsSince != null
+      ? earliestRow != null && earliestRow < refusalStatsSince
+        ? earliestRow
+        : refusalStatsSince
+      : earliestRow;
 
   const periodReports = {};
   for (const spec of periods) {
@@ -191,7 +205,7 @@ export function workReport({ board, autoRuns = [], refusalDailyStats = [], refus
     const windowEnd = spec.windowEnd ?? now;
     const endDate = spec.endDate ?? new Date(windowEnd).toISOString().slice(0, 10);
     const refusalPart = refusalsAvailable
-      ? refusalFlow(refusalDailyStats, spec.startDate, endDate, refusalDataSince)
+      ? refusalFlow(refusalDailyStats, spec.startDate, endDate, coverageSince)
       : { refusals: null, refusalsByCategory: {}, refusalsPartial: false };
     const flow = { ...runFlow(autoRuns, spec.windowStart, windowEnd), ...refusalPart };
     const report = { key: spec.key, label: spec.label, coverage: spec.coverage ?? "current", windowStart: spec.windowStart, windowEnd, startDate: spec.startDate, endDate, flow };
@@ -204,7 +218,7 @@ export function workReport({ board, autoRuns = [], refusalDailyStats = [], refus
     standing,
     attention,
     refusalsAvailable,
-    refusalDataSince: refusalsAvailable ? refusalDataSince : null,
+    refusalDataSince: refusalsAvailable ? coverageSince : null,
     periods: periodReports,
   };
 }

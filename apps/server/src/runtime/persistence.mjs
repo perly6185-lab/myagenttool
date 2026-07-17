@@ -139,6 +139,8 @@ export const persistedObjectKeys = [
   "terminalRuntimeCapability",
   // The scheduled work-report post config (channel + cadence + dedupe cursor).
   "reportSchedule",
+  // When refusal recording began (work-report coverage-honesty anchor).
+  "refusalStatsMeta",
 ];
 
 // Collections that carry BOTH a self-stamped owning team AND a project link. The

@@ -47,6 +47,9 @@ export function createServerState({ defaultProjectPath, now }) {
     approvalTokenLegacyUses: { count: 0, lastAt: null },
     applicationDailyStats: [],
     refusalDailyStats: [],
+    // When this deployment began recording refusals — the honesty anchor so a
+    // genuinely-zero window after this date reads as a trustworthy 0, not "unknown".
+    refusalStatsMeta: { since: now().slice(0, 10) },
     reportSchedule: createDefaultReportSchedule(),
     currentProjectId: defaultProject.id,
     projectTargets: [createProjectTargetRecord(defaultProject, now)],

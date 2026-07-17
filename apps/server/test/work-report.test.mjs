@@ -88,6 +88,27 @@ test("refusals sum from the durable daily rollup, windowed and by category", () 
   assert.equal(r.refusalDataSince, "2026-07-01");
 });
 
+test("refusalStatsSince makes a genuinely-zero window a TRUSTWORTHY 0 (not partial), while pre-recording windows stay partial", () => {
+  // Empty rollup, but we've been recording since 2026-07-01. A window fully after
+  // that (today/week) is a confident 0; a window reaching before it (quarter,
+  // 07-01 start is == since so ok; use a since mid-July to exercise both).
+  const board = workBoard({ now: NOW });
+  const r = workReport({ board, refusalDailyStats: [], refusalStatsSince: "2026-07-10", periods: calendarPeriods(NOW), now: NOW });
+  assert.equal(r.periods.day.flow.refusals, 0);
+  assert.equal(r.periods.day.flow.refusalsPartial, false); // today >= 07-10 → trustworthy 0
+  assert.equal(r.periods.week.flow.refusalsPartial, false); // week starts 07-13 >= 07-10
+  assert.equal(r.periods.month.flow.refusalsPartial, true); // month starts 07-01 < 07-10 → can't vouch
+  assert.equal(r.refusalDataSince, "2026-07-10"); // coverage anchor = recording start
+});
+
+test("a recorded row earlier than refusalStatsSince widens the coverage anchor to the row", () => {
+  // If we somehow have data older than the recorded since, we clearly were
+  // recording by then → coverage anchor = the earlier date.
+  const board = workBoard({ now: NOW });
+  const r = workReport({ board, refusalDailyStats: [{ date: "2026-06-15", total: 1, byCategory: { policy: 1 } }], refusalStatsSince: "2026-07-01", periods: calendarPeriods(NOW), now: NOW });
+  assert.equal(r.refusalDataSince, "2026-06-15");
+});
+
 test("refusalsPartial flags a window that starts before the rollup began", () => {
   // Rollup starts 2026-07-05: the quarter (07-01) and month (07-01) windows
   // predate it → lower-bound; the week (07-13) is fully covered.

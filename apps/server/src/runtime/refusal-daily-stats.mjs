@@ -29,6 +29,9 @@ export function recordRefusalDailyStat(state, atIso, category) {
   if (!Array.isArray(state.refusalDailyStats)) state.refusalDailyStats = [];
   const date = utcDate(atIso);
   if (!date) return;
+  // Anchor the recording-start date the first time we ever record (a defensive
+  // fallback; state-factory normally seeds it at boot). Never moved once set.
+  if (!state.refusalStatsMeta?.since) state.refusalStatsMeta = { since: date };
   let row = state.refusalDailyStats.find((r) => r.date === date);
   if (!row) {
     row = { date, total: 0, byCategory: {} };
