@@ -238,6 +238,19 @@ if (typeof httpDependencies.reapStuckAutoRuns === "function") {
   setInterval(() => httpDependencies.reapStuckAutoRuns().catch(() => {}), 60_000).unref?.();
 }
 
+// O5.2 follow-up: close the SLO → alert loop. Evaluate the loop's SLOs on a slow
+// tick and dispatch an operational alert when the below-target set changes
+// (throttled internally; no-op when SLOs are on target or there is no data).
+if (typeof httpDependencies.sweepAutoRunSloAlerts === "function") {
+  setInterval(() => {
+    try {
+      httpDependencies.sweepAutoRunSloAlerts();
+    } catch {
+      /* best-effort SLO alert sweep */
+    }
+  }, 60_000).unref?.();
+}
+
 // Risk-based merge (opt-in): sweep open PRs on a slow tick and auto-merge the
 // low-risk ones. No-op unless the operator enabled autoMergeLowRisk; respects
 // the kill switch + breaker internally.

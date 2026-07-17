@@ -49,6 +49,9 @@ export function createServerState({ defaultProjectPath, now }) {
     projectTargets: [createProjectTargetRecord(defaultProject, now)],
     worktrees: [],
     autoRuns: [],
+    // O5.2 follow-up: the last-emitted set of below-target SLO keys, so the
+    // breach→alert sweep only fires when the breach set changes (not every tick).
+    autoRunSloAlert: null,
     // D1 deploy stage: one record per post-merge deploy attempt (feeds deploy
     // frequency + change-failure/recovery). Empty until deployOnMerge is used.
     deployments: [],
