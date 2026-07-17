@@ -169,6 +169,31 @@ interface DoraReport {
   changeFailures?: { recorded?: boolean; changeFailureRate?: number; recoveryHours?: { median?: number } } | null;
 }
 
+// #1174 (R2 of #1170): per-worker / per-(worker×area) dispatch outcomes. Rates
+// are null below the sample threshold (verdict "indeterminate"); time-to-PR is
+// deliberately absent (cross-server data the dispatcher doesn't hold).
+interface DispatchSlice {
+  worker: string;
+  area?: string;
+  assignments: number;
+  open: number;
+  completed: number;
+  reassigned: number;
+  settled: number;
+  completionRate: number | null;
+  reassignmentRate: number | null;
+  medianMinutesToSettle: number | null;
+  verdict: "measured" | "indeterminate";
+  sample: string;
+}
+interface DispatchEvaluation {
+  minSamples: number;
+  total: DispatchSlice;
+  workers: DispatchSlice[];
+  workerAreas: DispatchSlice[];
+  unmeasured: string[];
+}
+
 // DORA Four Keys from the latest github:dora artifact. Deploy frequency is an
 // honest merge-to-main proxy (no deploy pipeline); change-fail reads "not recorded"
 // until the marker convention is used — surfaced as-is, never faked.
@@ -199,6 +224,62 @@ function verdictTone(v: string): "success" | "danger" | "neutral" {
   if (v === "met") return "success";
   if (v === "unmet") return "danger";
   return "neutral";
+}
+
+// #1174: dispatch routing outcomes. Rates render only past the sample threshold
+// (else "insufficient data"); the panel is explicit that time-to-PR is a
+// cross-server signal the dispatcher can't see — honest gap, not a blank.
+function DispatchEvaluationCard({ evaluation }: { evaluation: DispatchEvaluation }) {
+  const rate = (r: number | null) => (r == null ? "—" : pct(r));
+  const rows: DispatchSlice[] = [...evaluation.workers, ...evaluation.workerAreas];
+  return (
+    <Card>
+      <CardHeader className="flex-row items-center justify-between gap-2 py-3">
+        <CardTitle className="text-base">Dispatch routing</CardTitle>
+        <Badge tone="neutral">{evaluation.total.assignments} assignment(s)</Badge>
+      </CardHeader>
+      <CardContent className="space-y-2">
+        <p className="text-xs text-muted-foreground">
+          Per-worker and per-(worker × area) outcomes from the dispatcher's own bookkeeping. A slice with fewer than {evaluation.minSamples} settled outcomes shows "insufficient data" rather than an extrapolated rate.
+        </p>
+        <div className="overflow-x-auto">
+          <table className="w-full text-xs">
+            <thead>
+              <tr className="border-b border-border text-left text-muted-foreground">
+                <th className="py-1.5 pr-2 font-medium">Worker</th>
+                <th className="py-1.5 pr-2 font-medium">Area</th>
+                <th className="py-1.5 pr-2 font-medium text-right">Assigned</th>
+                <th className="py-1.5 pr-2 font-medium text-right">Completed</th>
+                <th className="py-1.5 pr-2 font-medium text-right">Reassigned</th>
+                <th className="py-1.5 pr-2 font-medium text-right">Median settle</th>
+                <th className="py-1.5 pr-2 font-medium text-right">Outcome</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((s, i) => (
+                <tr key={`${s.worker}:${s.area ?? "_"}:${i}`} className="border-b border-border/60">
+                  <td className="py-1.5 pr-2 font-mono">{s.worker}</td>
+                  <td className="py-1.5 pr-2 text-muted-foreground">{s.area ?? "—"}</td>
+                  <td className="py-1.5 pr-2 text-right">{s.assignments}</td>
+                  <td className="py-1.5 pr-2 text-right">{s.verdict === "measured" ? `${s.completed} (${rate(s.completionRate)})` : s.completed}</td>
+                  <td className="py-1.5 pr-2 text-right">{s.verdict === "measured" ? `${s.reassigned} (${rate(s.reassignmentRate)})` : s.reassigned}</td>
+                  <td className="py-1.5 pr-2 text-right">{s.medianMinutesToSettle != null ? `${s.medianMinutesToSettle}m` : "—"}</td>
+                  <td className="whitespace-nowrap py-1.5 text-right">
+                    <Badge tone={s.verdict === "measured" ? "success" : "neutral"}>
+                      {s.verdict === "measured" ? "measured" : `insufficient data (${s.sample})`}
+                    </Badge>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <p className="text-[11px] text-muted-foreground">
+          Not shown: time-to-in-progress and time-to-PR — those live in each worker's own server state (the dispatcher only sees assign → settle/reassign). Per-area rows can exceed the worker total when an issue declares multiple areas.
+        </p>
+      </CardContent>
+    </Card>
+  );
 }
 
 // The computed L0–L6 scorecard: calibration gates applied to measured evidence,
@@ -255,20 +336,23 @@ export function EvalTrendView() {
   const [summary, setSummary] = useState<EvalTrendSummary | null>(null);
   const [maturity, setMaturity] = useState<MaturityScorecard | null>(null);
   const [dora, setDora] = useState<DoraReport | null>(null);
+  const [dispatch, setDispatch] = useState<DispatchEvaluation | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [trend, mat, doraResp] = await Promise.all([
+      const [trend, mat, doraResp, disp] = await Promise.all([
         api.listEvalTrend() as Promise<{ summary?: EvalTrendSummary }>,
         api.maturity() as Promise<MaturityScorecard>,
         api.dora() as Promise<{ dora?: DoraReport | null }>,
+        api.dispatchEvaluation() as Promise<DispatchEvaluation>,
       ]);
       setSummary(trend.summary ?? null);
       setMaturity(mat ?? null);
       setDora(doraResp.dora ?? null);
+      setDispatch(disp ?? null);
       setError(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -307,6 +391,8 @@ export function EvalTrendView() {
       {maturity ? <MaturityScorecardCard scorecard={maturity} /> : null}
 
       {dora ? <DoraCard dora={dora} /> : null}
+
+      {dispatch && dispatch.total.assignments > 0 ? <DispatchEvaluationCard evaluation={dispatch} /> : null}
 
       {summary && summary.total > 0 ? (
         <>

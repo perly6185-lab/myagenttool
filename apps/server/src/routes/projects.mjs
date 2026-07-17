@@ -1,7 +1,8 @@
 import { randomBytes } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { basename, dirname, extname, join, relative, resolve, sep } from "node:path";
-import { denyForeignProject } from "../runtime/auth.mjs";
+import { denyForeignProject, teamOf } from "../runtime/auth.mjs";
+import { computeDispatchEvaluation } from "../read-models/dispatch-evaluation.mjs";
 import { recordHttpGateRefusal } from "./refusal-http-gate.mjs";
 import { summarizeAutoRuns } from "../services/auto-run-metrics.mjs";
 import { summarizeDeployments } from "../services/auto-run-deploy-metrics.mjs";
@@ -382,6 +383,20 @@ export async function handleProjectRoutes({
     // DORA Four Keys (lead time, deploy frequency, CI-green, change-fail) — the
     // latest `github:dora` artifact. Read-only, best-effort (null if never run).
     sendJson(res, 200, { dora: latestDora() });
+    return true;
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/dispatch-evaluation") {
+    // #1174 (R2 of #1170): per-worker / per-(worker×area) dispatch outcomes.
+    // Unlike /api/maturity and /api/dora (global artifacts), this is per-project
+    // data, so it MUST be team-scoped — filter assignments to projects the
+    // actor's team owns, then aggregate.
+    const teamId = actor?.teamId ?? null;
+    const visibleProjectIds = new Set(
+      (state.projects ?? []).filter((p) => teamId == null || teamOf(p) === teamId).map((p) => p.id),
+    );
+    const scoped = (state.dispatchAssignments ?? []).filter((a) => visibleProjectIds.has(a?.projectId));
+    sendJson(res, 200, computeDispatchEvaluation(scoped));
     return true;
   }
 
