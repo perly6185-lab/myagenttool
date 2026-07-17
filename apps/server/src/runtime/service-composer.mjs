@@ -241,6 +241,8 @@ export function createServerRuntimeServices({
     nextId,
     appendEvent,
     persistStateSoon,
+    // Over-cap refusals are archived (durable, readable) instead of dropped.
+    capWithArchive: retentionArchive.capWithArchive,
   });
   const {
     deviceForToken,
