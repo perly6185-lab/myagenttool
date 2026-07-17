@@ -57,6 +57,7 @@ import { decisionConfig } from "../services/auto-run-decision.mjs";
 import { autoRunSettingsEnvOverlay } from "../services/auto-run-config.mjs";
 import { createAlertDispatcher } from "../services/auto-run-alerts.mjs";
 import { createOtlpTraceExporter } from "../services/otlp-export.mjs";
+import { canDeleteObservabilityData, deleteObservabilityData, deletionScopes } from "../services/observability-deletion.mjs";
 import { DEFAULT_SLO_TARGETS, evaluateSloAlert, summarizeAutoRunSlos } from "../services/auto-run-slo.mjs";
 import { createTerminalService } from "../services/terminal.mjs";
 import { createToolService, failStrandedIssueFetches } from "../services/tools.mjs";
@@ -711,6 +712,29 @@ export function createServerRuntimeServices({
       }
     });
     return { exported: pending.length };
+  }
+
+  // ADR 0018: owner-gated per-subject deletion of observability data. Erases the
+  // subject's CONTENT (and, at tier `full`, its telemetry rows) through the same
+  // reap primitives as retention; the shielded set (ledger/audit/refusals) is
+  // never touched. A non-owner is refused through the single refusal writer.
+  function requestObservabilityDeletion({ scope, subjectId, tier = "operational", actor } = {}) {
+    if (!deletionScopes.includes(scope) || !subjectId) {
+      return { ok: false, error: "invalid_request" };
+    }
+    if (!canDeleteObservabilityData(actor)) {
+      refuse({
+        category: "policy",
+        code: "action_not_permitted",
+        requester: { kind: "control_plane", id: actor?.userId ?? null },
+        summary: `Observability data deletion is owner-gated; role "${actor?.role ?? "unknown"}" refused.`,
+        remedy: "Retry as an owner or admin.",
+      });
+      return { ok: false, error: "not_permitted" };
+    }
+    const result = deleteObservabilityData(state, { scope, subjectId, tier, now, appendEvent });
+    persistStateSoon();
+    return { ok: true, ...result };
   }
 
   const { startAutoRun, advanceAutoRunForInvocation, syncAutoRunOnApproval, syncAutoRunOnDenial, retryAutoRun, cancelAutoRun, mergeAutoRunPr, reapStuckAutoRuns, autoMergeSweep, approveDesign, rejectDesign, answerClarify, approveDecomposition, rejectDecomposition } = createAutoRunService({
@@ -2963,6 +2987,7 @@ export function createServerRuntimeServices({
     reapStuckAutoRuns,
     sweepAutoRunSloAlerts,
     flushTraceExport,
+    requestObservabilityDeletion,
     autoMergeSweep,
     claimIssue,
     releaseIssueClaim,
