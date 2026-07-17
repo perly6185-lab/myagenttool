@@ -100,6 +100,27 @@ test("tool_invocation_created is recorded and linked to its round", () => {
   assert.deepEqual(round.toolCallIds, [tool.id]);
 });
 
+test("a tool call's side effect is a first-class boolean, derived from action/riskTag when not reported", () => {
+  const { state, runtime, invocation } = harness();
+  runtime.recordRoundEvent(invocation, ev("round_started", { roundIndex: 0 }));
+  // read → no side effect
+  runtime.recordRoundEvent(invocation, ev("tool_invocation_created", { roundIndex: 0, toolName: "Read", action: "read" }));
+  // write action → side effect, and resultSize is captured
+  runtime.recordRoundEvent(invocation, ev("tool_invocation_created", { roundIndex: 0, toolName: "Write", action: "write", resultSize: 4096 }));
+  // read action but a network risk tag → still a side effect
+  runtime.recordRoundEvent(invocation, ev("tool_invocation_created", { roundIndex: 0, toolName: "Fetch", action: "read", riskTag: "network_access" }));
+  // an explicit reporter boolean wins over derivation
+  runtime.recordRoundEvent(invocation, ev("tool_invocation_created", { roundIndex: 0, toolName: "Odd", action: "read", sideEffect: true }));
+
+  const [oddCall, fetchCall, writeCall, readCall] = state.toolInvocationRecords; // unshift → newest first
+  assert.equal(readCall.sideEffect, false, "a plain read has no side effect");
+  assert.equal(readCall.resultSize, null, "unreported result size stays null");
+  assert.equal(writeCall.sideEffect, true, "a write action is a side effect");
+  assert.equal(writeCall.resultSize, 4096, "reported result byte size is captured");
+  assert.equal(fetchCall.sideEffect, true, "a network risk tag makes even a read a side effect");
+  assert.equal(oddCall.sideEffect, true, "an explicit reporter boolean is trusted over derivation");
+});
+
 test("#1087: a reported toolUseId is persisted as the join key to the transcript's full-text block", () => {
   const { state, runtime, invocation } = harness();
   runtime.recordRoundEvent(invocation, ev("round_started", { roundIndex: 0 }));
@@ -186,6 +207,14 @@ test("redactDigest scrubs secret-shaped tokens and bounds length", () => {
   const out = redactDigest(long);
   assert.equal(out.length, 500);
   assert.ok(out.endsWith("..."));
+});
+
+test("redactDigest scrubs mainland-China PII: mobile, resident id, bank card", () => {
+  assert.equal(redactDigest("call me at 13800138000 tomorrow"), "call me at [redacted] tomorrow");
+  assert.equal(redactDigest("id 11010119900307765X on file"), "id [redacted] on file");
+  assert.equal(redactDigest("card 6222021234567890123 charged"), "card [redacted] charged");
+  // A 13-digit epoch-ms timestamp is not PII and must survive untouched.
+  assert.equal(redactDigest("ts 1700000000000 logged"), "ts 1700000000000 logged");
 });
 
 test("round and tool digests are redacted at ingestion, not stored raw", () => {

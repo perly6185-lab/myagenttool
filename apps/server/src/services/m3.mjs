@@ -1727,10 +1727,12 @@ export function createM3Service({
       byCostOwner: [],
       byProject: [],
       byAgent: [],
+      byModel: [],
     };
     const owners = new Map();
     const projects = new Map();
     const agents = new Map();
+    const models = new Map();
     for (const entry of entries) {
       if (["voided", "cancelled"].includes(entry.status)) {
         summary.voidedEntries += 1;
@@ -1756,10 +1758,16 @@ export function createM3Service({
       const agentId = entry.agentId ?? "unknown";
       const agent = findAgent(agentId);
       addRollup(agents, agentId, amount, source, { agentId, agentName: agent?.name, provider: entry.provider });
+      // The model is stamped on every entry as `counterparty` (see
+      // recordInvocationLedgerEntry). cost_by_model answers "which model is the
+      // spend going to" without re-deriving it from per-round telemetry.
+      const modelKey = entry.counterparty ?? entry.provider ?? "unknown";
+      addRollup(models, modelKey, amount, source, { model: modelKey, provider: entry.provider });
     }
     summary.byCostOwner = [...owners.values()].sort((a, b) => b.entries - a.entries);
     summary.byProject = [...projects.values()].sort((a, b) => b.entries - a.entries);
     summary.byAgent = [...agents.values()].sort((a, b) => b.entries - a.entries);
+    summary.byModel = [...models.values()].sort((a, b) => b.entries - a.entries);
     return summary;
   }
 

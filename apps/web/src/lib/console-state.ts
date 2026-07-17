@@ -760,6 +760,15 @@ export interface LedgerAgentRollup {
   unknownEntries: number;
 }
 
+export interface LedgerModelRollup {
+  model: string;
+  provider?: string;
+  entries: number;
+  knownCostUsd: number;
+  estimatedCostUsd: number;
+  unknownEntries: number;
+}
+
 export interface LedgerSummary {
   currency: string;
   totalCostUsd: number;
@@ -774,6 +783,7 @@ export interface LedgerSummary {
   byCostOwner: LedgerOwnerRollup[];
   byProject: LedgerProjectRollup[];
   byAgent: LedgerAgentRollup[];
+  byModel: LedgerModelRollup[];
 }
 
 export interface ProjectSnapshot {

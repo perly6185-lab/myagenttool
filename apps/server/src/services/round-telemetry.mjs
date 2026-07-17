@@ -28,6 +28,31 @@ const MAX_TOOL_RECORDS_TOTAL = 5000;
 const ROUND_TERMINAL_STATUSES = new Set(["succeeded", "failed", "cancelled"]);
 const TOOL_STATUSES = new Set(["started", "succeeded", "failed"]);
 
+// Actions and CapabilityRiskTag values (packages/protocol/src/agent.ts) that
+// mutate state or reach outside the sandbox. Used to derive `sideEffect` when a
+// reporter does not set it explicitly.
+const SIDE_EFFECT_ACTIONS = new Set(["write", "command"]);
+const SIDE_EFFECT_RISK_TAGS = new Set([
+  "write_local",
+  "network_access",
+  "credential_access",
+  "shell_exec",
+  "browser_control",
+  "desktop_control",
+  "destructive",
+  "budget_spending",
+  "policy_change",
+  "secret_exposure",
+  "external_data_transfer",
+]);
+
+export function deriveSideEffect(action, riskTag, explicit) {
+  if (typeof explicit === "boolean") return explicit;
+  if (typeof action === "string" && SIDE_EFFECT_ACTIONS.has(action)) return true;
+  if (typeof riskTag === "string" && SIDE_EFFECT_RISK_TAGS.has(riskTag)) return true;
+  return false;
+}
+
 export function createRoundTelemetryRuntime({
   state,
   now,
@@ -213,6 +238,8 @@ export function createRoundTelemetryRuntime({
 
   function handleToolInvocation(invocation, data) {
     const round = findRound(invocation, intOr(data.roundIndex, null)) ?? latestRound(invocation);
+    const action = typeof data.action === "string" ? data.action : null;
+    const riskTag = typeof data.riskTag === "string" ? data.riskTag : null;
     const record = {
       id: nextId("tiv_demo"),
       invocationId: invocation.id,
@@ -225,8 +252,13 @@ export function createRoundTelemetryRuntime({
       inputDigest: typeof data.inputDigest === "string" ? data.inputDigest : null,
       outputDigest: typeof data.outputDigest === "string" ? data.outputDigest : null,
       targetPath: typeof data.targetPath === "string" ? data.targetPath : null,
-      action: typeof data.action === "string" ? data.action : null,
-      riskTag: typeof data.riskTag === "string" ? data.riskTag : null,
+      action,
+      riskTag,
+      // Explicit, filterable side-effect flag. Trust a reporter's boolean; else
+      // derive it from a write/command action or a mutating/external risk tag.
+      sideEffect: deriveSideEffect(action, riskTag, data.sideEffect),
+      // Raw result byte size before the 500-char digest cap; null when unknown.
+      resultSize: Number.isFinite(Number(data.resultSize)) ? Math.max(0, Math.trunc(Number(data.resultSize))) : null,
       status: TOOL_STATUSES.has(data.status) ? data.status : "succeeded",
       startedAt: typeof data.startedAt === "string" ? data.startedAt : now(),
       endedAt: typeof data.endedAt === "string" ? data.endedAt : now(),
@@ -254,6 +286,14 @@ const SECRET_PATTERNS = [
   /(?:bearer|authorization:?)\s+[A-Za-z0-9._~+/=-]{16,}/gi, // bearer / authorization value
   /-----BEGIN (?:[A-Z ]+)?PRIVATE KEY-----/g, // private key block
   /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g, // email address (PII)
+  // Mainland-China PII the digest must never carry. Digit-boundary lookarounds
+  // keep these from matching inside a longer token/id; over-redaction is
+  // acceptable here (an epoch-ms timestamp is 13 digits — none of these widths).
+  // Resident ID runs BEFORE bank card: an 18-char id ending in X would otherwise
+  // have its 17 leading digits eaten by the card pattern, leaving a dangling X.
+  /(?<![\dxX])\d{17}[\dxX](?![\dxX])/g, // China resident ID (18 chars, trailing X allowed)
+  /(?<!\d)(?:\d[ -]?){15,18}\d(?!\d)/g, // bank card number (16–19 digits, spaced/dashed)
+  /(?<!\d)1[3-9]\d{9}(?!\d)/g, // China mobile number (11 digits)
 ];
 
 export function redactDigest(text) {
