@@ -594,6 +594,12 @@ export function createProjectService({ state, now, nextId, appendEvent, persistS
       if (!add.ok) throw new Error(`git remote add origin failed: ${add.stderr || `exit ${add.code}`}`);
     }
 
+    // The remote just changed, so the cached facts are wrong. Without this the
+    // console shows `remoteUrl: null` until something unrelated re-reads them
+    // (browsing the file tree, projects.mjs:1018) — the project would have an
+    // origin and still look like it had none (#1213).
+    project.git = readGitFacts(project.path);
+
     if (created) {
       runTx(() => {
         appendEvent({
@@ -1210,6 +1216,22 @@ function refreshProjectGitFacts(project) {
   if (Date.now() - last < GIT_FACTS_TTL_MS) return;
   _gitFactsRefreshedAt.set(project.id, Date.now());
   try { project.git = readGitFacts(project.path); } catch { /* keep the prior facts on a transient error */ }
+}
+
+// createProjectRecord seeds `git` with nulls and no `isRepo` — a placeholder that
+// means "never read", not "not a repo". Until something calls readGitFacts, the
+// two are indistinguishable, so a repo-backed project reads as having no remote
+// AND as not being a repo (#1213). addProject and cloneProject read the facts;
+// a project seeded into state at startup does not, and would stay a blank until
+// someone happened to browse its file tree.
+//
+// So: read once, for projects that have never been read. Keyed on `isRepo` being
+// absent, which is exactly the "never read" marker — a real non-repo comes back
+// isRepo:false and is not probed again. One-time per project, not per poll.
+export function backfillProjectGitFacts(projects = []) {
+  for (const project of projects) {
+    if (project?.git?.isRepo === undefined) refreshProjectGitFacts(project);
+  }
 }
 
 export function gitStatusMap(root, { fresh = false } = {}) {

@@ -98,6 +98,57 @@ export function ProjectsView() {
   );
 }
 
+// Where a project pushes, in one line. A `file://` remote IS a local repo — that
+// is the URL scheme, not a guess about who created it — so nothing on the server
+// has to carry a flag for this.
+export function originOf(project: ProjectSnapshot): "none" | "local" | "remote" | "not-a-repo" {
+  if (!project.git?.isRepo) return "not-a-repo";
+  const url = project.git.remoteUrl;
+  if (!url) return "none";
+  return url.startsWith("file://") ? "local" : "remote";
+}
+
+// Where this project pushes, and — when the answer is "nowhere" — the one click
+// that fixes it without an account.
+function OriginRow({ project }: { project: ProjectSnapshot }) {
+  const { execute, pending, error } = useAsyncAction();
+  const kind = originOf(project);
+  if (kind === "not-a-repo") return null;
+
+  return (
+    <div className="mt-1.5 flex items-center gap-2 text-xs">
+      {kind === "local" ? (
+        <span className="text-muted-foreground">Local repo · publishes on this device</span>
+      ) : kind === "remote" ? (
+        <span className="min-w-0 truncate text-muted-foreground" title={project.git?.remoteUrl ?? ""}>
+          Remote · {project.git?.remoteUrl}
+        </span>
+      ) : (
+        <>
+          {/* Said here rather than at publish time, where it currently surfaces as
+              "No 'origin' remote to publish to. Add a remote first." — too late,
+              and it reads as "go get a GitHub account". */}
+          <span className="text-amber-600 dark:text-amber-500">No origin · nowhere to publish yet</span>
+          <Button
+            variant="secondary"
+            size="sm"
+            disabled={pending}
+            onClick={() => void execute(() => api.createLocalOrigin(project.id))}
+            title="Create a bare repo on this device and point origin at it — no account anywhere"
+          >
+            {pending ? "Creating…" : "Create local repo"}
+          </Button>
+          {error ? (
+            <span className="min-w-0 truncate text-destructive" title={error}>
+              {error}
+            </span>
+          ) : null}
+        </>
+      )}
+    </div>
+  );
+}
+
 function ProjectRow({
   project,
   target,
@@ -145,7 +196,7 @@ function ProjectRow({
             </span>
           </span>
         </button>
-        <div className="flex items-center gap-2">
+        <div className="flex shrink-0 items-center gap-2">
           {target ? (
             <Button
               variant="secondary"
@@ -162,6 +213,10 @@ function ProjectRow({
           </Button>
         </div>
       </div>
+
+      {/* Its own row: the name is the thing that must stay readable, and three
+          buttons beside it truncated it to "s…" at 1440px (caught in visual QA). */}
+      <OriginRow project={project} />
 
       {target ? (
         <TargetBlock
