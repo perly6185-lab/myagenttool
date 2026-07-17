@@ -54,7 +54,7 @@ test("sweep posts once when due, dedupes the same period, and rolls nextRunAt fo
   const rt = createReportScheduleRuntime({
     state,
     now: () => "2026-07-17T12:00:00Z",
-    enqueueChannelDelivery: (d) => enqueued.push(d),
+    enqueueChannelDelivery: (d) => { enqueued.push(d); return { ok: true }; },
   });
   const first = rt.sweepReportSchedule();
   assert.equal(first.posted, true);
@@ -74,7 +74,7 @@ test("sweep is a no-op when disabled or unconfigured", () => {
   const enqueued = [];
   const state = stateWithRun();
   state.reportSchedule.enabled = false;
-  const rt = createReportScheduleRuntime({ state, now: () => "2026-07-17T12:00:00Z", enqueueChannelDelivery: (d) => enqueued.push(d) });
+  const rt = createReportScheduleRuntime({ state, now: () => "2026-07-17T12:00:00Z", enqueueChannelDelivery: (d) => { enqueued.push(d); return { ok: true }; } });
   assert.equal(rt.sweepReportSchedule().reason, "disabled");
   assert.equal(enqueued.length, 0);
 });
@@ -83,10 +83,49 @@ test("postReportNow ignores dedupe + schedule (for setup/testing)", () => {
   const enqueued = [];
   const state = stateWithRun();
   state.reportSchedule.lastPostedStartDate = "2099-01-01"; // would dedupe a scheduled post
-  const rt = createReportScheduleRuntime({ state, now: () => "2026-07-17T12:00:00Z", enqueueChannelDelivery: (d) => enqueued.push(d) });
+  const rt = createReportScheduleRuntime({ state, now: () => "2026-07-17T12:00:00Z", enqueueChannelDelivery: (d) => { enqueued.push(d); return { ok: true }; } });
   const r = rt.postReportNow();
   assert.equal(r.posted, true);
   assert.equal(enqueued.length, 1);
+});
+
+test("scheduled push defaults to the just-CLOSED period (coverage 'previous')", () => {
+  const enqueued = [];
+  const state = {
+    reportSchedule: { ...createDefaultReportSchedule(), enabled: true, channelId: "ch_1", conversationId: "cv_1", periodKey: "week" },
+    // A run merged last week (2026-07-08) and one this week (2026-07-16).
+    autoRuns: [
+      { id: "ar_last", status: "pr_open", prState: "MERGED", prNumber: 1, createdAt: "2026-07-08T00:00:00Z", updatedAt: "2026-07-08T00:00:00Z", prMergedAt: "2026-07-08T00:00:00Z" },
+      { id: "ar_this", status: "pr_open", prState: "MERGED", prNumber: 2, createdAt: "2026-07-16T00:00:00Z", updatedAt: "2026-07-16T00:00:00Z", prMergedAt: "2026-07-16T00:00:00Z" },
+    ],
+    refusalDailyStats: [],
+  };
+  assert.equal(state.reportSchedule.coverage, "previous"); // default
+  const rt = createReportScheduleRuntime({ state, now: () => "2026-07-17T12:00:00Z", enqueueChannelDelivery: (d) => { enqueued.push(d); return { ok: true }; } });
+  const r = rt.postReportNow();
+  assert.equal(r.posted, true);
+  assert.match(enqueued[0].content, /Last week/);
+  assert.match(enqueued[0].content, /Completed: 1/); // only last week's merge, not this week's
+});
+
+test("a rejected enqueue ({ok:false}) is NOT marked posted — no dedupe suppression, warns", () => {
+  const state = stateWithRun();
+  state.reportSchedule.nextRunAt = "2026-07-17T09:00:00Z";
+  const events = [];
+  const rt = createReportScheduleRuntime({
+    state,
+    now: () => "2026-07-17T12:00:00Z",
+    enqueueChannelDelivery: () => ({ ok: false, reason: "invalid_delivery" }),
+    appendEvent: (e) => events.push(e),
+  });
+  const r = rt.sweepReportSchedule();
+  assert.equal(r.posted, false);
+  assert.equal(r.reason, "invalid_delivery");
+  // Dedupe cursor NOT advanced → the period can still be posted once the target recovers.
+  assert.equal(state.reportSchedule.lastPostedStartDate, null);
+  // A failure is surfaced, and nextRunAt still rolled forward (no busy-loop).
+  assert.ok(events.some((e) => e.type === "work_report_post_failed"));
+  assert.ok(state.reportSchedule.nextRunAt > "2026-07-17T12:00:00Z");
 });
 
 test("setReportSchedule normalizes + arms nextRunAt only when enabled", () => {

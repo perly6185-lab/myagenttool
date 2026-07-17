@@ -15,10 +15,11 @@
 
 import { workBoard } from "../read-models/work-board.mjs";
 import { pendingDecisions } from "../read-models/pending-decisions.mjs";
-import { workReport, calendarPeriods } from "../read-models/work-report.mjs";
+import { workReport, calendarPeriods, periodSpec } from "../read-models/work-report.mjs";
 import { makeRunTx } from "../runtime/store/run-tx.mjs";
 
 const PERIOD_KEYS = new Set(["day", "week", "month", "quarter"]);
+const COVERAGES = new Set(["previous", "current"]);
 const CADENCES = new Set(["daily", "weekly"]);
 const CONTENT_LIMIT = 2000; // margin under the 2048 hard cap in channel-delivery
 
@@ -28,6 +29,10 @@ export function createDefaultReportSchedule() {
     channelId: null,
     conversationId: null,
     periodKey: "day",
+    // "previous" = the just-CLOSED period (yesterday / last week …) — what a
+    // scheduled push should summarize. "current" = period-to-date (near-empty
+    // right after the period rolls over).
+    coverage: "previous",
     cadence: "daily",
     weekday: 1, // 0=Sun..6=Sat; used when cadence === "weekly" (1 = Monday)
     time: "09:00", // HH:MM, server LOCAL time (mirrors the automation scheduler)
@@ -92,7 +97,7 @@ export function chunkContent(text, limit = CONTENT_LIMIT) {
 // Assemble the GLOBAL (unscoped) work report from raw state — the sweep has no
 // viewer, so it uses the full data and refusalsAvailable:true. Mirrors the
 // pipeline buildPublicState runs per-viewer.
-export function assembleGlobalWorkReport(state, nowMs) {
+export function assembleGlobalWorkReport(state, nowMs, periods = calendarPeriods(nowMs)) {
   const autoRuns = state.autoRuns ?? [];
   const pd = pendingDecisions({
     approvalRequests: state.approvalRequests ?? [],
@@ -111,8 +116,9 @@ export function assembleGlobalWorkReport(state, nowMs) {
     board,
     autoRuns,
     refusalDailyStats: state.refusalDailyStats ?? [],
+    refusalStatsSince: state.refusalStatsMeta?.since ?? null,
     refusalsAvailable: true,
-    periods: calendarPeriods(nowMs),
+    periods,
     now: nowMs,
   });
 }
@@ -135,29 +141,40 @@ export function createReportScheduleRuntime({ state, now, enqueueChannelDelivery
   // is returned as a reason, so the sweep tick and the route stay safe.
   function post(cfg, { force = false } = {}) {
     if (!cfg.channelId || !cfg.conversationId) return { posted: false, reason: "no_target" };
-    const nowIso = now();
-    const report = assembleGlobalWorkReport(state, Date.parse(nowIso));
-    const period = report.periods?.[cfg.periodKey];
-    if (!period) return { posted: false, reason: "no_report" };
-    if (!force && cfg.lastPostedStartDate === period.startDate) return { posted: false, reason: "already_posted" };
-    const chunks = chunkContent(period.markdown);
+    let period;
     try {
-      for (const content of chunks) {
-        enqueueChannelDelivery({ channelId: cfg.channelId, conversationId: cfg.conversationId, content });
-      }
+      const nowIso = now();
+      const nowMs = Date.parse(nowIso);
+      // Build ONLY the configured period at the configured coverage — a scheduled
+      // push defaults to the just-closed period ("previous"), not the near-empty
+      // period-to-date.
+      const spec = periodSpec(nowMs, cfg.periodKey, cfg.coverage ?? "previous");
+      const report = spec ? assembleGlobalWorkReport(state, nowMs, [spec]) : null;
+      period = report?.periods?.[cfg.periodKey];
+      if (!period) return { posted: false, reason: "no_report" };
+      if (!force && cfg.lastPostedStartDate === period.startDate) return { posted: false, reason: "already_posted" };
+      const chunks = chunkContent(period.markdown);
+      // enqueueChannelDelivery returns {ok:false} (does NOT throw) on a stale/
+      // mismatched target — honor it, or we would mark the period posted with
+      // nothing queued and dedupe would suppress it forever.
+      const results = chunks.map((content) => enqueueChannelDelivery({ channelId: cfg.channelId, conversationId: cfg.conversationId, content }));
+      const okCount = results.filter((r) => r?.ok).length;
+      if (okCount === 0) return { posted: false, reason: results[0]?.reason ?? "enqueue_failed" };
+      cfg.lastPostedStartDate = period.startDate;
+      cfg.lastPostedAt = nowIso;
+      appendEvent({
+        invocationId: null,
+        type: "work_report_posted",
+        level: "info",
+        message: `Posted the ${period.label} work report to channel ${cfg.channelId}.`,
+        data: { channelId: cfg.channelId, periodKey: cfg.periodKey, startDate: period.startDate, chunks: okCount, ofChunks: chunks.length },
+      });
+      return { posted: true, chunks: okCount, startDate: period.startDate, label: period.label };
     } catch (error) {
-      return { posted: false, reason: "enqueue_failed", error: String(error?.message ?? error) };
+      // Never throw: a malformed-state assemble error must not propagate and
+      // stall the sweep's nextRunAt roll-forward (which would busy-loop).
+      return { posted: false, reason: "error", error: String(error?.message ?? error) };
     }
-    cfg.lastPostedStartDate = period.startDate;
-    cfg.lastPostedAt = nowIso;
-    appendEvent({
-      invocationId: null,
-      type: "work_report_posted",
-      level: "info",
-      message: `Posted the ${period.label} work report to channel ${cfg.channelId}.`,
-      data: { channelId: cfg.channelId, periodKey: cfg.periodKey, startDate: period.startDate, chunks: chunks.length },
-    });
-    return { posted: true, chunks: chunks.length, startDate: period.startDate, label: period.label };
   }
 
   // Slow-tick sweep: post when the schedule is due, then always roll nextRunAt
@@ -170,6 +187,18 @@ export function createReportScheduleRuntime({ state, now, enqueueChannelDelivery
     if (!cfg.nextRunAt || Date.parse(nowIso) < Date.parse(cfg.nextRunAt)) return { posted: false, reason: "not_due" };
     return runTx(() => {
       const result = post(cfg);
+      // A due post that didn't land (stale target, assemble error) is skipped to
+      // the next period — surface it so a persistently-broken schedule is visible
+      // instead of silently dropping every report. "already_posted" is not a fault.
+      if (!result.posted && result.reason !== "already_posted") {
+        appendEvent({
+          invocationId: null,
+          type: "work_report_post_failed",
+          level: "warn",
+          message: `Scheduled work report was not posted (${result.reason}).`,
+          data: { channelId: cfg.channelId, periodKey: cfg.periodKey, reason: result.reason },
+        });
+      }
       cfg.nextRunAt = computeReportNextRun(nowIso, cfg);
       cfg.updatedAt = nowIso;
       return result;
@@ -195,6 +224,7 @@ export function createReportScheduleRuntime({ state, now, enqueueChannelDelivery
         channelId: "channelId" in patch ? (patch.channelId || null) : cur.channelId,
         conversationId: "conversationId" in patch ? (patch.conversationId || null) : cur.conversationId,
         periodKey: PERIOD_KEYS.has(patch.periodKey) ? patch.periodKey : cur.periodKey,
+        coverage: COVERAGES.has(patch.coverage) ? patch.coverage : (cur.coverage ?? "previous"),
         cadence: CADENCES.has(patch.cadence) ? patch.cadence : cur.cadence,
         weekday: patch.weekday != null ? clampInt(patch.weekday, 0, 6, cur.weekday) : cur.weekday,
         time: patch.time != null ? normalizeTime(patch.time, cur.time) : cur.time,

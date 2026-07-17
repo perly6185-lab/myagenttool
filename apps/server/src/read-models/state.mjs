@@ -340,14 +340,19 @@ export function buildPublicState({
   // Work report — day / week / month / quarter rollups over the same board.
   // Windows are calendar-aligned in UTC (start of today / ISO-week Monday /
   // month-1st / quarter-start). Runs come from the (team-scoped) auto-run
-  // snapshot; refusals from the durable per-day rollup, gated to unscoped
-  // viewers since that rollup carries no per-team attribution.
+  // snapshot; refusals from the durable per-day rollup, shown only to the
+  // admin/local scope since that rollup carries no per-team attribution.
+  // `teamId == null` alone is unreachable in a live server (resolveActor always
+  // stamps a team, defaulting to LOCAL_TEAM_ID) — the local owner IS team_local,
+  // so the admin scope must include it or the figures never render for anyone.
+  const isAdminScope = teamId == null || teamId === LOCAL_TEAM_ID;
   const workReportPeriods = calendarPeriods(digestNow);
   const workReportSummary = workReport({
     board: workStatusBoard,
     autoRuns,
     refusalDailyStats: state.refusalDailyStats ?? [],
-    refusalsAvailable: teamId == null,
+    refusalStatsSince: state.refusalStatsMeta?.since ?? null,
+    refusalsAvailable: isAdminScope,
     periods: workReportPeriods,
     now: digestNow,
   });
@@ -497,9 +502,10 @@ export function buildPublicState({
     workBoard: workStatusBoard,
     workReport: workReportSummary,
     // Scheduled-report config is a single global admin-plane singleton (it names a
-    // channel target) — expose it only to an unscoped/local viewer, like the
-    // report's own refusal figures.
-    reportSchedule: teamId == null ? state.reportSchedule ?? null : null,
+    // channel target) — expose it to the admin/local scope (which the local owner
+    // belongs to), like the report's own refusal figures. A genuine foreign tenant
+    // still gets null.
+    reportSchedule: isAdminScope ? state.reportSchedule ?? null : null,
     codexImportedEvidenceRecords: visibleImported,
     terminalRuntimeCapability: state.terminalRuntimeCapability,
     terminalSessions,

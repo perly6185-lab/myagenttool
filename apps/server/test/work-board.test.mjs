@@ -21,6 +21,14 @@ test("auto-runs sort into the lifecycle lenses by status", () => {
   assert.equal(states.failed.count, 1);
 });
 
+test("a cancelled run is terminal (done lens), never nagging in waiting", () => {
+  const autoRuns = [{ id: "ar_cancel", status: "cancelled", link: { number: 9, title: "Aborted" }, updatedAt: "2026-07-17T10:00:00Z" }];
+  const { states } = workBoard({ autoRuns, now: NOW });
+  assert.equal(states.waiting.count, 0);
+  assert.equal(states.done.count, 1);
+  assert.equal(states.done.items[0].targetId, "ar_cancel");
+});
+
 test("pr_open resolves by PR state: open → waiting, merged → done", () => {
   const autoRuns = [
     { id: "ar_open", status: "pr_open", prState: "OPEN", prNumber: 10, updatedAt: "2026-07-17T10:00:00Z" },

@@ -5,8 +5,10 @@
 // for any window, so ONLY refusals need this durable rollup — one small row per
 // day, summed by weekly/monthly/quarterly reports.
 //
-// Written at the refuse() chokepoint, BEFORE the 200-cap can evict anything, so
-// every veto is counted exactly once regardless of retention.
+// Written at the refuse() chokepoint, once per veto. The count lives in its own
+// durable array, INDEPENDENT of the 200-row cap on state.refusals — so eviction
+// there never under- or double-counts a day's total (the ordering relative to
+// the cap does not matter; the counter is not derived from the capped array).
 
 const MAX_STAT_DAYS = 120; // a quarter (~90d) + margin; one row/day, bounded
 
@@ -27,6 +29,9 @@ export function recordRefusalDailyStat(state, atIso, category) {
   if (!Array.isArray(state.refusalDailyStats)) state.refusalDailyStats = [];
   const date = utcDate(atIso);
   if (!date) return;
+  // Anchor the recording-start date the first time we ever record (a defensive
+  // fallback; state-factory normally seeds it at boot). Never moved once set.
+  if (!state.refusalStatsMeta?.since) state.refusalStatsMeta = { since: date };
   let row = state.refusalDailyStats.find((r) => r.date === date);
   if (!row) {
     row = { date, total: 0, byCategory: {} };

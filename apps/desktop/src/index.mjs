@@ -13,6 +13,8 @@ import { probeContainerRuntime, runContainerAgent } from "./container-client.mjs
 import { codexResumeArgs } from "./codex-resume.mjs";
 import { extractClaudeFileAccesses } from "./claude-file-access.mjs";
 import { newRoundState, claudeRoundEmits, codexRoundEmits } from "./round-telemetry.mjs";
+import { createAgentLineSink } from "./agent-line-sink.mjs";
+import { createInvocationPool, resolveBridgeConcurrency } from "./invocation-pool.mjs";
 import { applicationWrapperArgs } from "./application-wrapper-args.mjs";
 import { collectApplicationBinaryReadiness } from "./application-binary-readiness.mjs";
 import { collectApplicationCredentialReadiness } from "./application-credential-readiness.mjs";
@@ -327,7 +329,13 @@ if (process.argv.includes("--check")) {
   process.exit(0);
 }
 
-let busy = false;
+// #1242: `polling` guards the poll TICK against re-entry (the claim round trips),
+// NOT the runs themselves — invocations run concurrently in invocationPool up to
+// the server's cap. `auxBusy` keeps aux work (health/discovery/probe/lifecycle/
+// install) single-flight while letting it interleave with in-flight invocations,
+// which the old single `busy` flag blocked.
+let polling = false;
+let auxBusy = false;
 let terminalBusy = false;
 let stopped = false;
 const terminalSessions = new Map();
@@ -375,6 +383,26 @@ if (registration?.bridgeToken) {
 }
 console.log(`[desktop] registered with ${serverUrl}`);
 
+// Cross-worktree concurrency: honor the server's authoritative cap (echoed on
+// the register response), falling back to env then a default. The server stays
+// the hard limit — it 204s past its own cap or the per-worktree lock — so this
+// is the bridge's own ceiling on parallel children. Read once at register time;
+// a live change in the Devices UI applies after the bridge re-registers (#1242).
+const bridgeConcurrency = resolveBridgeConcurrency({
+  serverMaxConcurrency: registration?.device?.maxConcurrency,
+  envValue: process.env.BRIDGE_MAX_CONCURRENT,
+});
+console.log(`[desktop] invocation concurrency: ${bridgeConcurrency}`);
+const invocationPool = createInvocationPool({
+  cap: bridgeConcurrency,
+  claim: () => request("GET", "/api/bridge/next"),
+  run: (work) => runInvocation(work),
+  // runInvocation self-reports every terminal outcome; a reject here is an
+  // unexpected bug in the runner itself — log it and free the slot (the pool's
+  // finally already decremented), never crash the poll loop.
+  onError: (error) => logPollError("invocation", error),
+});
+
 // A transient server blip — e.g. ECONNRESET while the API restarts — must never
 // escape a poll tick as an unhandled rejection: the dev supervisor tears down the
 // whole stack when any child exits non-zero, so one dropped fetch would take the
@@ -405,76 +433,54 @@ guarded(pollTerminal, "terminal")();
 const terminalTimer = setInterval(guarded(pollTerminal, "terminal"), terminalPollIntervalMs);
 const binaryReadinessTimer = setInterval(guarded(refreshApplicationBinaryReadiness, "binary readiness"), binaryReadinessIntervalMs);
 
+// Aux (non-invocation) work: still single-flight, but decoupled from
+// invocations so a long run no longer starves health/discovery. Tried in order;
+// the first route with work wins the tick. Each runner self-reports its own
+// terminal state to the server.
+const AUX_ROUTES = [
+  ["/api/bridge/health-next", (work) => runHealthCheck(work)],
+  ["/api/bridge/discovery-next", (work) => runDiscovery(work)],
+  ["/api/bridge/probe-next", (work) => runIntegrationProbe(work)],
+  ["/api/bridge/lifecycle-next", (work) => runLifecycleAction(work)],
+  ["/api/bridge/application-install-next", (work) => runApplicationInstall(work)],
+];
+
+async function pumpAux() {
+  if (auxBusy) {
+    return;
+  }
+  for (const [path, runner] of AUX_ROUTES) {
+    const work = await request("GET", path);
+    if (!work) {
+      continue;
+    }
+    // Launch in the background and free the tick — like invocations, aux work
+    // must not block the poll loop (an install can take minutes).
+    auxBusy = true;
+    Promise.resolve()
+      .then(() => runner(work))
+      .catch((error) => logPollError("aux", error))
+      .finally(() => {
+        auxBusy = false;
+      });
+    return;
+  }
+}
+
 async function poll() {
-  if (busy || stopped) {
+  if (polling || stopped) {
     return;
   }
-
-  const response = await request("GET", "/api/bridge/next");
-  if (response) {
-    busy = true;
-    try {
-      await runInvocation(response);
-    } finally {
-      busy = false;
-    }
-    return;
+  polling = true;
+  try {
+    // Fill the invocation pool up to the cap (the server 204s past its own
+    // limit / the per-worktree lock), then give aux work a turn. Neither awaits
+    // the actual runs — only the claim round trips — so the tick stays short.
+    await invocationPool.fill();
+    await pumpAux();
+  } finally {
+    polling = false;
   }
-
-  const healthWork = await request("GET", "/api/bridge/health-next");
-  if (healthWork) {
-    busy = true;
-    try {
-      await runHealthCheck(healthWork);
-    } finally {
-      busy = false;
-    }
-    return;
-  }
-
-  const discoveryWork = await request("GET", "/api/bridge/discovery-next");
-  if (discoveryWork) {
-    busy = true;
-    try {
-      await runDiscovery(discoveryWork);
-    } finally {
-      busy = false;
-    }
-    return;
-  }
-
-  const probeWork = await request("GET", "/api/bridge/probe-next");
-  if (probeWork) {
-    busy = true;
-    try {
-      await runIntegrationProbe(probeWork);
-    } finally {
-      busy = false;
-    }
-    return;
-  }
-
-  const lifecycleWork = await request("GET", "/api/bridge/lifecycle-next");
-  if (lifecycleWork) {
-    busy = true;
-    try {
-      await runLifecycleAction(lifecycleWork);
-    } finally {
-      busy = false;
-    }
-    return;
-  }
-
-  const installWork = await request("GET", "/api/bridge/application-install-next");
-  if (installWork) {
-    busy = true;
-    try {
-      await runApplicationInstall(installWork);
-    } finally {
-      busy = false;
-    }
-  }
-
 }
 
 async function runApplicationInstall(work) {
@@ -856,8 +862,6 @@ async function runInvocation(work) {
 
   let finalResult = null;
   let cancelled = false;
-  let stdoutBuffer = "";
-  let stderrBuffer = "";
   let cancelResult = null;
   let timedOut = false;
   let spawnError = null;
@@ -1041,29 +1045,32 @@ async function runInvocation(work) {
     }
   }, 250);
 
-  child.stdout.on("data", (chunk) => {
-    stdoutBuffer += chunk.toString("utf8");
-    const lines = stdoutBuffer.split(/\r?\n/);
-    stdoutBuffer = lines.pop() ?? "";
-    for (const line of lines) {
-      handleAgentLine(invocationId, line, adapter, roundState).then((result) => {
-        if (result) {
-          finalResult = result;
-        }
-      });
-    }
-  });
-
-  child.stderr.on("data", (chunk) => {
-    stderrBuffer += chunk.toString("utf8");
-    const lines = stderrBuffer.split(/\r?\n/);
-    stderrBuffer = lines.pop() ?? "";
-    for (const line of lines) {
-      if (line.trim()) {
-        emitAgentStderrLine(invocationId, adapter, line);
+  // #1228: line handling is serialized and drained before any outcome is
+  // reported. The jsonl handlers await event posts BEFORE returning the
+  // terminal result, and the CLI's normal behavior is to print that result
+  // line and exit immediately — fire-and-forget here let `close` win the
+  // race, completing the run with finalResult still null (summary degraded,
+  // usage/cost lost) and landing line events after invocation_completed.
+  const stdoutSink = createAgentLineSink(
+    async (line) => {
+      const result = await handleAgentLine(invocationId, line, adapter, roundState);
+      if (result) {
+        finalResult = result;
       }
-    }
-  });
+    },
+    { onError: (error, line) => console.error(`[desktop] ${invocationId} stdout line handling failed (continuing): ${error instanceof Error ? error.message : String(error)} — line: ${String(line).slice(0, 200)}`) },
+  );
+  const stderrSink = createAgentLineSink(
+    async (line) => {
+      if (line.trim()) {
+        await emitAgentStderrLine(invocationId, adapter, line);
+      }
+    },
+    { onError: (error) => console.error(`[desktop] ${invocationId} stderr line handling failed (continuing): ${error instanceof Error ? error.message : String(error)}`) },
+  );
+
+  child.stdout.on("data", (chunk) => stdoutSink.push(chunk));
+  child.stderr.on("data", (chunk) => stderrSink.push(chunk));
 
   child.on("error", (error) => {
     spawnError = error;
@@ -1079,15 +1086,10 @@ async function runInvocation(work) {
   // diff does not linger in the shared temp directory.
   cleanupApplyPatchFile(spawnPlan.args);
 
-  if (stdoutBuffer.trim()) {
-    const result = await handleAgentLine(invocationId, stdoutBuffer.trim(), adapter, roundState);
-    if (result) {
-      finalResult = result;
-    }
-  }
-  if (stderrBuffer.trim()) {
-    await emitAgentStderrLine(invocationId, adapter, stderrBuffer);
-  }
+  // Drain both sinks (residual partial line included) so finalResult is
+  // settled and no agent line event can land after the terminal report below.
+  await stdoutSink.flush();
+  await stderrSink.flush();
 
   if (timedOut) {
     const forcedNote = cancelResult?.message ? ` ${cancelResult.message}` : "";
