@@ -2,6 +2,8 @@ import { LOCAL_TEAM_ID, teamOf } from "../runtime/auth.mjs";
 import { publicDeviceView } from "../runtime/bridge-auth.mjs";
 import { channelOperations } from "./channels.mjs";
 import { pendingDecisions } from "./pending-decisions.mjs";
+import { workBoard } from "./work-board.mjs";
+import { dailyDigest } from "./daily-digest.mjs";
 import { evidenceLedger } from "./evidence-ledger.mjs";
 import { scheduleHealthReadModel } from "./schedule-health.mjs";
 
@@ -322,6 +324,32 @@ export function buildPublicState({
     decisionSoftClaims,
   });
 
+  // The Status board (#1215-follow-up): six lenses over the same team-scoped
+  // locals — 待决策 reuses pendingDecisionQueue verbatim, the lifecycle lenses
+  // classify auto-runs, 要跟进 rolls up failed runs + recent refusals. Pure and
+  // derived, so it inherits tenancy like everything else here.
+  const digestNow = Date.now();
+  const visibleRefusals = byInvocation(state.refusals);
+  const workStatusBoard = workBoard({
+    autoRuns,
+    pendingDecisions: pendingDecisionQueue,
+    refusals: visibleRefusals,
+    now: digestNow,
+  });
+
+  // Today's digest — "what moved today, where we stand, what's aging". Window is
+  // the start of the current UTC day (matches the digest's own UTC date label);
+  // reuses the board just built so standing counts can't drift from it.
+  const dayStart = new Date(digestNow);
+  dayStart.setUTCHours(0, 0, 0, 0);
+  const workDailyDigest = dailyDigest({
+    board: workStatusBoard,
+    autoRuns,
+    refusals: visibleRefusals,
+    windowStart: dayStart.getTime(),
+    now: digestNow,
+  });
+
   // Per-run trust ledger (the Evidence section). Scope the Codex/terminal evidence
   // aggregate ONCE and reuse it for both the ledger and the snapshot emit below.
   const evidenceCenterVisible = evidenceCenterRecords().filter((r) =>
@@ -464,6 +492,8 @@ export function buildPublicState({
     refusals: byInvocation(state.refusals),
     codexApprovalBrokerRequests,
     pendingDecisions: pendingDecisionQueue,
+    workBoard: workStatusBoard,
+    dailyDigest: workDailyDigest,
     codexImportedEvidenceRecords: visibleImported,
     terminalRuntimeCapability: state.terminalRuntimeCapability,
     terminalSessions,
