@@ -42,3 +42,22 @@ test("ledgerSummary rolls spend up by model", () => {
   const haiku = summary.byModel.find((row) => row.model === "claude-haiku-4-5");
   assert.equal(haiku.knownCostUsd, 1);
 });
+
+test("ledgerSummary rolls a whole auto-run's spend up (agent_run_cost_total)", () => {
+  const { state } = createServerState({ defaultProjectPath: PROJECT_DIR, now });
+  state.projects = [{ id: "proj_a", name: "A", path: PROJECT_DIR, ownerTeamId: "team_a" }];
+  const m3 = m3For(state);
+  // Two invocations of the SAME auto-run (develop + a repair), plus one manual
+  // invocation with no autoRunId that must NOT land in any run's total.
+  const inRun = (id) => ({ id, createdAt: now(), agentId: "agt_1", requestedBy: "usr_1", input: { metadata: { autoRunId: "aur_42", projectId: "proj_a" } } });
+  m3.recordInvocationLedgerEntry({ invocation: inRun("inv_d"), cost: { amountUsd: 4, currency: "USD", model: "m", billable: true } });
+  m3.recordInvocationLedgerEntry({ invocation: inRun("inv_r"), cost: { amountUsd: 2, currency: "USD", model: "m", billable: true } });
+  m3.recordInvocationLedgerEntry({ invocation: { id: "inv_manual", createdAt: now(), requestedBy: "usr_1", input: { metadata: { projectId: "proj_a" } } }, cost: { amountUsd: 9, currency: "USD", model: "m", billable: true } });
+
+  const summary = m3.ledgerSummary();
+  assert.equal(summary.byAutoRun.length, 1, "manual spend (no autoRunId) is not a run bucket");
+  const run = summary.byAutoRun[0];
+  assert.equal(run.autoRunId, "aur_42");
+  assert.equal(run.entries, 2);
+  assert.equal(run.knownCostUsd, 6, "develop + repair summed as the run's total");
+});

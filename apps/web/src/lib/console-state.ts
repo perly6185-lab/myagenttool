@@ -769,6 +769,14 @@ export interface LedgerModelRollup {
   unknownEntries: number;
 }
 
+export interface LedgerAutoRunRollup {
+  autoRunId: string;
+  entries: number;
+  knownCostUsd: number;
+  estimatedCostUsd: number;
+  unknownEntries: number;
+}
+
 export interface LedgerSummary {
   currency: string;
   totalCostUsd: number;
@@ -784,6 +792,7 @@ export interface LedgerSummary {
   byProject: LedgerProjectRollup[];
   byAgent: LedgerAgentRollup[];
   byModel: LedgerModelRollup[];
+  byAutoRun: LedgerAutoRunRollup[];
 }
 
 export interface ProjectSnapshot {
