@@ -251,6 +251,18 @@ if (typeof httpDependencies.sweepAutoRunSloAlerts === "function") {
   }, 60_000).unref?.();
 }
 
+// ADR 0017: opt-in OTLP trace export. Flush completed spans to the operator-set
+// OTLP endpoint on a slow tick. No-op unless OTEL_EXPORTER_OTLP_ENDPOINT is set.
+if (typeof httpDependencies.flushTraceExport === "function") {
+  setInterval(() => {
+    try {
+      httpDependencies.flushTraceExport();
+    } catch {
+      /* best-effort trace export */
+    }
+  }, 60_000).unref?.();
+}
+
 // Risk-based merge (opt-in): sweep open PRs on a slow tick and auto-merge the
 // low-risk ones. No-op unless the operator enabled autoMergeLowRisk; respects
 // the kill switch + breaker internally.
