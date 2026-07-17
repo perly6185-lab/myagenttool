@@ -7,14 +7,33 @@ import { Input, Select } from "@/components/ui/input";
 import { Modal } from "@/components/ui/modal";
 import { api, type ObservabilityDeletionResult } from "@/lib/api-client";
 
+export interface SubjectOption {
+  id: string;
+  label: string;
+}
+
+export type SubjectOptionsByScope = Partial<Record<"user" | "team" | "device", SubjectOption[]>>;
+
 // ADR 0018 console affordance: an owner/admin erases a subject's observability
 // data. Irreversible, so it goes through a typed confirm. The server enforces the
 // owner gate (403) and the shielded-safe erase; this UI just drives it and shows
-// the result.
-export function ObservabilityDeletionCard() {
-  const [scope, setScope] = useState("user");
+// the result. `subjects` supplies pick-from-list options per scope; when a scope
+// has no known subjects the field falls back to a free-text id input.
+export function ObservabilityDeletionCard({ subjects }: { subjects?: SubjectOptionsByScope } = {}) {
+  const [scope, setScope] = useState<"user" | "team" | "device">("user");
   const [subjectId, setSubjectId] = useState("");
   const [tier, setTier] = useState("operational");
+
+  const options = subjects?.[scope] ?? [];
+
+  // Switching scope invalidates the current subject: default to the first known
+  // subject of the new scope, else clear for the free-text fallback.
+  function changeScope(next: "user" | "team" | "device") {
+    setScope(next);
+    setSubjectId((subjects?.[next] ?? [])[0]?.id ?? "");
+    setResult(null);
+    setError(null);
+  }
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [pending, setPending] = useState(false);
   const [result, setResult] = useState<ObservabilityDeletionResult | null>(null);
@@ -57,19 +76,33 @@ export function ObservabilityDeletionCard() {
         <div className="grid gap-3 sm:grid-cols-3">
           <label className="space-y-1 text-sm">
             <span className="text-muted-foreground">Scope</span>
-            <Select value={scope} onChange={(event) => setScope(event.target.value)}>
+            <Select
+              value={scope}
+              onChange={(event) => changeScope(event.target.value as "user" | "team" | "device")}
+            >
               <option value="user">User</option>
               <option value="team">Team</option>
               <option value="device">Device</option>
             </Select>
           </label>
           <label className="space-y-1 text-sm sm:col-span-2">
-            <span className="text-muted-foreground">Subject id</span>
-            <Input
-              value={subjectId}
-              onChange={(event) => setSubjectId(event.target.value)}
-              placeholder="usr_… / team_… / dev_…"
-            />
+            <span className="text-muted-foreground">Subject</span>
+            {options.length > 0 ? (
+              <Select value={subjectId} onChange={(event) => setSubjectId(event.target.value)}>
+                <option value="">Select a {scope}…</option>
+                {options.map((option) => (
+                  <option key={option.id} value={option.id}>
+                    {option.label}
+                  </option>
+                ))}
+              </Select>
+            ) : (
+              <Input
+                value={subjectId}
+                onChange={(event) => setSubjectId(event.target.value)}
+                placeholder="usr_… / team_… / dev_…"
+              />
+            )}
           </label>
         </div>
         <div className="flex flex-wrap items-end justify-between gap-3">
