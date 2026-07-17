@@ -3,7 +3,7 @@ import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import { test } from "node:test";
 import { createApplicationInstallPlan } from "../../server/src/services/application-install-plans.mjs";
-import { resolveApplicationInstallSpawnPlan, runApprovedApplicationInstall } from "../src/application-installer.mjs";
+import { resolveApplicationInstallSpawnPlan, runApprovedApplicationInstall, setPolkitProbeForTests } from "../src/application-installer.mjs";
 
 const nodePlatform = { windows: "win32", macos: "darwin", linux: "linux" };
 const device = (platform) => ({ id: `dev_${platform}`, name: platform, platform, architecture: "x64" });
@@ -194,3 +194,95 @@ function fakeChild() {
   child.kill = () => true;
   return child;
 }
+
+// --- #994 / ADR 0015: the Linux elevation broker ---
+
+test("adr0015: the mirrored Linux git plan spawns through pkexec with the exact wrapped argv", () => {
+  setPolkitProbeForTests(() => true);
+  try {
+    const plan = createApplicationInstallPlan({ name: "git" }, { device: { id: "dev_linux", name: "linux device", platform: "linux", architecture: "x64" }, now: () => "2026-07-14T09:00:00.000Z" });
+    const spawnPlan = resolveApplicationInstallSpawnPlan(plan, { platform: "linux", now: () => Date.parse("2026-07-14T09:01:00.000Z") });
+    assert.ok(spawnPlan && !spawnPlan.refusal, "the mirrored elevated plan is accepted");
+    assert.equal(spawnPlan.command, "/usr/bin/pkexec");
+    assert.deepEqual(spawnPlan.args, ["apt-get", "install", "--yes", "git"], "pkexec wraps exactly the mirrored argv");
+    assert.equal(spawnPlan.elevated, true);
+    assert.equal(spawnPlan.elevation.mechanism, "polkit-pkexec");
+  } finally {
+    setPolkitProbeForTests(null);
+  }
+});
+
+test("adr0015: polkit absent -> a coded pre-privilege refusal, never an opaque spawn failure", async () => {
+  setPolkitProbeForTests(() => false);
+  try {
+    const plan = createApplicationInstallPlan({ name: "git" }, { device: { id: "dev_linux", name: "linux device", platform: "linux", architecture: "x64" }, now: () => "2026-07-14T09:00:00.000Z" });
+    const result = await runApprovedApplicationInstall({
+      plan,
+      platform: "linux",
+      now: () => Date.parse("2026-07-14T09:01:00.000Z"),
+      spawnProcess: () => { throw new Error("must never spawn without polkit"); },
+    });
+    assert.equal(result.status, "refused");
+    assert.equal(result.classification, "elevation_unavailable");
+    assert.match(result.summary, /pkexec/);
+  } finally {
+    setPolkitProbeForTests(null);
+  }
+});
+
+test("adr0015: elevation expectations are exact in BOTH directions", () => {
+  setPolkitProbeForTests(() => true);
+  try {
+    const linuxDevice = { id: "dev_linux", name: "linux device", platform: "linux", architecture: "x64" };
+    const winDevice = { id: "dev_windows", name: "windows device", platform: "windows", architecture: "x64" };
+    const fixedNow = () => "2026-07-14T09:00:00.000Z";
+    const resolveAt = { now: () => Date.parse("2026-07-14T09:01:00.000Z") };
+
+    // A de-elevated Linux git plan (tampered) is refused.
+    const linuxPlan = createApplicationInstallPlan({ name: "git" }, { device: linuxDevice, now: fixedNow });
+    assert.equal(resolveApplicationInstallSpawnPlan({ ...linuxPlan, execution: { ...linuxPlan.execution, elevated: false } }, { platform: "linux", ...resolveAt }), null);
+
+    // An elevated plan for an unelevated recipe (windows git) is refused.
+    const winPlan = createApplicationInstallPlan({ name: "git" }, { device: winDevice, now: fixedNow });
+    assert.equal(resolveApplicationInstallSpawnPlan({ ...winPlan, execution: { ...winPlan.execution, elevated: true } }, { platform: "windows", ...resolveAt }), null);
+
+    // The untampered windows plan still resolves unelevated.
+    const winSpawn = resolveApplicationInstallSpawnPlan(winPlan, { platform: "windows", ...resolveAt });
+    assert.ok(winSpawn && !winSpawn.refusal);
+    assert.equal(winSpawn.elevated, false);
+    assert.equal(winSpawn.command, "winget");
+  } finally {
+    setPolkitProbeForTests(null);
+  }
+});
+
+test("adr0015: every outcome of an elevated run is audited as elevated", async () => {
+  setPolkitProbeForTests(() => true);
+  try {
+    const plan = createApplicationInstallPlan({ name: "git" }, { device: { id: "dev_linux", name: "linux device", platform: "linux", architecture: "x64" }, now: () => "2026-07-14T09:00:00.000Z" });
+    const child = new EventEmitter();
+    child.stdout = new PassThrough();
+    child.stderr = new PassThrough();
+    child.kill = () => true;
+    const result = await (async () => {
+      const promise = runApprovedApplicationInstall({
+        plan,
+        platform: "linux",
+        now: () => Date.parse("2026-07-14T09:01:00.000Z"),
+        spawnProcess: (command, args) => {
+          assert.equal(command, "/usr/bin/pkexec");
+          assert.equal(args[0], "apt-get");
+          queueMicrotask(() => child.emit("exit", 1, null)); // provider failed
+          return child;
+        },
+      });
+      return promise;
+    })();
+    assert.equal(result.elevated, true, "the failure is audited AS elevated");
+    assert.equal(result.elevation.mechanism, "polkit-pkexec");
+    assert.equal(result.elevation.wrappedExecutable, "apt-get");
+    assert.notEqual(result.status, "succeeded");
+  } finally {
+    setPolkitProbeForTests(null);
+  }
+});
