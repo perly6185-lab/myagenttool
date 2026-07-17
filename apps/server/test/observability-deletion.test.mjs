@@ -113,6 +113,35 @@ test("deletion is idempotent — a second run changes nothing and still audits",
   assert.equal(events.filter((e) => e.type === "observability_data_deleted").length, 2);
 });
 
+test("a scoped actor can only delete its OWN team's data (cross-tenant is a no-op)", () => {
+  const s = baseState();
+  const actorA = { userId: "usr_a_owner", teamId: "team_a", role: "owner" };
+  // usr_2's invocation inv_u2 is on proj_b / team_b — out of team_a's reach.
+  const result = deleteObservabilityData(s, { scope: "user", subjectId: "usr_2", tier: "full", now, actor: actorA });
+  assert.equal(result.invocationCount, 0, "no team_b invocation is in scope for a team_a actor");
+  assert.equal(s.invocationRounds.find((r) => r.id === "r2").requestDigest, "other", "team_b content untouched");
+  assert.deepEqual(s.events.map((e) => e.id), ["e1", "e2"], "team_b events untouched");
+});
+
+test("team scope with a foreign teamId deletes nothing", () => {
+  const s = baseState();
+  const actorA = { userId: "usr_a_owner", teamId: "team_a", role: "owner" };
+  const result = deleteObservabilityData(s, { scope: "team", subjectId: "team_b", tier: "full", now, actor: actorA });
+  assert.equal(result.invocationCount, 0);
+  assert.equal(s.traces.length, 2, "team_b telemetry untouched");
+});
+
+test("a scoped actor deletes its own team's subject, and the audit records who deleted", () => {
+  const s = baseState();
+  const events = [];
+  const actorA = { userId: "usr_a_owner", teamId: "team_a", role: "owner" };
+  const result = deleteObservabilityData(s, { scope: "user", subjectId: "usr_1", tier: "operational", now, appendEvent: (e) => events.push(e), actor: actorA });
+  assert.equal(result.invocationCount, 1, "team_a's own invocation is in scope");
+  assert.equal(s.invocationRounds.find((r) => r.id === "r1").requestDigest, null, "own content erased");
+  const audit = events.find((e) => e.type === "observability_data_deleted");
+  assert.equal(audit.data.deletedBy, "usr_a_owner", "the deleting actor is recorded");
+});
+
 test("deletion is owner-gated", () => {
   assert.equal(canDeleteObservabilityData({ role: "owner" }), true);
   assert.equal(canDeleteObservabilityData({ role: "admin" }), true);

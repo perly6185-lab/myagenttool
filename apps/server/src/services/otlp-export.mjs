@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 
-import { redactDigest } from "./round-telemetry.mjs";
+import { digestHasSecret } from "./round-telemetry.mjs";
 
 /*
  * ADR 0017 — zero-dependency OTLP/HTTP JSON trace export. Serializes the existing
@@ -37,12 +37,13 @@ function otlpStatus(status) {
 }
 
 // ADR 0017 invariant 4: a span attribute must never carry redactable content.
-// redactDigest returns the value unchanged when it holds no secret/PII; if it
-// changes, the value would leak — refuse to export that attribute (drop it),
-// never send it. Non-strings (numbers) pass through as-is.
+// Refuse (drop) a string attribute only when it actually matches a secret/PII
+// pattern — NOT merely because it is long or empty (redactDigest also truncates
+// and nulls empties, so `=== value` used to drop clean-but-long/empty values).
+// Non-strings (numbers) pass through as-is.
 function attributeSafe(value) {
   if (typeof value !== "string") return true;
-  return redactDigest(value) === value;
+  return !digestHasSecret(value);
 }
 
 function toKeyValue(attributes) {

@@ -312,17 +312,19 @@ export function createRoundTelemetryRuntime({
     maybeFlagToolLoop(invocation);
   }
 
-  // Observability only — flags a suspected loop, never kills the run. Emits ONE
-  // warn per new same-tool streak that reaches the threshold; a growing streak on
-  // the same tool updates the count without re-alerting. Stores only toolName +
-  // count on the invocation (no redacted input text) so nothing sensitive is
-  // added to a persisted/read-model field.
+  // Observability only — flags a suspected loop, never kills the run. Alerts ONCE
+  // per fresh streak: the moment a leading run of identical (toolName+inputDigest)
+  // calls first REACHES the threshold. `detectToolLoop` counts only the leading
+  // run, so a loop that is broken (a different tool/input) and then restarts
+  // resets that count and re-alerts — the earlier "throttle by toolName" swallowed
+  // every same-tool loop after the first. A continuing streak (repeats > threshold)
+  // updates the count without re-alerting. Stores only toolName + count on the
+  // invocation (no redacted input text) so nothing sensitive is persisted.
   function maybeFlagToolLoop(invocation) {
     const signal = detectToolLoop(state.toolInvocationRecords, invocation.id);
     if (!signal.looping) return;
-    const alreadyFlagged = invocation.loopSuspected?.toolName === signal.toolName;
     invocation.loopSuspected = { toolName: signal.toolName, repeats: signal.repeats, at: now() };
-    if (alreadyFlagged || typeof appendEvent !== "function") return;
+    if (signal.repeats !== LOOP_MIN_REPEATS || typeof appendEvent !== "function") return;
     appendEvent({
       invocationId: invocation.id,
       type: "agent_loop_suspected",
@@ -365,6 +367,18 @@ export function redactDigest(text) {
   let value = text;
   for (const pattern of SECRET_PATTERNS) value = value.replace(pattern, "[redacted]");
   return value.length > DIGEST_MAX ? `${value.slice(0, DIGEST_MAX - 3)}...` : value;
+}
+
+// True when the text matches any secret/PII pattern — WITHOUT redactDigest's
+// truncation/empty-to-null side effects. For callers that must decide "does this
+// carry a secret" (e.g. the OTLP exporter refusing an attribute) rather than
+// "give me a bounded redacted copy"; a clean-but-long value is not a secret.
+export function digestHasSecret(text) {
+  if (typeof text !== "string" || text.length === 0) return false;
+  return SECRET_PATTERNS.some((pattern) => {
+    pattern.lastIndex = 0; // shared global-flag regex — reset before test
+    return pattern.test(text);
+  });
 }
 
 const DIGEST_FIELDS = ["responseDigest", "requestDigest", "inputDigest", "outputDigest"];
