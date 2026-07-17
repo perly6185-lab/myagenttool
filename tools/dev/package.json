@@ -7,7 +7,7 @@
   "scripts": {
     "dev": "node ./run-local-demo.mjs",
     "restart-changed": "node ./restart-changed-services.mjs",
-    "test": "node ./check.mjs",
+    "test": "node --test ./test/*.test.mjs && node ./check.mjs",
     "lint": "node ./check.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
