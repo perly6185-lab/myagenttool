@@ -112,32 +112,54 @@ test("#1180 shadow block: no shadow rows → indeterminate, no rate claimed", ()
   const evalResult = computeDispatchEvaluation([row({ status: "completed", completedAt: plusMin(10) })]);
   assert.equal(evalResult.shadow.shadowAssignments, 0);
   assert.equal(evalResult.shadow.verdict, "indeterminate");
-  assert.equal(evalResult.shadow.counterfactualWinRate, null);
+  assert.equal(evalResult.shadow.baselineReassignRate, null);
+  assert.equal(evalResult.shadow.agreementRate, null, "#1184: no confident rate off zero samples");
 });
 
-test("#1180 shadow: agreement rate is over all shadow rows; win rate needs settled disagreements past threshold", () => {
+test("#1180/#1184 shadow: per-issue baseline-reassign rate over settled diverged issues, gated by threshold", () => {
   const rows = [];
   // 6 agreements (both picked 'a'), completed.
   for (let i = 0; i < 6; i++) rows.push(shadowRow({ issueNumber: i, baseline: "a", scored: "a", status: "completed", completedAt: plusMin(10) }));
-  // 12 disagreements (baseline 'a', scored 'b'): 9 baseline reassigned (scored would've won), 3 baseline completed (baseline fine).
+  // 12 diverged (baseline 'a', scored 'b'): 9 baseline reassigned, 3 baseline completed.
   for (let i = 6; i < 15; i++) rows.push(shadowRow({ issueNumber: i, baseline: "a", scored: "b", status: "expired", expiredAt: plusMin(200) }));
   for (let i = 15; i < 18; i++) rows.push(shadowRow({ issueNumber: i, baseline: "a", scored: "b", status: "completed", completedAt: plusMin(30) }));
-  const evalResult = computeDispatchEvaluation(rows);
-  const s = evalResult.shadow;
+  const s = computeDispatchEvaluation(rows).shadow;
   assert.equal(s.shadowAssignments, 18);
   assert.equal(s.disagreements, 12);
-  assert.equal(s.agreementRate, 0.33, "6 of 18 agreed");
+  assert.equal(s.agreementRate, 0.33, "6 of 18 agreed (≥ threshold → measured)");
   assert.equal(s.settledDisagreements, 12);
-  assert.equal(s.verdict, "measured", "12 settled disagreements ≥ 10 threshold");
-  assert.equal(s.counterfactualWinRate, 0.75, "9 of 12 baseline picks were reassigned — scored likely better");
-  assert.match(s.promotionRule, /Promote MYAGENTTOOL_AUTOTRIGGER_ROUTER=scored/);
+  assert.equal(s.verdict, "measured", "12 settled diverged ≥ 10 threshold");
+  assert.equal(s.baselineReassignRate, 0.75, "9 of 12 baseline divergent picks were reassigned");
+  assert.match(s.promotionRule, /confirm it reflects routing, not a short assignment TTL/, "TTL-churn caveat carried");
 });
 
-test("#1180 shadow: below the settled-disagreement threshold, the win rate is withheld", () => {
+test("#1184 shadow: repeated TTL churn of ONE issue counts once, not per tick", () => {
+  const rows = [];
+  // One stubborn issue #7 churns 20 times (newest first): all expired, baseline≠scored.
+  for (let tick = 20; tick >= 1; tick--) {
+    rows.push(shadowRow({ issueNumber: 7, baseline: "a", scored: "b", status: tick === 20 ? "expired" : "expired", expiredAt: plusMin(tick * 10) }));
+  }
+  const s = computeDispatchEvaluation(rows).shadow;
+  assert.equal(s.shadowAssignments, 1, "20 churn rows for one issue collapse to one diverged issue");
+  assert.equal(s.settledDisagreements, 1);
+  assert.equal(s.verdict, "indeterminate", "a single pathological issue can no longer trip the gate");
+  assert.equal(s.baselineReassignRate, null);
+});
+
+test("#1184 shadow: agreementRate honors minSamples (no 100% off n=1)", () => {
+  const one = computeDispatchEvaluation([shadowRow({ issueNumber: 1, baseline: "a", scored: "a", status: "completed", completedAt: plusMin(5) })]);
+  assert.equal(one.shadow.shadowAssignments, 1);
+  assert.equal(one.shadow.agreementRate, null, "n=1 → withheld, not a confident 100%");
+  // 10 agreeing issues → past threshold → rate emitted.
+  const rows = Array.from({ length: 10 }, (_, i) => shadowRow({ issueNumber: i, baseline: "a", scored: "a", status: "completed", completedAt: plusMin(5) }));
+  assert.equal(computeDispatchEvaluation(rows).shadow.agreementRate, 1);
+});
+
+test("#1180 shadow: below the settled-diverged threshold, the reassign rate is withheld", () => {
   const rows = [];
   for (let i = 0; i < 5; i++) rows.push(shadowRow({ issueNumber: i, baseline: "a", scored: "b", status: "expired", expiredAt: plusMin(200) }));
-  const evalResult = computeDispatchEvaluation(rows);
-  assert.equal(evalResult.shadow.settledDisagreements, 5);
-  assert.equal(evalResult.shadow.verdict, "indeterminate");
-  assert.equal(evalResult.shadow.counterfactualWinRate, null, "5 < 10 → no rate");
+  const s = computeDispatchEvaluation(rows).shadow;
+  assert.equal(s.settledDisagreements, 5);
+  assert.equal(s.verdict, "indeterminate");
+  assert.equal(s.baselineReassignRate, null, "5 < 10 → no rate");
 });
