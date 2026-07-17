@@ -134,47 +134,43 @@ export function scoreWorkers({ issue, profiles = [], load = new Map(), workerCap
   const need = issueRequirements(issue);
   const eligible = [];
   const ineligible = [];
-  for (const profile of profiles) {
+  // #1184: scoreWorkers decides ELIGIBILITY only; the pickers (scoredPick /
+  // baselinePick) own ORDERING. `eligible` is returned UNSORTED — one source of
+  // truth per comparator, so a tiebreak edit can't leave the internal sort and a
+  // picker disagreeing (which would silently break the shadow "differ only on
+  // affinity" invariant). `order` is the declaration index, taken from the loop.
+  profiles.forEach((profile, order) => {
     if (profile.id === exclude) {
       ineligible.push({ id: profile.id, reason: "previous_holder" });
-      continue;
+      return;
     }
     if ((load.get(profile.id) ?? 0) >= workerCap) {
       ineligible.push({ id: profile.id, reason: "at_capacity" });
-      continue;
+      return;
     }
     if (profile.platform && need.platforms.length && !need.platforms.includes(profile.platform)) {
       ineligible.push({ id: profile.id, reason: `platform_mismatch (needs ${need.platforms.join("/")}, is ${profile.platform})` });
-      continue;
+      return;
     }
     if (profile.agents && need.agents.length && !need.agents.every((a) => profile.agents.includes(a))) {
       ineligible.push({ id: profile.id, reason: `agent_mismatch (needs ${need.agents.join("+")})` });
-      continue;
+      return;
     }
     if (profile.maxRisk && need.risk && RISK_ORDER[need.risk] !== undefined && RISK_ORDER[need.risk] > RISK_ORDER[profile.maxRisk]) {
       ineligible.push({ id: profile.id, reason: `risk_above_ceiling (${need.risk} > ${profile.maxRisk})` });
-      continue;
+      return;
     }
     const affinity = profile.areas && need.areas.some((a) => profile.areas.includes(a)) ? 1 : 0;
-    // #1180: `order` (declaration index) is carried so BOTH the scored ordering
-    // (affinity, load, order) and the baseline ordering (load, order) share one
-    // deterministic tiebreak — the shadow comparison needs the two to differ
-    // ONLY on the affinity term.
-    eligible.push({ id: profile.id, affinity, load: load.get(profile.id) ?? 0, order: profiles.indexOf(profile) });
-  }
-  // The scored ordering: area affinity first, then least-loaded, then declaration order.
-  eligible.sort((a, b) => b.affinity - a.affinity || a.load - b.load || a.order - b.order);
+    eligible.push({ id: profile.id, affinity, load: load.get(profile.id) ?? 0, order });
+  });
   return { eligible, ineligible, requirements: need };
 }
 
-// #1180: the two soft orderings the shadow comparison contrasts. Hard eligibility
-// is already decided (the input is scoreWorkers' `eligible`); this is purely the
-// SOFT rank. baseline = least-loaded (pre-R1 behavior); scored = affinity-first
-// (R1). Both respect the same load + declaration-order tiebreak, so they diverge
-// only when affinity actually changes the pick.
+// #1180/#1184: the two soft orderings the shadow comparison contrasts, each the
+// SINGLE definition of its comparator. baseline = least-loaded (pre-R1); scored =
+// affinity-first (R1). Both share the load + declaration-order tiebreak, so they
+// diverge only when affinity actually changes the pick.
 export function scoredPick(eligible) {
-  // Self-contained sort (don't rely on the caller pre-sorting) — affinity, then
-  // least-loaded, then declaration order. Mirrors baselinePick's independence.
   const byScore = [...eligible].sort((a, b) => b.affinity - a.affinity || a.load - b.load || a.order - b.order);
   return byScore[0]?.id ?? null;
 }
