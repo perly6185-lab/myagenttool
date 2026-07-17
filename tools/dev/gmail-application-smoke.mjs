@@ -40,7 +40,36 @@ try {
   assert(refused.status !== 0, "register script must refuse when no mail agent is registered");
   assert(/No registered read-only mail MCP agent/.test(refused.stderr), `refusal names the prerequisite: ${refused.stderr.slice(0, 200)}`);
 
-  // Register the read-only mail MCP agent (#976 shape).
+  // #1185: a mail agent for ANOTHER provider is not a Gmail agent. With only
+  // this one registered, counting candidates finds exactly one and the old shape
+  // wired app_gmail to a NetEase mailbox, silently, exit 0. Nothing about being
+  // the only candidate makes an agent the right one.
+  const neteaseAgent = await request("POST", "/api/agents", {
+    type: "mcp",
+    transport: "stdio",
+    command: process.execPath,
+    args: [mailFixture],
+    allowedTools: ["mail_list_unread", "mail_fetch"],
+    timeoutMs: 5_000,
+    name: "163 Mail (read-only)",
+    provider: "netease",
+    capabilityName: "mail.read",
+    riskLevel: "medium",
+    riskTags: ["local_execution", "untrusted_input"],
+  });
+  const neteaseAgentId = neteaseAgent.agent?.id ?? neteaseAgent.id;
+  assert(neteaseAgentId, "the netease mail agent registers");
+  assert(neteaseAgent.agent?.provider === "netease", "the declared provider is projected into state");
+
+  const wrongProvider = spawnScript(["--server-url", serverUrl]);
+  assert(wrongProvider.status !== 0, "register script must refuse when the only mail agent is another provider");
+  assert(/No mail MCP agent declares provider "google"/.test(wrongProvider.stderr), `refusal names the missing provider: ${wrongProvider.stderr.slice(0, 250)}`);
+  assert(wrongProvider.stderr.includes(neteaseAgentId), "refusal names the agent it declined to use");
+  assert(/--agent-id/.test(wrongProvider.stderr), "refusal names the way out");
+  const afterRefusal = await request("GET", "/api/state");
+  assert(!(afterRefusal.applications ?? []).some((item) => item.id === "app_gmail"), "app_gmail is NOT created against the wrong provider");
+
+  // Register the read-only mail MCP agent (#976 shape), declaring google (#1185).
   const agentResponse = await request("POST", "/api/agents", {
     type: "mcp",
     transport: "stdio",
@@ -49,6 +78,7 @@ try {
     allowedTools: ["mail_list_unread", "mail_fetch"],
     timeoutMs: 5_000,
     name: "Mail (read-only)",
+    provider: "google",
     capabilityName: "mail.read",
     riskLevel: "medium",
     riskTags: ["local_execution", "untrusted_input"],
@@ -56,10 +86,12 @@ try {
   const agentId = agentResponse.agent?.id ?? agentResponse.id;
   assert(agentId, "mail agent registration returns an id");
 
-  // Now the script wires app_gmail against the live agent.
+  // Now the script wires app_gmail against the live agent — and picks it out from
+  // beside the netease one, which is the whole point of the provider marker.
   const wired = spawnScript(["--server-url", serverUrl]);
-  assert(wired.status === 0, `register script succeeds with the agent present: ${wired.stderr.slice(0, 300)}`);
+  assert(wired.status === 0, `register script succeeds with the google agent present: ${wired.stderr.slice(0, 300)}`);
   assert(/registered application app_gmail/.test(wired.stdout), "script reports the registration");
+  assert(new RegExp(`-> agent ${agentId}`).test(wired.stdout), "the google agent is the one wired, not the netease one");
 
   const state = await request("GET", "/api/state");
   const application = (state.applications ?? []).find((item) => item.id === "app_gmail");
@@ -79,10 +111,10 @@ try {
   assert(!/refresh_token|access_token|client_secret/i.test(serialized), "no credential material in public state");
   console.log(`[gmail-app-smoke] wired app_gmail -> ${agentId}; capabilities tainted; credential readiness: ${readiness ?? "(reported by bridge at runtime)"}`);
 
-  // A SECOND mail provider makes discovery ambiguous. `mail.read` is what every
-  // mail MCP agent declares, so "first match wins" would silently wire app_gmail
-  // to whichever registered first — reading another provider's mailbox under the
-  // Gmail Application's identity. Refuse, and name both candidates.
+  // TWO agents declaring google is the ambiguity the provider marker cannot
+  // resolve — two Gmail accounts are both honestly "google" (#1176). Refuse and
+  // name both. The netease agent is still registered here and must NOT be named:
+  // it was never a candidate.
   const secondAgent = await request("POST", "/api/agents", {
     type: "mcp",
     transport: "stdio",
@@ -90,20 +122,22 @@ try {
     args: [mailFixture],
     allowedTools: ["mail_list_unread", "mail_fetch"],
     timeoutMs: 5_000,
-    name: "163 Mail (read-only)",
+    name: "Mail (read-only, second account)",
+    provider: "google",
     capabilityName: "mail.read",
     riskLevel: "medium",
     riskTags: ["local_execution", "untrusted_input"],
   });
   const secondAgentId = secondAgent.agent?.id ?? secondAgent.id;
-  assert(secondAgentId && secondAgentId !== agentId, "the second mail agent registers with its own id");
+  assert(secondAgentId && secondAgentId !== agentId, "the second google mail agent registers with its own id");
 
   const ambiguous = spawnScript(["--server-url", serverUrl]);
-  assert(ambiguous.status !== 0, "register script must refuse when two mail agents are registered");
-  assert(/Ambiguous: 2 mail MCP agents/.test(ambiguous.stderr), `refusal reports the ambiguity: ${ambiguous.stderr.slice(0, 200)}`);
+  assert(ambiguous.status !== 0, "register script must refuse when two google mail agents are registered");
+  assert(/Ambiguous: 2 mail MCP agents declare provider "google"/.test(ambiguous.stderr), `refusal reports the ambiguity: ${ambiguous.stderr.slice(0, 200)}`);
   for (const id of [agentId, secondAgentId]) {
     assert(ambiguous.stderr.includes(id), `refusal names candidate ${id}: ${ambiguous.stderr.slice(0, 300)}`);
   }
+  assert(!ambiguous.stderr.includes(neteaseAgentId), "the netease agent is not offered as a candidate");
   assert(/--agent-id/.test(ambiguous.stderr), "refusal names the way out");
 
   // ...and naming the agent explicitly still works: the refusal is a prompt for
@@ -112,14 +146,36 @@ try {
   assert(disambiguated.status === 0, `--agent-id resolves the ambiguity: ${disambiguated.stderr.slice(0, 300)}`);
   assert(new RegExp(`-> agent ${agentId}`).test(disambiguated.stdout), "the named agent is the one wired");
 
-  console.log(`[gmail-app-smoke] two mail agents -> refused by name; --agent-id ${agentId} still wires`);
+  console.log(`[gmail-app-smoke] lone netease agent -> refused; google picked out beside it; two google agents -> refused by name; --agent-id ${agentId} still wires`);
 
-  // The same ambiguity on the SEND script (#1147, ADR 0014). It matters more
-  // here: app_gmail_send holds send authority, so a wrong guess would bind the
-  // exfiltration boundary to a mailbox nobody named. Discovery matches on
-  // `allowedTools` including mail_send, so two send-capable agents are ambiguous.
+  // The SEND script (#1147, ADR 0014) must hold the same line, and the stakes are
+  // higher: app_gmail_send carries send authority, so a wrong bind sends AS the
+  // wrong account. `mail_send` says an agent can send, never as whom — so a lone
+  // netease send agent must be refused, not adopted for want of an alternative.
+  const neteaseSend = await request("POST", "/api/agents", {
+    type: "mcp",
+    transport: "stdio",
+    command: process.execPath,
+    args: [mailFixture],
+    allowedTools: ["mail_send"],
+    timeoutMs: 5_000,
+    name: "163 Mail (send)",
+    provider: "netease",
+    capabilityName: "mail.send",
+    riskLevel: "high",
+    riskTags: ["local_execution"],
+  });
+  const neteaseSendId = neteaseSend.agent?.id ?? neteaseSend.id;
+  const wrongProviderSend = spawnSendScript(["--server-url", serverUrl]);
+  assert(wrongProviderSend.status !== 0, "send script must refuse when the only send agent is another provider");
+  assert(/No mail send MCP agent declares provider "google"/.test(wrongProviderSend.stderr), `send refusal names the missing provider: ${wrongProviderSend.stderr.slice(0, 250)}`);
+  assert(wrongProviderSend.stderr.includes(neteaseSendId), "send refusal names the agent it declined to use");
+  const afterSendRefusal = await request("GET", "/api/state");
+  assert(!(afterSendRefusal.applications ?? []).some((item) => item.id === "app_gmail_send"), "app_gmail_send is NOT created against the wrong provider");
+
+  // Two google send agents stay ambiguous (#1176).
   const sendAgentIds = [];
-  for (const name of ["Mail (send)", "163 Mail (send)"]) {
+  for (const name of ["Mail (send)", "Mail (send, second account)"]) {
     const registered = await request("POST", "/api/agents", {
       type: "mcp",
       transport: "stdio",
@@ -128,6 +184,7 @@ try {
       allowedTools: ["mail_send"],
       timeoutMs: 5_000,
       name,
+      provider: "google",
       capabilityName: "mail.send",
       riskLevel: "high",
       riskTags: ["local_execution"],
@@ -135,13 +192,14 @@ try {
     sendAgentIds.push(registered.agent?.id ?? registered.id);
   }
   const ambiguousSend = spawnSendScript(["--server-url", serverUrl]);
-  assert(ambiguousSend.status !== 0, "send register script must refuse when two send agents are registered");
-  assert(/Ambiguous: 2 mail send MCP agents/.test(ambiguousSend.stderr), `send refusal reports the ambiguity: ${ambiguousSend.stderr.slice(0, 200)}`);
+  assert(ambiguousSend.status !== 0, "send register script must refuse when two google send agents are registered");
+  assert(/Ambiguous: 2 mail send MCP agents declare provider "google"/.test(ambiguousSend.stderr), `send refusal reports the ambiguity: ${ambiguousSend.stderr.slice(0, 200)}`);
   for (const id of sendAgentIds) {
     assert(ambiguousSend.stderr.includes(id), `send refusal names candidate ${id}: ${ambiguousSend.stderr.slice(0, 300)}`);
   }
+  assert(!ambiguousSend.stderr.includes(neteaseSendId), "the netease send agent is not offered as a candidate");
 
-  console.log(`[gmail-app-smoke] two send agents (${sendAgentIds.join(", ")}) -> refused by name`);
+  console.log(`[gmail-app-smoke] lone netease send agent -> refused; two google send agents (${sendAgentIds.join(", ")}) -> refused by name`);
   console.log("[gmail-application-smoke] gmail application wiring OK");
 } finally {
   server.kill();

@@ -99,6 +99,14 @@ export interface Agent {
   name: string;
   description: string;
   ownerUserId: UserId | "system";
+  /**
+   * The external service this agent fronts (`google`, `netease`), as declared at
+   * registration — the counterpart of an Application's
+   * `source.credential.provider`. `null` means undeclared, which matches nobody:
+   * discovery that resolves an agent by provider must refuse rather than adopt an
+   * unmarked one (#1185).
+   */
+  provider?: string | null;
   location: AgentLocation;
   adapter: AgentAdapter;
   lifecycle: AgentLifecycleMetadata;
