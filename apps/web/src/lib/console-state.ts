@@ -1093,6 +1093,7 @@ export interface ConsoleSnapshot {
   budgetStatuses?: BudgetStatus[];
   teamBudgetStatuses?: TeamBudgetStatus[];
   teams?: { id: string; name?: string }[];
+  users?: { id: string; name?: string; teamId?: string; role?: string }[];
   /** Channel subsystem (#1090): operational rollup per channel, team-scoped. */
   channelOperations?: ChannelOperations[];
   channelDeliveries?: ChannelDelivery[];

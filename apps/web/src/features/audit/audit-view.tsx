@@ -11,9 +11,17 @@ export function AuditView() {
   const lifecycle = state?.lifecycleAuditRecords ?? [];
   const policies = state?.policyDecisionRecords ?? [];
 
+  // Pick-from-list subjects for the deletion card, per scope. Empty lists fall
+  // back to a free-text id input in the card.
+  const deletionSubjects = {
+    user: (state?.users ?? []).map((user) => ({ id: user.id, label: user.name ?? user.id })),
+    team: (state?.teams ?? []).map((team) => ({ id: team.id, label: team.name ?? team.id })),
+    device: (state?.devices ?? []).map((device) => ({ id: device.id, label: device.name ?? device.id })),
+  };
+
   return (
     <div className="space-y-5">
-      <ObservabilityDeletionCard />
+      <ObservabilityDeletionCard subjects={deletionSubjects} />
       <div className="grid gap-5 lg:grid-cols-2">
       <Card>
         <CardHeader>
