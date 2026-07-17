@@ -193,7 +193,7 @@ export function createSqliteStore({ DatabaseSync, path = ":memory:" }) {
     transaction(() => {
       for (const row of rows) {
         if (!row || row.id == null) continue;
-        const invocationId = row.invocationId ?? row.subjectId ?? null;
+        const invocationId = row.invocationId ?? row.subjectId ?? row.traceId ?? null; // scope key: spans key by traceId
         const createdAt = row.createdAt ?? row.at ?? row.startedAt ?? null;
         const info = insertHistory.run(
           collection,

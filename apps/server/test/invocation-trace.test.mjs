@@ -68,3 +68,18 @@ test("falls back to invocation.traceId when no trace record is found; no archive
   assert.equal(result.trace, null);
   assert.deepEqual(result.spans.map((s) => s.id), ["s1"], "spans found via invocation.traceId even without a trace record");
 });
+
+test("prefers the indexed store query — traces scoped by invocationId, spans by traceId", () => {
+  const state = { traces: [], spans: [] };
+  const calls = [];
+  const queryHistory = (collection, opts) => {
+    calls.push({ collection, invocationId: opts.invocationId });
+    if (collection === "traces") return { rows: [{ id: "trc_1", subjectType: "invocation", subjectId: "inv_1", createdAt: "t0" }], nextBefore: null };
+    return { rows: [{ id: "spn_1", traceId: "trc_1", startedAt: "t", name: "n", status: "s" }], nextBefore: null };
+  };
+  const { getInvocationTrace } = createInvocationTraceService({ state, readArchiveWithMetadata: null, queryHistory });
+  const result = getInvocationTrace({ id: "inv_1", traceId: "trc_1" });
+  assert.deepEqual(calls, [{ collection: "traces", invocationId: "inv_1" }, { collection: "spans", invocationId: "trc_1" }], "spans queried by traceId scope");
+  assert.equal(result.trace.id, "trc_1");
+  assert.deepEqual(result.spans.map((s) => s.id), ["spn_1"]);
+});

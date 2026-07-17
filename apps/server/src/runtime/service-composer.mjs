@@ -190,7 +190,16 @@ export function createServerRuntimeServices({
   }
   // Event archive ids can be newer than either the JSON snapshot or the SQLite
   // scalar mirror. Read their durable high-water before minting any new ids.
-  const retentionArchive = createRetentionArchive({ stateStorePath, enabled: persistenceEnabled, now });
+  // ADR 0019 B-2: when a SQLite store is present, over-cap eviction dual-writes to
+  // its durable, indexed `history` table (alongside the JSONL). null on the memory
+  // / Node<22.13 backing — the JSONL stays the only durable archive there.
+  const historyAppend = sqliteStore && typeof sqliteStore.appendHistory === "function"
+    ? (collection, rows) => sqliteStore.appendHistory(collection, rows)
+    : null;
+  const historyQuery = sqliteStore && typeof sqliteStore.queryHistory === "function"
+    ? (collection, options) => sqliteStore.queryHistory(collection, options)
+    : null;
+  const retentionArchive = createRetentionArchive({ stateStorePath, enabled: persistenceEnabled, now, appendHistory: historyAppend });
   const eventArchive = retentionArchive.prepareInvocationEventArchive();
   if (eventArchive.readError) {
     throw new Error(`Cannot establish invocation event id high-water: ${eventArchive.readError}`);
@@ -227,10 +236,12 @@ export function createServerRuntimeServices({
   const { listInvocationRefusals } = createInvocationRefusalService({
     state,
     readArchiveWithMetadata: retentionArchive.readArchiveWithMetadata,
+    queryHistory: historyQuery,
   });
   const { getInvocationTrace } = createInvocationTraceService({
     state,
     readArchiveWithMetadata: retentionArchive.readArchiveWithMetadata,
+    queryHistory: historyQuery,
   });
   const { appendEvent } = createEventLogRuntime({
     state,
