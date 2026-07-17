@@ -87,15 +87,23 @@ export function evaluateSloAlert(sloSummary, previousSignature = "") {
   const prev = typeof previousSignature === "string" ? previousSignature : "";
   if (signature === prev) return { changed: false, signature, alert: null };
   if (below.length === 0) {
+    // Reaching here means a breach cleared (prev was non-empty). Only announce a
+    // real RECOVERY when there is data that now meets target. Going to NO DATA
+    // (every SLO meets===null — e.g. an empty loop after a restart while the
+    // breach signature is still persisted) is NOT a recovery: clear the stale
+    // signature silently, no false "back on target" alert.
+    const recovered = slos.some((s) => s.meets === true);
     return {
       changed: true,
       signature,
-      alert: {
-        kind: "auto_run_slo_recovered",
-        severity: "info",
-        message: "All auto-run SLOs are back on target.",
-        data: { previouslyBelow: prev ? prev.split(",") : [] },
-      },
+      alert: recovered
+        ? {
+            kind: "auto_run_slo_recovered",
+            severity: "info",
+            message: "All auto-run SLOs are back on target.",
+            data: { previouslyBelow: prev ? prev.split(",") : [] },
+          }
+        : null,
     };
   }
   return {

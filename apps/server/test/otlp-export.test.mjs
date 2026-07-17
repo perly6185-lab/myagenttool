@@ -71,6 +71,16 @@ test("a would-be-secret attribute value is refused, never exported (ADR 0017 inv
   assert.equal(kv.leaked, undefined, "secret-shaped attribute dropped");
 });
 
+test("a clean but long attribute is exported (not mistaken for a secret)", () => {
+  const long = "x".repeat(2000); // clean, just long — must NOT be dropped
+  const span = roundSpan({ attributes: { model: "claude-opus-4-8", note: long } });
+  const kv = Object.fromEntries(
+    spansToOtlp([span]).resourceSpans[0].scopeSpans[0].spans[0].attributes.map((a) => [a.key, a.value]),
+  );
+  assert.equal(kv.note.stringValue, long, "clean long value kept in full");
+  assert.equal(kv.model.stringValue, "claude-opus-4-8");
+});
+
 test("exporter is a no-op when no endpoint is configured", async () => {
   let called = false;
   const exporter = createOtlpTraceExporter({ getEndpoint: () => null, fetchImpl: () => { called = true; } });
