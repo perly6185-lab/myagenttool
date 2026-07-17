@@ -69,17 +69,54 @@ test("falls back to invocation.traceId when no trace record is found; no archive
   assert.deepEqual(result.spans.map((s) => s.id), ["s1"], "spans found via invocation.traceId even without a trace record");
 });
 
-test("prefers the indexed store query — traces scoped by invocationId, spans by traceId", () => {
+test("prefers the indexed store query — traces scoped by invocationId, spans by traceId (earliest-first)", () => {
   const state = { traces: [], spans: [] };
   const calls = [];
   const queryHistory = (collection, opts) => {
-    calls.push({ collection, invocationId: opts.invocationId });
+    calls.push({ collection, invocationId: opts.invocationId, order: opts.order });
     if (collection === "traces") return { rows: [{ id: "trc_1", subjectType: "invocation", subjectId: "inv_1", createdAt: "t0" }], nextBefore: null };
     return { rows: [{ id: "spn_1", traceId: "trc_1", startedAt: "t", name: "n", status: "s" }], nextBefore: null };
   };
   const { getInvocationTrace } = createInvocationTraceService({ state, readArchiveWithMetadata: null, queryHistory });
   const result = getInvocationTrace({ id: "inv_1", traceId: "trc_1" });
-  assert.deepEqual(calls, [{ collection: "traces", invocationId: "inv_1" }, { collection: "spans", invocationId: "trc_1" }], "spans queried by traceId scope");
+  assert.deepEqual(
+    calls,
+    [{ collection: "traces", invocationId: "inv_1", order: "desc" }, { collection: "spans", invocationId: "trc_1", order: "asc" }],
+    "spans queried by traceId scope, earliest-first so the root span survives the cap",
+  );
   assert.equal(result.trace.id, "trc_1");
   assert.deepEqual(result.spans.map((s) => s.id), ["spn_1"]);
+});
+
+test("the root span survives the archive cap: earliest-first read keeps the lowest-rowid span", () => {
+  // The store evicts oldest-first, so the root span has the lowest rowid. Simulate
+  // a queryHistory that honours order: "asc" returns the earliest `limit` rows.
+  const archived = Array.from({ length: 6 }, (_, i) => ({ id: `spn_${i}`, traceId: "trc_1", parentSpanId: i === 0 ? null : "spn_0", name: `n${i}`, status: "s", startedAt: `2026-07-17T00:00:0${i}.000Z` }));
+  const state = { traces: [{ id: "trc_1", subjectType: "invocation", subjectId: "inv_1", rootSpanId: "spn_0", createdAt: "t0" }], spans: [] };
+  const queryHistory = (collection, opts) => {
+    if (collection === "traces") return { rows: state.traces, nextBefore: null };
+    const ordered = opts.order === "asc" ? archived : [...archived].reverse();
+    const page = ordered.slice(0, opts.limit);
+    return { rows: page, nextBefore: page.length < ordered.length ? 1 : null };
+  };
+  const { getInvocationTrace } = createInvocationTraceService({ state, readArchiveWithMetadata: null, queryHistory });
+  const result = getInvocationTrace({ id: "inv_1", traceId: "trc_1" }, { limit: 3 });
+  assert.ok(result.spans.some((s) => s.id === "spn_0"), "root span (earliest) is present, not dropped off the newest-cap page");
+  assert.equal(result.spans[0].id, "spn_0", "root remains chronologically first");
+  assert.equal(result.trace.rootSpanId, "spn_0");
+});
+
+test("a null trace scope short-circuits: no unscoped whole-table span query, no false truncated", () => {
+  const state = { traces: [], spans: [] };
+  const calls = [];
+  const queryHistory = (collection, opts) => {
+    calls.push({ collection, invocationId: opts.invocationId });
+    if (collection === "traces") return { rows: [], nextBefore: null };
+    return { rows: [{ id: "leak", traceId: "trc_other", startedAt: "t", name: "n", status: "s" }], nextBefore: 99 };
+  };
+  const { getInvocationTrace } = createInvocationTraceService({ state, readArchiveWithMetadata: null, queryHistory });
+  const result = getInvocationTrace({ id: "inv_1" }); // no trace record, no invocation.traceId → scope null
+  assert.deepEqual(calls, [{ collection: "traces", invocationId: "inv_1" }], "spans NOT queried when the trace scope is null");
+  assert.deepEqual(result.spans, []);
+  assert.equal(result.truncated, false, "an unresolved trace is empty, not truncated");
 });

@@ -18,11 +18,20 @@ const CATEGORY_TONE: Record<string, "neutral" | "success" | "warning" | "danger"
  * nothing when there are none — it only surfaces when a run was actually refused.
  */
 export function InvocationRefusalHistory({ invocationId }: { invocationId: string }) {
-  const { data } = useQuery({
+  const { data, isError } = useQuery({
     queryKey: ["invocation-refusals", invocationId],
     queryFn: () => api.listInvocationRefusals(invocationId),
   });
   const refusals = data?.refusals ?? [];
+  // A failed fetch must NOT read as "no refusals" — on a compliance surface those
+  // are different states. Surface the failure explicitly instead of rendering null.
+  if (isError) {
+    return (
+      <div className="mt-4" data-testid="invocation-refusals-error">
+        <Badge tone="warning">Refusal history unavailable</Badge>
+      </div>
+    );
+  }
   if (refusals.length === 0) return null;
 
   return (

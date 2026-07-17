@@ -1860,10 +1860,12 @@ export function createM3Service({
       sinkId: request.sinkId,
       subjects: request.subjects,
       recordRefs,
-      // A REAL content digest over what the manifest attests to (the subjects +
-      // the exact record refs), not the old synthetic `count:subjects` token. A
-      // verifier can recompute it from the manifest and detect any tamper of the
-      // attested set (closes the M3 "checksum is synthetic" residual).
+      // A REAL content digest over what the manifest attests to: the subjects +
+      // the exact record refs, each ref carrying a sha256 of its record's content.
+      // A verifier recomputes it from the manifest and detects tamper of either the
+      // attested SET (a record added/removed) or a record's CONTENT (a field
+      // altered) — closing the M3 "checksum is synthetic" residual with genuine
+      // content-tamper evidence.
       checksum: computeAuditExportChecksum(request.subjects, recordRefs),
       delivery: {
         externalDeliveryEnabled: Boolean(sink?.externalDeliveryEnabled),
@@ -1881,7 +1883,12 @@ export function createM3Service({
       for (const record of records) {
         const id = record.id ?? record.invocationId ?? record.ledgerEntryId ?? record.policyDecisionId ?? record.traceId;
         if (id) {
-          refs.push({ subject, id: String(id) });
+          // Each ref carries a sha256 of the record's canonical content (a Merkle
+          // leaf), so the manifest checksum is content-tamper-evident: altering an
+          // attested record's fields — not only adding/removing a record — changes
+          // the leaf and therefore the top checksum.
+          const contentHash = createHash("sha256").update(stableStringifyForDigest(record)).digest("hex");
+          refs.push({ subject, id: String(id), contentHash });
         }
       }
     };
@@ -1908,13 +1915,32 @@ export function createM3Service({
   }
 }
 
-// A real sha256 digest of what an audit-export manifest attests to: the ordered
-// subjects and the exact record refs. Deterministic (canonical JSON of the
-// as-built refs), so a verifier recomputes it from the manifest and any change to
-// the attested set changes the checksum. Pure + exported for direct testing.
+// A real sha256 digest of what an audit-export manifest attests to: the subjects
+// and the exact record refs (each ref carrying its content hash). Subjects are
+// canonicalized (deduped + sorted) so the digest is invariant to the request's
+// subject order; refs carry a per-record contentHash so the digest is
+// content-tamper-evident, not merely reference-set-tamper-evident. Deterministic,
+// so a verifier recomputes it from the manifest's own fields. Pure + exported for
+// direct testing.
 export function computeAuditExportChecksum(subjects, recordRefs) {
-  const canonical = JSON.stringify({ subjects: Array.isArray(subjects) ? subjects : [], recordRefs: Array.isArray(recordRefs) ? recordRefs : [] });
+  const canonicalSubjects = Array.isArray(subjects) ? [...new Set(subjects.map(String))].sort() : [];
+  const refs = Array.isArray(recordRefs) ? recordRefs : [];
+  const canonical = JSON.stringify({ subjects: canonicalSubjects, recordRefs: refs });
   return `sha256:${createHash("sha256").update(canonical).digest("hex")}`;
+}
+
+// Stable, key-sorted stringify so a record's content hash is invariant to key
+// insertion order (a verifier re-reading the live record must reproduce the same
+// leaf). Recurses through arrays/objects; primitives fall through to JSON.
+function stableStringifyForDigest(value) {
+  if (value === null || typeof value !== "object") {
+    return JSON.stringify(value) ?? "null";
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map(stableStringifyForDigest).join(",")}]`;
+  }
+  const keys = Object.keys(value).sort();
+  return `{${keys.map((key) => `${JSON.stringify(key)}:${stableStringifyForDigest(value[key])}`).join(",")}}`;
 }
 
 function validateLifecycleRecipe({ action, agent, source, supportedPlatforms, rollback, uninstall, body }) {

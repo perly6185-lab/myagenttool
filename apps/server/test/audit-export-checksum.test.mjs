@@ -1,8 +1,10 @@
 /*
  * M3 residual closed: the audit-export manifest checksum is a REAL sha256 content
- * digest of what it attests to (subjects + record refs), not the old synthetic
- * `count:subjects` token. A verifier can recompute it from the manifest and any
- * tamper of the attested set changes it.
+ * digest of what it attests to. Each record ref carries a `contentHash` (a sha256
+ * of the record's canonical content), so the checksum is content-tamper-evident:
+ * altering a record's fields — not only adding/removing a record — changes it.
+ * Subjects are canonicalized (deduped + sorted) so the digest is invariant to the
+ * request's subject order. A verifier recomputes it from the manifest's own fields.
  */
 
 import assert from "node:assert/strict";
@@ -12,8 +14,8 @@ import { test } from "node:test";
 import { computeAuditExportChecksum } from "../src/services/m3.mjs";
 
 const refs = [
-  { subject: "invocation", id: "inv_1" },
-  { subject: "ledger", id: "led_1" },
+  { subject: "invocation", id: "inv_1", contentHash: "a".repeat(64) },
+  { subject: "ledger", id: "led_1", contentHash: "b".repeat(64) },
 ];
 
 test("is a real 64-hex sha256 digest, not a synthetic count:subjects token", () => {
@@ -24,7 +26,8 @@ test("is a real 64-hex sha256 digest, not a synthetic count:subjects token", () 
 
 test("a verifier can recompute it from the manifest's own subjects + recordRefs", () => {
   const subjects = ["invocation", "ledger"];
-  const expected = `sha256:${createHash("sha256").update(JSON.stringify({ subjects, recordRefs: refs })).digest("hex")}`;
+  const canonicalSubjects = [...new Set(subjects.map(String))].sort();
+  const expected = `sha256:${createHash("sha256").update(JSON.stringify({ subjects: canonicalSubjects, recordRefs: refs })).digest("hex")}`;
   assert.equal(computeAuditExportChecksum(subjects, refs), expected);
 });
 
@@ -36,9 +39,21 @@ test("deterministic for the same content, and changes when the attested set chan
   assert.notEqual(a, computeAuditExportChecksum(["ledger"], refs), "different subjects → different digest");
   assert.notEqual(
     a,
-    computeAuditExportChecksum(["invocation"], [...refs, { subject: "invocation", id: "inv_2" }]),
-    "an added record ref → different digest (tamper-evident)",
+    computeAuditExportChecksum(["invocation"], [...refs, { subject: "invocation", id: "inv_2", contentHash: "c".repeat(64) }]),
+    "an added record ref → different digest (set-tamper-evident)",
   );
+});
+
+test("is content-tamper-evident: altering a ref's contentHash changes the digest", () => {
+  const before = computeAuditExportChecksum(["invocation", "ledger"], refs);
+  const tampered = [refs[0], { ...refs[1], contentHash: "f".repeat(64) }];
+  assert.notEqual(before, computeAuditExportChecksum(["invocation", "ledger"], tampered), "a mutated record's content changes its leaf → changes the checksum");
+});
+
+test("subject order and duplicates do not change the digest (canonicalized)", () => {
+  const ordered = computeAuditExportChecksum(["invocation", "ledger"], refs);
+  assert.equal(computeAuditExportChecksum(["ledger", "invocation"], refs), ordered, "subject order is canonicalized away");
+  assert.equal(computeAuditExportChecksum(["invocation", "ledger", "invocation"], refs), ordered, "duplicate subjects are deduped");
 });
 
 test("tolerates missing/non-array inputs without throwing", () => {

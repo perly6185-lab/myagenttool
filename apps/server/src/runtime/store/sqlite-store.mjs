@@ -20,6 +20,10 @@
  */
 
 const SCHEMA_VERSION = 2;
+// Upper bound on a single history page. Aligned with the largest history reader
+// (invocation-trace's MAX_SPAN_LIMIT = 2000) so the SQLite path never silently
+// returns fewer rows than the whole-file JSONL scan would for the same request.
+const MAX_HISTORY_LIMIT = 2000;
 
 /**
  * Async convenience: dynamically import the experimental `node:sqlite`, then open
@@ -65,6 +69,13 @@ export function createSqliteStore({ DatabaseSync, path = ":memory:" }) {
   const insertHistory = db.prepare("INSERT OR IGNORE INTO history(collection, id, invocation_id, created_at, json) VALUES(?, ?, ?, ?, ?)");
 
   const parse = (row) => (row ? JSON.parse(row.json) : null);
+  // Reentrancy guard: node:sqlite's BEGIN cannot nest ("cannot start a
+  // transaction within a transaction"). A nested transaction() call joins the
+  // outer one (the outermost owns COMMIT/ROLLBACK) — mirroring the in-memory
+  // adapter's `active` guard so appendHistory can run inside an outer store
+  // transaction without throwing and being silently swallowed by a best-effort
+  // dual-write caller.
+  let active = false;
 
   function get(collection, id) {
     return parse(selectOne.get(collection, String(id)));
@@ -94,15 +105,22 @@ export function createSqliteStore({ DatabaseSync, path = ":memory:" }) {
         del.run(collection, String(id));
       },
     };
+    if (active) {
+      // Reentrant call: the outermost transaction owns COMMIT/ROLLBACK.
+      return fn(tx);
+    }
+    active = true;
     db.exec("BEGIN");
     let result;
     try {
       result = fn(tx);
     } catch (error) {
       db.exec("ROLLBACK");
+      active = false;
       throw error;
     }
     db.exec("COMMIT");
+    active = false;
     return result;
   }
 
@@ -208,16 +226,22 @@ export function createSqliteStore({ DatabaseSync, path = ":memory:" }) {
     return { appended };
   }
 
-  // ADR 0019: paginated newest-first read of the history table, optionally scoped
-  // to one invocation. `before` is the rowid cursor from a prior page's
-  // `nextBefore`. Replaces the whole-file JSONL scan on the SQLite path.
-  function queryHistory(collection, { invocationId = null, before = null, limit = 100 } = {}) {
-    const cap = Math.min(1000, Math.max(1, Number.parseInt(limit, 10) || 100));
+  // ADR 0019: paginated read of the history table, optionally scoped to one
+  // invocation. `order` selects the end of the rowid range the cap covers:
+  // "desc" (default) returns the NEWEST cap rows (for refusals — recency matters);
+  // "asc" returns the EARLIEST cap rows (for a span tree — the root span has the
+  // lowest rowid and must survive the cap, matching the whole-file JSONL scan).
+  // `before` is the rowid cursor from a prior page's `nextBefore` (its comparison
+  // direction follows `order`). Cap is aligned with the largest caller
+  // (MAX_HISTORY_LIMIT) so the SQLite path never silently under-returns vs JSONL.
+  function queryHistory(collection, { invocationId = null, before = null, limit = 100, order = "desc" } = {}) {
+    const cap = Math.min(MAX_HISTORY_LIMIT, Math.max(1, Number.parseInt(limit, 10) || 100));
+    const asc = order === "asc";
     const clauses = ["collection = ?"];
     const params = [collection];
     if (invocationId != null) { clauses.push("invocation_id = ?"); params.push(String(invocationId)); }
-    if (before != null && Number.isFinite(Number(before))) { clauses.push("rowid < ?"); params.push(Number(before)); }
-    const sql = `SELECT rowid AS rowid, json FROM history WHERE ${clauses.join(" AND ")} ORDER BY rowid DESC LIMIT ?`;
+    if (before != null && Number.isFinite(Number(before))) { clauses.push(asc ? "rowid > ?" : "rowid < ?"); params.push(Number(before)); }
+    const sql = `SELECT rowid AS rowid, json FROM history WHERE ${clauses.join(" AND ")} ORDER BY rowid ${asc ? "ASC" : "DESC"} LIMIT ?`;
     const rows = db.prepare(sql).all(...params, cap + 1);
     const hasMore = rows.length > cap;
     const page = rows.slice(0, cap);

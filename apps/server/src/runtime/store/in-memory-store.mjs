@@ -199,13 +199,17 @@ export function createInMemoryStore({ state, commit }) {
     }
     return { appended };
   }
-  function queryHistory(collection, { invocationId = null, before = null, limit = 100 } = {}) {
-    const cap = Math.min(1000, Math.max(1, Number.parseInt(limit, 10) || 100));
+  // Parity with the SQLite adapter's queryHistory: `order` selects which end of
+  // the seq range the cap covers ("desc" = newest cap, "asc" = earliest cap incl.
+  // the lowest-seq root), and the cap upper bound matches the largest reader.
+  function queryHistory(collection, { invocationId = null, before = null, limit = 100, order = "desc" } = {}) {
+    const cap = Math.min(2000, Math.max(1, Number.parseInt(limit, 10) || 100));
+    const asc = order === "asc";
     const matches = history
       .filter((h) => h.collection === collection
         && (invocationId == null || String(h.invocationId) === String(invocationId))
-        && (before == null || !Number.isFinite(Number(before)) || h.seq < Number(before)))
-      .sort((a, b) => b.seq - a.seq); // newest first
+        && (before == null || !Number.isFinite(Number(before)) || (asc ? h.seq > Number(before) : h.seq < Number(before))))
+      .sort((a, b) => (asc ? a.seq - b.seq : b.seq - a.seq));
     const hasMore = matches.length > cap;
     const page = matches.slice(0, cap);
     return { rows: page.map((h) => h.row), nextBefore: hasMore && page.length > 0 ? page[page.length - 1].seq : null };
