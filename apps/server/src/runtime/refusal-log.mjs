@@ -47,7 +47,12 @@ function assertTaxonomy(category, code) {
   }
 }
 
-export function createRefusalRuntime({ state, now, nextId, appendEvent, persistStateSoon = () => {} }) {
+// Default cap: a plain newest-keeps slice (over-cap rows are dropped) — the
+// composer injects the archiving variant so evicted refusals land in the durable
+// archive instead of vanishing.
+const sliceCap = (list, max) => (Array.isArray(list) && list.length > max ? list.slice(0, max) : Array.isArray(list) ? list : []);
+
+export function createRefusalRuntime({ state, now, nextId, appendEvent, persistStateSoon = () => {}, capWithArchive = sliceCap }) {
   if (!Array.isArray(state.refusals)) {
     state.refusals = [];
   }
@@ -104,11 +109,12 @@ export function createRefusalRuntime({ state, now, nextId, appendEvent, persistS
       invocationId: event?.invocationId ?? (subject?.kind === "invocation" ? subject.id : null) ?? null,
     };
     state.refusals.unshift(refusal);
-    // Bounded ring buffer — same pattern as state.events. retentionSettings holds
-    // the operator-facing day policy; this count cap is the hard growth stop.
-    if (state.refusals.length > REFUSALS_CAP) {
-      state.refusals = state.refusals.slice(0, REFUSALS_CAP);
-    }
+    // Bounded in-memory ring buffer — but the over-cap (oldest) refusals are now
+    // ARCHIVED to the durable append-only store, not silently dropped. Refusals
+    // are compliance/audit evidence (they even survive per-subject deletion,
+    // PII-scrubbed); losing them at 200 was the gap. Mirrors the round-telemetry
+    // and recovery-action cap-with-archive pattern.
+    state.refusals = capWithArchive(state.refusals, REFUSALS_CAP, "refusals");
     persistStateSoon();
     return { refusal, event: firedEvent };
   }
