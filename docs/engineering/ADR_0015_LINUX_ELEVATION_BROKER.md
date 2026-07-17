@@ -1,6 +1,6 @@
 # ADR 0015: Linux install elevation is a per-action polkit broker, never an ambient privilege
 
-Status: proposed · 2026-07-16
+Status: accepted · 2026-07-16
 
 Date: 2026-07-16
 

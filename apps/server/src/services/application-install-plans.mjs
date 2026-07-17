@@ -2,7 +2,7 @@ import crypto from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 
 const SCHEMA_VERSION = "application-install-plan/v1";
-const RECIPE_VERSION = "2026-07-16.1";
+const RECIPE_VERSION = "2026-07-16.2";
 const PLAN_TTL_MS = 10 * 60 * 1000;
 const SUPPORTED_PLATFORMS = ["windows", "macos", "linux"];
 const ALLOWED_REQUEST_FIELDS = new Set(["name", "projectId", "deviceId", "platform", "architecture"]);
@@ -30,6 +30,17 @@ const APPLICATIONS = {
       // post-install probe still records the exact version that landed.
       macos: recipe("homebrew", "brew", ["install", "--formula", "git"], "git", {
         source: { kind: "homebrew-core", name: "homebrew/core" },
+        versionPolicy: providerVersionPolicy(),
+      }),
+      // #994 / ADR 0015 slice 1: Linux Git via apt-get, ELEVATED through the
+      // bridge's polkit broker — pkexec wraps THIS mirrored argv at spawn time;
+      // the recipe records the real command, never the elevation mechanism.
+      // apt cannot pin an upstream version portably (distro epochs/revisions),
+      // so provider-managed is the explicit #995-style decision here too; the
+      // post-install probe records what landed. dnf/pacman stay fail-closed.
+      linux: recipe("apt", "apt-get", ["install", "--yes", "git"], "git", {
+        elevated: true,
+        source: { kind: "apt-repository", name: "distro-main" },
         versionPolicy: providerVersionPolicy(),
       }),
     },
