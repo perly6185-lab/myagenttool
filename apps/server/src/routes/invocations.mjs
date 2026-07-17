@@ -12,6 +12,7 @@ export async function handleInvocationRoutes({
   findInvocation,
   listInvocationEvents,
   listInvocationRefusals,
+  getInvocationTrace,
   approveInvocation,
   denyInvocation,
   findAgent,
@@ -48,6 +49,23 @@ export async function handleInvocationRoutes({
       return true;
     }
     sendJson(res, 200, { released: releaseDecisionClaim({ decisionId, actor }) });
+    return true;
+  }
+
+  // The trace tree for one invocation (trace + spans), including the spans the
+  // count cap evicted to the durable archive. Same existence-hiding tenancy guard.
+  const traceMatch = url.pathname.match(/^\/api\/invocations\/([^/]+)\/trace$/);
+  if (req.method === "GET" && traceMatch && typeof getInvocationTrace === "function") {
+    const invocationId = decodeURIComponent(traceMatch[1]);
+    const invocation = findInvocation(invocationId);
+    if (!invocation) {
+      sendJson(res, 404, { error: "invocation_not_found" });
+      return true;
+    }
+    if (denyForeignInvocationRead({ res, sendJson, state, actor, invocation })) {
+      return true;
+    }
+    sendJson(res, 200, getInvocationTrace(invocation, { limit: url.searchParams.get("limit") }));
     return true;
   }
 
