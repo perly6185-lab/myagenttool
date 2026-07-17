@@ -43,7 +43,7 @@ remain separate lifecycle capabilities.
 | `app_git` | binary `git` | 8 read-only repo inspections | wrapper argv (closed positionals) | binary probe | register script + catalog + install recipes (win/mac; Linux fails closed, #994) |
 | `app_claude` | binary `claude` | 6 read-only `tool_facade`s (review.diff, explain.diff, explain.code, analyze.issue, plan.change, propose.patch) | governed Tool contracts | binary probe | register script + catalog + install recipe (npm) |
 | `app_gmail` | manual, non-executable | 2 `agent_facade`s (list_unread, fetch), both `untrusted_input` | delegated mail MCP agent | **external credential readiness (ADR 0010)** | wired via `pnpm gmail:register-app` (resolves the mail MCP agent declaring `provider: "google"`; quick-register is deliberately not used — it cannot express the agent prerequisite) + `smoke:gmail-app` |
-| `app_163_mail_v2` | manual, non-executable | 2 `agent_facade`s (list_unread, fetch), both `untrusted_input` | delegated 163 mail MCP agent (`tools/mail-mcp`, provider `netease`) | **external credential readiness (ADR 0010)**; Windows DPAPI store, `not_authorized` off-Windows | wired via `pnpm mail:163:register` + `pnpm mail:163:setup` to authorize + `smoke:163-app` |
+| `app_163_mail` | manual, non-executable | 2 `agent_facade`s (list_unread, fetch), both `untrusted_input` | delegated 163 mail MCP agent (`tools/mail-mcp`, provider `netease`) | **external credential readiness (ADR 0010)**; Windows DPAPI store, `not_authorized` off-Windows | wired via `pnpm mail:163:register` + `pnpm mail:163:setup` to authorize + `smoke:163-app` |
 
 `app_claude`'s `analyze.issue` carries the `untrusted_input` tag (ADR 0011): the
 issue body is server-resolved, bounded, and fenced as data before the wrapper

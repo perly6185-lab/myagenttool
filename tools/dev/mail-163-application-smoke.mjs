@@ -1,4 +1,4 @@
-// #1190: end-to-end wiring smoke for app_163_mail_v2 against a real server —
+// #1190: end-to-end wiring smoke for app_163_mail against a real server —
 // run the register script, assert the agent declares its provider (#1185), the
 // Application projects both agent_facades with the ADR-0011 taint, no credential
 // material reaches public state (ADR 0010), and — the reason the provider marker
@@ -43,7 +43,7 @@ try {
 
   const registered = spawnScript(registerScript, ["--server-url", serverUrl]);
   assert(registered.status === 0, `register script succeeds: ${registered.stderr.slice(0, 300)}`);
-  assert(/application app_163_mail_v2 is/.test(registered.stdout), `script reports the registration: ${registered.stdout.slice(0, 200)}`);
+  assert(/application app_163_mail is/.test(registered.stdout), `script reports the registration: ${registered.stdout.slice(0, 200)}`);
 
   const state = await request("GET", "/api/state");
   const agent = (state.agents ?? []).find((item) => item.id === "agt_mcp_mail");
@@ -52,14 +52,14 @@ try {
   assert((agent.adapter?.allowedTools ?? []).every((tool) => ["mail_list_unread", "mail_fetch"].includes(tool)),
     "the allowlist is read-only: no mail_send on this agent");
 
-  const application = (state.applications ?? []).find((item) => item.id === "app_163_mail_v2");
-  assert(application, "app_163_mail_v2 appears in state");
+  const application = (state.applications ?? []).find((item) => item.id === "app_163_mail");
+  assert(application, "app_163_mail appears in state");
   assert(application.source?.credential?.provider === "netease", "the descriptor pins the provider");
   assert(application.source?.credential?.scope === "imap.readonly", "the descriptor pins the read-only scope");
 
-  const capabilities = await request("GET", "/api/applications/app_163_mail_v2/capabilities");
+  const capabilities = await request("GET", "/api/applications/app_163_mail/capabilities");
   const rows = (capabilities.capabilities ?? capabilities)
-    .filter((row) => row.metadata?.execution?.mode === "agent_facade" || /^app\.app_163_mail_v2\.(list_unread|fetch)$/.test(row.name ?? ""));
+    .filter((row) => row.metadata?.execution?.mode === "agent_facade" || /^app\.app_163_mail\.(list_unread|fetch)$/.test(row.name ?? ""));
   assert(rows.length === 2, `both agent_facades discoverable (got ${rows.length})`);
   assert(rows.every((row) => (row.riskTags ?? []).includes("untrusted_input")),
     "the ADR-0011 taint travels into discovery: a mail body is data, never an instruction");
@@ -75,7 +75,7 @@ try {
   assert(again.status === 0, `re-running the register script is idempotent: ${again.stderr.slice(0, 300)}`);
   const afterRerun = await request("GET", "/api/state");
   assert((afterRerun.agents ?? []).filter((item) => item.id === "agt_mcp_mail").length === 1, "no duplicate agent");
-  assert((afterRerun.applications ?? []).filter((item) => item.id === "app_163_mail_v2").length === 1, "no duplicate application");
+  assert((afterRerun.applications ?? []).filter((item) => item.id === "app_163_mail").length === 1, "no duplicate application");
 
   // #1185, the reason this agent declares a provider at all: app_gmail must not
   // adopt this mailbox for want of an alternative. This is the ONLY mail agent
@@ -87,7 +87,7 @@ try {
   assert(!(await request("GET", "/api/state")).applications?.some((item) => item.id === "app_gmail"),
     "app_gmail is NOT created against the 163 mailbox");
 
-  console.log(`[163-smoke] wired app_163_mail_v2 -> agt_mcp_mail (provider netease); facades tainted; idempotent; app_gmail refused this mailbox`);
+  console.log(`[163-smoke] wired app_163_mail -> agt_mcp_mail (provider netease); facades tainted; idempotent; app_gmail refused this mailbox`);
   console.log("[mail-163-application-smoke] 163 mail application wiring OK");
 } finally {
   server.kill();

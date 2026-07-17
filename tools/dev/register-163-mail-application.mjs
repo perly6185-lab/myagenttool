@@ -3,7 +3,7 @@ import { resolve } from "node:path";
 const options = parseArgs(process.argv.slice(2));
 const serverUrl = options.serverUrl ?? process.env.MYAGENTTOOL_SERVER_URL ?? "http://127.0.0.1:5001";
 const agentId = "agt_mcp_mail";
-const applicationId = "app_163_mail_v2";
+const applicationId = "app_163_mail";
 
 const publicState = await request("GET", "/api/state");
 const agents = publicState.agents ?? [];
@@ -30,10 +30,8 @@ if (!agents.some((agent) => agent.id === agentId)) {
 const applications = publicState.applications ?? [];
 let application = applications.find((item) => item.id === applicationId);
 if (!application) {
-  const predecessor = applications.find((item) => item.id === "app_163_mail");
   const data = await request("POST", "/api/applications/register", {
     id: applicationId,
-    ...(predecessor ? { replacesApplicationId: predecessor.id } : {}),
     name: "163 Mail",
     kind: "manual",
     autoOnline: false,

@@ -19,11 +19,11 @@ New-Item -ItemType Directory -Force -Path $mailDir, $readinessDir | Out-Null
 } | ConvertTo-Json | Set-Content -Encoding UTF8 (Join-Path $mailDir "163.json")
 
 @{
-  applicationId = "app_163_mail_v2"
+  applicationId = "app_163_mail"
   provider = "netease"
   scope = "imap.readonly"
   obtainedAt = (Get-Date).ToUniversalTime().ToString("o")
-} | ConvertTo-Json | Set-Content -Encoding UTF8 (Join-Path $readinessDir "app_163_mail_v2.json")
+} | ConvertTo-Json | Set-Content -Encoding UTF8 (Join-Path $readinessDir "app_163_mail.json")
 
 Write-Host "163 Mail credential stored with Windows DPAPI."
 Write-Host "Set BRIDGE_CREDENTIAL_DIR=$readinessDir before starting the Desktop Bridge."
