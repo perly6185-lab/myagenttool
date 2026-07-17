@@ -38,13 +38,19 @@ test("computeReportNextRun: weekly lands on the configured weekday", () => {
   assert.equal(d.getDate(), 20);
 });
 
-test("chunkContent splits long bodies on line boundaries, keeps short ones whole", () => {
+test("chunkContent splits by UTF-8 BYTES on line boundaries, keeps short ones whole, lossless", () => {
   assert.deepEqual(chunkContent("short"), ["short"]);
   const lines = Array.from({ length: 50 }, (_, i) => `line ${i} ${"x".repeat(50)}`).join("\n");
   const chunks = chunkContent(lines, 200);
   assert.ok(chunks.length > 1);
-  assert.ok(chunks.every((c) => c.length <= 200));
+  assert.ok(chunks.every((c) => Buffer.byteLength(c, "utf8") <= 200));
   assert.equal(chunks.join("\n"), lines); // lossless
+
+  // Chinese: 900 chars = 2700 bytes must chunk by bytes (not sail through a char cap).
+  const zh = "报".repeat(900);
+  const zhChunks = chunkContent(zh, 300);
+  assert.ok(zhChunks.every((c) => Buffer.byteLength(c, "utf8") <= 300));
+  assert.equal(zhChunks.join(""), zh); // lossless — nothing dropped
 });
 
 test("sweep posts once when due, dedupes the same period, and rolls nextRunAt forward", () => {

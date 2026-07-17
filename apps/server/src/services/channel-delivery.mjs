@@ -20,6 +20,10 @@ const BASE_BACKOFF_MS = 5_000;
 const MAX_BACKOFF_MS = 10 * 60 * 1000;
 const RATE_LIMIT_BACKOFF_MS = 60 * 1000;
 const MAX_CONTENT_CHARS = 2048;
+// A row claimed for sending is durably "sending"; if the process dies mid-send
+// (before the outcome commits), the sweep — which only takes queued/retrying —
+// would never resume it. Fold "sending" rows older than this back to retrying.
+const STALE_SENDING_MS = 2 * 60 * 1000;
 
 export function backoffMs(attempts, { rateLimited = false } = {}) {
   if (rateLimited) return RATE_LIMIT_BACKOFF_MS;
@@ -203,6 +207,20 @@ export function createChannelDeliveryService({
 
   async function runSweep() {
     const nowMs = Date.parse(now());
+    // Recover deliveries stranded in "sending" by a crash/restart mid-send. The
+    // send is at-least-once (this row already consumed an attempt; a resend of a
+    // possibly-delivered message is deduped provider-side, e.g. WeCom's 600s
+    // duplicate check). Without this the message is lost silently and forever.
+    for (const row of state.channelDeliveries ?? []) {
+      if (row.status === "sending" && (!row.updatedAt || nowMs - Date.parse(row.updatedAt) > STALE_SENDING_MS)) {
+        runTx(() => {
+          row.status = "retrying";
+          row.lastErrorCode = "stranded_sending";
+          row.nextAttemptAt = now();
+          row.updatedAt = now();
+        });
+      }
+    }
     const due = (state.channelDeliveries ?? []).filter(
       (row) =>
         (row.status === "queued" || row.status === "retrying")
