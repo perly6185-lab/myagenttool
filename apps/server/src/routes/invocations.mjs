@@ -11,6 +11,7 @@ export async function handleInvocationRoutes({
   findApprovalRequest,
   findInvocation,
   listInvocationEvents,
+  listInvocationRefusals,
   approveInvocation,
   denyInvocation,
   findAgent,
@@ -47,6 +48,23 @@ export async function handleInvocationRoutes({
       return true;
     }
     sendJson(res, 200, { released: releaseDecisionClaim({ decisionId, actor }) });
+    return true;
+  }
+
+  // Refusals for one invocation, including the ones the 200-row cap evicted to the
+  // durable archive. Same existence-hiding tenancy guard as the events surface.
+  const refusalsMatch = url.pathname.match(/^\/api\/invocations\/([^/]+)\/refusals$/);
+  if (req.method === "GET" && refusalsMatch && typeof listInvocationRefusals === "function") {
+    const invocationId = decodeURIComponent(refusalsMatch[1]);
+    const invocation = findInvocation(invocationId);
+    if (!invocation) {
+      sendJson(res, 404, { error: "invocation_not_found" });
+      return true;
+    }
+    if (denyForeignInvocationRead({ res, sendJson, state, actor, invocation })) {
+      return true;
+    }
+    sendJson(res, 200, listInvocationRefusals(invocation, { limit: url.searchParams.get("limit") }));
     return true;
   }
 
