@@ -7,6 +7,7 @@ import {
   Gauge,
   GitCompare,
   Inbox,
+  KanbanSquare,
   LayoutDashboard,
   ListChecks,
   ListTodo,
@@ -55,6 +56,7 @@ export interface SectionDef {
 export const SECTIONS: SectionDef[] = [
   // Work — the daily home: start a task, live in a project.
   { key: "dashboard", label: "Overview", icon: LayoutDashboard, blurb: "Start a task and watch it run", group: "work" },
+  { key: "workBoard", label: "Status", icon: KanbanSquare, blurb: "Every work item by state: to-decide, waiting, running, done, failed, follow-up", group: "work" },
   { key: "workspace", label: "Workspace", icon: PanelsTopLeft, blurb: "Project files, transcript, and history in one place", group: "work" },
   // Run — the ways work executes.
   { key: "autoRuns", label: "Auto-runs", icon: Bot, blurb: "Autonomous issue → worktree → PR runs", group: "run" },
