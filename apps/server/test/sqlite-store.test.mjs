@@ -111,3 +111,45 @@ test("sqlite: a store schema newer than the binary refuses to open", { skip }, (
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("sqlite: ADR 0019 — a history row SURVIVES replaceSnapshot (never mirrored)", { skip }, () => {
+  const store = createSqliteStore({ DatabaseSync, path: ":memory:" });
+  try {
+    // Append two evicted rows to history, and put ONE of them in the mirrored
+    // records too (as if it were still live).
+    store.appendHistory("spans", [
+      { id: "spn_old", traceId: "trc_1", invocationId: "inv_1", startedAt: "t0" },
+      { id: "spn_older", traceId: "trc_1", invocationId: "inv_1", startedAt: "t-1" },
+    ]);
+    store.replaceSnapshot({ spans: [{ id: "spn_live", traceId: "trc_1" }] });
+    // replaceSnapshot wiped+rewrote `records` (only spn_live remains there)...
+    assert.deepEqual(store.query("spans").map((s) => s.id), ["spn_live"], "records mirror reflects only live state");
+    // ...but the history table is untouched — the evicted rows are still queryable.
+    const history = store.queryHistory("spans", { invocationId: "inv_1" });
+    assert.deepEqual(history.rows.map((s) => s.id).sort(), ["spn_old", "spn_older"], "history survives the mirror replace");
+  } finally {
+    store.close();
+  }
+});
+
+test("sqlite: ADR 0019 — a v1 store migrates to v2 (history table added) on open", { skip }, () => {
+  const dir = mkdtempSync(join(tmpdir(), "sqlite-store-mig-"));
+  const path = join(dir, "store.sqlite");
+  try {
+    // Build a v1-shaped store by hand: records table + schema_version = 1, no history.
+    const raw = new DatabaseSync(path);
+    raw.exec("PRAGMA journal_mode = WAL;");
+    raw.exec("CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT)");
+    raw.exec("CREATE TABLE records(collection TEXT NOT NULL, id TEXT NOT NULL, json TEXT NOT NULL, PRIMARY KEY(collection, id))");
+    raw.prepare("INSERT INTO meta(key,value) VALUES('schema_version','1')").run();
+    raw.close();
+    // Opening with this (v2) binary runs migration step 1 → history exists + usable.
+    const store = createSqliteStore({ DatabaseSync, path });
+    assert.equal(store.schemaVersion, 2);
+    store.appendHistory("refusals", [{ id: "r1", invocationId: "inv_1", at: "t" }]);
+    assert.deepEqual(store.queryHistory("refusals", { invocationId: "inv_1" }).rows.map((r) => r.id), ["r1"]);
+    store.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

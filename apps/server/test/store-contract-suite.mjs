@@ -83,4 +83,35 @@ export function runStoreContract(label, makeStore) {
     });
     assert.equal(out, "done");
   });
+
+  // ADR 0019: durable observability history — append + paginated newest-first read.
+  test(`${label}: appendHistory / queryHistory — append, dedup, scope, paginate newest-first`, () => {
+    const { store } = makeStore();
+    // Two invocations' rows into one collection.
+    store.appendHistory("refusals", [
+      { id: "r1", invocationId: "inv_1", at: "t1", summary: "one" },
+      { id: "r2", invocationId: "inv_1", at: "t2", summary: "two" },
+      { id: "rx", invocationId: "inv_2", at: "tx", summary: "other" },
+    ]);
+    // Dedup by (collection,id): a re-append of r1 is ignored.
+    const dup = store.appendHistory("refusals", [{ id: "r1", invocationId: "inv_1", at: "t1", summary: "one" }]);
+    assert.equal(dup.appended, 0, "re-append of an existing (collection,id) is ignored");
+    store.appendHistory("refusals", [{ id: "r3", invocationId: "inv_1", at: "t3", summary: "three" }]);
+
+    // Scoped to inv_1, newest-first (r3, r2, r1).
+    const all = store.queryHistory("refusals", { invocationId: "inv_1" });
+    assert.deepEqual(all.rows.map((r) => r.id), ["r3", "r2", "r1"]);
+    assert.equal(all.nextBefore, null, "no more pages");
+
+    // A different collection is empty.
+    assert.equal(store.queryHistory("traces").rows.length, 0);
+
+    // Pagination: first page of 2, then the rest via the cursor.
+    const page1 = store.queryHistory("refusals", { invocationId: "inv_1", limit: 2 });
+    assert.deepEqual(page1.rows.map((r) => r.id), ["r3", "r2"]);
+    assert.ok(page1.nextBefore != null, "more pages → a cursor");
+    const page2 = store.queryHistory("refusals", { invocationId: "inv_1", limit: 2, before: page1.nextBefore });
+    assert.deepEqual(page2.rows.map((r) => r.id), ["r1"]);
+    assert.equal(page2.nextBefore, null);
+  });
 }
