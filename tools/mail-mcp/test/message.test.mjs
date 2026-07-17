@@ -26,6 +26,16 @@ test("headerOf refuses a message with no envelope rather than inventing one", ()
   assert.equal(messageRecordOf({}, { text: "body" }), null);
 });
 
+test("headerOf survives a malformed Date header instead of throwing (#1199)", () => {
+  // imapflow parses a garbage Date into an Invalid Date — still `instanceof
+  // Date` but toISOString() throws. One such message must not fail the whole
+  // list; it degrades to the raw string.
+  const invalid = headerOf({ envelope: { messageId: "<a@b>", from: [], subject: "x", date: new Date("not a date") } });
+  assert.equal(invalid.date, "Invalid Date");
+  const missing = headerOf({ envelope: { messageId: "<a@b>", from: [], subject: "x", date: undefined } });
+  assert.equal(missing.date, "");
+});
+
 // The regression this module exists for: without these two fields every reply
 // opens a NEW issue instead of commenting on the mapped one
 // (apps/server/src/services/mail-issue-transcription.mjs reads them), and the
