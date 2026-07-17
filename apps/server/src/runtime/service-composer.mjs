@@ -56,6 +56,7 @@ import { resolveDeployCommand, deployTimeoutMs, runDeployCommand, resolveRollbac
 import { decisionConfig } from "../services/auto-run-decision.mjs";
 import { autoRunSettingsEnvOverlay } from "../services/auto-run-config.mjs";
 import { createAlertDispatcher } from "../services/auto-run-alerts.mjs";
+import { createOtlpTraceExporter } from "../services/otlp-export.mjs";
 import { DEFAULT_SLO_TARGETS, evaluateSloAlert, summarizeAutoRunSlos } from "../services/auto-run-slo.mjs";
 import { createTerminalService } from "../services/terminal.mjs";
 import { createToolService, failStrandedIssueFetches } from "../services/tools.mjs";
@@ -687,6 +688,29 @@ export function createServerRuntimeServices({
     }
     persistStateSoon();
     return { alerted: Boolean(alert), kind: alert?.kind ?? null };
+  }
+
+  // ADR 0017: opt-in, best-effort OTLP/HTTP JSON trace export. Reads the endpoint
+  // live so an operator edit applies without a restart; a fire-and-forget mirror
+  // of the authoritative in-memory spans. On a slow tick (index.mjs) it exports
+  // completed, not-yet-exported spans and marks them optimistically, rolling the
+  // mark back if the POST fails so the batch retries next tick. No-op when
+  // unconfigured; never throws into or slows an invocation.
+  const otlpExporter = createOtlpTraceExporter({ now });
+  function flushTraceExport() {
+    if (!(process.env.OTEL_EXPORTER_OTLP_ENDPOINT ?? "").trim()) return { exported: 0 };
+    const pending = (state.spans ?? []).filter((span) => span.endedAt && !span.otlpExportedAt);
+    if (pending.length === 0) return { exported: 0 };
+    const at = now();
+    for (const span of pending) span.otlpExportedAt = at;
+    void otlpExporter.exportSpans(pending).then((result) => {
+      if (!result?.sent) {
+        for (const span of pending) if (span.otlpExportedAt === at) span.otlpExportedAt = null;
+      } else {
+        persistStateSoon();
+      }
+    });
+    return { exported: pending.length };
   }
 
   const { startAutoRun, advanceAutoRunForInvocation, syncAutoRunOnApproval, syncAutoRunOnDenial, retryAutoRun, cancelAutoRun, mergeAutoRunPr, reapStuckAutoRuns, autoMergeSweep, approveDesign, rejectDesign, answerClarify, approveDecomposition, rejectDecomposition } = createAutoRunService({
@@ -2938,6 +2962,7 @@ export function createServerRuntimeServices({
     cancelAutoRun,
     reapStuckAutoRuns,
     sweepAutoRunSloAlerts,
+    flushTraceExport,
     autoMergeSweep,
     claimIssue,
     releaseIssueClaim,

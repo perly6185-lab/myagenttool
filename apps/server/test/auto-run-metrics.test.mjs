@@ -6,7 +6,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { summarizeAutoRuns } from "../src/services/auto-run-metrics.mjs";
+import { summarizeAutoRuns, deriveFinalStatus } from "../src/services/auto-run-metrics.mjs";
 
 test("empty input: zero-filled statuses and a null success rate (no data yet)", () => {
   const s = summarizeAutoRuns([]);
@@ -144,4 +144,31 @@ test("quality rates are null until their population exists (no fake 0%)", () => 
 test("a run with no decision defaults to the develop population", () => {
   const s = summarizeAutoRuns([{ status: "pr_open", repairAttempts: 1 }]);
   assert.equal(s.rates.selfRepair, 1, "no decision.path is treated as develop");
+});
+
+// --- Derived terminal grade (finalStatus) ------------------------------------
+
+test("deriveFinalStatus grades a terminal run without changing its stored status", () => {
+  assert.equal(deriveFinalStatus({ status: "pr_open" }), "clean_success");
+  assert.equal(deriveFinalStatus({ status: "pr_open", repairAttempts: 2 }), "degraded_success");
+  assert.equal(deriveFinalStatus({ status: "pr_open", verification: { verified: false } }), "unverified_success", "opened but no check ran");
+  // A ran-and-passed check with a repair is degraded, not unverified.
+  assert.equal(deriveFinalStatus({ status: "pr_open", verification: { verified: true, passed: true }, repairAttempts: 1 }), "degraded_success");
+  assert.equal(deriveFinalStatus({ status: "failed" }), "failed");
+  assert.equal(deriveFinalStatus({ status: "blocked" }), "failed");
+  // Non-terminal / needs-human runs are not graded yet.
+  assert.equal(deriveFinalStatus({ status: "running" }), null);
+  assert.equal(deriveFinalStatus({ status: "needs_input" }), null);
+  assert.equal(deriveFinalStatus(null), null);
+});
+
+test("summarizeAutoRuns distributes runs across the finalStatuses grades", () => {
+  const s = summarizeAutoRuns([
+    { status: "pr_open" },                                        // clean
+    { status: "pr_open", repairAttempts: 1 },                     // degraded
+    { status: "pr_open", verification: { verified: false } },     // unverified
+    { status: "failed" },                                         // failed
+    { status: "running" },                                        // ungraded
+  ]);
+  assert.deepEqual(s.finalStatuses, { clean_success: 1, degraded_success: 1, unverified_success: 1, failed: 1 });
 });

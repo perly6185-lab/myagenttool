@@ -49,6 +49,21 @@ test("round_started persists a round + child span under the root span and sets e
   assert.equal(invocation.startedAt, T0, "first round sets true execution start");
 });
 
+test("a round span carries OpenTelemetry GenAI semantic-convention attributes", () => {
+  const { state, runtime, invocation } = harness();
+  runtime.recordRoundEvent(invocation, ev("round_started", { roundIndex: 0, provider: "anthropic", model: "claude-opus-4-8" }));
+  let span = state.spans.find((s) => s.parentSpanId === "spn_root");
+  assert.equal(span.attributes["gen_ai.system"], "anthropic");
+  assert.equal(span.attributes["gen_ai.request.model"], "claude-opus-4-8");
+  assert.equal(span.attributes["gen_ai.operation.name"], "chat", "model_turn maps to the chat operation");
+  assert.equal(span.attributes.provider, "anthropic", "existing custom keys are kept for back-compat");
+
+  runtime.recordRoundEvent(invocation, ev("round_completed", { roundIndex: 0, status: "succeeded", inputTokens: 120, outputTokens: 45 }));
+  span = state.spans.find((s) => s.parentSpanId === "spn_root");
+  assert.equal(span.attributes["gen_ai.usage.input_tokens"], 120, "usage attributes added on completion");
+  assert.equal(span.attributes["gen_ai.usage.output_tokens"], 45);
+});
+
 test("round_completed fills tokens/timing and closes the child span", () => {
   const { state, runtime, invocation } = harness();
   runtime.recordRoundEvent(invocation, ev("round_started", { roundIndex: 0, startedAt: T0 }));

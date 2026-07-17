@@ -6,6 +6,9 @@
 // per-send single-use grant all still gate execution.
 import { createGmailSendApplicationRegistration } from "../../apps/server/src/services/gmail-send-application.mjs";
 
+// Same provider the app_gmail_send descriptor pins in its credential (ADR 0014).
+const GMAIL_PROVIDER = "google";
+
 const options = parseArgs(process.argv.slice(2));
 const serverUrl = options.serverUrl ?? process.env.MYAGENTTOOL_SERVER_URL ?? "http://127.0.0.1:5001";
 
@@ -15,10 +18,31 @@ if (!agentId) {
   const state = await stateResponse.json();
   if (!stateResponse.ok) throw new Error(`Reading server state failed: ${JSON.stringify(state)}`);
   const isMcp = (agent) => agent.type === "mcp" || agent.adapter?.type === "mcp";
-  const sendAgent = (state.agents ?? []).find(
+  const sendAgents = (state.agents ?? []).filter(
     (agent) => isMcp(agent) && (agent.adapter?.allowedTools ?? []).includes("mail_send"),
   );
-  agentId = sendAgent?.id ?? null;
+  // Guessing matters more here than on the read side: this Application holds send
+  // authority (ADR 0014), so a wrong bind points the exfiltration boundary at a
+  // mailbox nobody named. `mail_send` says an agent can send, never as whom — so
+  // match the declared provider (#1185), and refuse when nothing declares it
+  // rather than falling back on the single candidate that happens to be there.
+  const candidates = sendAgents.filter((agent) => agent.provider === GMAIL_PROVIDER);
+  if (!candidates.length && sendAgents.length) {
+    throw new Error(
+      `No mail send MCP agent declares provider "${GMAIL_PROVIDER}", but ${sendAgents.length} send-capable `
+      + `MCP agent(s) are registered (${sendAgents.map((agent) => `${agent.id} -> provider ${agent.provider ?? "(none)"}`).join(", ")}). `
+      + "app_gmail_send holds send authority for a google mailbox; binding it to one of these would send as the wrong account. "
+      + "Re-register the Gmail send agent with `provider: \"google\"`, or pass --agent-id <id> to name it deliberately.",
+    );
+  }
+  if (candidates.length > 1) {
+    throw new Error(
+      `Ambiguous: ${candidates.length} mail send MCP agents declare provider "${GMAIL_PROVIDER}" `
+      + `(${candidates.map((agent) => agent.id).join(", ")}). `
+      + "Pass --agent-id <id> to name the one app_gmail_send delegates to.",
+    );
+  }
+  agentId = candidates[0]?.id ?? null;
 }
 if (!agentId) {
   throw new Error(
