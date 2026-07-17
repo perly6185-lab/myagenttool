@@ -326,6 +326,7 @@ test("every ingestion routes global retention through the archive, not a silent 
   const collections = capCalls.map((c) => `${c.collection}:${c.max}`);
   assert.ok(collections.includes("invocationRounds:5000"), "rounds capped via archive");
   assert.ok(collections.includes("toolInvocationRecords:5000"), "tool records capped via archive");
+  assert.ok(collections.includes("spans:20000"), "the whole spans array is capped via archive too");
 });
 
 test("a per-invocation over-cap round is archived, never silently lost", () => {
