@@ -48,6 +48,7 @@ export const persistedArrayKeys = [
   "applicationRecoveryActions",
   "approvalGrants",
   "applicationDailyStats",
+  "refusalDailyStats",
   "projectTargets",
   "invocations",
   "worktrees",

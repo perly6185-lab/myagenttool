@@ -3,7 +3,7 @@ import { publicDeviceView } from "../runtime/bridge-auth.mjs";
 import { channelOperations } from "./channels.mjs";
 import { pendingDecisions } from "./pending-decisions.mjs";
 import { workBoard } from "./work-board.mjs";
-import { dailyDigest } from "./daily-digest.mjs";
+import { workReport, calendarPeriods } from "./work-report.mjs";
 import { evidenceLedger } from "./evidence-ledger.mjs";
 import { scheduleHealthReadModel } from "./schedule-health.mjs";
 
@@ -337,16 +337,18 @@ export function buildPublicState({
     now: digestNow,
   });
 
-  // Today's digest — "what moved today, where we stand, what's aging". Window is
-  // the start of the current UTC day (matches the digest's own UTC date label);
-  // reuses the board just built so standing counts can't drift from it.
-  const dayStart = new Date(digestNow);
-  dayStart.setUTCHours(0, 0, 0, 0);
-  const workDailyDigest = dailyDigest({
+  // Work report — day / week / month / quarter rollups over the same board.
+  // Windows are calendar-aligned in UTC (start of today / ISO-week Monday /
+  // month-1st / quarter-start). Runs come from the (team-scoped) auto-run
+  // snapshot; refusals from the durable per-day rollup, gated to unscoped
+  // viewers since that rollup carries no per-team attribution.
+  const workReportPeriods = calendarPeriods(digestNow);
+  const workReportSummary = workReport({
     board: workStatusBoard,
     autoRuns,
-    refusals: visibleRefusals,
-    windowStart: dayStart.getTime(),
+    refusalDailyStats: state.refusalDailyStats ?? [],
+    refusalsAvailable: teamId == null,
+    periods: workReportPeriods,
     now: digestNow,
   });
 
@@ -493,7 +495,7 @@ export function buildPublicState({
     codexApprovalBrokerRequests,
     pendingDecisions: pendingDecisionQueue,
     workBoard: workStatusBoard,
-    dailyDigest: workDailyDigest,
+    workReport: workReportSummary,
     codexImportedEvidenceRecords: visibleImported,
     terminalRuntimeCapability: state.terminalRuntimeCapability,
     terminalSessions,

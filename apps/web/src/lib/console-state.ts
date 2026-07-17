@@ -259,26 +259,42 @@ export interface WorkBoard {
   states: Record<WorkState, { count: number; items: WorkItem[] }>;
 }
 
-/** The daily digest (server read-model `dailyDigest`): today's flow + current
- * standing + aging attention, plus a pre-rendered markdown report. */
-export interface DailyDigest {
-  date: string;
+export type WorkPeriodKey = "day" | "week" | "month" | "quarter";
+
+/** One period's rollup (server read-model `workReport`). Run metrics come from
+ * the auto-run snapshot; refusals from the durable per-day rollup (null when the
+ * viewer is team-scoped, since that rollup has no per-team attribution). */
+export interface WorkPeriodReport {
+  key: WorkPeriodKey;
+  label: string;
   windowStart: number;
-  now: number;
-  standing: Record<WorkState, number>;
+  startDate: string;
   flow: {
     opened: number;
     completed: number;
     failed: number;
-    refusals: number;
+    /** null when not available at team scope. */
+    refusals: number | null;
     refusalsByCategory: Record<string, number>;
+    /** Refusal count is a lower bound (rollup began after the window start). */
+    refusalsPartial: boolean;
   };
+  /** Copy-pasteable / channel-postable report of this period. */
+  markdown: string;
+}
+
+/** Day / week / month / quarter work reports over the six-state board, sharing
+ * one standing + attention snapshot (server read-model `workReport`). */
+export interface WorkReport {
+  generatedAt: number;
+  standing: Record<WorkState, number>;
   attention: {
     agingDecisions: { id: string; title: string; section: string; targetId: string | null; ageHours: number }[];
     stuckRuns: { id: string; title: string; section: string; targetId: string | null; ageHours: number }[];
   };
-  /** Copy-pasteable / channel-postable report of the above. */
-  markdown: string;
+  refusalsAvailable: boolean;
+  refusalDataSince: string | null;
+  periods: Record<WorkPeriodKey, WorkPeriodReport>;
 }
 
 /** #1143: an issue's develop/review lease — one active develop claim per issue. */
@@ -1121,8 +1137,8 @@ export interface ConsoleSnapshot {
   pendingDecisions?: PendingDecision[];
   /** The Status board — six lenses over the same work, server read-model `workBoard`. */
   workBoard?: WorkBoard;
-  /** Today's work digest — flow + standing + attention, server read-model `dailyDigest`. */
-  dailyDigest?: DailyDigest;
+  /** Day/week/month/quarter work reports — flow + standing + attention, server read-model `workReport`. */
+  workReport?: WorkReport;
   /** Durable per-application daily execution counters (survive the invocation cap). */
   applicationDailyStats?: ApplicationDailyStat[];
   applicationHealthSweepStatus?: ApplicationHealthSweepStatus | null;
