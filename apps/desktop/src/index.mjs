@@ -14,6 +14,7 @@ import { codexResumeArgs } from "./codex-resume.mjs";
 import { extractClaudeFileAccesses } from "./claude-file-access.mjs";
 import { newRoundState, claudeRoundEmits, codexRoundEmits } from "./round-telemetry.mjs";
 import { createAgentLineSink } from "./agent-line-sink.mjs";
+import { createInvocationPool, resolveBridgeConcurrency } from "./invocation-pool.mjs";
 import { applicationWrapperArgs } from "./application-wrapper-args.mjs";
 import { collectApplicationBinaryReadiness } from "./application-binary-readiness.mjs";
 import { collectApplicationCredentialReadiness } from "./application-credential-readiness.mjs";
@@ -328,7 +329,13 @@ if (process.argv.includes("--check")) {
   process.exit(0);
 }
 
-let busy = false;
+// #1242: `polling` guards the poll TICK against re-entry (the claim round trips),
+// NOT the runs themselves — invocations run concurrently in invocationPool up to
+// the server's cap. `auxBusy` keeps aux work (health/discovery/probe/lifecycle/
+// install) single-flight while letting it interleave with in-flight invocations,
+// which the old single `busy` flag blocked.
+let polling = false;
+let auxBusy = false;
 let terminalBusy = false;
 let stopped = false;
 const terminalSessions = new Map();
@@ -376,6 +383,26 @@ if (registration?.bridgeToken) {
 }
 console.log(`[desktop] registered with ${serverUrl}`);
 
+// Cross-worktree concurrency: honor the server's authoritative cap (echoed on
+// the register response), falling back to env then a default. The server stays
+// the hard limit — it 204s past its own cap or the per-worktree lock — so this
+// is the bridge's own ceiling on parallel children. Read once at register time;
+// a live change in the Devices UI applies after the bridge re-registers (#1242).
+const bridgeConcurrency = resolveBridgeConcurrency({
+  serverMaxConcurrency: registration?.device?.maxConcurrency,
+  envValue: process.env.BRIDGE_MAX_CONCURRENT,
+});
+console.log(`[desktop] invocation concurrency: ${bridgeConcurrency}`);
+const invocationPool = createInvocationPool({
+  cap: bridgeConcurrency,
+  claim: () => request("GET", "/api/bridge/next"),
+  run: (work) => runInvocation(work),
+  // runInvocation self-reports every terminal outcome; a reject here is an
+  // unexpected bug in the runner itself — log it and free the slot (the pool's
+  // finally already decremented), never crash the poll loop.
+  onError: (error) => logPollError("invocation", error),
+});
+
 // A transient server blip — e.g. ECONNRESET while the API restarts — must never
 // escape a poll tick as an unhandled rejection: the dev supervisor tears down the
 // whole stack when any child exits non-zero, so one dropped fetch would take the
@@ -406,76 +433,54 @@ guarded(pollTerminal, "terminal")();
 const terminalTimer = setInterval(guarded(pollTerminal, "terminal"), terminalPollIntervalMs);
 const binaryReadinessTimer = setInterval(guarded(refreshApplicationBinaryReadiness, "binary readiness"), binaryReadinessIntervalMs);
 
+// Aux (non-invocation) work: still single-flight, but decoupled from
+// invocations so a long run no longer starves health/discovery. Tried in order;
+// the first route with work wins the tick. Each runner self-reports its own
+// terminal state to the server.
+const AUX_ROUTES = [
+  ["/api/bridge/health-next", (work) => runHealthCheck(work)],
+  ["/api/bridge/discovery-next", (work) => runDiscovery(work)],
+  ["/api/bridge/probe-next", (work) => runIntegrationProbe(work)],
+  ["/api/bridge/lifecycle-next", (work) => runLifecycleAction(work)],
+  ["/api/bridge/application-install-next", (work) => runApplicationInstall(work)],
+];
+
+async function pumpAux() {
+  if (auxBusy) {
+    return;
+  }
+  for (const [path, runner] of AUX_ROUTES) {
+    const work = await request("GET", path);
+    if (!work) {
+      continue;
+    }
+    // Launch in the background and free the tick — like invocations, aux work
+    // must not block the poll loop (an install can take minutes).
+    auxBusy = true;
+    Promise.resolve()
+      .then(() => runner(work))
+      .catch((error) => logPollError("aux", error))
+      .finally(() => {
+        auxBusy = false;
+      });
+    return;
+  }
+}
+
 async function poll() {
-  if (busy || stopped) {
+  if (polling || stopped) {
     return;
   }
-
-  const response = await request("GET", "/api/bridge/next");
-  if (response) {
-    busy = true;
-    try {
-      await runInvocation(response);
-    } finally {
-      busy = false;
-    }
-    return;
+  polling = true;
+  try {
+    // Fill the invocation pool up to the cap (the server 204s past its own
+    // limit / the per-worktree lock), then give aux work a turn. Neither awaits
+    // the actual runs — only the claim round trips — so the tick stays short.
+    await invocationPool.fill();
+    await pumpAux();
+  } finally {
+    polling = false;
   }
-
-  const healthWork = await request("GET", "/api/bridge/health-next");
-  if (healthWork) {
-    busy = true;
-    try {
-      await runHealthCheck(healthWork);
-    } finally {
-      busy = false;
-    }
-    return;
-  }
-
-  const discoveryWork = await request("GET", "/api/bridge/discovery-next");
-  if (discoveryWork) {
-    busy = true;
-    try {
-      await runDiscovery(discoveryWork);
-    } finally {
-      busy = false;
-    }
-    return;
-  }
-
-  const probeWork = await request("GET", "/api/bridge/probe-next");
-  if (probeWork) {
-    busy = true;
-    try {
-      await runIntegrationProbe(probeWork);
-    } finally {
-      busy = false;
-    }
-    return;
-  }
-
-  const lifecycleWork = await request("GET", "/api/bridge/lifecycle-next");
-  if (lifecycleWork) {
-    busy = true;
-    try {
-      await runLifecycleAction(lifecycleWork);
-    } finally {
-      busy = false;
-    }
-    return;
-  }
-
-  const installWork = await request("GET", "/api/bridge/application-install-next");
-  if (installWork) {
-    busy = true;
-    try {
-      await runApplicationInstall(installWork);
-    } finally {
-      busy = false;
-    }
-  }
-
 }
 
 async function runApplicationInstall(work) {
