@@ -14,6 +14,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn, spawnSync } from "node:child_process";
+import { UNTRUSTED_INPUT_TAG } from "../../packages/protocol/src/issue-prompt.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const registerScript = resolve(here, "register-163-mail-application.mjs");
@@ -61,7 +62,7 @@ try {
   const rows = (capabilities.capabilities ?? capabilities)
     .filter((row) => row.metadata?.execution?.mode === "agent_facade" || /^app\.app_163_mail\.(list_unread|fetch)$/.test(row.name ?? ""));
   assert(rows.length === 2, `both agent_facades discoverable (got ${rows.length})`);
-  assert(rows.every((row) => (row.riskTags ?? []).includes("untrusted_input")),
+  assert(rows.every((row) => (row.riskTags ?? []).includes(UNTRUSTED_INPUT_TAG)),
     "the ADR-0011 taint travels into discovery: a mail body is data, never an instruction");
 
   // ADR 0010: the authorization code lives with the MCP server on the device,
