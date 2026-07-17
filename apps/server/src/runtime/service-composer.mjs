@@ -39,6 +39,7 @@ import { createCodexService } from "../services/codex.mjs";
 import { createIntegrationService } from "../services/integrations.mjs";
 import { createInvocationEventService } from "../services/invocation-events.mjs";
 import { createInvocationRefusalService } from "../services/invocation-refusals.mjs";
+import { createInvocationTraceService } from "../services/invocation-trace.mjs";
 import { createInvocationService } from "../services/invocations.mjs";
 import { createM3Service } from "../services/m3.mjs";
 import { createProjectService, sameProjectPath } from "../services/projects.mjs";
@@ -224,6 +225,10 @@ export function createServerRuntimeServices({
     readInvocationEventArchive: retentionArchive.readInvocationEventArchive,
   });
   const { listInvocationRefusals } = createInvocationRefusalService({
+    state,
+    readArchiveWithMetadata: retentionArchive.readArchiveWithMetadata,
+  });
+  const { getInvocationTrace } = createInvocationTraceService({
     state,
     readArchiveWithMetadata: retentionArchive.readArchiveWithMetadata,
   });
@@ -3181,6 +3186,7 @@ export function createServerRuntimeServices({
     completeInvocation,
     listInvocationEvents,
     listInvocationRefusals,
+    getInvocationTrace,
     findApprovalRequest,
     claimDecision,
     releaseDecisionClaim,
