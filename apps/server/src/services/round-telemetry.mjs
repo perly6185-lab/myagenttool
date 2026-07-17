@@ -171,7 +171,18 @@ export function createRoundTelemetryRuntime({
       status: "started",
       startedAt,
       endedAt: null,
-      attributes: { roundIndex, kind, provider, model },
+      // Existing custom keys are kept for back-compat; the gen_ai.* aliases follow
+      // the OpenTelemetry GenAI semantic conventions so this in-memory span is
+      // shape-ready for a future OTLP exporter without a re-map (de-silo, Phase 1).
+      attributes: {
+        roundIndex,
+        kind,
+        provider,
+        model,
+        "gen_ai.system": provider,
+        "gen_ai.request.model": model,
+        "gen_ai.operation.name": kind === "model_turn" ? "chat" : kind,
+      },
     };
     state.spans.unshift(span);
 
@@ -260,6 +271,12 @@ export function createRoundTelemetryRuntime({
     if (!span || span.endedAt) return;
     span.status = status === "succeeded" ? "succeeded" : status === "cancelled" ? "cancelled" : "failed";
     span.endedAt = round.endedAt ?? now();
+    // GenAI usage conventions — known only once the round completes with tokens.
+    span.attributes = {
+      ...span.attributes,
+      "gen_ai.usage.input_tokens": round.inputTokens ?? 0,
+      "gen_ai.usage.output_tokens": round.outputTokens ?? 0,
+    };
   }
 
   function handleToolInvocation(invocation, data) {
