@@ -205,13 +205,24 @@ export function reapRunTranscriptPayloads(state, { cutoffMs, now }) {
     if (!record || record.payloadReaped) continue;
     const ts = Date.parse(record.createdAt ?? "");
     if (!Number.isFinite(ts) || ts >= cutoffMs) continue;
-    record.blocks = (record.blocks ?? []).map(skeletonBlock);
-    record.totalChars = 0;
-    record.payloadReaped = true;
-    record.reapedAt = now();
-    invocationIds.push(record.invocationId ?? null);
+    if (reapRunTranscriptRecord(record, { now })) invocationIds.push(record.invocationId ?? null);
   }
   return { reaped: invocationIds.length, invocationIds };
+}
+
+/**
+ * Reap ONE transcript record's block payloads in place, keeping the skeleton
+ * (kinds, tool names, durations, sizes, order). Shared by time-based retention
+ * and per-subject deletion (ADR 0018) so both empty a transcript identically.
+ * Returns true when it reaped, false when the record was already reaped/empty.
+ */
+export function reapRunTranscriptRecord(record, { now }) {
+  if (!record || record.payloadReaped) return false;
+  record.blocks = (record.blocks ?? []).map(skeletonBlock);
+  record.totalChars = 0;
+  record.payloadReaped = true;
+  record.reapedAt = now();
+  return true;
 }
 
 function skeletonBlock(block) {
